@@ -183,3 +183,14 @@ This source-breaking revision removes the `syncNeeded` convenience and the raw
 `schemaFloor`, `leaseState`, `upgrading`, and `syncNeeded` commands. Read those
 fields from `statusSnapshot` instead. The wrappers use the existing native
 command dispatcher and return the binding's JSON value types.
+
+
+## Performance profile
+
+The repository benchmark runner measures the shipped Swift `query` and
+`querySnapshot` methods against a separately compiled release native library.
+Run `bun run bench --workload read --core rust --boundary ffi --binding swift
+--lane socket --storage file --iterations 100 --trials 5` from the repository
+root. The runner leaves `vendor/` unchanged. Build commands, loaded-library
+hashes, exact-result checks, and measurement boundaries are documented in
+[bench/README.md](../../bench/README.md#swift-read-boundary).

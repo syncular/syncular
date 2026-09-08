@@ -44,7 +44,7 @@ use std::os::raw::c_longlong;
 use std::sync::{Arc, Condvar, Mutex};
 
 use serde_json::{json, Value};
-use syncular_client::{ClientDiagnosticsRequest, SyncClient};
+use syncular_client::{ClientDiagnosticsRequest, ClientDiagnosticsSnapshot, SyncClient};
 use syncular_command::{dispatch, parse_headers, CreateEffects};
 
 pub mod transport;
@@ -65,7 +65,7 @@ pub struct Handle {
     transport: HostTransport,
     effects: CreateEffects,
     queue: Arc<EventQueue>,
-    last_diagnostics_fingerprint: Option<Value>,
+    last_diagnostics_snapshot: Option<ClientDiagnosticsSnapshot>,
 }
 
 /// A bounded, blocking event queue: `poll_event` waits up to `timeout_ms` for
@@ -117,6 +117,13 @@ impl EventQueue {
 }
 
 impl Handle {
+    /// Repository benchmark access; no C ABI entry point exposes this hook.
+    #[cfg(feature = "bench-internals")]
+    #[doc(hidden)]
+    pub fn benchmark_client(&mut self) -> Option<&mut SyncClient> {
+        self.client.as_mut()
+    }
+
     fn new(config: &Value) -> Result<Self, String> {
         let queue = Arc::new(EventQueue::new());
         let transport = HostTransport::from_config(config)?;
@@ -125,7 +132,7 @@ impl Handle {
             transport,
             effects: CreateEffects::default(),
             queue,
-            last_diagnostics_fingerprint: None,
+            last_diagnostics_snapshot: None,
         })
     }
 
@@ -133,16 +140,16 @@ impl Handle {
     /// realtime traffic and forward exact core outputs.
     fn command(&mut self, command: &Value) -> Value {
         let method = command.get("method").and_then(Value::as_str).unwrap_or("");
-        let params = command.get("params").cloned().unwrap_or(Value::Null);
+        let params = command.get("params").unwrap_or(&Value::Null);
         let result = dispatch(
             &mut self.transport,
             &mut self.client,
             &mut self.effects,
             method,
-            &params,
+            params,
         );
         if method == "create" {
-            self.last_diagnostics_fingerprint = None;
+            self.last_diagnostics_snapshot = None;
             self.transport.set_signed_urls(self.effects.signed_urls);
         }
         if matches!(method, "activateSecurity" | "setHeaders") && result.is_ok() {
@@ -182,7 +189,7 @@ impl Handle {
                 if let Some(object) = value.as_object_mut() {
                     object.remove("effects");
                 }
-                json!({ "result": value })
+                Value::Object(serde_json::Map::from_iter([("result".to_owned(), value)]))
             }
             Err((code, message)) => json!({ "error": { "code": code, "message": message } }),
         }
@@ -246,19 +253,16 @@ impl Handle {
         let Ok(snapshot) = client.diagnostics_snapshot(&ClientDiagnosticsRequest::default()) else {
             return;
         };
-        let Ok(mut fingerprint) = serde_json::to_value(&snapshot) else {
-            return;
-        };
-        if let Some(object) = fingerprint.as_object_mut() {
-            object.remove("capturedAtMs");
+        if let Some(previous) = &mut self.last_diagnostics_snapshot {
+            // Capture time is observation metadata, excluded from evidence equality.
+            previous.captured_at_ms = snapshot.captured_at_ms;
+            if previous == &snapshot {
+                return;
+            }
         }
-        if self.last_diagnostics_fingerprint.as_ref() == Some(&fingerprint) {
-            return;
-        }
-        self.last_diagnostics_fingerprint = Some(fingerprint);
-        self.queue.push(Event {
-            json: json!({ "type": "diagnostics", "snapshot": snapshot }),
-        });
+        let event = json!({ "type": "diagnostics", "snapshot": snapshot });
+        self.last_diagnostics_snapshot = Some(snapshot);
+        self.queue.push(Event { json: event });
     }
 }
 

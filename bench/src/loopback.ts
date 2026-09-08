@@ -7,13 +7,22 @@
 
 import {
   type ClientSchema,
+  type ClientDatabase,
   SyncClient,
   type SyncClientLimits,
+  type SyncTransport,
+  type RealtimeConnector,
+  type SegmentDownloader,
+  type BlobTransport,
+  httpSyncTransport,
+  httpSegmentDownloader,
+  webSocketRealtimeConnector,
 } from '@syncular/client';
 import { openBunDatabase } from '@syncular/client/bun';
 import { encodeRow } from '@syncular/core';
 import {
   compileSchema,
+  CommitValidationRejection,
   createRealtimeHub,
   handleSegmentDownload,
   handleSyncRequest,
@@ -22,9 +31,11 @@ import {
   type ServerStorage,
   SqliteServerStorage,
   type SyncRequestContext,
+  type BlobStore,
 } from '@syncular/server';
 import {
   ACTOR_ID,
+  BLOB_SCHEMA,
   COLUMNS,
   PARTITION,
   PROJECT_ID,
@@ -34,6 +45,7 @@ import {
   seededRandom,
   TABLE,
 } from './fixture';
+import { measureMethods, type MethodMeasurement } from './instrumentation';
 
 export interface BenchServer {
   readonly storage: ServerStorage;
@@ -43,6 +55,12 @@ export interface BenchServer {
 }
 
 export interface BenchServerOptions {
+  readonly measurements?: Record<string, MethodMeasurement>;
+  readonly resolveScopes?: SyncRequestContext['resolveScopes'];
+  readonly blobs?: BlobStore;
+  /** Mixed-commit workload: reject the marked middle commit after staging it. */
+  readonly rejectMiddle?: boolean;
+  readonly partition?: string;
   /**
    * Inject an alternative storage backend (the PG lane wires
    * `PostgresServerStorage`). Defaults to a fresh in-memory bun:sqlite.
@@ -57,19 +75,45 @@ export function createBenchServer(options?: BenchServerOptions): BenchServer {
     options?.storage === undefined ? new SqliteServerStorage() : undefined;
   const storage: ServerStorage = options?.storage ?? (sqlite as ServerStorage);
   const segments = new MemorySegmentStore();
-  const resolveScopes = () => ({ project_id: ['*'] });
+  const resolveScopes =
+    options?.resolveScopes ?? (() => ({ project_id: ['*'] }));
+  const schema = options?.blobs ? BLOB_SCHEMA : SCHEMA;
+  const validation = options?.rejectMiddle
+    ? {
+        commitValidator: (({ operations }) => {
+          const index = operations.findIndex(
+            (operation) => operation.row?.title === 'bench-reject-middle',
+          );
+          if (index >= 0)
+            throw new CommitValidationRejection(index, 'bench.middle_rejected');
+        }) satisfies NonNullable<SyncRequestContext['commitValidator']>,
+      }
+    : {};
   const hub = createRealtimeHub({
-    schema: SCHEMA,
+    ...validation,
+    schema,
+    ...(options?.blobs ? { blobs: options.blobs } : {}),
     storage,
     resolveScopes,
     // §8.7: realtime-connected clients run their sync rounds over the
     // socket seam, through the same segment store.
     segments,
   });
+  if (options?.measurements) {
+    // Replace the method on the owned hub so HTTP pushes and its own socket
+    // request contexts both measure the same awaited notification path.
+    hub.notifyCommit = measureMethods(
+      { notifyCommit: hub.notifyCommit.bind(hub) },
+      options.measurements,
+      'realtime',
+    ).notifyCommit;
+  }
   const ctx: SyncRequestContext = {
-    partition: PARTITION,
+    ...validation,
+    partition: options?.partition ?? PARTITION,
     actorId: ACTOR_ID,
-    schema: SCHEMA,
+    schema,
+    ...(options?.blobs ? { blobs: options.blobs } : {}),
     storage,
     segments,
     resolveScopes,
@@ -87,18 +131,23 @@ export async function seedServerRows(
   const rand = seededRandom(0xb6b6b6);
   // Direct storage seeding (not through the handler): the relational row
   // tables must exist first.
-  await server.storage.ensureSchema(compileSchema(SCHEMA));
-  const tx = await server.storage.begin(PARTITION);
-  for (let i = 0; i < count; i++) {
-    const values = rowValues(i, rand);
-    await tx.upsertRow(TABLE, {
-      rowId: rowId(i),
-      serverVersion: 1,
-      scopes: { project_id: PROJECT_ID },
-      payload: encodeRow(COLUMNS, values),
-    });
+  await server.storage.ensureSchema(compileSchema(server.ctx.schema));
+  const tx = await server.storage.begin(server.ctx.partition);
+  try {
+    for (let i = 0; i < count; i++) {
+      const values = rowValues(i, rand);
+      await tx.upsertRow(TABLE, {
+        rowId: rowId(i),
+        serverVersion: 1,
+        scopes: { project_id: PROJECT_ID },
+        payload: encodeRow(COLUMNS, values),
+      });
+    }
+    await tx.commit();
+  } catch (error) {
+    await tx.rollback();
+    throw error;
   }
-  await tx.commit();
 }
 
 const CLIENT_SCHEMA: ClientSchema = {
@@ -118,9 +167,38 @@ export interface BenchClient {
   close(): Promise<void>;
 }
 
+export interface BenchEndpoints {
+  readonly syncUrl: string;
+  readonly segmentsUrl: string;
+  readonly realtimeUrl: string;
+}
+
+export async function closeBenchClients(
+  handles: readonly Pick<BenchClient, 'close'>[],
+): Promise<void> {
+  const closed = await Promise.allSettled(
+    handles.map((handle) => handle.close()),
+  );
+  const failures = closed.flatMap((result) =>
+    result.status === 'rejected' ? [result.reason] : [],
+  );
+  if (failures.length)
+    throw new AggregateError(failures, 'Benchmark client cleanup failed');
+}
+
 export async function createBenchClient(
-  server: BenchServer,
-  options?: { limits?: SyncClientLimits; realtime?: boolean },
+  server: BenchServer | BenchEndpoints,
+  options?: {
+    schema?: ClientSchema;
+    blobs?: BlobTransport;
+    limits?: SyncClientLimits;
+    realtime?: boolean;
+    database?: ClientDatabase;
+    transport?: SyncTransport;
+    clientId?: string;
+    realtimeConnector?: RealtimeConnector;
+    segments?: SegmentDownloader;
+  },
 ): Promise<BenchClient> {
   const ackWaiters: Array<{ threshold: number; resolve: () => void }> = [];
   let maxAck = -1;
@@ -142,49 +220,84 @@ export async function createBenchClient(
     }
   };
 
+  const database = options?.database ?? openBunDatabase();
+  const clientId = options?.clientId ?? crypto.randomUUID();
+  const transport =
+    options?.transport ??
+    ('syncUrl' in server
+      ? httpSyncTransport(server.syncUrl)
+      : (bytes: Uint8Array) => handleSyncRequest(bytes, server.ctx));
+  const segments =
+    options?.segments ??
+    ('syncUrl' in server
+      ? httpSegmentDownloader(server.segmentsUrl)
+      : async (request: Parameters<SegmentDownloader>[0]) => {
+          const result = await handleSegmentDownload(server.ctx, {
+            segmentId: request.segmentId,
+            scopesHeader: request.requestedScopesJson,
+          });
+          return result.bytes;
+        });
+  const realtime =
+    options?.realtimeConnector ??
+    ('syncUrl' in server
+      ? webSocketRealtimeConnector(
+          `${server.realtimeUrl}?clientId=${encodeURIComponent(clientId)}`,
+        )
+      : async (handlers: Parameters<RealtimeConnector>[0]) => {
+          const session = await server.hub.connect({
+            partition: server.ctx.partition,
+            actorId: ACTOR_ID,
+            clientId,
+            send: (data) => {
+              if (typeof data === 'string') handlers.onText(data);
+              else handlers.onBinary(data);
+            },
+          });
+          return {
+            send: (text: string) => session.handleMessage(text),
+            sendBytes: (bytes: Uint8Array) => session.handleBinary(bytes),
+            close: () => session.close(),
+          };
+        });
   const client = new SyncClient({
-    database: openBunDatabase(),
-    schema: CLIENT_SCHEMA,
-    clientId: crypto.randomUUID(),
-    transport: (bytes) => handleSyncRequest(bytes, server.ctx),
-    segments: async (request) => {
-      const result = await handleSegmentDownload(server.ctx, {
-        segmentId: request.segmentId,
-        scopesHeader: request.requestedScopesJson,
-      });
-      return result.bytes;
-    },
+    database,
+    schema: options?.schema ?? CLIENT_SCHEMA,
+    ...(options?.blobs ? { blobs: options.blobs } : {}),
+    clientId,
+    transport,
+    segments,
     ...(options?.limits !== undefined ? { limits: options.limits } : {}),
     ...(options?.realtime === true
       ? {
           realtime: async (handlers) => {
-            const session = await server.hub.connect({
-              partition: PARTITION,
-              actorId: ACTOR_ID,
-              clientId: client.clientId,
-              send: (data) => {
-                if (typeof data === 'string') handlers.onText(data);
-                else handlers.onBinary(data);
-              },
-            });
+            const socket = await realtime(handlers);
             return {
+              ...socket,
               send: (text: string) => {
                 observeAck(text);
-                session.handleMessage(text);
+                socket.send(text);
               },
-              sendBytes: (bytes: Uint8Array) => session.handleBinary(bytes),
-              close: () => session.close(),
             };
           },
         }
       : {}),
   });
-  await client.start();
-  client.subscribe({
-    id: 'bench',
-    table: TABLE,
-    scopes: { project_id: [PROJECT_ID] },
-  });
+  try {
+    await client.start();
+    client.subscribe({
+      id: 'bench',
+      table: TABLE,
+      scopes: { project_id: [PROJECT_ID] },
+    });
+  } catch (error) {
+    try {
+      await client.close();
+    } finally {
+      database.close();
+    }
+    throw error;
+  }
   return {
     client,
     waitForAck(cursor: number): Promise<void> {
@@ -193,6 +306,12 @@ export async function createBenchClient(
         ackWaiters.push({ threshold: cursor, resolve });
       });
     },
-    close: () => client.close(),
+    close: async () => {
+      try {
+        await client.close();
+      } finally {
+        database.close();
+      }
+    },
   };
 }

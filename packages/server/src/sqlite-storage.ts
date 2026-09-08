@@ -17,6 +17,7 @@ import { syncError } from './errors';
 import {
   commitWindowPageSql,
   deleteRowSql,
+  deleteSqliteRowScopesSql,
   dropTableDdl,
   indexRowPageStatement,
   layoutsOf,
@@ -228,13 +229,15 @@ class SqliteTransaction implements StorageTransaction {
   async deleteRow(table: string, rowId: string): Promise<void> {
     this.#assertOpen();
     const db = this.#storage.db;
-    db.query(deleteRowSql(this.#storage.table(table), 'sqlite')).run(
+    const compiled = this.#storage.table(table);
+    db.query(deleteSqliteRowScopesSql(compiled)).run(
+      this.#partition,
+      table,
+      rowId,
       this.#partition,
       rowId,
     );
-    db.query(
-      'DELETE FROM sync_row_scopes WHERE partition=? AND tbl=? AND row_id=?',
-    ).run(this.#partition, table, rowId);
+    db.query(deleteRowSql(compiled, 'sqlite')).run(this.#partition, rowId);
     // §5.9.4: a deleted row references no blobs.
     db.query(
       'DELETE FROM sync_blob_refs WHERE partition=? AND tbl=? AND row_id=?',
@@ -687,6 +690,9 @@ export class SqliteServerStorage implements ServerStorage {
   writeRow(partition: string, table: string, row: StoredRow): void {
     const compiled = this.table(table);
     this.db
+      .query(deleteSqliteRowScopesSql(compiled))
+      .run(partition, table, row.rowId, partition, row.rowId);
+    this.db
       .query(upsertSql(compiled, 'sqlite'))
       .run(
         ...(upsertValues(compiled, partition, row, 'sqlite') as (
@@ -697,11 +703,6 @@ export class SqliteServerStorage implements ServerStorage {
           | null
         )[]),
       );
-    this.db
-      .query(
-        'DELETE FROM sync_row_scopes WHERE partition=? AND tbl=? AND row_id=?',
-      )
-      .run(partition, table, row.rowId);
     for (const [variable, value] of Object.entries(row.scopes)) {
       this.db
         .query(
@@ -1273,6 +1274,23 @@ export class SqliteServerStorage implements ServerStorage {
         JSON.stringify(record.subscriptions),
         record.updatedAtMs,
       );
+  }
+
+  async advanceClientCursor(
+    partition: string,
+    clientId: string,
+    actorId: string,
+    logEpoch: string,
+    cursor: number,
+    updatedAtMs: number,
+  ): Promise<void> {
+    this.db
+      .query(`UPDATE sync_clients
+         SET cursor=MAX(cursor, ?), updated_at_ms=MAX(updated_at_ms, ?)
+         WHERE partition=? AND client_id=? AND actor_id=?
+           AND EXISTS (SELECT 1 FROM sync_partition_registry
+                       WHERE partition=sync_clients.partition AND log_epoch=?)`)
+      .run(cursor, updatedAtMs, partition, clientId, actorId, logEpoch);
   }
 
   async updateClientCursor(

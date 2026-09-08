@@ -661,12 +661,15 @@ pub fn dispatch<T: Transport>(
                 .and_then(Value::as_str)
                 .ok_or_else(|| client_err("query missing sql".to_owned()))?;
             let bind = match params.get("params") {
-                Some(Value::Array(list)) => list.clone(),
-                None | Some(Value::Null) => Vec::new(),
+                Some(Value::Array(list)) => list.as_slice(),
+                None | Some(Value::Null) => &[],
                 Some(_) => return Err(client_err("query params must be a list".to_owned())),
             };
-            let rows = need_client(client)?.query(sql, &bind).map_err(client_err)?;
-            Ok(json!({ "rows": rows }))
+            let rows = need_client(client)?.query(sql, bind).map_err(client_err)?;
+            Ok(Value::Object(serde_json::Map::from_iter([(
+                "rows".to_owned(),
+                Value::Array(rows.into_iter().map(Value::Object).collect()),
+            )])))
         }
         "querySnapshot" => {
             let sql = params
@@ -674,8 +677,8 @@ pub fn dispatch<T: Transport>(
                 .and_then(Value::as_str)
                 .ok_or_else(|| client_err("querySnapshot missing sql".to_owned()))?;
             let bind = match params.get("params") {
-                Some(Value::Array(list)) => list.clone(),
-                None | Some(Value::Null) => Vec::new(),
+                Some(Value::Array(list)) => list.as_slice(),
+                None | Some(Value::Null) => &[],
                 Some(_) => {
                     return Err(client_err("querySnapshot params must be a list".to_owned()))
                 }
@@ -700,10 +703,13 @@ pub fn dispatch<T: Transport>(
                     .unwrap_or_default();
                 coverage.push(WindowCoverage { base, units });
             }
-            let snapshot = need_client(client)?
-                .query_snapshot(sql, &bind, &coverage)
+            let mut snapshot = need_client(client)?
+                .query_snapshot(sql, bind, &coverage)
                 .map_err(client_err)?;
-            Ok(serde_json::to_value(snapshot).expect("snapshot serializes"))
+            let rows = std::mem::take(&mut snapshot.rows);
+            let mut result = serde_json::to_value(snapshot).expect("snapshot serializes");
+            result["rows"] = Value::Array(rows.into_iter().map(Value::Object).collect());
+            Ok(result)
         }
         "localRevision" => Ok(json!({
             "revision": need_client(client)?.local_revision().to_string()
@@ -819,7 +825,10 @@ pub fn dispatch<T: Transport>(
             // fetch_blob returns (code, message) so the server's blob.* code
             // reaches the caller (§5.9.5 cross-scope probe).
             let value = need_client(client)?.fetch_blob(transport, &blob)?;
-            Ok(json!({ "blob": value }))
+            Ok(Value::Object(serde_json::Map::from_iter([(
+                "blob".to_owned(),
+                value,
+            )])))
         }
         "conflicts" => {
             let conflicts = need_client(client)?.conflicts().to_vec();

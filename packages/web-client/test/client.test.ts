@@ -487,9 +487,7 @@ describe('durable commit outcomes', () => {
       expect(db.decodedOutboxBodies).toBe(32);
       expect(db.outcomePruneCount).toBe(1);
       expect(diagnosticsCount).toBe(1);
-      expect(observedOutboxCounts).toEqual(
-        Array.from({ length: 32 }, (_, index) => 31 - index),
-      );
+      expect(observedOutboxCounts).toEqual([0]);
       expect(entry.client.pendingCommits()).toHaveLength(0);
     } finally {
       await entry.client.close();

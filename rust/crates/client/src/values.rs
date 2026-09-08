@@ -191,7 +191,8 @@ pub fn normalize_values_casing(
 pub fn bytes_to_hex(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
     for b in bytes {
-        out.push_str(&format!("{b:02x}"));
+        out.push(char::from(b"0123456789abcdef"[usize::from(b >> 4)]));
+        out.push(char::from(b"0123456789abcdef"[usize::from(b & 15)]));
     }
     out
 }
@@ -201,10 +202,25 @@ pub fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {
         return Err("odd-length hex string".to_owned());
     }
     let mut out = Vec::with_capacity(hex.len() / 2);
-    let bytes = hex.as_bytes();
-    for pair in bytes.chunks(2) {
-        let s = std::str::from_utf8(pair).map_err(|_| "non-ASCII hex".to_owned())?;
-        out.push(u8::from_str_radix(s, 16).map_err(|e| format!("bad hex: {e}"))?);
+    let nibble = |byte| match byte {
+        b'0'..=b'9' => byte - b'0',
+        b'a'..=b'f' => byte - b'a' + 10,
+        b'A'..=b'F' => byte - b'A' + 10,
+        _ => u8::MAX,
+    };
+    for pair in hex.as_bytes().as_chunks::<2>().0 {
+        // Preserve the prior radix parser's accepted +digit pair as well as
+        // uppercase input. Canonical encoders continue to emit lowercase hex.
+        let high = if pair[0] == b'+' { 0 } else { nibble(pair[0]) };
+        let low = nibble(pair[1]);
+        if high == u8::MAX || low == u8::MAX {
+            return Err(if std::str::from_utf8(pair).is_err() {
+                "non-ASCII hex".to_owned()
+            } else {
+                "bad hex: invalid digit found in string".to_owned()
+            });
+        }
+        out.push((high << 4) | low);
     }
     Ok(out)
 }
@@ -581,8 +597,59 @@ mod naming_tests {
     use serde_json::{json, Map, Value};
     use ssp2::segment::{Column, ColumnType, ColumnValue, Row};
 
-    use super::{normalize_values_casing, snake_to_camel, EncryptionConfig};
+    use super::{
+        bytes_to_hex, hex_to_bytes, normalize_values_casing, snake_to_camel, EncryptionConfig,
+    };
     use crate::schema::{EncryptedColumn, TableSchema};
+
+    #[test]
+    fn byte_envelopes_preserve_canonical_hex_for_every_byte() {
+        let bytes: Vec<u8> = (0..=255).collect();
+        let expected: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+        assert_eq!(bytes_to_hex(&bytes), expected);
+        assert_eq!(hex_to_bytes(&expected).expect("decode"), bytes);
+        assert_eq!(bytes_to_hex(&[]), "");
+        assert_eq!(bytes_to_hex(&[0, 15, 16, 255]), "000f10ff");
+        let large = bytes.repeat(8192);
+        assert_eq!(bytes_to_hex(&large), expected.repeat(8192));
+        assert_eq!(
+            hex_to_bytes(&bytes_to_hex(&large)).expect("large decode"),
+            large
+        );
+    }
+
+    #[test]
+    fn byte_decoder_preserves_radix_parser_inputs_and_errors() {
+        for first in 0_u8..=127 {
+            for second in 0_u8..=127 {
+                let pair = [first, second];
+                let input = std::str::from_utf8(&pair).unwrap();
+                let expected = u8::from_str_radix(input, 16)
+                    .map(|byte| vec![byte])
+                    .map_err(|error| format!("bad hex: {error}"));
+                assert_eq!(hex_to_bytes(input), expected, "ASCII pair {pair:?}");
+            }
+        }
+        assert_eq!(hex_to_bytes("+fA0+100"), Ok(vec![15, 160, 1, 0]));
+        for input in [
+            "", "0", "abc", "é", "雪", "😀", "0é0", "é00", "00é", "00😀", "😀00", "\0\0",
+        ] {
+            let expected = if !input.len().is_multiple_of(2) {
+                Err("odd-length hex string".to_owned())
+            } else {
+                input
+                    .as_bytes()
+                    .chunks(2)
+                    .map(|pair| {
+                        let text =
+                            std::str::from_utf8(pair).map_err(|_| "non-ASCII hex".to_owned())?;
+                        u8::from_str_radix(text, 16).map_err(|error| format!("bad hex: {error}"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            };
+            assert_eq!(hex_to_bytes(input), expected, "input {input:?}");
+        }
+    }
 
     #[test]
     fn snake_to_camel_pinned_vectors() {

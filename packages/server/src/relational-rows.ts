@@ -478,6 +478,22 @@ export function deleteRowSql(
 }
 
 /**
+ * SQLite: remove the old row's exact scope keys before replacing or deleting the row.
+ * Params: [partition, table, rowId, partition, rowId]. The caller keeps this
+ * statement and the row write in the same transaction (or D1 atomic batch).
+ */
+export function deleteSqliteRowScopesSql(table: CompiledTable): string {
+  return `DELETE FROM sync_row_scopes
+    WHERE partition=? AND tbl=? AND row_id=?
+      AND (var, value) IN (
+        SELECT key, value FROM json_each((
+          SELECT ${quoteIdent(SYNC_SCOPES_COLUMN)} FROM ${quoteIdent(table.name)}
+          WHERE ${quoteIdent(SYNC_PARTITION_COLUMN)}=? AND ${quoteIdent(SYNC_ROW_ID_COLUMN)}=?
+        ))
+      )`;
+}
+
+/**
  * The schema-version marker table gates DDL work. `ensureSchema` compares the
  * stored version and skips
  * all introspection/DDL when it matches — one cheap read per storage

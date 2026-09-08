@@ -1,3 +1,6 @@
+import { SQL } from 'bun';
+import { measureMethods, type MethodMeasurement } from './instrumentation';
+import { processObject } from './process-driver';
 /**
  * The env-gated Postgres bench lane. Runs ONLY when `SYNCULAR_PG_URL` is set;
  * it is NOT part of
@@ -19,54 +22,120 @@ import {
   type PgQueryable,
   PostgresServerStorage,
 } from '@syncular/server';
+import { fmtMs, PROJECT_ID, percentile, rowId, TABLE } from './fixture';
 import {
-  fmtMs,
-  PARTITION,
-  PROJECT_ID,
-  percentile,
-  rowId,
-  TABLE,
-} from './fixture';
-import {
-  type BenchServer,
+  type BenchServerOptions,
   createBenchClient,
   createBenchServer,
   seedServerRows,
 } from './loopback';
 
-// oxlint-disable-next-line typescript/no-explicit-any -- Bun.sql is version-fluid.
-const BunSQL = (Bun as any).SQL as undefined | (new (url: string) => any);
-
-/** A `PgExecutor` over Bun.sql — the production-shape driver adapter. */
-// oxlint-disable-next-line typescript/no-explicit-any -- driver handle is dynamic.
-function queryableOver(handle: any): PgQueryable {
+/** A typed driver adapter, shared by the engine and socket benchmarks. */
+function queryableOver(handle: Pick<SQL, 'unsafe'>): PgQueryable {
   return {
     async query<Row = Record<string, unknown>>(
       text: string,
       params?: readonly unknown[],
     ) {
-      const rows = (await handle.unsafe(
-        text,
-        params ? [...params] : [],
-      )) as Row[];
+      const rows = await handle.unsafe<Row[]>(text, params ? [...params] : []);
       return { rows, rowCount: rows.length };
     },
   };
 }
 
-// oxlint-disable-next-line typescript/no-explicit-any -- driver handle is dynamic.
-function bunSqlExecutor(sql: any): PgExecutor {
-  const q = queryableOver(sql);
-  return {
-    query: q.query,
-    async transaction<T>(fn: (client: PgQueryable) => Promise<T>): Promise<T> {
-      // oxlint-disable-next-line typescript/no-explicit-any -- dynamic tx handle.
-      return sql.begin(async (tx: any) => fn(queryableOver(tx)));
-    },
-    async close() {
-      await sql.end();
-    },
+/** Reject reset statistics instead of publishing an invalid counter interval. */
+export function validatePgIoSnapshots(
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+) {
+  for (const view of ['io', 'wal', 'checkpointer']) {
+    const initial = before[view];
+    const final = after[view];
+    if (
+      !Array.isArray(initial) ||
+      !Array.isArray(final) ||
+      initial.length === 0 ||
+      JSON.stringify(initial.map((row) => processObject(row).stats_reset)) !==
+        JSON.stringify(final.map((row) => processObject(row).stats_reset)) ||
+      initial.some((row) => typeof processObject(row).stats_reset !== 'string')
+    )
+      throw new Error(
+        'Postgres statistics reset or are missing during the benchmark attempt',
+      );
+  }
+}
+
+/** Cluster-wide counters require an explicitly selected, isolated PG instance. */
+export async function openPgIoObserver(url: string) {
+  const sql = new SQL(url, {
+    max: 1,
+    connection: { application_name: 'syncular-bench-io-observer' },
+  });
+  const snapshot = async () => {
+    // A closed benchmark pool can leave a backend finishing its exit. Wait for
+    // those sessions to disappear before reading their flushed statistics.
+    const deadline = performance.now() + 10_000;
+    while (true) {
+      const active = await sql.unsafe(
+        "SELECT pid FROM pg_stat_activity WHERE backend_type='client backend' AND pid<>pg_backend_pid()",
+      );
+      if (active.length === 0) break;
+      if (performance.now() >= deadline)
+        throw new Error(
+          'Postgres I/O diagnostics require an isolated instance with no other client connections',
+        );
+    }
+    await sql.unsafe('SELECT pg_stat_clear_snapshot()');
+    const io = await sql.unsafe(
+      "SELECT * FROM pg_stat_io WHERE object='wal' ORDER BY backend_type, context",
+    );
+    const wal = await sql.unsafe('SELECT * FROM pg_stat_wal');
+    const checkpointer = await sql.unsafe('SELECT * FROM pg_stat_checkpointer');
+    // Preserve bigint counters without an unsafe numeric conversion.
+    return processObject(
+      JSON.parse(
+        JSON.stringify({ io, wal, checkpointer }, (_, value: unknown) =>
+          typeof value === 'bigint' ? value.toString() : value,
+        ),
+      ),
+    );
   };
+  try {
+    const rows = await sql.unsafe<{ name: string; setting: string }[]>(
+      "SELECT name, setting FROM pg_settings WHERE name IN ('server_version_num','track_wal_io_timing','track_io_timing','fsync','full_page_writes','synchronous_commit','wal_sync_method') ORDER BY name",
+    );
+    const settings = Object.fromEntries(
+      rows.map((row) => [row.name, row.setting]),
+    );
+    const version = Number(settings.server_version_num);
+    if (
+      version < 180000 ||
+      version >= 190000 ||
+      !Number.isInteger(version) ||
+      settings.track_wal_io_timing !== 'on'
+    )
+      throw new Error(
+        'Postgres I/O diagnostics require PostgreSQL 18 with track_wal_io_timing=on',
+      );
+    const before = await snapshot();
+    return {
+      async collect() {
+        const after = await snapshot();
+        validatePgIoSnapshots(before, after);
+        return {
+          settings,
+          before,
+          after,
+          boundaries:
+            'Cluster-wide cumulative WAL I/O and checkpoint counters around the complete attempt, including server schema creation, bootstrap, validation, and cleanup. All benchmark server database sessions have exited before the final snapshot. Background PostgreSQL processes remain separate by backend type. These counters are not replay-only spans and cannot be added to overlapping storage or transaction durations. The observer reads settings and statistics without changing database settings or resetting counters. Use an isolated instance; other workloads would contaminate the counters.',
+        };
+      },
+      close: () => sql.close(),
+    };
+  } catch (error) {
+    await sql.close();
+    throw error;
+  }
 }
 
 export interface PgLaneResult {
@@ -77,49 +146,97 @@ export interface PgLaneResult {
   readonly propP95: number;
 }
 
-/** Build a Postgres-backed bench server on a fresh schema (unique partition). */
-async function createPgServer(url: string): Promise<{
-  server: BenchServer;
-  reset(): Promise<void>;
-}> {
-  const sql = new (BunSQL as new (url: string) => unknown)(url);
-  const storage = new PostgresServerStorage(bunSqlExecutor(sql as never));
-  await storage.migrate();
-  const server = createBenchServer({
-    storage,
-    close: async () => {
-      // oxlint-disable-next-line typescript/no-explicit-any -- dynamic handle.
-      await (sql as any).end?.();
-    },
-  });
-  const reset = async () => {
-    // Clear our partition's data so re-runs start clean.
-    // The relational row store: the app table is partitioned by
-    // _sync_partition (it may not exist yet on a fresh database).
-    // oxlint-disable-next-line typescript/no-explicit-any -- dynamic handle.
-    await (sql as any).unsafe(
-      `DO $$ BEGIN
-         IF to_regclass('tasks') IS NOT NULL THEN
-           DELETE FROM tasks WHERE _sync_partition = '${PARTITION}';
-         END IF;
-       END $$`,
+/** Every run owns an isolated schema; cleanup never touches existing tables. */
+export async function createPgServer(
+  url: string,
+  measurements: Record<string, MethodMeasurement> = {},
+  options: Pick<
+    BenchServerOptions,
+    'rejectMiddle' | 'blobs' | 'resolveScopes'
+  > = {},
+) {
+  const schema = `syncular_bench_${crypto.randomUUID().replaceAll('-', '')}`;
+  const admin = new SQL(url);
+  let sql: SQL | undefined;
+  let created = false;
+  try {
+    await admin.unsafe(`CREATE SCHEMA "${schema}"`);
+    created = true;
+    sql = new SQL(url, { connection: { search_path: schema } });
+    const pool = sql;
+    const settings = processObject(
+      (
+        await pool.unsafe(
+          "SELECT current_setting('server_version') AS version, current_setting('server_version_num') AS \"versionNumber\", current_setting('synchronous_commit') AS \"synchronousCommit\", current_setting('fsync') AS fsync, current_setting('full_page_writes') AS \"fullPageWrites\", current_setting('wal_sync_method') AS \"walSyncMethod\"",
+        )
+      )[0],
     );
-    for (const table of [
-      'sync_row_scopes',
-      'sync_commits',
-      'sync_changes',
-      'sync_change_scopes',
-      'sync_push_results',
-      'sync_clients',
-      'sync_partitions',
-    ]) {
-      // oxlint-disable-next-line typescript/no-explicit-any -- dynamic handle.
-      await (sql as any).unsafe(`DELETE FROM ${table} WHERE partition=$1`, [
-        PARTITION,
-      ]);
+    for (const key of [
+      'version',
+      'versionNumber',
+      'synchronousCommit',
+      'fsync',
+      'fullPageWrites',
+      'walSyncMethod',
+    ])
+      if (typeof settings[key] !== 'string' || settings[key].length === 0)
+        throw new Error('Postgres configuration missing');
+    const database = { backend: 'postgres' as const, settings };
+
+    const measured = measureMethods(
+      queryableOver(pool),
+      measurements,
+      'postgres',
+      true,
+    );
+    const executor: PgExecutor = {
+      query: measured.query,
+      transaction: (fn) =>
+        pool.begin((tx) =>
+          fn(
+            measureMethods(
+              queryableOver(tx),
+              measurements,
+              'postgresTransaction',
+              true,
+            ),
+          ),
+        ),
+    };
+    const storage = new PostgresServerStorage(executor);
+    await storage.migrate();
+    return {
+      database,
+      ...createBenchServer({
+        ...options,
+        measurements,
+        partition: schema,
+        storage: measureMethods(storage, measurements, 'storage'),
+        close: async () => {
+          try {
+            await pool.close();
+          } finally {
+            try {
+              await admin.unsafe(`DROP SCHEMA "${schema}" CASCADE`);
+            } finally {
+              await admin.close();
+            }
+          }
+        },
+      }),
+    };
+  } catch (error) {
+    try {
+      await sql?.close();
+    } finally {
+      try {
+        if (created) await admin.unsafe(`DROP SCHEMA "${schema}" CASCADE`);
+      } finally {
+        await admin.close();
+      }
     }
-  };
-  return { server, reset };
+    throw error;
+  }
 }
 
 /** Run the PG lane; returns undefined (with a note) when not configured. */
@@ -131,14 +248,8 @@ export async function runPgLane(
   if (url === undefined || url.length === 0) {
     return { skipped: 'SYNCULAR_PG_URL not set' };
   }
-  if (BunSQL === undefined) {
-    return { skipped: 'Bun.SQL unavailable in this runtime' };
-  }
-
-  const { server, reset } = await createPgServer(url);
+  const server = await createPgServer(url);
   try {
-    await reset();
-
     // -- Bootstrap: seed N rows, time a fresh client to fully applied. -----
     await seedServerRows(server, bootstrapRows);
     const t0 = performance.now();
@@ -165,7 +276,7 @@ export async function runPgLane(
     await b.client.syncUntilIdle();
     await b.client.connectRealtime();
     const samples: number[] = [];
-    let seq = await server.storage.getMaxCommitSeq(PARTITION);
+    let seq = await server.storage.getMaxCommitSeq(server.ctx.partition);
     const warmup = 20;
     for (let i = 0; i < propIterations + warmup; i++) {
       const id = rowId(1_000_000 + i);
@@ -206,7 +317,6 @@ export async function runPgLane(
       propP95: percentile(samples, 95),
     };
   } finally {
-    await reset();
     await server.close();
   }
 }

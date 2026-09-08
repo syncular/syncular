@@ -1116,12 +1116,18 @@ cannot silently return.
 ### commitSeq allocation under concurrency
 
 Per-partition `commitSeq` is dense and gap-free (§2.1). `appendCommit`
-allocates it with `UPDATE sync_partitions SET max_commit_seq =
-max_commit_seq + 1 … RETURNING`, which takes a row-level write lock on the
-partition row for the transaction's duration — concurrent pushes to the
-same partition serialize on that row; cross-partition pushes never
-contend. A Postgres `SEQUENCE` is deliberately **not** used: it would leave
+allocates it with an upsert that increments `sync_partitions.max_commit_seq`
+and returns the allocated value. A common table expression feeds that value
+into the commit metadata insert in the same SQL statement. The upsert takes a
+row-level write lock on the partition for the transaction duration. Concurrent
+pushes to that partition serialize; separate partitions use separate locks. A Postgres `SEQUENCE` is deliberately **not** used: it would leave
 gaps on rollback, which the §4.5 pull-window arithmetic does not tolerate.
+
+Each change insert expands its scope object into the inverted scope entries in
+the same statement. Serialized scopes bind as text before JSONB parsing; this
+avoids driver-specific JSON string encoding. Historical string-form scopes
+remain readable. Empty scopes still produce a change row, and repeated scopes
+within a commit retain one index entry.
 
 ### Multi-instance fanout (LISTEN/NOTIFY)
 
@@ -1191,3 +1197,12 @@ identity after authorization. Sharing is local to one process. Signed URL
 grants remain per request. The first eligibility probe has at most
 `limitSnapshotRows + 1` rows; subsequent builder batches have at most 5,000
 rows. The image database and serialized output still consume memory.
+
+
+Realtime acknowledgements call `advanceClientCursor(partition, clientId,
+actorId, logEpoch, cursor, updatedAtMs)`. Custom storage adapters must implement
+this atomic update: advance the cursor and activity timestamp to their respective
+maxima, preserve registration fields, and require a matching actor and current
+partition log epoch. Leave missing records unchanged. SQLite, Postgres, and D1
+perform one update without reading or serializing the subscription list. HTTP
+registration keeps its existing cursor and subscription replacement rules.

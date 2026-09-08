@@ -7,6 +7,7 @@
  */
 
 import { expect, test } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { PGlite } from '@electric-sql/pglite';
 import { encodeRow } from '@syncular/core';
 import {
@@ -23,11 +24,186 @@ import {
   type SqliteStatement,
 } from '@syncular/server';
 import type { PgExecutor } from '../src/pg-executor';
+import type { NewChange } from '../src/storage';
 import { pgliteExecutor } from '@syncular/server/pglite';
 import { BunSqliteDatabase } from '@syncular/server/sqlite';
 import { StorageConstraintError } from '../src/storage-errors';
 import { D1DatabaseDouble } from './d1-double';
 import { CONTRACT_SCHEMA, runStorageContract } from './storage-contract';
+import { deleteSqliteRowScopesSql } from '../src/relational-rows';
+
+for (const backend of ['sqlite', 'postgres', 'd1'] as const) {
+  test(`${backend} scope replacement removes exact old keys across repeated writes and rollback`, async () => {
+    const pg = backend === 'postgres' ? await PGlite.create() : undefined;
+    const sqlite = backend === 'sqlite' ? new BunSqliteDatabase() : undefined;
+    const d1 = backend === 'd1' ? new Database(':memory:') : undefined;
+    const storage: ServerStorage = pg
+      ? new PostgresServerStorage(pgliteExecutor(pg))
+      : sqlite
+        ? new SqliteServerStorage(sqlite)
+        : new D1ServerStorage(new D1DatabaseDouble(d1!), {
+            pushApplySerialized: true,
+          });
+    const columns = CONTRACT_SCHEMA.tables.find(
+      (table) => table.name === 'docs',
+    )!.columns;
+    const row = (id: string, org: string, project: string) => ({
+      rowId: id,
+      serverVersion: 1,
+      scopes: { org_id: org, project_id: project },
+      payload: encodeRow(columns, [id, org, project]),
+    });
+    const entries = async () => {
+      const sql =
+        'SELECT partition, tbl, var, value, row_id FROM sync_row_scopes ORDER BY partition, tbl, var, value, row_id';
+      type Entry = {
+        partition: string;
+        tbl: string;
+        var: string;
+        value: string;
+        row_id: string;
+      };
+      if (pg) return (await pg.query<Entry>(sql)).rows;
+      if (sqlite) return sqlite.query<Entry, []>(sql).all();
+      return d1!.query<Entry, []>(sql).all();
+    };
+    try {
+      if (storage instanceof D1ServerStorage) await prepareD1(storage);
+      await storage.ensureSchema(compileSchema(CONTRACT_SCHEMA));
+      for (const partition of ['part', 'other']) {
+        const tx = await storage.begin(partition);
+        await tx.upsertRow('docs', row('shared', 'o1', 'p1'));
+        if (partition === 'part') {
+          await tx.upsertRow('docs', row('sibling', 'o1', 'p1'));
+          await tx.upsertRow('tasks', {
+            rowId: 'shared',
+            serverVersion: 1,
+            scopes: { project_id: 'p1' },
+            payload: encodeRow(CONTRACT_SCHEMA.tables[0]!.columns, [
+              'shared',
+              'p1',
+              null,
+            ]),
+          });
+        }
+        await tx.commit();
+      }
+      const baseline = await entries();
+      if (pg) {
+        // Bun's executor also has existing rows whose JSONB is JSON-encoded
+        // text. The storage reader already supports this representation.
+        await pg.query(
+          `UPDATE docs SET _sync_scopes=to_jsonb(_sync_scopes::text) WHERE _sync_partition=$1 AND _sync_row_id=$2`,
+          ['part', 'shared'],
+        );
+      }
+      const isolated = baseline.filter(
+        (entry) =>
+          entry.partition !== 'part' ||
+          entry.tbl !== 'docs' ||
+          entry.row_id !== 'shared',
+      );
+      for (const empty of [false, true, false]) {
+        const tx = await storage.begin('part');
+        await tx.upsertRow('docs', row('shared', 'o2', 'p2'));
+        await tx.deleteRow('docs', 'shared');
+        await tx.deleteRow('docs', 'absent');
+        await tx.upsertRow('docs', row('shared', 'o3', 'p3'));
+        await tx.upsertRow('docs', {
+          ...row('shared', 'o4', 'p4'),
+          ...(empty ? { scopes: {} } : {}),
+        });
+        await tx.commit();
+        const actual = await entries();
+        expect(
+          actual.filter(
+            (entry) =>
+              entry.partition !== 'part' ||
+              entry.tbl !== 'docs' ||
+              entry.row_id !== 'shared',
+          ),
+        ).toEqual(isolated);
+        expect(
+          actual
+            .filter(
+              (entry) =>
+                entry.partition === 'part' &&
+                entry.tbl === 'docs' &&
+                entry.row_id === 'shared',
+            )
+            .map(({ var: variable, value }) => [variable, value]),
+        ).toEqual(
+          empty
+            ? []
+            : [
+                ['org_id', 'o4'],
+                ['project_id', 'p4'],
+              ],
+        );
+      }
+      const before = await entries();
+      for (const rejected of [false, true]) {
+        const tx = await storage.begin('part');
+        await tx.lockPartitionForPush?.();
+        await tx.upsertRow('docs', row('shared', 'rejected', 'rejected'));
+        await tx.deleteRow('docs', 'sibling');
+        if (rejected) {
+          await expect(
+            tx.upsertRow('docs', {
+              ...row('shared', 'invalid', 'invalid'),
+              payload: new Uint8Array([255]),
+            }),
+          ).rejects.toThrow();
+          await tx.commitRejectedPushResult?.('client', 'bad-row', {
+            status: 'rejected',
+            results: [
+              {
+                opIndex: 1,
+                status: 'error',
+                code: 'sync.invalid_request',
+                message: 'injected invalid row',
+                retryable: false,
+              },
+            ],
+          });
+        } else await tx.rollback();
+        expect(await entries()).toEqual(before);
+        expect(
+          (await storage.getRow('part', 'docs', 'shared'))?.scopes,
+        ).toEqual({ org_id: 'o4', project_id: 'p4' });
+        expect(
+          (await storage.getRow('part', 'docs', 'sibling'))?.scopes,
+        ).toEqual({ org_id: 'o1', project_id: 'p1' });
+      }
+      const deleted = await storage.begin('part');
+      await deleted.deleteRow('docs', 'shared');
+      await deleted.deleteRow('docs', 'shared');
+      await deleted.commit();
+      expect(await entries()).toEqual(isolated);
+      if (sqlite) {
+        const table = compileSchema(CONTRACT_SCHEMA).tables.get('docs')!;
+        const plan = sqlite
+          .query<{ detail: string }, string[]>(
+            `EXPLAIN QUERY PLAN ${deleteSqliteRowScopesSql(table)}`,
+          )
+          .all('part', 'docs', 'shared', 'part', 'shared');
+        expect(
+          plan.some(
+            ({ detail }) =>
+              detail.includes('SEARCH sync_row_scopes') &&
+              detail.includes('var=?') &&
+              detail.includes('value=?') &&
+              detail.includes('row_id=?'),
+          ),
+        ).toBe(true);
+      }
+    } finally {
+      sqlite?.close();
+      d1?.close();
+      await pg?.close();
+    }
+  });
+}
 
 runStorageContract('sqlite', () => new SqliteServerStorage());
 
@@ -212,6 +388,297 @@ test('pglite executor serializes overlapping transaction scopes', async () => {
     ]);
   } finally {
     await exec.close?.();
+  }
+});
+
+test('Postgres partition locking initializes once and survives an initial rollback', async () => {
+  const db = await PGlite.create();
+  const base = pgliteExecutor(db);
+  const statements: string[] = [];
+  const storage = new PostgresServerStorage({
+    query: (sql, params) => base.query(sql, params),
+    transaction: (fn) =>
+      base.transaction((client) =>
+        fn({
+          query: (sql, params) => {
+            statements.push(sql);
+            return client.query(sql, params);
+          },
+        }),
+      ),
+  });
+  try {
+    await storage.migrate();
+    for (const [finish, initializes, expectedSeq] of [
+      ['rollback', true, 1],
+      ['commit', true, 1],
+      ['commit', false, 2],
+    ] as const) {
+      statements.length = 0;
+      const tx = await storage.begin('lock-partition');
+      try {
+        await tx.lockPartitionForPush?.();
+        const initialization = statements.filter((sql) =>
+          sql.includes('INSERT INTO sync_partitions'),
+        );
+        expect(initialization).toHaveLength(initializes ? 1 : 0);
+        expect(
+          statements.filter((sql) => sql.includes('FOR UPDATE')),
+        ).toHaveLength(initialization.length + 1);
+        expect(statements.at(-1)).toBe('SAVEPOINT syncular_push_candidate');
+        const seq = await tx.appendCommit({
+          clientId: 'client',
+          clientCommitId: crypto.randomUUID(),
+          actorId: 'actor',
+          createdAtMs: 1,
+          changes: [],
+        });
+        expect(seq).toBe(expectedSeq);
+        await tx[finish]();
+      } catch (error) {
+        await tx.rollback();
+        throw error;
+      }
+    }
+    expect(await storage.getMaxCommitSeq('lock-partition')).toBe(2);
+  } finally {
+    await db.close();
+  }
+});
+
+test('Postgres allocates the sequence and commit metadata in one statement with atomic rollback', async () => {
+  const db = await PGlite.create();
+  const base = pgliteExecutor(db);
+  const statements: string[] = [];
+  const storage = new PostgresServerStorage({
+    query: (sql, params) => base.query(sql, params),
+    transaction: (fn) =>
+      base.transaction((client) =>
+        fn({
+          query: (sql, params) => {
+            statements.push(sql);
+            return client.query(sql, params);
+          },
+        }),
+      ),
+  });
+  try {
+    await storage.migrate();
+    for (const [finish, expectedSeq] of [
+      ['rollback', 1],
+      ['commit', 1],
+      ['rollback', 2],
+      ['commit', 2],
+    ] as const) {
+      const tx = await storage.begin('commit-allocation');
+      try {
+        statements.length = 0;
+        const seq = await tx.appendCommit({
+          clientId: 'client-λ',
+          clientCommitId: `commit-${expectedSeq}`,
+          actorId: "actor's id",
+          createdAtMs: 1_750_000_000_123,
+          changes: [],
+        });
+        expect(seq).toBe(expectedSeq);
+        expect(statements).toHaveLength(1);
+        await tx[finish]();
+      } catch (error) {
+        await tx.rollback();
+        throw error;
+      }
+      expect(await storage.getMaxCommitSeq('commit-allocation')).toBe(
+        finish === 'commit' ? expectedSeq : expectedSeq - 1,
+      );
+    }
+    const records = await base.query(
+      'SELECT partition, commit_seq, client_id, client_commit_id, actor_id, created_at_ms FROM sync_commits ORDER BY commit_seq',
+    );
+    expect(records.rows).toEqual(
+      [1, 2].map((seq) => ({
+        partition: 'commit-allocation',
+        commit_seq: seq,
+        client_id: 'client-λ',
+        client_commit_id: `commit-${seq}`,
+        actor_id: "actor's id",
+        created_at_ms: 1_750_000_000_123,
+      })),
+    );
+    await base.query(
+      "ALTER TABLE sync_commits ADD CHECK (actor_id <> 'rejected')",
+    );
+    const rejected = await storage.begin('commit-allocation');
+    try {
+      await expect(
+        rejected.appendCommit({
+          clientId: 'client',
+          clientCommitId: 'rejected',
+          actorId: 'rejected',
+          createdAtMs: 1,
+          changes: [],
+        }),
+      ).rejects.toThrow();
+    } finally {
+      await rejected.rollback();
+    }
+    expect(await storage.getMaxCommitSeq('commit-allocation')).toBe(2);
+    const retry = await storage.begin('commit-allocation');
+    try {
+      expect(
+        await retry.appendCommit({
+          clientId: 'client',
+          clientCommitId: 'next',
+          actorId: 'actor',
+          createdAtMs: 2,
+          changes: [],
+        }),
+      ).toBe(3);
+      await retry.commit();
+    } catch (error) {
+      await retry.rollback();
+      throw error;
+    }
+    expect(
+      (
+        await base.query(
+          'SELECT client_commit_id FROM sync_commits ORDER BY commit_seq',
+        )
+      ).rows,
+    ).toEqual([
+      { client_commit_id: 'commit-1' },
+      { client_commit_id: 'commit-2' },
+      { client_commit_id: 'next' },
+    ]);
+  } finally {
+    await db.close();
+  }
+});
+
+test('Postgres appends each change and all its scopes in one statement', async () => {
+  const db = await PGlite.create();
+  const base = pgliteExecutor(db);
+  const statements: string[] = [];
+  const storage = new PostgresServerStorage({
+    query: (sql, params) => base.query(sql, params),
+    transaction: (fn) =>
+      base.transaction((client) =>
+        fn({
+          query: (sql, params) => {
+            statements.push(sql);
+            return client.query(sql, params);
+          },
+        }),
+      ),
+  });
+  const changes: NewChange[] = [
+    { table: 'docs', rowId: 'unscoped', op: 'delete', scopes: {} },
+    {
+      table: 'docs',
+      rowId: 'upsert',
+      op: 'upsert',
+      rowVersion: 7,
+      scopes: { project_id: 'p\n1', org_id: "org's 雪", empty: '' },
+      payload: new Uint8Array([0, 1, 128, 255]),
+    },
+    {
+      table: 'docs',
+      rowId: 'delete',
+      op: 'delete',
+      scopes: { project_id: 'p\n1', org_id: "org's 雪" },
+    },
+  ];
+  try {
+    await storage.migrate();
+    for (const finish of ['rollback', 'commit'] as const) {
+      const tx = await storage.begin('change-scopes');
+      try {
+        statements.length = 0;
+        expect(
+          await tx.appendCommit({
+            clientId: 'client',
+            clientCommitId: finish,
+            actorId: 'actor',
+            createdAtMs: 123,
+            changes,
+          }),
+        ).toBe(1);
+        expect(statements).toHaveLength(1 + changes.length);
+        await tx[finish]();
+      } catch (error) {
+        await tx.rollback();
+        throw error;
+      }
+      expect(await storage.getMaxCommitSeq('change-scopes')).toBe(
+        finish === 'commit' ? 1 : 0,
+      );
+      expect(
+        (await base.query('SELECT idx FROM sync_changes ORDER BY idx')).rows,
+      ).toEqual(
+        finish === 'commit' ? [{ idx: 0 }, { idx: 1 }, { idx: 2 }] : [],
+      );
+      const entries = await base.query(
+        'SELECT tbl, var, value, commit_seq FROM sync_change_scopes ORDER BY var',
+      );
+      expect(entries.rows).toEqual(
+        finish === 'commit'
+          ? [
+              { tbl: 'docs', var: 'empty', value: '', commit_seq: 1 },
+              { tbl: 'docs', var: 'org_id', value: "org's 雪", commit_seq: 1 },
+              { tbl: 'docs', var: 'project_id', value: 'p\n1', commit_seq: 1 },
+            ]
+          : [],
+      );
+    }
+    const window = await storage.readCommitWindow('change-scopes', {
+      table: 'docs',
+      scopeFilter: { project_id: ['p\n1'], org_id: ["org's 雪"] },
+      afterSeq: 0,
+      throughSeq: 1,
+      limitChanges: 10,
+    });
+    expect(window).toEqual([
+      {
+        commitSeq: 1,
+        actorId: 'actor',
+        createdAtMs: 123,
+        changes: changes.slice(1),
+      },
+    ]);
+    await base.query(
+      "ALTER TABLE sync_change_scopes ADD CHECK (value <> 'rejected')",
+    );
+    const tx = await storage.begin('change-scopes');
+    try {
+      await expect(
+        tx.appendCommit({
+          clientId: 'client',
+          clientCommitId: 'rejected',
+          actorId: 'actor',
+          createdAtMs: 124,
+          changes: [
+            changes[1]!,
+            {
+              table: 'docs',
+              rowId: 'bad',
+              op: 'delete',
+              scopes: { project_id: 'rejected' },
+            },
+          ],
+        }),
+      ).rejects.toThrow();
+    } finally {
+      await tx.rollback();
+    }
+    expect(await storage.getMaxCommitSeq('change-scopes')).toBe(1);
+    expect(
+      (await base.query('SELECT DISTINCT commit_seq FROM sync_changes')).rows,
+    ).toEqual([{ commit_seq: 1 }]);
+    expect(
+      (await base.query('SELECT DISTINCT commit_seq FROM sync_change_scopes'))
+        .rows,
+    ).toEqual([{ commit_seq: 1 }]);
+  } finally {
+    await db.close();
   }
 });
 

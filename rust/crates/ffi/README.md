@@ -1,5 +1,11 @@
 # syncular-ffi — the Syncular Rust client as a shippable native core
 
+Incoming COMMIT frames and rows-segment blocks each commit their rows and local
+observation revision in a separate SQLite transaction. Pull and realtime delivery
+preserve earlier committed frames after a later apply failure. The subscription
+cursor advances at SUB_END; retry re-delivers the unadvanced window.
+
+
 The POC client crate (`syncular-client`), packaged for shipping. This crate
 turns the clean-room Rust client into a native library with a small, stable
 **C ABI** — the shape that binds to iOS (Swift), Android (Kotlin/JNI), the JVM,
@@ -41,6 +47,14 @@ The dispatch is **not** duplicated here. It lives in the shared
 FFI crate. Whatever the shim exercises against the conformance catalog (68/68,
 Rust client × TS server), the FFI core inherits — there is exactly one command
 router, and it is the one under test.
+
+Command dispatch borrows the parsed input parameters until dispatch returns.
+The shared blob command and FFI move owned JSON results into their envelopes.
+Query and snapshot commands borrow bind parameters and move their owned row maps
+into the result. Snapshot revision and coverage retain their shared serializer.
+
+The C ABI still returns a freshly allocated JSON string that the caller frees
+with `syncular_free_string`; the command format and ownership contract are unchanged.
 
 ## Transport ownership (why native is different)
 
@@ -85,6 +99,13 @@ Tauri plugin); the WS send/read plumbing is here. Proven end-to-end by the
 `round_tests` module — a scripted in-test `tungstenite` server speaking §8.7
 bytes built with the `ssp2` codec (round round-trip, byte-chunked response
 reassembly, delta-during-round queuing, mid-round-drop failure).
+
+The shared native transport gives one I/O thread ownership of the WebSocket.
+`polling` waits for socket readiness; an outgoing command wakes that thread and
+waits until its buffered write flushes. The receive loop handles at most 64
+frames before servicing another send. Idle sockets require no periodic read
+timeout or fairness sleep. Shutdown wakes the poller and joins the I/O thread.
+Socket tests also cover a 4 MiB write, ping replies, and idle shutdown.
 
 ### Dependency-policy justification
 
@@ -155,3 +176,27 @@ JSON-command-shaped: `command_json` in, `{result|error}` JSON out, bytes as
 designed for them (one dispatch entry, JSON in/out); Swift `Codable` /
 Kotlin `@Serializable` wrappers over the five functions are mechanical and can
 land after the core ships.
+
+## Repository read measurements
+
+The private `syncular-bench` driver enables `bench-internals` to borrow the
+handle's client between sequential calls. This Rust-only hook gives its raw
+SQLite comparison the same connection as the exported C query. Default builds
+omit the hook. The five C functions and public command surface stay unchanged.
+
+Run `bun run bench --workload read --core rust --lane socket --boundary ffi
+--storage file --iterations 100` from the repository root on one line. Read
+samples include command diagnostics and serialization inside the exported call.
+Separate fields record host request serialization, response copying, freeing,
+and JSON parsing. The caller frees every returned string before parsing its
+owned copy. See [the benchmark guide](../../../bench/README.md) for timing
+boundaries and statement-count checks.
+
+Diagnostic events compare typed snapshots with capture time excluded from
+equality. Unchanged evidence avoids constructing a JSON fingerprint. Every
+command still refreshes storage and client evidence; changed events retain the
+current capture time and the existing privacy and security-preflight rules.
+
+The Rust core reuses compiled statements for diagnostic outbox, outcome, and
+blob aggregates. Each refresh reads current values through SQLite; the cache
+contains compiled statements and retains no diagnostic result values.

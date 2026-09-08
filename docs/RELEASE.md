@@ -1,8 +1,44 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.16.1** (`v0.16.1`). All artifacts use Apache-2.0, except
+current release is **0.17.0** (`v0.17.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.17.0 release notes
+
+- Persistent Bun and Node clients use SQLite WAL with FULL durability. Both
+  client cores batch successful acknowledgments atomically while preserving
+  independent commit rejection and outcome records. Rust reconciles pending
+  rows incrementally and preserves each incoming frame's durability boundary.
+- Server storage reduces scope-replacement and Postgres commit-log work.
+  Realtime acknowledgments advance cursor metadata atomically with actor and
+  partition log epoch checks. Native transport, query, and blob paths reduce
+  repeated allocation and byte copies.
+- Repository benchmarks cover offline replay, restart, mixed-commit rejection,
+  fanout, reconnect, blobs, permission purge, and local read overhead across
+  engine, socket, and native boundaries. Artifacts retain correctness checks,
+  raw samples, database configuration, work counters, and resource measurements.
+  Application query and index tuning is outside the performance changes.
+- D1 schema migrations resume across Worker requests within a statement budget.
+  A pending migration reports `sync.storage.schema_migration_pending`; callers
+  complete the migration before serving sync traffic.
+- Pulls recheck the pruning horizon before starting active subscriptions.
+  Realtime sessions detect notification gaps and reorderings and request
+  catch-up. Schema retirement removes obsolete blob references, and declared
+  server indexes enforce uniqueness within each partition.
+
+Upgrade Syncular packages together. Custom storage adapters must implement
+`updateClientCursor` and the actor/epoch-guarded `advanceClientCursor`. Existing
+servers must increment their application schema version and regenerate the
+schema to rebuild declared server indexes with the partition column. Client
+index columns and SSP2 frame layouts remain unchanged.
+
+Migration guidance: [server storage](https://syncular.dev/server-storage/).
+Benchmark commands and measurement limits:
+[benchmarks](https://syncular.dev/benchmarks/) and
+[RFC-ENGINE-PERFORMANCE.md](./RFC-ENGINE-PERFORMANCE.md).
+Controlled-runner latency calibration remains pending; the new diagnostic
+workloads do not enforce uncalibrated timing thresholds.
 
 ## 0.16.1 release notes
 

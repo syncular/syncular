@@ -626,6 +626,7 @@ class TsClientInstance implements ClientInstance {
       ...this.#options,
       schema,
     });
+    this.#client.onChange((batch) => this.#changes.push(batch));
     if (this.#client.statusSnapshot().syncNeeded) {
       this.#intents.push({ kind: 'interactive' });
     }

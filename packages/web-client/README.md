@@ -543,6 +543,14 @@ Node 22.13 or newer. No SQLite package or native addon is required. Both
 adapters support synchronous `exec`, `query`, nested transactions, boolean
 bindings, `null`, `Uint8Array` BLOB values, and §5.3 SQLite-image attachment.
 
+Persistent Bun and Node databases use SQLite WAL journaling with
+`synchronous=FULL`. Each application or sync commit retains its own durable
+transaction. SQLite keeps in-memory databases on its memory journal. Use a
+local filesystem path; WAL uses adjacent `-wal` and `-shm` files. Close every
+connection before copying the database file, or use SQLite's backup facilities
+while it is open. Copying only the main file while writers are active can omit
+committed WAL contents.
+
 Runtime-specific imports remain available:
 
 ```ts

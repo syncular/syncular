@@ -66,6 +66,7 @@
         "@syncular/client": "workspace:*",
         "@syncular/core": "workspace:*",
         "@syncular/server": "workspace:*",
+        "@syncular/server-hono": "workspace:*",
       },
     },
     "bindings/react-native": {

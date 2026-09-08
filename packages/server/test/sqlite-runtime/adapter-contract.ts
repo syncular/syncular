@@ -75,10 +75,48 @@ export async function runServerSqliteContract(runtime: Runtime): Promise<void> {
     });
     await transaction.commit();
     assert(commitSeq === 1, 'commit sequence');
+    await storage.touchPartition('hospital', 1, 'epoch-a');
+    await storage.putClientRecord('hospital', {
+      clientId: 'worker',
+      actorId: 'system',
+      wireVersion: 2,
+      cursor: 0,
+      updatedAtMs: 1,
+      subscriptions: [],
+    });
+    await storage.advanceClientCursor(
+      'hospital',
+      'worker',
+      'system',
+      'epoch-a',
+      1,
+      3,
+    );
+    await storage.advanceClientCursor(
+      'hospital',
+      'worker',
+      'system',
+      'epoch-a',
+      0,
+      2,
+    );
+    await storage.advanceClientCursor(
+      'hospital',
+      'worker',
+      'system',
+      'old-epoch',
+      99,
+      99,
+    );
     storage.db.close();
 
     const reopened = runtime.storage(path);
     await reopened.ensureSchema(schema);
+    const clientRecord = await reopened.getClientRecord('hospital', 'worker');
+    assert(
+      clientRecord?.cursor === 1 && clientRecord.updatedAtMs === 3,
+      'persistent monotonic epoch-bound cursor',
+    );
     assert(
       (await reopened.getRow('hospital', 'tasks', row.rowId)) !== undefined,
       'persistent row',

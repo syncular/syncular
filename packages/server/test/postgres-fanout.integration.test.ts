@@ -104,28 +104,53 @@ gate('Postgres fanout integration (SYNCULAR_PG_URL)', () => {
   test('storage migrates and allocates commitSeq on real Postgres', async () => {
     const sql = new (BunSQL as new (url: string) => unknown)(PG_URL as string);
     handles.push(sql);
-    const storage = new PostgresServerStorage(bunSqlExecutor(sql));
+    const executor = bunSqlExecutor(sql);
+    const storage = new PostgresServerStorage(executor);
     await storage.migrate();
     const partition = `it-${crypto.randomUUID()}`;
     const tx = await storage.begin(partition);
-    const seq = await tx.appendCommit({
-      clientId: 'c',
-      clientCommitId: 'k0',
-      actorId: 'a',
-      createdAtMs: Date.now(),
-      changes: [
-        {
-          table: 'tasks',
-          rowId: 'r0',
-          op: 'upsert',
-          rowVersion: 1,
-          scopes: { project_id: 'p1' },
-          payload: new Uint8Array([1, 2, 3]),
-        },
-      ],
-    });
-    await tx.commit();
+    let seq: number;
+    try {
+      seq = await tx.appendCommit({
+        clientId: 'c',
+        clientCommitId: 'k0',
+        actorId: 'a',
+        createdAtMs: Date.now(),
+        changes: [
+          { table: 'tasks', rowId: 'unscoped', op: 'delete', scopes: {} },
+          {
+            table: 'tasks',
+            rowId: 'r0',
+            op: 'upsert',
+            rowVersion: 1,
+            scopes: { project_id: 'p1', org_id: "org's 雪" },
+            payload: new Uint8Array([1, 2, 3]),
+          },
+          {
+            table: 'tasks',
+            rowId: 'deleted',
+            op: 'delete',
+            scopes: { project_id: 'p1' },
+          },
+        ],
+      });
+      await tx.commit();
+    } finally {
+      await tx.rollback();
+    }
     expect(seq).toBe(1);
+    expect(
+      (
+        await executor.query(
+          'SELECT jsonb_typeof(scopes) AS scope_type FROM sync_changes WHERE partition=$1',
+          [partition],
+        )
+      ).rows,
+    ).toEqual([
+      { scope_type: 'object' },
+      { scope_type: 'object' },
+      { scope_type: 'object' },
+    ]);
     const window = await storage.readCommitWindow(partition, {
       table: 'tasks',
       scopeFilter: { project_id: ['p1'] },
@@ -134,6 +159,25 @@ gate('Postgres fanout integration (SYNCULAR_PG_URL)', () => {
       limitChanges: 10,
     });
     expect(window[0]?.changes[0]?.payload).toEqual(new Uint8Array([1, 2, 3]));
+    expect(window[0]?.changes.map((change) => change.rowId)).toEqual([
+      'r0',
+      'deleted',
+    ]);
+    // Historical Bun SQL bindings stored serialized scopes as a JSONB string.
+    // Those rows must remain readable alongside the new object representation.
+    await executor.query(
+      'UPDATE sync_changes SET scopes=to_jsonb(scopes::text) WHERE partition=$1',
+      [partition],
+    );
+    expect(
+      await storage.readCommitWindow(partition, {
+        table: 'tasks',
+        scopeFilter: { project_id: ['p1'] },
+        afterSeq: 0,
+        throughSeq: 1,
+        limitChanges: 10,
+      }),
+    ).toEqual(window);
   });
 
   test('two real connections apply an overlapping duplicate exactly once', async () => {
@@ -174,6 +218,11 @@ gate('Postgres fanout integration (SYNCULAR_PG_URL)', () => {
       });
 
     const partition = `overlap-${crypto.randomUUID()}`;
+    const { logEpoch } = await leftStorage.touchPartition(
+      partition,
+      Date.now(),
+      crypto.randomUUID(),
+    );
     const bytes = encodeMessage({
       wireVersion: PROTOCOL_WIRE_VERSION,
       msgKind: 'request',
@@ -182,6 +231,7 @@ gate('Postgres fanout integration (SYNCULAR_PG_URL)', () => {
           type: 'REQ_HEADER',
           clientId: 'overlap-client',
           schemaVersion: 1,
+          logEpoch,
         },
         {
           type: 'PUSH_COMMIT',
@@ -243,6 +293,100 @@ gate('Postgres fanout integration (SYNCULAR_PG_URL)', () => {
     expect(await leftStorage.getMaxCommitSeq(partition)).toBe(1);
   });
 
+  for (const firstOutcome of ['commit', 'rollback'] as const) {
+    test(`concurrent first partition writers retain the lock after ${firstOutcome}`, async () => {
+      const sql = new (BunSQL as new (url: string) => unknown)(
+        PG_URL as string,
+      );
+      handles.push(sql);
+      const base = bunSqlExecutor(sql);
+      const bothMissing = Promise.withResolvers<void>();
+      const firstLocked = Promise.withResolvers<void>();
+      const secondInserting = Promise.withResolvers<void>();
+      let missingReads = 0;
+      const storages = [0, 1].map(
+        (writer) =>
+          new PostgresServerStorage({
+            query: (text, params) => base.query(text, params),
+            transaction: (fn) =>
+              base.transaction((client) =>
+                fn({
+                  async query<Row = Record<string, unknown>>(
+                    text: string,
+                    params?: readonly unknown[],
+                  ) {
+                    if (
+                      writer === 1 &&
+                      text.startsWith('INSERT INTO sync_partitions')
+                    ) {
+                      await firstLocked.promise;
+                      secondInserting.resolve();
+                    }
+                    const result = await client.query<Row>(text, params);
+                    if (
+                      text.includes('FOR UPDATE') &&
+                      result.rows.length === 0
+                    ) {
+                      missingReads += 1;
+                      if (missingReads === 2) bothMissing.resolve();
+                      await bothMissing.promise;
+                    }
+                    return result;
+                  },
+                }),
+              ),
+          }),
+      );
+      const left = storages[0]!;
+      const right = storages[1]!;
+      await left.migrate();
+      const partition = `first-writers-${crypto.randomUUID()}`;
+      const first = await left.begin(partition);
+      const second = await right.begin(partition);
+      let secondAcquired = false;
+      const firstLock = first.lockPartitionForPush!();
+      const secondLock = second.lockPartitionForPush!().then(() => {
+        secondAcquired = true;
+      });
+      try {
+        await firstLock;
+        firstLocked.resolve();
+        await secondInserting.promise;
+        expect(secondAcquired).toBe(false);
+        expect(
+          await first.appendCommit({
+            clientId: 'first',
+            clientCommitId: 'one',
+            actorId: 'actor',
+            createdAtMs: 1,
+            changes: [],
+          }),
+        ).toBe(1);
+        await first[firstOutcome]();
+        await secondLock;
+        expect(missingReads).toBe(2);
+        const expectedSeq = firstOutcome === 'commit' ? 2 : 1;
+        expect(
+          await second.appendCommit({
+            clientId: 'second',
+            clientCommitId: 'two',
+            actorId: 'actor',
+            createdAtMs: 2,
+            changes: [],
+          }),
+        ).toBe(expectedSeq);
+        await second.commit();
+        expect(await left.getMaxCommitSeq(partition)).toBe(expectedSeq);
+      } finally {
+        bothMissing.resolve();
+        firstLocked.resolve();
+        await first.rollback();
+        await secondLock;
+        await second.rollback();
+      }
+    });
+  }
+
   test('NOTIFY on one connection wakes a LISTEN on another', async () => {
     // Two independent connections: a listener and a notifier.
     const listenSql = new (BunSQL as new (url: string) => unknown)(
@@ -253,10 +397,13 @@ gate('Postgres fanout integration (SYNCULAR_PG_URL)', () => {
     );
     handles.push(listenSql, notifySql);
 
-    const wakes: Array<{ partition: string; reason: WakeReason }> = [];
+    const delivered = Promise.withResolvers<{
+      partition: string;
+      reason: WakeReason;
+    }>();
     const hub: FanoutWakeTarget = {
       wake(partition, reason) {
-        wakes.push({ partition, reason });
+        delivered.resolve({ partition, reason });
       },
     };
 
@@ -278,18 +425,9 @@ gate('Postgres fanout integration (SYNCULAR_PG_URL)', () => {
 
     const fanout = new PostgresFanout(conn);
     await fanout.install(hub);
-    // Give the LISTEN a moment to register on the server.
-    await new Promise((r) => setTimeout(r, 200));
-
     const partition = `it-${crypto.randomUUID()}`;
     await fanout.notifyCommit(partition, 5);
-
-    // Poll for the cross-connection delivery.
-    const deadline = Date.now() + 3000;
-    while (wakes.length === 0 && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    expect(wakes).toContainEqual({
+    expect(await delivered.promise).toEqual({
       partition,
       reason: 'catchup-required',
     });

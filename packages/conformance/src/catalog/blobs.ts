@@ -79,6 +79,104 @@ async function requireBlobs(client: ClientHandle): Promise<void> {
 
 export const blobScenarios: readonly Scenario[] = [
   {
+    name: 'blobs/fresh-download-retains-live-references-over-cap',
+    requires: ['blobs'],
+    specRefs: ['§5.9.7', '§7.1'],
+    server: BLOB_SERVER,
+    async run(ctx) {
+      const owner = await ctx.newClient({
+        actorId: 'owner',
+        clientId: 'owner',
+        schema: BLOB_SCHEMA,
+        allowed: P1,
+      });
+      const reader = await ctx.newClient({
+        actorId: 'reader',
+        clientId: 'reader',
+        schema: BLOB_SCHEMA,
+        allowed: P1,
+        limits: { blobCacheMaxBytes: 64 },
+      });
+      for (const client of [owner, reader]) {
+        await requireBlobs(client);
+        await client.api.subscribe({
+          id: 'attachments',
+          table: 'attachments',
+          scopes: P1,
+        });
+        await syncIdle(client);
+      }
+      const refs: string[] = [];
+      for (const text of ['a'.repeat(128), 'b'.repeat(128)]) {
+        const ref = await owner.api.uploadBlob?.(bytesOf(text));
+        check(typeof ref === 'string', 'upload produced a reference');
+        refs.push(ref);
+        await owner.api.mutate([
+          {
+            op: 'upsert',
+            table: 'attachments',
+            values: attachmentRow(`row-${refs.length}`, 'p1', ref),
+          },
+        ]);
+      }
+      await syncIdle(owner);
+      await syncIdle(reader);
+      for (const [index, ref] of refs.entries()) {
+        const fetched = await reader.api.fetchBlob?.(ref);
+        check(fetched !== undefined, 'fresh referenced body survives the cap');
+        checkEqual(
+          decode(fetched),
+          (index === 0 ? 'a' : 'b').repeat(128),
+          'fresh bytes match the reference',
+        );
+      }
+      const downloads = reader.blobDownloads.length;
+      for (const ref of refs) await reader.api.fetchBlob?.(ref);
+      checkEqual(
+        reader.blobDownloads.length,
+        downloads,
+        'both referenced bodies remain cache hits while over cap',
+      );
+      const draft = await ctx.newClient({
+        actorId: 'draft',
+        clientId: 'draft',
+        schema: BLOB_SCHEMA,
+        allowed: P1,
+        limits: { blobCacheMaxBytes: 64 },
+      });
+      await requireBlobs(draft);
+      await syncIdle(draft);
+      // No subscription brings a base row to this client. Its only local
+      // reference is the unsent optimistic row, which must also pin the body.
+      const first = refs[0];
+      check(first !== undefined, 'first reference exists');
+      await draft.api.mutate([
+        {
+          op: 'upsert',
+          table: 'attachments',
+          values: attachmentRow('draft', 'p1', first),
+        },
+      ]);
+      const draftBody = await draft.api.fetchBlob?.(first);
+      check(
+        draftBody !== undefined,
+        'optimistic reference pins the downloaded body',
+      );
+      checkEqual(
+        decode(draftBody),
+        'a'.repeat(128),
+        'optimistic download bytes match',
+      );
+      const draftDownloads = draft.blobDownloads.length;
+      await draft.api.fetchBlob?.(first);
+      checkEqual(
+        draft.blobDownloads.length,
+        draftDownloads,
+        'optimistic reference remains a cache hit over cap',
+      );
+    },
+  },
+  {
     // B.13(a): upload → reference → push → other-client fetch, plus
     // B.13(e): a second read of the same blob serves from cache (no fetch).
     name: 'blobs/upload-reference-push-fetch',

@@ -137,6 +137,76 @@ export function runAdapterContract(
   assert(detached, 'image alias detached after use');
 
   db.close();
+
+  // File-backed adapters share Rust's WAL mode without weakening fsync.
+  // A reader holding a snapshot must neither block nor observe a later write.
+  const directory = mkdtempSync(join(tmpdir(), 'syncular-wal-contract-'));
+  const path = join(directory, 'replica.sqlite');
+  const writer = open(path);
+  let reader: ClientDatabase | undefined;
+  let writerOpen = true;
+  try {
+    eq(
+      writer.query('PRAGMA journal_mode')[0]?.journal_mode,
+      'wal',
+      'persistent WAL mode',
+    );
+    assert(
+      Number(writer.query('PRAGMA synchronous')[0]?.synchronous) >= 2,
+      'FULL durability retained',
+    );
+    writer.exec('CREATE TABLE durable (id INTEGER PRIMARY KEY, value TEXT)');
+    writer.transaction(() =>
+      writer.exec("INSERT INTO durable VALUES (1, 'before')"),
+    );
+    reader = open(path);
+    reader.transaction(() => {
+      eq(
+        reader?.query('SELECT value FROM durable')[0]?.value,
+        'before',
+        'initial reader snapshot',
+      );
+      writer.transaction(() =>
+        writer.exec("UPDATE durable SET value = 'after' WHERE id = 1"),
+      );
+      eq(
+        reader?.query('SELECT value FROM durable')[0]?.value,
+        'before',
+        'reader snapshot remains atomic',
+      );
+    });
+    eq(
+      reader.query('SELECT value FROM durable')[0]?.value,
+      'after',
+      'reader sees next transaction',
+    );
+    try {
+      writer.transaction(() => {
+        writer.exec("UPDATE durable SET value = 'rolled back' WHERE id = 1");
+        throw new Error('injected rollback');
+      });
+    } catch {
+      /* Verify the surviving value below. */
+    }
+    reader.close();
+    reader = undefined;
+    writer.close();
+    writerOpen = false;
+    const reopened = open(path);
+    try {
+      eq(
+        reopened.query('SELECT value FROM durable')[0]?.value,
+        'after',
+        'durable reopen excludes rollback',
+      );
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    reader?.close();
+    if (writerOpen) writer.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
 }
 
 /** Serialize a tiny source database to bytes for the image-import test. */

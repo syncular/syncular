@@ -15,6 +15,48 @@ import {
 } from './helpers';
 
 describe('handshake (§8.1)', () => {
+  test('late callbacks from a disconnected socket cannot touch a replacement or closed database', async () => {
+    const callbacks: RealtimeHandlers[] = [];
+    const server = makeServer();
+    const local = await makeClient(server, {
+      clientId: 'late-realtime-callback',
+      realtime: async (handlers) => {
+        callbacks.push(handlers);
+        return {
+          send: () => undefined,
+          sendBytes: () => undefined,
+          close: () => undefined,
+        };
+      },
+    });
+    await local.client.connectRealtime();
+    const obsolete = callbacks[0];
+    expect(obsolete).toBeDefined();
+    local.client.disconnectRealtime();
+    await local.client.connectRealtime();
+    const before = local.client.statusSnapshot();
+    const wake = JSON.stringify({
+      event: 'sync',
+      data: {
+        cursor: 1,
+        requiresPull: true,
+        reason: 'catchup-required',
+        timestamp: 1,
+      },
+    });
+    obsolete?.onText(wake);
+    obsolete?.onBinary(new Uint8Array([0, 255]));
+    expect(local.client.statusSnapshot()).toEqual(before);
+    expect(local.client.diagnosticsSnapshot().host.realtime).toBe('connected');
+    await local.client.close();
+    local.db.close();
+    for (const callback of callbacks) {
+      expect(() => callback.onText(wake)).not.toThrow();
+      expect(() => callback.onBinary(new Uint8Array([0, 255]))).not.toThrow();
+    }
+    server.storage.db.close();
+  });
+
   test('connect is sequentially idempotent and concurrent calls share one socket', async () => {
     let opens = 0;
     let closes = 0;
@@ -159,13 +201,13 @@ describe('deltas (§8.2)', () => {
         return record?.cursor === seq;
       },
       (notify) => {
-        const put = server.storage.putClientRecord.bind(server.storage);
-        server.storage.putClientRecord = async (partition, record) => {
-          await put(partition, record);
+        const advance = server.storage.advanceClientCursor.bind(server.storage);
+        server.storage.advanceClientCursor = async (...args) => {
+          await advance(...args);
           notify();
         };
         return () => {
-          server.storage.putClientRecord = put;
+          server.storage.advanceClientCursor = advance;
         };
       },
       'ack persisted',

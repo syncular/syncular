@@ -10,6 +10,7 @@
     "@sqlite.org/sqlite-wasm": "^3.53.0-build1",
     "@syncular/core": "workspace:*",
     "@syncular/server": "workspace:*",
+    "@syncular/server-hono": "workspace:*",
     "@syncular/client": "workspace:*"
   }
 }

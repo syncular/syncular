@@ -630,9 +630,11 @@ export class RealtimeSession {
 
   async #persistCursor(): Promise<void> {
     try {
-      await this.#storage.updateClientCursor(
+      await this.#storage.advanceClientCursor(
         this.partition,
         this.clientId,
+        this.actorId,
+        this.logEpoch,
         this.cursor,
         this.#clock(),
       );

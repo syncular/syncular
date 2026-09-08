@@ -6,9 +6,9 @@ controlled lane that flatters some of them; the caveats state which. The
 curated source of truth is
 [bench/RESULTS.md](https://github.com/syncular/syncular/blob/main/bench/RESULTS.md).
 
-## The lane
+## The published loopback lane
 
-All numbers come from a **bun:sqlite loopback** lane: the TypeScript
+The published numbers below come from a **bun:sqlite loopback** lane: the TypeScript
 client core and the real server library exchange SSP2 bytes in-process.
 Transport, segment download, and realtime are all direct function calls, so
 the numbers isolate engine cost. The client runs on bun:sqlite; a browser
@@ -89,6 +89,162 @@ The driver lives in
 same tables and regenerates the numbers on your machine. Expect different
 absolute values; the recorded run is darwin/arm64.
 
+## Diagnostic performance workloads
+
+Select a workload to measure offline replay, connected fanout, reconnect, or
+native byte-envelope costs. These commands write versioned JSON artifacts to
+`bench/results/` and leave the curated record unchanged.
+
+```sh
+bun run bench --workload replay --lane socket --storage file --sizes 1000
+bun run bench --workload reconnect --lane socket --storage file --sizes 1,5,25
+bun run bench --workload replay --core rust --lane socket --storage file --sizes 1000
+bun run bench --workload replay --core rust --lane engine --storage file --sizes 1000
+bun run bench --workload restart --core ts --lane socket --storage file --sizes 1000
+bun run bench --workload restart --core rust --lane socket --storage file --sizes 1000
+bun run bench --workload native-bytes --lane native --sizes 2097152
+```
+
+The socket lane uses full TypeScript or Rust clients, shipping HTTP/WebSocket
+transports, and a separate repository-owned server process. The TypeScript engine lane
+uses the same fixture through the in-process seam. Both support SQLite and
+explicit Postgres selection with `--backend postgres` and `SYNCULAR_PG_URL`.
+Each Postgres attempt owns an isolated schema and removes it during cleanup.
+
+Fanout and reconnect validate writer and reader rows against the seeded fixture
+and declared edits. Matching clients alone cannot satisfy the check. The runners
+also verify the original commit IDs in the durable outcome journal, empty
+outboxes, and the exact server sequence. Artifacts retain the validation marker
+and commit IDs. These checks run outside observation latency; bootstrap
+validation reads warm each client's local database before measurement.
+
+Socket fanout and reconnect give every TS or Rust writer and reader a separate
+process, with a separate server process. Artifacts record the execution model,
+per-client OS resources, and actual SQLite version, journal mode, and synchronous
+setting. File clients require WAL/FULL; memory clients require memory/FULL.
+TS engine clients share a process. Earlier TS socket observation artifacts also
+shared one client process, so their cross-core timing differences included a
+different concurrency model.
+
+Reconnect artifacts retain the explicit sync duration in
+`observations[].reconnectSync.elapsedNs`, followed by a separate acknowledgement
+wait. Both intervals sit inside controller elapsed time. Rust socket replay,
+restart, commit-boundaries, fanout and reconnect accept `--native-sql` to record SQL verb counts and commit/rollback hook
+counts from reset through acknowledgement. Commit hooks include outermost
+savepoint release and implicit writes, and run before commit. The collector
+retains only fixed verb labels and counts; SQLite's internal SQL expansion adds
+instrumentation overhead. Run ordinary timing comparisons without this flag.
+Direct and command boundaries support the flag; engine and FFI boundaries reject it.
+
+
+Rust socket replay, restart, commit-boundaries, fanout, reconnect and blobs also
+accept `--native-phases` on Linux and macOS with direct or command boundaries.
+It records per-client wall time and calling-thread CPU for request/row encoding,
+decode, apply, upsert execution, pending replay, observation and cursor
+persistence, and blob download/cache work. Blob snapshots separate each download,
+cache hit, failed download and recovery. Fixed names and counters exclude row
+values and identifiers. Failed calls count; reset starts a fresh interval.
+
+These inclusive phases overlap. Do not add their durations. Thread CPU excludes
+transport I/O threads, the server and the controller. Timing adds overhead and
+requires a comparison with phases disabled. The recorder exists only in the
+private benchmark feature; public diagnostics, command/FFI envelopes and SSP2
+remain unchanged. Replay and observation store snapshots under client
+`stats.phases`; blob samples use `nativePhases`. The repository benchmark README
+defines each phase boundary and its exclusions.
+
+Both client cores commit each incoming COMMIT frame and rows-segment block in
+its own local transaction. Each observer-visible transaction publishes its own
+revision. A later failed frame preserves the committed prefix; the cursor advances
+only after a successful SUB_END. Earlier native reconnect profiles used one
+transaction per subscription section. Their transaction counts and timings require
+that distinction when comparing them with the corrected implementation.
+
+Rust socket workloads build the native driver in release mode and run each client in
+its own process. Select `--boundary command` to time the shared command router;
+the default times direct core operations. Parent elapsed time includes stdio
+delivery. The restart workload supports TS and Rust with socket transport and file storage: it
+terminates the offline writer, opens its database in a fresh process, verifies
+the persisted queue, and checks convergence after replay.
+
+Rust engine replay runs each client on a Bun worker in the server/controller
+process. A private benchmark transport calls the real async server and realtime
+session through a shared response buffer. It retains independent readers,
+individual commit IDs, FIFO order, and file-backed SQLite durability checks.
+Both direct and shared-command operation timers include host callback
+scheduling, SSP2 copies, and server work. Outer command JSON and worker delivery
+remain outside them. Artifacts record the private library hash and thread
+identities; CPU and RSS cover the shared process. Shipping FFI measurements use
+their separate boundary. Other Rust engine workloads remain unsupported.
+
+Native realtime I/O uses socket readiness and explicit send notifications.
+Acknowledgements retain their per-delta boundaries. A Rust replica with no
+pending writes applies changed rows directly to its visible tables inside the
+existing observation transaction. Appending a local Rust commit applies its own
+operations to the current optimistic overlay. Incoming frames that touch tables
+without secondary unique constraints reconcile the changed rows and replay
+only their pending operations, in FIFO order. Other pending rows retain their
+visible values. Frames touching a table with secondary unique constraints and
+queue removals rebuild the overlay from confirmed rows and the surviving queue.
+Each frame retains its own durable revision and rollback boundary. A failed
+durable append or revision write leaves no queued commit or visible mutation.
+
+The native byte workload measures the shared Rust encoder and JSON conversion
+phases. It builds the native benchmark driver in release mode. Its phase timings
+exclude platform binding delivery and network download.
+
+Postgres replay artifacts include SQL shapes with bound values omitted and the
+awaited local realtime notification duration for HTTP and socket pushes. SQL
+durations overlap their transaction methods. Reader cursor persistence overlaps
+writer transactions; adding these totals does not produce replay elapsed time.
+Notification completion excludes subsequent client apply and cursor persistence.
+
+Use `bun run bench --workload read --lane engine --storage file --iterations 100`
+for warm local reads at 1,000, 10,000, and 100,000 rows. The TS workload compares
+the database adapter, public `query`, and `querySnapshot` with the same SQL and
+synced data. Primary-key reads return one row; bounded reads return 100 rows.
+Snapshots have empty coverage requirements. Artifacts retain raw samples,
+rotating execution order, parameters, schema, query plans, and separate statement
+counts. The database measurement includes row materialization. Validation runs
+outside the latency samples, and each surface must return the generated fixture
+in query order. Application indexes and queries remain fixed.
+
+Use `--core rust --lane socket --boundary direct` for Rust public reads or
+`--boundary command` to include its shared command router. The same fixture
+bootstraps over sockets before measurement. Rust measures all iterations inside
+one process and retains a raw baseline on the same SQLite connection. An untimed
+trace pass limits raw/query reads to one statement and snapshots to four,
+including savepoint and release. `--boundary ffi` measures the exported C call
+with input parsing, command dispatch, diagnostics, and response serialization.
+Separate host samples cover request serialization, response copying, freeing,
+and JSON parsing. FFI reads add five diagnostic SQL statements in this task
+fixture, for totals of six on queries and nine on snapshots. The raw baseline
+uses the same connection. Language-binding read measurements remain to implement.
+
+FFI and Tauri diagnostic observers compare typed snapshots before constructing
+an event's JSON. Unchanged evidence avoids JSON fingerprint allocation. The
+observers still refresh storage and client state and ignore only capture time
+when comparing snapshots. Changed events retain the current capture time.
+
+
+Rust scope lookups, row deletes, and CRDT row reads reuse prepared statements.
+For string, JSON, integer, and boolean keys, their internal predicates seek the
+existing primary-key index and retain the previous exact text comparison.
+Floating-point keys retain the text predicate because SQLite can render distinct
+values as the same text. Application schemas and indexes remain unchanged.
+
+Persistent Bun and Node clients use WAL journaling with `synchronous=FULL`.
+The default factory preserves individual durable commit boundaries. SQLite
+creates adjacent `-wal` and `-shm` files; close all connections before copying
+the main database file, or use SQLite's backup facilities. This setting does
+not change browser OPFS storage.
+
+Artifacts retain source hashes, raw attempts, final-state digests, method
+counts, and resource boundaries. Read the
+[benchmark guide](https://github.com/syncular/syncular/blob/main/bench/README.md)
+for options and comparison rules. The new reduced replay and reconnect CI
+workloads enforce FIFO boundaries and convergence without host-speed thresholds.
+
 ## Where to go next
 
 - [Bootstrap & segments](/concepts-bootstrap/): why the sqlite-image lane is
@@ -96,3 +252,206 @@ absolute values; the recorded run is darwin/arm64.
 - [Realtime](/concepts-realtime/): the delta path the propagation numbers
   measure.
 - [Spec & package map](/reference/): where everything measured here lives.
+
+
+The repository CI includes a separate Postgres diagnostic job for TS and Rust
+socket clients. Each job owns its database service and retains five fresh
+1,000-commit replay attempts and five 25-reader reconnect attempts with file storage. Invalid state or unavailable
+Postgres fails the job. Timing thresholds await runner calibration.
+
+
+Use `--workload commit-boundaries --lane socket` to measure three commits with
+499/2/1 or 500/2/1 operations. Add `--reject-middle` to reject the middle commit
+through the server validator. The runner verifies rollback of both middle
+writes, successful application of the later independent commit, exact request
+and acknowledgement identities, and the durable rejection outcome. TS and Rust
+use the same fixture against SQLite or Postgres. Reduced cases run in benchmark
+CI and the explicit Postgres job.
+
+
+`--workload blobs --lane socket --storage file` runs TS staging, upload and
+reference commit, fresh download, cache-hit, and interrupted-download recovery
+measurements. The full profile uses 64 KiB, 2 MiB, and 16 MiB bodies, including
+two distinct 2 MiB objects. Validation checks exact bytes, upload pins, live
+reference counts, clean recovery, and cache hits without network requests.
+The engine lane runs the same fixture through the in-process Hono route.
+Each phase reports database and transport call counts, failures, and inclusive
+durations, with SQL statement shapes that omit bound values. SQL time overlaps
+method and transaction time; these durations must not be summed.
+Add `--core rust --boundary direct` or `--core rust --boundary command` to run
+the native HTTP client. Artifacts separate native operation time from stdio
+delivery, response framing, parent JSON parsing, and hex decoding, and record
+serialized byte counts. Framing records received chunks and newline search ranges
+so controller work can be separated from native operation time.
+The native interruption uses a one-use signed URL whose HTTP body ends early;
+the client must leave the cache empty and re-request authorization to recover.
+`--boundary ffi` runs the shipping C ABI through a Rust caller. Its phases separate
+the complete C call from request serialization, returned-string copying, release,
+and host parsing. Server request traces verify cache hits and recovery through
+the FFI-owned native transport. Language-binding runtimes remain to measure.
+
+The shipping blob command moves its owned result into the reply envelope, and
+the C ABI moves that reply into its outer envelope. The C ABI borrows parsed
+command parameters for the duration of dispatch. These paths retain the existing
+JSON format while avoiding full-payload clones. A structural Rust test counts
+payload-sized allocations separately from timing and process memory profiles. Query
+and snapshot commands also borrow their bind arrays and move row maps into the
+result. Snapshot metadata retains its shared serializer. Paired 100-row query
+measurements verify the reduced command overhead with unchanged SQL and schema.
+
+
+
+Process-backed workloads record CPU milliseconds and peak RSS bytes for each
+client after exit. Restart preserves the killed and reopened writer separately.
+These counters include setup, validation, stdio, and shutdown; they exclude the
+server and controller. Peak RSS describes each process's lifetime high-water
+mark. Adding reader peaks does not establish simultaneous memory usage.
+
+
+The Rust byte decoder converts ASCII pairs directly while preserving its accepted
+inputs and errors. Ten paired local trials reduced 16 MiB envelope decoding from
+44.4 ms to 14.7 ms and shared-command staging from 148.2 ms to 120.8 ms. These
+measurements cover native command processing on the benchmark host; complete
+binding delivery requires separate measurements.
+
+Rust diagnostic storage aggregates reuse the connection's existing prepared
+statement cache for outbox, outcome, and blob byte estimates. Every call reads
+current values. Schema invalidation and unreadable-storage reporting retain
+their existing behavior. Page-count and page-size pragmas remain uncached.
+
+Socket replay runs TS and Rust writers and readers in separate processes through
+the same harness. Artifacts retain original commit identities, acknowledgements
+from every round, operation construction/drain times, and per-client lifetime
+CPU and peak memory. TS socket replay previously shared the controller process;
+keep that boundary difference explicit in historical comparisons. Engine replay
+continues to use the in-process seam.
+
+Process replay also records the client SQLite version, journal mode, and
+synchronous setting before construction. File clients require WAL and FULL
+durability; memory clients require the memory journal and FULL. A different
+effective configuration fails the attempt. This observation is outside the
+construction and replay timers.
+
+The SQLite benchmark server uses an in-memory database. File storage applies
+to the client replicas. Use the explicit Postgres backend to measure a persistent
+server; the client SQLite durability check does not describe server persistence.
+
+TS process replay attributes SQL shapes and counts rows returned by successful
+queries. Bound values and returned row contents stay out of measurements.
+`clientSqlite.run` records actual transaction-control calls separately from
+`database.transaction`: nested savepoints therefore remain distinguishable
+from `COMMIT`. Their durations overlap outer database and drain timers. Full
+outbox-read row counts measure pending bodies materialized for replay; bounded
+encoder reads have their own SQL shape. Counts exclude construction after the
+replay reset. Query timing excludes subsequent JSON decoding of operation bodies.
+
+The TS socket replay contract checks actual SQLite commit calls for 501 queued
+commits and allows at most 520. Consecutive successful acknowledgements share
+one local transaction; delivered row commits and response bookkeeping remain
+inside that count. Each individual commit retains its own durable outcome.
+See [successful acknowledgement batches](/concepts-conflicts/#successful-acknowledgement-batches)
+for the resulting change-event boundary.
+
+
+Async method and SQL-shape measurements include `pending`, `maxPending`, and
+`overlappingCalls`. `pending` counts calls started in the current collection
+epoch whose promises have not settled. `maxPending` records the peak count;
+`overlappingCalls` counts starts while another call was pending. These fields
+measure overlap at the instrumented method boundary. They do not distinguish
+executor queueing from database execution. A reset starts a new collection epoch;
+completion of a preceding call cannot decrement the new epoch's count.
+
+
+Permission purge uses `--workload purge --lane socket --storage file` with TS
+or Rust clients. `--sizes 2000,10000,100000` selects rows in the revoked project;
+one additional row belongs to a retained grant. Rust supports direct and command
+boundaries. The private server fixture removes the project grant through its
+scope resolver. Grant removal completes before timing; the measured explicit
+sync round includes authorization and local purge. Automatic discovery of a
+grant change is outside this workload.
+
+Each attempt verifies the revoked subscription and reason code, exact retained
+row values, an unchanged authoritative commit sequence, and an empty outbox.
+It closes the client, reopens the same SQLite file with the same identity in a
+fresh process, and verifies the purged rows remain absent before and after
+another sync. Artifacts separate client operation time, controller elapsed,
+reopen time, SQL/transport attribution, and per-process lifetime resources.
+Clients must report WAL and FULL durability. Validation reads remain bounded
+across data sizes. Benchmark CI runs a reduced 2,000-row TS case.
+
+```sh
+bun run bench --workload purge --lane socket --storage file --trials 5
+bun run bench --workload purge --core rust --lane socket --storage file --trials 5
+bun run bench --workload purge --core rust --boundary command --lane socket --storage file --trials 5
+```
+
+
+## Swift binding reads
+
+On macOS, measure the shipped Swift SDK over the native FFI with the fixed task
+fixture and SQL:
+
+```sh
+bun run bench --workload read --core rust --boundary ffi --binding swift --lane socket --storage file --iterations 100 --trials 5
+```
+
+The runner compiles the Swift SDK as a separate optimized module and builds
+the native library in release mode with locked dependencies. Each attempt checks
+the loaded library paths and hashes, exact row values, unchanged revision, empty
+outbox, and SQLite durability. Source provenance includes binding sources.
+
+Samples cover the complete Swift `query` and `querySnapshot` calls, including
+Foundation serialization, command dispatch, FFI execution, and result decoding.
+Three warmup cycles precede alternating surface order. Validation and autorelease
+pool cleanup run after each timer. The event poll loop remains active on its
+background queue, with a dedicated serial delivery queue and no application
+callback. UI rendering and raw SQLite timing are outside this profile.
+
+Swift samples and the Rust caller's FFI call samples have different measurement
+boundaries. The profile does not measure Kotlin, Flutter, React Native, or Tauri
+runtime costs. See the repository benchmark README for build provenance and
+focused contract commands.
+
+
+## PostgreSQL WAL I/O
+
+An explicit Postgres diagnostic can record WAL I/O with `--pg-io`:
+
+```sh
+SYNCULAR_PG_URL=postgres://postgres@127.0.0.1:5432/syncular_bench bun run bench --workload replay --lane socket --backend postgres --storage file --sizes 1000 --trials 5 --pg-io
+```
+
+Use an isolated PostgreSQL 18 instance with `track_wal_io_timing=on`. The runner
+records server durability settings and cumulative WAL/checkpoint statistics
+before setup and after all benchmark database sessions close. It leaves settings
+and counters unchanged. A reset or failed observation marks the attempt failed.
+The ordinary Postgres benchmark requires no I/O observer or additional extension.
+
+These counters include setup, bootstrap, validation, and cleanup. They remain
+cluster-wide; background PostgreSQL processes have separate backend-type rows.
+Their durations overlap existing server measurements and cannot be summed into
+replay latency. Use the counters to investigate durability costs alongside
+writer drain and independent reader visibility.
+
+
+Selected replay, restart, observation, blob, purge and read artifacts record every
+client's SQLite version, journal mode and synchronous setting in `clientSqlite`,
+with role, client identity and process ID. Recovery artifacts retain both the old
+and reopened processes. File clients must report WAL/FULL; memory clients must
+report memory/FULL. Metadata queries run outside operation timers, including the
+reopen timer. Read workloads verify the settings again after measurement.
+
+`serverMetrics.database` records SQLite version and durability, or the Postgres
+version and allowlisted durability settings read through the benchmark pool.
+Metric resets preserve that metadata. These records exclude database URLs and
+credentials. Existing `sqlite` fields retain their prior formats.
+
+
+Use `--ts-profile` with TS socket replay, restart, commit-boundaries, fanout or
+reconnect to retain Bun sampling profiles for each isolated client. The writer
+and reader stats contain compressed raw stacks alongside SQL and transport
+measurements. Collection begins after setup and ends before final validation;
+profile formatting and compression run outside delivery timers. Sample counts
+identify observed call stacks and can include native waits. They do not measure
+exact CPU time. The repository benchmark guide documents the envelope, decoding
+steps and comparison limits.
