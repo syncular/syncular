@@ -21,6 +21,7 @@ import {
 } from './loopback';
 import { reportPgLane, runPgLane } from './pg-lane';
 import { reportWindowShard, runWindowShardLane } from './window-lane';
+import { runPerformanceBench } from './performance';
 
 // accept 0b0011 pins the rows lane (the client's default now advertises
 // sqlite images, §4.2) — the rows number stays comparable across runs.
@@ -610,6 +611,95 @@ async function main(): Promise<void> {
   console.log(reportPgLane(pg));
 
   if (CI_MODE) {
+    await runPerformanceBench([
+      '--workload',
+      'read',
+      '--lane',
+      'engine',
+      '--sizes',
+      '1000',
+      '--trials',
+      '1',
+      '--iterations',
+      '10',
+      '--storage',
+      'file',
+    ]);
+    await runPerformanceBench([
+      '--workload',
+      'replay',
+      '--lane',
+      'engine',
+      '--sizes',
+      '501',
+      '--trials',
+      '1',
+      '--storage',
+      'file',
+    ]);
+    await runPerformanceBench([
+      '--workload',
+      'restart',
+      '--core',
+      'ts',
+      '--lane',
+      'socket',
+      '--sizes',
+      '501',
+      '--trials',
+      '1',
+      '--storage',
+      'file',
+    ]);
+    await runPerformanceBench([
+      '--workload',
+      'commit-boundaries',
+      '--lane',
+      'socket',
+      '--sizes',
+      '499',
+      '--reject-middle',
+      '--trials',
+      '1',
+      '--storage',
+      'file',
+    ]);
+    await runPerformanceBench([
+      '--workload',
+      'blobs',
+      '--lane',
+      'socket',
+      '--sizes',
+      '65536',
+      '--trials',
+      '1',
+      '--storage',
+      'file',
+    ]);
+    await runPerformanceBench([
+      '--workload',
+      'reconnect',
+      '--lane',
+      'socket',
+      '--sizes',
+      '5',
+      '--trials',
+      '1',
+      '--storage',
+      'file',
+    ]);
+    await runPerformanceBench([
+      '--workload',
+      'purge',
+      '--lane',
+      'socket',
+      '--sizes',
+      '2000',
+      '--trials',
+      '1',
+      '--storage',
+      'file',
+    ]);
     // Budgets gate; RESULTS.md stays the curated full-workload record.
     const checks = checkBudgets(big, image, prop, bundle);
     // §4.8: the sharding invariant is a correctness budget — a replace that
@@ -643,4 +733,8 @@ async function main(): Promise<void> {
   console.log(`\nwrote ${outPath}`);
 }
 
-await main();
+if (process.argv.includes('--workload')) {
+  await runPerformanceBench(process.argv.slice(2));
+} else {
+  await main();
+}

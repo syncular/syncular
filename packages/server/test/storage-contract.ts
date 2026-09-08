@@ -1262,6 +1262,133 @@ export function runStorageContract(
       expect(updated?.cursor).toBe(99);
     });
 
+    test('cursor acknowledgements advance atomically and preserve registration fields', async () => {
+      const storage = await make();
+      await storage.touchPartition(PARTITION, NOW, 'epoch-a');
+      const record: ClientRecord = {
+        clientId: 'c1',
+        actorId: 'a1',
+        wireVersion: 2,
+        cursor: -1,
+        updatedAtMs: NOW,
+        subscriptions: [
+          { id: 'new-sub', table: 'tasks', scopes: { project_id: ['p2'] } },
+        ],
+      };
+      await storage.putClientRecord(PARTITION, record);
+      await storage.putClientRecord('other', record);
+      await storage.advanceClientCursor(
+        PARTITION,
+        'c1',
+        'a1',
+        'epoch-a',
+        42,
+        NOW + 2,
+      );
+      await storage.advanceClientCursor(
+        PARTITION,
+        'c1',
+        'a1',
+        'epoch-a',
+        7,
+        NOW + 1,
+      );
+      expect(await storage.getClientRecord(PARTITION, 'c1')).toEqual({
+        ...record,
+        cursor: 42,
+        updatedAtMs: NOW + 2,
+      });
+      expect(await storage.getClientRecord('other', 'c1')).toEqual(record);
+      await storage.advanceClientCursor(
+        PARTITION,
+        'c1',
+        'a1',
+        'epoch-a',
+        41,
+        NOW + 3,
+      );
+      expect(await storage.getClientRecord(PARTITION, 'c1')).toEqual({
+        ...record,
+        cursor: 42,
+        updatedAtMs: NOW + 3,
+      });
+    });
+
+    test('cursor acknowledgements require the registered actor and current epoch', async () => {
+      const storage = await make();
+      await storage.touchPartition(PARTITION, NOW, 'epoch-a');
+      const record: ClientRecord = {
+        clientId: 'c1',
+        actorId: 'a1',
+        wireVersion: 2,
+        cursor: 0,
+        updatedAtMs: NOW,
+        subscriptions: [],
+      };
+      await storage.putClientRecord(PARTITION, record);
+      await storage.advanceClientCursor(
+        PARTITION,
+        'c1',
+        'wrong-actor',
+        'epoch-a',
+        42,
+        NOW + 1,
+      );
+      await storage.advanceClientCursor(
+        PARTITION,
+        'c1',
+        'a1',
+        'wrong-epoch',
+        42,
+        NOW + 1,
+      );
+      await storage.advanceClientCursor(
+        PARTITION,
+        'missing',
+        'a1',
+        'epoch-a',
+        42,
+        NOW + 1,
+      );
+      expect(await storage.getClientRecord(PARTITION, 'c1')).toEqual(record);
+      expect(
+        await storage.getClientRecord(PARTITION, 'missing'),
+      ).toBeUndefined();
+      await storage.rotatePartitionLogEpoch(PARTITION, 'epoch-b', NOW + 2);
+      await storage.advanceClientCursor(
+        PARTITION,
+        'c1',
+        'a1',
+        'epoch-a',
+        42,
+        NOW + 3,
+      );
+      expect(await storage.getClientRecord(PARTITION, 'c1')).toBeUndefined();
+      await storage.putClientRecord(PARTITION, record);
+      await storage.advanceClientCursor(
+        PARTITION,
+        'c1',
+        'a1',
+        'epoch-a',
+        42,
+        NOW + 4,
+      );
+      expect(await storage.getClientRecord(PARTITION, 'c1')).toEqual(record);
+      await storage.advanceClientCursor(
+        PARTITION,
+        'c1',
+        'a1',
+        'epoch-b',
+        1,
+        NOW + 5,
+      );
+      expect(await storage.getClientRecord(PARTITION, 'c1')).toEqual({
+        ...record,
+        cursor: 1,
+        updatedAtMs: NOW + 5,
+      });
+    });
+
     test('cursor-only updates are absent-safe and monotonic', async () => {
       const storage = await make();
 

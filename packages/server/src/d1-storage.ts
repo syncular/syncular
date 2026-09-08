@@ -52,6 +52,7 @@ import {
   assertAppendOnlyMigration,
   commitWindowPageSql,
   deleteRowSql,
+  deleteSqliteRowScopesSql,
   dropTableDdl,
   indexRowPageStatement,
   layoutsOf,
@@ -533,13 +534,16 @@ class D1Transaction implements StorageTransaction {
       row,
     });
     const p = this.#partition;
+    this.#buffer_(deleteSqliteRowScopesSql(compiled), [
+      p,
+      table,
+      row.rowId,
+      p,
+      row.rowId,
+    ]);
     this.#buffer_(
       upsertSql(compiled, 'sqlite'),
       upsertValues(compiled, p, row, 'sqlite'),
-    );
-    this.#buffer_(
-      'DELETE FROM sync_row_scopes WHERE partition=? AND tbl=? AND row_id=?',
-      [p, table, row.rowId],
     );
     for (const [variable, value] of Object.entries(row.scopes)) {
       this.#buffer_(
@@ -553,14 +557,15 @@ class D1Transaction implements StorageTransaction {
     this.#assertOpen();
     this.#pending.set(D1Transaction.#key(table, rowId), { kind: 'deleted' });
     const p = this.#partition;
-    this.#buffer_(deleteRowSql(this.#resolveTable(table), 'sqlite'), [
+    const compiled = this.#resolveTable(table);
+    this.#buffer_(deleteSqliteRowScopesSql(compiled), [
+      p,
+      table,
+      rowId,
       p,
       rowId,
     ]);
-    this.#buffer_(
-      'DELETE FROM sync_row_scopes WHERE partition=? AND tbl=? AND row_id=?',
-      [p, table, rowId],
-    );
+    this.#buffer_(deleteRowSql(compiled, 'sqlite'), [p, rowId]);
     // §5.9.4: a deleted row references no blobs.
     this.#buffer_(
       'DELETE FROM sync_blob_refs WHERE partition=? AND tbl=? AND row_id=?',
@@ -1955,6 +1960,24 @@ export class D1ServerStorage implements ServerStorage {
         JSON.stringify(record.subscriptions),
         record.updatedAtMs,
       )
+      .run();
+  }
+
+  async advanceClientCursor(
+    partition: string,
+    clientId: string,
+    actorId: string,
+    logEpoch: string,
+    cursor: number,
+    updatedAtMs: number,
+  ): Promise<void> {
+    await this.#db
+      .prepare(`UPDATE sync_clients
+         SET cursor=MAX(cursor, ?), updated_at_ms=MAX(updated_at_ms, ?)
+         WHERE partition=? AND client_id=? AND actor_id=?
+           AND EXISTS (SELECT 1 FROM sync_partition_registry
+                       WHERE partition=sync_clients.partition AND log_epoch=?)`)
+      .bind(cursor, updatedAtMs, partition, clientId, actorId, logEpoch)
       .run();
   }
 

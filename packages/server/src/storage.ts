@@ -560,6 +560,19 @@ export interface ServerStorage {
     clientId: string,
   ): Promise<ClientRecord | undefined>;
   putClientRecord(partition: string, record: ClientRecord): Promise<void>;
+  /**
+   * Atomically advance an existing record's cursor and activity timestamp.
+   * Preserve registration fields; require matching actor and current log epoch.
+   * Missing records and mismatched identities are unchanged (§8.2).
+   */
+  advanceClientCursor(
+    partition: string,
+    clientId: string,
+    actorId: string,
+    logEpoch: string,
+    cursor: number,
+    updatedAtMs: number,
+  ): Promise<void>;
   /** Advance an existing client's ACK cursor and timestamp atomically,
    * preserving actor, wire version, and subscriptions. Missing records stay absent. */
   updateClientCursor(

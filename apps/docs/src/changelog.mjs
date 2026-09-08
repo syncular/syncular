@@ -16,6 +16,85 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-09-08',
+    title: 'TS benchmark sampling profiles',
+    body: 'TS socket replay and observation workloads can capture opt-in Bun sampling profiles for each isolated client. Artifacts retain compressed raw call stacks alongside SQL and transport measurements. Explicit start/stop intervals exclude setup and final validation, and profile formatting and compression run outside delivery timers. Public client APIs remain unchanged.',
+    links: [{ href: '/benchmarks/', label: 'Sampling profiles' }],
+  },
+  {
+    date: '2026-09-08',
+    title: 'Benchmark database metadata for every client',
+    body: 'Repository replay, restart, observation, blob, purge and read artifacts record SQLite version and durability for every client, including reopened processes. Server metadata records SQLite configuration or Postgres version and allowlisted durability settings. Metadata queries run outside operation timers, and legacy artifact fields retain their formats.',
+    links: [{ href: '/benchmarks/', label: 'Database metadata' }],
+  },
+  {
+    date: '2026-09-08',
+    title: 'Native row-ID lookups use existing primary keys',
+    body: 'Rust scope lookups, row deletes, and CRDT row reads reuse prepared statements and seek existing primary-key indexes for string, JSON, integer, and boolean keys. Exact text matching remains unchanged, including the text predicate for floating-point keys whose string conversion can round distinct values.',
+    links: [{ href: '/benchmarks/', label: 'Native lookup behavior' }],
+  },
+  {
+    date: '2026-09-08',
+    title: 'Private native phase diagnostics',
+    body: 'Repository socket benchmarks can collect opt-in Rust wall-time and calling-thread CPU phases for replay, observation, and blob download/cache work. Artifacts retain per-client intervals, failed calls, and attempted pending-operation counts. The recorder is absent from normal builds and public diagnostics. SQL counters also cover replay, restart, and commit-boundary workloads.',
+    links: [{ href: '/benchmarks/', label: 'Phase boundaries and overhead' }],
+  },
+  {
+    date: '2026-09-08',
+    title: 'Incremental native pending-row reconciliation',
+    body: 'Incoming Rust commit frames reconcile changed rows and their pending operations when the affected tables have no secondary unique constraints. Other pending rows keep their optimistic values without a full overlay rebuild. Tables with secondary unique constraints retain complete FIFO replay, and every frame keeps its durable revision and rollback boundary.',
+    links: [{ href: '/benchmarks/', label: 'Native replay measurements' }],
+  },
+  {
+    date: '2026-09-08',
+    title: 'Native incoming transaction boundaries',
+    body: 'The Rust client now commits each incoming COMMIT frame and rows-segment block independently, matching the TypeScript client. A later failed frame preserves earlier rows and revisions while leaving the subscription cursor unchanged for retry. Pull and realtime delivery share the same frame transaction, and failed cursor persistence restores the previous subscription state.',
+    links: [
+      { href: '/benchmarks/', label: 'Transaction parity and measurements' },
+    ],
+  },
+  {
+    date: '2026-09-08',
+    title: 'Comparable socket observation processes',
+    body: 'Fanout and reconnect benchmarks run every TS and Rust client in its own process through one runner. Artifacts record client identity, resources, SQLite durability, and explicit reconnect sync timing. Opt-in Rust SQL counters distinguish statements and commit hooks. Independent fixture and durable outcome checks cover both cores.',
+    links: [{ href: '/benchmarks/', label: 'Observation benchmarks' }],
+  },
+  {
+    date: '2026-09-08',
+    title: 'Rust engine replay benchmarks',
+    body: 'Repository benchmarks can run Rust clients and the real server in one process through a private transport. Replay retains independent readers, durable SQLite, and FIFO commit checks, with direct and shared-command timings. Artifacts distinguish callback work and shared process resources from shipping socket and FFI measurements.',
+    links: [{ href: '/benchmarks/', label: 'Performance workloads' }],
+  },
+  {
+    date: '2026-09-08',
+    title: 'Atomic realtime cursor persistence',
+    body: 'Realtime acknowledgements update the client cursor and activity timestamp in one storage statement, preserving concurrent subscription registration. The update requires the session actor and current partition log epoch and cannot recreate a deleted client record. Custom storage adapters must implement advanceClientCursor.',
+    links: [{ href: '/server-storage/', label: 'Storage adapter contract' }],
+  },
+  {
+    date: '2026-09-08',
+    title: 'Batched acknowledgements with durable failure recovery',
+    body: 'Both client cores persist consecutive successful acknowledgements in one local transaction and publish one revisioned change batch with its final outbox count. Rejections retain their own transaction boundary. Both client cores report client.outcome_persistence_failed when a final outcome cannot commit locally. Failed acknowledgements preserve pending IDs and optimistic state without publishing an uncommitted conflict or rejection. Rust restores its in-memory outbox after a failed revision or commit write. TypeScript conflict callbacks run after local durability, so callback exceptions cannot undo the outcome.',
+    links: [
+      {
+        href: '/concepts-conflicts/',
+        label: 'Local outcome persistence failures',
+      },
+    ],
+  },
+  {
+    date: '2026-09-08',
+    title: 'Persistent SQLite performance and diagnostic benchmarks',
+    body: 'Bun and Node clients use WAL with FULL durability for persistent SQLite databases. Late callbacks from disconnected realtime connections cannot mutate a replacement or closed client. The repository benchmark runner adds replay, fanout, reconnect, and Rust byte-envelope diagnostics with raw artifacts and isolated Postgres schemas. Postgres diagnostics attribute SQL shapes and awaited local realtime notifications. An explicit WAL I/O profile records whole-attempt PostgreSQL 18 counters and durability settings without resetting statistics or changing configuration. Async benchmark measurements also record pending calls, peak overlap, and starts that overlap an earlier call. A macOS Swift profile measures the shipped query and querySnapshot methods through Foundation and the release FFI, verifying loaded-library provenance. Fixed-schema TS and Rust read workloads compare database, query, and snapshot costs at 1k, 10k, and 100k rows; Rust also measures the shared command router and traces statement counts outside timing. Rust replicas with no pending writes update changed visible rows within the existing transaction. Local Rust appends apply only the new commit to a current overlay; failed outbox or revision writes roll back the durable queue and in-memory state. Native realtime I/O uses socket readiness instead of timed reads sharing a send lock. Native replay, reconnect, fanout, and process-restart diagnostics separate core and command timing. TS and Rust restart workloads share SIGKILL, preserved-identity, FIFO acknowledgement, and independent-reader checks. Mixed-commit workloads verify 499/2/1 and 500/2/1 request boundaries, atomic middle-commit rejection, and later independent writes. TS and Rust blob lifecycle diagnostics measure staging, upload, download, interrupted recovery, and cache hits. TS records per-phase SQL and transport attribution; Rust separates native operations from stdio delivery, parsing, and byte decoding. Native FFI and Tauri diagnostic observers compare typed snapshots before serializing changed evidence, retaining fresh storage observations and capture times. Rust diagnostic storage aggregates reuse compiled SQLite statements while reading current values on every call. C ABI blob and fixed-schema read diagnostics separately measure the exported call, host response copying, deallocation, and JSON parsing. TS and Rust socket replay share isolated writer/reader processes and all-round acknowledgement validation. TS process replay records returned-row counts, SQL shapes, and actual SQLite transaction-control calls. Process-backed workloads retain per-client lifetime CPU and peak memory, including both writers in restart cases. The native command and C ABI envelopes move owned blob results and borrow input parameters, removing payload-sized JSON copies without changing the command format. Native query and snapshot commands also borrow bind parameters and move owned rows into their replies, preserving typed cells and snapshot coverage metadata. Permission-purge diagnostics revoke one project while retaining another, then verify the purge after persistent process reopen in TS and Rust. Both cores refresh downloaded-body reference counts before trimming; Rust counts visible optimistic references. The Rust byte encoder and decoder avoid per-byte formatting and radix parsing while retaining the hexadecimal command format and decoder input/error behavior. Postgres pushes avoid repeating partition initialization after the partition exists. Sequence allocation and commit metadata insertion share one Postgres statement. Each change and its inverted scope entries also share one statement, with consistent JSONB parameter typing. SQLite and D1 server row writes remove exact old scope entries through existing primary keys.',
+    links: [
+      {
+        href: '/benchmarks/',
+        label: 'Benchmark workloads and storage behavior',
+      },
+      { href: '/server-storage/', label: 'Postgres partition locking' },
+    ],
+  },
+  {
     date: '2026-09-05',
     title: 'D1 schema upgrades resume across requests',
     body: 'D1ServerStorage.migrateSchema limits statements per invocation and saves row-rewrite progress. Interrupted upgrades resume with the same schema, and competing requests cannot apply the same batch twice. The storage rejects row reads and transaction commits until migration finishes. Run migration requests before admitting sync traffic; ensureSchema reports when another invocation is needed.',

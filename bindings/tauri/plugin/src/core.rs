@@ -27,7 +27,9 @@
 use std::collections::VecDeque;
 
 use serde_json::{json, Value};
-use syncular_client::{ClientDiagnosticsRequest, SyncClient, SyncIntent};
+use syncular_client::{
+    ClientDiagnosticsRequest, ClientDiagnosticsSnapshot, SyncClient, SyncIntent,
+};
 use syncular_command::{dispatch, CreateEffects};
 
 use crate::transport::{self, HostTransport};
@@ -47,7 +49,7 @@ pub struct SyncularCore {
     transport: HostTransport,
     effects: CreateEffects,
     queue: VecDeque<Event>,
-    last_diagnostics_fingerprint: Option<Value>,
+    last_diagnostics_snapshot: Option<ClientDiagnosticsSnapshot>,
     /// Diagnostics snapshots are computed only after a consumer registers —
     /// the analogue of the web client's `ClientDiagnosticsEmitter.observed`.
     /// Set by the explicit `enableDiagnostics` command and by the first
@@ -75,7 +77,7 @@ impl SyncularCore {
             transport,
             effects: CreateEffects::default(),
             queue: VecDeque::new(),
-            last_diagnostics_fingerprint: None,
+            last_diagnostics_snapshot: None,
             diagnostics_observed: false,
             interactive_sync: false,
             background_sync_ms: None,
@@ -93,7 +95,7 @@ impl SyncularCore {
             // no listener count). Emission starts on this drain: the reset
             // fingerprint guarantees the observer receives a first snapshot.
             self.diagnostics_observed = true;
-            self.last_diagnostics_fingerprint = None;
+            self.last_diagnostics_snapshot = None;
             self.drain_realtime();
             self.drain_core_outputs();
             self.emit_diagnostics_if_changed();
@@ -112,7 +114,7 @@ impl SyncularCore {
             &params,
         );
         if method == "create" {
-            self.last_diagnostics_fingerprint = None;
+            self.last_diagnostics_snapshot = None;
             self.transport.set_signed_urls(self.effects.signed_urls);
         }
         if method == "beginSecurityPreflight"
@@ -292,17 +294,16 @@ impl SyncularCore {
         let Ok(snapshot) = client.diagnostics_snapshot(&ClientDiagnosticsRequest::default()) else {
             return;
         };
-        let Ok(mut fingerprint) = serde_json::to_value(&snapshot) else {
-            return;
-        };
-        if let Some(object) = fingerprint.as_object_mut() {
-            object.remove("capturedAtMs");
+        if let Some(previous) = &mut self.last_diagnostics_snapshot {
+            // Capture time is observation metadata, excluded from evidence equality.
+            previous.captured_at_ms = snapshot.captured_at_ms;
+            if previous == &snapshot {
+                return;
+            }
         }
-        if self.last_diagnostics_fingerprint.as_ref() == Some(&fingerprint) {
-            return;
-        }
-        self.last_diagnostics_fingerprint = Some(fingerprint);
-        self.push(json!({ "type": "diagnostics", "snapshot": snapshot }));
+        let event = json!({ "type": "diagnostics", "snapshot": snapshot });
+        self.last_diagnostics_snapshot = Some(snapshot);
+        self.push(event);
     }
 }
 
@@ -430,6 +431,88 @@ mod tests {
         assert!(matches!(core.take_sync_intent(), SyncIntent::Interactive));
         // Draining is exhaustive.
         assert!(core.drain_events().is_empty());
+    }
+
+    #[test]
+    fn diagnostics_keep_fresh_capture_times_and_revision_independent_changes() {
+        let mut core = SyncularCore::new(&json!({})).unwrap();
+        let created = core.command(&json!({"method": "create", "params": {
+            "clientId": "diagnostics-comparison", "schema": simple_schema(), "nowMs": 1000
+        }}));
+        assert!(created.get("error").is_none(), "{created}");
+        assert!(core.drain_events().is_empty());
+        core.command(&json!({"method": "enableDiagnostics", "params": {}}));
+        let initial = core.drain_events();
+        assert_eq!(initial.len(), 1);
+        assert_eq!(initial[0].json["snapshot"]["capturedAtMs"], 1000);
+
+        core.client.as_mut().unwrap().set_now_ms(2000);
+        let read = json!({"method": "query", "params": {"sql": "SELECT 1 AS id"}});
+        assert_eq!(core.command(&read)["result"]["rows"], json!([{"id": 1}]));
+        assert!(core.drain_events().is_empty());
+        let changed = core.command(&json!({"method": "mutate", "params": {
+            "mutations": [{"op": "upsert", "table": "todo", "values": {
+                "id": "first", "title": "private value", "done": false
+            }}]
+        }}));
+        assert!(changed.get("error").is_none(), "{changed}");
+        let expected = serde_json::to_value(
+            core.client
+                .as_ref()
+                .unwrap()
+                .diagnostics_snapshot(&Default::default())
+                .unwrap(),
+        )
+        .unwrap();
+        let diagnostics: Vec<Value> = core
+            .drain_events()
+            .into_iter()
+            .filter(|event| event.json["type"] == "diagnostics")
+            .map(|event| event.json)
+            .collect();
+        assert_eq!(
+            diagnostics,
+            vec![json!({"type": "diagnostics", "snapshot": expected})]
+        );
+        assert_eq!(diagnostics[0]["snapshot"]["capturedAtMs"], 2000);
+
+        core.client.as_mut().unwrap().set_now_ms(3000);
+        assert!(core.command(&read).get("error").is_none());
+        assert!(core.drain_events().is_empty());
+        let revision = core.client.as_ref().unwrap().local_revision();
+        core.command(&json!({"method": "sync", "params": {}}));
+        assert_eq!(core.client.as_ref().unwrap().local_revision(), revision);
+        let expected = serde_json::to_value(
+            core.client
+                .as_ref()
+                .unwrap()
+                .diagnostics_snapshot(&Default::default())
+                .unwrap(),
+        )
+        .unwrap();
+        let diagnostics: Vec<Value> = core
+            .drain_events()
+            .into_iter()
+            .filter(|event| event.json["type"] == "diagnostics")
+            .map(|event| event.json)
+            .collect();
+        assert_eq!(
+            diagnostics,
+            vec![json!({"type": "diagnostics", "snapshot": expected})]
+        );
+        assert_eq!(diagnostics[0]["snapshot"]["capturedAtMs"], 3000);
+        assert_eq!(diagnostics[0]["snapshot"]["lastRound"]["status"], "failed");
+
+        let preflight = core.command(&json!({"method": "beginSecurityPreflight", "params": {}}));
+        assert!(preflight.get("error").is_none(), "{preflight}");
+        assert_eq!(
+            core.command(&read)["error"]["code"],
+            "client.security_preflight_required"
+        );
+        assert!(core
+            .drain_events()
+            .iter()
+            .all(|event| event.json["type"] != "diagnostics"));
     }
 
     #[test]

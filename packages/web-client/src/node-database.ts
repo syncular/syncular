@@ -40,6 +40,13 @@ export class NodeClientDatabase implements ClientDatabase {
 
   constructor(path = ':memory:') {
     this.db = new DatabaseSync(path);
+    try {
+      this.db.exec('PRAGMA journal_mode = WAL');
+      this.db.exec('PRAGMA synchronous = FULL');
+    } catch (error) {
+      this.db.close();
+      throw error;
+    }
   }
 
   exec(sql: string, params: readonly SqlValue[] = []): void {

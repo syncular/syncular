@@ -2,6 +2,8 @@
 //! client-local, no native transport). Proves the 5 functions marshal JSON,
 //! run the shared command router, forward exact core events, and free cleanly.
 
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::ffi::{CStr, CString};
 
 use serde_json::{json, Value};
@@ -10,6 +12,172 @@ use crate::{
     syncular_client_close, syncular_client_command, syncular_client_new,
     syncular_client_poll_event, syncular_free_string,
 };
+
+thread_local! {
+    // Count only this test thread's payload-sized allocations. Other FFI tests
+    // and transport threads keep the disabled threshold.
+    static LARGE_ALLOCATIONS: Cell<(usize, usize)> = const { Cell::new((usize::MAX, 0)) };
+}
+
+struct CountAllocations;
+
+#[global_allocator]
+static ALLOCATOR: CountAllocations = CountAllocations;
+
+unsafe impl GlobalAlloc for CountAllocations {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: forward the allocator's layout unchanged to the system allocator.
+        let ptr = unsafe { System.alloc(layout) };
+        if !ptr.is_null() {
+            LARGE_ALLOCATIONS.with(|state| {
+                let (threshold, count) = state.get();
+                if layout.size() >= threshold {
+                    state.set((threshold, count + 1));
+                }
+            });
+        }
+        ptr
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: every allocation uses System with this same layout.
+        unsafe { System.dealloc(ptr, layout) };
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        // SAFETY: forward the live allocation and requested size unchanged.
+        let ptr = unsafe { System.realloc(ptr, layout, new_size) };
+        if !ptr.is_null() {
+            LARGE_ALLOCATIONS.with(|state| {
+                let (threshold, count) = state.get();
+                if new_size >= threshold {
+                    state.set((threshold, count + 1));
+                }
+            });
+        }
+        ptr
+    }
+}
+
+#[test]
+fn blob_command_envelopes_move_owned_payloads_without_full_size_copies() {
+    let mut handle = crate::Handle::new(&json!({})).unwrap();
+    let schema = json!({"version": 1, "tables": [{"name": "attachments", "primaryKey": "id",
+        "columns": [{"name": "id", "type": "string", "nullable": false},
+            {"name": "body", "type": "blob_ref", "nullable": false}], "scopes": []}]});
+    let created = handle.command(&json!({"method": "create", "params": {
+        "schema": schema, "clientId": "allocation-test"
+    }}));
+    assert!(created.get("error").is_none(), "{created}");
+    let bytes: Vec<u8> = (0..=255).cycle().take(2 * 1024 * 1024).collect();
+    let upload = json!({"method": "uploadBlob", "params": {
+        "bytes": syncular_command::bytes_value(&bytes)
+    }});
+    LARGE_ALLOCATIONS.with(|state| state.set((bytes.len() * 2, 0)));
+    let staged = handle.command(&upload);
+    let upload_copies = LARGE_ALLOCATIONS.with(|state| state.replace((usize::MAX, 0)).1);
+    assert!(staged.get("error").is_none(), "{staged}");
+    let blob_id = staged["result"]["ref"]["blobId"].as_str().unwrap();
+    let fetch = json!({"method": "fetchBlob", "params": {"blob": blob_id}});
+    let mut fetch_allocations = Vec::new();
+    for _ in 0..3 {
+        LARGE_ALLOCATIONS.with(|state| state.set((bytes.len() * 2, 0)));
+        let result = handle.command(&fetch);
+        let count = LARGE_ALLOCATIONS.with(|state| state.replace((usize::MAX, 0)).1);
+        fetch_allocations.push(count);
+        assert_eq!(
+            syncular_command::value_bytes(result.pointer("/result/blob/bytes")).unwrap(),
+            bytes
+        );
+        assert_eq!(result["result"]["blob"]["byteLength"], bytes.len());
+    }
+    assert_eq!(
+        (upload_copies, fetch_allocations),
+        (0, vec![1, 1, 1]),
+        "staging borrows the input envelope; each fetch allocates only its core hex result"
+    );
+}
+
+/// Typed cells and snapshot metadata survive ownership transfer unchanged.
+#[test]
+fn query_commands_borrow_parameters_and_move_rows_without_payload_copies() {
+    let mut handle = crate::Handle::new(&json!({})).unwrap();
+    assert_eq!(
+        handle.command(&json!({"method": "create", "params": {
+            "schema": simple_schema(), "clientId": "query-allocation-test"
+        }}))["result"],
+        json!({})
+    );
+    let sql = "SELECT ? AS text, x'0001ff' AS bytes, 9223372036854775807 AS big, 1.25 AS real, NULL AS empty";
+    let bind = vec![Value::from("λ".repeat(1024 * 1024))];
+    let expected = serde_json::to_value(
+        handle
+            .client
+            .as_mut()
+            .unwrap()
+            .query_snapshot(sql, &bind, &[])
+            .unwrap(),
+    )
+    .unwrap();
+    let mut allocations = Vec::new();
+    for method in ["query", "querySnapshot"] {
+        let request = json!({"method": method, "params": {"sql": sql, "params": bind}});
+        LARGE_ALLOCATIONS.with(|state| state.set((2 * 1024 * 1024, 0)));
+        let result = handle.command(&request);
+        allocations.push(LARGE_ALLOCATIONS.with(|state| state.replace((usize::MAX, 0)).1));
+        if method == "querySnapshot" {
+            assert_eq!(result["result"], expected);
+        } else {
+            assert_eq!(result["result"], json!({"rows": expected["rows"]}));
+        }
+    }
+    assert_eq!(
+        allocations,
+        vec![2, 2],
+        "only SQLite binding conversion and output materialization allocate the text payload"
+    );
+    let coverage = syncular_client::WindowCoverage {
+        base: syncular_client::WindowBase {
+            table: "todo".to_owned(),
+            variable: "bucket".to_owned(),
+            fixed_scopes: Vec::new(),
+            params: None,
+        },
+        units: vec!["missing".to_owned()],
+    };
+    let expected = serde_json::to_value(
+        handle
+            .client
+            .as_mut()
+            .unwrap()
+            .query_snapshot("SELECT 1 AS id WHERE 0", &[], &[coverage])
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(expected["coverage"]["complete"], false);
+    let result = handle.command(&json!({"method": "querySnapshot", "params": {
+        "sql": "SELECT 1 AS id WHERE 0", "params": null,
+        "coverage": [{"base": {"table": "todo", "variable": "bucket", "fixedScopes": {}}, "units": ["missing"]}]
+    }}));
+    assert_eq!(result["result"], expected);
+    for method in ["query", "querySnapshot"] {
+        for params in [
+            json!({"sql": "SELECT 1 AS id"}),
+            json!({"sql": "SELECT 1 AS id", "params": null}),
+            json!({"sql": "SELECT 1 AS id", "params": []}),
+        ] {
+            let result = handle.command(&json!({"method": method, "params": params}));
+            assert_eq!(result["result"]["rows"], json!([{"id": 1}]));
+        }
+        let result = handle
+            .command(&json!({"method": method, "params": {"sql": "SELECT 1", "params": "bad"}}));
+        assert_eq!(result["error"]["code"], "client.failed");
+        assert_eq!(
+            result["error"]["message"],
+            format!("{method} params must be a list")
+        );
+    }
+}
 
 /// Send one command and return the parsed reply, freeing the C string.
 fn command(handle: *mut crate::Handle, method: &str, params: Value) -> Value {
@@ -121,6 +289,102 @@ fn sync_without_native_transport_fails_loud() {
         "outcome: {outcome}"
     );
     syncular_client_close(handle);
+}
+
+#[test]
+fn diagnostics_preserve_capture_time_and_events_without_serializing_unchanged_evidence() {
+    let mut handle = crate::Handle::new(&json!({})).unwrap();
+    let created = handle.command(&json!({"method": "create", "params": {
+        "clientId": "diagnostics-comparison", "schema": simple_schema(), "nowMs": 1000
+    }}));
+    assert!(created.get("error").is_none(), "{created}");
+    let initial = handle.queue.pop(0).unwrap().json;
+    assert_eq!(initial["snapshot"]["capturedAtMs"], 1000);
+    assert!(handle.queue.pop(0).is_none());
+
+    handle.client.as_mut().unwrap().set_now_ms(2000);
+    let read = json!({"method": "query", "params": {"sql": "SELECT 1 AS id"}});
+    LARGE_ALLOCATIONS.with(|state| state.set((0, 0)));
+    let reply = handle.command(&read);
+    let allocations = LARGE_ALLOCATIONS.with(|state| state.replace((usize::MAX, 0)).1);
+    eprintln!("unchanged diagnostic query allocations: {allocations}");
+    assert!(
+        allocations <= 32,
+        "unchanged diagnostic query allocated {allocations} times"
+    );
+    assert_eq!(reply["result"]["rows"], json!([{"id": 1}]));
+    assert!(
+        handle.queue.pop(0).is_none(),
+        "capture time alone emitted an event"
+    );
+
+    let changed = handle.command(&json!({"method": "mutate", "params": {
+        "mutations": [{"op": "upsert", "table": "todo", "values": {
+            "id": "first", "title": "private value", "done": false
+        }}]
+    }}));
+    assert!(changed.get("error").is_none(), "{changed}");
+    let expected = serde_json::to_value(
+        handle
+            .client
+            .as_ref()
+            .unwrap()
+            .diagnostics_snapshot(&Default::default())
+            .unwrap(),
+    )
+    .unwrap();
+    let mut diagnostics = Vec::new();
+    while let Some(event) = handle.queue.pop(0) {
+        if event.json["type"] == "diagnostics" {
+            diagnostics.push(event.json);
+        }
+    }
+    assert_eq!(
+        diagnostics,
+        vec![json!({"type": "diagnostics", "snapshot": expected})]
+    );
+    assert_eq!(diagnostics[0]["snapshot"]["capturedAtMs"], 2000);
+    assert_eq!(diagnostics[0]["snapshot"]["replica"]["pendingOutbox"], 1);
+    handle.client.as_mut().unwrap().set_now_ms(3000);
+    assert!(handle.command(&read).get("error").is_none());
+    assert!(handle.queue.pop(0).is_none());
+
+    // A failed round changes evidence even though the local revision stays fixed.
+    let revision = handle.client.as_ref().unwrap().local_revision();
+    handle.command(&json!({"method": "sync", "params": {}}));
+    assert_eq!(handle.client.as_ref().unwrap().local_revision(), revision);
+    let expected = serde_json::to_value(
+        handle
+            .client
+            .as_ref()
+            .unwrap()
+            .diagnostics_snapshot(&Default::default())
+            .unwrap(),
+    )
+    .unwrap();
+    let mut diagnostics = Vec::new();
+    while let Some(event) = handle.queue.pop(0) {
+        if event.json["type"] == "diagnostics" {
+            diagnostics.push(event.json);
+        }
+    }
+    assert_eq!(
+        diagnostics,
+        vec![json!({"type": "diagnostics", "snapshot": expected})]
+    );
+    assert_eq!(diagnostics[0]["snapshot"]["capturedAtMs"], 3000);
+    assert_eq!(diagnostics[0]["snapshot"]["lastRound"]["status"], "failed");
+
+    let preflight = handle.command(&json!({"method": "beginSecurityPreflight", "params": {}}));
+    assert!(preflight.get("error").is_none(), "{preflight}");
+    let blocked = handle.command(&read);
+    assert_eq!(
+        blocked["error"]["code"],
+        "client.security_preflight_required"
+    );
+    while let Some(event) = handle.queue.pop(0) {
+        assert_ne!(event.json["type"], "diagnostics");
+    }
 }
 
 #[test]

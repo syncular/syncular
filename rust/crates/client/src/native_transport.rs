@@ -325,12 +325,13 @@ mod native {
 
     use std::net::TcpStream;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Condvar, Mutex};
+    use std::sync::{mpsc, Arc, Condvar, Mutex};
     use std::thread::JoinHandle;
     use std::time::Duration;
 
+    use polling::{Event, Events, Poller};
     use tungstenite::stream::MaybeTlsStream;
-    use tungstenite::{Message, WebSocket};
+    use tungstenite::Message;
 
     use super::{Inbound, InboundBuffer};
     use crate::{
@@ -338,26 +339,32 @@ mod native {
         TransportError,
     };
 
-    type Ws = WebSocket<MaybeTlsStream<TcpStream>>;
+    // Unregister before the cloned socket handle is closed, including on unwind.
+    struct SocketRegistration {
+        poller: Arc<Poller>,
+        stream: TcpStream,
+    }
+
+    impl Drop for SocketRegistration {
+        fn drop(&mut self) {
+            let _ = self.poller.delete(&self.stream);
+        }
+    }
+
+    struct SocketSender {
+        queue: mpsc::SyncSender<Outgoing>,
+        poller: Arc<Poller>,
+    }
+
+    struct Outgoing {
+        message: Message,
+        completed: mpsc::Sender<Result<(), TransportError>>,
+    }
 
     /// How long a single response round waits before giving up (§8.7 rounds
     /// are bounded — bulk rides segments over HTTP). Generous; a stuck socket
     /// surfaces as a transport failure rather than hanging the caller forever.
     const ROUND_TIMEOUT: Duration = Duration::from_secs(30);
-    /// The reader's per-iteration socket read timeout: bounds how long the
-    /// reader holds the socket lock across `ws.read()`, so `realtime_send`
-    /// (round request bytes + §8.2 acks) can interleave sends promptly. A
-    /// pending send waits out at most one read window, so this is the
-    /// worst-case send latency — keep it small (the wakeup churn on a quiet
-    /// socket is a few hundred cheap syscalls per second).
-    const READ_TIMEOUT: Duration = Duration::from_millis(5);
-    /// How long the reader parks OUTSIDE the socket lock after an empty read
-    /// window. Load-bearing for fairness, not just politeness: without it the
-    /// reader re-acquires the (unfair) mutex faster than a parked sender can
-    /// wake, and sends starve for seconds on a quiet socket (observed on
-    /// macOS: 30-150s per §8.7 round).
-    const READ_YIELD: Duration = Duration::from_micros(500);
-
     /// The §8.7 round rendezvous shared between the reader thread (which
     /// demuxes inbound `0x01` chunks into the round via [`RealtimeRound`]) and
     /// `realtime_sync` (which begins the round, sends the request, and blocks
@@ -445,8 +452,7 @@ mod native {
         TransportError::new("transport.failed", format!("{op}: {e}"))
     }
 
-    /// A read error that is merely "no data within the timeout" — the reader
-    /// loops instead of tearing the socket down.
+    /// Nonblocking I/O needs a readiness notification before it can continue.
     fn is_would_block(e: &tungstenite::Error) -> bool {
         matches!(
             e,
@@ -457,20 +463,6 @@ mod native {
         )
     }
 
-    /// Apply the reader's per-iteration read timeout to the live stream so
-    /// `ws.read()` yields the socket lock periodically (see `READ_TIMEOUT`).
-    fn set_read_timeout(ws: &mut Ws, timeout: Option<Duration>) {
-        match ws.get_mut() {
-            MaybeTlsStream::Plain(s) => {
-                let _ = s.set_read_timeout(timeout);
-            }
-            MaybeTlsStream::Rustls(s) => {
-                let _ = s.get_ref().set_read_timeout(timeout);
-            }
-            _ => {}
-        }
-    }
-
     pub struct NativeTransport {
         base_url: String,
         ws_url: String,
@@ -479,8 +471,8 @@ mod native {
         agent: ureq::Agent,
         pub signed_urls: bool,
         pub inbound: Arc<InboundBuffer>,
-        /// The live socket, shared with the reader thread for sends.
-        socket: Option<Arc<Mutex<Ws>>>,
+        /// One I/O thread owns the socket; callers wait for their write to flush.
+        outgoing: Option<Box<SocketSender>>,
         reader: Option<JoinHandle<()>>,
         reader_stop: Arc<AtomicBool>,
         /// §8.7 round rendezvous, shared with the reader thread.
@@ -531,7 +523,7 @@ mod native {
                     Some(notify) => InboundBuffer::with_notify(notify),
                     None => InboundBuffer::default(),
                 }),
-                socket: None,
+                outgoing: None,
                 reader: None,
                 reader_stop: Arc::new(AtomicBool::new(false)),
                 round: Arc::new(RoundChannel::default()),
@@ -596,16 +588,44 @@ mod native {
                 "sync.transport_failed",
                 "realtime disconnected mid-round (§8.7)",
             ));
-            if let Some(socket) = &self.socket {
-                if let Ok(mut ws) = socket.lock() {
-                    let _ = ws.close(None);
-                    let _ = ws.flush();
-                }
+            if let Some(outgoing) = &self.outgoing {
+                let _ = outgoing.poller.notify();
             }
             if let Some(handle) = self.reader.take() {
                 let _ = handle.join();
             }
-            self.socket = None;
+            self.outgoing = None;
+        }
+
+        fn send_message(&mut self, message: Message) -> Result<(), TransportError> {
+            let result = (|| {
+                let Some(outgoing) = &self.outgoing else {
+                    return Err(TransportError::new(
+                        "transport.failed",
+                        "realtime not connected",
+                    ));
+                };
+                let (completed, result) = mpsc::channel();
+                outgoing
+                    .queue
+                    .try_send(Outgoing { message, completed })
+                    .map_err(|_| {
+                        TransportError::new("transport.failed", "realtime send queue unavailable")
+                    })?;
+                outgoing
+                    .poller
+                    .notify()
+                    .map_err(|e| http_err("ws wake", e))?;
+                result.recv_timeout(ROUND_TIMEOUT).map_err(|_| {
+                    TransportError::new("transport.failed", "realtime send did not complete")
+                })?
+            })();
+            // A failed/timed-out write must not remain eligible for delivery
+            // behind a later command on the same connection.
+            if result.is_err() {
+                self.shutdown();
+            }
+            result
         }
     }
 
@@ -635,24 +655,12 @@ mod native {
             // `realtime_connected`, and connect established the socket; a
             // missing socket here means the round rides HTTP instead (same
             // rule as the TS client: `POST /sync` when the socket is absent).
-            let Some(socket) = self.socket.clone() else {
+            if self.outgoing.is_none() {
                 return self.post_sync("/sync", request);
-            };
+            }
             let framed = self.round.begin(request)?;
-            // Send the whole request as one `0x01` chunk (boundaries are
-            // arbitrary, §8.7; the request is bounded — bulk rides segments).
-            let send = {
-                let mut ws = socket
-                    .lock()
-                    .map_err(|_| TransportError::new("transport.failed", "ws lock poisoned"))?;
-                ws.send(Message::Binary(framed.into()))
-                    .map_err(|e| http_err("ws round send", &e))
-                    .and_then(|()| ws.flush().map_err(|e| http_err("ws round flush", &e)))
-            };
-            if let Err(e) = send {
-                // Fail the started round so `wait` returns the send error, not
-                // a timeout.
-                self.round.fail_in_flight(e);
+            if let Err(error) = self.send_message(Message::Binary(framed.into())) {
+                self.round.fail_in_flight(error);
             }
             self.round.wait()
         }
@@ -805,7 +813,7 @@ mod native {
         }
 
         fn realtime_connect(&mut self) -> Result<(), TransportError> {
-            if self.socket.is_some() {
+            if self.outgoing.is_some() {
                 return Ok(());
             }
             // Build the client request VIA `IntoClientRequest` so tungstenite
@@ -844,79 +852,128 @@ mod native {
             }
             let (mut ws, _resp) = tungstenite::connect(request)
                 .map_err(|e| TransportError::new("transport.failed", format!("ws connect: {e}")))?;
-            // Bound how long the reader holds the socket lock across `ws.read()`
-            // so `realtime_sync` / ack sends can interleave promptly (§8.7 sends
-            // and reads share one socket).
-            set_read_timeout(&mut ws, Some(READ_TIMEOUT));
-            let socket = Arc::new(Mutex::new(ws));
-            self.socket = Some(Arc::clone(&socket));
-            // Reader thread: demux inbound binary frames by §8.7 channel tag —
-            // `0x01` round chunks feed the in-flight round (reassembled to END,
-            // handed back to the blocked `realtime_sync`); `0x00` deltas + text
-            // control frames go to the inbound buffer the command path drains.
+            let stream = match ws.get_mut() {
+                MaybeTlsStream::Plain(stream) => stream.try_clone(),
+                MaybeTlsStream::Rustls(stream) => stream.get_ref().try_clone(),
+                _ => {
+                    return Err(TransportError::new(
+                        "transport.failed",
+                        "unsupported websocket stream",
+                    ))
+                }
+            }
+            .map_err(|e| http_err("ws clone", e))?;
+            stream
+                .set_nonblocking(true)
+                .map_err(|e| http_err("ws nonblocking", e))?;
+            let poller = Arc::new(Poller::new().map_err(|e| http_err("ws poller", e))?);
+            // SAFETY: SocketRegistration owns this handle and unregisters it before drop.
+            unsafe { poller.add(&stream, Event::readable(0)) }
+                .map_err(|e| http_err("ws register", e))?;
+            let registration = SocketRegistration {
+                poller: Arc::clone(&poller),
+                stream,
+            };
+            let (outgoing, queued) = mpsc::sync_channel::<Outgoing>(1);
+            self.outgoing = Some(Box::new(SocketSender {
+                queue: outgoing,
+                poller,
+            }));
             self.reader_stop.store(false, Ordering::SeqCst);
             let inbound = Arc::clone(&self.inbound);
             let stop = Arc::clone(&self.reader_stop);
-            let reader_socket = Arc::clone(&socket);
             let round = Arc::clone(&self.round);
-            self.reader = Some(std::thread::spawn(move || loop {
-                if stop.load(Ordering::SeqCst) {
-                    break;
-                }
-                let msg = {
-                    let mut ws = match reader_socket.lock() {
-                        Ok(ws) => ws,
-                        Err(_) => break,
-                    };
-                    ws.read()
-                };
-                match msg {
-                    Ok(Message::Text(text)) => inbound.push(Inbound::Text(text.to_string())),
-                    Ok(Message::Binary(bytes)) => {
-                        // §8.7 tag demux: round chunk → round channel; delta →
-                        // inbound (stripped of its tag, a bare SSP2 response
-                        // the client applies exactly like a pull, §8.2).
-                        if let Some(delta) = round.route_binary(&bytes) {
-                            inbound.push(Inbound::Binary(delta));
-                        }
-                    }
-                    // A read timeout is not a disconnect — loop and retry so a
-                    // quiet socket stays open. The yield sleep runs OUTSIDE
-                    // the socket lock so pending sends can interleave (see
-                    // `READ_YIELD` — senders starve without it).
-                    Err(e) if is_would_block(&e) => {
-                        std::thread::sleep(READ_YIELD);
-                        continue;
-                    }
-                    Ok(Message::Close(_)) | Err(_) => {
-                        // The socket is gone: fail any in-flight round so a
-                        // blocked `realtime_sync` wakes (§8.7 mid-round drop).
-                        round.fail_in_flight(TransportError::new(
+            self.reader = Some(std::thread::spawn(move || {
+                let mut events = Events::new();
+                let mut pending: Option<mpsc::Sender<Result<(), TransportError>>> = None;
+                let failure = 'io: loop {
+                    if stop.load(Ordering::SeqCst) {
+                        let _ = ws.close(None);
+                        let _ = ws.flush();
+                        break TransportError::new(
                             "sync.transport_failed",
                             "realtime disconnected mid-round (§8.7)",
-                        ));
-                        break;
+                        );
                     }
-                    Ok(_) => {}
+                    if pending.is_none() {
+                        if let Ok(outgoing) = queued.try_recv() {
+                            pending = Some(outgoing.completed);
+                            // WouldBlock retains the frame in tungstenite's write buffer.
+                            if let Err(error) = ws.write(outgoing.message) {
+                                if !is_would_block(&error) {
+                                    break http_err("ws write", error);
+                                }
+                            }
+                        }
+                    }
+                    // Bound receive work so a continuously readable peer cannot starve sends.
+                    let mut drained = false;
+                    for _ in 0..64 {
+                        match ws.read() {
+                            Ok(Message::Text(text)) => {
+                                inbound.push(Inbound::Text(text.to_string()))
+                            }
+                            Ok(Message::Binary(bytes)) => {
+                                if let Some(delta) = round.route_binary(&bytes) {
+                                    inbound.push(Inbound::Binary(delta));
+                                }
+                            }
+                            Err(error) if is_would_block(&error) => {
+                                drained = true;
+                                break;
+                            }
+                            Ok(Message::Close(_)) => {
+                                let _ = ws.flush();
+                                break 'io TransportError::new(
+                                    "sync.transport_failed",
+                                    "realtime disconnected mid-round (§8.7)",
+                                );
+                            }
+                            Err(_) => {
+                                break 'io TransportError::new(
+                                    "sync.transport_failed",
+                                    "realtime disconnected mid-round (§8.7)",
+                                );
+                            }
+                            Ok(_) => {}
+                        }
+                    }
+                    let interest = match ws.flush() {
+                        Ok(()) => {
+                            if let Some(completed) = pending.take() {
+                                let _ = completed.send(Ok(()));
+                            }
+                            Event::readable(0)
+                        }
+                        Err(error) if is_would_block(&error) => Event::all(0),
+                        Err(error) => break http_err("ws flush", error),
+                    };
+                    if !drained {
+                        continue;
+                    }
+                    if let Err(error) = registration.poller.modify(&registration.stream, interest) {
+                        break http_err("ws rearm", error);
+                    }
+                    events.clear();
+                    if let Err(error) = registration.poller.wait(&mut events, None) {
+                        if error.kind() != std::io::ErrorKind::Interrupted {
+                            break http_err("ws wait", error);
+                        }
+                    }
+                };
+                if let Some(completed) = pending {
+                    let _ = completed.send(Err(failure.clone()));
                 }
+                while let Ok(outgoing) = queued.try_recv() {
+                    let _ = outgoing.completed.send(Err(failure.clone()));
+                }
+                round.fail_in_flight(failure);
             }));
             Ok(())
         }
 
         fn realtime_send(&mut self, text: &str) -> Result<(), TransportError> {
-            let Some(socket) = &self.socket else {
-                return Err(TransportError::new(
-                    "transport.failed",
-                    "realtime not connected",
-                ));
-            };
-            let mut ws = socket
-                .lock()
-                .map_err(|_| TransportError::new("transport.failed", "ws lock poisoned"))?;
-            ws.send(Message::Text(text.to_owned().into()))
-                .map_err(|e| http_err("ws send", e))?;
-            ws.flush().map_err(|e| http_err("ws flush", e))?;
-            Ok(())
+            self.send_message(Message::Text(text.to_owned().into()))
         }
 
         fn realtime_close(&mut self) -> Result<(), TransportError> {

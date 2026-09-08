@@ -418,38 +418,67 @@ describe('delta delivery (§8.2)', () => {
     expect(wire.binaries).toHaveLength(1);
   });
 
-  test('an ACK racing a subscription replacement updates only the cursor and timestamp', async () => {
+  test('acknowledgements persist the delivered cursor', async () => {
+    const t = makeContext();
+    const hub = makeHub(t);
+    const { wire, session } = await connectedSession(t, hub);
+    await sync(t, [
+      pushCommit('c1', [upsert('tasks', 't1', taskRow('t1', 'p1'))]),
+    ]);
+    expect(wire.binaries).toHaveLength(1);
+    const latest = await t.storage.getMaxCommitSeq('part-1');
+    const advance = t.storage.advanceClientCursor.bind(t.storage);
+    const pending: Promise<void>[] = [];
+    t.storage.advanceClientCursor = (...args) => {
+      const task = advance(...args);
+      pending.push(task);
+      return task;
+    };
+    session.handleMessage(JSON.stringify({ type: 'ack', cursor: latest }));
+    expect(pending).toHaveLength(1);
+    await Promise.all(pending);
+    expect(
+      (await t.storage.getClientRecord('part-1', 'client-1'))?.cursor,
+    ).toBe(latest);
+  });
+
+  test('delayed acknowledgements preserve newer subscription registration', async () => {
     const t = makeContext();
     const hub = makeHub(t);
     const { session } = await connectedSession(t, hub);
-    const original = await t.storage.getClientRecord('part-1', 'client-1');
-    if (original === undefined) throw new Error('missing client');
-    const update = t.storage.updateClientCursor.bind(t.storage);
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    let persisted!: Promise<void>;
-    t.storage.updateClientCursor = (...args) => {
-      persisted = gate.then(() => update(...args));
-      return persisted;
+    const advance = t.storage.advanceClientCursor.bind(t.storage);
+    const gate = Promise.withResolvers<void>();
+    const pending: Promise<void>[] = [];
+    t.storage.advanceClientCursor = (...args) => {
+      const task = gate.promise.then(() => advance(...args));
+      pending.push(task);
+      return task;
     };
-    session.handleMessage(JSON.stringify({ type: 'ack', cursor: 10 }));
-    const replacement = {
-      ...original,
-      cursor: 4,
-      subscriptions: [
-        { id: 'new', table: 'tasks', scopes: { project_id: ['p2'] } },
-      ],
-    };
-    await t.storage.putClientRecord('part-1', replacement);
-    release();
-    await persisted;
-    expect(await t.storage.getClientRecord('part-1', 'client-1')).toEqual({
-      ...replacement,
-      cursor: 10,
-      updatedAtMs: t.now.ms,
-    });
+    try {
+      session.handleMessage(JSON.stringify({ type: 'ack', cursor: 42 }));
+      expect(pending).toHaveLength(1);
+      const record = await t.storage.getClientRecord('part-1', 'client-1');
+      if (!record) throw new Error('expected registered client');
+      const updated = {
+        ...record,
+        cursor: 4,
+        wireVersion: 2,
+        subscriptions: [
+          { id: 'new-sub', table: 'tasks', scopes: { project_id: ['p2'] } },
+        ],
+      };
+      await t.storage.putClientRecord('part-1', updated);
+      gate.resolve();
+      await Promise.all(pending);
+      expect(await t.storage.getClientRecord('part-1', 'client-1')).toEqual({
+        ...updated,
+        cursor: 42,
+      });
+    } finally {
+      gate.resolve();
+      await Promise.all(pending);
+      session.close();
+    }
   });
 
   test('closed sessions receive nothing', async () => {

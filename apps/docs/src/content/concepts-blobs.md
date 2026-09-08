@@ -62,6 +62,12 @@ scope is revoked, the now-unauthorized blob bodies are purged along with their
 rows. Window eviction treats cached bodies differently; see
 [Windowed sync](/concepts-windowing/).
 
+A fresh download refreshes its reference count before cache trimming. Synced
+rows and unsent optimistic rows protect their referenced bodies. If those bodies
+exceed the configured cache cap, the client retains them and subsequent reads
+remain cache hits. Revocation updates the visible rows before removing orphaned
+bodies.
+
 ## Storage backends
 
 Blobs share the same store abstractions as segments: `MemoryBlobStore` for

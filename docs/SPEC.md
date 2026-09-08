@@ -377,6 +377,9 @@ a streaming reader needs:
 4. **Apply transaction**: one local write transaction per `COMMIT` frame,
    and one per rows-segment *block* (§5.2). Durable client state (cursor,
    bootstrap resume token) is persisted only when `SUB_END` is processed.
+   A client MUST finish each frame or block transaction before starting the
+   next; an outer subscription transaction MUST NOT defer those commits.
+   Each observer-visible frame or block publishes its own revision (§7.5).
 5. **Abort rule**: on a decode error, an in-band `ERROR` frame, or a
    truncated stream, the reader MUST abort the currently open
    subscription: roll back the *current in-progress* local transaction
@@ -3310,6 +3313,40 @@ without durable evidence explaining whether it was `applied`, `cached`,
 `conflict`, or `rejected`. The retryable `sync.idempotency_cache_miss` serving
 failure is not final and creates no journal entry.
 
+If local final-outcome persistence fails, including the transaction's commit,
+the client MUST abort response processing with the host-local error
+`client.outcome_persistence_failed`. The failed transaction preserves its
+outbox entry, optimistic state, outcome collections, and revision. It emits no
+change batch or conflict callback. Earlier completed transactions remain
+durable. A later sync retries the original commit ID and handles the server's
+idempotent answer. The error does not travel on SSP2 and does not authorize
+dropping the pending commit. Conflict callbacks run after local commit; a
+callback exception cannot undo the persisted outcome or restore its outbox entry.
+
+**Successful acknowledgement transaction.** A client MUST process each maximal
+consecutive run of `PUSH_RESULT` frames with status `applied` or `cached` in one
+local transaction. Each rejected result, including a retryable serving failure,
+forms a separate transaction boundary. Every other frame ends the run; companion
+`PUSH_RESULT_DETAILS` metadata remains pre-indexed under §6.3.1. Runs never span
+responses. Unknown, unsent, already-drained, or locally purged commit IDs have no
+outcome effect; duplicate results cannot drain a commit twice.
+
+The run preserves wire order and individual journal entries. Its journal writes,
+outbox removals, retention changes, and one §7.5 revision commit together. A run
+which drains at least one commit emits one change batch with the final outbox
+status and the union of changed domains. A run with no observer-visible change
+emits no batch and consumes no revision. Hosts forward that batch without
+manufacturing intermediate per-commit progress events. Rejection rollback and
+conflict callbacks retain their separate durability boundary.
+
+A failed run restores every affected pending commit and emits no acknowledgement
+batch. A crash before local commit retries every original ID in the run; a crash
+after commit recovers all its durable outcomes. A later response error preserves
+completed runs. Clients MUST NOT include a server row `COMMIT`, subscription
+section, lease, purge, reset, or network wait in this transaction. Server commit
+atomicity, authorization, partition locks, and realtime notifications remain
+per server commit as specified in §6.4.
+
 Each journal entry contains the `clientCommitId`, local recording time,
 newest-first local sequence, final status, and every operation result. A
 conflict retains its stable code and message, `serverVersion`, decoded
@@ -3951,7 +3988,12 @@ per §8.7, or `POST /sync`) before trusting the socket for continuity.
   not `event` — §8.1).
   The server uses acks to trim its per-connection replay buffer (if it
   keeps one) and to update the client cursor record (§4.5) without an
-  HTTP pull.
+  HTTP pull. The storage update MUST atomically advance the cursor and
+  activity timestamp with their respective maxima, preserve registration
+  fields (actor, wire version, subscriptions), and require the session's
+  actor and current partition log epoch. It MUST NOT create a missing client
+  record. A delayed ack from before an epoch rotation cannot update a newly
+  registered client. HTTP registration retains its existing cursor rules.
 - **Client-side application.** A delta applies exactly like a pull
   response (§4.5), per section: only subscriptions that are locally
   `active` and not mid-bootstrap (no resume token pending, §4.7) apply;

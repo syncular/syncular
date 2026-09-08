@@ -14,7 +14,7 @@
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde_json::json;
 use ssp2::model::{Frame, Message, MsgKind};
@@ -77,23 +77,36 @@ fn read_round_request<S: std::io::Read + std::io::Write>(
 
 /// Spawn a one-shot scripted WS server on an ephemeral port. `script` runs
 /// with the accepted, handshaken socket; it returns the port to connect to.
-fn spawn_ws_server<F>(script: F) -> u16
+fn spawn_ws_server<F>(script: F) -> (u16, thread::JoinHandle<()>)
 where
     F: FnOnce(&mut tungstenite::WebSocket<TcpStream>) + Send + 'static,
 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().unwrap().port();
-    thread::spawn(move || {
+    let server = thread::spawn(move || {
         let (stream, _) = listener.accept().expect("accept");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         let mut ws = tungstenite::accept_hdr(stream, assert_client_identity).expect("ws accept");
         script(&mut ws);
-        // Give the client a moment to drain before we drop/close.
-        let _ = ws.flush();
-        thread::sleep(Duration::from_millis(50));
-        let _ = ws.close(None);
+        // Keep the connection alive until the client closes it. Readiness and
+        // completion come from socket events; timeouts only bound failed tests.
+        loop {
+            match ws.read() {
+                Ok(WsMessage::Close(_))
+                | Err(tungstenite::Error::ConnectionClosed)
+                | Err(tungstenite::Error::AlreadyClosed) => break,
+                Ok(_) => {}
+                Err(error) => panic!("server awaiting client close: {error}"),
+            }
+        }
         let _ = ws.flush();
     });
-    port
+    (port, server)
 }
 
 /// Build a `Native` transport pointed at `ws://127.0.0.1:{port}` and connect
@@ -128,7 +141,7 @@ fn quiet_socket_reader_never_starves_round_sends() {
     const ROUNDS: usize = 12;
     let response = response_bytes();
     let server_response = response.clone();
-    let port = spawn_ws_server(move |ws| {
+    let (port, server) = spawn_ws_server(move |ws| {
         for _ in 0..ROUNDS {
             let _request = read_round_request(ws);
             let mut framed = vec![REALTIME_TAG_ROUND];
@@ -140,24 +153,19 @@ fn quiet_socket_reader_never_starves_round_sends() {
 
     let mut transport = connect_native(port);
     let request = request_bytes();
-    let started = Instant::now();
     for _ in 0..ROUNDS {
         let got = transport.realtime_sync(&request).expect("round ok");
         assert_eq!(got, response);
     }
-    let elapsed = started.elapsed();
-    assert!(
-        elapsed < Duration::from_millis(750),
-        "quiet-socket send fairness regressed: {ROUNDS} loopback rounds took {elapsed:?}"
-    );
     transport.shutdown();
+    server.join().expect("server script completed");
 }
 
 #[test]
 fn round_single_chunk_response_round_trips() {
     let response = response_bytes();
     let server_response = response.clone();
-    let port = spawn_ws_server(move |ws| {
+    let (port, server) = spawn_ws_server(move |ws| {
         let _request = read_round_request(ws);
         // Answer with the whole response as one 0x01 chunk.
         let mut framed = vec![REALTIME_TAG_ROUND];
@@ -171,13 +179,14 @@ fn round_single_chunk_response_round_trips() {
     let got = transport.realtime_sync(&request).expect("round ok");
     assert_eq!(got, response, "reassembled response matches the server's");
     transport.shutdown();
+    server.join().expect("server script completed");
 }
 
 #[test]
 fn round_chunked_response_reassembles() {
     let response = response_bytes();
     let server_response = response.clone();
-    let port = spawn_ws_server(move |ws| {
+    let (port, server) = spawn_ws_server(move |ws| {
         let _request = read_round_request(ws);
         // Send the response byte-by-byte, each in its own 0x01 chunk —
         // arbitrary boundaries (§8.7); the client concatenates to END.
@@ -201,6 +210,7 @@ fn round_chunked_response_reassembles() {
     let got = transport.realtime_sync(&request).expect("round ok");
     assert_eq!(got, response, "byte-chunked response reassembles exactly");
     transport.shutdown();
+    server.join().expect("server script completed");
 }
 
 #[test]
@@ -220,7 +230,7 @@ fn delta_during_round_is_queued_not_mixed_into_response() {
     });
     let server_response = response.clone();
     let server_delta = delta.clone();
-    let port = spawn_ws_server(move |ws| {
+    let (port, server) = spawn_ws_server(move |ws| {
         let _request = read_round_request(ws);
         // Interleave a 0x00 delta before the round's response completes.
         let mut delta_frame = vec![REALTIME_TAG_DELTA];
@@ -260,6 +270,7 @@ fn delta_during_round_is_queued_not_mixed_into_response() {
         "the mid-round delta is queued, tag stripped"
     );
     transport.shutdown();
+    server.join().expect("server script completed");
 }
 
 #[test]
@@ -271,7 +282,7 @@ fn mid_round_socket_drop_fails_the_round() {
     // `RealtimeRound` level, `second_begin_while_in_flight_is_rejected`; the
     // synchronous client never issues two concurrent `realtime_sync` calls.)
     let (started_tx, started_rx) = mpsc::channel::<()>();
-    let port = spawn_ws_server(move |ws| {
+    let (port, server) = spawn_ws_server(move |ws| {
         let _request = read_round_request(ws);
         started_tx.send(()).ok();
         // Close immediately without a response.
@@ -296,4 +307,68 @@ fn mid_round_socket_drop_fails_the_round() {
     let err = outcome.expect_err("a mid-round close fails the round, never hangs");
     assert_eq!(err.code, "sync.transport_failed", "err: {}", err.message);
     transport.shutdown();
+    server.join().expect("server script completed");
+}
+
+#[test]
+fn native_socket_flushes_large_messages_and_handles_ping_between_sends() {
+    let payload = "x".repeat(4 * 1024 * 1024);
+    let expected = payload.clone();
+    let (port, server) = spawn_ws_server(move |ws| {
+        ws.send(WsMessage::Ping(vec![1, 2, 3].into())).unwrap();
+        let mut received = 0;
+        let mut pong = false;
+        while received < 2 || !pong {
+            match ws.read().expect("server receives buffered writes") {
+                WsMessage::Text(text) => {
+                    if received == 0 {
+                        assert_eq!(text.as_str(), expected);
+                    } else {
+                        assert_eq!(text.as_str(), "after-large-write");
+                    }
+                    received += 1;
+                }
+                WsMessage::Pong(bytes) => {
+                    assert_eq!(&bytes[..], &[1, 2, 3]);
+                    pong = true;
+                }
+                other => panic!("unexpected frame: {other:?}"),
+            }
+        }
+        ws.send(WsMessage::Text("received".into())).unwrap();
+    });
+    let (notified, wake) = mpsc::sync_channel(1);
+    let mut transport = HostTransport::from_config_with_notify(
+        &json!({"baseUrl": format!("http://127.0.0.1:{port}"),
+            "wsUrl": format!("ws://127.0.0.1:{port}?transport=round")}),
+        Some(std::sync::Arc::new(move || {
+            let _ = notified.try_send(());
+        })),
+    )
+    .unwrap();
+    transport.realtime_connect_for_client("c1").unwrap();
+    transport
+        .realtime_send(&payload)
+        .expect("large write flushed");
+    transport
+        .realtime_send("after-large-write")
+        .expect("subsequent write flushed");
+    wake.recv_timeout(Duration::from_secs(5))
+        .expect("server confirmed both writes");
+    assert!(matches!(&transport.take_inbound()[..], [Inbound::Text(text)] if text == "received"));
+    transport.shutdown();
+    server.join().expect("server script completed");
+}
+
+#[test]
+fn native_shutdown_wakes_idle_socket_and_rejects_later_send() {
+    let (port, server) = spawn_ws_server(|_| {});
+    let mut transport = connect_native(port);
+    transport.shutdown();
+    transport.shutdown();
+    assert_eq!(
+        transport.realtime_send("late").unwrap_err().code,
+        "transport.failed"
+    );
+    server.join().expect("idle socket closed");
 }

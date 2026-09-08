@@ -73,6 +73,105 @@ jobs:
       - name: Bench budgets (CI mode)
         run: bun run bench:ci
 
+      - name: Retain diagnostic attempts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-performance-attempts
+          path: bench/results/*.json
+          if-no-files-found: ignore
+
+  # Real database correctness and diagnostic timing; host-speed budgets await
+  # calibration. Each matrix job owns its Postgres service and artifact.
+  postgres-performance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        core: [ts, rust]
+    services:
+      postgres:
+        image: postgres@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2 # 18.6 alpine
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: syncular_bench
+        ports:
+          - 5432/tcp
+        options: >-
+          --health-cmd "pg_isready -U postgres -d syncular_bench"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.4.0'
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable branch
+        if: matrix.core == 'rust'
+        with:
+          toolchain: '1.96.0'
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        if: matrix.core == 'rust'
+        with:
+          workspaces: rust -> target
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Real Postgres storage and fanout contracts
+        if: matrix.core == 'ts'
+        env:
+          SYNCULAR_PG_URL: postgres://postgres@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/syncular_bench
+        run: bun test packages/server/test/postgres-fanout.integration.test.ts
+      - name: Full-client Postgres replay
+        env:
+          SYNCULAR_PG_URL: postgres://postgres@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/syncular_bench
+        run: >-
+          bun run bench --workload replay --core ${{ matrix.core }}
+          --lane socket --backend postgres --storage file --rows 2000
+          --sizes 1000 --trials 5
+          --output bench/results/postgres-${{ matrix.core }}.json
+      - name: Full-client Postgres reconnect
+        env:
+          SYNCULAR_PG_URL: postgres://postgres@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/syncular_bench
+        run: >-
+          bun run bench --workload reconnect --core ${{ matrix.core }}
+          --lane socket --backend postgres --storage file --rows 2000
+          --sizes 25 --trials 5
+          --output bench/results/postgres-reconnect-${{ matrix.core }}.json
+      - name: Postgres mixed-commit rejection
+        env:
+          SYNCULAR_PG_URL: postgres://postgres@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/syncular_bench
+        run: >-
+          bun run bench --workload commit-boundaries --core ${{ matrix.core }}
+          --lane socket --backend postgres --storage file --rows 2000
+          --sizes 499,500 --reject-middle --trials 1
+          --output bench/results/postgres-boundaries-${{ matrix.core }}.json
+      - name: Postgres permission purge and persistent reopen
+        env:
+          SYNCULAR_PG_URL: postgres://postgres@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/syncular_bench
+        run: >-
+          bun run bench --workload purge --core ${{ matrix.core }}
+          --lane socket --backend postgres --storage file --sizes 2000
+          --trials 5 --output bench/results/postgres-purge-${{ matrix.core }}.json
+      - name: Postgres C ABI blob lifecycle
+        if: matrix.core == 'rust'
+        env:
+          SYNCULAR_PG_URL: postgres://postgres@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/syncular_bench
+        run: >-
+          bun run bench --workload blobs --core rust --boundary ffi
+          --lane socket --backend postgres --storage file --sizes 2097152
+          --trials 5 --output bench/results/postgres-ffi-blobs.json
+      - name: Retain diagnostic attempts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgres-performance-${{ matrix.core }}
+          path: bench/results/*.json
+          if-no-files-found: warn
+
   # The Rust pairing as a merge precondition (migration gate Risks: two-core
   # drift): cargo hygiene + tests, then the SAME conformance catalog on
   # (Rust client x TS server). Plain `bun run check` stays hermetic —
@@ -120,9 +219,15 @@ jobs:
         working-directory: rust
         run: cargo test -p syncular-ffi --features native-transport round_tests
 
-      - name: Build conformance shim
+      - name: Build conformance shim and benchmark driver
         working-directory: rust
-        run: cargo build -p conformance-shim
+        run: cargo build -p conformance-shim -p syncular-bench
+
+      - name: Native blob, read, and observation contracts
+        run: SYNCULAR_NATIVE_BENCH="$PWD/rust/target/debug/syncular-bench" bun test bench/src/blob-lane.test.ts bench/src/read-lane.test.ts bench/src/observation-lane.test.ts
+
+      - name: Native in-process engine contracts
+        run: SYNCULAR_ENGINE_BENCH="$PWD/rust/target/debug/libsyncular_bench.so" bun test bench/src/engine-driver.test.ts
 
       - name: Conformance (Rust client x TS server)
         run: SYNCULAR_RUST_CONFORMANCE=1 bun test packages/conformance/test/conformance-rust.test.ts

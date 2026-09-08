@@ -36,6 +36,16 @@ export class BunClientDatabase implements ClientDatabase {
 
   constructor(path = ':memory:') {
     this.db = new Database(path);
+    // Match native Rust persistence: append durable commits to the WAL
+    // instead of creating and syncing a rollback journal per transaction.
+    // SQLite retains its in-memory journal for :memory: databases.
+    try {
+      this.db.run('PRAGMA journal_mode = WAL');
+      this.db.run('PRAGMA synchronous = FULL');
+    } catch (error) {
+      this.db.close();
+      throw error;
+    }
   }
 
   exec(sql: string, params: readonly SqlValue[] = []): void {

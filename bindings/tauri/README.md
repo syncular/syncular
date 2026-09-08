@@ -205,3 +205,11 @@ example build). CI runs it as the `tauri-bindings` job, gated on
   invoke/listen doubles) assert the `SyncClientLike` contract, event fanout, and
   the bytes convention, plus a shape-parity test against the real React
   `SyncClientLike` contract.
+
+## Diagnostic event comparison
+
+After a diagnostic consumer registers, the native owner compares typed
+snapshots with capture time excluded from equality. It serializes the event
+only when evidence changes. Fresh storage and client observations remain part
+of each diagnostic refresh. Changed events retain the current capture time;
+security preflight continues to suppress protected diagnostic evidence.

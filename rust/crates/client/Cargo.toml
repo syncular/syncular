@@ -13,6 +13,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }
+libc = { version = "0.2", optional = true }
 
 # §5.10.5 native CRDT: the Rust Yjs port. Feature-gated so the
 # dependency-lean core (and the conformance/codec builds that never touch a
@@ -47,8 +48,15 @@ features = ["rustls-tls-webpki-roots"]
 version = "2"
 optional = true
 
+[dependencies.polling]
+version = "3"
+optional = true
+
 [features]
 default = []
+# Internal repository measurements only. Exposes the owned connection to the
+# private benchmark driver so raw and public reads share the same SQLite state.
+bench-internals = ["dep:libc"]
 crdt-yjs = ["dep:yrs"]
 e2ee = ["ssp2/e2ee", "dep:rand_core"]
-native-transport = ["dep:ureq", "dep:tungstenite", "dep:url"]
+native-transport = ["dep:ureq", "dep:tungstenite", "dep:url", "dep:polling"]

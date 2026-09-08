@@ -12,6 +12,8 @@
 //! (§8.4); the core exposes the coalesced `sync_needed` signal only.
 
 pub mod api;
+#[cfg(feature = "bench-internals")]
+mod bench;
 pub mod client;
 /// §5.10.5 native CRDT helpers (the `crdt-yjs` feature) — the Rust face of the
 /// Yjs binding, mirroring `@syncular/crdt-yjs`. Off by default (dependency-lean).

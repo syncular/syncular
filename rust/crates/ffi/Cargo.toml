@@ -27,6 +27,7 @@ tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 
 [features]
 default = []
+bench-internals = ["syncular-client/bench-internals"]
 native-transport = ["syncular-client/native-transport"]
 # §5.10.5 native CRDT commands. Off by default (lean-core builds skip yrs);
 # examples/demos that show collaborative text turn it on. Forwards to the

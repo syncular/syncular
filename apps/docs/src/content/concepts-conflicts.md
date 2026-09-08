@@ -111,3 +111,30 @@ validators, and the `changedFields` recorded by `patch`. The end-to-end
 repair flow (server validators, atomic aggregate validation, the outcome
 journal, restart, and acknowledgement) is
 [Concurrency and conflict correction](/guide-concurrency-correction/).
+
+## Local outcome persistence failures
+
+The client records a final outcome and removes its outbox entry in one local
+transaction. If the journal write, revision write, or transaction commit fails,
+sync reports `client.outcome_persistence_failed`. The pending commit retains its
+original ID and optimistic state. Conflicts and rejections from the failed
+transaction remain absent from local collections and change events. Earlier
+completed acknowledgements remain durable.
+
+Restore the local store's ability to commit, then run sync again. The server's
+idempotency record lets the original commit retry without applying its writes
+twice. TypeScript's `onConflict` callback runs after the outcome commits. An
+exception in that callback leaves the outcome durable and the outbox drained.
+
+## Successful acknowledgement batches
+
+Consecutive applied or cached acknowledgements commit in one local transaction.
+Each commit keeps its own outcome journal entry. The client publishes one change
+batch with the final outbox count after the transaction commits. Progress
+observers therefore receive one update for a successful run. A rejected result
+ends that run and keeps its own rollback and conflict-publication boundary.
+Other frames also end the run, and a run never crosses a response boundary.
+
+If a local write or commit fails, every acknowledgement in that run rolls back.
+A later response error preserves earlier completed runs. Server transactions
+and their realtime notifications still execute per commit.

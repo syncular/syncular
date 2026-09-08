@@ -38,6 +38,8 @@ use crate::api::{
     WindowBase, WindowChange, WindowCoverage, WindowState, WindowUnitRef,
     CLIENT_DIAGNOSTICS_VERSION, MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
 };
+#[cfg(feature = "bench-internals")]
+use crate::bench::{Phase, Recorder};
 use crate::schema::{parse_schema_json, ClientSchema, FtsIndexSchema, TableSchema};
 use crate::transport::{BlobDownload, BlobUploadGrant, SegmentRequest, Transport, TransportError};
 use crate::values::{
@@ -161,6 +163,410 @@ mod observation_tests {
     }
 
     #[test]
+    fn incoming_frame_transactions_preserve_prefix_cursor_and_revision_after_reopen() {
+        let schema = json!({"version":1,"tables":[{"name":"tasks","primaryKey":"id","columns":[
+            {"name":"id","type":"string","nullable":false},{"name":"project_id","type":"string","nullable":false}],
+            "scopes":[{"pattern":"project:{project_id}"}]}]});
+        for realtime in [false, true] {
+            for fault in [
+                "none",
+                "row",
+                "revision",
+                "commit",
+                "cursor",
+                "error",
+                "missing-end",
+            ] {
+                if realtime && fault == "missing-end" {
+                    continue;
+                }
+                let path = std::env::temp_dir()
+                    .join(format!("syncular-frame-{}.sqlite", uuid::Uuid::new_v4()));
+                let mut client = SyncClient::open_path(
+                    "frame-test".into(),
+                    &schema,
+                    Default::default(),
+                    path.to_str().unwrap(),
+                )
+                .unwrap();
+                client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+                client
+                    .subscribe(
+                        "tasks".into(),
+                        "tasks".into(),
+                        vec![("project_id".into(), vec!["p1".into()])],
+                        None,
+                    )
+                    .unwrap();
+                client.subs[0].cursor = 0;
+                client.subs[0].synced_once = true;
+                client.subs[0].effective = Some(vec![("project_id".into(), vec!["p1".into()])]);
+                client.persist_sub(&client.subs[0]).unwrap();
+                client.realtime_connected = true;
+                client.drain_change_batches();
+                let mut transport = CountingRealtimeTransport::default();
+                let (_, meta) = client.build_request(false);
+                let mut response = Message {
+                    wire_version: WIRE_VERSION,
+                    msg_kind: MsgKind::Response,
+                    frames: vec![
+                        Frame::RespHeader {
+                            required_schema_version: None,
+                            latest_schema_version: None,
+                            log_epoch: Some("epoch-1".into()),
+                            reset_required: Some(false),
+                        },
+                        Frame::SubStart {
+                            id: "tasks".into(),
+                            status: SubStatus::Active,
+                            reason_code: "".into(),
+                            effective_scopes: vec![("project_id".into(), vec!["p1".into()])],
+                            bootstrap: false,
+                        },
+                    ],
+                };
+                for (index, id) in ["first", "second"].iter().enumerate() {
+                    let values = Map::from_iter([
+                        ("id".into(), Value::from(*id)),
+                        ("project_id".into(), Value::from("p1")),
+                    ]);
+                    response.frames.push(Frame::Commit {
+                        commit_seq: index as i64 + 1,
+                        actor_id: "writer".into(),
+                        created_at_ms: 1,
+                        tables: vec!["tasks".into()],
+                        changes: vec![ssp2::model::Change {
+                            table_index: 0,
+                            row_id: (*id).into(),
+                            op: Op::Upsert,
+                            row_version: Some(index as i64 + 1),
+                            scopes: vec![("project_id".into(), "p1".into())],
+                            row: Some(
+                                encode_row_json(
+                                    client.schema.table("tasks").unwrap(),
+                                    id,
+                                    &values,
+                                    &client.encryption,
+                                )
+                                .unwrap(),
+                            ),
+                        }],
+                    });
+                }
+                response.frames.push(Frame::SubEnd {
+                    next_cursor: 2,
+                    bootstrap_state: None,
+                });
+                let valid = response.clone();
+                match fault {
+                    "row" => {
+                        let Frame::Commit {changes, ..} = &mut response.frames[3] else {panic!("second frame")};
+                        let mut malformed = changes[0].clone(); malformed.row_id = "malformed".into(); malformed.row = Some(vec![]); changes.push(malformed);
+                    },
+                    "revision" => client.conn.execute_batch("CREATE TRIGGER fail_frame BEFORE INSERT ON _syncular_meta WHEN NEW.key = 'localRevision' AND NEW.value = '2' AND EXISTS (SELECT 1 FROM _syncular_base_tasks WHERE id = 'second') BEGIN SELECT RAISE(FAIL, 'injected revision failure'); END").unwrap(),
+                    "commit" => client.conn.execute_batch("PRAGMA foreign_keys = ON; CREATE TABLE frame_parent(id INTEGER PRIMARY KEY); CREATE TABLE frame_child(id INTEGER REFERENCES frame_parent(id) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER fail_frame AFTER INSERT ON _syncular_base_tasks WHEN NEW.id = 'second' BEGIN INSERT INTO frame_child VALUES(1); END").unwrap(),
+                    "cursor" => client.conn.execute_batch("CREATE TRIGGER fail_frame BEFORE INSERT ON _syncular_subscriptions BEGIN SELECT RAISE(FAIL, 'injected cursor failure'); END").unwrap(),
+                    "error" => {response.frames.truncate(3);response.frames.push(Frame::Error {code:"sync.invalid_request".into(),message:"later error".into(),category:"protocol".into(),retryable:false,recommended_action:"retry".into(),details:None});},
+                    "missing-end" => {response.frames.truncate(3);},
+                    _ => {}
+                }
+                if realtime {
+                    client.on_realtime_binary(&mut transport, &encode_message(&response));
+                } else {
+                    assert_eq!(
+                        matches!(
+                            client.process_response(&mut transport, response, &meta),
+                            SyncOutcome::Ok(_)
+                        ),
+                        fault == "none",
+                        "{fault}"
+                    );
+                }
+                assert!(
+                    client.conn.is_autocommit(),
+                    "no open transaction after {realtime}/{fault}"
+                );
+                let count = if matches!(fault, "none" | "cursor") {
+                    2
+                } else {
+                    1
+                };
+                let expected_revision = count + u64::from(realtime && fault != "none");
+                assert_eq!(
+                    client.local_revision(),
+                    expected_revision,
+                    "{realtime}/{fault}"
+                );
+                let batches = client.drain_change_batches();
+                assert_eq!(
+                    batches.len(),
+                    expected_revision as usize,
+                    "{realtime}/{fault}"
+                );
+                let row_batches: Vec<_> = batches
+                    .iter()
+                    .filter(|batch| !batch.tables.is_empty())
+                    .collect();
+                assert_eq!(row_batches.len(), count as usize);
+                assert_eq!(
+                    row_batches
+                        .iter()
+                        .map(|b| b.revision.clone())
+                        .collect::<Vec<_>>(),
+                    (1..=count).map(|r| r.to_string()).collect::<Vec<_>>()
+                );
+                for table in ["tasks", "_syncular_base_tasks"] {
+                    assert_eq!(
+                        client
+                            .conn
+                            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row
+                                .get::<_, u64>(0))
+                            .unwrap(),
+                        count,
+                        "{realtime}/{fault}/{table}"
+                    );
+                }
+                assert_eq!(client.subs[0].cursor, if fault == "none" { 2 } else { 0 });
+                assert_eq!(
+                    transport
+                        .messages
+                        .iter()
+                        .filter(|m| m.contains("\"ack\""))
+                        .count(),
+                    usize::from(fault == "none")
+                );
+                if matches!(fault, "revision" | "commit" | "cursor") {
+                    client
+                        .conn
+                        .execute_batch("DROP TRIGGER fail_frame")
+                        .unwrap();
+                }
+                drop(client);
+                let mut reopened = SyncClient::open_path(
+                    "frame-test".into(),
+                    &schema,
+                    Default::default(),
+                    path.to_str().unwrap(),
+                )
+                .unwrap();
+                assert_eq!(reopened.local_revision(), expected_revision);
+                assert_eq!(
+                    reopened
+                        .query("SELECT id FROM tasks ORDER BY id", &[])
+                        .unwrap()
+                        .len(),
+                    count as usize
+                );
+                assert_eq!(reopened.subs[0].cursor, if fault == "none" { 2 } else { 0 });
+                let (_, meta) = reopened.build_request(false);
+                assert!(matches!(
+                    reopened.process_response(&mut transport, valid, &meta),
+                    SyncOutcome::Ok(_)
+                ));
+                assert_eq!(
+                    reopened
+                        .query("SELECT id FROM tasks ORDER BY id", &[])
+                        .unwrap()
+                        .len(),
+                    2
+                );
+                assert_eq!(reopened.subs[0].cursor, 2);
+                drop(reopened);
+                std::fs::remove_file(path).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn failed_subscription_control_persistence_rolls_back_rows_outbox_and_memory() {
+        for status in [SubStatus::Reset, SubStatus::Revoked] {
+            for fault in ["subscription", "revision"] {
+                let mut client = client();
+                client
+                    .subscribe(
+                        "tasks".into(),
+                        "tasks".into(),
+                        vec![("project_id".into(), vec!["p1".into()])],
+                        None,
+                    )
+                    .unwrap();
+                client.subs[0].cursor = 41;
+                client.subs[0].synced_once = true;
+                client.subs[0].effective = Some(vec![("project_id".into(), vec!["p1".into()])]);
+                client.persist_sub(&client.subs[0]).unwrap();
+                client
+                    .mutate(vec![Mutation::Upsert {
+                        table: "tasks".into(),
+                        values: Map::from_iter([
+                            ("id".into(), Value::from("pending")),
+                            ("project_id".into(), Value::from("p1")),
+                        ]),
+                        base_version: None,
+                    }])
+                    .unwrap();
+                let ids = client.pending_commit_ids();
+                let rows = client.query("SELECT * FROM tasks", &[]).unwrap();
+                let revision = client.local_revision();
+                client.drain_change_batches();
+                let (_, meta) = client.build_request(false);
+                client.conn.execute_batch(if fault == "subscription" {
+                    "CREATE TRIGGER fail_control BEFORE INSERT ON _syncular_subscriptions BEGIN SELECT RAISE(FAIL, 'injected subscription failure'); END"
+                } else {
+                    "CREATE TRIGGER fail_control BEFORE INSERT ON _syncular_meta WHEN NEW.key = 'localRevision' BEGIN SELECT RAISE(FAIL, 'injected revision failure'); END"
+                }).unwrap();
+                let mut transport = CountingRealtimeTransport::default();
+                let mut report = SyncReport::default();
+                // Reset changes window completeness and therefore needs a revision.
+                if status == SubStatus::Reset {
+                    client.conn.execute("INSERT INTO _syncular_windows(base,unit,sub_id) VALUES ('base','p1','tasks')", []).unwrap();
+                }
+                let result = client.process_section(
+                    &mut transport,
+                    "tasks",
+                    status,
+                    "sync.scope_revoked",
+                    vec![],
+                    vec![],
+                    Some((42, None)),
+                    &meta,
+                    &mut report,
+                );
+                assert!(result.is_err(), "{status:?}/{fault}");
+                assert!(client.conn.is_autocommit());
+                assert_eq!(client.subs[0].cursor, 41);
+                assert_eq!(client.subs[0].state, SubState::Active);
+                assert_eq!(client.pending_commit_ids(), ids);
+                assert!(client.commit_outcome(&ids[0]).unwrap().is_none());
+                assert!(client.rejections.is_empty());
+                assert_eq!(client.query("SELECT * FROM tasks", &[]).unwrap(), rows);
+                assert_eq!(client.local_revision(), revision);
+                assert!(client.drain_change_batches().is_empty());
+                assert!(report.revoked.is_empty() && report.resets.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn rows_segment_blocks_commit_independently_and_clear_with_the_first_block() {
+        let mut client = client();
+        client
+            .subscribe(
+                "tasks".into(),
+                "tasks".into(),
+                vec![("project_id".into(), vec!["p1".into()])],
+                None,
+            )
+            .unwrap();
+        client.subs[0].effective = Some(vec![("project_id".into(), vec!["p1".into()])]);
+        client.conn.execute_batch("INSERT INTO _syncular_base_tasks VALUES ('stale','p1',1); INSERT INTO tasks VALUES ('stale','p1',1);
+            CREATE TRIGGER fail_block BEFORE INSERT ON _syncular_base_tasks WHEN NEW.id = 'bad' BEGIN SELECT RAISE(FAIL,'injected later block failure'); END").unwrap();
+        let row = |id: &str| ssp2::segment::SegmentRow {
+            server_version: 1,
+            values: vec![
+                Some(ColumnValue::String(id.into())),
+                Some(ColumnValue::String("p1".into())),
+            ],
+        };
+        let segment = RowsSegment {
+            table: "tasks".into(),
+            schema_version: 1,
+            columns: client.schema.table("tasks").unwrap().wire_columns.clone(),
+            blocks: vec![vec![row("first")], vec![row("second"), row("bad")]],
+        };
+        assert!(client.apply_segment(0, &segment, true).is_err());
+        assert!(client.conn.is_autocommit());
+        assert_eq!(
+            client
+                .query("SELECT id FROM tasks ORDER BY id", &[])
+                .unwrap(),
+            vec![Map::from_iter([("id".into(), Value::from("first"))])]
+        );
+        assert_eq!(client.local_revision(), 1);
+        assert_eq!(client.drain_change_batches().len(), 1);
+        assert_eq!(client.subs[0].cursor, -1);
+        client
+            .conn
+            .execute_batch("DROP TRIGGER fail_block")
+            .unwrap();
+        assert!(matches!(client.apply_segment(0, &segment, true), Ok(3)));
+        assert_eq!(client.local_revision(), 3);
+        assert_eq!(client.drain_change_batches().len(), 2);
+    }
+
+    #[test]
+    fn diagnostic_storage_reads_fresh_aggregates_after_writes_rollback_and_schema_changes() {
+        assert_eq!(
+            client().diagnostics_storage().blob_cache_bytes_approx,
+            Some(0)
+        );
+        let client = SyncClient::new(
+            "diagnostic-storage".to_owned(),
+            &json!({
+                "version": 1, "tables": [{"name": "attachments", "primaryKey": "id",
+                    "columns": [{"name": "id", "type": "string", "nullable": false},
+                        {"name": "body", "type": "blob_ref", "nullable": false}], "scopes": []}]
+            }),
+            ClientLimits {
+                blob_cache_max_bytes: Some(5),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let empty = client.diagnostics_storage();
+        assert_eq!(empty.status, "healthy");
+        assert_eq!(empty.pending_outbox_bytes_approx, Some(0));
+        assert_eq!(empty.retained_outcome_entries, Some(0));
+        assert_eq!(empty.retained_outcome_bytes_approx, Some(0));
+        assert_eq!(empty.blob_cache_bytes_approx, Some(0));
+        client.conn.execute_batch("INSERT INTO _syncular_outbox(commit_id, ops_json) VALUES ('one', '[]');
+            INSERT INTO _syncular_commit_outcomes(client_commit_id,status,recorded_at_ms,results_json,operations_json)
+                VALUES ('one','applied',0,'[]',NULL),('two','rejected',0,'[]','[]');
+            INSERT INTO _syncular_blobs(blob_id,bytes,byte_length,refcount,last_used_ms,created_at_ms)
+                VALUES ('body',zeroblob(8),8,1,0,0);").unwrap();
+        let written = client.diagnostics_storage();
+        assert_eq!(written.status, "pressure");
+        assert_eq!(written.pending_outbox_bytes_approx, Some(2));
+        assert_eq!(written.retained_outcome_entries, Some(2));
+        assert_eq!(written.retained_outcome_bytes_approx, Some(6));
+        assert_eq!(written.blob_cache_bytes_approx, Some(8));
+        assert_eq!(
+            written.pressure_reason_code.as_deref(),
+            Some("client.blob_cache_over_limit")
+        );
+        client
+            .conn
+            .execute_batch(
+                "BEGIN; UPDATE _syncular_outbox SET ops_json = '[1,2]';
+            DELETE FROM _syncular_commit_outcomes; DELETE FROM _syncular_blobs;",
+            )
+            .unwrap();
+        let staged = client.diagnostics_storage();
+        assert_eq!(staged.pending_outbox_bytes_approx, Some(5));
+        assert_eq!(staged.retained_outcome_entries, Some(0));
+        assert_eq!(staged.blob_cache_bytes_approx, Some(0));
+        assert_eq!(staged.status, "healthy");
+        client.conn.execute_batch("ROLLBACK").unwrap();
+        assert_eq!(client.diagnostics_storage(), written);
+        client.conn.execute_batch("ALTER TABLE _syncular_commit_outcomes RENAME COLUMN results_json TO hidden_results").unwrap();
+        let unreadable = client.diagnostics_storage();
+        assert_eq!(unreadable.status, "unreadable");
+        assert!(unreadable.database_bytes_approx.is_none());
+        assert!(unreadable.pending_outbox_bytes_approx.is_none());
+        assert!(unreadable.retained_outcome_entries.is_none());
+        assert!(unreadable.retained_outcome_bytes_approx.is_none());
+        assert!(unreadable.blob_cache_bytes_approx.is_none());
+        client.conn.execute_batch("ALTER TABLE _syncular_commit_outcomes RENAME COLUMN hidden_results TO results_json").unwrap();
+        let restored = client.diagnostics_storage();
+        assert_eq!(restored.status, written.status);
+        assert_eq!(
+            restored.retained_outcome_bytes_approx,
+            written.retained_outcome_bytes_approx
+        );
+        client.conn.set_prepared_statement_cache_capacity(0);
+        assert_eq!(client.diagnostics_storage(), restored);
+    }
+
+    #[test]
     fn background_retry_deadlines_back_off_and_reset() {
         let mut client = client();
         client.schedule_background_retry();
@@ -204,9 +610,11 @@ mod observation_tests {
         ));
     }
 
+    #[derive(Default)]
     struct CountingRealtimeTransport {
         connects: usize,
         closes: usize,
+        messages: Vec<String>,
     }
 
     impl Transport for CountingRealtimeTransport {
@@ -230,7 +638,8 @@ mod observation_tests {
             Ok(())
         }
 
-        fn realtime_send(&mut self, _text: &str) -> Result<(), TransportError> {
+        fn realtime_send(&mut self, text: &str) -> Result<(), TransportError> {
+            self.messages.push(text.to_owned());
             Ok(())
         }
 
@@ -246,6 +655,7 @@ mod observation_tests {
         let mut transport = CountingRealtimeTransport {
             connects: 0,
             closes: 0,
+            ..Default::default()
         };
         client
             .connect_realtime(&mut transport)
@@ -283,7 +693,7 @@ mod observation_tests {
             sub.cursor = 42;
             sub.synced_once = true;
             let persisted = sub.clone();
-            client.persist_sub(&persisted);
+            client.persist_sub(&persisted).unwrap();
         }
         for table in ["_syncular_base_tasks", "tasks"] {
             client
@@ -615,6 +1025,948 @@ mod observation_tests {
     }
 
     #[test]
+    fn clean_commit_mirroring_matches_full_replay_with_fts_and_unique_indexes() {
+        let schema = json!({ "version": 1, "tables": [{ "name": "tasks", "primaryKey": "id",
+            "columns": [
+                {"name":"id", "type":"string", "nullable":false},
+                {"name":"project_id", "type":"string", "nullable":false},
+                {"name":"title", "type":"string", "nullable":false}
+            ], "scopes": [{"pattern":"project:{project_id}"}],
+            "indexes": [{"name":"unique_title", "columns":["title"], "unique":true}],
+            "ftsIndexes": [{"name":"tasks_fts", "columns":["title"], "tokenize":"unicode61"}]
+        }] });
+        let mut incremental =
+            SyncClient::new("mirror".to_owned(), &schema, ClientLimits::default()).unwrap();
+        let mut reference =
+            SyncClient::new("mirror".to_owned(), &schema, ClientLimits::default()).unwrap();
+        let tables = vec!["tasks".to_owned()];
+        for index in 0..32 {
+            let id = format!("task-{}", index % 8);
+            let values = Map::from_iter([
+                ("id".to_owned(), Value::from(id.clone())),
+                (
+                    "project_id".to_owned(),
+                    Value::from(format!("p{}", index % 2)),
+                ),
+                ("title".to_owned(), Value::from(format!("needle{index}"))),
+            ]);
+            let payload = encode_row_json(
+                incremental.schema.table("tasks").unwrap(),
+                &id,
+                &values,
+                &incremental.encryption,
+            )
+            .unwrap();
+            let change = ssp2::model::Change {
+                table_index: 0,
+                row_id: id,
+                op: if index % 5 == 0 {
+                    Op::Delete
+                } else {
+                    Op::Upsert
+                },
+                row_version: Some(index + 1),
+                scopes: vec![("project_id".to_owned(), format!("p{}", index % 2))],
+                row: Some(payload),
+            };
+            reference.overlay_dirty.set(true);
+            for instance in [&mut incremental, &mut reference] {
+                instance.begin_observation("mirror_test").unwrap();
+                let mut batch = ChangeAccumulator::default();
+                instance.record_commit_changes(&mut batch, &tables, std::slice::from_ref(&change));
+                instance
+                    .apply_commit_changes(&tables, std::slice::from_ref(&change))
+                    .unwrap();
+                instance.rebuild_overlay_if_dirty();
+                instance.finish_observation("mirror_test", batch).unwrap();
+            }
+            for sql in [
+                "SELECT * FROM tasks ORDER BY id",
+                "SELECT _syncular_source_id, title FROM tasks_fts ORDER BY _syncular_source_id",
+            ] {
+                assert_eq!(
+                    incremental.query(sql, &[]).unwrap(),
+                    reference.query(sql, &[]).unwrap()
+                );
+            }
+            assert_eq!(incremental.local_revision(), reference.local_revision());
+            assert_eq!(
+                serde_json::to_value(incremental.drain_change_batches()).unwrap(),
+                serde_json::to_value(reference.drain_change_batches()).unwrap()
+            );
+        }
+        assert_eq!(incremental.overlay_rebuild_count.get(), 0);
+        assert_eq!(reference.overlay_rebuild_count.get(), 32);
+    }
+
+    #[test]
+    fn row_id_lookups_preserve_text_matching_and_seek_lossless_keys() {
+        let cases = [
+            (
+                "string",
+                vec![
+                    json!("1"),
+                    json!("01"),
+                    json!(""),
+                    json!("nul\u{0}id"),
+                    json!("é"),
+                ],
+            ),
+            (
+                "integer",
+                vec![
+                    json!(i64::MIN),
+                    json!(-1),
+                    json!(0),
+                    json!(1),
+                    json!(i64::MAX),
+                ],
+            ),
+            ("boolean", vec![json!(false), json!(true)]),
+            ("json", vec![json!("null"), json!("1"), json!("{\"a\":1}")]),
+            (
+                "float",
+                vec![
+                    json!(1.0),
+                    json!(1.0000000000000002),
+                    json!(-1.0),
+                    json!(1e20),
+                ],
+            ),
+        ];
+        for (kind, ids) in cases {
+            let schema = json!({"version":1,"tables":[{"name":"tasks","primaryKey":"id",
+                "columns":[{"name":"id","type":kind,"nullable":false},
+                    {"name":"project_id","type":"string","nullable":false}],
+                "scopes":[{"pattern":"project:{project_id}"}]}]});
+            let mut client =
+                SyncClient::new("row-id-lookup".into(), &schema, ClientLimits::default()).unwrap();
+            for (index, id) in ids.iter().enumerate() {
+                let table = client.schema.table("tasks").unwrap();
+                client
+                    .write_base_row(
+                        "tasks",
+                        &vec![
+                            json_to_column_value(&table.columns[0], Some(id)).unwrap(),
+                            Some(ColumnValue::String(format!("p{index}"))),
+                        ],
+                        1,
+                    )
+                    .unwrap();
+            }
+            client.rebuild_overlay_if_dirty();
+            for base in [true, false] {
+                let full = if base {
+                    base_table("tasks")
+                } else {
+                    visible_table("tasks")
+                };
+                let predicate = row_id_predicate(client.schema.table("tasks").unwrap());
+                for row_id in [
+                    "1",
+                    "01",
+                    "1.0",
+                    "1.0000000000000002",
+                    "+1",
+                    "1e0",
+                    " 1",
+                    "-1",
+                    "0",
+                    "9223372036854775807",
+                    "-9223372036854775808",
+                    "true",
+                    "false",
+                    "",
+                    "nul\u{0}id",
+                    "é",
+                    "null",
+                    "{\"a\":1}",
+                ] {
+                    let old_sql =
+                        format!("SELECT project_id FROM {full} WHERE CAST(id AS TEXT) = ?1");
+                    let new_sql = format!("SELECT project_id FROM {full} WHERE {predicate}");
+                    let old = client
+                        .conn
+                        .prepare(&old_sql)
+                        .unwrap()
+                        .query_map([row_id], |row| row.get::<_, String>(0))
+                        .unwrap()
+                        .collect::<Result<Vec<_>, _>>()
+                        .unwrap();
+                    let new = client
+                        .conn
+                        .prepare_cached(&new_sql)
+                        .unwrap()
+                        .query_map([row_id], |row| row.get::<_, String>(0))
+                        .unwrap()
+                        .collect::<Result<Vec<_>, _>>()
+                        .unwrap();
+                    assert_eq!(old, new, "{kind}, base={base}, row_id={row_id:?}");
+                    // The floating-point text collision is deliberate: an
+                    // indexed numeric equality must not silently lose a match.
+                    if kind == "float" && row_id == "1.0" {
+                        assert_eq!(old.len(), 2);
+                    }
+                    let mut batch = ChangeAccumulator::default();
+                    assert_eq!(
+                        client.record_row_scopes(&mut batch, "tasks", row_id, base),
+                        !old.is_empty()
+                    );
+                    let expected = old.first().map(|scope| {
+                        BTreeMap::from([(
+                            "tasks".to_owned(),
+                            Some(BTreeSet::from([format!("project:{scope}")])),
+                        )])
+                    });
+                    assert_eq!(batch.tables, expected.unwrap_or_default());
+                    client
+                        .conn
+                        .execute_batch("SAVEPOINT lookup_delete")
+                        .unwrap();
+                    if base {
+                        client.delete_base_row("tasks", row_id).unwrap();
+                    } else {
+                        client.apply_outbox_ops(&[OutboxOp {
+                            upsert: false,
+                            table: "tasks".into(),
+                            row_id: row_id.into(),
+                            base_version: None,
+                            values: None,
+                            changed_fields: None,
+                        }]);
+                    }
+                    let remaining: i64 = client
+                        .conn
+                        .query_row(&format!("SELECT count(*) FROM {full}"), [], |row| {
+                            row.get(0)
+                        })
+                        .unwrap();
+                    assert_eq!(remaining, ids.len() as i64 - old.len() as i64);
+                    client
+                        .conn
+                        .execute_batch("ROLLBACK TO lookup_delete; RELEASE lookup_delete")
+                        .unwrap();
+                    client.overlay_dirty.set(false);
+                }
+                for (predicate, expected) in [
+                    ("CAST(id AS TEXT) = ?1".to_owned(), "SCAN"),
+                    (predicate, if kind == "float" { "SCAN" } else { "SEARCH" }),
+                ] {
+                    let sql = format!("EXPLAIN QUERY PLAN SELECT project_id FROM {full} WHERE {predicate} LIMIT 1");
+                    let details = client
+                        .conn
+                        .prepare(&sql)
+                        .unwrap()
+                        .query_map(["1"], |row| row.get::<_, String>(3))
+                        .unwrap()
+                        .collect::<Result<Vec<_>, _>>()
+                        .unwrap();
+                    assert!(
+                        details.iter().any(|detail| detail.contains(expected)),
+                        "{kind}: {details:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pending_row_reconciliation_matches_full_fifo_replay() {
+        for unique in [false, true] {
+            let schema = json!({"version": 1, "tables": (["tasks", "notes"].map(|name| json!({
+                "name": name, "primaryKey": "id", "columns": [
+                    {"name":"id", "type":"string", "nullable":false},
+                    {"name":"project_id", "type":"string", "nullable":false},
+                    {"name":"title", "type":"string", "nullable":false}],
+                "scopes": [{"pattern":"project:{project_id}"}],
+                "indexes": [{"name":format!("{name}_title"), "columns":["title"], "unique":unique || name == "notes"}],
+                "ftsIndexes": [{"name":format!("{name}_fts"), "columns":["title"], "tokenize":"unicode61"}]
+            })))});
+            let mut incremental =
+                SyncClient::new("pending".into(), &schema, ClientLimits::default()).unwrap();
+            let mut reference =
+                SyncClient::new("pending".into(), &schema, ClientLimits::default()).unwrap();
+            let tables = vec!["tasks".to_owned(), "notes".to_owned()];
+            for instance in [&mut incremental, &mut reference] {
+                for table in &tables {
+                    for index in 0..12 {
+                        instance
+                            .write_base_row(
+                                table,
+                                &vec![
+                                    Some(ColumnValue::String(format!("row{index}"))),
+                                    Some(ColumnValue::String("p0".into())),
+                                    Some(ColumnValue::String(format!("base{index}"))),
+                                ],
+                                1,
+                            )
+                            .unwrap();
+                    }
+                }
+                instance.rebuild_overlay_if_dirty();
+            }
+            for index in 0..80 {
+                let mutations = (0..3)
+                    .map(|offset| {
+                        let table = tables[(index + offset) % 2].clone();
+                        let id = format!("row{}", (index + offset) % 16);
+                        if (index + offset) % 7 == 0 {
+                            Mutation::Delete {
+                                table,
+                                row_id: id,
+                                base_version: None,
+                            }
+                        } else {
+                            Mutation::Upsert {
+                                table,
+                                values: Map::from_iter([
+                                    ("id".into(), Value::from(id)),
+                                    ("project_id".into(), Value::from(format!("p{}", index % 3))),
+                                    (
+                                        "title".into(),
+                                        Value::from(format!("needle{}", (index + offset) % 5)),
+                                    ),
+                                ]),
+                                base_version: None,
+                            }
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                for instance in [&mut incremental, &mut reference] {
+                    instance.mutate(mutations.clone()).unwrap();
+                }
+                // Most frames touch only the table without unique constraints.
+                // Mixed frames must retain full replay for both tables.
+                let changes = (0..3)
+                    .map(|offset| {
+                        let table_index = if index % 4 == 0 { offset % 2 } else { 0 };
+                        let id = format!("row{}", (index + offset) % 16);
+                        let values = Map::from_iter([
+                            ("id".into(), Value::from(id.clone())),
+                            (
+                                "project_id".into(),
+                                Value::from(format!("p{}", (index + 1) % 3)),
+                            ),
+                            (
+                                "title".into(),
+                                Value::from(format!("remote{index}_{offset}")),
+                            ),
+                        ]);
+                        ssp2::model::Change {
+                            table_index: table_index as u16,
+                            row_id: id.clone(),
+                            op: if (index + offset) % 5 == 0 {
+                                Op::Delete
+                            } else {
+                                Op::Upsert
+                            },
+                            row_version: Some(index as i64 + 2),
+                            scopes: vec![],
+                            row: Some(
+                                encode_row_json(
+                                    incremental.schema.table(&tables[table_index]).unwrap(),
+                                    &id,
+                                    &values,
+                                    &incremental.encryption,
+                                )
+                                .unwrap(),
+                            ),
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                reference.overlay_dirty.set(true);
+                incremental.apply_commit_frame(&tables, &changes).unwrap();
+                reference.apply_commit_frame(&tables, &changes).unwrap();
+                for table in &tables {
+                    for sql in [format!("SELECT * FROM {table} ORDER BY id"),
+                        format!("SELECT * FROM _syncular_base_{table} ORDER BY id"),
+                        format!("SELECT _syncular_source_id, title FROM {table}_fts ORDER BY _syncular_source_id"),
+                        format!("SELECT _syncular_source_id FROM {table}_fts WHERE {table}_fts MATCH 'needle1' ORDER BY _syncular_source_id")] {
+                        assert_eq!(incremental.query(&sql, &[]).unwrap(), reference.query(&sql, &[]).unwrap(), "unique={unique}, frame={index}: {sql}");
+                    }
+                }
+                assert_eq!(incremental.local_revision(), reference.local_revision());
+                assert_eq!(
+                    serde_json::to_value(incremental.drain_change_batches()).unwrap(),
+                    serde_json::to_value(reference.drain_change_batches()).unwrap()
+                );
+            }
+            assert_eq!(
+                incremental.overlay_rebuild_count.get(),
+                if unique { 81 } else { 21 }
+            );
+            assert_eq!(reference.overlay_rebuild_count.get(), 81);
+        }
+    }
+
+    #[test]
+    fn remote_unique_values_reconsider_pending_writes_on_other_rows() {
+        let schema = json!({"version": 1, "tables": [{"name":"tasks", "primaryKey":"id",
+            "columns":[{"name":"id", "type":"string", "nullable":false},
+                {"name":"title", "type":"string", "nullable":false}],
+            "scopes":[], "indexes":[{"name":"unique_title", "columns":["title"], "unique":true}]}]});
+        let mut client =
+            SyncClient::new("unique-pending".into(), &schema, ClientLimits::default()).unwrap();
+        for (id, title) in [("a", "original"), ("b", "occupied")] {
+            client
+                .write_base_row(
+                    "tasks",
+                    &vec![
+                        Some(ColumnValue::String(id.into())),
+                        Some(ColumnValue::String(title.into())),
+                    ],
+                    1,
+                )
+                .unwrap();
+        }
+        client.rebuild_overlay_if_dirty();
+        let pending = client
+            .mutate(vec![Mutation::Upsert {
+                table: "tasks".into(),
+                values: Map::from_iter([
+                    ("id".into(), Value::from("a")),
+                    ("title".into(), Value::from("occupied")),
+                ]),
+                base_version: None,
+            }])
+            .unwrap();
+        assert_eq!(
+            client
+                .conn
+                .query_row("SELECT title FROM tasks WHERE id = 'a'", [], |row| row
+                    .get::<_, String>(
+                    0
+                ))
+                .unwrap(),
+            "original"
+        );
+        for (title, expected) in [("available", "occupied"), ("occupied", "original")] {
+            let change = ssp2::model::Change {
+                table_index: 0,
+                row_id: "b".into(),
+                op: Op::Upsert,
+                row_version: Some(2),
+                scopes: vec![],
+                row: Some(
+                    encode_row_json(
+                        client.schema.table("tasks").unwrap(),
+                        "b",
+                        &Map::from_iter([
+                            ("id".into(), Value::from("b")),
+                            ("title".into(), Value::from(title)),
+                        ]),
+                        &client.encryption,
+                    )
+                    .unwrap(),
+                ),
+            };
+            client
+                .apply_commit_frame(&["tasks".into()], &[change])
+                .unwrap();
+            assert_eq!(
+                client
+                    .conn
+                    .query_row("SELECT title FROM tasks WHERE id = 'a'", [], |row| row
+                        .get::<_, String>(
+                        0
+                    ))
+                    .unwrap(),
+                expected
+            );
+            assert_eq!(client.pending_commit_ids(), vec![pending.clone()]);
+        }
+        assert_eq!(client.overlay_rebuild_count.get(), 3);
+    }
+
+    #[test]
+    fn pending_row_reconciliation_failure_preserves_queue_and_frame_state() {
+        for failure in ["visible", "revision", "commit"] {
+            let mut client = client();
+            let id = client
+                .mutate(vec![Mutation::Upsert {
+                    table: "tasks".into(),
+                    values: Map::from_iter([
+                        ("id".into(), Value::from("t1")),
+                        ("project_id".into(), Value::from("pending")),
+                    ]),
+                    base_version: None,
+                }])
+                .unwrap();
+            client.drain_change_batches();
+            let revision = client.local_revision();
+            let before = client.query("SELECT * FROM tasks", &[]).unwrap();
+            let trigger = match failure {
+                "visible" => "CREATE TRIGGER fail_pending BEFORE INSERT ON tasks WHEN NEW.project_id = 'remote' BEGIN SELECT RAISE(ABORT, 'injected visible failure'); END".to_owned(),
+                "revision" => format!("CREATE TRIGGER fail_pending BEFORE INSERT ON _syncular_meta WHEN NEW.key = '{LOCAL_REVISION_KEY}' BEGIN SELECT RAISE(ABORT, 'injected revision failure'); END"),
+                _ => "PRAGMA foreign_keys = ON; CREATE TABLE pending_parent(id INTEGER PRIMARY KEY); CREATE TABLE pending_child(id INTEGER REFERENCES pending_parent(id) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER fail_pending AFTER INSERT ON _syncular_base_tasks BEGIN INSERT INTO pending_child VALUES(1); END".to_owned(),
+            };
+            client.conn.execute_batch(&trigger).unwrap();
+            let change = ssp2::model::Change {
+                table_index: 0,
+                row_id: "t1".into(),
+                op: Op::Upsert,
+                row_version: Some(2),
+                scopes: vec![],
+                row: Some(
+                    encode_row_json(
+                        client.schema.table("tasks").unwrap(),
+                        "t1",
+                        &Map::from_iter([
+                            ("id".into(), Value::from("t1")),
+                            ("project_id".into(), Value::from("remote")),
+                        ]),
+                        &client.encryption,
+                    )
+                    .unwrap(),
+                ),
+            };
+            assert!(client
+                .apply_commit_frame(&["tasks".into()], std::slice::from_ref(&change))
+                .is_err());
+            assert!(client.conn.is_autocommit());
+            assert!(!client.overlay_dirty.get());
+            assert_eq!(client.local_revision(), revision);
+            assert!(client.drain_change_batches().is_empty());
+            assert_eq!(client.pending_commit_ids(), vec![id.clone()]);
+            assert_eq!(client.query("SELECT * FROM tasks", &[]).unwrap(), before);
+            assert!(client
+                .query("SELECT * FROM _syncular_base_tasks", &[])
+                .unwrap()
+                .is_empty());
+            client
+                .conn
+                .execute_batch("DROP TRIGGER fail_pending")
+                .unwrap();
+            client
+                .apply_commit_frame(&["tasks".into()], &[change])
+                .unwrap();
+            assert_eq!(client.local_revision(), revision + 1);
+            assert_eq!(client.pending_commit_ids(), vec![id]);
+            assert_eq!(client.query("SELECT * FROM tasks", &[]).unwrap(), before);
+            assert_eq!(
+                client
+                    .conn
+                    .query_row("SELECT project_id FROM _syncular_base_tasks", [], |row| row
+                        .get::<_, String>(0))
+                    .unwrap(),
+                "remote"
+            );
+        }
+    }
+
+    #[test]
+    fn appended_overlay_matches_full_fifo_replay_with_constraints_and_fts() {
+        let schema = json!({"version": 1, "tables": [{"name": "tasks", "primaryKey": "id",
+            "columns": [
+                {"name":"id", "type":"string", "nullable":false},
+                {"name":"project_id", "type":"string", "nullable":false},
+                {"name":"title", "type":"string", "nullable":false}],
+            "scopes": [{"pattern":"project:{project_id}"}],
+            "indexes": [{"name":"unique_title", "columns":["title"], "unique":true}],
+            "ftsIndexes": [{"name":"tasks_fts", "columns":["title"], "tokenize":"unicode61"}]}]});
+        let mut incremental =
+            SyncClient::new("append".to_owned(), &schema, ClientLimits::default()).unwrap();
+        let mut reference =
+            SyncClient::new("append".to_owned(), &schema, ClientLimits::default()).unwrap();
+        for instance in [&mut incremental, &mut reference] {
+            for index in 0..16 {
+                instance
+                    .write_base_row(
+                        "tasks",
+                        &vec![
+                            Some(ColumnValue::String(format!("task{index}"))),
+                            Some(ColumnValue::String("p0".to_owned())),
+                            Some(ColumnValue::String(format!("base{index}"))),
+                        ],
+                        1,
+                    )
+                    .unwrap();
+            }
+            instance.rebuild_overlay_if_dirty();
+            instance.overlay_rebuild_count.set(0);
+        }
+        for index in 0..100 {
+            let mutations = (0..1 + index % 4)
+                .map(|offset| {
+                    let id = format!("task{}", (index + offset) % 24);
+                    if (index + offset) % 7 == 0 {
+                        Mutation::Delete {
+                            table: "tasks".to_owned(),
+                            row_id: id,
+                            base_version: None,
+                        }
+                    } else {
+                        Mutation::Upsert {
+                            table: "tasks".to_owned(),
+                            values: Map::from_iter([
+                                ("id".to_owned(), Value::from(id)),
+                                (
+                                    "project_id".to_owned(),
+                                    Value::from(format!("p{}", index % 2)),
+                                ),
+                                (
+                                    "title".to_owned(),
+                                    Value::from(format!("needle{}", (index + offset) % 5)),
+                                ),
+                            ]),
+                            base_version: None,
+                        }
+                    }
+                })
+                .collect::<Vec<_>>();
+            reference.overlay_dirty.set(true);
+            incremental.mutate(mutations.clone()).unwrap();
+            reference.mutate(mutations).unwrap();
+            for sql in ["SELECT * FROM tasks ORDER BY id", "SELECT _syncular_source_id, title FROM tasks_fts ORDER BY _syncular_source_id",
+                "SELECT _syncular_source_id FROM tasks_fts WHERE tasks_fts MATCH 'needle1' ORDER BY _syncular_source_id"] {
+                assert_eq!(incremental.query(sql, &[]).unwrap(), reference.query(sql, &[]).unwrap(), "commit {index}: {sql}");
+            }
+            assert_eq!(incremental.local_revision(), reference.local_revision());
+            assert_eq!(
+                serde_json::to_value(incremental.drain_change_batches()).unwrap(),
+                serde_json::to_value(reference.drain_change_batches()).unwrap()
+            );
+        }
+        assert_eq!(incremental.outbox.len(), 100);
+        assert_eq!(incremental.overlay_rebuild_count.get(), 0);
+        assert_eq!(reference.overlay_rebuild_count.get(), 100);
+    }
+
+    #[test]
+    fn failed_append_rolls_back_durable_queue_visible_rows_and_memory() {
+        for fail_at in ["outbox", "revision"] {
+            let mut client = client();
+            let values = Map::from_iter([
+                ("id".to_owned(), Value::from("t1")),
+                ("project_id".to_owned(), Value::from("p1")),
+            ]);
+            let mutation = Mutation::Upsert {
+                table: "tasks".to_owned(),
+                values,
+                base_version: None,
+            };
+            let trigger = if fail_at == "outbox" {
+                "CREATE TRIGGER fail_append BEFORE INSERT ON _syncular_outbox BEGIN SELECT RAISE(FAIL, 'injected outbox failure'); END".to_owned()
+            } else {
+                format!("CREATE TRIGGER fail_append BEFORE INSERT ON _syncular_meta WHEN NEW.key = '{LOCAL_REVISION_KEY}' BEGIN SELECT RAISE(FAIL, 'injected revision failure'); END")
+            };
+            client.conn.execute_batch(&trigger).unwrap();
+            let revision = client.local_revision();
+            assert!(client.mutate(vec![mutation.clone()]).is_err(), "{fail_at}");
+            assert_eq!(client.local_revision(), revision);
+            assert!(client.outbox.is_empty());
+            assert!(client.query("SELECT * FROM tasks", &[]).unwrap().is_empty());
+            assert_eq!(
+                client
+                    .conn
+                    .query_row("SELECT count(*) FROM _syncular_outbox", [], |row| row
+                        .get::<_, i64>(0))
+                    .unwrap(),
+                0
+            );
+            assert!(client.drain_change_batches().is_empty());
+            assert!(!client.overlay_dirty.get());
+            client
+                .conn
+                .execute_batch("DROP TRIGGER fail_append")
+                .unwrap();
+            client.mutate(vec![mutation]).unwrap();
+            assert_eq!(client.outbox.len(), 1);
+            assert_eq!(client.query("SELECT * FROM tasks", &[]).unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn mirrored_commit_failure_rolls_back_base_visible_and_revision() {
+        let mut client = client();
+        let tables = vec!["tasks".to_owned(), "missing".to_owned()];
+        let values = Map::from_iter([
+            ("id".to_owned(), Value::from("t1")),
+            ("project_id".to_owned(), Value::from("p1")),
+        ]);
+        let payload = encode_row_json(
+            client.schema.table("tasks").unwrap(),
+            "t1",
+            &values,
+            &client.encryption,
+        )
+        .unwrap();
+        let first = ssp2::model::Change {
+            table_index: 0,
+            row_id: "t1".to_owned(),
+            op: Op::Upsert,
+            row_version: Some(1),
+            scopes: vec![("project_id".to_owned(), "p1".to_owned())],
+            row: Some(payload),
+        };
+        let mut invalid = first.clone();
+        invalid.table_index = 1;
+        let revision = client.local_revision();
+        client.begin_observation("failed_mirror").unwrap();
+        assert!(client
+            .apply_commit_changes(&tables, &[first, invalid])
+            .is_err());
+        client.rollback_observation("failed_mirror");
+        client.rebuild_overlay_if_dirty();
+        assert!(client.query("SELECT * FROM tasks", &[]).unwrap().is_empty());
+        assert_eq!(
+            client
+                .conn
+                .query_row("SELECT count(*) FROM _syncular_base_tasks", [], |row| row
+                    .get::<_, i64>(
+                    0
+                ))
+                .unwrap(),
+            0
+        );
+        assert_eq!(client.local_revision(), revision);
+        assert!(client.drain_change_batches().is_empty());
+    }
+
+    #[test]
+    fn successful_acknowledgement_runs_are_atomic_and_preserve_completed_runs() {
+        for failure in ["journal", "revision", "commit", "later-frame"] {
+            let mut client = client();
+            client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+            for id in ["first", "second"] {
+                client
+                    .mutate(vec![Mutation::Upsert {
+                        table: "tasks".to_owned(),
+                        values: Map::from_iter([
+                            ("id".to_owned(), Value::from(id)),
+                            ("project_id".to_owned(), Value::from("p1")),
+                        ]),
+                        base_version: None,
+                    }])
+                    .unwrap();
+            }
+            let (_, meta) = client.build_request(false);
+            // A malicious or stale response must not drain an unsent local commit.
+            client
+                .mutate(vec![Mutation::Upsert {
+                    table: "tasks".to_owned(),
+                    values: Map::from_iter([
+                        ("id".to_owned(), Value::from("later")),
+                        ("project_id".to_owned(), Value::from("p1")),
+                    ]),
+                    base_version: None,
+                }])
+                .unwrap();
+            let ids = client.pending_commit_ids();
+            let rows = client
+                .query("SELECT * FROM tasks ORDER BY id", &[])
+                .unwrap();
+            let revision = client.local_revision();
+            client.drain_change_batches();
+            if failure != "later-frame" {
+                client.conn.execute_batch(match failure {
+                    "journal" => "CREATE TRIGGER fail_run BEFORE INSERT ON _syncular_commit_outcomes WHEN (SELECT count(*) FROM _syncular_commit_outcomes) = 1 BEGIN SELECT RAISE(FAIL, 'injected second journal failure'); END",
+                    "revision" => "CREATE TRIGGER fail_run BEFORE INSERT ON _syncular_meta WHEN NEW.key = 'localRevision' AND (SELECT count(*) FROM _syncular_commit_outcomes) = 2 BEGIN SELECT RAISE(FAIL, 'injected run revision failure'); END",
+                    _ => "PRAGMA foreign_keys = ON; CREATE TABLE ack_parent(id INTEGER PRIMARY KEY); CREATE TABLE ack_child(id INTEGER REFERENCES ack_parent(id) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER fail_run AFTER INSERT ON _syncular_commit_outcomes WHEN (SELECT count(*) FROM _syncular_commit_outcomes) = 2 BEGIN INSERT INTO ack_child VALUES (1); END",
+                }).unwrap();
+            }
+            let mut response = Message {
+                wire_version: WIRE_VERSION,
+                msg_kind: MsgKind::Response,
+                frames: vec![Frame::RespHeader {
+                    required_schema_version: None,
+                    latest_schema_version: None,
+                    log_epoch: Some("epoch-1".to_owned()),
+                    reset_required: Some(false),
+                }],
+            };
+            for id in [&ids[0], &ids[0], "unknown", &ids[1], &ids[2]] {
+                response.frames.push(Frame::PushResult {
+                    client_commit_id: id.to_owned(),
+                    status: PushStatus::Applied,
+                    commit_seq: Some(1),
+                    results: vec![OpResult::Applied { op_index: 0 }],
+                });
+            }
+            if failure == "later-frame" {
+                response.frames.push(Frame::Error {
+                    code: "sync.invalid_request".to_owned(),
+                    message: "later error".to_owned(),
+                    category: "protocol".to_owned(),
+                    retryable: false,
+                    recommended_action: "retry".to_owned(),
+                    details: None,
+                });
+            }
+            let mut transport = HostTransport::new_from_config(&json!({})).unwrap();
+            let outcome = client.process_response(&mut transport, response.clone(), &meta);
+            assert!(
+                matches!(outcome, SyncOutcome::Failed { error_code, .. } if error_code == if failure == "later-frame" { "sync.invalid_request" } else { "client.outcome_persistence_failed" })
+            );
+            if failure == "later-frame" {
+                assert_eq!(client.pending_commit_ids(), ids[2..]);
+                assert!(client.commit_outcome(&ids[0]).unwrap().is_some());
+                assert!(client.commit_outcome(&ids[1]).unwrap().is_some());
+                let batches = client.drain_change_batches();
+                assert_eq!(batches.len(), 1);
+                assert_eq!(batches[0].status.as_ref().unwrap().outbox, 1);
+                assert_eq!(client.local_revision(), revision + 1);
+                response.frames.pop();
+            } else {
+                assert_eq!(client.pending_commit_ids(), ids);
+                assert!(client.commit_outcome(&ids[0]).unwrap().is_none());
+                assert!(client.commit_outcome(&ids[1]).unwrap().is_none());
+                assert_eq!(client.local_revision(), revision);
+                assert!(client.drain_change_batches().is_empty());
+                assert_eq!(
+                    client
+                        .query("SELECT * FROM tasks ORDER BY id", &[])
+                        .unwrap(),
+                    rows
+                );
+                client.conn.execute_batch("DROP TRIGGER fail_run").unwrap();
+            }
+            for frame in &mut response.frames {
+                if let Frame::PushResult { status, .. } = frame {
+                    *status = PushStatus::Cached;
+                }
+            }
+            let SyncOutcome::Ok(report) = client.process_response(&mut transport, response, &meta)
+            else {
+                panic!("retry failed");
+            };
+            assert_eq!(
+                report.applied,
+                if failure == "later-frame" {
+                    vec![]
+                } else {
+                    ids[..2].to_vec()
+                }
+            );
+            assert_eq!(client.pending_commit_ids(), ids[2..]);
+            let batches = client.drain_change_batches();
+            assert_eq!(batches.len(), usize::from(failure != "later-frame"));
+            if let Some(batch) = batches.first() {
+                assert_eq!(batch.status.as_ref().unwrap().outbox, 1);
+            }
+            assert_eq!(client.local_revision(), revision + 1);
+        }
+    }
+
+    #[test]
+    fn failed_push_result_preserves_memory_disk_and_retry_identity() {
+        for failure in ["revision", "journal", "commit"] {
+            for status in ["applied", "cached", "rejected", "conflict"] {
+                let mut client = client();
+                client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+                for id in ["first", "later"] {
+                    client
+                        .mutate(vec![Mutation::Upsert {
+                            table: "tasks".to_owned(),
+                            values: Map::from_iter([
+                                ("id".to_owned(), Value::from(id)),
+                                ("project_id".to_owned(), Value::from("p1")),
+                            ]),
+                            base_version: None,
+                        }])
+                        .unwrap();
+                }
+                let (_, meta) = client.build_request(false);
+                let ids = client.pending_commit_ids();
+                let rows = client
+                    .query("SELECT * FROM tasks ORDER BY id", &[])
+                    .unwrap();
+                let revision = client.local_revision();
+                client.drain_change_batches();
+                let (push_status, results) = match status {
+                    "applied" => (PushStatus::Applied, vec![OpResult::Applied { op_index: 0 }]),
+                    "cached" => (PushStatus::Cached, vec![OpResult::Applied { op_index: 0 }]),
+                    "conflict" => (
+                        PushStatus::Rejected,
+                        vec![OpResult::Conflict {
+                            op_index: 0,
+                            code: "sync.version_conflict".to_owned(),
+                            message: "conflict".to_owned(),
+                            server_version: 1,
+                            server_row: encode_row_json(
+                                client.schema.table("tasks").unwrap(),
+                                "first",
+                                &Map::from_iter([
+                                    ("id".to_owned(), Value::from("first")),
+                                    ("project_id".to_owned(), Value::from("p1")),
+                                ]),
+                                &client.encryption,
+                            )
+                            .unwrap(),
+                        }],
+                    ),
+                    _ => (
+                        PushStatus::Rejected,
+                        vec![OpResult::Error {
+                            op_index: 0,
+                            code: "sync.validation_failed".to_owned(),
+                            message: "rejected".to_owned(),
+                            retryable: false,
+                        }],
+                    ),
+                };
+                let response = Message {
+                    wire_version: WIRE_VERSION,
+                    msg_kind: MsgKind::Response,
+                    frames: vec![
+                        Frame::RespHeader {
+                            required_schema_version: None,
+                            latest_schema_version: None,
+                            log_epoch: Some("epoch-1".to_owned()),
+                            reset_required: Some(false),
+                        },
+                        Frame::PushResult {
+                            client_commit_id: ids[0].clone(),
+                            status: push_status,
+                            commit_seq: Some(1),
+                            results,
+                        },
+                    ],
+                };
+                client.conn.execute_batch(match failure {
+                    "journal" => "CREATE TRIGGER fail_ack BEFORE INSERT ON _syncular_commit_outcomes BEGIN SELECT RAISE(FAIL, 'injected journal failure'); END",
+                    "revision" => "CREATE TRIGGER fail_ack BEFORE INSERT ON _syncular_meta WHEN NEW.key = 'localRevision' BEGIN SELECT RAISE(FAIL, 'injected revision failure'); END",
+                    _ => "PRAGMA foreign_keys = ON; CREATE TABLE ack_parent(id INTEGER PRIMARY KEY); CREATE TABLE ack_child(id INTEGER REFERENCES ack_parent(id) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER fail_ack AFTER INSERT ON _syncular_commit_outcomes BEGIN INSERT INTO ack_child VALUES (1); END",
+                }).unwrap();
+                let mut transport = HostTransport::new_from_config(&json!({})).unwrap();
+                let outcome = client.process_response(&mut transport, response.clone(), &meta);
+                assert_eq!(
+                    client.pending_commit_ids(),
+                    ids,
+                    "{failure}/{status}: pending identity"
+                );
+                assert_eq!(
+                    client.local_revision(),
+                    revision,
+                    "{failure}/{status}: revision"
+                );
+                assert!(client.commit_outcome(&ids[0]).unwrap().is_none());
+                assert!(client.conflicts().is_empty());
+                assert!(client.rejections().is_empty());
+                assert!(client.drain_change_batches().is_empty());
+                assert_eq!(
+                    client
+                        .query("SELECT * FROM tasks ORDER BY id", &[])
+                        .unwrap(),
+                    rows
+                );
+                assert!(
+                    matches!(outcome, SyncOutcome::Failed { error_code, .. } if error_code == "client.outcome_persistence_failed"),
+                    "{failure}/{status}: failed round"
+                );
+                client.conn.execute_batch("DROP TRIGGER fail_ack").unwrap();
+                assert!(matches!(
+                    client.process_response(&mut transport, response, &meta),
+                    SyncOutcome::Ok(_)
+                ));
+                assert_eq!(client.pending_commit_ids(), ids[1..]);
+                assert!(client.commit_outcome(&ids[0]).unwrap().is_some());
+                assert_eq!(client.drain_change_batches().len(), 1);
+            }
+        }
+    }
+
+    #[test]
     fn mixed_push_results_reconcile_and_prune_once_per_response() {
         let mut client = client();
         client.set_meta(LOG_EPOCH_KEY, "epoch-1");
@@ -892,7 +2244,7 @@ mod observation_tests {
                 subscription.synced_once = true;
                 subscription.clone()
             };
-            first.persist_sub(&persisted);
+            first.persist_sub(&persisted).unwrap();
         }
 
         let mut reopened = SyncClient::open_path_with_identity(
@@ -1854,6 +3206,8 @@ const MAX_LOCAL_PURGE_VALUE_LENGTH: usize = 256;
 pub const SECURITY_PREFLIGHT_REQUIRED_CODE: &str = "client.security_preflight_required";
 
 pub struct SyncClient {
+    #[cfg(feature = "bench-internals")]
+    benchmark_phases: Recorder,
     conn: Connection,
     schema: ClientSchema,
     client_id: String,
@@ -1913,6 +3267,26 @@ pub struct SyncClient {
 
 fn quote_ident(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+/// Seek by the existing key while retaining the exact legacy text match.
+fn row_id_predicate(table: &TableSchema) -> String {
+    let key = quote_ident(&table.primary_key);
+    let text_match = format!("CAST({key} AS TEXT) = ?1");
+    match table.columns[table.pk_index].ty {
+        ColumnType::String | ColumnType::Json => {
+            format!("{key} = ?1 AND {text_match}")
+        }
+        // Native columns have no declared SQLite affinity. Match the stored
+        // integer bind type explicitly. Unary + removes expression affinity so
+        // SQLite can seek the typeless key; the text check preserves exact IDs.
+        ColumnType::Integer | ColumnType::Boolean => {
+            format!("{key} = +CAST(?1 AS INTEGER) AND {text_match}")
+        }
+        // REAL-to-text conversion can round distinct values to the same text.
+        // Narrowing those matches by numeric equality would change behavior.
+        _ => text_match,
+    }
 }
 
 fn is_local_operation_code_like(value: &str) -> bool {
@@ -2423,6 +3797,8 @@ impl SyncClient {
         }
         let schema = parse_schema_json(schema_json)?;
         let mut client = SyncClient {
+            #[cfg(feature = "bench-internals")]
+            benchmark_phases: Recorder::default(),
             conn,
             schema,
             client_id,
@@ -3088,22 +4464,18 @@ impl SyncClient {
             let page_size: i64 = self
                 .conn
                 .query_row("PRAGMA page_size", [], |row| row.get(0))?;
-            let outbox_bytes: i64 = self.conn.query_row(
-                "SELECT COALESCE(SUM(LENGTH(ops_json)), 0) FROM _syncular_outbox",
-                [],
-                |row| row.get(0),
-            )?;
-            let (outcome_entries, outcome_bytes): (i64, i64) = self.conn.query_row(
+            // Reuse compiled aggregates; every invocation still reads current storage.
+            let outbox_bytes: i64 = self
+                .conn
+                .prepare_cached("SELECT COALESCE(SUM(LENGTH(ops_json)), 0) FROM _syncular_outbox")?
+                .query_row([], |row| row.get(0))?;
+            let (outcome_entries, outcome_bytes): (i64, i64) = self.conn.prepare_cached(
                 "SELECT COUNT(*), COALESCE(SUM(LENGTH(results_json) + COALESCE(LENGTH(operations_json), 0)), 0) FROM _syncular_commit_outcomes",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )?;
+            )?.query_row([], |row| Ok((row.get(0)?, row.get(1)?)))?;
             let blob_bytes = if self.schema_has_blobs() {
-                self.conn.query_row(
-                    "SELECT COALESCE(SUM(byte_length), 0) FROM _syncular_blobs",
-                    [],
-                    |row| row.get(0),
-                )?
+                self.conn
+                    .prepare_cached("SELECT COALESCE(SUM(byte_length), 0) FROM _syncular_blobs")?
+                    .query_row([], |row| row.get(0))?
             } else {
                 0
             };
@@ -3210,6 +4582,8 @@ impl SyncClient {
     }
 
     fn finish_observation(&mut self, name: &str, batch: ChangeAccumulator) -> Result<(), String> {
+        #[cfg(feature = "bench-internals")]
+        let _phase = self.benchmark_phases.start(Phase::ObservationCommit);
         if !batch.touched() {
             self.conn
                 .execute_batch(&format!("RELEASE {name}"))
@@ -3336,10 +4710,10 @@ impl SyncClient {
             visible_table(table_name)
         };
         let sql = format!(
-            "SELECT {columns} FROM {full_table} WHERE CAST({} AS TEXT) = ?1 LIMIT 1",
-            quote_ident(&table.primary_key)
+            "SELECT {columns} FROM {full_table} WHERE {} LIMIT 1",
+            row_id_predicate(table)
         );
-        let Ok(mut stmt) = self.conn.prepare(&sql) else {
+        let Ok(mut stmt) = self.conn.prepare_cached(&sql) else {
             return false;
         };
         let values = stmt.query_row(rusqlite::params![row_id], |row| {
@@ -3368,6 +4742,8 @@ impl SyncClient {
         tables: &[String],
         changes: &[ssp2::model::Change],
     ) {
+        #[cfg(feature = "bench-internals")]
+        let _phase = self.benchmark_phases.start(Phase::ObservationPrepare);
         for change in changes {
             let Some(table_name) = tables.get(change.table_index as usize) else {
                 continue;
@@ -3603,7 +4979,7 @@ impl SyncClient {
         }
         let subs = self.subs.clone();
         for sub in &subs {
-            self.persist_sub(sub);
+            self.persist_sub(sub)?;
         }
         // The stop state is over: this client now ships a servable schema.
         self.stopped = false;
@@ -3871,7 +5247,7 @@ impl SyncClient {
 
     // -- persistence write-through --------------------------------------------
 
-    fn persist_sub(&self, sub: &Subscription) {
+    fn persist_sub(&self, sub: &Subscription) -> Result<(), String> {
         let state = serde_json::json!({
             "requested": scope_map_to_json(&sub.requested),
             "params": sub.params,
@@ -3882,13 +5258,13 @@ impl SyncClient {
             "effectiveScopes": sub.effective.as_ref().map(|e| scope_map_to_json(e)),
             "syncedOnce": sub.synced_once,
         });
-        let _ = self.conn.execute(
+        self.conn.execute(
             "INSERT OR REPLACE INTO _syncular_subscriptions (id, tbl, state_json) VALUES (?1, ?2, ?3)",
             rusqlite::params![sub.id, sub.table, state.to_string()],
-        );
+        ).map(|_| ()).map_err(|error| error.to_string())
     }
 
-    fn persist_outbox_insert(&self, commit: &OutboxCommit) {
+    fn persist_outbox_insert(&self, commit: &OutboxCommit) -> Result<(), String> {
         let ops: Vec<Value> = commit
             .ops
             .iter()
@@ -3903,10 +5279,13 @@ impl SyncClient {
                 })
             })
             .collect();
-        let _ = self.conn.execute(
-            "INSERT OR REPLACE INTO _syncular_outbox (commit_id, ops_json) VALUES (?1, ?2)",
-            rusqlite::params![commit.client_commit_id, Value::Array(ops).to_string()],
-        );
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO _syncular_outbox (commit_id, ops_json) VALUES (?1, ?2)",
+                rusqlite::params![commit.client_commit_id, Value::Array(ops).to_string()],
+            )
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 
     fn delete_outbox_persisted(&self, client_commit_id: &str) -> Result<(), String> {
@@ -4170,7 +5549,7 @@ impl SyncClient {
             effective: None,
             synced_once: false,
         };
-        self.persist_sub(&sub);
+        self.persist_sub(&sub)?;
         self.subs.push(sub);
         Ok(())
     }
@@ -4622,14 +6001,26 @@ impl SyncClient {
                 batch.table(&op.table);
             }
         }
-        self.persist_outbox_insert(&commit);
+        if let Err(error) = self.persist_outbox_insert(&commit) {
+            self.rollback_observation("syncular_mutation");
+            return Err(error);
+        }
+        let was_dirty = self.overlay_dirty.get();
+        // A clean overlay already contains the FIFO fold of every previous
+        // commit. Appending a commit only needs its own operations applied.
+        if !was_dirty {
+            self.apply_outbox_ops(&commit.ops);
+        }
         let id = commit.client_commit_id.clone();
         self.outbox.push(commit);
-        self.overlay_dirty.set(true);
-        self.rebuild_overlay();
+        if was_dirty {
+            self.rebuild_overlay();
+        }
         batch.status = true;
         if let Err(error) = self.finish_observation("syncular_mutation", batch) {
             self.rollback_observation("syncular_mutation");
+            self.outbox.pop();
+            self.overlay_dirty.set(was_dirty);
             return Err(error);
         }
         Ok(id)
@@ -4978,14 +6369,16 @@ impl SyncClient {
             return Err(format!("column {column:?} is not a crdt column (§5.10.1)"));
         }
         let sql = format!(
-            "SELECT {} FROM {} WHERE CAST({} AS TEXT) = ?1",
+            "SELECT {} FROM {} WHERE {}",
             quote_ident(column),
             visible_table(table),
-            quote_ident(&schema_table.primary_key)
+            row_id_predicate(schema_table)
         );
         let bytes: Option<Vec<u8>> = self
             .conn
-            .query_row(&sql, rusqlite::params![row_id], |row| {
+            .prepare_cached(&sql)
+            .map_err(|error| error.to_string())?
+            .query_row(rusqlite::params![row_id], |row| {
                 row.get::<_, Option<Vec<u8>>>(0)
             })
             .map_err(|e| match e {
@@ -5132,6 +6525,25 @@ impl SyncClient {
         query_connection(&self.conn, sql, params)
     }
 
+    /// Repository benchmark access, present only with `bench-internals`.
+    #[cfg(feature = "bench-internals")]
+    #[doc(hidden)]
+    pub fn benchmark_connection(&mut self) -> &mut Connection {
+        &mut self.conn
+    }
+
+    /// Private benchmark intervals; absent from ordinary builds and diagnostics.
+    #[cfg(feature = "bench-internals")]
+    #[doc(hidden)]
+    pub fn benchmark_phases(
+        &self,
+        enabled: Option<bool>,
+        reset: bool,
+    ) -> Result<Option<Value>, String> {
+        self.benchmark_phases.configure(enabled, reset)?;
+        Ok(self.benchmark_phases.snapshot())
+    }
+
     /// Rows, coverage, and local revision from one SQLite read snapshot.
     pub fn query_snapshot(
         &mut self,
@@ -5145,6 +6557,8 @@ impl SyncClient {
     // -- request building ---------------------------------------------------------
 
     fn build_request(&self, url_capable: bool) -> (Message, RequestMeta) {
+        #[cfg(feature = "bench-internals")]
+        let _phase = self.benchmark_phases.start(Phase::RequestPrepare);
         let log_epoch = self.get_meta(LOG_EPOCH_KEY);
         let mut frames = vec![Frame::ReqHeader {
             client_id: self.client_id.clone(),
@@ -5154,6 +6568,8 @@ impl SyncClient {
         let mut pushed_ids = Vec::new();
         let mut ops_in_request = 0usize;
         let mut deferred_commits = 0usize;
+        #[cfg(feature = "bench-internals")]
+        let outbox_phase = self.benchmark_phases.start(Phase::OutboxEncode);
         for (index, commit) in self
             .outbox
             .iter()
@@ -5199,6 +6615,8 @@ impl SyncClient {
             });
             pushed_ids.push(commit.client_commit_id.clone());
         }
+        #[cfg(feature = "bench-internals")]
+        drop(outbox_phase);
         // §4.2/§5.4: bit 3 is advertised iff the transport can fetch a
         // bare URL — capability negotiation, decided per transport.
         let accept = self.limits.accept.unwrap_or(if url_capable {
@@ -5314,7 +6732,11 @@ impl SyncClient {
             }
         }
         let (message, meta) = self.build_request(transport.supports_url_fetch());
-        let request_bytes = encode_message(&message);
+        let request_bytes = {
+            #[cfg(feature = "bench-internals")]
+            let _phase = self.benchmark_phases.start(Phase::RequestEncode);
+            encode_message(&message)
+        };
         // §8.7: rounds ride the socket whenever it is connected (one
         // loop, no fallback pair); the transport seam stays bytes-in /
         // bytes-out either way. Registration-at-round-end is server-side.
@@ -5338,6 +6760,8 @@ impl SyncClient {
                 };
             }
         };
+        #[cfg(feature = "bench-internals")]
+        let decode_phase = self.benchmark_phases.start(Phase::ResponseDecode);
         let response = match decode_message(&response_bytes) {
             Ok(message) => message,
             Err(error) => {
@@ -5349,6 +6773,8 @@ impl SyncClient {
                 };
             }
         };
+        #[cfg(feature = "bench-internals")]
+        drop(decode_phase);
         if response.msg_kind != MsgKind::Response {
             return SyncOutcome::Failed {
                 error_code: "sync.invalid_request".to_owned(),
@@ -5435,6 +6861,8 @@ impl SyncClient {
         response: Message,
         meta: &RequestMeta,
     ) -> SyncOutcome {
+        #[cfg(feature = "bench-internals")]
+        let _phase = self.benchmark_phases.start(Phase::ResponseApply);
         let mut report = SyncReport {
             pushed: meta.pushed_ids.len() as u32,
             ..SyncReport::default()
@@ -5482,7 +6910,7 @@ impl SyncClient {
                 _ => {}
             }
         }
-        let mut frames = response.frames.into_iter();
+        let mut frames = response.frames.into_iter().peekable();
         if response.wire_version < 2 {
             return SyncOutcome::Failed {
                 error_code: "client.invalid_host_response".to_owned(),
@@ -5557,22 +6985,44 @@ impl SyncClient {
         let mut failure: Option<(String, String)> = None;
         while let Some(frame) = frames.next() {
             match frame {
-                Frame::PushResult {
-                    client_commit_id,
-                    status,
-                    commit_seq: _,
-                    results,
-                } => {
-                    let prune_outcomes =
-                        last_final_push_result_id.as_deref() == Some(&client_commit_id);
-                    self.handle_push_result(
-                        &client_commit_id,
-                        status,
-                        &results,
-                        rejection_details_by_commit.get(&client_commit_id),
-                        &mut report,
-                        prune_outcomes,
+                frame @ Frame::PushResult { .. } => {
+                    let successful = matches!(
+                        &frame,
+                        Frame::PushResult {
+                            status: PushStatus::Applied | PushStatus::Cached,
+                            ..
+                        }
                     );
+                    let mut results = vec![frame];
+                    if successful {
+                        while matches!(
+                            frames.peek(),
+                            Some(Frame::PushResult {
+                                status: PushStatus::Applied | PushStatus::Cached,
+                                ..
+                            })
+                        ) {
+                            if let Some(next) = frames.next() {
+                                results.push(next);
+                            }
+                        }
+                    }
+                    if self
+                        .handle_push_results(
+                            &results,
+                            &pushed_ids,
+                            &rejection_details_by_commit,
+                            &mut report,
+                            last_final_push_result_id.as_deref(),
+                        )
+                        .is_err()
+                    {
+                        failure = Some((
+                            "client.outcome_persistence_failed".to_owned(),
+                            "local commit outcome could not be persisted".to_owned(),
+                        ));
+                        break;
+                    }
                 }
                 Frame::PushResultDetails { .. } => {}
                 Frame::SubStart {
@@ -5597,13 +7047,6 @@ impl SyncClient {
                             other => body.push(other),
                         }
                     }
-                    let Some((next_cursor, bootstrap_state)) = sub_end else {
-                        failure = Some((
-                            "sync.invalid_request".to_owned(),
-                            "subscription section without SUB_END".to_owned(),
-                        ));
-                        break;
-                    };
                     if let Err(SectionError::Abort(code, message)) = self.process_section(
                         transport,
                         &id,
@@ -5611,8 +7054,7 @@ impl SyncClient {
                         &reason_code,
                         effective_scopes,
                         body,
-                        next_cursor,
-                        bootstrap_state,
+                        sub_end,
                         meta,
                         &mut report,
                     ) {
@@ -5684,225 +7126,247 @@ impl SyncClient {
 
     // -- push results (§6.3, §7.2) ------------------------------------------------
 
-    fn handle_push_result(
+    fn handle_push_results(
         &mut self,
-        client_commit_id: &str,
-        status: PushStatus,
-        results: &[OpResult],
-        rejection_details: Option<&BTreeMap<i32, RejectionDetails>>,
+        frames: &[Frame],
+        pushed_ids: &HashSet<&str>,
+        rejection_details_by_commit: &HashMap<String, BTreeMap<i32, RejectionDetails>>,
         report: &mut SyncReport,
-        prune_outcomes: bool,
-    ) {
-        let Some(index) = self
-            .outbox
-            .iter()
-            .position(|c| c.client_commit_id == client_commit_id)
-        else {
-            return;
-        };
-        if self.begin_observation("syncular_push_result").is_err() {
-            return;
-        }
+        last_final_push_result_id: Option<&str>,
+    ) -> Result<(), String> {
+        self.begin_observation("syncular_push_results")?;
+        let conflict_count = self.conflicts.len();
+        let rejection_count = self.rejections.len();
+        let applied_count = report.applied.len();
+        let rejected_count = report.rejected.len();
+        let retryable_count = report.retryable.len();
+        let was_dirty = self.overlay_dirty.get();
+        let mut removed = Vec::new();
         let mut batch = ChangeAccumulator::default();
-        let operations = self.outbox[index].ops.clone();
-        match status {
-            PushStatus::Applied | PushStatus::Cached => {
-                // §7.2: a lost ack replays as `cached` — proceed as if the
-                // ack had arrived.
-                let journal_results = results
+        let persisted = (|| {
+            for frame in frames {
+                let Frame::PushResult {
+                    client_commit_id,
+                    status,
+                    results,
+                    ..
+                } = frame
+                else {
+                    return Err("unexpected acknowledgement frame".to_owned());
+                };
+                if !pushed_ids.contains(client_commit_id.as_str()) {
+                    continue;
+                }
+                let Some(index) = self
+                    .outbox
                     .iter()
-                    .map(|result| {
-                        let op_index = match result {
-                            OpResult::Applied { op_index }
-                            | OpResult::Conflict { op_index, .. }
-                            | OpResult::Error { op_index, .. } => *op_index,
+                    .position(|commit| commit.client_commit_id == *client_commit_id)
+                else {
+                    continue;
+                };
+                let status = *status;
+                let rejection_details = rejection_details_by_commit.get(client_commit_id);
+                let operations = self.outbox[index].ops.clone();
+                match status {
+                    PushStatus::Applied | PushStatus::Cached => {
+                        // §7.2: a lost ack replays as `cached` — proceed as if the
+                        // ack had arrived.
+                        let journal_results = results
+                            .iter()
+                            .map(|result| {
+                                let op_index = match result {
+                                    OpResult::Applied { op_index }
+                                    | OpResult::Conflict { op_index, .. }
+                                    | OpResult::Error { op_index, .. } => *op_index,
+                                };
+                                CommitOperationOutcome::Applied { op_index }
+                            })
+                            .collect::<Vec<_>>();
+                        let outcome_status = if status == PushStatus::Applied {
+                            CommitOutcomeStatus::Applied
+                        } else {
+                            CommitOutcomeStatus::Cached
                         };
-                        CommitOperationOutcome::Applied { op_index }
-                    })
-                    .collect::<Vec<_>>();
-                let outcome_status = if status == PushStatus::Applied {
-                    CommitOutcomeStatus::Applied
-                } else {
-                    CommitOutcomeStatus::Cached
-                };
-                let persisted = self
-                    .persist_commit_outcome(
-                        client_commit_id,
-                        outcome_status,
-                        &journal_results,
-                        None,
-                    )
-                    .and_then(|()| self.delete_outbox_persisted(client_commit_id));
-                let persisted = if prune_outcomes {
-                    persisted.and_then(|()| self.prune_commit_outcomes())
-                } else {
-                    persisted
-                };
-                if persisted.is_err() {
-                    self.rollback_observation("syncular_push_result");
-                    return;
-                }
-                report.applied.push(client_commit_id.to_owned());
-                self.outbox.remove(index);
-                self.overlay_dirty.set(true);
-                batch.status = true;
-                batch.outcomes = true;
-            }
-            PushStatus::Rejected => {
-                if results.iter().any(|result| {
-                    matches!(
-                        result,
-                        OpResult::Error {
-                            code,
-                            retryable: true,
-                            ..
-                        } if code == "sync.idempotency_cache_miss"
-                    )
-                }) {
-                    // §6.3/§7.2: a serving failure, not an outcome — keep the
-                    // exact commit queued for an identical retry.
-                    report.retryable.push(client_commit_id.to_owned());
-                    if self
-                        .finish_observation("syncular_push_result", batch)
-                        .is_err()
-                    {
-                        self.rollback_observation("syncular_push_result");
+                        let persisted = self
+                            .persist_commit_outcome(
+                                client_commit_id,
+                                outcome_status,
+                                &journal_results,
+                                None,
+                            )
+                            .and_then(|()| self.delete_outbox_persisted(client_commit_id));
+                        persisted?;
+                        self.overlay_dirty.set(true);
+                        batch.status = true;
+                        batch.outcomes = true;
                     }
-                    return;
-                }
+                    PushStatus::Rejected => {
+                        if results.iter().any(|result| {
+                            matches!(
+                                result,
+                                OpResult::Error {
+                                    code,
+                                    retryable: true,
+                                    ..
+                                } if code == "sync.idempotency_cache_miss"
+                            )
+                        }) {
+                            // §6.3/§7.2: a serving failure, not an outcome — keep the
+                            // exact commit queued for an identical retry.
+                            report.retryable.push(client_commit_id.to_owned());
+                            continue;
+                        }
 
-                let mut journal_results = Vec::with_capacity(results.len());
-                let mut conflicts = Vec::new();
-                let mut rejections = Vec::new();
-                for result in results {
-                    match result {
-                        OpResult::Applied { op_index } => {
-                            journal_results.push(CommitOperationOutcome::Applied {
-                                op_index: *op_index,
-                            });
+                        let mut journal_results = Vec::with_capacity(results.len());
+                        let mut conflicts = Vec::new();
+                        let mut rejections = Vec::new();
+                        for result in results {
+                            match result {
+                                OpResult::Applied { op_index } => {
+                                    journal_results.push(CommitOperationOutcome::Applied {
+                                        op_index: *op_index,
+                                    });
+                                }
+                                OpResult::Conflict {
+                                    op_index,
+                                    code,
+                                    message,
+                                    server_version,
+                                    server_row,
+                                } => {
+                                    let operation = operations
+                                        .get(*op_index as usize)
+                                        .map(CommitOperation::from);
+                                    let (table, row_id) = operation
+                                        .as_ref()
+                                        .map(|op| (op.table.clone(), op.row_id.clone()))
+                                        .unwrap_or_default();
+                                    let server_row_json = self
+                                        .schema
+                                        .table(&table)
+                                        .and_then(|t| {
+                                            decode_row_bytes(t, server_row, &self.encryption)
+                                                .ok()
+                                                .map(|row| (t, row))
+                                        })
+                                        .map(|(t, row)| {
+                                            let mut map = Map::new();
+                                            for (i, column) in t.columns.iter().enumerate() {
+                                                map.insert(
+                                                    column.name.clone(),
+                                                    column_value_to_json(
+                                                        row.get(i).unwrap_or(&None),
+                                                    ),
+                                                );
+                                            }
+                                            map
+                                        })
+                                        .unwrap_or_default();
+                                    let conflict = ConflictRecord {
+                                        client_commit_id: client_commit_id.to_owned(),
+                                        op_index: *op_index,
+                                        table,
+                                        row_id,
+                                        code: code.clone(),
+                                        message: message.clone(),
+                                        server_version: *server_version,
+                                        server_row: server_row_json,
+                                        operation,
+                                    };
+                                    journal_results.push(CommitOperationOutcome::Conflict {
+                                        conflict: conflict.clone(),
+                                    });
+                                    conflicts.push(conflict);
+                                }
+                                OpResult::Error {
+                                    op_index,
+                                    code,
+                                    message,
+                                    retryable,
+                                } => {
+                                    let rejection = RejectionRecord {
+                                        client_commit_id: client_commit_id.to_owned(),
+                                        op_index: *op_index,
+                                        code: code.clone(),
+                                        message: message.clone(),
+                                        retryable: *retryable,
+                                        details: rejection_details
+                                            .and_then(|details| details.get(op_index))
+                                            .cloned(),
+                                        operation: operations
+                                            .get(*op_index as usize)
+                                            .map(CommitOperation::from),
+                                    };
+                                    journal_results.push(CommitOperationOutcome::Error {
+                                        rejection: rejection.clone(),
+                                    });
+                                    rejections.push(rejection);
+                                }
+                            }
                         }
-                        OpResult::Conflict {
-                            op_index,
-                            code,
-                            message,
-                            server_version,
-                            server_row,
-                        } => {
-                            let operation = operations
-                                .get(*op_index as usize)
-                                .map(CommitOperation::from);
-                            let (table, row_id) = operation
-                                .as_ref()
-                                .map(|op| (op.table.clone(), op.row_id.clone()))
-                                .unwrap_or_default();
-                            let server_row_json = self
-                                .schema
-                                .table(&table)
-                                .and_then(|t| {
-                                    decode_row_bytes(t, server_row, &self.encryption)
-                                        .ok()
-                                        .map(|row| (t, row))
-                                })
-                                .map(|(t, row)| {
-                                    let mut map = Map::new();
-                                    for (i, column) in t.columns.iter().enumerate() {
-                                        map.insert(
-                                            column.name.clone(),
-                                            column_value_to_json(row.get(i).unwrap_or(&None)),
-                                        );
-                                    }
-                                    map
-                                })
-                                .unwrap_or_default();
-                            let conflict = ConflictRecord {
-                                client_commit_id: client_commit_id.to_owned(),
-                                op_index: *op_index,
-                                table,
-                                row_id,
-                                code: code.clone(),
-                                message: message.clone(),
-                                server_version: *server_version,
-                                server_row: server_row_json,
-                                operation,
-                            };
-                            journal_results.push(CommitOperationOutcome::Conflict {
-                                conflict: conflict.clone(),
-                            });
-                            conflicts.push(conflict);
-                        }
-                        OpResult::Error {
-                            op_index,
-                            code,
-                            message,
-                            retryable,
-                        } => {
-                            let rejection = RejectionRecord {
-                                client_commit_id: client_commit_id.to_owned(),
-                                op_index: *op_index,
-                                code: code.clone(),
-                                message: message.clone(),
-                                retryable: *retryable,
-                                details: rejection_details
-                                    .and_then(|details| details.get(op_index))
-                                    .cloned(),
-                                operation: operations
-                                    .get(*op_index as usize)
-                                    .map(CommitOperation::from),
-                            };
-                            journal_results.push(CommitOperationOutcome::Error {
-                                rejection: rejection.clone(),
-                            });
-                            rejections.push(rejection);
+                        let outcome_status = if conflicts.is_empty() {
+                            CommitOutcomeStatus::Rejected
+                        } else {
+                            CommitOutcomeStatus::Conflict
+                        };
+                        let persisted = self
+                            .persist_commit_outcome(
+                                client_commit_id,
+                                outcome_status,
+                                &journal_results,
+                                Some(&operations),
+                            )
+                            .and_then(|()| self.delete_outbox_persisted(client_commit_id));
+                        persisted?;
+                        batch.conflicts = !conflicts.is_empty();
+                        batch.rejections = !rejections.is_empty();
+                        batch.status = true;
+                        batch.outcomes = true;
+                        self.conflicts.extend(conflicts);
+                        self.rejections.extend(rejections);
+                        self.overlay_dirty.set(true);
+                    }
+                }
+                removed.push((index, self.outbox.remove(index)));
+                if batch.status {
+                    for operation in &operations {
+                        if !self.record_row_scopes(
+                            &mut batch,
+                            &operation.table,
+                            &operation.row_id,
+                            false,
+                        ) {
+                            batch.table(&operation.table);
                         }
                     }
                 }
-                let outcome_status = if conflicts.is_empty() {
-                    CommitOutcomeStatus::Rejected
-                } else {
-                    CommitOutcomeStatus::Conflict
-                };
-                let persisted = self
-                    .persist_commit_outcome(
-                        client_commit_id,
-                        outcome_status,
-                        &journal_results,
-                        Some(&operations),
-                    )
-                    .and_then(|()| self.delete_outbox_persisted(client_commit_id));
-                let persisted = if prune_outcomes {
-                    persisted.and_then(|()| self.prune_commit_outcomes())
-                } else {
-                    persisted
-                };
-                if persisted.is_err() {
-                    self.rollback_observation("syncular_push_result");
-                    return;
-                }
-                report.conflicts += conflicts.len() as u32;
-                report.rejected.push(client_commit_id.to_owned());
-                batch.conflicts = !conflicts.is_empty();
-                batch.rejections = !rejections.is_empty();
-                batch.status = true;
-                batch.outcomes = true;
-                self.conflicts.extend(conflicts);
-                self.rejections.extend(rejections);
-                self.outbox.remove(index);
-                self.overlay_dirty.set(true);
-            }
-        }
-        if batch.status {
-            for operation in &operations {
-                if !self.record_row_scopes(&mut batch, &operation.table, &operation.row_id, false) {
-                    batch.table(&operation.table);
+                match status {
+                    PushStatus::Applied | PushStatus::Cached => {
+                        report.applied.push(client_commit_id.to_owned())
+                    }
+                    PushStatus::Rejected => report.rejected.push(client_commit_id.to_owned()),
                 }
             }
+            if batch.outcomes && frames.iter().any(|frame| matches!(frame, Frame::PushResult { client_commit_id, .. } if Some(client_commit_id.as_str()) == last_final_push_result_id)) {
+                self.prune_commit_outcomes()?;
+            }
+            self.finish_observation("syncular_push_results", batch)
+        })();
+        if let Err(error) = persisted {
+            self.rollback_observation("syncular_push_results");
+            for (index, commit) in removed.into_iter().rev() {
+                self.outbox.insert(index, commit);
+            }
+            self.conflicts.truncate(conflict_count);
+            self.rejections.truncate(rejection_count);
+            self.overlay_dirty.set(was_dirty);
+            report.applied.truncate(applied_count);
+            report.rejected.truncate(rejected_count);
+            report.retryable.truncate(retryable_count);
+            return Err(error);
         }
-        if self
-            .finish_observation("syncular_push_result", batch)
-            .is_err()
-        {
-            self.rollback_observation("syncular_push_result");
-        }
+        report.conflicts += (self.conflicts.len() - conflict_count) as u32;
+        Ok(())
     }
 
     fn push_result_is_final(status: PushStatus, results: &[OpResult]) -> bool {
@@ -5930,173 +7394,235 @@ impl SyncClient {
         reason_code: &str,
         effective_scopes: Vec<(String, Vec<String>)>,
         body: Vec<Frame>,
-        next_cursor: i64,
-        bootstrap_state: Option<String>,
+        sub_end: Option<(i64, Option<String>)>,
         meta: &RequestMeta,
         report: &mut SyncReport,
     ) -> Result<(), SectionError> {
         let Some(sub_index) = self.subs.iter().position(|s| s.id == id) else {
             return Ok(()); // unknown echo: ignore
         };
+        if status != SubStatus::Active && sub_end.is_none() {
+            return Err(SectionError::Abort(
+                "sync.invalid_request".into(),
+                "subscription section without SUB_END".into(),
+            ));
+        }
         match status {
             SubStatus::Revoked => {
                 self.begin_observation("syncular_revocation")
                     .map_err(|message| SectionError::Abort("storage.failed".to_owned(), message))?;
-                let mut batch = ChangeAccumulator::default();
-                let registered = self.window_unit_by_sub_id(id);
-                // §3.3: stop pulling, purge exactly the last effective grant.
-                let (table, effective) = {
-                    let sub = &self.subs[sub_index];
-                    (sub.table.clone(), sub.effective.clone().unwrap_or_default())
-                };
-                let purged = self.purge_scope_rows(&table, &effective);
-                match purged {
-                    Ok(()) => {
-                        self.record_scope_map(&mut batch, &table, &effective);
-                        let sub = &mut self.subs[sub_index];
-                        sub.state = SubState::Revoked;
-                        sub.reason_code = Some(if reason_code.is_empty() {
-                            "sync.scope_revoked".to_owned()
-                        } else {
-                            reason_code.to_owned()
-                        });
-                        report.revoked.push(id.to_owned());
-                        let doomed_effective = effective;
-                        let sub_table = table;
-                        self.persist_sub(&self.subs[sub_index].clone());
-                        let dropped = self
-                            .drop_doomed_outbox(&sub_table, &doomed_effective)
+                let previous = self.subs[sub_index].clone();
+                let was_dirty = self.overlay_dirty.get();
+                let previous_outbox = self.outbox.clone();
+                let rejection_count = self.rejections.len();
+                let revoked_count = report.revoked.len();
+                let failed_count = report.failed.len();
+                let result =
+                    (|| {
+                        let mut batch = ChangeAccumulator::default();
+                        let registered = self.window_unit_by_sub_id(id);
+                        // §3.3: stop pulling, purge exactly the last effective grant.
+                        let (table, effective) = {
+                            let sub = &self.subs[sub_index];
+                            (sub.table.clone(), sub.effective.clone().unwrap_or_default())
+                        };
+                        let purged = self.purge_scope_rows(&table, &effective);
+                        match purged {
+                            Ok(()) => {
+                                self.record_scope_map(&mut batch, &table, &effective);
+                                let sub = &mut self.subs[sub_index];
+                                sub.state = SubState::Revoked;
+                                sub.reason_code = Some(if reason_code.is_empty() {
+                                    "sync.scope_revoked".to_owned()
+                                } else {
+                                    reason_code.to_owned()
+                                });
+                                report.revoked.push(id.to_owned());
+                                let doomed_effective = effective;
+                                let sub_table = table;
+                                self.persist_sub(&self.subs[sub_index].clone()).map_err(
+                                    |message| SectionError::Abort("storage.failed".into(), message),
+                                )?;
+                                let dropped = self
+                                    .drop_doomed_outbox(&sub_table, &doomed_effective)
+                                    .map_err(|message| {
+                                        SectionError::Abort("storage.failed".to_owned(), message)
+                                    })?;
+                                if dropped {
+                                    batch.status = true;
+                                    batch.rejections = true;
+                                    batch.outcomes = true;
+                                }
+                                // §5.9.7 B2: revocation deletes now-unauthorized blob
+                                // bodies (evicted ≠ revoked).
+                                self.reconcile_blob_refcounts(true);
+                            }
+                            Err(()) => {
+                                // §3.3 fail closed: no local mapping — never clear by
+                                // approximation; fatal configuration error.
+                                let sub = &mut self.subs[sub_index];
+                                sub.state = SubState::Failed;
+                                sub.reason_code = Some("sync.scope_revoked".to_owned());
+                                report.failed.push(id.to_owned());
+                                self.persist_sub(&self.subs[sub_index].clone()).map_err(
+                                    |message| SectionError::Abort("storage.failed".into(), message),
+                                )?;
+                            }
+                        }
+                        if let Some((base_key, unit)) = registered {
+                            batch.window(&base_key, &self.subs[sub_index].table, &unit);
+                        }
+                        self.rebuild_overlay_if_dirty();
+                        self.finish_observation("syncular_revocation", batch)
                             .map_err(|message| {
                                 SectionError::Abort("storage.failed".to_owned(), message)
                             })?;
-                        if dropped {
-                            batch.status = true;
-                            batch.rejections = true;
-                            batch.outcomes = true;
-                        }
-                        // §5.9.7 B2: revocation deletes now-unauthorized blob
-                        // bodies (evicted ≠ revoked).
-                        self.reconcile_blob_refcounts(true);
-                    }
-                    Err(()) => {
-                        // §3.3 fail closed: no local mapping — never clear by
-                        // approximation; fatal configuration error.
-                        let sub = &mut self.subs[sub_index];
-                        sub.state = SubState::Failed;
-                        sub.reason_code = Some("sync.scope_revoked".to_owned());
-                        report.failed.push(id.to_owned());
-                        self.persist_sub(&self.subs[sub_index].clone());
-                    }
+                        Ok(())
+                    })();
+                if result.is_err() {
+                    self.rollback_observation("syncular_revocation");
+                    self.subs[sub_index] = previous;
+                    self.overlay_dirty.set(was_dirty);
+                    self.outbox = previous_outbox;
+                    self.rejections.truncate(rejection_count);
+                    report.revoked.truncate(revoked_count);
+                    report.failed.truncate(failed_count);
                 }
-                if let Some((base_key, unit)) = registered {
-                    batch.window(&base_key, &self.subs[sub_index].table, &unit);
-                }
-                self.rebuild_overlay_if_dirty();
-                self.finish_observation("syncular_revocation", batch)
-                    .map_err(|message| SectionError::Abort("storage.failed".to_owned(), message))?;
-                Ok(())
+                result
             }
             SubStatus::Reset => {
                 self.begin_observation("syncular_reset")
                     .map_err(|message| SectionError::Abort("storage.failed".to_owned(), message))?;
-                let mut batch = ChangeAccumulator::default();
-                let registered = self.window_unit_by_sub_id(id);
-                // §4.6: discard cursor + bootstrap state, keep local rows —
-                // reset is a staleness signal, not a purge signal.
-                let sub = &mut self.subs[sub_index];
-                sub.cursor = -1;
-                sub.bootstrap_state = None;
-                report.resets.push(id.to_owned());
-                self.persist_sub(&self.subs[sub_index].clone());
-                if let Some((base_key, unit)) = registered {
-                    batch.window(&base_key, &self.subs[sub_index].table, &unit);
+                let previous = self.subs[sub_index].clone();
+                let was_dirty = self.overlay_dirty.get();
+                let reset_count = report.resets.len();
+                let result = (|| {
+                    let mut batch = ChangeAccumulator::default();
+                    let registered = self.window_unit_by_sub_id(id);
+                    // §4.6: discard cursor + bootstrap state, keep local rows —
+                    // reset is a staleness signal, not a purge signal.
+                    let sub = &mut self.subs[sub_index];
+                    sub.cursor = -1;
+                    sub.bootstrap_state = None;
+                    report.resets.push(id.to_owned());
+                    self.persist_sub(&self.subs[sub_index].clone())
+                        .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
+                    if let Some((base_key, unit)) = registered {
+                        batch.window(&base_key, &self.subs[sub_index].table, &unit);
+                    }
+                    self.finish_observation("syncular_reset", batch)
+                        .map_err(|message| {
+                            SectionError::Abort("storage.failed".to_owned(), message)
+                        })?;
+                    Ok(())
+                })();
+                if result.is_err() {
+                    self.rollback_observation("syncular_reset");
+                    self.subs[sub_index] = previous;
+                    self.overlay_dirty.set(was_dirty);
+                    report.resets.truncate(reset_count);
                 }
-                self.finish_observation("syncular_reset", batch)
-                    .map_err(|message| SectionError::Abort("storage.failed".to_owned(), message))?;
-                Ok(())
+                result
             }
             SubStatus::Active => {
                 let fresh = meta
                     .fresh
                     .iter()
                     .find(|(fid, _)| fid == id)
-                    .map(|(_, f)| *f)
+                    .map(|(_, fresh)| *fresh)
                     .unwrap_or(false);
-                let was_pending = self.subs[sub_index].cursor < 0
-                    || self.subs[sub_index].bootstrap_state.is_some();
-                let registered = self.window_unit_by_sub_id(id);
-                // §3.3: each active echo replaces the persisted copy.
+                let previous = self.subs[sub_index].clone();
                 self.subs[sub_index].effective = Some(effective_scopes);
-                self.begin_observation("syncular_section")
-                    .map_err(|message| SectionError::Abort("storage.failed".to_owned(), message))?;
-                let mut batch = ChangeAccumulator::default();
-                let outcome = self.apply_section_body(
-                    transport, sub_index, body, fresh, meta, report, &mut batch,
-                );
+                let outcome = self
+                    .apply_section_body(transport, sub_index, body, fresh, meta, report)
+                    .and_then(|()| {
+                        let (cursor, bootstrap_state) = sub_end.ok_or_else(|| {
+                            SectionError::Abort(
+                                "sync.invalid_request".into(),
+                                "subscription section without SUB_END".into(),
+                            )
+                        })?;
+                        self.apply_sub_end(sub_index, cursor, bootstrap_state)
+                            .map_err(|message| {
+                                SectionError::Abort("storage.failed".into(), message)
+                            })
+                    });
                 match outcome {
                     Ok(()) => {
-                        let sub = &mut self.subs[sub_index];
-                        // §1.4: durable cursor/resume state persists only at
-                        // SUB_END.
-                        sub.cursor = next_cursor;
-                        sub.bootstrap_state = bootstrap_state;
-                        sub.synced_once = true;
-                        if sub.bootstrap_state.is_some() {
+                        if self.subs[sub_index].bootstrap_state.is_some() {
                             report.bootstrapping.push(id.to_owned());
                         }
-                        let completed =
-                            was_pending && sub.cursor >= 0 && sub.bootstrap_state.is_none();
-                        self.persist_sub(&self.subs[sub_index].clone());
-                        if completed {
-                            if let Some((base_key, unit)) = registered.clone() {
-                                batch.window(&base_key, &self.subs[sub_index].table, &unit);
-                            }
-                        }
-                        self.rebuild_overlay_if_dirty();
-                        self.finish_observation("syncular_section", batch)
-                            .map_err(|message| {
-                                SectionError::Abort("storage.failed".to_owned(), message)
-                            })?;
                         Ok(())
                     }
                     Err(SectionError::FailClosed) => {
-                        // §5.6: subscription-local; the rest of the response
-                        // still applies. SUB_END values are NOT persisted.
-                        self.rollback_observation("syncular_section");
+                        self.subs[sub_index] = previous.clone();
                         self.begin_observation("syncular_section_failure")
                             .map_err(|message| {
-                                SectionError::Abort("storage.failed".to_owned(), message)
+                                SectionError::Abort("storage.failed".into(), message)
                             })?;
-                        let mut failure_batch = ChangeAccumulator::default();
-                        let sub = &mut self.subs[sub_index];
-                        sub.state = SubState::Failed;
-                        sub.reason_code = Some("sync.scope_revoked".to_owned());
-                        report.failed.push(id.to_owned());
-                        self.persist_sub(&self.subs[sub_index].clone());
-                        if let Some((base_key, unit)) = registered {
-                            failure_batch.window(&base_key, &self.subs[sub_index].table, &unit);
+                        let persisted = (|| {
+                            let mut batch = ChangeAccumulator::default();
+                            if let Some((base_key, unit)) = self.window_unit_by_sub_id(id) {
+                                batch.window(&base_key, &self.subs[sub_index].table, &unit);
+                            }
+                            self.subs[sub_index].state = SubState::Failed;
+                            self.subs[sub_index].reason_code = Some("sync.scope_revoked".into());
+                            self.persist_sub(&self.subs[sub_index])?;
+                            self.finish_observation("syncular_section_failure", batch)
+                        })();
+                        if let Err(message) = persisted {
+                            self.rollback_observation("syncular_section_failure");
+                            self.subs[sub_index] = previous;
+                            return Err(SectionError::Abort("storage.failed".into(), message));
                         }
-                        self.finish_observation("syncular_section_failure", failure_batch)
-                            .map_err(|message| {
-                                SectionError::Abort("storage.failed".to_owned(), message)
-                            })?;
+                        report.failed.push(id.to_owned());
                         Ok(())
                     }
-                    Err(SectionError::Abort(code, message)) => {
-                        // §1.4 rule 5: roll back the open subscription; do
-                        // not persist its SUB_END values.
-                        self.rollback_observation("syncular_section");
-                        Err(SectionError::Abort(code, message))
+                    Err(error) => {
+                        // Frame/block transactions already completed. Preserve their
+                        // rows and revisions, but leave this subscription cursor unchanged.
+                        self.subs[sub_index] = previous;
+                        Err(error)
                     }
                 }
             }
         }
     }
 
-    // The section context and its transaction-owned change accumulator are
-    // deliberately explicit here: folding either into shared mutable state
-    // would weaken the atomic observation boundary.
-    #[allow(clippy::too_many_arguments)]
+    fn apply_sub_end(
+        &mut self,
+        sub_index: usize,
+        cursor: i64,
+        bootstrap_state: Option<String>,
+    ) -> Result<(), String> {
+        #[cfg(feature = "bench-internals")]
+        let _phase = self.benchmark_phases.start(Phase::CursorPersist);
+        let previous = self.subs[sub_index].clone();
+        self.begin_observation("syncular_sub_end")?;
+        let persisted = (|| {
+            let mut batch = ChangeAccumulator::default();
+            let completed = (previous.cursor < 0 || previous.bootstrap_state.is_some())
+                && cursor >= 0
+                && bootstrap_state.is_none();
+            if completed {
+                if let Some((base_key, unit)) = self.window_unit_by_sub_id(&previous.id) {
+                    batch.window(&base_key, &previous.table, &unit);
+                }
+            }
+            let sub = &mut self.subs[sub_index];
+            sub.cursor = cursor;
+            sub.bootstrap_state = bootstrap_state;
+            sub.synced_once = true;
+            self.persist_sub(&self.subs[sub_index])?;
+            self.finish_observation("syncular_sub_end", batch)
+        })();
+        if persisted.is_err() {
+            self.rollback_observation("syncular_sub_end");
+            self.subs[sub_index] = previous;
+        }
+        persisted
+    }
+
     fn apply_section_body(
         &mut self,
         transport: &mut dyn Transport,
@@ -6105,7 +7631,6 @@ impl SyncClient {
         fresh: bool,
         meta: &RequestMeta,
         report: &mut SyncReport,
-        batch: &mut ChangeAccumulator,
     ) -> Result<(), SectionError> {
         let mut saw_segment = false;
         for frame in body {
@@ -6113,8 +7638,7 @@ impl SyncClient {
                 Frame::Commit {
                     tables, changes, ..
                 } => {
-                    self.record_commit_changes(batch, &tables, &changes);
-                    self.apply_commit_changes(&tables, &changes)
+                    self.apply_commit_frame(&tables, &changes)
                         .map_err(|(c, m)| SectionError::Abort(c, m))?;
                     report.commits_applied += 1;
                 }
@@ -6123,13 +7647,7 @@ impl SyncClient {
                         .map_err(|e| SectionError::Abort(e.code.as_str().to_owned(), e.detail))?;
                     let first = !saw_segment;
                     saw_segment = true;
-                    let effective = self.subs[sub_index].effective.clone().unwrap_or_default();
-                    let cleared =
-                        fresh && first && self.scoped_rows_exist(&segment.table, &effective);
                     let applied = self.apply_segment(sub_index, &segment, fresh && first)?;
-                    if applied > 0 || cleared {
-                        batch.table(&segment.table);
-                    }
                     report.segment_rows_applied += applied;
                 }
                 Frame::SegmentRef {
@@ -6221,10 +7739,6 @@ impl SyncClient {
                         }
                         let first = !saw_segment;
                         saw_segment = true;
-                        let sub_table = self.subs[sub_index].table.clone();
-                        let effective = self.subs[sub_index].effective.clone().unwrap_or_default();
-                        let cleared =
-                            fresh && first && self.scoped_rows_exist(&sub_table, &effective);
                         let applied = self.apply_sqlite_segment(
                             sub_index,
                             &bytes,
@@ -6233,9 +7747,6 @@ impl SyncClient {
                             as_of_commit_seq,
                             &scope_digest,
                         )?;
-                        if applied > 0 || cleared {
-                            batch.table(&sub_table);
-                        }
                         report.segment_rows_applied += applied;
                     } else {
                         let segment = decode_rows_segment(&bytes).map_err(|e| {
@@ -6243,17 +7754,14 @@ impl SyncClient {
                         })?;
                         let first = row_cursor.is_none();
                         saw_segment = true;
-                        let effective = self.subs[sub_index].effective.clone().unwrap_or_default();
-                        let cleared =
-                            fresh && first && self.scoped_rows_exist(&segment.table, &effective);
                         let applied = self.apply_segment(sub_index, &segment, fresh && first)?;
-                        if applied > 0 || cleared {
-                            batch.table(&segment.table);
-                        }
                         report.segment_rows_applied += applied;
                     }
                 }
                 Frame::Unknown { .. } => {}
+                Frame::Error { code, message, .. } => {
+                    return Err(SectionError::Abort(code, message))
+                }
                 _ => {
                     return Err(SectionError::Abort(
                         "sync.invalid_request".to_owned(),
@@ -6265,11 +7773,49 @@ impl SyncClient {
         Ok(())
     }
 
+    // Both pull and realtime frames use the same durable observation boundary.
+    fn apply_commit_frame(
+        &mut self,
+        tables: &[String],
+        changes: &[ssp2::model::Change],
+    ) -> Result<(), (String, String)> {
+        #[cfg(feature = "bench-internals")]
+        let _phase = self.benchmark_phases.start(Phase::CommitApply);
+        let was_dirty = self.overlay_dirty.get();
+        self.begin_observation("syncular_commit")
+            .map_err(|message| ("storage.failed".into(), message))?;
+        let applied = (|| {
+            let mut batch = ChangeAccumulator::default();
+            self.record_commit_changes(&mut batch, tables, changes);
+            self.apply_commit_changes(tables, changes)?;
+            self.rebuild_overlay_if_dirty();
+            self.finish_observation("syncular_commit", batch)
+                .map_err(|message| ("storage.failed".into(), message))
+        })();
+        if applied.is_err() {
+            self.rollback_observation("syncular_commit");
+            self.overlay_dirty.set(was_dirty);
+        }
+        applied
+    }
+
     fn apply_commit_changes(
         &mut self,
         tables: &[String],
         changes: &[ssp2::model::Change],
     ) -> Result<(), (String, String)> {
+        // A clean overlay can reconcile changed primary keys independently
+        // when their tables have no secondary unique constraints. Such a
+        // constraint can change whether another row's pending write succeeds,
+        // so those frames still require the complete FIFO replay below.
+        let mirror_visible = !self.overlay_dirty.get()
+            && (self.outbox.is_empty()
+                || changes.iter().all(|change| {
+                    tables
+                        .get(change.table_index as usize)
+                        .and_then(|name| self.schema.table(name))
+                        .is_some_and(|table| !table.indexes.iter().any(|index| index.unique))
+                }));
         for change in changes {
             let table_name = tables.get(change.table_index as usize).ok_or_else(|| {
                 (
@@ -6292,18 +7838,63 @@ impl SyncClient {
                         )
                     })?;
                     // §5.11: decrypt encrypted columns on apply.
-                    let row = decode_row_bytes(table, payload, &self.encryption)
-                        .map_err(|m| ("sync.invalid_request".to_owned(), m))?;
+                    let row = {
+                        #[cfg(feature = "bench-internals")]
+                        let _phase = self.benchmark_phases.start(Phase::RowDecode);
+                        decode_row_bytes(table, payload, &self.encryption)
+                            .map_err(|m| ("sync.invalid_request".to_owned(), m))?
+                    };
                     let version = change.row_version.unwrap_or(0);
                     let table_name = table.name.clone();
                     self.write_base_row(&table_name, &row, version)
                         .map_err(|m| ("sync.invalid_request".to_owned(), m))?;
+                    if mirror_visible {
+                        self.write_row(&visible_table(&table_name), &table_name, &row, version)
+                            .map_err(|m| ("sync.invalid_request".to_owned(), m))?;
+                    }
                 }
                 Op::Delete => {
                     self.delete_base_row(table_name, &change.row_id)
                         .map_err(|m| ("sync.invalid_request".to_owned(), m))?;
+                    if mirror_visible {
+                        let sql = format!(
+                            "DELETE FROM {} WHERE {}",
+                            visible_table(table_name),
+                            row_id_predicate(table)
+                        );
+                        self.conn
+                            .prepare_cached(&sql)
+                            .and_then(|mut statement| {
+                                statement.execute(rusqlite::params![change.row_id])
+                            })
+                            .map_err(|error| {
+                                ("sync.invalid_request".to_owned(), error.to_string())
+                            })?;
+                    }
                 }
             }
+        }
+        if mirror_visible {
+            if !self.outbox.is_empty() {
+                let changed_rows: HashSet<(&str, &str)> = changes
+                    .iter()
+                    .map(|change| {
+                        (
+                            tables[change.table_index as usize].as_str(),
+                            change.row_id.as_str(),
+                        )
+                    })
+                    .collect();
+                self.apply_outbox_ops(
+                    self.outbox
+                        .iter()
+                        .flat_map(|commit| &commit.ops)
+                        .filter(|op| {
+                            changed_rows.contains(&(op.table.as_str(), op.row_id.as_str()))
+                        }),
+                );
+            }
+            self.overlay_dirty.set(false);
         }
         Ok(())
     }
@@ -6346,36 +7937,58 @@ impl SyncClient {
                 "segment column table does not match the generated schema (§5.2)".to_owned(),
             ));
         }
-        if first_fresh_page {
-            // §5.6: delete local rows for the subscription's scope so
-            // removed rows don't survive re-bootstrap; fail closed at the
-            // clear too.
-            self.purge_scope_rows(&table.name, &effective)
-                .map_err(|()| SectionError::FailClosed)?;
-        }
         let mut applied = 0u32;
-        for block in &segment.blocks {
-            for row in block {
-                // §5.11: a bootstrap segment carries ciphertext for encrypted
-                // columns; decrypt to plaintext before the local write. A
-                // plaintext table writes the decoded row directly (no per-row
-                // clone on the hot bootstrap path).
-                let decrypted;
-                let values = if table.has_encrypted_columns() {
-                    let mut values = row.values.clone();
-                    crate::values::decrypt_segment_row(&table, &mut values, &self.encryption)
-                        .map_err(|m| SectionError::Abort("client.decrypt_failed".to_owned(), m))?;
-                    decrypted = values;
-                    &decrypted
-                } else {
-                    &row.values
-                };
-                // §5.6: the row record's serverVersion is the row's
-                // last-known server_version, same as a COMMIT rowVersion.
-                self.write_base_row(&table.name, values, row.server_version)
-                    .map_err(|m| SectionError::Abort("sync.invalid_request".to_owned(), m))?;
-                applied += 1;
+        let empty = Vec::new();
+        let blocks = if segment.blocks.is_empty() {
+            std::slice::from_ref(&empty)
+        } else {
+            &segment.blocks
+        };
+        for (index, block) in blocks.iter().enumerate() {
+            let clear = first_fresh_page && index == 0;
+            if !clear && block.is_empty() {
+                continue;
             }
+            let was_dirty = self.overlay_dirty.get();
+            self.begin_observation("syncular_segment_block")
+                .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
+            let outcome = (|| {
+                let mut batch = ChangeAccumulator::default();
+                if !block.is_empty() || (clear && self.scoped_rows_exist(&table.name, &effective)) {
+                    batch.table(&table.name);
+                }
+                if clear {
+                    self.purge_scope_rows(&table.name, &effective)
+                        .map_err(|()| SectionError::FailClosed)?;
+                }
+                for row in block {
+                    let decrypted;
+                    let values = if table.has_encrypted_columns() {
+                        let mut values = row.values.clone();
+                        crate::values::decrypt_segment_row(&table, &mut values, &self.encryption)
+                            .map_err(|message| {
+                            SectionError::Abort("client.decrypt_failed".into(), message)
+                        })?;
+                        decrypted = values;
+                        &decrypted
+                    } else {
+                        &row.values
+                    };
+                    self.write_base_row(&table.name, values, row.server_version)
+                        .map_err(|message| {
+                            SectionError::Abort("sync.invalid_request".into(), message)
+                        })?;
+                }
+                self.rebuild_overlay_if_dirty();
+                self.finish_observation("syncular_segment_block", batch)
+                    .map_err(|message| SectionError::Abort("storage.failed".into(), message))
+            })();
+            if let Err(error) = outcome {
+                self.rollback_observation("syncular_segment_block");
+                self.overlay_dirty.set(was_dirty);
+                return Err(error);
+            }
+            applied += block.len() as u32;
         }
         Ok(applied)
     }
@@ -6386,7 +7999,7 @@ impl SyncClient {
     /// replace-or-upsert every image row with its `_syncular_version`.
     /// Mechanics: the image lands in a temp file read through a second
     /// rusqlite connection (semantics identical to ATTACH + INSERT…SELECT;
-    /// ATTACH is unavailable inside the open section savepoint).
+    /// The image's writes and revision share one local transaction).
     fn apply_sqlite_segment(
         &mut self,
         sub_index: usize,
@@ -6425,15 +8038,33 @@ impl SyncClient {
                 return Err(invalid("bytes do not open as a SQLite database"));
             }
         };
-        let outcome = self.apply_sqlite_image(
-            &img,
-            &table,
-            first_fresh_page,
-            &effective,
-            row_count,
-            as_of_commit_seq,
-            scope_digest,
-        );
+        let was_dirty = self.overlay_dirty.get();
+        let outcome = (|| {
+            self.begin_observation("syncular_image")
+                .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
+            let mut batch = ChangeAccumulator::default();
+            let cleared = first_fresh_page && self.scoped_rows_exist(&table.name, &effective);
+            let result = self.apply_sqlite_image(
+                &img,
+                &table,
+                first_fresh_page,
+                &effective,
+                row_count,
+                as_of_commit_seq,
+                scope_digest,
+            )?;
+            if result > 0 || cleared {
+                batch.table(&table.name);
+            }
+            self.rebuild_overlay_if_dirty();
+            self.finish_observation("syncular_image", batch)
+                .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
+            Ok(result)
+        })();
+        if outcome.is_err() {
+            self.rollback_observation("syncular_image");
+            self.overlay_dirty.set(was_dirty);
+        }
         drop(img);
         let _ = std::fs::remove_file(&path);
         outcome
@@ -6550,8 +8181,8 @@ impl SyncClient {
         // recreating them after replaces that with one bulk sort per index.
         // Unique indexes stay in place because they are semantics, not just
         // speed. A collision outside the primary key aborts the section and
-        // preserves the existing row. The DDL rides the open section
-        // savepoint (§1.4): an abort rolls the drop back.
+        // preserves the existing row. The DDL rides the image
+        // savepoint (§5.3): an abort rolls the drop back.
         let bulk_indexes: Vec<&crate::schema::IndexSchema> = if first_fresh_page {
             table.indexes.iter().filter(|i| !i.unique).collect()
         } else {
@@ -7246,6 +8877,8 @@ impl SyncClient {
         // authorized endpoint serves bytes inline OR (always-issue, presign
         // configured) a signed url the client fetches directly — no host auth,
         // no fall-through: failure => re-request (the caller's next fetch_blob).
+        #[cfg(feature = "bench-internals")]
+        let download_phase = self.benchmark_phases.start(Phase::BlobDownload);
         let bytes = match transport
             .blob_download(&blob_id)
             .map_err(|e| (e.code, e.message))?
@@ -7269,12 +8902,20 @@ impl SyncClient {
                     .map_err(|e| (e.code, e.message))?
             }
         };
+        #[cfg(feature = "bench-internals")]
+        drop(download_phase);
+        #[cfg(feature = "bench-internals")]
+        let validate_phase = self.benchmark_phases.start(Phase::BlobValidate);
         // §5.9.5 inherits §5.1: verify the content address, reject mismatch.
         if blob_id_for(&bytes) != blob_id {
             return Err(simple(format!(
                 "blob content address mismatch for {blob_id}"
             )));
         }
+        #[cfg(feature = "bench-internals")]
+        drop(validate_phase);
+        #[cfg(feature = "bench-internals")]
+        let insert_phase = self.benchmark_phases.start(Phase::BlobCacheInsert);
         let now = self.clock_now_ms();
         self.conn
             .execute(
@@ -7282,13 +8923,20 @@ impl SyncClient {
                 rusqlite::params![blob_id, bytes, bytes.len() as i64, now, now],
             )
             .map_err(|e| simple(e.to_string()))?;
+        // The row can arrive before its body. Pin the newly downloaded entry
+        // from the current visible references before trimming (§5.9.7 B1).
+        self.reconcile_blob_refcounts(false);
         self.enforce_blob_cache_cap();
+        #[cfg(feature = "bench-internals")]
+        drop(insert_phase);
         self.get_cached_blob(&blob_id)
             .map_err(simple)?
             .ok_or_else(|| simple("blob cache write failed".to_owned()))
     }
 
     fn get_cached_blob(&self, blob_id: &str) -> Result<Option<Value>, String> {
+        #[cfg(feature = "bench-internals")]
+        let _phase = self.benchmark_phases.start(Phase::BlobCacheRead);
         // §5.9.7 B1 LRU: a cache-hit read touches "recently used" so a hot
         // image survives a cap trim.
         let _ = self.conn.execute(
@@ -7310,7 +8958,12 @@ impl SyncClient {
             obj.insert("blobId".to_owned(), Value::from(blob_id.to_owned()));
             obj.insert("byteLength".to_owned(), Value::from(byte_length));
             let mut bytes_obj = Map::new();
-            bytes_obj.insert("$bytes".to_owned(), Value::from(bytes_to_hex(&bytes)));
+            let encoded = {
+                #[cfg(feature = "bench-internals")]
+                let _phase = self.benchmark_phases.start(Phase::BlobEncode);
+                bytes_to_hex(&bytes)
+            };
+            bytes_obj.insert("$bytes".to_owned(), Value::from(encoded));
             obj.insert("bytes".to_owned(), Value::Object(bytes_obj));
             if let Some(mt) = media_type {
                 obj.insert("mediaType".to_owned(), Value::from(mt));
@@ -7440,12 +9093,17 @@ impl SyncClient {
     }
 
     /// §5.9.7 B1/B2: recompute cache refcounts from live `blob_ref` columns
-    /// in the BASE tables; `delete_orphans` deletes zero-ref bodies not
+    /// in the visible tables; `delete_orphans` deletes zero-ref bodies not
     /// pinned by a pending upload (the revocation side, B2).
     fn reconcile_blob_refcounts(&mut self, delete_orphans: bool) {
+        #[cfg(feature = "bench-internals")]
+        let _phase = self.benchmark_phases.start(Phase::BlobReconcile);
         if !self.schema_has_blobs() {
             return;
         }
+        // Pending edits and revocation must be reflected before counting the
+        // live references that protect cached bodies (§5.9.7 B1/B2).
+        self.rebuild_overlay_if_dirty();
         let mut counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
         for table in self.schema.tables.clone() {
             let blob_cols: Vec<String> = table
@@ -7458,7 +9116,7 @@ impl SyncClient {
                 let sql = format!(
                     "SELECT {} FROM {} WHERE {} IS NOT NULL",
                     quote_ident(&column),
-                    base_table(&table.name),
+                    quote_ident(&table.name),
                     quote_ident(&column)
                 );
                 let Ok(mut stmt) = self.conn.prepare(&sql) else {
@@ -7534,6 +9192,8 @@ impl SyncClient {
         row: &Row,
         version: i64,
     ) -> Result<(), String> {
+        #[cfg(feature = "bench-internals")]
+        let _phase = self.benchmark_phases.start(Phase::RowWrite);
         let table = self
             .schema
             .table(table_name)
@@ -7556,9 +9216,9 @@ impl SyncClient {
             .ok_or_else(|| format!("unknown table {table_name:?}"))?;
         self.overlay_dirty.set(true);
         let sql = format!(
-            "DELETE FROM {} WHERE CAST({} AS TEXT) = ?1",
+            "DELETE FROM {} WHERE {}",
             base_table(table_name),
-            quote_ident(&table.primary_key)
+            row_id_predicate(table)
         );
         let mut stmt = self.conn.prepare_cached(&sql).map_err(|e| e.to_string())?;
         stmt.execute(rusqlite::params![row_id])
@@ -7578,6 +9238,8 @@ impl SyncClient {
     /// every visible table as (base server state) + (pending outbox replay
     /// on top). Optimistic rows carry version `-1`.
     fn rebuild_overlay(&mut self) {
+        #[cfg(feature = "bench-internals")]
+        let _phase = self.benchmark_phases.start(Phase::OverlayRebuild);
         #[cfg(test)]
         self.overlay_rebuild_count
             .set(self.overlay_rebuild_count.get() + 1);
@@ -7591,38 +9253,8 @@ impl SyncClient {
             self.exec(&format!("DELETE FROM {visible}"));
             self.exec(&format!("INSERT INTO {visible} SELECT * FROM {base}"));
         }
-        for commit in self.outbox.clone() {
-            for op in &commit.ops {
-                let Some(table) = self.schema.table(&op.table).cloned() else {
-                    continue;
-                };
-                if op.upsert {
-                    let Some(values) = op.values.as_ref() else {
-                        continue;
-                    };
-                    let mut row: Row = Vec::with_capacity(table.columns.len());
-                    let mut ok = true;
-                    for column in &table.columns {
-                        match json_to_column_value(column, values.get(&column.name)) {
-                            Ok(v) => row.push(v),
-                            Err(_) => {
-                                ok = false;
-                                break;
-                            }
-                        }
-                    }
-                    if ok {
-                        let _ = self.write_row(&visible_table(&table.name), &table.name, &row, -1);
-                    }
-                } else {
-                    let sql = format!(
-                        "DELETE FROM {} WHERE CAST({} AS TEXT) = ?1",
-                        visible_table(&table.name),
-                        quote_ident(&table.primary_key)
-                    );
-                    let _ = self.conn.execute(&sql, rusqlite::params![op.row_id]);
-                }
-            }
+        for commit in &self.outbox {
+            self.apply_outbox_ops(&commit.ops);
         }
         for table in self.schema.tables.clone() {
             for index in &table.fts_indexes {
@@ -7632,6 +9264,49 @@ impl SyncClient {
         }
         self.exec("RELEASE syncular_overlay");
         self.overlay_dirty.set(false);
+    }
+
+    fn apply_outbox_ops<'a>(&self, ops: impl IntoIterator<Item = &'a OutboxOp>) {
+        #[cfg(feature = "bench-internals")]
+        let mut phase = self.benchmark_phases.start(Phase::PendingReplay);
+        for op in ops {
+            #[cfg(feature = "bench-internals")]
+            if let Some(phase) = &mut phase {
+                phase.unit();
+            }
+            let Some(table) = self.schema.table(&op.table) else {
+                continue;
+            };
+            if op.upsert {
+                let Some(values) = op.values.as_ref() else {
+                    continue;
+                };
+                let mut row: Row = Vec::with_capacity(table.columns.len());
+                let mut ok = true;
+                for column in &table.columns {
+                    match json_to_column_value(column, values.get(&column.name)) {
+                        Ok(v) => row.push(v),
+                        Err(_) => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                if ok {
+                    let _ = self.write_row(&visible_table(&table.name), &table.name, &row, -1);
+                }
+            } else {
+                let sql = format!(
+                    "DELETE FROM {} WHERE {}",
+                    visible_table(&table.name),
+                    row_id_predicate(table)
+                );
+                let _ = self
+                    .conn
+                    .prepare_cached(&sql)
+                    .and_then(|mut statement| statement.execute(rusqlite::params![op.row_id]));
+            }
+        }
     }
 
     fn exec(&self, sql: &str) {
@@ -7767,6 +9442,8 @@ impl SyncClient {
         if self.stopped {
             return;
         }
+        #[cfg(feature = "bench-internals")]
+        let decode_phase = self.benchmark_phases.start(Phase::ResponseDecode);
         let message = match decode_message(bytes) {
             Ok(m) if m.msg_kind == MsgKind::Response => m,
             _ => {
@@ -7774,6 +9451,8 @@ impl SyncClient {
                 return;
             }
         };
+        #[cfg(feature = "bench-internals")]
+        drop(decode_phase);
         let mut frames = message.frames.into_iter();
         let mut applied_cursor: Option<i64> = None;
         let mut any_covered = false;
@@ -7802,10 +9481,6 @@ impl SyncClient {
                     other => body.push(other),
                 }
             }
-            let Some(next_cursor) = next_cursor else {
-                dropped = true;
-                break;
-            };
             let Some(sub_index) = self.subs.iter().position(|s| s.id == id) else {
                 dropped = true;
                 continue;
@@ -7821,54 +9496,42 @@ impl SyncClient {
                 dropped = true;
                 continue;
             }
-            if next_cursor <= sub.cursor {
+            if next_cursor.is_some_and(|cursor| cursor <= sub.cursor) {
                 // Idempotent redelivery of an already-covered window.
                 any_covered = true;
                 continue;
             }
             let previous_effective = self.subs[sub_index].effective.clone();
             let previous_cursor = self.subs[sub_index].cursor;
-            if self.begin_observation("syncular_delta").is_err() {
-                dropped = true;
-                continue;
-            }
             self.subs[sub_index].effective = Some(effective_scopes);
-            let mut batch = ChangeAccumulator::default();
             let mut failed = false;
             for inner in body {
-                if let Frame::Commit {
-                    tables, changes, ..
-                } = inner
-                {
-                    self.record_commit_changes(&mut batch, &tables, &changes);
-                    if self.apply_commit_changes(&tables, &changes).is_err() {
+                match inner {
+                    Frame::Commit {
+                        tables, changes, ..
+                    } => {
+                        if self.apply_commit_frame(&tables, &changes).is_err() {
+                            failed = true;
+                            break;
+                        }
+                    }
+                    _ => {
                         failed = true;
                         break;
                     }
                 }
             }
-            if failed {
-                self.rollback_observation("syncular_delta");
+            let committed = next_cursor.filter(|_| !failed).and_then(|cursor| {
+                self.apply_sub_end(sub_index, cursor, None)
+                    .ok()
+                    .map(|()| cursor)
+            });
+            let Some(next_cursor) = committed else {
                 self.subs[sub_index].effective = previous_effective;
                 self.subs[sub_index].cursor = previous_cursor;
-                self.overlay_dirty.set(true);
-                self.rebuild_overlay();
                 dropped = true;
                 continue;
-            }
-            let sub = &mut self.subs[sub_index];
-            sub.cursor = next_cursor;
-            self.persist_sub(&self.subs[sub_index].clone());
-            self.rebuild_overlay_if_dirty();
-            if self.finish_observation("syncular_delta", batch).is_err() {
-                self.rollback_observation("syncular_delta");
-                self.subs[sub_index].effective = previous_effective;
-                self.subs[sub_index].cursor = previous_cursor;
-                self.overlay_dirty.set(true);
-                self.rebuild_overlay();
-                dropped = true;
-                continue;
-            }
+            };
             applied_cursor = Some(applied_cursor.map_or(next_cursor, |c| c.max(next_cursor)));
         }
         if let Some(cursor) = applied_cursor {

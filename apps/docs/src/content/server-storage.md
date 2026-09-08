@@ -21,6 +21,9 @@ Custom storage adapters must implement
 `updateClientCursor(partition, clientId, cursor, updatedAtMs)`. Update only the
 existing record's cursor and timestamp with their respective maxima, atomically.
 Keep missing records absent and preserve actor, wire version, and subscriptions.
+Implement `advanceClientCursor(partition, clientId, actorId, logEpoch, cursor,
+updatedAtMs)` for realtime acknowledgments with the same atomic update plus actor
+and current partition log epoch checks.
 `putClientRecord` remains a full replacement: changing subscriptions can lower the
 retention cursor floor.
 
@@ -224,6 +227,12 @@ schema. It is
 the storage the [quickstart](/quickstart/) uses and the baseline the load
 suite runs against.
 
+SQLite and D1 row replacement and deletion remove the old row's exact scope
+entries through the existing scope primary key. The storage backend reads the
+old scope map before changing the row and keeps the deletion and row change in
+the same transaction or D1 atomic batch. This adds no indexes or schema migration.
+The Postgres implementation retains its existing row-ID predicate.
+
 ## Postgres (`PostgresServerStorage`)
 
 The production database path. It implements the same `ServerStorage`
@@ -233,6 +242,23 @@ test asserts via
 `EXPLAIN` that the fanout candidate scans stay index-driven, so a
 regression to row scans fails in CI. `storage.migrate()` applies the DDL
 idempotently: safe to call on every boot.
+
+Pushes lock an existing partition with `SELECT ... FOR UPDATE`. A new partition
+requires initialization and a second lock query to serialize concurrent first
+writers. Each push keeps its own transaction and rejection savepoint; rollback
+does not consume a commit sequence. Existing partitions avoid repeating the
+initialization statement on every push.
+
+Sequence allocation and commit metadata insertion share one SQL statement. The
+allocation feeds the commit insert through its returned sequence, retaining the
+partition lock and transaction rollback behavior. Change rows and their scope
+entries remain in that same commit transaction.
+
+Each change insert also populates its inverted scope entries in one statement.
+The statement expands the inserted scope object and deduplicates entries shared
+by changes in the same commit. Empty-scope changes still enter the log. Serialized
+scopes bind as text before JSONB parsing so driver JSON encoding cannot turn them
+into a JSON string. Existing change rows with string-form scopes remain readable.
 
 The server library never imports a Postgres driver. You wire yours through
 the minimal `PgExecutor` interface (`query(text, params)` plus a
@@ -403,3 +429,12 @@ identity after authorization. Sharing is local to one process. Signed URL
 grants remain per request. The first eligibility probe has at most
 `limitSnapshotRows + 1` rows; subsequent builder batches have at most 5,000
 rows. The image database and serialized output still consume memory.
+
+
+Realtime acknowledgements call `advanceClientCursor(partition, clientId,
+actorId, logEpoch, cursor, updatedAtMs)`. Custom storage adapters must implement
+this atomic update: advance the cursor and activity timestamp to their respective
+maxima, preserve registration fields, and require a matching actor and current
+partition log epoch. Leave missing records unchanged. SQLite, Postgres, and D1
+perform one update without reading or serializing the subscription list. HTTP
+registration keeps its existing cursor and subscription replacement rules.

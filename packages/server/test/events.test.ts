@@ -403,6 +403,7 @@ function wrapStorage(
     scanRows: (p, q) => storage.scanRows(p, q),
     getClientRecord: (p, c) => storage.getClientRecord(p, c),
     putClientRecord: (p, r) => storage.putClientRecord(p, r),
+    advanceClientCursor: (...args) => storage.advanceClientCursor(...args),
     updateClientCursor: (p, c, s, t) => storage.updateClientCursor(p, c, s, t),
     getActiveClientCursorFloor: (p, cutoff) =>
       storage.getActiveClientCursorFloor(p, cutoff),

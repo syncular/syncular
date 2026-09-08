@@ -230,6 +230,13 @@ async function lockPartitionOn(
   client: PgQueryable,
   partition: string,
 ): Promise<void> {
+  const locked = await client.query(
+    'SELECT max_commit_seq FROM sync_partitions WHERE partition=$1 FOR UPDATE',
+    [partition],
+  );
+  if (locked.rows.length > 0) return;
+  // The first writer initializes the partition. Concurrent initializers may
+  // wait on this insert, so acquire the row lock again before applying writes.
   await client.query(
     `INSERT INTO sync_partitions(partition, max_commit_seq) VALUES ($1, 0)
     ON CONFLICT (partition) DO NOTHING`,
@@ -753,32 +760,40 @@ class PostgresTransaction implements StorageTransaction {
     // Allocate the next dense commitSeq under a per-partition row lock: the
     // UPDATE … RETURNING serializes concurrent pushes to this partition and
     // never leaves a gap on rollback (see the file header).
-    const { rows } = await q.query<{ max_commit_seq: unknown }>(
-      `INSERT INTO sync_partitions(partition, max_commit_seq) VALUES ($1, 1)
-       ON CONFLICT (partition) DO UPDATE
-         SET max_commit_seq = sync_partitions.max_commit_seq + 1
-       RETURNING max_commit_seq`,
-      [p],
-    );
-    const commitSeq = asNumber(rows[0]?.max_commit_seq);
-    await q.query(
-      `INSERT INTO sync_commits(partition, commit_seq, client_id, client_commit_id, actor_id, created_at_ms)
-       VALUES ($1,$2,$3,$4,$5,$6)`,
+    const { rows } = await q.query<{ commit_seq: unknown }>(
+      `WITH allocated AS (
+         INSERT INTO sync_partitions(partition, max_commit_seq) VALUES ($1, 1)
+         ON CONFLICT (partition) DO UPDATE
+           SET max_commit_seq = sync_partitions.max_commit_seq + 1
+         RETURNING max_commit_seq
+       )
+       INSERT INTO sync_commits(partition, commit_seq, client_id, client_commit_id, actor_id, created_at_ms)
+       SELECT $1, max_commit_seq, $2, $3, $4, $5 FROM allocated
+       RETURNING commit_seq`,
       [
         p,
-        commitSeq,
         commit.clientId,
         commit.clientCommitId,
         commit.actorId,
         commit.createdAtMs,
       ],
     );
+    const commitSeq = asNumber(rows[0]?.commit_seq);
     for (let idx = 0; idx < commit.changes.length; idx++) {
       const change = commit.changes[idx];
       if (change === undefined) continue;
+      // Bind serialized scopes as text before parsing JSONB. Drivers that
+      // encode JSONB parameters would otherwise store this string as a scalar.
       await q.query(
-        `INSERT INTO sync_changes(partition, commit_seq, idx, tbl, row_id, op, row_version, scopes, payload)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        `WITH inserted AS (
+           INSERT INTO sync_changes(partition, commit_seq, idx, tbl, row_id, op, row_version, scopes, payload)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8::text::jsonb,$9)
+           RETURNING partition, tbl, commit_seq, scopes
+         )
+         INSERT INTO sync_change_scopes(partition, tbl, var, value, commit_seq)
+         SELECT inserted.partition, inserted.tbl, scope.key, scope.value, inserted.commit_seq
+         FROM inserted CROSS JOIN LATERAL jsonb_each_text(inserted.scopes) AS scope
+         ON CONFLICT DO NOTHING`,
         [
           p,
           commitSeq,
@@ -791,13 +806,6 @@ class PostgresTransaction implements StorageTransaction {
           change.payload ?? null,
         ],
       );
-      for (const [variable, value] of Object.entries(change.scopes)) {
-        await q.query(
-          `INSERT INTO sync_change_scopes(partition, tbl, var, value, commit_seq)
-           VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
-          [p, change.table, variable, value, commitSeq],
-        );
-      }
     }
     return commitSeq;
   }
@@ -1676,6 +1684,24 @@ export class PostgresServerStorage implements ServerStorage {
         JSON.stringify(record.subscriptions),
         record.updatedAtMs,
       ],
+    );
+  }
+
+  async advanceClientCursor(
+    partition: string,
+    clientId: string,
+    actorId: string,
+    logEpoch: string,
+    cursor: number,
+    updatedAtMs: number,
+  ): Promise<void> {
+    await this.#exec.query(
+      `UPDATE sync_clients
+         SET cursor=GREATEST(cursor, $1), updated_at_ms=GREATEST(updated_at_ms, $2)
+         WHERE partition=$3 AND client_id=$4 AND actor_id=$5
+           AND EXISTS (SELECT 1 FROM sync_partition_registry
+                       WHERE partition=sync_clients.partition AND log_epoch=$6)`,
+      [cursor, updatedAtMs, partition, clientId, actorId, logEpoch],
     );
   }
 
