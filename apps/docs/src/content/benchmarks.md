@@ -254,6 +254,9 @@ workloads enforce FIFO boundaries and convergence without host-speed thresholds.
 - [Spec & package map](/reference/): where everything measured here lives.
 
 
+Repository benchmark commands require Bun 1.4.0 or newer. Older Linux Bun
+builds report subprocess peak memory in different units.
+
 The repository CI includes a separate Postgres diagnostic job for TS and Rust
 socket clients. Each job owns its database service and retains five fresh
 1,000-commit replay attempts and five 25-reader reconnect attempts with file storage. Invalid state or unavailable

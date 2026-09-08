@@ -3871,3 +3871,21 @@ All 41 local native blob, read, observation, and engine contracts pass after
 prebuilding release artifacts; two Swift SDK contracts remain explicitly skipped
 in that command. Materialized 0.17.0 package archives also pass clean external
 Node and Bun SQLite consumer verification.
+
+
+### 9.53 Hosted validation and release runtime, 2026-09-08
+
+All checks pass for commit `caecbab6` in Actions run 34257329951, including native
+conformance, Tauri, Flutter, Kotlin, and both Postgres jobs. The retained Postgres
+artifacts contain 17 completed TS attempts and 22 completed Rust attempts, covering
+replay, reconnect, mixed rejection, purge/reopen, and Rust C ABI blob lifecycle.
+This verifies the hosted diagnostic jobs; dedicated-hardware calibration remains
+open.
+
+The 0.17.0 tag points to merge commit `1020540d`. Its release workflow published
+all Rust crates, but the npm gate failed the subprocess resource-unit contract on
+Linux Bun 1.3.14: the parent reported 75,772 while the child's own peak represented
+77,590,528 bytes, an exact factor of 1,024. The same contract passes in CI on Bun
+1.4.0. Release jobs now pin 1.4.0, and repository benchmark documentation requires
+that runtime or newer. The source tag and published Rust artifacts remain immutable;
+the updated workflow on main resumes publication from the existing tag.

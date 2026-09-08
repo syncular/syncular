@@ -1136,6 +1136,9 @@ Existing generated query inputs remain valid.
 
 ## Release gates
 
+Use Bun 1.4.0, matching the release workflow. The benchmark resource contract
+expects its subprocess memory-counter units.
+
 From the repository root:
 
 ```sh

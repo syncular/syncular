@@ -1,5 +1,9 @@
 # Syncular benchmarks
 
+Use Bun 1.4.0 or newer for repository benchmarks. The subprocess resource
+counters are validated against that runtime; older Linux builds report different
+peak-memory units.
+
 Run the suite from the repository root after `bun install`. The default
 `bun run bench` command regenerates the curated `bench/RESULTS.md` record.
 `bun run bench:ci` runs the existing reduced checks without changing that file.
