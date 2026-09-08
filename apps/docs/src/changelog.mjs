@@ -17,6 +17,15 @@
 export const changelog = [
   {
     date: '2026-09-08',
+    title: 'Syncular 0.17.0',
+    body: 'Offline replay performs less repeated storage and pending-row work in both cores. Native transport and blob paths reduce allocation and copying. Repository benchmarks now measure replay, recovery, delivery, reads, and native boundaries. This release also includes resumable D1 migrations, pruning-race resets, and partition-scoped server indexes. Custom storage adapters must implement both cursor-update contracts; existing servers must bump their application schema version and regenerate to rebuild declared indexes.',
+    links: [
+      { href: '/benchmarks/', label: 'Engine performance and benchmarks' },
+      { href: '/server-storage/', label: 'Storage migration guidance' },
+    ],
+  },
+  {
+    date: '2026-09-08',
     title: 'TS benchmark sampling profiles',
     body: 'TS socket replay and observation workloads can capture opt-in Bun sampling profiles for each isolated client. Artifacts retain compressed raw call stacks alongside SQL and transport measurements. Explicit start/stop intervals exclude setup and final validation, and profile formatting and compression run outside delivery timers. Public client APIs remain unchanged.',
     links: [{ href: '/benchmarks/', label: 'Sampling profiles' }],
