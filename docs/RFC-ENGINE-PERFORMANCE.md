@@ -3860,3 +3860,14 @@ reconnect trials, mixed-commit rejection, permission purge with reopen, and
 real storage/fanout contracts. Its artifacts are attached to Actions run
 34256128245. Remaining hosted results are pending; hardware calibration remains
 separate from this release.
+
+The next hosted native gate reached the CLI contracts, then timed out while
+compiling the release driver inside Bun's default five-second test watchdog.
+CI had prepared only debug artifacts, while the public benchmark entry point
+correctly requests a release build. CI now prepares both profiles before the
+contracts run. The native SQL CLI test uses the same 30-second watchdog as the
+other native CLI tests. No benchmark latency budget changes.
+All 41 local native blob, read, observation, and engine contracts pass after
+prebuilding release artifacts; two Swift SDK contracts remain explicitly skipped
+in that command. Materialized 0.17.0 package archives also pass clean external
+Node and Bun SQLite consumer verification.

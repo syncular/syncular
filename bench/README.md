@@ -379,6 +379,10 @@ resources. Per-phase native CPU/allocation attribution, successful presigned-sto
 profiles, and language-binding delivery remain to measure.
 Run the native lifecycle contracts with `SYNCULAR_NATIVE_BENCH` pointing at a
 freshly built `syncular-bench` executable; the Rust CI job builds and runs them.
+Before enabling native CLI contracts, run `cargo build --release --locked
+--manifest-path rust/Cargo.toml -p syncular-bench`. The CLI always verifies a
+release build; preparing it before tests keeps cold compilation outside the test
+watchdog. CI prepares both debug and release profiles.
 
 TS socket replay records operation construction/drain samples, all-round push
 acknowledgements, and separate client lifetime CPU/peak memory. Earlier TS

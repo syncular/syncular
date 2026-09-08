@@ -219,9 +219,11 @@ jobs:
         working-directory: rust
         run: cargo test -p syncular-ffi --features native-transport round_tests
 
-      - name: Build conformance shim and benchmark driver
+      - name: Build conformance shim and benchmark drivers
         working-directory: rust
-        run: cargo build -p conformance-shim -p syncular-bench
+        run: |
+          cargo build -p conformance-shim -p syncular-bench
+          cargo build --release --locked -p syncular-bench
 
       - name: Native blob, read, and observation contracts
         run: SYNCULAR_NATIVE_BENCH="$PWD/rust/target/debug/syncular-bench" bun test bench/src/blob-lane.test.ts bench/src/read-lane.test.ts bench/src/observation-lane.test.ts
