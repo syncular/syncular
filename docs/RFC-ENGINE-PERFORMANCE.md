@@ -3839,3 +3839,24 @@ opening a pull request. Final real-Postgres checks and controlled-runner
 calibration remain open; the local Docker daemon is unavailable and the current
 GitHub runner inventory has no self-hosted runner. Timing thresholds remain
 disabled for the new diagnostic workloads pending calibration.
+
+### 9.52 Release validation, 2026-09-08
+
+The maintainer authorized merging and a minor release. The release candidate is
+0.17.0 in pull request #58. The source metadata gate, dependency audits, root
+gate, package/site builds, and all 26 strict worker/native performance checks
+pass locally. Managed child versions remain `0.0.0` until the release workflow
+materializes its disposable checkout.
+
+Hosted Rust 1.98 Clippy rejected the byte decoder's constant-size
+`chunks_exact(2)` loop (`clippy::chunks_exact_to_as_chunks`). The decoder now
+uses `as_chunks::<2>().0` after the existing even-length guard. The Rust 1.98
+workspace Clippy gate and all ten value-conversion tests pass, including every
+ASCII pair, malformed input, and canonical byte round trips. Earlier timing
+artifacts retain their original source hashes.
+
+The first hosted TS Postgres job passes five replay trials, five 25-reader
+reconnect trials, mixed-commit rejection, permission purge with reopen, and
+real storage/fanout contracts. Its artifacts are attached to Actions run
+34256128245. Remaining hosted results are pending; hardware calibration remains
+separate from this release.

@@ -208,7 +208,7 @@ pub fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {
         b'A'..=b'F' => byte - b'A' + 10,
         _ => u8::MAX,
     };
-    for pair in hex.as_bytes().chunks_exact(2) {
+    for pair in hex.as_bytes().as_chunks::<2>().0 {
         // Preserve the prior radix parser's accepted +digit pair as well as
         // uppercase input. Canonical encoders continue to emit lowercase hex.
         let high = if pair[0] == b'+' { 0 } else { nibble(pair[0]) };
