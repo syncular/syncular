@@ -1,11 +1,17 @@
 import { createInterface } from 'node:readline';
+import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { profile } from 'bun:jsc';
-import { httpSyncTransport, type MutationInput } from '@syncular/client';
+import {
+  httpBlobTransport,
+  httpSyncTransport,
+  type MutationInput,
+} from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
 import { decodeMessage, type PushResultFrame } from '@syncular/core';
 import { createBenchClient, type BenchClient } from './loopback';
 import { processObject, processSampling } from './process-driver';
-import { PROJECT_ID } from './fixture';
+import { BLOB_SCHEMA, PROJECT_ID } from './fixture';
 import {
   measureMethods,
   withinDeadline,
@@ -19,6 +25,7 @@ if (import.meta.main) {
   let catchup: Promise<void> | undefined;
   let catchupError: unknown;
   let explicitSync = false;
+  let blobFixture = false;
   let sampling:
     | { stop: () => void; result: Promise<unknown>; started: number }
     | undefined;
@@ -58,6 +65,26 @@ if (import.meta.main) {
       )
         throw new Error('Missing transport endpoints');
       const syncUrl = new URL('/sync', transport.baseUrl).href;
+      const schema = processObject(params.schema);
+      if (!Array.isArray(schema.tables))
+        throw new Error('Missing benchmark schema');
+      blobFixture = schema.tables.some(
+        (table: unknown) => processObject(table).name === 'attachments',
+      );
+      const clientBlobSchema = {
+        ...BLOB_SCHEMA,
+        tables: BLOB_SCHEMA.tables.map((table) => ({
+          ...table,
+          scopes: table.scopes.map((scope) =>
+            typeof scope === 'string' ? { pattern: scope } : scope,
+          ),
+        })),
+      };
+      if (
+        blobFixture &&
+        JSON.stringify(schema) !== JSON.stringify(clientBlobSchema)
+      )
+        throw new Error('Unsupported blob benchmark schema');
       const http = httpSyncTransport(syncUrl);
       const database = new BunClientDatabase(params.dbPath);
       // The adapter runs transaction control through this owned SQLite method.
@@ -78,6 +105,26 @@ if (import.meta.main) {
           clientId: params.clientId,
           realtime: true,
           database: measureMethods(database, measurements, 'database', true),
+          ...(blobFixture
+            ? {
+                schema: {
+                  version: BLOB_SCHEMA.version,
+                  tables: BLOB_SCHEMA.tables.map((table) => ({
+                    name: table.name,
+                    columns: table.columns,
+                    primaryKey: table.primaryKey,
+                    scopes: table.scopes,
+                  })),
+                },
+                blobs: measureMethods(
+                  httpBlobTransport(new URL('/blobs', transport.baseUrl).href, {
+                    headers: { 'x-bench-client-id': params.clientId },
+                  }),
+                  measurements,
+                  'blobTransport',
+                ),
+              }
+            : {}),
           transport: async (bytes) => {
             const message = decodeMessage(bytes);
             if (message.msgKind !== 'request')
@@ -117,7 +164,8 @@ if (import.meta.main) {
       if (
         typeof params.id !== 'string' ||
         params.id.length === 0 ||
-        params.table !== 'tasks' ||
+        (params.table !== 'tasks' &&
+          !(blobFixture && params.table === 'attachments')) ||
         Object.keys(scopes).length !== 1 ||
         !Array.isArray(projects) ||
         projects.length === 0 ||
@@ -133,7 +181,7 @@ if (import.meta.main) {
       if (params.id !== 'bench')
         client.subscribe({
           id: params.id,
-          table: 'tasks',
+          table: params.table,
           scopes: { project_id: projects },
         });
       return { subscribed: true };
@@ -145,7 +193,69 @@ if (import.meta.main) {
     }
     if (method === 'query') {
       if (typeof params.sql !== 'string') throw new Error('Missing SQL');
-      return { rows: client.query(params.sql) };
+      const bindings = params.params ?? [];
+      if (
+        !Array.isArray(bindings) ||
+        !bindings.every(
+          (value: unknown) =>
+            value === null ||
+            typeof value === 'string' ||
+            (typeof value === 'number' && Number.isFinite(value)),
+        )
+      )
+        throw new Error('Invalid benchmark query bindings');
+      return { rows: client.query(params.sql, bindings) };
+    }
+    if (method === 'benchBlobFile') {
+      if (
+        !blobFixture ||
+        params.mode !== 'direct' ||
+        !['uploadBlob', 'fetchBlob'].includes(String(params.operation))
+      )
+        throw new Error(
+          'Blob file measurement requires the blob fixture and direct boundary',
+        );
+      let bytes: Uint8Array;
+      let sourceReadNs: number | undefined;
+      let elapsedNs: number;
+      let ref;
+      if (params.operation === 'uploadBlob') {
+        if (typeof params.path !== 'string' || params.path.length === 0)
+          throw new Error('Missing blob fixture path');
+        const sourceStarted = performance.now();
+        bytes = await readFile(params.path);
+        sourceReadNs = (performance.now() - sourceStarted) * 1_000_000;
+        const started = performance.now();
+        ref = await client.uploadBlob(bytes, {
+          mediaType: 'application/octet-stream',
+        });
+        elapsedNs = (performance.now() - started) * 1_000_000;
+      } else {
+        if (typeof params.blob !== 'string')
+          throw new Error('Missing blob reference');
+        const started = performance.now();
+        const cached = await client.fetchBlob(params.blob);
+        elapsedNs = (performance.now() - started) * 1_000_000;
+        bytes = cached.bytes;
+        ref = {
+          blobId: cached.blobId,
+          byteLength: cached.byteLength,
+          ...(cached.mediaType ? { mediaType: cached.mediaType } : {}),
+        };
+      }
+      const operationStats = stats();
+      const validationStarted = performance.now();
+      const sha256 = createHash('sha256').update(bytes).digest('hex');
+      if (ref.blobId !== `sha256:${sha256}` || ref.byteLength !== bytes.length)
+        throw new Error('Blob result differs from complete bytes');
+      return {
+        ref,
+        elapsedNs,
+        ...(sourceReadNs !== undefined ? { sourceReadNs } : {}),
+        validation: { byteLength: bytes.length, sha256 },
+        validationNs: (performance.now() - validationStarted) * 1_000_000,
+        stats: operationStats,
+      };
     }
     if (method === 'statusSnapshot') return client.statusSnapshot();
     if (method === 'commitOutcome') {
@@ -169,11 +279,15 @@ if (import.meta.main) {
           throw new Error('Missing mutations');
         return input.mutations.map((value: unknown): MutationInput => {
           const mutation = processObject(value);
-          if (mutation.op !== 'upsert' || mutation.table !== 'tasks')
-            throw new Error('Expected task upsert');
+          if (
+            mutation.op !== 'upsert' ||
+            (mutation.table !== 'tasks' &&
+              !(blobFixture && mutation.table === 'attachments'))
+          )
+            throw new Error('Expected fixture upsert');
           return {
             op: 'upsert',
-            table: 'tasks',
+            table: mutation.table,
             values: processObject(mutation.values),
           };
         });

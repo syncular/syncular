@@ -22,4 +22,5 @@ syncular-command = { path = "../command" }
 # transport the FFI core owns (ureq + tungstenite), reused rather than copied.
 syncular-ffi = { path = "../ffi", features = ["native-transport", "bench-internals"] }
 serde_json = "1"
+sha2 = "0.10"
 ssp2 = { package = "syncular-ssp2", path = "../ssp2" }

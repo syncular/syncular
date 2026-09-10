@@ -318,6 +318,24 @@ Benchmark CI also runs a 501-commit TS process restart and the rejected 499/2/1
 commit fixture with file storage.
 The implementation and remaining workload coverage are tracked in
 [the engine performance RFC](../docs/RFC-ENGINE-PERFORMANCE.md).
+The [SQLite blob experiments](../docs/RFC-SQLITE-BLOB-PERFORMANCE.md)
+extend that suite with large attachments and measured keep/discard decisions.
+
+The private TS and Rust process drivers also support `benchBlobFile` with
+`mode: direct`. Upload takes a fixture `path`, reads it inside the client process,
+and reports source-read and public staging durations separately. Fetch takes a
+`blob` reference and times complete public-API materialization. Both return a
+full SHA-256/length receipt after the operation clock, without sending the body
+through stdio. Rust's internal hex result remains inside its public API timing;
+receipt validation decodes bounded pieces afterwards. This command is not yet
+wired into the diagnostic CLI or its size limits.
+
+Run its staged-restart and fresh-download contracts with:
+
+```sh
+(cd rust && cargo build -p syncular-bench --bin syncular-bench)
+SYNCULAR_NATIVE_BENCH="$PWD/rust/target/debug/syncular-bench" bun test bench/src/blob-lane.test.ts --test-name-pattern 'blob file receipts'
+```
 
 
 ## Blob lifecycle

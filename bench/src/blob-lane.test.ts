@@ -1,6 +1,238 @@
 import { expect, test } from 'bun:test';
 import { runBlobLane, runProcessBlobs } from './blob-lane';
 import { performanceOptions } from './performance';
+import { createHash } from 'node:crypto';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { BLOB_SCHEMA, PROJECT_ID } from './fixture';
+import {
+  assertProcessSync,
+  createProcessDriver,
+  processObject,
+} from './process-driver';
+import { startSocketServer } from './socket-server';
+
+for (const core of ['ts', 'rust'] as const)
+  test.skipIf(core === 'rust' && !process.env.SYNCULAR_NATIVE_BENCH)(
+    `${core} blob file receipts validate isolated download and staged restart without body IPC`,
+    async () => {
+      const directory = await mkdtemp(join(tmpdir(), 'syncular-blob-receipt-'));
+      const server = await startSocketServer(1, 'sqlite', { blobs: true });
+      const clients: Array<Awaited<ReturnType<typeof createProcessDriver>>> =
+        [];
+      try {
+        const binary =
+          core === 'ts'
+            ? [process.execPath, join(import.meta.dir, 'ts-process.ts')]
+            : process.env.SYNCULAR_NATIVE_BENCH;
+        if (!binary) throw new Error('Native benchmark executable required');
+        const path = join(directory, 'fixture.bin');
+        const body = Uint8Array.from(
+          { length: 1_048_579 },
+          (_, i) => (i * 131 + Math.floor(i / 251)) % 256,
+        );
+        const sha256 = createHash('sha256').update(body).digest('hex');
+        await writeFile(path, body);
+        const writerPath = join(directory, 'writer.sqlite');
+        const writer = await createProcessDriver(
+          binary,
+          server.endpoints,
+          writerPath,
+          undefined,
+          BLOB_SCHEMA,
+        );
+        clients.push(writer);
+        assertProcessSync(await writer.invoke('syncUntilIdle'));
+        await expect(
+          writer.invoke('benchBlobFile', {
+            mode: 'command',
+            operation: 'uploadBlob',
+            path,
+          }),
+        ).rejects.toThrow('direct boundary');
+        await expect(
+          writer.invoke('benchBlobFile', {
+            mode: 'direct',
+            operation: 'uploadBlob',
+            path: join(directory, 'absent'),
+          }),
+        ).rejects.toThrow();
+        const stage = processObject(
+          await writer.invoke('benchBlobFile', {
+            mode: 'direct',
+            operation: 'uploadBlob',
+            path,
+          }),
+        );
+        expect(stage.validation).toEqual({ byteLength: body.length, sha256 });
+        expect(stage.elapsedNs).toBeGreaterThanOrEqual(0);
+        expect(stage.sourceReadNs).toBeGreaterThanOrEqual(0);
+        expect(stage.validationNs).toBeGreaterThanOrEqual(0);
+        const ref = processObject(stage.ref);
+        const row = {
+          id: 'file-1',
+          project_id: PROJECT_ID,
+          body: JSON.stringify(ref),
+        };
+        const mutation = processObject(
+          await writer.invoke('benchMutate', {
+            mode: 'direct',
+            commits: [
+              {
+                mutations: [
+                  { table: 'attachments', op: 'upsert', values: row },
+                ],
+              },
+            ],
+          }),
+        );
+        expect(await writer.terminate()).toEqual({
+          pid: writer.pid,
+          signal: 'SIGKILL',
+        });
+        clients.pop();
+        await rm(path);
+        const reopened = await createProcessDriver(
+          binary,
+          server.endpoints,
+          writerPath,
+          writer.clientId,
+          BLOB_SCHEMA,
+        );
+        clients.push(reopened);
+        expect(reopened.pid).not.toBe(writer.pid);
+        expect(
+          processObject(await reopened.invoke('statusSnapshot')).outbox,
+        ).toBe(1);
+        expect(
+          processObject(
+            await reopened.invoke('query', {
+              sql: 'SELECT blob_id FROM _syncular_blob_uploads',
+            }),
+          ).rows,
+        ).toEqual([{ blob_id: ref.blobId }]);
+        await reopened.invoke('stats', { reset: true });
+        const offline = processObject(
+          await reopened.invoke('benchBlobFile', {
+            mode: 'direct',
+            operation: 'fetchBlob',
+            blob: ref.blobId,
+          }),
+        );
+        expect(offline.validation).toEqual(stage.validation);
+        if (core === 'ts') {
+          expect(
+            processObject(processObject(offline.stats).measurements)[
+              'blobTransport.download'
+            ],
+          ).toBeUndefined();
+        } else {
+          expect(processObject(offline.stats).blobRequests).toEqual([]);
+        }
+        assertProcessSync(await reopened.invoke('syncUntilIdle'), 1);
+        if (!Array.isArray(mutation.ids))
+          throw new Error('Missing original commit ids');
+        expect(
+          processObject(
+            processObject(
+              await reopened.invoke('commitOutcome', {
+                clientCommitId: mutation.ids[0],
+              }),
+            ).outcome,
+          ).status,
+        ).toBe('applied');
+
+        const reader = await createProcessDriver(
+          binary,
+          server.endpoints,
+          join(directory, 'reader.sqlite'),
+          undefined,
+          BLOB_SCHEMA,
+        );
+        clients.push(reader);
+        expect(reader.pid).not.toBe(reopened.pid);
+        await reader.invoke('subscribe', {
+          id: 'attachments',
+          table: 'attachments',
+          scopes: { project_id: [PROJECT_ID] },
+        });
+        assertProcessSync(await reader.invoke('syncUntilIdle'));
+        expect(
+          processObject(
+            await reader.invoke('query', {
+              sql: 'SELECT id, project_id, body FROM attachments WHERE id = ?',
+              params: [row.id],
+            }),
+          ).rows,
+        ).toEqual([row]);
+        expect(
+          processObject(
+            await reader.invoke('query', {
+              sql: 'SELECT count(*) AS n FROM _syncular_blobs',
+            }),
+          ).rows,
+        ).toEqual([{ n: 0 }]);
+        await reader.invoke('stats', { reset: true });
+        const before = reader.deliveryStats();
+        const fetched = processObject(
+          await reader.invoke('benchBlobFile', {
+            mode: 'direct',
+            operation: 'fetchBlob',
+            blob: row.body,
+          }),
+        );
+        expect(fetched.validation).toEqual(stage.validation);
+        expect(fetched.sourceReadNs).toBeUndefined();
+        if (core === 'ts')
+          expect(
+            processObject(
+              processObject(processObject(fetched.stats).measurements)[
+                'blobTransport.download'
+              ],
+            ).calls,
+          ).toBe(1);
+        else
+          expect(processObject(fetched.stats).blobRequests).toEqual([
+            expect.objectContaining({
+              method: 'download',
+              failed: false,
+              bytes: body.length,
+            }),
+          ]);
+        expect(
+          reader.deliveryStats().responseBytes - before.responseBytes,
+        ).toBeLessThan(16_384);
+        expect(
+          reader.deliveryStats().requestBytes - before.requestBytes,
+        ).toBeLessThan(1024);
+        await reader.invoke('stats', { reset: true });
+        const cached = processObject(
+          await reader.invoke('benchBlobFile', {
+            mode: 'direct',
+            operation: 'fetchBlob',
+            blob: ref.blobId,
+          }),
+        );
+        expect(cached.validation).toEqual(stage.validation);
+        if (core === 'ts')
+          expect(
+            processObject(processObject(cached.stats).measurements)[
+              'blobTransport.download'
+            ],
+          ).toBeUndefined();
+        else expect(processObject(cached.stats).blobRequests).toEqual([]);
+      } finally {
+        try {
+          await Promise.all(clients.map((client) => client.close()));
+        } finally {
+          await server.close();
+          await rm(directory, { recursive: true, force: true });
+        }
+      }
+    },
+    30_000,
+  );
 
 test('blob diagnostics declare body sizes and reject unsupported boundaries', () => {
   const base = ['--workload', 'blobs', '--lane', 'socket'];
