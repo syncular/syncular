@@ -410,8 +410,11 @@ validation. A reader's resource total covers both download and cache hit.
 SQLite/WAL/SHM snapshots report file lengths and filesystem allocated bytes at
 declared phases, without claiming peak disk usage. Sync-server RSS and MinIO's
 Docker metrics are final snapshots, not peak measurements. OS/server caches are
-uncontrolled and warm. Instrumentation overhead calibration and A/A comparisons
-remain pending; the first 500 MB runs validate the harness only.
+uncontrolled and warm. The first 120-attempt diagnostic/A/A calibration is
+recorded in the blob RFC §9.5. Both primary overhead intervals include zero;
+observed A/A download differences reached 375 ms for TS and 889 ms for Rust at
+500 MB. Keep the recorded noise floors and independent replication requirement
+for candidate decisions.
 
 Run the memory and real MinIO contracts for both cores with:
 

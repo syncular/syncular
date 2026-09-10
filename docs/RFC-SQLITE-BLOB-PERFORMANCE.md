@@ -376,7 +376,7 @@ must make each decision reproducible.
 
 | Experiment | Baseline/candidate | Evidence | Decision |
 | --- | --- | --- | --- |
-| Harness and A/A | Review baseline plus private driver changes | §9.1–9.3: isolated file receipts, bounded fixtures, and repository-owned MinIO profile pass in both cores, including 500 MB; complete phase attribution, instrumentation calibration, and A/A remain | In progress |
+| Harness and A/A | Review baseline plus private driver changes | §9.1–9.5: 120 calibration attempts passed; both primary diagnostic-overhead intervals include zero; observed A/A noise sets explicit absolute floors; finer phase attribution remains | Initial calibration complete |
 | R1/R2 | Pending | Inspected paths only; failure reproductions required | Pending |
 | P1–P4 | Pending | Allocation/access hypotheses above | Pending |
 | P5–P7 | Conditional | Reassess after simpler candidates | Pending |
@@ -554,3 +554,78 @@ and peak RSS as diagnostic observations. The 64 KiB profile checks overhead
 that fixed recording costs can obscure in the large profile. This calibration
 does not retain a production optimization. Subsequent candidate experiments
 still require their declared thresholds and an independent repeat of a win.
+
+### 9.5 Calibration results, 2026-09-10
+
+All 120 predeclared attempts completed between 21:15:14 and 21:32:02 UTC.
+The collection used commit `6d6de24a2ae2e150ec80bf8dcb28bfa89c321cec`, source
+fingerprint `8aa4ae6f9edbcf72054f4120aaf09d269abb30b78a571252669f2d9d894f5ee4`,
+and release binary SHA-256
+`d128b1f9de065eb01726db1dad10c25262bcb6b0187bed03621d43cc2ec8ffcc`.
+Every artifact had the same source fingerprint and clean source status.
+The analysis verified each raw artifact's SHA-256, runtime controls, release
+binary, fixture digest, object-store length, and all four phase receipts.
+All 120 MinIO container identities were distinct; cleanup left no containers
+from this collection. No separate build or test suite ran concurrently with
+collection; the CLI verified its already-built release executable before each
+Rust attempt.
+
+The two primary measurements are fresh-download time at 500 MB. The off baseline
+below is the median of the ten block-level geometric means of A1 and A2.
+The percentage effect compares diagnostics on with that baseline, as declared.
+
+| Core | Off baseline (ms) | Diagnostics-on change | 95% paired bootstrap interval | A/A absolute noise floor (ms) |
+| --- | ---: | ---: | --- | ---: |
+| TS/Bun | 2,051.86 | −3.17% | −9.69% to +3.88% | 375.36 |
+| Rust/release | 3,270.62 | −4.05% | −8.01% to +0.16% | 888.97 |
+
+Both primary intervals include zero. This collection cannot distinguish client
+diagnostic overhead from variation in fresh-download time. The observed absolute
+noise floors correspond to about 18.3% and 27.2% of those baselines. A 5% point
+estimate alone cannot qualify a latency optimization under §7 on this profile.
+
+Other A/A floors, in milliseconds, are:
+
+| Core / size | Stage | Upload + metadata acceptance | Fresh download | Cache hit |
+| --- | ---: | ---: | ---: | ---: |
+| TS / 64 KiB | 0.496 | 13.313 | 3.267 | 0.166 |
+| Rust / 64 KiB | 0.461 | 53.357 | 10.705 | 0.097 |
+| TS / 500 MB | 798.39 | 574.81 | 375.36 | 160.21 |
+| Rust / 500 MB | 875.69 | 747.06 | 888.97 | 247.77 |
+
+Some secondary unchanged-control intervals excluded zero. For example, the
+64 KiB Rust upload-plus-commit A2/A1 effect was −26.60% (−45.10% to −5.16%)
+despite identical code and diagnostic settings. This is evidence against using
+one interval or point estimate as sufficient proof on this host. The collection
+does not establish the source of that variation. Keep the absolute-noise
+criterion and independent replication requirement. Do not select a favorable
+secondary metric after observing a candidate.
+
+For 500 MB reader process CPU, the A/A absolute floors were 230.34 ms (TS) and
+946.45 ms (Rust). Reader peak-RSS floors were 493,715,456 and 503,234,560 bytes.
+These retain the whole-process scope from §9.3, including verification and cache
+hits. They cannot attribute a saving to one phase. Finer process/phase CPU or
+allocation measurements need a separately declared calibration before becoming
+a candidate's primary metric.
+
+Use diagnostics off for candidate operation timings and a separate diagnostics-on
+pass for attribution. No production optimization is retained by this experiment.
+Proceed with deterministic R1/R2 failure reproductions; qualify reliability fixes
+through those tests and report measured performance costs with these limitations.
+
+The local evidence directory is `bench/results/blob-calibration-v1/`:
+
+- `collect.py` and `collection.json`: executable schedule, frozen revision/binary,
+  all 120 commands, statuses, and artifact hashes.
+- Individual `*-block-*-*.json` files: standard benchmark artifacts and receipts.
+- `analyze.mjs` and `summary.json`: provenance checks and all paired summaries;
+  the summary records the analysis script hash and the statistical method.
+- `commands.log`: complete CLI output, including build verification and failures
+  (none in this collection).
+
+The diagnostic controls and statistical helper passed 25 targeted tests
+(1,857 assertions), including real MinIO, both cores, and known binomial
+bootstrap quantiles. `bun run check` passed 1,729 main tests (48 explicit skips),
+13 isolated tests, typecheck, lint/format, knip, and both Node runtime contracts.
+The private Rust crate's 11 unit tests and Clippy passed. The checkout remained
+frozen throughout measurement and analysis.
