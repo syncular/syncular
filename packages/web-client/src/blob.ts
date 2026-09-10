@@ -94,9 +94,13 @@ export interface CachedBlob {
 
 /** `"sha256:" + hex` of the bytes — the content address (§5.9.1). */
 export async function computeBlobId(bytes: Uint8Array): Promise<string> {
+  const input =
+    bytes.buffer instanceof ArrayBuffer
+      ? new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+      : bytes.slice();
   const digest = await crypto.subtle.digest(
     'SHA-256',
-    bytes.slice().buffer as ArrayBuffer,
+    input as Uint8Array<ArrayBuffer>,
   );
   const hex = [...new Uint8Array(digest)]
     .map((b) => b.toString(16).padStart(2, '0'))

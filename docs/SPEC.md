@@ -2176,6 +2176,9 @@ and one pending-upload pin.
 
 Before uploading a queued body or accepting an already-present upload grant,
 the client MUST validate its local byte length and SHA-256 content address.
+A byte-array staging call MUST snapshot the exact supplied view before yielding.
+Caller mutation or reuse after the method returns its promise MUST NOT change
+the bytes, length, or content address committed by that call.
 A missing body, invalid stored body or upload metadata, or content mismatch
 MUST fail the sync round with client-local `sync.local_corrupt`. A storage
 read or pending-pin deletion failure MUST also fail the round. The client

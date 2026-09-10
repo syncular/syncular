@@ -18,7 +18,7 @@ export const changelog = [
   {
     date: '2026-09-11',
     title: 'Durable blob upload recovery',
-    body: 'Both client cores commit a staged body and its upload pin atomically. Queued uploads validate their stored length and SHA-256 before transfer, and local storage failures retain the original outbox commit for retry. A durable commit-to-blob index keeps successfully uploaded bodies pinned until every referencing commit reaches a terminal outcome, including after restart, lost acknowledgements, rejection, and scope revocation.',
+    body: 'Both client cores commit a staged body and its upload pin atomically. TypeScript snapshots the exact supplied byte view at call time, so later caller mutation cannot change the staged body or content address. Queued uploads validate their stored length and SHA-256 before transfer, and local storage failures retain the original outbox commit for retry. A durable commit-to-blob index keeps successfully uploaded bodies pinned until every referencing commit reaches a terminal outcome, including after restart, lost acknowledgements, rejection, and scope revocation.',
     links: [{ href: '/concepts-blobs/', label: 'Blob upload lifecycle' }],
   },
   {

@@ -379,7 +379,8 @@ must make each decision reproducible.
 | Harness and A/A | Review baseline plus private driver changes | §9.1–9.5: 120 calibration attempts passed; both primary diagnostic-overhead intervals include zero; observed A/A noise sets explicit absolute floors; finer phase attribution remains | Initial calibration complete |
 | R1 | One Rust transaction for body and upload pin | §9.6–9.7: baseline failure reproduced; candidate passes both cores and native file reopen; two independent 40-run cost collections | Retain for atomicity with the explicit performance uncertainty in §9.7; no speedup or neutrality claim |
 | R2 | Validate queued bytes and preserve commit-dependent bodies | §9.8: 42 shared R2 cases, 7 native reopen cases, and 80 paired benchmark attempts pass | Retained for reliability; measured 500 MB upload cost is +11.7% TS and +67.8% Rust |
-| P1–P4 | Pending | Allocation/access hypotheses above | Pending |
+| P1 | Hash exact views and stage one owned JS snapshot | §9.9: baseline ownership failure, 82 cross-core blob cases, and two independent 40-run collections | Retained for input ownership; performance improvement remains inconclusive |
+| P2–P4 | Pending | Allocation/access hypotheses above | Pending |
 | P5–P7 | Conditional | Reassess after simpler candidates | Pending |
 
 ## 9. Implementation evidence
@@ -925,3 +926,76 @@ The Rust workspace passes 142 unit/integration tests plus doc tests, formatting,
 and Clippy with warnings denied. Tauri, React Native, and Swift binding gates
 pass. Kotlin and Flutter verify generated-schema freshness but skip runtime
 tests because this host lacks a working JDK and Dart SDK. R2 is retained.
+
+### 9.9 P1 exact-view hashing and owned staging snapshot, 2026-09-11
+
+The baseline hashes `bytes.slice().buffer`, then awaits WebCrypto before it
+inserts the caller's original view into SQLite. A caller can mutate that view
+after `uploadBlob` returns its promise and before the insert resumes. The stored
+body can then differ from the content address. The shared reproduction uses a
+nonzero-offset view, starts staging, overwrites the view immediately, and
+requires the returned reference to match the call-time bytes. Rust passes
+because its synchronous core and command conversion consume the input before
+returning. TS fails before the candidate.
+
+The candidate copies the exact TS input view synchronously at the public method
+boundary and uses that owned array for hashing, persistence, length, and the
+returned reference. `computeBlobId` passes an exact ArrayBuffer-backed view to
+WebCrypto without cloning its body; SharedArrayBuffer-backed input retains a
+copy because WebCrypto does not accept shared memory. R2 verification and
+download validation operate on client-owned arrays and avoid their previous
+full-body clone.
+
+Compare commit `a03ffe32` with the candidate in ten paired blocks at 65,536 and
+500,000,000 bytes using the R2 TS file/MinIO controls. Alternate arm order and
+size traversal, disable diagnostics, preserve every attempt, and verify the
+same fixture, stored object, accepted commit, download, cache hit, reopen, and
+SHA-256 receipts. The primary metric is 500 MB upload plus commit time. Stage
+time, fresh download, writer CPU, and writer peak RSS are secondary. Use the
+same paired estimator, bootstrap seed, §9.5 A/A floors, and two-gate retention
+rule. A retained performance result requires a second independent collection.
+
+The baseline TS client fails the shared reproduction: immediate caller mutation
+changes the returned SHA-256 from the call-time bytes to the overwritten bytes.
+Mutation after hashing can also change the later SQLite insert independently.
+The candidate and Rust return the reference for the exact call-time view. All
+82 focused blob cases pass across both cores.
+
+Both independent collections completed 40/40 attempts with no failures or
+exclusions. The first ran from 2026-09-10 23:07:56 to 23:11:38 UTC; the repeat
+ran from 23:12:02 to 23:15:40 UTC. Both used commit `a03ffe32`, candidate diff
+SHA-256
+`fa1244c7fe93312c9549529e27dc15d18fde30b22f8193a009ebc8dadd3ac2bb`,
+Apple M4, Darwin 27.0.0, Bun 1.4.0, SQLite 3.54.0, WAL/FULL, and distinct pinned
+MinIO containers. All 80 attempts validated the complete lifecycle receipts.
+
+| Collection | Baseline median | Candidate median | Paired change | 95% interval | Absolute p95 |
+| --- | ---: | ---: | ---: | --- | ---: |
+| First | 1,989.36 ms | 1,796.93 ms | -8.50% | [-15.59%, +0.03%] | 525.36 ms |
+| Repeat | 1,916.67 ms | 1,821.09 ms | -12.20% | [-17.28%, -6.22%] | 494.24 ms |
+
+Neither collection qualifies an upload-latency improvement. The first interval
+includes no improvement, and both absolute p95 benefits remain below the §9.5
+574.81 ms A/A floor. Writer CPU changes -4.97% [-6.75%, -2.89%] in the first
+collection and -2.75% [-3.86%, -1.73%] in the repeat. The first writer peak RSS
+result is -15.04% [-18.70%, -12.32%], but the repeat is -8.20% [-16.12%,
++0.93%]. The memory interval does not exclude no improvement in the repeat.
+
+Staging is an unchanged control because P1 moves the required ownership copy
+from hashing to the public method boundary. Its 500 MB effects are -1.34%
+[-11.62%, +8.40%] and +4.45% [-0.72%, +10.46%]. Fresh download moves -6.63%
+[-12.42%, -1.95%] and -8.18% [-13.08%, -3.53%], but both absolute p95 changes
+exceed the 375.36 ms download A/A floor and P1 changes validation on that path.
+The inconsistent cache-hit movement prevents attributing the full reader result
+to the removed validation copy.
+
+Retain P1 for reliability. The baseline violates call-time byte ownership and
+can associate persisted bytes with the wrong content address. The candidate
+uses one owned staging snapshot and removes the otherwise redundant hash copy
+for client-owned arrays. The two collections show no material regression, but
+they do not qualify a performance claim. Raw evidence is under
+`bench/results/blob-p1-v1/` and `bench/results/blob-p1-v1-repeat/`.
+
+`bun run check` passes 1,909 main tests (46 explicit skips), 13 isolated
+multi-tab tests, typecheck, lint/format, knip, and both Node SQLite runtime
+contracts.

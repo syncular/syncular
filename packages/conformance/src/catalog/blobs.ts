@@ -79,6 +79,33 @@ async function requireBlobs(client: ClientHandle): Promise<void> {
 
 export const blobScenarios: readonly Scenario[] = [
   {
+    name: 'blobs/upload-owns-nonzero-offset-input-at-call-time',
+    requires: ['blobs'],
+    specRefs: ['§5.9.1', '§5.9.7'],
+    server: BLOB_SERVER,
+    async run(ctx) {
+      const owner = await ctx.newClient({
+        actorId: 'owner',
+        clientId: 'owner',
+        schema: BLOB_SCHEMA,
+        allowed: P1,
+      });
+      const api = owner.api;
+      check(api.uploadBlob !== undefined, 'blob upload surface exists');
+      const expected = await api.uploadBlob(bytesOf('owned'));
+      const backing = bytesOf('_owned_');
+      const view = backing.subarray(1, 6);
+      const pending = api.uploadBlob(view);
+      view.fill(0);
+      checkEqual(
+        await pending,
+        expected,
+        'upload snapshots the exact view before caller mutation',
+      );
+    },
+  },
+
+  {
     name: 'blobs/upload-pin-survives-lost-ack-and-restart-backfill',
     requires: ['blobs', 'blob-presign'],
     specRefs: ['§2.3', '§5.9.7'],

@@ -50,7 +50,9 @@ const cached = await client.fetchBlob(row.attachment);
 transaction in both cores. A body write, pin write, or commit failure rejects
 the call and preserves the previous body, metadata, and pin state. Retry
 staging after repairing the storage failure; the same bytes retain their
-content address and do not create duplicate cache entries.
+content address and do not create duplicate cache entries. The method snapshots
+the exact supplied byte view before it yields, so the caller can mutate or reuse
+its buffer after receiving the promise without changing the staged body.
 
 Before uploading a queued body, the client checks its stored length and SHA-256,
 including when the server already has the object. Missing or corrupt pending

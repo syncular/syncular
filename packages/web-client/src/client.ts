@@ -1495,7 +1495,8 @@ export class SyncClient {
     bytes: Uint8Array,
     options?: { readonly mediaType?: string; readonly name?: string },
   ): Promise<BlobRef> {
-    return this.#runProtectedAsync(() => this.#uploadBlob(bytes, options));
+    const owned = bytes.slice();
+    return this.#runProtectedAsync(() => this.#uploadBlob(owned, options));
   }
 
   async #uploadBlob(
