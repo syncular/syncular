@@ -877,6 +877,188 @@ export const blobScenarios: readonly Scenario[] = [
     ),
   ),
   {
+    name: 'blobs/duplicate-stage-preserves-first-body-metadata',
+    requires: ['blobs'],
+    specRefs: ['§5.9.1', '§5.9.7'],
+    server: BLOB_SERVER,
+    async run(ctx) {
+      const owner = await ctx.newClient({
+        actorId: 'owner',
+        clientId: 'owner',
+        schema: BLOB_SCHEMA,
+        allowed: P1,
+      });
+      const api = owner.api;
+      check(
+        api.uploadBlob !== undefined && api.querySnapshot !== undefined,
+        'blob storage conformance surfaces are required',
+      );
+      const first = await api.uploadBlob(bytesOf('duplicate'), {
+        mediaType: 'text/plain',
+        name: 'first.txt',
+      });
+      const second = await api.uploadBlob(bytesOf('duplicate'), {
+        mediaType: 'application/octet-stream',
+        name: 'second.bin',
+      });
+      checkEqual(
+        JSON.parse(first).blobId,
+        JSON.parse(second).blobId,
+        'duplicate bytes keep one content address',
+      );
+      checkEqual(
+        (
+          await api.querySnapshot(
+            'SELECT byte_length, media_type FROM _syncular_blobs',
+          )
+        ).rows,
+        [{ byte_length: 9, media_type: 'text/plain' }],
+        'duplicate staging preserves the first stored body metadata',
+      );
+    },
+  },
+  {
+    name: 'blobs/simultaneous-fresh-downloads-converge-on-one-cache-row',
+    requires: ['blobs'],
+    specRefs: ['§5.9.5', '§5.9.7'],
+    server: BLOB_SERVER,
+    async run(ctx) {
+      const owner = await ctx.newClient({
+        actorId: 'owner',
+        clientId: 'owner',
+        schema: BLOB_SCHEMA,
+        allowed: P1,
+      });
+      const reader = await ctx.newClient({
+        actorId: 'reader',
+        clientId: 'reader',
+        schema: BLOB_SCHEMA,
+        allowed: P1,
+      });
+      for (const client of [owner, reader]) {
+        await requireBlobs(client);
+        await client.api.subscribe({
+          id: 'attachments',
+          table: 'attachments',
+          scopes: P1,
+        });
+        await syncIdle(client);
+      }
+      const ref = await owner.api.uploadBlob?.(bytesOf('simultaneous'));
+      check(typeof ref === 'string', 'upload produced a reference');
+      await owner.api.mutate([
+        {
+          op: 'upsert',
+          table: 'attachments',
+          values: attachmentRow('row', 'p1', ref),
+        },
+      ]);
+      await syncIdle(owner);
+      await syncIdle(reader);
+      const [first, second] = await Promise.all([
+        reader.api.fetchBlob?.(ref),
+        reader.api.fetchBlob?.(ref),
+      ]);
+      check(first !== undefined && second !== undefined, 'both fetches return');
+      checkEqual(decode(first), 'simultaneous', 'first fetch returns the body');
+      checkEqual(
+        decode(second),
+        'simultaneous',
+        'second fetch returns the body',
+      );
+      checkEqual(
+        (
+          await reader.api.querySnapshot?.(
+            'SELECT count(*) AS n FROM _syncular_blobs',
+          )
+        )?.rows,
+        [{ n: 1 }],
+        'simultaneous inserts converge on one cache row',
+      );
+    },
+  },
+  {
+    name: 'blobs/download-cache-insert-failure-retries-cleanly',
+    requires: ['blobs'],
+    specRefs: ['§5.9.5', '§5.9.7'],
+    server: BLOB_SERVER,
+    async run(ctx) {
+      const owner = await ctx.newClient({
+        actorId: 'owner',
+        clientId: 'owner',
+        schema: BLOB_SCHEMA,
+        allowed: P1,
+      });
+      const reader = await ctx.newClient({
+        actorId: 'reader',
+        clientId: 'reader',
+        schema: BLOB_SCHEMA,
+        allowed: P1,
+      });
+      for (const client of [owner, reader]) {
+        await requireBlobs(client);
+        await client.api.subscribe({
+          id: 'attachments',
+          table: 'attachments',
+          scopes: P1,
+        });
+        await syncIdle(client);
+      }
+      const ref = await owner.api.uploadBlob?.(bytesOf('retry download'));
+      check(typeof ref === 'string', 'upload produced a reference');
+      await owner.api.mutate([
+        {
+          op: 'upsert',
+          table: 'attachments',
+          values: attachmentRow('row', 'p1', ref),
+        },
+      ]);
+      await syncIdle(owner);
+      await syncIdle(reader);
+      check(
+        reader.api.executeStorageSql !== undefined &&
+          reader.api.querySnapshot !== undefined,
+        'storage fault surfaces are required',
+      );
+      await reader.api.executeStorageSql(
+        `CREATE TRIGGER fail_download_insert BEFORE INSERT ON _syncular_blobs
+         BEGIN SELECT RAISE(ABORT, 'injected download insert failure'); END`,
+      );
+      let failure: unknown;
+      try {
+        await reader.api.fetchBlob?.(ref);
+      } catch (error) {
+        failure = error;
+      }
+      check(
+        String(failure).includes('injected download insert failure'),
+        'download surfaces the durable cache insert failure',
+      );
+      checkEqual(
+        (
+          await reader.api.querySnapshot(
+            'SELECT count(*) AS n FROM _syncular_blobs',
+          )
+        ).rows,
+        [{ n: 0 }],
+        'failed insertion leaves no cache row',
+      );
+      await reader.api.executeStorageSql('DROP TRIGGER fail_download_insert');
+      const fetched = await reader.api.fetchBlob?.(ref);
+      check(fetched !== undefined, 'retry returns the body');
+      checkEqual(
+        decode(fetched),
+        'retry download',
+        'retry preserves the bytes',
+      );
+      checkEqual(
+        reader.blobDownloads.length,
+        2,
+        'retry performs a second authorized download',
+      );
+    },
+  },
+  {
     name: 'blobs/fresh-download-retains-live-references-over-cap',
     requires: ['blobs'],
     specRefs: ['§5.9.7', '§7.1'],

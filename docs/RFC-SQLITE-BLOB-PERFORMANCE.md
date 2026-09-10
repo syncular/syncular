@@ -380,7 +380,8 @@ must make each decision reproducible.
 | R1 | One Rust transaction for body and upload pin | §9.6–9.7: baseline failure reproduced; candidate passes both cores and native file reopen; two independent 40-run cost collections | Retain for atomicity with the explicit performance uncertainty in §9.7; no speedup or neutrality claim |
 | R2 | Validate queued bytes and preserve commit-dependent bodies | §9.8: 42 shared R2 cases, 7 native reopen cases, and 80 paired benchmark attempts pass | Retained for reliability; measured 500 MB upload cost is +11.7% TS and +67.8% Rust |
 | P1 | Hash exact views and stage one owned JS snapshot | §9.9: baseline ownership failure, 82 cross-core blob cases, and two independent 40-run collections | Retained for input ownership; performance improvement remains inconclusive |
-| P2–P4 | Pending | Allocation/access hypotheses above | Pending |
+| P2 | Return downloaded bytes after metadata-only cache verification | §9.10: 88 cross-core blob cases and 80 paired benchmark attempts pass; both 500 MB primary intervals include zero | Discarded; no production change retained |
+| P3–P4 | Pending | Allocation/access hypotheses above | Pending |
 | P5–P7 | Conditional | Reassess after simpler candidates | Pending |
 
 ## 9. Implementation evidence
@@ -999,3 +1000,81 @@ they do not qualify a performance claim. Raw evidence is under
 `bun run check` passes 1,909 main tests (46 explicit skips), 13 isolated
 multi-tab tests, typecheck, lint/format, knip, and both Node SQLite runtime
 contracts.
+
+### 9.10 P2 downloaded-byte reuse protocol, 2026-09-11
+
+The fresh-download path currently verifies the transport-owned body, inserts
+it into SQLite, then selects the body back from SQLite before returning. The
+last query materializes the complete body a second time. P2 will take one owned
+snapshot of the downloaded body and retain it through verification, cache
+insertion, refcount reconciliation, and cap enforcement. A metadata-only query
+must prove that the durable cache row still exists and return its stored length
+and media type before the method returns the owned body. The Rust transport
+already returns an owned byte vector. The Rust compatibility command will
+continue to encode the same JSON byte shape; P3 owns changes below that
+serializer.
+
+Before measurement, add shared cases for simultaneous fresh fetches, a
+referenced body larger than the configured cap, and an injected cache-insert
+failure after download. Direct cache tests must preserve the stored metadata
+when duplicate content arrives with different caller metadata. Returned bytes
+must remain valid after later database queries and client close. Existing
+authorization, hash-mismatch, presigned-download recovery, refcount, eviction,
+and restart cases remain required.
+
+Compare commit `a5ba2300` with one P2 production diff in ten paired blocks for
+each core at 65,536 and 500,000,000 bytes. Each block runs baseline and
+candidate once, alternates arm order, and reverses core and size traversal on
+alternate blocks. Use diagnostics off, SQLite server storage, persistent
+WAL/FULL client databases, a distinct pinned MinIO container per attempt, and
+the existing complete lifecycle receipts. Preserve every attempt and stop on
+failure. The primary metric is 500 MB fresh-download operation time. Report
+reader CPU and peak RSS as secondary observations. Stage, upload plus commit,
+cache hit, reopened hit, filesystem allocation, and server metrics are
+unchanged controls. Use the §9.5 paired estimator, bootstrap seed, A/A floors,
+and two-gate retention rule. Repeat the complete collection independently when
+the first collection qualifies.
+
+The collection completed all 80 attempts between 2026-09-10 23:27:59 and
+23:38:31 UTC with no failures or exclusions. Every attempt used a distinct
+MinIO container and verified the fixture, stored object, accepted commit,
+download, cache hit, reopened cache hit, and SHA-256 receipts. The baseline was
+commit `a5ba2300`; its Rust source matches the R2 candidate executable exactly.
+The candidate diff SHA-256 was
+`4f36f863260de3ec2824adddf9873bc55c91d040a38435dbd4fdcb49d3ade90d`.
+The baseline and candidate Rust executable SHA-256 values were
+`14c82aa993cf2f4ad256553c7141e27f4f740f7a79cd660df0d7ac86c0e69aa5` and
+`18ff8ea2b18240ec04d9df338d76b826c6a61fb1cf7997f0efed60bdac349244`.
+
+| Core | Baseline median | Candidate median | Paired change | 95% interval | Absolute p95 | §9.5 A/A floor |
+| --- | ---: | ---: | ---: | --- | ---: | ---: |
+| TS/Bun | 1,848.59 ms | 1,883.64 ms | +2.49% | [-6.98%, +9.49%] | 792.88 ms | 375.36 ms |
+| Rust/release | 2,872.17 ms | 2,709.14 ms | -0.49% | [-7.36%, +10.42%] | 1,537.08 ms | 888.97 ms |
+
+Both primary intervals include zero. The absolute paired variation exceeds the
+earlier A/A floors, but neither core establishes an improvement direction. TS
+reader CPU changes +1.51% [-5.25%, +7.23%], and Rust reader CPU changes -1.13%
+[-4.97%, +3.01%]. TS reader peak RSS changes +7.25% [-0.45%, +16.11%]; Rust
+changes +0.79% [-2.90%, +6.13%]. The complete TS process still owns one
+500 MB result snapshot, and the Rust compatibility command still performs its
+hex serialization. Removing the SQL body readback does not reduce either
+measured process peak.
+
+All 500 MB unchanged-control intervals include zero. TS staging changes +0.06%,
+upload plus commit -4.06%, cache hit -1.44%, and reopened hit +4.55%. Rust
+staging changes -0.64%, upload plus commit -2.26%, cache hit +1.95%, and
+reopened hit +0.85%. The 64 KiB fresh-download intervals also include zero for
+both cores.
+
+Discard P2 and do not run a repeat. The candidate preserves behavior but does
+not prove a fresh-download improvement. The production paths continue to read
+the cached body from SQLite before returning. Retain the three shared scenarios
+for duplicate metadata, simultaneous fresh fetches, and cache-insert failure,
+plus the TS result-ownership test. The baseline and candidate both pass all 88
+focused blob cases across the two cores. Raw evidence is under
+`bench/results/blob-p2-v1/`.
+
+`bun run check` passes 1,916 main tests (46 explicit skips), 13 isolated
+multi-tab tests, typecheck, lint/format, knip, and both Node SQLite runtime
+contracts. The Rust client passes 66 unit tests and 6 integration tests;
+`cargo fmt --check` and clippy with warnings denied also pass.

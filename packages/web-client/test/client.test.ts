@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import {
   type ClientSchema,
   ClientSyncError,
+  computeBlobId,
   type SqlRow,
   type SqlValue,
 } from '@syncular/client';
@@ -1422,6 +1423,48 @@ describe('the SELECT * → mutate round trip', () => {
     expect(() => a.client.patch('tasks', 'missing', { done: true })).toThrow(
       /no local row/,
     );
+  });
+});
+
+describe('blob downloads', () => {
+  test('fresh bytes outlive transport reuse, later queries, and client close', async () => {
+    const source = new TextEncoder().encode('owned download');
+    const expected = source.slice();
+    const blobId = await computeBlobId(source);
+    const server = makeServer();
+    const entry = await makeClient(server, {
+      clientId: 'owned-download',
+      schema: {
+        version: 1,
+        tables: [
+          {
+            name: 'attachments',
+            primaryKey: 'id',
+            columns: [
+              { name: 'id', type: 'string', nullable: false },
+              { name: 'project_id', type: 'string', nullable: false },
+              { name: 'file', type: 'blob_ref', nullable: true },
+            ],
+            scopes: ['project:{project_id}'],
+          },
+        ],
+      },
+      blobs: {
+        upload: async () => undefined,
+        download: async () => ({ kind: 'bytes', bytes: source }),
+      },
+    });
+    let fetched: Awaited<ReturnType<typeof entry.client.fetchBlob>> | undefined;
+    try {
+      fetched = await entry.client.fetchBlob(blobId);
+      source.fill(0);
+      entry.db.query('SELECT count(*) AS n FROM _syncular_blobs');
+    } finally {
+      await entry.client.close();
+      entry.db.close();
+      server.storage.db.close();
+    }
+    expect(fetched?.bytes).toEqual(expected);
   });
 });
 
