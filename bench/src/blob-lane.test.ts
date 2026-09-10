@@ -2,16 +2,85 @@ import { expect, test } from 'bun:test';
 import { runBlobLane, runProcessBlobs } from './blob-lane';
 import { performanceOptions } from './performance';
 import { createHash } from 'node:crypto';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { BLOB_SCHEMA, PROJECT_ID } from './fixture';
+import { deflateSync } from 'node:zlib';
+import { BLOB_SCHEMA, PROJECT_ID, writeBlobFixture } from './fixture';
 import {
   assertProcessSync,
   createProcessDriver,
   processObject,
 } from './process-driver';
 import { startSocketServer } from './socket-server';
+
+test('blob fixture files match independent OpenSSL vectors across buffer boundaries', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'syncular-blob-fixture-'));
+  try {
+    // OpenSSL AES-256-CTR over zero bytes, SHA-256 checked with Python hashlib.
+    for (const [seed, byteLength, sha256] of [
+      [
+        0,
+        1,
+        '7c5bd2d144fdde498406edcb9fe60ce65b0dfa5f2dd7a7617f505e3d46d68bdb',
+      ],
+      [
+        0,
+        65535,
+        '88771a4af5f0c536f21b85e44c1df42020eae0990c0694f7b2b8a3fead4a0ad0',
+      ],
+      [
+        0,
+        65536,
+        '90913cfcc96c4850ed0ab49d4afa1f98a4fa0a96465b2d069e0234a638cb28ae',
+      ],
+      [
+        0,
+        65537,
+        'fd38c4d8477e4584f719145445f1c2497a64636450eb3c82b98fdab04c42fdd5',
+      ],
+      [
+        1,
+        131075,
+        'e821af81e1dd279a787c05594f9314660f2f8168b77ff2dc991632ddc64e04ab',
+      ],
+    ] as const) {
+      const path = join(directory, `${seed}-${byteLength}.bin`);
+      expect(await writeBlobFixture(path, byteLength, seed)).toEqual({
+        algorithm: 'aes-256-ctr-zero-v1',
+        seed,
+        byteLength,
+        sha256,
+      });
+      const bytes = await readFile(path);
+      expect(bytes.length).toBe(byteLength);
+      expect(createHash('sha256').update(bytes).digest('hex')).toBe(sha256);
+      if (byteLength > 1)
+        expect(deflateSync(bytes).length).toBeGreaterThan(byteLength * 0.99);
+      await expect(writeBlobFixture(path, byteLength, seed)).rejects.toThrow();
+      expect(await readFile(path)).toEqual(bytes);
+    }
+    for (const [byteLength, seed] of [
+      [0, 0],
+      [-1, 0],
+      [1.5, 0],
+      [500_000_001, 0],
+      [Number.NaN, 0],
+      [1, -1],
+      [1, 0x1_0000_0000],
+      [1, 0.5],
+      [1, Infinity],
+    ] as const) {
+      const path = join(directory, 'invalid.bin');
+      await expect(writeBlobFixture(path, byteLength, seed)).rejects.toThrow(
+        'uint32 seed',
+      );
+      expect(await Bun.file(path).exists()).toBe(false);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 for (const core of ['ts', 'rust'] as const)
   test.skipIf(core === 'rust' && !process.env.SYNCULAR_NATIVE_BENCH)(
@@ -28,12 +97,10 @@ for (const core of ['ts', 'rust'] as const)
             : process.env.SYNCULAR_NATIVE_BENCH;
         if (!binary) throw new Error('Native benchmark executable required');
         const path = join(directory, 'fixture.bin');
-        const body = Uint8Array.from(
-          { length: 1_048_579 },
-          (_, i) => (i * 131 + Math.floor(i / 251)) % 256,
-        );
+        const fixture = await writeBlobFixture(path, 1_048_579);
+        const body = await readFile(path);
         const sha256 = createHash('sha256').update(body).digest('hex');
-        await writeFile(path, body);
+        expect(fixture.sha256).toBe(sha256);
         const writerPath = join(directory, 'writer.sqlite');
         const writer = await createProcessDriver(
           binary,

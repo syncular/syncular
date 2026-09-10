@@ -376,7 +376,7 @@ must make each decision reproducible.
 
 | Experiment | Baseline/candidate | Evidence | Decision |
 | --- | --- | --- | --- |
-| Harness and A/A | Review baseline plus private driver changes | §9.1: isolated file-input/digest-receipt contracts pass in TS and Rust; large CLI/S3 profile and A/A runs remain | In progress |
+| Harness and A/A | Review baseline plus private driver changes | §9.1–9.2: isolated file-input/digest-receipt contracts pass in TS and Rust; bounded 500 MB fixture independently verified; large CLI/S3 profile and A/A runs remain | In progress |
 | R1/R2 | Pending | Inspected paths only; failure reproductions required | Pending |
 | P1–P4 | Pending | Allocation/access hypotheses above | Pending |
 | P5–P7 | Conditional | Reassess after simpler candidates | Pending |
@@ -412,3 +412,34 @@ Rust, not performance results. No production client code changed.
 The CLI still uses its existing blob lane and 16 MiB size limit;
 fixture generation, large-profile integration, S3 setup, resource attribution,
 and A/A measurements remain before the performance baseline.
+
+### 9.2 Bounded deterministic file fixtures, 2026-09-10
+
+`bench/src/fixture.ts` now generates files up to 500,000,000 bytes with
+64 KiB input/output chunks. AES-256-CTR encrypts zero bytes using a zero IV
+and the SHA-256 of `syncular-blob-fixture-v1:<seed>` as its key. The receipt
+records algorithm `aes-256-ctr-zero-v1`, seed, length, and a digest computed
+during generation. The generator handles partial writes, refuses existing
+paths, and removes its own incomplete file after a write failure. This bounds
+individual generation buffers; it does not claim a process RSS ceiling.
+
+The TS and Rust process contracts use this fixture and independently hash the
+source file before comparing upload, reopen, fresh download, and cache-hit
+receipts. Five fixed vectors, independently generated with OpenSSL and hashed
+with Python hashlib, cover one byte and either side of the 64 KiB boundary.
+Tests check exact file lengths, digests, incompressibility, invalid size/seed
+rejection, and preservation of existing files. The fixture and both process
+contracts pass 95 assertions.
+
+A separate 500,000,000-byte seed-zero generation completed and matched
+`shasum -a 256` over the full file:
+`5fd68f1bf4781c884bdd3839ecdba18710fc5cba3d0348583f0126b7fe91fb8b`.
+The local validation receipt is
+`bench/results/blob-fixture-500mb-2026-09-10.json`. Fixture generation and
+validation establish input correctness; no client performance was measured.
+Large-profile CLI integration, S3 setup, resource attribution, and A/A runs
+remain pending.
+
+`bun run check` passes 1,724 main tests (42 explicit skips), 13 isolated
+tests, typecheck, lint/format, knip, and both Node runtime contracts.
+Production client code remains unchanged.

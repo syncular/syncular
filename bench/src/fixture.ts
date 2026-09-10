@@ -4,6 +4,64 @@
  */
 import type { RowColumn, RowValue } from '@syncular/core';
 import type { ServerSchema } from '@syncular/server';
+import { createCipheriv, createHash } from 'node:crypto';
+import { open, rm } from 'node:fs/promises';
+
+/** Generate reproducible, incompressible file input outside client timers. */
+export async function writeBlobFixture(
+  path: string,
+  byteLength: number,
+  seed = 0,
+) {
+  if (
+    !Number.isSafeInteger(byteLength) ||
+    byteLength < 1 ||
+    byteLength > 500_000_000 ||
+    !Number.isInteger(seed) ||
+    seed < 0 ||
+    seed > 0xffff_ffff
+  )
+    throw new Error(
+      'Blob fixture requires 1..500000000 bytes and a uint32 seed',
+    );
+  const algorithm = 'aes-256-ctr-zero-v1';
+  const key = createHash('sha256')
+    .update(`syncular-blob-fixture-v1:${seed}`)
+    .digest();
+  const cipher = createCipheriv('aes-256-ctr', key, Buffer.alloc(16));
+  const digest = createHash('sha256');
+  const zeros = Buffer.alloc(Math.min(byteLength, 65_536));
+  const file = await open(path, 'wx');
+  let complete = false;
+  try {
+    for (let offset = 0; offset < byteLength; offset += zeros.length) {
+      const bytes = cipher.update(
+        zeros.subarray(0, Math.min(zeros.length, byteLength - offset)),
+      );
+      digest.update(bytes);
+      let written = 0;
+      while (written < bytes.length) {
+        const { bytesWritten } = await file.write(bytes.subarray(written));
+        if (bytesWritten === 0)
+          throw new Error('Blob fixture write made no progress');
+        written += bytesWritten;
+      }
+    }
+    if (cipher.final().length !== 0)
+      throw new Error('Blob fixture cipher returned an unexpected tail');
+    await file.close();
+    complete = true;
+    return { algorithm, seed, byteLength, sha256: digest.digest('hex') };
+  } finally {
+    if (!complete) {
+      try {
+        await file.close();
+      } finally {
+        await rm(path, { force: true });
+      }
+    }
+  }
+}
 
 export const PARTITION = 'bench';
 export const ACTOR_ID = 'bench-actor';

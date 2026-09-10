@@ -321,6 +321,15 @@ The implementation and remaining workload coverage are tracked in
 The [SQLite blob experiments](../docs/RFC-SQLITE-BLOB-PERFORMANCE.md)
 extend that suite with large attachments and measured keep/discard decisions.
 
+`writeBlobFixture` in `src/fixture.ts` writes deterministic file inputs up to
+500,000,000 bytes using 64 KiB generation buffers. It encrypts zero bytes with
+AES-256-CTR, a zero IV, and a SHA-256 key derived from
+`syncular-blob-fixture-v1:<seed>`. Its receipt records the algorithm version,
+uint32 seed, byte length, and full SHA-256. Generation runs outside client
+operation timers. Existing paths are refused. Failed writes remove only the
+newly created fixture. Tests pin independent OpenSSL digest vectors across
+buffer boundaries and reject compressible output.
+
 The private TS and Rust process drivers also support `benchBlobFile` with
 `mode: direct`. Upload takes a fixture `path`, reads it inside the client process,
 and reports source-read and public staging durations separately. Fetch takes a
