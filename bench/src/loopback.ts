@@ -58,6 +58,9 @@ export interface BenchServerOptions {
   readonly measurements?: Record<string, MethodMeasurement>;
   readonly resolveScopes?: SyncRequestContext['resolveScopes'];
   readonly blobs?: BlobStore;
+  readonly blobSignedUrls?: SyncRequestContext['blobSignedUrls'];
+  readonly blobUploadUrls?: SyncRequestContext['blobUploadUrls'];
+  readonly maxBlobBytes?: number;
   /** Mixed-commit workload: reject the marked middle commit after staging it. */
   readonly rejectMiddle?: boolean;
   readonly partition?: string;
@@ -78,6 +81,20 @@ export function createBenchServer(options?: BenchServerOptions): BenchServer {
   const resolveScopes =
     options?.resolveScopes ?? (() => ({ project_id: ['*'] }));
   const schema = options?.blobs ? BLOB_SCHEMA : SCHEMA;
+  const blobOptions = options?.blobs
+    ? {
+        blobs: options.blobs,
+        ...(options.blobSignedUrls
+          ? { blobSignedUrls: options.blobSignedUrls }
+          : {}),
+        ...(options.blobUploadUrls
+          ? { blobUploadUrls: options.blobUploadUrls }
+          : {}),
+        ...(options.maxBlobBytes !== undefined
+          ? { maxBlobBytes: options.maxBlobBytes }
+          : {}),
+      }
+    : {};
   const validation = options?.rejectMiddle
     ? {
         commitValidator: (({ operations }) => {
@@ -92,7 +109,7 @@ export function createBenchServer(options?: BenchServerOptions): BenchServer {
   const hub = createRealtimeHub({
     ...validation,
     schema,
-    ...(options?.blobs ? { blobs: options.blobs } : {}),
+    ...blobOptions,
     storage,
     resolveScopes,
     // §8.7: realtime-connected clients run their sync rounds over the
@@ -113,7 +130,7 @@ export function createBenchServer(options?: BenchServerOptions): BenchServer {
     partition: options?.partition ?? PARTITION,
     actorId: ACTOR_ID,
     schema,
-    ...(options?.blobs ? { blobs: options.blobs } : {}),
+    ...blobOptions,
     storage,
     segments,
     resolveScopes,

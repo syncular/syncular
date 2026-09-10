@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { runBlobLane, runProcessBlobs } from './blob-lane';
+import { runBlobLane, runProcessBlobs, runBlobFile } from './blob-lane';
 import { performanceOptions } from './performance';
 import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -13,6 +13,118 @@ import {
   processObject,
 } from './process-driver';
 import { startSocketServer } from './socket-server';
+
+test('large blob file options require isolated persistent direct clients and MinIO', () => {
+  const base = [
+    '--workload',
+    'blobs',
+    '--lane',
+    'socket',
+    '--storage',
+    'file',
+    '--blob-profile',
+    'file',
+  ];
+  const large = [...base, '--blob-store', 'minio', '--sizes', '500000000'];
+  expect(performanceOptions(large).sizes).toEqual([500_000_000]);
+  expect(performanceOptions([...large, '--core', 'rust']).blobStore).toBe(
+    'minio',
+  );
+  for (const args of [
+    [...base, '--sizes', '500000000'],
+    [...large, '--sizes', '500000001'],
+    [...large, '--lane', 'engine'],
+    [...large, '--storage', 'memory'],
+    [...large, '--core', 'rust', '--boundary', 'command'],
+    [...large, '--core', 'rust', '--native-phases'],
+    [...large, '--blob-profile', 'lifecycle'],
+    [...large, '--blob-store', 'unknown'],
+    [...large, '--workload', 'replay'],
+  ])
+    expect(() => performanceOptions(args)).toThrow();
+});
+
+for (const core of ['ts', 'rust'] as const)
+  for (const blobStore of ['memory', 'minio'] as const)
+    test.skipIf(
+      (core === 'rust' && !process.env.SYNCULAR_NATIVE_BENCH) ||
+        (blobStore === 'minio' && process.env.SYNCULAR_BLOB_S3_TEST !== '1'),
+    )(
+      `${core} file profile validates ${blobStore} transfers and offline reopen`,
+      async () => {
+        const binary =
+          core === 'ts'
+            ? [process.execPath, join(import.meta.dir, 'ts-process.ts')]
+            : process.env.SYNCULAR_NATIVE_BENCH;
+        if (!binary) throw new Error('Native benchmark executable required');
+        const result = await runBlobFile({
+          binary,
+          byteLength: 65_537,
+          rows: 1,
+          backend: 'sqlite',
+          blobStore,
+        });
+        expect(result.fixture.sha256).toBe(
+          'fd38c4d8477e4584f719145445f1c2497a64636450eb3c82b98fdab04c42fdd5',
+        );
+        expect(result.validatedObjects).toBe(1);
+        expect(
+          new Set(result.clientResources.map((client) => client.pid)).size,
+        ).toBe(3);
+        expect(
+          result.clientResources.every((client) => client.peakRssBytes > 0),
+        ).toBe(true);
+        expect(result.clientSqlite).toHaveLength(3);
+        for (const phase of [
+          result.stages.staged,
+          result.stages.downloaded,
+          result.stages.cacheHit,
+          result.stages.reopenedHit,
+        ]) {
+          expect(phase.operationMs).toBeGreaterThanOrEqual(0);
+          expect(phase.delivery.responseBytes).toBeLessThan(65_536);
+          expect(processObject(phase.validation).byteLength).toBe(65_537);
+        }
+        expect(result.disk.map((phase) => phase.phase)).toEqual([
+          'staged',
+          'uploaded',
+          'downloaded',
+        ]);
+        if (result.objectStore) {
+          expect(result.objectStore.storageReceipt?.byteLength).toBe(65_537);
+          const uploadStats = processObject(
+            result.stages.uploadAndCommit.stats,
+          );
+          if (core === 'rust')
+            expect(uploadStats.blobRequests).toEqual(
+              expect.arrayContaining([
+                expect.objectContaining({
+                  method: 'putUrl',
+                  bytes: 65_537,
+                  failed: false,
+                  elapsedNs: expect.any(Number),
+                }),
+              ]),
+            );
+          else
+            expect(
+              processObject(
+                processObject(uploadStats.measurements)[
+                  'blobTransport.uploadToUrl'
+                ],
+              ).calls,
+            ).toBe(1);
+          expect(
+            result.serverMetrics.measurements['blobStore.get'],
+          ).toBeUndefined();
+          expect(
+            Bun.spawnSync(['docker', 'inspect', result.objectStore.container])
+              .exitCode,
+          ).not.toBe(0);
+        }
+      },
+      60_000,
+    );
 
 test('blob fixture files match independent OpenSSL vectors across buffer boundaries', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'syncular-blob-fixture-'));

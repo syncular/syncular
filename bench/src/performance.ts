@@ -11,7 +11,7 @@ import { runProcessReplay } from './process-lane';
 import { runProcessPurge } from './purge-lane';
 import { runProcessObservation } from './process-observation';
 import { runReadLane, runProcessReads } from './read-lane';
-import { runBlobLane, runProcessBlobs } from './blob-lane';
+import { runBlobLane, runProcessBlobs, runBlobFile } from './blob-lane';
 
 const root = resolve(import.meta.dir, '../..');
 
@@ -36,10 +36,39 @@ export function performanceOptions(args: string[]) {
       'native-sql': { type: 'boolean', default: false },
       'native-phases': { type: 'boolean', default: false },
       'ts-profile': { type: 'boolean', default: false },
+      'blob-profile': { type: 'string' },
+      'blob-store': { type: 'string' },
       output: { type: 'string' },
       ci: { type: 'boolean', default: false },
     },
   });
+  const blobProfile = values['blob-profile'] ?? 'lifecycle';
+  const blobStore = values['blob-store'] ?? 'memory';
+  if (
+    !['lifecycle', 'file'].includes(blobProfile) ||
+    !['memory', 'minio'].includes(blobStore) ||
+    (values.workload !== 'blobs' &&
+      (values['blob-profile'] !== undefined ||
+        values['blob-store'] !== undefined))
+  )
+    throw new Error(
+      'Blob options require the blobs workload, lifecycle/file profile, and memory/minio store',
+    );
+  if (
+    (blobStore === 'minio' && blobProfile !== 'file') ||
+    (blobProfile === 'file' &&
+      (values.lane !== 'socket' ||
+        values.storage !== 'file' ||
+        values.boundary !== 'direct' ||
+        values['native-phases']))
+  )
+    throw new Error(
+      'Blob file profile requires socket, file storage, direct boundary, and native phases disabled; MinIO requires file profile',
+    );
+  const maxSize =
+    blobProfile === 'file' && blobStore === 'minio'
+      ? 500_000_000
+      : 16 * 1024 * 1024;
   if (
     !(
       (values.workload === 'native-bytes' && values.lane === 'native') ||
@@ -156,12 +185,10 @@ export function performanceOptions(args: string[]) {
     iterations < 1 ||
     iterations > 100 ||
     sizes.length === 0 ||
-    sizes.some(
-      (size) => !Number.isInteger(size) || size < 1 || size > 16 * 1024 * 1024,
-    )
+    sizes.some((size) => !Number.isInteger(size) || size < 1 || size > maxSize)
   ) {
     throw new Error(
-      'Trials/iterations must be integers in 1..100; sizes in 1..16777216',
+      `Trials/iterations must be integers in 1..100; sizes in 1..${maxSize}`,
     );
   }
   if (
@@ -264,6 +291,8 @@ export function performanceOptions(args: string[]) {
     nativeSql: values['native-sql'],
     nativePhases: values['native-phases'],
     tsProfile: values['ts-profile'],
+    blobProfile: blobProfile as 'lifecycle' | 'file',
+    blobStore: blobStore as 'memory' | 'minio',
     output: resolve(
       root,
       values.output ??
@@ -620,25 +649,39 @@ export async function runPerformanceBench(args: string[]): Promise<void> {
           if (options.lane !== 'engine' && options.lane !== 'socket')
             throw new Error('Invalid blob lane');
           const result =
-            options.core === 'rust'
-              ? await runProcessBlobs({
-                  binary,
-                  nativePhases: options.nativePhases,
-                  boundary: options.boundary,
-                  rows: options.rows,
+            options.blobProfile === 'file'
+              ? await runBlobFile({
+                  binary:
+                    options.core === 'rust'
+                      ? binary
+                      : [
+                          process.execPath,
+                          join(import.meta.dir, 'ts-process.ts'),
+                        ],
                   byteLength: size,
-                  objects: size === 2 * 1024 * 1024 ? 2 : 1,
-                  persistent: options.storage === 'file',
+                  rows: options.rows,
                   backend: options.backend,
+                  blobStore: options.blobStore,
                 })
-              : await runBlobLane({
-                  byteLength: size,
-                  objects: size === 2 * 1024 * 1024 ? 2 : 1,
-                  rows: options.rows,
-                  persistent: options.storage === 'file',
-                  lane: options.lane,
-                  backend: options.backend,
-                });
+              : options.core === 'rust'
+                ? await runProcessBlobs({
+                    binary,
+                    nativePhases: options.nativePhases,
+                    boundary: options.boundary,
+                    rows: options.rows,
+                    byteLength: size,
+                    objects: size === 2 * 1024 * 1024 ? 2 : 1,
+                    persistent: options.storage === 'file',
+                    backend: options.backend,
+                  })
+                : await runBlobLane({
+                    byteLength: size,
+                    objects: size === 2 * 1024 * 1024 ? 2 : 1,
+                    rows: options.rows,
+                    persistent: options.storage === 'file',
+                    lane: options.lane,
+                    backend: options.backend,
+                  });
           attempts.push({ trial, size, status: 'completed', ...result });
           console.log(
             `blob trial ${trial + 1}, ${result.validatedObjects} objects of ${size} bytes: lifecycle validated`,

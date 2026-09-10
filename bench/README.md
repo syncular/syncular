@@ -48,6 +48,8 @@ bun run bench --workload blobs --core rust --lane socket --boundary ffi --storag
 | `--native-sql` | Opt-in Rust socket replay/restart/commit-boundaries/fanout/reconnect SQL verb and commit/rollback hook counts; direct or command boundary only |
 | `--native-phases` | Opt-in Rust socket replay/restart/commit-boundaries/fanout/reconnect/blobs wall-time and calling-thread CPU phases; direct or command boundary, Linux or macOS |
 | `--iterations` | Measured operations per read surface or native byte phase, default 10, after three warmups |
+| `--blob-profile lifecycle\|file` | Blob workloads only; default `lifecycle`. `file` uses isolated processes and digest receipts, with socket lane, file storage, and direct boundary required. |
+| `--blob-store memory\|minio` | Blob workloads only; default `memory`. `minio` requires the file profile and the pinned local Docker image. |
 | `--output` | Artifact path, relative to the repository root or absolute; existing files are refused |
 
 The commit-boundaries workload queues three commits with 499/2/1 or 500/2/1
@@ -336,14 +338,69 @@ and reports source-read and public staging durations separately. Fetch takes a
 `blob` reference and times complete public-API materialization. Both return a
 full SHA-256/length receipt after the operation clock, without sending the body
 through stdio. Rust's internal hex result remains inside its public API timing;
-receipt validation decodes bounded pieces afterwards. This command is not yet
-wired into the diagnostic CLI or its size limits.
+receipt validation decodes bounded pieces afterwards. The diagnostic CLI uses
+this command for `--blob-profile file`.
 
 Run its staged-restart and fresh-download contracts with:
 
 ```sh
 (cd rust && cargo build -p syncular-bench --bin syncular-bench)
 SYNCULAR_NATIVE_BENCH="$PWD/rust/target/debug/syncular-bench" bun test bench/src/blob-lane.test.ts --test-name-pattern 'blob file receipts'
+```
+
+## Blob file profile
+
+The file profile stages one deterministic file, commits an attachment whose ID
+matches the first seeded task, and closes the writer. A fresh reader syncs that
+attachment into an empty body cache, downloads and validates it, then reads a
+cache hit. Another process reopens the reader database and validates an offline
+cache hit after the sync server stops. Every read checks all bytes against the
+fixture digest. Client SQLite must use WAL/FULL. The controller retains metadata,
+timings, and digest receipts; body bytes stay in the client processes.
+
+MinIO runs in a fresh container with an anonymous data volume and an ephemeral
+loopback port per attempt. The runner creates its own credentials and bucket,
+then removes that container and volume on completion or failure. Pull the pinned
+image before running; missing Docker or a missing image fails the selected
+profile without substituting another store. The server uses the shipping
+`S3BlobStore` and presigned grant handlers. Upload bytes go directly to MinIO,
+and an untimed HEAD verifies stored length. Downloads use authorized presigned
+URLs. Setup waits for successful bucket creation because MinIO's health route
+can become ready before its object layer.
+
+```sh
+docker pull minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+bun run bench --workload blobs --blob-profile file --blob-store minio \
+  --lane socket --storage file --sizes 500000000 --trials 10
+bun run bench --workload blobs --blob-profile file --blob-store minio \
+  --core rust --lane socket --storage file --sizes 500000000 --trials 10
+```
+
+The file/MinIO combination accepts sizes up to 500,000,000 bytes. Memory-store
+file runs and existing lifecycle/bridge profiles retain the 16 MiB limit.
+Native phase recording is currently unavailable in the file profile and fails
+if requested. Existing lifecycle profiles retain it.
+
+Artifacts separate source reading, staging, upload plus metadata acceptance,
+reader visibility, download, cache hit, and offline reopen. Upload and metadata
+acceptance currently share one public sync timer; transport method intervals
+remain nested diagnostic measurements. Source generation and independent digest
+validation are outside operation timers. Controller delivery includes validation
+and IPC. Reopen includes launch, client setup, and configuration queries.
+Client CPU and peak RSS cover each process's complete lifetime, including
+validation. A reader's resource total covers both download and cache hit.
+SQLite/WAL/SHM snapshots report file lengths and filesystem allocated bytes at
+declared phases, without claiming peak disk usage. Sync-server RSS and MinIO's
+Docker metrics are final snapshots, not peak measurements. OS/server caches are
+uncontrolled and warm. Instrumentation overhead calibration and A/A comparisons
+remain pending; the first 500 MB runs validate the harness only.
+
+Run the memory and real MinIO contracts for both cores with:
+
+```sh
+(cd rust && cargo build --release --locked -p syncular-bench)
+SYNCULAR_BLOB_S3_TEST=1 SYNCULAR_NATIVE_BENCH="$PWD/rust/target/release/syncular-bench" \
+  bun test bench/src/blob-lane.test.ts
 ```
 
 

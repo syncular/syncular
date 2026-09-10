@@ -102,7 +102,7 @@ Reuse the existing components:
 | [`rust/crates/bench`](../rust/crates/bench/src/lib.rs) | In-process materialization/validation, direct and compatibility boundaries, later binary/stream boundaries |
 | [`instrumentation.ts`](../bench/src/instrumentation.ts), Rust private phase recorder | Copy/materialization counts, SQL and transport phases, allocations, and measurement overhead |
 
-Today the CLI caps sizes at 16 MiB. TS blob clients share the controller process
+At the review baseline, the CLI caps sizes at 16 MiB. TS blob clients share the controller process
 even in the socket lane. The native blob lane sends complete hex bodies through
 its controller, unlike the external large-file trial. The default server body
 store is in memory. Increasing `--sizes` alone would produce a different workload
@@ -140,8 +140,8 @@ cloning responses, or changing request framing. Validate the meter against serve
 receipts and compare instrumentation on/off. Keep nested phase durations nested;
 never sum overlapping spans.
 
-Existing commands remain valid; large sizes and new options below are future
-extensions, documented only when implemented. `--storage file` continues to mean
+Existing commands remain valid. Section 9.3 records the implemented file/MinIO
+profile; other proposed options remain future work. `--storage file` continues to mean
 a persistent SQLite database. Preserve `bun run bench:ci`, diagnostic artifacts
 under `bench/results/`, and the rule that diagnostic runs leave curated
 [`bench/RESULTS.md`](../bench/RESULTS.md) unchanged.
@@ -376,7 +376,7 @@ must make each decision reproducible.
 
 | Experiment | Baseline/candidate | Evidence | Decision |
 | --- | --- | --- | --- |
-| Harness and A/A | Review baseline plus private driver changes | §9.1–9.2: isolated file-input/digest-receipt contracts pass in TS and Rust; bounded 500 MB fixture independently verified; large CLI/S3 profile and A/A runs remain | In progress |
+| Harness and A/A | Review baseline plus private driver changes | §9.1–9.3: isolated file receipts, bounded fixtures, and repository-owned MinIO profile pass in both cores, including 500 MB; complete phase attribution, instrumentation calibration, and A/A remain | In progress |
 | R1/R2 | Pending | Inspected paths only; failure reproductions required | Pending |
 | P1–P4 | Pending | Allocation/access hypotheses above | Pending |
 | P5–P7 | Conditional | Reassess after simpler candidates | Pending |
@@ -443,3 +443,76 @@ remain pending.
 `bun run check` passes 1,724 main tests (42 explicit skips), 13 isolated
 tests, typecheck, lint/format, knip, and both Node runtime contracts.
 Production client code remains unchanged.
+
+### 9.3 Repository-owned file/MinIO profile, 2026-09-10
+
+The diagnostic CLI now accepts `--workload blobs --blob-profile file` for
+isolated TS and Rust direct clients with persistent SQLite. `--blob-store minio`
+selects a fresh Docker container and anonymous data volume using
+`minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e`.
+This is a multi-architecture manifest for MinIO RELEASE.2025-09-07T16-13-09Z.
+The image must already exist locally. Setup creates its own credentials, bucket,
+and ephemeral loopback port; cleanup removes only its container and volume.
+The existing memory-store lifecycle and native bridge profiles remain available.
+
+The file profile uses the shipping S3 store, upload grants, and authorized
+presigned downloads. The writer stages a file, removes the source, and commits
+an attachment sharing the first seeded task's ID and project. A fresh reader
+syncs that reference, verifies an empty body cache, downloads the complete body,
+and validates its digest. The same reader measures a cache hit. Another process
+reopens its SQLite file and validates an offline hit after the sync server stops.
+The runner checks the original commit outcome, upload-pin drain, WAL/FULL
+configuration, stored object length through HEAD, and bounded receipt IPC.
+
+Rust's private transport recorder now times `blob_put_url` and counts bytes
+from its input slice. It adds no body copy and leaves request framing unchanged.
+The server trace verifies a presigned upload instead of a sync-server body PUT;
+S3 profile contracts require no `blobStore.get` call on the sync server.
+
+The first MinIO attempt failed during bucket creation with HTTP 503,
+`XMinioServerNotInitialized`, after a successful health response. The fixture
+now treats successful bucket creation as readiness and retries only that
+initialization response within its setup deadline. The failed CLI artifact is
+retained as `bench/results/blob-file-minio-smoke-2026-09-10.json`.
+These retries occur before client operation timers. No production retry policy
+changed.
+
+Both cores completed one 500,000,000-byte smoke attempt against the same pinned
+service and seed-zero fixture, with one seeded task and SQLite server storage
+on macOS arm64. Every digest matched §9.2. These uncalibrated
+samples establish executable coverage; they support no optimization decision
+or product comparison.
+
+| Core | Source read (ms) | Durable stage (ms) | Upload + metadata acceptance (ms) | Fresh download (ms) | Cache hit (ms) | Reopened hit (ms) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| TS/Bun | 46.35 | 1,352.16 | 2,149.24 | 2,114.16 | 248.16 | 306.55 |
+| Rust/release | 58.61 | 1,752.81 | 1,332.08 | 3,141.09 | 633.84 | 898.60 |
+
+Artifacts retain revision `54530a16ab01a2d7988ad6ead9af2c878b42826a` plus the
+private harness diff, file hashes, runtime/binary metadata, and raw measurements:
+
+- `bench/results/blob-file-minio-ts-500mb-smoke-2026-09-10.json`
+- `bench/results/blob-file-minio-rust-500mb-smoke-2026-09-10.json`
+
+Fresh-download receipts crossed stdio in 2,006 bytes for TS and 704 bytes for
+Rust. TS writer/reader/reopened-reader process peaks were 2,820,014,080 /
+3,439,673,344 / 1,553,350,656 bytes. Rust peaks were 1,510,768,640 /
+2,512,781,312 / 2,008,367,104 bytes. These OS resource counters include each
+process's complete lifetime and harness validation; the reader includes both
+fresh download and cache hit. They do not isolate allocation sites or prove
+that a specific copy causes the peak.
+
+SQLite/WAL/SHM snapshots report logical and filesystem allocated sizes at stage,
+upload, and download boundaries. Server RSS and Docker storage/network/memory
+metrics are final snapshots. Peak disk usage and peak server/container memory
+remain unmeasured. Upload plus metadata acceptance currently shares one public
+sync timer, with nested transport method intervals. Complete phase attribution,
+meter on/off calibration, A/A noise measurements, and repeated paired trials
+remain before selecting production optimizations.
+
+All 19 blob contracts pass with real MinIO and the release Rust executable
+(1,705 assertions), covering existing engine/socket/direct/command/FFI paths
+alongside the file profiles. The private Rust crate's 11 tests and Clippy pass.
+`bun run check` passes 1,726 main tests (45 explicit skips), 13 isolated tests,
+typecheck, lint/format, knip, and both Node runtime contracts.
+No production client implementation changed.

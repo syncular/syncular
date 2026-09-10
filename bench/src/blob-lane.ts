@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { httpBlobTransport } from '@syncular/client';
@@ -9,11 +9,17 @@ import {
   ACTOR_ID,
   BLOB_SCHEMA,
   PROJECT_ID,
+  rowId,
+  writeBlobFixture,
   sqliteConfiguration,
   SQLITE_CONFIGURATION_SQL,
 } from './fixture';
 import { createBenchClient, closeBenchClients } from './loopback';
-import { createPerformanceServer, startSocketServer } from './socket-server';
+import {
+  createPerformanceServer,
+  startSocketServer,
+  startBlobObjectStore,
+} from './socket-server';
 import {
   assertProcessSync,
   createProcessDriver,
@@ -25,6 +31,363 @@ import {
   withinDeadline,
   type MethodMeasurement,
 } from './instrumentation';
+
+/** File input and digest-only IPC, with the shipping byte-array API timed. */
+export async function runBlobFile(options: {
+  binary: string | readonly string[];
+  byteLength: number;
+  rows: number;
+  backend: 'sqlite' | 'postgres';
+  blobStore: 'memory' | 'minio';
+}) {
+  if (options.byteLength > 16 * 1024 * 1024 && options.blobStore !== 'minio')
+    throw new Error('Large blob files require the MinIO profile');
+  const directory = await mkdtemp(join(tmpdir(), 'syncular-blob-file-'));
+  let objectStore: Awaited<ReturnType<typeof startBlobObjectStore>> | undefined;
+  let server: Awaited<ReturnType<typeof startSocketServer>> | undefined;
+  const clients: Array<Awaited<ReturnType<typeof createProcessDriver>>> = [];
+  const clientSqlite: Array<
+    { role: string; pid: number; clientId: string } & ReturnType<
+      typeof sqliteConfiguration
+    >
+  > = [];
+  const disk: Array<{
+    phase: string;
+    files: Array<{ suffix: string; bytes: number; allocatedBytes: number }>;
+  }> = [];
+  let closing: Promise<void> | undefined;
+  const close = () =>
+    (closing ??= (async () => {
+      const cleanup = await Promise.allSettled(
+        clients.map((client) => client.close()),
+      );
+      for (const action of [
+        () => server?.close(),
+        () => objectStore?.close(),
+        () => rm(directory, { recursive: true, force: true }),
+      ]) {
+        try {
+          await action();
+        } catch (reason) {
+          cleanup.push({ status: 'rejected', reason });
+        }
+      }
+      const failures = cleanup.flatMap((result) =>
+        result.status === 'rejected' ? [result.reason] : [],
+      );
+      if (failures.length)
+        throw new AggregateError(
+          failures,
+          'Blob file benchmark cleanup failed',
+        );
+    })());
+  try {
+    const path = join(directory, 'fixture.bin');
+    const fixture = await writeBlobFixture(path, options.byteLength);
+    if (options.blobStore === 'minio')
+      objectStore = await startBlobObjectStore();
+    server = await startSocketServer(options.rows, options.backend, {
+      blobs: true,
+      ...(objectStore ? { s3: objectStore.config } : {}),
+    });
+    const endpoints = server.endpoints;
+    const openClient = async (
+      role: string,
+      dbPath: string,
+      clientId?: ReturnType<typeof crypto.randomUUID>,
+    ) => {
+      const client = await createProcessDriver(
+        options.binary,
+        endpoints,
+        dbPath,
+        clientId,
+        BLOB_SCHEMA,
+      );
+      clients.push(client);
+      clientSqlite.push({
+        role,
+        pid: client.pid,
+        clientId: client.clientId,
+        ...sqliteConfiguration(
+          processObject(
+            await client.invoke('query', { sql: SQLITE_CONFIGURATION_SQL }),
+          ).rows,
+          true,
+        ),
+      });
+      return client;
+    };
+    const query = async (
+      client: (typeof clients)[number],
+      sql: string,
+      params: unknown[] = [],
+    ) => {
+      const rows = processObject(
+        await client.invoke('query', { sql, params }),
+      ).rows;
+      if (!Array.isArray(rows))
+        throw new Error('Blob file query returned no rows');
+      return rows.map(processObject);
+    };
+    const measure = async (
+      client: (typeof clients)[number],
+      operation: 'uploadBlob' | 'fetchBlob',
+      params: Record<string, unknown>,
+    ) => {
+      const beforeStats = await client.invoke('stats', { reset: true });
+      const before = client.deliveryStats();
+      const started = performance.now();
+      const result = processObject(
+        await client.invoke('benchBlobFile', {
+          mode: 'direct',
+          operation,
+          ...params,
+        }),
+      );
+      const deliveryMs = performance.now() - started;
+      const validation = processObject(result.validation);
+      const ref = processObject(result.ref);
+      if (
+        validation.sha256 !== fixture.sha256 ||
+        validation.byteLength !== fixture.byteLength ||
+        ref.blobId !== `sha256:${fixture.sha256}` ||
+        ref.byteLength !== fixture.byteLength
+      )
+        throw new Error('Blob file receipt differs from independent fixture');
+      for (const key of [
+        'elapsedNs',
+        'validationNs',
+        ...(operation === 'uploadBlob' ? ['sourceReadNs'] : []),
+      ]) {
+        if (
+          typeof result[key] !== 'number' ||
+          !Number.isFinite(result[key]) ||
+          result[key] < 0
+        )
+          throw new Error('Blob file operation timer is invalid');
+      }
+      const responseBytes =
+        client.deliveryStats().responseBytes - before.responseBytes;
+      const requestBytes =
+        client.deliveryStats().requestBytes - before.requestBytes;
+      if (responseBytes > 65_536 || requestBytes > 4096)
+        throw new Error('Blob file receipt exceeds bounded IPC budget');
+      return {
+        ...result,
+        ref,
+        validation,
+        operationMs: Number(result.elapsedNs) / 1_000_000,
+        beforeStats,
+        deliveryMs,
+        delivery: { requestBytes, responseBytes },
+      };
+    };
+    const snapshotDisk = async (phase: string, dbPath: string) => {
+      const files = [];
+      for (const suffix of ['', '-wal', '-shm']) {
+        try {
+          const file = await stat(`${dbPath}${suffix}`);
+          files.push({
+            suffix,
+            bytes: file.size,
+            allocatedBytes: file.blocks * 512,
+          });
+        } catch (error) {
+          if (
+            !(error instanceof Error) ||
+            !('code' in error) ||
+            error.code !== 'ENOENT'
+          )
+            throw error;
+          files.push({ suffix, bytes: 0, allocatedBytes: 0 });
+        }
+      }
+      disk.push({ phase, files });
+    };
+    const writerPath = join(directory, 'writer.sqlite');
+    const writer = await openClient('writer', writerPath);
+    assertProcessSync(await writer.invoke('syncUntilIdle'));
+    const staged = await measure(writer, 'uploadBlob', { path });
+    await snapshotDisk('staged', writerPath);
+    // The attachment row shares the seeded task's primary key and project.
+    const row = {
+      id: rowId(0),
+      project_id: PROJECT_ID,
+      body: JSON.stringify(staged.ref),
+    };
+    const mutation = processObject(
+      await writer.invoke('benchMutate', {
+        mode: 'direct',
+        commits: [
+          { mutations: [{ table: 'attachments', op: 'upsert', values: row }] },
+        ],
+      }),
+    );
+    if (
+      !Array.isArray(mutation.ids) ||
+      mutation.ids.length !== 1 ||
+      typeof mutation.ids[0] !== 'string'
+    )
+      throw new Error('Blob file commit identity missing');
+    if (
+      (await query(writer, 'SELECT blob_id FROM _syncular_blob_uploads'))[0]
+        ?.blob_id !== staged.ref.blobId
+    )
+      throw new Error('Blob file upload pin missing');
+    await rm(path);
+    await writer.invoke('stats', { reset: true });
+    const uploadStarted = performance.now();
+    const uploadAndCommit = processObject(
+      await writer.invoke('benchSync', { mode: 'direct' }),
+    );
+    const uploadAndCommitDeliveryMs = performance.now() - uploadStarted;
+    const report = assertProcessSync(uploadAndCommit.outcome, 1);
+    if (JSON.stringify(report.applied) !== JSON.stringify(mutation.ids))
+      throw new Error('Original blob commit was not applied');
+    if (
+      (await query(writer, 'SELECT blob_id FROM _syncular_blob_uploads'))
+        .length !== 0
+    )
+      throw new Error('Blob upload pin did not drain');
+    const outcome = processObject(
+      processObject(
+        await writer.invoke('commitOutcome', {
+          clientCommitId: mutation.ids[0],
+        }),
+      ).outcome,
+    );
+    if (outcome.status !== 'applied')
+      throw new Error('Blob file outcome was not durably applied');
+    await snapshotDisk('uploaded', writerPath);
+    const storageReceipt = objectStore
+      ? await objectStore.head(String(staged.ref.blobId))
+      : undefined;
+    if (storageReceipt && storageReceipt.byteLength !== fixture.byteLength)
+      throw new Error('Object store length differs from fixture');
+    const writerRequests = await server.requests(writer.clientId);
+    if (!Array.isArray(writerRequests))
+      throw new Error('Blob writer trace missing');
+    const requests = writerRequests.map(processObject);
+    if (
+      objectStore &&
+      (!requests.some(
+        (r) =>
+          r.method === 'POST' &&
+          String(r.path).endsWith('/upload-grant') &&
+          r.status === 200,
+      ) ||
+        requests.some(
+          (r) => r.method === 'PUT' && String(r.path).startsWith('/blobs/'),
+        ))
+    )
+      throw new Error('Blob file upload did not use the presigned route');
+    await writer.close();
+
+    const readerPath = join(directory, 'reader.sqlite');
+    const reader = await openClient('reader', readerPath);
+    const visibilityStarted = performance.now();
+    await reader.invoke('subscribe', {
+      id: 'attachments',
+      table: 'attachments',
+      scopes: { project_id: [PROJECT_ID] },
+    });
+    assertProcessSync(await reader.invoke('syncUntilIdle'));
+    const readerVisibilityMs = performance.now() - visibilityStarted;
+    const visible = await query(
+      reader,
+      'SELECT id, project_id, body FROM attachments WHERE id = ?',
+      [row.id],
+    );
+    if (
+      visible.length !== 1 ||
+      visible[0]?.id !== row.id ||
+      visible[0]?.project_id !== row.project_id ||
+      visible[0]?.body !== row.body
+    )
+      throw new Error('Independent reader attachment differs from fixture');
+    if (
+      (await query(reader, 'SELECT count(*) AS n FROM _syncular_blobs'))[0]
+        ?.n !== 0
+    )
+      throw new Error('Fresh blob reader has a nonempty body cache');
+    const downloaded = await measure(reader, 'fetchBlob', { blob: row.body });
+    await snapshotDisk('downloaded', readerPath);
+    const beforeHitRequests = await server.requests(reader.clientId);
+    const cacheHit = await measure(reader, 'fetchBlob', { blob: row.body });
+    if (
+      JSON.stringify(await server.requests(reader.clientId)) !==
+      JSON.stringify(beforeHitRequests)
+    )
+      throw new Error('Blob cache hit unexpectedly used the network');
+    await reader.close();
+    const reopenStarted = performance.now();
+    const reopened = await openClient(
+      'reopened-reader',
+      readerPath,
+      reader.clientId,
+    );
+    const reopenMs = performance.now() - reopenStarted;
+    // Stop the sync server before reading to establish an offline cache hit.
+    const serverMetrics = await server.metrics();
+    await server.close();
+    server = undefined;
+    const reopenedHit = await measure(reopened, 'fetchBlob', {
+      blob: row.body,
+    });
+    await reopened.close();
+    const clientResources = clients.map((client) => client.resourceUsage());
+    const result = {
+      executionModel: 'isolated-client-processes',
+      blobProfile: 'file',
+      blobStore: options.blobStore,
+      validatedObjects: 1,
+      validation: 'independent-file-sha256-and-original-outcome',
+      fixture,
+      source: 'file-read-before-array-api',
+      consumer: 'complete-public-result-before-digest',
+      productCache: 'empty-reader-database',
+      osCache: 'uncontrolled-warm',
+      stages: {
+        staged,
+        uploadAndCommit,
+        uploadAndCommitDeliveryMs,
+        readerVisibilityMs,
+        downloaded,
+        cacheHit,
+        reopenMs,
+        reopenedHit,
+      },
+      boundaries:
+        'Operation timers exclude fixture preparation and final digest validation. Delivery includes validation and IPC. Process resources include setup, all phases, and validation. Reopen includes launch, client setup, and configuration queries. UploadAndCommit includes upload plus metadata acceptance.',
+      clientSqlite,
+      clientResources,
+      disk,
+      serverMetrics,
+      writerRequests,
+      readerRequests: beforeHitRequests,
+      objectStore: objectStore
+        ? {
+            ...objectStore.metadata,
+            storageReceipt,
+            finalMetrics: await objectStore.metrics(),
+          }
+        : null,
+    };
+    await close();
+    return result;
+  } catch (error) {
+    try {
+      await close();
+    } catch (cleanupError) {
+      if (cleanupError !== error)
+        throw new AggregateError(
+          [error, cleanupError],
+          `Blob file benchmark and cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+    }
+    throw error;
+  }
+}
 
 /** Full TS blob lifecycle. Fault injection cancels an actual response body. */
 export async function runBlobLane(options: {

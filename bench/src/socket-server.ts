@@ -2,12 +2,17 @@ import { createServer } from 'node:http';
 import {
   BunSqliteDatabase,
   MemoryBlobStore,
+  S3BlobStore,
+  s3PresignedBlobUploads,
+  s3PresignedBlobUrls,
+  type S3BlobStoreConfig,
   SqliteServerStorage,
   type RealtimeSession,
 } from '@syncular/server';
 import { createSyncularHono } from '@syncular/server-hono';
 import {
   ACTOR_ID,
+  PARTITION,
   RETAINED_PROJECT_ID,
   sqliteConfiguration,
   SQLITE_CONFIGURATION_SQL,
@@ -24,6 +29,174 @@ import {
   type MethodMeasurement,
 } from './instrumentation';
 import { createPgServer } from './pg-lane';
+import {
+  EMPTY_PAYLOAD_SHA256,
+  signRequest,
+} from '../../packages/server/src/sigv4';
+
+/** Own one fresh local object store; never connect to an existing bucket. */
+export async function startBlobObjectStore() {
+  const image =
+    'minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e';
+  const name = `syncular-blob-bench-${crypto.randomUUID()}`;
+  const accessKeyId = crypto.randomUUID();
+  const secretAccessKey = crypto.randomUUID();
+  const docker = async (args: string[]) => {
+    const child = Bun.spawn(['docker', ...args], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    try {
+      const [code, out, err] = await withinDeadline(
+        Promise.all([
+          child.exited,
+          new Response(child.stdout).text(),
+          new Response(child.stderr).text(),
+        ]),
+        'local blob store Docker command',
+        30_000,
+      );
+      if (code !== 0)
+        throw new Error(
+          `Local blob store Docker command failed: ${err.trim()}`,
+        );
+      return out.trim();
+    } catch (error) {
+      child.kill('SIGKILL');
+      await child.exited;
+      throw error;
+    }
+  };
+  // Refuse an unavailable image rather than adding network setup to a trial.
+  await docker(['image', 'inspect', image, '--format', '{{.Id}}']);
+  let created = false;
+  try {
+    await docker([
+      'create',
+      '--name',
+      name,
+      '--publish',
+      '127.0.0.1::9000',
+      '--mount',
+      'type=volume,destination=/data',
+      '--env',
+      `MINIO_ROOT_USER=${accessKeyId}`,
+      '--env',
+      `MINIO_ROOT_PASSWORD=${secretAccessKey}`,
+      image,
+      'server',
+      '/data',
+      '--console-address',
+      ':9001',
+    ]);
+    created = true;
+    await docker(['start', name]);
+    const address = await docker(['port', name, '9000/tcp']);
+    if (!/^127\.0\.0\.1:\d+$/.test(address))
+      throw new Error('Local blob store has no loopback port');
+    const config: S3BlobStoreConfig = {
+      endpoint: `http://${address}`,
+      region: 'us-east-1',
+      bucket: 'syncular-bench',
+      accessKeyId,
+      secretAccessKey,
+    };
+    const deadline = performance.now() + 30_000;
+    while (true) {
+      const response = await fetch(`${config.endpoint}/minio/health/ready`, {
+        signal: AbortSignal.timeout(1000),
+      }).catch(() => undefined);
+      await response?.body?.cancel();
+      if (response?.ok) break;
+      if (performance.now() >= deadline)
+        throw new Error('Local blob store did not become ready');
+    }
+    const url = new URL(`${config.endpoint}/${config.bucket}`);
+    while (true) {
+      const response = await fetch(url, {
+        method: 'PUT',
+        headers: await signRequest({
+          method: 'PUT',
+          url,
+          region: config.region,
+          credentials: config,
+          payloadHash: EMPTY_PAYLOAD_SHA256,
+          nowMs: Date.now(),
+        }),
+        signal: AbortSignal.timeout(30_000),
+      });
+      const bucketResponse = await response.text();
+      if (response.ok) break;
+      // The health route can precede MinIO's writable object layer on startup.
+      if (
+        response.status === 503 &&
+        bucketResponse.includes('<Code>XMinioServerNotInitialized</Code>') &&
+        performance.now() < deadline
+      )
+        continue;
+      throw new Error(
+        `Local blob store bucket creation failed (${response.status}): ${bucketResponse}`,
+      );
+    }
+    return {
+      config,
+      metadata: {
+        provider: 'minio',
+        image,
+        endpoint: config.endpoint,
+        bucket: config.bucket,
+        region: config.region,
+        isolation: 'fresh-container-and-anonymous-volume',
+        container: name,
+        dockerVersion: await docker([
+          'version',
+          '--format',
+          '{{.Server.Version}}',
+        ]),
+      },
+      async head(blobId: string) {
+        const key = new S3BlobStore(config).objectKeyFor(PARTITION, blobId);
+        const url = new URL(`${config.endpoint}/${config.bucket}/${key}`);
+        const response = await fetch(url, {
+          method: 'HEAD',
+          headers: await signRequest({
+            method: 'HEAD',
+            url,
+            region: config.region,
+            credentials: config,
+            payloadHash: EMPTY_PAYLOAD_SHA256,
+            nowMs: Date.now(),
+          }),
+          signal: AbortSignal.timeout(30_000),
+        });
+        const length = response.headers.get('content-length');
+        if (!response.ok || length === null || !/^\d+$/.test(length))
+          throw new Error('Object store receipt is missing');
+        return {
+          byteLength: Number(length),
+          etag: response.headers.get('etag'),
+        };
+      },
+      async metrics() {
+        return JSON.parse(
+          await docker([
+            'stats',
+            '--no-stream',
+            '--format',
+            '{{json .}}',
+            name,
+          ]),
+        ) as Record<string, unknown>;
+      },
+      async close() {
+        await docker(['rm', '--force', '--volumes', name]);
+      },
+    };
+  } catch (error) {
+    if (created) await docker(['rm', '--force', '--volumes', name]);
+    throw error;
+  }
+}
 
 export interface ServerSnapshot {
   database:
@@ -128,8 +301,11 @@ export async function startSocketServer(
     rejectMiddle?: boolean;
     blobs?: boolean;
     revocation?: boolean;
+    s3?: S3BlobStoreConfig;
   } = {},
 ) {
+  if (profile.s3 && !profile.blobs)
+    throw new Error('S3 profile requires the blob fixture');
   if (backend === 'postgres' && !process.env.SYNCULAR_PG_URL) {
     throw new Error('Postgres benchmark requires SYNCULAR_PG_URL');
   }
@@ -144,12 +320,24 @@ export async function startSocketServer(
       String(rows),
       backend,
       profile.rejectMiddle ? 'reject-middle' : 'accept-all',
-      profile.blobs ? 'blobs' : profile.revocation ? 'revocation' : 'tasks',
+      profile.s3
+        ? 'blobs-s3'
+        : profile.blobs
+          ? 'blobs'
+          : profile.revocation
+            ? 'revocation'
+            : 'tasks',
     ],
     {
       stdin: 'ignore',
       stdout: 'ignore',
       stderr: 'pipe',
+      env: {
+        ...process.env,
+        SYNCULAR_BENCH_S3_CONFIG: profile.s3
+          ? JSON.stringify(profile.s3)
+          : undefined,
+      },
       ipc(message: unknown) {
         if (
           typeof message === 'object' &&
@@ -251,11 +439,19 @@ if (import.meta.main) {
     rows > 100_000 ||
     !['sqlite', 'postgres'].includes(backend ?? '') ||
     !['accept-all', 'reject-middle'].includes(validation ?? 'accept-all') ||
-    !['tasks', 'blobs', 'revocation'].includes(fixtureKind)
+    !['tasks', 'blobs', 'blobs-s3', 'revocation'].includes(fixtureKind)
   ) {
     throw new Error('Invalid benchmark server fixture');
   }
   const measurements: Record<string, MethodMeasurement> = {};
+  const s3 =
+    fixtureKind === 'blobs-s3'
+      ? new S3BlobStore(
+          JSON.parse(
+            process.env.SYNCULAR_BENCH_S3_CONFIG ?? 'null',
+          ) as S3BlobStoreConfig,
+        )
+      : undefined;
   let revoked = false;
   const serverOptions = {
     measurements,
@@ -267,13 +463,20 @@ if (import.meta.main) {
           }),
         }
       : {}),
-    ...(fixtureKind === 'blobs'
+    ...(fixtureKind === 'blobs' || s3
       ? {
           blobs: measureMethods(
-            new MemoryBlobStore(),
+            s3 ?? new MemoryBlobStore(),
             measurements,
             'blobStore',
           ),
+          ...(s3
+            ? {
+                blobSignedUrls: s3PresignedBlobUrls(s3, { ttlSeconds: 900 }),
+                blobUploadUrls: s3PresignedBlobUploads(s3, { ttlSeconds: 900 }),
+                maxBlobBytes: 500_000_000,
+              }
+            : {}),
         }
       : {}),
   };

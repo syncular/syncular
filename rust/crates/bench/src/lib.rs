@@ -433,7 +433,12 @@ impl Transport for BenchTransport {
         media_type: Option<&str>,
     ) -> Result<(), TransportError> {
         self.count_request(bytes.len() as u64);
-        self.inner.blob_put_url(url, bytes, media_type)
+        let started = Instant::now();
+        let result = self.inner.blob_put_url(url, bytes, media_type);
+        self.stats.blob_requests.push(json!({"method": "putUrl",
+            "elapsedNs": started.elapsed().as_nanos() as u64,
+            "bytes": bytes.len(), "failed": result.is_err()}));
+        result
     }
 
     fn realtime_connect(&mut self) -> Result<(), TransportError> {
