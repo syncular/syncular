@@ -39,6 +39,7 @@ export async function runBlobFile(options: {
   rows: number;
   backend: 'sqlite' | 'postgres';
   blobStore: 'memory' | 'minio';
+  blobDiagnostics?: boolean;
 }) {
   if (options.byteLength > 16 * 1024 * 1024 && options.blobStore !== 'minio')
     throw new Error('Large blob files require the MinIO profile');
@@ -102,6 +103,9 @@ export async function runBlobFile(options: {
         dbPath,
         clientId,
         BLOB_SCHEMA,
+        false,
+        undefined,
+        options.blobDiagnostics,
       );
       clients.push(client);
       clientSqlite.push({
@@ -339,6 +343,7 @@ export async function runBlobFile(options: {
     const result = {
       executionModel: 'isolated-client-processes',
       blobProfile: 'file',
+      blobDiagnostics: options.blobDiagnostics !== false,
       blobStore: options.blobStore,
       validatedObjects: 1,
       validation: 'independent-file-sha256-and-original-outcome',

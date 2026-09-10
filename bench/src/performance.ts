@@ -38,12 +38,20 @@ export function performanceOptions(args: string[]) {
       'ts-profile': { type: 'boolean', default: false },
       'blob-profile': { type: 'string' },
       'blob-store': { type: 'string' },
+      'blob-diagnostics': { type: 'string' },
       output: { type: 'string' },
       ci: { type: 'boolean', default: false },
     },
   });
   const blobProfile = values['blob-profile'] ?? 'lifecycle';
   const blobStore = values['blob-store'] ?? 'memory';
+  const blobDiagnostics = values['blob-diagnostics'] ?? 'on';
+  if (
+    !['on', 'off'].includes(blobDiagnostics) ||
+    (values['blob-diagnostics'] !== undefined &&
+      (values.workload !== 'blobs' || blobProfile !== 'file'))
+  )
+    throw new Error('Blob diagnostics on/off requires the blob file profile');
   if (
     !['lifecycle', 'file'].includes(blobProfile) ||
     !['memory', 'minio'].includes(blobStore) ||
@@ -293,6 +301,7 @@ export function performanceOptions(args: string[]) {
     tsProfile: values['ts-profile'],
     blobProfile: blobProfile as 'lifecycle' | 'file',
     blobStore: blobStore as 'memory' | 'minio',
+    blobDiagnostics: blobDiagnostics === 'on',
     output: resolve(
       root,
       values.output ??
@@ -662,6 +671,7 @@ export async function runPerformanceBench(args: string[]): Promise<void> {
                   rows: options.rows,
                   backend: options.backend,
                   blobStore: options.blobStore,
+                  blobDiagnostics: options.blobDiagnostics,
                 })
               : options.core === 'rust'
                 ? await runProcessBlobs({

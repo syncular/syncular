@@ -50,6 +50,7 @@ bun run bench --workload blobs --core rust --lane socket --boundary ffi --storag
 | `--iterations` | Measured operations per read surface or native byte phase, default 10, after three warmups |
 | `--blob-profile lifecycle\|file` | Blob workloads only; default `lifecycle`. `file` uses isolated processes and digest receipts, with socket lane, file storage, and direct boundary required. |
 | `--blob-store memory\|minio` | Blob workloads only; default `memory`. `minio` requires the file profile and the pinned local Docker image. |
+| `--blob-diagnostics on\|off` | File profile only; default `on`. Controls TS client SQL/blob method wrappers and Rust blob transport recording. |
 | `--output` | Artifact path, relative to the repository root or absolute; existing files are refused |
 
 The commit-boundaries workload queues three commits with 499/2/1 or 500/2/1
@@ -380,6 +381,23 @@ The file/MinIO combination accepts sizes up to 500,000,000 bytes. Memory-store
 file runs and existing lifecycle/bridge profiles retain the 16 MiB limit.
 Native phase recording is currently unavailable in the file profile and fails
 if requested. Existing lifecycle profiles retain it.
+
+Use `--blob-diagnostics off` for client operation timings without the diagnostic
+SQL/blob wrappers. TS uses the database and blob transport directly; Rust calls
+the underlying blob transport without per-blob clocks, counters, or request
+records. Public operation timers, digest verification, server instrumentation,
+and existing sync-protocol bookkeeping remain. Artifacts and per-phase stats
+declare the mode. Empty diagnostic collections in off mode do not prove the
+absence of network traffic; server traces and full receipts still validate the
+transfer path. Calibrate the two modes on the same frozen build before using
+diagnostic measurements to select optimizations.
+
+`pairedEffects` in `src/fixture.ts` summarizes at least ten positive paired
+measurements. It reports the geometric mean of candidate/baseline ratios,
+nearest-rank medians/ranges, and a 95% percentile bootstrap interval from
+10,000 resamples of complete pairs (seed 20260910). Positive percentages mean
+an increase. Absolute paired differences retain the input unit. Resample
+independent trials, not repeated operations within a process.
 
 Artifacts separate source reading, staging, upload plus metadata acceptance,
 reader visibility, download, cache hit, and offline reopen. Upload and metadata

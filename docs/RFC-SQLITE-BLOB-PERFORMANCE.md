@@ -516,3 +516,41 @@ alongside the file profiles. The private Rust crate's 11 tests and Clippy pass.
 `bun run check` passes 1,726 main tests (45 explicit skips), 13 isolated tests,
 typecheck, lint/format, knip, and both Node runtime contracts.
 No production client implementation changed.
+
+### 9.4 Calibration protocol, declared before collection
+
+The file profile adds `--blob-diagnostics on|off` (default on). Off mode removes
+TS client database/SQL/blob method proxies and Rust per-blob transport timing,
+byte counts, and request records. Both modes retain the shipping client APIs,
+full digest checks, public operation timers, sync-protocol bookkeeping, and
+fixed server instrumentation. This measures the overhead of those client
+diagnostics; it does not claim an entirely uninstrumented application build.
+Tests require identical full-file receipts in both modes and empty diagnostic
+collections in off mode.
+
+Freeze the validated checkout and release executable before collection.
+Use SQLite server storage, one seeded task, persistent WAL/FULL clients, the
+pinned MinIO service, and seed-zero files at 65,536 and 500,000,000 bytes.
+Run ten blocks for each core and size. Each block has three fresh attempts:
+A1 and A2 disable diagnostics; B enables them. Rotate these six orders:
+`A1 A2 B`, `A2 B A1`, `B A1 A2`, `B A2 A1`, `A2 A1 B`, `A1 B A2`.
+Ten blocks balance A1/A2 order five times each. Reverse core and size traversal
+on alternate blocks. Run serially, with no concurrent builds or test suites.
+This is 120 attempts across four core/size groups.
+
+Compare A2/A1 for A/A variation. Compare B with the geometric mean of A1 and
+A2 from the same block for diagnostic overhead, resampling whole blocks.
+`pairedEffects` reports the geometric-mean ratio change and a 95% percentile
+bootstrap interval from 10,000 resamples with seed 20260910, plus medians and
+ranges. Positive changes mean increased cost. The empirical 95th percentile
+of absolute A1/A2 differences is the initial absolute noise floor for the
+corresponding metric; ten pairs make this a conservative observed maximum.
+Retain every raw attempt and failure. A failed block makes that group incomplete;
+do not replace failures or silently remove them from the declared collection.
+
+Primary observations are fresh-download time at 500 MB for each core. Report
+staging, upload-plus-metadata acceptance, cache hit, reopened hit, process CPU,
+and peak RSS as diagnostic observations. The 64 KiB profile checks overhead
+that fixed recording costs can obscure in the large profile. This calibration
+does not retain a production optimization. Subsequent candidate experiments
+still require their declared thresholds and an independent repeat of a win.

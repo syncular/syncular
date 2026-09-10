@@ -251,6 +251,7 @@ export async function createProcessDriver(
   schema = SCHEMA,
   ffi = false,
   limits?: { limitSnapshotRows: number; maxSnapshotPages: number },
+  blobDiagnostics?: boolean,
 ) {
   const child = Bun.spawn(typeof binary === 'string' ? [binary] : [...binary], {
     stdin: 'pipe',
@@ -344,6 +345,7 @@ export async function createProcessDriver(
     })());
   try {
     await invoke('create', {
+      ...(blobDiagnostics !== undefined ? { blobDiagnostics } : {}),
       ...(limits ? { limits } : {}),
       ...(ffi ? { benchBoundary: 'ffi' } : {}),
       schema: {

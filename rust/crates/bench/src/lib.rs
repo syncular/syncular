@@ -221,6 +221,7 @@ impl BenchBackend for HostTransport {
 
 struct BenchTransport {
     inner: Box<dyn BenchBackend>,
+    blob_diagnostics: bool,
     stats: TransportStats,
     wait_for_inbound: Box<dyn FnMut(Duration) -> Result<(), CommandError>>,
     last_ack: i64,
@@ -242,6 +243,7 @@ impl BenchTransport {
                 })),
             )?),
             stats: TransportStats::default(),
+            blob_diagnostics: true,
             wait_for_inbound: Box::new(move |remaining| {
                 notification
                     .recv_timeout(remaining)
@@ -268,6 +270,7 @@ impl BenchTransport {
 
     fn stats_json(&self) -> Value {
         let mut value = json!({
+            "blobDiagnostics": self.blob_diagnostics,
             "requestBytes": self.stats.request_bytes,
             "responseBytes": self.stats.response_bytes,
             "wsInBytes": self.stats.ws_in_bytes,
@@ -371,6 +374,9 @@ impl Transport for BenchTransport {
         bytes: &[u8],
         media_type: Option<&str>,
     ) -> Result<(), TransportError> {
+        if !self.blob_diagnostics {
+            return self.inner.blob_upload(blob_id, bytes, media_type);
+        }
         self.count_request(bytes.len() as u64);
         let started = Instant::now();
         let result = self.inner.blob_upload(blob_id, bytes, media_type);
@@ -380,6 +386,9 @@ impl Transport for BenchTransport {
     }
 
     fn blob_download(&mut self, blob_id: &str) -> Result<BlobDownload, TransportError> {
+        if !self.blob_diagnostics {
+            return self.inner.blob_download(blob_id);
+        }
         self.count_request(0);
         let started = Instant::now();
         let result = self.inner.blob_download(blob_id);
@@ -397,6 +406,9 @@ impl Transport for BenchTransport {
     }
 
     fn fetch_blob_url(&mut self, url: &str) -> Result<Vec<u8>, TransportError> {
+        if !self.blob_diagnostics {
+            return self.inner.fetch_blob_url(url);
+        }
         self.count_request(0);
         let started = Instant::now();
         let result = self.inner.fetch_blob_url(url);
@@ -416,6 +428,11 @@ impl Transport for BenchTransport {
         byte_length: u64,
         media_type: Option<&str>,
     ) -> Result<BlobUploadGrant, TransportError> {
+        if !self.blob_diagnostics {
+            return self
+                .inner
+                .blob_upload_grant(blob_id, byte_length, media_type);
+        }
         self.count_request(0);
         let started = Instant::now();
         let result = self
@@ -432,6 +449,9 @@ impl Transport for BenchTransport {
         bytes: &[u8],
         media_type: Option<&str>,
     ) -> Result<(), TransportError> {
+        if !self.blob_diagnostics {
+            return self.inner.blob_put_url(url, bytes, media_type);
+        }
         self.count_request(bytes.len() as u64);
         let started = Instant::now();
         let result = self.inner.blob_put_url(url, bytes, media_type);
@@ -990,6 +1010,11 @@ fn handle(
                 transport.shutdown();
                 *transport = BenchTransport::from_config(config).map_err(client_err)?;
             }
+            transport.blob_diagnostics = match params.get("blobDiagnostics") {
+                None => true,
+                Some(Value::Bool(enabled)) => *enabled,
+                _ => return Err(client_err("Blob diagnostics must be boolean".to_owned())),
+            };
             let result = dispatch(transport, client, effects, method, params)?;
             transport.inner.set_signed_urls(effects.signed_urls)?;
             Ok(result)

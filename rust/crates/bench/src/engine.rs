@@ -201,6 +201,7 @@ pub unsafe extern "C" fn syncular_bench_engine_new(
         effects: CreateEffects::default(),
         host,
         transport: BenchTransport {
+            blob_diagnostics: true,
             inner: Box::new(EngineBackend(host)),
             stats: TransportStats::default(),
             last_ack: -1,

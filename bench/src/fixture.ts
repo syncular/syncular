@@ -311,6 +311,65 @@ export function median(values: readonly number[]): number {
   return percentile(sorted, 50);
 }
 
+/** Paired geometric-mean effect; resample complete independent pairs. */
+export function pairedEffects(
+  pairs: readonly { baseline: number; candidate: number }[],
+) {
+  if (
+    pairs.length < 10 ||
+    pairs.some(
+      ({ baseline, candidate }) =>
+        !Number.isFinite(baseline) ||
+        !Number.isFinite(candidate) ||
+        baseline <= 0 ||
+        candidate <= 0,
+    )
+  )
+    throw new Error(
+      'Paired effects require at least ten positive finite pairs',
+    );
+  const logs = pairs.map(({ baseline, candidate }) =>
+    Math.log(candidate / baseline),
+  );
+  const random = seededRandom(20_260_910);
+  const resamples = Array.from({ length: 10_000 }, () => {
+    let sum = 0;
+    for (let index = 0; index < logs.length; index++)
+      sum += logs[Math.floor(random() * logs.length)]!;
+    return 100 * Math.expm1(sum / logs.length);
+  }).sort((a, b) => a - b);
+  const baseline = pairs.map((pair) => pair.baseline).sort((a, b) => a - b);
+  const candidate = pairs.map((pair) => pair.candidate).sort((a, b) => a - b);
+  const absoluteChanges = pairs
+    .map((pair) => Math.abs(pair.candidate - pair.baseline))
+    .sort((a, b) => a - b);
+  return {
+    pairs: pairs.length,
+    method:
+      'geometric-mean-ratio; percentile bootstrap of pairs; 10000 resamples; seed 20260910',
+    direction: 'positive means candidate increased',
+    baseline: {
+      median: median(baseline),
+      min: baseline[0]!,
+      max: baseline.at(-1)!,
+    },
+    candidate: {
+      median: median(candidate),
+      min: candidate[0]!,
+      max: candidate.at(-1)!,
+    },
+    changePct:
+      100 *
+      Math.expm1(logs.reduce((sum, value) => sum + value, 0) / logs.length),
+    interval95Pct: [
+      percentile(resamples, 2.5),
+      percentile(resamples, 97.5),
+    ] as const,
+    absoluteChangeMedian: median(absoluteChanges),
+    absoluteChangeP95: percentile(absoluteChanges, 95),
+  };
+}
+
 export function fmtMs(value: number): string {
   return `${value.toFixed(1)} ms`;
 }

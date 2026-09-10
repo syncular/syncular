@@ -26,6 +26,7 @@ if (import.meta.main) {
   let catchupError: unknown;
   let explicitSync = false;
   let blobFixture = false;
+  let blobDiagnostics = true;
   let sampling:
     | { stop: () => void; result: Promise<unknown>; started: number }
     | undefined;
@@ -39,6 +40,7 @@ if (import.meta.main) {
   const stats = () => {
     const cpu = process.cpuUsage(cpuStart);
     return {
+      blobDiagnostics,
       pushes,
       requestBytes,
       responseBytes,
@@ -54,6 +56,12 @@ if (import.meta.main) {
   ): Promise<unknown> => {
     if (method === 'create') {
       if (handle) throw new Error('Client already created');
+      if (
+        params.blobDiagnostics !== undefined &&
+        typeof params.blobDiagnostics !== 'boolean'
+      )
+        throw new Error('Blob diagnostics must be boolean');
+      blobDiagnostics = params.blobDiagnostics !== false;
       if (typeof params.clientId !== 'string')
         throw new Error('Missing client identity');
       if (params.dbPath !== undefined && typeof params.dbPath !== 'string')
@@ -89,12 +97,19 @@ if (import.meta.main) {
       const database = new BunClientDatabase(params.dbPath);
       // The adapter runs transaction control through this owned SQLite method.
       // Prepared data statements use query().run(), a separate surface.
-      database.db.run = measureMethods(
-        { run: database.db.run.bind(database.db) },
-        measurements,
-        'clientSqlite',
-        true,
-      ).run;
+      if (blobDiagnostics)
+        database.db.run = measureMethods(
+          { run: database.db.run.bind(database.db) },
+          measurements,
+          'clientSqlite',
+          true,
+        ).run;
+      const blobs = httpBlobTransport(
+        new URL('/blobs', transport.baseUrl).href,
+        {
+          headers: { 'x-bench-client-id': params.clientId },
+        },
+      );
       handle = await createBenchClient(
         {
           syncUrl,
@@ -104,7 +119,9 @@ if (import.meta.main) {
         {
           clientId: params.clientId,
           realtime: true,
-          database: measureMethods(database, measurements, 'database', true),
+          database: blobDiagnostics
+            ? measureMethods(database, measurements, 'database', true)
+            : database,
           ...(blobFixture
             ? {
                 schema: {
@@ -116,13 +133,9 @@ if (import.meta.main) {
                     scopes: table.scopes,
                   })),
                 },
-                blobs: measureMethods(
-                  httpBlobTransport(new URL('/blobs', transport.baseUrl).href, {
-                    headers: { 'x-bench-client-id': params.clientId },
-                  }),
-                  measurements,
-                  'blobTransport',
-                ),
+                blobs: blobDiagnostics
+                  ? measureMethods(blobs, measurements, 'blobTransport')
+                  : blobs,
               }
             : {}),
           transport: async (bytes) => {
