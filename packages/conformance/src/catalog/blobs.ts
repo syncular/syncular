@@ -78,6 +78,153 @@ async function requireBlobs(client: ClientHandle): Promise<void> {
 }
 
 export const blobScenarios: readonly Scenario[] = [
+  ...(['body', 'pin', 'commit'] as const).flatMap((fault) =>
+    (['absent', 'cached', 'pinned'] as const).map(
+      (state): Scenario => ({
+        name: `blobs/stage-failure-${fault}-${state}`,
+        requires: ['blobs'],
+        specRefs: ['§5.9.7'],
+        server: BLOB_SERVER,
+        async run(ctx) {
+          const owner = await ctx.newClient({
+            actorId: 'owner',
+            clientId: 'owner',
+            schema: BLOB_SCHEMA,
+            allowed: P1,
+            limits: { blobCacheMaxBytes: 1 },
+          });
+          const api = owner.api;
+          check(
+            api.executeStorageSql !== undefined &&
+              api.querySnapshot !== undefined &&
+              api.uploadBlob !== undefined &&
+              api.fetchBlob !== undefined &&
+              api.recreateWithSchema !== undefined,
+            'blob storage conformance surfaces are required',
+          );
+          const bytes = bytesOf('atomic stage');
+          if (state !== 'absent') {
+            await api.uploadBlob(bytes, {
+              mediaType: 'text/plain',
+              name: 'original',
+            });
+            if (state === 'cached')
+              await api.executeStorageSql('DELETE FROM _syncular_blob_uploads');
+            await api.executeStorageSql(
+              'UPDATE _syncular_blobs SET last_used_ms = 1',
+            );
+          }
+          const bodies = (
+            await api.querySnapshot('SELECT * FROM _syncular_blobs')
+          ).rows;
+          const pins = (
+            await api.querySnapshot('SELECT * FROM _syncular_blob_uploads')
+          ).rows;
+          if (fault === 'commit') {
+            await api.executeStorageSql('PRAGMA foreign_keys = ON');
+            await api.executeStorageSql(
+              'CREATE TABLE stage_parent(id INTEGER PRIMARY KEY)',
+            );
+            await api.executeStorageSql(
+              'CREATE TABLE stage_child(id INTEGER REFERENCES stage_parent(id) DEFERRABLE INITIALLY DEFERRED)',
+            );
+          }
+          await api.executeStorageSql(
+            fault === 'commit'
+              ? `CREATE TRIGGER fail_stage BEFORE INSERT ON _syncular_blob_uploads
+             BEGIN INSERT INTO stage_child VALUES(1); END`
+              : `CREATE TRIGGER fail_stage BEFORE INSERT ON ${fault === 'body' ? '_syncular_blobs' : '_syncular_blob_uploads'}
+             BEGIN SELECT RAISE(ABORT, 'injected stage failure'); END`,
+          );
+          let failure: unknown;
+          try {
+            await api.uploadBlob(bytes, {
+              mediaType: 'application/octet-stream',
+              name: 'retry',
+            });
+          } catch (error) {
+            failure = error;
+          }
+          check(failure !== undefined, 'storage fault must reject staging');
+          check(
+            String(failure).includes(
+              fault === 'commit' ? 'FOREIGN KEY' : 'injected stage failure',
+            ),
+            'stage must surface the injected storage failure',
+          );
+          checkEqual(
+            (await api.querySnapshot('SELECT * FROM _syncular_blobs')).rows,
+            bodies,
+            'failed staging preserves body and metadata',
+          );
+          checkEqual(
+            (await api.querySnapshot('SELECT * FROM _syncular_blob_uploads'))
+              .rows,
+            pins,
+            'failed staging preserves upload pins',
+          );
+          if (fault === 'commit')
+            checkEqual(
+              (await api.querySnapshot('SELECT * FROM stage_child')).rows,
+              [],
+              'failed commit rolls back trigger side effects',
+            );
+          await api.executeStorageSql('DROP TRIGGER fail_stage');
+          const reopened = await api.recreateWithSchema(BLOB_SCHEMA);
+          check(
+            reopened.querySnapshot !== undefined &&
+              reopened.uploadBlob !== undefined &&
+              reopened.fetchBlob !== undefined,
+            'recreated client must support blob conformance',
+          );
+          checkEqual(
+            (await reopened.querySnapshot('SELECT * FROM _syncular_blobs'))
+              .rows,
+            bodies,
+            'recreating the core preserves pre-failure bodies',
+          );
+          checkEqual(
+            (
+              await reopened.querySnapshot(
+                'SELECT * FROM _syncular_blob_uploads',
+              )
+            ).rows,
+            pins,
+            'recreating the core preserves pre-failure pins',
+          );
+          const ref = await reopened.uploadBlob(bytes);
+          checkEqual(
+            await reopened.uploadBlob(bytes),
+            ref,
+            'retry keeps the content address',
+          );
+          checkEqual(
+            (
+              await reopened.querySnapshot(
+                'SELECT count(*) AS n FROM _syncular_blobs',
+              )
+            ).rows,
+            [{ n: 1 }],
+            'retry creates exactly one body',
+          );
+          checkEqual(
+            (
+              await reopened.querySnapshot(
+                'SELECT count(*) AS n FROM _syncular_blob_uploads',
+              )
+            ).rows,
+            [{ n: 1 }],
+            'retry creates exactly one pin',
+          );
+          checkEqual(
+            decode(await reopened.fetchBlob(ref)),
+            'atomic stage',
+            'pinned bytes survive the cap',
+          );
+        },
+      }),
+    ),
+  ),
   {
     name: 'blobs/fresh-download-retains-live-references-over-cap',
     requires: ['blobs'],

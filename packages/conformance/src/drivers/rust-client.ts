@@ -968,6 +968,10 @@ class RustClientInstance implements ClientInstance {
     return this;
   }
 
+  async executeStorageSql(sql: string): Promise<void> {
+    await this.#shim.call('executeStorageSql', { sql });
+  }
+
   async uploadBlob(
     bytes: Uint8Array,
     options?: { readonly mediaType?: string; readonly name?: string },

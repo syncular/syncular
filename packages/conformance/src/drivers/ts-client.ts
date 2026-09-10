@@ -657,6 +657,10 @@ class TsClientInstance implements ClientInstance {
     return this.#client.presence(scopeKey);
   }
 
+  async executeStorageSql(sql: string): Promise<void> {
+    this.#db.exec(sql);
+  }
+
   async uploadBlob(
     bytes: Uint8Array,
     options?: { readonly mediaType?: string; readonly name?: string },

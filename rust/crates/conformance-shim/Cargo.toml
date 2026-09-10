@@ -11,7 +11,9 @@ name = "conformance-shim"
 path = "src/main.rs"
 
 [dependencies]
-syncular-client = { path = "../client" }
+# The private connection seam installs deterministic SQLite faults. The
+# shipping command router does not expose this harness-only operation.
+syncular-client = { path = "../client", features = ["bench-internals"] }
 # §5.10.5: the shim carries the crdt-yjs commands so the cross-core conformance
 # pairing (Appendix B.14) can have the RUST side AUTHOR crdt edits via
 # crdtInsertText/crdtDeleteText and the TS/yjs side read them back — byte-

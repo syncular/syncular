@@ -375,7 +375,23 @@ fn main() {
                     io.respond(&id, Ok(json!({})));
                     break;
                 }
-                let result = dispatch(&mut io, &mut client, &mut effects, &method, &params);
+                let result = if method == "executeStorageSql" {
+                    match (client.as_mut(), params.get("sql").and_then(Value::as_str)) {
+                        (Some(instance), Some(sql)) => instance
+                            .benchmark_connection()
+                            .execute_batch(sql)
+                            .map(|()| json!({}))
+                            .map_err(|error| {
+                                ("harness.storage_failed".to_owned(), error.to_string())
+                            }),
+                        _ => Err((
+                            "harness.invalid_request".to_owned(),
+                            "client and SQL are required".to_owned(),
+                        )),
+                    }
+                } else {
+                    dispatch(&mut io, &mut client, &mut effects, &method, &params)
+                };
                 // The shared router parses `create`'s signedUrls into effects;
                 // apply it to this stdio host's transport capability.
                 if method == "create" {

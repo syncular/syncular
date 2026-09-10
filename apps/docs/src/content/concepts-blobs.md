@@ -46,6 +46,12 @@ await client.sync();
 const cached = await client.fetchBlob(row.attachment);
 ```
 
+`uploadBlob` commits the cached bytes and pending-upload pin in one SQLite
+transaction in both cores. A body write, pin write, or commit failure rejects
+the call and preserves the previous body, metadata, and pin state. Retry
+staging after repairing the storage failure; the same bytes retain their
+content address and do not create duplicate cache entries.
+
 ## Download authorization
 
 Every blob **download re-authorizes** against the rows that reference the

@@ -28,9 +28,15 @@ not aspiration.
    surfacing). Faults are deterministic — the only randomness is the
    truncation offset, drawn from a PRNG seeded by the scenario name.
    Implementations are never instrumented to "know" a fault happened;
-   the single exception is the *optional* `idempotency-fault` server
-   capability (§6.3 requires a storage-level failure no transport can
-   simulate). Drivers without it skip those scenarios.
+   storage failures require explicit exceptions: the optional
+   `idempotency-fault` server capability (§6.3), and the harness-only
+   `executeStorageSql` client seam (§5.9.7 staging failures). The latter
+   installs real SQLite triggers and deferred constraints through the
+   driver's owned connection. The shipping core does not branch on faults;
+   its ordinary SQL statements fail. The Rust shim exposes this operation
+   outside the shipping command router using the private connection feature.
+   Drivers without the server capability skip its scenarios; both reference
+   client drivers must implement the client seam for blob conformance.
 
 3. **Readiness waits, never sleeps.** Every wait is an explicit
    completion promise: a sync round resolving, a delivered delta, a

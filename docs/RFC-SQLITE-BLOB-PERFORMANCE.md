@@ -377,7 +377,8 @@ must make each decision reproducible.
 | Experiment | Baseline/candidate | Evidence | Decision |
 | --- | --- | --- | --- |
 | Harness and A/A | Review baseline plus private driver changes | §9.1–9.5: 120 calibration attempts passed; both primary diagnostic-overhead intervals include zero; observed A/A noise sets explicit absolute floors; finer phase attribution remains | Initial calibration complete |
-| R1/R2 | Pending | Inspected paths only; failure reproductions required | Pending |
+| R1 | One Rust transaction for body and upload pin | §9.6–9.7: baseline failure reproduced; candidate passes both cores and native file reopen; two independent 40-run cost collections | Retain for atomicity with the explicit performance uncertainty in §9.7; no speedup or neutrality claim |
+| R2 | Pending | Missing/corrupt pending-body paths inspected; failure reproductions required | Pending |
 | P1–P4 | Pending | Allocation/access hypotheses above | Pending |
 | P5–P7 | Conditional | Reassess after simpler candidates | Pending |
 
@@ -629,3 +630,148 @@ bootstrap quantiles. `bun run check` passed 1,729 main tests (48 explicit skips)
 13 isolated tests, typecheck, lint/format, knip, and both Node runtime contracts.
 The private Rust crate's 11 unit tests and Clippy passed. The checkout remained
 frozen throughout measurement and analysis.
+
+
+### 9.6 R1 protocol and baseline reproduction, 2026-09-10
+
+Hypothesis: Rust stages the body and upload pin in separate autocommit
+transactions. A pin-statement or commit failure therefore leaves the first
+body write durable. TS already groups both statements in one transaction.
+The candidate will group only these Rust staging statements and propagate
+begin/write/commit failures through the existing error surface.
+
+Before the production edit, nine shared conformance scenarios inject real
+SQLite body, pin, and deferred-constraint commit failures against absent,
+cached, and pinned bytes. TS passes all nine. Rust passes the three body
+failures and fails all six pin/commit cases: a new body survives without its
+pin, or a duplicate body's last-used timestamp changes despite rejection.
+The harness installs faults through its owned connection; no production
+command accepts fault setup. Native file-reopen coverage separately checks
+durable state and retries. It fails against baseline with an orphan body
+persisted after the pin error. The candidate passes all nine native cases and
+all 38 blob conformance cases across both cores, including 18 injected-failure
+cases. The production edit adds one transaction around the two Rust statements;
+TS already satisfies the contract. Failed commits roll back trigger writes,
+and retries preserve deduplication and the pending pin above the cache cap.
+
+Baseline and candidate failure logs are retained alongside the binaries. The
+candidate release SHA-256 is
+`8ee273ba1b73cb14387adce54818fbf70ed5b0b11a981cb7cc0a506e22d8660f`.
+
+The baseline release binary is preserved at
+`bench/results/blob-r1-v1/baseline-syncular-bench`, SHA-256
+`d128b1f9de065eb01726db1dad10c25262bcb6b0187bed03621d43cc2ec8ffcc`.
+The R1 comparison will use the existing isolated file/MinIO harness with
+instrumentation off, WAL/FULL, one linked task, seed-0 fixtures of 65,536 and
+500,000,000 bytes, and full digest verification. Collect ten paired trials per
+size, alternating baseline/candidate order and size traversal each block.
+Use the same harness for both binaries, with no concurrent builds/tests.
+Primary cost metric: native staging elapsed time. Secondary checks:
+upload-and-commit, fresh download, cache hit, writer lifetime CPU/RSS, and
+durable SQLite state. Use §9.5 A/A floors and the declared paired 95% interval;
+investigate costs above 10% before retention. Reliability is the qualifying
+outcome; this comparison does not establish a performance gain. If claiming
+a performance gain later, repeat independently under §6's retention rules.
+Raw commands, artifacts, binary hashes, source diff, and analysis will remain
+under `bench/results/blob-r1-v1/`.
+
+
+The first R1 collection completed 40/40 attempts with full validation between
+2026-09-10 21:52:32 and 22:00:50 UTC. No observation is excluded. Its 500 MB
+staging ratio estimate is +5.77%, with a 95% interval [-11.25%, +28.75%].
+The 64 KiB upload-and-commit, download, and writer lifetime CPU estimates are
++15.77%, +10.26%, and +12.61%; their intervals include zero and their paired
+absolute p95 differences (30.70 ms, 2.43 ms, 7.04 ms) are below the corresponding
+A/A floors (53.36 ms, 10.70 ms, 9.84 ms). Reader peak RSS at 500 MB shifts
++8.57% [3.93%, 13.55%], while its paired absolute p95 difference (454,017,024
+bytes) is below the A/A floor (503,234,560 bytes). R1 changes only writer
+staging; these observations do not establish a reader-path mechanism.
+
+The 500 MB stage/upload/CPU pairs include variation above calibration. The
+staging pairs in blocks 3 and 5 favor baseline by 1.96 s and 1.53 s, while
+other pairs favor candidate. The interval cannot exclude a material staging
+cost. Before deciding retention, collect an independent repeat at
+`bench/results/blob-r1-v1-repeat/`: the same two binary hashes, diagnostics
+off, fixtures, WAL/FULL, MinIO image, ten paired trials per size, and
+alternating order. Preserve every observation and report the repeat separately;
+do not pool it with the first collection or change the primary metric.
+This repeat investigates the unresolved cost; it does not qualify a speedup.
+
+
+### 9.7 R1 retention and unresolved performance cost, 2026-09-11
+
+Retain R1 for reliability. The baseline body/pin split violates §5.9.7:
+injected pin and commit failures persist a new unpinned body or change existing
+body metadata despite rejecting the call. The candidate's single transaction
+preserves the complete pre-call state, survives a database close/reopen, and
+allows a successful deduplicated retry. TS already implements this transaction;
+the shared catalog now enforces it in both cores.
+
+**Accepted tradeoff:** atomic staging is a required storage guarantee, and the
+failure reproduction establishes that the previous implementation lacks it.
+The elapsed-time cost remains uncertain. Retention accepts that uncertainty,
+including the material secondary regressions observed in the repeat below.
+R1 is not a speedup, is not established as performance-neutral, and does not
+satisfy the performance retention gate. Further phase attribution remains open;
+subsequent performance candidates must meet their own gate.
+
+Both collections completed 40/40 attempts with no exclusions, distinct MinIO
+containers, identical binary hashes, seed-0 fixtures, WAL/FULL clients, and full
+hash/commit/cache/restart validation. The repeat ran from 2026-09-10 22:02:51 to
+22:13:46 UTC. Both collections used Apple M4, Darwin 27.0.0, Bun 1.4.0, and
+native SQLite 3.46.0. A host snapshot during the repeat reports 24 GiB total
+memory and 37% system-wide free memory; it cannot attribute an earlier or
+individual operation's memory pressure.
+
+The primary metric is native staging time. Medians are in milliseconds; effects
+are geometric means of paired candidate/baseline ratios with the predeclared
+95% bootstrap interval. A ratio estimate is not the ratio of the two medians.
+
+| Collection | Bytes | Baseline median | Candidate median | Paired change | 95% interval |
+| --- | ---: | ---: | ---: | ---: | --- |
+| First | 65,536 | 0.376 | 0.361 | -12.35% | [-27.72%, +2.65%] |
+| Repeat | 65,536 | 0.433 | 0.351 | -17.17% | [-36.66%, +11.08%] |
+| First | 500,000,000 | 2,301.43 | 2,159.61 | +5.77% | [-11.25%, +28.75%] |
+| Repeat | 500,000,000 | 2,375.03 | 2,831.31 | +6.57% | [-14.61%, +32.77%] |
+
+The small-file secondary cost signals from §9.6 do not recur in the repeat:
+upload-and-commit changes -14.70% [-31.78%, +6.87%], download changes -32.50%
+[-63.96%, +14.72%], and writer lifetime CPU changes -0.05% [-8.07%, +9.59%].
+Every interval includes zero. At 500 MB, the secondary results remain unresolved:
+
+| Metric | First collection: change [95% interval] | Repeat: change [95% interval] |
+| --- | --- | --- |
+| Upload-and-commit elapsed | +1.34% [-12.74%, +21.00%] | +36.31% [+2.28%, +90.58%] |
+| Fresh download elapsed | -3.61% [-9.44%, +2.24%] | +29.80% [+4.97%, +69.70%] |
+| Writer lifetime CPU | +3.23% [-5.36%, +14.73%] | +1.83% [-6.46%, +11.88%] |
+| Reader lifetime peak RSS | +8.57% [+3.93%, +13.55%] | -3.77% [-9.83%, +2.09%] |
+
+The repeat's positive upload/download intervals require investigation; the
+first collection does not establish the same effect. The largest repeat
+slowdowns occur in blocks 4, 7, and 9. For example, block 4 candidate takes
+9,396 ms for upload-and-commit versus 2,465 ms for baseline, and MinIO's final
+block-read counter is 410 MB versus 225 kB. Block 7 candidate takes 14,310 ms
+for download versus 4,538 ms for baseline, while reader lifetime CPU is
+14,689 ms versus 10,348 ms. These observations cover different measurement
+boundaries and cannot identify the cause. The production edit touches writer
+staging only; no measured phase attribution yet connects it to those later
+slowdowns. Do not discard these trials or explain all of the difference as
+MinIO, memory pressure, or measurement noise without additional evidence.
+
+Raw artifacts, scripts, source patches, binary hashes, and separate summaries:
+`bench/results/blob-r1-v1/` and `bench/results/blob-r1-v1-repeat/`. Each analyzer
+verifies all artifact hashes, controls, fixtures, phase digests, SQLite
+configuration, original commit outcomes, and container isolation before
+computing effects. The original records remain unchanged; no pooled estimate
+replaces either collection. Both collections removed all their containers and
+temporary client databases.
+
+Validation: `bun run check` passes 1,859 main tests (47 explicit skips), 13
+isolated tests, typecheck, lint/format, knip, and Node client/server runtime
+contracts. Rust workspace tests, Clippy with warnings denied, and seven native
+transport round tests pass. All 38 blob conformance cases pass across TS and
+Rust; the 18 new failure cases also pass after the final driver-recreation
+check. Swift, React Native, and Tauri gates pass. Kotlin and Flutter verify
+generated-schema freshness but skip runtime tests because this host lacks a
+working JDK and Dart SDK. Browser OPFS, device builds, and those skipped binding
+runtimes were not measured by R1.

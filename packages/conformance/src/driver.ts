@@ -787,6 +787,9 @@ export interface ClientInstance {
   ): Promise<string>;
   fetchBlob?(blobIdOrRef: string): Promise<{ readonly $bytes: string }>;
 
+  /** Harness-only SQLite fault setup; absent from the shipping command API. */
+  executeStorageSql?(sql: string): Promise<void>;
+
   connectRealtime(): Promise<void>;
   disconnectRealtime(): Promise<void>;
   /** §8: a hello/wake-up asked for a pull that has not run yet. */

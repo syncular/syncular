@@ -54,8 +54,8 @@ optional = true
 
 [features]
 default = []
-# Internal repository measurements only. Exposes the owned connection to the
-# private benchmark driver so raw and public reads share the same SQLite state.
+# Internal repository measurements and conformance only. Exposes the owned
+# connection for benchmark reads and deterministic SQLite fault setup.
 bench-internals = ["dep:libc"]
 crdt-yjs = ["dep:yrs"]
 e2ee = ["ssp2/e2ee", "dep:rand_core"]

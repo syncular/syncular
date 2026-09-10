@@ -2166,6 +2166,14 @@ by referencing rows** under the following normative constraints:
   outbox entry and releases its upload state; the uploaded bytes become an
   orphan swept by §5.9.2.
 
+Upload staging MUST commit the cached body and pending-upload pin in one
+local transaction. If a body write, pin write, or transaction commit fails,
+the client MUST report the storage failure and preserve the pre-call body,
+metadata, and pin state. This includes staging bytes already in the cache.
+A failed stage MUST NOT run cache eviction. Retrying after the storage fault
+is repaired MUST use the same content address and create at most one body
+and one pending-upload pin.
+
 Client download resolution: a query/read that surfaces a `blob_ref` value
 gives the app the `blobId` + metadata; the app requests bytes through the
 client's blob API, which returns a cache hit if present (no network) or

@@ -163,6 +163,124 @@ mod observation_tests {
     }
 
     #[test]
+    fn blob_staging_failures_preserve_durable_state_and_allow_retry() {
+        let schema = json!({"version":1,"tables":[{"name":"attachments","primaryKey":"id","columns":[
+            {"name":"id","type":"string","nullable":false},
+            {"name":"file","type":"blob_ref","nullable":true}],"scopes":[]}]});
+        for fault in ["pin", "commit", "body"] {
+            for state in ["absent", "cached", "pinned"] {
+                let path = std::env::temp_dir().join(format!(
+                    "syncular-blob-stage-{}.sqlite",
+                    uuid::Uuid::new_v4()
+                ));
+                let mut client = SyncClient::open_path(
+                    "stage-test".into(),
+                    &schema,
+                    Default::default(),
+                    path.to_str().unwrap(),
+                )
+                .unwrap();
+                let bytes = b"atomic stage";
+                if state != "absent" {
+                    client
+                        .upload_blob(bytes, Some("text/plain".into()), None)
+                        .unwrap();
+                    if state == "cached" {
+                        client
+                            .conn
+                            .execute("DELETE FROM _syncular_blob_uploads", [])
+                            .unwrap();
+                    }
+                    client
+                        .conn
+                        .execute("UPDATE _syncular_blobs SET last_used_ms = 1", [])
+                        .unwrap();
+                }
+                let bodies = client.query("SELECT * FROM _syncular_blobs", &[]).unwrap();
+                let pins = client
+                    .query("SELECT * FROM _syncular_blob_uploads", &[])
+                    .unwrap();
+                client.conn.execute_batch(match fault {
+                    "body" => "CREATE TRIGGER fail_stage BEFORE INSERT ON _syncular_blobs BEGIN SELECT RAISE(ABORT, 'injected stage failure'); END",
+                    "pin" => "CREATE TRIGGER fail_stage BEFORE INSERT ON _syncular_blob_uploads BEGIN SELECT RAISE(ABORT, 'injected stage failure'); END",
+                    _ => "PRAGMA foreign_keys = ON; CREATE TABLE stage_parent(id INTEGER PRIMARY KEY); CREATE TABLE stage_child(id INTEGER REFERENCES stage_parent(id) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER fail_stage BEFORE INSERT ON _syncular_blob_uploads BEGIN INSERT INTO stage_child VALUES(1); END",
+                }).unwrap();
+                let error = client
+                    .upload_blob(bytes, Some("application/octet-stream".into()), None)
+                    .unwrap_err();
+                assert!(
+                    error.contains(if fault == "commit" {
+                        "FOREIGN KEY"
+                    } else {
+                        "injected stage failure"
+                    }),
+                    "{fault}/{state}: {error}"
+                );
+                assert!(
+                    client.conn.is_autocommit(),
+                    "failed staging must close its transaction"
+                );
+                let immediate_bodies = client.query("SELECT * FROM _syncular_blobs", &[]).unwrap();
+                let immediate_pins = client
+                    .query("SELECT * FROM _syncular_blob_uploads", &[])
+                    .unwrap();
+                drop(client);
+                let mut reopened = SyncClient::open_path(
+                    "stage-test".into(),
+                    &schema,
+                    Default::default(),
+                    path.to_str().unwrap(),
+                )
+                .unwrap();
+                let durable_bodies = reopened
+                    .query("SELECT * FROM _syncular_blobs", &[])
+                    .unwrap();
+                let durable_pins = reopened
+                    .query("SELECT * FROM _syncular_blob_uploads", &[])
+                    .unwrap();
+                reopened
+                    .conn
+                    .execute_batch("DROP TRIGGER fail_stage")
+                    .unwrap();
+                let retried = reopened.upload_blob(bytes, None, None).unwrap();
+                assert_eq!(reopened.upload_blob(bytes, None, None).unwrap(), retried);
+                assert_eq!(
+                    reopened
+                        .query("SELECT * FROM _syncular_blobs", &[])
+                        .unwrap()
+                        .len(),
+                    1
+                );
+                assert_eq!(
+                    reopened
+                        .query("SELECT * FROM _syncular_blob_uploads", &[])
+                        .unwrap()
+                        .len(),
+                    1
+                );
+                if fault == "commit" {
+                    assert!(reopened
+                        .query("SELECT * FROM stage_child", &[])
+                        .unwrap()
+                        .is_empty());
+                }
+                drop(reopened);
+                std::fs::remove_file(&path).unwrap();
+                assert_eq!(
+                    durable_bodies, bodies,
+                    "{fault}/{state}: reopened body state"
+                );
+                assert_eq!(durable_pins, pins, "{fault}/{state}: reopened pin state");
+                assert_eq!(
+                    immediate_bodies, bodies,
+                    "{fault}/{state}: immediate body state"
+                );
+                assert_eq!(immediate_pins, pins, "{fault}/{state}: immediate pin state");
+            }
+        }
+    }
+
+    #[test]
     fn incoming_frame_transactions_preserve_prefix_cursor_and_revision_after_reopen() {
         let schema = json!({"version":1,"tables":[{"name":"tasks","primaryKey":"id","columns":[
             {"name":"id","type":"string","nullable":false},{"name":"project_id","type":"string","nullable":false}],
@@ -6525,7 +6643,7 @@ impl SyncClient {
         query_connection(&self.conn, sql, params)
     }
 
-    /// Repository benchmark access, present only with `bench-internals`.
+    /// Repository benchmark and conformance access, present only with `bench-internals`.
     #[cfg(feature = "bench-internals")]
     #[doc(hidden)]
     pub fn benchmark_connection(&mut self) -> &mut Connection {
@@ -8821,19 +8939,21 @@ impl SyncClient {
     ) -> Result<Value, String> {
         let blob_id = blob_id_for(bytes);
         let now = self.clock_now_ms();
-        self.conn
+        let transaction = self.conn.transaction().map_err(|e| e.to_string())?;
+        transaction
             .execute(
                 "INSERT INTO _syncular_blobs(blob_id, bytes, byte_length, media_type, refcount, created_at_ms, last_used_ms) VALUES (?,?,?,?,0,?,?)
                  ON CONFLICT(blob_id) DO UPDATE SET last_used_ms = excluded.last_used_ms",
                 rusqlite::params![blob_id, bytes, bytes.len() as i64, media_type, now, now],
             )
             .map_err(|e| e.to_string())?;
-        self.conn
+        transaction
             .execute(
                 "INSERT OR IGNORE INTO _syncular_blob_uploads(blob_id, media_type, created_at_ms) VALUES (?,?,?)",
                 rusqlite::params![blob_id, media_type, now],
             )
             .map_err(|e| e.to_string())?;
+        transaction.commit().map_err(|e| e.to_string())?;
         // §5.9.7 B1: a staged upload is pinned (in _syncular_blob_uploads), so
         // the trim never evicts it; other zero-ref bodies may be over the cap.
         self.enforce_blob_cache_cap();
