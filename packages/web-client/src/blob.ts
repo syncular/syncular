@@ -12,6 +12,7 @@
  */
 import { type BlobRef, parseBlobRef, serializeBlobRef } from '@syncular/core';
 import type { ClientDatabase } from './database';
+import { ClientSyncError } from './errors';
 import type { CompiledClientSchema } from './schema';
 import { quoteIdent } from './schema';
 
@@ -126,6 +127,11 @@ export function ensureBlobSchema(db: ClientDatabase): void {
     blob_id TEXT PRIMARY KEY,
     media_type TEXT,
     created_at_ms INTEGER NOT NULL)`);
+  db.exec(`CREATE TABLE IF NOT EXISTS _syncular_blob_commit_refs(
+    commit_id TEXT NOT NULL, blob_id TEXT NOT NULL, PRIMARY KEY(commit_id, blob_id))`);
+  db.exec(
+    'CREATE INDEX IF NOT EXISTS _syncular_blob_commit_refs_body ON _syncular_blob_commit_refs(blob_id)',
+  );
 }
 
 /** Put bytes into the content-addressed cache (idempotent); touches LRU. */
@@ -197,6 +203,7 @@ export function enforceBlobCacheCap(
     `SELECT blob_id, byte_length FROM _syncular_blobs
      WHERE refcount = 0
        AND blob_id NOT IN (SELECT blob_id FROM _syncular_blob_uploads)
+       AND blob_id NOT IN (SELECT blob_id FROM _syncular_blob_commit_refs)
      ORDER BY last_used_ms ASC, created_at_ms ASC`,
   );
   const evicted: string[] = [];
@@ -231,14 +238,29 @@ export function listPendingUploads(
 ): { blobId: string; mediaType?: string }[] {
   return db
     .query(
-      'SELECT blob_id, media_type FROM _syncular_blob_uploads ORDER BY created_at_ms',
+      `SELECT blob_id, media_type FROM (
+        SELECT blob_id, media_type, created_at_ms FROM _syncular_blob_uploads
+        UNION ALL
+        SELECT DISTINCT r.blob_id, b.media_type, 9223372036854775807 AS created_at_ms
+        FROM _syncular_blob_commit_refs r LEFT JOIN _syncular_blobs b ON b.blob_id = r.blob_id
+        WHERE NOT EXISTS (SELECT 1 FROM _syncular_blob_uploads u WHERE u.blob_id = r.blob_id)
+      ) ORDER BY created_at_ms, blob_id`,
     )
-    .map((row) => ({
-      blobId: row.blob_id as string,
-      ...(row.media_type !== null
-        ? { mediaType: row.media_type as string }
-        : {}),
-    }));
+    .map((row) => {
+      if (
+        typeof row.blob_id !== 'string' ||
+        (row.media_type !== null && typeof row.media_type !== 'string')
+      ) {
+        throw new ClientSyncError(
+          'sync.local_corrupt',
+          'Pending blob upload metadata is invalid',
+        );
+      }
+      return {
+        blobId: row.blob_id,
+        ...(row.media_type !== null ? { mediaType: row.media_type } : {}),
+      };
+    });
 }
 
 export function clearPendingUpload(db: ClientDatabase, blobId: string): void {
@@ -323,7 +345,8 @@ export function reconcileBlobRefcounts(
       db.exec(
         `DELETE FROM _syncular_blobs
          WHERE refcount = 0
-           AND blob_id NOT IN (SELECT blob_id FROM _syncular_blob_uploads)`,
+           AND blob_id NOT IN (SELECT blob_id FROM _syncular_blob_uploads)
+           AND blob_id NOT IN (SELECT blob_id FROM _syncular_blob_commit_refs)`,
       );
     }
   });

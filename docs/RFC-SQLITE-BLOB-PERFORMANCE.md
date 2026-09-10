@@ -378,7 +378,7 @@ must make each decision reproducible.
 | --- | --- | --- | --- |
 | Harness and A/A | Review baseline plus private driver changes | §9.1–9.5: 120 calibration attempts passed; both primary diagnostic-overhead intervals include zero; observed A/A noise sets explicit absolute floors; finer phase attribution remains | Initial calibration complete |
 | R1 | One Rust transaction for body and upload pin | §9.6–9.7: baseline failure reproduced; candidate passes both cores and native file reopen; two independent 40-run cost collections | Retain for atomicity with the explicit performance uncertainty in §9.7; no speedup or neutrality claim |
-| R2 | Pending | Missing/corrupt pending-body paths inspected; failure reproductions required | Pending |
+| R2 | Validate queued bytes and preserve commit-dependent bodies | §9.8: 42 shared R2 cases, 7 native reopen cases, and 80 paired benchmark attempts pass | Retained for reliability; measured 500 MB upload cost is +11.7% TS and +67.8% Rust |
 | P1–P4 | Pending | Allocation/access hypotheses above | Pending |
 | P5–P7 | Conditional | Reassess after simpler candidates | Pending |
 
@@ -775,3 +775,153 @@ check. Swift, React Native, and Tauri gates pass. Kotlin and Flutter verify
 generated-schema freshness but skip runtime tests because this host lacks a
 working JDK and Dart SDK. Browser OPFS, device builds, and those skipped binding
 runtimes were not measured by R1.
+
+### 9.8 R2 failure reproduction and candidate, 2026-09-11
+
+The initial R2 matrix injects seven faults with the remote object absent and
+already present: missing local body, wrong body type, incorrect length,
+incorrect SHA-256, invalid upload metadata, SQL body-read failure, and SQL
+upload-pin deletion failure. Before the production edit, TS passes the four
+read/deletion cases and fails the other ten; Rust fails all fourteen. The
+baseline log is `bench/results/blob-r2-v1/baseline.log`. Missing bodies can drain
+the original pending commit. An already-present upload grant also bypasses
+validation of corrupt cached bytes in both cores.
+
+The candidate validates queued body type, length, and SHA-256 before requesting
+an upload grant. Missing or corrupt data returns client-local
+`sync.local_corrupt`. Rust collects pending-row errors and propagates body-read
+and pin-deletion failures, preserving the affected pin and original commit.
+Both cores now derive a durable `(commit_id, blob_id)` dependency table from the
+outbox. Outbox and cache triggers maintain it in the same transaction as commit
+insertion, removal, operation replacement, and a body arriving after the
+commit. Startup recreates the schema-specific triggers and backfills existing
+pending work. Upload-queue removal therefore records successful byte delivery
+without releasing the body needed by an unacknowledged commit.
+
+The extra full-body hash has an expected CPU and allocation cost, particularly
+TS's current hashing copy. R2 is a correctness candidate pending validation and
+cost measurement, not a retained optimization. Preserve the R1 release binary
+as the native baseline (SHA-256
+`8ee273ba1b73cb14387adce54818fbf70ed5b0b11a981cb7cc0a506e22d8660f`)
+and use frozen TS source for the paired comparison before editing later copy
+optimizations. Declare the measurement protocol before collecting candidate
+costs; report the hash/copy cost explicitly instead of folding it into P1.
+
+R2's initial candidate passes all 28 corruption/storage scenarios and the
+existing 38 blob scenarios. Seven native file-reopen cases preserve upload
+pins and original commit IDs, then upload repaired bytes while keeping the
+metadata commit pending. Metadata validation runs over the complete pending
+list before either core starts transfers; body validation runs in upload order.
+
+The subsequent prefix audit exposes an additional B4 failure in both cores.
+One commit references two staged bodies. The first uploads successfully and
+its upload-queue entry is deleted; the second is corrupt and fails the round.
+Staging a third body above a one-byte cache cap then evicts the first body,
+even though the original commit still depends on it. Its cached refcount is
+zero and its upload pin has been removed. The shared
+`blobs/upload-prefix-body-failure` scenario now fails with an actual missing
+body after trim. The metadata-failure prefix case passes: no transfer starts,
+so both upload pins still protect their bodies. The fixture pins client time
+to the server clock so upload-grant expiry does not obscure the intended path.
+
+This reproduction justifies explicit commit-dependent body protection.
+Refreshing only visible-row refcounts would leave the case where a later
+optimistic edit hides an earlier pending commit's reference unresolved. The
+implemented dependency table preserves that earlier reference. Five additional
+shared scenarios cover lost acknowledgements, restart backfill, shadowed
+optimistic references, references to a server-resident body absent from the
+local cache, shared references across rejection, and revocation of a doomed
+commit. Terminal acknowledgement, rejection, and revocation remove the commit
+dependency. A sibling pending commit or live row continues to protect the same
+body.
+
+The latest focused run passes all 80 blob cases across TS and Rust: 40 catalog
+scenarios per core, including 42 R2 cases across the two cores. The Rust
+conformance recreation path initially skipped bookkeeping migrations and failed
+restart backfill; it now invokes the same bookkeeping setup as a file reopen.
+The seven native file-reopen cases still pass. The full repository gate remains
+to run after measurement.
+
+The cost collection uses the R1 result as its baseline. Rust uses the retained
+R1 release executable with SHA-256
+`8ee273ba1b73cb14387adce54818fbf70ed5b0b11a981cb7cc0a506e22d8660f`;
+TS uses an installed source snapshot at commit `32dc1f5a`. The candidate Rust
+release executable has SHA-256
+`14c82aa993cf2f4ad256553c7141e27f4f740f7a79cd660df0d7ac86c0e69aa5`;
+the collection manifest records the final candidate source diff and every
+tracked source hash.
+
+Collect ten paired blocks for each core at 65,536 and 500,000,000 bytes. Each
+block runs baseline and candidate once, alternates their order, and reverses
+size and core traversal on alternating blocks. Run serially with diagnostics
+off, SQLite server storage, persistent WAL/FULL client databases, one linked
+attachment, the pinned MinIO service, seed-zero fixtures, and full independent
+hash verification. Preserve every attempt and stop on failure. This produces
+80 attempts.
+
+The primary metric is upload-plus-metadata-acceptance time, because R2 adds the
+validation hash immediately before transport. Report stage and fresh-download
+time as unchanged controls; report writer CPU, peak RSS, and durable SQLite
+sizes as secondary observations. Compare paired candidate/baseline geometric
+mean ratios with a 95% percentile bootstrap interval over the ten blocks using
+10,000 resamples and seed 20260910. Report the paired absolute p95 difference
+beside the §9.5 A/A floor. Investigate an upload-time cost above 10%. The fault
+matrix qualifies the reliability repair; this collection measures its accepted
+cost and cannot qualify a speedup without an independent repeat.
+
+The collection completed all 80 attempts between 2026-09-10 22:47:24 and
+22:58:14 UTC with no failures or exclusions. Every attempt used a distinct
+MinIO container and verified the fixture, stored object, downloaded body, cache
+hit, reopened cache hit, and accepted metadata commit. The candidate source
+diff SHA-256 is
+`e186da1cc0c56c47c39d96011138fe7958918a587a2cbb5b4bd5d57b684de528`.
+All runs used Apple M4, Darwin 27.0.0, Bun 1.4.0, TS SQLite 3.54.0, and Rust
+SQLite 3.46.0.
+
+The primary 500 MB results are:
+
+| Core | Baseline median | Candidate median | Paired change | 95% interval | Paired absolute p95 | §9.5 A/A floor |
+| --- | ---: | ---: | ---: | --- | ---: | ---: |
+| TS/Bun | 1,582.48 ms | 1,850.79 ms | +11.67% | [+2.47%, +19.49%] | 424.97 ms | 574.81 ms |
+| Rust/release | 1,359.30 ms | 2,227.94 ms | +67.79% | [+57.90%, +79.69%] | 2,193.38 ms | 747.06 ms |
+
+The TS absolute p95 remains below the earlier A/A floor, while its paired
+interval excludes zero. The Rust effect exceeds both the 10% investigation
+threshold and the A/A floor. Rust writer CPU increases 32.31% [26.71%, 39.40%]
+with an 844.85 ms median absolute paired difference. Its writer peak RSS changes
++0.007% [-0.005%, +0.015%]. TS writer CPU increases 9.64% [6.24%, 12.67%];
+writer peak RSS changes +10.72% [-0.11%, +22.08%], with a 499,761,152-byte
+median absolute paired difference. Process RSS covers the complete writer
+lifetime and does not isolate the verification hash.
+
+The unchanged staging controls include zero in both 500 MB intervals: -3.60%
+[-8.56%, +0.31%] for TS and +5.24% [-2.64%, +15.48%] for Rust. Fresh download
+changes -0.42% [-12.98%, +13.09%] for TS and -8.76% [-15.13%, -2.51%] for
+Rust. R2 does not change the reader path, so the Rust download result is an
+unattributed control movement rather than a claimed improvement.
+
+At 64 KiB, upload plus commit changes -7.89% [-23.22%, +12.33%] for TS and
++14.55% [+1.54%, +28.89%] for Rust. The absolute p95 differences are 8.92 ms
+and 4.33 ms, below the §9.5 A/A floors of 13.31 ms and 53.36 ms.
+
+Retain R2 for reliability. The baseline can delete or evict bytes still needed
+by a durable commit, silently discard missing queued bodies, skip corrupt bytes
+when the server reports the object present, and ignore Rust storage failures.
+The deterministic failure matrix and restart cases prove those defects. The
+full-body verification cost is accepted and is not a performance improvement.
+P1 and P5 may reduce copying or hash/I/O cost under their own measurement gates;
+they must preserve R2's failure behavior and commit-pin lifetime.
+
+The frozen analyzer initially assumed SQLite 3.46.0 for both cores and stopped
+before computing results. `analyze-v1.mjs` preserves that script byte-for-byte.
+The corrected analyzer accepts the versions recorded consistently by all
+attempts, verifies the original frozen script hash, and records its own hash in
+`summary.json`. Raw attempts, commands, manifests, executables, source patch,
+and both analyzers are under `bench/results/blob-r2-v1/`.
+
+`bun run check` passes 1,907 main tests (46 explicit skips), 13 isolated
+multi-tab tests, typecheck, lint/format, knip, and both Node runtime contracts.
+The Rust workspace passes 142 unit/integration tests plus doc tests, formatting,
+and Clippy with warnings denied. Tauri, React Native, and Swift binding gates
+pass. Kotlin and Flutter verify generated-schema freshness but skip runtime
+tests because this host lacks a working JDK and Dart SDK. R2 is retained.

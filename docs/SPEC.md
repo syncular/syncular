@@ -2174,6 +2174,18 @@ A failed stage MUST NOT run cache eviction. Retrying after the storage fault
 is repaired MUST use the same content address and create at most one body
 and one pending-upload pin.
 
+Before uploading a queued body or accepting an already-present upload grant,
+the client MUST validate its local byte length and SHA-256 content address.
+A missing body, invalid stored body or upload metadata, or content mismatch
+MUST fail the sync round with client-local `sync.local_corrupt`. A storage
+read or pending-pin deletion failure MUST also fail the round. The client
+MUST NOT push the referencing commit after any such failure, drop that commit,
+or clear the affected pending-upload pin. The caller can repair storage and
+retry the original commit. Successfully uploaded earlier entries may remain
+cleared only when no pending commit needs their body. Byte delivery alone MUST
+NOT release a pending commit's body pin. The affected entry and all unsent
+commits stay durable.
+
 Client download resolution: a query/read that surfaces a `blob_ref` value
 gives the app the `blobId` + metadata; the app requests bytes through the
 client's blob API, which returns a cache hit if present (no network) or

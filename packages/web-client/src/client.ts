@@ -688,7 +688,47 @@ export class SyncClient {
     // Do not materialize new app indexes/FTS projections yet: on a version
     // bump they may reference columns that only exist after the reset.
     ensureLocalBookkeepingSchema(this.#db);
-    if (this.#hasBlobs) ensureBlobSchema(this.#db);
+    this.#db.transaction(() => {
+      for (const trigger of ['insert', 'update', 'delete', 'cache'])
+        this.#db.exec(
+          `DROP TRIGGER IF EXISTS _syncular_blob_commit_${trigger}`,
+        );
+      if (this.#hasBlobs) {
+        ensureBlobSchema(this.#db);
+        const columns = JSON.stringify(
+          [...this.#schema.tables.values()].flatMap((table) =>
+            table.columns
+              .filter((column) => column.type === 'blob_ref')
+              .map((column) => [table.name, column.name]),
+          ),
+        ).replaceAll("'", "''");
+        const references = `SELECT o.client_commit_id, b.blob_id
+          FROM _syncular_outbox o JOIN json_each(o.operations) op
+          JOIN json_each(op.value, '$.values') v JOIN json_each('${columns}') c
+          JOIN _syncular_blobs b ON b.blob_id = CASE WHEN v.type = 'text' AND json_valid(v.value) THEN json_extract(v.value, '$.blobId') END
+          WHERE json_extract(op.value, '$.op') = 'upsert'
+            AND json_extract(op.value, '$.table') = json_extract(c.value, '$[0]')
+            AND v.key = json_extract(c.value, '$[1]')`;
+        this.#db
+          .exec(`CREATE TRIGGER _syncular_blob_commit_insert AFTER INSERT ON _syncular_outbox BEGIN
+          INSERT OR IGNORE INTO _syncular_blob_commit_refs ${references} AND o.client_commit_id = NEW.client_commit_id; END`);
+        this.#db
+          .exec(`CREATE TRIGGER _syncular_blob_commit_update AFTER UPDATE OF operations ON _syncular_outbox BEGIN
+          DELETE FROM _syncular_blob_commit_refs WHERE commit_id = OLD.client_commit_id;
+          INSERT OR IGNORE INTO _syncular_blob_commit_refs ${references} AND o.client_commit_id = NEW.client_commit_id; END`);
+        this.#db
+          .exec(`CREATE TRIGGER _syncular_blob_commit_delete BEFORE DELETE ON _syncular_outbox BEGIN
+          DELETE FROM _syncular_blob_uploads WHERE blob_id IN (SELECT blob_id FROM _syncular_blob_commit_refs WHERE commit_id = OLD.client_commit_id)
+            AND NOT EXISTS (SELECT 1 FROM _syncular_blob_commit_refs r WHERE r.blob_id = _syncular_blob_uploads.blob_id AND r.commit_id != OLD.client_commit_id);
+          DELETE FROM _syncular_blob_commit_refs WHERE commit_id = OLD.client_commit_id; END`);
+        this.#db
+          .exec(`CREATE TRIGGER _syncular_blob_commit_cache AFTER INSERT ON _syncular_blobs BEGIN
+          INSERT OR IGNORE INTO _syncular_blob_commit_refs ${references} AND b.blob_id = NEW.blob_id; END`);
+        this.#db.exec(
+          `INSERT OR IGNORE INTO _syncular_blob_commit_refs ${references}`,
+        );
+      }
+    });
     this.#db.transaction(() => {
       pruneCommitOutcomes(this.#db, this.#outcomeRetentionMaxEntries);
     });
@@ -1585,11 +1625,17 @@ export class SyncClient {
     if (transport === undefined || !this.#hasBlobs) return;
     for (const pending of listPendingUploads(this.#db)) {
       const cached = getCachedBlob(this.#db, pending.blobId);
-      if (cached === undefined) {
-        // The bytes are gone (never happens for a well-behaved client);
-        // drop the upload so it does not wedge the queue.
-        clearPendingUpload(this.#db, pending.blobId);
-        continue;
+      if (
+        cached === undefined ||
+        !(cached.bytes instanceof Uint8Array) ||
+        !Number.isSafeInteger(cached.byteLength) ||
+        cached.byteLength !== cached.bytes.byteLength ||
+        (await computeBlobId(cached.bytes)) !== pending.blobId
+      ) {
+        throw new ClientSyncError(
+          'sync.local_corrupt',
+          'Pending blob upload body is missing or corrupt',
+        );
       }
       await this.#uploadOne(
         transport,

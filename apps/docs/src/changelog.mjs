@@ -16,6 +16,12 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-09-11',
+    title: 'Durable blob upload recovery',
+    body: 'Both client cores commit a staged body and its upload pin atomically. Queued uploads validate their stored length and SHA-256 before transfer, and local storage failures retain the original outbox commit for retry. A durable commit-to-blob index keeps successfully uploaded bodies pinned until every referencing commit reaches a terminal outcome, including after restart, lost acknowledgements, rejection, and scope revocation.',
+    links: [{ href: '/concepts-blobs/', label: 'Blob upload lifecycle' }],
+  },
+  {
     date: '2026-09-08',
     title: 'Syncular 0.17.0',
     body: 'Offline replay performs less repeated storage and pending-row work in both cores. Native transport and blob paths reduce allocation and copying. Repository benchmarks now measure replay, recovery, delivery, reads, and native boundaries. This release also includes resumable D1 migrations, pruning-race resets, and partition-scoped server indexes. Custom storage adapters must implement both cursor-update contracts; existing servers must bump their application schema version and regenerate to rebuild declared indexes.',

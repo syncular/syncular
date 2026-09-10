@@ -22,7 +22,7 @@ import {
   type Scenario,
   type ScenarioContext,
 } from '../scenario';
-import { syncIdle } from './util';
+import { syncFails, syncIdle } from './util';
 
 const P1 = { project_id: ['p1'] } as const;
 const P2 = { project_id: ['p2'] } as const;
@@ -78,6 +78,630 @@ async function requireBlobs(client: ClientHandle): Promise<void> {
 }
 
 export const blobScenarios: readonly Scenario[] = [
+  {
+    name: 'blobs/upload-pin-survives-lost-ack-and-restart-backfill',
+    requires: ['blobs', 'blob-presign'],
+    specRefs: ['§2.3', '§5.9.7'],
+    server: BLOB_SERVER,
+    async run(ctx) {
+      await ctx.server.setBlobPresign?.(true);
+      const owner = await ctx.newClient({
+        actorId: 'owner',
+        clientId: 'owner',
+        schema: BLOB_SCHEMA,
+        allowed: P1,
+        nowMs: DEFAULT_NOW_MS,
+        limits: { blobCacheMaxBytes: 1 },
+      });
+      const api = owner.api;
+      check(
+        api.uploadBlob !== undefined &&
+          api.executeStorageSql !== undefined &&
+          api.querySnapshot !== undefined &&
+          api.recreateWithSchema !== undefined,
+        'blob restart fault surfaces exist',
+      );
+      await api.subscribe({ id: 'a', table: 'attachments', scopes: P1 });
+      await syncIdle(owner);
+      const ref = await api.uploadBlob(bytesOf('unacknowledged'));
+      const commit = await api.mutate([
+        {
+          op: 'upsert',
+          table: 'attachments',
+          values: attachmentRow('pending', 'p1', ref),
+        },
+      ]);
+      owner.faults.dropNextResponses = 1;
+      await syncFails(
+        owner,
+        'transport.lost',
+        'lost blob commit acknowledgement',
+      );
+      checkEqual(
+        await api.pendingCommitIds(),
+        [commit],
+        'lost acknowledgement retains the original commit',
+      );
+      checkEqual(
+        owner.blobDirectPuts.length,
+        1,
+        'the body reached storage before the acknowledgement was lost',
+      );
+
+      await api.executeStorageSql(
+        'DELETE FROM _syncular_blob_commit_refs; DROP TRIGGER _syncular_blob_commit_insert; DROP TRIGGER _syncular_blob_commit_update; DROP TRIGGER _syncular_blob_commit_delete; DROP TRIGGER _syncular_blob_commit_cache',
+      );
+      const reopened = await api.recreateWithSchema(BLOB_SCHEMA);
+      checkEqual(
+        (
+          await reopened.querySnapshot?.(
+            'SELECT count(*) AS n FROM _syncular_blob_commit_refs',
+          )
+        )?.rows,
+        [{ n: 1 }],
+        'startup backfills commit references for existing pending work',
+      );
+      await reopened.uploadBlob?.(bytesOf('pressure'));
+      checkEqual(
+        (
+          await reopened.querySnapshot?.(
+            "SELECT count(*) AS n FROM _syncular_blobs WHERE bytes = CAST('unacknowledged' AS BLOB)",
+          )
+        )?.rows,
+        [{ n: 1 }],
+        'the rebuilt pin protects the body from cache pressure',
+      );
+      const replay = await reopened.sync();
+      check(replay.ok, 'cached replay succeeds after restart');
+      if (replay.ok) {
+        checkEqual(
+          replay.report.applied,
+          [commit],
+          'cached replay drains the commit',
+        );
+      }
+      checkEqual(
+        owner.blobDirectPuts.length,
+        2,
+        'replay uploads the pressure body without retransferring the acknowledged body',
+      );
+    },
+  },
+
+  {
+    name: 'blobs/upload-pins-include-shadowed-optimistic-references',
+    requires: ['blobs', 'blob-presign'],
+    specRefs: ['§5.9.7', '§7.2'],
+    server: BLOB_SERVER,
+    async run(ctx) {
+      await ctx.server.setBlobPresign?.(true);
+      const owner = await ctx.newClient({
+        actorId: 'owner',
+        clientId: 'owner',
+        schema: BLOB_SCHEMA,
+        allowed: P1,
+        nowMs: DEFAULT_NOW_MS,
+        limits: { blobCacheMaxBytes: 1 },
+      });
+      const api = owner.api;
+      check(
+        api.uploadBlob !== undefined && api.querySnapshot !== undefined,
+        'blob storage surfaces exist',
+      );
+      await api.subscribe({ id: 'a', table: 'attachments', scopes: P1 });
+      await syncIdle(owner);
+      const first = await api.uploadBlob(bytesOf('first'));
+      const second = await api.uploadBlob(bytesOf('second'));
+      const firstCommit = await api.mutate([
+        {
+          op: 'upsert',
+          table: 'attachments',
+          values: attachmentRow('same-row', 'p1', first),
+        },
+      ]);
+      const secondCommit = await api.mutate([
+        {
+          op: 'upsert',
+          table: 'attachments',
+          values: attachmentRow('same-row', 'p1', second),
+        },
+      ]);
+      owner.faults.dropNextRequests = 1;
+      await syncFails(owner, 'transport.lost', 'metadata request loss');
+      checkEqual(
+        await api.pendingCommitIds(),
+        [firstCommit, secondCommit],
+        'both optimistic commits remain pending',
+      );
+      await api.uploadBlob(bytesOf('pressure'));
+      checkEqual(
+        (
+          await api.querySnapshot(
+            "SELECT hex(bytes) AS body FROM _syncular_blobs WHERE bytes IN (CAST('first' AS BLOB), CAST('second' AS BLOB)) ORDER BY body",
+          )
+        ).rows,
+        [{ body: '6669727374' }, { body: '7365636F6E64' }],
+        'commit pins preserve the earlier reference hidden by the later edit',
+      );
+    },
+  },
+
+  {
+    name: 'blobs/server-resident-reference-needs-no-local-body',
+    requires: ['blobs'],
+    specRefs: ['§5.9.3', '§5.9.7'],
+    server: BLOB_SERVER,
+    async run(ctx) {
+      const owner = await ctx.newClient({
+        actorId: 'owner',
+        clientId: 'owner',
+        schema: BLOB_SCHEMA,
+        allowed: P1,
+      });
+      await owner.api.subscribe({ id: 'a', table: 'attachments', scopes: P1 });
+      await syncIdle(owner);
+      const ref = await owner.api.uploadBlob?.(bytesOf('server resident'));
+      check(ref !== undefined, 'owner stages the server-resident body');
+      await owner.api.mutate([
+        {
+          op: 'upsert',
+          table: 'attachments',
+          values: attachmentRow('owner-row', 'p1', ref ?? null),
+        },
+      ]);
+      await syncIdle(owner);
+
+      const writer = await ctx.newClient({
+        actorId: 'writer',
+        clientId: 'writer',
+        schema: BLOB_SCHEMA,
+        allowed: P1,
+      });
+      const commit = await writer.api.mutate([
+        {
+          op: 'upsert',
+          table: 'attachments',
+          values: attachmentRow('writer-row', 'p1', ref ?? null),
+        },
+      ]);
+      const report = await writer.api.sync();
+      check(
+        report.ok,
+        'server-resident blob reference pushes without a local body',
+      );
+      if (report.ok) {
+        checkEqual(
+          report.report.applied,
+          [commit],
+          'server accepts the reference',
+        );
+      }
+      checkEqual(
+        writer.blobUploads,
+        [],
+        'writer does not synthesize a body upload',
+      );
+    },
+  },
+
+  {
+    name: 'blobs/shared-pin-survives-sibling-rejection',
+    requires: ['blobs', 'validators'],
+    specRefs: ['§5.9.7', '§6.7'],
+    server: BLOB_SERVER,
+    async run(ctx) {
+      check(
+        ctx.server.installValidators !== undefined,
+        'validator installation surface exists',
+      );
+      await ctx.server.installValidators?.([
+        {
+          table: 'attachments',
+          rule: {
+            kind: 'maxLength',
+            column: 'title',
+            max: 5,
+            code: 'app.title_too_long',
+          },
+        },
+      ]);
+      const owner = await ctx.newClient({
+        actorId: 'owner',
+        clientId: 'owner',
+        schema: BLOB_SCHEMA,
+        allowed: P1,
+      });
+      const api = owner.api;
+      check(
+        api.uploadBlob !== undefined && api.querySnapshot !== undefined,
+        'blob storage surfaces exist',
+      );
+      const ref = await api.uploadBlob(bytesOf('shared'));
+      const rejected = await api.mutate([
+        {
+          op: 'upsert',
+          table: 'attachments',
+          values: attachmentRow('rejected', 'p1', ref, 'too long'),
+        },
+      ]);
+      const accepted = await api.mutate([
+        {
+          op: 'upsert',
+          table: 'attachments',
+          values: attachmentRow('accepted', 'p1', ref, 'ok'),
+        },
+      ]);
+      const report = await api.sync();
+      check(report.ok, 'mixed rejection response applies');
+      if (report.ok) {
+        checkEqual(report.report.rejected, [rejected], 'first commit rejects');
+        checkEqual(report.report.applied, [accepted], 'sibling commit applies');
+      }
+      checkEqual(
+        (
+          await api.querySnapshot(
+            "SELECT count(*) AS n FROM _syncular_blobs WHERE bytes = CAST('shared' AS BLOB)",
+          )
+        ).rows,
+        [{ n: 1 }],
+        'deleting one commit pin does not delete a body used by its sibling',
+      );
+      checkEqual(
+        (
+          await api.querySnapshot(
+            'SELECT count(*) AS n FROM _syncular_blob_commit_refs',
+          )
+        ).rows,
+        [{ n: 0 }],
+        'terminal outcomes drain both commit pins',
+      );
+    },
+  },
+
+  {
+    name: 'blobs/revocation-drops-doomed-upload-pin',
+    requires: ['blobs'],
+    specRefs: ['§3.3', '§5.9.7'],
+    server: BLOB_SERVER,
+    async run(ctx) {
+      const owner = await ctx.newClient({
+        actorId: 'owner',
+        clientId: 'owner',
+        schema: BLOB_SCHEMA,
+        allowed: P1,
+      });
+      const api = owner.api;
+      check(
+        api.uploadBlob !== undefined && api.querySnapshot !== undefined,
+        'blob storage surfaces exist',
+      );
+      await api.subscribe({ id: 'a', table: 'attachments', scopes: P1 });
+      await syncIdle(owner);
+      const ref = await api.uploadBlob(bytesOf('revoked pending'));
+      await api.mutate([
+        {
+          op: 'upsert',
+          table: 'attachments',
+          values: attachmentRow('doomed', 'p1', ref),
+        },
+      ]);
+      await ctx.server.setAllowedScopes('owner', {});
+      const report = await api.sync();
+      check(report.ok, 'revocation response applies');
+      if (report.ok) {
+        check(report.report.revoked.includes('a'), 'subscription is revoked');
+      }
+      checkEqual(await api.pendingCommitIds(), [], 'doomed commit is removed');
+      checkEqual(
+        (
+          await api.querySnapshot(
+            'SELECT count(*) AS n FROM _syncular_blob_commit_refs',
+          )
+        ).rows,
+        [{ n: 0 }],
+        'revocation removes the doomed commit pin',
+      );
+      checkEqual(
+        (
+          await api.querySnapshot(
+            "SELECT count(*) AS n FROM _syncular_blobs WHERE bytes = CAST('revoked pending' AS BLOB)",
+          )
+        ).rows,
+        [{ n: 0 }],
+        'revocation purges the now-unreferenced cached body',
+      );
+    },
+  },
+
+  ...(['body', 'metadata'] as const).map(
+    (fault): Scenario => ({
+      name: `blobs/upload-prefix-${fault}-failure`,
+      requires: ['blobs', 'blob-presign'],
+      specRefs: ['§5.9.7'],
+      server: BLOB_SERVER,
+      async run(ctx) {
+        await ctx.server.setBlobPresign?.(true);
+        const owner = await ctx.newClient({
+          actorId: 'owner',
+          clientId: 'owner',
+          schema: BLOB_SCHEMA,
+          allowed: P1,
+          nowMs: DEFAULT_NOW_MS,
+          limits: { blobCacheMaxBytes: 1 },
+        });
+        const api = owner.api;
+        check(
+          api.uploadBlob !== undefined &&
+            api.executeStorageSql !== undefined &&
+            api.querySnapshot !== undefined,
+          'blob storage surfaces exist',
+        );
+        await api.subscribe({ id: 'a', table: 'attachments', scopes: P1 });
+        await syncIdle(owner);
+        const first = await api.uploadBlob(bytesOf('good'), {
+          mediaType: 'text/plain',
+        });
+        const second = await api.uploadBlob(bytesOf('bad!'), {
+          mediaType: 'text/plain',
+        });
+        const commit = await api.mutate([
+          {
+            op: 'upsert',
+            table: 'attachments',
+            values: attachmentRow('first', 'p1', first),
+          },
+          {
+            op: 'upsert',
+            table: 'attachments',
+            values: attachmentRow('second', 'p1', second),
+          },
+        ]);
+        await api.executeStorageSql(
+          'CREATE TABLE saved_prefix AS SELECT * FROM _syncular_blobs',
+        );
+        await api.executeStorageSql(
+          "UPDATE _syncular_blob_uploads SET created_at_ms = CASE WHEN blob_id IN (SELECT blob_id FROM _syncular_blobs WHERE bytes = CAST('good' AS BLOB)) THEN 1 ELSE 2 END",
+        );
+        await api.executeStorageSql(
+          fault === 'body'
+            ? "UPDATE _syncular_blobs SET bytes = zeroblob(byte_length) WHERE bytes = CAST('bad!' AS BLOB)"
+            : "UPDATE _syncular_blob_uploads SET media_type = x'ff' WHERE created_at_ms = 2",
+        );
+        const requests = owner.sentRequests.length;
+        const result = await api.sync();
+        check(!result.ok, 'later corruption fails the round');
+        checkEqual(
+          result.errorCode,
+          'sync.local_corrupt',
+          'corrupt queued data has a local code',
+        );
+        checkEqual(
+          await api.pendingCommitIds(),
+          [commit],
+          'entire original commit remains pending',
+        );
+        checkEqual(
+          owner.sentRequests.length,
+          requests,
+          'no partial metadata push',
+        );
+        checkEqual(
+          owner.blobDirectPuts.length,
+          fault === 'body' ? 1 : 0,
+          'metadata validates before transfers; body failure preserves successful prefix',
+        );
+        await api.uploadBlob(bytesOf('pressure'));
+        checkEqual(
+          (
+            await api.querySnapshot(
+              "SELECT count(*) AS n FROM _syncular_blobs WHERE bytes = CAST('good' AS BLOB)",
+            )
+          ).rows,
+          [{ n: 1 }],
+          'cache trimming preserves the uploaded body required by the pending commit',
+        );
+        checkEqual(
+          (
+            await api.querySnapshot(
+              'SELECT count(*) AS n FROM (SELECT blob_id FROM _syncular_blob_uploads UNION SELECT blob_id FROM _syncular_blob_commit_refs)',
+            )
+          ).rows,
+          [{ n: 3 }],
+          'byte delivery alone does not release a pending commit pin',
+        );
+        await api.executeStorageSql(
+          'UPDATE _syncular_blobs SET bytes = (SELECT bytes FROM saved_prefix WHERE saved_prefix.blob_id = _syncular_blobs.blob_id) WHERE blob_id IN (SELECT blob_id FROM saved_prefix)',
+        );
+        await api.executeStorageSql(
+          "UPDATE _syncular_blob_uploads SET media_type = 'text/plain'",
+        );
+        const retried = await api.sync();
+        check(retried.ok, 'repaired prefix retry succeeds');
+        checkEqual(
+          retried.report.applied,
+          [commit],
+          'original commit is acknowledged once',
+        );
+        checkEqual(
+          await api.pendingCommitIds(),
+          [],
+          'acknowledgement drains original commit',
+        );
+        checkEqual(
+          owner.blobDirectPuts.length,
+          3,
+          'retry does not transfer the successful prefix twice',
+        );
+      },
+    }),
+  ),
+
+  ...(
+    [
+      'missing',
+      'body-type',
+      'length',
+      'hash',
+      'pin-metadata',
+      'read',
+      'pin-delete',
+    ] as const
+  ).flatMap((fault) =>
+    [false, true].map(
+      (present): Scenario => ({
+        name: `blobs/upload-storage-failure-${fault}-${present ? 'present' : 'absent'}`,
+        requires: ['blobs', 'blob-presign'],
+        specRefs: ['§5.9.7'],
+        server: BLOB_SERVER,
+        async run(ctx) {
+          await ctx.server.setBlobPresign?.(true);
+          const owner = await ctx.newClient({
+            actorId: 'owner',
+            clientId: 'owner',
+            schema: BLOB_SCHEMA,
+            allowed: P1,
+            nowMs: DEFAULT_NOW_MS,
+          });
+          const api = owner.api;
+          check(
+            api.executeStorageSql !== undefined &&
+              api.querySnapshot !== undefined &&
+              api.uploadBlob !== undefined &&
+              api.fetchBlob !== undefined &&
+              api.recreateWithSchema !== undefined,
+            'storage fault surfaces are required',
+          );
+          await api.subscribe({ id: 'a', table: 'attachments', scopes: P1 });
+          await syncIdle(owner);
+          const bytes = bytesOf('durable upload');
+          const ref = await api.uploadBlob(bytes, { mediaType: 'text/plain' });
+          if (present) {
+            await api.mutate([
+              {
+                op: 'upsert',
+                table: 'attachments',
+                values: attachmentRow('existing', 'p1', ref),
+              },
+            ]);
+            await syncIdle(owner);
+            await api.uploadBlob(bytes, { mediaType: 'text/plain' });
+          }
+          const commit = await api.mutate([
+            {
+              op: 'upsert',
+              table: 'attachments',
+              values: attachmentRow('pending', 'p1', ref),
+            },
+          ]);
+          await api.executeStorageSql(
+            'CREATE TABLE saved_bodies AS SELECT * FROM _syncular_blobs',
+          );
+          await api.executeStorageSql(
+            'CREATE TABLE saved_uploads AS SELECT * FROM _syncular_blob_uploads',
+          );
+          await api.executeStorageSql(
+            {
+              missing: 'DELETE FROM _syncular_blobs',
+              'body-type':
+                "UPDATE _syncular_blobs SET bytes = 'invalid body type'",
+              length:
+                'UPDATE _syncular_blobs SET byte_length = byte_length + 1',
+              hash: 'UPDATE _syncular_blobs SET bytes = zeroblob(byte_length)',
+              'pin-metadata':
+                "UPDATE _syncular_blob_uploads SET media_type = x'ff'",
+              read: 'ALTER TABLE _syncular_blobs RENAME TO unavailable_bodies',
+              'pin-delete':
+                "CREATE TRIGGER fail_pin_delete BEFORE DELETE ON _syncular_blob_uploads BEGIN SELECT RAISE(ABORT, 'injected pin deletion failure'); END",
+            }[fault],
+          );
+          const pins = (
+            await api.querySnapshot('SELECT * FROM _syncular_blob_uploads')
+          ).rows;
+          const requests = owner.sentRequests.length;
+          const result = await api.sync();
+          checkEqual(
+            await api.pendingCommitIds(),
+            [commit],
+            'original commit remains pending',
+          );
+          check(!result.ok, 'storage fault must fail the round');
+          if (fault !== 'read' && fault !== 'pin-delete')
+            checkEqual(
+              result.errorCode,
+              'sync.local_corrupt',
+              'corrupt pending data has a stable local code',
+            );
+          checkEqual(
+            owner.sentRequests.length,
+            requests,
+            'storage failure prevents metadata push',
+          );
+          checkEqual(
+            await api.rejections(),
+            [],
+            'local failure is not a server rejection',
+          );
+          checkEqual(
+            (await api.querySnapshot('SELECT * FROM _syncular_blob_uploads'))
+              .rows,
+            pins,
+            'affected upload pin survives',
+          );
+          if (fault === 'read')
+            await api.executeStorageSql(
+              'ALTER TABLE unavailable_bodies RENAME TO _syncular_blobs',
+            );
+          if (fault === 'pin-delete')
+            await api.executeStorageSql('DROP TRIGGER fail_pin_delete');
+          await api.executeStorageSql('DELETE FROM _syncular_blobs');
+          await api.executeStorageSql(
+            'INSERT INTO _syncular_blobs SELECT * FROM saved_bodies',
+          );
+          await api.executeStorageSql('DELETE FROM _syncular_blob_uploads');
+          await api.executeStorageSql(
+            'INSERT INTO _syncular_blob_uploads SELECT * FROM saved_uploads',
+          );
+          const reopened = await api.recreateWithSchema(BLOB_SCHEMA);
+          checkEqual(
+            await reopened.pendingCommitIds(),
+            [commit],
+            'recreated core retains the original commit',
+          );
+          const retried = await reopened.sync();
+          check(retried.ok, 'retry succeeds after storage repair');
+          checkEqual(
+            retried.report.applied,
+            [commit],
+            'retry acknowledges the original commit',
+          );
+          checkEqual(
+            await reopened.pendingCommitIds(),
+            [],
+            'only the successful retry drains the commit',
+          );
+          check(
+            reopened.fetchBlob !== undefined &&
+              reopened.querySnapshot !== undefined,
+            'recreated blob surface exists',
+          );
+          checkEqual(
+            decode(await reopened.fetchBlob(ref)),
+            'durable upload',
+            'repaired bytes remain intact',
+          );
+          checkEqual(
+            (
+              await reopened.querySnapshot(
+                'SELECT * FROM _syncular_blob_uploads',
+              )
+            ).rows,
+            [],
+            'successful retry clears the upload pin',
+          );
+        },
+      }),
+    ),
+  ),
   ...(['body', 'pin', 'commit'] as const).flatMap((fault) =>
     (['absent', 'cached', 'pinned'] as const).map(
       (state): Scenario => ({

@@ -52,6 +52,21 @@ the call and preserves the previous body, metadata, and pin state. Retry
 staging after repairing the storage failure; the same bytes retain their
 content address and do not create duplicate cache entries.
 
+Before uploading a queued body, the client checks its stored length and SHA-256,
+including when the server already has the object. Missing or corrupt pending
+bytes or upload metadata fail the round with `sync.local_corrupt`. A storage
+read or upload-pin deletion failure also stops the round. The affected upload
+pin and original pending commit remain available for retry after storage is
+repaired. This verification adds one full-body hash to each queued upload.
+
+The client keeps a durable body pin for every pending commit that references
+locally cached bytes. Upload completion removes the transport queue entry while
+the commit pin remains. Acknowledgement, rejection, revocation, and an
+application-authorized purge remove the commit pin with the outbox entry. On
+restart, the client rebuilds missing commit pins from the durable outbox before
+it trims the cache. A reference to a body that exists only on the server does
+not create a local pin or require a local upload.
+
 ## Download authorization
 
 Every blob **download re-authorizes** against the rows that reference the

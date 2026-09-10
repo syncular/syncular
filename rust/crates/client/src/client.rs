@@ -281,6 +281,149 @@ mod observation_tests {
     }
 
     #[test]
+    fn blob_upload_failures_preserve_pins_and_original_commits_after_file_reopen() {
+        let schema = json!({"version":1,"tables":[{"name":"attachments","primaryKey":"id","columns":[
+            {"name":"id","type":"string","nullable":false},
+            {"name":"file","type":"blob_ref","nullable":true}],"scopes":[]}]});
+        for fault in [
+            "missing",
+            "body-type",
+            "length",
+            "hash",
+            "pin-metadata",
+            "read",
+            "pin-delete",
+        ] {
+            let path = std::env::temp_dir().join(format!(
+                "syncular-blob-upload-{}.sqlite",
+                uuid::Uuid::new_v4()
+            ));
+            let mut client = SyncClient::open_path(
+                "upload-test".into(),
+                &schema,
+                Default::default(),
+                path.to_str().unwrap(),
+            )
+            .unwrap();
+            let bytes = b"durable upload";
+            let ref_value = client
+                .upload_blob(bytes, Some("text/plain".into()), None)
+                .unwrap();
+            let commit = client
+                .mutate(vec![Mutation::Upsert {
+                    table: "attachments".into(),
+                    values: Map::from_iter([
+                        ("id".into(), Value::from("pending")),
+                        (
+                            "file".into(),
+                            Value::from(format!(
+                                "{{\"blobId\":\"{}\",\"byteLength\":{}}}",
+                                blob_id_for(bytes),
+                                bytes.len()
+                            )),
+                        ),
+                    ]),
+                    base_version: None,
+                }])
+                .unwrap();
+            client.conn.execute_batch("CREATE TABLE saved_bodies AS SELECT * FROM _syncular_blobs; CREATE TABLE saved_uploads AS SELECT * FROM _syncular_blob_uploads").unwrap();
+            client.conn.execute_batch(match fault {
+                "missing" => "DELETE FROM _syncular_blobs",
+                "body-type" => "UPDATE _syncular_blobs SET bytes = 'wrong type'",
+                "length" => "UPDATE _syncular_blobs SET byte_length = byte_length + 1",
+                "hash" => "UPDATE _syncular_blobs SET bytes = zeroblob(byte_length)",
+                "pin-metadata" => "UPDATE _syncular_blob_uploads SET media_type = x'ff'",
+                "read" => "ALTER TABLE _syncular_blobs RENAME TO unavailable_bodies",
+                _ => "CREATE TRIGGER fail_pin_delete BEFORE DELETE ON _syncular_blob_uploads BEGIN SELECT RAISE(ABORT, 'injected pin deletion failure'); END",
+            }).unwrap();
+            let pins = client
+                .query("SELECT * FROM _syncular_blob_uploads", &[])
+                .unwrap();
+            let mut transport = CountingRealtimeTransport::default();
+            let error = client.flush_blob_uploads(&mut transport).unwrap_err();
+            assert_eq!(
+                error.code,
+                if matches!(fault, "read" | "pin-delete") {
+                    "client.failed"
+                } else {
+                    "sync.local_corrupt"
+                },
+                "{fault}"
+            );
+            assert_eq!(
+                transport.blob_uploads.len(),
+                usize::from(fault == "pin-delete"),
+                "{fault}: corrupt bytes must never be uploaded"
+            );
+            assert_eq!(client.pending_commit_ids(), std::slice::from_ref(&commit));
+            assert_eq!(
+                client
+                    .query("SELECT * FROM _syncular_blob_uploads", &[])
+                    .unwrap(),
+                pins
+            );
+            // Restore the schema before boot so schema creation cannot hide the read fault.
+            if fault == "read" {
+                client
+                    .conn
+                    .execute_batch("ALTER TABLE unavailable_bodies RENAME TO _syncular_blobs")
+                    .unwrap();
+            }
+            drop(client);
+            let mut reopened = SyncClient::open_path(
+                "upload-test".into(),
+                &schema,
+                Default::default(),
+                path.to_str().unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                reopened.pending_commit_ids(),
+                std::slice::from_ref(&commit),
+                "{fault}: original durable commit"
+            );
+            assert_eq!(
+                reopened
+                    .query("SELECT * FROM _syncular_blob_uploads", &[])
+                    .unwrap(),
+                pins,
+                "{fault}: durable pin"
+            );
+            if fault == "pin-delete" {
+                reopened
+                    .conn
+                    .execute_batch("DROP TRIGGER fail_pin_delete")
+                    .unwrap();
+            }
+            reopened.conn.execute_batch("DELETE FROM _syncular_blobs; INSERT INTO _syncular_blobs SELECT * FROM saved_bodies; DELETE FROM _syncular_blob_uploads; INSERT INTO _syncular_blob_uploads SELECT * FROM saved_uploads").unwrap();
+            transport.blob_uploads.clear();
+            reopened.flush_blob_uploads(&mut transport).unwrap();
+            assert_eq!(
+                transport.blob_uploads,
+                [(blob_id_for(bytes), bytes.to_vec())]
+            );
+            assert!(reopened
+                .query("SELECT * FROM _syncular_blob_uploads", &[])
+                .unwrap()
+                .is_empty());
+            assert_eq!(
+                reopened.pending_commit_ids(),
+                [commit],
+                "upload success alone must not drain the metadata commit"
+            );
+            assert_eq!(
+                reopened
+                    .get_cached_blob(ref_value["blobId"].as_str().unwrap())
+                    .unwrap()
+                    .unwrap()["bytes"]["$bytes"],
+                bytes_to_hex(bytes)
+            );
+            drop(reopened);
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
     fn incoming_frame_transactions_preserve_prefix_cursor_and_revision_after_reopen() {
         let schema = json!({"version":1,"tables":[{"name":"tasks","primaryKey":"id","columns":[
             {"name":"id","type":"string","nullable":false},{"name":"project_id","type":"string","nullable":false}],
@@ -733,9 +876,20 @@ mod observation_tests {
         connects: usize,
         closes: usize,
         messages: Vec<String>,
+        blob_uploads: Vec<(String, Vec<u8>)>,
     }
 
     impl Transport for CountingRealtimeTransport {
+        fn blob_upload(
+            &mut self,
+            blob_id: &str,
+            bytes: &[u8],
+            _media_type: Option<&str>,
+        ) -> Result<(), TransportError> {
+            self.blob_uploads.push((blob_id.to_owned(), bytes.to_vec()));
+            Ok(())
+        }
+
         fn sync(&mut self, _request: &[u8]) -> Result<Vec<u8>, TransportError> {
             Err(TransportError::new("sync.transport_failed", "offline"))
         }
@@ -4108,7 +4262,11 @@ impl SyncClient {
                    PRIMARY KEY (base, unit));
                  CREATE TABLE IF NOT EXISTS _syncular_window_pending_evict (
                    sub_id TEXT PRIMARY KEY, tbl TEXT NOT NULL,
-                   effective_scopes TEXT NOT NULL);",
+                   effective_scopes TEXT NOT NULL);
+                 DROP TRIGGER IF EXISTS _syncular_blob_commit_insert;
+                 DROP TRIGGER IF EXISTS _syncular_blob_commit_update;
+                 DROP TRIGGER IF EXISTS _syncular_blob_commit_delete;
+                 DROP TRIGGER IF EXISTS _syncular_blob_commit_cache;",
             )
             .map_err(|e| e.to_string())?;
         // Migrate an outcome journal created before failed aggregate
@@ -4141,6 +4299,49 @@ impl SyncClient {
             let _ = self.conn.execute_batch(
                 "ALTER TABLE _syncular_blobs ADD COLUMN last_used_ms INTEGER NOT NULL DEFAULT 0",
             );
+            let columns: Vec<(&str, &str)> = self
+                .schema
+                .tables
+                .iter()
+                .flat_map(|table| {
+                    table
+                        .columns
+                        .iter()
+                        .filter(|column| column.ty == ColumnType::BlobRef)
+                        .map(move |column| (table.name.as_str(), column.name.as_str()))
+                })
+                .collect();
+            let columns = serde_json::to_string(&columns)
+                .map_err(|e| e.to_string())?
+                .replace('\'', "''");
+            let references = format!("SELECT o.commit_id, b.blob_id
+                FROM _syncular_outbox o JOIN json_each(o.ops_json) op
+                JOIN json_each(op.value, '$.values') v JOIN json_each('{columns}') c
+                JOIN _syncular_blobs b ON b.blob_id = CASE WHEN v.type = 'text' AND json_valid(v.value) THEN json_extract(v.value, '$.blobId') END
+                WHERE json_extract(op.value, '$.op') = 'upsert'
+                  AND json_extract(op.value, '$.table') = json_extract(c.value, '$[0]')
+                  AND v.key = json_extract(c.value, '$[1]')");
+            let transaction = self
+                .conn
+                .unchecked_transaction()
+                .map_err(|e| e.to_string())?;
+            transaction.execute_batch(&format!("
+                CREATE TABLE IF NOT EXISTS _syncular_blob_commit_refs(commit_id TEXT NOT NULL, blob_id TEXT NOT NULL, PRIMARY KEY(commit_id, blob_id));
+                CREATE INDEX IF NOT EXISTS _syncular_blob_commit_refs_body ON _syncular_blob_commit_refs(blob_id);
+                CREATE TRIGGER _syncular_blob_commit_insert AFTER INSERT ON _syncular_outbox BEGIN
+                  INSERT OR IGNORE INTO _syncular_blob_commit_refs {references} AND o.commit_id = NEW.commit_id; END;
+                CREATE TRIGGER _syncular_blob_commit_update AFTER UPDATE OF ops_json ON _syncular_outbox BEGIN
+                  DELETE FROM _syncular_blob_commit_refs WHERE commit_id = OLD.commit_id;
+                  INSERT OR IGNORE INTO _syncular_blob_commit_refs {references} AND o.commit_id = NEW.commit_id; END;
+                CREATE TRIGGER _syncular_blob_commit_delete BEFORE DELETE ON _syncular_outbox BEGIN
+                  DELETE FROM _syncular_blob_uploads WHERE blob_id IN (SELECT blob_id FROM _syncular_blob_commit_refs WHERE commit_id = OLD.commit_id)
+                    AND NOT EXISTS (SELECT 1 FROM _syncular_blob_commit_refs r WHERE r.blob_id = _syncular_blob_uploads.blob_id AND r.commit_id != OLD.commit_id);
+                  DELETE FROM _syncular_blob_commit_refs WHERE commit_id = OLD.commit_id; END;
+                CREATE TRIGGER _syncular_blob_commit_cache AFTER INSERT ON _syncular_blobs BEGIN
+                  INSERT OR IGNORE INTO _syncular_blob_commit_refs {references} AND b.blob_id = NEW.blob_id; END;
+                INSERT OR IGNORE INTO _syncular_blob_commit_refs {references};
+            ")).map_err(|e| e.to_string())?;
+            transaction.commit().map_err(|e| e.to_string())?;
         }
         Ok(())
     }
@@ -4937,6 +5138,7 @@ impl SyncClient {
             .get_meta(LOCAL_SCHEMA_VERSION_KEY)
             .and_then(|v| v.parse().ok());
         self.schema = new_schema;
+        self.create_bookkeeping_tables()?;
         if marker != Some(self.schema.version) {
             self.run_schema_reset()?;
         }
@@ -9099,7 +9301,13 @@ impl SyncClient {
             let mut stmt = self
                 .conn
                 .prepare(
-                    "SELECT blob_id, media_type FROM _syncular_blob_uploads ORDER BY created_at_ms",
+                    "SELECT blob_id, media_type FROM (
+                      SELECT blob_id, media_type, created_at_ms FROM _syncular_blob_uploads
+                      UNION ALL
+                      SELECT DISTINCT r.blob_id, b.media_type, 9223372036854775807 AS created_at_ms
+                      FROM _syncular_blob_commit_refs r LEFT JOIN _syncular_blobs b ON b.blob_id = r.blob_id
+                      WHERE NOT EXISTS (SELECT 1 FROM _syncular_blob_uploads u WHERE u.blob_id = r.blob_id)
+                    ) ORDER BY created_at_ms, blob_id",
                 )
                 .map_err(|e| TransportError::new("client.failed", e.to_string()))?;
             let rows = stmt
@@ -9107,24 +9315,45 @@ impl SyncClient {
                     Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
                 })
                 .map_err(|e| TransportError::new("client.failed", e.to_string()))?;
-            rows.filter_map(Result::ok).collect()
+            rows.collect::<Result<_, _>>()
+                .map_err(|error| match error {
+                    rusqlite::Error::InvalidColumnType(..)
+                    | rusqlite::Error::FromSqlConversionFailure(..) => TransportError::new(
+                        "sync.local_corrupt",
+                        "Pending blob upload metadata is invalid",
+                    ),
+                    _ => TransportError::new("client.failed", error.to_string()),
+                })?
         };
         for (blob_id, media_type) in pending {
-            let bytes: Option<Vec<u8>> = self
+            let stored: Option<(SqlValue, SqlValue)> = self
                 .conn
                 .query_row(
-                    "SELECT bytes FROM _syncular_blobs WHERE blob_id = ?",
+                    "SELECT bytes, byte_length FROM _syncular_blobs WHERE blob_id = ?",
                     rusqlite::params![blob_id],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
-                .ok();
-            if let Some(bytes) = bytes {
-                self.upload_one(transport, &blob_id, &bytes, media_type.as_deref())?;
+                .optional()
+                .map_err(|e| TransportError::new("client.failed", e.to_string()))?;
+            let Some((SqlValue::Blob(bytes), SqlValue::Integer(byte_length))) = stored else {
+                return Err(TransportError::new(
+                    "sync.local_corrupt",
+                    "Pending blob upload body is missing or corrupt",
+                ));
+            };
+            if byte_length != bytes.len() as i64 || blob_id_for(&bytes) != blob_id {
+                return Err(TransportError::new(
+                    "sync.local_corrupt",
+                    "Pending blob upload body is missing or corrupt",
+                ));
             }
-            let _ = self.conn.execute(
-                "DELETE FROM _syncular_blob_uploads WHERE blob_id = ?",
-                rusqlite::params![blob_id],
-            );
+            self.upload_one(transport, &blob_id, &bytes, media_type.as_deref())?;
+            self.conn
+                .execute(
+                    "DELETE FROM _syncular_blob_uploads WHERE blob_id = ?",
+                    rusqlite::params![blob_id],
+                )
+                .map_err(|e| TransportError::new("client.failed", e.to_string()))?;
         }
         Ok(())
     }
@@ -9189,6 +9418,7 @@ impl SyncClient {
                 "SELECT blob_id, byte_length FROM _syncular_blobs
                  WHERE refcount = 0
                    AND blob_id NOT IN (SELECT blob_id FROM _syncular_blob_uploads)
+                   AND blob_id NOT IN (SELECT blob_id FROM _syncular_blob_commit_refs)
                  ORDER BY last_used_ms ASC, created_at_ms ASC",
             ) else {
                 return;
@@ -9265,7 +9495,8 @@ impl SyncClient {
         }
         if delete_orphans {
             let _ = self.conn.execute(
-                "DELETE FROM _syncular_blobs WHERE refcount = 0 AND blob_id NOT IN (SELECT blob_id FROM _syncular_blob_uploads)",
+                "DELETE FROM _syncular_blobs WHERE refcount = 0 AND blob_id NOT IN (SELECT blob_id FROM _syncular_blob_uploads)
+                   AND blob_id NOT IN (SELECT blob_id FROM _syncular_blob_commit_refs)",
                 [],
             );
         }
