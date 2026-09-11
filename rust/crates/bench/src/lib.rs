@@ -1123,41 +1123,78 @@ fn handle(
                         .get("blob")
                         .and_then(Value::as_str)
                         .ok_or_else(|| client_err("Missing blob reference".to_owned()))?;
-                    let started = Instant::now();
-                    let mut value = need_client(client)?.fetch_blob(transport, blob)?;
-                    let elapsed_ns = started.elapsed().as_nanos() as u64;
-                    let validation_started = Instant::now();
-                    let object = value
-                        .as_object_mut()
-                        .ok_or_else(|| client_err("Invalid blob result".to_owned()))?;
-                    let encoded = object
-                        .remove("bytes")
-                        .ok_or_else(|| client_err("Missing blob bytes".to_owned()))?;
-                    let hex = encoded
-                        .get("$bytes")
+                    match params
+                        .get("resultSurface")
                         .and_then(Value::as_str)
-                        .filter(|hex| hex.len() % 2 == 0 && hex.is_ascii())
-                        .ok_or_else(|| client_err("Invalid blob byte encoding".to_owned()))?;
-                    let mut hasher = Sha256::new();
-                    // Decode only bounded pieces after the public API clock. The full
-                    // hex result remains an explicit cost of the shipping legacy API.
-                    for chunk in hex.as_bytes().chunks(128 * 1024) {
-                        let text = std::str::from_utf8(chunk)
-                            .map_err(|error| client_err(error.to_string()))?;
-                        let bytes = syncular_command::value_bytes(Some(&json!({"$bytes": text})))
-                            .map_err(client_err)?;
-                        hasher.update(bytes);
+                        .unwrap_or("typed")
+                    {
+                        "typed" => {
+                            let started = Instant::now();
+                            let value = need_client(client)?.fetch_blob_bytes(transport, blob)?;
+                            let elapsed_ns = started.elapsed().as_nanos() as u64;
+                            let validation_started = Instant::now();
+                            let sha256 = format!("{:x}", Sha256::digest(&value.bytes));
+                            let byte_length = value.bytes.len();
+                            let mut reference = json!({
+                                "blobId": value.blob_id,
+                                "byteLength": value.byte_length,
+                            });
+                            if let Some(media_type) = value.media_type {
+                                reference["mediaType"] = Value::from(media_type);
+                            }
+                            (
+                                reference,
+                                elapsed_ns,
+                                None,
+                                validation_started.elapsed().as_nanos() as u64,
+                                byte_length,
+                                sha256,
+                            )
+                        }
+                        "legacy" => {
+                            let started = Instant::now();
+                            let mut value = need_client(client)?.fetch_blob(transport, blob)?;
+                            let elapsed_ns = started.elapsed().as_nanos() as u64;
+                            let validation_started = Instant::now();
+                            let object = value
+                                .as_object_mut()
+                                .ok_or_else(|| client_err("Invalid blob result".to_owned()))?;
+                            let encoded = object
+                                .remove("bytes")
+                                .ok_or_else(|| client_err("Missing blob bytes".to_owned()))?;
+                            let hex = encoded
+                                .get("$bytes")
+                                .and_then(Value::as_str)
+                                .filter(|hex| hex.len() % 2 == 0 && hex.is_ascii())
+                                .ok_or_else(|| {
+                                    client_err("Invalid blob byte encoding".to_owned())
+                                })?;
+                            let mut hasher = Sha256::new();
+                            for chunk in hex.as_bytes().chunks(128 * 1024) {
+                                let text = std::str::from_utf8(chunk)
+                                    .map_err(|error| client_err(error.to_string()))?;
+                                let bytes =
+                                    syncular_command::value_bytes(Some(&json!({"$bytes": text})))
+                                        .map_err(client_err)?;
+                                hasher.update(bytes);
+                            }
+                            let byte_length = hex.len() / 2;
+                            let sha256 = format!("{:x}", hasher.finalize());
+                            (
+                                value,
+                                elapsed_ns,
+                                None,
+                                validation_started.elapsed().as_nanos() as u64,
+                                byte_length,
+                                sha256,
+                            )
+                        }
+                        _ => {
+                            return Err(client_err(
+                                "Blob file result surface must be typed or legacy".to_owned(),
+                            ))
+                        }
                     }
-                    let byte_length = hex.len() / 2;
-                    let sha256 = format!("{:x}", hasher.finalize());
-                    (
-                        value,
-                        elapsed_ns,
-                        None,
-                        validation_started.elapsed().as_nanos() as u64,
-                        byte_length,
-                        sha256,
-                    )
                 };
             if reference.get("blobId").and_then(Value::as_str)
                 != Some(format!("sha256:{sha256}").as_str())
@@ -1222,9 +1259,22 @@ fn handle(
                     .ok_or_else(|| client_err("benchBlob fetch requires blob".to_owned()))?;
                 let instance = need_client(client)?;
                 let started = Instant::now();
-                let result = instance.fetch_blob(transport, blob);
+                let result = instance.fetch_blob_bytes(transport, blob);
                 let elapsed_ns = started.elapsed().as_nanos() as u64;
-                (result.map(|blob| json!({"blob": blob})), elapsed_ns)
+                (
+                    result.map(|blob| {
+                        let mut value = json!({
+                            "blobId": blob.blob_id,
+                            "byteLength": blob.byte_length,
+                            "bytes": syncular_command::bytes_value(&blob.bytes),
+                        });
+                        if let Some(media_type) = blob.media_type {
+                            value["mediaType"] = Value::from(media_type);
+                        }
+                        json!({"blob": value})
+                    }),
+                    elapsed_ns,
+                )
             };
             // Failed downloads retain timing and transport evidence for the fault fixture.
             Ok(match result {

@@ -201,6 +201,21 @@ Transport and protocol failures come back as `SyncOutcome::Failed`;
 `sync()` does not panic or error out-of-band. After a round, `sync_needed()`
 tells you whether another round is already warranted.
 
+## Blob bytes
+
+Use `fetch_blob_bytes` when a Rust host needs a complete attachment:
+
+```rust
+let blob = client.fetch_blob_bytes(&mut transport, &blob_ref)?;
+assert_eq!(blob.byte_length, blob.bytes.len() as i64);
+```
+
+The returned `FetchedBlob` owns its `Vec<u8>`. Its bytes remain valid after
+later client calls and after the client closes. `fetch_blob` retains the
+driver-compatible JSON result with bytes encoded as
+`{"$bytes":"<lowercase-hex>"}`. The shared command router and C ABI continue
+to use that JSON result.
+
 ## The `Transport` trait
 
 You implement `syncular_client::Transport` and pass it to every

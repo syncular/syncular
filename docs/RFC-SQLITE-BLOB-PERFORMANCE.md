@@ -381,7 +381,8 @@ must make each decision reproducible.
 | R2 | Validate queued bytes and preserve commit-dependent bodies | §9.8: 42 shared R2 cases, 7 native reopen cases, and 80 paired benchmark attempts pass | Retained for reliability; measured 500 MB upload cost is +11.7% TS and +67.8% Rust |
 | P1 | Hash exact views and stage one owned JS snapshot | §9.9: baseline ownership failure, 82 cross-core blob cases, and two independent 40-run collections | Retained for input ownership; performance improvement remains inconclusive |
 | P2 | Return downloaded bytes after metadata-only cache verification | §9.10: 88 cross-core blob cases and 80 paired benchmark attempts pass; both 500 MB primary intervals include zero | Discarded; no production change retained |
-| P3–P4 | Pending | Allocation/access hypotheses above | Pending |
+| P3 | Add typed Rust byte results beneath the compatibility serializer | §9.11: 80 file-profile and 30 lifecycle attempts pass; the independent 500 MB cache-hit confirmation clears both retention gates | Retained for Rust cache-hit latency, CPU, and peak RSS; JSON command and C ABI remain compatible |
+| P4 | Pending | Metadata/refcount hypothesis above | Pending |
 | P5–P7 | Conditional | Reassess after simpler candidates | Pending |
 
 ## 9. Implementation evidence
@@ -1078,3 +1079,125 @@ focused blob cases across the two cores. Raw evidence is under
 multi-tab tests, typecheck, lint/format, knip, and both Node SQLite runtime
 contracts. The Rust client passes 66 unit tests and 6 integration tests;
 `cargo fmt --check` and clippy with warnings denied also pass.
+
+### 9.11 P3 typed Rust result protocol, 2026-09-11
+
+P3 will add a public Rust blob result whose byte field is an owned `Vec<u8>`
+and a `fetch_blob_bytes` method that returns it. The existing `fetch_blob`
+method will remain source compatible and return the same JSON value. The
+shared `fetchBlob` command and C ABI will keep their current JSON envelope,
+lowercase hexadecimal byte encoding, error codes, and ownership rules. The
+typed method will use the same authorization, download, hash validation,
+SQLite insertion, refcount reconciliation, cap enforcement, and cache-hit
+path as the compatibility method.
+
+The Rust file-profile direct lane will time `fetch_blob_bytes` and validate
+the owned bytes after its operation clock. Add an explicit legacy surface to
+the same private command so the candidate can time `fetch_blob` without
+sending the body through stdio. The lifecycle profile will continue to time
+the shared command router and real C ABI, including their existing delivery
+fields. Tests must prove that typed and JSON results agree for cache misses,
+cache hits, metadata, and errors, and that the typed bytes survive later
+queries and client destruction.
+
+Compare commit `cb7cce17` with one P3 production diff in ten paired blocks for
+each 65,536-byte and 500,000,000-byte file-profile case. Run baseline legacy,
+candidate typed, and candidate legacy in rotating order with a distinct pinned
+MinIO container for every attempt. The primary metric is the 500 MB candidate
+typed result against the baseline public result. Candidate legacy is the
+compatibility control. Use diagnostics off and retain the §9.5 estimator,
+bootstrap seed, noise floors, receipts, durability settings, and stop rules.
+The typed result qualifies only when its primary interval excludes zero in the
+improvement direction, exceeds the Rust 500 MB A/A floor, and the candidate
+legacy control establishes no material regression. Repeat the complete
+collection independently when those gates pass.
+
+Measure direct typed, shared command, and C ABI delivery at the lifecycle
+profile's 16 MiB limit in a separate ten-block collection. Record operation
+time, delivery time, CPU, peak RSS, and the C ABI request serialization,
+exported call, response copy, free, and parse fields. These results describe
+the cost that remains for compatibility consumers. Add no binary C ABI in P3;
+the evidence must first show that its avoided encoding and delivery cost pays
+for a sixth allocation API with explicit buffer lifetime, free, cancellation,
+handle-validity, and error contracts.
+
+The first collection completed all 60 attempts with no failures or exclusions.
+Every arm used a distinct MinIO container and passed the file digest, stored
+object, accepted commit, fresh download, cache hit, offline reopen, WAL/FULL,
+and bounded-IPC controls. The baseline and candidate executable SHA-256 values
+were `14c82aa993cf2f4ad256553c7141e27f4f740f7a79cd660df0d7ac86c0e69aa5`
+and `c3c5c62f97eff5ff408c34acc5980f77aa82c0496f0cabc29bf2adf82d6f3c5a`.
+The candidate diff SHA-256 was
+`e45a923ef7bc5b525d1d05080414c2f9ea588ebe9fe2764e2ec8df0365b5368c`.
+
+The 500 MB fresh-download primary does not qualify. The baseline median is
+2,908.54 ms and the typed median is 2,521.98 ms; the paired change is -13.62%
+with a 95% interval of [-25.81%, +3.52%]. The interval includes zero. Candidate
+legacy changes -5.13% [-17.05%, +3.17%] against baseline, so the compatibility
+control also includes zero.
+
+The predeclared cache-hit secondary shows a larger result. Candidate typed is
+224.08 ms versus 624.95 ms for candidate legacy, a paired change of -58.86%
+[-64.26%, -48.74%]. Its median absolute saving is 389.21 ms, above the 247.77
+ms Rust cache-hit A/A floor. The reopened hit changes -60.78%
+[-62.24%, -58.44%]. Reader lifetime CPU changes -44.48%
+[-47.79%, -39.03%], and reader peak RSS changes -39.80%
+[-39.81%, -39.78%], about 1.00 GB at the median. These process totals include
+the fresh download, cache hit, validation, and setup.
+
+Treat the cache-hit result as exploratory because the fresh-download metric
+was the declared retention primary. Before deciding P3, run an independent
+confirmation under `bench/results/blob-p3-v1-repeat/` with the same candidate
+binary, fixture, diagnostics-off setting, pinned MinIO image, WAL/FULL clients,
+and full receipts. Run ten paired 500 MB blocks of candidate typed and candidate
+legacy, alternating arm order. The primary metric is cache-hit operation time.
+Retain P3 only if the repeat interval excludes zero in the improvement
+direction and its median absolute saving exceeds the 247.77 ms A/A floor.
+Report reopened-hit time and reader lifetime CPU/RSS as secondary metrics and
+fresh-download time as an unchanged control. Do not pool the two collections.
+
+The independent confirmation completed all 20 attempts with no failures or
+exclusions. Typed cache hits are 223.84 ms versus 601.08 ms legacy, a paired
+change of -60.29% [-62.89%, -55.29%]. The 375.13 ms median absolute saving
+exceeds the 247.77 ms A/A floor. Reopened hits change -60.32%
+[-62.01%, -58.12%]. Reader lifetime CPU changes -45.56%
+[-47.40%, -43.36%], and peak RSS changes -39.81%, about 1.00 GB at the median.
+The repeat fresh download changes -11.06% [-14.38%, -6.41%], but its 396.93 ms
+median absolute saving remains below the 888.97 ms fresh-download A/A floor.
+Do not claim a fresh-download latency improvement from P3.
+
+P3 qualifies for retention on its independently confirmed cache-hit result.
+The first and confirmation collections use separate containers and observations;
+their cache-hit intervals both exclude zero and both median absolute savings
+exceed the recorded floor. Raw evidence is under `bench/results/blob-p3-v1/`
+and `bench/results/blob-p3-v1-repeat/`. Complete the declared 16 MiB lifecycle
+boundary collection before the final retention commit.
+
+The 16 MiB lifecycle collection completed all 30 attempts across direct,
+command, and C ABI boundaries with no failures. The direct typed, command JSON,
+and C ABI median operation times are 100.98, 113.52, and 125.72 ms for a fresh
+download. Their cache-hit operation times are 7.41, 19.91, and 32.12 ms. Command
+cache-hit operation time is 167.48% [156.73%, 177.86%] above direct typed, a
+12.47 ms median difference attributable to the retained hexadecimal result.
+
+The process driver encodes the typed result after its direct operation clock,
+so end-to-end cache-hit delivery is 41.42 ms direct and 39.62 ms command. The
+C ABI median is 59.20 ms. Its 16 MiB cache-hit response contains 33,554,581
+bytes; the exported call takes 32.12 ms, host copy 1.26 ms, library free 0.53
+ms, and host JSON parse 3.18 ms at the median. The C ABI reader peak RSS is
+162,578,432 bytes versus 128,729,088 bytes for the command process.
+
+Retain the typed Rust result and its benchmark surface. The independently
+confirmed 500 MB cache-hit improvement applies to in-process Rust consumers
+that keep the owned byte result. A host that converts the result to the JSON
+driver shape still pays the encoding and delivery cost. Keep the existing C ABI
+unchanged in P3. A binary C ABI requires a separate candidate with binding-level
+ownership, cancellation, invalid-handle, error, and compatibility tests. Raw
+lifecycle evidence is under `bench/results/blob-p3-lifecycle-v1/`.
+
+`bun run check` passes 1,916 main tests (46 explicit skips), 13 isolated
+multi-tab tests, typecheck, lint/format, knip, and both Node SQLite runtime
+contracts. The Rust workspace tests, formatting, and clippy with warnings
+denied pass. React Native, Swift, and Tauri binding gates pass. Kotlin and
+Flutter verify their generated schemas but skip runtime tests because this host
+lacks a working JDK and Dart SDK.

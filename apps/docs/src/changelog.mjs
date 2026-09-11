@@ -17,6 +17,12 @@
 export const changelog = [
   {
     date: '2026-09-11',
+    title: 'Owned blob bytes for Rust hosts',
+    body: 'Rust hosts can call fetch_blob_bytes to receive an owned Vec<u8> after the existing authorization, hash verification, cache insertion, refcount, and cache-cap work. The fetch_blob method, shared JSON command, and C ABI retain their lowercase hexadecimal byte envelope and existing error results.',
+    links: [{ href: '/platform-rust/', label: 'Rust blob API' }],
+  },
+  {
+    date: '2026-09-11',
     title: 'Durable blob upload recovery',
     body: 'Both client cores commit a staged body and its upload pin atomically. TypeScript snapshots the exact supplied byte view at call time, so later caller mutation cannot change the staged body or content address. Queued uploads validate their stored length and SHA-256 before transfer, and local storage failures retain the original outbox commit for retry. A durable commit-to-blob index keeps successfully uploaded bodies pinned until every referencing commit reaches a terminal outcome, including after restart, lost acknowledgements, rejection, and scope revocation.',
     links: [{ href: '/concepts-blobs/', label: 'Blob upload lifecycle' }],

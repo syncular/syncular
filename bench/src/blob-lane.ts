@@ -40,6 +40,7 @@ export async function runBlobFile(options: {
   backend: 'sqlite' | 'postgres';
   blobStore: 'memory' | 'minio';
   blobDiagnostics?: boolean;
+  rustResultSurface?: 'typed' | 'legacy';
 }) {
   if (options.byteLength > 16 * 1024 * 1024 && options.blobStore !== 'minio')
     throw new Error('Large blob files require the MinIO profile');
@@ -145,6 +146,9 @@ export async function runBlobFile(options: {
         await client.invoke('benchBlobFile', {
           mode: 'direct',
           operation,
+          ...(options.rustResultSurface
+            ? { resultSurface: options.rustResultSurface }
+            : {}),
           ...params,
         }),
       );
@@ -344,6 +348,9 @@ export async function runBlobFile(options: {
       executionModel: 'isolated-client-processes',
       blobProfile: 'file',
       blobDiagnostics: options.blobDiagnostics !== false,
+      ...(options.rustResultSurface
+        ? { rustResultSurface: options.rustResultSurface }
+        : {}),
       blobStore: options.blobStore,
       validatedObjects: 1,
       validation: 'independent-file-sha256-and-original-outcome',

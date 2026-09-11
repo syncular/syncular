@@ -30,6 +30,10 @@ test('large blob file options require isolated persistent direct clients and Min
   expect(performanceOptions([...large, '--core', 'rust']).blobStore).toBe(
     'minio',
   );
+  expect(
+    performanceOptions([...large, '--core', 'rust', '--blob-result', 'legacy'])
+      .blobResult,
+  ).toBe('legacy');
   for (const args of [
     [...base, '--sizes', '500000000'],
     [...large, '--sizes', '500000001'],
@@ -40,6 +44,8 @@ test('large blob file options require isolated persistent direct clients and Min
     [...large, '--blob-profile', 'lifecycle'],
     [...large, '--blob-store', 'unknown'],
     [...large, '--blob-diagnostics', 'unknown'],
+    [...large, '--blob-result', 'typed'],
+    [...large, '--core', 'rust', '--blob-result', 'unknown'],
     [...large, '--workload', 'replay'],
   ])
     expect(() => performanceOptions(args)).toThrow();

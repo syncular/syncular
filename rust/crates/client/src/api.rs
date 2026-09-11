@@ -13,6 +13,15 @@ pub type QueryValue = Value;
 /// One dynamic query result row, keyed by QueryIR runtime projection name.
 pub type QueryRow = Map<String, QueryValue>;
 
+/// An owned blob body returned by the Rust client without driver encoding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchedBlob {
+    pub blob_id: String,
+    pub byte_length: i64,
+    pub bytes: Vec<u8>,
+    pub media_type: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimeBucketUnit {
     Month,

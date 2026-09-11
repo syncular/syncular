@@ -30,7 +30,7 @@ use crate::api::{
     ClientDiagnosticsStorage, ClientLimits, CommandEffects, CommitOperation,
     CommitOperationOutcome, CommitOutcome, CommitOutcomeQuery, CommitOutcomeResolution,
     CommitOutcomeStatus, ConflictRecord, CoverageSnapshot, DiagnosticLastChange,
-    DiagnosticLastRound, DiagnosticRoundCounters, DiagnosticSubscription, LeaseState,
+    DiagnosticLastRound, DiagnosticRoundCounters, DiagnosticSubscription, FetchedBlob, LeaseState,
     LocalDataPurgeInput, LocalDataPurgeResult, LocalDataPurgeTarget, LocalDataRebootstrapInput,
     LocalDataRebootstrapResult, Mutation, PresencePeer, QueryRow, QuerySnapshot, QueryValue,
     RejectionDetails, RejectionRecord, ResolveCommitOutcomeInput, RowState, SchemaFloor,
@@ -413,10 +413,11 @@ mod observation_tests {
             );
             assert_eq!(
                 reopened
-                    .get_cached_blob(ref_value["blobId"].as_str().unwrap())
+                    .get_cached_blob_bytes(ref_value["blobId"].as_str().unwrap())
                     .unwrap()
-                    .unwrap()["bytes"]["$bytes"],
-                bytes_to_hex(bytes)
+                    .unwrap()
+                    .bytes,
+                bytes
             );
             drop(reopened);
             std::fs::remove_file(path).unwrap();
@@ -877,6 +878,7 @@ mod observation_tests {
         closes: usize,
         messages: Vec<String>,
         blob_uploads: Vec<(String, Vec<u8>)>,
+        blob_download: Option<Vec<u8>>,
     }
 
     impl Transport for CountingRealtimeTransport {
@@ -888,6 +890,13 @@ mod observation_tests {
         ) -> Result<(), TransportError> {
             self.blob_uploads.push((blob_id.to_owned(), bytes.to_vec()));
             Ok(())
+        }
+
+        fn blob_download(&mut self, _blob_id: &str) -> Result<BlobDownload, TransportError> {
+            self.blob_download
+                .clone()
+                .map(BlobDownload::Bytes)
+                .ok_or_else(|| TransportError::new("blob.not_found", "missing blob"))
         }
 
         fn sync(&mut self, _request: &[u8]) -> Result<Vec<u8>, TransportError> {
@@ -919,6 +928,47 @@ mod observation_tests {
             self.closes += 1;
             Ok(())
         }
+    }
+
+    #[test]
+    fn typed_blob_results_match_json_and_own_downloaded_bytes() {
+        let schema = json!({"version":1,"tables":[{"name":"attachments","primaryKey":"id","columns":[
+            {"name":"id","type":"string","nullable":false},
+            {"name":"file","type":"blob_ref","nullable":true}],"scopes":[]}]});
+        let bytes = b"owned typed result".to_vec();
+        let blob_id = blob_id_for(&bytes);
+        let mut transport = CountingRealtimeTransport {
+            blob_download: Some(bytes.clone()),
+            ..Default::default()
+        };
+        let typed = {
+            let mut client =
+                SyncClient::new("typed-result".to_owned(), &schema, ClientLimits::default())
+                    .unwrap();
+            let typed = client.fetch_blob_bytes(&mut transport, &blob_id).unwrap();
+            assert_eq!(typed.blob_id, blob_id);
+            assert_eq!(typed.byte_length, bytes.len() as i64);
+            assert_eq!(typed.bytes, bytes);
+            assert_eq!(typed.media_type, None);
+            let legacy = client.fetch_blob(&mut transport, &blob_id).unwrap();
+            assert_eq!(legacy["blobId"], typed.blob_id);
+            assert_eq!(legacy["byteLength"], typed.byte_length);
+            assert_eq!(legacy["bytes"]["$bytes"], bytes_to_hex(&typed.bytes));
+            assert!(legacy.get("mediaType").is_none());
+            client
+                .query("SELECT count(*) FROM _syncular_blobs", &[])
+                .unwrap();
+            typed
+        };
+        assert_eq!(typed.bytes, bytes);
+
+        let mut client =
+            SyncClient::new("typed-errors".to_owned(), &schema, ClientLimits::default()).unwrap();
+        let typed_error = client
+            .fetch_blob_bytes(&mut transport, "not json")
+            .unwrap_err();
+        let legacy_error = client.fetch_blob(&mut transport, "not json").unwrap_err();
+        assert_eq!(typed_error, legacy_error);
     }
 
     #[test]
@@ -9171,14 +9221,42 @@ impl SyncClient {
         Ok(Value::Object(obj))
     }
 
-    /// §5.9.7: resolve blob bytes — a content-addressed cache hit serves
-    /// with no fetch (B1); a miss downloads (§5.9.5), verifies the address,
-    /// caches, and returns `{blobId, byteLength, bytes:{$bytes:hex}}`.
+    /// §5.9.7 compatibility result with bytes encoded for the JSON driver.
     pub fn fetch_blob(
         &mut self,
         transport: &mut dyn Transport,
         blob_id_or_ref: &str,
     ) -> Result<Value, (String, String)> {
+        let blob = self.fetch_blob_bytes(transport, blob_id_or_ref)?;
+        let mut obj = Map::new();
+        obj.insert("blobId".to_owned(), Value::from(blob.blob_id));
+        obj.insert("byteLength".to_owned(), Value::from(blob.byte_length));
+        let encoded = {
+            #[cfg(feature = "bench-internals")]
+            let _phase = self.benchmark_phases.start(Phase::BlobEncode);
+            bytes_to_hex(&blob.bytes)
+        };
+        obj.insert(
+            "bytes".to_owned(),
+            Value::Object(Map::from_iter([(
+                "$bytes".to_owned(),
+                Value::from(encoded),
+            )])),
+        );
+        if let Some(media_type) = blob.media_type {
+            obj.insert("mediaType".to_owned(), Value::from(media_type));
+        }
+        Ok(Value::Object(obj))
+    }
+
+    /// §5.9.7: resolve an owned blob body without driver encoding. A
+    /// content-addressed cache hit serves with no fetch (B1); a miss downloads
+    /// (§5.9.5), verifies the address, caches the bytes, and returns them.
+    pub fn fetch_blob_bytes(
+        &mut self,
+        transport: &mut dyn Transport,
+        blob_id_or_ref: &str,
+    ) -> Result<FetchedBlob, (String, String)> {
         let simple = |m: String| ("client.failed".to_owned(), m);
         let blob_id = if blob_id_or_ref.starts_with("sha256:") {
             blob_id_or_ref.to_owned()
@@ -9191,7 +9269,7 @@ impl SyncClient {
                 .ok_or_else(|| simple("blob ref has no blobId".to_owned()))?
                 .to_owned()
         };
-        if let Some(cached) = self.get_cached_blob(&blob_id).map_err(simple)? {
+        if let Some(cached) = self.get_cached_blob_bytes(&blob_id).map_err(simple)? {
             return Ok(cached);
         }
         // §5.9.5: propagate the server's blob.* code (blob.forbidden /
@@ -9251,12 +9329,12 @@ impl SyncClient {
         self.enforce_blob_cache_cap();
         #[cfg(feature = "bench-internals")]
         drop(insert_phase);
-        self.get_cached_blob(&blob_id)
+        self.get_cached_blob_bytes(&blob_id)
             .map_err(simple)?
             .ok_or_else(|| simple("blob cache write failed".to_owned()))
     }
 
-    fn get_cached_blob(&self, blob_id: &str) -> Result<Option<Value>, String> {
+    fn get_cached_blob_bytes(&self, blob_id: &str) -> Result<Option<FetchedBlob>, String> {
         #[cfg(feature = "bench-internals")]
         let _phase = self.benchmark_phases.start(Phase::BlobCacheRead);
         // §5.9.7 B1 LRU: a cache-hit read touches "recently used" so a hot
@@ -9276,21 +9354,12 @@ impl SyncClient {
             let bytes: Vec<u8> = row.get(0).map_err(|e| e.to_string())?;
             let byte_length: i64 = row.get(1).map_err(|e| e.to_string())?;
             let media_type: Option<String> = row.get(2).map_err(|e| e.to_string())?;
-            let mut obj = Map::new();
-            obj.insert("blobId".to_owned(), Value::from(blob_id.to_owned()));
-            obj.insert("byteLength".to_owned(), Value::from(byte_length));
-            let mut bytes_obj = Map::new();
-            let encoded = {
-                #[cfg(feature = "bench-internals")]
-                let _phase = self.benchmark_phases.start(Phase::BlobEncode);
-                bytes_to_hex(&bytes)
-            };
-            bytes_obj.insert("$bytes".to_owned(), Value::from(encoded));
-            obj.insert("bytes".to_owned(), Value::Object(bytes_obj));
-            if let Some(mt) = media_type {
-                obj.insert("mediaType".to_owned(), Value::from(mt));
-            }
-            return Ok(Some(Value::Object(obj)));
+            return Ok(Some(FetchedBlob {
+                blob_id: blob_id.to_owned(),
+                byte_length,
+                bytes,
+                media_type,
+            }));
         }
         Ok(None)
     }

@@ -338,9 +338,10 @@ The private TS and Rust process drivers also support `benchBlobFile` with
 and reports source-read and public staging durations separately. Fetch takes a
 `blob` reference and times complete public-API materialization. Both return a
 full SHA-256/length receipt after the operation clock, without sending the body
-through stdio. Rust's internal hex result remains inside its public API timing;
-receipt validation decodes bounded pieces afterwards. The diagnostic CLI uses
-this command for `--blob-profile file`.
+through stdio. Rust times the owned `FetchedBlob` result by default and hashes
+its bytes after the operation clock. Pass `--blob-result legacy` to include the
+hexadecimal JSON conversion and decode bounded pieces during validation. The
+diagnostic CLI uses this command for `--blob-profile file`.
 
 Run its staged-restart and fresh-download contracts with:
 
