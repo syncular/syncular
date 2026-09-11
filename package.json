@@ -1,6 +1,6 @@
 {
   "name": "syncular",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -14,7 +14,7 @@
   ],
   "overrides": {
     "dompurify": "3.4.13",
-    "js-yaml": "4.3.1",
+    "js-yaml": "4.3.2",
     "nanoid": "3.3.18",
     "svgo": "^4.0.2",
     "postcss": "^8.5.23",

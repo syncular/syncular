@@ -1,8 +1,32 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.17.0** (`v0.17.0`). All artifacts use Apache-2.0, except
+current release is **0.18.0** (`v0.18.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.18.0 release notes
+
+- Both client cores commit each staged blob body and its upload pin atomically.
+  Failed or interrupted transfers retain pending commits and their dependent
+  bodies across restart, lost acknowledgements, rejection, and scope revocation.
+  TypeScript staging snapshots the supplied byte view before asynchronous work.
+- Fresh downloads reconcile only the downloaded body's visible references before
+  cache-cap enforcement. Two independent paired collections with 100,000 visible
+  references reduced 64 KiB fresh-download time by 61.6% in TypeScript and 60.1%
+  in Rust.
+- The Rust client exposes `fetch_blob_bytes` as its single blob fetch method and
+  returns an owned `Vec<u8>`. Remove calls to the deleted JSON-returning
+  `fetch_blob` method. The shared command router still emits the existing JSON
+  byte envelope for the C ABI and native bindings.
+- Repository blob benchmarks support isolated 500 MB file transfers through the
+  local MinIO profile, complete SHA-256 receipts, persistent-client reopen checks,
+  process resource measurements, and SQLite phase attribution. The private
+  `--blob-result` comparison switch has been removed with the old Rust API.
+
+This release changes the direct Rust client API. The SSP2 wire protocol, native
+JSON command shape, C ABI, server schema, and TypeScript client API are unchanged.
+Performance evidence and discarded experiments are recorded in
+[RFC-SQLITE-BLOB-PERFORMANCE.md](./RFC-SQLITE-BLOB-PERFORMANCE.md).
 
 ## 0.17.0 release notes
 

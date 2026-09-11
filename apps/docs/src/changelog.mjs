@@ -17,6 +17,16 @@
 export const changelog = [
   {
     date: '2026-09-11',
+    title: 'Syncular 0.18.0',
+    body: 'Blob staging and upload recovery now preserve pending work across storage and transfer failures in both client cores. Fresh downloads reconcile only the downloaded body before cache-cap enforcement; two independent paired collections at 100,000 references reduced 64 KiB download time by 61.6% in TypeScript and 60.1% in Rust. The direct Rust client exposes fetch_blob_bytes as its single blob fetch method. The SSP2 wire protocol and native JSON command remain unchanged.',
+    links: [
+      { href: '/concepts-blobs/', label: 'Blob lifecycle' },
+      { href: '/platform-rust/', label: 'Rust blob API' },
+      { href: '/benchmarks/', label: 'Benchmark evidence' },
+    ],
+  },
+  {
+    date: '2026-09-11',
     title: 'Targeted blob download reconciliation',
     body: 'After a cache miss, both client cores ask SQLite to count visible references for the downloaded body and update only that cache row before enforcing the size cap. Full reconciliation remains on row changes, purge, revocation, replay, and rebootstrap. Two independent paired collections at 100,000 references reduced 64 KiB fresh-download time by 61.6% in TypeScript and 60.1% in Rust.',
     links: [
