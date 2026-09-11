@@ -358,7 +358,10 @@ mod observation_tests {
             if fault == "pin-metadata" {
                 reopened
                     .conn
-                    .execute("UPDATE _syncular_blob_uploads SET media_type = 'text/plain'", [])
+                    .execute(
+                        "UPDATE _syncular_blob_uploads SET media_type = 'text/plain'",
+                        [],
+                    )
                     .unwrap();
             }
             reopened
