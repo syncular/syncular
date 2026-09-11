@@ -33,7 +33,6 @@ export function processPhases(value: unknown) {
           'blobReconcile',
           'blobDownload',
           'blobValidate',
-          'blobEncode',
           'blobCacheRead',
           'blobCacheInsert',
         ].includes(name)

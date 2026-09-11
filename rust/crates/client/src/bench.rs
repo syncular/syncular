@@ -26,7 +26,6 @@ pub(crate) enum Phase {
     BlobReconcile,
     BlobDownload,
     BlobValidate,
-    BlobEncode,
     BlobCacheRead,
     BlobCacheInsert,
 }
@@ -50,7 +49,6 @@ impl Phase {
             Self::BlobReconcile => "blobReconcile",
             Self::BlobDownload => "blobDownload",
             Self::BlobValidate => "blobValidate",
-            Self::BlobEncode => "blobEncode",
             Self::BlobCacheRead => "blobCacheRead",
             Self::BlobCacheInsert => "blobCacheInsert",
         }

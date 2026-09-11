@@ -94,7 +94,7 @@ fn blob_command_envelopes_move_owned_payloads_without_full_size_copies() {
     assert_eq!(
         (upload_copies, fetch_allocations),
         (0, vec![1, 1, 1]),
-        "staging borrows the input envelope; each fetch allocates only its core hex result"
+        "staging borrows the input envelope; each fetch allocates only its command hex result"
     );
 }
 

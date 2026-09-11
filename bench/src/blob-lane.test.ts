@@ -31,10 +31,6 @@ test('large blob file options require isolated persistent direct clients and Min
     'minio',
   );
   expect(
-    performanceOptions([...large, '--core', 'rust', '--blob-result', 'legacy'])
-      .blobResult,
-  ).toBe('legacy');
-  expect(
     performanceOptions([...large, '--blob-reference-rows', '100000'])
       .blobReferenceRows,
   ).toBe(100_000);
@@ -48,8 +44,6 @@ test('large blob file options require isolated persistent direct clients and Min
     [...large, '--blob-profile', 'lifecycle'],
     [...large, '--blob-store', 'unknown'],
     [...large, '--blob-diagnostics', 'unknown'],
-    [...large, '--blob-result', 'typed'],
-    [...large, '--core', 'rust', '--blob-result', 'unknown'],
     [...large, '--blob-reference-rows', '0'],
     [...large, '--blob-reference-rows', '100001'],
     [...large, '--workload', 'replay'],
@@ -604,9 +598,6 @@ for (const persistent of [false, true])
           expect(
             sample.nativePhases?.cacheHit?.measurements.blobDownload,
           ).toBeUndefined();
-          expect(
-            sample.nativePhases?.cacheHit?.measurements.blobEncode?.calls,
-          ).toBe(1);
           expect(
             sample.nativePhases?.interrupted?.measurements.blobDownload?.calls,
           ).toBe(1);

@@ -36,7 +36,10 @@ pub fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {
 }
 
 pub fn bytes_value(bytes: &[u8]) -> Value {
-    json!({ "$bytes": bytes_to_hex(bytes) })
+    Value::Object(serde_json::Map::from_iter([(
+        "$bytes".to_owned(),
+        Value::from(bytes_to_hex(bytes)),
+    )]))
 }
 
 pub fn value_bytes(value: Option<&Value>) -> Result<Vec<u8>, String> {
@@ -822,12 +825,20 @@ pub fn dispatch<T: Transport>(
                 .and_then(Value::as_str)
                 .ok_or_else(|| client_err("fetchBlob missing blob".to_owned()))?
                 .to_owned();
-            // fetch_blob returns (code, message) so the server's blob.* code
-            // reaches the caller (§5.9.5 cross-scope probe).
-            let value = need_client(client)?.fetch_blob(transport, &blob)?;
+            // fetch_blob_bytes returns (code, message) so the server's blob.*
+            // code reaches the caller (§5.9.5 cross-scope probe). The command
+            // boundary owns the JSON byte encoding used by native bindings.
+            let blob = need_client(client)?.fetch_blob_bytes(transport, &blob)?;
+            let mut value = serde_json::Map::new();
+            value.insert("blobId".to_owned(), Value::from(blob.blob_id));
+            value.insert("byteLength".to_owned(), Value::from(blob.byte_length));
+            value.insert("bytes".to_owned(), bytes_value(&blob.bytes));
+            if let Some(media_type) = blob.media_type {
+                value.insert("mediaType".to_owned(), Value::from(media_type));
+            }
             Ok(Value::Object(serde_json::Map::from_iter([(
                 "blob".to_owned(),
-                value,
+                Value::Object(value),
             )])))
         }
         "conflicts" => {

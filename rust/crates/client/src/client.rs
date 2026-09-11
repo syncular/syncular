@@ -931,7 +931,7 @@ mod observation_tests {
     }
 
     #[test]
-    fn typed_blob_results_match_json_and_own_downloaded_bytes() {
+    fn blob_results_own_downloaded_bytes() {
         let schema = json!({"version":1,"tables":[{"name":"attachments","primaryKey":"id","columns":[
             {"name":"id","type":"string","nullable":false},
             {"name":"file","type":"blob_ref","nullable":true}],"scopes":[]}]});
@@ -941,20 +941,15 @@ mod observation_tests {
             blob_download: Some(bytes.clone()),
             ..Default::default()
         };
-        let typed = {
+        let result = {
             let mut client =
-                SyncClient::new("typed-result".to_owned(), &schema, ClientLimits::default())
+                SyncClient::new("owned-result".to_owned(), &schema, ClientLimits::default())
                     .unwrap();
-            let typed = client.fetch_blob_bytes(&mut transport, &blob_id).unwrap();
-            assert_eq!(typed.blob_id, blob_id);
-            assert_eq!(typed.byte_length, bytes.len() as i64);
-            assert_eq!(typed.bytes, bytes);
-            assert_eq!(typed.media_type, None);
-            let legacy = client.fetch_blob(&mut transport, &blob_id).unwrap();
-            assert_eq!(legacy["blobId"], typed.blob_id);
-            assert_eq!(legacy["byteLength"], typed.byte_length);
-            assert_eq!(legacy["bytes"]["$bytes"], bytes_to_hex(&typed.bytes));
-            assert!(legacy.get("mediaType").is_none());
+            let result = client.fetch_blob_bytes(&mut transport, &blob_id).unwrap();
+            assert_eq!(result.blob_id, blob_id);
+            assert_eq!(result.byte_length, bytes.len() as i64);
+            assert_eq!(result.bytes, bytes);
+            assert_eq!(result.media_type, None);
             assert_eq!(
                 client
                     .conn
@@ -966,17 +961,21 @@ mod observation_tests {
                     .unwrap(),
                 0
             );
-            typed
+            result
         };
-        assert_eq!(typed.bytes, bytes);
+        assert_eq!(result.bytes, bytes);
 
         let mut client =
-            SyncClient::new("typed-errors".to_owned(), &schema, ClientLimits::default()).unwrap();
-        let typed_error = client
-            .fetch_blob_bytes(&mut transport, "not json")
-            .unwrap_err();
-        let legacy_error = client.fetch_blob(&mut transport, "not json").unwrap_err();
-        assert_eq!(typed_error, legacy_error);
+            SyncClient::new("blob-errors".to_owned(), &schema, ClientLimits::default()).unwrap();
+        assert_eq!(
+            client
+                .fetch_blob_bytes(&mut transport, "not json")
+                .unwrap_err(),
+            (
+                "client.failed".to_owned(),
+                "blob ref is not JSON".to_owned()
+            )
+        );
     }
 
     #[test]
@@ -9292,34 +9291,6 @@ impl SyncClient {
         Ok(Value::Object(obj))
     }
 
-    /// §5.9.7 compatibility result with bytes encoded for the JSON driver.
-    pub fn fetch_blob(
-        &mut self,
-        transport: &mut dyn Transport,
-        blob_id_or_ref: &str,
-    ) -> Result<Value, (String, String)> {
-        let blob = self.fetch_blob_bytes(transport, blob_id_or_ref)?;
-        let mut obj = Map::new();
-        obj.insert("blobId".to_owned(), Value::from(blob.blob_id));
-        obj.insert("byteLength".to_owned(), Value::from(blob.byte_length));
-        let encoded = {
-            #[cfg(feature = "bench-internals")]
-            let _phase = self.benchmark_phases.start(Phase::BlobEncode);
-            bytes_to_hex(&blob.bytes)
-        };
-        obj.insert(
-            "bytes".to_owned(),
-            Value::Object(Map::from_iter([(
-                "$bytes".to_owned(),
-                Value::from(encoded),
-            )])),
-        );
-        if let Some(media_type) = blob.media_type {
-            obj.insert("mediaType".to_owned(), Value::from(media_type));
-        }
-        Ok(Value::Object(obj))
-    }
-
     /// §5.9.7: resolve an owned blob body without driver encoding. A
     /// content-addressed cache hit serves with no fetch (B1); a miss downloads
     /// (§5.9.5), verifies the address, caches the bytes, and returns them.
@@ -9347,7 +9318,7 @@ impl SyncClient {
         // blob.not_found) verbatim so the harness can assert on it. The
         // authorized endpoint serves bytes inline OR (always-issue, presign
         // configured) a signed url the client fetches directly — no host auth,
-        // no fall-through: failure => re-request (the caller's next fetch_blob).
+        // no fall-through: failure => re-request (the caller's next fetch_blob_bytes).
         #[cfg(feature = "bench-internals")]
         let download_phase = self.benchmark_phases.start(Phase::BlobDownload);
         let bytes = match transport

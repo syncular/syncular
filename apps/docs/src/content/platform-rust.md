@@ -211,10 +211,9 @@ assert_eq!(blob.byte_length, blob.bytes.len() as i64);
 ```
 
 The returned `FetchedBlob` owns its `Vec<u8>`. Its bytes remain valid after
-later client calls and after the client closes. `fetch_blob` retains the
-driver-compatible JSON result with bytes encoded as
-`{"$bytes":"<lowercase-hex>"}`. The shared command router and C ABI continue
-to use that JSON result.
+later client calls and after the client closes. The shared command router
+encodes those bytes as `{"$bytes":"<lowercase-hex>"}` at the JSON boundary used
+by the C ABI and native bindings.
 
 ## The `Transport` trait
 

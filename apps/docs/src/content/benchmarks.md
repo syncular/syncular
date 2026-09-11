@@ -163,11 +163,9 @@ that distinction when comparing them with the corrected implementation.
 Rust socket workloads build the native driver in release mode and run each client in
 its own process. Select `--boundary command` to time the shared command router;
 the default times direct core operations. Parent elapsed time includes stdio
-delivery. Rust file-profile blob runs time the owned `FetchedBlob` result by
-default. Pass `--blob-result legacy` to time the hexadecimal JSON result while
-retaining digest-only stdio receipts. Pass `--blob-reference-rows 100000` to
-seed that many visible references outside the operation clock and verify the
-downloaded body's resulting cache refcount.
+delivery. Rust file-profile blob runs time the owned `FetchedBlob` result. Pass
+`--blob-reference-rows 100000` to seed that many visible references outside the
+operation clock and verify the downloaded body's resulting cache refcount.
 
 The restart workload supports TS and Rust with socket transport and file storage: it
 terminates the offline writer, opens its database in a fresh process, verifies

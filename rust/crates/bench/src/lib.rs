@@ -1152,78 +1152,27 @@ fn handle(
                         .get("blob")
                         .and_then(Value::as_str)
                         .ok_or_else(|| client_err("Missing blob reference".to_owned()))?;
-                    match params
-                        .get("resultSurface")
-                        .and_then(Value::as_str)
-                        .unwrap_or("typed")
-                    {
-                        "typed" => {
-                            let started = Instant::now();
-                            let value = need_client(client)?.fetch_blob_bytes(transport, blob)?;
-                            let elapsed_ns = started.elapsed().as_nanos() as u64;
-                            let validation_started = Instant::now();
-                            let sha256 = format!("{:x}", Sha256::digest(&value.bytes));
-                            let byte_length = value.bytes.len();
-                            let mut reference = json!({
-                                "blobId": value.blob_id,
-                                "byteLength": value.byte_length,
-                            });
-                            if let Some(media_type) = value.media_type {
-                                reference["mediaType"] = Value::from(media_type);
-                            }
-                            (
-                                reference,
-                                elapsed_ns,
-                                None,
-                                validation_started.elapsed().as_nanos() as u64,
-                                byte_length,
-                                sha256,
-                            )
-                        }
-                        "legacy" => {
-                            let started = Instant::now();
-                            let mut value = need_client(client)?.fetch_blob(transport, blob)?;
-                            let elapsed_ns = started.elapsed().as_nanos() as u64;
-                            let validation_started = Instant::now();
-                            let object = value
-                                .as_object_mut()
-                                .ok_or_else(|| client_err("Invalid blob result".to_owned()))?;
-                            let encoded = object
-                                .remove("bytes")
-                                .ok_or_else(|| client_err("Missing blob bytes".to_owned()))?;
-                            let hex = encoded
-                                .get("$bytes")
-                                .and_then(Value::as_str)
-                                .filter(|hex| hex.len() % 2 == 0 && hex.is_ascii())
-                                .ok_or_else(|| {
-                                    client_err("Invalid blob byte encoding".to_owned())
-                                })?;
-                            let mut hasher = Sha256::new();
-                            for chunk in hex.as_bytes().chunks(128 * 1024) {
-                                let text = std::str::from_utf8(chunk)
-                                    .map_err(|error| client_err(error.to_string()))?;
-                                let bytes =
-                                    syncular_command::value_bytes(Some(&json!({"$bytes": text})))
-                                        .map_err(client_err)?;
-                                hasher.update(bytes);
-                            }
-                            let byte_length = hex.len() / 2;
-                            let sha256 = format!("{:x}", hasher.finalize());
-                            (
-                                value,
-                                elapsed_ns,
-                                None,
-                                validation_started.elapsed().as_nanos() as u64,
-                                byte_length,
-                                sha256,
-                            )
-                        }
-                        _ => {
-                            return Err(client_err(
-                                "Blob file result surface must be typed or legacy".to_owned(),
-                            ))
-                        }
+                    let started = Instant::now();
+                    let value = need_client(client)?.fetch_blob_bytes(transport, blob)?;
+                    let elapsed_ns = started.elapsed().as_nanos() as u64;
+                    let validation_started = Instant::now();
+                    let sha256 = format!("{:x}", Sha256::digest(&value.bytes));
+                    let byte_length = value.bytes.len();
+                    let mut reference = json!({
+                        "blobId": value.blob_id,
+                        "byteLength": value.byte_length,
+                    });
+                    if let Some(media_type) = value.media_type {
+                        reference["mediaType"] = Value::from(media_type);
                     }
+                    (
+                        reference,
+                        elapsed_ns,
+                        None,
+                        validation_started.elapsed().as_nanos() as u64,
+                        byte_length,
+                        sha256,
+                    )
                 };
             if reference.get("blobId").and_then(Value::as_str)
                 != Some(format!("sha256:{sha256}").as_str())

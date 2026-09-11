@@ -39,7 +39,6 @@ export function performanceOptions(args: string[]) {
       'blob-profile': { type: 'string' },
       'blob-store': { type: 'string' },
       'blob-diagnostics': { type: 'string' },
-      'blob-result': { type: 'string' },
       'blob-reference-rows': { type: 'string' },
       output: { type: 'string' },
       ci: { type: 'boolean', default: false },
@@ -48,7 +47,6 @@ export function performanceOptions(args: string[]) {
   const blobProfile = values['blob-profile'] ?? 'lifecycle';
   const blobStore = values['blob-store'] ?? 'memory';
   const blobDiagnostics = values['blob-diagnostics'] ?? 'on';
-  const blobResult = values['blob-result'];
   const blobReferenceRows = Number(values['blob-reference-rows'] ?? '1');
   if (
     !Number.isInteger(blobReferenceRows) ||
@@ -66,16 +64,6 @@ export function performanceOptions(args: string[]) {
       (values.workload !== 'blobs' || blobProfile !== 'file'))
   )
     throw new Error('Blob diagnostics on/off requires the blob file profile');
-  if (
-    blobResult !== undefined &&
-    (!['typed', 'legacy'].includes(blobResult) ||
-      values.workload !== 'blobs' ||
-      blobProfile !== 'file' ||
-      values.core !== 'rust')
-  )
-    throw new Error(
-      'Blob result typed/legacy requires the Rust blob file profile',
-    );
   if (
     !['lifecycle', 'file'].includes(blobProfile) ||
     !['memory', 'minio'].includes(blobStore) ||
@@ -326,7 +314,6 @@ export function performanceOptions(args: string[]) {
     blobProfile: blobProfile as 'lifecycle' | 'file',
     blobStore: blobStore as 'memory' | 'minio',
     blobDiagnostics: blobDiagnostics === 'on',
-    blobResult: blobResult as 'typed' | 'legacy' | undefined,
     blobReferenceRows,
     output: resolve(
       root,
@@ -699,9 +686,6 @@ export async function runPerformanceBench(args: string[]): Promise<void> {
                   blobStore: options.blobStore,
                   blobDiagnostics: options.blobDiagnostics,
                   localReferenceRows: options.blobReferenceRows,
-                  ...(options.core === 'rust'
-                    ? { rustResultSurface: options.blobResult ?? 'typed' }
-                    : {}),
                 })
               : options.core === 'rust'
                 ? await runProcessBlobs({

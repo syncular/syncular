@@ -27,7 +27,7 @@ export const changelog = [
   {
     date: '2026-09-11',
     title: 'Owned blob bytes for Rust hosts',
-    body: 'Rust hosts can call fetch_blob_bytes to receive an owned Vec<u8> after the existing authorization, hash verification, cache insertion, refcount, and cache-cap work. The fetch_blob method, shared JSON command, and C ABI retain their lowercase hexadecimal byte envelope and existing error results.',
+    body: 'Rust hosts call fetch_blob_bytes to receive an owned Vec<u8> after authorization, hash verification, cache insertion, refcount, and cache-cap work. This is the Rust client’s single blob fetch method. The shared command router encodes bytes only at the JSON boundary used by the C ABI and native bindings.',
     links: [{ href: '/platform-rust/', label: 'Rust blob API' }],
   },
   {
