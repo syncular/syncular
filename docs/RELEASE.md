@@ -1,8 +1,27 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.18.0** (`v0.18.0`). All artifacts use Apache-2.0, except
+current release is **0.19.0** (`v0.19.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.19.0 release notes
+
+- The TypeScript and Rust clients write blob dependencies directly with each
+  outbox commit. They no longer maintain stored blob refcounts, SQLite triggers,
+  startup dependency backfill, cache-hit metadata writes, or reconciliation
+  passes.
+- Blob bodies remain immutable SQLite rows. A separate small upload table keeps
+  mutable transfer state from rewriting a staged body when its upload completes.
+- Two independent paired 500 MB collections reduced upload time by 21.1% and
+  24.9% in TypeScript and by 9.0% and 6.8% in Rust. Cache-hit time fell by
+  61.6% to 61.9% in TypeScript and by 66.1% to 67.0% in Rust.
+- Clients reject the 0.18 local blob-table layout with
+  `sync.schema_mismatch`. Applications must create a fresh local database and
+  resync after upgrading. The wire protocol and server blob storage remain
+  unchanged.
+
+Implementation and benchmark evidence are recorded in
+[RFC-SQLITE-BLOB-SIMPLIFICATION.md](./RFC-SQLITE-BLOB-SIMPLIFICATION.md).
 
 ## 0.18.0 release notes
 

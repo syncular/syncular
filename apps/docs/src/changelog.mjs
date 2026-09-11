@@ -17,6 +17,15 @@
 export const changelog = [
   {
     date: '2026-09-11',
+    title: 'Syncular 0.19.0',
+    body: 'The TS and Rust clients write blob dependencies directly with the outbox and keep mutable upload state outside immutable blob rows. They remove stored refcounts, SQLite triggers, startup dependency backfill, cache-hit metadata writes, and reconciliation passes. Two independent paired 500 MB collections reduced upload time by 21.1% and 24.9% in TS and by 9.0% and 6.8% in Rust. Clients reject the 0.18 local blob-table layout and require a fresh local database after upgrading.',
+    links: [
+      { href: '/concepts-blobs/', label: 'Blob lifecycle' },
+      { href: '/benchmarks/', label: 'Benchmark evidence' },
+    ],
+  },
+  {
+    date: '2026-09-11',
     title: 'Simplified SQLite blob state',
     body: 'The TS and Rust clients write commit dependencies directly with the outbox and keep mutable upload state outside immutable blob rows. They no longer maintain stored refcounts, blob triggers, startup backfill, or cache-hit metadata. Two independent paired 500 MB collections reduced upload time by 21.1% and 24.9% in TS and by 9.0% and 6.8% in Rust. Older local blob-table layouts fail with sync.schema_mismatch and require a fresh local database.',
     links: [
