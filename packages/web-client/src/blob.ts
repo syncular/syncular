@@ -301,6 +301,7 @@ export function schemaHasBlobs(schema: CompiledClientSchema): boolean {
  * to zero refs *and* have no pending upload (a pending upload pins its body,
  * B4). Called after every apply/purge that may add or remove references.
  *
+ * `blobId` narrows a fresh-download refresh to the inserted cache row.
  * `deleteOrphans` distinguishes the two B2 transitions: revocation purge
  * passes `true` (drop the now-unauthorized body); a benign apply passes
  * `false` (retain zero-ref bodies as LRU cache entries — the shipped
@@ -309,10 +310,35 @@ export function schemaHasBlobs(schema: CompiledClientSchema): boolean {
 export function reconcileBlobRefcounts(
   db: ClientDatabase,
   schema: CompiledClientSchema,
-  options?: { readonly deleteOrphans?: boolean },
+  options?: {
+    readonly blobId?: string;
+    readonly deleteOrphans?: boolean;
+  },
 ): void {
   const byTable = blobRefColumnsBySchema(schema);
   if (byTable.size === 0) return;
+  if (options?.blobId !== undefined) {
+    let count = 0;
+    for (const [tableName, columns] of byTable) {
+      for (const column of columns) {
+        const identifier = quoteIdent(column);
+        const row = db.query(
+          `SELECT count(*) AS n FROM ${quoteIdent(tableName)}
+           WHERE CASE
+             WHEN typeof(${identifier}) = 'text' AND json_valid(${identifier})
+             THEN json_extract(${identifier}, '$.blobId')
+           END = ?`,
+          [options.blobId],
+        )[0];
+        count += Number(row?.n ?? 0);
+      }
+    }
+    db.exec('UPDATE _syncular_blobs SET refcount = ? WHERE blob_id = ?', [
+      count,
+      options.blobId,
+    ]);
+    return;
+  }
   // Count references to each blobId across every blob_ref column.
   const counts = new Map<string, number>();
   for (const [tableName, columns] of byTable) {

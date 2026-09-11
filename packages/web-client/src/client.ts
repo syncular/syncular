@@ -1597,7 +1597,7 @@ export class SyncClient {
     putCachedBlob(this.#db, blobId, bytes, this.#now());
     // The referencing row can arrive before its body. Pin the new cache entry
     // from current visible references before applying the size cap (§5.9.7 B1).
-    this.#reconcileBlobs(false);
+    this.#reconcileBlobs(false, blobId);
     this.#enforceBlobCacheCap();
     const stored = getCachedBlob(this.#db, blobId);
     if (stored === undefined) {
@@ -4270,9 +4270,12 @@ export class SyncClient {
    * columns. No-op unless the schema has blob columns. `deleteOrphans`
    * triggers the revocation-side body deletion (B2).
    */
-  #reconcileBlobs(deleteOrphans: boolean): void {
+  #reconcileBlobs(deleteOrphans: boolean, blobId?: string): void {
     if (!this.#hasBlobs) return;
-    reconcileBlobRefcounts(this.#db, this.#schema, { deleteOrphans });
+    reconcileBlobRefcounts(this.#db, this.#schema, {
+      deleteOrphans,
+      ...(blobId === undefined ? {} : { blobId }),
+    });
   }
 
   // -- helpers -----------------------------------------------------------------

@@ -51,6 +51,8 @@ bun run bench --workload blobs --core rust --lane socket --boundary ffi --storag
 | `--blob-profile lifecycle\|file` | Blob workloads only; default `lifecycle`. `file` uses isolated processes and digest receipts, with socket lane, file storage, and direct boundary required. |
 | `--blob-store memory\|minio` | Blob workloads only; default `memory`. `minio` requires the file profile and the pinned local Docker image. |
 | `--blob-diagnostics on\|off` | File profile only; default `on`. Controls TS client SQL/blob method wrappers and Rust blob transport recording. |
+| `--blob-reference-rows` | File profile only; visible references to seed before the download clock, from 1 to 100,000. Default 1. The runner verifies the exact cache refcount. |
+| `--blob-result typed\|legacy` | Rust file profile only; default `typed`. Measures the owned byte result or the compatible hexadecimal JSON result. |
 | `--output` | Artifact path, relative to the repository root or absolute; existing files are refused |
 
 The commit-boundaries workload queues three commits with 499/2/1 or 500/2/1

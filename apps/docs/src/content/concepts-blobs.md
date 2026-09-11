@@ -89,7 +89,9 @@ A fresh download refreshes its reference count before cache trimming. Synced
 rows and unsent optimistic rows protect their referenced bodies. If those bodies
 exceed the configured cache cap, the client retains them and subsequent reads
 remain cache hits. Revocation updates the visible rows before removing orphaned
-bodies.
+bodies. The client asks SQLite to count references for the downloaded body and
+updates that cache row. Row changes and revocation still reconcile all cached
+body counts.
 
 ## Storage backends
 

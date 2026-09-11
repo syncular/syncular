@@ -40,6 +40,7 @@ export function performanceOptions(args: string[]) {
       'blob-store': { type: 'string' },
       'blob-diagnostics': { type: 'string' },
       'blob-result': { type: 'string' },
+      'blob-reference-rows': { type: 'string' },
       output: { type: 'string' },
       ci: { type: 'boolean', default: false },
     },
@@ -48,6 +49,17 @@ export function performanceOptions(args: string[]) {
   const blobStore = values['blob-store'] ?? 'memory';
   const blobDiagnostics = values['blob-diagnostics'] ?? 'on';
   const blobResult = values['blob-result'];
+  const blobReferenceRows = Number(values['blob-reference-rows'] ?? '1');
+  if (
+    !Number.isInteger(blobReferenceRows) ||
+    blobReferenceRows < 1 ||
+    blobReferenceRows > 100_000 ||
+    (values['blob-reference-rows'] !== undefined &&
+      (values.workload !== 'blobs' || blobProfile !== 'file'))
+  )
+    throw new Error(
+      'Blob reference rows in 1..100000 require the blob file profile',
+    );
   if (
     !['on', 'off'].includes(blobDiagnostics) ||
     (values['blob-diagnostics'] !== undefined &&
@@ -315,6 +327,7 @@ export function performanceOptions(args: string[]) {
     blobStore: blobStore as 'memory' | 'minio',
     blobDiagnostics: blobDiagnostics === 'on',
     blobResult: blobResult as 'typed' | 'legacy' | undefined,
+    blobReferenceRows,
     output: resolve(
       root,
       values.output ??
@@ -685,6 +698,7 @@ export async function runPerformanceBench(args: string[]): Promise<void> {
                   backend: options.backend,
                   blobStore: options.blobStore,
                   blobDiagnostics: options.blobDiagnostics,
+                  localReferenceRows: options.blobReferenceRows,
                   ...(options.core === 'rust'
                     ? { rustResultSurface: options.blobResult ?? 'typed' }
                     : {}),

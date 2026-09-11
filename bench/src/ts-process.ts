@@ -21,6 +21,7 @@ import {
 // Private benchmark protocol shared with the Rust driver. No shipping API changes.
 if (import.meta.main) {
   let handle: BenchClient | undefined;
+  let database: BunClientDatabase | undefined;
   let unsubscribe: (() => void) | undefined;
   let catchup: Promise<void> | undefined;
   let catchupError: unknown;
@@ -94,7 +95,7 @@ if (import.meta.main) {
       )
         throw new Error('Unsupported blob benchmark schema');
       const http = httpSyncTransport(syncUrl);
-      const database = new BunClientDatabase(params.dbPath);
+      database = new BunClientDatabase(params.dbPath);
       // The adapter runs transaction control through this owned SQLite method.
       // Prepared data statements use query().run(), a separate surface.
       if (blobDiagnostics)
@@ -218,6 +219,27 @@ if (import.meta.main) {
       )
         throw new Error('Invalid benchmark query bindings');
       return { rows: client.query(params.sql, bindings) };
+    }
+    if (method === 'benchSeedBlobRefs') {
+      if (
+        !blobFixture ||
+        database === undefined ||
+        typeof params.blob !== 'string' ||
+        !Number.isInteger(params.count) ||
+        Number(params.count) < 0 ||
+        Number(params.count) > 99_999
+      )
+        throw new Error('Invalid blob reference fixture');
+      const blob = params.blob;
+      const count = Number(params.count);
+      const insert = database.db.query(
+        'INSERT INTO attachments(id, project_id, body, _sync_version) VALUES (?, ?, ?, 0)',
+      );
+      database.transaction(() => {
+        for (let index = 1; index <= count; index += 1)
+          insert.run(`p4-ref-${index}`, PROJECT_ID, blob);
+      });
+      return { inserted: count };
     }
     if (method === 'benchBlobFile') {
       if (

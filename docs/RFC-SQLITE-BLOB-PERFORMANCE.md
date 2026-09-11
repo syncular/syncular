@@ -382,7 +382,7 @@ must make each decision reproducible.
 | P1 | Hash exact views and stage one owned JS snapshot | §9.9: baseline ownership failure, 82 cross-core blob cases, and two independent 40-run collections | Retained for input ownership; performance improvement remains inconclusive |
 | P2 | Return downloaded bytes after metadata-only cache verification | §9.10: 88 cross-core blob cases and 80 paired benchmark attempts pass; both 500 MB primary intervals include zero | Discarded; no production change retained |
 | P3 | Add typed Rust byte results beneath the compatibility serializer | §9.11: 80 file-profile and 30 lifecycle attempts pass; the independent 500 MB cache-hit confirmation clears both retention gates | Retained for Rust cache-hit latency, CPU, and peak RSS; JSON command and C ABI remain compatible |
-| P4 | Pending | Metadata/refcount hypothesis above | Pending |
+| P4 | Count only the downloaded body's visible references | §9.12: 80 paired attempts pass both cross-core primary gates, with focused malformed-value, cache-cap, and unrelated-row tests | Retained; fresh download at 100,000 references drops 61.6% TS and 60.1% Rust in the independent confirmation |
 | P5–P7 | Conditional | Reassess after simpler candidates | Pending |
 
 ## 9. Implementation evidence
@@ -1196,6 +1196,76 @@ ownership, cancellation, invalid-handle, error, and compatibility tests. Raw
 lifecycle evidence is under `bench/results/blob-p3-lifecycle-v1/`.
 
 `bun run check` passes 1,916 main tests (46 explicit skips), 13 isolated
+multi-tab tests, typecheck, lint/format, knip, and both Node SQLite runtime
+contracts. The Rust workspace tests, formatting, and clippy with warnings
+denied pass. React Native, Swift, and Tauri binding gates pass. Kotlin and
+Flutter verify their generated schemas but skip runtime tests because this host
+lacks a working JDK and Dart SDK.
+
+### 9.12 P4 targeted post-download reconciliation protocol, 2026-09-11
+
+After a fresh download inserts one cache body, both cores run full blob
+reconciliation before enforcing the cache cap. That pass selects and parses
+every visible `blob_ref`, resets every cached body's refcount, and rewrites the
+counts. The download needs one narrower fact: the reference count for the body
+it just inserted. Other refcounts were reconciled when their visible rows
+changed.
+
+P4 will add a targeted mode to the existing reconciliation path. It will count
+only rows whose valid JSON `blobId` equals the inserted body, then update only
+that cache row. SQLite will perform the guarded JSON comparison and aggregate,
+so neither core materializes every reference in host memory. Full
+reconciliation remains unchanged after apply, purge, revocation, local replay,
+and rebootstrap. Cache caps, upload pins, commit pins, LRU timestamps, returned
+bytes, and error behavior remain unchanged.
+
+Add a private file-profile setup that inserts 100,000 local attachment rows
+referencing the downloaded body outside every operation and resource-reset
+clock. Verify the exact row count, downloaded body's refcount, empty initial
+body cache, complete digest, accepted original commit, cache hit, offline
+reopen, WAL/FULL settings, and transport receipts. Tests must also cover mixed
+tables and columns, malformed stored values, another cached body's existing
+refcount, an optimistic reference, a zero-reference authorized fetch, and a
+referenced body above the cache cap. Existing apply, rejection, revocation,
+purge, restart, and concurrent-download cases remain required.
+
+Compare commit `4b10f8b0` with one P4 production diff in ten paired blocks for
+each core at 65,536 bytes and 100,000 local references. Alternate arm order and
+core traversal. Use diagnostics off, persistent SQLite clients, the pinned
+MinIO image, a distinct container per attempt, and the §9.5 paired estimator
+and bootstrap seed. The primary metric is fresh-download operation time. The
+TS and Rust median absolute savings must exceed their 64 KiB A/A floors of
+3.267 ms and 10.705 ms, and both intervals must exclude zero in the improvement
+direction. Report cache-hit and reopened-hit time, reader CPU/RSS, staging, and
+upload plus commit as unchanged controls. Repeat the complete collection
+independently only when both cores pass. Keep P4 only when both collections
+pass both primary gates.
+
+Both collections completed all 40 attempts without failures or exclusions.
+The first TS fresh-download median is 18.78 ms versus 48.68 ms for the baseline,
+a paired change of -61.72% with a 95% interval of [-63.70%, -59.10%]. Its
+30.56 ms median absolute saving exceeds the 3.267 ms floor. The first Rust
+median is 15.75 ms versus 38.42 ms, a change of -59.55%
+[-61.56%, -57.56%]. Its 22.49 ms saving exceeds the 10.705 ms floor.
+
+The independent confirmation records TS at 18.97 ms versus 49.31 ms, a change
+of -61.57% [-63.13%, -59.83%] with a 29.82 ms median absolute saving. Rust is
+14.84 ms versus 39.01 ms, a change of -60.05% [-61.70%, -57.99%] with a
+23.67 ms saving. Both confirmation gates pass.
+
+Staging, upload plus commit, cache-hit, and reopened-hit intervals include zero
+in the confirmation. TS reader lifetime CPU changes -22.08%
+[-23.79%, -19.83%], and peak RSS changes -47.45%, about 79.6 MB at the median.
+Rust reader lifetime CPU changes -14.54% [-15.77%, -13.29%], and peak RSS
+changes -1.39%, about 115 KB at the median. These resource totals include
+fixture insertion, download, validation, cache hit, and process setup.
+
+Retain P4. Fresh download now asks SQLite to count only valid references to the
+inserted body and updates only that cache row. Full reconciliation remains on
+row-change, purge, revocation, replay, and rebootstrap paths. Raw evidence is
+under `bench/results/blob-p4-v1/` and `bench/results/blob-p4-v1-repeat/`.
+
+`bun run check` passes 1,917 main tests (46 explicit skips), 13 isolated
 multi-tab tests, typecheck, lint/format, knip, and both Node SQLite runtime
 contracts. The Rust workspace tests, formatting, and clippy with warnings
 denied pass. React Native, Swift, and Tauri binding gates pass. Kotlin and

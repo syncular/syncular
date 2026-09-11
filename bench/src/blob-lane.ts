@@ -40,6 +40,7 @@ export async function runBlobFile(options: {
   backend: 'sqlite' | 'postgres';
   blobStore: 'memory' | 'minio';
   blobDiagnostics?: boolean;
+  localReferenceRows?: number;
   rustResultSurface?: 'typed' | 'legacy';
 }) {
   if (options.byteLength > 16 * 1024 * 1024 && options.blobStore !== 'minio')
@@ -313,12 +314,48 @@ export async function runBlobFile(options: {
       visible[0]?.body !== row.body
     )
       throw new Error('Independent reader attachment differs from fixture');
+    const localReferenceRows = options.localReferenceRows ?? 1;
+    if (
+      !Number.isInteger(localReferenceRows) ||
+      localReferenceRows < 1 ||
+      localReferenceRows > 100_000
+    )
+      throw new Error('Blob local reference rows must be in 1..100000');
+    if (localReferenceRows > 1) {
+      const seeded = processObject(
+        await reader.invoke('benchSeedBlobRefs', {
+          blob: row.body,
+          count: localReferenceRows - 1,
+        }),
+      );
+      if (seeded.inserted !== localReferenceRows - 1)
+        throw new Error('Blob reference fixture insert count differs');
+    }
+    if (
+      (
+        await query(
+          reader,
+          'SELECT count(*) AS n FROM attachments WHERE body = ?',
+          [row.body],
+        )
+      )[0]?.n !== localReferenceRows
+    )
+      throw new Error('Blob reference fixture row count differs');
     if (
       (await query(reader, 'SELECT count(*) AS n FROM _syncular_blobs'))[0]
         ?.n !== 0
     )
       throw new Error('Fresh blob reader has a nonempty body cache');
     const downloaded = await measure(reader, 'fetchBlob', { blob: row.body });
+    const cached = await query(
+      reader,
+      'SELECT refcount FROM _syncular_blobs WHERE blob_id = ?',
+      [staged.ref.blobId],
+    );
+    if (cached.length !== 1 || cached[0]?.refcount !== localReferenceRows)
+      throw new Error(
+        'Downloaded blob refcount differs from visible references',
+      );
     await snapshotDisk('downloaded', readerPath);
     const beforeHitRequests = await server.requests(reader.clientId);
     const cacheHit = await measure(reader, 'fetchBlob', { blob: row.body });
@@ -348,6 +385,7 @@ export async function runBlobFile(options: {
       executionModel: 'isolated-client-processes',
       blobProfile: 'file',
       blobDiagnostics: options.blobDiagnostics !== false,
+      localReferenceRows,
       ...(options.rustResultSurface
         ? { rustResultSurface: options.rustResultSurface }
         : {}),

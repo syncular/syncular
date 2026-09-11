@@ -17,6 +17,15 @@
 export const changelog = [
   {
     date: '2026-09-11',
+    title: 'Targeted blob download reconciliation',
+    body: 'After a cache miss, both client cores ask SQLite to count visible references for the downloaded body and update only that cache row before enforcing the size cap. Full reconciliation remains on row changes, purge, revocation, replay, and rebootstrap. Two independent paired collections at 100,000 references reduced 64 KiB fresh-download time by 61.6% in TypeScript and 60.1% in Rust.',
+    links: [
+      { href: '/concepts-blobs/', label: 'Blob cache behavior' },
+      { href: '/benchmarks/', label: 'Blob benchmark controls' },
+    ],
+  },
+  {
+    date: '2026-09-11',
     title: 'Owned blob bytes for Rust hosts',
     body: 'Rust hosts can call fetch_blob_bytes to receive an owned Vec<u8> after the existing authorization, hash verification, cache insertion, refcount, and cache-cap work. The fetch_blob method, shared JSON command, and C ABI retain their lowercase hexadecimal byte envelope and existing error results.',
     links: [{ href: '/platform-rust/', label: 'Rust blob API' }],

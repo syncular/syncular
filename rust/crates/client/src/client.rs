@@ -955,9 +955,17 @@ mod observation_tests {
             assert_eq!(legacy["byteLength"], typed.byte_length);
             assert_eq!(legacy["bytes"]["$bytes"], bytes_to_hex(&typed.bytes));
             assert!(legacy.get("mediaType").is_none());
-            client
-                .query("SELECT count(*) FROM _syncular_blobs", &[])
-                .unwrap();
+            assert_eq!(
+                client
+                    .conn
+                    .query_row(
+                        "SELECT refcount FROM _syncular_blobs WHERE blob_id = ?",
+                        rusqlite::params![blob_id],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                0
+            );
             typed
         };
         assert_eq!(typed.bytes, bytes);
@@ -969,6 +977,69 @@ mod observation_tests {
             .unwrap_err();
         let legacy_error = client.fetch_blob(&mut transport, "not json").unwrap_err();
         assert_eq!(typed_error, legacy_error);
+    }
+
+    #[test]
+    fn targeted_blob_reconciliation_counts_valid_refs_and_preserves_other_bodies() {
+        let schema = json!({"version":1,"tables":[
+            {"name":"attachments","primaryKey":"id","columns":[
+                {"name":"id","type":"string","nullable":false},
+                {"name":"body","type":"blob_ref","nullable":true},
+                {"name":"preview","type":"blob_ref","nullable":true}],"scopes":[]},
+            {"name":"avatars","primaryKey":"id","columns":[
+                {"name":"id","type":"string","nullable":false},
+                {"name":"photo","type":"blob_ref","nullable":true}],"scopes":[]}
+        ]});
+        let bytes = b"referenced above cap".to_vec();
+        let blob_id = blob_id_for(&bytes);
+        let reference = json!({"blobId": blob_id, "byteLength": bytes.len()}).to_string();
+        let mut client = SyncClient::new(
+            "targeted-refcounts".to_owned(),
+            &schema,
+            ClientLimits {
+                blob_cache_max_bytes: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        client.conn.execute(
+            "INSERT INTO attachments VALUES ('one', ?, ?, 0), ('two', ?, 'malformed', 0), ('three', 12, ?, 0)",
+            rusqlite::params![reference, reference, reference, reference],
+        ).unwrap();
+        client
+            .conn
+            .execute(
+                "INSERT INTO avatars VALUES ('one', ?, 0), ('two', '{\"blobId\":12}', 0)",
+                rusqlite::params![reference],
+            )
+            .unwrap();
+        client.conn.execute(
+            "INSERT INTO _syncular_blobs(blob_id, bytes, byte_length, refcount, created_at_ms, last_used_ms) VALUES ('sha256:other', X'02', 1, 77, 0, 0)",
+            [],
+        ).unwrap();
+        let mut transport = CountingRealtimeTransport {
+            blob_download: Some(bytes.clone()),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            client
+                .fetch_blob_bytes(&mut transport, &blob_id)
+                .unwrap()
+                .bytes,
+            bytes
+        );
+        let rows = client
+            .conn
+            .prepare("SELECT blob_id, refcount FROM _syncular_blobs ORDER BY blob_id")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(rows, vec![(blob_id, 5), ("sha256:other".to_owned(), 77)]);
     }
 
     #[test]
@@ -7474,7 +7545,7 @@ impl SyncClient {
         // flag can leave a newly referenced body at refcount zero and make it
         // eligible for LRU eviction. The TypeScript core has the same
         // unconditional response-boundary reconciliation.
-        self.reconcile_blob_refcounts(false);
+        self.reconcile_blob_refcounts(false, None);
 
         if let Some((error_code, message)) = failure {
             return SyncOutcome::Failed {
@@ -7825,7 +7896,7 @@ impl SyncClient {
                                 }
                                 // §5.9.7 B2: revocation deletes now-unauthorized blob
                                 // bodies (evicted ≠ revoked).
-                                self.reconcile_blob_refcounts(true);
+                                self.reconcile_blob_refcounts(true, None);
                             }
                             Err(()) => {
                                 // §3.3 fail closed: no local mapping — never clear by
@@ -8924,7 +8995,7 @@ impl SyncClient {
                 }
             }
             self.rebuild_overlay_if_dirty();
-            self.reconcile_blob_refcounts(true);
+            self.reconcile_blob_refcounts(true, None);
             self.conn
                 .execute(
                     "INSERT INTO _syncular_meta(key, value) VALUES (?1, ?2)",
@@ -9325,7 +9396,7 @@ impl SyncClient {
             .map_err(|e| simple(e.to_string()))?;
         // The row can arrive before its body. Pin the newly downloaded entry
         // from the current visible references before trimming (§5.9.7 B1).
-        self.reconcile_blob_refcounts(false);
+        self.reconcile_blob_refcounts(false, Some(&blob_id));
         self.enforce_blob_cache_cap();
         #[cfg(feature = "bench-internals")]
         drop(insert_phase);
@@ -9512,9 +9583,10 @@ impl SyncClient {
     }
 
     /// §5.9.7 B1/B2: recompute cache refcounts from live `blob_ref` columns
-    /// in the visible tables; `delete_orphans` deletes zero-ref bodies not
+    /// in the visible tables. `blob_id` narrows a fresh-download refresh to
+    /// the inserted cache row. `delete_orphans` deletes zero-ref bodies not
     /// pinned by a pending upload (the revocation side, B2).
-    fn reconcile_blob_refcounts(&mut self, delete_orphans: bool) {
+    fn reconcile_blob_refcounts(&mut self, delete_orphans: bool, blob_id: Option<&str>) {
         #[cfg(feature = "bench-internals")]
         let _phase = self.benchmark_phases.start(Phase::BlobReconcile);
         if !self.schema_has_blobs() {
@@ -9523,6 +9595,29 @@ impl SyncClient {
         // Pending edits and revocation must be reflected before counting the
         // live references that protect cached bodies (§5.9.7 B1/B2).
         self.rebuild_overlay_if_dirty();
+        if let Some(blob_id) = blob_id {
+            let mut count = 0_i64;
+            for table in self.schema.tables.clone() {
+                for column in table.columns.iter().filter(|c| c.ty == ColumnType::BlobRef) {
+                    let identifier = quote_ident(&column.name);
+                    let sql = format!(
+                        "SELECT count(*) FROM {} WHERE CASE WHEN typeof({identifier}) = 'text' AND json_valid({identifier}) THEN json_extract({identifier}, '$.blobId') END = ?",
+                        quote_ident(&table.name),
+                    );
+                    if let Ok(column_count) =
+                        self.conn
+                            .query_row(&sql, rusqlite::params![blob_id], |row| row.get::<_, i64>(0))
+                    {
+                        count += column_count;
+                    }
+                }
+            }
+            let _ = self.conn.execute(
+                "UPDATE _syncular_blobs SET refcount = ? WHERE blob_id = ?",
+                rusqlite::params![count, blob_id],
+            );
+            return;
+        }
         let mut counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
         for table in self.schema.tables.clone() {
             let blob_cols: Vec<String> = table
@@ -9955,7 +10050,7 @@ impl SyncClient {
             applied_cursor = Some(applied_cursor.map_or(next_cursor, |c| c.max(next_cursor)));
         }
         if let Some(cursor) = applied_cursor {
-            self.reconcile_blob_refcounts(false);
+            self.reconcile_blob_refcounts(false, None);
             // §8.2 ack point: the highest applied SUB_END.nextCursor.
             let ack = format!("{{\"type\":\"ack\",\"cursor\":{cursor}}}");
             let _ = transport.realtime_send(&ack);

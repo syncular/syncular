@@ -1081,6 +1081,35 @@ fn handle(
             }
             Ok(json!({ "ids": ids, "nsPerCommit": durations }))
         }
+        "benchSeedBlobRefs" => {
+            let blob = params
+                .get("blob")
+                .and_then(Value::as_str)
+                .ok_or_else(|| client_err("Invalid blob reference fixture".to_owned()))?;
+            let count = params
+                .get("count")
+                .and_then(Value::as_u64)
+                .filter(|count| *count <= 99_999)
+                .ok_or_else(|| client_err("Invalid blob reference fixture".to_owned()))?;
+            let transaction = need_client(client)?
+                .benchmark_connection()
+                .transaction()
+                .map_err(|error| client_err(error.to_string()))?;
+            {
+                let mut insert = transaction
+                    .prepare("INSERT INTO attachments(id, project_id, body, _syncular_version) VALUES (?, ?, ?, 0)")
+                    .map_err(|error| client_err(error.to_string()))?;
+                for index in 1..=count {
+                    insert
+                        .execute(rusqlite::params![format!("p4-ref-{index}"), "p-1", blob])
+                        .map_err(|error| client_err(error.to_string()))?;
+                }
+            }
+            transaction
+                .commit()
+                .map_err(|error| client_err(error.to_string()))?;
+            Ok(json!({ "inserted": count }))
+        }
         "benchBlobFile" => {
             if params.get("mode").and_then(Value::as_str) != Some("direct") {
                 return Err(client_err(

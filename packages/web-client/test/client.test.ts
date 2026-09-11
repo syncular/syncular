@@ -1457,6 +1457,12 @@ describe('blob downloads', () => {
     let fetched: Awaited<ReturnType<typeof entry.client.fetchBlob>> | undefined;
     try {
       fetched = await entry.client.fetchBlob(blobId);
+      expect(
+        entry.db.query(
+          'SELECT refcount FROM _syncular_blobs WHERE blob_id = ?',
+          [blobId],
+        ),
+      ).toEqual([{ refcount: 0 }]);
       source.fill(0);
       entry.db.query('SELECT count(*) AS n FROM _syncular_blobs');
     } finally {
