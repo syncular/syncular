@@ -47,13 +47,13 @@ import {
   type CachedBlob,
   clearPendingUpload,
   computeBlobId,
+  deleteUnreferencedCachedBlobs,
   enforceBlobCacheCap,
   ensureBlobSchema,
   getCachedBlob,
   listPendingUploads,
   parseBlobRef,
   putCachedBlob,
-  reconcileBlobRefcounts,
   recordPendingUpload,
   schemaHasBlobs,
   serializeBlobRef,
@@ -302,9 +302,9 @@ export interface SyncClientConfig {
   readonly blobs?: BlobTransport;
   /**
    * §5.9.7 B1 blob-cache size cap (bytes). When the sum of cached body sizes
-   * exceeds this, zero-ref, non-pinned bodies are evicted LRU-first after each
-   * cache write (referenced/pinned bodies are never evicted — correctness
-   * beats the cap). Absent ⇒ retain until storage pressure (the shipped
+   * exceeds this, unreferenced bodies without pending work are evicted in
+   * creation timestamp order after each cache write. Referenced bodies remain cached
+   * even when that exceeds the cap. Absent means retain until storage pressure (the shipped
    * default; a referenced body always stays resolvable without a re-download).
    */
   readonly blobCacheMaxBytes?: number;
@@ -688,47 +688,7 @@ export class SyncClient {
     // Do not materialize new app indexes/FTS projections yet: on a version
     // bump they may reference columns that only exist after the reset.
     ensureLocalBookkeepingSchema(this.#db);
-    this.#db.transaction(() => {
-      for (const trigger of ['insert', 'update', 'delete', 'cache'])
-        this.#db.exec(
-          `DROP TRIGGER IF EXISTS _syncular_blob_commit_${trigger}`,
-        );
-      if (this.#hasBlobs) {
-        ensureBlobSchema(this.#db);
-        const columns = JSON.stringify(
-          [...this.#schema.tables.values()].flatMap((table) =>
-            table.columns
-              .filter((column) => column.type === 'blob_ref')
-              .map((column) => [table.name, column.name]),
-          ),
-        ).replaceAll("'", "''");
-        const references = `SELECT o.client_commit_id, b.blob_id
-          FROM _syncular_outbox o JOIN json_each(o.operations) op
-          JOIN json_each(op.value, '$.values') v JOIN json_each('${columns}') c
-          JOIN _syncular_blobs b ON b.blob_id = CASE WHEN v.type = 'text' AND json_valid(v.value) THEN json_extract(v.value, '$.blobId') END
-          WHERE json_extract(op.value, '$.op') = 'upsert'
-            AND json_extract(op.value, '$.table') = json_extract(c.value, '$[0]')
-            AND v.key = json_extract(c.value, '$[1]')`;
-        this.#db
-          .exec(`CREATE TRIGGER _syncular_blob_commit_insert AFTER INSERT ON _syncular_outbox BEGIN
-          INSERT OR IGNORE INTO _syncular_blob_commit_refs ${references} AND o.client_commit_id = NEW.client_commit_id; END`);
-        this.#db
-          .exec(`CREATE TRIGGER _syncular_blob_commit_update AFTER UPDATE OF operations ON _syncular_outbox BEGIN
-          DELETE FROM _syncular_blob_commit_refs WHERE commit_id = OLD.client_commit_id;
-          INSERT OR IGNORE INTO _syncular_blob_commit_refs ${references} AND o.client_commit_id = NEW.client_commit_id; END`);
-        this.#db
-          .exec(`CREATE TRIGGER _syncular_blob_commit_delete BEFORE DELETE ON _syncular_outbox BEGIN
-          DELETE FROM _syncular_blob_uploads WHERE blob_id IN (SELECT blob_id FROM _syncular_blob_commit_refs WHERE commit_id = OLD.client_commit_id)
-            AND NOT EXISTS (SELECT 1 FROM _syncular_blob_commit_refs r WHERE r.blob_id = _syncular_blob_uploads.blob_id AND r.commit_id != OLD.client_commit_id);
-          DELETE FROM _syncular_blob_commit_refs WHERE commit_id = OLD.client_commit_id; END`);
-        this.#db
-          .exec(`CREATE TRIGGER _syncular_blob_commit_cache AFTER INSERT ON _syncular_blobs BEGIN
-          INSERT OR IGNORE INTO _syncular_blob_commit_refs ${references} AND b.blob_id = NEW.blob_id; END`);
-        this.#db.exec(
-          `INSERT OR IGNORE INTO _syncular_blob_commit_refs ${references}`,
-        );
-      }
-    });
+    if (this.#hasBlobs) ensureBlobSchema(this.#db);
     this.#db.transaction(() => {
       pruneCommitOutcomes(this.#db, this.#outcomeRetentionMaxEntries);
     });
@@ -1510,13 +1470,11 @@ export class SyncClient {
       );
     }
     const blobId = await computeBlobId(bytes);
+    const nowMs = this.#now();
     this.#db.transaction(() => {
-      putCachedBlob(this.#db, blobId, bytes, this.#now(), options?.mediaType);
-      recordPendingUpload(this.#db, blobId, this.#now(), options?.mediaType);
+      putCachedBlob(this.#db, blobId, bytes, nowMs, options?.mediaType);
+      recordPendingUpload(this.#db, blobId, nowMs, options?.mediaType);
     });
-    // §5.9.7 B1: a staged upload is pinned (recordPendingUpload), so the cap
-    // trim below will never evict it — but a stage may push other zero-ref
-    // bodies over the cap, so run the trim.
     this.#enforceBlobCacheCap();
     return {
       blobId,
@@ -1547,7 +1505,7 @@ export class SyncClient {
     const blobId = blobIdOrRef.startsWith('sha256:')
       ? blobIdOrRef
       : parseBlobRef(blobIdOrRef).blobId;
-    const cached = getCachedBlob(this.#db, blobId, this.#now());
+    const cached = getCachedBlob(this.#db, blobId);
     if (cached !== undefined) return cached;
     const transport = this.#config.blobs;
     if (transport === undefined) {
@@ -1595,9 +1553,7 @@ export class SyncClient {
       );
     }
     putCachedBlob(this.#db, blobId, bytes, this.#now());
-    // The referencing row can arrive before its body. Pin the new cache entry
-    // from current visible references before applying the size cap (§5.9.7 B1).
-    this.#reconcileBlobs(false, blobId);
+    this.#db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
     this.#enforceBlobCacheCap();
     const stored = getCachedBlob(this.#db, blobId);
     if (stored === undefined) {
@@ -1613,7 +1569,7 @@ export class SyncClient {
   #enforceBlobCacheCap(): void {
     const cap = this.#config.blobCacheMaxBytes;
     if (cap === undefined) return;
-    enforceBlobCacheCap(this.#db, cap);
+    enforceBlobCacheCap(this.#db, this.#schema, cap);
   }
 
   /** Flush any queued blob uploads (§5.9.7 B4); safe to call standalone. */
@@ -2188,6 +2144,29 @@ export class SyncClient {
           this.#now(),
           this.#captureBeforeImages(operations),
         );
+        for (const operation of operations) {
+          if (operation.op !== 'upsert') continue;
+          const table = this.#schema.tables.get(operation.table);
+          if (table === undefined) continue;
+          for (const column of table.columns) {
+            if (column.type !== 'blob_ref') continue;
+            const raw = operation.values?.[column.name];
+            if (typeof raw !== 'string') continue;
+            let blobId: string;
+            try {
+              blobId = parseBlobRef(raw).blobId;
+            } catch {
+              continue;
+            }
+            this.#db.exec(
+              `INSERT OR IGNORE INTO _syncular_blob_commit_refs(commit_id, blob_id)
+               SELECT ?, ? WHERE EXISTS (
+                 SELECT 1 FROM _syncular_blobs WHERE blob_id = ?
+               )`,
+              [clientCommitId, blobId, blobId],
+            );
+          }
+        }
         this.#applyOperationsLocally(operations, batch);
         batch.status();
       });
@@ -2386,7 +2365,7 @@ export class SyncClient {
           batch.rejections();
           batch.outcomes();
         }
-        this.#reconcileBlobs(true);
+        this.#deleteUnreferencedBlobs();
         setMeta(this.#db, metaKey, purge.canonicalPlan);
         return {
           alreadyApplied: false,
@@ -3564,7 +3543,6 @@ export class SyncClient {
         // §7.1: local reads see outbox state applied optimistically — replay
         // the still-pending commits on top of the freshly applied server state.
         this.#replayOutbox();
-        this.#reconcileBlobs(false);
       } finally {
         this.#endDiagnosticsDeferral();
       }
@@ -4047,7 +4025,7 @@ export class SyncClient {
             batch.rejections();
             batch.outcomes();
           }
-          this.#reconcileBlobs(true);
+          this.#deleteUnreferencedBlobs();
         } catch (error) {
           if (
             error instanceof ClientSyncError &&
@@ -4265,17 +4243,9 @@ export class SyncClient {
     });
   }
 
-  /**
-   * §5.9.7 B1/B2: recompute blob-cache refcounts from live `blob_ref`
-   * columns. No-op unless the schema has blob columns. `deleteOrphans`
-   * triggers the revocation-side body deletion (B2).
-   */
-  #reconcileBlobs(deleteOrphans: boolean, blobId?: string): void {
+  #deleteUnreferencedBlobs(): void {
     if (!this.#hasBlobs) return;
-    reconcileBlobRefcounts(this.#db, this.#schema, {
-      deleteOrphans,
-      ...(blobId === undefined ? {} : { blobId }),
-    });
+    deleteUnreferencedCachedBlobs(this.#db, this.#schema);
   }
 
   // -- helpers -----------------------------------------------------------------

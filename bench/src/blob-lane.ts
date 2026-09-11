@@ -345,13 +345,11 @@ export async function runBlobFile(options: {
     const downloaded = await measure(reader, 'fetchBlob', { blob: row.body });
     const cached = await query(
       reader,
-      'SELECT refcount FROM _syncular_blobs WHERE blob_id = ?',
+      'SELECT blob_id FROM _syncular_blobs WHERE blob_id = ?',
       [staged.ref.blobId],
     );
-    if (cached.length !== 1 || cached[0]?.refcount !== localReferenceRows)
-      throw new Error(
-        'Downloaded blob refcount differs from visible references',
-      );
+    if (cached.length !== 1)
+      throw new Error('Downloaded blob cache state differs');
     await snapshotDisk('downloaded', readerPath);
     const beforeHitRequests = await server.requests(reader.clientId);
     const cacheHit = await measure(reader, 'fetchBlob', { blob: row.body });
@@ -736,16 +734,14 @@ export async function runBlobLane(options: {
       )
         throw new Error('Blob references failed to converge');
       const entries = entry.database.query(
-        'SELECT blob_id, byte_length, refcount FROM _syncular_blobs ORDER BY blob_id',
+        'SELECT blob_id, byte_length FROM _syncular_blobs ORDER BY blob_id',
       );
       if (
         entries.length !== options.objects ||
-        entries.some(
-          (row) => row.byte_length !== options.byteLength || row.refcount !== 1,
-        )
+        entries.some((row) => row.byte_length !== options.byteLength)
       )
         throw new Error(
-          `Blob cache metadata differs from live references: ${entry.name} ${JSON.stringify(entries)}`,
+          `Blob cache metadata differs: ${entry.name} ${JSON.stringify(entries)}`,
         );
       cacheState.push({ client: entry.name, entries });
     }
@@ -1217,13 +1213,11 @@ export async function runProcessBlobs(options: {
         throw new Error('Native blob references did not converge');
       const entries = await query(
         client,
-        'SELECT blob_id, byte_length, refcount FROM _syncular_blobs ORDER BY blob_id',
+        'SELECT blob_id, byte_length FROM _syncular_blobs ORDER BY blob_id',
       );
       if (
         entries.length !== options.objects ||
-        entries.some(
-          (row) => row.byte_length !== options.byteLength || row.refcount !== 1,
-        )
+        entries.some((row) => row.byte_length !== options.byteLength)
       )
         throw new Error(
           'Native blob cache metadata differs from live references',

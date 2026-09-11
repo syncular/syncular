@@ -802,8 +802,9 @@ pub struct ClientLimits {
     /// baseline + sqlite images, §5.3 — rusqlite can always import).
     pub accept: Option<u8>,
     /// §5.9.7 B1 blob-cache size cap (bytes). When set and the sum of cached
-    /// body sizes exceeds it, zero-ref, non-pinned bodies are evicted LRU-first
-    /// after each cache write. `None` ⇒ retain until storage pressure (default).
+    /// body sizes exceeds it, unreferenced bodies without pending work are
+    /// evicted by creation timestamp after each cache write. `None` retains bodies
+    /// until storage pressure (default).
     pub blob_cache_max_bytes: Option<i64>,
     /// Maximum durable final outcomes. Active conflicts/rejections are never
     /// pruned to satisfy the cap. Defaults to 1,000.

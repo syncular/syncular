@@ -501,6 +501,11 @@ export function ensureLocalBookkeepingSchema(db: ClientDatabase): void {
   db.transaction(() => {
     db.exec(`CREATE TABLE IF NOT EXISTS _syncular_meta(
       key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+    db.exec(`CREATE TABLE IF NOT EXISTS _syncular_blob_commit_refs(
+      commit_id TEXT NOT NULL, blob_id TEXT NOT NULL, PRIMARY KEY(commit_id, blob_id))`);
+    db.exec(
+      'CREATE INDEX IF NOT EXISTS _syncular_blob_commit_refs_body ON _syncular_blob_commit_refs(blob_id)',
+    );
     db.exec(
       `INSERT OR IGNORE INTO _syncular_meta(key, value) VALUES ('localRevision', '0')`,
     );

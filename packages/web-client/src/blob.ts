@@ -1,14 +1,9 @@
 /**
  * Client-side blob cache + transport (SPEC.md §5.9.7).
  *
- * Blob bytes are cached content-addressed by `blobId` and refcounted by the
- * local rows whose `blob_ref` columns reference them (B1). The cache is
- * derived from live-row references: after any apply/purge, refcounts are
- * reconciled from the current `blob_ref` column contents, and a body whose
- * only referencing rows were revocation-purged is deleted (B2, evicted ≠
- * revoked). BlobRefs stay resolvable at any time (B3): the `blobId` in the
- * row value is the whole download key. Pending uploads are tracked in the
- * outbox-adjacent uploads table (B4) and flushed before push.
+ * Blob bytes are cached by `blobId`. Retention reads live references directly
+ * from `blob_ref` columns and keeps explicit pending-commit dependencies.
+ * A small upload row queues each staged body for transfer before push.
  */
 import { type BlobRef, parseBlobRef, serializeBlobRef } from '@syncular/core';
 import type { ClientDatabase } from './database';
@@ -109,36 +104,43 @@ export async function computeBlobId(bytes: Uint8Array): Promise<string> {
 }
 
 export function ensureBlobSchema(db: ClientDatabase): void {
-  db.exec(`CREATE TABLE IF NOT EXISTS _syncular_blobs(
-    blob_id TEXT PRIMARY KEY,
-    bytes BLOB NOT NULL,
-    byte_length INTEGER NOT NULL,
-    media_type TEXT,
-    refcount INTEGER NOT NULL DEFAULT 0,
-    created_at_ms INTEGER NOT NULL,
-    last_used_ms INTEGER NOT NULL DEFAULT 0)`);
-  // Migrate a cache created before the §5.9.7 B1 LRU column: additive,
-  // idempotent (a duplicate-column error on an already-migrated DB is
-  // swallowed). last_used_ms drives cap eviction (LRU of zero-ref bodies).
-  try {
-    db.exec(
-      'ALTER TABLE _syncular_blobs ADD COLUMN last_used_ms INTEGER NOT NULL DEFAULT 0',
-    );
-  } catch {
-    // column already exists — the CREATE above included it
+  const existing = db.query(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_syncular_blobs'",
+  );
+  if (existing.length > 0) {
+    const columns = db
+      .query('PRAGMA table_info(_syncular_blobs)')
+      .map((row) => row.name)
+      .sort();
+    const expected = [
+      'blob_id',
+      'byte_length',
+      'bytes',
+      'created_at_ms',
+      'media_type',
+    ].sort();
+    if (
+      columns.length !== expected.length ||
+      columns.some((column, index) => column !== expected[index])
+    ) {
+      throw new ClientSyncError(
+        'sync.schema_mismatch',
+        'Local blob schema is incompatible',
+      );
+    }
+  } else {
+    db.exec(`CREATE TABLE _syncular_blobs(
+      blob_id TEXT PRIMARY KEY,
+      bytes BLOB NOT NULL,
+      byte_length INTEGER NOT NULL,
+      media_type TEXT,
+      created_at_ms INTEGER NOT NULL)`);
   }
   db.exec(`CREATE TABLE IF NOT EXISTS _syncular_blob_uploads(
-    blob_id TEXT PRIMARY KEY,
-    media_type TEXT,
-    created_at_ms INTEGER NOT NULL)`);
-  db.exec(`CREATE TABLE IF NOT EXISTS _syncular_blob_commit_refs(
-    commit_id TEXT NOT NULL, blob_id TEXT NOT NULL, PRIMARY KEY(commit_id, blob_id))`);
-  db.exec(
-    'CREATE INDEX IF NOT EXISTS _syncular_blob_commit_refs_body ON _syncular_blob_commit_refs(blob_id)',
-  );
+    blob_id TEXT PRIMARY KEY, media_type TEXT, created_at_ms INTEGER NOT NULL)`);
 }
 
-/** Put bytes into the content-addressed cache (idempotent); touches LRU. */
+/** Put bytes into the content-addressed cache without rewriting an existing body. */
 export function putCachedBlob(
   db: ClientDatabase,
   blobId: string,
@@ -148,17 +150,15 @@ export function putCachedBlob(
 ): void {
   db.exec(
     `INSERT INTO _syncular_blobs(
-       blob_id, bytes, byte_length, media_type, refcount, created_at_ms, last_used_ms)
-     VALUES (?,?,?,?,0,?,?)
-     ON CONFLICT(blob_id) DO UPDATE SET last_used_ms = excluded.last_used_ms`,
-    [blobId, bytes, bytes.length, mediaType ?? null, nowMs, nowMs],
+       blob_id, bytes, byte_length, media_type, created_at_ms)
+     VALUES (?,?,?,?,?) ON CONFLICT(blob_id) DO NOTHING`,
+    [blobId, bytes, bytes.length, mediaType ?? null, nowMs],
   );
 }
 
 export function getCachedBlob(
   db: ClientDatabase,
   blobId: string,
-  nowMs?: number,
 ): CachedBlob | undefined {
   const rows = db.query(
     'SELECT bytes, byte_length, media_type FROM _syncular_blobs WHERE blob_id = ?',
@@ -166,14 +166,6 @@ export function getCachedBlob(
   );
   const row = rows[0];
   if (row === undefined) return undefined;
-  // §5.9.7 B1 LRU: a cache-hit read touches "recently used" so a hot image
-  // survives a cap trim. Skipped when no clock is supplied (pure read).
-  if (nowMs !== undefined) {
-    db.exec('UPDATE _syncular_blobs SET last_used_ms = ? WHERE blob_id = ?', [
-      nowMs,
-      blobId,
-    ]);
-  }
   return {
     blobId,
     bytes: row.bytes as Uint8Array,
@@ -183,17 +175,13 @@ export function getCachedBlob(
 }
 
 /**
- * §5.9.7 B1 size cap + LRU eviction. When the sum of cached body sizes exceeds
- * `maxBytes`, evict **zero-ref, non-pinned** bodies in least-recently-used
- * order until back under the cap. NEVER evicts a referenced body (refcount > 0
- * — it must stay resolvable without a re-download) nor a pending-upload-pinned
- * body (its bytes are the only copy until push, B4). If every over-cap body is
- * referenced or pinned, the cache stays over the cap (correctness beats the
- * cap). Evicting a zero-ref body is always safe: B3 re-enables the fetch from
- * any surviving `blob_ref` value. Returns the evicted blobIds.
+ * §5.9.7 B1 size cap. When the sum of cached body sizes exceeds `maxBytes`,
+ * evict unreferenced, non-pinned bodies by creation timestamp, then blob ID,
+ * until back under the cap. Returns the evicted blobIds.
  */
 export function enforceBlobCacheCap(
   db: ClientDatabase,
+  schema: CompiledClientSchema,
   maxBytes: number,
 ): string[] {
   const totalRow = db.query(
@@ -201,14 +189,13 @@ export function enforceBlobCacheCap(
   )[0];
   let total = Number(totalRow?.total ?? 0);
   if (total <= maxBytes) return [];
-  // Eviction candidates: zero-ref AND not pinned by a pending upload, oldest
-  // (LRU) first, then oldest created as a stable tiebreak.
+  // Oldest eligible body first, with blob ID as a stable tie.
   const candidates = db.query(
     `SELECT blob_id, byte_length FROM _syncular_blobs
-     WHERE refcount = 0
-       AND blob_id NOT IN (SELECT blob_id FROM _syncular_blob_uploads)
+     WHERE blob_id NOT IN (SELECT blob_id FROM _syncular_blob_uploads)
        AND blob_id NOT IN (SELECT blob_id FROM _syncular_blob_commit_refs)
-     ORDER BY last_used_ms ASC, created_at_ms ASC`,
+       AND blob_id NOT IN (${visibleBlobIdsSql(schema)})
+     ORDER BY created_at_ms ASC, blob_id ASC`,
   );
   const evicted: string[] = [];
   db.transaction(() => {
@@ -221,20 +208,6 @@ export function enforceBlobCacheCap(
     }
   });
   return evicted;
-}
-
-/** Record a pending upload (§5.9.7 B4); flushed before the next push. */
-export function recordPendingUpload(
-  db: ClientDatabase,
-  blobId: string,
-  nowMs: number,
-  mediaType?: string,
-): void {
-  db.exec(
-    `INSERT OR IGNORE INTO _syncular_blob_uploads(blob_id, media_type, created_at_ms)
-     VALUES (?,?,?)`,
-    [blobId, mediaType ?? null, nowMs],
-  );
 }
 
 export function listPendingUploads(
@@ -267,13 +240,25 @@ export function listPendingUploads(
     });
 }
 
+export function recordPendingUpload(
+  db: ClientDatabase,
+  blobId: string,
+  nowMs: number,
+  mediaType?: string,
+): void {
+  db.exec(
+    `INSERT OR IGNORE INTO _syncular_blob_uploads(blob_id, media_type, created_at_ms)
+     VALUES (?,?,?)`,
+    [blobId, mediaType ?? null, nowMs],
+  );
+}
+
 export function clearPendingUpload(db: ClientDatabase, blobId: string): void {
   db.exec('DELETE FROM _syncular_blob_uploads WHERE blob_id = ?', [blobId]);
 }
 
 /**
- * All `blob_ref` column names per table (for refcount reconciliation).
- * Blank result ⇒ the schema has no attachments; callers skip reconciliation.
+ * All `blob_ref` column names per table.
  */
 export function blobRefColumnsBySchema(
   schema: CompiledClientSchema,
@@ -295,91 +280,35 @@ export function schemaHasBlobs(schema: CompiledClientSchema): boolean {
   return false;
 }
 
-/**
- * §5.9.7 B1/B2: recompute cache refcounts from the current `blob_ref` column
- * contents across all synced tables, then delete cache bodies that dropped
- * to zero refs *and* have no pending upload (a pending upload pins its body,
- * B4). Called after every apply/purge that may add or remove references.
- *
- * `blobId` narrows a fresh-download refresh to the inserted cache row.
- * `deleteOrphans` distinguishes the two B2 transitions: revocation purge
- * passes `true` (drop the now-unauthorized body); a benign apply passes
- * `false` (retain zero-ref bodies as LRU cache entries — the shipped
- * default). Bodies pinned by a pending upload are always retained.
- */
-export function reconcileBlobRefcounts(
+function visibleBlobIdsSql(schema: CompiledClientSchema): string {
+  const selects: string[] = [];
+  for (const [tableName, columns] of blobRefColumnsBySchema(schema)) {
+    for (const column of columns) {
+      const identifier = quoteIdent(column);
+      selects.push(
+        `SELECT json_extract(${identifier}, '$.blobId') AS blob_id
+         FROM ${quoteIdent(tableName)}
+         WHERE typeof(${identifier}) = 'text'
+           AND json_valid(${identifier})
+           AND json_type(${identifier}, '$.blobId') = 'text'`,
+      );
+    }
+  }
+  return selects.length === 0
+    ? 'SELECT NULL AS blob_id WHERE 0'
+    : selects.join(' UNION ');
+}
+
+export function deleteUnreferencedCachedBlobs(
   db: ClientDatabase,
   schema: CompiledClientSchema,
-  options?: {
-    readonly blobId?: string;
-    readonly deleteOrphans?: boolean;
-  },
 ): void {
-  const byTable = blobRefColumnsBySchema(schema);
-  if (byTable.size === 0) return;
-  if (options?.blobId !== undefined) {
-    let count = 0;
-    for (const [tableName, columns] of byTable) {
-      for (const column of columns) {
-        const identifier = quoteIdent(column);
-        const row = db.query(
-          `SELECT count(*) AS n FROM ${quoteIdent(tableName)}
-           WHERE CASE
-             WHEN typeof(${identifier}) = 'text' AND json_valid(${identifier})
-             THEN json_extract(${identifier}, '$.blobId')
-           END = ?`,
-          [options.blobId],
-        )[0];
-        count += Number(row?.n ?? 0);
-      }
-    }
-    db.exec('UPDATE _syncular_blobs SET refcount = ? WHERE blob_id = ?', [
-      count,
-      options.blobId,
-    ]);
-    return;
-  }
-  // Count references to each blobId across every blob_ref column.
-  const counts = new Map<string, number>();
-  for (const [tableName, columns] of byTable) {
-    for (const column of columns) {
-      const rows = db.query(
-        `SELECT ${quoteIdent(column)} AS v FROM ${quoteIdent(tableName)}
-         WHERE ${quoteIdent(column)} IS NOT NULL`,
-      );
-      for (const row of rows) {
-        const raw = row.v;
-        if (typeof raw !== 'string') continue;
-        let ref: BlobRef;
-        try {
-          ref = parseBlobRef(raw);
-        } catch {
-          continue;
-        }
-        counts.set(ref.blobId, (counts.get(ref.blobId) ?? 0) + 1);
-      }
-    }
-  }
-  db.transaction(() => {
-    // Reset all refcounts, then apply the recomputed counts.
-    db.exec('UPDATE _syncular_blobs SET refcount = 0');
-    for (const [blobId, count] of counts) {
-      db.exec('UPDATE _syncular_blobs SET refcount = ? WHERE blob_id = ?', [
-        count,
-        blobId,
-      ]);
-    }
-    if (options?.deleteOrphans === true) {
-      // §5.9.7 B2 revocation side: delete zero-ref bodies not pinned by a
-      // pending upload.
-      db.exec(
-        `DELETE FROM _syncular_blobs
-         WHERE refcount = 0
-           AND blob_id NOT IN (SELECT blob_id FROM _syncular_blob_uploads)
-           AND blob_id NOT IN (SELECT blob_id FROM _syncular_blob_commit_refs)`,
-      );
-    }
-  });
+  db.exec(
+    `DELETE FROM _syncular_blobs
+     WHERE blob_id NOT IN (SELECT blob_id FROM _syncular_blob_uploads)
+       AND blob_id NOT IN (SELECT blob_id FROM _syncular_blob_commit_refs)
+       AND blob_id NOT IN (${visibleBlobIdsSql(schema)})`,
+  );
 }
 
 export type { BlobRef };

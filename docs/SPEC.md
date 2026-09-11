@@ -1785,7 +1785,7 @@ pushed and downloaded on demand — never in the pull stream. Blobs reuse the
 codec (rides `json`), the content-address discipline (§5.1), the store
 abstraction, and the signed-URL machinery (§5.4); the genuinely new
 surfaces are the reference index, the download authorization rule, and the
-client refcounted cache lifecycle.
+client cache lifecycle.
 
 **Explicit non-goals this rung** (deferred until evidence demands):
 chunked/resumable upload, client-side encryption, blob versioning
@@ -2081,113 +2081,67 @@ payload and reference no blob — they skip the check.
 
 #### 5.9.7 Client cache lifecycle (constraints B1–B4)
 
-The client caches blob bytes locally, **content-addressed and refcounted
-by referencing rows** under the following normative constraints:
+The client stores blob bodies in its SQLite database under the following
+normative constraints:
 
-- **B1 — Refcounted, content-addressed cache.** Cached blob bodies are
-  keyed by `blobId`; the refcount for a `blobId` is the number of local
-  rows whose `blob_ref` columns currently reference it. The cache does not
-  assume a body exists for a referencing row (it may be online-only, not
-  yet fetched) nor a referencing row for a body (a fetched body whose rows
-  were all deleted is zero-ref). A zero-ref body is **evictable** (LRU /
-  storage-pressure policy) — the shipped default is **retain until storage
-  pressure** (device-friendly re-entry UX; delete-on-zero-refs stays
-  policy-configurable). Reference counting is maintained through the one
-  apply-path choke point (§5.6 apply, §4.5 commit apply, §3.3 purge, §5.6
-  first-page clear): every mutation that adds, changes, or removes a
-  `blob_ref` value adjusts the refcount.
+- **B1: Content-addressed cache.** `_syncular_blobs` keys each body by
+  `blobId` and stores its bytes, byte length, media type, and creation time. The
+  body row is immutable. The client does not store a derived reference count.
+  When retention needs the current references, the client
+  selects valid `blobId` values directly from the visible `blob_ref` columns.
 
-  **Where the bytes live — the pinned storage model.** Cached blob bodies
-  are stored as **BLOB columns in the client's own SQLite database**, in a
-  `_syncular_blobs` cache table alongside the synced rows and the refcounts.
-  Decision, justified against the alternatives: (a) *one storage system* —
-  the bytes are transactional with the refcount rows that pin them (a
-  refcount adjust and a body insert/delete commit atomically, so a crash
-  never strands a body against a stale count); (b) *survives restarts for
-  free* — the client DB already rides OPFS via the SQLite sahpool VFS in the
-  browser and a plain file under `rusqlite` on native, so no second
-  persistence surface (an OPFS blob directory, an IndexedDB store, a native
-  filesystem cache) and no second eviction policy to keep coherent; (c)
-  *SQLite handles multi-MB images fine* — a page-cached BLOB read is a
-  memory copy, well within the image-attachment envelope this rung targets.
-  The alternatives rejected: a separate OPFS/filesystem blob directory would
-  double the storage systems and break the transactional pin (the classic
-  "row says present, file is gone" skew); IndexedDB adds a third async store
-  the native core cannot mirror. **The "very large media" caveat**: SQLite
-  is not the store for gigabyte video — a single BLOB must fit the client's
-  memory and the SQLite row-size envelope. An app attaching very large media
-  SHOULD store it presigned-URL-only (fetch bytes through the §5.9.5 URL and
-  hand them straight to a media element, never through the byte cache) or
-  run the client in a no-body-cache mode (resolve `blob_ref` → download URL
-  on demand, cache nothing). The refcounted-BLOB cache is the default for
-  images and documents; the presigned-URL path is the escape hatch for media
-  that must not sit in the row store.
+  The client MAY enforce a cache size cap. It evicts bodies in
+  ascending creation timestamp and then `blobId` until the total reaches the cap. A body is
+  eligible only when it needs no upload, no pending commit dependency names
+  it, and no visible row references it. If every body above the cap is
+  retained by one of those conditions, the cache stays above the cap.
+  Cache hits do not write blob metadata.
+- **B2: Eviction and revocation.** Ordinary row deletion leaves an
+  unreferenced body available for later cache eviction. Scope revocation
+  deletes bodies that have no remaining visible reference, pending upload,
+  or pending commit dependency. The client evaluates visible references
+  after applying the purge and replaying its remaining outbox.
+- **B3: BlobRefs remain resolvable.** A `blob_ref` value contains the complete
+  download key. A cache miss uses that `blobId` to request an authorized
+  download under §5.9.5. Retention bookkeeping adds no authority.
+- **B4: Upload state and commit dependencies.** `_syncular_blob_uploads`
+  carries one small durable row for each staged body. Keeping mutable upload
+  state outside `_syncular_blobs` prevents upload completion from rewriting a
+  large body row. When the client appends an outbox commit, it extracts the
+  commit's local cached `blob_ref` values
+  and writes `(commit_id, blob_id)` rows to `_syncular_blob_commit_refs` in
+  the same transaction as the outbox row. A server-resident reference whose
+  body is absent locally creates no local dependency and proceeds to the
+  server existence check in §5.9.6.
 
-  **Size cap + LRU eviction (the shipped trim).** The client MAY be given a
-  cache size cap (bytes). When the sum of cached body sizes exceeds the cap,
-  the client evicts **zero-ref, non-pinned bodies in least-recently-used
-  order** until the cache is back under the cap. Eviction NEVER touches a
-  body that is (i) currently referenced by a live row (refcount > 0 — a
-  referenced body stays resolvable without a re-download, the cache-hit
-  contract) or (ii) pinned by a pending upload (§5.9.7 B4 — its bytes are the
-  only copy until the push drains). An evicted referenced body is a
-  contradiction the eviction MUST NOT create; if every body over the cap is
-  referenced or pinned, the cache stays over the cap (correctness beats the
-  cap — the alternative is dropping bytes an app still needs). Evicting a
-  zero-ref body is always safe: B3 guarantees any surviving `blob_ref` value
-  re-enables the fetch, so eviction only costs a future re-download, never
-  correctness. "Recently used" is touched on both `putCachedBlob` (a fetch or
-  an upload stage) and a cache-hit read, so a hot image survives a trim.
-- **B2 — Evicted ≠ revoked.** Two distinct transitions delete blob bytes
-  differently: **revocation** (§3.3 — authorization lost) MUST delete the
-  no-longer-authorized bodies whose only referencing rows are being purged
-  (losing the grant means losing the bytes); **window
-  eviction** (future §4.8; a voluntary retention trim) MAY retain a
-  zero-ref body as an LRU cache entry. This rung implements the revocation
-  side (purge drops refs and deletes now-zero-ref bodies that were
-  reachable *only* through purged rows); the eviction side is a no-op
-  until windowed sync lands, but the refcount discipline is built so it
-  slots in.
-- **B3 — BlobRefs are always resolvable.** A `blob_ref` value on any local
-  row is sufficient to fetch its bytes: the `blobId` in the value is the
-  whole download key, and download is re-authorized server-side against
-  live rows (§5.9.5). No download-necessary bookkeeping lives in
-  row-adjacent state that a purge or eviction deletes — re-entry
-  re-delivers the row's `blob_ref`, and that alone re-enables the fetch.
-- **B4 — Upload state keys off the outbox.** A pending blob upload is
-  tracked **on the outbox commit that will reference it**, not on row
-  presence. When a mutation attaches a blob, the client records the blob
-  bytes (or a handle to them) against the pending commit; the sync loop
-  uploads any not-yet-present blobs (§5.9.3) **before** pushing the
-  commit's `PUSH_COMMIT` frame, so the §5.9.6 server check passes. The
-  optimistic local row and its blob body are both pinned by the same
-  outbox pin (a pending commit references the row; E1 of the eviction
-  design) until the commit drains. A rejected commit (§6.3) drops its
-  outbox entry and releases its upload state; the uploaded bytes become an
-  orphan swept by §5.9.2.
+  The sync loop validates and uploads staged bodies before pushing commits.
+  Successful byte delivery deletes the upload row; it does not delete a commit
+  dependency. Applied, cached, rejected, and revoked commits delete their own
+  dependencies in the same transaction that deletes the outbox row. A sibling
+  commit dependency continues to retain a shared body.
 
-Upload staging MUST commit the cached body and pending-upload pin in one
-local transaction. If a body write, pin write, or transaction commit fails,
-the client MUST report the storage failure and preserve the pre-call body,
-metadata, and pin state. This includes staging bytes already in the cache.
-A failed stage MUST NOT run cache eviction. Retrying after the storage fault
-is repaired MUST use the same content address and create at most one body
-and one pending-upload pin.
+The client uses exactly `_syncular_blobs`, `_syncular_blob_uploads`, and
+`_syncular_blob_commit_refs` for blob cache state. It MUST NOT derive commit
+dependencies through SQLite triggers or startup backfill, and it MUST NOT
+maintain stored refcounts. A client that finds an older local blob table layout MUST fail with
+`sync.schema_mismatch`. The client does not migrate or interpret the older
+layout.
+
+Upload staging MUST snapshot and hash the supplied byte view, then atomically
+insert or update `_syncular_blobs` and insert `_syncular_blob_uploads`. If that
+transaction fails, the client MUST report the storage failure and preserve the
+pre-call body, metadata, and upload state. A failed stage MUST NOT run cache
+eviction. Retrying after repair MUST use the same content address and leave one
+body row.
 
 Before uploading a queued body or accepting an already-present upload grant,
-the client MUST validate its local byte length and SHA-256 content address.
-A byte-array staging call MUST snapshot the exact supplied view before yielding.
-Caller mutation or reuse after the method returns its promise MUST NOT change
-the bytes, length, or content address committed by that call.
-A missing body, invalid stored body or upload metadata, or content mismatch
-MUST fail the sync round with client-local `sync.local_corrupt`. A storage
-read or pending-pin deletion failure MUST also fail the round. The client
-MUST NOT push the referencing commit after any such failure, drop that commit,
-or clear the affected pending-upload pin. The caller can repair storage and
-retry the original commit. Successfully uploaded earlier entries may remain
-cleared only when no pending commit needs their body. Byte delivery alone MUST
-NOT release a pending commit's body pin. The affected entry and all unsent
-commits stay durable.
+the client MUST validate its local byte type, byte length, upload metadata, and
+SHA-256 content address. A missing body, invalid stored value, or content
+mismatch MUST fail the sync round with `sync.local_corrupt`. A storage read or
+upload-state update failure MUST also fail the round. The client MUST NOT push
+or drop the referencing commit, delete its dependency, or clear failed upload
+state. Successfully uploaded earlier bodies may have no upload row; their
+pending commit dependencies continue to retain them.
 
 Client download resolution: a query/read that surfaces a `blob_ref` value
 gives the app the `blobId` + metadata; the app requests bytes through the
@@ -3678,8 +3632,8 @@ lease** (`leaseState`). Everything else is destroyed and rebuilt:
   are the app's declared intent, not synced data — but each is reset to
   `cursor = -1`, no resume token, `status = active`, so the next round
   is a fresh bootstrap of exactly the subscriptions the app still wants.
-  Blob-cache refcount state (§5.9.7), if present, is rebuilt from the
-  re-bootstrapped rows.
+  Blob bodies and pending commit dependencies (§5.9.7) remain durable;
+  retention reads references directly from the re-bootstrapped rows.
 - **Preserved:** the outbox (schema-agnostic by construction, §0 /
   §7.1 — pending commits survive verbatim and replay on top, §7.4.4);
   `clientId` (§1.5 — the device identity is not schema state, and
@@ -4893,9 +4847,9 @@ Each is a driver-interface script, not a prose test.
     Cache persistence across restart: a client uploads/fetches a blob, is
     closed and reopened on the SAME local database, and `fetchBlob` serves
     from cache with no network — the harness download counter proves the
-    body survived the restart (B1 storage model). (j) LRU eviction respects
-    refcounts/pins: with a small cache cap, staging bodies past the cap
-    evicts zero-ref bodies in LRU order while a still-referenced body and a
+    body survived the restart (B1 storage model). (j) Cache-cap eviction
+    respects references and pins: with a small cache cap, staging bodies past
+    the cap evicts unreferenced bodies by creation timestamp while a referenced body and a
     pending-upload-pinned body are retained (B1 cap + eviction). Both
     pairings (TS×TS, Rust×TS).
 

@@ -1,6 +1,7 @@
 # RFC: SQLite blob performance and reliability experiments
 
-- Status: implementation in progress
+- Status: completed in 0.18.0; follow-up simplification is tracked in
+  [RFC-SQLITE-BLOB-SIMPLIFICATION.md](./RFC-SQLITE-BLOB-SIMPLIFICATION.md)
 - Date: 2026-09-10
 - Review baseline: `99a036a19911068008d8f32136c69e1fcaabd874`
 - Scope: SQLite-backed client attachments, TS/Rust APIs and transports, native boundaries, and repository benchmarks

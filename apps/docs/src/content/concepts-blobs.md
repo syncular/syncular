@@ -46,28 +46,31 @@ await client.sync();
 const cached = await client.fetchBlob(row.attachment);
 ```
 
-`uploadBlob` commits the cached bytes and pending-upload pin in one SQLite
-transaction in both cores. A body write, pin write, or commit failure rejects
-the call and preserves the previous body, metadata, and pin state. Retry
-staging after repairing the storage failure; the same bytes retain their
-content address and do not create duplicate cache entries. The method snapshots
-the exact supplied byte view before it yields, so the caller can mutate or reuse
-its buffer after receiving the promise without changing the staged body.
+`uploadBlob` writes the cached bytes and a small upload row in one atomic SQLite
+transaction. A storage failure rejects the call and preserves the previous body,
+metadata, and upload state. Retry staging after repairing the storage failure;
+the same bytes retain their content address and do not create duplicate cache
+entries. The method snapshots the exact supplied byte view before it yields, so
+the caller can mutate or reuse its buffer after receiving the promise without
+changing the staged body.
 
 Before uploading a queued body, the client checks its stored length and SHA-256,
 including when the server already has the object. Missing or corrupt pending
 bytes or upload metadata fail the round with `sync.local_corrupt`. A storage
-read or upload-pin deletion failure also stops the round. The affected upload
-pin and original pending commit remain available for retry after storage is
+read or upload-row deletion failure also stops the round. The affected upload
+state and original pending commit remain available for retry after storage is
 repaired. This verification adds one full-body hash to each queued upload.
 
 The client keeps a durable body pin for every pending commit that references
-locally cached bytes. Upload completion removes the transport queue entry while
+locally cached bytes. Upload completion deletes the upload row while
 the commit pin remains. Acknowledgement, rejection, revocation, and an
-application-authorized purge remove the commit pin with the outbox entry. On
-restart, the client rebuilds missing commit pins from the durable outbox before
-it trims the cache. A reference to a body that exists only on the server does
-not create a local pin or require a local upload.
+application-authorized purge remove the commit pin with the outbox entry.
+Restart preserves the explicit commit pins. A reference to a body that exists
+only on the server does not create a local pin or require a local upload.
+
+The current clients accept one local blob-table layout. Opening a database from
+an older blob implementation fails with `sync.schema_mismatch`; create a fresh
+local database and resync it.
 
 ## Download authorization
 
@@ -80,18 +83,20 @@ A push that references a blob the server has never received is rejected with
 `blob.not_found`, and an upload whose bytes do not match the claimed address
 is rejected with `blob.hash_mismatch`.
 
-The local cache is content-addressed and refcounted by live rows: when a
-scope is revoked, the now-unauthorized blob bodies are purged along with their
-rows. Window eviction treats cached bodies differently; see
+The local cache is content-addressed. Cache trimming reads live references
+directly from `blob_ref` columns and keeps bodies referenced by pending commits.
+When a scope is revoked, the client purges now-unauthorized blob bodies along
+with their rows. Window eviction treats cached bodies differently; see
 [Windowed sync](/concepts-windowing/).
 
-A fresh download refreshes its reference count before cache trimming. Synced
-rows and unsent optimistic rows protect their referenced bodies. If those bodies
-exceed the configured cache cap, the client retains them and subsequent reads
-remain cache hits. Revocation updates the visible rows before removing orphaned
-bodies. The client asks SQLite to count references for the downloaded body and
-updates that cache row. Row changes and revocation still reconcile all cached
-body counts.
+Synced rows and unsent optimistic rows protect their referenced bodies. If those
+bodies exceed the configured cache cap, the client retains them and subsequent
+reads remain cache hits. Revocation updates the visible rows before removing
+orphaned bodies. The client stores upload state in a small row outside the body
+table and writes commit dependencies in the same transaction as the outbox commit.
+The body row remains immutable after insertion. Cache hits perform no metadata
+write, and a completed fresh download checkpoints its body out of the WAL before
+returning bytes.
 
 ## Storage backends
 

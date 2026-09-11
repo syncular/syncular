@@ -6,6 +6,27 @@ controlled lane that flatters some of them; the caveats state which. The
 curated source of truth is
 [bench/RESULTS.md](https://github.com/syncular/syncular/blob/main/bench/RESULTS.md).
 
+## SQLite blob-state simplification
+
+Two independent collections compared the current TS and Rust clients with
+0.18.0. Each collection ran ten paired 500,000,000-byte attempts per core with
+fresh writer and reader processes, WAL/FULL client databases, local MinIO, and
+complete SHA-256 receipts.
+
+| Collection | Core | 0.18 upload | Current upload | Paired change (95% interval) | Cache-hit change (95% interval) |
+| --- | --- | ---: | ---: | ---: | ---: |
+| First | TS | 1,905.12 ms | 1,454.29 ms | -21.07% [-31.11%, -9.12%] | -61.60% [-63.84%, -58.03%] |
+| Confirmation | TS | 1,994.98 ms | 1,524.89 ms | -24.93% [-32.73%, -17.18%] | -61.86% [-65.85%, -56.72%] |
+| First | Rust | 2,147.38 ms | 1,993.12 ms | -8.99% [-13.66%, -4.70%] | -66.07% [-66.49%, -65.57%] |
+| Confirmation | Rust | 2,212.32 ms | 2,027.48 ms | -6.80% [-10.00%, -3.44%] | -67.03% [-67.85%, -66.15%] |
+
+The current clients keep body rows immutable, store upload state in a small
+separate row, and write commit dependencies directly with each outbox commit.
+They do not maintain stored refcounts, triggers, startup backfill, or cache-hit
+metadata. See the
+[curated result](https://github.com/syncular/syncular/blob/main/bench/RESULTS.md)
+and [RFC](https://github.com/syncular/syncular/blob/main/docs/RFC-SQLITE-BLOB-SIMPLIFICATION.md).
+
 ## The published loopback lane
 
 The published numbers below come from a **bun:sqlite loopback** lane: the TypeScript
@@ -165,7 +186,7 @@ its own process. Select `--boundary command` to time the shared command router;
 the default times direct core operations. Parent elapsed time includes stdio
 delivery. Rust file-profile blob runs time the owned `FetchedBlob` result. Pass
 `--blob-reference-rows 100000` to seed that many visible references outside the
-operation clock and verify the downloaded body's resulting cache refcount.
+operation clock and verify that cache trimming retains the downloaded body.
 
 The restart workload supports TS and Rust with socket transport and file storage: it
 terminates the offline writer, opens its database in a fresh process, verifies

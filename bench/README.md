@@ -51,7 +51,7 @@ bun run bench --workload blobs --core rust --lane socket --boundary ffi --storag
 | `--blob-profile lifecycle\|file` | Blob workloads only; default `lifecycle`. `file` uses isolated processes and digest receipts, with socket lane, file storage, and direct boundary required. |
 | `--blob-store memory\|minio` | Blob workloads only; default `memory`. `minio` requires the file profile and the pinned local Docker image. |
 | `--blob-diagnostics on\|off` | File profile only; default `on`. Controls TS client SQL/blob method wrappers and Rust blob transport recording. |
-| `--blob-reference-rows` | File profile only; visible references to seed before the download clock, from 1 to 100,000. Default 1. The runner verifies the exact cache refcount. |
+| `--blob-reference-rows` | File profile only; visible references to seed before the download clock, from 1 to 100,000. Default 1. The runner verifies that the downloaded body remains cached. |
 | `--output` | Artifact path, relative to the repository root or absolute; existing files are refused |
 
 The commit-boundaries workload queues three commits with 499/2/1 or 500/2/1
@@ -132,8 +132,7 @@ The extra stats calls sit outside operation and delivery timers.
 | `observationPrepare`, `observationCommit`, `cursorPersist` | Change-scope collection, revision persistence/publication, and subscription trailer persistence |
 | `overlayRebuild`, `pendingReplay` | Complete base-to-visible reconciliation and pending-operation iteration/application, including changed-key filtering |
 | `blobDownload`, `blobValidate` | Authorized inline/signed-URL body retrieval and content-address verification |
-| `blobCacheInsert`, `blobCacheRead` | Cache insertion with refcount/retention work and cache read/materialization |
-| `blobReconcile` | Visible-reference scans and cache refcount updates |
+| `blobCacheInsert`, `blobCacheRead` | Cache insertion with retention work and cache read/materialization |
 
 Durations are inclusive. Nested phases overlap, so summing them double-counts
 work. Thread CPU excludes transport I/O threads and the server/controller.

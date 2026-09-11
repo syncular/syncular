@@ -66,7 +66,7 @@ One local SQLite transaction:
 - rejects each whole pending commit that touches a target with
   `client.local_data_purged` (an atomic multi-row commit is never split);
 - restores the last confirmed rows and replays safe later optimistic edits;
-- reconciles cached blob references;
+- removes cached blob bodies that no visible row or pending commit references;
 - records the purge id and canonical plan durably;
 - journals the dropped commit outcomes and emits one revisioned change batch.
 

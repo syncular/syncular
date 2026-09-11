@@ -30,7 +30,7 @@ export function processPhases(value: unknown) {
           'cursorPersist',
           'overlayRebuild',
           'pendingReplay',
-          'blobReconcile',
+          'blobRetention',
           'blobDownload',
           'blobValidate',
           'blobCacheRead',

@@ -17,6 +17,15 @@
 export const changelog = [
   {
     date: '2026-09-11',
+    title: 'Simplified SQLite blob state',
+    body: 'The TS and Rust clients write commit dependencies directly with the outbox and keep mutable upload state outside immutable blob rows. They no longer maintain stored refcounts, blob triggers, startup backfill, or cache-hit metadata. Two independent paired 500 MB collections reduced upload time by 21.1% and 24.9% in TS and by 9.0% and 6.8% in Rust. Older local blob-table layouts fail with sync.schema_mismatch and require a fresh local database.',
+    links: [
+      { href: '/concepts-blobs/', label: 'Blob lifecycle' },
+      { href: '/benchmarks/', label: 'Benchmark protocol' },
+    ],
+  },
+  {
+    date: '2026-09-11',
     title: 'Syncular 0.18.0',
     body: 'Blob staging and upload recovery now preserve pending work across storage and transfer failures in both client cores. Fresh downloads reconcile only the downloaded body before cache-cap enforcement; two independent paired collections at 100,000 references reduced 64 KiB download time by 61.6% in TypeScript and 60.1% in Rust. The direct Rust client exposes fetch_blob_bytes as its single blob fetch method. The SSP2 wire protocol and native JSON command remain unchanged.',
     links: [
@@ -37,7 +46,7 @@ export const changelog = [
   {
     date: '2026-09-11',
     title: 'Owned blob bytes for Rust hosts',
-    body: 'Rust hosts call fetch_blob_bytes to receive an owned Vec<u8> after authorization, hash verification, cache insertion, refcount, and cache-cap work. This is the Rust client’s single blob fetch method. The shared command router encodes bytes only at the JSON boundary used by the C ABI and native bindings.',
+    body: 'Rust hosts call fetch_blob_bytes to receive an owned Vec<u8> after authorization, hash verification, cache insertion, reference retention, and cache-cap work. This is the Rust client’s single blob fetch method. The shared command router encodes bytes only at the JSON boundary used by the C ABI and native bindings.',
     links: [{ href: '/platform-rust/', label: 'Rust blob API' }],
   },
   {

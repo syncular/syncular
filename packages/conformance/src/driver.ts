@@ -594,7 +594,7 @@ export interface ClientLimitsOptions {
   readonly maxSnapshotPages?: number;
   /** §4.2 accept bitmask. */
   readonly accept?: number;
-  /** §5.9.7 B1 blob-cache size cap (bytes); LRU-evicts zero-ref bodies. */
+  /** §5.9.7 B1 blob-cache size cap; evicts by creation timestamp, then blob ID. */
   readonly blobCacheMaxBytes?: number;
 }
 

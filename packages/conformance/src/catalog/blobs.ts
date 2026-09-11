@@ -6,8 +6,8 @@
  * re-download (asserted with the harness blob-download counter). Plus the
  * presigned E2E rungs (§5.9.3/§5.9.5): presigned download consumed at the CDN
  * hop, expiry→fresh-url recovery, presigned upload grant→PUT→reference→fetch,
- * cache persistence across a client-core restart, and LRU cap eviction that
- * respects refcounts/pins.
+ * cache persistence across a client-core restart, and cache-cap eviction that
+ * respects visible references and pins.
  *
  * The blob-bearing schema is scenario-local: `attachments` has a `blob_ref`
  * column scoped by `project_id`, so download authorization derives from the
@@ -106,7 +106,7 @@ export const blobScenarios: readonly Scenario[] = [
   },
 
   {
-    name: 'blobs/upload-pin-survives-lost-ack-and-restart-backfill',
+    name: 'blobs/upload-pin-survives-lost-ack-and-restart',
     requires: ['blobs', 'blob-presign'],
     specRefs: ['§2.3', '§5.9.7'],
     server: BLOB_SERVER,
@@ -155,9 +155,6 @@ export const blobScenarios: readonly Scenario[] = [
         'the body reached storage before the acknowledgement was lost',
       );
 
-      await api.executeStorageSql(
-        'DELETE FROM _syncular_blob_commit_refs; DROP TRIGGER _syncular_blob_commit_insert; DROP TRIGGER _syncular_blob_commit_update; DROP TRIGGER _syncular_blob_commit_delete; DROP TRIGGER _syncular_blob_commit_cache',
-      );
       const reopened = await api.recreateWithSchema(BLOB_SCHEMA);
       checkEqual(
         (
@@ -166,7 +163,7 @@ export const blobScenarios: readonly Scenario[] = [
           )
         )?.rows,
         [{ n: 1 }],
-        'startup backfills commit references for existing pending work',
+        'restart preserves explicit commit references',
       );
       await reopened.uploadBlob?.(bytesOf('pressure'));
       checkEqual(
@@ -176,7 +173,7 @@ export const blobScenarios: readonly Scenario[] = [
           )
         )?.rows,
         [{ n: 1 }],
-        'the rebuilt pin protects the body from cache pressure',
+        'the durable pin protects the body from cache pressure',
       );
       const replay = await reopened.sync();
       check(replay.ok, 'cached replay succeeds after restart');
@@ -487,7 +484,7 @@ export const blobScenarios: readonly Scenario[] = [
           'CREATE TABLE saved_prefix AS SELECT * FROM _syncular_blobs',
         );
         await api.executeStorageSql(
-          "UPDATE _syncular_blob_uploads SET created_at_ms = CASE WHEN blob_id IN (SELECT blob_id FROM _syncular_blobs WHERE bytes = CAST('good' AS BLOB)) THEN 1 ELSE 2 END",
+          "UPDATE _syncular_blob_uploads SET created_at_ms = CASE WHEN blob_id = (SELECT blob_id FROM _syncular_blobs WHERE bytes = CAST('good' AS BLOB)) THEN 1 ELSE 2 END",
         );
         await api.executeStorageSql(
           fault === 'body'
@@ -538,6 +535,9 @@ export const blobScenarios: readonly Scenario[] = [
         );
         await api.executeStorageSql(
           'UPDATE _syncular_blobs SET bytes = (SELECT bytes FROM saved_prefix WHERE saved_prefix.blob_id = _syncular_blobs.blob_id) WHERE blob_id IN (SELECT blob_id FROM saved_prefix)',
+        );
+        await api.executeStorageSql(
+          "UPDATE _syncular_blobs SET media_type = 'text/plain'",
         );
         await api.executeStorageSql(
           "UPDATE _syncular_blob_uploads SET media_type = 'text/plain'",
@@ -624,9 +624,6 @@ export const blobScenarios: readonly Scenario[] = [
             'CREATE TABLE saved_bodies AS SELECT * FROM _syncular_blobs',
           );
           await api.executeStorageSql(
-            'CREATE TABLE saved_uploads AS SELECT * FROM _syncular_blob_uploads',
-          );
-          await api.executeStorageSql(
             {
               missing: 'DELETE FROM _syncular_blobs',
               'body-type':
@@ -642,7 +639,7 @@ export const blobScenarios: readonly Scenario[] = [
             }[fault],
           );
           const pins = (
-            await api.querySnapshot('SELECT * FROM _syncular_blob_uploads')
+            await api.querySnapshot('SELECT * FROM _syncular_blob_commit_refs')
           ).rows;
           const requests = owner.sentRequests.length;
           const result = await api.sync();
@@ -669,10 +666,13 @@ export const blobScenarios: readonly Scenario[] = [
             'local failure is not a server rejection',
           );
           checkEqual(
-            (await api.querySnapshot('SELECT * FROM _syncular_blob_uploads'))
-              .rows,
+            (
+              await api.querySnapshot(
+                'SELECT * FROM _syncular_blob_commit_refs',
+              )
+            ).rows,
             pins,
-            'affected upload pin survives',
+            'affected commit dependency survives',
           );
           if (fault === 'read')
             await api.executeStorageSql(
@@ -680,13 +680,13 @@ export const blobScenarios: readonly Scenario[] = [
             );
           if (fault === 'pin-delete')
             await api.executeStorageSql('DROP TRIGGER fail_pin_delete');
+          if (fault === 'pin-metadata')
+            await api.executeStorageSql(
+              "UPDATE _syncular_blob_uploads SET media_type = 'text/plain'",
+            );
           await api.executeStorageSql('DELETE FROM _syncular_blobs');
           await api.executeStorageSql(
             'INSERT INTO _syncular_blobs SELECT * FROM saved_bodies',
-          );
-          await api.executeStorageSql('DELETE FROM _syncular_blob_uploads');
-          await api.executeStorageSql(
-            'INSERT INTO _syncular_blob_uploads SELECT * FROM saved_uploads',
           );
           const reopened = await api.recreateWithSchema(BLOB_SCHEMA);
           checkEqual(
@@ -761,9 +761,6 @@ export const blobScenarios: readonly Scenario[] = [
             });
             if (state === 'cached')
               await api.executeStorageSql('DELETE FROM _syncular_blob_uploads');
-            await api.executeStorageSql(
-              'UPDATE _syncular_blobs SET last_used_ms = 1',
-            );
           }
           const bodies = (
             await api.querySnapshot('SELECT * FROM _syncular_blobs')
@@ -876,6 +873,48 @@ export const blobScenarios: readonly Scenario[] = [
       }),
     ),
   ),
+  {
+    name: 'blobs/older-local-layout-fails-loud',
+    requires: ['blobs'],
+    specRefs: ['§5.9.7'],
+    server: BLOB_SERVER,
+    async run(ctx) {
+      const owner = await ctx.newClient({
+        actorId: 'owner',
+        clientId: 'owner',
+        schema: BLOB_SCHEMA,
+        allowed: P1,
+      });
+      const api = owner.api;
+      check(
+        api.executeStorageSql !== undefined &&
+          api.recreateWithSchema !== undefined,
+        'blob recreation surfaces are required',
+      );
+      await api.executeStorageSql('DROP TABLE _syncular_blobs');
+      await api.executeStorageSql(
+        `CREATE TABLE _syncular_blobs(
+           blob_id TEXT PRIMARY KEY, bytes BLOB NOT NULL,
+           byte_length INTEGER NOT NULL, media_type TEXT,
+           refcount INTEGER NOT NULL DEFAULT 0,
+           created_at_ms INTEGER NOT NULL)`,
+      );
+      let failure: unknown;
+      try {
+        await api.recreateWithSchema(BLOB_SCHEMA);
+      } catch (error) {
+        failure = error;
+      }
+      check(
+        (typeof failure === 'object' &&
+          failure !== null &&
+          'code' in failure &&
+          failure.code === 'sync.schema_mismatch') ||
+          String(failure).includes('sync.schema_mismatch'),
+        'older local blob layout fails with sync.schema_mismatch',
+      );
+    },
+  },
   {
     name: 'blobs/duplicate-stage-preserves-first-body-metadata',
     requires: ['blobs'],
@@ -1764,11 +1803,11 @@ export const blobScenarios: readonly Scenario[] = [
   },
 
   {
-    // B.13(j): LRU cap eviction respects refcounts/pins. With a small cache
-    // cap, staging bodies past the cap evicts zero-ref bodies LRU-first, while
+    // B.13(j): cache-cap eviction respects references and pins. With a small
+    // cache cap, staging bodies past the cap evicts unreferenced bodies oldest first, while
     // a still-referenced body and a pending-upload-pinned body are retained
     // (B1 cap + eviction).
-    name: 'blobs/lru-eviction-respects-refcounts',
+    name: 'blobs/cache-cap-respects-references',
     specRefs: ['§5.9.7', 'B.13'],
     requires: ['blobs'],
     server: BLOB_SERVER,
@@ -1786,7 +1825,7 @@ export const blobScenarios: readonly Scenario[] = [
       await syncIdle(owner);
 
       const body = (fill: string) => bytesOf(fill.repeat(100));
-      // Body A: referenced by a pushed+drained row (refcount 1, pinned by ref).
+      // Body A: referenced by a pushed and drained row.
       const refA = await owner.api.uploadBlob?.(body('a'));
       const idA = JSON.parse(refA ?? '{}').blobId as string;
       await owner.api.mutate([
@@ -1798,11 +1837,11 @@ export const blobScenarios: readonly Scenario[] = [
       ]);
       await syncIdle(owner); // A's upload drains; its row references it.
 
-      // Bodies B, C, D: staged but NOT referenced (zero-ref once uploaded).
+      // Bodies B, C, D: staged but not referenced after upload.
       // We fetch them (not upload-stage) so they are not pinned by the outbox.
       // Stage-then-fetch a fresh unreferenced body by uploading + fetching so
-      // it lands in cache zero-ref: upload pins via outbox, so instead push a
-      // referencing row then delete it to reach zero-ref cleanly.
+      // it lands in cache unreferenced: upload state retains it, so instead push
+      // a referencing row and delete that row after upload.
       const stageZeroRef = async (
         id: string,
         fill: string,
@@ -1819,15 +1858,13 @@ export const blobScenarios: readonly Scenario[] = [
         await owner.api.mutate([
           { op: 'delete', table: 'attachments', rowId: id },
         ]);
-        await syncIdle(owner); // row gone ⇒ body is zero-ref, retained (LRU)
+        await syncIdle(owner); // row gone; the unreferenced body remains cached
         return JSON.parse(ref ?? '{}').blobId as string;
       };
       const idC = await stageZeroRef('attC', 'c');
       const idD = await stageZeroRef('attD', 'd');
-      // Touch D so it is more-recently-used than C (C evicts before D).
-      await owner.api.fetchBlob?.(idD);
-      // Adding E pushes total over the cap ⇒ evict the LRU zero-ref body (C).
-      // A stays (refcount 1, referenced) and E is the newest (retained).
+      // Adding E pushes total over the cap, so older unreferenced body C evicts.
+      // A stays referenced and E is the newest retained body.
       const idE = await stageZeroRef('attE', 'e');
       void idE;
 
@@ -1841,7 +1878,7 @@ export const blobScenarios: readonly Scenario[] = [
       );
 
       // Re-reference C and D so the server authorizes their download again
-      // (their rows were deleted to reach zero-ref; §5.9.5 authz derives from
+      // (their rows were deleted to remove local references; §5.9.5 authz derives from
       // a live row). Eviction is proved by the download counter on re-fetch.
       await owner.api.mutate([
         {
@@ -1865,20 +1902,20 @@ export const blobScenarios: readonly Scenario[] = [
       ]);
       await syncIdle(owner);
 
-      // C was the LRU zero-ref body ⇒ evicted ⇒ a re-fetch is a cache miss.
+      // C was the oldest unreferenced body, so a re-fetch is a cache miss.
       const beforeC = owner.blobDownloads.length;
       await owner.api.fetchBlob?.(idC);
       check(
         owner.blobDownloads.length > beforeC,
-        'the LRU zero-ref body C was evicted — a re-fetch re-downloads (B1)',
+        'the oldest unreferenced body C was evicted; a re-fetch re-downloads (B1)',
       );
-      // D was more-recently-used ⇒ retained ⇒ a re-fetch is a cache hit.
+      // D was newer, so a re-fetch is a cache hit.
       const beforeD = owner.blobDownloads.length;
       await owner.api.fetchBlob?.(idD);
       checkEqual(
         owner.blobDownloads.length,
         beforeD,
-        'the more-recently-used zero-ref body D is retained (B1 LRU)',
+        'the newer unreferenced body D is retained (B1)',
       );
     },
   },

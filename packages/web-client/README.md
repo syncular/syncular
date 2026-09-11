@@ -375,7 +375,7 @@ lifecycle with an `EncryptionConfig`; Worker handles use the portable keyring.
 Within one local SQLite transaction the engine deletes exactly the matching
 synced rows, lets generated FTS triggers remove their projections, drops every
 whole pending commit with a matching operation, restores/replays unrelated
-optimistic state, reconciles blob references, persists the `purgeId`, and emits
+optimistic state, removes unreferenced cached blob bodies, persists the `purgeId`, and emits
 one revisioned change batch. A retry with the same canonical plan returns
 `alreadyApplied: true`; reusing an id with different selectors fails closed.
 Only bounded, non-empty, code-like values on plaintext string schema columns
@@ -484,9 +484,8 @@ and are cached locally. **Blob bytes live as `BLOB` columns in the client's own
 SQLite database** (a `_syncular_blobs` cache table), not in a separate OPFS
 directory or IndexedDB store. This is the pinned decision (SPEC §5.9.7 B1):
 
-- **One storage system.** The bytes are transactional with the refcount rows
-  that pin them — a refcount adjust and a body insert/delete commit atomically,
-  so a crash never strands a body against a stale count.
+- **One storage system.** The bytes, upload state, and pending-commit references
+  share the client database. SQLite commits each change atomically.
 - **Survives restarts for free.** The client DB already rides OPFS via the
   sahpool VFS in the browser (and a plain file under `rusqlite`, `bun:sqlite`,
   or `node:sqlite` on native runtimes), so there is no second persistence
@@ -495,25 +494,24 @@ directory or IndexedDB store. This is the pinned decision (SPEC §5.9.7 B1):
 - **SQLite handles multi-MB images fine.** A page-cached `BLOB` read is a memory
   copy, well within the image/document envelope this targets.
 
-### Size cap + LRU eviction
+### Size cap
 
 Pass `blobCacheMaxBytes` to cap the on-device cache. When the sum of cached body
-sizes exceeds the cap, the client evicts **zero-ref, non-pinned** bodies in
-least-recently-used order until back under the cap:
+sizes exceeds the cap, the client evicts bodies with no visible row or pending
+commit by creation timestamp, then blob ID, until back under the cap:
 
 ```ts
 new SyncClient({ /* … */, blobCacheMaxBytes: 256 * 1024 * 1024 }); // 256 MiB
 ```
 
-- A body **referenced by a live row** (refcount > 0) is **never** evicted — it
+- A body **referenced by a live row** is **never** evicted. It
   stays resolvable without a re-download.
-- A body **pinned by a pending upload** (not yet pushed) is never evicted — its
+- A body **needed by a pending upload** (not yet pushed) is never evicted. Its
   bytes are the only copy until the commit drains.
-- Evicting a zero-ref body only costs a future re-download, never correctness:
+- Evicting an unreferenced body only costs a future re-download, never correctness:
   any surviving `blob_ref` value re-enables the fetch (§5.9.7 B3). If every
   over-cap body is referenced or pinned, the cache stays over the cap
-  (correctness beats the cap). A cache-hit read touches "recently used", so a
-  hot image survives a trim. Absent `blobCacheMaxBytes` ⇒ retain until storage
+  (correctness beats the cap). Absent `blobCacheMaxBytes` ⇒ retain until storage
   pressure (the default).
 
 ### Very large media — the escape hatch
@@ -522,7 +520,7 @@ SQLite is **not** the store for gigabyte video: a single `BLOB` must fit the
 client's memory and the SQLite row-size envelope. For very large media, run the
 server with presigned downloads (`blobSignedUrls`) and hand the presigned URL
 straight to a media element instead of pulling bytes through the cache — the
-image-app default (refcounted `BLOB` cache) and the large-media path (presigned
+image-app default (`BLOB` cache) and the large-media path (presigned
 URL, no byte cache) coexist per attachment.
 
 ## Node and Bun SQLite backend (`./sqlite`)

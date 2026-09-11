@@ -135,6 +135,9 @@ export function deleteOutboxCommit(
   db: ClientDatabase,
   clientCommitId: string,
 ): void {
+  db.exec('DELETE FROM _syncular_blob_commit_refs WHERE commit_id = ?', [
+    clientCommitId,
+  ]);
   db.exec(
     'DELETE FROM _syncular_outbox_before_images WHERE client_commit_id = ?',
     [clientCommitId],
