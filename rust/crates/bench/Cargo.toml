@@ -16,7 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 syncular-client = { path = "../client", features = ["bench-internals"] }
-rusqlite = { version = "0.32", features = ["bundled", "trace", "hooks"] }
+rusqlite = { version = "0.40", features = ["bundled", "trace", "hooks"] }
 syncular-command = { path = "../command" }
 # The bench driver measures the SHIPPING native lane: the same HTTP+WS
 # transport the FFI core owns (ureq + tungstenite), reused rather than copied.
