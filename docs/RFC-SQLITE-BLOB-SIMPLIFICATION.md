@@ -1,7 +1,7 @@
 # RFC: Simplify the SQLite blob path
 
-- Status: implemented and validated in the repository; published-client
-  confirmation pending
+- Status: implemented, released in `v0.19.0`, and confirmed with published
+  clients
 - Date: 2026-09-11
 - Baseline: `v0.18.0` (`3238fd4fb723315fd8b8cd17f1a39b687a0bc2d3`)
 - Scope: SQLite-backed blob storage in the TS and Rust clients
@@ -266,8 +266,32 @@ client cores. It deletes four triggers, startup backfill, stored refcounts,
 cache-hit metadata writes, and reconciliation. The small upload table remains
 because the rejected two-table experiment rewrote the 500 MB body row when it
 cleared upload state. The retained candidate satisfies the repository gates.
-The external published-client comparison remains pending because this checkout
-has not been released.
+
+The external benchmark installed the published 0.18.0 and 0.19.0 clients and
+ran both against the same verified 0.19.0 server. It collected three
+alternating pairs per core with no retries or exclusions. Every attempt used a
+new writer process, reader process, and client store, transferred the complete
+500,000,000-byte body, and verified its SHA-256 receipt.
+
+| Core | Clock boundary | 0.18 median | 0.19 median | Median change | Paired geometric change |
+| --- | --- | ---: | ---: | ---: | ---: |
+| JS | Total upload | 3,399.87 ms | 3,006.24 ms | -11.6% | -7.11% |
+| JS | Upload after staging | 2,050.33 ms | 1,470.24 ms | -28.3% | -21.96% |
+| Rust | Total upload | 4,141.38 ms | 3,765.50 ms | -9.1% | -8.60% |
+| Rust | Upload after staging | 2,329.18 ms | 1,989.28 ms | -14.6% | -15.50% |
+
+All three upload pairs improved at both clock boundaries for both cores. Rust
+fresh downloads improved in all three pairs, with a 25.9% median reduction. JS
+fresh downloads changed by -17.88%, +6.04%, and -2.14%; this mixed result
+supports no JS download claim and shows no repeatable regression.
+
+The separately preserved 0.17.0 to 0.19.0 collection measured total upload
+across staging and transfer. It changed by +1.4% for JS with mixed pair
+directions and by +27.8% for Rust. That comparison spans the 0.18 durability
+changes and does not isolate this RFC. The controlled 0.18.0 baseline and the
+post-staging clock match this RFC's retention gate. The external evidence lives
+under `results/investigations/syncular-018-019-blobs/` in
+`offline-sync-bench`.
 
 Both TS and Rust pass all 147 shared conformance scenarios. The Rust workspace
 passes 145 unit, integration, and vector tests with all features, plus Clippy

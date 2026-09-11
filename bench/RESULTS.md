@@ -33,6 +33,23 @@ collections. Compact observations and the analyzer are under
 the local ignored `bench/results/blob-simplification-v1/` directory; this file
 retains the curated result.
 
+The published-client confirmation installed 0.18.0 and 0.19.0 against the same
+verified 0.19.0 server. It ran three alternating pairs per core with no retries
+or exclusions and verified every 500,000,000-byte SHA-256 receipt.
+
+| Core | Clock boundary | 0.18 median | 0.19 median | Median change | Paired geometric change |
+| --- | --- | ---: | ---: | ---: | ---: |
+| JS | Total upload | 3,399.87 ms | 3,006.24 ms | -11.6% | -7.11% |
+| JS | Upload after staging | 2,050.33 ms | 1,470.24 ms | -28.3% | -21.96% |
+| Rust | Total upload | 4,141.38 ms | 3,765.50 ms | -9.1% | -8.60% |
+| Rust | Upload after staging | 2,329.18 ms | 1,989.28 ms | -14.6% | -15.50% |
+
+Every upload pair improved at both clock boundaries. Rust fresh downloads
+improved in all three pairs, with a 25.9% median reduction. JS fresh-download
+pair changes were -17.88%, +6.04%, and -2.14%, which supports no download
+claim and shows no repeatable regression. The controlled evidence is under
+`results/investigations/syncular-018-019-blobs/` in `offline-sync-bench`.
+
 ## SQLite blob download reconciliation in 0.18.0 (2026-09-11)
 
 The file profile downloaded one 65,536-byte object into a persistent client
