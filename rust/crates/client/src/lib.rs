@@ -23,6 +23,11 @@ pub mod crdt;
 /// The network stack is feature-gated; its no-network shape remains available
 /// in dependency-lean builds so host code needs only one transport type.
 pub mod native_transport;
+mod progress;
+pub use progress::{
+    ProgressObserver, ProgressPhase, ProgressState, ProgressSubscription, SyncProgress,
+    SyncProgressListener,
+};
 pub mod query_guard;
 pub mod realtime_round;
 pub mod remote;

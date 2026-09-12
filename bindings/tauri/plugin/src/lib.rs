@@ -276,8 +276,9 @@ fn run_reader_thread(path: String, rx: Receiver<ReadRequest>) {
 /// background host policy. `emit` pushes drained events onto the Tauri channel.
 fn run_owner_thread<F>(config: SyncularConfig, tx: Sender<Request>, rx: Receiver<Request>, emit: F)
 where
-    F: Fn(&Value) + Send + 'static,
+    F: Fn(&Value) + Send + Sync + 'static,
 {
+    let emit = std::sync::Arc::new(emit);
     let transport_json = config.to_transport_json();
     let wake_tx = tx.clone();
     let notify: std::sync::Arc<dyn Fn() + Send + Sync> = std::sync::Arc::new(move || {
@@ -292,6 +293,10 @@ where
             return;
         }
     };
+    let progress_emit = emit.clone();
+    core.progress_listener = Some(std::sync::Arc::new(move |progress| {
+        progress_emit(&json!({ "type": "progress", "progress": progress }));
+    }));
 
     // No idle poll: commands/realtime wake the mailbox, while a retryable
     // transport failure contributes one real monotonic deadline.
@@ -302,7 +307,7 @@ where
                 syncular_client::SyncIntent::Interactive => {
                     background_deadline = None;
                     core.sync_until_idle();
-                    pump_events(&mut core, &emit);
+                    pump_events(&mut core, &*emit);
                     continue;
                 }
                 syncular_client::SyncIntent::Background { delay_ms } => {
@@ -322,7 +327,7 @@ where
             if deadline <= now {
                 background_deadline = None;
                 core.sync_until_idle();
-                pump_events(&mut core, &emit);
+                pump_events(&mut core, &*emit);
                 continue;
             }
             match rx.recv_timeout(deadline.saturating_duration_since(now)) {
@@ -330,7 +335,7 @@ where
                 Err(RecvTimeoutError::Timeout) => {
                     background_deadline = None;
                     core.sync_until_idle();
-                    pump_events(&mut core, &emit);
+                    pump_events(&mut core, &*emit);
                     continue;
                 }
                 Err(RecvTimeoutError::Disconnected) => {
@@ -363,12 +368,12 @@ where
                     }
                 }
                 let _ = reply.send(result);
-                pump_events(&mut core, &emit);
+                pump_events(&mut core, &*emit);
             }
             Request::Query { sql, params, reply } => {
                 let result = core.query(&sql, params);
                 let _ = reply.send(result);
-                pump_events(&mut core, &emit);
+                pump_events(&mut core, &*emit);
             }
             Request::SetHeaders { headers, reply } => {
                 core.set_headers(headers);
@@ -376,7 +381,7 @@ where
             }
             Request::TransportWake => {
                 core.poll_transport();
-                pump_events(&mut core, &emit);
+                pump_events(&mut core, &*emit);
             }
             #[cfg(test)]
             Request::Block { duration, entered } => {

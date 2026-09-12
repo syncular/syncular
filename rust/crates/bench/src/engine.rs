@@ -73,7 +73,11 @@ impl Transport for EngineBackend {
         self.0.call(2, request)
     }
 
-    fn download_segment(&mut self, request: &SegmentRequest) -> Result<Vec<u8>, TransportError> {
+    fn download_segment(
+        &mut self,
+        request: &SegmentRequest,
+        _on_progress: &mut dyn FnMut(u64),
+    ) -> Result<Vec<u8>, TransportError> {
         self.0.call(
             3,
             &serde_json::to_vec(&json!({

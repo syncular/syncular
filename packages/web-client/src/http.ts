@@ -139,6 +139,40 @@ export function webSocketRemoteOperationConnector(
  * Resolution (which path a descriptor takes, expiry, no fall-through)
  * lives in the client core, not here.
  */
+async function readSegmentBody(
+  response: Response,
+  onProgress?: (bytesReceived: number) => void,
+): Promise<Uint8Array> {
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  let reported = 0;
+  const reader = response.body?.getReader();
+  if (reader !== undefined) {
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        received += value.byteLength;
+        if (received - reported >= 64 * 1024) {
+          onProgress?.(received);
+          reported = received;
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+  if (received !== reported) onProgress?.(received);
+  const bytes = new Uint8Array(received);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
 export function httpSegmentDownloader(
   segmentsBaseUrl: string,
   options?: HttpTransportOptions,
@@ -147,6 +181,7 @@ export function httpSegmentDownloader(
   const direct = async (request: {
     readonly segmentId: string;
     readonly requestedScopesJson: string;
+    readonly onProgress?: (bytesReceived: number) => void;
   }) => {
     const response = await doFetch(
       `${segmentsBaseUrl}/${encodeURIComponent(request.segmentId)}`,
@@ -158,9 +193,12 @@ export function httpSegmentDownloader(
       },
     );
     if (!response.ok) await throwHttpError(response);
-    return new Uint8Array(await response.arrayBuffer());
+    return readSegmentBody(response, request.onProgress);
   };
-  const fetchUrl = async (url: string) => {
+  const fetchUrl = async (
+    url: string,
+    onProgress?: (bytesReceived: number) => void,
+  ) => {
     // Deliberately headerless: the URL is the bearer grant (§5.4).
     const response = await doFetch(url);
     if (!response.ok) {
@@ -170,7 +208,7 @@ export function httpSegmentDownloader(
         true,
       );
     }
-    return new Uint8Array(await response.arrayBuffer());
+    return readSegmentBody(response, onProgress);
   };
   return Object.assign(direct, { fetchUrl });
 }

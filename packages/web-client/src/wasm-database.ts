@@ -53,6 +53,13 @@ interface SahPoolUtil {
   OpfsSAHPoolDb: new (filename: string) => Oo1Database;
 }
 
+interface SqliteIoMethods {
+  installMethod(
+    name: 'xCheckReservedLock',
+    callback: (file: number, output: number) => number,
+  ): unknown;
+}
+
 interface Sqlite3Static {
   oo1: {
     DB: new (filename: string, flags?: string) => Oo1Database;
@@ -60,6 +67,18 @@ interface Sqlite3Static {
   capi: {
     SQLITE_DESERIALIZE_FREEONCLOSE: number;
     SQLITE_DESERIALIZE_READONLY: number;
+    SQLITE_FCNTL_FILE_POINTER: number;
+    sqlite3_file_control(
+      db: number,
+      schema: string,
+      operation: number,
+      output: number,
+    ): number;
+    sqlite3_file: new (pointer: number) => {
+      readonly $pMethods: number;
+      dispose(): void;
+    };
+    sqlite3_io_methods: new (pointer: number) => SqliteIoMethods;
     sqlite3_deserialize(
       db: number,
       schema: string,
@@ -71,6 +90,13 @@ interface Sqlite3Static {
   };
   wasm: {
     allocFromTypedArray(bytes: Uint8Array): number;
+    peekPtr(pointer: number): number;
+    poke32(pointer: number, value: number): unknown;
+    pstack: {
+      readonly pointer: number;
+      allocPtr(): number;
+      restore(pointer: number): void;
+    };
   };
   installOpfsSAHPoolVfs(options: {
     name?: string;
@@ -217,6 +243,10 @@ function inWorkerContext(): boolean {
 /** One registered VFS per pool directory, reused across opens. */
 const sahPools = new Map<string, Promise<SahPoolUtil>>();
 
+// SAH pools share an I/O method table within the WASM runtime. Keep the
+// installed callback alive for that runtime, including across database closes.
+const sahIoMethods = new Map<number, SqliteIoMethods>();
+
 function opfsSahPoolError(error: unknown, directory: string): ClientSyncError {
   const detail = error instanceof Error ? error.message : String(error);
   const normalized = detail.toLowerCase();
@@ -306,5 +336,53 @@ export async function openPersistentWasmDatabase(
     sahPools.set(directory, pool);
   }
   const util = await pool;
-  return new WasmClientDatabase(new util.OpfsSAHPoolDb(`/${name}.db`), sqlite3);
+  const db = new util.OpfsSAHPoolDb(`/${name}.db`);
+  const { capi, wasm } = sqlite3;
+  const stack = wasm.pstack.pointer;
+  try {
+    // Do this before the first SQL statement, when SQLite checks for a hot
+    // journal. The SAH-pool callback in sqlite-wasm 3.53 reports a reserved
+    // lock unconditionally, which suppresses crash rollback. The pool already
+    // excludes other owners; report no competing writer, as the other OPFS
+    // VFS does. Keep DELETE/FULL and the existing database/journal files.
+    const output = wasm.pstack.allocPtr();
+    if (
+      db.pointer === undefined ||
+      capi.sqlite3_file_control(
+        db.pointer,
+        'main',
+        capi.SQLITE_FCNTL_FILE_POINTER,
+        output,
+      ) !== 0 ||
+      !wasm.peekPtr(output)
+    ) {
+      throw new ClientSyncError(
+        STORAGE_UNAVAILABLE_CODE,
+        'Could not configure OPFS crash recovery',
+      );
+    }
+    const file = new capi.sqlite3_file(wasm.peekPtr(output));
+    const methodsPointer = file.$pMethods;
+    file.dispose(); // Borrowed struct view; SQLite still owns the file.
+    if (!methodsPointer) {
+      throw new ClientSyncError(
+        STORAGE_UNAVAILABLE_CODE,
+        'Could not configure OPFS crash recovery',
+      );
+    }
+    if (!sahIoMethods.has(methodsPointer)) {
+      const methods = new capi.sqlite3_io_methods(methodsPointer);
+      methods.installMethod('xCheckReservedLock', (_file, reserved) => {
+        wasm.poke32(reserved, 0);
+        return 0;
+      });
+      sahIoMethods.set(methodsPointer, methods);
+    }
+    return new WasmClientDatabase(db, sqlite3);
+  } catch (error) {
+    db.close();
+    throw error;
+  } finally {
+    wasm.pstack.restore(stack);
+  }
 }

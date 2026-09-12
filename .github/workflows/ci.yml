@@ -37,6 +37,30 @@ jobs:
       - name: Build and verify packed Node and Bun exports
         run: bun run build:packages && bun run verify:packages
 
+  browser-recovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Install Chromium and system libraries
+        working-directory: packages/web-client
+        run: bunx --no-install playwright install --with-deps chromium
+      - name: Real OPFS bootstrap interruption and recovery
+        run: bun run test:browser
+      - name: Retain failed synthetic browser profiles
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: opfs-bootstrap-recovery
+          path: /tmp/syncular-opfs-recovery-*
+          include-hidden-files: true
+          if-no-files-found: ignore
+
   sites:
     runs-on: ubuntu-latest
     timeout-minutes: 10

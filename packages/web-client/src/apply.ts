@@ -11,7 +11,7 @@ import {
   type ScopeMap,
   type SegmentRow,
 } from '@syncular/core';
-import type { ClientDatabase } from './database';
+import type { ClientDatabase, SqlValue } from './database';
 import type { EncryptionConfig } from './encryption';
 import { ClientSyncError } from './errors';
 import {
@@ -303,6 +303,7 @@ export function applySqliteSegment(
     readonly clearFirst: boolean;
     readonly effective: ScopeMap;
     readonly transaction?: ApplyTransaction;
+    readonly onProgress?: (rowsProcessed: number) => void;
   },
 ): number {
   const withImage = db.withSqliteImage?.bind(db);
@@ -381,23 +382,45 @@ export function applySqliteSegment(
       if (options.clearFirst) {
         deleteScopedRows(db, table, options.effective);
       }
-      db.exec(
-        `INSERT INTO ${quoteIdent(table.name)}
-           (${insertNames.join(', ')})
-         SELECT ${[...names, quoteIdent('_syncular_version')].join(', ')}
-         FROM ${IMAGE_ALIAS}.${quoteIdent(table.name)}
-         WHERE true
-         ON CONFLICT (${quoteIdent(table.primaryKey)}) DO UPDATE SET ${updates}`,
-      );
-      const counted = db.query(
-        `SELECT count(*) AS n FROM ${IMAGE_ALIAS}.${quoteIdent(table.name)}`,
-      )[0];
-      const applied = Number(counted?.n ?? 0);
+      const source = `${IMAGE_ALIAS}.${quoteIdent(table.name)}`;
+      const primaryKey = quoteIdent(table.primaryKey);
+      let after: SqlValue | undefined;
+      let applied = 0;
+      for (;;) {
+        const boundary = db.query(
+          `SELECT ${primaryKey} AS boundary FROM ${source}
+           ${after === undefined ? '' : `WHERE ${primaryKey} > ?`}
+           ORDER BY ${primaryKey} LIMIT 1 OFFSET 1023`,
+          after === undefined ? [] : [after],
+        )[0]?.boundary;
+        const predicates: string[] = [];
+        const params: SqlValue[] = [];
+        if (after !== undefined) {
+          predicates.push(`${primaryKey} > ?`);
+          params.push(after);
+        }
+        if (boundary !== undefined) {
+          predicates.push(`${primaryKey} <= ?`);
+          params.push(boundary);
+        }
+        db.exec(
+          `INSERT INTO ${quoteIdent(table.name)} (${insertNames.join(', ')})
+           SELECT ${[...names, quoteIdent('_syncular_version')].join(', ')}
+           FROM ${source} WHERE ${predicates.join(' AND ') || 'true'}
+           ON CONFLICT (${primaryKey}) DO UPDATE SET ${updates}`,
+          params,
+        );
+        applied += Number(db.query('SELECT changes() AS n')[0]?.n ?? 0);
+        if (boundary === undefined) break;
+        options.onProgress?.(applied);
+        after = boundary;
+      }
       if (applied !== descriptor.rowCount) {
         imageInvalid(
           `image holds ${applied} rows, descriptor says ${descriptor.rowCount}`,
         );
       }
+      options.onProgress?.(applied);
       return applied;
     });
   });
@@ -420,6 +443,7 @@ export async function applyRowsSegment(
     readonly clearFirst: boolean;
     readonly effective: ScopeMap;
     readonly transaction?: ApplyTransaction;
+    readonly onProgress?: (rowsProcessed: number) => void;
   },
   encryption?: EncryptionConfig,
 ): Promise<number> {
@@ -453,8 +477,10 @@ export async function applyRowsSegment(
       for (const row of rows) {
         upsertLocalRow(db, table, row.values, row.serverVersion);
         applied += 1;
+        if (applied % 1024 === 0) options.onProgress?.(applied);
       }
     });
   }
+  options.onProgress?.(applied);
   return applied;
 }

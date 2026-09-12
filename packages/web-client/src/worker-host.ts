@@ -1,3 +1,8 @@
+import {
+  ProgressEmitter,
+  type SyncProgress,
+  type SyncProgressListener,
+} from './progress';
 import type { PromiseMethods } from './client';
 /**
  * Main-thread side of the worker mode and the
@@ -273,6 +278,7 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
   #core: LeaderCore | undefined;
   #follower: FollowerLink | undefined;
   readonly #invalidation: InvalidationEmitter;
+  readonly #progress = new ProgressEmitter();
   readonly #changes: ChangeEmitter;
   readonly #presence: Set<(scopeKey: string) => void>;
   readonly #diagnostics: ClientDiagnosticsEmitter;
@@ -376,7 +382,9 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
 
   /** @internal — dispatch a worker/relayed event to handle-local listeners. */
   __dispatchEvent(event: SyncWorkerEvent): void {
-    if (event.kind === 'presence') {
+    if (event.kind === 'progress') {
+      this.#progress.emit(event.progress);
+    } else if (event.kind === 'presence') {
       for (const listener of this.#presence) {
         try {
           listener(event.scopeKey);
@@ -407,6 +415,13 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
    */
   onInvalidate(listener: InvalidationListener): () => void {
     return this.#invalidation.on(listener);
+  }
+
+  onProgress(listener: SyncProgressListener): () => void {
+    return this.#progress.on(listener);
+  }
+  progressSnapshot(): SyncProgress | undefined {
+    return this.#progress.snapshot();
   }
 
   onChange(listener: ClientChangeListener): () => void {
@@ -646,6 +661,7 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    this.#progress.clear();
     this.#devtoolsUnregister();
     if (this.#follower !== undefined) {
       this.#follower.close();

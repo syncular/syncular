@@ -220,7 +220,11 @@ impl Transport for HostIo {
         value_bytes(result.get("response")).map_err(|m| TransportError::new("transport.failed", m))
     }
 
-    fn download_segment(&mut self, request: &SegmentRequest) -> Result<Vec<u8>, TransportError> {
+    fn download_segment(
+        &mut self,
+        request: &SegmentRequest,
+        _on_progress: &mut dyn FnMut(u64),
+    ) -> Result<Vec<u8>, TransportError> {
         let mut params = Map::new();
         params.insert(
             "segmentId".to_owned(),
@@ -241,7 +245,11 @@ impl Transport for HostIo {
         self.signed_urls
     }
 
-    fn fetch_url(&mut self, url: &str) -> Result<Vec<u8>, TransportError> {
+    fn fetch_url(
+        &mut self,
+        url: &str,
+        _on_progress: &mut dyn FnMut(u64),
+    ) -> Result<Vec<u8>, TransportError> {
         // The URL is the entire grant (§5.4): nothing but the URL crosses.
         let result = self.call_host("fetchUrl", json!({ "url": url }))?;
         value_bytes(result.get("bytes")).map_err(|m| TransportError::new("transport.failed", m))
@@ -355,6 +363,10 @@ fn main() {
     let mut io = HostIo::new();
     let mut client: Option<SyncClient> = None;
     let mut effects = CreateEffects::default();
+    let progress_events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<
+        syncular_client::SyncProgress,
+    >::new()));
+    let mut progress_subscription = None;
     // Runs until stdin EOF (the host is gone) or an explicit `close`.
     loop {
         let incoming = if let Some((id, method, params)) = io.deferred.pop_front() {
@@ -372,10 +384,15 @@ fn main() {
             }
             Incoming::Request { id, method, params } => {
                 if method == "close" {
+                    drop(progress_subscription.take());
                     io.respond(&id, Ok(json!({})));
                     break;
                 }
-                let result = if method == "executeStorageSql" {
+                let result = if method == "drainProgress" {
+                    Ok(json!(std::mem::take(
+                        &mut *progress_events.lock().expect("progress events")
+                    )))
+                } else if method == "executeStorageSql" {
                     match (client.as_mut(), params.get("sql").and_then(Value::as_str)) {
                         (Some(instance), Some(sql)) => instance
                             .benchmark_connection()
@@ -394,6 +411,14 @@ fn main() {
                 };
                 // The shared router parses `create`'s signedUrls into effects;
                 // apply it to this stdio host's transport capability.
+                if method == "create" && result.is_ok() {
+                    let events = progress_events.clone();
+                    progress_subscription = client.as_ref().map(|c| {
+                        c.progress().subscribe(move |p| {
+                            events.lock().expect("progress events").push(p.clone())
+                        })
+                    });
+                }
                 if method == "create" {
                     io.signed_urls = effects.signed_urls;
                 }

@@ -63,3 +63,5 @@ export {
   type ViteSyncClientResourceBootstrap,
   type ViteSyncClientResourceResult,
 } from './vite-hmr';
+
+export { useSyncProgress } from './use-sync-progress';

@@ -11,6 +11,8 @@ export function handleShapeOf(client: SyncClient): SyncClientLike {
     securityLifecycle: () => Promise.resolve(client.securityLifecycle()),
     beginSecurityPreflight: () => client.beginSecurityPreflight(),
     activateSecurity: () => client.activateSecurity(),
+    onProgress: (listener) => client.onProgress(listener),
+    progressSnapshot: () => client.progressSnapshot(),
     onChange: (listener) => client.onChange(listener),
     onDiagnostics: (listener) => client.onDiagnostics(listener),
     onInvalidate: (listener) => client.onInvalidate(listener),

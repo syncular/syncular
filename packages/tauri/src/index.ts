@@ -1,3 +1,8 @@
+import {
+  ProgressEmitter,
+  type SyncProgress,
+  type SyncProgressListener,
+} from '@syncular/client';
 import type { ClientSnapshotMethods, PromiseMethods } from '@syncular/client';
 /**
  * @syncular/tauri — the JS bridge to the native syncular instance running
@@ -258,6 +263,7 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
   readonly #tauri: TauriApi;
   readonly #invalidationListeners = new Set<InvalidationListener>();
   readonly #changeListeners = new Set<ClientChangeListener>();
+  readonly #progress = new ProgressEmitter();
   readonly #diagnosticsListeners = new Set<ClientDiagnosticsListener>();
   readonly #presenceListeners = new Set<(scopeKey: string) => void>();
   #unlisten: (() => void) | undefined;
@@ -326,6 +332,10 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
   /** @internal — fan an incoming plugin event out to the local listeners. */
   __dispatchEvent(event: SyncularEvent): void {
     switch (event.type) {
+      case 'progress': {
+        this.#progress.emit(event.progress as SyncProgress);
+        break;
+      }
       case 'change': {
         const batch = decodeChangeBatch(event.batch);
         if (batch === undefined) break;
@@ -440,6 +450,13 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
   onInvalidate(listener: InvalidationListener): () => void {
     this.#invalidationListeners.add(listener);
     return () => this.#invalidationListeners.delete(listener);
+  }
+
+  onProgress(listener: SyncProgressListener): () => void {
+    return this.#progress.on(listener);
+  }
+  progressSnapshot(): SyncProgress | undefined {
+    return this.#progress.snapshot();
   }
 
   onChange(listener: ClientChangeListener): () => void {
@@ -802,6 +819,7 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
     this.#unlisten?.();
     this.#unlisten = undefined;
     this.#invalidationListeners.clear();
+    this.#progress.clear();
     this.#changeListeners.clear();
     this.#diagnosticsListeners.clear();
     this.#presenceListeners.clear();

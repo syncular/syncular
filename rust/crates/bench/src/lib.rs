@@ -350,9 +350,13 @@ impl Transport for BenchTransport {
         Ok(response)
     }
 
-    fn download_segment(&mut self, request: &SegmentRequest) -> Result<Vec<u8>, TransportError> {
+    fn download_segment(
+        &mut self,
+        request: &SegmentRequest,
+        on_progress: &mut dyn FnMut(u64),
+    ) -> Result<Vec<u8>, TransportError> {
         self.count_request(0);
-        let response = self.inner.download_segment(request)?;
+        let response = self.inner.download_segment(request, on_progress)?;
         self.stats.response_bytes += response.len() as u64;
         Ok(response)
     }
@@ -361,9 +365,13 @@ impl Transport for BenchTransport {
         self.inner.supports_url_fetch()
     }
 
-    fn fetch_url(&mut self, url: &str) -> Result<Vec<u8>, TransportError> {
+    fn fetch_url(
+        &mut self,
+        url: &str,
+        on_progress: &mut dyn FnMut(u64),
+    ) -> Result<Vec<u8>, TransportError> {
         self.count_request(0);
-        let response = self.inner.fetch_url(url)?;
+        let response = self.inner.fetch_url(url, on_progress)?;
         self.stats.response_bytes += response.len() as u64;
         Ok(response)
     }

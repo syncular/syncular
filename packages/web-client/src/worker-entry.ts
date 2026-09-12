@@ -20,7 +20,7 @@ import {
   withClientDiagnosticsHost,
 } from './diagnostics';
 import { encryptionConfigFromKeyring } from './encryption';
-import { ClientSyncError } from './errors';
+import { ClientSyncError, STORAGE_BUSY_CODE } from './errors';
 import {
   httpBlobTransport,
   httpSegmentDownloader,
@@ -51,6 +51,8 @@ export interface SyncWorkerOverrides {
   readonly openDatabase?: (
     config: WorkerInitConfig,
   ) => Promise<ClientDatabase> | ClientDatabase;
+  /** Retry deadline indirection for deterministic worker-host tests. */
+  readonly waitForStorageRetry?: (delayMs: number) => Promise<void>;
   readonly createTransport?: (config: WorkerInitConfig) => SyncTransport;
   readonly createSegments?: (
     config: WorkerInitConfig,
@@ -262,10 +264,33 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
     }
     autoSync = config.autoSync ?? true;
 
-    database =
-      overrides.openDatabase !== undefined
-        ? await overrides.openDatabase(config)
-        : await defaultOpenDatabase(config);
+    for (let attempt = 0; ; attempt++) {
+      try {
+        database =
+          overrides.openDatabase !== undefined
+            ? await overrides.openDatabase(config)
+            : await defaultOpenDatabase(config);
+        break;
+      } catch (error) {
+        if (
+          config.database.mode !== 'persistent' ||
+          !(error instanceof ClientSyncError) ||
+          error.code !== STORAGE_BUSY_CODE ||
+          !error.retryable ||
+          attempt === 6
+        ) {
+          throw error;
+        }
+        // Retain the leader lease while the previous worker's OPFS handles
+        // drain. Only opening is retried; core initialization has not started.
+        const delayMs = Math.min(50 * 2 ** attempt, 1000);
+        if (overrides.waitForStorageRetry !== undefined) {
+          await overrides.waitForStorageRetry(delayMs);
+        } else {
+          await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+        }
+      }
+    }
     const transport = gateOffline(
       overrides.createTransport !== undefined
         ? overrides.createTransport(config)
@@ -335,6 +360,9 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
         // §8.6: surface a presence change to the UI thread.
         post({ t: 'event', event: { kind: 'presence', scopeKey } });
       },
+    });
+    started.onProgress((progress) => {
+      if (!closed) post({ t: 'event', event: { kind: 'progress', progress } });
     });
     started.onChange((batch) => {
       if (!closed) post({ t: 'event', event: { kind: 'change', batch } });

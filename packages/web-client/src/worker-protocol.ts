@@ -1,3 +1,4 @@
+import type { SyncProgress } from './progress';
 /**
  * The worker RPC protocol: the whole
  * client core runs in a Web Worker; the UI thread talks to it through
@@ -206,6 +207,7 @@ export interface WorkerErrorShape {
 }
 
 export type SyncWorkerEvent =
+  | { readonly kind: 'progress'; readonly progress: SyncProgress }
   | {
       readonly kind: 'sync-needed';
       readonly reason: 'startup' | 'hello' | WakeReason;

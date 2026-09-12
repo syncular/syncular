@@ -40,3 +40,9 @@ export * from './transport';
 export * from './window';
 export * from './worker-host';
 export * from './worker-protocol';
+
+export {
+  ProgressEmitter,
+  type SyncProgress,
+  type SyncProgressListener,
+} from './progress';

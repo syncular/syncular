@@ -3241,6 +3241,16 @@ when pending outbox commits exist. A denied request leaves the database usable
 with best-effort durability. A second origin-local outbox store does not cover
 origin eviction and MUST NOT be presented as an eviction backup.
 
+**Browser worker startup ownership.** A persistent worker MUST retry database
+opening only for retryable `client.storage_busy`. It retains its leader lease
+and retries the same directory after 50, 100, 200, 400, 800, and 1000 ms
+(seven attempts, 2550 ms of scheduled delay). Browser scheduling and storage
+operation time can extend elapsed startup time. Exhaustion MUST surface
+`client.storage_busy` and release the failed worker and leader lease. Other
+errors MUST fail immediately. Retries MUST NOT delete, rename, or replace the
+replica. Direct database opens remain single attempts. This policy is specific
+to browser OPFS ownership and does not alter either core's sync retry semantics.
+
 `syncUntilIdle` continues while the core's sync-needed flag is raised,
 including an epoch handshake with no subscriptions. A persisted outbox can
 therefore drain after startup without requiring a subscription to trigger a
@@ -3865,6 +3875,42 @@ protected operation during security preflight because table/subscription
 evidence belongs to the quarantined replica.
 
 ---
+
+### 7.6 Live sync progress
+
+TS and Rust clients expose a client-local progress snapshot and a listener API.
+Progress is ephemeral, bounded to the latest snapshot, and independent of the
+revisioned post-commit change stream. Listening immediately delivers the latest
+snapshot when one exists. Listener failures must not fail a sync operation.
+Bridges forward progress while the operation is running, without waiting for
+its command response. Unsubscribing stops observation and does not cancel sync.
+
+Each `sync` round starts a new monotonically increasing `attempt` scoped to the
+client instance. `syncUntilIdle` starts an attempt for each round. `state` is
+`running`, `complete`, or `failed`; `phase` is `request`, `download`, or `import`.
+A new attempt resets counters and failure state. `subscriptionId`, `table`, and
+`segmentId` identify the current payload when present. Payload counters reset
+when the current payload changes. They are not an aggregate percentage across
+subscriptions or rounds. Unknown totals remain absent.
+
+`bytesReceived` counts decoded response-body bytes, with optional `bytesTotal`.
+HTTP segment transports report intermediate bytes at 64 KiB boundaries (or
+larger transport chunks). A custom buffered transport can report only its final
+byte count. Both direct and signed-URL downloads follow this contract.
+`rowsProcessed` counts imported rows, with optional `rowsTotal`. Import reports
+intermediate updates every 1,024 rows and the final count. These are work counters:
+an image's rows remain uncommitted until its existing atomic transaction commits.
+Progress MUST NOT split an image transaction or advance a subscription cursor.
+Rows segments retain their per-block transactions.
+
+`complete` is emitted only after the round has applied subscription checkpoints
+and reconciled the optimistic read model. It means the round completed, not that
+all subscriptions have finished bootstrap. `failed` carries a static `errorCode`
+and retains the last observed counters; processed rows may have rolled back.
+A failed subscription makes the progress attempt failed even when the ordinary
+sync summary returns that subscription failure without throwing. Progress does
+not claim cancellation or recovery when a worker or process disappears.
+
 
 ## 8. Realtime
 

@@ -1,3 +1,4 @@
+import type { DriverSyncProgress } from '../driver';
 /**
  * Rust ClientDriver: spawns the `conformance-shim` binary (the Rust client
  * core on rusqlite, `rust/crates/client`) — one subprocess per
@@ -585,6 +586,36 @@ class ShimProcess {
 // ClientDriver
 // ---------------------------------------------------------------------------
 
+function progressValue(value: JsonValue): DriverSyncProgress {
+  const object = asObject(value, 'progress');
+  if (
+    (object.state !== 'running' &&
+      object.state !== 'complete' &&
+      object.state !== 'failed') ||
+    (object.phase !== 'request' &&
+      object.phase !== 'download' &&
+      object.phase !== 'import') ||
+    typeof object.attempt !== 'number' ||
+    typeof object.bytesReceived !== 'number' ||
+    typeof object.rowsProcessed !== 'number'
+  ) {
+    throw new Error('invalid progress snapshot');
+  }
+  return {
+    attempt: object.attempt,
+    state: object.state,
+    phase: object.phase,
+    bytesReceived: object.bytesReceived,
+    rowsProcessed: object.rowsProcessed,
+    ...(typeof object.rowsTotal === 'number'
+      ? { rowsTotal: object.rowsTotal }
+      : {}),
+    ...(typeof object.errorCode === 'string'
+      ? { errorCode: object.errorCode }
+      : {}),
+  };
+}
+
 function asObject(value: JsonValue, what: string): Record<string, JsonValue> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new Error(`${what}: expected an object result`);
@@ -781,6 +812,17 @@ class RustClientInstance implements ClientInstance {
         }[];
       };
     };
+  }
+
+  async drainProgress(): Promise<readonly DriverSyncProgress[]> {
+    const result = await this.#shim.call('drainProgress', {});
+    if (!Array.isArray(result)) throw new Error('invalid progress events');
+    return result.map(progressValue);
+  }
+
+  async progressSnapshot(): Promise<DriverSyncProgress | undefined> {
+    const result = await this.#shim.call('progressSnapshot', {});
+    return result === null ? undefined : progressValue(result);
   }
 
   async drainChangeBatches(): Promise<readonly DriverChangeBatch[]> {

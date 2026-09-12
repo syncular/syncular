@@ -200,3 +200,12 @@ current capture time and the existing privacy and security-preflight rules.
 The Rust core reuses compiled statements for diagnostic outbox, outcome, and
 blob aggregates. Each refresh reads current values through SQLite; the cache
 contains compiled statements and retains no diagnostic result values.
+
+## Live sync progress
+
+`progressSnapshot` returns the latest client-local progress snapshot. The event
+queue forwards `{ "type": "progress", "progress": { ... } }` during a running
+sync command; poll it from the host's event thread. Queued progress coalesces to
+the latest snapshot so a slow consumer does not retain every byte or row update.
+The ABI is unchanged. The fields and completion boundary match
+[the Rust progress API](https://syncular.dev/platform-rust/#live-sync-progress).

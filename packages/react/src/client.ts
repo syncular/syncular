@@ -1,6 +1,8 @@
 /** The provider uses the supplied client identity and canonical snapshot methods. */
 import type {
   ClientSnapshotReader,
+  SyncProgress,
+  SyncProgressListener,
   ClientChangeListener,
   ClientDiagnosticsListener,
   InvalidationListener,
@@ -22,6 +24,8 @@ import type {
 
 export interface SyncClientLike extends ClientSnapshotReader {
   readonly currentSchemaVersion?: number;
+  onProgress(listener: SyncProgressListener): () => void;
+  progressSnapshot(): SyncProgress | undefined;
   onChange(listener: ClientChangeListener): () => void;
   onDiagnostics(listener: ClientDiagnosticsListener): () => void;
   onInvalidate(listener: InvalidationListener): () => void;

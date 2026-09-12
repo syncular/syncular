@@ -32,6 +32,7 @@ export interface SegmentFetchRequest {
   readonly table: string;
   /** Canonical JSON (§11.2) of the requested scope map (§5.5 header). */
   readonly requestedScopesJson: string;
+  readonly onProgress?: (bytesReceived: number) => void;
 }
 
 /**
@@ -44,7 +45,10 @@ export interface SegmentFetchRequest {
  */
 export interface SegmentDownloader {
   (request: SegmentFetchRequest): Promise<Uint8Array>;
-  readonly fetchUrl?: (url: string) => Promise<Uint8Array>;
+  readonly fetchUrl?: (
+    url: string,
+    onProgress?: (bytesReceived: number) => void,
+  ) => Promise<Uint8Array>;
 }
 
 export interface RealtimeHandlers {

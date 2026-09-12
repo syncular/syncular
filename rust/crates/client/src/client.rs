@@ -7,6 +7,7 @@
 //! Built from `SPEC.md` and the committed `ssp2` codec alone — no
 //! reference to the v1 Rust tree or the v2 TypeScript client.
 
+use crate::{ProgressObserver, ProgressPhase, ProgressState};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
@@ -883,6 +884,7 @@ mod observation_tests {
         fn download_segment(
             &mut self,
             _request: &SegmentRequest,
+            _on_progress: &mut dyn FnMut(u64),
         ) -> Result<Vec<u8>, TransportError> {
             Err(TransportError::new("sync.transport_failed", "offline"))
         }
@@ -3620,6 +3622,7 @@ pub struct SyncClient {
     #[cfg(test)]
     outcome_prune_count: Cell<usize>,
     /// Exact observer-transaction output drained by command/FFI hosts.
+    progress: ProgressObserver,
     change_queue: VecDeque<ClientChangeBatch>,
     sync_intent_queue: VecDeque<SyncIntent>,
     /// Explicit exponential retry policy for transient transport failures.
@@ -4186,6 +4189,7 @@ impl SyncClient {
             overlay_rebuild_count: Cell::new(0),
             #[cfg(test)]
             outcome_prune_count: Cell::new(0),
+            progress: ProgressObserver::default(),
             change_queue: VecDeque::new(),
             sync_intent_queue: VecDeque::new(),
             retry_delay_ms: 250,
@@ -7106,9 +7110,28 @@ impl SyncClient {
 
     // -- sync -------------------------------------------------------------------
 
+    /// Cloneable observation handle; no client lock is needed to read it.
+    pub fn progress(&self) -> ProgressObserver {
+        self.progress.clone()
+    }
+
     pub fn sync(&mut self, transport: &mut dyn Transport) -> SyncOutcome {
+        self.progress.start();
         let started_at_ms = self.clock_now_ms();
         let outcome = self.sync_inner(transport);
+        self.progress.update(|p| match &outcome {
+            SyncOutcome::Ok(report) if report.failed.is_empty() => {
+                p.state = ProgressState::Complete
+            }
+            SyncOutcome::Ok(_) => {
+                p.state = ProgressState::Failed;
+                p.error_code = Some("sync.scope_revoked".into());
+            }
+            SyncOutcome::Failed { error_code, .. } => {
+                p.state = ProgressState::Failed;
+                p.error_code = Some(Self::diagnostic_code(error_code));
+            }
+        });
         let completed_at_ms = self.clock_now_ms();
         self.last_round = Some(match &outcome {
             SyncOutcome::Ok(report) => DiagnosticLastRound {
@@ -8075,6 +8098,17 @@ impl SyncClient {
                 Frame::SegmentInline { payload } => {
                     let segment = decode_rows_segment(&payload)
                         .map_err(|e| SectionError::Abort(e.code.as_str().to_owned(), e.detail))?;
+                    self.progress.update(|p| {
+                        p.phase = ProgressPhase::Import;
+                        p.subscription_id = Some(self.subs[sub_index].id.clone());
+                        p.table = Some(self.subs[sub_index].table.clone());
+                        p.segment_id = None;
+                        p.bytes_received = payload.len() as u64;
+                        p.bytes_total = Some(payload.len() as u64);
+                        p.rows_processed = 0;
+                        p.rows_total =
+                            Some(segment.blocks.iter().map(|block| block.len() as u64).sum());
+                    });
                     let first = !saw_segment;
                     saw_segment = true;
                     let applied = self.apply_segment(sub_index, &segment, fresh && first)?;
@@ -8082,6 +8116,7 @@ impl SyncClient {
                 }
                 Frame::SegmentRef {
                     segment_id,
+                    byte_length,
                     media_type,
                     table,
                     row_count,
@@ -8111,6 +8146,18 @@ impl SyncClient {
                             ),
                         ));
                     }
+                    self.progress.update(|p| {
+                        p.phase = ProgressPhase::Download;
+                        p.subscription_id = Some(self.subs[sub_index].id.clone());
+                        p.table = Some(table.clone());
+                        p.segment_id = Some(segment_id.clone());
+                        p.bytes_received = 0;
+                        p.bytes_total = u64::try_from(byte_length).ok();
+                        p.rows_processed = 0;
+                        p.rows_total = u64::try_from(row_count).ok();
+                    });
+                    let observer = self.progress.clone();
+                    let mut on_progress = |bytes| observer.update(|p| p.bytes_received = bytes);
                     let bytes = if let Some(url) = url {
                         // §5.4: a url-carrying descriptor MUST be fetched
                         // from that URL; failure invalidates the whole
@@ -8133,20 +8180,24 @@ impl SyncClient {
                             ));
                         }
                         transport
-                            .fetch_url(&url)
+                            .fetch_url(&url, &mut on_progress)
                             .map_err(|e| SectionError::Abort(e.code, e.message))?
                     } else {
                         let requested_scopes_json =
                             canonical_scope_json(&self.subs[sub_index].requested);
                         transport
-                            .download_segment(&SegmentRequest {
-                                segment_id: segment_id.clone(),
-                                table,
-                                requested_scopes_json,
-                            })
+                            .download_segment(
+                                &SegmentRequest {
+                                    segment_id: segment_id.clone(),
+                                    table,
+                                    requested_scopes_json,
+                                },
+                                &mut on_progress,
+                            )
                             .map_err(|e| SectionError::Abort(e.code, e.message))?
                     };
                     // §5.1: verify the content address before applying.
+                    on_progress(bytes.len() as u64);
                     let digest = Sha256::digest(&bytes);
                     let expected = segment_id
                         .strip_prefix("sha256:")
@@ -8157,6 +8208,7 @@ impl SyncClient {
                             "segment bytes do not match the content address (§5.1)".to_owned(),
                         ));
                     }
+                    self.progress.update(|p| p.phase = ProgressPhase::Import);
                     if media_type == MediaType::Sqlite {
                         // §5.3: images are whole-table — a paged sqlite
                         // descriptor is invalid.
@@ -8391,7 +8443,7 @@ impl SyncClient {
                     self.purge_scope_rows(&table.name, &effective)
                         .map_err(|()| SectionError::FailClosed)?;
                 }
-                for row in block {
+                for (row_index, row) in block.iter().enumerate() {
                     let decrypted;
                     let values = if table.has_encrypted_columns() {
                         let mut values = row.values.clone();
@@ -8408,6 +8460,10 @@ impl SyncClient {
                         .map_err(|message| {
                             SectionError::Abort("sync.invalid_request".into(), message)
                         })?;
+                    let processed = u64::from(applied) + row_index as u64 + 1;
+                    if processed.is_multiple_of(1024) {
+                        self.progress.update(|p| p.rows_processed = processed);
+                    }
                 }
                 self.rebuild_overlay_if_dirty();
                 self.finish_observation("syncular_segment_block", batch)
@@ -8420,6 +8476,8 @@ impl SyncClient {
             }
             applied += block.len() as u32;
         }
+        self.progress
+            .update(|p| p.rows_processed = u64::from(applied));
         Ok(applied)
     }
 
@@ -8667,6 +8725,10 @@ impl SyncClient {
                     .map_err(|e| invalid(e.to_string()))?;
                 ins.raw_execute().map_err(|e| invalid(e.to_string()))?;
                 applied += 1;
+                if applied.is_multiple_of(1024) {
+                    self.progress
+                        .update(|p| p.rows_processed = u64::from(applied));
+                }
             }
             applied
         };
@@ -8693,6 +8755,8 @@ impl SyncClient {
                 "image holds {applied} rows, descriptor says {row_count}"
             )));
         }
+        self.progress
+            .update(|p| p.rows_processed = u64::from(applied));
         Ok(applied)
     }
 

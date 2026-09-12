@@ -659,6 +659,16 @@ export type DriverSyncIntent =
   | { readonly kind: 'interactive' }
   | { readonly kind: 'background'; readonly delayMs: number };
 
+export interface DriverSyncProgress {
+  readonly attempt: number;
+  readonly state: 'running' | 'complete' | 'failed';
+  readonly phase: 'request' | 'download' | 'import';
+  readonly bytesReceived: number;
+  readonly rowsProcessed: number;
+  readonly rowsTotal?: number;
+  readonly errorCode?: string;
+}
+
 export interface ClientInstance {
   subscribe(input: {
     readonly id: string;
@@ -720,6 +730,8 @@ export interface ClientInstance {
       }[];
     };
   }>;
+  drainProgress?(): Promise<readonly DriverSyncProgress[]>;
+  progressSnapshot?(): Promise<DriverSyncProgress | undefined>;
   drainChangeBatches?(): Promise<readonly DriverChangeBatch[]>;
   drainSyncIntents?(): Promise<readonly DriverSyncIntent[]>;
 

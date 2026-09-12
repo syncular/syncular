@@ -16,6 +16,29 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-09-12',
+    title: 'Live download and import progress',
+    body: 'Both client cores expose live sync progress with per-attempt identities, byte and row counters, and terminal failures. Worker, Tauri, and FFI events deliver updates while sync is running. JavaScript clients provide onProgress and progressSnapshot; React adds useSyncProgress(client), and Rust provides a cloneable observer with subscription guards. SQLite image imports retain their atomic transaction.',
+    links: [
+      {
+        href: '/platform-web/#live-sync-progress',
+        label: 'JavaScript progress',
+      },
+      { href: '/platform-rust/#live-sync-progress', label: 'Rust progress' },
+    ],
+  },
+  {
+    date: '2026-09-12',
+    title: 'Browser SQLite crash recovery',
+    body: 'The persistent browser client corrects the OPFS SAH-pool reserved-lock callback before the first SQL statement, allowing SQLite to roll back interrupted writes on reopen. Bounded startup retries handle transient storage_busy errors while retaining leadership. Seven Chromium cases verify crash recovery within the same browser session, database and FTS integrity, checkpoint recovery, and contention without losing pending writes.',
+    links: [
+      {
+        href: '/platform-web/#interrupted-writes',
+        label: 'Browser crash recovery',
+      },
+    ],
+  },
+  {
     date: '2026-09-11',
     title: 'Syncular 0.19.0',
     body: 'The TS and Rust clients write blob dependencies directly with the outbox and keep mutable upload state outside immutable blob rows. They remove stored refcounts, SQLite triggers, startup dependency backfill, cache-hit metadata writes, and reconciliation passes. Two independent paired 500 MB collections reduced upload time by 21.1% and 24.9% in TS and by 9.0% and 6.8% in Rust. Clients reject the 0.18 local blob-table layout and require a fresh local database after upgrading.',

@@ -14,6 +14,120 @@ import { expectConverged, seedTasks, syncIdle, syncOk } from './util';
 const P1 = { project_id: ['p1'] } as const;
 
 export const bootstrapScenarios: readonly Scenario[] = [
+  ...[0b0011, 0b0111].map(
+    (accept): Scenario => ({
+      name: `bootstrap/live-progress-intermediate-import-${accept === 3 ? 'rows' : 'sqlite'}`,
+      specRefs: ['§7.6', '§5.2', '§5.3'],
+      server: { limits: { inlineSegmentMaxBytes: 0 } },
+      async run(ctx) {
+        for (let start = 0; start < 2049; start += 500) {
+          await seedTasks(
+            ctx,
+            Array.from({ length: Math.min(500, 2049 - start) }, (_, i) =>
+              task(`task-${start + i}`, 'p1', 'progress'),
+            ),
+          );
+        }
+        const a = await ctx.newClient({
+          actorId: 'actor-a',
+          clientId: 'client-a',
+          allowed: P1,
+          limits: { accept, limitSnapshotRows: accept === 3 ? 4096 : 1 },
+        });
+        await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+        await syncOk(a);
+        const events = await a.api.drainProgress?.();
+        check(events !== undefined, 'driver captures live listener events');
+        check(
+          events?.some(
+            (p) =>
+              p.state === 'running' &&
+              p.phase === 'import' &&
+              p.rowsProcessed === 1024,
+          ) === true,
+          'intermediate import at 1024 rows',
+        );
+        check(
+          events?.some(
+            (p) =>
+              p.state === 'running' &&
+              p.phase === 'import' &&
+              p.rowsProcessed === 2048,
+          ) === true,
+          'intermediate import at 2048 rows',
+        );
+        checkEqual(
+          events?.at(-1)?.state,
+          'complete',
+          'terminal follows import',
+        );
+        checkEqual(events?.at(-1)?.rowsProcessed, 2049, 'exact final counter');
+        checkEqual(
+          (await a.api.readRows('tasks')).length,
+          2049,
+          'committed rows after completion',
+        );
+      },
+    }),
+  ),
+  {
+    name: 'bootstrap/live-progress-failure-and-retry',
+    specRefs: ['§7.6', '§5.1', '§1.4'],
+    server: { limits: { inlineSegmentMaxBytes: 0 } },
+    async run(ctx) {
+      await seedTasks(ctx, [
+        task('t1', 'p1', 'one'),
+        task('t2', 'p1', 'two'),
+        task('t3', 'p1', 'three'),
+      ]);
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: P1,
+      });
+      const progress = a.api.progressSnapshot?.bind(a.api);
+      check(progress !== undefined, 'client exposes progress snapshots');
+      if (progress === undefined) throw new Error('progress snapshots missing');
+      checkEqual(
+        await progress(),
+        undefined,
+        'no invented work before first attempt',
+      );
+      await syncOk(a);
+      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      a.faults.truncateNextSegmentDownload = true;
+      const failed = await a.api.sync();
+      check(!failed.ok, 'corrupt transfer fails');
+      const failure = await progress();
+      checkEqual(failure?.state, 'failed', 'terminal failure is observable');
+      checkEqual(
+        failure?.phase,
+        'download',
+        'verification failure remains in download phase',
+      );
+      checkEqual(failure?.rowsProcessed, 0, 'unverified rows are not imported');
+      checkEqual(
+        failure?.errorCode,
+        'sync.invalid_request',
+        'failure has a stable code',
+      );
+      await syncOk(a);
+      const complete = await progress();
+      checkEqual(complete?.state, 'complete', 'retry completes');
+      check(
+        (complete?.attempt ?? 0) > (failure?.attempt ?? 0),
+        'retry has a new identity',
+      );
+      checkEqual(complete?.errorCode, undefined, 'retry clears the failure');
+      checkEqual(complete?.rowsProcessed, 3, 'actual imported rows');
+      checkEqual(complete?.rowsTotal, 3, 'declared total rows');
+      checkEqual(
+        (await a.api.readRows('tasks')).length,
+        3,
+        'complete follows usable local reads',
+      );
+    },
+  },
   {
     name: 'bootstrap/fresh-inline-and-handoff-at-pin',
     specRefs: ['§4.7', '§5.2', '§5.7'],
@@ -32,6 +146,16 @@ export const bootstrapScenarios: readonly Scenario[] = [
 
       const first = await syncOk(a);
       checkEqual(first.segmentRowsApplied, 3, 'snapshot arrived as segments');
+      checkEqual(
+        (await a.api.progressSnapshot?.())?.rowsProcessed,
+        3,
+        'inline progress counts applied rows',
+      );
+      checkEqual(
+        (await a.api.progressSnapshot?.())?.rowsTotal,
+        3,
+        'inline progress reports the decoded total',
+      );
       checkEqual(
         first.bootstrapping,
         [],

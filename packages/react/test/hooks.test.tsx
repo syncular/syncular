@@ -23,9 +23,10 @@ import {
   useRawSql,
   useRetainedWindow,
   useSyncStatus,
+  useSyncProgress,
   useWindow,
 } from '../src/index';
-import type { PresencePeer } from '@syncular/client';
+import { ProgressEmitter, type PresencePeer } from '@syncular/client';
 import { FakeClient } from './fake-client';
 import { installHappyDom } from './setup';
 
@@ -548,4 +549,48 @@ describe('useWindow (§4.8 completeness oracle, I3)', () => {
     await waitFor(() => expect(calls).toContain('querySnapshot'));
     expect(calls).not.toContain('windowState');
   });
+});
+
+test('useSyncProgress updates directly and switches subscriptions with the client', () => {
+  const first = new ProgressEmitter();
+  const second = new ProgressEmitter();
+  const a = {
+    onProgress: first.on.bind(first),
+    progressSnapshot: first.snapshot.bind(first),
+  };
+  const b = {
+    onProgress: second.on.bind(second),
+    progressSnapshot: second.snapshot.bind(second),
+  };
+  const { result, rerender, unmount } = renderHook(
+    ({ client }) => useSyncProgress(client),
+    { initialProps: { client: a } },
+  );
+  expect(result.current).toBeUndefined();
+  act(() =>
+    first.emit({
+      attempt: 1,
+      state: 'running',
+      phase: 'import',
+      bytesReceived: 0,
+      rowsProcessed: 1024,
+      rowsTotal: 4096,
+    }),
+  );
+  expect(result.current?.rowsProcessed).toBe(1024);
+  rerender({ client: b });
+  expect(result.current).toBeUndefined();
+  act(() => first.update({ rowsProcessed: 2048 }));
+  expect(result.current).toBeUndefined();
+  act(() =>
+    second.emit({
+      attempt: 1,
+      state: 'complete',
+      phase: 'request',
+      bytesReceived: 0,
+      rowsProcessed: 0,
+    }),
+  );
+  expect(result.current?.state).toBe('complete');
+  unmount();
 });

@@ -3,8 +3,8 @@
  * a real Worker (bun's Web Worker implementation) behind the
  * worker-protocol RPC, against a real HTTP + WebSocket server. Only the
  * SQLite backend differs from the browser (bun:sqlite via the bootstrap's
- * database-factory indirection; opfs-sahpool is browser-verified through
- * the demo).
+ * database-factory indirection; opfs-bootstrap.browser.test.ts exercises
+ * opfs-sahpool in Chromium).
  */
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import {
@@ -699,3 +699,60 @@ test('close terminates the worker and rejects later calls', async () => {
   await handle.close(); // idempotent
   await expectRejectsWithCode(handle.query('SELECT 1'), WORKER_FAILED_CODE);
 });
+
+for (const [name, attempts, delays, errorCode] of [
+  ['storage-busy-once', 2, [50], undefined],
+  ['storage-busy-final', 7, [50, 100, 200, 400, 800, 1000], undefined],
+  ['storage-busy', 7, [50, 100, 200, 400, 800, 1000], STORAGE_BUSY_CODE],
+  ['storage-busy-permanent', 1, [], STORAGE_BUSY_CODE],
+  ['storage-failed', 1, [], WORKER_FAILED_CODE],
+] as const) {
+  test(`persistent startup retry policy: ${name}`, async () => {
+    const opened: number[] = [];
+    const waited: number[] = [];
+    let held = false;
+    const leaderLock: LeaderLock = {
+      acquire: async () => {
+        expect(held).toBe(false);
+        held = true;
+        return {
+          release: async () => {
+            held = false;
+          },
+        };
+      },
+    };
+    const pending = createSyncClientHandle({
+      worker: () => {
+        const worker = new Worker(WORKER_URL);
+        worker.addEventListener('message', (event) => {
+          if (event.data.t === 'storage-open') {
+            expect(held).toBe(true);
+            opened.push(event.data.attempt);
+          }
+          if (event.data.t === 'storage-retry') {
+            expect(held).toBe(true);
+            waited.push(event.data.delayMs);
+          }
+        });
+        return worker;
+      },
+      schema: CLIENT_SCHEMA,
+      database: { mode: 'persistent', name },
+      endpoints: { syncUrl: http.syncUrl },
+      leaderLock,
+      multiTab: false,
+      autoSync: false,
+    });
+    if (errorCode !== undefined) {
+      await expectRejectsWithCode(pending, errorCode);
+    } else {
+      const handle = await pending;
+      expect(await handle.query('SELECT 1 AS one')).toEqual([{ one: 1 }]);
+      await handle.close();
+    }
+    expect(opened).toEqual(Array.from({ length: attempts }, (_, i) => i + 1));
+    expect(waited).toEqual([...delays]);
+    expect(held).toBe(false);
+  });
+}

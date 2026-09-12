@@ -94,11 +94,13 @@ const WORKLOAD = {
  * - `propagationP95CeilingMs` 20 ms: local in-process p95 is 0.2 ms. A
  *   100× allowance absorbs runner noise; breaching 20 ms in-process means
  *   a sleep/poll crept into the sync/realtime loop.
- * - `ownJsRawCeilingBytes` 122 KB: syncular's own JS (core + codec) is
- *   116.6 KB raw today. Bundle bytes are deterministic — no runner noise —
- *   so this stays tight (~5% headroom: enough that a one-KB innocent
- *   change doesn't trip, small enough to catch real bloat). RAISED from
- *   118 KB (2026-07-20): per-commit measurement attributes the growth
+ * - `ownJsRawCeilingBytes` 130 KB: measured 126,687 raw bytes on
+ *   2026-09-12, with OPFS crash recovery and live sync progress. Paired
+ *   source builds retaining the OPFS fix measure progress at +2,085 raw
+ *   bytes (+730 gzip), from 124,602 to 126,687. The previous 122 KB cap
+ *   left only 326 bytes before progress; 130 KB restores ~5% headroom.
+ *   The image throughput and propagation budgets remain unchanged.
+ *   Previously raised from 118 KB to 122 KB (2026-07-20): per-commit measurement attributes the growth
  *   (115,521 → 119,356) as 2,742 bytes from feature commits that shipped
  *   without a budget re-derivation — safe local rebootstrap (+1,091),
  *   rebootstrap receipt replay (+952), realtime lifecycle wiring (+404),
@@ -174,7 +176,7 @@ const BUDGETS = {
   bootstrapRowsPerSecFloor: 90_000,
   imageBootstrapRowsPerSecFloor: 300_000,
   propagationP95CeilingMs: 20,
-  ownJsRawCeilingBytes: 122 * 1024,
+  ownJsRawCeilingBytes: 130 * 1024,
   totalGzipCeilingBytes: 600 * 1024,
 } as const;
 

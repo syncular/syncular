@@ -45,6 +45,8 @@ pub struct Event {
 /// The Tauri-free core: one client, its owned transport, explicit scheduling
 /// state, and the pending exact-event queue. Lives on ONE owning thread.
 pub struct SyncularCore {
+    pub progress_listener: Option<syncular_client::SyncProgressListener>,
+    progress_subscription: Option<syncular_client::ProgressSubscription>,
     client: Option<SyncClient>,
     transport: HostTransport,
     effects: CreateEffects,
@@ -73,6 +75,8 @@ impl SyncularCore {
     ) -> Result<Self, String> {
         let transport = HostTransport::from_config_with_notify(config, notify)?;
         Ok(SyncularCore {
+            progress_listener: None,
+            progress_subscription: None,
             client: None,
             transport,
             effects: CreateEffects::default(),
@@ -113,6 +117,18 @@ impl SyncularCore {
             method,
             &params,
         );
+        if method == "create" && result.is_ok() {
+            self.progress_subscription = self.client.as_ref().and_then(|client| {
+                self.progress_listener.clone().map(|listener| {
+                    client
+                        .progress()
+                        .subscribe(move |progress| listener(progress))
+                })
+            });
+        }
+        if method == "shutdown" {
+            self.progress_subscription = None;
+        }
         if method == "create" {
             self.last_diagnostics_snapshot = None;
             self.transport.set_signed_urls(self.effects.signed_urls);
@@ -346,6 +362,36 @@ mod tests {
             "params": { "clientId": "c1", "schema": simple_schema() }
         }));
         assert_eq!(reply["result"], json!({}), "create ok: {reply}");
+    }
+
+    #[test]
+    fn progress_sink_runs_before_the_sync_command_returns() {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc, Mutex,
+        };
+        let mut core = SyncularCore::new(&json!({})).unwrap();
+        let running = Arc::new(AtomicBool::new(false));
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let in_command = running.clone();
+        let events = observed.clone();
+        core.progress_listener = Some(Arc::new(move |progress| {
+            events
+                .lock()
+                .unwrap()
+                .push((in_command.load(Ordering::SeqCst), progress.state));
+        }));
+        create(&mut core);
+        running.store(true, Ordering::SeqCst);
+        core.command(&json!({ "method": "sync" }));
+        running.store(false, Ordering::SeqCst);
+        assert_eq!(
+            *observed.lock().unwrap(),
+            vec![
+                (true, syncular_client::ProgressState::Running),
+                (true, syncular_client::ProgressState::Failed)
+            ]
+        );
     }
 
     #[test]

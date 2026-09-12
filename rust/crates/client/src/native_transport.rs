@@ -190,11 +190,15 @@ impl Transport for HostTransport {
         }
     }
 
-    fn download_segment(&mut self, request: &SegmentRequest) -> Result<Vec<u8>, TransportError> {
+    fn download_segment(
+        &mut self,
+        request: &SegmentRequest,
+        on_progress: &mut dyn FnMut(u64),
+    ) -> Result<Vec<u8>, TransportError> {
         match self {
             HostTransport::Null { .. } => Err(unavailable("downloadSegment")),
             #[cfg(feature = "native-transport")]
-            HostTransport::Native(t) => t.download_segment(request),
+            HostTransport::Native(t) => t.download_segment(request, on_progress),
         }
     }
 
@@ -206,11 +210,15 @@ impl Transport for HostTransport {
         }
     }
 
-    fn fetch_url(&mut self, url: &str) -> Result<Vec<u8>, TransportError> {
+    fn fetch_url(
+        &mut self,
+        url: &str,
+        on_progress: &mut dyn FnMut(u64),
+    ) -> Result<Vec<u8>, TransportError> {
         match self {
             HostTransport::Null { .. } => Err(unavailable("fetchUrl")),
             #[cfg(feature = "native-transport")]
-            HostTransport::Native(t) => t.fetch_url(url),
+            HostTransport::Native(t) => t.fetch_url(url, on_progress),
         }
     }
 
@@ -543,7 +551,7 @@ mod native {
                 req = req.header(k.as_str(), v.as_str());
             }
             let resp = req.send(body).map_err(|e| http_err("POST", e))?;
-            read_body(resp)
+            read_body(resp, None)
         }
 
         fn post_operation(&self, body: &[u8]) -> Result<Vec<u8>, TransportError> {
@@ -558,7 +566,7 @@ mod native {
             let response = req
                 .send(body)
                 .map_err(|error| http_err("POST operation", error))?;
-            read_body(response)
+            read_body(response, None)
         }
 
         fn get_bytes(&self, url: &str, with_headers: bool) -> Result<Vec<u8>, TransportError> {
@@ -569,7 +577,7 @@ mod native {
                 }
             }
             let resp = req.call().map_err(|e| http_err("GET", e))?;
-            read_body(resp)
+            read_body(resp, None)
         }
 
         pub fn set_headers(&mut self, headers: Vec<(String, String)>) {
@@ -629,11 +637,34 @@ mod native {
         }
     }
 
-    fn read_body(resp: ureq::http::Response<ureq::Body>) -> Result<Vec<u8>, TransportError> {
-        resp.into_body()
-            .into_with_config()
-            .read_to_vec()
-            .map_err(|e| http_err("read", e))
+    fn read_body(
+        resp: ureq::http::Response<ureq::Body>,
+        mut progress: Option<&mut dyn FnMut(u64)>,
+    ) -> Result<Vec<u8>, TransportError> {
+        use std::io::Read;
+        let mut reader = resp.into_body().into_with_config().reader();
+        let mut bytes = Vec::new();
+        let mut chunk = [0u8; 64 * 1024];
+        let mut reported = 0;
+        loop {
+            let n = reader.read(&mut chunk).map_err(|e| http_err("read", e))?;
+            if n == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&chunk[..n]);
+            if bytes.len() - reported >= 64 * 1024 {
+                if let Some(callback) = progress.as_mut() {
+                    callback(bytes.len() as u64);
+                }
+                reported = bytes.len();
+            }
+        }
+        if bytes.len() != reported {
+            if let Some(callback) = progress {
+                callback(bytes.len() as u64);
+            }
+        }
+        Ok(bytes)
     }
 
     impl Transport for NativeTransport {
@@ -668,6 +699,7 @@ mod native {
         fn download_segment(
             &mut self,
             request: &SegmentRequest,
+            on_progress: &mut dyn FnMut(u64),
         ) -> Result<Vec<u8>, TransportError> {
             // The FULL content address (`sha256:<hex>`) is the path param —
             // the reference server keys its segment store by it (§5.1) and
@@ -684,16 +716,26 @@ mod native {
                 req = req.header(k.as_str(), v.as_str());
             }
             let resp = req.call().map_err(|e| http_err("GET segment", e))?;
-            read_body(resp)
+            read_body(resp, Some(on_progress))
         }
 
         fn supports_url_fetch(&self) -> bool {
             self.signed_urls
         }
 
-        fn fetch_url(&mut self, url: &str) -> Result<Vec<u8>, TransportError> {
+        fn fetch_url(
+            &mut self,
+            url: &str,
+            on_progress: &mut dyn FnMut(u64),
+        ) -> Result<Vec<u8>, TransportError> {
             // §5.4: the URL is the entire grant — no host credentials attached.
-            self.get_bytes(url, false)
+            read_body(
+                self.agent
+                    .get(url)
+                    .call()
+                    .map_err(|e| http_err("GET segment URL", e))?,
+                Some(on_progress),
+            )
         }
 
         fn blob_upload(
@@ -740,7 +782,7 @@ mod native {
                 .get(ureq::http::header::CONTENT_TYPE)
                 .and_then(|value| value.to_str().ok())
                 .is_some_and(|value| value.contains("application/json"));
-            let body = read_body(resp)?;
+            let body = read_body(resp, None)?;
             if is_json {
                 if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&body) {
                     if let Some(u) = parsed.get("url").and_then(|v| v.as_str()) {
@@ -782,7 +824,7 @@ mod native {
             let resp = req
                 .send(body.to_string())
                 .map_err(|e| http_err("POST upload-grant", e))?;
-            let grant_body = read_body(resp)?;
+            let grant_body = read_body(resp, None)?;
             let parsed: serde_json::Value = serde_json::from_slice(&grant_body)
                 .map_err(|e| TransportError::new("transport.failed", format!("read grant: {e}")))?;
             if let Some(u) = parsed.get("url").and_then(|v| v.as_str()) {
@@ -979,6 +1021,71 @@ mod native {
         fn realtime_close(&mut self) -> Result<(), TransportError> {
             self.shutdown();
             Ok(())
+        }
+    }
+}
+
+#[cfg(all(test, feature = "native-transport"))]
+mod tests {
+    use super::*;
+    use std::io::{BufRead, BufReader, Write};
+
+    #[test]
+    fn segment_http_reports_intermediate_bytes_for_direct_and_signed_urls() {
+        for signed in [false, true] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let server = std::thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(socket.try_clone().unwrap());
+                let mut headers = String::new();
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    assert!(!line.is_empty());
+                    headers.push_str(&line.to_ascii_lowercase());
+                }
+                assert_eq!(headers.contains("authorization: bearer test"), !signed);
+                assert_eq!(headers.contains("x-syncular-scopes:"), !signed);
+                let bytes = vec![7; 128 * 1024 + 17];
+                write!(
+                    socket,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    bytes.len()
+                )
+                .unwrap();
+                socket.write_all(&bytes).unwrap();
+            });
+            let mut transport = HostTransport::from_config(
+                &serde_json::json!({"baseUrl": base, "headers": {"authorization": "Bearer test"}}),
+            )
+            .unwrap();
+            let mut updates = Vec::new();
+            let mut progress = |bytes| updates.push(bytes);
+            let bytes = if signed {
+                transport
+                    .fetch_url(&format!("{base}/signed"), &mut progress)
+                    .unwrap()
+            } else {
+                transport
+                    .download_segment(
+                        &SegmentRequest {
+                            segment_id: "sha256:test".into(),
+                            table: "tasks".into(),
+                            requested_scopes_json: "{}".into(),
+                        },
+                        &mut progress,
+                    )
+                    .unwrap()
+            };
+            assert_eq!(bytes.len(), 128 * 1024 + 17);
+            assert!(updates.iter().any(|n| *n > 0 && *n < bytes.len() as u64));
+            assert_eq!(updates.last(), Some(&(bytes.len() as u64)));
+            assert!(updates.windows(2).all(|pair| pair[0] < pair[1]));
+            server.join().unwrap();
         }
     }
 }

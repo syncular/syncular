@@ -65,6 +65,7 @@ pub struct Handle {
     transport: HostTransport,
     effects: CreateEffects,
     queue: Arc<EventQueue>,
+    progress_subscription: Option<syncular_client::ProgressSubscription>,
     last_diagnostics_snapshot: Option<ClientDiagnosticsSnapshot>,
 }
 
@@ -85,6 +86,11 @@ impl EventQueue {
 
     fn push(&self, event: Event) {
         let mut guard = self.inner.lock().expect("event queue lock");
+        if event.json.get("type").and_then(Value::as_str) == Some("progress") {
+            guard.retain(|queued| {
+                queued.json.get("type").and_then(Value::as_str) != Some("progress")
+            });
+        }
         guard.push_back(event);
         self.ready.notify_one();
     }
@@ -132,6 +138,7 @@ impl Handle {
             transport,
             effects: CreateEffects::default(),
             queue,
+            progress_subscription: None,
             last_diagnostics_snapshot: None,
         })
     }
@@ -148,6 +155,19 @@ impl Handle {
             method,
             params,
         );
+        if method == "create" && result.is_ok() {
+            let queue = self.queue.clone();
+            self.progress_subscription = self.client.as_ref().map(|client| {
+                client.progress().subscribe(move |progress| {
+                    queue.push(Event {
+                        json: json!({ "type": "progress", "progress": progress }),
+                    });
+                })
+            });
+        }
+        if method == "shutdown" {
+            self.progress_subscription = None;
+        }
         if method == "create" {
             self.last_diagnostics_snapshot = None;
             self.transport.set_signed_urls(self.effects.signed_urls);
@@ -416,3 +436,24 @@ mod tests;
 
 #[cfg(test)]
 mod round_tests;
+
+#[cfg(test)]
+mod progress_event_tests {
+    use super::*;
+
+    #[test]
+    fn slow_pollers_keep_only_the_latest_progress_without_losing_changes() {
+        let queue = EventQueue::new();
+        queue.push(Event {
+            json: json!({"type": "change", "revision": 1}),
+        });
+        for rows in [1024, 2048, 4096] {
+            queue.push(Event {
+                json: json!({"type": "progress", "rows": rows}),
+            });
+        }
+        assert_eq!(queue.pop(0).unwrap().json["type"], "change");
+        assert_eq!(queue.pop(0).unwrap().json["rows"], 4096);
+        assert!(queue.pop(0).is_none());
+    }
+}

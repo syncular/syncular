@@ -285,10 +285,62 @@ There is a single support floor and a single persistence path:
   `checkBrowserStoragePersistence()` and a user-triggered
   `requestBrowserStoragePersistence()` call to establish and surface the
   browser's durability decision.
-- A temporarily occupied SAH pool fails with retryable
-  `client.storage_busy`; missing/obsolete OPFS APIs fail with non-retryable
-  `client.storage_unavailable`. Never wipe a database merely because its live
-  owner has not released it yet; retry after the owner closes.
+- Persistent worker startup retries retryable `client.storage_busy` up to six
+  times after the first attempt, retaining its leader lease and opening the same
+  directory. Retry delays are 50, 100, 200, 400, 800, and 1000 ms. Browser
+  scheduling and storage operations can extend the 2550 ms total delay.
+- If ownership remains unavailable, handle creation rejects with
+  `client.storage_busy` and releases the worker and leader lease. Close the
+  competing instance, then create the handle again. Never wipe the database
+  because its live owner has not released it. Direct database opens remain
+  single attempts.
+- Other startup errors fail immediately. Missing or obsolete OPFS APIs use
+  non-retryable `client.storage_unavailable`.
+
+### Interrupted writes
+
+The persistent browser binding enables SQLite's rollback-journal recovery before
+the first SQL statement. It corrects the SAH-pool VFS's reserved-lock callback,
+which otherwise reports an active writer after a worker crash and suppresses
+recovery. The database format and DELETE/FULL journal settings remain unchanged.
+The correction applies when opening existing replicas as well as new replicas.
+
+Browser regression tests interrupt image bootstrap during download, before
+import, during a physical database write, after import and after the subscription
+checkpoint. They reload within the same browser session and check SQLite integrity,
+FTS integrity, rows and checkpoint recovery. Separate contention tests require
+successful startup when another owner closes during retry and a bounded
+`client.storage_busy` failure while that owner remains live. Both preserve the
+replica identity and pending outbox. Existing corruption with a lost or
+overwritten journal requires separate recovery.
+
+### Live sync progress
+
+Subscribe to `client.onProgress(listener)` on a direct client or worker handle.
+The callback receives the latest snapshot immediately when one exists, then
+updates during download and import. It returns an unsubscribe function.
+
+```ts
+const unsubscribe = client.onProgress((progress) => {
+  console.log(progress.phase, progress.bytesReceived, progress.rowsProcessed);
+});
+```
+
+`progressSnapshot()` returns the cached value synchronously. `attempt` identifies
+one sync round. `phase` is `request`, `download`, or `import`; `state` is `running`,
+`complete`, or `failed`. The snapshot names the current `subscriptionId`, `table`,
+and optional `segmentId`. `bytesTotal` and `rowsTotal` are absent when unknown.
+Counters reset when the payload changes or a new attempt starts.
+
+`rowsProcessed` reports work inside an import transaction, including rows that a
+failure can roll back. `complete` follows checkpoint persistence and optimistic
+read-model reconciliation for that round. It does not mean every subscription
+has finished bootstrap. Failures retain the last counters and set `errorCode`.
+Unsubscribing stops observations and leaves sync running.
+
+React views can call `useSyncProgress(client)` from `@syncular/react`. The hook
+subscribes to the same events and releases its listener on unmount. Tauri and
+React Native client handles expose the same listener and snapshot methods.
 
 ## Where to go next
 

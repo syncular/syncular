@@ -15,6 +15,7 @@ import {
   SyncClient,
   type SyncIntent,
   type SyncSummary,
+  type SyncProgress,
   last,
 } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
@@ -236,6 +237,7 @@ class TsClientInstance implements ClientInstance {
   #schema: DriverSchema;
   readonly #options: ClientCreateOptions;
   readonly #changes: ClientChangeBatch[] = [];
+  readonly #progress: SyncProgress[] = [];
   readonly #intents: SyncIntent[] = [];
   #epochEstablished = false;
 
@@ -250,6 +252,7 @@ class TsClientInstance implements ClientInstance {
     this.#schema = schema;
     this.#options = options;
     client.onChange((batch) => this.#changes.push(batch));
+    client.onProgress((progress) => this.#progress.push(progress));
   }
 
   async subscribe(input: {
@@ -428,6 +431,14 @@ class TsClientInstance implements ClientInstance {
       ),
       coverage: snapshot.coverage,
     };
+  }
+
+  async drainProgress() {
+    return this.#progress.splice(0);
+  }
+
+  async progressSnapshot() {
+    return this.#client.progressSnapshot();
   }
 
   async drainChangeBatches(): Promise<readonly DriverChangeBatch[]> {

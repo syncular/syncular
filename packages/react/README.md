@@ -343,3 +343,12 @@ come from that snapshot. Direct `conflicts`, `rejections`, and
 `securityLifecycle` reads are now method calls. `normalizeClient` has been
 removed; custom adapters must implement the canonical snapshot methods.
 See the [client migration](https://syncular.dev/platform-web/#snapshot-api-migration).
+
+## Live sync progress
+
+`useSyncProgress(client)` subscribes to a direct, worker, Tauri, or React Native
+client's live progress stream and returns `SyncProgress | undefined`. The hook
+releases its subscription on unmount or when `client` changes. Download counters
+use bytes; import counters use processed rows and can include uncommitted work.
+See [browser progress](https://syncular.dev/platform-web/#live-sync-progress) for
+the attempt, phase, failure, and completion contract.

@@ -1,8 +1,35 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.19.0** (`v0.19.0`). All artifacts use Apache-2.0, except
+current release is **0.20.0** (`v0.20.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.20.0 release notes
+
+- TypeScript and Rust clients expose live sync progress during segment download
+  and import, including byte and row counts, available totals, attempt identity,
+  and failure codes. Browser workers, Tauri, and React Native forward live events;
+  React exposes `useSyncProgress(client)`.
+- Progress counts describe the current payload. Import counts can include
+  uncommitted rows; completion follows checkpoint persistence and read-model
+  reconciliation for the current sync round. SQLite image imports remain atomic.
+- Persistent browser clients correct the SQLite SAH-pool reserved-lock callback
+  before the first SQL statement so interrupted writes can recover from their
+  rollback journal. Real Chromium tests cover five bootstrap interruption points
+  and verify database integrity, FTS, rows, and checkpoints after reopening.
+- Persistent browser worker startup retries `client.storage_busy` six times,
+  with 2550 ms of scheduled delay, while retaining leadership. Browser tests
+  require crash recovery within the same session, recovery when another owner
+  closes during retry, and a bounded error while that owner remains live.
+  Existing corruption with a lost or overwritten journal needs separate recovery.
+
+Custom Rust `Transport::download_segment` and `SegmentDownloader::fetch_url`
+implementations must accept the new progress callback. Upgrade Syncular packages
+and crates together. The wire protocol and local database format are unchanged
+from 0.19.0.
+
+API details: [web progress](https://syncular.dev/platform-web/#live-sync-progress)
+and [Rust](https://syncular.dev/platform-rust/).
 
 ## 0.19.0 release notes
 

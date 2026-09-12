@@ -1,3 +1,8 @@
+import {
+  ProgressEmitter,
+  type SyncProgress,
+  type SyncProgressListener,
+} from './progress';
 /**
  * SyncClient implements the client side of SPEC.md §§3–8.
  *
@@ -584,6 +589,8 @@ export class SyncClient {
   #realtimeGeneration = 0;
   #pendingRound: PendingRound | undefined;
   #needsPull = false;
+  readonly #progress = new ProgressEmitter();
+  #progressAttempt = 0;
   #syncing = false;
   /**
    * True from the synchronous entry of `sync()` until its serialized round
@@ -873,6 +880,7 @@ export class SyncClient {
     await this.#lease?.release();
     this.#lease = undefined;
     this.#started = false;
+    this.#progress.clear();
     this.#syncNeededListeners.clear();
     this.#syncIntentListeners.clear();
   }
@@ -1073,6 +1081,14 @@ export class SyncClient {
   }
 
   /** Subscribe to exact revisioned observer transactions (SPEC §7.5). */
+  onProgress(listener: SyncProgressListener): () => void {
+    return this.#progress.on(listener);
+  }
+
+  progressSnapshot(): SyncProgress | undefined {
+    return this.#progress.snapshot();
+  }
+
   onChange(listener: ClientChangeListener): () => void {
     return this.#changes.on(listener);
   }
@@ -2655,6 +2671,13 @@ export class SyncClient {
         (error: unknown) => {
           const completedAtMs = this.#now();
           const code = (error as { code?: unknown }).code;
+          this.#progress.update({
+            state: 'failed',
+            errorCode:
+              typeof code === 'string'
+                ? this.#diagnosticCode(code)
+                : 'client.unknown_failure',
+          });
           this.#lastRound = {
             status: 'failed',
             startedAtMs,
@@ -2709,7 +2732,15 @@ export class SyncClient {
   }
 
   async #runSync(): Promise<SyncSummary> {
+    this.#progress.emit({
+      attempt: ++this.#progressAttempt,
+      state: 'running',
+      phase: 'request',
+      bytesReceived: 0,
+      rowsProcessed: 0,
+    });
     if (this.#schemaFloor !== undefined) {
+      this.#progress.update({ state: 'complete' });
       return {
         ...emptySummary(0),
         bootstrapping: [],
@@ -2800,6 +2831,11 @@ export class SyncClient {
       // §4.8 E1: the push half may have drained commits that pinned rows of
       // a shrunk window unit — retry any deferred evictions now.
       this.#drainPendingEvictions();
+      this.#progress.update(
+        summary.failed.length > 0
+          ? { state: 'failed', errorCode: 'sync.scope_revoked' }
+          : { state: 'complete' },
+      );
       this.#retryDelayMs = 250;
       if (deferred > 0) {
         // §6.1 splitBatch remainder: more queued commits than this request
@@ -3368,6 +3404,19 @@ export class SyncClient {
               break;
             }
             const segment = decodeRowsSegment(frame.payload);
+            this.#progress.update({
+              phase: 'import',
+              subscriptionId: section.sub.id,
+              table: section.sub.table,
+              segmentId: undefined,
+              bytesReceived: frame.payload.byteLength,
+              bytesTotal: frame.payload.byteLength,
+              rowsProcessed: 0,
+              rowsTotal: segment.blocks.reduce(
+                (n, block) => n + block.length,
+                0,
+              ),
+            });
             await this.#applySegmentOrFail(
               section,
               summary,
@@ -3379,6 +3428,8 @@ export class SyncClient {
                   segment,
                   {
                     clearFirst,
+                    onProgress: (rowsProcessed) =>
+                      this.#progress.update({ rowsProcessed }),
                     effective,
                     transaction: (fn) =>
                       this.#applyBatch((batch) => {
@@ -3418,6 +3469,7 @@ export class SyncClient {
               );
             }
             const bytes = await this.#downloadSegment(frame, section.sub);
+            this.#progress.update({ phase: 'import' });
             if (frame.mediaType === 'sqlite') {
               // §5.3: images are whole-table — a paged descriptor is
               // invalid, and the image is always its table's first page.
@@ -3447,6 +3499,8 @@ export class SyncClient {
                     },
                     {
                       clearFirst,
+                      onProgress: (rowsProcessed) =>
+                        this.#progress.update({ rowsProcessed }),
                       effective,
                       transaction: (fn) =>
                         this.#applyBatch((batch) => {
@@ -3476,6 +3530,8 @@ export class SyncClient {
                     segment,
                     {
                       clearFirst,
+                      onProgress: (rowsProcessed) =>
+                        this.#progress.update({ rowsProcessed }),
                       effective,
                       transaction: (fn) =>
                         this.#applyBatch((batch) => {
@@ -3857,6 +3913,19 @@ export class SyncClient {
         'received SEGMENT_REF but no segment downloader is configured',
       );
     }
+    this.#progress.update({
+      phase: 'download',
+      subscriptionId: sub.id,
+      table: frame.table,
+      segmentId: frame.segmentId,
+      bytesReceived: 0,
+      bytesTotal: frame.byteLength,
+      rowsProcessed: 0,
+      rowsTotal: frame.rowCount,
+    });
+    const onProgress = (bytesReceived: number): void => {
+      this.#progress.update({ bytesReceived });
+    };
     let bytes: Uint8Array;
     if (frame.url !== undefined) {
       // §5.4: a url-carrying descriptor MUST be fetched from that URL —
@@ -3884,17 +3953,19 @@ export class SyncClient {
           true,
         );
       }
-      bytes = await fetchUrl(frame.url);
+      bytes = await fetchUrl(frame.url, onProgress);
     } else {
       bytes = await downloader({
         segmentId: frame.segmentId,
         table: frame.table,
         requestedScopesJson: canonicalScopeJson(sub.scopes),
+        onProgress,
       });
     }
     // §5.1: verify the content address before applying; on mismatch the
     // segment is discarded and the cursor/resume token stay unpersisted,
     // so the next pull re-delivers.
+    onProgress(bytes.byteLength);
     const hash = await sha256Hex(bytes);
     if (`sha256:${hash}` !== frame.segmentId) {
       throw new ClientSyncError(

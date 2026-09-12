@@ -1,3 +1,8 @@
+import {
+  ProgressEmitter,
+  type SyncProgress,
+  type SyncProgressListener,
+} from '@syncular/client';
 import type { ClientSnapshotMethods, PromiseMethods } from '@syncular/client';
 /**
  * @syncular/react-native — the JS bridge to the native syncular core running
@@ -281,6 +286,7 @@ export class NativeSyncClient implements PromiseMethods<ClientSnapshotMethods> {
   readonly #autoSync: boolean;
   readonly #invalidationListeners = new Set<InvalidationListener>();
   readonly #changeListeners = new Set<ClientChangeListener>();
+  readonly #progress = new ProgressEmitter();
   readonly #diagnosticsListeners = new Set<ClientDiagnosticsListener>();
   readonly #presenceListeners = new Set<(scopeKey: string) => void>();
   #subscription: { remove(): void } | undefined;
@@ -359,6 +365,10 @@ export class NativeSyncClient implements PromiseMethods<ClientSnapshotMethods> {
   /** @internal — fan an incoming native event out to the local listeners. */
   __dispatchEvent(event: SyncularEvent): void {
     switch (event.type) {
+      case 'progress': {
+        this.#progress.emit(event.progress as SyncProgress);
+        break;
+      }
       case 'change': {
         const batch = decodeChangeBatch(event.batch);
         if (batch === undefined) break;
@@ -563,6 +573,13 @@ export class NativeSyncClient implements PromiseMethods<ClientSnapshotMethods> {
   onInvalidate(listener: InvalidationListener): () => void {
     this.#invalidationListeners.add(listener);
     return () => this.#invalidationListeners.delete(listener);
+  }
+
+  onProgress(listener: SyncProgressListener): () => void {
+    return this.#progress.on(listener);
+  }
+  progressSnapshot(): SyncProgress | undefined {
+    return this.#progress.snapshot();
   }
 
   onChange(listener: ClientChangeListener): () => void {
@@ -906,6 +923,7 @@ export class NativeSyncClient implements PromiseMethods<ClientSnapshotMethods> {
     this.#subscription?.remove();
     this.#subscription = undefined;
     this.#invalidationListeners.clear();
+    this.#progress.clear();
     this.#changeListeners.clear();
     this.#diagnosticsListeners.clear();
     this.#presenceListeners.clear();

@@ -778,3 +778,28 @@ describe('SyncClientLike parity', () => {
     await normalized.setPresence('room:1', { hi: true });
   });
 });
+
+test('progress arrives as an event and listener removal does not issue a command', async () => {
+  const { client, emit, calls } = await build();
+  const received: number[] = [];
+  const before = calls.length;
+  const off = client.onProgress((progress) =>
+    received.push(progress.rowsProcessed),
+  );
+  const progress = {
+    attempt: 1,
+    state: 'running',
+    phase: 'import',
+    bytesReceived: 100,
+    rowsProcessed: 1024,
+    rowsTotal: 4096,
+  } as const;
+  emit({ type: 'progress', progress });
+  expect(received).toEqual([1024]);
+  expect(client.progressSnapshot()).toEqual(progress);
+  off();
+  emit({ type: 'progress', progress: { ...progress, rowsProcessed: 2048 } });
+  expect(received).toEqual([1024]);
+  expect(calls.length).toBe(before);
+  await client.close();
+});

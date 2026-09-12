@@ -1,3 +1,4 @@
+import { ProgressEmitter, type SyncProgressListener } from '@syncular/client';
 /**
  * A controllable in-memory `SyncClientLike` for deterministic hook tests:
  * an actual query surface (a tiny row store keyed by table), a manual
@@ -40,6 +41,13 @@ import { windowBaseKey } from '@syncular/client';
 import type { SyncClientLike } from '../src/client';
 
 export class FakeClient implements SyncClientLike {
+  readonly progress = new ProgressEmitter();
+  onProgress(listener: SyncProgressListener): () => void {
+    return this.progress.on(listener);
+  }
+  progressSnapshot() {
+    return this.progress.snapshot();
+  }
   #securityLifecycle: SecurityLifecycle = 'active';
   securityLifecycle(): SecurityLifecycle {
     return this.#securityLifecycle;

@@ -76,7 +76,11 @@ pub trait Transport {
     /// needed after subscription changes.
     fn realtime_sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError>;
     /// Segment download via the direct endpoint (§5.5).
-    fn download_segment(&mut self, request: &SegmentRequest) -> Result<Vec<u8>, TransportError>;
+    fn download_segment(
+        &mut self,
+        request: &SegmentRequest,
+        _on_progress: &mut dyn FnMut(u64),
+    ) -> Result<Vec<u8>, TransportError>;
     /// §5.4 direct URL fetch capability: `true` makes the client
     /// advertise accept bit 3 (capability negotiation, §4.2). Default:
     /// not capable.
@@ -87,7 +91,11 @@ pub trait Transport {
     /// implementations MUST NOT attach sync-server authentication or the
     /// `X-Syncular-Scopes` header. Only called when `supports_url_fetch`
     /// returned `true`.
-    fn fetch_url(&mut self, url: &str) -> Result<Vec<u8>, TransportError> {
+    fn fetch_url(
+        &mut self,
+        url: &str,
+        _on_progress: &mut dyn FnMut(u64),
+    ) -> Result<Vec<u8>, TransportError> {
         let _ = url;
         Err(TransportError::new(
             "sync.invalid_request",

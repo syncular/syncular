@@ -735,6 +735,10 @@ pub fn dispatch<T: Transport>(
         // immediately after every command, but exposing the exact core output
         // here lets both client implementations consume one observation
         // vector catalog without bridge inference.
+        "progressSnapshot" => Ok(
+            serde_json::to_value(need_client(client)?.progress().snapshot())
+                .expect("progress JSON"),
+        ),
         "drainChangeBatches" => Ok(json!({
             "batches": need_client(client)?.drain_change_batches()
         })),
@@ -1024,6 +1028,7 @@ mod tests {
         fn download_segment(
             &mut self,
             _request: &SegmentRequest,
+            _on_progress: &mut dyn FnMut(u64),
         ) -> Result<Vec<u8>, TransportError> {
             Err(TransportError::new("sync.transport_failed", "offline"))
         }

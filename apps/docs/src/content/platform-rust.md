@@ -267,3 +267,38 @@ the connected socket carries the sync rounds themselves. See
   and TypeScript cores implement one protocol.
 - **[Commits & the outbox](/concepts-commits/)**: what `mutate` and a sync
   round actually do.
+
+## Live sync progress
+
+`client.progress()` returns a cloneable observer that can be read from another
+thread while the owning thread runs sync. Keep the subscription guard alive to
+receive updates; dropping it unsubscribes without cancelling sync.
+
+```rust
+let observer = client.progress();
+let subscription = observer.subscribe(|progress| {
+    println!("{:?}: {} bytes, {} rows", progress.phase,
+             progress.bytes_received, progress.rows_processed);
+});
+let outcome = client.sync(&mut transport);
+let latest = observer.snapshot();
+drop(subscription);
+```
+
+The observer immediately supplies its latest snapshot when one exists. Each
+round gets a new `attempt`; retries reset counters and errors. `ProgressPhase`
+is `Request`, `Download`, or `Import`. `ProgressState` is `Running`, `Complete`,
+or `Failed`. Optional totals remain absent when unknown. `rows_processed` counts
+work inside the import transaction; failure can roll it back. `Complete` follows
+checkpoint persistence and read-model reconciliation for one round.
+
+Custom `Transport::download_segment` and `Transport::fetch_url` implementations
+now receive `&mut dyn FnMut(u64)` as their last argument. Report cumulative decoded
+body bytes through it. Buffered transports can leave it unused; the core reports
+the final count. The native HTTP transport reports intermediate download bytes.
+Listeners run on the sync thread and should hand expensive work to the UI thread.
+
+The JSON command surface exposes `progressSnapshot`. FFI hosts receive coalesced
+`{ "type": "progress", "progress": { ... } }` events through `poll_event`, including
+while a sync command is running. Tauri forwards the same event directly to its
+webview. Camel-case JSON fields match the JavaScript progress API.

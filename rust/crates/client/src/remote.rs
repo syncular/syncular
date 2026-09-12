@@ -769,6 +769,7 @@ mod tests {
         fn download_segment(
             &mut self,
             _request: &SegmentRequest,
+            _on_progress: &mut dyn FnMut(u64),
         ) -> Result<Vec<u8>, TransportError> {
             Err(TransportError::new("unused", "unused"))
         }

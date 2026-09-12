@@ -457,10 +457,17 @@ still happen during rapid hot-module replacement, or in an embedded/test host
 that shares OPFS data without sharing the same Web Locks and BroadcastChannel
 coordination domain.
 
-Pool acquisition failures surface as `ClientSyncError` with code
-`client.storage_busy` and `retryable === true`. Treat that as a startup state:
-close the competing instance or let it finish shutting down, then create the
-handle again. **Do not delete, rename, or silently replace the database with an
+Persistent worker startup retries retryable `client.storage_busy` failures
+while retaining the leader lease. It opens the same directory at most seven
+times, waiting 50, 100, 200, 400, 800, and 1000 ms between attempts. These delays
+total 2550 ms; browser scheduling and storage operations can extend elapsed time.
+Other errors fail immediately. Direct `openPersistentWasmDatabase` calls remain
+single attempts.
+
+If ownership remains unavailable, handle creation rejects with `ClientSyncError`,
+code `client.storage_busy`, and `retryable === true`, then releases the worker
+and leader lease. Close the competing instance or let it finish shutting down,
+then create the handle again. **Do not delete, rename, or silently replace the database with an
 in-memory one**; the local database and pending outbox may be perfectly healthy.
 Missing or obsolete OPFS APIs instead use the non-retryable
 `client.storage_unavailable` code.
@@ -584,8 +591,96 @@ they own their buffer.
 
 Tests drive the real worker entry in a bun `Worker` with bun:sqlite
 injected through the bootstrap's database-factory override
-(`test/worker-rpc.test.ts`); the OPFS path itself is browser-only and is
-exercised by `apps/demo`.
+(`test/worker-rpc.test.ts`). The separate Chromium gate exercises actual
+sqlite-wasm, OPFS SAH pools and FTS through the production worker and HTTP paths:
+
+```sh
+cd packages/web-client
+bunx --no-install playwright install chromium
+cd ../..
+bun run test:browser
+```
+
+`test/opfs-bootstrap.browser.test.ts` covers five interruption boundaries:
+
+- Partial segment download: hold the asynchronous transfer, then terminate the worker.
+- Before image import: inject an exception before applying the verified image.
+- Mid-import: terminate the worker after an actual OPFS database page write during
+  `INSERT SELECT`. A commit notification must not precede termination.
+- After import: inject an exception after the transaction commits, before `SUB_END`.
+- After checkpoint: complete the round before terminating the worker.
+
+Each case reloads the page using the same replica identity and requires successful
+startup in the same browser session. It checks SQLite and FTS integrity, search
+results, exact rows, persisted client identity, and subscription checkpoints.
+Incomplete sections must download again; completed sections must not. A held
+synchronous test request after a physical page write keeps the mid-import crash
+boundary stable until worker termination. Two additional ownership cases verify
+recovery when a competing owner closes during retry and bounded failure while
+that owner remains live, including pending outbox preservation.
+
+Each case owns a temporary browser profile and a loopback server. A small SQLite
+page cache forces dirty pages to disk before COMMIT. Tests use no timing sleeps,
+COOP/COEP requirement, existing profiles or application replicas. Failed profiles
+and `recovery-test.json` remain at the path printed by the test; CI retains them
+as an artifact. Successful profiles are removed. `bun run check` keeps its
+Bun-only test lane; CI runs the browser gate separately.
+
+`openPersistentWasmDatabase` corrects the SAH-pool VFS's reserved-lock callback
+before the first SQL statement. sqlite-wasm 3.53 reports a reserved lock
+unconditionally, suppressing SQLite's hot-journal recovery after an interrupted
+write. The pool already excludes other owners. Syncular reports no competing
+writer through SQLite's I/O method binding, matching the other OPFS VFS, and
+retains that callback across database closes and pool opens. The correction ships
+in the client package and preserves the existing database format, DELETE journal
+mode and FULL synchronous mode.
+
+On 2026-09-12, Chromium 153 with sqlite-wasm 3.53.0 failed the mid-import case
+without this correction and passed all five cases with it. The fixture serves
+the unmodified dependency. Bounded worker startup retries handle transient
+`client.storage_busy` while the browser releases old handles. This correction enables
+rollback from an intact hot journal; it does not repair existing corruption
+whose recovery journal has already been lost or overwritten.
+
+## Live sync progress
+
+`onProgress` observes work during a sync round. It immediately delivers the latest
+snapshot when one exists and returns an unsubscribe function. `progressSnapshot()`
+reads the cached snapshot synchronously, including on worker handles. Worker
+leaders and followers forward events while download and import are running.
+
+```ts
+const stop = client.onProgress((progress) => {
+  if (progress.phase === 'download') {
+    renderDownload(progress.bytesReceived, progress.bytesTotal);
+  } else if (progress.phase === 'import') {
+    renderImport(progress.rowsProcessed, progress.rowsTotal);
+  }
+  if (progress.state === 'failed') showError(progress.errorCode);
+});
+// Stop listening when the view is disposed. Sync continues.
+stop();
+```
+
+Each snapshot identifies the round with `attempt`, and the current payload with
+`subscriptionId`, `table`, and optional `segmentId`. Counters reset for each
+payload; `syncUntilIdle` starts a new attempt for each round. `phase` is `request`,
+`download`, or `import`; `state` is `running`, `complete`, or `failed`. Unknown
+totals remain absent. A new attempt clears prior errors and counters.
+
+HTTP downloads report decoded body bytes at 64 KiB intervals or larger network
+chunks. Custom segment downloaders receive `request.onProgress`; signed-URL
+implementations receive an optional second callback argument. Call it with the
+cumulative received byte count. Buffered custom transports report a final count
+through the core, without intermediate download updates.
+
+Import reports every 1,024 rows and its final count. `rowsProcessed` includes work
+inside the current transaction; a failed import can roll those rows back. SQLite
+images retain one atomic transaction. `complete` follows checkpoint persistence
+and optimistic-state reconciliation for the round. More bootstrap pages can
+remain; use subscription coverage to determine whether a query is complete.
+Listener exceptions do not fail sync. Listeners should hand UI work off and avoid
+reentering database commands during an import.
 
 ## Snapshot API migration
 

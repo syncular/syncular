@@ -127,3 +127,50 @@ describe('WebSocket connectors', () => {
     }
   });
 });
+
+for (const signed of [false, true]) {
+  test(`segment transfer emits intermediate bytes before completion (signed=${signed})`, async () => {
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const fetcher = Object.assign(
+      async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              stream = controller;
+            },
+          }),
+        ),
+      { preconnect: fetch.preconnect },
+    );
+    const downloader = httpSegmentDownloader('https://host/segments', {
+      fetch: fetcher,
+    });
+    const updates: number[] = [];
+    const intermediate = Promise.withResolvers<void>();
+    const onProgress = (bytes: number) => {
+      updates.push(bytes);
+      intermediate.resolve();
+    };
+    let finished = false;
+    const operation = signed
+      ? downloader.fetchUrl!('https://cdn/image', onProgress)
+      : downloader({
+          segmentId: 'sha256:test',
+          table: 'tasks',
+          requestedScopesJson: '{}',
+          onProgress,
+        });
+    const done = operation.then((bytes) => {
+      finished = true;
+      return bytes;
+    });
+    stream!.enqueue(new Uint8Array(64 * 1024));
+    await intermediate.promise;
+    expect(finished).toBe(false);
+    expect(updates).toEqual([64 * 1024]);
+    stream!.enqueue(new Uint8Array(17));
+    stream!.close();
+    expect((await done).byteLength).toBe(64 * 1024 + 17);
+    expect(updates).toEqual([64 * 1024, 64 * 1024 + 17]);
+  });
+}
