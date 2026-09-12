@@ -60,7 +60,7 @@ window.opfsTest = {
       schema: OPFS_SCHEMA,
       autoSync: false,
       endpoints: {
-        syncUrl: `${location.origin}/sync`,
+        syncUrl: `${location.origin}/${location.search === '?signed' ? 'sync-signed' : 'sync'}`,
         segmentsUrl: `${location.origin}/segments`,
       },
     });

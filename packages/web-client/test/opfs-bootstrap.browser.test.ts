@@ -4,7 +4,11 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { chromium } from 'playwright';
 import { decodeMessage } from '@syncular/core';
-import { handleSegmentDownload, handleSyncRequest } from '@syncular/server';
+import {
+  handleSegmentDownload,
+  handleSyncRequest,
+  verifySegmentToken,
+} from '@syncular/server';
 import { makeClient, makeServer, PARTITION } from './helpers';
 import { OPFS_SCHEMA, type CrashPoint } from './opfs-bootstrap-fixture';
 import type {} from './opfs-bootstrap-page';
@@ -21,8 +25,10 @@ let server: ReturnType<typeof Bun.serve>;
 let downloads = 0;
 let images = 0;
 let pin = 0;
+let signedDownloads = 0;
 
 beforeAll(async () => {
+  source.now.ms = Date.now();
   const seed = await makeClient(source, {
     clientId: 'seed',
     schema: OPFS_SCHEMA,
@@ -108,10 +114,21 @@ beforeAll(async () => {
           );
         });
       }
-      if (pathname === '/sync') {
+      if (pathname === '/sync' || pathname === '/sync-signed') {
         const response = await handleSyncRequest(
           new Uint8Array(await request.arrayBuffer()),
-          source.ctxFor('actor-1'),
+          {
+            ...source.ctxFor('actor-1'),
+            ...(pathname === '/sync-signed'
+              ? {
+                  signedUrls: {
+                    key: 'synthetic-browser-test-key',
+                    baseUrl: new URL('/signed-segments', request.url).href,
+                    audience: () => 'synthetic-browser-test',
+                  },
+                }
+              : {}),
+          },
         );
         const decoded = decodeMessage(response);
         if (decoded.msgKind === 'response')
@@ -120,6 +137,27 @@ beforeAll(async () => {
               frame.type === 'SEGMENT_REF' && frame.mediaType === 'sqlite',
           ).length;
         return new Response(response.slice().buffer, { headers });
+      }
+      if (pathname.startsWith('/signed-segments/')) {
+        const segmentId = decodeURIComponent(
+          pathname.slice('/signed-segments/'.length),
+        );
+        const segment = await source.segments.get(segmentId);
+        if (!segment) return new Response('missing segment', { status: 404 });
+        await verifySegmentToken(
+          'synthetic-browser-test-key',
+          new URL(request.url).searchParams.get('st') ?? '',
+          {
+            segmentId,
+            scopeDigest: segment.record.scopeDigest,
+            audience: 'synthetic-browser-test',
+            nowMs: source.now.ms,
+          },
+        );
+        expect(request.headers.get('Authorization')).toBeNull();
+        expect(request.headers.get('X-Syncular-Scopes')).toBeNull();
+        signedDownloads++;
+        return new Response(segment.bytes.slice().buffer);
       }
       if (pathname.startsWith('/segments/')) {
         const segment = await handleSegmentDownload(source.ctxFor('actor-1'), {
@@ -380,3 +418,43 @@ for (const releaseOwner of [true, false]) {
     }
   }, 60000);
 }
+
+test('OPFS worker forwards intermediate signed-URL download progress', async () => {
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    const before = signedDownloads;
+    await page.goto(`${server.url.href}?signed`);
+    await page.evaluate(async () => {
+      await window.opfsTest.open();
+      const client = await window.opfsTest.ready;
+      await client.subscribe({
+        id: 'catalogue',
+        table: 'catalogue',
+        scopes: { project_id: ['p1'] },
+      });
+      await client.syncUntilIdle();
+    });
+    const updates = await page.evaluate(() => window.opfsTest.progress);
+    expect(signedDownloads - before).toBe(1);
+    expect(
+      updates.some(
+        (p) =>
+          p.phase === 'download' &&
+          p.bytesReceived > 0 &&
+          p.bytesReceived < (p.bytesTotal ?? 0),
+      ),
+    ).toBe(true);
+    expect(updates.at(-1)?.state).toBe('complete');
+    expect(
+      await page.evaluate(async () =>
+        (await window.opfsTest.ready).query(
+          'SELECT count(*) AS n FROM catalogue',
+        ),
+      ),
+    ).toEqual([{ n: expected.length }]);
+    await page.evaluate(async () => (await window.opfsTest.ready).close());
+  } finally {
+    await browser.close();
+  }
+}, 60000);

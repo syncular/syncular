@@ -246,9 +246,12 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
     return Object.assign(gateOffline(inner), {
       ...(fetchUrl !== undefined
         ? {
-            fetchUrl: (url: string) => {
+            fetchUrl: (
+              url: string,
+              onProgress?: (bytesReceived: number) => void,
+            ) => {
               assertOnline();
-              return fetchUrl(url);
+              return fetchUrl(url, onProgress);
             },
           }
         : {}),
