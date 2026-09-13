@@ -1,8 +1,38 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.20.0** (`v0.20.0`). All artifacts use Apache-2.0, except
+current release is **0.20.1** (`v0.20.1`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.20.1 release notes
+
+- Reactive queries read cached data while window registration runs. Additional
+  owners immediately reuse acknowledged windows. Partial coverage, registration
+  failures, and security gates remain observable.
+- Both cores commit imports and cache eviction in bounded chunks, allowing local
+  reads between commits. SQLite image chunks contain at most 1,024 rows. Failed
+  chunks roll back; interrupted imports retain their committed prefix and retry
+  from the previous checkpoint. Cleanup resumes from durable state.
+- Managed FTS projections delete rows through an indexed identity map. Existing
+  projections receive the mapping automatically when the client opens.
+- Rust imports with secondary unique indexes and pending edits reconcile affected
+  rows without rebuilding unrelated tables for every chunk. Regression tests
+  cover unique conflicts, typed keys, FTS consistency, and rollback.
+- Failed window edits invalidate cached acknowledgements. Rust propagates cleanup
+  persistence errors, and clients reject incomplete or malformed SQLite images.
+- Default convergence budgets allow bootstrap pages that advance their durable
+  continuation token. Explicit round limits remain hard limits.
+
+The behavior is automatic. Upgrade Syncular packages and crates together. Custom
+TypeScript database adapters implementing `withSqliteImage` must await an async
+callback before detaching the image. The wire protocol is unchanged. SQLite image
+imports now expose committed partial data while coverage stays pending until the
+subscription checkpoint commits. Native hosts that serialize reads behind sync
+still need a separate read connection.
+
+Details: [bootstrap](https://syncular.dev/concepts-bootstrap/),
+[window ownership](https://syncular.dev/concepts-windowing/), and
+[local benchmark evidence](../bench/RESULTS.md).
 
 ## 0.20.0 release notes
 
