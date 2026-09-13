@@ -374,6 +374,14 @@ function createFtsProjection(
     `CREATE VIRTUAL TABLE IF NOT EXISTS ${quoteIdent(index.name)} USING fts5(${quoteIdent(FTS_SOURCE_ID_COLUMN)} UNINDEXED, ${indexedColumns.join(', ')}, tokenize='${tokenizer}')`,
   );
 
+  const mapping = quoteIdent(`_syncular_fts_${index.name}`);
+  const mapped =
+    db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", [
+      `_syncular_fts_${index.name}`,
+    ]).length > 0;
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS ${mapping} (id INTEGER PRIMARY KEY, source_id TEXT NOT NULL UNIQUE)`,
+  );
   const sourceId = `CAST(${quoteIdent(table.primaryKey)} AS TEXT)`;
   const newSourceId = `CAST(new.${quoteIdent(table.primaryKey)} AS TEXT)`;
   const oldSourceId = `CAST(old.${quoteIdent(table.primaryKey)} AS TEXT)`;
@@ -386,9 +394,10 @@ function createFtsProjection(
     ...index.columns.map((column) => `new.${quoteIdent(column)}`),
   ].join(', ');
   const deleteFor = (value: string) =>
-    `DELETE FROM ${quoteIdent(index.name)} WHERE ${quoteIdent(FTS_SOURCE_ID_COLUMN)} = ${value}`;
+    `DELETE FROM ${quoteIdent(index.name)} WHERE rowid = (SELECT id FROM ${mapping} WHERE source_id = ${value}); DELETE FROM ${mapping} WHERE source_id = ${value}`;
   const deleteDisplaced = (select: string) =>
-    `DELETE FROM ${quoteIdent(index.name)} WHERE ${quoteIdent(FTS_SOURCE_ID_COLUMN)} IN (${select})`;
+    `DELETE FROM ${quoteIdent(index.name)} WHERE rowid IN (SELECT id FROM ${mapping} WHERE source_id IN (${select})); DELETE FROM ${mapping} WHERE source_id IN (${select})`;
+  const insertNew = `INSERT INTO ${mapping}(source_id) VALUES (${newSourceId}); INSERT INTO ${quoteIdent(index.name)} (rowid, ${projectionColumns}) VALUES ((SELECT id FROM ${mapping} WHERE source_id = ${newSourceId}), ${newValues})`;
 
   // A clean insert cannot already have a projection row because the source
   // primary key is unique. Keep clean inserts linear by moving replacement
@@ -441,13 +450,13 @@ function createFtsProjection(
     `CREATE TRIGGER ${quoteIdent(`${index.name}_bi`)} BEFORE INSERT ON ${quoteIdent(table.name)} WHEN ${insertGuardCondition} BEGIN ${insertGuardBody}; END`,
   );
   db.exec(
-    `CREATE TRIGGER ${quoteIdent(`${index.name}_ai`)} AFTER INSERT ON ${quoteIdent(table.name)} BEGIN INSERT INTO ${quoteIdent(index.name)} (${projectionColumns}) VALUES (${newValues}); END`,
+    `CREATE TRIGGER ${quoteIdent(`${index.name}_ai`)} AFTER INSERT ON ${quoteIdent(table.name)} BEGIN ${insertNew}; END`,
   );
   db.exec(
     `CREATE TRIGGER ${quoteIdent(`${index.name}_ad`)} AFTER DELETE ON ${quoteIdent(table.name)} BEGIN ${deleteFor(oldSourceId)}; END`,
   );
   db.exec(
-    `CREATE TRIGGER ${quoteIdent(`${index.name}_au`)} AFTER UPDATE ON ${quoteIdent(table.name)} BEGIN ${deleteFor(oldSourceId)}; ${deleteFor(newSourceId)}; INSERT INTO ${quoteIdent(index.name)} (${projectionColumns}) VALUES (${newValues}); END`,
+    `CREATE TRIGGER ${quoteIdent(`${index.name}_au`)} AFTER UPDATE ON ${quoteIdent(table.name)} BEGIN ${deleteFor(oldSourceId)}; ${deleteFor(newSourceId)}; ${insertNew}; END`,
   );
   // BEFORE UPDATE guard for `UPDATE OR REPLACE`: clear the projection of any
   // different-PK row about to be displaced through a secondary unique index by
@@ -466,6 +475,12 @@ function createFtsProjection(
   if (!existed) {
     db.exec(
       `INSERT INTO ${quoteIdent(index.name)} (${projectionColumns}) SELECT ${sourceId}, ${indexedColumns.join(', ')} FROM ${quoteIdent(table.name)}`,
+    );
+  }
+  if (!mapped || !existed) {
+    db.exec(`DELETE FROM ${mapping}`);
+    db.exec(
+      `INSERT INTO ${mapping}(id, source_id) SELECT rowid, ${quoteIdent(FTS_SOURCE_ID_COLUMN)} FROM ${quoteIdent(index.name)}`,
     );
   }
 }
@@ -602,6 +617,9 @@ export function dropAndRecreateSyncedTables(
        AND name NOT LIKE '${RESERVED_TABLE_PREFIX}%'`,
   );
   for (const row of virtualTables) {
+    db.exec(
+      `DROP TABLE IF EXISTS ${quoteIdent(`_syncular_fts_${String(row.name)}`)}`,
+    );
     db.exec(`DROP TABLE IF EXISTS ${quoteIdent(String(row.name))}`);
   }
   const existing = db.query(

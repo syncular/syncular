@@ -49,9 +49,8 @@ use crate::values::{
     scope_map_to_json, sort_scope_map,
 };
 
-/// §4.2 default: the rows baseline plus sqlite images (§5.3) — rusqlite
-/// can always import an image, so the premier path is advertised unless
-/// the host overrides `limits.accept`. Bit 3 (signed URLs, §5.4) is
+/// §4.2 default: rows and SQLite images, both applied in committed chunks.
+/// Bit 3 (signed URLs, §5.4) is
 /// added per transport capability at request-build time.
 const DEFAULT_ACCEPT: u8 = 0b0111;
 const ACCEPT_INLINE_ROWS: u8 = 1 << 0;
@@ -3177,6 +3176,86 @@ mod observation_tests {
     }
 
     #[test]
+    fn image_chunks_keep_their_committed_prefix_after_a_later_invalid_row() {
+        let mut client = client();
+        let image = Connection::open_in_memory().unwrap();
+        image.execute_batch("CREATE TABLE tasks(id TEXT PRIMARY KEY, project_id TEXT, _syncular_version INTEGER NOT NULL);
+            WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2050)
+            INSERT INTO tasks SELECT printf('%05d',x),CASE WHEN x=1500 THEN NULL ELSE 'p1' END,1 FROM n;
+            CREATE TABLE _syncular_segment(format INTEGER, \"table\" TEXT, \"schemaVersion\" INTEGER, \"asOfCommitSeq\" INTEGER, \"scopeDigest\" TEXT, \"rowCount\" INTEGER);
+            INSERT INTO _syncular_segment VALUES (1,'tasks',1,7,'digest',2050);").unwrap();
+        let table = client.schema.table("tasks").unwrap().clone();
+        let scopes = vec![("project_id".into(), vec!["p1".into()])];
+        assert!(client
+            .apply_sqlite_image(&image, &table, true, &scopes, 2050, 7, "digest")
+            .is_err());
+        assert!(client.conn.is_autocommit());
+        assert_eq!(
+            client
+                .query("SELECT count(*) AS n FROM tasks", &[])
+                .unwrap()[0]["n"],
+            1024
+        );
+        assert_eq!(client.drain_change_batches().len(), 1);
+        image
+            .execute("UPDATE tasks SET project_id='p1' WHERE id='01500'", [])
+            .unwrap();
+        assert!(matches!(
+            client.apply_sqlite_image(&image, &table, true, &scopes, 2050, 7, "digest"),
+            Ok(2050)
+        ));
+        assert_eq!(
+            client
+                .query("SELECT count(*) AS n FROM tasks", &[])
+                .unwrap()[0]["n"],
+            2050
+        );
+        assert_eq!(client.drain_change_batches().len(), 3);
+    }
+
+    #[test]
+    fn eviction_chunks_commit_before_failure_and_resume_with_exact_scope() {
+        let mut client = client();
+        let base = WindowBase {
+            table: "tasks".into(),
+            variable: "project_id".into(),
+            fixed_scopes: Vec::new(),
+            params: None,
+        };
+        client
+            .set_window(&base, &["p1".into(), "p2".into()])
+            .unwrap();
+        client.conn.execute_batch("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2050)
+            INSERT INTO _syncular_base_tasks SELECT printf('%05d',x),'p1',1 FROM n;
+            INSERT INTO _syncular_base_tasks VALUES ('held','p2',1);
+            INSERT INTO tasks SELECT * FROM _syncular_base_tasks;
+            CREATE TRIGGER interrupt_evict BEFORE DELETE ON tasks WHEN old.id='01500' BEGIN SELECT RAISE(ABORT,'interrupted chunk'); END;").unwrap();
+        client.drain_change_batches();
+        assert!(client.set_window(&base, &["p2".into()]).is_err());
+        assert!(client.conn.is_autocommit());
+        assert_eq!(
+            client
+                .query("SELECT count(*) AS n FROM tasks", &[])
+                .unwrap()[0]["n"],
+            1027
+        );
+        assert_eq!(client.window_state(&base).units, vec!["p2"]);
+        assert_eq!(client.load_pending_evictions().len(), 1);
+        assert_eq!(client.drain_change_batches().len(), 1);
+        client
+            .conn
+            .execute_batch("DROP TRIGGER interrupt_evict")
+            .unwrap();
+        client.drain_pending_evictions().unwrap();
+        assert!(client.load_pending_evictions().is_empty());
+        assert_eq!(
+            client.query("SELECT id FROM tasks", &[]).unwrap()[0]["id"],
+            "held"
+        );
+        assert_eq!(client.drain_change_batches().len(), 2);
+    }
+
+    #[test]
     fn local_fts_projection_tracks_optimistic_overlay_rebuilds() {
         let schema = json!({
             "version": 1,
@@ -3239,6 +3318,26 @@ mod observation_tests {
                 base_version: None,
             }])
             .expect("insert code");
+        assert_eq!(search(&client, "cholera").len(), 1);
+        let prior = client
+            .query("SELECT rowid, * FROM catalogue_codes_fts", &[])
+            .unwrap();
+        client
+            .conn
+            .execute_batch("DROP TABLE _syncular_fts_catalogue_codes_fts")
+            .unwrap();
+        client.create_synced_tables().unwrap();
+        assert_eq!(
+            client
+                .query("SELECT rowid, * FROM catalogue_codes_fts", &[])
+                .unwrap(),
+            prior
+        );
+        let plan = client.query("EXPLAIN QUERY PLAN SELECT rowid FROM catalogue_codes_fts WHERE rowid = (SELECT id FROM _syncular_fts_catalogue_codes_fts WHERE source_id = 'c1')", &[]).unwrap();
+        let rendered = serde_json::to_string(&plan).unwrap();
+        assert!(rendered.contains("COVERING INDEX"));
+        assert!(rendered.contains("INDEX 0:="));
+        client.conn.execute_batch("SAVEPOINT test_mapping; DELETE FROM catalogue_codes WHERE id='c1'; ROLLBACK TO test_mapping; RELEASE test_mapping").unwrap();
         assert_eq!(search(&client, "cholera").len(), 1);
 
         client
@@ -5239,6 +5338,7 @@ impl SyncClient {
     fn enqueue_startup_sync_if_needed(&mut self) {
         let startup_work = !self.stopped
             && (!self.outbox.is_empty()
+                || !self.load_pending_evictions().is_empty()
                 || self.subs.iter().any(|sub| sub.state == SubState::Active));
         if startup_work {
             self.sync_needed = true;
@@ -5344,6 +5444,12 @@ impl SyncClient {
                 .collect()
         };
         for name in virtual_tables {
+            self.conn
+                .execute_batch(&format!(
+                    "DROP TABLE IF EXISTS {}",
+                    quote_ident(&format!("_syncular_fts_{name}"))
+                ))
+                .map_err(|e| e.to_string())?;
             self.conn
                 .execute(&format!("DROP TABLE IF EXISTS {}", quote_ident(&name)), [])
                 .map_err(|e| e.to_string())?;
@@ -5574,9 +5680,10 @@ impl SyncClient {
             )
             .collect::<Vec<_>>()
             .join(", ");
-        let delete_new = format!("DELETE FROM {fts} WHERE {source_id} = CAST(new.{pk} AS TEXT)");
-        let delete_old = format!("DELETE FROM {fts} WHERE {source_id} = CAST(old.{pk} AS TEXT)");
-        let insert_new = format!("INSERT INTO {fts} ({projection_columns}) VALUES ({new_values})");
+        let mapping = quote_ident(&format!("_syncular_fts_{}", index.name));
+        let delete_new = format!("DELETE FROM {fts} WHERE rowid = (SELECT id FROM {mapping} WHERE source_id = CAST(new.{pk} AS TEXT)); DELETE FROM {mapping} WHERE source_id = CAST(new.{pk} AS TEXT)");
+        let delete_old = format!("DELETE FROM {fts} WHERE rowid = (SELECT id FROM {mapping} WHERE source_id = CAST(old.{pk} AS TEXT)); DELETE FROM {mapping} WHERE source_id = CAST(old.{pk} AS TEXT)");
+        let insert_new = format!("INSERT INTO {mapping}(source_id) VALUES (CAST(new.{pk} AS TEXT)); INSERT INTO {fts} (rowid, {projection_columns}) VALUES ((SELECT id FROM {mapping} WHERE source_id = CAST(new.{pk} AS TEXT)), {new_values})");
         let bi = quote_ident(&format!("{}_bi", index.name));
         let ai = quote_ident(&format!("{}_ai", index.name));
         let ad = quote_ident(&format!("{}_ad", index.name));
@@ -5608,12 +5715,13 @@ impl SyncClient {
             .iter()
             .map(|column| quote_ident(column))
             .collect::<Vec<_>>();
-        let projection_columns = std::iter::once(source_id)
+        let projection_columns = std::iter::once(source_id.clone())
             .chain(indexed_columns.iter().cloned())
             .collect::<Vec<_>>()
             .join(", ");
+        let mapping = quote_ident(&format!("_syncular_fts_{}", index.name));
         let sql = format!(
-            "DELETE FROM {fts}; INSERT INTO {fts} ({projection_columns}) SELECT CAST({pk} AS TEXT), {columns} FROM {source};",
+            "DELETE FROM {fts}; DELETE FROM {mapping}; INSERT INTO {fts} ({projection_columns}) SELECT CAST({pk} AS TEXT), {columns} FROM {source}; INSERT INTO {mapping}(id, source_id) SELECT rowid, {source_id} FROM {fts};",
             columns = indexed_columns.join(", "),
             source = visible_table(&table.name),
         );
@@ -5625,28 +5733,59 @@ impl SyncClient {
         table: &TableSchema,
         index: &FtsIndexSchema,
     ) -> Result<(), String> {
-        let existed = self.fts_projection_exists(index)?;
-        let tokenizer = index.tokenize.replace('\'', "''");
-        let columns = index
-            .columns
-            .iter()
-            .map(|column| quote_ident(column))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!(
+        self.begin_observation("syncular_fts_schema")?;
+        let result = (|| {
+            let existed = self.fts_projection_exists(index)?;
+            let tokenizer = index.tokenize.replace('\'', "''");
+            let columns = index
+                .columns
+                .iter()
+                .map(|column| quote_ident(column))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql = format!(
             "CREATE VIRTUAL TABLE IF NOT EXISTS {fts} USING fts5({source_id} UNINDEXED, {columns}, tokenize='{tokenizer}')",
             fts = quote_ident(&index.name),
             source_id = quote_ident(FTS_SOURCE_ID_COLUMN),
         );
-        self.conn.execute(&sql, []).map_err(|error| {
-            format!(
-                "cannot create local FTS5 projection {:?}: {error}",
-                index.name
-            )
-        })?;
-        self.create_fts_triggers(table, index)?;
-        if !existed {
-            self.rebuild_fts_projection(table, index)?;
+            self.conn.execute(&sql, []).map_err(|error| {
+                format!(
+                    "cannot create local FTS5 projection {:?}: {error}",
+                    index.name
+                )
+            })?;
+            let mapping = quote_ident(&format!("_syncular_fts_{}", index.name));
+            let mapped: bool = self
+                .conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                    [format!("_syncular_fts_{}", index.name)],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            self.conn.execute_batch(&format!("CREATE TABLE IF NOT EXISTS {mapping}(id INTEGER PRIMARY KEY, source_id TEXT NOT NULL UNIQUE)")).map_err(|e| e.to_string())?;
+            if !mapped && existed {
+                self.conn
+                    .execute_batch(&format!(
+                        "INSERT INTO {mapping}(id, source_id) SELECT rowid, {} FROM {}",
+                        quote_ident(FTS_SOURCE_ID_COLUMN),
+                        quote_ident(&index.name)
+                    ))
+                    .map_err(|e| e.to_string())?;
+            }
+            self.create_fts_triggers(table, index)?;
+            if !existed {
+                self.rebuild_fts_projection(table, index)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            self.rollback_observation("syncular_fts_schema");
+            return Err(error);
+        }
+        if let Err(error) = self.conn.execute_batch("RELEASE syncular_fts_schema") {
+            self.rollback_observation("syncular_fts_schema");
+            return Err(error.to_string());
         }
         Ok(())
     }
@@ -6009,7 +6148,7 @@ impl SyncClient {
     /// §4.8: set the live window units for a base — a value-sharded family
     /// of subscriptions, one per unit. Added units get fresh subscriptions
     /// (image-lane bootstrap on the next sync); removed units are
-    /// unsubscribed and evicted, fused in one local transaction (E1–E4).
+    /// unsubscribed with their first eviction chunk in one transaction (E1–E4).
     /// Idempotent; re-entry cancels any deferred eviction.
     pub fn set_window(
         &mut self,
@@ -6051,25 +6190,44 @@ impl SyncClient {
             changed = true;
         }
 
-        // Shrink: units live but not wanted → unsubscribe fused with eviction.
+        if let Err(error) = self.finish_observation("syncular_window", batch) {
+            self.rollback_observation("syncular_window");
+            return Err(error);
+        }
         for (unit, sub_id) in live {
             if wanted.contains(&unit) {
                 continue;
             }
+            self.rebuild_overlay_if_dirty();
+            let prior_subs = self.subs.clone();
+            self.begin_observation("syncular_window")?;
             let effective = self
                 .subs
                 .iter()
                 .find(|sub| sub.id == sub_id)
                 .and_then(|sub| sub.effective.clone())
                 .unwrap_or_else(|| unit_scopes(base, &unit));
+            let mut batch = ChangeAccumulator::default();
             self.record_scope_map(&mut batch, &base.table, &effective);
             batch.window(&base_key, &base.table, &unit);
-            self.evict_unit(&base_key, base, &unit, &sub_id);
+            let result = self.evict_unit(&base_key, base, &unit, &sub_id);
+            let remaining = match result {
+                Ok(remaining) => remaining,
+                Err(error) => {
+                    self.rollback_observation("syncular_window");
+                    self.subs = prior_subs;
+                    return Err(error);
+                }
+            };
+            if let Err(error) = self.finish_observation("syncular_window", batch) {
+                self.rollback_observation("syncular_window");
+                self.subs = prior_subs;
+                return Err(error);
+            }
+            if remaining {
+                self.drain_pending_evictions()?;
+            }
             changed = true;
-        }
-        if let Err(error) = self.finish_observation("syncular_window", batch) {
-            self.rollback_observation("syncular_window");
-            return Err(error);
         }
         Ok(if changed {
             CommandEffects::interactive()
@@ -6171,7 +6329,13 @@ impl SyncClient {
     /// the subscription's cursor/resume/effective-echo (E3) and version
     /// state with the rows (E2). Fail-closed: no local mapping ⇒ evict
     /// nothing.
-    fn evict_unit(&mut self, base_key: &str, base: &WindowBase, unit: &str, sub_id: &str) {
+    fn evict_unit(
+        &mut self,
+        base_key: &str,
+        base: &WindowBase,
+        unit: &str,
+        sub_id: &str,
+    ) -> Result<bool, String> {
         let effective = self
             .subs
             .iter()
@@ -6179,9 +6343,7 @@ impl SyncClient {
             .and_then(|s| s.effective.clone())
             .unwrap_or_else(|| unit_scopes(base, unit));
         let pinned = self.pinned_row_ids(&base.table);
-        let deferred = self
-            .evict_scope_rows(&base.table, &effective, &pinned)
-            .unwrap_or(false);
+        let (remaining, deferred) = self.evict_scope_rows(&base.table, &effective, &pinned)?;
         self.delete_window_unit(base_key, unit);
         self.unsubscribe(sub_id);
         if deferred {
@@ -6189,121 +6351,146 @@ impl SyncClient {
         } else {
             self.delete_pending_evict(sub_id);
         }
-        self.rebuild_overlay();
+        Ok(remaining)
     }
 
     /// §4.8 E1: delete base rows matching effective scopes EXCEPT pinned
     /// primary keys; returns `Ok(true)` iff a pinned row was left behind (so
     /// the eviction must be deferred). `Err(())` = fail-closed (no mapping).
     fn evict_scope_rows(
-        &mut self,
+        &self,
         table_name: &str,
         effective: &[(String, Vec<String>)],
         pinned: &std::collections::HashSet<String>,
-    ) -> Result<bool, ()> {
+    ) -> Result<(bool, bool), String> {
         if effective.is_empty() {
-            return Ok(false);
+            return Ok((false, false));
         }
-        let table = self.schema.table(table_name).ok_or(())?.clone();
+        let table = self.schema.table(table_name).ok_or("sync.unknown_table")?;
         let mut clauses = Vec::new();
         let mut params: Vec<SqlValue> = Vec::new();
         for (variable, values) in effective {
-            let column = table.scope_column(variable).ok_or(())?;
-            let placeholders: Vec<String> = values
+            let column = table.scope_column(variable).ok_or("sync.scope_revoked")?;
+            if values.is_empty() {
+                return Ok((false, false));
+            }
+            let holes = values
                 .iter()
                 .map(|v| {
                     params.push(SqlValue::Text(v.clone()));
-                    "?".to_owned()
+                    "?"
                 })
-                .collect();
-            clauses.push(format!(
-                "{} IN ({})",
-                quote_ident(column),
-                placeholders.join(", ")
-            ));
+                .collect::<Vec<_>>()
+                .join(", ");
+            clauses.push(format!("{} IN ({holes})", quote_ident(column)));
         }
-        let mut sql = format!(
-            "DELETE FROM {} WHERE {}",
-            base_table(table_name),
-            clauses.join(" AND ")
-        );
+        let scope = clauses.join(" AND ");
+        let scope_params = params.len();
+        let pk = quote_ident(&table.primary_key);
         if !pinned.is_empty() {
-            let pk = quote_ident(&table.primary_key);
-            let holes: Vec<String> = pinned
+            let holes = pinned
                 .iter()
                 .map(|id| {
                     params.push(SqlValue::Text(id.clone()));
-                    "?".to_owned()
+                    "?"
                 })
-                .collect();
-            sql.push_str(&format!(" AND {} NOT IN ({})", pk, holes.join(", ")));
+                .collect::<Vec<_>>()
+                .join(", ");
+            clauses.push(format!("{pk} NOT IN ({holes})"));
         }
-        self.overlay_dirty.set(true);
-        self.conn
-            .execute(&sql, rusqlite::params_from_iter(params))
-            .map_err(|_| ())?;
-        if pinned.is_empty() {
-            return Ok(false);
+        let predicate = clauses.join(" AND ");
+        let base = base_table(table_name);
+        let visible = visible_table(table_name);
+        let mut ids: Vec<SqlValue> = Vec::new();
+        for source in [&base, &visible] {
+            let mut stmt = self
+                .conn
+                .prepare_cached(&format!(
+                    "SELECT {pk} FROM {source} WHERE {predicate} LIMIT 1024"
+                ))
+                .map_err(|e| e.to_string())?;
+            ids = stmt
+                .query_map(rusqlite::params_from_iter(&params), |row| row.get(0))
+                .map_err(|e| e.to_string())?
+                .collect::<Result<_, _>>()
+                .map_err(|e| e.to_string())?;
+            if !ids.is_empty() {
+                break;
+            }
         }
-        // A pin defers the eviction only if a pinned row actually falls
-        // inside this unit's effective scopes — re-select the survivors.
-        let mut where_params: Vec<SqlValue> = Vec::new();
-        let mut where_clauses = Vec::new();
-        for (variable, values) in effective {
-            let column = table.scope_column(variable).ok_or(())?;
-            let placeholders: Vec<String> = values
-                .iter()
-                .map(|v| {
-                    where_params.push(SqlValue::Text(v.clone()));
-                    "?".to_owned()
-                })
-                .collect();
-            where_clauses.push(format!(
-                "{} IN ({})",
-                quote_ident(column),
-                placeholders.join(", ")
-            ));
+        if !ids.is_empty() {
+            let holes = vec!["?"; ids.len()].join(", ");
+            for source in [&base, &visible] {
+                self.conn
+                    .execute(
+                        &format!("DELETE FROM {source} WHERE {pk} IN ({holes})"),
+                        rusqlite::params_from_iter(&ids),
+                    )
+                    .map_err(|e| e.to_string())?;
+            }
         }
-        let pk = quote_ident(&table.primary_key);
-        let select = format!(
-            "SELECT {} FROM {} WHERE {}",
-            pk,
-            base_table(table_name),
-            where_clauses.join(" AND ")
-        );
-        let mut stmt = self.conn.prepare(&select).map_err(|_| ())?;
-        let survivors: Vec<String> = stmt
-            .query_map(rusqlite::params_from_iter(where_params), |row| {
-                row.get::<_, String>(0)
-            })
-            .map_err(|_| ())?
-            .filter_map(Result::ok)
-            .collect();
-        Ok(survivors.iter().any(|id| pinned.contains(id)))
+        let mut remaining = false;
+        let mut deferred = false;
+        for source in [&base, &visible] {
+            remaining |= self
+                .conn
+                .query_row(
+                    &format!("SELECT EXISTS(SELECT 1 FROM {source} WHERE {predicate})"),
+                    rusqlite::params_from_iter(&params),
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(|e| e.to_string())?;
+            deferred |= self
+                .conn
+                .query_row(
+                    &format!("SELECT EXISTS(SELECT 1 FROM {source} WHERE {scope})"),
+                    rusqlite::params_from_iter(&params[..scope_params]),
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        Ok((remaining, deferred))
     }
 
-    /// §4.8 E1: retry deferred evictions after the outbox drains. No
-    /// pending records (the common case) means nothing to retry — and no
-    /// overlay rebuild.
-    fn drain_pending_evictions(&mut self) {
+    /// Resume committed eviction chunks, retaining outbox pins and their durable marker.
+    fn drain_pending_evictions(&mut self) -> Result<(), String> {
         let pending = self.load_pending_evictions();
         if pending.is_empty() {
-            return;
+            return Ok(());
         }
+        self.rebuild_overlay_if_dirty();
         for (sub_id, table_name, effective) in pending {
             if self.schema.table(&table_name).is_none() {
                 self.delete_pending_evict(&sub_id);
                 continue;
             }
-            let pinned = self.pinned_row_ids(&table_name);
-            let deferred = self
-                .evict_scope_rows(&table_name, &effective, &pinned)
-                .unwrap_or(false);
-            if !deferred {
-                self.delete_pending_evict(&sub_id);
+            loop {
+                std::thread::yield_now();
+                self.begin_observation("syncular_evict")?;
+                let pinned = self.pinned_row_ids(&table_name);
+                let result = self.evict_scope_rows(&table_name, &effective, &pinned);
+                let (remaining, deferred) = match result {
+                    Ok(result) => result,
+                    Err(error) => {
+                        self.rollback_observation("syncular_evict");
+                        return Err(error);
+                    }
+                };
+                if !deferred {
+                    self.delete_pending_evict(&sub_id);
+                }
+                let mut batch = ChangeAccumulator::default();
+                self.record_scope_map(&mut batch, &table_name, &effective);
+                if let Err(error) = self.finish_observation("syncular_evict", batch) {
+                    self.rollback_observation("syncular_evict");
+                    return Err(error);
+                }
+                if !remaining {
+                    break;
+                }
             }
         }
-        self.rebuild_overlay_if_dirty();
+        Ok(())
     }
 
     /// §4.8 E1: primary keys of `table` referenced by a pending outbox
@@ -7192,6 +7379,12 @@ impl SyncClient {
                 };
             }
         }
+        if let Err(message) = self.drain_pending_evictions() {
+            return SyncOutcome::Failed {
+                error_code: "storage.failed".into(),
+                message,
+            };
+        }
         let (message, meta) = self.build_request(transport.supports_url_fetch());
         let request_bytes = {
             #[cfg(feature = "bench-internals")]
@@ -7268,9 +7461,16 @@ impl SyncClient {
         transport: &mut dyn Transport,
         max_rounds: Option<u32>,
     ) -> SyncOutcome {
-        let rounds = max_rounds.unwrap_or(12).max(1);
+        let rounds = max_rounds.unwrap_or(20).max(1);
         let mut aggregate = SyncReport::default();
-        for _ in 0..rounds {
+        let mut spent = 0;
+        while spent < rounds {
+            spent += 1;
+            let before = self
+                .subs
+                .iter()
+                .map(|sub| (sub.id.clone(), sub.bootstrap_state.clone()))
+                .collect::<Vec<_>>();
             match self.sync(transport) {
                 SyncOutcome::Failed {
                     error_code,
@@ -7282,6 +7482,18 @@ impl SyncClient {
                     };
                 }
                 SyncOutcome::Ok(report) => {
+                    if max_rounds.is_none()
+                        && report.segment_rows_applied > 0
+                        && !report.bootstrapping.is_empty()
+                        && before
+                            != self
+                                .subs
+                                .iter()
+                                .map(|sub| (sub.id.clone(), sub.bootstrap_state.clone()))
+                                .collect::<Vec<_>>()
+                    {
+                        spent = 0;
+                    }
                     aggregate.pushed += report.pushed;
                     aggregate.applied.extend(report.applied.iter().cloned());
                     aggregate.rejected.extend(report.rejected.iter().cloned());
@@ -7308,12 +7520,15 @@ impl SyncClient {
                         || !report.resets.is_empty()
                         || self.sync_needed;
                     if !more {
-                        break;
+                        return SyncOutcome::Ok(aggregate);
                     }
                 }
             }
         }
-        SyncOutcome::Ok(aggregate)
+        SyncOutcome::Failed {
+            error_code: "sync.invalid_request".into(),
+            message: "sync did not reach idle within the round budget".into(),
+        }
     }
 
     fn process_response(
@@ -7567,7 +7782,12 @@ impl SyncClient {
         }
         // §4.8 E1: the push half may have drained commits that pinned rows of
         // a shrunk window unit — retry any deferred evictions now.
-        self.drain_pending_evictions();
+        if let Err(message) = self.drain_pending_evictions() {
+            return SyncOutcome::Failed {
+                error_code: "storage.failed".into(),
+                message,
+            };
+        }
         self.ack_after_pull(transport);
         // §7.4.5: the reset is over once the first post-reset pull round
         // leaves no subscription mid-bootstrap — the tables are rebuilt.
@@ -8432,6 +8652,13 @@ impl SyncClient {
                 continue;
             }
             let was_dirty = self.overlay_dirty.get();
+            let mirror_visible = !was_dirty
+                && (!table.indexes.iter().any(|index| index.unique)
+                    || !self
+                        .outbox
+                        .iter()
+                        .flat_map(|commit| &commit.ops)
+                        .any(|op| op.table == table.name));
             self.begin_observation("syncular_segment_block")
                 .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
             let outcome = (|| {
@@ -8460,10 +8687,28 @@ impl SyncClient {
                         .map_err(|message| {
                             SectionError::Abort("sync.invalid_request".into(), message)
                         })?;
+                    if mirror_visible {
+                        self.write_row(
+                            &visible_table(&table.name),
+                            &table.name,
+                            values,
+                            row.server_version,
+                        )
+                        .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
+                    }
                     let processed = u64::from(applied) + row_index as u64 + 1;
                     if processed.is_multiple_of(1024) {
                         self.progress.update(|p| p.rows_processed = processed);
                     }
+                }
+                if mirror_visible {
+                    self.apply_outbox_ops(
+                        self.outbox
+                            .iter()
+                            .flat_map(|commit| &commit.ops)
+                            .filter(|op| op.table == table.name),
+                    );
+                    self.overlay_dirty.set(false);
                 }
                 self.rebuild_overlay_if_dirty();
                 self.finish_observation("syncular_segment_block", batch)
@@ -8475,6 +8720,9 @@ impl SyncClient {
                 return Err(error);
             }
             applied += block.len() as u32;
+            self.progress
+                .update(|p| p.rows_processed = u64::from(applied));
+            std::thread::yield_now();
         }
         self.progress
             .update(|p| p.rows_processed = u64::from(applied));
@@ -8486,8 +8734,8 @@ impl SyncClient {
     /// generated schema, run the §5.6 first-page clear when fresh, then
     /// replace-or-upsert every image row with its `_syncular_version`.
     /// Mechanics: the image lands in a temp file read through a second
-    /// rusqlite connection (semantics identical to ATTACH + INSERT…SELECT;
-    /// The image's writes and revision share one local transaction).
+    /// rusqlite connection, equivalent to ATTACH + INSERT…SELECT.
+    /// Each image chunk commits its writes and revision before readers continue.
     fn apply_sqlite_segment(
         &mut self,
         sub_index: usize,
@@ -8526,33 +8774,15 @@ impl SyncClient {
                 return Err(invalid("bytes do not open as a SQLite database"));
             }
         };
-        let was_dirty = self.overlay_dirty.get();
-        let outcome = (|| {
-            self.begin_observation("syncular_image")
-                .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
-            let mut batch = ChangeAccumulator::default();
-            let cleared = first_fresh_page && self.scoped_rows_exist(&table.name, &effective);
-            let result = self.apply_sqlite_image(
-                &img,
-                &table,
-                first_fresh_page,
-                &effective,
-                row_count,
-                as_of_commit_seq,
-                scope_digest,
-            )?;
-            if result > 0 || cleared {
-                batch.table(&table.name);
-            }
-            self.rebuild_overlay_if_dirty();
-            self.finish_observation("syncular_image", batch)
-                .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
-            Ok(result)
-        })();
-        if outcome.is_err() {
-            self.rollback_observation("syncular_image");
-            self.overlay_dirty.set(was_dirty);
-        }
+        let outcome = self.apply_sqlite_image(
+            &img,
+            &table,
+            first_fresh_page,
+            &effective,
+            row_count,
+            as_of_commit_seq,
+            scope_digest,
+        );
         drop(img);
         let _ = std::fs::remove_file(&path);
         outcome
@@ -8626,6 +8856,7 @@ impl SyncClient {
 
         // 2. Column names and order vs the generated schema (§5.3 rule 3).
         let mut names: Vec<String> = Vec::new();
+        let mut primary_keys: Vec<String> = Vec::new();
         {
             let mut stmt = img
                 .prepare(&format!("PRAGMA table_info({})", quote_ident(&table.name)))
@@ -8637,6 +8868,9 @@ impl SyncClient {
                 .next()
                 .map_err(|_| invalid("image data table unreadable".to_owned()))?
             {
+                if row.get::<_, i64>(5).map_err(|e| invalid(e.to_string()))? > 0 {
+                    primary_keys.push(row.get(1).map_err(|e| invalid(e.to_string()))?);
+                }
                 names.push(
                     row.get::<_, String>(1)
                         .map_err(|_| invalid("image data table unreadable".to_owned()))?,
@@ -8652,111 +8886,140 @@ impl SyncClient {
             ));
         }
 
-        // 3. §5.6 first-page clear (fail closed without a mapping), then
-        //    replace-or-upsert with the image-carried server versions.
-        if first_fresh_page {
-            self.purge_scope_rows(&table.name, effective)
-                .map_err(|()| SectionError::FailClosed)?;
+        if primary_keys != vec![table.primary_key.clone()] {
+            return Err(invalid(
+                "image primary key does not match generated schema".into(),
+            ));
         }
-        // One cached INSERT statement on our side, one SELECT cursor on the
-        // image side; every cell is validated against the declared column
-        // type and bound BORROWED (no per-cell allocation, no per-row
-        // statement re-preparation) — the Rust analogue of the TS client's
-        // one prepared primary-key upsert per imported row.
-        self.overlay_dirty.set(true);
-        // A fresh whole-table load pays secondary-index maintenance per row;
-        // dropping the base half's NON-unique indexes for the load and
-        // recreating them after replaces that with one bulk sort per index.
-        // Unique indexes stay in place because they are semantics, not just
-        // speed. A collision outside the primary key aborts the section and
-        // preserves the existing row. The DDL rides the image
-        // savepoint (§5.3): an abort rolls the drop back.
-        let bulk_indexes: Vec<&crate::schema::IndexSchema> = if first_fresh_page {
-            table.indexes.iter().filter(|i| !i.unique).collect()
-        } else {
-            Vec::new()
-        };
-        for index in &bulk_indexes {
-            let index_name = quote_ident(&format!("_syncular_base_{}", index.name));
-            self.conn
-                .execute(&format!("DROP INDEX IF EXISTS {index_name}"), [])
-                .map_err(|e| invalid(e.to_string()))?;
+        let actual_count: i64 = img
+            .query_row(
+                &format!("SELECT count(*) FROM {}", quote_ident(&table.name)),
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| invalid(e.to_string()))?;
+        if actual_count != row_count {
+            return Err(invalid("image row count does not match descriptor".into()));
         }
         let insert = self.insert_row_sql(&base_table(&table.name), table);
-        let applied = {
-            let mut ins = self
-                .conn
-                .prepare_cached(&insert)
-                .map_err(|e| invalid(e.to_string()))?;
-            let column_list: Vec<String> = names.iter().map(|n| quote_ident(n)).collect();
-            let mut stmt = img
-                .prepare(&format!(
-                    "SELECT {} FROM {}",
-                    column_list.join(", "),
-                    quote_ident(&table.name)
-                ))
-                .map_err(|_| invalid("image data table unreadable".to_owned()))?;
-            let mut rows = stmt
-                .query([])
-                .map_err(|_| invalid("image data table unreadable".to_owned()))?;
-            let version_index = table.columns.len();
-            let mut applied = 0u32;
-            while let Some(row) = rows
-                .next()
-                .map_err(|_| invalid("image row unreadable".to_owned()))?
-            {
-                for (i, column) in table.columns.iter().enumerate() {
-                    let cell = row
-                        .get_ref(i)
-                        .map_err(|_| invalid("image row unreadable".to_owned()))?;
-                    let param = image_cell_param(column, cell).map_err(&invalid)?;
-                    ins.raw_bind_parameter(i + 1, param)
+        let visible_insert = self.insert_row_sql(&visible_table(&table.name), table);
+        let column_list = names
+            .iter()
+            .map(|n| quote_ident(n))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut stmt = img
+            .prepare(&format!(
+                "SELECT {column_list} FROM {} ORDER BY {}",
+                quote_ident(&table.name),
+                quote_ident(&table.primary_key)
+            ))
+            .map_err(|e| invalid(e.to_string()))?;
+        let mut rows = stmt.query([]).map_err(|e| invalid(e.to_string()))?;
+        let mut applied = 0u32;
+        loop {
+            let clear = applied == 0 && first_fresh_page;
+            let was_dirty = self.overlay_dirty.get();
+            let mirror_visible = !was_dirty
+                && (!table.indexes.iter().any(|index| index.unique)
+                    || !self
+                        .outbox
+                        .iter()
+                        .flat_map(|commit| &commit.ops)
+                        .any(|op| op.table == table.name));
+            self.begin_observation("syncular_image_chunk")
+                .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
+            let result = (|| {
+                let mut batch = ChangeAccumulator::default();
+                if clear {
+                    if self.scoped_rows_exist(&table.name, effective) {
+                        batch.table(&table.name);
+                    }
+                    self.purge_scope_rows(&table.name, effective)
+                        .map_err(|()| SectionError::FailClosed)?;
+                }
+                let mut processed = 0u32;
+                {
+                    let mut ins = self
+                        .conn
+                        .prepare_cached(&insert)
                         .map_err(|e| invalid(e.to_string()))?;
+                    let mut mirror = if mirror_visible {
+                        Some(
+                            self.conn
+                                .prepare_cached(&visible_insert)
+                                .map_err(|e| invalid(e.to_string()))?,
+                        )
+                    } else {
+                        None
+                    };
+                    for _ in 0..1024 {
+                        let Some(row) = rows.next().map_err(|e| invalid(e.to_string()))? else {
+                            break;
+                        };
+                        for (i, column) in table.columns.iter().enumerate() {
+                            let cell = row.get_ref(i).map_err(|e| invalid(e.to_string()))?;
+                            let param = image_cell_param(column, cell).map_err(&invalid)?;
+                            ins.raw_bind_parameter(i + 1, &param)
+                                .map_err(|e| invalid(e.to_string()))?;
+                            if let Some(mirror) = &mut mirror {
+                                mirror
+                                    .raw_bind_parameter(i + 1, &param)
+                                    .map_err(|e| invalid(e.to_string()))?;
+                            }
+                        }
+                        let version_index = table.columns.len();
+                        let version: i64 =
+                            row.get(version_index).map_err(|e| invalid(e.to_string()))?;
+                        if version < 1 {
+                            return Err(invalid("image row version must be positive".into()));
+                        }
+                        ins.raw_bind_parameter(version_index + 1, version)
+                            .map_err(|e| invalid(e.to_string()))?;
+                        ins.raw_execute().map_err(|e| invalid(e.to_string()))?;
+                        if let Some(mirror) = &mut mirror {
+                            mirror
+                                .raw_bind_parameter(version_index + 1, version)
+                                .map_err(|e| invalid(e.to_string()))?;
+                            mirror.raw_execute().map_err(|e| invalid(e.to_string()))?;
+                        }
+                        processed += 1;
+                    }
                 }
-                let version: i64 = row
-                    .get(version_index)
-                    .map_err(|_| invalid("image row unreadable".to_owned()))?;
-                if version < 1 {
-                    return Err(invalid(format!(
-                        "row _syncular_version must be >= 1, got {version}"
-                    )));
+                if processed > 0 {
+                    batch.table(&table.name);
+                    self.overlay_dirty.set(true);
                 }
-                ins.raw_bind_parameter(version_index + 1, version)
-                    .map_err(|e| invalid(e.to_string()))?;
-                ins.raw_execute().map_err(|e| invalid(e.to_string()))?;
-                applied += 1;
-                if applied.is_multiple_of(1024) {
-                    self.progress
-                        .update(|p| p.rows_processed = u64::from(applied));
+                if mirror_visible {
+                    self.apply_outbox_ops(
+                        self.outbox
+                            .iter()
+                            .flat_map(|commit| &commit.ops)
+                            .filter(|op| op.table == table.name),
+                    );
+                    self.overlay_dirty.set(false);
                 }
+                self.rebuild_overlay_if_dirty();
+                self.finish_observation("syncular_image_chunk", batch)
+                    .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
+                Ok(processed)
+            })();
+            let processed = match result {
+                Ok(processed) => processed,
+                Err(error) => {
+                    self.rollback_observation("syncular_image_chunk");
+                    self.overlay_dirty.set(was_dirty);
+                    return Err(error);
+                }
+            };
+            applied += processed;
+            self.progress
+                .update(|p| p.rows_processed = u64::from(applied));
+            std::thread::yield_now();
+            if i64::from(applied) == actual_count {
+                break;
             }
-            applied
-        };
-        for index in &bulk_indexes {
-            let index_name = quote_ident(&format!("_syncular_base_{}", index.name));
-            let cols_sql = index
-                .columns
-                .iter()
-                .map(|c| quote_ident(c))
-                .collect::<Vec<_>>()
-                .join(", ");
-            self.conn
-                .execute(
-                    &format!(
-                        "CREATE INDEX IF NOT EXISTS {index_name} ON {} ({cols_sql})",
-                        base_table(&table.name)
-                    ),
-                    [],
-                )
-                .map_err(|e| invalid(e.to_string()))?;
         }
-        if i64::from(applied) != row_count {
-            return Err(invalid(format!(
-                "image holds {applied} rows, descriptor says {row_count}"
-            )));
-        }
-        self.progress
-            .update(|p| p.rows_processed = u64::from(applied));
         Ok(applied)
     }
 
@@ -9212,7 +9475,17 @@ impl SyncClient {
         );
         self.overlay_dirty.set(true);
         self.conn
-            .execute(&sql, rusqlite::params_from_iter(params))
+            .execute(&sql, rusqlite::params_from_iter(&params))
+            .map_err(|_| ())?;
+        self.conn
+            .execute(
+                &format!(
+                    "DELETE FROM {} WHERE {}",
+                    visible_table(table_name),
+                    clauses.join(" AND ")
+                ),
+                rusqlite::params_from_iter(&params),
+            )
             .map_err(|_| ())?;
         Ok(())
     }

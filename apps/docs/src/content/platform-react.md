@@ -247,3 +247,13 @@ come from that snapshot. Direct `conflicts`, `rejections`, and
 `securityLifecycle` reads are now method calls. `normalizeClient` has been
 removed; custom adapters must implement the canonical snapshot methods.
 See the [client migration](/platform-web/#snapshot-api-migration).
+
+## Cached reads during sync
+
+Query hooks request a local snapshot while their window claim registers. A
+complete cached window renders immediately; incomplete coverage remains partial.
+A registration failure remains visible even when the snapshot contains rows.
+Handle the query error and `useRetainedWindow().error` in the owning view.
+
+Imports and cache eviction yield between committed chunks automatically. See
+[windowing](/concepts-windowing/) for ownership and coverage semantics.

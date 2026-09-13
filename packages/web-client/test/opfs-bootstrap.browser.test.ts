@@ -26,6 +26,8 @@ let downloads = 0;
 let images = 0;
 let pin = 0;
 let signedDownloads = 0;
+let readBarrierReached: (() => void) | undefined;
+let releaseReadBarrier: (() => void) | undefined;
 
 beforeAll(async () => {
   source.now.ms = Date.now();
@@ -102,6 +104,12 @@ beforeAll(async () => {
           Bun.file(join(vendor, pathname.slice('/vendor/'.length))),
           { headers },
         );
+      }
+      if (pathname === '/read-barrier') {
+        return new Promise<Response>((resolve) => {
+          releaseReadBarrier = () => resolve(new Response('continue'));
+          readBarrierReached?.();
+        });
       }
       if (pathname === '/crash-barrier') {
         return new Promise<Response>((resolve) => {
@@ -181,6 +189,7 @@ for (const point of [
   'download',
   'before-import',
   'mid-import',
+  'after-chunk',
   'after-import',
   'after-checkpoint',
 ] as const) {
@@ -278,7 +287,9 @@ for (const point of [
       expect(recovered.rows).toEqual(
         point === 'after-import' || point === 'after-checkpoint'
           ? expected
-          : [],
+          : point === 'after-chunk'
+            ? expected.slice(0, 1024)
+            : [],
       );
       expect(recovered.probe.integrity).toEqual([{ integrity_check: 'ok' }]);
       expect(recovered.probe.journal).toEqual([{ journal_mode: 'delete' }]);
@@ -455,6 +466,68 @@ test('OPFS worker forwards intermediate signed-URL download progress', async () 
     ).toEqual([{ n: expected.length }]);
     await page.evaluate(async () => (await window.opfsTest.ready).close());
   } finally {
+    await browser.close();
+  }
+}, 60000);
+
+test('the default worker serves a queued snapshot between committed image chunks', async () => {
+  const browser = await chromium.launch();
+  const page = await browser.newPage();
+  const reached = new Promise<void>((resolve) => {
+    readBarrierReached = resolve;
+  });
+  try {
+    await page.goto(`${server.url.href}?responsive`);
+    await page.evaluate(async () => {
+      await window.opfsTest.open();
+      const client = await window.opfsTest.ready;
+      await client.setWindow({ table: 'catalogue', variable: 'project_id' }, [
+        'p1',
+      ]);
+    });
+    const importing = page.evaluate(async () =>
+      (await window.opfsTest.ready).syncUntilIdle(),
+    );
+    await reached;
+    // Post the RPC while SQLite is held in the first block's transaction.
+    // The read must run after that commit and before the remaining blocks.
+    const reading = page.evaluate(async () => {
+      const client = await window.opfsTest.ready;
+      const result = client.querySnapshot({
+        sql: 'SELECT count(*) AS n FROM catalogue',
+        coverage: [
+          {
+            base: { table: 'catalogue', variable: 'project_id' },
+            units: ['p1'],
+          },
+        ],
+      });
+      document.title = 'read-requested';
+      const snapshot = await result;
+      return { rows: snapshot.rows, coverage: snapshot.coverage };
+    });
+    await page.waitForFunction(() => document.title === 'read-requested');
+    releaseReadBarrier?.();
+    const snapshot = await reading;
+    expect(snapshot.rows).toEqual([{ n: 1024 }]);
+    expect(snapshot.coverage.complete).toBe(false);
+    expect(snapshot.coverage.pending).toHaveLength(1);
+    await importing;
+    expect(
+      await page.evaluate(async () =>
+        (await window.opfsTest.ready).query(
+          'SELECT count(*) AS n FROM catalogue',
+        ),
+      ),
+    ).toEqual([{ n: expected.length }]);
+    expect(
+      (await page.evaluate(() => window.opfsTest.progress)).at(-1)?.state,
+    ).toBe('complete');
+    await page.evaluate(async () => (await window.opfsTest.ready).close());
+  } finally {
+    releaseReadBarrier?.();
+    readBarrierReached = undefined;
+    releaseReadBarrier = undefined;
     await browser.close();
   }
 }, 60000);

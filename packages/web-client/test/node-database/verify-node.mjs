@@ -3,7 +3,7 @@ import { runAdapterContract } from './adapter-contract.ts';
 import { openNodeDatabase } from '../../src/node-database.ts';
 
 try {
-  runAdapterContract(openNodeDatabase);
+  await runAdapterContract(openNodeDatabase);
   console.log('node-database: node:sqlite adapter passes the full contract');
 } catch (error) {
   console.error('node-database: VERIFICATION FAILED');

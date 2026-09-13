@@ -76,6 +76,11 @@ export interface DriverTable {
   readonly columns: readonly DriverColumn[];
   readonly primaryKey: string;
   readonly scopes: readonly DriverScopePattern[];
+  readonly ftsIndexes?: readonly {
+    readonly name: string;
+    readonly columns: readonly string[];
+    readonly tokenize: string;
+  }[];
 }
 
 export interface DriverSchema {

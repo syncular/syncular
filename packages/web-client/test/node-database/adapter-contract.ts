@@ -28,9 +28,9 @@ function eq(actual: unknown, expected: unknown, message: string): void {
 }
 
 /** Exercise every branch of the ClientDatabase surface. */
-export function runAdapterContract(
+export async function runAdapterContract(
   open: (path?: string) => ClientDatabase,
-): void {
+): Promise<void> {
   const db = open();
 
   // --- exec / query round-trip, params, and result shape ---
@@ -121,7 +121,8 @@ export function runAdapterContract(
   assert(typeof withImage === 'function', 'withSqliteImage present');
   const image = buildImage(open);
   db.exec('CREATE TABLE dest (id TEXT, v TEXT)');
-  withImage.call(db, image, 'img', () => {
+  await withImage.call(db, image, 'img', async () => {
+    await Promise.resolve();
     db.exec('INSERT INTO dest (id, v) SELECT id, v FROM img.src');
   });
   const imported = db.query('SELECT id, v FROM dest ORDER BY id');

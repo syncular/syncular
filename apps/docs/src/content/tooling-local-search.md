@@ -111,3 +111,15 @@ as its owner row; the purge removes both in one transaction.
 For the exact migration subset, see [Schema & typegen](/guide-schema/). For
 typed query generation, see [Named queries](/tooling-queries/) and
 [SYQL](/syql/).
+
+## Indexed projection maintenance
+
+Each managed FTS projection maintains an internal mapping from source identity
+to FTS rowid. Deletes resolve that identity through a unique index and delete by
+rowid. This avoids scanning the unindexed source-identity column for each row
+during eviction or replacement.
+
+Both cores backfill the mapping for existing projections on startup without
+resetting application rows or pending writes. Source rows, mappings, and FTS
+changes commit or roll back together. Applications keep their existing query
+SQL and schema declarations.

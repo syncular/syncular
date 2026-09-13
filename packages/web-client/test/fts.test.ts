@@ -59,6 +59,54 @@ function rawFtsHits(db: BunClientDatabase, query: string): string[] {
 }
 
 describe('client-local FTS5 projections', () => {
+  test('an existing projection gains an indexed identity map without rebuilding rows', () => {
+    const db = new BunClientDatabase();
+    try {
+      const compiled = compileClientSchema(SCHEMA);
+      ensureLocalSchema(db, compiled);
+      db.exec(
+        "INSERT INTO catalogue_codes VALUES ('c1','r1','A01','Cholera',7)",
+      );
+      const before = db.query('SELECT rowid, * FROM catalogue_codes_fts');
+      db.exec('DROP TABLE _syncular_fts_catalogue_codes_fts');
+      // An existing projection must only be read when upgrading its mapping.
+      db.exec(
+        "CREATE TRIGGER forbid_rebuild BEFORE UPDATE ON catalogue_codes BEGIN SELECT RAISE(ABORT,'source changed'); END",
+      );
+      ensureLocalSchema(db, compiled);
+      expect(db.query('SELECT rowid, * FROM catalogue_codes_fts')).toEqual(
+        before,
+      );
+      expect(
+        db.query('SELECT id, source_id FROM _syncular_fts_catalogue_codes_fts'),
+      ).toEqual([{ id: before[0]!.rowid!, source_id: 'c1' }]);
+      const plan = db.db.prepare(
+        'EXPLAIN QUERY PLAN SELECT rowid FROM catalogue_codes_fts WHERE rowid = (SELECT id FROM _syncular_fts_catalogue_codes_fts WHERE source_id = ?)',
+      );
+      const details = JSON.stringify(plan.all('c1'));
+      plan.finalize();
+      expect(details).toContain('COVERING INDEX');
+      expect(details).toContain('INDEX 0:=');
+      expect(() =>
+        db.transaction(() => {
+          db.exec("DELETE FROM catalogue_codes WHERE id='c1'");
+          throw new Error('rollback');
+        }),
+      ).toThrow('rollback');
+      expect(search(db, 'cholera')).toEqual(['c1']);
+      expect(
+        db.query('SELECT count(*) AS n FROM _syncular_fts_catalogue_codes_fts'),
+      ).toEqual([{ n: 1 }]);
+      db.exec("DELETE FROM catalogue_codes WHERE id='c1'");
+      expect(search(db, 'cholera')).toEqual([]);
+      expect(
+        db.query('SELECT * FROM _syncular_fts_catalogue_codes_fts'),
+      ).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
   test('initial build and insert/update/delete stay transactionally current', () => {
     const db = new BunClientDatabase();
     const compiled = compileClientSchema(SCHEMA);

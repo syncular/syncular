@@ -13,6 +13,6 @@ test('the automatic SQLite factory selects Bun', () => {
   database.close();
 });
 
-test('the shared adapter contract passes on bun:sqlite', () => {
-  expect(() => runAdapterContract(openBunDatabase)).not.toThrow();
+test('the shared adapter contract passes on bun:sqlite', async () => {
+  await runAdapterContract(openBunDatabase);
 });

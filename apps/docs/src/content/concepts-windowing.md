@@ -60,8 +60,8 @@ live unit:
   [bootstraps](/concepts-bootstrap/) via the image lane. `A` and `B` stay
   untouched, and their cursors remain valid.
 - **Shrink** `{A,B,C} → {B,C}`: `A`'s subscription is dropped and its rows are
-  **evicted** from the local database, fused into one atomic step with the
-  unsubscription.
+  **evicted** in chunks of at most 1,024 unpinned rows. The first chunk and
+  unsubscription commit together; coverage becomes missing immediately.
 - **Replace** `{A,B} → {B,C}` is shrink + widen. Because units are
   value-sharded, `B` stays cached: the cost of a window change scales with the
   size of the *delta*. (The bench proves it on a segment counter:
@@ -88,6 +88,11 @@ eviction correct:
 - **Re-entry is a fresh bootstrap**: correct at any distance. It snapshots
   current server state, so it doesn't care how much log was pruned since the
   eviction. A re-entered row is writable immediately.
+
+Cleanup yields between committed chunks. A durable pending-eviction record lets
+a reopened client resume cleanup before its next network request, including
+when that request fails offline. Re-entry cancels pending cleanup and starts a
+fresh bootstrap. Authorization revocation retains its atomic security purge.
 
 ## The completeness oracle
 
@@ -121,6 +126,15 @@ That distinction makes a zero-row bootstrap safe: `[]` is not a complete empty
 answer until the same snapshot says the unit has finished. There is no
 render-order dependency between a query hook and a separate window hook.
 
+Queries request their local snapshot immediately while registration runs.
+Cached complete rows can render even if registration waits behind a download;
+cached incomplete rows remain partial. Registration failures stay observable
+alongside cached rows. Security and availability checks still gate every result.
+
+An additional owner of already-held units receives its registration
+acknowledgement without waiting for unrelated window widening. An in-flight
+removal still requires acknowledgement before those units are held again.
+
 Claims compose. If two mounted consumers require `{A,B}` and `{B,C}` on the
 same base, the effective core window is `{A,B,C}`. Unmounting the first drops
 only `A`; it cannot overwrite the second consumer's claim.
@@ -150,7 +164,8 @@ const retention = useRetainedWindow(
 ```
 
 It composes with generated query claims, normalizes duplicate units, cleans up
-on unmount, and surfaces registration through `isPending` / `error`.
+on unmount, and surfaces registration through `isPending` / `error`. Handle
+`error` even when another query already renders cached rows.
 
 `setWindow`/`windowState` and React's `useWindow` remain explicit primitives.
 They feed the same union coordinator, but ordinary generated queries should

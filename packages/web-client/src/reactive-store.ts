@@ -359,7 +359,8 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
   #running = false;
   #requested = false;
   #desiredRevision = 0n;
-  #claimReady: Promise<void> = Promise.resolve();
+  #claimError: Error | undefined;
+  #claimPending = false;
   #offStatus: (() => void) | undefined;
 
   constructor(
@@ -397,10 +398,25 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
             ),
           );
         }
-        this.#claimReady = Promise.all(claims).then(() => undefined);
-        // A render can lose its last subscriber before the read loop starts.
-        // The loop still observes the original rejection while it owns the claim.
-        void this.#claimReady.catch(() => undefined);
+        const generation = this.#generation;
+        this.#claimPending = claims.length > 0;
+        if (claims.length > 0)
+          void Promise.all(claims).then(
+            () => {
+              if (generation !== this.#generation || this.#listeners.size === 0)
+                return;
+              this.#claimPending = false;
+              if (!this.#running && this.#state.phase !== 'ready')
+                this.#requestRead();
+            },
+            (error: unknown) => {
+              if (generation !== this.#generation || this.#listeners.size === 0)
+                return;
+              this.#claimPending = false;
+              this.#claimError = errorOf(error);
+              this.#requestRead();
+            },
+          );
       }
       this.#requestRead();
     }
@@ -426,7 +442,8 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
     this.#running = false;
     this.#requested = false;
     this.#desiredRevision = 0n;
-    this.#claimReady = Promise.resolve();
+    this.#claimError = undefined;
+    this.#claimPending = false;
     this.#state = {
       rows: [],
       phase: 'loading',
@@ -520,9 +537,11 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
       do {
         this.#requested = false;
         if (this.store.availabilitySnapshot().state === 'blocked') break;
-        await this.#claimReady;
+
         if (generation !== this.#generation || this.#listeners.size === 0)
           return;
+        if (this.#claimError !== undefined) throw this.#claimError;
+        const claimWasPending = this.#claimPending;
         const snapshot = await this.store.client.querySnapshot<
           Record<string, SqlValue>
         >({
@@ -536,6 +555,7 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
         });
         if (generation !== this.#generation || this.#listeners.size === 0)
           return;
+        if (this.#claimError !== undefined) throw this.#claimError;
         const availability = this.store.availabilitySnapshot();
         if (availability.state === 'blocked') {
           this.#publish({
@@ -550,6 +570,12 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
           this.#requested = true;
           continue;
         }
+        if (
+          !snapshot.coverage.complete &&
+          claimWasPending &&
+          !this.#claimPending
+        )
+          this.#requested = true;
         const mappedRows =
           this.spec.mapRow === undefined
             ? (snapshot.rows as readonly Row[])
@@ -625,6 +651,8 @@ interface WindowClaimGroup {
   readonly base: WindowBase;
   readonly claims: Map<symbol, ReadonlySet<string>>;
   appliedKey: string;
+  appliedUnits: ReadonlySet<string>;
+  inFlightUnits?: ReadonlySet<string> | undefined;
   scheduled: boolean;
   running: boolean;
   requested: boolean;
@@ -889,6 +917,7 @@ export class ReactiveClientStore {
         base,
         claims: new Map(),
         appliedKey: '',
+        appliedUnits: new Set(),
         scheduled: false,
         running: false,
         requested: false,
@@ -897,6 +926,17 @@ export class ReactiveClientStore {
       this.#windowClaims.set(key, group);
     }
     group.claims.set(owner, new Set(units));
+    const alreadyHeld =
+      units.length > 0 &&
+      units.every(
+        (unit) =>
+          group.appliedUnits.has(unit) &&
+          (group.inFlightUnits === undefined || group.inFlightUnits.has(unit)),
+      );
+    if (alreadyHeld) {
+      this.#scheduleWindow(group);
+      return Promise.resolve();
+    }
     const result = new Promise<void>((resolve, reject) => {
       group?.waiters.push({ resolve, reject });
     });
@@ -932,9 +972,15 @@ export class ReactiveClientStore {
         ].sort();
         const key = canonicalValue(units);
         if (key !== group.appliedKey) {
-          await this.client.setWindow(group.base, units);
+          group.inFlightUnits = new Set(units);
+          try {
+            await this.client.setWindow(group.base, units);
+          } finally {
+            group.inFlightUnits = undefined;
+          }
           if (this.#windowClaims.get(baseKey) !== group) return;
           group.appliedKey = key;
+          group.appliedUnits = new Set(units);
         }
       }
       for (const waiter of group.waiters.splice(0)) waiter.resolve();

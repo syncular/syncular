@@ -676,7 +676,8 @@ through the core, without intermediate download updates.
 
 Import reports every 1,024 rows and its final count. `rowsProcessed` includes work
 inside the current transaction; a failed import can roll those rows back. SQLite
-images retain one atomic transaction. `complete` follows checkpoint persistence
+images commit in chunks of at most 1,024 rows and yield after each commit.
+Earlier committed chunks survive a later interruption. `complete` follows checkpoint persistence
 and optimistic-state reconciliation for the round. More bootstrap pages can
 remain; use subscription coverage to determine whether a query is complete.
 Listener exceptions do not fail sync. Listeners should hand UI work off and avoid
@@ -723,3 +724,19 @@ request. Status and diagnostics use `COUNT(*)` without parsing pending bodies.
 Optimistic replay still reads the remaining outbox after each response. The
 100/1,000/10,000-commit workload and measured limits are recorded in
 [the reliability RFC](../../docs/RFC-RELIABILITY-DX.md#9-implementation-evidence-2026-09-05).
+
+## Reads during bootstrap and eviction
+
+Reactive queries read cached snapshots while window registration runs. Coverage
+continues to distinguish complete, pending, and missing windows; registration
+errors remain observable. Retained owners reuse acknowledged units immediately.
+
+Both segment formats yield between committed import chunks automatically.
+Window eviction deletes at most 1,024 unpinned rows per chunk and resumes from a
+durable pending record after interruption. Security purges remain atomic.
+See [windowing](https://syncular.dev/concepts-windowing/) and
+[bootstrap](https://syncular.dev/concepts-bootstrap/) for coverage and recovery.
+
+Custom database adapters implementing `withSqliteImage` must return a promise and
+await their callback before detaching the image. The callback can await between
+committed import chunks; no write transaction spans that await.

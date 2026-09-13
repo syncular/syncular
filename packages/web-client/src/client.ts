@@ -44,6 +44,7 @@ import {
   deleteLocalRow,
   deleteScopedRows,
   evictScopedRows,
+  yieldToHost,
   upsertLocalRow,
 } from './apply';
 import {
@@ -286,8 +287,8 @@ export interface SyncClientLimits {
   readonly maxSnapshotPages?: number;
   /**
    * §4.2 accept bitmask; defaults to inline + external rows (0b0011)
-   * plus sqlite images (bit 2) when the database backend implements
-   * `withSqliteImage` and a segment downloader is configured (§5.3).
+   * plus SQLite images and signed URLs when supported. Both image chunks
+   * and rows blocks commit before yielding to local reads (§7.7).
    */
   readonly accept?: number;
   /**
@@ -748,6 +749,7 @@ export class SyncClient {
     const startupWork =
       this.#schemaFloor === undefined &&
       (countOutbox(this.#db) > 0 ||
+        loadPendingEvictions(this.#db).length > 0 ||
         subscriptions.some((sub) => sub.status === 'active'));
     if (startupWork && this.#securityLifecycle === 'active') {
       this.#needsPull = true;
@@ -1820,23 +1822,17 @@ export class SyncClient {
     socket.send(encodePresencePublish(scopeKey, doc));
   }
 
-  /**
-   * §4.2 accept mask: the configured override, or the rows baseline plus
-   * bit 2 when the backend can import sqlite images (§5.3) and a segment
-   * downloader exists (sqlite segments are never inline, §5.7), plus
-   * bit 3 when the downloader exposes a direct URL fetch (§5.4
-   * capability negotiation).
-   */
+  /** Advertise supported segment formats; all imports yield between commits. */
   #acceptMask(): number {
     const configured = this.#config.limits?.accept;
     if (configured !== undefined) return configured;
     const segments = this.#config.segments;
-    const sqliteCapable =
-      typeof this.#db.withSqliteImage === 'function' && segments !== undefined;
     const urlCapable = typeof segments?.fetchUrl === 'function';
     return (
       ACCEPT_ROWS_BASELINE |
-      (sqliteCapable ? ACCEPT_SQLITE : 0) |
+      (typeof this.#db.withSqliteImage === 'function' && segments !== undefined
+        ? ACCEPT_SQLITE
+        : 0) |
       (urlCapable ? ACCEPT_SIGNED_URLS : 0)
     );
   }
@@ -1975,7 +1971,7 @@ export class SyncClient {
       // Shrink: units live but not wanted → unsubscribe fused with eviction.
       for (const { unit, subId } of live) {
         if (wanted.has(unit)) continue;
-        this.#evictUnit(baseKey, base, unit, subId);
+        await this.#evictUnit(baseKey, base, unit, subId);
         changed = true;
       }
     });
@@ -2018,8 +2014,8 @@ export class SyncClient {
   }
 
   /**
-   * §4.8 E1–E4: evict one departing unit, fused with its unsubscription in
-   * one transaction. Deletes the unit's rows EXCEPT those pinned by a
+   * §4.8 E1–E4: evict one departing unit in committed chunks, fusing
+   * its first chunk with unsubscription. Deletes the unit's rows EXCEPT those pinned by a
    * pending outbox commit (E1); if any pin remains, records a deferred
    * eviction retried on the next outbox drain. Discards the subscription's
    * cursor/resume/effective-echo (E3) and its version state with the rows
@@ -2027,24 +2023,26 @@ export class SyncClient {
    * with no local scope-column mapping, surfaces a configuration error and
    * evicts nothing (§4.8/§3.3).
    */
-  #evictUnit(
+  async #evictUnit(
     baseKey: string,
     base: WindowBase,
     unit: string,
     subId: string,
-  ): void {
+  ): Promise<void> {
     const table = this.#table(base.table);
     const sub = getSubscription(this.#db, subId);
     // The rows a unit holds live under its LAST effective scopes if it ever
     // synced; before first sync, the requested unit scopes are the match.
     const effective = sub?.effectiveScopes ?? unitScopes(base, unit);
     const pinned = this.#pinnedRowIds(base.table);
+    let remaining = false;
     this.#applyBatch((batch) => {
       this.#db.transaction(() => {
-        const deferred = evictScopedRows(this.#db, table, effective, pinned);
+        const result = evictScopedRows(this.#db, table, effective, pinned);
+        remaining = result.remaining;
         deleteWindowUnit(this.#db, baseKey, unit);
         deleteSubscription(this.#db, subId);
-        if (deferred) {
+        if (result.deferred) {
           savePendingEviction(this.#db, subId, base.table, effective);
         } else {
           deletePendingEviction(this.#db, subId);
@@ -2055,6 +2053,10 @@ export class SyncClient {
       this.#needsPull = true;
       batch.status();
     });
+    if (remaining) {
+      await yieldToHost();
+      await this.#drainPendingEvictions();
+    }
   }
 
   /**
@@ -2062,7 +2064,7 @@ export class SyncClient {
    * unit's rows are removed once no pending commit references them; a unit
    * that re-entered the window in the meantime has no pending record left.
    */
-  #drainPendingEvictions(): void {
+  async #drainPendingEvictions(): Promise<void> {
     const pending = loadPendingEvictions(this.#db);
     if (pending.length === 0) return;
     for (const entry of pending) {
@@ -2071,15 +2073,30 @@ export class SyncClient {
         deletePendingEviction(this.#db, entry.subId);
         continue;
       }
-      const pinned = this.#pinnedRowIds(entry.table);
-      this.#applyBatch((batch) => {
-        let deferred = false;
-        this.#db.transaction(() => {
-          deferred = evictScopedRows(this.#db, table, entry.effective, pinned);
-          if (!deferred) deletePendingEviction(this.#db, entry.subId);
+      let remaining: boolean;
+      do {
+        if (
+          !loadPendingEvictions(this.#db).some(
+            (item) => item.subId === entry.subId,
+          )
+        )
+          break;
+        // Local writes may add pins while the worker yields between chunks.
+        const pinned = this.#pinnedRowIds(entry.table);
+        remaining = false;
+        this.#applyBatch((batch) => {
+          const result = evictScopedRows(
+            this.#db,
+            table,
+            entry.effective,
+            pinned,
+          );
+          remaining = result.remaining;
+          if (!result.deferred) deletePendingEviction(this.#db, entry.subId);
+          batch.scopeMap(table, entry.effective);
         });
-        batch.scopeMap(table, entry.effective);
-      });
+        if (remaining) await yieldToHost();
+      } while (remaining);
     }
   }
 
@@ -2753,6 +2770,7 @@ export class SyncClient {
     // survive it — the reference server keeps no replay buffer (§8.2).
     this.#setSyncNeeded(false);
     try {
+      await this.#drainPendingEvictions();
       const logEpoch = getMeta(this.#db, LOG_EPOCH_META_KEY);
       // §5.9.7 B4: upload pending blobs BEFORE pushing rows that reference
       // them, so the server-side existence check (§6.6) passes.
@@ -2830,7 +2848,7 @@ export class SyncClient {
       );
       // §4.8 E1: the push half may have drained commits that pinned rows of
       // a shrunk window unit — retry any deferred evictions now.
-      this.#drainPendingEvictions();
+      await this.#drainPendingEvictions();
       this.#progress.update(
         summary.failed.length > 0
           ? { state: 'failed', errorCode: 'sync.scope_revoked' }
@@ -2879,10 +2897,27 @@ export class SyncClient {
    * Pull repeatedly until quiescent: no commits delivered, no bootstrap
    * pages pending, no resets to recover (§4.5 "pull again" SHOULD).
    */
-  async syncUntilIdle(maxRounds = 20): Promise<SyncSummary> {
+  async syncUntilIdle(maxRounds?: number): Promise<SyncSummary> {
+    const budget = maxRounds ?? 20;
     let last: SyncSummary | undefined;
-    for (let round = 0; round < maxRounds; round++) {
+    for (let round = 0; round < budget; round++) {
+      const before = JSON.stringify(
+        loadSubscriptions(this.#db).map((sub) => [sub.id, sub.bootstrapState]),
+      );
       last = await this.sync();
+      if (
+        maxRounds === undefined &&
+        last.segmentRowsApplied > 0 &&
+        last.bootstrapping.length > 0 &&
+        before !==
+          JSON.stringify(
+            loadSubscriptions(this.#db).map((sub) => [
+              sub.id,
+              sub.bootstrapState,
+            ]),
+          )
+      )
+        round = -1;
       if (last.schemaFloor !== undefined) return last;
       if (
         last.commitsApplied === 0 &&
@@ -2897,7 +2932,7 @@ export class SyncClient {
     }
     throw new ClientSyncError(
       'sync.invalid_request',
-      `sync did not reach idle within ${maxRounds} rounds`,
+      'sync did not reach idle within the round budget',
     );
   }
 
@@ -3428,6 +3463,7 @@ export class SyncClient {
                   segment,
                   {
                     clearFirst,
+                    isCurrent: () => this.#localResetEpoch === resetEpoch,
                     onProgress: (rowsProcessed) =>
                       this.#progress.update({ rowsProcessed }),
                     effective,
@@ -3440,7 +3476,9 @@ export class SyncClient {
                         ) {
                           batch.table(table.name);
                         }
-                        return fn();
+                        const result = fn();
+                        this.#replayOutbox();
+                        return result;
                       }),
                   },
                   this.#encryption,
@@ -3499,6 +3537,7 @@ export class SyncClient {
                     },
                     {
                       clearFirst,
+                      isCurrent: () => this.#localResetEpoch === resetEpoch,
                       onProgress: (rowsProcessed) =>
                         this.#progress.update({ rowsProcessed }),
                       effective,
@@ -3511,7 +3550,9 @@ export class SyncClient {
                           ) {
                             batch.table(table.name);
                           }
-                          return fn();
+                          const result = fn();
+                          this.#replayOutbox();
+                          return result;
                         }),
                     },
                   ),
@@ -3530,6 +3571,7 @@ export class SyncClient {
                     segment,
                     {
                       clearFirst,
+                      isCurrent: () => this.#localResetEpoch === resetEpoch,
                       onProgress: (rowsProcessed) =>
                         this.#progress.update({ rowsProcessed }),
                       effective,
@@ -3542,7 +3584,9 @@ export class SyncClient {
                           ) {
                             batch.table(table.name);
                           }
-                          return fn();
+                          const result = fn();
+                          this.#replayOutbox();
+                          return result;
                         }),
                     },
                     this.#encryption,

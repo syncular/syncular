@@ -63,7 +63,11 @@ export class NodeClientDatabase implements ClientDatabase {
   }
 
   /** §5.3 image import through a private file attached for one callback. */
-  withSqliteImage<T>(bytes: Uint8Array, alias: string, fn: () => T): T {
+  async withSqliteImage<T>(
+    bytes: Uint8Array,
+    alias: string,
+    fn: () => T | Promise<T>,
+  ): Promise<T> {
     assertImageAlias(alias);
     const dir = mkdtempSync(join(tmpdir(), 'syncular-image-'));
     const path = join(dir, 'segment.db');
@@ -71,7 +75,7 @@ export class NodeClientDatabase implements ClientDatabase {
       writeFileSync(path, bytes);
       this.db.prepare(`ATTACH DATABASE ? AS ${alias}`).run(path);
       try {
-        return fn();
+        return await fn();
       } finally {
         this.db.prepare(`DETACH DATABASE ${alias}`).run();
       }

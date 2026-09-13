@@ -151,9 +151,13 @@ class WasmClientDatabase implements ClientDatabase {
    * §5.3 image import at near-file-copy speed: attach an empty in-memory
    * schema, then `sqlite3_deserialize` the image bytes into it (the
    * documented sqlite-wasm import path — no OPFS round-trip, no SQL-level
-   * row shuttling before the single INSERT…SELECT the caller runs).
+   * row shuttling before the chunked INSERT…SELECT statements the caller runs).
    */
-  withSqliteImage<T>(bytes: Uint8Array, alias: string, fn: () => T): T {
+  async withSqliteImage<T>(
+    bytes: Uint8Array,
+    alias: string,
+    fn: () => T | Promise<T>,
+  ): Promise<T> {
     assertImageAlias(alias);
     const pointer = this.#db.pointer;
     if (pointer === undefined) {
@@ -182,7 +186,7 @@ class WasmClientDatabase implements ClientDatabase {
           `sqlite3_deserialize failed with code ${rc} (§5.3)`,
         );
       }
-      return fn();
+      return await fn();
     } finally {
       this.exec(`DETACH ${alias}`);
     }

@@ -215,8 +215,8 @@ export function deleteScopedRows(
  * scopes (same local-scope-column rule and fail-closed clause as
  * {@link deleteScopedRows}) EXCEPT rows whose primary key is in
  * `pinnedRowIds` (E1 — pinned by a still-pending outbox commit). Returns
- * `true` iff any pinned row was left behind, so the caller knows to defer
- * the rest of the eviction until the outbox drains. Also removes the
+ * whether unpinned work remains and whether any scoped rows remain. Each
+ * call removes at most 1,024 rows; the caller commits before yielding. Also removes the
  * evicted rows' `server_version` with them (E2 — no residual version
  * cache), which is automatic since the version column is per-row.
  */
@@ -225,9 +225,9 @@ export function evictScopedRows(
   table: CompiledClientTable,
   effective: ScopeMap,
   pinnedRowIds: ReadonlySet<string>,
-): boolean {
+): { remaining: boolean; deferred: boolean } {
   const entries = Object.entries(effective);
-  if (entries.length === 0) return false;
+  if (entries.length === 0) return { remaining: false, deferred: false };
   const clauses: string[] = [];
   const params: string[] = [];
   for (const [variable, values] of entries) {
@@ -238,7 +238,7 @@ export function evictScopedRows(
         `table ${JSON.stringify(table.name)} has no local scope-column mapping for ${JSON.stringify(variable)} (§4.8/§3.3 fail-closed)`,
       );
     }
-    if (values.length === 0) return false;
+    if (values.length === 0) return { remaining: false, deferred: false };
     clauses.push(
       `${quoteIdent(column)} IN (${values.map(() => '?').join(', ')})`,
     );
@@ -251,21 +251,25 @@ export function evictScopedRows(
     pinnedClause = ` AND ${pk} NOT IN (${ids.map(() => '?').join(', ')})`;
     params.push(...ids);
   }
+  const target = quoteIdent(table.name);
   db.exec(
-    `DELETE FROM ${quoteIdent(table.name)} WHERE ${clauses.join(' AND ')}${pinnedClause}`,
+    `DELETE FROM ${target} WHERE ${pk} IN (
+      SELECT ${pk} FROM ${target} WHERE ${clauses.join(' AND ')}${pinnedClause} LIMIT 1024
+    )`,
     params,
   );
-  if (pinnedRowIds.size === 0) return false;
-  // A pin still matters only if a pinned row actually falls inside this
-  // unit's effective scopes; check by re-selecting the survivors.
-  const survivors = db.query(
-    `SELECT ${pk} AS pk FROM ${quoteIdent(table.name)} WHERE ${clauses.join(' AND ')}`,
-    params.slice(0, params.length - pinnedRowIds.size),
-  );
-  for (const row of survivors) {
-    if (pinnedRowIds.has(String(row.pk))) return true;
-  }
-  return false;
+  const remaining =
+    db.query(
+      `SELECT 1 FROM ${target} WHERE ${clauses.join(' AND ')}${pinnedClause} LIMIT 1`,
+      params,
+    ).length > 0;
+  const deferred =
+    remaining ||
+    db.query(
+      `SELECT 1 FROM ${target} WHERE ${clauses.join(' AND ')} LIMIT 1`,
+      params.slice(0, params.length - pinnedRowIds.size),
+    ).length > 0;
+  return { remaining, deferred };
 }
 
 /** Descriptor fields a sqlite image is validated against (§5.3). */
@@ -286,14 +290,14 @@ function imageInvalid(detail: string): never {
 }
 
 /**
- * Apply a §5.3 sqlite-image segment in ONE local transaction: validate
+ * Apply a §5.3 sqlite image in committed chunks of at most 1,024 rows: validate
  * the in-file metadata against the descriptor, validate the data table's
  * column names/order against the generated schema, run the §5.6
- * first-page clear when fresh, then copy every row with a single
- * one primary-key upsert — `_syncular_version` lands in
+ * first-page clear when fresh, then bulk-copy each chunk through a
+ * primary-key upsert — `_syncular_version` lands in
  * `_sync_version` exactly like a rows segment's per-row `serverVersion`.
  */
-export function applySqliteSegment(
+export async function applySqliteSegment(
   db: ClientDatabase,
   schema: CompiledClientSchema,
   table: CompiledClientTable,
@@ -304,8 +308,9 @@ export function applySqliteSegment(
     readonly effective: ScopeMap;
     readonly transaction?: ApplyTransaction;
     readonly onProgress?: (rowsProcessed: number) => void;
+    readonly isCurrent?: () => boolean;
   },
-): number {
+): Promise<number> {
   const withImage = db.withSqliteImage?.bind(db);
   if (withImage === undefined) {
     throw new ClientSyncError(
@@ -316,7 +321,7 @@ export function applySqliteSegment(
   if (descriptor.table !== table.name) {
     imageInvalid(`descriptor table ${JSON.stringify(descriptor.table)}`);
   }
-  return withImage(bytes, IMAGE_ALIAS, () => {
+  return withImage(bytes, IMAGE_ALIAS, async () => {
     // 1. Metadata vs descriptor (§5.3 rule 2). A file that is not a
     //    SQLite database or lacks the metadata table fails right here.
     let meta: ReturnType<ClientDatabase['query']>;
@@ -371,38 +376,43 @@ export function applySqliteSegment(
       );
     }
 
-    // 3. One transaction: fresh-bootstrap clear, then primary-key upsert.
+    const primaryKeys = info.filter((column) => Number(column.pk) > 0);
+    if (primaryKeys.length !== 1 || primaryKeys[0]?.name !== table.primaryKey)
+      imageInvalid('image primary key does not match generated schema');
+    const source = `${IMAGE_ALIAS}.${quoteIdent(table.name)}`;
+    const count = Number(db.query(`SELECT count(*) AS n FROM ${source}`)[0]?.n);
+    if (count !== descriptor.rowCount)
+      imageInvalid('image row count does not match descriptor');
     const names = table.columns.map((column) => quoteIdent(column.name));
     const insertNames = [...names, quoteIdent(SYNC_VERSION_COLUMN)];
+    const primaryKey = quoteIdent(table.primaryKey);
     const updates = insertNames
-      .filter((name) => name !== quoteIdent(table.primaryKey))
+      .filter((name) => name !== primaryKey)
       .map((name) => `${name}=excluded.${name}`)
       .join(', ');
-    return (options.transaction ?? ((fn) => db.transaction(fn)))(() => {
-      if (options.clearFirst) {
-        deleteScopedRows(db, table, options.effective);
+    let after: SqlValue | undefined;
+    let applied = 0;
+    for (;;) {
+      if (options.isCurrent?.() === false) return applied;
+      const boundary = db.query(
+        `SELECT ${primaryKey} AS boundary FROM ${source}
+         ${after === undefined ? '' : `WHERE ${primaryKey} > ?`}
+         ORDER BY ${primaryKey} LIMIT 1 OFFSET 1023`,
+        after === undefined ? [] : [after],
+      )[0]?.boundary;
+      const predicates: string[] = [];
+      const params: SqlValue[] = [];
+      if (after !== undefined) {
+        predicates.push(`${primaryKey} > ?`);
+        params.push(after);
       }
-      const source = `${IMAGE_ALIAS}.${quoteIdent(table.name)}`;
-      const primaryKey = quoteIdent(table.primaryKey);
-      let after: SqlValue | undefined;
-      let applied = 0;
-      for (;;) {
-        const boundary = db.query(
-          `SELECT ${primaryKey} AS boundary FROM ${source}
-           ${after === undefined ? '' : `WHERE ${primaryKey} > ?`}
-           ORDER BY ${primaryKey} LIMIT 1 OFFSET 1023`,
-          after === undefined ? [] : [after],
-        )[0]?.boundary;
-        const predicates: string[] = [];
-        const params: SqlValue[] = [];
-        if (after !== undefined) {
-          predicates.push(`${primaryKey} > ?`);
-          params.push(after);
-        }
-        if (boundary !== undefined) {
-          predicates.push(`${primaryKey} <= ?`);
-          params.push(boundary);
-        }
+      if (boundary !== undefined) {
+        predicates.push(`${primaryKey} <= ?`);
+        params.push(boundary);
+      }
+      (options.transaction ?? ((fn) => db.transaction(fn)))(() => {
+        if (after === undefined && options.clearFirst)
+          deleteScopedRows(db, table, options.effective);
         db.exec(
           `INSERT INTO ${quoteIdent(table.name)} (${insertNames.join(', ')})
            SELECT ${[...names, quoteIdent('_syncular_version')].join(', ')}
@@ -411,18 +421,13 @@ export function applySqliteSegment(
           params,
         );
         applied += Number(db.query('SELECT changes() AS n')[0]?.n ?? 0);
-        if (boundary === undefined) break;
-        options.onProgress?.(applied);
-        after = boundary;
-      }
-      if (applied !== descriptor.rowCount) {
-        imageInvalid(
-          `image holds ${applied} rows, descriptor says ${descriptor.rowCount}`,
-        );
-      }
+      });
       options.onProgress?.(applied);
-      return applied;
-    });
+      await yieldToHost();
+      if (boundary === undefined || applied === count) break;
+      after = boundary;
+    }
+    return applied;
   });
 }
 
@@ -444,6 +449,7 @@ export async function applyRowsSegment(
     readonly effective: ScopeMap;
     readonly transaction?: ApplyTransaction;
     readonly onProgress?: (rowsProcessed: number) => void;
+    readonly isCurrent?: () => boolean;
   },
   encryption?: EncryptionConfig,
 ): Promise<number> {
@@ -453,6 +459,7 @@ export async function applyRowsSegment(
   const blocks: readonly (readonly SegmentRow[])[] =
     segment.blocks.length > 0 ? segment.blocks : [[]];
   for (const block of blocks) {
+    if (options.isCurrent?.() === false) break;
     // §5.11: decrypt this block's rows before opening the sync transaction
     // (WebCrypto is async; the SQLite transaction is not). Decrypt failure
     // aborts before any write in this block.
@@ -467,6 +474,7 @@ export async function applyRowsSegment(
           : row.values;
       rows.push({ values, serverVersion: row.serverVersion });
     }
+    if (options.isCurrent?.() === false) break;
     const clearThisBlock = first && options.clearFirst;
     first = false;
     if (!clearThisBlock && rows.length === 0) continue;
@@ -480,7 +488,22 @@ export async function applyRowsSegment(
         if (applied % 1024 === 0) options.onProgress?.(applied);
       }
     });
+    options.onProgress?.(applied);
+    await yieldToHost();
   }
   options.onProgress?.(applied);
   return applied;
+}
+
+/** Let worker messages run only after the current SQLite transaction commits. */
+export function yieldToHost(): Promise<void> {
+  return new Promise((resolve) => {
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => {
+      channel.port1.close();
+      channel.port2.close();
+      resolve();
+    };
+    channel.port2.postMessage(null);
+  });
 }

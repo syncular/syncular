@@ -68,6 +68,35 @@ afterEach(() => {
 });
 
 describe('useRawSql', () => {
+  test('cached rows render while registration waits and retain its error', async () => {
+    const client = new FakeClient();
+    const base = { table: 'tasks', variable: 'project_id' };
+    client.setWindow(base, ['p1']);
+    client.completeBootstrap(base);
+    client.setRows('tasks', [{ id: 't1', title: 'cached' }]);
+    let reject!: (error: Error) => void;
+    const registration = new Promise<void>((_, fail) => {
+      reject = fail;
+    });
+    client.setWindow = () => registration;
+    const view = renderHook(
+      () =>
+        useRawSql('SELECT * FROM tasks', [], {
+          coverage: [{ base, units: ['p1'] }],
+        }),
+      { wrapper: wrapper(client) },
+    );
+    await flushEffects();
+    expect(view.result.current.phase).toBe('ready');
+    expect(view.result.current.rows).toEqual([{ id: 't1', title: 'cached' }]);
+    await act(async () => {
+      reject(new Error('registration failed'));
+    });
+    expect(view.result.current.error?.message).toBe('registration failed');
+    expect(view.result.current.rows).toEqual([{ id: 't1', title: 'cached' }]);
+    view.unmount();
+  });
+
   test('runs on mount and returns rows', async () => {
     const client = new FakeClient();
     client.setRows('tasks', [{ id: 't1', title: 'hello' }]);

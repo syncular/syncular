@@ -676,3 +676,24 @@ and stop commands. The stats CPU snapshot precedes profiler formatting and
 compression; client lifetime resource counters include those costs. Small
 fanout captures can contain few or zero samples. Sampling is opt-in and requires
 paired overhead measurements for a performance investigation.
+
+## Local responsiveness diagnostic
+
+```sh
+bun run --cwd bench bench:responsiveness --sizes 2500,5000,10000 --trials 3 --output results/responsiveness.json
+```
+
+The runner uses the TypeScript core with in-memory Bun SQLite and synthetic SSP2
+responses. It measures both rows segments and SQLite images, with a managed FTS
+projection. Each size receives one warmup before measured trials. It validates
+final source and search counts, retained cached reads, and import/eviction
+transaction counts. Existing output files are rejected.
+
+`elapsedMs` measures the complete operation. `readElapsedMs` measures from
+operation start until a read queued after the first committed change returns.
+`firstReadMs` measures only that read's queue delay. `readBeforeCompletion` and
+`rowsAtFirstRead` distinguish a read between chunks from one after all work.
+These are scheduling diagnostics, not production latency percentiles; network,
+OPFS storage, native bindings, and large first-page clears are outside the timer.
+The browser recovery suite separately verifies committed-prefix reads and crash
+recovery using real OPFS SQLite images.

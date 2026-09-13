@@ -10,7 +10,7 @@
  * server is never told of any eviction (evicted ≠ revoked).
  */
 import { check, checkEqual } from '../checks';
-import { task } from '../fixture';
+import { task, FIXTURE_SCHEMA } from '../fixture';
 import type { ClientHandle, Scenario } from '../scenario';
 import { seedTasks, syncIdle, syncOk } from './util';
 
@@ -26,6 +26,148 @@ async function windowUnits(handle: ClientHandle): Promise<string[]> {
 }
 
 export const windowScenarios: readonly Scenario[] = [
+  {
+    name: 'window/default-convergence-allows-advancing-bootstrap-pages',
+    specRefs: ['§4.8', '§7.7'],
+    async run(ctx) {
+      await seedTasks(
+        ctx,
+        Array.from({ length: 25 }, (_, i) => task(`page-${i}`, 'p1')),
+      );
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: { project_id: ['p1'] },
+        limits: { accept: 1, limitSnapshotRows: 1, maxSnapshotPages: 1 },
+      });
+      await a.api.setWindow?.(BASE, ['p1']);
+      const capped = await a.api.syncUntilIdle(2);
+      check(
+        !capped.ok,
+        'an explicit cap cannot report an unfinished import as idle',
+      );
+      if (!capped.ok)
+        checkEqual(
+          capped.errorCode,
+          'sync.invalid_request',
+          'stable cap error',
+        );
+      await syncIdle(a);
+      checkEqual(
+        (await readIds(a)).length,
+        25,
+        'the ordinary helper finishes more than twenty advancing pages',
+      );
+      checkEqual(
+        (await a.api.windowState?.(BASE))?.pending,
+        [],
+        'all pages committed before completion',
+      );
+    },
+  },
+
+  {
+    name: 'window/chunked-fts-eviction-preserves-pins-and-reentry',
+    specRefs: ['§4.8', '§7.7'],
+    async run(ctx) {
+      const rows = Array.from({ length: 2050 }, (_, i) =>
+        task(`code-${i}`, 'p1'),
+      );
+      for (let i = 0; i < rows.length; i += 500)
+        await seedTasks(ctx, rows.slice(i, i + 500));
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: { project_id: ['p1'] },
+        schema: {
+          ...FIXTURE_SCHEMA,
+          tables: FIXTURE_SCHEMA.tables.map((table) =>
+            table.name === 'tasks'
+              ? {
+                  ...table,
+                  ftsIndexes: [
+                    {
+                      name: 'tasks_fts',
+                      columns: ['title'],
+                      tokenize: 'unicode61',
+                    },
+                  ],
+                }
+              : table,
+          ),
+        },
+      });
+      await a.api.setWindow?.(BASE, ['p1']);
+      await syncIdle(a);
+      const pending = await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: {
+            id: 'local',
+            project_id: 'p1',
+            title: 'retainedneedle',
+            done: false,
+            priority: null,
+            meta: null,
+          },
+        },
+      ]);
+      await a.api.drainChangeBatches?.();
+      await a.api.setWindow?.(BASE, []);
+      checkEqual(
+        await readIds(a),
+        ['local'],
+        'only the outbox-pinned row survives all chunks',
+      );
+      const batches = await a.api.drainChangeBatches?.();
+      checkEqual(
+        batches?.filter((batch) =>
+          batch.tables.some((table) => table.table === 'tasks'),
+        ).length,
+        3,
+        '2050 rows require three committed eviction chunks',
+      );
+      const snapshot = await a.api.querySnapshot?.(
+        "SELECT _syncular_source_id AS id FROM tasks_fts WHERE tasks_fts MATCH 'retainedneedle'",
+        [],
+        [{ base: BASE, units: ['p1'] }],
+      );
+      checkEqual(
+        snapshot?.rows,
+        [{ id: 'local' }],
+        'FTS retains the pinned local row',
+      );
+      checkEqual(
+        snapshot?.coverage.complete,
+        false,
+        'evicted coverage stays incomplete despite a pinned hit',
+      );
+      checkEqual(
+        snapshot?.coverage.missing.length,
+        1,
+        'departed unit is missing',
+      );
+      check(
+        (await a.api.pendingCommitIds()).includes(pending),
+        'eviction preserves the commit identity',
+      );
+      await a.api.setWindow?.(BASE, ['p1']);
+      await syncIdle(a);
+      checkEqual(
+        (await readIds(a)).length,
+        2051,
+        'reentry converges from a fresh bootstrap',
+      );
+      await a.api.setWindow?.(BASE, []);
+      checkEqual(await readIds(a), [], 'acknowledged rows are evicted');
+      const empty = await a.api.querySnapshot?.(
+        'SELECT count(*) AS n FROM tasks_fts',
+      );
+      checkEqual(empty?.rows, [{ n: 0 }], 'eviction leaves no ghost FTS rows');
+    },
+  },
+
   {
     name: 'window/creation-time-month-sugar',
     specRefs: ['§4.8'],

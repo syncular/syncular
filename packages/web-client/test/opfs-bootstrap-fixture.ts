@@ -23,6 +23,7 @@ export type CrashPoint =
   | 'download'
   | 'before-import'
   | 'mid-import'
+  | 'after-chunk'
   | 'after-import';
 
 export interface CrashReceipt {

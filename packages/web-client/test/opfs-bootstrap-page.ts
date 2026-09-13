@@ -46,7 +46,10 @@ window.opfsTest = {
   open: async (contend = false) => {
     window.opfsTest.ready = createSyncClientHandle({
       worker: () => {
-        worker = new Worker('/opfs-bootstrap-worker.js', { type: 'module' });
+        worker = new Worker(
+          `/opfs-bootstrap-worker.js${location.search === '?responsive' ? '?responsive' : ''}`,
+          { type: 'module' },
+        );
         worker.addEventListener('message', (event) => {
           if (event.data.t === 'storage-open-failed') announceStorageBusy();
           if (event.data.t === 'crash-point') announceCrash(event.data.receipt);

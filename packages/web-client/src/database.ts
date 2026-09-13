@@ -22,11 +22,16 @@ export interface ClientDatabase {
   /**
    * Optional sqlite-image capability (SPEC §5.3): expose `bytes` as an
    * attached read-only database schema named `alias` for the duration of
-   * `fn`, then detach. Presence of this method is what makes the client
+   * `fn`, awaiting its result before detaching. No transaction spans its awaits.
+   * Presence of this method is what makes the client
    * advertise `accept` bit 2 (§4.2). MUST be called outside any open
    * transaction (SQLite cannot ATTACH inside one); `fn` may open its own.
    */
-  withSqliteImage?<T>(bytes: Uint8Array, alias: string, fn: () => T): T;
+  withSqliteImage?<T>(
+    bytes: Uint8Array,
+    alias: string,
+    fn: () => T | Promise<T>,
+  ): Promise<T>;
   close(): void;
 }
 

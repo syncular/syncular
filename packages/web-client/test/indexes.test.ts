@@ -173,7 +173,79 @@ describe('CREATE INDEX subset — client local DDL', () => {
     ]);
   });
 
-  test('sqlite-image primary-key upserts preserve rows on a secondary unique collision', () => {
+  test('image chunks keep their committed prefix and detach after a later failure', async () => {
+    const db = new BunClientDatabase();
+    const image = new BunClientDatabase();
+    const compiled = compileClientSchema({
+      ...SCHEMA,
+      tables: SCHEMA.tables.map((table) => ({
+        ...table,
+        ftsIndexes: [
+          { name: 'tasks_fts', columns: ['title'], tokenize: 'unicode61' },
+        ],
+      })),
+    });
+    const table = compiled.tables.get('tasks')!;
+    try {
+      ensureLocalSchema(db, compiled);
+      image.exec(
+        'CREATE TABLE tasks(id TEXT PRIMARY KEY, project_id TEXT, title TEXT, _syncular_version INTEGER NOT NULL)',
+      );
+      image.exec(
+        "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2050) INSERT INTO tasks SELECT printf('%05d',x),'p1',CASE WHEN x=1500 THEN NULL ELSE 'searchable '||x END,1 FROM n",
+      );
+      image.exec(
+        'CREATE TABLE _syncular_segment(format INTEGER, "table" TEXT, "schemaVersion" INTEGER, "asOfCommitSeq" INTEGER, "scopeDigest" TEXT, "rowCount" INTEGER)',
+      );
+      image.exec(
+        "INSERT INTO _syncular_segment VALUES (1,'tasks',1,7,'digest',2050)",
+      );
+      const descriptor = {
+        table: 'tasks',
+        rowCount: 2050,
+        asOfCommitSeq: 7,
+        scopeDigest: 'digest',
+      };
+      await expect(
+        applySqliteSegment(
+          db,
+          compiled,
+          table,
+          image.db.serialize(),
+          descriptor,
+          { clearFirst: true, effective: { project_id: ['p1'] } },
+        ),
+      ).rejects.toThrow();
+      expect(db.query('SELECT count(*) AS n FROM tasks')).toEqual([
+        { n: 1024 },
+      ]);
+      expect(
+        db.query(
+          "SELECT count(*) AS n FROM tasks_fts WHERE tasks_fts MATCH 'searchable'",
+        ),
+      ).toEqual([{ n: 1024 }]);
+      expect(() => db.query('SELECT * FROM syncular_image.tasks')).toThrow();
+      image.exec("UPDATE tasks SET title='searchable 1500' WHERE id='01500'");
+      await expect(
+        applySqliteSegment(
+          db,
+          compiled,
+          table,
+          image.db.serialize(),
+          descriptor,
+          { clearFirst: true, effective: { project_id: ['p1'] } },
+        ),
+      ).resolves.toBe(2050);
+      expect(
+        db.query('SELECT count(*) AS n FROM _syncular_fts_tasks_fts'),
+      ).toEqual([{ n: 2050 }]);
+    } finally {
+      image.close();
+      db.close();
+    }
+  });
+
+  test('sqlite-image primary-key upserts preserve rows on a secondary unique collision', async () => {
     const db = new BunClientDatabase();
     const compiled = compileClientSchema(SCHEMA);
     const table = compiled.tables.get('tasks');
@@ -188,7 +260,7 @@ describe('CREATE INDEX subset — client local DDL', () => {
       scopeDigest: 'digest',
     } as const;
     expect(
-      applySqliteSegment(
+      await applySqliteSegment(
         db,
         compiled,
         table,
@@ -206,7 +278,7 @@ describe('CREATE INDEX subset — client local DDL', () => {
     ).toBe(1);
     upsertLocalRow(db, table, ['t2', 'p1', 'original'], 1);
 
-    expect(() =>
+    await expect(
       applySqliteSegment(
         db,
         compiled,
@@ -222,7 +294,7 @@ describe('CREATE INDEX subset — client local DDL', () => {
         descriptor,
         { clearFirst: false, effective: { project_id: ['p1'] } },
       ),
-    ).toThrow();
+    ).rejects.toThrow();
     expect(
       db.query('SELECT id, title, _sync_version FROM tasks ORDER BY id'),
     ).toEqual([

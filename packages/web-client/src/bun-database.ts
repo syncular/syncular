@@ -69,7 +69,11 @@ export class BunClientDatabase implements ClientDatabase {
    * §5.3 image import: bun:sqlite attaches files, not buffers, so the
    * image lands in a private temp file for the duration of the ATTACH.
    */
-  withSqliteImage<T>(bytes: Uint8Array, alias: string, fn: () => T): T {
+  async withSqliteImage<T>(
+    bytes: Uint8Array,
+    alias: string,
+    fn: () => T | Promise<T>,
+  ): Promise<T> {
     assertImageAlias(alias);
     const dir = mkdtempSync(join(tmpdir(), 'syncular-image-'));
     const path = join(dir, 'segment.db');
@@ -77,7 +81,7 @@ export class BunClientDatabase implements ClientDatabase {
       writeFileSync(path, bytes);
       this.db.run(`ATTACH DATABASE ? AS ${alias}`, [path]);
       try {
-        return fn();
+        return await fn();
       } finally {
         this.db.run(`DETACH DATABASE ${alias}`);
       }

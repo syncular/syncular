@@ -79,6 +79,7 @@ class FakeReactiveClient implements ReactiveQueryClient {
   currentStatus = STATUS;
   setWindowFailure: Error | undefined;
   setWindowSyncFailure: Error | undefined;
+  setWindowGate: Promise<void> | undefined;
 
   onChange(listener: ClientChangeListener): () => void {
     this.listeners.add(listener);
@@ -127,6 +128,7 @@ class FakeReactiveClient implements ReactiveQueryClient {
     if (this.setWindowFailure !== undefined) {
       return Promise.reject(this.setWindowFailure);
     }
+    return this.setWindowGate;
   }
 
   windowState(): WindowState {
@@ -226,18 +228,17 @@ describe('revision race gates', () => {
 
   test('zero-row completion changes loading directly to ready atomically', async () => {
     const client = new FakeReactiveClient();
-    client.snapshots.push(
-      {
-        revision: 1n,
-        rows: [],
-        coverage: {
-          complete: false,
-          pending: [{ baseKey: 'tasks', unit: 'p1' }],
-          missing: [],
-        },
+    client.snapshots.push({
+      revision: 1n,
+      rows: [],
+      coverage: {
+        complete: false,
+        pending: [{ baseKey: 'tasks', unit: 'p1' }],
+        missing: [],
       },
-      { revision: 2n, rows: [], coverage: COMPLETE },
-    );
+    });
+    const gate = deferred<void>();
+    client.setWindowGate = gate.promise;
     const store = new ReactiveClientStore(client);
     const entry = store.query<Row>(
       querySpec({ coverage: [{ base: BASE, units: ['p1'] }] }),
@@ -247,6 +248,8 @@ describe('revision race gates', () => {
     await drainMicrotasks();
     expect(entry.getSnapshot().phase).toBe('loading');
 
+    client.snapshots.push({ revision: 2n, rows: [], coverage: COMPLETE });
+    gate.resolve();
     client.emit(
       batch(2n, {
         windows: [
@@ -264,6 +267,147 @@ describe('revision race gates', () => {
     expect(entry.getSnapshot().rows).toEqual([]);
     expect(phases).not.toContain('partial');
     off();
+    store.dispose();
+  });
+});
+
+describe('local snapshots during window registration', () => {
+  for (const complete of [true, false]) {
+    test(`cached rows are ${complete ? 'ready' : 'partial'} while registration waits`, async () => {
+      const client = new FakeReactiveClient();
+      const gate = deferred<void>();
+      client.setWindowGate = gate.promise;
+      client.snapshots.push({
+        revision: 1n,
+        rows: [{ id: 'cached', title: 'local' }],
+        coverage: complete
+          ? COMPLETE
+          : {
+              complete: false,
+              pending: [],
+              missing: [{ baseKey: 'tasks', unit: 'p1' }],
+            },
+      });
+      const store = new ReactiveClientStore(client);
+      const entry = store.query<Row>(
+        querySpec({ coverage: [{ base: BASE, units: ['p1'] }] }),
+      );
+      const off = entry.subscribe(() => {});
+      await drainMicrotasks();
+      expect(client.setWindowCalls).toHaveLength(1);
+      expect(entry.getSnapshot()).toMatchObject({
+        phase: complete ? 'ready' : 'partial',
+        rows: [{ id: 'cached', title: 'local' }],
+        error: undefined,
+      });
+      gate.reject(new Error('registration rejected'));
+      await drainMicrotasks();
+      expect(entry.getSnapshot().error?.message).toBe('registration rejected');
+      expect(entry.getSnapshot().rows).toEqual([
+        { id: 'cached', title: 'local' },
+      ]);
+      off();
+      store.dispose();
+    });
+  }
+
+  test('registration completion refreshes missing coverage without a change event', async () => {
+    const client = new FakeReactiveClient();
+    const gate = deferred<void>();
+    client.setWindowGate = gate.promise;
+    client.snapshots.push({
+      revision: 1n,
+      rows: [],
+      coverage: {
+        complete: false,
+        pending: [],
+        missing: [{ baseKey: 'tasks', unit: 'p1' }],
+      },
+    });
+    const store = new ReactiveClientStore(client);
+    const entry = store.query<Row>(
+      querySpec({ coverage: [{ base: BASE, units: ['p1'] }] }),
+    );
+    const off = entry.subscribe(() => {});
+    await drainMicrotasks();
+    expect(entry.getSnapshot().phase).toBe('loading');
+    client.snapshots.push({ revision: 2n, rows: [], coverage: COMPLETE });
+    gate.resolve();
+    await drainMicrotasks();
+    expect(entry.getSnapshot()).toMatchObject({
+      phase: 'ready',
+      revision: 2n,
+      rows: [],
+    });
+    off();
+    store.dispose();
+  });
+
+  test('a blocked transition defeats a late snapshot and claim completion', async () => {
+    const client = new FakeReactiveClient();
+    const claim = deferred<void>();
+    const read = deferred<QuerySnapshot<Row>>();
+    client.setWindowGate = claim.promise;
+    client.snapshots.push(read.promise);
+    const store = new ReactiveClientStore(client);
+    const entry = store.query<Row>(
+      querySpec({ coverage: [{ base: BASE, units: ['p1'] }] }),
+    );
+    const off = entry.subscribe(() => {});
+    await drainMicrotasks();
+    client.emit(
+      batch(2n, {
+        status: { ...STATUS, schemaFloor: { requiredSchemaVersion: 2 } },
+      }),
+    );
+    claim.resolve();
+    read.resolve({
+      revision: 1n,
+      rows: [{ id: 'secret', title: 'protected' }],
+      coverage: COMPLETE,
+    });
+    await drainMicrotasks();
+    expect(entry.getSnapshot().phase).toBe('blocked');
+    expect(entry.getSnapshot().rows).toEqual([]);
+    off();
+    store.dispose();
+  });
+
+  test('a held unit is acknowledged during widening but not during its removal', async () => {
+    const client = new FakeReactiveClient();
+    const store = new ReactiveClientStore(client);
+    const owner = Symbol('cache');
+    await store.setWindowClaim(owner, BASE, ['p1']);
+    const widening = deferred<void>();
+    client.setWindowGate = widening.promise;
+    const widen = store.setWindowClaim(Symbol('new'), BASE, ['p2']);
+    await drainMicrotasks();
+    let held = false;
+    const observer = Symbol('observer');
+    const ack = store.setWindowClaim(observer, BASE, ['p1']).then(() => {
+      held = true;
+    });
+    await drainMicrotasks();
+    expect(held).toBe(true);
+    widening.resolve();
+    await widen;
+    await ack;
+    const removal = deferred<void>();
+    client.setWindowGate = removal.promise;
+    store.releaseWindowClaims(owner);
+    store.releaseWindowClaims(observer);
+    await drainMicrotasks();
+    let restored = false;
+    const reentry = store
+      .setWindowClaim(Symbol('reentry'), BASE, ['p1'])
+      .then(() => {
+        restored = true;
+      });
+    await drainMicrotasks();
+    expect(restored).toBe(false);
+    removal.resolve();
+    await reentry;
+    expect(client.setWindowCalls.at(-1)?.units).toEqual(['p1', 'p2']);
     store.dispose();
   });
 });

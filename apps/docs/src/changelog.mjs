@@ -16,6 +16,16 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-09-13',
+    title: 'Cached reads during sync and cooperative imports',
+    body: 'Reactive queries read cached snapshots while window registration runs, and additional owners reuse acknowledged windows immediately. Both cores commit SQLite images in chunks of at most 1,024 rows and yield between import and eviction chunks automatically. Interrupted cleanup resumes from durable state. Managed FTS projections delete through an indexed identity mapping. Coverage and registration errors remain observable throughout.',
+    links: [
+      { href: '/concepts-windowing/', label: 'Window ownership and eviction' },
+      { href: '/concepts-bootstrap/', label: 'Import chunks and recovery' },
+      { href: '/tooling-local-search/', label: 'Search index maintenance' },
+    ],
+  },
+  {
     date: '2026-09-12',
     title: 'Live download and import progress',
     body: 'Both client cores expose live sync progress with per-attempt identities, byte and row counters, and terminal failures. Worker, Tauri, and FFI events deliver updates while sync is running. JavaScript clients provide onProgress and progressSnapshot; React adds useSyncProgress(client), and Rust provides a cloneable observer with subscription guards. SQLite image imports retain their atomic transaction.',

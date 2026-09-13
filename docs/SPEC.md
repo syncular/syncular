@@ -375,7 +375,8 @@ a streaming reader needs:
    are only legal inside an open subscription context; subscriptions
    never nest or interleave.
 4. **Apply transaction**: one local write transaction per `COMMIT` frame,
-   and one per rows-segment *block* (§5.2). Durable client state (cursor,
+   and one per rows-segment *block* (§5.2) or SQLite-image chunk of at most
+   1,024 rows (§5.3). Durable client state (cursor,
    bootstrap resume token) is persisted only when `SUB_END` is processed.
    A client MUST finish each frame or block transaction before starting the
    next; an outer subscription transaction MUST NOT defer those commits.
@@ -1283,9 +1284,10 @@ starts no timer. Shrink, outbox pinning, completeness, and re-entry retain the
 rules in this section.
 
 **Eviction (E1–E4).** When a unit leaves the window, the client
-performs, as **one atomic local transaction** (E3):
+performs the first bounded eviction chunk and unsubscription in **one atomic
+local transaction** (E3):
 
-- delete the local rows matching the departing unit's effective scopes,
+- delete at most 1,024 local rows matching the departing unit's effective scopes,
   by the §5.6 local-scope-column rule **including its fail-closed
   clause** (no local mapping ⇒ do not clear, surface a configuration
   error), **except** rows pinned by E1;
@@ -1295,6 +1297,19 @@ performs, as **one atomic local transaction** (E3):
 - emit the deleted rows' invalidation keys through the client's single
   apply-path choke point, exactly like a purge (a live query over evicted
   rows MUST re-run).
+
+If matching rows remain, that same transaction MUST persist their effective
+scopes in the pending-eviction registry. Later chunks delete at most 1,024 rows
+and publish independent revisions. The host yields between committed chunks;
+readers see missing coverage from the first chunk onward. Each chunk rechecks
+outbox pins. Re-entry cancels the pending marker before adding a fresh
+subscription. Restart MUST schedule remaining work even with no active
+subscription or outbox; cleanup runs before the next network request and survives
+transport failure. A failed chunk rolls back its rows and revision while earlier
+chunks and the pending marker remain durable.
+
+This chunking applies to cache eviction. Permission revocation and security
+purges retain their existing atomic deletion and availability rules.
 
 - **E1 — Outbox pin.** A row referenced by any still-pending outbox
   commit MUST NOT be evicted. Its eviction is *deferred* and completes
@@ -1502,9 +1517,9 @@ matching rule, same `asOfCommitSeq`). Consequences, all normative:
   whole-table, and dead always-NULL variance is exactly what SSP2 kills.)
 
 **Application contract** (the §5.6 rules, specialized): the client
-applies the whole image in **one local transaction** — the §5.6
-fresh-bootstrap first-page clear (an image is always the first page),
-then replace-or-upsert every image row by primary key with
+applies the image in **transactions of at most 1,024 rows**, with the §5.6
+fresh-bootstrap first-page clear in the first transaction (an image is always
+the first page), then primary-key upserts for every image row with
 `_syncular_version` landing as the row's last-known `server_version`.
 Mechanics are implementation detail (ATTACH + `INSERT INTO … SELECT`,
 `sqlite3_deserialize`, or row copy); the contract is replace-all
@@ -1525,6 +1540,15 @@ semantics plus version seeding. Before applying, the client MUST:
    exactly the §5.2 column-table rule (validate, never infer). Declared
    affinities and NOT NULL constraints are producer conformance rules;
    receivers MAY additionally check them.
+
+**Application.** Validate metadata, column order, the declared single primary key
+against the generated schema, and total row count before
+writing. Apply the image in primary-key order, at most 1,024 rows per local
+transaction, with the first-page clear in the first transaction (§5.6). Publish
+a revision after each committed chunk, preserving optimistic writes. Yield
+between chunks; persist the subscription checkpoint only at `SUB_END`. Failure
+rolls back the current chunk and leaves the committed prefix for safe retry
+(§7.7). Empty images still apply a required first-page clear.
 
 **Determinism and reuse.** Sqlite images are **not** required to be
 byte-deterministic: SQLite files embed page-layout and library-version
@@ -1711,7 +1735,7 @@ for clients without signed-URL support.
   failure is subscription-local: the rest of the response still
   applies.
 - Rows-segment blocks are applied transactionally per §1.4/§5.2; a
-  sqlite image applies as one transaction (§5.3). The resume token is
+  SQLite image applies in committed chunks (§5.3). The resume token is
   persisted only at `SUB_END`, so a crash mid-segment resumes
   conservatively (re-applying a block is safe by upsert idempotency).
 - **Segment rows carry their server version** (per-row `serverVersion`
@@ -3899,9 +3923,10 @@ larger transport chunks). A custom buffered transport can report only its final
 byte count. Both direct and signed-URL downloads follow this contract.
 `rowsProcessed` counts imported rows, with optional `rowsTotal`. Import reports
 intermediate updates every 1,024 rows and the final count. These are work counters:
-an image's rows remain uncommitted until its existing atomic transaction commits.
-Progress MUST NOT split an image transaction or advance a subscription cursor.
-Rows segments retain their per-block transactions.
+rows within the current chunk remain uncommitted until that chunk commits.
+Progress MUST NOT advance a subscription cursor. Rows segments retain their
+per-block transactions; SQLite images commit in chunks of at most 1,024 rows
+(§7.7). Earlier committed chunks survive a later interruption.
 
 `complete` is emitted only after the round has applied subscription checkpoints
 and reconciled the optimistic read model. It means the round completed, not that
@@ -3911,6 +3936,53 @@ A failed subscription makes the progress attempt failed even when the ordinary
 sync summary returns that subscription failure without throwing. Progress does
 not claim cancellation or recovery when a worker or process disappears.
 
+
+### 7.7 Responsive local reads
+
+Reactive queries request a local snapshot while their window claim is registering.
+They MUST retain security/availability checks, revision ordering, and the snapshot's
+coverage result. Claim registration is an ownership operation, not proof of data
+completeness. Claim success refreshes an incomplete snapshot; failure remains observable
+even when a prior snapshot contained rows. Unmounted or replaced observers MUST
+ignore late registration results.
+
+A retained window belongs to its explicit owner. Adding an observer whose units
+are already acknowledged MUST NOT wait for an unrelated widening operation.
+An in-flight removal or reset MUST NOT be acknowledged as retained ownership.
+
+The reference clients use the same automatic import behavior for rows segments
+and SQLite images. Each rows block or image chunk commits before the host yields
+to local reads. Pending optimistic edits MUST be reapplied before the chunk's
+revision becomes observable. Coverage remains pending until `SUB_END` commits;
+readers never see an open transaction's writes. A local reset invalidates the
+remaining chunks of the older response. Image attachment lifetime spans all
+chunks, with no write transaction held across a yield.
+
+An interrupted import retains its committed prefix and the previous subscription
+checkpoint. A fresh retry clears that subscription's effective scope with its
+first chunk and reapplies the snapshot; a checkpointed rows-page retry resumes
+through the existing token. A failing chunk rolls back its rows, FTS maintenance,
+and revision. Metadata and total image row count are validated before any writes.
+The existing content address, authentication, scope checks, and server-version
+rules remain mandatory.
+
+Chunk size bounds row-processing work, not elapsed SQL time: a large individual
+row, a first-page scope clear, constraints, and disk I/O can extend one
+transaction. Native hosts that serialize reads with sync commands need a
+separate read connection to serve reads concurrently with native sync.
+
+Without an explicit round limit, `syncUntilIdle` permits continued bootstrap
+while nonempty pages advance durable resume state. A round without such progress
+consumes its 20-round budget. A caller-supplied round limit remains a hard cap.
+Exhaustion returns `sync.invalid_request`; it MUST NOT report an unfinished run
+as successfully idle. This rule lets large paged imports finish without an
+application-specific round count while bounding stalled responses.
+
+Client FTS projections address deletion through an indexed source-identity to
+FTS-rowid mapping. TS and Rust maintain that mapping in the same transaction as
+source rows and FTS writes. Existing projections acquire the derived mapping
+without deleting application data, outbox entries, or changing their public
+source-identity projection. Rebuild/reset keeps the mapping and projection aligned.
 
 ## 8. Realtime
 

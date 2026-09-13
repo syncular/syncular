@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "bench": "bun run src/index.ts",
-    "bench:ci": "bun run src/index.ts --ci"
+    "bench:ci": "bun run src/index.ts --ci",
+    "bench:responsiveness": "bun src/responsiveness.ts"
   },
   "dependencies": {
     "@sqlite.org/sqlite-wasm": "^3.53.0-build1",

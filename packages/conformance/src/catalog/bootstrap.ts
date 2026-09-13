@@ -17,7 +17,7 @@ export const bootstrapScenarios: readonly Scenario[] = [
   ...[0b0011, 0b0111].map(
     (accept): Scenario => ({
       name: `bootstrap/live-progress-intermediate-import-${accept === 3 ? 'rows' : 'sqlite'}`,
-      specRefs: ['§7.6', '§5.2', '§5.3'],
+      specRefs: ['§7.6', '§7.7', '§5.2', '§5.3'],
       server: { limits: { inlineSegmentMaxBytes: 0 } },
       async run(ctx) {
         for (let start = 0; start < 2049; start += 500) {
@@ -34,8 +34,19 @@ export const bootstrapScenarios: readonly Scenario[] = [
           allowed: P1,
           limits: { accept, limitSnapshotRows: accept === 3 ? 4096 : 1 },
         });
-        await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+        // Establish the log epoch before measuring import revisions.
         await syncOk(a);
+        await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+        await a.api.drainChangeBatches?.();
+        await syncOk(a);
+        const batches = await a.api.drainChangeBatches?.();
+        checkEqual(
+          batches?.filter((batch) =>
+            batch.tables.some((table) => table.table === 'tasks'),
+          ).length,
+          3,
+          'rows blocks and image chunks each publish three committed revisions',
+        );
         const events = await a.api.drainProgress?.();
         check(events !== undefined, 'driver captures live listener events');
         check(

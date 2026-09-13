@@ -17,6 +17,7 @@ const scope = globalThis as typeof globalThis & {
 let armed: CrashPoint | undefined;
 let database: ClientDatabase;
 let importing = false;
+let attachedImage = false;
 const databaseHandles = new WeakSet<object>();
 
 function stopAt(point: CrashPoint, bytes = 0, databaseWrite = false): void {
@@ -24,7 +25,7 @@ function stopAt(point: CrashPoint, bytes = 0, databaseWrite = false): void {
   armed = undefined;
   const receipt: CrashReceipt = { point, bytes, databaseWrite };
   scope.postMessage({ t: 'crash-point', receipt });
-  if (point === 'mid-import') {
+  if (point === 'mid-import' || point === 'after-chunk') {
     const barrier = new XMLHttpRequest();
     barrier.open('GET', '/crash-barrier', false);
     barrier.send();
@@ -131,21 +132,39 @@ startSyncWorker({
     database.exec('PRAGMA cache_size=8');
     database.exec('PRAGMA cache_spill=ON');
     const exec = database.exec.bind(database);
+    let readBarrierUsed = false;
     database.exec = (sql, params) => {
       const imageInsert =
         sql.startsWith('INSERT INTO "catalogue"') && sql.includes('SELECT');
       if (imageInsert) importing = true;
       try {
         exec(sql, params);
+        if (attachedImage && sql === 'COMMIT') stopAt('after-chunk', 1024);
+        if (
+          !readBarrierUsed &&
+          location.search === '?responsive' &&
+          sql.startsWith('INSERT INTO "catalogue"')
+        ) {
+          readBarrierUsed = true;
+          const barrier = new XMLHttpRequest();
+          barrier.open('GET', '/read-barrier', false);
+          barrier.send();
+        }
       } finally {
         if (imageInsert) importing = false;
       }
     };
     const withImage = database.withSqliteImage?.bind(database);
     if (!withImage) throw new Error('SQLite image support required');
-    database.withSqliteImage = (bytes, alias, apply) => {
+    database.withSqliteImage = async (bytes, alias, apply) => {
       stopAt('before-import', bytes.byteLength);
-      const result = withImage(bytes, alias, apply);
+      attachedImage = true;
+      let result;
+      try {
+        result = await withImage(bytes, alias, apply);
+      } finally {
+        attachedImage = false;
+      }
       scope.postMessage({ t: 'image-committed' });
       stopAt('after-import', bytes.byteLength);
       return result;

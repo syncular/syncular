@@ -6,6 +6,7 @@ import {
 } from '@syncular/client';
 import {
   encodeMessage,
+  encodeRowsSegment,
   encodeRow,
   type ResponseFrame,
   type PushResultFrame,
@@ -27,6 +28,166 @@ const DOC_BASE: WindowBase = {
 };
 
 describe('revisioned local observation (SPEC §7.5)', () => {
+  test('host reads see committed blocks and optimistic edits during an import', async () => {
+    const db = new BunClientDatabase();
+    let subId = '';
+    const client = new SyncClient({
+      database: db,
+      schema: CLIENT_SCHEMA,
+      transport: async () =>
+        encodeMessage({
+          wireVersion: 2,
+          msgKind: 'response',
+          frames: [
+            { type: 'RESP_HEADER', logEpoch: 'epoch-1', resetRequired: false },
+            {
+              type: 'SUB_START',
+              id: subId,
+              status: 'active',
+              reasonCode: '',
+              effectiveScopes: { project_id: ['p1'] },
+              bootstrap: true,
+            },
+            {
+              type: 'SEGMENT_INLINE',
+              payload: encodeRowsSegment({
+                table: 'tasks',
+                schemaVersion: 1,
+                columns: TASK_COLUMNS,
+                blocks: ['first', 'second'].map((id) => [
+                  {
+                    serverVersion: 1,
+                    values: [id, 'p1', 'server', false, null, null],
+                  },
+                ]),
+              }),
+            },
+            { type: 'SUB_END', nextCursor: 1 },
+          ],
+        }),
+    });
+    const channel = new MessageChannel();
+    let queued = false;
+    let resolveRead!: () => void;
+    const read = new Promise<void>((resolve) => {
+      resolveRead = resolve;
+    });
+    try {
+      await client.start();
+      db.exec(
+        "INSERT OR REPLACE INTO _syncular_meta(key,value) VALUES ('logEpoch','epoch-1')",
+      );
+      await client.setWindow(BASE, ['p1']);
+      subId = client.subscriptions()[0]!.id;
+      const commit = client.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: taskValues('first', 'p1', 'offline edit'),
+        },
+      ]);
+      channel.port1.onmessage = () => {
+        try {
+          const snapshot = client.querySnapshot({
+            sql: 'SELECT id, title FROM tasks ORDER BY id',
+            coverage: [{ base: BASE, units: ['p1'] }],
+          });
+          expect(snapshot.rows).toEqual([
+            { id: 'first', title: 'offline edit' },
+          ]);
+          expect(snapshot.coverage.complete).toBe(false);
+          expect(client.subscriptions()[0]?.cursor).toBe(-1);
+          expect(
+            client.pendingCommits().map((c) => c.clientCommitId),
+          ).toContain(commit);
+        } finally {
+          resolveRead();
+        }
+      };
+      client.onChange((batch) => {
+        if (!queued && batch.tables.some((table) => table.table === 'tasks')) {
+          queued = true;
+          channel.port2.postMessage(null);
+        }
+      });
+      await client.sync();
+      await read;
+      expect(queued).toBe(true);
+      expect(client.query('SELECT id, title FROM tasks ORDER BY id')).toEqual([
+        { id: 'first', title: 'offline edit' },
+        { id: 'second', title: 'server' },
+      ]);
+    } finally {
+      channel.port1.close();
+      channel.port2.close();
+      await client.close();
+      db.close();
+    }
+  });
+
+  test('an interrupted eviction resumes from its marker without a successful download', async () => {
+    const db = new BunClientDatabase();
+    const changes: number[] = [];
+    let client = new SyncClient({
+      database: db,
+      schema: CLIENT_SCHEMA,
+      clientId: 'evict-resume',
+      transport: async () => {
+        throw new Error('offline');
+      },
+    });
+    try {
+      await client.start();
+      await client.setWindow(BASE, ['p1', 'p2']);
+      db.exec(
+        "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2050) INSERT INTO tasks(id,project_id,title,done) SELECT printf('%05d',x),'p1','cached',0 FROM n",
+      );
+      db.exec(
+        "INSERT INTO tasks(id,project_id,title,done) VALUES ('held','p2','held',0)",
+      );
+      db.exec(
+        "CREATE TRIGGER interrupt_evict BEFORE DELETE ON tasks WHEN old.id = '01500' BEGIN SELECT RAISE(ABORT,'interrupted chunk'); END",
+      );
+      client.onChange((batch) => {
+        if (batch.tables.some((table) => table.table === 'tasks'))
+          changes.push(
+            Number(client.query('SELECT count(*) AS n FROM tasks')[0]?.n),
+          );
+      });
+      await expect(client.setWindow(BASE, ['p2'])).rejects.toThrow(
+        'interrupted chunk',
+      );
+      expect(changes).toEqual([1027]);
+      expect(client.windowState(BASE).units).toEqual(['p2']);
+      expect(client.subscriptions().map((s) => s.scopes.project_id)).toEqual([
+        ['p2'],
+      ]);
+      expect(
+        db.query('SELECT count(*) AS n FROM _syncular_window_pending_evict'),
+      ).toEqual([{ n: 1 }]);
+      db.exec('DROP TRIGGER interrupt_evict');
+      await client.close();
+      client = new SyncClient({
+        database: db,
+        schema: CLIENT_SCHEMA,
+        clientId: 'evict-resume',
+        transport: async () => {
+          throw new Error('offline');
+        },
+      });
+      await client.start();
+      expect(client.statusSnapshot().syncNeeded).toBe(true);
+      await expect(client.sync()).rejects.toThrow('offline');
+      expect(client.query('SELECT id FROM tasks')).toEqual([{ id: 'held' }]);
+      expect(db.query('SELECT * FROM _syncular_window_pending_evict')).toEqual(
+        [],
+      );
+    } finally {
+      await client.close();
+      db.close();
+    }
+  });
+
   test('a frame boundary preserves writes made by acknowledgement observers', async () => {
     const db = new BunClientDatabase();
     let ids: string[] = [];
