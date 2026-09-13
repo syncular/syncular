@@ -697,3 +697,19 @@ These are scheduling diagnostics, not production latency percentiles; network,
 OPFS storage, native bindings, and large first-page clears are outside the timer.
 The browser recovery suite separately verifies committed-prefix reads and crash
 recovery using real OPFS SQLite images.
+
+## Native image imports with pending writes
+
+```sh
+SYNCULAR_IMPORT_BENCH_OUTPUT=/tmp/unique-import.json cargo test --manifest-path rust/Cargo.toml -p syncular-client --release --lib benchmark_unique_image_import -- --ignored --nocapture
+```
+
+This manual benchmark imports 10,240, 51,200, and 102,400 rows with a pending
+local edit, a secondary unique index, FTS, and 8,192 unrelated cached rows. Each
+size receives one warmup and three measured trials. The timer covers native
+image application into in-memory SQLite, including committed chunks and pending
+replay. It excludes image construction, transport, and final validation. The
+artifact records raw times, full-rebuild counts, SQLite version, build mode, and
+the compiled client source hash. An existing output path fails explicitly.
+The ordinary Rust suite separately checks conflict semantics, typed primary
+keys, rollback, and absence of unrelated-table rebuilds without timing thresholds.

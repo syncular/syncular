@@ -3958,9 +3958,13 @@ invalidate its cached acknowledgement and reconcile later claims through the cor
 The reference clients use the same automatic import behavior for rows segments
 and SQLite images. Each rows block or image chunk commits before the host yields
 to local reads. Pending optimistic edits MUST be reapplied before the chunk's
-revision becomes observable. Coverage remains pending until `SUB_END` commits;
-readers never see an open transaction's writes. A local reset invalidates the
-remaining chunks of the older response. Image attachment lifetime spans all
+revision becomes observable. A secondary unique index MUST NOT cause every import
+chunk to rebuild unrelated tables. The Rust reference client restores the chunk's
+rows and pending row identities from the authoritative local base, then replays
+pending operations in order. Reconciliation MUST reconsider edits on other rows
+when a server row frees or occupies their unique value. Coverage remains pending
+until `SUB_END` commits; readers never see an open transaction's writes. A local
+reset invalidates the remaining chunks of the older response. Image attachment lifetime spans all
 chunks, with no write transaction held across a yield.
 
 An interrupted import retains its committed prefix and the previous subscription

@@ -28,6 +28,9 @@ snapshot pin and reuses it for clients requesting the same snapshot.
 Imports yield automatically after each committed rows block or SQLite image
 chunk. Local queries can read that committed prefix while later chunks import.
 The client restores pending optimistic edits before publishing each revision.
+Rust reconciles imported rows and pending row identities under secondary unique
+constraints without rebuilding unrelated tables. Each chunk restores the imported
+rows and rows touched by pending operations, then replays those operations.
 Window coverage stays pending until the subscription checkpoint commits; render
 partial results using the query's coverage state.
 

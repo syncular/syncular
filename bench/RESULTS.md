@@ -41,19 +41,53 @@ image chunk, incomplete coverage, a crash after that chunk, and successful retry
 in the same browser session. Native binding scheduling and large first-page
 scope clears require separate latency measurements.
 
-A subsequent Rust review probe imported 10,240 rows into a table with a secondary
-unique index and one pending local write. The import invoked the complete local
-read-model rebuild ten times, once per chunk. That rebuild copies every visible
-table and rebuilds its FTS projections. This path remains unresolved and blocks
-a general native responsiveness claim; the TypeScript timings above do not
-measure it.
-
 Raw attempts are retained locally in the ignored
 `bench/results/responsiveness-2026-09-13/` directory. The artifact hashes the six
 engine sources listed by the runner. Baseline hash:
 `2c9d6adc0c40f7e335c7315aea4f1e1ad512b0803fb3693288e2cb5a3346f1e6`.
 Candidate hash:
 `60b40ff5236a323ac0c54be92046550a68a98a0bae691ea23e9cf778782dc915`.
+
+## Rust imports with unique indexes and pending edits (2026-09-13)
+
+The review found that each image chunk rebuilt every visible table and its FTS
+projection when the imported table had a secondary unique index and a pending
+edit. The fix restores imported and pending row identities from server state,
+then replays that table's pending edits in order. Unrelated tables remain intact.
+
+The same ignored native benchmark ran against `677aed3e` and the candidate source
+identified below. Both used optimized builds, in-memory SQLite 3.46.0 on Apple M4,
+one pending insert, secondary unique indexes and managed FTS on both tables, and
+8,192 rows in the unrelated table. Each size used one warmup and three measured
+trials, baseline first. The clock covers image application; fixture creation and
+final source/FTS count checks are outside it.
+
+| Imported rows | Before, median | After, median | Full rebuilds before | Full rebuilds after |
+| --- | ---: | ---: | ---: | ---: |
+| 10,240 | 284.16 ms | 32.04 ms | 10 | 0 |
+| 51,200 | 3,936.59 ms | 164.78 ms | 50 | 0 |
+| 102,400 | 14,584.55 ms | 345.59 ms | 100 | 0 |
+
+Separate regression tests compare rows and image imports with a full-rebuild
+reference, including unique values freed or occupied by incoming rows, pending
+updates/deletes, typed primary keys, FTS contents, and rollback. The scaling test
+rejects any attempt to copy the unrelated table.
+
+These timings measure native core throughput with one pending edit. Reconciliation
+work still grows with the pending operations for the imported table. Pending deletes
+with floating-point keys retain the existing text-match scan semantics. These runs do not
+measure disk-backed imports, binding queue latency, or Diego's original dataset.
+A host that serializes reads behind synchronization still needs a separate read
+connection; yielding inside the Rust core does not provide one.
+
+The baseline archive received the identical benchmark harness. A candidate attempt
+that reused the baseline build was rejected because its source fingerprint matched
+the baseline. The candidate was rebuilt explicitly before the accepted run.
+Raw accepted trials are retained locally as `native-baseline.json` and
+`native-current.json` under `bench/results/responsiveness-2026-09-13/`.
+The artifacts hash the compiled `client.rs` source, including the benchmark:
+baseline `4d0d7428aa03204462f4285cca175252f2e65c8c0e8821cbd808f9877a06920a`;
+candidate `cdd86504896bbd59782f4cc89ac2c316b38ebc0560a32a4e1f044499a27840b5`.
 
 ## SQLite blob-state simplification (2026-09-11)
 

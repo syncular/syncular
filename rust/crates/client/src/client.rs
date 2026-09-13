@@ -3363,6 +3363,409 @@ mod observation_tests {
     }
 
     #[test]
+    fn import_chunks_with_unique_constraints_match_full_pending_replay() {
+        for images in [false, true] {
+            let schema = json!({"version":1,"tables": (["tasks", "notes"].map(|name| json!({
+                "name":name,"primaryKey":"id","columns":[
+                    {"name":"id","type":"string","nullable":false},
+                    {"name":"project_id","type":"string","nullable":false},
+                    {"name":"title","type":"string","nullable":false}],
+                "scopes":[{"pattern":"project:{project_id}"}],
+                "indexes":[{"name":format!("{name}_unique_title"),"columns":["title"],"unique":true}],
+                "ftsIndexes":[{"name":format!("{name}_fts"),"columns":["title"],"tokenize":"unicode61"}]
+            })))});
+            let mut actual =
+                SyncClient::new("actual".into(), &schema, ClientLimits::default()).unwrap();
+            let mut reference =
+                SyncClient::new("reference".into(), &schema, ClientLimits::default()).unwrap();
+            let scopes = vec![("project_id".into(), vec!["p1".into()])];
+            for client in [&mut actual, &mut reference] {
+                client
+                    .subscribe("tasks".into(), "tasks".into(), scopes.clone(), None)
+                    .unwrap();
+                client.subs[0].effective = Some(scopes.clone());
+                for (table, id, title) in [
+                    ("tasks", "a", "original"),
+                    ("tasks", "b", "occupied"),
+                    ("tasks", "c", "deleted"),
+                    ("notes", "n", "untouched"),
+                ] {
+                    client
+                        .write_base_row(
+                            table,
+                            &vec![
+                                Some(ColumnValue::String(id.into())),
+                                Some(ColumnValue::String("p1".into())),
+                                Some(ColumnValue::String(title.into())),
+                            ],
+                            1,
+                        )
+                        .unwrap();
+                }
+                client.rebuild_overlay_if_dirty();
+                client
+                    .mutate(vec![
+                        Mutation::Upsert {
+                            table: "tasks".into(),
+                            values: Map::from_iter([
+                                ("id".into(), Value::from("a")),
+                                ("project_id".into(), Value::from("p1")),
+                                ("title".into(), Value::from("occupied")),
+                            ]),
+                            base_version: None,
+                        },
+                        Mutation::Delete {
+                            table: "tasks".into(),
+                            row_id: "c".into(),
+                            base_version: None,
+                        },
+                        Mutation::Upsert {
+                            table: "tasks".into(),
+                            values: Map::from_iter([
+                                ("id".into(), Value::from("local")),
+                                ("project_id".into(), Value::from("p1")),
+                                ("title".into(), Value::from("local value")),
+                            ]),
+                            base_version: None,
+                        },
+                        Mutation::Upsert {
+                            table: "notes".into(),
+                            values: Map::from_iter([
+                                ("id".into(), Value::from("n")),
+                                ("project_id".into(), Value::from("p1")),
+                                ("title".into(), Value::from("pending note")),
+                            ]),
+                            base_version: None,
+                        },
+                    ])
+                    .unwrap();
+            }
+            let pending = actual.pending_commit_ids();
+            actual.overlay_rebuild_count.set(0);
+            for (id, title) in [
+                ("b", "available"),
+                ("b", "occupied"),
+                ("a", "server original"),
+                ("d", "local value"),
+                ("d", "released"),
+                ("c", "redelivered"),
+            ] {
+                let table = actual.schema.table("tasks").unwrap().clone();
+                let values = vec![
+                    Some(ColumnValue::String(id.into())),
+                    Some(ColumnValue::String("p1".into())),
+                    Some(ColumnValue::String(title.into())),
+                ];
+                if images {
+                    let image = Connection::open_in_memory().unwrap();
+                    image.execute_batch("CREATE TABLE tasks(id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL, _syncular_version INTEGER NOT NULL);
+                        CREATE TABLE _syncular_segment(format INTEGER, \"table\" TEXT, \"schemaVersion\" INTEGER, \"asOfCommitSeq\" INTEGER, \"scopeDigest\" TEXT, \"rowCount\" INTEGER);
+                        INSERT INTO _syncular_segment VALUES (1,'tasks',1,7,'digest',1);").unwrap();
+                    image
+                        .execute("INSERT INTO tasks VALUES (?1,'p1',?2,2)", [id, title])
+                        .unwrap();
+                    assert!(matches!(
+                        actual.apply_sqlite_image(&image, &table, false, &scopes, 1, 7, "digest"),
+                        Ok(1)
+                    ));
+                } else {
+                    let segment = RowsSegment {
+                        table: "tasks".into(),
+                        schema_version: 1,
+                        columns: table.wire_columns.clone(),
+                        blocks: vec![vec![ssp2::segment::SegmentRow {
+                            server_version: 2,
+                            values: values.clone(),
+                        }]],
+                    };
+                    assert!(matches!(actual.apply_segment(0, &segment, false), Ok(1)));
+                }
+                reference.write_base_row("tasks", &values, 2).unwrap();
+                reference.rebuild_overlay();
+                for table in ["tasks", "notes"] {
+                    for sql in [format!("SELECT * FROM {table} ORDER BY id"),format!("SELECT _syncular_source_id,title FROM {table}_fts ORDER BY _syncular_source_id"),format!("SELECT source_id FROM _syncular_fts_{table}_fts ORDER BY source_id")] {
+                        assert_eq!(actual.query(&sql, &[]).unwrap(), reference.query(&sql, &[]).unwrap(), "images={images}, {id}/{title}: {sql}");
+                    }
+                }
+                assert_eq!(actual.pending_commit_ids(), pending);
+            }
+            assert_eq!(
+                actual.overlay_rebuild_count.get(),
+                0,
+                "each chunk must leave unrelated tables alone"
+            );
+            let before = actual
+                .query("SELECT * FROM tasks ORDER BY id", &[])
+                .unwrap();
+            let fts_before = actual
+                .query("SELECT * FROM tasks_fts ORDER BY _syncular_source_id", &[])
+                .unwrap();
+            let revision = actual.local_revision();
+            actual.conn.execute_batch("CREATE TRIGGER fail_import BEFORE INSERT ON tasks WHEN new.id='b' BEGIN SELECT RAISE(ABORT,'restore failed'); END").unwrap();
+            let table = actual.schema.table("tasks").unwrap().clone();
+            let segment = RowsSegment {
+                table: "tasks".into(),
+                schema_version: 1,
+                columns: table.wire_columns.clone(),
+                blocks: vec![vec![ssp2::segment::SegmentRow {
+                    server_version: 3,
+                    values: vec![
+                        Some(ColumnValue::String("b".into())),
+                        Some(ColumnValue::String("p1".into())),
+                        Some(ColumnValue::String("fresh".into())),
+                    ],
+                }]],
+            };
+            assert!(actual.apply_segment(0, &segment, false).is_err());
+            assert!(actual.conn.is_autocommit());
+            assert_eq!(
+                actual
+                    .query("SELECT * FROM tasks ORDER BY id", &[])
+                    .unwrap(),
+                before
+            );
+            assert_eq!(
+                actual
+                    .query("SELECT * FROM tasks_fts ORDER BY _syncular_source_id", &[])
+                    .unwrap(),
+                fts_before
+            );
+            assert_eq!(actual.local_revision(), revision);
+            assert_eq!(actual.pending_commit_ids(), pending);
+        }
+    }
+
+    #[test]
+    fn import_reconciliation_preserves_typed_pending_primary_keys() {
+        for (kind, a, b) in [
+            ("string", json!("a"), json!("b")),
+            ("integer", json!(1), json!(2)),
+            ("float", json!(1.5), json!(2.5)),
+            ("boolean", json!(true), json!(false)),
+            ("json", json!("1"), json!("2")),
+        ] {
+            let schema = json!({"version":1,"tables":[{"name":"tasks","primaryKey":"id","columns":[{"name":"id","type":kind,"nullable":false},{"name":"title","type":"string","nullable":false}],"scopes":[],"indexes":[{"name":"unique_title","columns":["title"],"unique":true}]}]});
+            for images in [false, true] {
+                let mut client =
+                    SyncClient::new("typed".into(), &schema, ClientLimits::default()).unwrap();
+                let table = client.schema.table("tasks").unwrap().clone();
+                client
+                    .subscribe("tasks".into(), "tasks".into(), vec![], None)
+                    .unwrap();
+                for (id, title) in [(&a, "original"), (&b, "occupied")] {
+                    client
+                        .write_base_row(
+                            "tasks",
+                            &vec![
+                                json_to_column_value(&table.columns[0], Some(id)).unwrap(),
+                                Some(ColumnValue::String(title.into())),
+                            ],
+                            1,
+                        )
+                        .unwrap();
+                }
+                client.rebuild_overlay_if_dirty();
+                client
+                    .mutate(vec![Mutation::Upsert {
+                        table: "tasks".into(),
+                        values: Map::from_iter([
+                            ("id".into(), a.clone()),
+                            ("title".into(), json!("occupied")),
+                        ]),
+                        base_version: None,
+                    }])
+                    .unwrap();
+                client.overlay_rebuild_count.set(0);
+                for (title, expected) in [("available", "occupied"), ("occupied", "original")] {
+                    let values = vec![
+                        json_to_column_value(&table.columns[0], Some(&b)).unwrap(),
+                        Some(ColumnValue::String(title.into())),
+                    ];
+                    if images {
+                        let image = Connection::open_in_memory().unwrap();
+                        image.execute_batch("CREATE TABLE tasks(id PRIMARY KEY, title TEXT NOT NULL, _syncular_version INTEGER NOT NULL);
+                            CREATE TABLE _syncular_segment(format INTEGER, \"table\" TEXT, \"schemaVersion\" INTEGER, \"asOfCommitSeq\" INTEGER, \"scopeDigest\" TEXT, \"rowCount\" INTEGER);
+                            INSERT INTO _syncular_segment VALUES (1,'tasks',1,7,'digest',1);").unwrap();
+                        image
+                            .execute(
+                                "INSERT INTO tasks VALUES (?1,?2,2)",
+                                rusqlite::params![RowParam::Cell(&values[0]), title],
+                            )
+                            .unwrap();
+                        assert!(
+                            matches!(
+                                client.apply_sqlite_image(
+                                    &image,
+                                    &table,
+                                    false,
+                                    &[],
+                                    1,
+                                    7,
+                                    "digest"
+                                ),
+                                Ok(1)
+                            ),
+                            "{kind}, images={images}"
+                        );
+                    } else {
+                        let segment = RowsSegment {
+                            table: "tasks".into(),
+                            schema_version: 1,
+                            columns: table.wire_columns.clone(),
+                            blocks: vec![vec![ssp2::segment::SegmentRow {
+                                server_version: 2,
+                                values,
+                            }]],
+                        };
+                        assert!(
+                            matches!(client.apply_segment(0, &segment, false), Ok(1)),
+                            "{kind}"
+                        );
+                    }
+                    let key = json_to_column_value(&table.columns[0], Some(&a)).unwrap();
+                    let actual: String = client
+                        .conn
+                        .query_row(
+                            "SELECT title FROM tasks WHERE id=?1",
+                            [RowParam::Cell(&key)],
+                            |row| row.get(0),
+                        )
+                        .unwrap();
+                    assert_eq!(actual, expected, "{kind}, images={images}");
+                }
+                assert_eq!(client.overlay_rebuild_count.get(), 0);
+            }
+        }
+    }
+
+    fn unique_import_fixture(rows: usize) -> (SyncClient, Connection, TableSchema) {
+        let schema = json!({"version":1,"tables": (["tasks", "notes"].map(|name| json!({
+            "name":name,"primaryKey":"id","columns":[{"name":"id","type":"string","nullable":false},{"name":"project_id","type":"string","nullable":false},{"name":"title","type":"string","nullable":false}],
+            "scopes":[{"pattern":"project:{project_id}"}],"indexes":[{"name":format!("{name}_title"),"columns":["title"],"unique":true}],
+            "ftsIndexes":[{"name":format!("{name}_fts"),"columns":["title"],"tokenize":"unicode61"}]
+        })))});
+        let mut client =
+            SyncClient::new("unique-import".into(), &schema, ClientLimits::default()).unwrap();
+        client.conn.execute_batch("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<8192) INSERT INTO _syncular_base_notes SELECT printf('%08d',x),'p2','note-'||x,1 FROM n").unwrap();
+        client.rebuild_overlay();
+        client
+            .mutate(vec![Mutation::Upsert {
+                table: "tasks".into(),
+                values: Map::from_iter([
+                    ("id".into(), json!("offline")),
+                    ("project_id".into(), json!("p1")),
+                    ("title".into(), json!("pending edit")),
+                ]),
+                base_version: None,
+            }])
+            .unwrap();
+        let image = Connection::open_in_memory().unwrap();
+        image.execute_batch("CREATE TABLE tasks(id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL, _syncular_version INTEGER NOT NULL);
+            CREATE TABLE _syncular_segment(format INTEGER, \"table\" TEXT, \"schemaVersion\" INTEGER, \"asOfCommitSeq\" INTEGER, \"scopeDigest\" TEXT, \"rowCount\" INTEGER);").unwrap();
+        image.execute("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<?1) INSERT INTO tasks SELECT printf('%08d',x),'p1','item-'||x,1 FROM n",[rows]).unwrap();
+        image
+            .execute(
+                "INSERT INTO _syncular_segment VALUES (1,'tasks',1,7,'digest',?1)",
+                [rows],
+            )
+            .unwrap();
+        client.overlay_rebuild_count.set(0);
+        let table = client.schema.table("tasks").unwrap().clone();
+        (client, image, table)
+    }
+
+    #[test]
+    fn large_unique_import_copies_no_unrelated_tables() {
+        let (mut client, image, table) = unique_import_fixture(10240);
+        let pending = client.pending_commit_ids();
+        client.conn.execute_batch("CREATE TRIGGER unrelated_insert BEFORE INSERT ON notes BEGIN SELECT RAISE(ABORT,'unrelated insert'); END;
+            CREATE TRIGGER unrelated_delete BEFORE DELETE ON notes BEGIN SELECT RAISE(ABORT,'unrelated delete'); END;").unwrap();
+        assert!(matches!(
+            client.apply_sqlite_image(
+                &image,
+                &table,
+                true,
+                &[("project_id".into(), vec!["p1".into()])],
+                10240,
+                7,
+                "digest"
+            ),
+            Ok(10240)
+        ));
+        assert_eq!(client.overlay_rebuild_count.get(), 0);
+        assert_eq!(client.pending_commit_ids(), pending);
+        assert_eq!(
+            client
+                .query("SELECT count(*) AS n FROM tasks", &[])
+                .unwrap()[0]["n"],
+            10241
+        );
+        assert_eq!(
+            client
+                .query("SELECT count(*) AS n FROM tasks_fts", &[])
+                .unwrap()[0]["n"],
+            10241
+        );
+        assert_eq!(
+            client
+                .query("SELECT count(*) AS n FROM notes_fts", &[])
+                .unwrap()[0]["n"],
+            8192
+        );
+    }
+
+    #[test]
+    #[ignore = "manual scaling benchmark; see bench/README.md"]
+    fn benchmark_unique_image_import() {
+        let mut samples = Vec::new();
+        for rows in [10240, 51200, 102400] {
+            for trial in 0..4 {
+                let (mut client, image, table) = unique_import_fixture(rows);
+                let start = std::time::Instant::now();
+                assert!(
+                    matches!(client.apply_sqlite_image(&image,&table,true,&[("project_id".into(),vec!["p1".into()])],rows as i64,7,"digest"),Ok(n) if n as usize == rows)
+                );
+                let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+                assert_eq!(
+                    client
+                        .query("SELECT count(*) AS n FROM tasks", &[])
+                        .unwrap()[0]["n"],
+                    rows + 1
+                );
+                assert_eq!(
+                    client
+                        .query("SELECT count(*) AS n FROM tasks_fts", &[])
+                        .unwrap()[0]["n"],
+                    rows + 1
+                );
+                assert_eq!(
+                    client
+                        .query("SELECT count(*) AS n FROM notes_fts", &[])
+                        .unwrap()[0]["n"],
+                    8192
+                );
+                assert_eq!(client.pending_commit_ids().len(), 1);
+                if trial > 0 {
+                    samples.push(json!({"rows":rows,"trial":trial,"elapsedMs":elapsed,"fullRebuilds":client.overlay_rebuild_count.get()}));
+                }
+            }
+        }
+        let artifact = json!({"boundary":"Rust core; in-memory SQLite; one pending edit; secondary unique indexes and FTS; 8192 unrelated rows; one warmup per size","optimized":!cfg!(debug_assertions),"sqliteVersion":rusqlite::version(),"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"sourceHash":bytes_to_hex(&Sha256::digest(include_str!("client.rs").as_bytes())),"samples":samples});
+        let output = serde_json::to_string_pretty(&artifact).unwrap();
+        if let Ok(path) = std::env::var("SYNCULAR_IMPORT_BENCH_OUTPUT") {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+                .unwrap();
+            file.write_all(output.as_bytes()).unwrap();
+        } else {
+            println!("{output}");
+        }
+    }
+
+    #[test]
     fn local_fts_projection_tracks_optimistic_overlay_rebuilds() {
         let schema = json!({
             "version": 1,
@@ -3960,6 +4363,15 @@ impl rusqlite::ToSql for RowParam<'_> {
                 }
             },
         })
+    }
+}
+
+// Retain a typed primary key across the current import chunk without copying row payloads.
+fn owned_sql_value(param: impl rusqlite::ToSql) -> Result<SqlValue, String> {
+    match param.to_sql().map_err(|error| error.to_string())? {
+        ToSqlOutput::Owned(value) => Ok(value),
+        ToSqlOutput::Borrowed(value) => Ok(value.into()),
+        _ => Err("sync.invalid_request: unsupported SQLite key parameter".into()),
     }
 }
 
@@ -8783,16 +9195,18 @@ impl SyncClient {
                 continue;
             }
             let was_dirty = self.overlay_dirty.get();
-            let mirror_visible = !was_dirty
-                && (!table.indexes.iter().any(|index| index.unique)
-                    || !self
-                        .outbox
-                        .iter()
-                        .flat_map(|commit| &commit.ops)
-                        .any(|op| op.table == table.name));
+            let reconcile_pending = table.indexes.iter().any(|index| index.unique)
+                && self
+                    .outbox
+                    .iter()
+                    .flat_map(|commit| &commit.ops)
+                    .any(|op| op.table == table.name);
+            let mirror_visible = !reconcile_pending;
             self.begin_observation("syncular_segment_block")
                 .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
             let outcome = (|| {
+                self.rebuild_overlay_if_dirty();
+                let mut changed_keys = Vec::new();
                 let mut batch = ChangeAccumulator::default();
                 if !block.is_empty() || (clear && self.scoped_rows_exist(&table.name, &effective)) {
                     batch.table(&table.name);
@@ -8818,6 +9232,13 @@ impl SyncClient {
                         .map_err(|message| {
                             SectionError::Abort("sync.invalid_request".into(), message)
                         })?;
+                    if reconcile_pending {
+                        changed_keys.push(
+                            owned_sql_value(RowParam::Cell(&values[table.pk_index])).map_err(
+                                |message| SectionError::Abort("storage.failed".into(), message),
+                            )?,
+                        );
+                    }
                     if mirror_visible {
                         self.write_row(
                             &visible_table(&table.name),
@@ -8832,16 +9253,17 @@ impl SyncClient {
                         self.progress.update(|p| p.rows_processed = processed);
                     }
                 }
-                if mirror_visible {
-                    self.apply_outbox_ops(
-                        self.outbox
-                            .iter()
-                            .flat_map(|commit| &commit.ops)
-                            .filter(|op| op.table == table.name),
-                    );
-                    self.overlay_dirty.set(false);
+                if reconcile_pending {
+                    self.reconcile_imported_rows(&table, &mut changed_keys)
+                        .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
                 }
-                self.rebuild_overlay_if_dirty();
+                self.apply_outbox_ops(
+                    self.outbox
+                        .iter()
+                        .flat_map(|commit| &commit.ops)
+                        .filter(|op| op.table == table.name),
+                );
+                self.overlay_dirty.set(false);
                 self.finish_observation("syncular_segment_block", batch)
                     .map_err(|message| SectionError::Abort("storage.failed".into(), message))
             })();
@@ -9051,16 +9473,18 @@ impl SyncClient {
         loop {
             let clear = applied == 0 && first_fresh_page;
             let was_dirty = self.overlay_dirty.get();
-            let mirror_visible = !was_dirty
-                && (!table.indexes.iter().any(|index| index.unique)
-                    || !self
-                        .outbox
-                        .iter()
-                        .flat_map(|commit| &commit.ops)
-                        .any(|op| op.table == table.name));
+            let reconcile_pending = table.indexes.iter().any(|index| index.unique)
+                && self
+                    .outbox
+                    .iter()
+                    .flat_map(|commit| &commit.ops)
+                    .any(|op| op.table == table.name);
+            let mirror_visible = !reconcile_pending;
             self.begin_observation("syncular_image_chunk")
                 .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
             let result = (|| {
+                self.rebuild_overlay_if_dirty();
+                let mut changed_keys = Vec::new();
                 let mut batch = ChangeAccumulator::default();
                 if clear {
                     if self.scoped_rows_exist(&table.name, effective) {
@@ -9114,6 +9538,12 @@ impl SyncClient {
                                 .map_err(|e| invalid(e.to_string()))?;
                             mirror.raw_execute().map_err(|e| invalid(e.to_string()))?;
                         }
+                        if reconcile_pending {
+                            changed_keys.push(
+                                row.get::<_, SqlValue>(table.pk_index)
+                                    .map_err(|error| invalid(error.to_string()))?,
+                            );
+                        }
                         processed += 1;
                     }
                 }
@@ -9121,16 +9551,17 @@ impl SyncClient {
                     batch.table(&table.name);
                     self.overlay_dirty.set(true);
                 }
-                if mirror_visible {
-                    self.apply_outbox_ops(
-                        self.outbox
-                            .iter()
-                            .flat_map(|commit| &commit.ops)
-                            .filter(|op| op.table == table.name),
-                    );
-                    self.overlay_dirty.set(false);
+                if reconcile_pending {
+                    self.reconcile_imported_rows(table, &mut changed_keys)
+                        .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
                 }
-                self.rebuild_overlay_if_dirty();
+                self.apply_outbox_ops(
+                    self.outbox
+                        .iter()
+                        .flat_map(|commit| &commit.ops)
+                        .filter(|op| op.table == table.name),
+                );
+                self.overlay_dirty.set(false);
                 self.finish_observation("syncular_image_chunk", batch)
                     .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
                 Ok(processed)
@@ -9152,6 +9583,76 @@ impl SyncClient {
             }
         }
         Ok(applied)
+    }
+
+    /// Restore only imported and pending row identities before FIFO replay. All pending
+    /// identities participate: a server row can free a unique value for a different edit.
+    /// The caller owns the chunk transaction and publishes its revision after replay.
+    fn reconcile_imported_rows(
+        &self,
+        table: &TableSchema,
+        keys: &mut Vec<SqlValue>,
+    ) -> Result<(), String> {
+        let visible = visible_table(&table.name);
+        let base = base_table(&table.name);
+        let pk = quote_ident(&table.primary_key);
+        let predicate = row_id_predicate(table);
+        let mut lookup = self.conn.prepare_cached(&format!(
+            "SELECT {pk} FROM {base} WHERE {predicate} UNION SELECT {pk} FROM {visible} WHERE {predicate}"
+        )).map_err(|error| error.to_string())?;
+        let mut deleted = HashSet::new();
+        for op in self
+            .outbox
+            .iter()
+            .flat_map(|commit| &commit.ops)
+            .filter(|op| op.table == table.name)
+        {
+            if op.upsert {
+                if let Some(values) = &op.values {
+                    let key = json_to_column_value(
+                        &table.columns[table.pk_index],
+                        values.get(&table.primary_key),
+                    )?;
+                    keys.push(owned_sql_value(RowParam::Cell(&key))?);
+                }
+            } else if deleted.insert(&op.row_id) {
+                keys.extend(
+                    lookup
+                        .query_map([&op.row_id], |row| row.get::<_, SqlValue>(0))
+                        .map_err(|error| error.to_string())?
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|error| error.to_string())?,
+                );
+            }
+        }
+        // Delete the complete affected set before restoring any base value, so
+        // old optimistic unique values cannot collide with the new server rows.
+        for chunk in keys.chunks(400) {
+            let holes = vec!["?"; chunk.len()].join(",");
+            self.conn
+                .prepare_cached(&format!("DELETE FROM {visible} WHERE {pk} IN ({holes})"))
+                .and_then(|mut statement| statement.execute(rusqlite::params_from_iter(chunk)))
+                .map_err(|error| error.to_string())?;
+        }
+        let updates = table
+            .columns
+            .iter()
+            .map(|column| column.name.as_str())
+            .chain(std::iter::once("_syncular_version"))
+            .filter(|name| *name != table.primary_key)
+            .map(|name| {
+                let name = quote_ident(name);
+                format!("{name}=excluded.{name}")
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        for chunk in keys.chunks(400) {
+            let holes = vec!["?"; chunk.len()].join(",");
+            self.conn.prepare_cached(&format!("INSERT INTO {visible} SELECT * FROM {base} WHERE {pk} IN ({holes}) ON CONFLICT ({pk}) DO UPDATE SET {updates}"))
+                .and_then(|mut statement| statement.execute(rusqlite::params_from_iter(chunk)))
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
     }
 
     // -- application-authorized local purge ---------------------------------------
