@@ -34,7 +34,8 @@ partial results using the query's coverage state.
 An interrupted import preserves earlier committed chunks and leaves the
 subscription checkpoint incomplete. Retry clears the fresh snapshot's scope in
 its first transaction and reapplies the snapshot. A failing chunk rolls back its
-rows, search index changes, and revision together.
+rows, search index changes, and revision together. Malformed image primary keys
+and mismatched applied row counts fail the import without advancing its checkpoint.
 
 Chunk size bounds imported rows, not transaction duration. A first-page scope
 clear, large rows, constraints, and storage latency can extend a transaction.

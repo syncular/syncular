@@ -1306,7 +1306,8 @@ outbox pins. Re-entry cancels the pending marker before adding a fresh
 subscription. Restart MUST schedule remaining work even with no active
 subscription or outbox; cleanup runs before the next network request and survives
 transport failure. A failed chunk rolls back its rows and revision while earlier
-chunks and the pending marker remain durable.
+chunks and the pending marker remain durable. Failure to read, save, or delete
+a pending marker MUST surface; it MUST NOT be treated as an empty cleanup queue.
 
 This chunking applies to cache eviction. Permission revocation and security
 purges retain their existing atomic deletion and availability rules.
@@ -1548,7 +1549,9 @@ transaction, with the first-page clear in the first transaction (§5.6). Publish
 a revision after each committed chunk, preserving optimistic writes. Yield
 between chunks; persist the subscription checkpoint only at `SUB_END`. Failure
 rolls back the current chunk and leaves the committed prefix for safe retry
-(§7.7). Empty images still apply a required first-page clear.
+(§7.7). Empty images still apply a required first-page clear. NULL primary keys MUST NOT
+be skipped by chunk boundaries, and the applied row count MUST equal the
+descriptor before a subscription checkpoint can advance.
 
 **Determinism and reuse.** Sqlite images are **not** required to be
 byte-deterministic: SQLite files embed page-layout and library-version
@@ -3949,6 +3952,8 @@ ignore late registration results.
 A retained window belongs to its explicit owner. Adding an observer whose units
 are already acknowledged MUST NOT wait for an unrelated widening operation.
 An in-flight removal or reset MUST NOT be acknowledged as retained ownership.
+A failed window edit can have committed a prefix. The ownership coordinator MUST
+invalidate its cached acknowledgement and reconcile later claims through the core.
 
 The reference clients use the same automatic import behavior for rows segments
 and SQLite images. Each rows block or image chunk commits before the host yields

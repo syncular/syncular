@@ -3240,19 +3240,126 @@ mod observation_tests {
             1027
         );
         assert_eq!(client.window_state(&base).units, vec!["p2"]);
-        assert_eq!(client.load_pending_evictions().len(), 1);
+        assert_eq!(client.load_pending_evictions().unwrap().len(), 1);
         assert_eq!(client.drain_change_batches().len(), 1);
         client
             .conn
             .execute_batch("DROP TRIGGER interrupt_evict")
             .unwrap();
         client.drain_pending_evictions().unwrap();
-        assert!(client.load_pending_evictions().is_empty());
+        assert!(client.load_pending_evictions().unwrap().is_empty());
         assert_eq!(
             client.query("SELECT id FROM tasks", &[]).unwrap()[0]["id"],
             "held"
         );
         assert_eq!(client.drain_change_batches().len(), 2);
+    }
+
+    #[test]
+    fn eviction_marker_failures_roll_back_window_changes() {
+        let mut client = client();
+        let base = WindowBase {
+            table: "tasks".into(),
+            variable: "project_id".into(),
+            fixed_scopes: Vec::new(),
+            params: None,
+        };
+        client.set_window(&base, &["p1".into()]).unwrap();
+        client.conn.execute_batch("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2050)
+            INSERT INTO _syncular_base_tasks SELECT printf('%05d',x),'p1',1 FROM n;
+            INSERT INTO tasks SELECT * FROM _syncular_base_tasks;
+            CREATE TRIGGER fail_marker BEFORE INSERT ON _syncular_window_pending_evict BEGIN SELECT RAISE(ABORT,'marker failed'); END;").unwrap();
+        let revision = client.local_revision();
+        assert!(client.set_window(&base, &[]).is_err());
+        assert!(client.conn.is_autocommit());
+        assert_eq!(client.local_revision(), revision);
+        assert_eq!(
+            client
+                .query("SELECT count(*) AS n FROM tasks", &[])
+                .unwrap()[0]["n"],
+            2050
+        );
+        assert_eq!(client.window_state(&base).units, vec!["p1"]);
+        client.conn.execute_batch("DROP TRIGGER fail_marker;
+            CREATE TRIGGER interrupt_evict BEFORE DELETE ON tasks WHEN old.id='01500' BEGIN SELECT RAISE(ABORT,'interrupted chunk'); END;").unwrap();
+        assert!(client.set_window(&base, &[]).is_err());
+        client.conn.execute_batch("DROP TRIGGER interrupt_evict;
+            CREATE TRIGGER fail_marker BEFORE DELETE ON _syncular_window_pending_evict BEGIN SELECT RAISE(ABORT,'marker failed'); END;").unwrap();
+        assert!(client.drain_pending_evictions().is_err());
+        assert!(client.conn.is_autocommit());
+        assert_eq!(
+            client
+                .query("SELECT count(*) AS n FROM tasks", &[])
+                .unwrap()[0]["n"],
+            2
+        );
+        assert!(client.set_window(&base, &["p1".into()]).is_err());
+        assert!(client.conn.is_autocommit());
+        assert!(client.window_state(&base).units.is_empty());
+        assert!(client.subs.is_empty());
+        assert_eq!(
+            client
+                .query(
+                    "SELECT count(*) AS n FROM _syncular_window_pending_evict",
+                    &[]
+                )
+                .unwrap()[0]["n"],
+            1
+        );
+        client
+            .conn
+            .execute_batch("DROP TRIGGER fail_marker")
+            .unwrap();
+        client.set_window(&base, &["p1".into()]).unwrap();
+        assert_eq!(client.window_state(&base).units, vec!["p1"]);
+    }
+
+    #[test]
+    fn malformed_eviction_marker_is_reported_without_starting_cleanup() {
+        let mut client = client();
+        client
+            .conn
+            .execute(
+                "INSERT INTO _syncular_window_pending_evict VALUES ('broken','tasks','{')",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            client.drain_pending_evictions().unwrap_err(),
+            "sync.local_corrupt: invalid pending eviction scopes"
+        );
+        assert!(client.conn.is_autocommit());
+        assert!(client.enqueue_startup_sync_if_needed().is_err());
+    }
+
+    #[test]
+    fn image_chunks_reject_null_primary_keys() {
+        let mut client = client();
+        let image = Connection::open_in_memory().unwrap();
+        image.execute_batch("CREATE TABLE tasks(id TEXT PRIMARY KEY, project_id TEXT NOT NULL, _syncular_version INTEGER NOT NULL);
+            WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<1025)
+            INSERT INTO tasks SELECT NULL,'p1',1 FROM n;
+            CREATE TABLE _syncular_segment(format INTEGER, \"table\" TEXT, \"schemaVersion\" INTEGER, \"asOfCommitSeq\" INTEGER, \"scopeDigest\" TEXT, \"rowCount\" INTEGER);
+            INSERT INTO _syncular_segment VALUES (1,'tasks',1,7,'digest',1025);").unwrap();
+        let table = client.schema.table("tasks").unwrap().clone();
+        assert!(client
+            .apply_sqlite_image(
+                &image,
+                &table,
+                true,
+                &[("project_id".into(), vec!["p1".into()])],
+                1025,
+                7,
+                "digest"
+            )
+            .is_err());
+        assert!(client.conn.is_autocommit());
+        assert_eq!(
+            client
+                .query("SELECT count(*) AS n FROM tasks", &[])
+                .unwrap()[0]["n"],
+            0
+        );
     }
 
     #[test]
@@ -4342,7 +4449,7 @@ impl SyncClient {
         // setWindow correctly creates no fresh command effect. Pending outbox
         // work has the same restart requirement. The core owns this intent so
         // native hosts never poll or require an application-issued sync().
-        client.enqueue_startup_sync_if_needed();
+        client.enqueue_startup_sync_if_needed()?;
         Ok(client)
     }
 
@@ -4411,10 +4518,10 @@ impl SyncClient {
                 "sync.invalid_request: activateSecurity requires security preflight".to_owned(),
             );
         }
+        self.enqueue_startup_sync_if_needed()?;
         self.encryption = encryption;
         self.security_preflight = false;
         self.delete_meta(SECURITY_PREFLIGHT_PENDING_KEY);
-        self.enqueue_startup_sync_if_needed();
         Ok(())
     }
 
@@ -5331,19 +5438,20 @@ impl SyncClient {
         // The conformance recreate is the in-memory equivalent of reopening a
         // durable client. Apply the same startup catch-up contract even when
         // the schema itself did not change.
-        self.enqueue_startup_sync_if_needed();
+        self.enqueue_startup_sync_if_needed()?;
         Ok(())
     }
 
-    fn enqueue_startup_sync_if_needed(&mut self) {
+    fn enqueue_startup_sync_if_needed(&mut self) -> Result<(), String> {
         let startup_work = !self.stopped
             && (!self.outbox.is_empty()
-                || !self.load_pending_evictions().is_empty()
+                || !self.load_pending_evictions()?.is_empty()
                 || self.subs.iter().any(|sub| sub.state == SubState::Active));
         if startup_work {
             self.sync_needed = true;
             self.sync_intent_queue.push_back(SyncIntent::Interactive);
         }
+        Ok(())
     }
 
     /// A native client persists schema-floor stops across process restarts.
@@ -6172,26 +6280,31 @@ impl SyncClient {
         let mut batch = ChangeAccumulator::default();
         let mut changed = false;
 
-        // Widen: units wanted but not live → fresh subscription + registry row.
-        for unit in units {
-            if live.iter().any(|(u, _)| u == unit) {
-                continue;
+        let prior_subs = self.subs.clone();
+        let widened = (|| {
+            // Widen: units wanted but not live → fresh subscription + registry row.
+            for unit in units {
+                if live.iter().any(|(u, _)| u == unit) {
+                    continue;
+                }
+                let sub_id = derive_sub_id(base, unit);
+                self.delete_pending_evict(&sub_id)?;
+                self.insert_window_unit(&base_key, unit, &sub_id)?;
+                self.subscribe(
+                    sub_id,
+                    base.table.clone(),
+                    unit_scopes(base, unit),
+                    base.params.clone(),
+                )?;
+                batch.window(&base_key, &base.table, unit);
+                changed = true;
             }
-            let sub_id = derive_sub_id(base, unit);
-            self.delete_pending_evict(&sub_id);
-            self.insert_window_unit(&base_key, unit, &sub_id);
-            self.subscribe(
-                sub_id,
-                base.table.clone(),
-                unit_scopes(base, unit),
-                base.params.clone(),
-            )?;
-            batch.window(&base_key, &base.table, unit);
-            changed = true;
-        }
 
-        if let Err(error) = self.finish_observation("syncular_window", batch) {
+            self.finish_observation("syncular_window", batch)
+        })();
+        if let Err(error) = widened {
             self.rollback_observation("syncular_window");
+            self.subs = prior_subs;
             return Err(error);
         }
         for (unit, sub_id) in live {
@@ -6309,18 +6422,24 @@ impl SyncClient {
             .ok()
     }
 
-    fn insert_window_unit(&self, base_key: &str, unit: &str, sub_id: &str) {
-        let _ = self.conn.execute(
-            "INSERT OR REPLACE INTO _syncular_windows(base, unit, sub_id) VALUES (?1, ?2, ?3)",
-            rusqlite::params![base_key, unit, sub_id],
-        );
+    fn insert_window_unit(&self, base_key: &str, unit: &str, sub_id: &str) -> Result<(), String> {
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO _syncular_windows(base, unit, sub_id) VALUES (?1, ?2, ?3)",
+                rusqlite::params![base_key, unit, sub_id],
+            )
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 
-    fn delete_window_unit(&self, base_key: &str, unit: &str) {
-        let _ = self.conn.execute(
-            "DELETE FROM _syncular_windows WHERE base = ?1 AND unit = ?2",
-            rusqlite::params![base_key, unit],
-        );
+    fn delete_window_unit(&self, base_key: &str, unit: &str) -> Result<(), String> {
+        self.conn
+            .execute(
+                "DELETE FROM _syncular_windows WHERE base = ?1 AND unit = ?2",
+                rusqlite::params![base_key, unit],
+            )
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 
     /// §4.8 E1–E4: evict one departing unit, fused with unsubscription.
@@ -6344,19 +6463,25 @@ impl SyncClient {
             .unwrap_or_else(|| unit_scopes(base, unit));
         let pinned = self.pinned_row_ids(&base.table);
         let (remaining, deferred) = self.evict_scope_rows(&base.table, &effective, &pinned)?;
-        self.delete_window_unit(base_key, unit);
-        self.unsubscribe(sub_id);
+        self.delete_window_unit(base_key, unit)?;
+        self.conn
+            .execute(
+                "DELETE FROM _syncular_subscriptions WHERE id = ?1",
+                [sub_id],
+            )
+            .map_err(|error| error.to_string())?;
+        self.subs.retain(|sub| sub.id != sub_id);
         if deferred {
-            self.save_pending_evict(sub_id, &base.table, &effective);
+            self.save_pending_evict(sub_id, &base.table, &effective)?;
         } else {
-            self.delete_pending_evict(sub_id);
+            self.delete_pending_evict(sub_id)?;
         }
         Ok(remaining)
     }
 
     /// §4.8 E1: delete base rows matching effective scopes EXCEPT pinned
-    /// primary keys; returns `Ok(true)` iff a pinned row was left behind (so
-    /// the eviction must be deferred). `Err(())` = fail-closed (no mapping).
+    /// primary keys. Returns (more unpinned work, any scoped rows remain).
+    /// A missing scope-column mapping fails without deleting rows.
     fn evict_scope_rows(
         &self,
         table_name: &str,
@@ -6454,14 +6579,14 @@ impl SyncClient {
 
     /// Resume committed eviction chunks, retaining outbox pins and their durable marker.
     fn drain_pending_evictions(&mut self) -> Result<(), String> {
-        let pending = self.load_pending_evictions();
+        let pending = self.load_pending_evictions()?;
         if pending.is_empty() {
             return Ok(());
         }
         self.rebuild_overlay_if_dirty();
         for (sub_id, table_name, effective) in pending {
             if self.schema.table(&table_name).is_none() {
-                self.delete_pending_evict(&sub_id);
+                self.delete_pending_evict(&sub_id)?;
                 continue;
             }
             loop {
@@ -6477,7 +6602,10 @@ impl SyncClient {
                     }
                 };
                 if !deferred {
-                    self.delete_pending_evict(&sub_id);
+                    if let Err(error) = self.delete_pending_evict(&sub_id) {
+                        self.rollback_observation("syncular_evict");
+                        return Err(error);
+                    }
                 }
                 let mut batch = ChangeAccumulator::default();
                 self.record_scope_map(&mut batch, &table_name, &effective);
@@ -6507,48 +6635,51 @@ impl SyncClient {
         pinned
     }
 
-    fn save_pending_evict(&self, sub_id: &str, table: &str, effective: &[(String, Vec<String>)]) {
-        let _ = self.conn.execute(
-            "INSERT OR REPLACE INTO _syncular_window_pending_evict(sub_id, tbl, effective_scopes)
-               VALUES (?1, ?2, ?3)",
+    fn save_pending_evict(
+        &self,
+        sub_id: &str,
+        table: &str,
+        effective: &[(String, Vec<String>)],
+    ) -> Result<(), String> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO _syncular_window_pending_evict(sub_id, tbl, effective_scopes) VALUES (?1, ?2, ?3)",
             rusqlite::params![sub_id, table, scope_map_to_json(effective).to_string()],
-        );
+        ).map(|_| ()).map_err(|error| error.to_string())
     }
 
-    fn delete_pending_evict(&self, sub_id: &str) {
-        let _ = self.conn.execute(
-            "DELETE FROM _syncular_window_pending_evict WHERE sub_id = ?1",
-            rusqlite::params![sub_id],
-        );
+    fn delete_pending_evict(&self, sub_id: &str) -> Result<(), String> {
+        self.conn
+            .execute(
+                "DELETE FROM _syncular_window_pending_evict WHERE sub_id = ?1",
+                rusqlite::params![sub_id],
+            )
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 
-    fn load_pending_evictions(&self) -> Vec<PendingEvict> {
-        let mut stmt = match self
+    fn load_pending_evictions(&self) -> Result<Vec<PendingEvict>, String> {
+        let mut stmt = self
             .conn
             .prepare("SELECT sub_id, tbl, effective_scopes FROM _syncular_window_pending_evict")
-        {
-            Ok(stmt) => stmt,
-            Err(_) => return Vec::new(),
-        };
-        let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        });
-        let mut out = Vec::new();
-        if let Ok(rows) = rows {
-            for entry in rows.filter_map(Result::ok) {
-                let (sub_id, table, json) = entry;
-                if let Ok(value) = serde_json::from_str::<Value>(&json) {
-                    if let Ok(effective) = json_to_scope_map(&value) {
-                        out.push((sub_id, table, effective));
-                    }
-                }
-            }
-        }
-        out
+            .map_err(|error| error.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(|error| error.to_string())?;
+        rows.map(|row| {
+            let (sub_id, table, json) = row.map_err(|error| error.to_string())?;
+            let value: Value = serde_json::from_str(&json)
+                .map_err(|_| "sync.local_corrupt: invalid pending eviction scopes".to_owned())?;
+            let effective = json_to_scope_map(&value)
+                .map_err(|_| "sync.local_corrupt: invalid pending eviction scopes".to_owned())?;
+            Ok((sub_id, table, effective))
+        })
+        .collect()
     }
 
     /// Record one atomic local commit (§7.1) and apply it optimistically.

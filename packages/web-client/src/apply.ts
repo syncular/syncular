@@ -400,6 +400,7 @@ export async function applySqliteSegment(
          ORDER BY ${primaryKey} LIMIT 1 OFFSET 1023`,
         after === undefined ? [] : [after],
       )[0]?.boundary;
+      if (boundary === null) imageInvalid('image primary key must not be null');
       const predicates: string[] = [];
       const params: SqlValue[] = [];
       if (after !== undefined) {
@@ -427,6 +428,8 @@ export async function applySqliteSegment(
       if (boundary === undefined || applied === count) break;
       after = boundary;
     }
+    if (applied !== count)
+      imageInvalid('image applied row count does not match descriptor');
     return applied;
   });
 }

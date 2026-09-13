@@ -7,7 +7,8 @@ vary run to run.
 ## Cached reads and cooperative imports (2026-09-13)
 
 The same `bench/src/responsiveness.ts` harness ran against baseline `fc012861`
-and the candidate source. Each format/size used one warmup and three measured
+and candidate `3da811d8`, before the subsequent failure-path review fixes. Those
+fixes have not been retimed. Each format/size used one warmup and three measured
 trials, with fresh in-memory Bun SQLite databases, managed FTS, and synthetic
 SSP2 responses. Runs were sequential, baseline first, on Apple M4 / Bun 1.4.0.
 These medians describe this local diagnostic; they do not establish production
@@ -39,6 +40,13 @@ The browser suite independently checks real OPFS reads after the first committed
 image chunk, incomplete coverage, a crash after that chunk, and successful retry
 in the same browser session. Native binding scheduling and large first-page
 scope clears require separate latency measurements.
+
+A subsequent Rust review probe imported 10,240 rows into a table with a secondary
+unique index and one pending local write. The import invoked the complete local
+read-model rebuild ten times, once per chunk. That rebuild copies every visible
+table and rebuilds its FTS projections. This path remains unresolved and blocks
+a general native responsiveness claim; the TypeScript timings above do not
+measure it.
 
 Raw attempts are retained locally in the ignored
 `bench/results/responsiveness-2026-09-13/` directory. The artifact hashes the six

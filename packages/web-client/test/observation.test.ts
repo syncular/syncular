@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   type ClientChangeBatch,
   SyncClient,
+  ReactiveClientStore,
   type WindowBase,
 } from '@syncular/client';
 import {
@@ -182,6 +183,101 @@ describe('revisioned local observation (SPEC §7.5)', () => {
       expect(db.query('SELECT * FROM _syncular_window_pending_evict')).toEqual(
         [],
       );
+    } finally {
+      await client.close();
+      db.close();
+    }
+  });
+
+  test('window ownership is reacquired after a partially committed shrink fails', async () => {
+    const db = new BunClientDatabase();
+    const client = new SyncClient({
+      database: db,
+      schema: CLIENT_SCHEMA,
+      transport: async () => {
+        throw new Error('offline');
+      },
+    });
+    const store = new ReactiveClientStore(client);
+    const owner = Symbol('tree');
+    try {
+      await client.start();
+      await store.setWindowClaim(owner, BASE, ['p1']);
+      db.exec(
+        "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2050) INSERT INTO tasks(id,project_id,title,done) SELECT printf('%05d',x),'p1','cached',0 FROM n",
+      );
+      db.exec(
+        "CREATE TRIGGER interrupt_evict BEFORE DELETE ON tasks WHEN old.id='01500' BEGIN SELECT RAISE(ABORT,'interrupted chunk'); END",
+      );
+      await expect(store.setWindowClaim(owner, BASE, [])).rejects.toThrow(
+        'interrupted chunk',
+      );
+      expect(client.windowState(BASE).units).toEqual([]);
+      db.exec('DROP TRIGGER interrupt_evict');
+      await store.setWindowClaim(owner, BASE, ['p1']);
+      expect(client.windowState(BASE)).toEqual({
+        units: ['p1'],
+        pending: ['p1'],
+      });
+      expect(db.query('SELECT * FROM _syncular_window_pending_evict')).toEqual(
+        [],
+      );
+    } finally {
+      store.dispose();
+      await client.close();
+      db.close();
+    }
+  });
+
+  test('eviction marker storage failures roll back the affected window transaction', async () => {
+    const db = new BunClientDatabase();
+    const client = new SyncClient({
+      database: db,
+      schema: CLIENT_SCHEMA,
+      transport: async () => {
+        throw new Error('offline');
+      },
+    });
+    try {
+      await client.start();
+      await client.setWindow(BASE, ['p1']);
+      db.exec(
+        "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2050) INSERT INTO tasks(id,project_id,title,done) SELECT printf('%05d',x),'p1','cached',0 FROM n",
+      );
+      db.exec(
+        "CREATE TRIGGER fail_marker BEFORE INSERT ON _syncular_window_pending_evict BEGIN SELECT RAISE(ABORT,'marker failed'); END",
+      );
+      const revision = client.querySnapshot({
+        sql: 'SELECT count(*) AS n FROM tasks',
+      }).revision;
+      await expect(client.setWindow(BASE, [])).rejects.toThrow('marker failed');
+      expect(
+        client.querySnapshot({ sql: 'SELECT count(*) AS n FROM tasks' }),
+      ).toMatchObject({ revision, rows: [{ n: 2050 }] });
+      expect(client.windowState(BASE).units).toEqual(['p1']);
+      db.exec('DROP TRIGGER fail_marker');
+      db.exec(
+        "CREATE TRIGGER interrupt_evict BEFORE DELETE ON tasks WHEN old.id='01500' BEGIN SELECT RAISE(ABORT,'interrupted chunk'); END",
+      );
+      await expect(client.setWindow(BASE, [])).rejects.toThrow(
+        'interrupted chunk',
+      );
+      db.exec('DROP TRIGGER interrupt_evict');
+      db.exec(
+        "CREATE TRIGGER fail_marker BEFORE DELETE ON _syncular_window_pending_evict BEGIN SELECT RAISE(ABORT,'marker failed'); END",
+      );
+      await expect(client.sync()).rejects.toThrow('marker failed');
+      expect(db.query('SELECT count(*) AS n FROM tasks')).toEqual([{ n: 2 }]);
+      await expect(client.setWindow(BASE, ['p1'])).rejects.toThrow(
+        'marker failed',
+      );
+      expect(client.windowState(BASE).units).toEqual([]);
+      expect(
+        db.query('SELECT count(*) AS n FROM _syncular_window_pending_evict'),
+      ).toEqual([{ n: 1 }]);
+      db.exec('DROP TRIGGER fail_marker');
+      await client.setWindow(BASE, ['p1']);
+      expect(client.windowState(BASE).units).toEqual(['p1']);
     } finally {
       await client.close();
       db.close();

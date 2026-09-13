@@ -1905,8 +1905,8 @@ export class SyncClient {
    * Set the live window units for a base (§4.8): a value-sharded family of
    * subscriptions, one per unit. Computes the diff against the registry —
    * added units get fresh subscriptions (image-lane bootstrap on the next
-   * sync); removed units are unsubscribed and evicted, fused in one local
-   * transaction (E1–E4). Idempotent: calling with the same units is a
+   * sync); removed units are unsubscribed with their first eviction chunk
+   * in one local transaction (E1–E4). Idempotent: calling with the same units is a
    * no-op. Re-entry (a unit removed then re-added) cancels any deferred
    * eviction and fresh-bootstraps.
    *

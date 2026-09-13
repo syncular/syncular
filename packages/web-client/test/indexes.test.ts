@@ -245,6 +245,47 @@ describe('CREATE INDEX subset — client local DDL', () => {
     }
   });
 
+  test('image chunk boundaries cannot silently skip malformed NULL primary keys', async () => {
+    const db = new BunClientDatabase();
+    const image = new BunClientDatabase();
+    try {
+      const compiled = compileClientSchema(SCHEMA);
+      const table = compiled.tables.get('tasks');
+      if (!table) throw new Error('missing tasks');
+      ensureLocalSchema(db, compiled);
+      image.exec(
+        'CREATE TABLE tasks(id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL, _syncular_version INTEGER NOT NULL)',
+      );
+      image.exec(
+        "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<1025) INSERT INTO tasks SELECT NULL,'p1','row-'||x,1 FROM n",
+      );
+      image.exec(
+        'CREATE TABLE _syncular_segment(format INTEGER, "table" TEXT, "schemaVersion" INTEGER, "asOfCommitSeq" INTEGER, "scopeDigest" TEXT, "rowCount" INTEGER)',
+      );
+      image.exec(
+        "INSERT INTO _syncular_segment VALUES (1,'tasks',1,7,'digest',1025)",
+      );
+      await expect(
+        applySqliteSegment(
+          db,
+          compiled,
+          table,
+          image.db.serialize(),
+          {
+            table: 'tasks',
+            rowCount: 1025,
+            asOfCommitSeq: 7,
+            scopeDigest: 'digest',
+          },
+          { clearFirst: true, effective: { project_id: ['p1'] } },
+        ),
+      ).rejects.toThrow();
+    } finally {
+      image.close();
+      db.close();
+    }
+  });
+
   test('sqlite-image primary-key upserts preserve rows on a secondary unique collision', async () => {
     const db = new BunClientDatabase();
     const compiled = compileClientSchema(SCHEMA);

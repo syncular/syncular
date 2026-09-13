@@ -92,7 +92,8 @@ eviction correct:
 Cleanup yields between committed chunks. A durable pending-eviction record lets
 a reopened client resume cleanup before its next network request, including
 when that request fails offline. Re-entry cancels pending cleanup and starts a
-fresh bootstrap. Authorization revocation retains its atomic security purge.
+fresh bootstrap. Storage failures remain errors, including failures to persist the cleanup record.
+Authorization revocation retains its atomic security purge.
 
 ## The completeness oracle
 
@@ -133,7 +134,9 @@ alongside cached rows. Security and availability checks still gate every result.
 
 An additional owner of already-held units receives its registration
 acknowledgement without waiting for unrelated window widening. An in-flight
-removal still requires acknowledgement before those units are held again.
+removal still requires acknowledgement before those units are held again. A
+failed window edit invalidates the cached acknowledgement, so retry reconciles
+ownership with the core even if an earlier eviction chunk already committed.
 
 Claims compose. If two mounted consumers require `{A,B}` and `{B,C}` on the
 same base, the effective core window is `{A,B,C}`. Unmounting the first drops

@@ -985,6 +985,10 @@ export class ReactiveClientStore {
       }
       for (const waiter of group.waiters.splice(0)) waiter.resolve();
     } catch (error) {
+      // A failed window edit may already have committed its first eviction chunk.
+      // Reconcile through the core before acknowledging any later claim.
+      group.appliedKey = '';
+      group.appliedUnits = new Set();
       for (const waiter of group.waiters.splice(0)) waiter.reject(error);
     } finally {
       group.running = false;
