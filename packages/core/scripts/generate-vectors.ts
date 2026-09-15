@@ -17,6 +17,7 @@ import {
   encodeMessage,
   encodeRow,
   encodeRowsSegment,
+  encodeSparseRow,
   FrameType,
   type JsonValue,
   type RequestMessage,
@@ -25,6 +26,9 @@ import {
   type RowValue,
   renderMessage,
   renderRowsSegment,
+  renderSparseRowValue,
+  type SparseRowValue,
+  decodeSparseRow,
   utf8Encode,
 } from '../src/index';
 
@@ -108,6 +112,60 @@ const DOC_EMPTY_CRDT: readonly RowValue[] = ['d-2', 'fresh', new Uint8Array(0)];
 const DOC_NULL_CRDT: readonly RowValue[] = ['d-3', 'no doc yet', null];
 
 const docMergedBytes = encodeRow(DOCS_COLUMNS, DOC_MERGED);
+
+// RFC §6.1 sparse-row fixture: every §2.4 column type across 9 columns, so
+// the presence bitmap spans two bytes and both bitmaps carry padding bits.
+const SPARSE_COLUMNS: readonly RowColumn[] = [
+  { name: 'id', type: 'string', nullable: false },
+  { name: 'title', type: 'string', nullable: true },
+  { name: 'body', type: 'string', nullable: false },
+  { name: 'count', type: 'integer', nullable: true },
+  { name: 'score', type: 'float', nullable: false },
+  { name: 'done', type: 'boolean', nullable: false },
+  { name: 'meta', type: 'json', nullable: true },
+  { name: 'blob', type: 'bytes', nullable: true },
+  { name: 'doc', type: 'crdt', nullable: true, crdtType: 'yjs-doc' },
+];
+const SPARSE_PRIMARY_KEY = 'id';
+const SPARSE_PRIMARY_KEY_INDEX = SPARSE_COLUMNS.findIndex(
+  (column) => column.name === SPARSE_PRIMARY_KEY,
+);
+
+// A partial payload: id, a present-NULL title, and meta. count, score, done,
+// blob, and doc are absent, so the server leaves their stored values alone.
+const SPARSE_PARTIAL: readonly SparseRowValue[] = [
+  'n-1',
+  null,
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+  '{"tags": ["a"]}',
+  undefined,
+  undefined,
+];
+
+// Every presence bit set: the full-row special case (still byte-different
+// from the full-row codec, which has no presence bitmap).
+const SPARSE_FULL: readonly SparseRowValue[] = [
+  'n-2',
+  null,
+  'body',
+  -7,
+  0.125,
+  false,
+  '{"k":true}',
+  new Uint8Array([0, 1, 254, 255]),
+  new Uint8Array([0x01, 0x02, 0xfe]),
+];
+
+/** §11 rule 11: the sparse payloads render through the codec itself. */
+function renderSparseRow(bytes: Uint8Array): JsonValue {
+  return renderSparseRowValue(
+    SPARSE_COLUMNS,
+    decodeSparseRow(SPARSE_COLUMNS, SPARSE_PRIMARY_KEY_INDEX, bytes),
+  );
+}
 
 const EFFECTIVE_SCOPES = { project: ['p1'] };
 const scopeDigest = createHash('sha256')
@@ -943,6 +1001,36 @@ const invalidServerVersionZero = (() => {
   return w.finish();
 })();
 
+// Sparse-row decode violations (RFC §6.1), one per rule. Each payload is
+// hand-built from the codec's bitmaps: the decoder rejects every one before
+// a value is read, so the payloads stop at the offending byte.
+
+// Column 9 does not exist: bit 9 of the 2-byte presence bitmap is padding.
+const invalidSparsePresencePadding = new Uint8Array([0b0000_0001, 0b0000_0010]);
+
+// Only column 0 is present, so null bitmap bit 3 is padding — a null bit for
+// an absent column.
+const invalidSparseNullForAbsentColumn = new Uint8Array([
+  0b0000_0001, 0x00, 0b0000_1000,
+]);
+
+// Present indices 0 and 1 are id and title; bit 0 marks the non-nullable id
+// NULL.
+const invalidSparseNullOnNonNullable = new Uint8Array([
+  0b0000_0011, 0x00, 0b0000_0001,
+]);
+
+// The presence bitmap omits column 0 (the primary key) and presents title;
+// the null bitmap and title's value follow so the payload is otherwise
+// well-formed.
+const invalidSparseAbsentPrimaryKey = (() => {
+  const w = new ByteWriter();
+  w.raw(new Uint8Array([0b0000_0010, 0x00]));
+  w.raw(new Uint8Array([0x00]));
+  w.str('unnamed');
+  return w.finish();
+})();
+
 // Realtime invalid cases (.json only — malformed *known* events; unknown
 // event names are tolerated per §8.1 and are not invalid cases).
 const invalidWakeRequiresPullFalse = {
@@ -1015,6 +1103,13 @@ interface InvalidCase {
   covers: string;
 }
 
+/** Manifest fields shared by every case of a codec-level kind (the sparse
+ * row codec decodes bytes that carry no column table of their own). */
+interface ManifestExtra {
+  columns?: readonly Record<string, unknown>[];
+  primaryKey?: string;
+}
+
 /** JSON-only invalid case (realtime): the text must fail control parsing. */
 interface JsonInvalidCase {
   name: string;
@@ -1033,6 +1128,7 @@ function emitKind(
   jsonCases: JsonCase[],
   invalid: InvalidCase[],
   jsonInvalid: JsonInvalidCase[] = [],
+  manifestExtra: ManifestExtra = {},
 ): number {
   const kindDir = join(vectorsDir, kind);
   rmSync(kindDir, { recursive: true, force: true });
@@ -1087,6 +1183,7 @@ function emitKind(
     jsonText({
       kind,
       generatedBy: 'packages/core/scripts/generate-vectors.ts',
+      ...manifestExtra,
       cases: manifestCases,
       invalid: manifestInvalid,
     }),
@@ -1336,6 +1433,73 @@ total += emitKind(
       covers: 'Row record serverVersion 0 — must be ≥ 1 (SPEC.md §5.2)',
     },
   ],
+);
+
+total += emitKind(
+  'push',
+  [
+    {
+      name: 'sparse-row',
+      bytes: encodeSparseRow(
+        SPARSE_COLUMNS,
+        SPARSE_PRIMARY_KEY_INDEX,
+        SPARSE_PARTIAL,
+      ),
+      render: renderSparseRow,
+      covers:
+        'Sparse push payload (RFC §6.1): a partial row — id, a present-NULL title, and meta — over a 9-column table, so the 2-byte presence bitmap and the present-column null bitmap both carry padding bits',
+    },
+    {
+      name: 'sparse-row-full',
+      bytes: encodeSparseRow(
+        SPARSE_COLUMNS,
+        SPARSE_PRIMARY_KEY_INDEX,
+        SPARSE_FULL,
+      ),
+      render: renderSparseRow,
+      covers:
+        'The full-row special case: every presence bit set (incl. the second presence byte), a present-NULL title, and all nine §2.4 column types',
+    },
+  ],
+  [],
+  [
+    {
+      name: 'presence-padding-bit',
+      bytes: invalidSparsePresencePadding,
+      error: 'sync.invalid_request',
+      covers:
+        'Sparse row presence bitmap with a set padding bit (bit 9 of a 9-column table)',
+    },
+    {
+      name: 'null-bit-for-absent-column',
+      bytes: invalidSparseNullForAbsentColumn,
+      error: 'sync.invalid_request',
+      covers:
+        'Sparse row null bitmap with a set bit beyond the present columns — a null for an absent column',
+    },
+    {
+      name: 'null-bit-on-non-nullable',
+      bytes: invalidSparseNullOnNonNullable,
+      error: 'sync.invalid_request',
+      covers: 'Sparse row null bit for the non-nullable primary-key column',
+    },
+    {
+      name: 'absent-primary-key',
+      bytes: invalidSparseAbsentPrimaryKey,
+      error: 'sync.invalid_request',
+      covers:
+        'Sparse row whose presence bitmap omits the primary-key column (RFC §6.1)',
+    },
+  ],
+  [],
+  {
+    columns: SPARSE_COLUMNS.map((column) => ({
+      name: column.name,
+      type: column.type,
+      nullable: column.nullable,
+    })),
+    primaryKey: SPARSE_PRIMARY_KEY,
+  },
 );
 
 total += emitKind(

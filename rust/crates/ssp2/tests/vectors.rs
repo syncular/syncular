@@ -12,9 +12,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
+use ssp2::segment::{decode_sparse_row, encode_sparse_row, Column, ColumnType};
 use ssp2::{
     decode_message, decode_rows_segment, encode_message, encode_rows_segment, parse_control_value,
-    render_control, render_message, render_rows_segment,
+    render_control, render_message, render_rows_segment, render_sparse_row,
 };
 
 fn vectors_dir() -> PathBuf {
@@ -135,6 +136,63 @@ fn segment_vectors() {
         let bin = read_bin(kind, str_field(case, "bin"));
         let expected_code = str_field(case, "error");
         match decode_rows_segment(&bin) {
+            Ok(_) => panic!("{kind}/invalid/{name}: decode unexpectedly succeeded"),
+            Err(e) => assert_eq!(
+                e.code.as_str(),
+                expected_code,
+                "{kind}/invalid/{name}: wrong error code (detail: {})",
+                e.detail
+            ),
+        }
+    }
+}
+
+#[test]
+fn push_vectors() {
+    let kind = "push";
+    let manifest = read_manifest(kind);
+    let columns: Vec<Column> = manifest["columns"]
+        .as_array()
+        .expect("push manifest has a column table")
+        .iter()
+        .map(|c| Column {
+            name: str_field(c, "name").to_owned(),
+            ty: ColumnType::from_name(str_field(c, "type")).expect("known column type"),
+            nullable: c["nullable"].as_bool().expect("column nullable flag"),
+        })
+        .collect();
+    let primary_key = str_field(&manifest, "primaryKey");
+    let primary_key_index = columns
+        .iter()
+        .position(|c| c.name == primary_key)
+        .expect("primary key is a column of the table");
+
+    let valid = cases(&manifest, "cases");
+    assert!(!valid.is_empty(), "{kind}: no cases in manifest");
+    for case in &valid {
+        let name = str_field(case, "name");
+        let bin = read_bin(kind, str_field(case, "bin"));
+        let expected = read_json(kind, str_field(case, "json"));
+
+        let row = decode_sparse_row(&columns, primary_key_index, &bin)
+            .unwrap_or_else(|e| panic!("{kind}/{name}: decode failed: {e}"));
+        let rendered = render_sparse_row(&columns, &row);
+        assert_eq!(
+            rendered, expected,
+            "{kind}/{name}: rendering does not deep-equal the committed .json\nrendered: {rendered:#}\nexpected: {expected:#}"
+        );
+        let reencoded = encode_sparse_row(&columns, primary_key_index, &row);
+        assert_eq!(
+            reencoded, bin,
+            "{kind}/{name}: re-encode is not byte-identical to the .bin"
+        );
+    }
+
+    for case in &cases(&manifest, "invalid") {
+        let name = str_field(case, "name");
+        let bin = read_bin(kind, str_field(case, "bin"));
+        let expected_code = str_field(case, "error");
+        match decode_sparse_row(&columns, primary_key_index, &bin) {
             Ok(_) => panic!("{kind}/invalid/{name}: decode unexpectedly succeeded"),
             Err(e) => assert_eq!(
                 e.code.as_str(),

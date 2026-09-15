@@ -1,0 +1,58 @@
+{
+  "columns": [
+    {
+      "name": "id",
+      "type": "string",
+      "nullable": false
+    },
+    {
+      "name": "title",
+      "type": "string",
+      "nullable": true
+    },
+    {
+      "name": "body",
+      "type": "string",
+      "nullable": false
+    },
+    {
+      "name": "count",
+      "type": "integer",
+      "nullable": true
+    },
+    {
+      "name": "score",
+      "type": "float",
+      "nullable": false
+    },
+    {
+      "name": "done",
+      "type": "boolean",
+      "nullable": false
+    },
+    {
+      "name": "meta",
+      "type": "json",
+      "nullable": true
+    },
+    {
+      "name": "blob",
+      "type": "bytes",
+      "nullable": true
+    },
+    {
+      "name": "doc",
+      "type": "crdt",
+      "nullable": true
+    }
+  ],
+  "values": {
+    "id": "n-1",
+    "title": null,
+    "meta": {
+      "tags": [
+        "a"
+      ]
+    }
+  }
+}

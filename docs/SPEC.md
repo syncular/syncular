@@ -705,11 +705,37 @@ sides, a **row codec** for each supported `schemaVersion`:
   encoding — one byte sequence per row).
 
 The row codec is used for change payloads in `COMMIT` frames (§4.5),
-row data inside rows segments (§5.2), push operation payloads (§6.1),
-and conflict `serverRow` values (§6.3). There is no runtime fallback: a
-server that cannot codec a table for the client's `schemaVersion` MUST
-answer with `requiredSchemaVersion` — the schema-floor response of
-§1.6, which processes nothing — never with a degraded encoding.
+row data inside rows segments (§5.2), and conflict `serverRow` values
+(§6.3). There is no runtime fallback: a server that cannot codec a table
+for the client's `schemaVersion` MUST answer with
+`requiredSchemaVersion` — the schema-floor response of §1.6, which
+processes nothing — never with a degraded encoding.
+
+**Sparse rows (RFC §6.1).** A push operation payload is a *sparse row*:
+the subset of the row's columns the operation writes. Layout:
+
+1. presence bitmap, `ceil(columnCount / 8)` bytes, bit `i` set when column
+   `i` is present (LSB-first within each byte, byte `i / 8`); padding bits
+   (bit positions ≥ columnCount in the final byte) MUST be zero;
+2. null bitmap over the present columns, `ceil(presentCount / 8)` bytes,
+   same bit layout and padding rule: bit `j` refers to the `j`-th present
+   column in declaration order;
+3. the non-null present values in declaration order, each encoded per the
+   column-type table above.
+
+The primary-key column MUST be present. Decode validates in this order,
+and each violation is a decode error (`sync.invalid_request`, in §5.2's
+closed list): a set presence padding bit; a clear presence bit for the
+primary-key column; a set bit in the null bitmap's padding region (a null
+for an absent column); a null bit for a non-nullable column. A full row is
+the special case with every presence bit set; it still carries the
+presence bitmap and a null bitmap over all columns, so its bytes differ
+from the full-row codec's.
+
+The sparse row is the `payload` format of push operations (§6.1) at wire
+version 3; §9's window advances to `[3]` when that wire version flips.
+Every other surface keeps the full-row codec: `COMMIT` change payloads,
+rows-segment row data, SQLite images, and conflict `serverRow`.
 
 **Client-local FTS5 projections.** The schema IR MAY attach an
 `ftsIndexes` array to a synced table. Each entry names a local FTS5 virtual
@@ -4803,6 +4829,11 @@ silently).
     JSON serialization produces. The wire bytes are unaffected (the
     codec carries any IEEE-754 bit pattern); only the debug rendering
     collapses them.
+11. A sparse row payload (§2.4, vector kind `push`) renders as
+    `{"columns":[…],"values":{…name→value…}}` with the rule-8 column
+    objects and value rules; `values` carries only the present columns
+    (an absent column has no key), and a present NULL renders as JSON
+    `null`.
 
 ### 11.2 Canonical JSON (for digests)
 
@@ -4829,7 +4860,7 @@ Directory layout (message kind = top-level directory):
 
 ```
 spec/vectors/
-  request/    response/    segment/    realtime/
+  request/    response/    segment/    realtime/    crypto/    push/
     <case>.bin  <case>.json  manifest.json  invalid/…
 ```
 
@@ -4865,10 +4896,12 @@ byte-identical output):
 | 23 | `crypto/x25519-wrap` | §5.11 X25519 sealed-box key wrap: a fixed recipient keypair, a fixed ephemeral secret and nonce, a fixed 32-byte symmetric key, and the expected wrap envelope; both cores wrap to the same bytes and unwrap back to the key. Proves the async-encryption utilities are cross-core byte-compatible |
 | 24 | `request/epoch-bound` | Wire version 2 request header with the client's stored partition `logEpoch` |
 | 25 | `response/epoch-reset` | Wire version 2 header-only response with a new `logEpoch` and `resetRequired = true` |
+| 26 | `push/sparse-row` + `push/sparse-row-full` | Sparse row push payloads (RFC §6.1), exercised at the codec level (not inside an SSP2 frame): a partial row with a present-NULL column, and the full-row case with every presence bit set. Nine columns covering every §2.4 type, so the presence bitmap spans two bytes and both bitmaps carry padding bits |
 | — | `request/invalid/*` | Truncated envelope (no END), bad magic, unsupported wireVersion, non-zero flags, overlong frame length, unknown enum byte (`op = 3`), upsert without payload |
 | — | `response/invalid/*` | Bool byte > 1 (`SUB_START.bootstrap` = `0x02`) |
 | — | `segment/invalid/*` | Null bit on non-nullable column, rows segment without end marker, json column value that does not parse (§2.4 tag 5), row `serverVersion` 0 (must be ≥ 1) |
 | — | `realtime/invalid/*` | Malformed known events (JSON-only): `requiresPull` not the literal `true` (§8.3), fractional numeric field (§8.1), a `presence` fanout with an unknown `kind` (§8.6.2 closed set), a client→server `presence` with a non-object non-null `doc` (§8.6.2) |
+| — | `push/invalid/*` | Sparse row violations (RFC §6.1): a set presence padding bit, a null bit for an absent column, a null bit for a non-nullable column, an absent primary-key column |
 
 ---
 

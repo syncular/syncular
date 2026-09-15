@@ -35,6 +35,9 @@ pub use realtime::{
     encode_presence_publish, parse_control, parse_control_value, render_control, ControlMessage,
     PresenceKind,
 };
-pub use render::{render_message, render_rows_segment};
-pub use segment::{decode_rows_segment, encode_rows_segment, RowsSegment, SegmentRow};
+pub use render::{render_message, render_rows_segment, render_sparse_row};
+pub use segment::{
+    decode_rows_segment, decode_sparse_row, encode_rows_segment, encode_sparse_row, RowsSegment,
+    SegmentRow, SparseRow, SparseSlot,
+};
 pub use stream::{MessageStreamScanner, ScannedMessage};

@@ -11,12 +11,17 @@ import {
   DecodeError,
   decodeMessage,
   decodeRowsSegment,
+  decodeSparseRow,
   encodeMessage,
   encodeRowsSegment,
+  encodeSparseRow,
   type JsonValue,
   parseRealtimeServerEvent,
   renderMessageValue,
   renderRowsSegmentValue,
+  renderSparseRowValue,
+  type ColumnType,
+  type RowColumn,
 } from './index';
 
 const vectorsDir = join(import.meta.dir, '../../../spec/vectors');
@@ -40,6 +45,10 @@ interface ManifestInvalid {
 
 interface Manifest {
   kind: string;
+  /** Codec-level kinds (push) carry the column table the payload decodes
+   * against; envelope kinds carry it inside the bytes. */
+  columns?: Array<{ name: string; type: string; nullable: boolean }>;
+  primaryKey?: string;
   cases: ManifestCase[];
   invalid: ManifestInvalid[];
 }
@@ -110,6 +119,41 @@ describe('vectors/segment', () => {
     it(`invalid/${c.name}: fails with ${c.error}`, () => {
       const bin = loadBin('segment', c.bin ?? `invalid/${c.name}.bin`);
       expectNamedDecodeError(() => decodeRowsSegment(bin), c.error);
+    });
+  }
+});
+
+describe('vectors/push', () => {
+  const manifest = loadManifest('push');
+  const columns: readonly RowColumn[] = (manifest.columns ?? []).map(
+    (column) => ({
+      name: column.name,
+      type: column.type as ColumnType,
+      nullable: column.nullable,
+    }),
+  );
+  const primaryKeyIndex = columns.findIndex(
+    (column) => column.name === manifest.primaryKey,
+  );
+  expect(columns.length).toBeGreaterThan(0);
+  expect(primaryKeyIndex).toBeGreaterThanOrEqual(0);
+  for (const c of manifest.cases) {
+    it(`${c.name}: decode, render, byte-exact re-encode`, () => {
+      const bin = loadBin('push', c.bin ?? `${c.name}.bin`);
+      const values = decodeSparseRow(columns, primaryKeyIndex, bin);
+      expect(renderSparseRowValue(columns, values)).toEqual(
+        loadJson('push', c.json),
+      );
+      expect(encodeSparseRow(columns, primaryKeyIndex, values)).toEqual(bin);
+    });
+  }
+  for (const c of manifest.invalid) {
+    it(`invalid/${c.name}: fails with ${c.error}`, () => {
+      const bin = loadBin('push', c.bin ?? `invalid/${c.name}.bin`);
+      expectNamedDecodeError(
+        () => decodeSparseRow(columns, primaryKeyIndex, bin),
+        c.error,
+      );
     });
   }
 });

@@ -16,7 +16,7 @@ import type {
   SyncMessage,
 } from './message';
 import { decodeMessage } from './message';
-import type { RowColumn, RowValue } from './row-codec';
+import type { RowColumn, RowValue, SparseRowValue } from './row-codec';
 import type { RowsSegment } from './segment';
 import { decodeRowsSegment, ROWS_SEGMENT_FORMAT_VERSION } from './segment';
 
@@ -321,17 +321,21 @@ function renderRowValue(column: RowColumn, value: RowValue): JsonValue {
   return value;
 }
 
+function renderColumnTable(columns: readonly RowColumn[]): JsonValue {
+  return columns.map((column) => ({
+    name: column.name,
+    type: column.type,
+    nullable: column.nullable,
+  }));
+}
+
 export function renderRowsSegmentValue(segment: RowsSegment): JsonValue {
   return {
     magic: 'SSG2',
     formatVersion: ROWS_SEGMENT_FORMAT_VERSION,
     table: segment.table,
     schemaVersion: segment.schemaVersion,
-    columns: segment.columns.map((column) => ({
-      name: column.name,
-      type: column.type,
-      nullable: column.nullable,
-    })),
+    columns: renderColumnTable(segment.columns),
     blocks: segment.blocks.map((block) =>
       block.map((row) => ({
         serverVersion: row.serverVersion,
@@ -349,4 +353,26 @@ export function renderRowsSegmentValue(segment: RowsSegment): JsonValue {
 /** `render(bytes) → json` for standalone SSG2 rows segments (§11 rule 8). */
 export function renderRowsSegment(bytes: Uint8Array): JsonValue {
   return renderRowsSegmentValue(decodeRowsSegment(bytes));
+}
+
+/**
+ * Render a decoded sparse row (RFC §6.1, §11 rule 11): the column table plus
+ * `values` keyed by column name, carrying only the present columns, so an
+ * absent column has no key and a present NULL renders as JSON `null`.
+ */
+export function renderSparseRowValue(
+  columns: readonly RowColumn[],
+  values: readonly SparseRowValue[],
+): JsonValue {
+  const present: Array<[string, JsonValue]> = [];
+  for (let i = 0; i < columns.length; i++) {
+    const column = columns[i];
+    const value = values[i];
+    if (column === undefined || value === undefined) continue;
+    present.push([column.name, renderRowValue(column, value)]);
+  }
+  return {
+    columns: renderColumnTable(columns),
+    values: Object.fromEntries(present),
+  };
 }

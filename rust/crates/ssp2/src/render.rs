@@ -5,7 +5,7 @@
 use serde_json::{Map, Value};
 
 use crate::model::{Frame, Message, MsgKind, OpResult};
-use crate::segment::{ColumnValue, RowsSegment};
+use crate::segment::{Column, ColumnValue, RowsSegment, SparseRow, SparseSlot};
 use crate::util::base64;
 
 fn obj(entries: Vec<(&str, Value)>) -> Value {
@@ -364,17 +364,6 @@ fn render_result(result: &OpResult) -> Value {
 /// `{"serverVersion":…,"values":{name→value}}`, NULLs as JSON `null`,
 /// `bytes` as base64, `json` columns parsed.
 pub fn render_rows_segment(seg: &RowsSegment) -> Value {
-    let columns = seg
-        .columns
-        .iter()
-        .map(|c| {
-            obj(vec![
-                ("name", Value::from(c.name.clone())),
-                ("type", Value::from(c.ty.name())),
-                ("nullable", Value::from(c.nullable)),
-            ])
-        })
-        .collect();
     let blocks = seg
         .blocks
         .iter()
@@ -385,7 +374,13 @@ pub fn render_rows_segment(seg: &RowsSegment) -> Value {
                     .map(|row| {
                         let mut values = Map::new();
                         for (col, value) in seg.columns.iter().zip(row.values.iter()) {
-                            values.insert(col.name.clone(), render_column_value(value));
+                            values.insert(
+                                col.name.clone(),
+                                match value {
+                                    None => Value::Null,
+                                    Some(value) => render_column_value(value),
+                                },
+                            );
                         }
                         obj(vec![
                             ("serverVersion", Value::from(row.server_version)),
@@ -401,25 +396,61 @@ pub fn render_rows_segment(seg: &RowsSegment) -> Value {
         ("formatVersion", Value::from(1)),
         ("table", Value::from(seg.table.clone())),
         ("schemaVersion", Value::from(seg.schema_version)),
-        ("columns", Value::Array(columns)),
+        ("columns", render_column_table(&seg.columns)),
         ("blocks", Value::Array(blocks)),
     ])
 }
 
-fn render_column_value(value: &Option<ColumnValue>) -> Value {
+fn render_column_table(columns: &[Column]) -> Value {
+    Value::Array(
+        columns
+            .iter()
+            .map(|c| {
+                obj(vec![
+                    ("name", Value::from(c.name.clone())),
+                    ("type", Value::from(c.ty.name())),
+                    ("nullable", Value::from(c.nullable)),
+                ])
+            })
+            .collect(),
+    )
+}
+
+fn render_column_value(value: &ColumnValue) -> Value {
     match value {
-        None => Value::Null,
-        Some(ColumnValue::String(s)) => Value::from(s.clone()),
-        Some(ColumnValue::Integer(v)) => Value::from(*v),
-        Some(ColumnValue::Float(v)) => {
+        ColumnValue::String(s) => Value::from(s.clone()),
+        ColumnValue::Integer(v) => Value::from(*v),
+        ColumnValue::Float(v) => {
             serde_json::Number::from_f64(*v).map_or(Value::Null, Value::Number)
         }
-        Some(ColumnValue::Boolean(v)) => Value::from(*v),
-        Some(ColumnValue::Json(j)) => j.parse(),
-        Some(ColumnValue::Bytes(b)) => Value::from(base64(b)),
+        ColumnValue::Boolean(v) => Value::from(*v),
+        ColumnValue::Json(j) => j.parse(),
+        ColumnValue::Bytes(b) => Value::from(base64(b)),
         // §11: blob_ref (tag 7) renders as embedded parsed JSON, like json.
-        Some(ColumnValue::BlobRef(j)) => j.parse(),
+        ColumnValue::BlobRef(j) => j.parse(),
         // §11: crdt (tag 8) renders as base64, like bytes.
-        Some(ColumnValue::Crdt(b)) => Value::from(base64(b)),
+        ColumnValue::Crdt(b) => Value::from(base64(b)),
     }
+}
+
+/// Render a decoded sparse row (SPEC.md §11.1 rule 11): the column table plus
+/// `values` keyed by column name, carrying only the present columns, so an
+/// absent column has no key and a present NULL renders as JSON `null`.
+pub fn render_sparse_row(columns: &[Column], row: &SparseRow) -> Value {
+    let mut values = Map::new();
+    for (col, slot) in columns.iter().zip(row.iter()) {
+        match slot {
+            SparseSlot::Absent => {}
+            SparseSlot::Null => {
+                values.insert(col.name.clone(), Value::Null);
+            }
+            SparseSlot::Value(value) => {
+                values.insert(col.name.clone(), render_column_value(value));
+            }
+        }
+    }
+    obj(vec![
+        ("columns", render_column_table(columns)),
+        ("values", Value::Object(values)),
+    ])
 }

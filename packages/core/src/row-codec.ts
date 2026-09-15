@@ -4,8 +4,13 @@
  * A row is a null bitmap of ceil(columnCount / 8) bytes (bit i set =
  * column i is NULL; LSB-first within each byte, byte i/8), followed by the
  * non-null values encoded positionally in schema-IR declaration order.
- * Used for `COMMIT` change payloads, rows-segment row data, push operation
- * payloads, and conflict `serverRow` values.
+ * Used for `COMMIT` change payloads, rows-segment row data, and conflict
+ * `serverRow` values; push operation payloads use the sparse row codec
+ * (`encodeSparseRow` / `decodeSparseRow`) instead.
+ *
+ * A sparse row (RFC §6.1) is the column subset a push operation writes: a
+ * presence bitmap over all columns, a null bitmap over the present columns,
+ * then the non-null present values. Absent columns keep their stored value.
  */
 import { parseBlobRef } from './blob-ref';
 import { ByteReader, ByteWriter } from './bytes';
@@ -176,6 +181,156 @@ function readValue(reader: ByteReader, column: RowColumn): RowValue {
       // §2.4 tag 8: opaque bytes, decoded exactly like tag 6 (no parse).
       return reader.bytes();
   }
+}
+
+/** One bit of a bitmap: LSB-first within byte `index / 8`. */
+function bitmapBit(bitmap: Uint8Array, index: number): boolean {
+  return (((bitmap[index >> 3] ?? 0) >> (index & 7)) & 1) !== 0;
+}
+
+/**
+ * A sparse-row slot (RFC §6.1): `undefined` when the column is absent from
+ * the payload (an apply leaves the stored value untouched), `null` when the
+ * column is present and NULL.
+ */
+export type SparseRowValue = RowValue | undefined;
+
+/**
+ * Encode one standalone sparse row (RFC §6.1, SPEC.md §2.4).
+ *
+ * `primaryKeyIndex` is the row's primary-key column; a payload without it is
+ * encoder misuse and throws, like a NULL in a non-nullable column.
+ */
+export function encodeSparseRow(
+  columns: readonly RowColumn[],
+  primaryKeyIndex: number,
+  values: readonly SparseRowValue[],
+): Uint8Array {
+  if (values.length !== columns.length) {
+    throw new Error(
+      `row value count ${values.length} does not match column count ${columns.length}`,
+    );
+  }
+  const presence = new Uint8Array(Math.ceil(columns.length / 8));
+  let presentCount = 0;
+  for (let i = 0; i < columns.length; i++) {
+    if (values[i] === undefined) continue;
+    presence[i >> 3] = (presence[i >> 3] ?? 0) | (1 << (i & 7));
+    presentCount++;
+  }
+  const primaryKey = columns[primaryKeyIndex];
+  if (primaryKey === undefined) {
+    throw new Error(
+      `primary-key column index ${primaryKeyIndex} is outside the column table`,
+    );
+  }
+  if (!bitmapBit(presence, primaryKeyIndex)) {
+    throw new Error(
+      `sparse row is missing the primary-key column ${primaryKey.name}`,
+    );
+  }
+  const nulls = new Uint8Array(Math.ceil(presentCount / 8));
+  let present = 0;
+  for (let i = 0; i < columns.length; i++) {
+    const column = columns[i];
+    const value = values[i];
+    if (column === undefined || value === undefined) continue;
+    if (value === null) {
+      if (!column.nullable) {
+        throw new Error(`column ${column.name} is not nullable`);
+      }
+      nulls[present >> 3] = (nulls[present >> 3] ?? 0) | (1 << (present & 7));
+    }
+    present++;
+  }
+  const writer = new ByteWriter();
+  writer.raw(presence);
+  writer.raw(nulls);
+  for (let i = 0; i < columns.length; i++) {
+    const column = columns[i];
+    const value = values[i];
+    if (column === undefined || value === undefined || value === null) {
+      continue;
+    }
+    writeValue(writer, column, value);
+  }
+  return writer.finish();
+}
+
+/**
+ * Decode one standalone sparse row; the bytes must contain exactly one row.
+ *
+ * Decode checks, in order (each a decode error, RFC §6.1): a set presence
+ * padding bit, an absent primary-key column, a set null-bitmap padding bit
+ * (a null for an absent column), a null bit for a non-nullable column.
+ */
+export function decodeSparseRow(
+  columns: readonly RowColumn[],
+  primaryKeyIndex: number,
+  bytes: Uint8Array,
+): SparseRowValue[] {
+  const reader = new ByteReader(bytes);
+  const presenceLength = Math.ceil(columns.length / 8);
+  const presence = reader.raw(presenceLength);
+  for (let bit = columns.length; bit < presenceLength * 8; bit++) {
+    if (bitmapBit(presence, bit)) {
+      throw new DecodeError(
+        'sync.invalid_request',
+        'sparse row presence bitmap has a set padding bit (non-canonical encoding)',
+      );
+    }
+  }
+  const primaryKey = columns[primaryKeyIndex];
+  if (primaryKey === undefined) {
+    throw new DecodeError(
+      'sync.invalid_request',
+      `primary-key column index ${primaryKeyIndex} is outside the column table`,
+    );
+  }
+  if (!bitmapBit(presence, primaryKeyIndex)) {
+    throw new DecodeError(
+      'sync.invalid_request',
+      `sparse row is missing the primary-key column ${primaryKey.name}`,
+    );
+  }
+  let presentCount = 0;
+  for (let i = 0; i < columns.length; i++) {
+    if (bitmapBit(presence, i)) presentCount++;
+  }
+  const nullLength = Math.ceil(presentCount / 8);
+  const nulls = reader.raw(nullLength);
+  for (let bit = presentCount; bit < nullLength * 8; bit++) {
+    if (bitmapBit(nulls, bit)) {
+      throw new DecodeError(
+        'sync.invalid_request',
+        'sparse row null bitmap sets a null bit for an absent column',
+      );
+    }
+  }
+  const values: SparseRowValue[] = [];
+  let present = 0;
+  for (let i = 0; i < columns.length; i++) {
+    const column = columns[i];
+    if (column === undefined || !bitmapBit(presence, i)) {
+      values.push(undefined);
+      continue;
+    }
+    const isNull = bitmapBit(nulls, present);
+    present++;
+    if (!isNull) {
+      values.push(readValue(reader, column));
+      continue;
+    }
+    if (!column.nullable) {
+      throw new DecodeError(
+        'sync.invalid_request',
+        `null bit set for non-nullable column ${column.name}`,
+      );
+    }
+    values.push(null);
+  }
+  reader.expectFullyConsumed('sparse row payload');
+  return values;
 }
 
 export function writeRow(

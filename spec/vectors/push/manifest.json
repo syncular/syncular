@@ -1,0 +1,92 @@
+{
+  "kind": "push",
+  "generatedBy": "packages/core/scripts/generate-vectors.ts",
+  "columns": [
+    {
+      "name": "id",
+      "type": "string",
+      "nullable": false
+    },
+    {
+      "name": "title",
+      "type": "string",
+      "nullable": true
+    },
+    {
+      "name": "body",
+      "type": "string",
+      "nullable": false
+    },
+    {
+      "name": "count",
+      "type": "integer",
+      "nullable": true
+    },
+    {
+      "name": "score",
+      "type": "float",
+      "nullable": false
+    },
+    {
+      "name": "done",
+      "type": "boolean",
+      "nullable": false
+    },
+    {
+      "name": "meta",
+      "type": "json",
+      "nullable": true
+    },
+    {
+      "name": "blob",
+      "type": "bytes",
+      "nullable": true
+    },
+    {
+      "name": "doc",
+      "type": "crdt",
+      "nullable": true
+    }
+  ],
+  "primaryKey": "id",
+  "cases": [
+    {
+      "name": "sparse-row",
+      "bin": "sparse-row.bin",
+      "json": "sparse-row.json",
+      "covers": "Sparse push payload (RFC §6.1): a partial row — id, a present-NULL title, and meta — over a 9-column table, so the 2-byte presence bitmap and the present-column null bitmap both carry padding bits"
+    },
+    {
+      "name": "sparse-row-full",
+      "bin": "sparse-row-full.bin",
+      "json": "sparse-row-full.json",
+      "covers": "The full-row special case: every presence bit set (incl. the second presence byte), a present-NULL title, and all nine §2.4 column types"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "presence-padding-bit",
+      "bin": "invalid/presence-padding-bit.bin",
+      "error": "sync.invalid_request",
+      "covers": "Sparse row presence bitmap with a set padding bit (bit 9 of a 9-column table)"
+    },
+    {
+      "name": "null-bit-for-absent-column",
+      "bin": "invalid/null-bit-for-absent-column.bin",
+      "error": "sync.invalid_request",
+      "covers": "Sparse row null bitmap with a set bit beyond the present columns — a null for an absent column"
+    },
+    {
+      "name": "null-bit-on-non-nullable",
+      "bin": "invalid/null-bit-on-non-nullable.bin",
+      "error": "sync.invalid_request",
+      "covers": "Sparse row null bit for the non-nullable primary-key column"
+    },
+    {
+      "name": "absent-primary-key",
+      "bin": "invalid/absent-primary-key.bin",
+      "error": "sync.invalid_request",
+      "covers": "Sparse row whose presence bitmap omits the primary-key column (RFC §6.1)"
+    }
+  ]
+}

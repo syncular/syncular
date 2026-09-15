@@ -21,6 +21,9 @@ spec/vectors/
   response/          SSP2 response messages
   segment/           standalone SSG2 rows segments
   realtime/          JSON control messages (no binary form)
+  push/              sparse row push payloads (codec-level: the manifest
+                     carries the column table the bytes decode against)
+  crypto/            §5.11 crypto vectors (vectors.json)
     <case>.bin       canonical encoded bytes (binary kinds)
     <case>.json      canonical JSON debug rendering (SPEC.md §11 —
                      non-contractual for wire, contractual for vectors)
@@ -51,7 +54,7 @@ spec/vectors/
 
 ## Coverage
 
-The authoritative vector list (23 valid cases + 16 invalid cases) is
+The authoritative vector list (27 valid cases + 20 invalid cases) is
 SPEC.md Appendix A. Summary of what it covers:
 
 - requests: minimal pull, bootstrap pull (accept bits, resume token),
@@ -66,10 +69,16 @@ SPEC.md Appendix A. Summary of what it covers:
   a `crdt` column (tag 8) riding the bytes machinery
 - response: a `COMMIT` upsert carrying a server-merged `crdt` column
   (§5.10.3 — no CRDT-specific frame)
+- push: sparse row payloads (RFC §6.1) decoded against the manifest's
+  column table: a partial row with a present-NULL column and the full-row
+  case with every presence bit set, over nine columns covering every
+  §2.4 type
 - realtime: `wake` and `hello` JSON control vectors
 - invalid: truncated envelope (missing END), bad magic, unsupported
   wireVersion, non-zero flags, overlong frame length, bad bool byte,
   null bit on non-nullable column, rows segment without end marker,
   json column value that does not parse, row `serverVersion` 0,
+  sparse row violations (presence padding bit, null bit for an absent
+  column, null bit for a non-nullable column, absent primary key),
   wake with `requiresPull` not the literal `true`, fractional realtime
   numeric field
