@@ -252,6 +252,69 @@ describe('declared references (§6.11)', () => {
   });
 });
 
+describe('recursive cascade (§6.11)', () => {
+  const SUBITEM_COLUMNS: readonly RowColumn[] = [
+    { name: 'id', type: 'string', nullable: false },
+    { name: 'project_id', type: 'string', nullable: false },
+    { name: 'item_id', type: 'string', nullable: false },
+  ];
+
+  function chainSchema(onDelete: 'RESTRICT' | 'CASCADE'): ServerSchema {
+    return {
+      version: 1,
+      tables: [
+        ...(REFERENCE_SCHEMA.tables as ServerSchema['tables']),
+        {
+          name: 'subitems',
+          columns: SUBITEM_COLUMNS,
+          primaryKey: 'id',
+          scopes: ['project:{project_id}'],
+          references: [{ column: 'item_id', parentTable: 'items', onDelete }],
+          indexes: [{ name: 'idx_subitems_item_id_ref', columns: ['item_id'] }],
+        },
+      ],
+    };
+  }
+
+  function subitemRow(id: string, itemId: string): Uint8Array {
+    return encodeRow(SUBITEM_COLUMNS, [id, 'p1', itemId]);
+  }
+
+  test('CASCADE recurses through further CASCADE references in one commit', async () => {
+    const t = referenceContext({ schema: chainSchema('CASCADE') });
+    await seed(t, 'c1', 'projects', 'p1', projectRow('p1'));
+    await seed(t, 'c2', 'items', 'i1', itemRow('i1', 'p1', { cascade: 'p1' }));
+    await seed(t, 'c3', 'subitems', 's1', subitemRow('s1', 'i1'));
+    const message = await sync(t, [pushCommit('c4', [del('projects', 'p1')])]);
+    expect(pushResults(message)[0]?.status).toBe('applied');
+    expect(await t.storage.getRow('part-1', 'projects', 'p1')).toBeUndefined();
+    expect(await t.storage.getRow('part-1', 'items', 'i1')).toBeUndefined();
+    expect(await t.storage.getRow('part-1', 'subitems', 's1')).toBeUndefined();
+  });
+
+  test('a deeper RESTRICT blocks the cascade and attributes to the originating delete', async () => {
+    const t = referenceContext({ schema: chainSchema('RESTRICT') });
+    await seed(t, 'c1', 'projects', 'p1', projectRow('p1'));
+    await seed(t, 'c2', 'items', 'i1', itemRow('i1', 'p1', { cascade: 'p1' }));
+    await seed(t, 'c3', 'subitems', 's1', subitemRow('s1', 'i1'));
+    const message = await sync(t, [pushCommit('c4', [del('projects', 'p1')])]);
+    const result = pushResults(message)[0];
+    expect(result?.status).toBe('rejected');
+    expect(rejectionDetails(message)).toEqual([
+      {
+        opIndex: 0,
+        details: {
+          reason: 'restricted_delete',
+          references: { child: 'subitems' },
+        },
+      },
+    ]);
+    // The whole commit, including the first-level cascade delete, rolls back.
+    expect(await t.storage.getRow('part-1', 'projects', 'p1')).toBeDefined();
+    expect(await t.storage.getRow('part-1', 'items', 'i1')).toBeDefined();
+  });
+});
+
 describe('reference schema compilation (§6.11)', () => {
   function withChildren(
     references: NonNullable<ServerSchema['tables'][number]['references']>,
