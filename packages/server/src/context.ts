@@ -78,11 +78,14 @@ export interface ServerLimits {
   readonly maxOperationsPerRequest: number;
   /** Inline rows segments up to this size (§5.7 SHOULD: 256 KiB). */
   readonly inlineSegmentMaxBytes: number;
+  /** §6.11 declared-reference cascade cap per commit (reference default). */
+  readonly maxCascadeOperationsPerCommit: number;
 }
 
 export const DEFAULT_LIMITS: ServerLimits = {
   maxOperationsPerRequest: 500,
   inlineSegmentMaxBytes: 256 * 1024,
+  maxCascadeOperationsPerCommit: 1_000,
 };
 
 /** Receives applied commits for realtime fanout (§8.2). */

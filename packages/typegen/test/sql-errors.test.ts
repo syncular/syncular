@@ -598,10 +598,6 @@ describe('unsupported constructs are hard errors that name the construct', () =>
 
   test('column constraints', () => {
     expectError(
-      'CREATE TABLE t (id TEXT PRIMARY KEY, o TEXT REFERENCES other (id))',
-      /unsupported column constraint "REFERENCES"/,
-    );
-    expectError(
       'CREATE TABLE t (id TEXT PRIMARY KEY, n INT CHECK (n))',
       /unsupported column constraint "CHECK"/,
     );
@@ -612,6 +608,46 @@ describe('unsupported constructs are hard errors that name the construct', () =>
     expectError(
       'CREATE TABLE t (id TEXT PRIMARY KEY, ts BIGINT DEFAULT (unixepoch()))',
       /DEFAULT expressions are unsupported/,
+    );
+  });
+
+  test('declared references (§6.11)', () => {
+    const tables = parse(
+      'CREATE TABLE t (id TEXT PRIMARY KEY, p TEXT REFERENCES t(id) ON DELETE CASCADE)',
+    );
+    expect(tables.get('t')?.references).toEqual([
+      { column: 'p', parentTable: 't', parentPk: 'id', onDelete: 'CASCADE' },
+    ]);
+    // Every reference emits the non-unique index the server probes.
+    expect(tables.get('t')?.indexes).toEqual([
+      { name: 'idx_t_p_ref', columns: ['p'], unique: false },
+    ]);
+    expect(
+      parse(
+        'CREATE TABLE t (id TEXT PRIMARY KEY, p TEXT REFERENCES t(id))',
+      ).get('t')?.references,
+    ).toEqual([
+      { column: 'p', parentTable: 't', parentPk: 'id', onDelete: 'RESTRICT' },
+    ]);
+    expectError(
+      'CREATE TABLE t (id TEXT PRIMARY KEY, p TEXT REFERENCES t(id) ON UPDATE CASCADE)',
+      /ON UPDATE is unsupported/,
+    );
+    expectError(
+      'CREATE TABLE t (id TEXT PRIMARY KEY, p TEXT REFERENCES t(id) ON DELETE SET DEFAULT)',
+      /SET DEFAULT is unsupported/,
+    );
+    expectError(
+      'CREATE TABLE t (id TEXT PRIMARY KEY, p TEXT REFERENCES t(id) ON DELETE NO ACTION)',
+      /NO ACTION is unsupported/,
+    );
+    expectError(
+      'CREATE TABLE t (id TEXT PRIMARY KEY, p TEXT NOT NULL REFERENCES t(id) ON DELETE SET NULL)',
+      /ON DELETE SET NULL requires a nullable column/,
+    );
+    expectError(
+      'CREATE TABLE t (id TEXT PRIMARY KEY, p TEXT REFERENCES t(id) REFERENCES t(id))',
+      /at most one REFERENCES clause/,
     );
   });
 

@@ -379,6 +379,141 @@
           ]
         }
       ]
+    },
+    {
+      "name": "0005_add_doc_revision_fk",
+      "sha256": "cf5246eecfb3246d4f39ef818e9a71055aaa3cc567d268bfd90f83c34eac545a",
+      "tables": [
+        {
+          "name": "doc_revisions",
+          "primaryKey": "id",
+          "columns": [
+            {
+              "name": "id",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "org_id",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "project_id",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "doc_id",
+              "type": "string",
+              "nullable": true
+            },
+            {
+              "name": "note",
+              "type": "string",
+              "nullable": true
+            }
+          ]
+        },
+        {
+          "name": "docs",
+          "primaryKey": "id",
+          "columns": [
+            {
+              "name": "id",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "org_id",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "project_id",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "body",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "score",
+              "type": "float",
+              "nullable": true
+            },
+            {
+              "name": "attachment",
+              "type": "bytes",
+              "nullable": true
+            },
+            {
+              "name": "body_doc",
+              "type": "crdt",
+              "nullable": true,
+              "crdtType": "yjs-doc"
+            },
+            {
+              "name": "remote_blob",
+              "type": "blob_ref",
+              "nullable": true
+            }
+          ]
+        },
+        {
+          "name": "tasks",
+          "primaryKey": "id",
+          "columns": [
+            {
+              "name": "id",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "project_id",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "title",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "done",
+              "type": "boolean",
+              "nullable": false
+            },
+            {
+              "name": "reviewed",
+              "type": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "priority",
+              "type": "integer",
+              "nullable": true
+            },
+            {
+              "name": "meta",
+              "type": "json",
+              "nullable": true
+            },
+            {
+              "name": "estimate",
+              "type": "float",
+              "nullable": true
+            },
+            {
+              "name": "estimated_at",
+              "type": "integer",
+              "nullable": true
+            }
+          ]
+        }
+      ]
     }
   ]
 }

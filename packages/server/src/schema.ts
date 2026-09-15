@@ -23,6 +23,34 @@ export interface IndexSchema {
   readonly unique?: boolean;
 }
 
+/** One declared reference (§6.11). Absent `onDelete` means `RESTRICT`. */
+export interface ReferenceSchema {
+  readonly column: string;
+  readonly parentTable: string;
+  readonly onDelete?: ReferenceOnDelete;
+}
+
+export type ReferenceOnDelete = 'RESTRICT' | 'CASCADE' | 'SET NULL';
+
+/** A compiled outgoing reference (§6.11). */
+export interface CompiledReference {
+  readonly column: string;
+  readonly columnIndex: number;
+  readonly parentTable: string;
+  readonly onDelete: ReferenceOnDelete;
+}
+
+/** A compiled INCOMING reference: rows of `table` whose `column` points at a
+ * row of the table that carries this entry. `index` is the declared
+ * single-column index the server probes through `scanRowsByIndex` (§6.8). */
+export interface CompiledIncomingReference {
+  readonly table: string;
+  readonly column: string;
+  readonly columnIndex: number;
+  readonly onDelete: ReferenceOnDelete;
+  readonly index: string;
+}
+
 export interface TableSchema {
   readonly name: string;
   /** Columns in schema-IR declaration order (the row-codec order, §2.4). */
@@ -33,6 +61,10 @@ export interface TableSchema {
   readonly scopes: readonly ScopePatternSpec[];
   /** User indexes (optional) — created on the server's relational tables. */
   readonly indexes?: readonly IndexSchema[];
+  /** Declared references (§6.11). Optional so pre-reference schemas stay
+   * valid; the reference index over each child column is declared in
+   * `indexes` (typegen emits it). */
+  readonly references?: readonly ReferenceSchema[];
   /**
    * Server-side column materialization
    * "optional materialization"). When `true` (the usual default) the server's
@@ -72,6 +104,10 @@ export interface CompiledTable {
   readonly scopePatterns: readonly CompiledScopePattern[];
   /** User indexes (validated: unique names, existing columns). */
   readonly indexes: readonly IndexSchema[];
+  /** Outgoing declared references (§6.11), resolved to column indices. */
+  readonly references: readonly CompiledReference[];
+  /** Incoming declared references: child rows to reach on a parent delete. */
+  readonly referencedBy: readonly CompiledIncomingReference[];
   /** Resolved materialization (see `TableSchema.materialize`). */
   readonly materialize: boolean;
   readonly columnIndex: ReadonlyMap<string, number>;
@@ -216,6 +252,21 @@ export function compileSchema(schema: ServerSchema): CompiledSchema {
     const blobRefColumnIndices: number[] = [];
     const crdtColumns: { index: number; crdtType: string }[] = [];
     const encryptedColumnIndices: number[] = [];
+    const references: CompiledReference[] = [];
+    for (const reference of table.references ?? []) {
+      const index = columnIndex.get(reference.column);
+      if (index === undefined) {
+        throw new Error(
+          `table ${table.name}: reference column ${JSON.stringify(reference.column)} is not a column`,
+        );
+      }
+      references.push({
+        column: reference.column,
+        columnIndex: index,
+        parentTable: reference.parentTable,
+        onDelete: reference.onDelete ?? 'RESTRICT',
+      });
+    }
     table.columns.forEach((column, index) => {
       if (column.type === 'blob_ref') blobRefColumnIndices.push(index);
       // §5.11: an encrypted column carries wire type `bytes` + `encrypted`.
@@ -253,6 +304,8 @@ export function compileSchema(schema: ServerSchema): CompiledSchema {
       primaryKeyIndex,
       scopePatterns,
       indexes,
+      references,
+      referencedBy: [],
       materialize,
       columnIndex,
       declaredVariables: variables,
@@ -260,6 +313,62 @@ export function compileSchema(schema: ServerSchema): CompiledSchema {
       crdtColumns,
       encryptedColumnIndices,
     });
+  }
+  // §6.11: resolve incoming references and enforce the declaration rules the
+  // generator enforces too, so a hand-written server schema fails loud.
+  for (const child of tables.values()) {
+    for (const reference of child.references) {
+      const parent = tables.get(reference.parentTable);
+      if (parent === undefined) {
+        throw new Error(
+          `table ${child.name}: reference column ${JSON.stringify(reference.column)} names unknown table ${JSON.stringify(reference.parentTable)}`,
+        );
+      }
+      const childColumn = child.columns[reference.columnIndex];
+      const parentKey = parent.columns[parent.primaryKeyIndex];
+      if (childColumn === undefined || parentKey === undefined) {
+        throw new Error(
+          `unreachable: ${child.name}.${reference.column} or a missing primary key on ${parent.name}`,
+        );
+      }
+      if (childColumn.type !== parentKey.type) {
+        throw new Error(
+          `table ${child.name}: reference column ${JSON.stringify(reference.column)} has type ${JSON.stringify(childColumn.type)} but ${parent.name}.${parentKey.name} has type ${JSON.stringify(parentKey.type)} — the types must match (§6.11)`,
+        );
+      }
+      if (reference.onDelete === 'SET NULL' && !childColumn.nullable) {
+        throw new Error(
+          `table ${child.name}: reference column ${JSON.stringify(reference.column)} is not nullable but declares ON DELETE SET NULL (§6.11)`,
+        );
+      }
+      const patterns = (compiled: CompiledTable): string =>
+        compiled.scopePatterns
+          .map((pattern) => `${pattern.prefix}:{${pattern.variable}}`)
+          .sort()
+          .join('\u0000');
+      if (patterns(child) !== patterns(parent)) {
+        throw new Error(
+          `table ${child.name}: reference column ${JSON.stringify(reference.column)} targets ${parent.name}, whose scope patterns differ — a cascade MUST NOT cross an authorization boundary (§6.11)`,
+        );
+      }
+      const index = child.indexes.find(
+        (candidate) =>
+          candidate.columns.length === 1 &&
+          candidate.columns[0] === reference.column,
+      );
+      if (index === undefined) {
+        throw new Error(
+          `table ${child.name}: reference column ${JSON.stringify(reference.column)} needs a declared single-column index so the server reaches children through scanRowsByIndex (§6.11)`,
+        );
+      }
+      (parent.referencedBy as CompiledIncomingReference[]).push({
+        table: child.name,
+        column: reference.column,
+        columnIndex: reference.columnIndex,
+        onDelete: reference.onDelete,
+        index: index.name,
+      });
+    }
   }
   const compiled: CompiledSchema = {
     version: schema.version,

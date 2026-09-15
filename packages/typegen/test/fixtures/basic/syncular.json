@@ -29,12 +29,20 @@
     { "version": 1, "through": "0001_initial" },
     { "version": 2, "through": "0002_add_task_estimate" },
     { "version": 3, "through": "0003_add_doc_crdt" },
-    { "version": 4, "through": "0004_add_doc_blob_ref" }
+    { "version": 4, "through": "0004_add_doc_blob_ref" },
+    { "version": 5, "through": "0005_add_doc_revision_fk" }
   ],
   "tables": [
     { "name": "tasks", "scopes": ["project:{project_id}"] },
     {
       "name": "docs",
+      "scopes": [
+        "org:{org_id}",
+        { "pattern": "project:{projectId}", "column": "project_id" }
+      ]
+    },
+    {
+      "name": "doc_revisions",
       "scopes": [
         "org:{org_id}",
         { "pattern": "project:{projectId}", "column": "project_id" }

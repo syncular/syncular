@@ -21,6 +21,7 @@ import { presenceScenarios } from './presence';
 import { realtimeScenarios } from './realtime';
 import { remoteProducerScenarios } from './remote-producer';
 import { reconnectStormScenarios } from './reconnect-storm';
+import { referenceScenarios } from './references';
 import { schemaBumpScenarios } from './schema-bump';
 import { scopeScenarios } from './scopes';
 import { signedUrlScenarios } from './signed-url';
@@ -51,6 +52,7 @@ export const CATALOG: readonly Scenario[] = [
   ...wsRoundScenarios,
   ...presenceScenarios,
   ...reconnectStormScenarios,
+  ...referenceScenarios,
   ...windowScenarios,
   ...validatorScenarios,
   ...commitValidatorScenarios,

@@ -137,6 +137,34 @@ columns; changing names, order, types, or nullability in locked history is not
 an upgrade. A SQL `DEFAULT` does not backfill existing Syncular row payloads,
 so a required appended column is rejected even when it has a literal default.
 
+### Declared references
+
+A column may declare a reference to another table's primary key:
+
+```sql
+CREATE TABLE todos (
+  id TEXT PRIMARY KEY,
+  list_id TEXT NOT NULL,
+  parent_id TEXT REFERENCES todos(id) ON DELETE CASCADE
+);
+```
+
+The parser accepts `REFERENCES parent(pk)` with an optional
+`ON DELETE RESTRICT | CASCADE | SET NULL`, and rejects `ON UPDATE`,
+`SET DEFAULT`, and `NO ACTION`. An absent `ON DELETE` clause means `RESTRICT`.
+The parent and child tables must declare the same scope patterns, the child
+column type must equal the parent primary-key type, and `SET NULL` needs a
+nullable child column.
+
+typegen records the reference in the schema IR and emits a non-unique index
+over the child column. The local replica DDL omits the clause, so local SQLite
+never enforces a reference. The server enforces it once per commit over the
+candidate state a commit produces: a commit that deletes a parent and its
+children together passes, a `CASCADE` delete emits the child deletes in the
+same commit, a `SET NULL` delete nulls the child column, and `RESTRICT`
+rejects the delete while a child remains. A violation rejects the commit with
+`sync.reference_violation`.
+
 ## Data changes and backfills
 
 Migration SQL is schema-only. `UPDATE`, `INSERT`, and `DELETE` do not modify

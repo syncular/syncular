@@ -12,7 +12,8 @@
  * - `CREATE VIRTUAL TABLE name USING fts5(cols…, content=table,
  *   [tokenize='allowlisted tokenizer'])` (client-local FTS5 projection)
  * - column defs: `name TYPE [PRIMARY KEY] [NOT NULL] [NULL]
- *   [DEFAULT literal]`; `ALTER TABLE … ADD COLUMN` is restricted to nullable
+ *   [DEFAULT literal] [REFERENCES parent(pk) [ON DELETE RESTRICT | CASCADE |
+ *   SET NULL]]`; `ALTER TABLE … ADD COLUMN` is restricted to nullable
  *   columns because Syncular does not execute SQL-default backfills
  * - `--` and C-style comments
  *
@@ -23,7 +24,13 @@
  */
 import { validatePortableRelationalIdentifier } from '@syncular/core';
 import { TypegenError } from './errors';
-import type { IrColumn, IrColumnType, IrFtsIndex, IrIndex } from './ir';
+import type {
+  IrColumn,
+  IrColumnType,
+  IrFtsIndex,
+  IrIndex,
+  IrReference,
+} from './ir';
 
 /** SQL type keyword → the §2.4 column types. Case-insensitive. */
 const TYPE_MAP: Readonly<Record<string, IrColumnType>> = {
@@ -55,10 +62,22 @@ const TYPE_MAP: Readonly<Record<string, IrColumnType>> = {
 /** Default `crdtType` for a bare `CRDT` keyword (§5.10.1). */
 const DEFAULT_CRDT_TYPE = 'yjs-doc';
 
+/** Parse-time declared reference (§6.11). `parentPk` is validated against
+ * the parent's primary key once every migration has been applied; the IR
+ * keeps only `{ column, parentTable, onDelete }`. */
+export interface ParsedReference {
+  readonly column: string;
+  readonly parentTable: string;
+  readonly parentPk: string;
+  readonly onDelete: IrReference['onDelete'];
+}
+
 export interface ParsedTable {
   readonly name: string;
   primaryKey: string;
   readonly columns: IrColumn[];
+  /** Declared references (§6.11), in declaration order. */
+  readonly references: ParsedReference[];
   /** Local secondary indexes, in declaration order (CREATE INDEX subset). */
   readonly indexes: IrIndex[];
   /** Client-local contentful FTS5 projections. */
@@ -322,6 +341,14 @@ class Cursor {
 interface ColumnDef {
   readonly column: IrColumn;
   readonly primaryKey: boolean;
+  /** §6.11: parsed `REFERENCES parent(pk) [ON DELETE …]`, validated against
+   * the accumulated schema after every migration has been applied. */
+  readonly reference?: {
+    readonly column: string;
+    readonly parentTable: string;
+    readonly parentPk: string;
+    readonly onDelete: IrReference['onDelete'];
+  };
 }
 
 function parseColumnType(cursor: Cursor, columnName: string): IrColumnType {
@@ -345,6 +372,7 @@ function parseColumnDef(cursor: Cursor, allowPrimaryKey: boolean): ColumnDef {
   const type = parseColumnType(cursor, name);
   let nullable = true;
   let primaryKey = false;
+  let reference: ColumnDef['reference'];
   for (;;) {
     const token = cursor.peek();
     if (token === undefined || token.kind === 'punct') break;
@@ -375,6 +403,60 @@ function parseColumnDef(cursor: Cursor, allowPrimaryKey: boolean): ColumnDef {
       }
       // Literal defaults are accepted and ignored: typegen extracts the
       // schema shape; running migrations is the host's job.
+    } else if (word === 'REFERENCES') {
+      if (reference !== undefined) {
+        cursor.fail(`column ${name}: at most one REFERENCES clause is allowed`);
+      }
+      cursor.next();
+      const parentTable = cursor.identifier(`a referenced table for ${name}`);
+      cursor.expectPunct('(', `after REFERENCES ${parentTable}`);
+      const parentPk = cursor.identifier(`a referenced column for ${name}`);
+      cursor.expectPunct(')', 'after the referenced column');
+      let onDelete: IrReference['onDelete'] = 'RESTRICT';
+      if (cursor.eatWord('ON')) {
+        const action = cursor.identifier('ON DELETE for a reference');
+        const actionKind = action.toUpperCase();
+        if (actionKind === 'UPDATE') {
+          cursor.fail(
+            `column ${name}: ON UPDATE is unsupported — the primary key is immutable`,
+          );
+        }
+        if (actionKind !== 'DELETE') {
+          cursor.fail(
+            `column ${name}: unsupported reference action ${JSON.stringify(action)} (only ON DELETE)`,
+          );
+        }
+        const behavior = cursor.identifier('an ON DELETE behavior');
+        const behaviorKind = behavior.toUpperCase();
+        if (behaviorKind === 'RESTRICT') {
+          onDelete = 'RESTRICT';
+        } else if (behaviorKind === 'CASCADE') {
+          onDelete = 'CASCADE';
+        } else if (behaviorKind === 'SET') {
+          const second = cursor.identifier('SET NULL');
+          if (second.toUpperCase() === 'NULL') {
+            onDelete = 'SET NULL';
+          } else if (second.toUpperCase() === 'DEFAULT') {
+            cursor.fail(
+              `column ${name}: SET DEFAULT is unsupported (absent ON DELETE means RESTRICT)`,
+            );
+          } else {
+            cursor.fail(
+              `column ${name}: unsupported ON DELETE behavior ${JSON.stringify(`SET ${second}`)} (only RESTRICT, CASCADE, or SET NULL)`,
+            );
+          }
+        } else if (behaviorKind === 'NO') {
+          cursor.expectWord('ACTION', 'after NO');
+          cursor.fail(
+            `column ${name}: NO ACTION is unsupported (absent ON DELETE means RESTRICT)`,
+          );
+        } else {
+          cursor.fail(
+            `column ${name}: unsupported ON DELETE behavior ${JSON.stringify(behavior)} (only RESTRICT, CASCADE, or SET NULL)`,
+          );
+        }
+      }
+      reference = { column: name, parentTable, parentPk, onDelete };
     } else {
       cursor.fail(
         `column ${name}: unsupported column constraint ${JSON.stringify(token.text)}`,
@@ -382,12 +464,27 @@ function parseColumnDef(cursor: Cursor, allowPrimaryKey: boolean): ColumnDef {
     }
   }
   if (primaryKey) nullable = false;
+  // §6.11: SET NULL needs a nullable child column; the check runs after the
+  // whole constraint list so clause order does not matter.
+  if (
+    reference !== undefined &&
+    reference.onDelete === 'SET NULL' &&
+    !nullable
+  ) {
+    cursor.fail(
+      `column ${name}: ON DELETE SET NULL requires a nullable column`,
+    );
+  }
   // §5.10.1: a crdt column carries a crdtType (default `yjs-doc`).
   const column: IrColumn =
     type === 'crdt'
       ? { name, type, nullable, crdtType: DEFAULT_CRDT_TYPE }
       : { name, type, nullable };
-  return { column, primaryKey };
+  return {
+    column,
+    primaryKey,
+    ...(reference !== undefined ? { reference } : {}),
+  };
 }
 
 /**
@@ -559,6 +656,49 @@ function parseCreateVirtualTable(
   if (options.lockedHistory === true) lockedHistoryObjects.add(ftsIndex);
 }
 
+/**
+ * §6.11: record one declared reference on its table and emit the non-unique
+ * index over the child column, so the server reaches children through
+ * `scanRowsByIndex` (§6.8). Index names share the schema namespace, so a
+ * collision with a table, index, or FTS projection is a hard error.
+ */
+function addReference(
+  tables: Map<string, ParsedTable>,
+  table: ParsedTable,
+  reference: NonNullable<ColumnDef['reference']>,
+  source: string,
+  options: ApplyMigrationSqlOptions,
+): void {
+  const name = `idx_${table.name}_${reference.column}_ref`;
+  if (tables.has(name)) {
+    throw new TypegenError(
+      source,
+      `table ${table.name}: reference index ${name} conflicts with a synced table`,
+    );
+  }
+  for (const candidate of tables.values()) {
+    if (
+      candidate.indexes.some((index) => index.name === name) ||
+      candidate.ftsIndexes.some((index) => index.name === name)
+    ) {
+      throw new TypegenError(
+        source,
+        `table ${table.name}: reference index ${name} conflicts with another schema object`,
+      );
+    }
+  }
+  table.references.push({
+    column: reference.column,
+    parentTable: reference.parentTable,
+    parentPk: reference.parentPk,
+    onDelete: reference.onDelete,
+  });
+  const index: IrIndex = { name, columns: [reference.column], unique: false };
+  table.indexes.push(index);
+  indexIdentifierSources.set(index, source);
+  if (options.lockedHistory === true) lockedHistoryObjects.add(index);
+}
+
 function parseCreateTable(
   cursor: Cursor,
   tables: Map<string, ParsedTable>,
@@ -590,6 +730,7 @@ function parseCreateTable(
   cursor.expectPunct('(', `after CREATE TABLE ${name}`);
   const columns: IrColumn[] = [];
   const primaryKeys: string[] = [];
+  const references: NonNullable<ColumnDef['reference']>[] = [];
   for (;;) {
     const head = cursor.peek();
     if (head?.kind === 'word') {
@@ -621,6 +762,7 @@ function parseCreateTable(
         }
         columns.push(def.column);
         if (def.primaryKey) primaryKeys.push(def.column.name);
+        if (def.reference !== undefined) references.push(def.reference);
       }
     } else {
       cursor.fail(`table ${name}: expected a column definition`);
@@ -660,6 +802,7 @@ function parseCreateTable(
     name,
     primaryKey,
     columns: finalColumns,
+    references: [],
     indexes: [],
     ftsIndexes: [],
   };
@@ -669,6 +812,9 @@ function parseCreateTable(
   for (const column of finalColumns) {
     columnIdentifierSources.set(column, source);
     if (options.lockedHistory === true) lockedHistoryObjects.add(column);
+  }
+  for (const reference of references) {
+    addReference(tables, table, reference, source, options);
   }
 }
 
@@ -804,6 +950,9 @@ function parseAlterTable(
   table.columns.push(def.column);
   columnIdentifierSources.set(def.column, source);
   if (options.lockedHistory === true) lockedHistoryObjects.add(def.column);
+  if (def.reference !== undefined) {
+    addReference(tables, table, def.reference, source, options);
+  }
 }
 
 /** `DROP TABLE [IF EXISTS] name`; table-name reuse remains unsupported. */

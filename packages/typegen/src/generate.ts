@@ -132,6 +132,13 @@ function buildTable(
     primaryKey: parsed.primaryKey,
     columns,
     scopes,
+    // Declared references (§6.11), in declaration order. The generated index
+    // over each child column already rides in `parsed.indexes`.
+    references: parsed.references.map((reference) => ({
+      column: reference.column,
+      parentTable: reference.parentTable,
+      onDelete: reference.onDelete,
+    })),
     // Indexes flow through from the migration parser (already validated:
     // columns exist, names unique per schema) in declaration order.
     indexes: parsed.indexes,
@@ -195,6 +202,66 @@ function applyEncryption(
       declaredType: column.type,
     };
   });
+}
+
+/**
+ * §6.11 hard errors: a declared reference must name an existing parent table
+ * whose primary key has the child column's type, and parent and child must
+ * declare the same scope patterns so a cascade never crosses an
+ * authorization boundary.
+ */
+function validateReferences(
+  tables: readonly IrTable[],
+  parsedTables: ReadonlyMap<string, ParsedTable>,
+): void {
+  const patternsOf = (table: IrTable): string =>
+    table.scopes
+      .map((scope) => scope.pattern)
+      .sort()
+      .join('\u0000');
+  for (const table of tables) {
+    for (const reference of table.references) {
+      const parent = tables.find(
+        (candidate) => candidate.name === reference.parentTable,
+      );
+      if (parent === undefined) {
+        throw new TypegenError(
+          MANIFEST_FILENAME,
+          `table ${table.name}: reference column ${JSON.stringify(reference.column)} names unknown table ${JSON.stringify(reference.parentTable)}`,
+        );
+      }
+      const parsed = parsedTables
+        .get(table.name)
+        ?.references.find((candidate) => candidate.column === reference.column);
+      if (parsed !== undefined && parsed.parentPk !== parent.primaryKey) {
+        throw new TypegenError(
+          MANIFEST_FILENAME,
+          `table ${table.name}: reference column ${JSON.stringify(reference.column)} names ${parent.name}.${parsed.parentPk}, but a reference only targets the parent's primary key ${parent.name}.${parent.primaryKey} (§6.11)`,
+        );
+      }
+      const child = table.columns.find((c) => c.name === reference.column);
+      const parentKey = parent.columns.find(
+        (c) => c.name === parent.primaryKey,
+      );
+      if (child === undefined || parentKey === undefined) {
+        throw new Error(
+          `unreachable: ${table.name}.${reference.column} or ${parent.name}.${parent.primaryKey} is missing`,
+        );
+      }
+      if (child.type !== parentKey.type) {
+        throw new TypegenError(
+          MANIFEST_FILENAME,
+          `table ${table.name}: reference column ${JSON.stringify(reference.column)} has type ${JSON.stringify(child.type)} but ${parent.name}.${parent.primaryKey} has type ${JSON.stringify(parentKey.type)} — the types must match (§6.11)`,
+        );
+      }
+      if (patternsOf(table) !== patternsOf(parent)) {
+        throw new TypegenError(
+          MANIFEST_FILENAME,
+          `table ${table.name}: reference column ${JSON.stringify(reference.column)} targets ${parent.name}, whose scope patterns (${parent.scopes.map((scope) => scope.pattern).join(', ')}) differ from ${table.name}'s (${table.scopes.map((scope) => scope.pattern).join(', ')}) — a cascade MUST NOT cross an authorization boundary (§6.11)`,
+        );
+      }
+    }
+  }
 }
 
 function buildSubscription(
@@ -312,6 +379,7 @@ export function buildIr(
       );
     }
   }
+  validateReferences(tables, parsedTables);
   const subscriptions = manifest.subscriptions.map((sub) =>
     buildSubscription(sub, tables),
   );

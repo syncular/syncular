@@ -318,6 +318,9 @@ function createSyncedTable(
   db: ClientDatabase,
   table: CompiledClientTable,
 ): void {
+  // §6.11: a declared reference is deliberately NOT emitted here. Windowing
+  // evicts a parent independently of its children, so local SQLite never
+  // enforces a reference; the server enforces it.
   const columns = table.columns.map((column) => {
     const notNull = column.nullable ? '' : ' NOT NULL';
     const pk = column.name === table.primaryKey ? ' PRIMARY KEY' : '';

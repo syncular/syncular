@@ -75,6 +75,17 @@ function toServerSchema(schema: DriverSchema): ServerSchema {
           ? { pattern: scope.pattern, column: scope.column }
           : scope.pattern,
       ),
+      // §6.11: typegen emits one non-unique index per reference column; the
+      // hand-written conformance fixture synthesizes the same declaration.
+      ...(table.references !== undefined
+        ? {
+            references: table.references,
+            indexes: table.references.map((reference) => ({
+              name: `idx_${table.name}_${reference.column}_ref`,
+              columns: [reference.column],
+            })),
+          }
+        : {}),
     })),
   };
 }
@@ -233,6 +244,7 @@ class TsServerInstance implements ServerInstance {
   readonly #limits: {
     maxOperationsPerRequest: number;
     inlineSegmentMaxBytes: number;
+    maxCascadeOperationsPerCommit: number;
   };
   #resolverFailing = false;
   #resolverOutage = false;
@@ -267,6 +279,8 @@ class TsServerInstance implements ServerInstance {
       maxOperationsPerRequest: options.limits?.maxOperationsPerRequest ?? 500,
       inlineSegmentMaxBytes:
         options.limits?.inlineSegmentMaxBytes ?? 256 * 1024,
+      maxCascadeOperationsPerCommit:
+        options.limits?.maxCascadeOperationsPerCommit ?? 1_000,
     };
     this.#segments = new MemorySegmentStore(
       options.limits?.segmentTtlMs !== undefined

@@ -56,7 +56,7 @@ describe('golden fixtures', () => {
   test('IR shape: versioned, extension slots present, no TS types', () => {
     const ir = JSON.parse(generate(FIXTURE).irJson);
     expect(ir.irVersion).toBe(1);
-    expect(ir.schemaVersion).toBe(4);
+    expect(ir.schemaVersion).toBe(5);
     expect(ir.extensions).toEqual({});
     expect(ir.tables[0].extensions).toEqual({});
     expect(ir.schemaVersions).toEqual([
@@ -64,6 +64,7 @@ describe('golden fixtures', () => {
       { version: 2, migrations: ['0002_add_task_estimate'] },
       { version: 3, migrations: ['0003_add_doc_crdt'] },
       { version: 4, migrations: ['0004_add_doc_blob_ref'] },
+      { version: 5, migrations: ['0005_add_doc_revision_fk'] },
     ]);
     // §5.10.1: the CRDT keyword became a crdt column carrying a crdtType.
     const bodyDoc = ir.tables[1].columns.find(
@@ -87,6 +88,18 @@ describe('golden fixtures', () => {
       {
         variable: 'projectId',
         values: [{ kind: 'parameter', name: 'projectId' }],
+      },
+    ]);
+    // §6.11: a declared reference rides the table IR with the non-unique
+    // index over its child column that reference enforcement probes.
+    expect(ir.tables[2].references).toEqual([
+      { column: 'doc_id', parentTable: 'docs', onDelete: 'CASCADE' },
+    ]);
+    expect(ir.tables[2].indexes).toEqual([
+      {
+        name: 'idx_doc_revisions_doc_id_ref',
+        columns: ['doc_id'],
+        unique: false,
       },
     ]);
   });

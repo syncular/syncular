@@ -76,6 +76,13 @@ export interface DriverTable {
   readonly columns: readonly DriverColumn[];
   readonly primaryKey: string;
   readonly scopes: readonly DriverScopePattern[];
+  /** §6.11 declared references. The server enforces them; a client core
+   * ignores them (the local replica DDL omits the clause). */
+  readonly references?: readonly {
+    readonly column: string;
+    readonly parentTable: string;
+    readonly onDelete?: 'RESTRICT' | 'CASCADE' | 'SET NULL';
+  }[];
   readonly ftsIndexes?: readonly {
     readonly name: string;
     readonly columns: readonly string[];
@@ -140,6 +147,8 @@ export type BlobUploadGrantResult =
 export interface ServerLimitsOptions {
   readonly maxOperationsPerRequest?: number;
   readonly inlineSegmentMaxBytes?: number;
+  /** §6.11 declared-reference cascade cap per commit (reference default 1,000). */
+  readonly maxCascadeOperationsPerCommit?: number;
   readonly maxDeltaBytes?: number;
   readonly segmentTtlMs?: number;
   /** §8.6.2 presence document size cap (bytes). */

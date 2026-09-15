@@ -30,7 +30,7 @@ import {
 } from '@syncular/core';
 import type { BlobStore } from './blob-store';
 import type { SyncRequestContext } from './context';
-import { clockOf } from './context';
+import { clockOf, limitsOf } from './context';
 import type { CrdtMergerRegistry } from './crdt-merger';
 import { SyncError } from './errors';
 import { emitEvent } from './events';
@@ -47,6 +47,7 @@ import type {
   StorageTransaction,
   StoredCommit,
   StoredPushResult,
+  StoredRow,
 } from './storage';
 import { StorageConstraintError } from './storage-errors';
 import type {
@@ -79,13 +80,32 @@ function blobIdsInRow(
   return ids;
 }
 
+/** Final state of one staged client operation, as the §6.11 reference pass
+ * sees it after every client operation has been applied to candidate state. */
+interface StagedWrite {
+  readonly table: CompiledTable;
+  readonly op: 'upsert' | 'delete';
+  readonly rowId: string;
+  readonly opIndex: number;
+  /** Final post-merge, post-scope-strip values (upsert only). */
+  readonly values?: readonly RowValue[];
+  /** Stored row observed immediately before the write; undefined on insert. */
+  readonly stored: StoredRow | undefined;
+}
+
+type TerminatingOutcome = {
+  readonly kind: 'terminate';
+  readonly record: PushOperationResult;
+};
+
 type OperationOutcome =
   | {
       readonly kind: 'applied';
       readonly change: NewChange | undefined;
       readonly operation: ValidateCommitOperation;
+      readonly staged: StagedWrite;
     }
-  | { readonly kind: 'terminate'; readonly record: PushOperationResult };
+  | TerminatingOutcome;
 
 function errorRecord(
   opIndex: number,
@@ -93,7 +113,7 @@ function errorRecord(
   message: string,
   retryable = false,
   details?: RejectionDetails,
-): OperationOutcome {
+): TerminatingOutcome {
   return {
     kind: 'terminate',
     record: {
@@ -149,7 +169,7 @@ async function runValidator(
   opIndex: number,
   partition: string,
   actorId: string,
-): Promise<OperationOutcome | undefined> {
+): Promise<TerminatingOutcome | undefined> {
   const validator = validators?.[table.name];
   if (validator === undefined) return undefined;
   try {
@@ -284,6 +304,13 @@ async function applyOperation(
           row: undefined,
           stored: undefined,
         },
+        staged: {
+          table,
+          op: 'delete',
+          rowId: op.rowId,
+          opIndex,
+          stored: undefined,
+        },
       };
     }
     if (!authorizeWrite(table, stored.scopes, resolved)) {
@@ -335,6 +362,7 @@ async function applyOperation(
         stored: toValidateRow(table.columns, storedValues),
         storedServerVersion: stored.serverVersion,
       },
+      staged: { table, op: 'delete', rowId: op.rowId, opIndex, stored },
     };
   }
 
@@ -463,6 +491,7 @@ async function applyOperation(
         storedServerVersion: stored.serverVersion,
         nextServerVersion: newVersion,
       },
+      staged: { table, op: 'upsert', rowId: op.rowId, opIndex, values, stored },
     };
   }
 
@@ -566,6 +595,14 @@ async function applyOperation(
       row: toValidateRow(table.columns, values),
       stored: undefined,
       nextServerVersion: 1,
+    },
+    staged: {
+      table,
+      op: 'upsert',
+      rowId: op.rowId,
+      opIndex,
+      values,
+      stored: undefined,
     },
   };
 }
@@ -736,6 +773,273 @@ async function runCommitValidator(
     );
   }
   return undefined;
+}
+
+/** §6.3.1 reference values are bounded to 256 encoded bytes; an over-long
+ * row id still rejects with the same code and reason, and the parent table
+ * name alone names the reference. */
+function parentReference(
+  parentTable: string,
+  parentRowId: string,
+): Readonly<Record<string, string>> {
+  return new TextEncoder().encode(parentRowId).length <= 256
+    ? { parent: parentTable, row: parentRowId }
+    : { parent: parentTable };
+}
+
+function referenceRejection(
+  opIndex: number,
+  message: string,
+  details: RejectionDetails,
+): PushOperationResult {
+  return {
+    opIndex,
+    status: 'error',
+    code: 'sync.reference_violation',
+    message,
+    retryable: false,
+    details,
+  };
+}
+
+/**
+ * §6.11 declared-reference enforcement, once per commit after every client
+ * operation is staged and before whole-commit validation: a present non-null
+ * reference column must name a live parent, and a parent delete expands
+ * through `CASCADE` / `SET NULL` or rejects `restricted_delete` under
+ * `RESTRICT`. Candidate state is read through the transaction, so a commit
+ * that deletes a parent and its children together passes. Appended
+ * operations join the §6.8 staged operation list (`opIndex` ≥ the client
+ * operation count) and emit ordinary changes carrying the child's stored
+ * scopes; a rejection attributes to the originating client delete.
+ */
+async function enforceReferences(
+  tx: StorageTransaction,
+  schema: CompiledSchema,
+  staged: readonly StagedWrite[],
+  clientOpCount: number,
+  cascadeLimit: number,
+  validators: ValidatorRegistry | undefined,
+  partition: string,
+  actorId: string,
+): Promise<
+  | {
+      readonly kind: 'ok';
+      readonly changes: NewChange[];
+      readonly operations: ValidateCommitOperation[];
+      /** Synthetic opIndex → originating client opIndex. */
+      readonly originByIndex: readonly number[];
+    }
+  | { readonly kind: 'terminate'; readonly record: PushOperationResult }
+> {
+  const changes: NewChange[] = [];
+  const operations: ValidateCommitOperation[] = [];
+  const originByIndex: number[] = [];
+
+  for (const write of staged) {
+    if (write.op !== 'upsert' || write.values === undefined) continue;
+    for (const reference of write.table.references) {
+      const value = write.values[reference.columnIndex];
+      if (value === null || value === undefined) continue;
+      const parentRowId = renderScopeValue(value);
+      if (parentRowId === undefined) continue;
+      if ((await tx.getRow(reference.parentTable, parentRowId)) !== undefined) {
+        continue;
+      }
+      return {
+        kind: 'terminate',
+        record: referenceRejection(
+          write.opIndex,
+          'declared reference names an absent parent row (§6.11)',
+          {
+            reason: 'missing_parent',
+            fieldPaths: [reference.column],
+            references: parentReference(reference.parentTable, parentRowId),
+          },
+        ),
+      };
+    }
+  }
+
+  const schedule = (
+    table: CompiledTable,
+    rowId: string,
+    originOpIndex: number,
+    scheduled: Set<string>,
+    queue: Array<{
+      readonly table: CompiledTable;
+      readonly rowId: string;
+      readonly originOpIndex: number;
+    }>,
+  ): boolean => {
+    const key = `${table.name}\u0000${rowId}`;
+    if (scheduled.has(key)) return false;
+    scheduled.add(key);
+    queue.push({ table, rowId, originOpIndex });
+    return true;
+  };
+
+  const scheduled = new Set<string>();
+  const processed = new Set<string>();
+  const queue: Array<{
+    readonly table: CompiledTable;
+    readonly rowId: string;
+    readonly originOpIndex: number;
+  }> = [];
+  for (const write of staged) {
+    if (write.op === 'delete' && write.stored !== undefined) {
+      schedule(write.table, write.rowId, write.opIndex, scheduled, queue);
+    }
+  }
+
+  for (let cursor = 0; cursor < queue.length; cursor++) {
+    const item = queue[cursor];
+    if (item === undefined) continue;
+    const key = `${item.table.name}\u0000${item.rowId}`;
+    if (processed.has(key)) continue;
+    processed.add(key);
+    for (const reference of item.table.referencedBy) {
+      if (tx.scanRowsByIndex === undefined) {
+        throw new Error(
+          'storage transaction does not support declared-reference enforcement (scanRowsByIndex)',
+        );
+      }
+      const children: StoredRow[] = [];
+      let afterRowId: string | null = null;
+      for (;;) {
+        const page = await tx.scanRowsByIndex({
+          table: reference.table,
+          index: reference.index,
+          values: [item.rowId],
+          afterRowId,
+          limit: 1_000,
+        });
+        children.push(...page);
+        if (page.length < 1_000) break;
+        afterRowId = page[page.length - 1]?.rowId ?? null;
+      }
+      if (children.length === 0) continue;
+      if (reference.onDelete === 'RESTRICT') {
+        return {
+          kind: 'terminate',
+          record: referenceRejection(
+            item.originOpIndex,
+            'delete is blocked by a declared reference with ON DELETE RESTRICT (§6.11)',
+            {
+              reason: 'restricted_delete',
+              references: { child: reference.table },
+            },
+          ),
+        };
+      }
+      const child = schema.tables.get(reference.table);
+      if (child === undefined) {
+        throw new Error(
+          `unreachable: reference child table ${reference.table} is not compiled`,
+        );
+      }
+      for (const childRow of children) {
+        if (originByIndex.length >= cascadeLimit) {
+          return {
+            kind: 'terminate',
+            record: referenceRejection(
+              item.originOpIndex,
+              'declared-reference cascade exceeded the per-commit operation cap (§6.11)',
+              { reason: 'cascade_limit' },
+            ),
+          };
+        }
+        if (
+          !schedule(child, childRow.rowId, item.originOpIndex, scheduled, queue)
+        ) {
+          continue;
+        }
+        const syntheticIndex = clientOpCount + originByIndex.length;
+        const storedValues = decodeRow(child.columns, childRow.payload);
+        if (reference.onDelete === 'CASCADE') {
+          const reject = await runValidator(
+            validators,
+            child,
+            'delete',
+            childRow.rowId,
+            undefined,
+            storedValues,
+            item.originOpIndex,
+            partition,
+            actorId,
+          );
+          if (reject !== undefined) {
+            return { kind: 'terminate', record: reject.record };
+          }
+          await tx.deleteRow(child.name, childRow.rowId);
+          changes.push({
+            table: child.name,
+            rowId: childRow.rowId,
+            op: 'delete',
+            scopes: childRow.scopes,
+          });
+          operations.push({
+            opIndex: syntheticIndex,
+            op: 'delete',
+            table: child.name,
+            rowId: childRow.rowId,
+            row: undefined,
+            stored: toValidateRow(child.columns, storedValues),
+            storedServerVersion: childRow.serverVersion,
+          });
+        } else {
+          const values = [...storedValues];
+          values[reference.columnIndex] = null;
+          const reject = await runValidator(
+            validators,
+            child,
+            'upsert',
+            childRow.rowId,
+            values,
+            storedValues,
+            item.originOpIndex,
+            partition,
+            actorId,
+          );
+          if (reject !== undefined) {
+            return { kind: 'terminate', record: reject.record };
+          }
+          const nextServerVersion = childRow.serverVersion + 1;
+          const payload = encodeRow(child.columns, values);
+          await tx.upsertRow(
+            child.name,
+            {
+              rowId: childRow.rowId,
+              serverVersion: nextServerVersion,
+              scopes: childRow.scopes,
+              payload,
+            },
+            { opIndex: syntheticIndex },
+          );
+          changes.push({
+            table: child.name,
+            rowId: childRow.rowId,
+            op: 'upsert',
+            rowVersion: nextServerVersion,
+            scopes: childRow.scopes,
+            payload,
+          });
+          operations.push({
+            opIndex: syntheticIndex,
+            op: 'upsert',
+            table: child.name,
+            rowId: childRow.rowId,
+            row: toValidateRow(child.columns, values),
+            stored: toValidateRow(child.columns, storedValues),
+            storedServerVersion: childRow.serverVersion,
+            nextServerVersion,
+          });
+        }
+        originByIndex.push(item.originOpIndex);
+      }
+    }
+  }
+  return { kind: 'ok', changes, operations, originByIndex };
 }
 
 function resultFrame(
@@ -950,6 +1254,7 @@ export async function processPushOperationsWithTrace(
     const results: PushOperationResult[] = [];
     const changes: NewChange[] = [];
     const validatedOperations: ValidateCommitOperation[] = [];
+    const stagedWrites: StagedWrite[] = [];
     let terminated: PushOperationResult | undefined;
     const operations = await buildOperations(tx);
     for (let opIndex = 0; opIndex < operations.length; opIndex++) {
@@ -973,7 +1278,32 @@ export async function processPushOperationsWithTrace(
       }
       results.push({ opIndex, status: 'applied' });
       validatedOperations.push(outcome.operation);
+      stagedWrites.push(outcome.staged);
       if (outcome.change !== undefined) changes.push(outcome.change);
+    }
+
+    // §6.11: reference enforcement runs after every client operation is
+    // staged (so the candidate state is final for the client's own writes)
+    // and before whole-commit validation.
+    let appendedOrigin: readonly number[] = [];
+    if (terminated === undefined) {
+      const referencePass = await enforceReferences(
+        tx,
+        schema,
+        stagedWrites,
+        operations.length,
+        limitsOf(ctx).maxCascadeOperationsPerCommit,
+        validators,
+        partition,
+        ctx.actorId,
+      );
+      if (referencePass.kind === 'terminate') {
+        terminated = referencePass.record;
+      } else {
+        changes.push(...referencePass.changes);
+        validatedOperations.push(...referencePass.operations);
+        appendedOrigin = referencePass.originByIndex;
+      }
     }
 
     if (terminated === undefined) {
@@ -988,7 +1318,17 @@ export async function processPushOperationsWithTrace(
         validatedOperations,
       );
       if (commitReject?.kind === 'terminate') {
-        terminated = commitReject.record;
+        // An appended §6.11 cascade operation carries a synthetic opIndex;
+        // surface the originating client operation instead.
+        const rejected = commitReject.record;
+        terminated =
+          rejected.opIndex >= operations.length
+            ? {
+                ...rejected,
+                opIndex:
+                  appendedOrigin[rejected.opIndex - operations.length] ?? 0,
+              }
+            : rejected;
       }
     }
 

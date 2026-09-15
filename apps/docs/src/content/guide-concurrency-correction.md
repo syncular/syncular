@@ -122,6 +122,12 @@ appointment and reservation siblings, indexes, and commit-log candidate all
 roll back. Use ordinary row validators for one authorized proposed row; use
 `commitValidator` when correctness depends on the complete candidate aggregate.
 
+A parent/child existence rule belongs in the schema instead. A declared
+`REFERENCES` column ([Declared references](/guide-schema/#declared-references))
+enforces parent existence, `RESTRICT`, `CASCADE`, and `SET NULL` on the server
+once per commit, so the aggregate hook stays for invariants that references and
+scopes cannot express.
+
 ## 3. Submit one optimistic aggregate from React
 
 Use one `mutate()` call. Splitting the rows across calls would create separate

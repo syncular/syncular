@@ -2969,8 +2969,12 @@ exactly once, after the final staged operation but before `appendCommit`, the
 idempotency result, or transaction commit:
 
 `optimistic idempotency → partition serialization → locked idempotency →
-decode/auth/row validation/write × N → whole-commit validation → append
-log/idempotency → commit`
+decode/auth/row validation/write × N → reference enforcement §6.11 →
+whole-commit validation → append log/idempotency → commit`
+
+Reference enforcement (§6.11) reads the same candidate state after every
+client operation is staged; its appended cascade operations join the staged
+operation list before the callback runs.
 
 Consequently the callback observes the final candidate state, including all
 sibling operations regardless of their order in the pushed commit, and a
@@ -3225,6 +3229,51 @@ The application-facing remote operation protocol for authoritative queries,
 commands, and live query watches is defined separately in
 [`docs/REMOTE.md`](./REMOTE.md). Ordinary commits continue to use SSP2 so
 there is one commit path.
+
+### 6.11 Declared references
+
+A synced table MAY declare one column constraint in its migration SQL:
+
+```
+REFERENCES parent_table(parent_pk) [ON DELETE RESTRICT | CASCADE | SET NULL]
+```
+
+`parent_pk` is the parent table's primary key column. Table-level
+`FOREIGN KEY` syntax stays rejected: one syntax per concept. The generator
+(`typegen`) enforces the subset at schema-compile time and refuses, with a
+hard error, a reference to a non-primary-key column, a child column whose
+type differs from the parent primary-key type, parent and child tables whose
+scope patterns differ, `ON UPDATE`, `SET DEFAULT`, `NO ACTION`, and `SET NULL`
+on a non-nullable child column. An absent `ON DELETE` clause means `RESTRICT`.
+The generator records `{ column, parentTable, onDelete }` in the schema IR and
+emits a non-unique index over the child column so the server reaches children
+through `scanRowsByIndex` (§6.8).
+
+**The local replica DDL omits the clause.** Windowing (§4.8) evicts a parent
+independently of its children, so local SQLite never enforces a reference and
+never holds a row on account of one.
+
+**Enforcement runs once per commit**, after every client operation is staged
+and before whole-commit validation (the §6.8 pipeline). It reads candidate
+state, so a commit that deletes a parent and its children together passes.
+
+| Situation | Outcome |
+|---|---|
+| Staged upsert whose present, non-null reference column names an absent parent | reject `sync.reference_violation` with `reason = missing_parent`, `fieldPaths = [column]`, and `references = { parent: <parentTable>, row: <parentRowId> }` |
+| Staged delete of a parent with remaining children, `RESTRICT` | reject `sync.reference_violation` with `reason = restricted_delete` and `references = { child: <childTable> }` |
+| Staged delete of a parent, `CASCADE` | the server appends one `delete` operation per child to the same commit, recursively through further `CASCADE` references with a visited set |
+| Staged delete of a parent, `SET NULL` | the server appends one upsert per child that sets the reference column to `NULL` |
+| Appended operations exceed the cascade cap (reference default 1,000 per commit) | reject `sync.reference_violation` with `reason = cascade_limit` |
+
+Appended operations run the §6.7 row validators with `op` set to `delete` or
+`upsert`, appear in the §6.8 staged operation list, and emit ordinary changes
+(§2.2) carrying the child's stored scopes. A rejection attributes to the
+`opIndex` of the originating client delete. The `PUSH_RESULT_DETAILS` frame
+(§6.3.1) carries the `reason` and `references` tokens above; the `message`
+stays static.
+
+`sync.reference_violation`: category `invalid-request`, not retryable, action
+`fixRequest`.
 
 ---
 
@@ -4611,6 +4660,7 @@ Recommended actions: `refreshAuth`, `checkPermissions`, `fixRequest`,
 | `sync.row_missing` | not-found | no | forceResync | Upsert with `baseVersion ≠ 0` targeting an absent row (§6.2) |
 | `sync.version_conflict` | conflict | no | resolveConflict | `baseVersion` mismatch (§6.2) — appears as a conflict result, not a request error |
 | `sync.constraint_violation` | invalid-request | no | fixRequest | Server-side data constraint (unique/FK/not-null) rejected the write; also a §6.7 write-validator that threw a non-host-code error (an unexpected throw, not a deliberate host rejection) |
+| `sync.reference_violation` | invalid-request | no | fixRequest | A declared reference (§6.11) failed: an absent parent, a `RESTRICT` delete with live children, or the cascade cap — *new in SSP2*; a push operation-result `error` record with `reason`/`references` in its §6.3.1 details |
 | `sync.missing_scopes` | internal | no | inspectServer | Handler emitted a change without stored scopes (§3.1) |
 | `sync.crdt_merge_failed` | internal | no | inspectServer | A `crdt` column (§2.4 tag 8) was pushed but no merger is registered for its `crdtType`, or the merger threw (§5.10.2) — *new in SSP2*; a push operation-result `error` record only |
 | `sync.idempotency_cache_miss` | internal | yes | retryLater | Cached push result unreadable on replay (§6.3) |
@@ -5099,3 +5149,17 @@ Each is a driver-interface script, not a prose test.
     is never told of any eviction and tombstones nothing (evicted ≠
     revoked — no `revoked` status, no server-side purge). Both pairings
     (TS×TS, Rust×TS).
+
+19. **Declared references (§6.11).** (a) A staged child insert whose present,
+    non-null reference column names an absent parent rejects with
+    `sync.reference_violation` and `reason = missing_parent`, and the commit
+    rolls back whole. (b) `RESTRICT`: a parent delete and a concurrent child
+    insert, in each arrival order, produce the documented outcome
+    (`restricted_delete` for the delete, `missing_parent` for the insert)
+    and both clients converge. (c) `CASCADE`: a parent delete emits one child
+    `delete` per child inside the same commit, and subscribers of the child
+    scope remove the rows. (d) `SET NULL`: a parent delete emits a child
+    upsert that sets the reference column to `NULL`. (e) A cascade that
+    exceeds the 1,000-operation cap rejects with `reason = cascade_limit`.
+    (f) A single commit that deletes a parent and its children together
+    passes `RESTRICT`. Both pairings (TS×TS, Rust×TS).

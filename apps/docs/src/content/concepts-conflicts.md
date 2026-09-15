@@ -103,6 +103,24 @@ scope check, or a serving hiccup that is retryable) surfaces as a
 semantics driven by the error's `retryable` flag. The
 [error catalog](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#10-errors) is normative.
 
+## Declared reference outcomes
+
+A parent/child existence rule belongs in the schema, not in a
+`commitValidator`. A declared `REFERENCES` column enforces parent existence,
+`RESTRICT`, `CASCADE`, and `SET NULL` on the server once per commit, so the
+aggregate hook stays for invariants that references and scopes cannot express.
+
+A violation rejects the commit with `sync.reference_violation` and structured
+recovery details. `reason = missing_parent` marks a present non-null reference
+column naming an absent parent, with `fieldPaths` naming the column and
+`references` carrying the parent table and row. `reason = restricted_delete`
+marks a delete blocked by a live child under `RESTRICT`, with
+`references.child` naming the child table. `reason = cascade_limit` marks a
+cascade past the per-commit operation cap. A `CASCADE` or `SET NULL` delete
+applies inside the originating commit and reaches subscribers as ordinary
+changes. A rejected reference operation removes its optimistic effect on
+rebuild, like any other rejection.
+
 ## Recovery
 
 Conflicts and rejections persist as durable **commit outcomes** with

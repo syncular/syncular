@@ -1,6 +1,6 @@
 {
   "irVersion": 1,
-  "schemaVersion": 4,
+  "schemaVersion": 5,
   "schemaVersions": [
     {
       "version": 1,
@@ -24,6 +24,12 @@
       "version": 4,
       "migrations": [
         "0004_add_doc_blob_ref"
+      ]
+    },
+    {
+      "version": 5,
+      "migrations": [
+        "0005_add_doc_revision_fk"
       ]
     }
   ],
@@ -160,6 +166,66 @@
           "pattern": "project:{projectId}",
           "variable": "projectId",
           "column": "project_id"
+        }
+      ],
+      "extensions": {}
+    },
+    {
+      "name": "doc_revisions",
+      "primaryKey": "id",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "org_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "project_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "doc_id",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "name": "note",
+          "type": "string",
+          "nullable": true
+        }
+      ],
+      "scopes": [
+        {
+          "pattern": "org:{org_id}",
+          "variable": "org_id",
+          "column": "org_id"
+        },
+        {
+          "pattern": "project:{projectId}",
+          "variable": "projectId",
+          "column": "project_id"
+        }
+      ],
+      "references": [
+        {
+          "column": "doc_id",
+          "parentTable": "docs",
+          "onDelete": "CASCADE"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_doc_revisions_doc_id_ref",
+          "columns": [
+            "doc_id"
+          ],
+          "unique": false
         }
       ],
       "extensions": {}

@@ -33,6 +33,7 @@ const IR: IrDocument = {
           column: 'release_id',
         },
       ],
+      references: [],
       indexes: [],
       ftsIndexes: [
         {

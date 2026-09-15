@@ -64,6 +64,16 @@ export interface IrIndex {
   readonly unique: boolean;
 }
 
+/** One declared reference (§6.11): a column constraint the server enforces
+ * with `RESTRICT`, `CASCADE`, or `SET NULL`. `parentTable` is the referenced
+ * table; the referenced column is that table's primary key. IR metadata:
+ * the local replica DDL omits the clause (§6.11). */
+export interface IrReference {
+  readonly column: string;
+  readonly parentTable: string;
+  readonly onDelete: 'RESTRICT' | 'CASCADE' | 'SET NULL';
+}
+
 /** One client-local contentful FTS5 projection. It is owned by the
  * synced table in whose `ftsIndexes` array it appears and never enters the
  * row codec, server schema, scopes, or mutation surface. */
@@ -79,6 +89,9 @@ export interface IrTable {
   /** Declaration order — this IS the §2.4 row-codec positional order. */
   readonly columns: readonly IrColumn[];
   readonly scopes: readonly IrScope[];
+  /** Declared references (§6.11), in declaration order. Additive under
+   * irVersion 1: omitted for tables that declare none. */
+  readonly references: readonly IrReference[];
   /** Local secondary indexes (§migration subset), in declaration order.
    * Additive under irVersion 1: absent/empty for tables that declare none. */
   readonly indexes: readonly IrIndex[];
@@ -175,6 +188,14 @@ export function serializeIr(ir: IrDocument): string {
         variable: scope.variable,
         column: scope.column,
       })),
+      // Declared references (§6.11) are additive under irVersion 1: emitted
+      // only when the table declares at least one, so reference-free tables
+      // stay byte-identical.
+      ...(table.references.length > 0
+        ? {
+            references: table.references.map((reference) => ({ ...reference })),
+          }
+        : {}),
       // Indexes are additive under irVersion 1: emitted only when the table
       // declares at least one, so index-free tables (every pre-index manifest)
       // stay byte-identical and --check fresh. Declaration order preserved.

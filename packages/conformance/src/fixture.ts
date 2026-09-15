@@ -97,3 +97,78 @@ export const ALL_SCOPES: Readonly<Record<string, readonly string[]>> = {
   projectId: ['*'],
   org_id: ['*'],
 };
+
+/**
+ * §6.11 reference fixture: `projects` is the parent, `items` the child, with
+ * one reference column per `ON DELETE` behavior. Parent and child declare the
+ * same scope pattern, so every cascade stays inside one authorization
+ * boundary.
+ */
+export const REFERENCE_FIXTURE_SCHEMA: DriverSchema = {
+  version: 1,
+  tables: [
+    {
+      name: 'projects',
+      columns: [
+        { name: 'project_id', type: 'string', nullable: false },
+        { name: 'title', type: 'string', nullable: false },
+      ],
+      primaryKey: 'project_id',
+      scopes: [{ pattern: 'project:{project_id}' }],
+    },
+    {
+      name: 'items',
+      columns: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'project_id', type: 'string', nullable: false },
+        { name: 'label', type: 'string', nullable: false },
+        { name: 'restrict_parent', type: 'string', nullable: true },
+        { name: 'cascade_parent', type: 'string', nullable: true },
+        { name: 'nullify_parent', type: 'string', nullable: true },
+      ],
+      primaryKey: 'id',
+      scopes: [{ pattern: 'project:{project_id}' }],
+      references: [
+        {
+          column: 'restrict_parent',
+          parentTable: 'projects',
+          onDelete: 'RESTRICT',
+        },
+        {
+          column: 'cascade_parent',
+          parentTable: 'projects',
+          onDelete: 'CASCADE',
+        },
+        {
+          column: 'nullify_parent',
+          parentTable: 'projects',
+          onDelete: 'SET NULL',
+        },
+      ],
+    },
+  ],
+};
+
+export function project(projectId: string, title = 'project'): DriverRow {
+  return { project_id: projectId, title };
+}
+
+export function item(
+  id: string,
+  projectId: string,
+  label = 'item',
+  parents: {
+    readonly restrict?: string | null;
+    readonly cascade?: string | null;
+    readonly nullify?: string | null;
+  } = {},
+): DriverRow {
+  return {
+    id,
+    project_id: projectId,
+    label,
+    restrict_parent: parents.restrict ?? null,
+    cascade_parent: parents.cascade ?? null,
+    nullify_parent: parents.nullify ?? null,
+  };
+}

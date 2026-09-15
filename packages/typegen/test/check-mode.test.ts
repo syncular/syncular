@@ -47,7 +47,7 @@ function replaceInFile(path: string, before: string, after: string): void {
 }
 
 function appendNullableMigration(dir: string): void {
-  const migrationDir = join(dir, 'migrations', '0005_add_task_reviewer');
+  const migrationDir = join(dir, 'migrations', '0006_add_task_reviewer');
   cpSync(join(dir, 'migrations', '0004_add_doc_blob_ref'), migrationDir, {
     recursive: true,
   });
@@ -61,14 +61,14 @@ function appendNullableMigration(dir: string): void {
     schemaVersions: Array<{ version: number; through: string }>;
   };
   manifest.schemaVersions.push({
-    version: 5,
-    through: '0005_add_task_reviewer',
+    version: 6,
+    through: '0006_add_task_reviewer',
   });
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
 }
 
 function appendRequiredMigration(dir: string): void {
-  const migrationDir = join(dir, 'migrations', '0005_add_task_reviewer');
+  const migrationDir = join(dir, 'migrations', '0006_add_task_reviewer');
   cpSync(join(dir, 'migrations', '0004_add_doc_blob_ref'), migrationDir, {
     recursive: true,
   });
@@ -82,14 +82,14 @@ function appendRequiredMigration(dir: string): void {
     schemaVersions: Array<{ version: number; through: string }>;
   };
   manifest.schemaVersions.push({
-    version: 5,
-    through: '0005_add_task_reviewer',
+    version: 6,
+    through: '0006_add_task_reviewer',
   });
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
 }
 
 function appendOverlongIndexMigration(dir: string): string {
-  const migrationName = '0005_add_overlong_index';
+  const migrationName = '0006_add_overlong_index';
   const migrationDir = join(dir, 'migrations', migrationName);
   cpSync(join(dir, 'migrations', '0004_add_doc_blob_ref'), migrationDir, {
     recursive: true,
@@ -104,7 +104,7 @@ function appendOverlongIndexMigration(dir: string): string {
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
     schemaVersions: Array<{ version: number; through: string }>;
   };
-  manifest.schemaVersions.push({ version: 5, through: migrationName });
+  manifest.schemaVersions.push({ version: 6, through: migrationName });
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
   return indexName;
 }
@@ -213,7 +213,7 @@ describe('syncular generate', () => {
     const indexName = appendOverlongIndexMigration(dir);
     const run = runCli(['generate', '--manifest-dir', dir]);
     expect(run.exitCode).toBe(1);
-    expect(run.stderr).toContain('0005_add_overlong_index/up.sql');
+    expect(run.stderr).toContain('0006_add_overlong_index/up.sql');
     expect(run.stderr).toContain(`index name "${indexName}"`);
     expect(run.stderr).toContain('actual UTF-8 length: 64 bytes');
     for (const [path, content] of before) {
@@ -284,7 +284,7 @@ describe('immutable migration history', () => {
         mutate: (dir) =>
           renameSync(
             join(dir, 'migrations', '0002_add_task_estimate'),
-            join(dir, 'migrations', '0005_add_task_estimate'),
+            join(dir, 'migrations', '0006_add_task_estimate'),
           ),
         evidence: 'cannot be removed, renamed, or reordered',
       },
@@ -378,7 +378,7 @@ describe('immutable migration history', () => {
     ]) {
       const run = runCli(args);
       expect(run.exitCode).toBe(1);
-      expect(run.stderr).toContain('0005_add_task_reviewer/up.sql');
+      expect(run.stderr).toContain('0006_add_task_reviewer/up.sql');
       expect(run.stderr).toContain('added column "reviewer" must be nullable');
       expect(run.stderr).toContain('SQL defaults do not backfill');
       expect(run.stderr).not.toContain(upgradeDir);
@@ -463,7 +463,7 @@ describe('immutable migration history', () => {
       dir,
     ]);
     expect(refused.exitCode).toBe(1);
-    expect(refused.stderr).toContain('0005_add_task_reviewer');
+    expect(refused.stderr).toContain('0006_add_task_reviewer');
     expect(refused.stderr).toContain('appended beyond the locked history');
     expect(refused.stderr).toContain('run generate to extend the lock');
     expect(readFileSync(lockPath, 'utf8')).toBe(before);

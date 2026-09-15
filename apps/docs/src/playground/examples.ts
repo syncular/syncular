@@ -35,6 +35,7 @@ const TASKS_SCHEMA = {
           unique: false,
         },
       ],
+      references: [],
       ftsIndexes: [],
       extensions: {},
     },

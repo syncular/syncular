@@ -357,3 +357,85 @@ describe('buildIr cross-checks', () => {
     expect(Object.keys(ir.extensions)).toEqual(['alpha', 'zeta']);
   });
 });
+
+describe('declared references (§6.11)', () => {
+  const REFERENCE_RAW = {
+    manifestVersion: 1,
+    schemaVersions: [{ version: 1, through: '0001_initial' }],
+    tables: [
+      { name: 'parents', scopes: ['project:{project_id}'] },
+      { name: 'children', scopes: ['project:{project_id}'] },
+    ],
+  };
+
+  function referenceIr(
+    parentColumn = 'project_id',
+    parentType = 'TEXT',
+    childScope = 'project:{project_id}',
+  ) {
+    return buildIr(
+      parseManifest({
+        ...REFERENCE_RAW,
+        tables: [
+          {
+            name: 'parents',
+            scopes: ['project:{project_id}'],
+          },
+          { name: 'children', scopes: [childScope] },
+        ],
+      }),
+      [
+        {
+          name: '0001_initial',
+          sql: `CREATE TABLE parents (project_id ${parentType} PRIMARY KEY, title TEXT NOT NULL);
+                CREATE TABLE children (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, parent_id TEXT REFERENCES parents(${parentColumn}) ON DELETE CASCADE)`,
+        },
+      ],
+    );
+  }
+
+  test('a two-table reference lands in the IR with its child index', () => {
+    const ir = referenceIr();
+    expect(ir.tables[1]?.references).toEqual([
+      { column: 'parent_id', parentTable: 'parents', onDelete: 'CASCADE' },
+    ]);
+    expect(ir.tables[1]?.indexes).toEqual([
+      {
+        name: 'idx_children_parent_id_ref',
+        columns: ['parent_id'],
+        unique: false,
+      },
+    ]);
+  });
+
+  test('unknown parent, non-key target, type mismatch, and scope mismatch fail loud', () => {
+    expectFail(
+      () =>
+        buildIr(
+          parseManifest({
+            ...REFERENCE_RAW,
+            tables: [{ name: 'children', scopes: ['project:{project_id}'] }],
+          }),
+          [
+            {
+              name: '0001_initial',
+              sql: 'CREATE TABLE children (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, parent_id TEXT REFERENCES ghosts(id))',
+            },
+          ],
+        ),
+      /names unknown table "ghosts"/,
+    );
+    expectFail(
+      () => referenceIr('title'),
+      /only targets the parent's primary key parents.project_id/,
+    );
+    expectFail(
+      () => referenceIr('project_id', 'INTEGER'),
+      /the types must match/,
+    );
+    expectFail(
+      () => referenceIr('project_id', 'TEXT', 'org:{project_id}'),
+      /MUST NOT cross an authorization boundary/,
+    );
+  });
+});

@@ -16,6 +16,21 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-09-16',
+    title: 'Declared references',
+    body: 'A migration column may declare REFERENCES parent(pk) with ON DELETE RESTRICT, CASCADE, or SET NULL. typegen validates the subset, records the reference in the schema IR, and emits the child index. The server enforces the reference once per commit over candidate state, appends CASCADE deletes and SET NULL updates to the same commit, and rejects a violation with sync.reference_violation and structured recovery details. The local replica DDL omits the clause.',
+    links: [
+      {
+        href: '/guide-schema/#declared-references',
+        label: 'Declared references',
+      },
+      {
+        href: '/concepts-conflicts/#declared-reference-outcomes',
+        label: 'Reference outcomes',
+      },
+    ],
+  },
+  {
     date: '2026-09-13',
     title: 'Cached reads during sync and cooperative imports',
     body: 'Reactive queries read cached snapshots while window registration runs, and additional owners reuse acknowledged windows immediately. Both cores commit SQLite images in chunks of at most 1,024 rows and yield between import and eviction chunks automatically. Interrupted cleanup resumes from durable state. Rust image imports reconcile pending writes under unique constraints without rebuilding the full replica per chunk. Managed FTS projections delete through an indexed identity mapping. Coverage and registration errors remain observable throughout.',
