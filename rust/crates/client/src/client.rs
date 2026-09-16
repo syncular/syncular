@@ -7540,12 +7540,12 @@ impl SyncClient {
     //
     // The Rust face of the §5.10.4 client model: a local crdt edit loads the
     // current stored (server-merged ⊕ pending-overlay) column bytes, applies
-    // the op with `yrs`, re-encodes the whole doc state, and pushes it as a
-    // baseVersion-less upsert through the ordinary `mutate` path (§5.10.3
-    // "crdt-only divergence merges cleanly"). No local merge — merging is
-    // server-side; the overlay's last-write-wins re-materializes the edit
-    // immediately (optimistic apply, §7.1) and the server-merged bytes arrive
-    // on the next pull, idempotently. Byte-compatible with `@syncular/crdt-yjs`.
+    // the op with `yrs`, re-encodes the whole doc state, and records a
+    // baseVersion-less sparse upsert carrying only the primary key and the
+    // crdt column (§5.10.3, §6.6). No local merge — merging is server-side;
+    // the overlay re-materializes the edit immediately (optimistic apply,
+    // §7.1) and the server-merged bytes arrive on the next pull, idempotently.
+    // Byte-compatible with `@syncular/crdt-yjs`.
 
     /// The current stored value of a `crdt` column for one row — the visible
     /// (optimistic) bytes, or `None` when the row is absent or the column is
@@ -7607,9 +7607,9 @@ impl SyncClient {
         crate::crdt::text(&bytes, name)
     }
 
-    /// §5.10.4 push-an-update: apply a text insert to a `crdt` column and push
-    /// the resulting full-state update through the normal (baseVersion-less)
-    /// mutate path. Returns the enqueued `clientCommitId`.
+    /// §5.10.4 push-an-update: apply a text insert to a `crdt` column and
+    /// record the resulting crdt-only sparse operation. Returns the enqueued
+    /// `clientCommitId`.
     #[cfg(feature = "crdt-yjs")]
     pub fn crdt_insert_text(
         &mut self,
@@ -7627,8 +7627,9 @@ impl SyncClient {
         self.crdt_push_update(table, row_id, column, &update)
     }
 
-    /// §5.10.4 push-an-update: apply a text delete to a `crdt` column and push
-    /// the resulting full-state update. Returns the enqueued `clientCommitId`.
+    /// §5.10.4 push-an-update: apply a text delete to a `crdt` column and
+    /// record the resulting crdt-only sparse operation. Returns the enqueued
+    /// `clientCommitId`.
     #[cfg(feature = "crdt-yjs")]
     pub fn crdt_delete_text(
         &mut self,
@@ -7647,9 +7648,9 @@ impl SyncClient {
     }
 
     /// §5.10.4 generic escape hatch: apply an arbitrary Yjs update onto a
-    /// `crdt` column's current state and push the resulting full state. The
-    /// app authored the update with its own `yrs` model. Returns the enqueued
-    /// `clientCommitId`.
+    /// `crdt` column's current state and record the resulting crdt-only sparse
+    /// operation. The app authored the update with its own `yrs` model.
+    /// Returns the enqueued `clientCommitId`.
     #[cfg(feature = "crdt-yjs")]
     pub fn crdt_apply_update(
         &mut self,
@@ -7665,11 +7666,12 @@ impl SyncClient {
         self.crdt_push_update(table, row_id, column, &next)
     }
 
-    /// Shared tail of the crdt edit methods: build the full-row upsert that
-    /// carries the new crdt bytes and enqueue it. The row's other columns are
-    /// preserved from the current visible row (so a crdt edit does not clobber
-    /// the LWW columns); a brand-new row is seeded with just the primary key +
-    /// crdt column. Pushed baseVersion-less (§5.10.3 crdt-only-divergence rule).
+    /// Shared tail of the crdt edit methods: record a §6.1 sparse crdt-only
+    /// upsert — the primary key plus the crdt column, no `baseVersion` — and
+    /// enqueue it. The server merges the crdt column and leaves every other
+    /// column untouched (§5.10.3), so a baseVersion-less crdt edit cannot
+    /// clobber a concurrent edit to another column. A locally absent row
+    /// records the same partial operation; the server answers per §6.2.
     #[cfg(feature = "crdt-yjs")]
     fn crdt_push_update(
         &mut self,
@@ -7678,35 +7680,11 @@ impl SyncClient {
         column: &str,
         crdt_bytes: &[u8],
     ) -> Result<String, String> {
-        let schema_table = self
-            .schema
-            .table(table)
-            .ok_or_else(|| format!("unknown table {table:?}"))?
-            .clone();
-        // The current visible row's values (preserving LWW columns), or a
-        // fresh row keyed by row_id if it does not exist yet.
-        let mut values: Map<String, Value> = self
-            .read_rows(table)?
-            .into_iter()
-            .find(|r| r.row_id == row_id)
-            .map(|r| r.values)
-            .unwrap_or_else(|| {
-                let mut map = Map::new();
-                map.insert(
-                    schema_table.primary_key.clone(),
-                    Value::from(row_id.to_owned()),
-                );
-                map
-            });
-        // Replace the crdt column with the new bytes in the driver envelope.
         let mut bytes_obj = Map::new();
         bytes_obj.insert("$bytes".to_owned(), Value::from(bytes_to_hex(crdt_bytes)));
-        values.insert(column.to_owned(), Value::Object(bytes_obj));
-        self.mutate(vec![Mutation::Upsert {
-            table: table.to_owned(),
-            values,
-            base_version: None,
-        }])
+        let mut partial = Map::new();
+        partial.insert(column.to_owned(), Value::Object(bytes_obj));
+        self.patch(table, row_id, partial, None)
     }
 
     /// Run an arbitrary read-only SQL query against the local database and
