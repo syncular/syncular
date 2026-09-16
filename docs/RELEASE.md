@@ -1,8 +1,54 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.20.1** (`v0.20.1`). All artifacts use Apache-2.0, except
+current release is **0.21.0** (`v0.21.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.21.0 release notes
+
+- Migrations may declare one column reference: `REFERENCES parent(pk)` with
+  `ON DELETE RESTRICT | CASCADE | SET NULL`. typegen validates the subset
+  (parent primary key only, matching column types, matching scope patterns,
+  no `ON UPDATE`, `SET DEFAULT`, or `NO ACTION`; an absent clause means
+  `RESTRICT`) and emits the child index. The server enforces references once
+  per commit over candidate state: `CASCADE` deletes and `SET NULL` updates
+  join the originating commit (cap 1,000 appended operations), and a
+  violation rejects with `sync.reference_violation` carrying `missing_parent`,
+  `restricted_delete`, or `cascade_limit` details. The local replica DDL omits
+  the clause.
+- Wire version 3: a push payload is a sparse row. A presence bitmap names the
+  columns the operation writes; `patch` carries the primary key plus the
+  supplied non-scope columns, `mutate` and inserts carry every column. A
+  500-patch bench lane over a twenty-column table cut request bytes 53.2%
+  (123,756 to 57,866) with drain time inside the lane's noise band.
+- Conflict detection is column-granular: the server tracks a `column_version`
+  per column and conflicts only when a present non-crdt column moved past the
+  operation's `baseVersion`; the conflict record names the contended columns
+  in `conflictColumns`. A `baseVersion` above the row's `server_version`
+  rejects with `sync.invalid_request`.
+- Deletes beat concurrent unversioned upserts: every applied delete leaves a
+  tombstone until the pruning horizon, an unversioned upsert of a deleted row
+  rejects with `sync.row_deleted`, and an explicit `baseVersion = 0` insert
+  recreates it. An upsert presenting a scope column with a changed value
+  rejects with `sync.invalid_request` instead of silently stripping it.
+- `changedFields` is removed from both cores: the operation's values map is
+  the presence set, and the outcome journal derives intent from it. CRDT
+  edits (the web `YjsColumn` flow, the native `crdt*` commands) push sparse
+  crdt-only operations that never conflict, with or without `baseVersion`.
+
+Upgrade Syncular packages and crates together. SSP2 advances to wire version
+3; versions 1 and 2 are rejected as unknown, so clients must upgrade in the
+same release. `COMMIT` frames, rows segments, SQLite images, and conflict
+`serverRow` bytes are unchanged. Servers must increment their application
+schema version once so the storage projection adds the `_sync_column_versions`
+column. Custom `StorageTransaction` adapters must implement
+`getTombstoneSeq` and `clearTombstone`. `patch()` no longer requires a local
+row, rejects scope-column writes, and the optimistic overlay applies present
+columns only.
+
+Details: [declared references](https://syncular.dev/guide-schema/#declared-references),
+[column-granular conflicts](https://syncular.dev/concepts-conflicts/), and
+[local benchmark evidence](../bench/RESULTS.md).
 
 ## 0.20.1 release notes
 
