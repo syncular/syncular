@@ -37,6 +37,7 @@ import {
   type SubStartFrame,
   type WakeReason,
 } from '@syncular/core';
+import { DecryptError, EncryptError } from '@syncular/core';
 import {
   applyCommitFrame,
   applyRowsSegment,
@@ -2638,14 +2639,26 @@ export class SyncClient {
       try {
         pushFrames.push(
           // §5.11: encrypted columns are encrypted at this encode-at-send
-          // seam before the row codec serializes them.
-          await encodeOutboxCommit(this.#schema, commit, this.#encryption),
+          // seam before the row codec serializes them. The stored local
+          // row supplies an absent key-id selector (§6.1 presence set
+          // first, stored row second); an unresolvable key becomes a
+          // durable rejection for that commit, never a sync() throw.
+          await encodeOutboxCommit(
+            this.#schema,
+            commit,
+            this.#encryption,
+            (table, rowId) => this.#readLocalFallbackRow(table, rowId),
+          ),
         );
         outbox.push(commit);
         ops += commit.operations.length;
       } catch (error) {
         if (error instanceof OutboxEncodeError) {
           this.#dropIncompatibleCommit(commit, error.message);
+          continue;
+        }
+        if (error instanceof EncryptError || error instanceof DecryptError) {
+          this.#dropIncompatibleCommit(commit, error.message, error.code);
           continue;
         }
         throw error;
@@ -2655,17 +2668,56 @@ export class SyncClient {
   }
 
   /**
+   * Read the stored local row as a positional fallback for §5.11 key-id
+   * selection. Returns undefined when the table has no key-id selector or
+   * the row is locally absent; only the selector slot is ever read from it.
+   */
+  #readLocalFallbackRow(
+    table: CompiledClientTable,
+    rowId: string,
+  ): readonly (RowValue | undefined)[] | undefined {
+    if (this.#encryption?.keyIdColumns?.[table.name] === undefined) {
+      return undefined;
+    }
+    let row: Record<string, SqlValue | null> | undefined;
+    try {
+      row = this.#db.query(
+        `SELECT ${table.columns.map((column) => quoteIdent(column.name)).join(', ')}
+           FROM ${quoteIdent(table.name)}
+          WHERE ${quoteIdent(table.primaryKey)} = ?`,
+        [rowId],
+      )[0] as Record<string, SqlValue | null> | undefined;
+    } catch {
+      return undefined;
+    }
+    if (row === undefined) return undefined;
+    return table.columns.map((column) => {
+      const sql = row[column.name] ?? null;
+      if (sql === null) return null;
+      try {
+        return fromSqlValue(column, sql) as RowValue;
+      } catch {
+        return undefined;
+      }
+    });
+  }
+
+  /**
    * §7.4.4: drop a commit that cannot re-encode after a bump, mirroring the
    * §7.2 `rejected` surface — the commit leaves the outbox, its
    * purely-optimistic rows are undone, and a rejection record is raised.
    */
-  #dropIncompatibleCommit(commit: OutboxCommit, message: string): void {
+  #dropIncompatibleCommit(
+    commit: OutboxCommit,
+    message: string,
+    code: string = OUTBOX_INCOMPATIBLE_CODE,
+  ): void {
     this.#applyBatch((batch) => {
       this.#rollbackFailedCommit(commit, batch);
       const rejection: RejectionRecord = {
         clientCommitId: commit.clientCommitId,
         opIndex: 0,
-        code: OUTBOX_INCOMPATIBLE_CODE,
+        code,
         message,
         retryable: false,
         ...(commit.operations[0] !== undefined

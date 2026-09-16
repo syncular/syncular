@@ -7122,7 +7122,9 @@ impl SyncClient {
                     let values = full_row_values(schema_table, values)?;
                     // Validate the payload encodes with the current codec
                     // (and, §5.11, that the encrypt seam has its keys).
-                    encode_sparse_row_json(schema_table, &row_id, &values, &self.encryption)?;
+                    // Full-row `mutate` presents every column, so no stored
+                    // fallback is needed.
+                    encode_sparse_row_json(schema_table, &row_id, &values, &self.encryption, None)?;
                     ops.push(OutboxOp {
                         upsert: true,
                         table,
@@ -7239,7 +7241,10 @@ impl SyncClient {
             schema_table.primary_key.clone(),
             Value::from(row_id.to_owned()),
         );
-        encode_sparse_row_json(schema_table, row_id, &values, &self.encryption)?;
+        // §5.11: an absent key-id selector falls back to the stored local
+        // row; a patch presenting no encrypted column needs no key at all.
+        let fallback = self.stored_key_fallback(schema_table, row_id);
+        encode_sparse_row_json(schema_table, row_id, &values, &self.encryption, fallback.as_ref())?;
         self.record_outbox_commit(vec![OutboxOp {
             upsert: true,
             table: table.to_owned(),
@@ -7247,6 +7252,32 @@ impl SyncClient {
             base_version,
             values: Some(values),
         }])
+    }
+
+    /// §5.11 key-id fallback: the stored local row's selector value as a
+    /// positional row (only the selector slot filled). Returns None when no
+    /// selector is configured, the row is locally absent, or the stored
+    /// value is not a usable key id.
+    fn stored_key_fallback(&self, table: &TableSchema, row_id: &str) -> Option<Row> {
+        let selector = self.encryption.key_id_columns.get(&table.name)?;
+        let index = table.columns.iter().position(|column| &column.name == selector)?;
+        fn quote_ident(name: &str) -> String {
+            format!("\"{}\"", name.replace('\"', "\"\""))
+        }
+        let sql = format!(
+            "SELECT {} FROM {} WHERE {} = ?1",
+            quote_ident(selector),
+            quote_ident(&table.name),
+            quote_ident(&table.primary_key)
+        );
+        let key: Option<String> = self
+            .conn
+            .query_row(&sql, rusqlite::params![row_id], |row| row.get(0))
+            .ok()?;
+        let key = key.filter(|key| !key.is_empty())?;
+        let mut fallback: Row = vec![None; table.columns.len()];
+        fallback[index] = Some(ColumnValue::String(key));
+        Some(fallback)
     }
 
     pub fn pending_commit_ids(&self) -> Vec<String> {
@@ -7269,8 +7300,9 @@ impl SyncClient {
                 let Some(table) = self.schema.table(&op.table) else {
                     continue;
                 };
+                let fallback = self.stored_key_fallback(table, &op.row_id);
                 if let Ok(payload) =
-                    encode_sparse_row_json(table, &op.row_id, values, &self.encryption)
+                    encode_sparse_row_json(table, &op.row_id, values, &self.encryption, fallback.as_ref())
                 {
                     payloads.push(payload);
                 }
@@ -7778,8 +7810,13 @@ impl SyncClient {
                         // §0: outbox entries encode at send time with the
                         // current codec (validated at mutate()). §6.1: the
                         // values map's keys are the sparse presence set.
-                        // §5.11: encrypted columns are encrypted here.
-                        encode_sparse_row_json(table, &op.row_id, values, &self.encryption).ok()
+                        // §5.11: encrypted columns are encrypted here, with
+                        // an absent key-id selector read from the stored row.
+                        // An unencodable op yields no payload here; the push
+                        // path below drops the commit as a durable local
+                        // rejection instead of failing the round.
+                        let fallback = self.stored_key_fallback(table, &op.row_id);
+                        encode_sparse_row_json(table, &op.row_id, values, &self.encryption, fallback.as_ref()).ok()
                     });
                     ssp2::model::Operation {
                         table: op.table.clone(),

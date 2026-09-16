@@ -64,7 +64,11 @@ const mobile = await createNativeSyncClient({ schema, encryption });
 
 `keyIdColumns.patient_notes` must name a non-encrypted string column. Its value
 selects the write key for each row; the envelope's own key id still selects the
-correct key while decrypting older data. Raw keys are installed inside the
+correct key while decrypting older data. A `patch` that omits the key-id column
+resolves it from the stored local row, and a `patch` that writes no encrypted
+column needs no key at all. An encode-time selection failure surfaces as
+`client.encrypt_failed`: a durable per-commit rejection that never aborts the
+round. Raw keys are installed inside the
 worker/native core and are never sent to the server. The Tauri plugin must be
 built with its `e2ee` feature.
 

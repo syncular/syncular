@@ -64,6 +64,9 @@ impl EncryptionConfig {
     }
 
     /// §5.11 portable key selection: configured row column, then table name.
+    /// Encode-seam failures carry `client.encrypt_failed` (never the apply-
+    /// seam `client.decrypt_failed`). The caller supplies the presence set
+    /// first with the stored local row merged into an absent selector.
     pub fn key_id_for(&self, table: &TableSchema, row: &Row) -> Result<String, String> {
         let Some(column_name) = self.key_id_columns.get(&table.name) else {
             return Ok(table.name.clone());
@@ -74,7 +77,7 @@ impl EncryptionConfig {
             .position(|column| &column.name == column_name)
         else {
             return Err(format!(
-                "client.decrypt_failed: encryption key-id column {column_name:?} is not present on table {:?}",
+                "client.encrypt_failed: encryption key-id column {column_name:?} is not present on table {:?}",
                 table.name
             ));
         };
@@ -84,14 +87,14 @@ impl EncryptionConfig {
             .any(|column| column.index == index)
         {
             return Err(format!(
-                "client.decrypt_failed: encryption key-id column {column_name:?} on table {:?} must not be encrypted",
+                "client.encrypt_failed: encryption key-id column {column_name:?} on table {:?} must not be encrypted",
                 table.name
             ));
         }
         match row.get(index).and_then(|value| value.as_ref()) {
             Some(ColumnValue::String(key_id)) if !key_id.is_empty() => Ok(key_id.clone()),
             _ => Err(format!(
-                "client.decrypt_failed: encryption key-id column {column_name:?} on table {:?} must contain a non-empty string",
+                "client.encrypt_failed: encryption key-id column {column_name:?} on table {:?} must contain a non-empty string",
                 table.name
             )),
         }
@@ -363,13 +366,15 @@ pub fn encode_row_json(
 
 /// Encode one SPARSE push payload (§2.4, §6.1): the keys of `values` ARE the
 /// presence set — a column with no key stays absent. §5.11: only present
-/// encrypted columns are encrypted; absent columns are densified to NULL for
-/// key-id selection only. Serialized with the `wire_columns` table.
+/// encrypted columns are encrypted, and key resolution runs only then;
+/// absent selector slots fall back to `fallback` (the stored local row).
+/// Serialized with the `wire_columns` table.
 pub fn encode_sparse_row_json(
     table: &TableSchema,
     row_id: &str,
     values: &Map<String, Value>,
     encryption: &EncryptionConfig,
+    fallback: Option<&Row>,
 ) -> Result<Vec<u8>, String> {
     let mut row: SparseRow = Vec::with_capacity(table.columns.len());
     for column in &table.columns {
@@ -387,7 +392,7 @@ pub fn encode_sparse_row_json(
         row.push(value.map_or(SparseSlot::Null, SparseSlot::Value));
     }
     if table.has_encrypted_columns() {
-        encrypt_sparse_row(table, row_id, &mut row, encryption)?;
+        encrypt_sparse_row(table, row_id, &mut row, encryption, fallback)?;
     }
     Ok(encode_sparse_row(&table.wire_columns, table.pk_index, &row))
 }
@@ -443,7 +448,7 @@ fn encrypt_row(
         let key = encryption
             .keys
             .get(&key_id)
-            .ok_or_else(|| format!("client.decrypt_failed: no key for keyId {key_id:?}"))?;
+            .ok_or_else(|| format!("client.encrypt_failed: no key for keyId {key_id:?}"))?;
         let mut nonce = [0u8; NONCE_LENGTH];
         rand_core::OsRng.fill_bytes(&mut nonce);
         let envelope = encrypt_value(&plain, &key_id, key, nonce)?;
@@ -458,17 +463,49 @@ fn encrypt_sparse_row(
     _row_id: &str,
     row: &mut SparseRow,
     encryption: &EncryptionConfig,
+    fallback: Option<&Row>,
 ) -> Result<(), String> {
     use rand_core::RngCore;
     use ssp2::crypto::{encrypt_value, NONCE_LENGTH};
-    // Densify absent columns to NULL for key-id selection only (§6.1).
-    let dense: Row = row
+    // Sparse semantics: absent and NULL columns are never re-encrypted, so
+    // a patch presenting no encrypted value needs no key (§5.11).
+    let has_present_encrypted = table.encrypted_columns.iter().any(|enc| {
+        matches!(row.get(enc.index), Some(SparseSlot::Value(_)))
+    });
+    if !has_present_encrypted {
+        return Ok(());
+    }
+    // Densify absent columns to NULL for key-id selection only; an absent
+    // selector falls back to the stored local row. Absent ≠ NULL: a
+    // present NULL never reads the fallback.
+    let mut dense: Row = row
         .iter()
         .map(|slot| match slot {
             SparseSlot::Value(value) => Some(value.clone()),
             _ => None,
         })
         .collect();
+    if let Some(selector) = encryption.key_id_columns.get(&table.name) {
+        if let Some(index) = table
+            .columns
+            .iter()
+            .position(|column| &column.name == selector)
+        {
+            let absent = dense.get(index).is_none_or(|slot| slot.is_none());
+            if absent {
+                let stored: Option<&str> = match fallback
+                    .and_then(|row| row.get(index))
+                    .and_then(|value| value.as_ref())
+                {
+                    Some(ColumnValue::String(key_id)) => Some(key_id),
+                    _ => None,
+                };
+                if let Some(key_id) = stored.filter(|key_id| !key_id.is_empty()) {
+                    dense[index] = Some(ColumnValue::String(key_id.to_owned()));
+                }
+            }
+        }
+    }
     let key_id = encryption.key_id_for(table, &dense)?;
     for enc in &table.encrypted_columns {
         let Some(SparseSlot::Value(value)) = row.get(enc.index) else {
@@ -478,7 +515,7 @@ fn encrypt_sparse_row(
         let key = encryption
             .keys
             .get(&key_id)
-            .ok_or_else(|| format!("client.decrypt_failed: no key for keyId {key_id:?}"))?;
+            .ok_or_else(|| format!("client.encrypt_failed: no key for keyId {key_id:?}"))?;
         let mut nonce = [0u8; NONCE_LENGTH];
         rand_core::OsRng.fill_bytes(&mut nonce);
         let envelope = encrypt_value(&plain, &key_id, key, nonce)?;
@@ -491,9 +528,15 @@ fn encrypt_sparse_row(
 fn encrypt_sparse_row(
     table: &TableSchema,
     _row_id: &str,
-    _row: &mut SparseRow,
+    row: &mut SparseRow,
     _encryption: &EncryptionConfig,
+    _fallback: Option<&Row>,
 ) -> Result<(), String> {
+    if !table.encrypted_columns.iter().any(|enc| {
+        matches!(row.get(enc.index), Some(SparseSlot::Value(_)))
+    }) {
+        return Ok(());
+    }
     Err(format!(
         "table {:?} has encrypted columns but this build lacks the e2ee feature (§5.11)",
         table.name
@@ -917,5 +960,137 @@ mod naming_tests {
         let internal = normalize_values_casing(&t, map(&[("id", "x"), ("_sync_version", "1")]))
             .expect_err("internal field");
         assert!(internal.contains("internal sync column"), "{internal}");
+    }
+}
+
+#[cfg(test)]
+mod sparse_key_tests {
+    use ssp2::segment::{Column, ColumnType, ColumnValue, Row};
+
+    use super::EncryptionConfig;
+    use crate::schema::{EncryptedColumn, TableSchema};
+
+    #[cfg(feature = "e2ee")]
+    use super::encode_sparse_row_json;
+    #[cfg(feature = "e2ee")]
+    use serde_json::{json, Map, Value};
+
+    fn keyed_table() -> TableSchema {
+        let columns = vec![
+            Column {
+                name: "id".to_owned(),
+                ty: ColumnType::String,
+                nullable: false,
+            },
+            Column {
+                name: "encryption_key_id".to_owned(),
+                ty: ColumnType::String,
+                nullable: true,
+            },
+            Column {
+                name: "note".to_owned(),
+                ty: ColumnType::String,
+                nullable: true,
+            },
+        ];
+        let wire_columns = vec![
+            Column {
+                name: "id".to_owned(),
+                ty: ColumnType::String,
+                nullable: false,
+            },
+            Column {
+                name: "encryption_key_id".to_owned(),
+                ty: ColumnType::String,
+                nullable: true,
+            },
+            Column {
+                name: "note".to_owned(),
+                ty: ColumnType::Bytes,
+                nullable: true,
+            },
+        ];
+        TableSchema {
+            name: "t".to_owned(),
+            columns,
+            wire_columns,
+            primary_key: "id".to_owned(),
+            pk_index: 0,
+            scope_variables: Vec::new(),
+            indexes: Vec::new(),
+            fts_indexes: Vec::new(),
+            encrypted_columns: vec![EncryptedColumn {
+                index: 2,
+                declared_type: "string".to_owned(),
+            }],
+        }
+    }
+
+    fn keyed_config() -> EncryptionConfig {
+        let mut config = EncryptionConfig::default();
+        config.keys.insert("k1".to_owned(), vec![0x2A; 32]);
+        config
+            .key_id_columns
+            .insert("t".to_owned(), "encryption_key_id".to_owned());
+        config
+    }
+
+    #[cfg(feature = "e2ee")]
+    fn values(entries: &[(&str, Value)]) -> Map<String, Value> {
+        entries
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), value.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn key_selection_failures_carry_the_encode_seam_code() {
+        let table = keyed_table();
+        let config = keyed_config();
+        // Absent selector: absent is not NULL and never densifies into one.
+        let row: Row = vec![
+            Some(ColumnValue::String("r1".to_owned())),
+            None,
+            Some(ColumnValue::String("hi".to_owned())),
+        ];
+        let error = config.key_id_for(&table, &row).expect_err("rejects");
+        assert!(error.starts_with("client.encrypt_failed"), "{error}");
+        assert!(!error.starts_with("client.decrypt_failed"), "{error}");
+    }
+
+    #[cfg(feature = "e2ee")]
+    #[test]
+    fn sparse_patch_without_an_encrypted_slot_needs_no_key() {
+        let table = keyed_table();
+        // No keys at all: resolution must be skipped, not failed.
+        let config = EncryptionConfig::default();
+        let payload = encode_sparse_row_json(
+            &table,
+            "r1",
+            &values(&[("id", json!("r1"))]),
+            &config,
+            None,
+        )
+        .expect("encodes without key resolution");
+        assert!(!payload.is_empty());
+    }
+
+    #[cfg(feature = "e2ee")]
+    #[test]
+    fn sparse_patch_falls_back_to_the_stored_key_id() {
+        let table = keyed_table();
+        let config = keyed_config();
+        // The patch presents an encrypted column but not the selector.
+        let sparse = values(&[("id", json!("r1")), ("note", json!("hi"))]);
+        let error = encode_sparse_row_json(&table, "r1", &sparse, &config, None)
+            .expect_err("absent selector with no fallback fails");
+        assert!(error.contains("client.encrypt_failed"), "{error}");
+        let fallback: Row = vec![
+            Some(ColumnValue::String("r1".to_owned())),
+            Some(ColumnValue::String("k1".to_owned())),
+            None,
+        ];
+        encode_sparse_row_json(&table, "r1", &sparse, &config, Some(&fallback))
+            .expect("stored key id encrypts the patch");
     }
 }

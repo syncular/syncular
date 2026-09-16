@@ -14,6 +14,7 @@ import {
 } from '@syncular/core';
 import type { ClientDatabase, SqlRow } from './database';
 import type { EncryptionConfig } from './encryption';
+import type { RowValue } from '@syncular/core';
 import { ClientSyncError } from './errors';
 import {
   type CompiledClientSchema,
@@ -243,6 +244,10 @@ export async function encodeOutboxCommit(
   schema: CompiledClientSchema,
   commit: OutboxCommit,
   encryption?: EncryptionConfig,
+  localRowFor?: (
+    table: CompiledClientTable,
+    rowId: string,
+  ) => readonly (RowValue | undefined)[] | undefined,
 ): Promise<PushCommitFrame> {
   const operations: PushOperation[] = [];
   for (const op of commit.operations) {
@@ -274,7 +279,13 @@ export async function encodeOutboxCommit(
     if (encryption !== undefined && table.hasEncryptedColumns) {
       // Lazy: opt-in E2EE never enters an encryption-free app's bundle.
       const { encryptRowValues } = await import('./encryption');
-      values = await encryptRowValues(encryption, table, op.rowId, values);
+      values = await encryptRowValues(
+        encryption,
+        table,
+        op.rowId,
+        values,
+        localRowFor?.(table, op.rowId),
+      );
     }
     operations.push({
       table: op.table,

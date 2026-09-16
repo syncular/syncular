@@ -20,6 +20,7 @@ Errors carry stable codes. Arriving from a stack trace, start here:
 | `client.storage_busy` | The OPFS pool is still held by another engine | [below](#clientstorage_busy-while-opening-the-app) |
 | `client.worker_restart_required` | A stale dev-server worker graph | [below](#clientworker_restart_required-after-a-package-upgrade) |
 | `client.decrypt_failed` | No key for an envelope's key id | [Encryption keys](/concepts-encryption-keys/) |
+| `client.encrypt_failed` | No usable key id at the push encode seam | [Encryption keys](/concepts-encryption-keys/) |
 | `client.security_preflight_required` | Protected work before `activateSecurity` | [Authorized local purge](/concepts-local-data-purge/) |
 | `client.local_data_purged` | A pending commit touched a purged target | [Authorized local purge](/concepts-local-data-purge/) |
 | `client.crdt_unavailable` | The `crdt-yjs` feature is off in this build | [CRDT columns](/concepts-crdt/) |

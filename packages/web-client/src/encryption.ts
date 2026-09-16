@@ -12,6 +12,7 @@ import {
   type DeclaredType,
   DecryptError,
   decryptValue,
+  EncryptError,
   encryptValue,
   KEY_LENGTH,
   type NonceSource,
@@ -99,7 +100,7 @@ function encryptionKeyId(
   if (config.keyIdFor !== undefined) {
     const selected = config.keyIdFor(table.name, rowId, values);
     if (selected.length === 0) {
-      throw new DecryptError(
+      throw new EncryptError(
         `empty encryption key id selected for table ${JSON.stringify(table.name)}`,
       );
     }
@@ -111,18 +112,18 @@ function encryptionKeyId(
     (column) => column.name === selectorColumn,
   );
   if (index < 0) {
-    throw new DecryptError(
+    throw new EncryptError(
       `encryption key-id column ${JSON.stringify(selectorColumn)} is not present on table ${JSON.stringify(table.name)}`,
     );
   }
   if (table.columns[index]?.encrypted === true) {
-    throw new DecryptError(
+    throw new EncryptError(
       `encryption key-id column ${JSON.stringify(selectorColumn)} on table ${JSON.stringify(table.name)} must not be encrypted`,
     );
   }
   const selected = values[index];
   if (typeof selected !== 'string' || selected.length === 0) {
-    throw new DecryptError(
+    throw new EncryptError(
       `encryption key-id column ${JSON.stringify(selectorColumn)} on table ${JSON.stringify(table.name)} must contain a non-empty string`,
     );
   }
@@ -147,17 +148,45 @@ export async function encryptRowValues<T extends RowValue | undefined>(
   table: CompiledClientTable,
   rowId: string,
   values: readonly T[],
+  fallback?: readonly (RowValue | undefined)[],
 ): Promise<T[]> {
   if (!table.hasEncryptedColumns) return values.slice();
   const out = values.slice();
-  // A sparse operation's absent columns are densified to null for key
-  // selection only; the encryption loop leaves them untouched.
-  const keyId = encryptionKeyId(
-    config,
-    table,
-    rowId,
-    values.map((value) => value ?? null),
-  );
+  // Sparse semantics: absent (undefined) and NULL columns are never
+  // re-encrypted, so a patch that presents no encrypted value needs no key.
+  let hasPresentEncrypted = false;
+  for (let i = 0; i < table.columns.length; i++) {
+    if (table.columns[i]?.encrypted !== true) continue;
+    const value = out[i];
+    if (value !== undefined && value !== null) {
+      hasPresentEncrypted = true;
+      break;
+    }
+  }
+  if (!hasPresentEncrypted) return out;
+  // Key selection reads the presence set first, then the stored local row.
+  // Absent slots densify to null for selection only; the loop below still
+  // leaves them untouched. Absent ≠ NULL: only a fallback fill may rescue
+  // an absent selector, never a null.
+  const selected = values.map((value) => value ?? null);
+  const selectorColumn = config.keyIdColumns?.[table.name];
+  if (selectorColumn !== undefined && config.keyIdFor === undefined) {
+    const index = table.columns.findIndex(
+      (column) => column.name === selectorColumn,
+    );
+    const current = index >= 0 ? selected[index] : undefined;
+    if (
+      (current === null || current === undefined) &&
+      fallback !== undefined &&
+      index >= 0
+    ) {
+      const stored = fallback[index];
+      if (typeof stored === 'string' && stored.length > 0) {
+        (selected as RowValue[])[index] = stored;
+      }
+    }
+  }
+  const keyId = encryptionKeyId(config, table, rowId, selected);
   for (let i = 0; i < table.columns.length; i++) {
     const column = table.columns[i];
     if (column === undefined || !column.encrypted) continue;
@@ -165,7 +194,7 @@ export async function encryptRowValues<T extends RowValue | undefined>(
     if (value === null || value === undefined) continue; // NULL stays NULL
     const key = config.keyProvider(keyId);
     if (key === undefined) {
-      throw new DecryptError(
+      throw new EncryptError(
         `no encryption key for keyId ${JSON.stringify(keyId)} (table ${table.name})`,
       );
     }

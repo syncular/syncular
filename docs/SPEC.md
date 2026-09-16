@@ -2540,8 +2540,16 @@ map from table name to one non-encrypted string column whose row value is the
 active `keyId`. This supports per-Practice/per-Facility keys and rotation via an
 explicit plaintext key-grant identifier without deriving it from an opaque row
 id. The selection order is custom `keyIdFor`, configured `keyIdColumns`, then
-the default **per-table** `keyId = table`. A missing, encrypted, empty, or
-non-string selector column fails locally; it never falls back to another key.
+the default **per-table** `keyId = table`. Key resolution runs only when the
+sparse presence set holds an encrypted column with a non-NULL value: a patch
+that presents no encrypted value encrypts nothing and needs no key. For a
+sparse upsert the selector reads the present columns first, then the stored
+local row: an absent selector slot falls back to the locally stored value,
+while a present NULL never does (absent is not NULL). A missing, encrypted,
+empty, or non-string selector with no usable stored value fails locally with
+`client.encrypt_failed`; it never falls back to another key. An encode-time
+selection or unknown-key failure is a durable client-local rejection for that
+commit and never aborts the round.
 On encode the client resolves `keyId`, embeds it in the envelope, and encrypts with
 `keyProvider(keyId)`. On apply the client reads `keyId` **from the
 envelope** and decrypts with `keyProvider(keyId)` — so key rotation and
@@ -4795,7 +4803,10 @@ Outside the wire catalog: all client-local codes
 [§7.2.1 — an explicit resolution named no retained journal entry],
 `sync.outbox_incompatible`
 [§7.4.4 — a pending commit cannot re-encode under the new schema after a
-bump], `client.decrypt_failed` [§5.11 — an encrypted column failed to
+bump], `client.encrypt_failed` [§5.11 — an encrypted column failed to
+encode at the push seam: the key id resolved to no usable value or the
+selected key is unknown; category `crypto`, non-retryable, raised at the
+encode seam as a durable per-commit rejection, never on the wire], `client.decrypt_failed` [§5.11 — an encrypted column failed to
 decrypt on apply: unknown envelope version, unknown `keyId`, GCM
 authentication failure (wrong key), a malformed envelope, or a post-decrypt
 value-parse failure; category `crypto`, non-retryable, raised at the apply

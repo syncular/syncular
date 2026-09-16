@@ -252,3 +252,168 @@ describe('portable keyring hardening', () => {
     ).not.toThrow();
   });
 });
+
+describe('sparse patch key-id fallback (SYNCULAR-SPARSE-PATCH-KEYID-001)', () => {
+  const COLUMNS: readonly RowColumn[] = [
+    { name: 'id', type: 'string', nullable: false },
+    { name: 'project_id', type: 'string', nullable: false },
+    { name: 'encryption_key_id', type: 'string', nullable: true },
+    { name: 'memo', type: 'string', nullable: true },
+    {
+      name: 'note',
+      type: 'bytes',
+      nullable: true,
+      encrypted: true,
+      declaredType: 'string',
+    },
+  ];
+  const TABLE = {
+    name: 'secrets',
+    columns: COLUMNS,
+    primaryKey: 'id',
+    scopes: ['project:{project_id}'],
+  } as const;
+  const SERVER_SCHEMA: ServerSchema = { version: 1, tables: [TABLE] };
+  const CLIENT_SCHEMA: ClientSchema = { version: 1, tables: [TABLE] };
+  const KEY_ID = 'practice-key-v1';
+  const encryption = {
+    keyProvider: (id: string) => (id === KEY_ID ? KEY : undefined),
+    keyIdColumns: { secrets: 'encryption_key_id' },
+  };
+
+  async function seededClient() {
+    const server = makeServer(SERVER_SCHEMA);
+    server.allowed['actor-1'] = { project_id: ['p1'] };
+    const handle = await makeClient(server, {
+      clientId: 'sparse-keyid',
+      schema: CLIENT_SCHEMA,
+      encryption,
+    });
+    handle.client.subscribe({
+      id: 's1',
+      table: 'secrets',
+      scopes: { project_id: ['p1'] },
+    });
+    await handle.client.syncUntilIdle();
+    return { server, handle };
+  }
+
+  test('a sparse patch omitting the key-id column uses the stored key id', async () => {
+    const { server, handle } = await seededClient();
+    handle.client.mutate([
+      {
+        table: 'secrets',
+        op: 'upsert',
+        values: {
+          id: 'r1',
+          project_id: 'p1',
+          encryption_key_id: KEY_ID,
+          memo: null,
+          note: 'original',
+        },
+      },
+    ]);
+    await handle.client.syncUntilIdle();
+
+    // The patch presents an encrypted column but not the key-id column.
+    handle.client.patch('secrets', 'r1', { note: 'updated' });
+    await handle.client.sync();
+
+    const stored = await server.storage.getRow(PARTITION, 'secrets', 'r1');
+    expect(stored).toBeDefined();
+    expect(
+      contains(
+        stored?.payload ?? new Uint8Array(),
+        new TextEncoder().encode('updated'),
+      ),
+    ).toBe(false);
+    expect(
+      contains(
+        stored?.payload ?? new Uint8Array(),
+        new TextEncoder().encode('original'),
+      ),
+    ).toBe(false);
+    expect(tableRows(handle.db, 'secrets')[0]).toMatchObject({
+      note: 'updated',
+      encryption_key_id: KEY_ID,
+    });
+  });
+
+  test('a sparse patch presenting no encrypted column needs no key', async () => {
+    const server = makeServer(SERVER_SCHEMA);
+    server.allowed['actor-1'] = { project_id: ['p1'] };
+    // The provider knows no key at all: any key resolution would fail, so
+    // reaching the server proves resolution was skipped, not resolved.
+    const handle = await makeClient(server, {
+      clientId: 'sparse-keyless',
+      schema: CLIENT_SCHEMA,
+      encryption: {
+        keyProvider: () => undefined,
+        keyIdColumns: { secrets: 'encryption_key_id' },
+      },
+    });
+    handle.client.subscribe({
+      id: 's1',
+      table: 'secrets',
+      scopes: { project_id: ['p1'] },
+    });
+    await handle.client.syncUntilIdle();
+    // A NULL encrypted column is never encrypted, so even this full-row
+    // write needs no key.
+    handle.client.mutate([
+      {
+        table: 'secrets',
+        op: 'upsert',
+        values: {
+          id: 'r2',
+          project_id: 'p1',
+          encryption_key_id: KEY_ID,
+          memo: null,
+          note: null,
+        },
+      },
+    ]);
+    await handle.client.syncUntilIdle();
+    handle.client.patch('secrets', 'r2', { memo: 'plain' });
+    await handle.client.sync();
+    expect(tableRows(handle.db, 'secrets')[0]).toMatchObject({
+      memo: 'plain',
+      note: null,
+    });
+    expect(handle.client.rejections()).toHaveLength(0);
+  });
+
+  test('an unresolvable key id rejects the commit without throwing from sync()', async () => {
+    const { handle } = await seededClient();
+    handle.client.mutate([
+      {
+        table: 'secrets',
+        op: 'upsert',
+        values: {
+          id: 'r3',
+          project_id: 'p1',
+          encryption_key_id: KEY_ID,
+          memo: null,
+          note: 'sealed',
+        },
+      },
+    ]);
+    await handle.client.syncUntilIdle();
+    // A patch on a locally absent row presents an encrypted column with no
+    // stored key id to fall back to.
+    const badId = handle.client.patch('secrets', 'ghost', { note: 'x' });
+    const goodId = handle.client.patch('secrets', 'r3', { memo: 'y' });
+    await handle.client.sync();
+    expect(handle.client.commitOutcome(badId)).toMatchObject({
+      status: 'rejected',
+      results: [
+        {
+          status: 'error',
+          rejection: { code: 'client.encrypt_failed' },
+        },
+      ],
+    });
+    // The unrelated commit in the same round still applied.
+    expect(handle.client.commitOutcome(goodId)?.status).toBe('applied');
+  });
+});

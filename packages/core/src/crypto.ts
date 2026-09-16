@@ -49,6 +49,19 @@ export class DecryptError extends Error {
 }
 
 /**
+ * Client-local encrypt failure (SPEC.md §5.11, §10.3). Never on the wire.
+ * Raised at the encode-at-send seam when the key id cannot be resolved
+ * from the present columns or the stored local row, or the selected key
+ * is unknown. Not retryable unmodified. Distinct from {@link DecryptError},
+ * which is apply-seam only.
+ */
+export class EncryptError extends Error {
+  override readonly name = 'EncryptError';
+  readonly code = 'client.encrypt_failed';
+  readonly retryable = false;
+}
+
+/**
  * Injectable nonce source (SPEC.md §5.11 nonce discipline). Production uses
  * {@link secureRandomNonce}; crypto golden vectors inject a fixed nonce. A
  * fixed nonce MUST NOT be reachable from a production encode path.
