@@ -279,6 +279,58 @@ export const encryptionScenarios: readonly Scenario[] = [
       );
       checkEqual((await a.api.rejections()).length, 0, 'no rejection yet');
 
+      // A patch that presents no encrypted column needs no key: the new
+      // selector names a key the provider lacks, so any key resolution would
+      // reject. The commit reaches the server with zero rejections (§5.11).
+      await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'secrets',
+          values: {
+            id: 'r2',
+            project_id: 'p1',
+            encryption_key_id: SELECTED_KEY_ID,
+            note: null,
+          },
+        },
+      ]);
+      await syncIdle(a);
+      await a.api.patch('secrets', 'r2', {
+        encryption_key_id: 'rotated-away-key',
+      });
+      const keyless = await syncIdle(a);
+      checkEqual(
+        keyless.rejected.length,
+        0,
+        'the selector-only patch is not server-rejected',
+      );
+      checkEqual(
+        (await a.api.rejections()).length,
+        0,
+        'a patch presenting no encrypted column yields zero rejections',
+      );
+      const keylessLocal = (await a.api.readRows('secrets')).find(
+        (r) => r.values.id === 'r2',
+      );
+      checkEqual(
+        keylessLocal?.values.encryption_key_id,
+        'rotated-away-key',
+        'the unconfigured selector is stored, proving no key was resolved',
+      );
+      checkEqual(
+        keylessLocal?.values.note,
+        null,
+        'the untouched encrypted column stays NULL',
+      );
+      const keylessServer = (await ctx.server.readRows('secrets')).find(
+        (r) => r.rowId === 'r2',
+      );
+      checkEqual(
+        keylessServer?.values.encryption_key_id,
+        'rotated-away-key',
+        'the server stored the selector instead of rejecting the patch',
+      );
+
       // A patch on a locally absent row presents an encrypted column with no
       // stored selector: durable rejection, dropped commit, no sync() abort.
       const ghost = await a.api.patch('secrets', 'ghost', { note: 'x' });
@@ -302,6 +354,62 @@ export const encryptionScenarios: readonly Scenario[] = [
       check(
         !(await a.api.pendingCommitIds()).includes(ghost),
         'the dropped commit left the outbox',
+      );
+
+      // A present NULL selector is not an absent selector: it stays NULL and
+      // never reads the stored key id, so the encode fails durably. A core
+      // that fell back would have encrypted under the stored key and put
+      // ciphertext on the server with zero rejections (§6.1 absent ≠ NULL).
+      const nullSelector = await a.api.patch('secrets', 'r1', {
+        encryption_key_id: null,
+        note: 'nullled',
+      });
+      const nullReport = await syncIdle(a);
+      check(
+        !nullReport.rejected.includes(nullSelector),
+        'the present-NULL encode failure is client-local, not a server rejection',
+      );
+      const afterNull = await a.api.rejections();
+      checkEqual(afterNull.length, 2, 'a second durable rejection');
+      checkEqual(
+        afterNull[1]?.code,
+        'client.encrypt_failed',
+        'the present NULL selector is unusable, not rescued from the stored row',
+      );
+      checkEqual(
+        afterNull[1]?.clientCommitId,
+        nullSelector,
+        'the rejection names the dropped present-NULL commit',
+      );
+      check(
+        afterNull[1]?.operation?.present?.includes('encryption_key_id') ===
+          true && afterNull[1]?.operation?.present?.includes('note') === true,
+        'the rejected operation presented the selector (NULL) and the note',
+      );
+      check(
+        !(await a.api.pendingCommitIds()).includes(nullSelector),
+        'the dropped present-NULL commit left the outbox',
+      );
+      const r1After = (await a.api.readRows('secrets')).find(
+        (r) => r.values.id === 'r1',
+      );
+      checkEqual(
+        r1After?.values.encryption_key_id,
+        SELECTED_KEY_ID,
+        'the failed commit rolled back, so the stored selector survives',
+      );
+      checkEqual(
+        r1After?.values.note,
+        'updated',
+        'the failed commit rolled back the stored note',
+      );
+      const r1Server = (await ctx.server.readRows('secrets')).find(
+        (r) => r.rowId === 'r1',
+      );
+      checkEqual(
+        r1Server?.values.encryption_key_id,
+        SELECTED_KEY_ID,
+        'the server row kept the stored selector',
       );
     },
   },
