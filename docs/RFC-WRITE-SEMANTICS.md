@@ -1,6 +1,6 @@
 # RFC: Column-granular writes, delete precedence, and declared references
 
-- Status: proposed
+- Status: implemented and verified; included in 0.21.0
 - Date: 2026-09-16
 - Review baseline: `dafb91fb7f6bd8a165ff64b37594bf803e28c06c` (0.20.1)
 - Scope: SPEC §2, §5.10, §6, §7, §9, §10, Appendix B; typegen DDL subset and
