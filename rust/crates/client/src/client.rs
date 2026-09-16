@@ -76,6 +76,9 @@ const MAX_JS_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 /// §7.4.4 client-local code: a pending outbox commit cannot re-encode under
 /// the new schema after a bump. Never a wire code (§10.3).
 const OUTBOX_INCOMPATIBLE_CODE: &str = "sync.outbox_incompatible";
+/// §5.11 client-local code: an encode at the push seam resolved no usable key
+/// id or named an unknown key. Never a wire code (§10.3).
+const ENCRYPT_FAILED_CODE: &str = "client.encrypt_failed";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -161,6 +164,59 @@ mod observation_tests {
             ClientLimits::default(),
         )
         .expect("test client")
+    }
+
+    #[cfg(feature = "e2ee")]
+    #[test]
+    fn an_unresolvable_key_id_becomes_a_durable_rejection_at_the_push_seam() {
+        let schema = json!({
+            "version": 1,
+            "tables": [{
+                "name": "secrets",
+                "primaryKey": "id",
+                "columns": [
+                    { "name": "id", "type": "string", "nullable": false },
+                    { "name": "encryption_key_id", "type": "string", "nullable": true },
+                    { "name": "note", "type": "bytes", "nullable": true,
+                      "encrypted": true, "declaredType": "string" }
+                ],
+                "scopes": []
+            }]
+        });
+        let mut client =
+            SyncClient::new("encrypt-reject".into(), &schema, ClientLimits::default())
+                .expect("test client");
+        let mut config = crate::values::EncryptionConfig::default();
+        config.keys.insert("k1".to_owned(), vec![0x2A; 32]);
+        config
+            .key_id_columns
+            .insert("secrets".to_owned(), "encryption_key_id".to_owned());
+        client.set_encryption(config);
+        // A patch on a locally absent row presents an encrypted column with no
+        // stored key id to fall back to. Authoring succeeds...
+        let commit_id = client
+            .patch(
+                "secrets",
+                "ghost",
+                Map::from_iter([("note".to_owned(), json!("x"))]),
+                None,
+            )
+            .expect("patch records without an author-time encrypt failure");
+        assert_eq!(client.pending_commit_ids(), vec![commit_id.clone()]);
+        // ...and the push seam raises a durable local rejection, not a throw.
+        assert!(client.drop_unencodable_outbox().unwrap());
+        assert!(client.pending_commit_ids().is_empty());
+        let rejections = client.rejections();
+        assert_eq!(rejections.len(), 1);
+        assert_eq!(rejections[0].code, "client.encrypt_failed");
+        assert_eq!(rejections[0].client_commit_id, commit_id);
+        assert_eq!(
+            client
+                .commit_outcome(&commit_id)
+                .unwrap()
+                .map(|outcome| outcome.status),
+            Some(CommitOutcomeStatus::Rejected)
+        );
     }
 
     #[test]
@@ -7120,11 +7176,12 @@ impl SyncClient {
                     // §6.7 `mutate` marks every column present: fill missing
                     // nullable columns with NULL before the payload is built.
                     let values = full_row_values(schema_table, values)?;
-                    // Validate the payload encodes with the current codec
-                    // (and, §5.11, that the encrypt seam has its keys).
-                    // Full-row `mutate` presents every column, so no stored
-                    // fallback is needed.
-                    encode_sparse_row_json(schema_table, &row_id, &values, &self.encryption, None)?;
+                    // §5.11: validate the payload encodes with the current
+                    // codec. A key-selection or unknown-key failure is a
+                    // durable rejection at the push seam (§10.3), never an
+                    // author-time error. Full-row `mutate` presents every
+                    // column, so no stored fallback is needed.
+                    self.validate_author_encode(schema_table, &row_id, &values)?;
                     ops.push(OutboxOp {
                         upsert: true,
                         table,
@@ -7241,10 +7298,12 @@ impl SyncClient {
             schema_table.primary_key.clone(),
             Value::from(row_id.to_owned()),
         );
-        // §5.11: an absent key-id selector falls back to the stored local
-        // row; a patch presenting no encrypted column needs no key at all.
-        let fallback = self.stored_key_fallback(schema_table, row_id);
-        encode_sparse_row_json(schema_table, row_id, &values, &self.encryption, fallback.as_ref())?;
+        // §5.11: structural validation only; an absent key-id selector is
+        // resolved at the push seam from the stored local row, and a
+        // key-selection or unknown-key failure becomes a durable
+        // `client.encrypt_failed` rejection there (§10.3), never an
+        // author-time error.
+        self.validate_author_encode(schema_table, row_id, &values)?;
         self.record_outbox_commit(vec![OutboxOp {
             upsert: true,
             table: table.to_owned(),
@@ -7278,6 +7337,93 @@ impl SyncClient {
         let mut fallback: Row = vec![None; table.columns.len()];
         fallback[index] = Some(ColumnValue::String(key));
         Some(fallback)
+    }
+
+    /// §5.11/§10.3 author-time encode check: a structural failure (a
+    /// non-nullable NULL, a value the codec rejects) is an author-time
+    /// error; a key-selection or unknown-key failure is deferred to the push
+    /// seam, where it becomes a durable `client.encrypt_failed` rejection.
+    fn validate_author_encode(
+        &self,
+        table: &TableSchema,
+        row_id: &str,
+        values: &Map<String, Value>,
+    ) -> Result<(), String> {
+        match encode_sparse_row_json(table, row_id, values, &self.encryption, None) {
+            Err(error) if error.starts_with(ENCRYPT_FAILED_CODE) => Ok(()),
+            result => result.map(|_| ()),
+        }
+    }
+
+    /// §5.11/§10.3: drop every pending commit whose push encode fails with
+    /// `client.encrypt_failed` (an unresolvable key id or an unknown key) and
+    /// raise one durable rejection per commit. `sync()` never aborts for an
+    /// encode failure. Mirrors §7.4.4's `drop_incompatible_outbox`, including
+    /// undoing the dropped commit's purely-optimistic rows.
+    fn drop_unencodable_outbox(&mut self) -> Result<bool, String> {
+        if !self
+            .schema
+            .tables
+            .iter()
+            .any(|table| table.has_encrypted_columns())
+        {
+            return Ok(false);
+        }
+        let failures = self
+            .outbox
+            .iter()
+            .filter_map(|commit| {
+                commit
+                    .ops
+                    .iter()
+                    .find_map(|op| {
+                        let values = op.values.as_ref().filter(|_| op.upsert)?;
+                        let table = self.schema.table(&op.table)?;
+                        let fallback = self.stored_key_fallback(table, &op.row_id);
+                        match encode_sparse_row_json(
+                            table,
+                            &op.row_id,
+                            values,
+                            &self.encryption,
+                            fallback.as_ref(),
+                        ) {
+                            Err(error) if error.starts_with(ENCRYPT_FAILED_CODE) => Some(error),
+                            _ => None,
+                        }
+                    })
+                    .map(|error| (commit.clone(), error))
+            })
+            .collect::<Vec<_>>();
+        if failures.is_empty() {
+            return Ok(false);
+        }
+        for (commit, message) in failures {
+            let rejection = RejectionRecord {
+                client_commit_id: commit.client_commit_id.clone(),
+                op_index: 0,
+                code: ENCRYPT_FAILED_CODE.to_owned(),
+                message,
+                retryable: false,
+                details: None,
+                operation: commit.ops.first().map(CommitOperation::from),
+            };
+            self.persist_commit_outcome(
+                &commit.client_commit_id,
+                CommitOutcomeStatus::Rejected,
+                &[CommitOperationOutcome::Error {
+                    rejection: rejection.clone(),
+                }],
+                Some(&commit.ops),
+            )?;
+            self.delete_outbox_persisted(&commit.client_commit_id)?;
+            self.outbox
+                .retain(|candidate| candidate.client_commit_id != commit.client_commit_id);
+            self.rejections.push(rejection);
+        }
+        self.prune_commit_outcomes()?;
+        self.overlay_dirty.set(true);
+        self.rebuild_overlay();
+        Ok(true)
     }
 
     pub fn pending_commit_ids(&self) -> Vec<String> {
@@ -7812,9 +7958,9 @@ impl SyncClient {
                         // values map's keys are the sparse presence set.
                         // §5.11: encrypted columns are encrypted here, with
                         // an absent key-id selector read from the stored row.
-                        // An unencodable op yields no payload here; the push
-                        // path below drops the commit as a durable local
-                        // rejection instead of failing the round.
+                        // `sync_inner` runs `drop_unencodable_outbox` first,
+                        // so an encrypt failure cannot reach this encode; the
+                        // author seam validated every other failure.
                         let fallback = self.stored_key_fallback(table, &op.row_id);
                         encode_sparse_row_json(table, &op.row_id, values, &self.encryption, fallback.as_ref()).ok()
                     });
@@ -7969,6 +8115,15 @@ impl SyncClient {
             }
         }
         if let Err(message) = self.drain_pending_evictions() {
+            return SyncOutcome::Failed {
+                error_code: "storage.failed".into(),
+                message,
+            };
+        }
+        // §5.11/§10.3: an unresolvable key id or an unknown key is a durable
+        // per-commit rejection, never a reason to abort the round. Drop those
+        // commits before the request is built.
+        if let Err(message) = self.drop_unencodable_outbox() {
             return SyncOutcome::Failed {
                 error_code: "storage.failed".into(),
                 message,

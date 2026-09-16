@@ -37,7 +37,7 @@ import {
   type SubStartFrame,
   type WakeReason,
 } from '@syncular/core';
-import { DecryptError, EncryptError } from '@syncular/core';
+import { EncryptError } from '@syncular/core';
 import {
   applyCommitFrame,
   applyRowsSegment,
@@ -2639,15 +2639,26 @@ export class SyncClient {
       try {
         pushFrames.push(
           // §5.11: encrypted columns are encrypted at this encode-at-send
-          // seam before the row codec serializes them. The stored local
-          // row supplies an absent key-id selector (§6.1 presence set
-          // first, stored row second); an unresolvable key becomes a
-          // durable rejection for that commit, never a sync() throw.
+          // seam before the row codec serializes them. The stored local row
+          // supplies an ABSENT key-id selector (§6.1 presence set first,
+          // stored row second); an unresolvable key becomes a durable
+          // rejection for that commit, never a sync() throw.
           await encodeOutboxCommit(
             this.#schema,
             commit,
             this.#encryption,
-            (table, rowId) => this.#readLocalFallbackRow(table, rowId),
+            (table, rowId) => {
+              const selector = this.#encryption?.keyIdColumns?.[table.name];
+              if (selector === undefined) return undefined;
+              const row = this.#db.query(
+                `SELECT ${quoteIdent(selector)} AS value FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)} = ?`,
+                [rowId],
+              )[0];
+              const value = row?.value;
+              return typeof value === 'string' && value.length > 0
+                ? value
+                : undefined;
+            },
           ),
         );
         outbox.push(commit);
@@ -2657,7 +2668,7 @@ export class SyncClient {
           this.#dropIncompatibleCommit(commit, error.message);
           continue;
         }
-        if (error instanceof EncryptError || error instanceof DecryptError) {
+        if (error instanceof EncryptError) {
           this.#dropIncompatibleCommit(commit, error.message, error.code);
           continue;
         }
@@ -2668,44 +2679,10 @@ export class SyncClient {
   }
 
   /**
-   * Read the stored local row as a positional fallback for §5.11 key-id
-   * selection. Returns undefined when the table has no key-id selector or
-   * the row is locally absent; only the selector slot is ever read from it.
-   */
-  #readLocalFallbackRow(
-    table: CompiledClientTable,
-    rowId: string,
-  ): readonly (RowValue | undefined)[] | undefined {
-    if (this.#encryption?.keyIdColumns?.[table.name] === undefined) {
-      return undefined;
-    }
-    let row: Record<string, SqlValue | null> | undefined;
-    try {
-      row = this.#db.query(
-        `SELECT ${table.columns.map((column) => quoteIdent(column.name)).join(', ')}
-           FROM ${quoteIdent(table.name)}
-          WHERE ${quoteIdent(table.primaryKey)} = ?`,
-        [rowId],
-      )[0] as Record<string, SqlValue | null> | undefined;
-    } catch {
-      return undefined;
-    }
-    if (row === undefined) return undefined;
-    return table.columns.map((column) => {
-      const sql = row[column.name] ?? null;
-      if (sql === null) return null;
-      try {
-        return fromSqlValue(column, sql) as RowValue;
-      } catch {
-        return undefined;
-      }
-    });
-  }
-
-  /**
    * §7.4.4: drop a commit that cannot re-encode after a bump, mirroring the
    * §7.2 `rejected` surface — the commit leaves the outbox, its
    * purely-optimistic rows are undone, and a rejection record is raised.
+   * §5.11: the same drop carries an encode-seam `client.encrypt_failed`.
    */
   #dropIncompatibleCommit(
     commit: OutboxCommit,

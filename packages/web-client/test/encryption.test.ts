@@ -10,8 +10,14 @@ import {
   compileClientSchema,
   decryptRowValues,
   encryptionConfigFromKeyring,
+  encryptRowValues,
 } from '@syncular/client';
-import { DecryptError, encryptValue, type RowColumn } from '@syncular/core';
+import {
+  DecryptError,
+  encryptValue,
+  type RowColumn,
+  type RowValue,
+} from '@syncular/core';
 import type { ServerSchema } from '@syncular/server';
 import { makeClient, makeServer, PARTITION, tableRows } from './helpers';
 
@@ -381,6 +387,41 @@ describe('sparse patch key-id fallback (SYNCULAR-SPARSE-PATCH-KEYID-001)', () =>
       note: null,
     });
     expect(handle.client.rejections()).toHaveLength(0);
+  });
+
+  test('a present NULL key-id column never falls back to the stored key id', async () => {
+    // Unit seam: the patch presents the selector explicitly as NULL with a
+    // stored key id able to rescue it. Absent is not NULL, so the stored key
+    // id must stay unused and the NULL selector must fail as unusable.
+    const table = compileClientSchema(CLIENT_SCHEMA).tables.get('secrets')!;
+    const values: readonly (RowValue | undefined)[] = [
+      'r4',
+      undefined,
+      null,
+      undefined,
+      'updated',
+    ];
+    await expect(
+      encryptRowValues(encryption, table, 'r4', values, KEY_ID),
+    ).rejects.toMatchObject({ code: 'client.encrypt_failed' });
+
+    // The same patch with an ABSENT selector does read the stored key id.
+    const absent: readonly (RowValue | undefined)[] = [
+      'r4',
+      undefined,
+      undefined,
+      undefined,
+      'updated',
+    ];
+    const encrypted = await encryptRowValues(
+      encryption,
+      table,
+      'r4',
+      absent,
+      KEY_ID,
+    );
+    expect(encrypted[2]).toBeUndefined();
+    expect(encrypted[4]).not.toBe('updated');
   });
 
   test('an unresolvable key id rejects the commit without throwing from sync()', async () => {

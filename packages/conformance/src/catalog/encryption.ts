@@ -56,6 +56,37 @@ const wrongKeys: DriverEncryptionConfig = {
   keys: { secrets: { $bytes: WRONG_KEY_HEX } },
 };
 
+/** A table whose key id is selected by a plaintext column (§5.11). */
+const SELECTED_SCHEMA: DriverSchema = {
+  version: 1,
+  tables: [
+    {
+      name: 'secrets',
+      columns: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'project_id', type: 'string', nullable: false },
+        { name: 'encryption_key_id', type: 'string', nullable: true },
+        {
+          name: 'note',
+          type: 'bytes',
+          nullable: true,
+          encrypted: true,
+          declaredType: 'string',
+        },
+      ],
+      primaryKey: 'id',
+      scopes: [{ pattern: 'project:{project_id}' }],
+    },
+  ],
+};
+
+const SELECTED_SERVER = { schema: SELECTED_SCHEMA } as const;
+const SELECTED_KEY_ID = 'practice-key-v1';
+const selectedKeys: DriverEncryptionConfig = {
+  keys: { [SELECTED_KEY_ID]: { $bytes: KEY_HEX } },
+  keyIdColumns: { secrets: 'encryption_key_id' },
+};
+
 function utf8Hex(text: string): string {
   let hex = '';
   for (const b of new TextEncoder().encode(text)) {
@@ -188,6 +219,89 @@ export const encryptionScenarios: readonly Scenario[] = [
         bad,
         'client.decrypt_failed',
         'wrong-key apply surfaces client.decrypt_failed',
+      );
+    },
+  },
+  {
+    // §5.11: a sparse patch that omits the key-id selector resolves it from
+    // the stored local row; an unresolvable key id is a durable
+    // `client.encrypt_failed` rejection instead of a sync() abort.
+    name: 'encryption/sparse-patch-key-resolution',
+    specRefs: ['§5.11', '§10.3', '§6.1'],
+    server: SELECTED_SERVER,
+    async run(ctx: ScenarioContext) {
+      const a = await ctx.newClient({
+        actorId: 'a',
+        clientId: 'client-selected',
+        schema: SELECTED_SCHEMA,
+        allowed: P1,
+        encryption: selectedKeys,
+      });
+      await a.api.subscribe({ id: 's', table: 'secrets', scopes: P1 });
+      await syncIdle(a);
+      await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'secrets',
+          values: {
+            id: 'r1',
+            project_id: 'p1',
+            encryption_key_id: SELECTED_KEY_ID,
+            note: 'original',
+          },
+        },
+      ]);
+      await syncIdle(a);
+
+      // A sparse patch that omits the selector falls back to the stored row.
+      await a.api.patch('secrets', 'r1', { note: 'updated' });
+      await syncIdle(a);
+      const serverRow = (await ctx.server.readRows('secrets')).find(
+        (r) => r.rowId === 'r1',
+      );
+      const noteVal = serverRow?.values.note;
+      check(
+        typeof noteVal === 'object' && noteVal !== null && '$bytes' in noteVal,
+        'the patched note is ciphertext on the server',
+      );
+      check(
+        !(noteVal as { $bytes: string }).$bytes.includes(utf8Hex('updated')),
+        'the patched note plaintext is not on the server',
+      );
+      const local = (await a.api.readRows('secrets')).find(
+        (r) => r.values.id === 'r1',
+      );
+      checkEqual(local?.values.note, 'updated', 'the local note is plaintext');
+      checkEqual(
+        local?.values.encryption_key_id,
+        SELECTED_KEY_ID,
+        'the stored selector survived the patch',
+      );
+      checkEqual((await a.api.rejections()).length, 0, 'no rejection yet');
+
+      // A patch on a locally absent row presents an encrypted column with no
+      // stored selector: durable rejection, dropped commit, no sync() abort.
+      const ghost = await a.api.patch('secrets', 'ghost', { note: 'x' });
+      const report = await syncIdle(a);
+      check(
+        !report.rejected.includes(ghost),
+        'the encode failure is client-local, not a server rejection',
+      );
+      const rejections = await a.api.rejections();
+      checkEqual(rejections.length, 1, 'one durable rejection');
+      checkEqual(
+        rejections[0]?.code,
+        'client.encrypt_failed',
+        'the encode seam code',
+      );
+      checkEqual(
+        rejections[0]?.clientCommitId,
+        ghost,
+        'the rejection names the dropped commit',
+      );
+      check(
+        !(await a.api.pendingCommitIds()).includes(ghost),
+        'the dropped commit left the outbox',
       );
     },
   },

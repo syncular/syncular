@@ -14,7 +14,6 @@ import {
 } from '@syncular/core';
 import type { ClientDatabase, SqlRow } from './database';
 import type { EncryptionConfig } from './encryption';
-import type { RowValue } from '@syncular/core';
 import { ClientSyncError } from './errors';
 import {
   type CompiledClientSchema,
@@ -238,16 +237,17 @@ function sparseValues(
  * schema's row codec (§6.1). When `encryption` is configured, encrypted
  * columns (§5.11) are encrypted here — the encode-at-send seam — before the
  * row codec serializes them as ciphertext-envelope `bytes`. Async because
- * WebCrypto is async.
+ * WebCrypto is async. `storedKeyIdFor` supplies the stored local row's
+ * key-id selector for a sparse upsert that omits that column (§5.11).
  */
 export async function encodeOutboxCommit(
   schema: CompiledClientSchema,
   commit: OutboxCommit,
   encryption?: EncryptionConfig,
-  localRowFor?: (
+  storedKeyIdFor?: (
     table: CompiledClientTable,
     rowId: string,
-  ) => readonly (RowValue | undefined)[] | undefined,
+  ) => string | undefined,
 ): Promise<PushCommitFrame> {
   const operations: PushOperation[] = [];
   for (const op of commit.operations) {
@@ -284,7 +284,7 @@ export async function encodeOutboxCommit(
         table,
         op.rowId,
         values,
-        localRowFor?.(table, op.rowId),
+        storedKeyIdFor?.(table, op.rowId),
       );
     }
     operations.push({

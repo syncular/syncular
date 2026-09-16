@@ -148,7 +148,7 @@ export async function encryptRowValues<T extends RowValue | undefined>(
   table: CompiledClientTable,
   rowId: string,
   values: readonly T[],
-  fallback?: readonly (RowValue | undefined)[],
+  storedKeyId?: string,
 ): Promise<T[]> {
   if (!table.hasEncryptedColumns) return values.slice();
   const out = values.slice();
@@ -166,25 +166,20 @@ export async function encryptRowValues<T extends RowValue | undefined>(
   if (!hasPresentEncrypted) return out;
   // Key selection reads the presence set first, then the stored local row.
   // Absent slots densify to null for selection only; the loop below still
-  // leaves them untouched. Absent ≠ NULL: only a fallback fill may rescue
-  // an absent selector, never a null.
-  const selected = values.map((value) => value ?? null);
+  // leaves them untouched. Absent ≠ NULL (§6.1): only an ABSENT selector
+  // slot is filled from the stored row, never a present NULL.
+  const selected: RowValue[] = values.map((value) => value ?? null);
   const selectorColumn = config.keyIdColumns?.[table.name];
-  if (selectorColumn !== undefined && config.keyIdFor === undefined) {
+  if (
+    selectorColumn !== undefined &&
+    config.keyIdFor === undefined &&
+    storedKeyId !== undefined
+  ) {
     const index = table.columns.findIndex(
       (column) => column.name === selectorColumn,
     );
-    const current = index >= 0 ? selected[index] : undefined;
-    if (
-      (current === null || current === undefined) &&
-      fallback !== undefined &&
-      index >= 0
-    ) {
-      const stored = fallback[index];
-      if (typeof stored === 'string' && stored.length > 0) {
-        (selected as RowValue[])[index] = stored;
-      }
-    }
+    if (index >= 0 && values[index] === undefined)
+      selected[index] = storedKeyId;
   }
   const keyId = encryptionKeyId(config, table, rowId, selected);
   for (let i = 0; i < table.columns.length; i++) {

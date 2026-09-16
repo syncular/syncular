@@ -46,7 +46,7 @@ import type {
 } from '../driver';
 import { bytesToHex, hexToBytes } from '../raw';
 
-/** §5.11: driver `{ keyId: {$bytes} }` → a client key provider. */
+/** §5.11: driver `{ keyId, $bytes }` → a client key provider + selector. */
 function buildEncryption(
   config: DriverEncryptionConfig | undefined,
 ): EncryptionConfig | undefined {
@@ -55,7 +55,12 @@ function buildEncryption(
   for (const [keyId, val] of Object.entries(config.keys)) {
     keys.set(keyId, hexToBytes(val.$bytes));
   }
-  return { keyProvider: (keyId) => keys.get(keyId) };
+  return {
+    keyProvider: (keyId) => keys.get(keyId),
+    ...(config.keyIdColumns !== undefined
+      ? { keyIdColumns: config.keyIdColumns }
+      : {}),
+  };
 }
 
 function toClientSchema(schema: DriverSchema): ClientSchema {

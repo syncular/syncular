@@ -623,6 +623,8 @@ export interface ClientLimitsOptions {
  */
 export interface DriverEncryptionConfig {
   readonly keys: Readonly<Record<string, { readonly $bytes: string }>>;
+  /** §5.11 `keyIdColumns`: table name → non-encrypted selector column. */
+  readonly keyIdColumns?: Readonly<Record<string, string>>;
 }
 
 export interface ClientCreateOptions {

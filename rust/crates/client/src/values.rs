@@ -476,8 +476,8 @@ fn encrypt_sparse_row(
         return Ok(());
     }
     // Densify absent columns to NULL for key-id selection only; an absent
-    // selector falls back to the stored local row. Absent ≠ NULL: a
-    // present NULL never reads the fallback.
+    // selector falls back to the stored local row. Absent ≠ NULL (§6.1):
+    // only an ABSENT slot reads the fallback, a present NULL never does.
     let mut dense: Row = row
         .iter()
         .map(|slot| match slot {
@@ -491,8 +491,7 @@ fn encrypt_sparse_row(
             .iter()
             .position(|column| &column.name == selector)
         {
-            let absent = dense.get(index).is_none_or(|slot| slot.is_none());
-            if absent {
+            if matches!(row.get(index), None | Some(SparseSlot::Absent)) {
                 let stored: Option<&str> = match fallback
                     .and_then(|row| row.get(index))
                     .and_then(|value| value.as_ref())
@@ -1092,5 +1091,28 @@ mod sparse_key_tests {
         ];
         encode_sparse_row_json(&table, "r1", &sparse, &config, Some(&fallback))
             .expect("stored key id encrypts the patch");
+    }
+
+    #[cfg(feature = "e2ee")]
+    #[test]
+    fn sparse_patch_keeps_a_present_null_selector() {
+        let table = keyed_table();
+        let config = keyed_config();
+        // The patch presents the selector explicitly as NULL alongside an
+        // encrypted column. Absent is not NULL: the stored row must not
+        // rescue a present NULL, and a NULL key id is unusable.
+        let sparse = values(&[
+            ("id", json!("r1")),
+            ("encryption_key_id", json!(null)),
+            ("note", json!("hi")),
+        ]);
+        let fallback: Row = vec![
+            Some(ColumnValue::String("r1".to_owned())),
+            Some(ColumnValue::String("k1".to_owned())),
+            None,
+        ];
+        let error = encode_sparse_row_json(&table, "r1", &sparse, &config, Some(&fallback))
+            .expect_err("a present NULL selector must not read the stored fallback");
+        assert!(error.contains("client.encrypt_failed"), "{error}");
     }
 }
