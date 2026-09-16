@@ -189,8 +189,13 @@ describe('idempotent replay (§2.3, §6.3)', () => {
   test('replaying a rejected commit returns rejected, not cached', async () => {
     const t = makeContext();
     await seedTask(t, 'c1', 't1', 'p1');
+    // Move the row to v2 so a baseVersion 1 push is a genuine column
+    // conflict (§6.2), not a baseVersion-above-server invalid request.
+    await sync(t, [
+      pushCommit('c-bump', [upsert('tasks', 't1', taskRow('t1', 'p1', 'v2'))]),
+    ]);
     const rejected = pushCommit('c2', [
-      upsert('tasks', 't1', taskRow('t1', 'p1'), 99),
+      upsert('tasks', 't1', taskRow('t1', 'p1'), 1),
     ]);
     const first = await sync(t, [rejected]);
     expect(pushResults(first)[0]?.status).toBe('rejected');
@@ -199,6 +204,17 @@ describe('idempotent replay (§2.3, §6.3)', () => {
     expect(result?.status).toBe('rejected');
     expect(result?.commitSeq).toBeUndefined();
     expect(result?.results[0]?.status).toBe('conflict');
+  });
+
+  test('baseVersion above server_version rejects with sync.invalid_request (§6.2)', async () => {
+    const t = makeContext();
+    await seedTask(t, 'c1', 't1', 'p1');
+    const message = await sync(t, [
+      pushCommit('c2', [upsert('tasks', 't1', taskRow('t1', 'p1'), 99)]),
+    ]);
+    const record = pushResults(message)[0]?.results[0];
+    if (record?.status !== 'error') throw new Error('expected error record');
+    expect(record.code).toBe('sync.invalid_request');
   });
 
   test('a clientCommitId duplicated within one request applies once (§6.3)', async () => {
@@ -363,31 +379,43 @@ describe('write-path authorization (§3.4)', () => {
     expect(row?.scopes).toEqual({ project_id: 'p2' });
   });
 
-  test('scope columns are stripped from every update path (§3.4 rule 5)', async () => {
+  test('a present scope column rejects a value change (§3.4 rule 5)', async () => {
     const t = makeContext();
     t.scopes.value = { project_id: ['p1', 'p2'] };
     await seedTask(t, 'c1', 't1', 'p1');
-    // Attempt to re-home the row to p2 via LWW update.
+    // Attempt to re-home the row to p2 via LWW update: rejected, never
+    // silently stripped (wire version 3).
     const lww = await sync(t, [
       pushCommit('c2', [upsert('tasks', 't1', taskRow('t1', 'p2', 'moved'))]),
     ]);
-    expect(pushResults(lww)[0]?.status).toBe('applied');
+    const lwwRecord = pushResults(lww)[0]?.results[0];
+    if (lwwRecord?.status !== 'error')
+      throw new Error('expected an error record');
+    expect(lwwRecord.code).toBe('sync.invalid_request');
     let row = await t.storage.getRow('part-1', 'tasks', 't1');
     expect(row?.scopes).toEqual({ project_id: 'p1' });
-    expect(decodeRow(TASK_COLUMNS, row?.payload ?? new Uint8Array())[1]).toBe(
-      'p1',
+    expect(decodeRow(TASK_COLUMNS, row?.payload ?? new Uint8Array())[2]).toBe(
+      'task',
     );
     // And via the baseVersion path.
     const versioned = await sync(t, [
       pushCommit('c3', [
-        upsert('tasks', 't1', taskRow('t1', 'p2', 'again'), 2),
+        upsert('tasks', 't1', taskRow('t1', 'p2', 'again'), 1),
       ]),
     ]);
-    expect(pushResults(versioned)[0]?.status).toBe('applied');
+    const versionedRecord = pushResults(versioned)[0]?.results[0];
+    if (versionedRecord?.status !== 'error')
+      throw new Error('expected an error record');
+    expect(versionedRecord.code).toBe('sync.invalid_request');
+    // A present scope column equal to the stored value applies as a no-op.
+    const same = await sync(t, [
+      pushCommit('c4', [upsert('tasks', 't1', taskRow('t1', 'p1', 'kept'))]),
+    ]);
+    expect(pushResults(same)[0]?.status).toBe('applied');
     row = await t.storage.getRow('part-1', 'tasks', 't1');
     expect(row?.scopes).toEqual({ project_id: 'p1' });
-    expect(decodeRow(TASK_COLUMNS, row?.payload ?? new Uint8Array())[1]).toBe(
-      'p1',
+    expect(decodeRow(TASK_COLUMNS, row?.payload ?? new Uint8Array())[2]).toBe(
+      'kept',
     );
   });
 

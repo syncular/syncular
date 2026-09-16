@@ -142,15 +142,22 @@ function declaredTypeOf(column: RowColumn): DeclaredType {
  * value becomes the §5.11 ciphertext-envelope `bytes`. NULLs pass through
  * unencrypted (§5.11).
  */
-export async function encryptRowValues(
+export async function encryptRowValues<T extends RowValue | undefined>(
   config: EncryptionConfig,
   table: CompiledClientTable,
   rowId: string,
-  values: readonly RowValue[],
-): Promise<RowValue[]> {
+  values: readonly T[],
+): Promise<T[]> {
   if (!table.hasEncryptedColumns) return values.slice();
   const out = values.slice();
-  const keyId = encryptionKeyId(config, table, rowId, values);
+  // A sparse operation's absent columns are densified to null for key
+  // selection only; the encryption loop leaves them untouched.
+  const keyId = encryptionKeyId(
+    config,
+    table,
+    rowId,
+    values.map((value) => value ?? null),
+  );
   for (let i = 0; i < table.columns.length; i++) {
     const column = table.columns[i];
     if (column === undefined || !column.encrypted) continue;
@@ -162,13 +169,13 @@ export async function encryptRowValues(
         `no encryption key for keyId ${JSON.stringify(keyId)} (table ${table.name})`,
       );
     }
-    out[i] = await encryptValue(
+    out[i] = (await encryptValue(
       declaredTypeOf(column),
       value as PlainValue,
       keyId,
       key,
       config.nonceSource,
-    );
+    )) as T;
   }
   return out;
 }

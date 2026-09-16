@@ -234,6 +234,18 @@ describe('error catalog (§10.2)', () => {
       category: 'forbidden',
       recommendedAction: 'checkPermissions',
     });
+    // Wire version 3 added the delete-precedence and declared-reference
+    // operation-result codes (§5, §6.11).
+    expect(ERROR_CATALOG['sync.row_deleted']).toMatchObject({
+      category: 'not-found',
+      retryable: false,
+      recommendedAction: 'fixRequest',
+    });
+    expect(ERROR_CATALOG['sync.reference_violation']).toMatchObject({
+      category: 'invalid-request',
+      retryable: false,
+      recommendedAction: 'fixRequest',
+    });
     // §5.10.6 CRDT fields added one internal code.
     expect(ERROR_CATALOG['sync.crdt_merge_failed']).toMatchObject({
       category: 'internal',
@@ -266,6 +278,6 @@ describe('error catalog (§10.2)', () => {
       retryable: false,
       recommendedAction: 'inspectServer',
     });
-    expect(Object.keys(ERROR_CATALOG)).toHaveLength(36);
+    expect(Object.keys(ERROR_CATALOG)).toHaveLength(37);
   });
 });

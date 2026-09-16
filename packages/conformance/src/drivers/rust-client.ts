@@ -623,6 +623,65 @@ function asObject(value: JsonValue, what: string): Record<string, JsonValue> {
   return value;
 }
 
+/** §7.2.1: a retained sparse operation's presence set is the keys of its
+ * `values` map — the only intent metadata that exists. */
+function presentKeys(operation: JsonValue): readonly string[] {
+  if (
+    typeof operation !== 'object' ||
+    operation === null ||
+    Array.isArray(operation)
+  ) {
+    return [];
+  }
+  const values = operation.values;
+  if (typeof values !== 'object' || values === null || Array.isArray(values)) {
+    return [];
+  }
+  return Object.keys(values);
+}
+
+function stringListOf(value: JsonValue | undefined): readonly string[] {
+  return Array.isArray(value) ? value.map(String) : [];
+}
+
+function driverRowOf(value: JsonValue | undefined): DriverRow {
+  if (typeof value !== 'object' || value === null || Array.isArray(value))
+    return {};
+  const out: Record<string, DriverRowValue> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    out[key] = entry as DriverRowValue;
+  }
+  return out;
+}
+
+/** §6.3.1: the shim already serializes the bounded camelCase detail shape. */
+function detailsOf(value: JsonValue): NonNullable<ClientRejection['details']> {
+  const raw = asObject(value, 'rejection details');
+  const fieldPaths = raw.fieldPaths;
+  const references = raw.references;
+  return {
+    ...(Array.isArray(fieldPaths)
+      ? { fieldPaths: fieldPaths.map(String) }
+      : {}),
+    ...(typeof raw.reason === 'string' ? { reason: raw.reason } : {}),
+    ...(typeof raw.requiredAction === 'string'
+      ? { requiredAction: raw.requiredAction }
+      : {}),
+    ...(typeof references === 'object' &&
+    references !== null &&
+    !Array.isArray(references)
+      ? {
+          references: Object.fromEntries(
+            Object.entries(references).map(([key, entry]) => [
+              key,
+              String(entry),
+            ]),
+          ),
+        }
+      : {}),
+  };
+}
+
 class RustClientInstance implements ClientInstance {
   readonly #shim: ShimProcess;
   readonly #intents: DriverSyncIntent[] = [];
@@ -881,7 +940,26 @@ class RustClientInstance implements ClientInstance {
       await this.#shim.call('conflicts', {}),
       'conflicts',
     );
-    return (result.conflicts ?? []) as unknown as ClientConflict[];
+    const conflicts = result.conflicts;
+    if (!Array.isArray(conflicts)) return [];
+    return conflicts.map((raw) => {
+      const conflict = asObject(raw, 'conflict');
+      const operation = conflict.operation ?? undefined;
+      return {
+        clientCommitId: String(conflict.clientCommitId),
+        opIndex: Number(conflict.opIndex),
+        table: String(conflict.table),
+        rowId: String(conflict.rowId),
+        code: String(conflict.code),
+        serverVersion: Number(conflict.serverVersion),
+        serverRow: driverRowOf(conflict.serverRow),
+        // §6.3: the rust core serializes the decoded names already.
+        conflictColumns: stringListOf(conflict.conflictColumns),
+        ...(operation !== undefined
+          ? { operation: { present: presentKeys(operation) } }
+          : {}),
+      };
+    });
   }
 
   async rejections(): Promise<ClientRejection[]> {
@@ -889,7 +967,24 @@ class RustClientInstance implements ClientInstance {
       await this.#shim.call('rejections', {}),
       'rejections',
     );
-    return (result.rejections ?? []) as unknown as ClientRejection[];
+    const rejections = result.rejections;
+    if (!Array.isArray(rejections)) return [];
+    return rejections.map((raw) => {
+      const rejection = asObject(raw, 'rejection');
+      const operation = rejection.operation ?? undefined;
+      return {
+        clientCommitId: String(rejection.clientCommitId),
+        opIndex: Number(rejection.opIndex),
+        code: String(rejection.code),
+        retryable: rejection.retryable === true,
+        ...(rejection.details !== undefined && rejection.details !== null
+          ? { details: detailsOf(rejection.details) }
+          : {}),
+        ...(operation !== undefined
+          ? { operation: { present: presentKeys(operation) } }
+          : {}),
+      };
+    });
   }
 
   async pendingCommitIds(): Promise<string[]> {
@@ -898,6 +993,17 @@ class RustClientInstance implements ClientInstance {
       'pendingCommitIds',
     );
     return (result.ids ?? []) as unknown as string[];
+  }
+
+  async pendingPayloads(): Promise<Uint8Array[]> {
+    const result = asObject(
+      await this.#shim.call('pendingPayloads', {}),
+      'pendingPayloads',
+    );
+    const payloads = result.payloads;
+    if (!Array.isArray(payloads))
+      throw new Error('pendingPayloads: expected a list');
+    return payloads.map((value) => bytesOf(value, 'pendingPayloads'));
   }
 
   async subscriptionState(

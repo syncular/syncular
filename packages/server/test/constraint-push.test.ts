@@ -4,6 +4,7 @@ import {
   decodeMessage,
   encodeMessage,
   encodeRow,
+  encodeSparseRow,
   PROTOCOL_WIRE_VERSION,
   type PushCommitFrame,
   type PushOperation,
@@ -57,7 +58,7 @@ function row(
   surgeryId: string,
   body: string,
 ): Uint8Array {
-  return encodeRow(COLUMNS, [id, workspaceId, surgeryId, body]);
+  return encodeSparseRow(COLUMNS, 0, [id, workspaceId, surgeryId, body]);
 }
 
 function upsert(rowId: string, payload: Uint8Array): PushOperation {
@@ -237,7 +238,16 @@ describe('durable relational constraint rejection', () => {
           'reports',
           'report-existing',
         );
-        expect(existing?.payload).toEqual(existingPayload);
+        // Storage keeps the full-row codec (§2.4): the sparse push payload
+        // re-encodes to the canonical stored bytes.
+        expect(existing?.payload).toEqual(
+          encodeRow(COLUMNS, [
+            'report-existing',
+            'w1',
+            'surgery-1',
+            'original',
+          ]),
+        );
         expect(
           await storage.getRow(
             'workspace-partition',

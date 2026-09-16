@@ -602,11 +602,14 @@ describe('durable commit outcomes', () => {
               code: 'sync.version_conflict',
               serverVersion: 2,
               serverRow: { title: 'winner' },
+              // The winner's full-row write moved every mutable column
+              // past baseVersion 1; the immutable primary key never marks.
+              conflictColumns: ['title'],
               operation: {
                 op: 'upsert',
                 rowId: 'conflict-1',
                 baseVersion: 1,
-                changedFields: ['title'],
+                values: { id: 'conflict-1', title: 'loser' },
               },
             },
           },
@@ -621,9 +624,12 @@ describe('durable commit outcomes', () => {
       });
       expect(reopened.client.conflicts()).toHaveLength(1);
       expect(reopened.client.conflicts()[0]?.serverRow.title).toBe('winner');
-      expect(reopened.client.conflicts()[0]?.operation?.changedFields).toEqual([
+      expect(reopened.client.conflicts()[0]?.conflictColumns).toEqual([
         'title',
       ]);
+      expect(
+        Object.keys(reopened.client.conflicts()[0]?.operation?.values ?? {}),
+      ).toEqual(['id', 'title']);
       const resolved = reopened.client.resolveCommitOutcome({
         clientCommitId: losingCommitId,
         resolution: 'resolved_keep_server',
@@ -870,7 +876,9 @@ describe('durable commit outcomes', () => {
                 requiredAction: 'edit_fields',
                 references: { task_id: 'details-1' },
               },
-              operation: { changedFields: ['title'] },
+              operation: {
+                values: { id: 'details-1', title: 'invalid' },
+              },
             },
           },
         ],
@@ -885,7 +893,7 @@ describe('durable commit outcomes', () => {
       expect(reopened.client.rejections()[0]).toMatchObject({
         clientCommitId: rejectedId,
         details: { fieldPaths: ['title'], requiredAction: 'edit_fields' },
-        operation: { changedFields: ['title'] },
+        operation: { values: { id: 'details-1', title: 'invalid' } },
       });
       await reopened.client.close();
       reopened.db.close();
@@ -1417,12 +1425,17 @@ describe('the SELECT * → mutate round trip', () => {
     expect(remote?.title).toBe('keep-me');
   });
 
-  test('patch() of an absent row fails loud', async () => {
+  test('patch() of an absent row stays absent locally and rejects row_missing (§5.2)', async () => {
     const server = makeServer();
     const a = await makeClient(server, { clientId: 'client-a' });
-    expect(() => a.client.patch('tasks', 'missing', { done: true })).toThrow(
-      /no local row/,
-    );
+    const commitId = a.client.patch('tasks', 'missing', { done: true });
+    // The overlay applies present columns only; a partial operation over an
+    // absent row leaves it absent (§7.1).
+    expect(a.client.query('SELECT * FROM tasks')).toEqual([]);
+    await a.client.syncUntilIdle();
+    expect(a.client.commitOutcome(commitId)?.status).toBe('rejected');
+    expect(a.client.rejections()[0]?.code).toBe('sync.row_missing');
+    expect(a.client.query('SELECT * FROM tasks')).toEqual([]);
   });
 });
 

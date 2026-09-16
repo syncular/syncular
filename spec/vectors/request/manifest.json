@@ -30,7 +30,7 @@
       "name": "epoch-bound",
       "bin": "epoch-bound.bin",
       "json": "epoch-bound.json",
-      "covers": "Wire version 2 request carrying the client partition log epoch"
+      "covers": "Request carrying the client partition log epoch (§2.1)"
     }
   ],
   "invalid": [

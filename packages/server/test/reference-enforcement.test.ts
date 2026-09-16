@@ -5,7 +5,11 @@
  * same commit. Driven through bytes like the rest of the push suite.
  */
 import { describe, expect, test } from 'bun:test';
-import { encodeRow, type PushOperation, type RowColumn } from '@syncular/core';
+import {
+  encodeSparseRow,
+  type PushOperation,
+  type RowColumn,
+} from '@syncular/core';
 import type { ResponseMessage } from '@syncular/core';
 import { compileSchema, type ServerSchema } from '@syncular/server';
 import {
@@ -72,7 +76,7 @@ const REFERENCE_SCHEMA: ServerSchema = {
 };
 
 function projectRow(projectId: string, title = 'project'): Uint8Array {
-  return encodeRow(PARENT_COLUMNS, [projectId, title]);
+  return encodeSparseRow(PARENT_COLUMNS, 0, [projectId, title]);
 }
 
 function itemRow(
@@ -84,7 +88,7 @@ function itemRow(
     readonly nullify?: string | null;
   } = {},
 ): Uint8Array {
-  return encodeRow(CHILD_COLUMNS, [
+  return encodeSparseRow(CHILD_COLUMNS, 0, [
     id,
     projectId,
     'item',
@@ -277,7 +281,7 @@ describe('recursive cascade (§6.11)', () => {
   }
 
   function subitemRow(id: string, itemId: string): Uint8Array {
-    return encodeRow(SUBITEM_COLUMNS, [id, 'p1', itemId]);
+    return encodeSparseRow(SUBITEM_COLUMNS, 0, [id, 'p1', itemId]);
   }
 
   test('CASCADE recurses through further CASCADE references in one commit', async () => {

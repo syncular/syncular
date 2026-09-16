@@ -22,6 +22,12 @@ export interface ConflictRecord {
   readonly serverVersion: number;
   /** The current server row, decoded — resolve without a round-trip. */
   readonly serverRow: Readonly<Record<string, RowValue>>;
+  /**
+   * §6.3: the present columns whose `column_version` exceeded the losing
+   * operation's `baseVersion`. A custom merge recomputes exactly these;
+   * keep-server and keep-local ignore them (§6.5).
+   */
+  readonly conflictColumns: readonly string[];
   /** The losing local operation (absent only for malformed op indexes). */
   readonly operation?: OutboxOperation;
 }
@@ -94,8 +100,13 @@ export interface ResolveCommitOutcomeInput {
   readonly replacementClientCommitId?: string;
 }
 
-interface StoredConflictRecord extends Omit<ConflictRecord, 'serverRow'> {
+interface StoredConflictRecord extends Omit<
+  ConflictRecord,
+  'serverRow' | 'conflictColumns'
+> {
   readonly serverRow: Readonly<Record<string, JsonRowValue>>;
+  /** Absent in journal entries written before wire version 3. */
+  readonly conflictColumns?: readonly string[];
 }
 
 type StoredCommitOperationOutcome =
@@ -130,6 +141,8 @@ function decodeResults(raw: string): CommitOperationOutcome[] {
       status: 'conflict',
       conflict: {
         ...result.conflict,
+        // Pre-column-version journal entries carry no conflictColumns.
+        conflictColumns: result.conflict.conflictColumns ?? [],
         serverRow: Object.fromEntries(
           Object.entries(result.conflict.serverRow).map(([key, value]) => [
             key,

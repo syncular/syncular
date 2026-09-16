@@ -1,10 +1,12 @@
 /** Protocol constants (SPEC.md §1.2, §9 are normative). */
 
 /** Latest SSP2 envelope wire version emitted by current clients. */
-export const PROTOCOL_WIRE_VERSION = 2;
+export const PROTOCOL_WIRE_VERSION = 3;
 
-/** Oldest SSP2 envelope wire version accepted during the epoch rollout. */
-export const MINIMUM_PROTOCOL_WIRE_VERSION = 1;
+/** Oldest SSP2 envelope wire version accepted. Wire version 3 changed the
+ * push payload to the sparse row codec (§2.4) and the conflict record shape
+ * (§6.3); versions 1 and 2 are rejected as unknown (§9). */
+export const MINIMUM_PROTOCOL_WIRE_VERSION = 3;
 
 /** Wire versions implemented by the reference codec, oldest first. */
 export const SUPPORTED_PROTOCOL_WIRE_VERSIONS: readonly number[] =

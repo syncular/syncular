@@ -14,15 +14,15 @@ describe('protocol constants', () => {
   });
 
   it('publishes the complete contiguous reference-codec window', () => {
-    expect(SUPPORTED_PROTOCOL_WIRE_VERSIONS).toEqual([1, 2]);
+    expect(SUPPORTED_PROTOCOL_WIRE_VERSIONS).toEqual([3]);
     expect(SUPPORTED_PROTOCOL_WIRE_VERSIONS[0]).toBe(
       MINIMUM_PROTOCOL_WIRE_VERSION,
     );
     expect(SUPPORTED_PROTOCOL_WIRE_VERSIONS.at(-1)).toBe(PROTOCOL_WIRE_VERSION);
-    expect(isSupportedProtocolWireVersion(1)).toBe(true);
-    expect(isSupportedProtocolWireVersion(2)).toBe(true);
-    expect(isSupportedProtocolWireVersion(1.5)).toBe(false);
-    expect(isSupportedProtocolWireVersion(3)).toBe(false);
+    expect(isSupportedProtocolWireVersion(3)).toBe(true);
+    expect(isSupportedProtocolWireVersion(2)).toBe(false);
+    expect(isSupportedProtocolWireVersion(1)).toBe(false);
+    expect(isSupportedProtocolWireVersion(3.5)).toBe(false);
   });
 
   it('uses a 4-byte ASCII magic that cannot collide with SSP1 bodies', () => {

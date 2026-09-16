@@ -864,6 +864,7 @@ describe('optional materialization', () => {
       '_sync_server_version',
       '_sync_scopes',
       '_sync_payload',
+      '_sync_column_versions',
     ]);
     // User indexes are skipped (their columns do not exist).
     const indexes = storage.db

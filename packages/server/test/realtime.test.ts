@@ -462,7 +462,7 @@ describe('delta delivery (§8.2)', () => {
       const updated = {
         ...record,
         cursor: 4,
-        wireVersion: 2,
+        wireVersion: 3,
         subscriptions: [
           { id: 'new-sub', table: 'tasks', scopes: { project_id: ['p2'] } },
         ],

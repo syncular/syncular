@@ -718,6 +718,7 @@ export function runStorageContract(
             message: 'stale',
             serverVersion: 7,
             serverRow: bytes(200, 201, 202),
+            conflictColumns: bytes(0b0100_0000),
           },
         ],
       });
@@ -728,6 +729,7 @@ export function runStorageContract(
       if (record?.status === 'conflict') {
         expect(record.serverVersion).toBe(7);
         expect(record.serverRow).toEqual(bytes(200, 201, 202));
+        expect(record.conflictColumns).toEqual(bytes(0b0100_0000));
       }
     });
 
@@ -1204,7 +1206,7 @@ export function runStorageContract(
       const record: ClientRecord = {
         clientId: 'inactive',
         actorId: 'a',
-        wireVersion: 2,
+        wireVersion: 3,
         cursor: -99,
         updatedAtMs: NOW - 1,
         subscriptions: [],
@@ -1242,7 +1244,7 @@ export function runStorageContract(
       const record: ClientRecord = {
         clientId: 'c1',
         actorId: 'a1',
-        wireVersion: 2,
+        wireVersion: 3,
         cursor: 42,
         updatedAtMs: NOW,
         subscriptions: [
@@ -1268,7 +1270,7 @@ export function runStorageContract(
       const record: ClientRecord = {
         clientId: 'c1',
         actorId: 'a1',
-        wireVersion: 2,
+        wireVersion: 3,
         cursor: -1,
         updatedAtMs: NOW,
         subscriptions: [
@@ -1320,7 +1322,7 @@ export function runStorageContract(
       const record: ClientRecord = {
         clientId: 'c1',
         actorId: 'a1',
-        wireVersion: 2,
+        wireVersion: 3,
         cursor: 0,
         updatedAtMs: NOW,
         subscriptions: [],
@@ -1400,7 +1402,7 @@ export function runStorageContract(
       const record: ClientRecord = {
         clientId: 'cursor-only',
         actorId: 'actor-old',
-        wireVersion: 1,
+        wireVersion: 3,
         cursor: 2,
         updatedAtMs: NOW,
         subscriptions: [
@@ -1425,7 +1427,7 @@ export function runStorageContract(
       const original: ClientRecord = {
         clientId: 'changed-subscriptions',
         actorId: 'actor-1',
-        wireVersion: 2,
+        wireVersion: 3,
         cursor: 10,
         updatedAtMs: NOW,
         subscriptions: [
@@ -1608,7 +1610,7 @@ export function runStorageContract(
       await storage.putClientRecord(PARTITION, {
         clientId: 'c1',
         actorId: 'a1',
-        wireVersion: 2,
+        wireVersion: 3,
         cursor: 2,
         updatedAtMs: NOW,
         subscriptions: [
@@ -1687,7 +1689,7 @@ export function runStorageContract(
       await storage.putClientRecord('part-a', {
         clientId: 'c1',
         actorId: 'a1',
-        wireVersion: 2,
+        wireVersion: 3,
         cursor: 12,
         updatedAtMs: NOW,
         subscriptions: [],

@@ -18,14 +18,11 @@ import {
   type SubStartFrame,
 } from '@syncular/core';
 
-const stubHeader = (wireVersion: number): RespHeaderFrame =>
-  wireVersion >= 2
-    ? {
-        type: 'RESP_HEADER',
-        logEpoch: 'frame-probe',
-        resetRequired: false,
-      }
-    : { type: 'RESP_HEADER' };
+const stubHeader = (): RespHeaderFrame => ({
+  type: 'RESP_HEADER',
+  logEpoch: 'frame-probe',
+  resetRequired: false,
+});
 const STUB_SUB_START: SubStartFrame = {
   type: 'SUB_START',
   id: '',
@@ -37,9 +34,9 @@ const STUB_SUB_START: SubStartFrame = {
 const STUB_SUB_END: SubEndFrame = { type: 'SUB_END', nextCursor: 0 };
 
 const probe = encodeMessage({
-  wireVersion: 1,
+  wireVersion: PROTOCOL_WIRE_VERSION,
   msgKind: 'response',
-  frames: [stubHeader(1)],
+  frames: [stubHeader()],
 });
 
 /** The 8-byte SSP2 response envelope header (§1.2). */
@@ -47,7 +44,7 @@ export function responseEnvelopeHeader(wireVersion: number): Uint8Array {
   const encoded = encodeMessage({
     wireVersion,
     msgKind: 'response',
-    frames: [stubHeader(wireVersion)],
+    frames: [stubHeader()],
   });
   return encoded.slice(0, 8);
 }
@@ -55,10 +52,7 @@ export function responseEnvelopeHeader(wireVersion: number): Uint8Array {
 /** The terminating END frame (§1.2 rule 1). */
 export const END_FRAME_BYTES: Uint8Array = probe.slice(probe.length - 5);
 
-function wrapperFor(
-  frame: ResponseFrame,
-  wireVersion: number,
-): {
+function wrapperFor(frame: ResponseFrame): {
   frames: ResponseFrame[];
   index: number;
 } {
@@ -67,11 +61,11 @@ function wrapperFor(
       return { frames: [frame], index: 0 };
     case 'LEASE':
       // §7.3.2: LEASE rides immediately after RESP_HEADER.
-      return { frames: [stubHeader(wireVersion), frame], index: 1 };
+      return { frames: [stubHeader(), frame], index: 1 };
     case 'PUSH_RESULT':
     case 'ERROR':
     case 'UNKNOWN':
-      return { frames: [stubHeader(wireVersion), frame], index: 1 };
+      return { frames: [stubHeader(), frame], index: 1 };
     case 'PUSH_RESULT_DETAILS': {
       const result: PushResultFrame = {
         type: 'PUSH_RESULT',
@@ -85,23 +79,23 @@ function wrapperFor(
           retryable: false,
         })),
       };
-      return { frames: [stubHeader(wireVersion), result, frame], index: 2 };
+      return { frames: [stubHeader(), result, frame], index: 2 };
     }
     case 'SUB_START':
       return {
-        frames: [stubHeader(wireVersion), frame, STUB_SUB_END],
+        frames: [stubHeader(), frame, STUB_SUB_END],
         index: 1,
       };
     case 'SUB_END':
       return {
-        frames: [stubHeader(wireVersion), STUB_SUB_START, frame],
+        frames: [stubHeader(), STUB_SUB_START, frame],
         index: 2,
       };
     case 'COMMIT':
     case 'SEGMENT_REF':
     case 'SEGMENT_INLINE':
       return {
-        frames: [stubHeader(wireVersion), STUB_SUB_START, frame, STUB_SUB_END],
+        frames: [stubHeader(), STUB_SUB_START, frame, STUB_SUB_END],
         index: 2,
       };
   }
@@ -115,7 +109,7 @@ export function encodeResponseFrame(
   frame: ResponseFrame,
   wireVersion = PROTOCOL_WIRE_VERSION,
 ): Uint8Array {
-  const { frames, index } = wrapperFor(frame, wireVersion);
+  const { frames, index } = wrapperFor(frame);
   const encoded = encodeMessage({
     wireVersion,
     msgKind: 'response',

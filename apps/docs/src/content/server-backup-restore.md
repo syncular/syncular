@@ -67,10 +67,10 @@ The reset prevents a cursor from the abandoned timeline from crossing the
 restore boundary. It also preserves offline writes created before the client
 learned about the restore.
 
-A wire-version 1 client cannot observe a log epoch. Once any partition epoch
-has rotated, the server rejects version 1 for that partition with
-`sync.client_wire_unsupported`. Upgrade these clients before running a restore
-that must preserve automatic recovery.
+Every wire-version 3 client observes the log epoch, so a rotation resets each
+durable replica exactly once and automatic recovery is preserved. Clients from
+retired wire versions cannot connect at all (§9); upgrade them before running
+a restore.
 
 ## Verification drill
 

@@ -271,6 +271,31 @@ class D1Transaction implements StorageTransaction {
     return record === null ? undefined : toStoredRow(record);
   }
 
+  async getTombstoneSeq(
+    table: string,
+    rowId: string,
+  ): Promise<number | undefined> {
+    this.#assertOpen();
+    // Persisted read, no #pending overlay: a delete buffered by this commit
+    // records its tombstone at appendCommit, matching the SQLite/Postgres
+    // adapters where the tombstone insert also runs at commit append.
+    const record = await this.#db
+      .prepare(
+        'SELECT commit_seq FROM sync_tombstones WHERE partition=? AND tbl=? AND row_id=?',
+      )
+      .bind(this.#partition, table, rowId)
+      .first<{ commit_seq: number }>();
+    return record?.commit_seq;
+  }
+
+  async clearTombstone(table: string, rowId: string): Promise<void> {
+    this.#assertOpen();
+    this.#buffer_(
+      'DELETE FROM sync_tombstones WHERE partition=? AND tbl=? AND row_id=?',
+      [this.#partition, table, rowId],
+    );
+  }
+
   async getPushResult(
     clientId: string,
     clientCommitId: string,
@@ -637,6 +662,15 @@ class D1Transaction implements StorageTransaction {
           change.payload ?? null,
         ],
       );
+      if (change.op === 'delete') {
+        // §5 delete precedence: every applied delete leaves a tombstone,
+        // pruned with the commit log (§4.6).
+        this.#buffer_(
+          `INSERT INTO sync_tombstones(partition, tbl, row_id, commit_seq) VALUES (?,?,?,?)
+           ON CONFLICT(partition, tbl, row_id) DO UPDATE SET commit_seq=excluded.commit_seq`,
+          [p, change.table, change.rowId, commitSeq],
+        );
+      }
       for (const [variable, value] of Object.entries(change.scopes)) {
         this.#buffer_(
           'INSERT OR IGNORE INTO sync_change_scopes(partition, tbl, var, value, commit_seq) VALUES (?,?,?,?,?)',
@@ -1501,7 +1535,12 @@ export class D1ServerStorage implements ServerStorage {
           `SELECT horizon_seq, (SELECT count(*) FROM sync_commits WHERE partition=? AND commit_seq<=${horizon}) AS removed_commits FROM sync_partitions WHERE partition=?`,
         )
         .bind(partition, partition, partition),
-      ...['sync_commits', 'sync_changes', 'sync_change_scopes'].map((table) =>
+      ...[
+        'sync_commits',
+        'sync_changes',
+        'sync_change_scopes',
+        'sync_tombstones',
+      ].map((table) =>
         this.#db
           .prepare(
             `DELETE FROM ${table} WHERE partition=? AND commit_seq<=${horizon} AND ${epochGuard}`,

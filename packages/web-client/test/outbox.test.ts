@@ -20,7 +20,7 @@ import {
   rowValueToJson,
 } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
-import { decodeRow, encodeRow } from '@syncular/core';
+import { decodeSparseRow, encodeSparseRow } from '@syncular/core';
 import {
   CLIENT_SCHEMA,
   makeClient,
@@ -83,7 +83,6 @@ describe('schema-agnostic persistence (§0 outbox rule)', () => {
       priority: 7,
       meta: '{"k":1}',
     });
-    expect(op?.changedFields).toBeUndefined();
     // The persisted form is JSON-serializable — no binary in the outbox.
     expect(() => JSON.stringify(op)).not.toThrow();
   });
@@ -128,7 +127,7 @@ describe('schema-agnostic persistence (§0 outbox rule)', () => {
     const payload = frame.operations[0]?.payload;
     expect(payload).toBeDefined();
     const columns = blobSchema.tables[0]?.columns ?? [];
-    const values = decodeRow(columns, payload ?? new Uint8Array());
+    const values = decodeSparseRow(columns, 0, payload ?? new Uint8Array());
     expect(values).toEqual(['b1', 'p1', new Uint8Array([0xca, 0xfe])]);
   });
 });
@@ -152,7 +151,7 @@ describe('encode-at-send (§6.1)', () => {
     const op = frame.operations[0];
     expect(op?.baseVersion).toBe(3);
     expect(op?.payload).toEqual(
-      encodeRow(TASK_COLUMNS, ['t1', 'p1', 'x', false, null, null]),
+      encodeSparseRow(TASK_COLUMNS, 0, ['t1', 'p1', 'x', false, null, null]),
     );
   });
 
@@ -193,24 +192,39 @@ describe('encode-at-send (§6.1)', () => {
     ]);
   });
 
-  test('patch records normalized field intent locally without changing the wire', async () => {
+  test('patch records the presence set and encodes a sparse payload (§6.1)', async () => {
     const server = makeServer();
     const a = await makeClient(server, { clientId: 'patch-intent' });
     a.client.mutate([
       { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1') },
     ]);
     await a.client.syncUntilIdle();
-    a.client.patch('tasks', 't1', { title: 'changed', projectId: 'p1' });
+    a.client.patch('tasks', 't1', { title: 'changed' });
     const commit = a.client.pendingCommits()[0];
-    expect(commit?.operations[0]?.changedFields).toEqual([
-      'project_id',
+    // The values map IS the presence set: the primary key plus the supplied
+    // columns, in column declaration order (§7.2.1 — no changedFields).
+    expect(Object.keys(commit?.operations[0]?.values ?? {})).toEqual([
+      'id',
       'title',
     ]);
     const frame = await encodeOutboxCommit(
       compiled,
       commit as NonNullable<typeof commit>,
     );
-    expect(frame.operations[0]).not.toHaveProperty('changedFields');
+    expect(frame.operations[0]?.payload).toEqual(
+      encodeSparseRow(TASK_COLUMNS, 0, [
+        't1',
+        undefined,
+        'changed',
+        undefined,
+        undefined,
+        undefined,
+      ]),
+    );
+    // A patch cannot write a scope column (§3.4).
+    expect(() => a.client.patch('tasks', 't1', { projectId: 'p2' })).toThrow(
+      'scope column',
+    );
   });
 });
 

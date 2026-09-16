@@ -274,7 +274,9 @@ describe('createTestSync — write validation', () => {
         reason: 'reserved_term',
         requiredAction: 'edit_fields',
       });
-      expect(a.api.rejections()[0]?.operation?.changedFields).toEqual(['body']);
+      expect(
+        Object.keys(a.api.rejections()[0]?.operation?.values ?? {}),
+      ).toEqual(['id', 'body']);
     } finally {
       await sync.dispose();
     }

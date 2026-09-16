@@ -114,6 +114,11 @@ CREATE TABLE IF NOT EXISTS sync_blob_refs(
 );
 CREATE INDEX IF NOT EXISTS sync_blob_refs_by_blob
   ON sync_blob_refs(partition, blob_id);
+CREATE TABLE IF NOT EXISTS sync_tombstones(
+  partition TEXT NOT NULL, tbl TEXT NOT NULL, row_id TEXT NOT NULL,
+  commit_seq INTEGER NOT NULL,
+  PRIMARY KEY(partition, tbl, row_id)
+);
 `;
 
 /** Split the DDL into individual statements (D1 applies them one by one). */
@@ -151,6 +156,7 @@ interface SerializedResult {
   message?: string;
   serverVersion?: number;
   serverRow?: string;
+  conflictColumns?: string;
   retryable?: boolean;
   details?: import('@syncular/core').RejectionDetails;
 }
@@ -175,6 +181,7 @@ export function serializePushResult(result: StoredPushResult): string {
           message: record.message,
           serverVersion: record.serverVersion,
           serverRow: bytesToBase64(record.serverRow),
+          conflictColumns: bytesToBase64(record.conflictColumns),
         };
       }
       if (record.status === 'error') {
@@ -209,6 +216,7 @@ export function deserializePushResult(text: string): StoredPushResult {
         message: record.message ?? '',
         serverVersion: record.serverVersion ?? 0,
         serverRow: base64ToBytes(record.serverRow ?? ''),
+        conflictColumns: base64ToBytes(record.conflictColumns ?? ''),
       };
     }
     if (record.status === 'error') {
@@ -242,6 +250,7 @@ export interface SqliteRowRecord {
   server_version: number;
   scopes: string;
   payload: Uint8Array;
+  column_versions: Uint8Array | null;
 }
 
 export interface SqliteChangeRecord {
@@ -267,6 +276,9 @@ export function toStoredRow(record: SqliteRowRecord): StoredRow {
     serverVersion: record.server_version,
     scopes: JSON.parse(record.scopes) as Record<string, string>,
     payload: asUint8Array(record.payload),
+    ...(record.column_versions !== null
+      ? { columnVersions: asUint8Array(record.column_versions) }
+      : {}),
   };
 }
 

@@ -90,6 +90,10 @@ const ROW_BOUNDARY: readonly RowValue[] = [
 
 const rowEdgeBytes = encodeRow(NOTES_COLUMNS, ROW_EDGE);
 const rowFullBytes = encodeRow(NOTES_COLUMNS, ROW_FULL);
+// Wire version 3: push payloads are sparse rows (§2.4). The push request
+// vectors carry these; COMMIT changes and conflict serverRow stay full-row.
+const rowEdgeSparseBytes = encodeSparseRow(NOTES_COLUMNS, 0, ROW_EDGE);
+const rowFullSparseBytes = encodeSparseRow(NOTES_COLUMNS, 0, ROW_FULL);
 
 // CRDT column (§2.4 tag 8, §5.10). A dedicated fixture so the new tag is
 // byte-pinned WITHOUT touching NOTES_COLUMNS (existing vectors stay
@@ -203,7 +207,7 @@ function signedUrl(segmentId: string): {
 // ---------------------------------------------------------------------------
 
 const pullMinimal: RequestMessage = {
-  wireVersion: 1,
+  wireVersion: 3,
   msgKind: 'request',
   frames: [
     { type: 'REQ_HEADER', clientId: 'client-a', schemaVersion: 1 },
@@ -225,7 +229,7 @@ const pullMinimal: RequestMessage = {
 };
 
 const pullBootstrap: RequestMessage = {
-  wireVersion: 1,
+  wireVersion: 3,
   msgKind: 'request',
   frames: [
     { type: 'REQ_HEADER', clientId: 'client-a', schemaVersion: 2 },
@@ -257,7 +261,7 @@ const pullBootstrap: RequestMessage = {
 };
 
 const pushMultiCommit: RequestMessage = {
-  wireVersion: 1,
+  wireVersion: 3,
   msgKind: 'request',
   frames: [
     { type: 'REQ_HEADER', clientId: 'client-a', schemaVersion: 1 },
@@ -270,13 +274,13 @@ const pushMultiCommit: RequestMessage = {
           rowId: 'n-1',
           op: 'upsert',
           baseVersion: 3,
-          payload: rowEdgeBytes,
+          payload: rowEdgeSparseBytes,
         },
         {
           table: 'notes',
           rowId: 'n-2',
           op: 'upsert',
-          payload: rowFullBytes,
+          payload: rowFullSparseBytes,
         },
       ],
     },
@@ -289,7 +293,7 @@ const pushMultiCommit: RequestMessage = {
 };
 
 const combined: RequestMessage = {
-  wireVersion: 1,
+  wireVersion: 3,
   msgKind: 'request',
   frames: [
     { type: 'REQ_HEADER', clientId: 'client-a', schemaVersion: 1 },
@@ -302,7 +306,7 @@ const combined: RequestMessage = {
           rowId: 'n-2',
           op: 'upsert',
           baseVersion: 1,
-          payload: rowFullBytes,
+          payload: rowFullSparseBytes,
         },
       ],
     },
@@ -324,7 +328,7 @@ const combined: RequestMessage = {
 };
 
 const epochBound: RequestMessage = {
-  wireVersion: 2,
+  wireVersion: 3,
   msgKind: 'request',
   frames: [
     {
@@ -355,10 +359,14 @@ const epochBound: RequestMessage = {
 // ---------------------------------------------------------------------------
 
 const pullEmpty: ResponseMessage = {
-  wireVersion: 1,
+  wireVersion: 3,
   msgKind: 'response',
   frames: [
-    { type: 'RESP_HEADER' },
+    {
+      type: 'RESP_HEADER',
+      logEpoch: 'epoch-2026-07-02-a',
+      resetRequired: false,
+    },
     {
       type: 'SUB_START',
       id: 'sub-notes',
@@ -372,7 +380,7 @@ const pullEmpty: ResponseMessage = {
 };
 
 const epochReset: ResponseMessage = {
-  wireVersion: 2,
+  wireVersion: 3,
   msgKind: 'response',
   frames: [
     {
@@ -384,10 +392,14 @@ const epochReset: ResponseMessage = {
 };
 
 const commitsIncremental: ResponseMessage = {
-  wireVersion: 1,
+  wireVersion: 3,
   msgKind: 'response',
   frames: [
-    { type: 'RESP_HEADER' },
+    {
+      type: 'RESP_HEADER',
+      logEpoch: 'epoch-2026-07-02-a',
+      resetRequired: false,
+    },
     {
       type: 'SUB_START',
       id: 'sub-notes',
@@ -452,10 +464,14 @@ const rowsSegmentId = `sha256:${sha256Hex(inlineSegment)}`;
 const sqliteUrl = signedUrl(sqliteSegmentId);
 
 const bootstrapSegments: ResponseMessage = {
-  wireVersion: 1,
+  wireVersion: 3,
   msgKind: 'response',
   frames: [
-    { type: 'RESP_HEADER' },
+    {
+      type: 'RESP_HEADER',
+      logEpoch: 'epoch-2026-07-02-a',
+      resetRequired: false,
+    },
     {
       type: 'SUB_START',
       id: 'sub-notes',
@@ -499,10 +515,14 @@ const bootstrapSegments: ResponseMessage = {
 };
 
 const pushApplied: ResponseMessage = {
-  wireVersion: 1,
+  wireVersion: 3,
   msgKind: 'response',
   frames: [
-    { type: 'RESP_HEADER' },
+    {
+      type: 'RESP_HEADER',
+      logEpoch: 'epoch-2026-07-02-a',
+      resetRequired: false,
+    },
     {
       type: 'PUSH_RESULT',
       clientCommitId: 'c-0001',
@@ -517,10 +537,14 @@ const pushApplied: ResponseMessage = {
 };
 
 const pushConflict: ResponseMessage = {
-  wireVersion: 1,
+  wireVersion: 3,
   msgKind: 'response',
   frames: [
-    { type: 'RESP_HEADER' },
+    {
+      type: 'RESP_HEADER',
+      logEpoch: 'epoch-2026-07-02-a',
+      resetRequired: false,
+    },
     {
       type: 'PUSH_RESULT',
       clientCommitId: 'c-0002',
@@ -530,9 +554,10 @@ const pushConflict: ResponseMessage = {
           opIndex: 0,
           status: 'conflict',
           code: 'sync.version_conflict',
-          message: 'baseVersion 3 does not match server_version 7',
+          message: 'present columns moved past baseVersion (§6.2)',
           serverVersion: 7,
           serverRow: rowFullBytes,
+          conflictColumns: new Uint8Array([0b0000_0010]),
         },
       ],
     },
@@ -540,10 +565,14 @@ const pushConflict: ResponseMessage = {
 };
 
 const pushCached: ResponseMessage = {
-  wireVersion: 1,
+  wireVersion: 3,
   msgKind: 'response',
   frames: [
-    { type: 'RESP_HEADER' },
+    {
+      type: 'RESP_HEADER',
+      logEpoch: 'epoch-2026-07-02-a',
+      resetRequired: false,
+    },
     {
       type: 'PUSH_RESULT',
       clientCommitId: 'c-0001',
@@ -558,10 +587,14 @@ const pushCached: ResponseMessage = {
 };
 
 const subscriptionRevoked: ResponseMessage = {
-  wireVersion: 1,
+  wireVersion: 3,
   msgKind: 'response',
   frames: [
-    { type: 'RESP_HEADER' },
+    {
+      type: 'RESP_HEADER',
+      logEpoch: 'epoch-2026-07-02-a',
+      resetRequired: false,
+    },
     {
       type: 'SUB_START',
       id: 'sub-notes',
@@ -575,10 +608,14 @@ const subscriptionRevoked: ResponseMessage = {
 };
 
 const cursorReset: ResponseMessage = {
-  wireVersion: 1,
+  wireVersion: 3,
   msgKind: 'response',
   frames: [
-    { type: 'RESP_HEADER' },
+    {
+      type: 'RESP_HEADER',
+      logEpoch: 'epoch-2026-07-02-a',
+      resetRequired: false,
+    },
     {
       type: 'SUB_START',
       id: 'sub-notes',
@@ -592,10 +629,14 @@ const cursorReset: ResponseMessage = {
 };
 
 const errorMidStream: ResponseMessage = {
-  wireVersion: 1,
+  wireVersion: 3,
   msgKind: 'response',
   frames: [
-    { type: 'RESP_HEADER' },
+    {
+      type: 'RESP_HEADER',
+      logEpoch: 'epoch-2026-07-02-a',
+      resetRequired: false,
+    },
     {
       type: 'SUB_START',
       id: 'sub-notes',
@@ -617,10 +658,14 @@ const errorMidStream: ResponseMessage = {
 };
 
 const unknownFrameSkip: ResponseMessage = {
-  wireVersion: 1,
+  wireVersion: 3,
   msgKind: 'response',
   frames: [
-    { type: 'RESP_HEADER' },
+    {
+      type: 'RESP_HEADER',
+      logEpoch: 'epoch-2026-07-02-a',
+      resetRequired: false,
+    },
     {
       type: 'SUB_START',
       id: 'sub-notes',
@@ -641,10 +686,16 @@ const unknownFrameSkip: ResponseMessage = {
 };
 
 const schemaFloor: ResponseMessage = {
-  wireVersion: 1,
+  wireVersion: 3,
   msgKind: 'response',
   frames: [
-    { type: 'RESP_HEADER', requiredSchemaVersion: 3, latestSchemaVersion: 5 },
+    {
+      type: 'RESP_HEADER',
+      requiredSchemaVersion: 3,
+      latestSchemaVersion: 5,
+      logEpoch: 'epoch-2026-07-02-a',
+      resetRequired: false,
+    },
   ],
 };
 
@@ -652,10 +703,14 @@ const schemaFloor: ResponseMessage = {
 // no CRDT-specific frame. The merged bytes are just the row's `crdt` column
 // (tag 8, bytes machinery) in the change payload.
 const commitCrdtMerge: ResponseMessage = {
-  wireVersion: 1,
+  wireVersion: 3,
   msgKind: 'response',
   frames: [
-    { type: 'RESP_HEADER' },
+    {
+      type: 'RESP_HEADER',
+      logEpoch: 'epoch-2026-07-02-a',
+      resetRequired: false,
+    },
     {
       type: 'SUB_START',
       id: 'sub-docs',
@@ -688,10 +743,14 @@ const commitCrdtMerge: ResponseMessage = {
 // §7.3.2: a LEASE frame immediately after RESP_HEADER, then an active
 // subscription section — pins the new 0x19 frame in its grammar position.
 const leaseIssued: ResponseMessage = {
-  wireVersion: 1,
+  wireVersion: 3,
   msgKind: 'response',
   frames: [
-    { type: 'RESP_HEADER' },
+    {
+      type: 'RESP_HEADER',
+      logEpoch: 'epoch-2026-07-02-a',
+      resetRequired: false,
+    },
     {
       type: 'LEASE',
       leaseId: 'lease_9f8e7d6c-5b4a-3210-fedc-ba9876543210',
@@ -813,7 +872,7 @@ function frameInto(
 
 function envelopeHeader(w: ByteWriter, msgKind: number): void {
   w.raw(utf8Encode('SSP2'));
-  w.u16(1);
+  w.u16(3);
   w.u8(msgKind);
   w.u8(0);
 }
@@ -860,6 +919,7 @@ const invalidOpEnum = (() => {
   frameInto(w, FrameType.REQ_HEADER, (p) => {
     p.str('client-a');
     p.i32(1);
+    p.u8(0); // logEpoch absent
   });
   frameInto(w, FrameType.PUSH_COMMIT, (p) => {
     p.str('c-bad');
@@ -869,7 +929,7 @@ const invalidOpEnum = (() => {
     p.u8(3); // invalid op enum byte
     p.u8(0); // baseVersion absent
     p.u8(1); // payload present
-    p.bytes(rowFullBytes);
+    p.bytes(rowFullSparseBytes);
   });
   endFrame(w);
   return w.finish();
@@ -882,6 +942,7 @@ const invalidUpsertNoPayload = (() => {
   frameInto(w, FrameType.REQ_HEADER, (p) => {
     p.str('client-a');
     p.i32(1);
+    p.u8(0); // logEpoch absent
   });
   frameInto(w, FrameType.PUSH_COMMIT, (p) => {
     p.str('c-bad');
@@ -903,6 +964,8 @@ const invalidBoolByte = (() => {
   frameInto(w, FrameType.RESP_HEADER, (p) => {
     p.u8(0);
     p.u8(0);
+    p.str('epoch-2026-07-02-a');
+    p.u8(0); // resetRequired false
   });
   frameInto(w, FrameType.SUB_START, (p) => {
     p.str('sub-notes');
@@ -1227,7 +1290,7 @@ total += emitKind(
       name: 'epoch-bound',
       bytes: encodeMessage(epochBound),
       render: renderMessage,
-      covers: 'Wire version 2 request carrying the client partition log epoch',
+      covers: 'Request carrying the client partition log epoch (§2.1)',
     },
   ],
   [],
@@ -1291,8 +1354,7 @@ total += emitKind(
       name: 'epoch-reset',
       bytes: encodeMessage(epochReset),
       render: renderMessage,
-      covers:
-        'Wire version 2 header-only reset after a partition log epoch change',
+      covers: 'Header-only reset after a partition log epoch change (§2.1)',
     },
     {
       name: 'commits-incremental',
@@ -1318,7 +1380,8 @@ total += emitKind(
       name: 'push-conflict',
       bytes: encodeMessage(pushConflict),
       render: renderMessage,
-      covers: 'Rejected commit; conflict record with serverVersion + serverRow',
+      covers:
+        'Rejected commit; conflict record with serverVersion, full-row serverRow, and the conflictColumns bitmap (§6.3)',
     },
     {
       name: 'push-cached',

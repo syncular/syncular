@@ -7,6 +7,7 @@ use serde::de::DeserializeOwned;
 use serde::ser::SerializeMap;
 use serde::{Serialize, Serializer};
 use serde_json::{json, Map, Value};
+use ssp2::decode::WIRE_VERSION;
 use ssp2::model::{Frame, Message, MsgKind, Op, OpResult, Operation, PushResultDetail, PushStatus};
 use ssp2::{decode_message, encode_message};
 
@@ -14,7 +15,8 @@ use crate::api::Mutation;
 use crate::schema::ClientSchema;
 use crate::transport::Transport;
 use crate::values::{
-    encode_row_json, normalize_values_casing, render_row_id_json, EncryptionConfig,
+    encode_sparse_row_json, full_row_values, normalize_values_casing, render_row_id_json,
+    EncryptionConfig,
 };
 
 #[derive(Debug, Clone)]
@@ -191,8 +193,13 @@ impl SyncRemoteClient {
                             .map_err(RemoteClientError::invalid)?;
                     let row_id = render_row_id_json(values.get(&schema_table.primary_key))
                         .map_err(RemoteClientError::invalid)?;
-                    let payload = encode_row_json(schema_table, &row_id, &values, &self.encryption)
+                    // §6.7: a mutation is a full-row upsert — every column
+                    // present in the sparse payload.
+                    let values = full_row_values(schema_table, values)
                         .map_err(RemoteClientError::invalid)?;
+                    let payload =
+                        encode_sparse_row_json(schema_table, &row_id, &values, &self.encryption)
+                            .map_err(RemoteClientError::invalid)?;
                     operations.push(Operation {
                         table,
                         row_id,
@@ -227,7 +234,7 @@ impl SyncRemoteClient {
             }
         }
         let bytes = encode_message(&Message {
-            wire_version: if self.log_epoch.is_some() { 2 } else { 1 },
+            wire_version: WIRE_VERSION,
             msg_kind: MsgKind::Request,
             frames: vec![
                 Frame::ReqHeader {
@@ -736,14 +743,14 @@ mod tests {
         fn sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
             self.requests.push(request.to_vec());
             Ok(encode_message(&Message {
-                wire_version: 1,
+                wire_version: ssp2::decode::WIRE_VERSION,
                 msg_kind: MsgKind::Response,
                 frames: vec![
                     Frame::RespHeader {
                         required_schema_version: None,
                         latest_schema_version: None,
-                        log_epoch: None,
-                        reset_required: None,
+                        log_epoch: Some("epoch-1".to_owned()),
+                        reset_required: Some(false),
                     },
                     Frame::PushResult {
                         client_commit_id: "job-1".to_owned(),

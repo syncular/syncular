@@ -903,6 +903,12 @@ pub fn dispatch<T: Transport>(
             let ids = need_client(client)?.pending_commit_ids();
             Ok(json!({ "ids": ids }))
         }
+        "pendingPayloads" => {
+            let payloads = need_client(client)?.pending_payloads();
+            Ok(json!({
+                "payloads": payloads.iter().map(|p| bytes_value(p)).collect::<Vec<_>>()
+            }))
+        }
         "subscriptionState" => {
             let id = params
                 .get("id")

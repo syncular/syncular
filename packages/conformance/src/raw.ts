@@ -9,7 +9,7 @@
 import {
   decodeMessage,
   encodeMessage,
-  encodeRow,
+  encodeSparseRow,
   PROTOCOL_WIRE_VERSION,
   type PushOperation,
   type PushResultFrame,
@@ -60,14 +60,18 @@ export function findTable(schema: DriverSchema, name: string): DriverTable {
   return table;
 }
 
-/** Encode a driver row with the reference row codec (§2.4). */
+/** Encode a driver row as a sparse push payload (§2.4, wire version 3):
+ * every column present, byte-identical to a full sparse row. */
 export function encodeDriverRow(
   table: DriverTable,
   row: DriverRow,
 ): Uint8Array {
   const columns = table.columns as readonly RowColumn[];
   const values = table.columns.map((column) => toRowValue(row[column.name]));
-  return encodeRow(columns, values);
+  const primaryKeyIndex = table.columns.findIndex(
+    (column) => column.name === table.primaryKey,
+  );
+  return encodeSparseRow(columns, primaryKeyIndex, values);
 }
 
 // ---------------------------------------------------------------------------
@@ -214,12 +218,13 @@ export function rawInvalidRequestBytes(
     0x53,
     0x50,
     0x32, // "SSP2"
-    ...u16le(1), // wireVersion
+    ...u16le(3), // wireVersion
     0x01, // msgKind: request
     0x00, // flags
   ];
-  // REQ_HEADER (0x01): clientId str + schemaVersion i32 (always ≥ 1).
-  bytes.push(...frame(0x01, [...strField(clientId), ...u32le(1)]));
+  // REQ_HEADER (0x01): clientId str + schemaVersion i32 (always ≥ 1) +
+  // logEpoch option byte (absent — an epoch acquisition round, §2.1).
+  bytes.push(...frame(0x01, [...strField(clientId), ...u32le(1), 0x00]));
   if (kind === 'empty-commit') {
     // PUSH_COMMIT (0x02) with zero operations (§6.1 sync.empty_commit).
     bytes.push(...frame(0x02, [...strField('empty'), ...u32le(0)]));

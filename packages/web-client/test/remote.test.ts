@@ -48,7 +48,7 @@ describe('SyncRemoteClient', () => {
     });
 
     const message = decodeMessage(prepared.bytes);
-    expect(message.wireVersion).toBe(2);
+    expect(message.wireVersion).toBe(3);
     expect(message.frames[0]).toMatchObject({
       type: 'REQ_HEADER',
       logEpoch: 'epoch-2',

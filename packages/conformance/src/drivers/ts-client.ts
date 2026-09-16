@@ -6,7 +6,9 @@
  */
 
 import {
+  compileClientSchema,
   creationTimeBucket,
+  encodeOutboxCommit,
   type ClientChangeBatch,
   type ClientSchema,
   type EncryptionConfig,
@@ -544,12 +546,11 @@ class TsClientInstance implements ClientInstance {
         code: conflict.code,
         serverVersion: conflict.serverVersion,
         serverRow: serverRow as DriverRow,
+        conflictColumns: conflict.conflictColumns,
         ...(conflict.operation !== undefined
           ? {
               operation: {
-                ...(conflict.operation.changedFields !== undefined
-                  ? { changedFields: conflict.operation.changedFields }
-                  : {}),
+                present: Object.keys(conflict.operation.values ?? {}),
               },
             }
           : {}),
@@ -569,9 +570,7 @@ class TsClientInstance implements ClientInstance {
       ...(rejection.operation !== undefined
         ? {
             operation: {
-              ...(rejection.operation.changedFields !== undefined
-                ? { changedFields: rejection.operation.changedFields }
-                : {}),
+              present: Object.keys(rejection.operation.values ?? {}),
             },
           }
         : {}),
@@ -580,6 +579,18 @@ class TsClientInstance implements ClientInstance {
 
   async pendingCommitIds(): Promise<string[]> {
     return this.#client.pendingCommits().map((c) => c.clientCommitId);
+  }
+
+  async pendingPayloads(): Promise<Uint8Array[]> {
+    const compiled = compileClientSchema(toClientSchema(this.#schema));
+    const payloads: Uint8Array[] = [];
+    for (const commit of this.#client.pendingCommits()) {
+      const frame = await encodeOutboxCommit(compiled, commit);
+      for (const operation of frame.operations) {
+        if (operation.payload !== undefined) payloads.push(operation.payload);
+      }
+    }
+    return payloads;
   }
 
   async subscriptionState(

@@ -11,7 +11,7 @@ import {
   decodeMessage,
   decodeRow,
   encodeMessage,
-  encodeRow,
+  encodeSparseRow,
   type PushResultFrame,
   type RequestFrame,
   type ResponseMessage,
@@ -41,18 +41,21 @@ function makeContext(): SyncRequestContext {
   };
 }
 
+const TEST_LOG_EPOCH = 'test-log-epoch';
+
 async function sync(
   ctx: SyncRequestContext,
   frames: RequestFrame[],
 ): Promise<ResponseMessage> {
   const bytes = encodeMessage({
-    wireVersion: 1,
+    wireVersion: 3,
     msgKind: 'request',
     frames: [
       {
         type: 'REQ_HEADER',
         clientId: 'client-1',
         schemaVersion: schema.version,
+        logEpoch: TEST_LOG_EPOCH,
       },
       ...frames,
     ],
@@ -65,6 +68,7 @@ async function sync(
 describe('generated schema against the server', () => {
   test('push + pull one row through bytes', async () => {
     const ctx = makeContext();
+    await ctx.storage.touchPartition('part-1', 0, TEST_LOG_EPOCH);
     const tasks = schema.tables[0];
     const row: TasksRow = {
       id: 't1',
@@ -79,8 +83,9 @@ describe('generated schema against the server', () => {
     };
     // Generated row keys are camelCase (§5); the wire codec wants schema
     // (snake) order — map through the pinned naming function.
-    const payload = encodeRow(
+    const payload = encodeSparseRow(
       tasks.columns,
+      0,
       tasks.columns.map(
         (column) => row[snakeToCamel(column.name) as keyof TasksRow],
       ),

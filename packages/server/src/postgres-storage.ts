@@ -213,6 +213,11 @@ CREATE TABLE IF NOT EXISTS sync_blob_refs(
 );
 CREATE INDEX IF NOT EXISTS sync_blob_refs_by_blob
   ON sync_blob_refs(partition, blob_id);
+CREATE TABLE IF NOT EXISTS sync_tombstones(
+  partition TEXT NOT NULL, tbl TEXT NOT NULL, row_id TEXT NOT NULL,
+  commit_seq BIGINT NOT NULL,
+  PRIMARY KEY(partition, tbl, row_id)
+);
 `;
 
 interface SerializedResult {
@@ -222,6 +227,7 @@ interface SerializedResult {
   message?: string;
   serverVersion?: number;
   serverRow?: string;
+  conflictColumns?: string;
   retryable?: boolean;
   details?: import('@syncular/core').RejectionDetails;
 }
@@ -325,6 +331,7 @@ function serializePushResult(result: StoredPushResult): unknown {
           message: record.message,
           serverVersion: record.serverVersion,
           serverRow: toBase64(record.serverRow),
+          conflictColumns: toBase64(record.conflictColumns),
         };
       }
       if (record.status === 'error') {
@@ -359,6 +366,7 @@ function deserializePushResult(value: unknown): StoredPushResult {
         message: record.message ?? '',
         serverVersion: record.serverVersion ?? 0,
         serverRow: fromBase64(record.serverRow ?? ''),
+        conflictColumns: fromBase64(record.conflictColumns ?? ''),
       };
     }
     if (record.status === 'error') {
@@ -400,6 +408,7 @@ interface RowRecord {
   server_version: unknown;
   scopes: unknown;
   payload: unknown;
+  column_versions: unknown;
 }
 
 interface ChangeRecord {
@@ -434,6 +443,9 @@ function toStoredRow(record: RowRecord): StoredRow {
     serverVersion: asNumber(record.server_version),
     scopes: asJson<Record<string, string>>(record.scopes),
     payload: asBytes(record.payload),
+    ...(record.column_versions === null || record.column_versions === undefined
+      ? {}
+      : { columnVersions: asBytes(record.column_versions) }),
   };
 }
 
@@ -607,6 +619,27 @@ class PostgresTransaction implements StorageTransaction {
       this.#resolveTable(table),
       this.#partition,
       rowId,
+    );
+  }
+
+  async getTombstoneSeq(
+    table: string,
+    rowId: string,
+  ): Promise<number | undefined> {
+    this.#assertOpen();
+    const { rows } = await this.#client.query<{ commit_seq: unknown }>(
+      'SELECT commit_seq FROM sync_tombstones WHERE partition=$1 AND tbl=$2 AND row_id=$3',
+      [this.#partition, table, rowId],
+    );
+    const seq = rows[0]?.commit_seq;
+    return seq === null || seq === undefined ? undefined : asNumber(seq);
+  }
+
+  async clearTombstone(table: string, rowId: string): Promise<void> {
+    this.#assertOpen();
+    await this.#client.query(
+      'DELETE FROM sync_tombstones WHERE partition=$1 AND tbl=$2 AND row_id=$3',
+      [this.#partition, table, rowId],
     );
   }
 
@@ -784,16 +817,24 @@ class PostgresTransaction implements StorageTransaction {
       if (change === undefined) continue;
       // Bind serialized scopes as text before parsing JSONB. Drivers that
       // encode JSONB parameters would otherwise store this string as a scalar.
+      // One statement per change: scopes AND the §5 delete tombstone ride the
+      // same writable-CTE chain.
       await q.query(
         `WITH inserted AS (
            INSERT INTO sync_changes(partition, commit_seq, idx, tbl, row_id, op, row_version, scopes, payload)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8::text::jsonb,$9)
-           RETURNING partition, tbl, commit_seq, scopes
+           RETURNING partition, tbl, row_id, op, commit_seq, scopes
+         ),
+         scoped AS (
+           INSERT INTO sync_change_scopes(partition, tbl, var, value, commit_seq)
+           SELECT inserted.partition, inserted.tbl, scope.key, scope.value, inserted.commit_seq
+           FROM inserted CROSS JOIN LATERAL jsonb_each_text(inserted.scopes) AS scope
+           ON CONFLICT DO NOTHING
          )
-         INSERT INTO sync_change_scopes(partition, tbl, var, value, commit_seq)
-         SELECT inserted.partition, inserted.tbl, scope.key, scope.value, inserted.commit_seq
-         FROM inserted CROSS JOIN LATERAL jsonb_each_text(inserted.scopes) AS scope
-         ON CONFLICT DO NOTHING`,
+         INSERT INTO sync_tombstones(partition, tbl, row_id, commit_seq)
+         SELECT partition, tbl, row_id, commit_seq FROM inserted WHERE op = 2
+         ON CONFLICT (partition, tbl, row_id)
+         DO UPDATE SET commit_seq = excluded.commit_seq`,
         [
           p,
           commitSeq,
@@ -1256,6 +1297,11 @@ export class PostgresServerStorage implements ServerStorage {
       );
       await client.query(
         'DELETE FROM sync_change_scopes WHERE partition=$1 AND commit_seq<=$2',
+        [partition, horizonSeq],
+      );
+      // §4.6: tombstones prune in the same pass as the commit log.
+      await client.query(
+        'DELETE FROM sync_tombstones WHERE partition=$1 AND commit_seq<=$2',
         [partition, horizonSeq],
       );
       return {

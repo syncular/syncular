@@ -6,7 +6,10 @@ use std::collections::HashMap;
 
 use serde_json::{Map, Value};
 use ssp2::primitives::{RawJson, Reader, Writer};
-use ssp2::segment::{decode_row, encode_row, Column, ColumnType, ColumnValue, Row};
+use ssp2::segment::{
+    decode_row, encode_row, encode_sparse_row, Column, ColumnType, ColumnValue, Row, SparseRow,
+    SparseSlot,
+};
 use ssp2::util::utf16_lt;
 
 use crate::schema::TableSchema;
@@ -305,6 +308,28 @@ pub fn column_value_to_json(value: &Option<ColumnValue>) -> Value {
     }
 }
 
+/// Turn an app-facing value map into a full-row map: every column present,
+/// a missing nullable column filled with NULL, a missing non-nullable column
+/// a loud error (§6.1 full-row payloads, §6.7 `mutate` marks every column).
+pub fn full_row_values(
+    table: &TableSchema,
+    mut values: Map<String, Value>,
+) -> Result<Map<String, Value>, String> {
+    for column in &table.columns {
+        if values.contains_key(&column.name) {
+            continue;
+        }
+        if !column.nullable {
+            return Err(format!(
+                "table {:?}: column {:?} is not nullable (§6.1 full-row payloads)",
+                table.name, column.name
+            ));
+        }
+        values.insert(column.name.clone(), Value::Null);
+    }
+    Ok(values)
+}
+
 /// Encode one full row (driver JSON values keyed by column name) with the
 /// generated row codec (§2.4, §6.1). §5.11: encrypted columns are encrypted
 /// here — the encode-at-send seam — before the codec serializes them as
@@ -334,6 +359,37 @@ pub fn encode_row_json(
     let mut w = Writer::new();
     encode_row(&mut w, &table.wire_columns, &row);
     Ok(w.into_bytes())
+}
+
+/// Encode one SPARSE push payload (§2.4, §6.1): the keys of `values` ARE the
+/// presence set — a column with no key stays absent. §5.11: only present
+/// encrypted columns are encrypted; absent columns are densified to NULL for
+/// key-id selection only. Serialized with the `wire_columns` table.
+pub fn encode_sparse_row_json(
+    table: &TableSchema,
+    row_id: &str,
+    values: &Map<String, Value>,
+    encryption: &EncryptionConfig,
+) -> Result<Vec<u8>, String> {
+    let mut row: SparseRow = Vec::with_capacity(table.columns.len());
+    for column in &table.columns {
+        let Some(raw) = values.get(&column.name) else {
+            row.push(SparseSlot::Absent);
+            continue;
+        };
+        let value = json_to_column_value(column, Some(raw))?;
+        if value.is_none() && !column.nullable {
+            return Err(format!(
+                "table {:?}: column {:?} is not nullable (§6.1)",
+                table.name, column.name
+            ));
+        }
+        row.push(value.map_or(SparseSlot::Null, SparseSlot::Value));
+    }
+    if table.has_encrypted_columns() {
+        encrypt_sparse_row(table, row_id, &mut row, encryption)?;
+    }
+    Ok(encode_sparse_row(&table.wire_columns, table.pk_index, &row))
 }
 
 /// Decode one row-codec payload; trailing bytes are a decode error. §5.11:
@@ -394,6 +450,54 @@ fn encrypt_row(
         row[enc.index] = Some(ColumnValue::Bytes(envelope));
     }
     Ok(())
+}
+
+#[cfg(feature = "e2ee")]
+fn encrypt_sparse_row(
+    table: &TableSchema,
+    _row_id: &str,
+    row: &mut SparseRow,
+    encryption: &EncryptionConfig,
+) -> Result<(), String> {
+    use rand_core::RngCore;
+    use ssp2::crypto::{encrypt_value, NONCE_LENGTH};
+    // Densify absent columns to NULL for key-id selection only (§6.1).
+    let dense: Row = row
+        .iter()
+        .map(|slot| match slot {
+            SparseSlot::Value(value) => Some(value.clone()),
+            _ => None,
+        })
+        .collect();
+    let key_id = encryption.key_id_for(table, &dense)?;
+    for enc in &table.encrypted_columns {
+        let Some(SparseSlot::Value(value)) = row.get(enc.index) else {
+            continue; // absent or NULL stays untouched (§5.11)
+        };
+        let plain = column_value_to_plain(value)?;
+        let key = encryption
+            .keys
+            .get(&key_id)
+            .ok_or_else(|| format!("client.decrypt_failed: no key for keyId {key_id:?}"))?;
+        let mut nonce = [0u8; NONCE_LENGTH];
+        rand_core::OsRng.fill_bytes(&mut nonce);
+        let envelope = encrypt_value(&plain, &key_id, key, nonce)?;
+        row[enc.index] = SparseSlot::Value(ColumnValue::Bytes(envelope));
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "e2ee"))]
+fn encrypt_sparse_row(
+    table: &TableSchema,
+    _row_id: &str,
+    _row: &mut SparseRow,
+    _encryption: &EncryptionConfig,
+) -> Result<(), String> {
+    Err(format!(
+        "table {:?} has encrypted columns but this build lacks the e2ee feature (§5.11)",
+        table.name
+    ))
 }
 
 #[cfg(feature = "e2ee")]

@@ -211,12 +211,6 @@ async function planRequest(
     else if (frame.type === 'SUBSCRIPTION') subFrames.push(frame);
   }
 
-  if (request.wireVersion === 1 && registry.epochRequired) {
-    throw syncError(
-      'sync.client_wire_unsupported',
-      'this partition requires a client that validates log epochs (§2.1)',
-    );
-  }
   if (
     request.wireVersion >= 2 &&
     header.logEpoch === undefined &&

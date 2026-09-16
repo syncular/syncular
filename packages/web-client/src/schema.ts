@@ -719,7 +719,10 @@ export function normalizeRecordKeys(
  * may surface integers as bigint. Anything else passes through untouched —
  * the codec still fails loud on genuine type garbage at encode time.
  */
-function coerceSqlRepresentation(column: RowColumn, value: unknown): unknown {
+export function coerceSqlRepresentation(
+  column: RowColumn,
+  value: unknown,
+): unknown {
   switch (localColumnType(column)) {
     case 'boolean':
       return value === 0 ? false : value === 1 ? true : value;

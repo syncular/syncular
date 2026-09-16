@@ -50,9 +50,12 @@ encodings
 
 ## Conflict detection
 
-Pass a `baseVersion` on a mutation to assert "I edited version K." If the
-server's stored `server_version` has moved on, the commit is **rejected with a
-conflict record** and the stored row stays as it was
+Pass a `baseVersion` on a mutation to assert "I edited version K." The
+server tracks a `column_version` per column and rejects with a **conflict
+record** when a present non-`crdt` column changed after version K. Absent
+columns are untouched, so two edits to disjoint columns both apply. The
+conflict record's `conflictColumns` names the columns that moved on, so a
+custom merge recomputes exactly those
 ([SPEC §6.2](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#6-push-and-commit-application)):
 
 ```ts
@@ -79,21 +82,21 @@ client.conflicts; // readonly ConflictRecord[]
 Without a `baseVersion`, upserts are last-write-wins on the server; conflicts
 only arise when you opt into version checking.
 
-For an edit form, prefer `patch` after reading the row locally. It still sends
-the full row required by the wire protocol, but records the fields the user
-actually changed in local durable metadata:
+For an edit form, prefer `patch` after reading the row locally. It records one
+sparse push operation: the primary key plus the columns the caller supplied.
+The server writes those columns and leaves the rest untouched.
 
 ```ts
 client.patch('todos', 't1', { title: 'Buy oat milk' }, { baseVersion: 3 });
 
 const [conflict] = client.conflicts;
-conflict.operation?.changedFields; // ['title']
+conflict.operation?.values; // { title: 'Buy oat milk', id: 't1' }
 ```
 
-`changedFields` survives restart and is available on both conflict and
-rejection records. It is never sent to or trusted by the server. A full-row
-`mutate` intentionally omits it because Syncular cannot safely infer user
-intent by diffing against a changing local base.
+The keys of the operation's `values` map are the presence set, and they survive
+restart on both conflict and rejection records. A full-row `mutate` marks every
+column present; Syncular never infers intent by diffing against a changing
+local base.
 
 ## Rejections vs conflicts
 
@@ -125,7 +128,7 @@ rebuild, like any other rejection.
 
 Conflicts and rejections persist as durable **commit outcomes** with
 structured recovery metadata: bounded `details` attached by server
-validators, and the `changedFields` recorded by `patch`. The end-to-end
+validators, and the sparse operation recorded by `patch`. The end-to-end
 repair flow (server validators, atomic aggregate validation, the outcome
 journal, restart, and acknowledgement) is
 [Concurrency and conflict correction](/guide-concurrency-correction/).

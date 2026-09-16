@@ -155,13 +155,13 @@ mod tests {
     fn response_bytes() -> Vec<u8> {
         // A minimal but real response envelope: RESP_HEADER + END.
         let message = Message {
-            wire_version: 1,
+            wire_version: ssp2::decode::WIRE_VERSION,
             msg_kind: MsgKind::Response,
             frames: vec![Frame::RespHeader {
                 required_schema_version: None,
                 latest_schema_version: None,
-                log_epoch: None,
-                reset_required: None,
+                log_epoch: Some("epoch-1".to_owned()),
+                reset_required: Some(false),
             }],
         };
         encode_message(&message)

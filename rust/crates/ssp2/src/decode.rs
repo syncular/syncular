@@ -11,8 +11,8 @@ use crate::primitives::Reader;
 use crate::segment::decode_rows_segment;
 
 pub const SSP2_MAGIC: &[u8; 4] = b"SSP2";
-pub const MINIMUM_WIRE_VERSION: u16 = 1;
-pub const WIRE_VERSION: u16 = 2;
+pub const MINIMUM_WIRE_VERSION: u16 = 3;
+pub const WIRE_VERSION: u16 = 3;
 
 /// Decode a complete SSP2 message, enforcing envelope rules and the per-kind
 /// frame grammar. Unknown frame types are preserved byte-for-byte (§1.2
@@ -648,6 +648,7 @@ fn decode_push_result(payload: &[u8]) -> Result<Frame> {
                     message: r.str("conflict message")?,
                     server_version: r.i64("serverVersion")?,
                     server_row: r.bytes("serverRow")?,
+                    conflict_columns: r.bytes("conflictColumns")?,
                 },
                 3 => OpResult::Error {
                     op_index,

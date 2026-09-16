@@ -119,6 +119,22 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorCatalogEntry>> = {
     recommendedAction: 'forceResync',
     httpStatus: 404,
   },
+  // §5 delete precedence: an unversioned upsert lost to a delete inside the
+  // tombstone horizon. The client drops the operation on rebuild.
+  'sync.row_deleted': {
+    category: 'not-found',
+    retryable: false,
+    recommendedAction: 'fixRequest',
+    httpStatus: 404,
+  },
+  // §6.11 declared references: absent parent, RESTRICT delete with live
+  // children, or the cascade cap. A push operation-result error only.
+  'sync.reference_violation': {
+    category: 'invalid-request',
+    retryable: false,
+    recommendedAction: 'fixRequest',
+    httpStatus: 400,
+  },
   'sync.version_conflict': {
     category: 'conflict',
     retryable: false,
@@ -194,12 +210,6 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorCatalogEntry>> = {
     httpStatus: 400,
   },
   'sync.client_schema_unsupported': {
-    category: 'schema-mismatch',
-    retryable: false,
-    recommendedAction: 'upgradeClient',
-    httpStatus: 400,
-  },
-  'sync.client_wire_unsupported': {
     category: 'schema-mismatch',
     retryable: false,
     recommendedAction: 'upgradeClient',

@@ -7,7 +7,7 @@ import { expect } from 'bun:test';
 import {
   decodeMessage,
   encodeMessage,
-  encodeRow,
+  encodeSparseRow,
   PROTOCOL_WIRE_VERSION,
   type PullHeaderFrame,
   type PushCommitFrame,
@@ -118,7 +118,7 @@ export const TEST_SCHEMA: ServerSchema = {
   ],
 };
 
-const TEST_LOG_EPOCH = 'test-log-epoch';
+export const TEST_LOG_EPOCH = 'test-log-epoch';
 
 export interface ScopeHolder {
   value: ScopeMap;
@@ -168,7 +168,16 @@ export function taskRow(
   priority: number | null = null,
   meta: string | null = null,
 ): Uint8Array {
-  return encodeRow(TASK_COLUMNS, [id, projectId, title, done, priority, meta]);
+  // Push payloads are sparse rows at wire version 3 (§2.4); every column
+  // present keeps these full-row writes byte-compatible with mutate().
+  return encodeSparseRow(TASK_COLUMNS, 0, [
+    id,
+    projectId,
+    title,
+    done,
+    priority,
+    meta,
+  ]);
 }
 
 export function docRow(
@@ -177,7 +186,7 @@ export function docRow(
   projectId: string,
   body = 'body',
 ): Uint8Array {
-  return encodeRow(DOC_COLUMNS, [id, orgId, projectId, body]);
+  return encodeSparseRow(DOC_COLUMNS, 0, [id, orgId, projectId, body]);
 }
 
 export function upsert(

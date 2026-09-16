@@ -17,11 +17,13 @@ import { leaseScenarios } from './leases';
 import { lifecycleScenarios } from './lifecycle';
 import { observationScenarios } from './observation';
 import { offlineScenarios } from './offline';
+import { deletePrecedenceScenarios } from './delete-precedence';
 import { presenceScenarios } from './presence';
 import { realtimeScenarios } from './realtime';
 import { remoteProducerScenarios } from './remote-producer';
 import { reconnectStormScenarios } from './reconnect-storm';
 import { referenceScenarios } from './references';
+import { sparseRowScenarios } from './sparse-rows';
 import { schemaBumpScenarios } from './schema-bump';
 import { scopeScenarios } from './scopes';
 import { signedUrlScenarios } from './signed-url';
@@ -53,6 +55,8 @@ export const CATALOG: readonly Scenario[] = [
   ...presenceScenarios,
   ...reconnectStormScenarios,
   ...referenceScenarios,
+  ...deletePrecedenceScenarios,
+  ...sparseRowScenarios,
   ...windowScenarios,
   ...validatorScenarios,
   ...commitValidatorScenarios,

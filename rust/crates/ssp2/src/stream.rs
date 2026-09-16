@@ -141,7 +141,7 @@ mod tests {
     /// the same shape the TS scanner test uses.
     fn request_bytes() -> Vec<u8> {
         let message = Message {
-            wire_version: 1,
+            wire_version: WIRE_VERSION,
             msg_kind: MsgKind::Request,
             frames: vec![
                 Frame::ReqHeader {

@@ -20,7 +20,7 @@ import { syncFails, syncIdle, syncOk } from './util';
 const P1 = { project_id: ['p1'] } as const;
 
 /** A table mixing an LWW `title` and a `crdt` `doc` column (§5.10.1). */
-const CRDT_SCHEMA: DriverSchema = {
+export const CRDT_SCHEMA: DriverSchema = {
   version: 1,
   tables: [
     {
@@ -37,17 +37,17 @@ const CRDT_SCHEMA: DriverSchema = {
   ],
 };
 
-const CRDT_SERVER = { schema: CRDT_SCHEMA } as const;
+export const CRDT_SERVER = { schema: CRDT_SCHEMA } as const;
 
 /** Bytes → the `{ $bytes: hex }` driver form. */
-function bytesValue(bytes: Uint8Array): { readonly $bytes: string } {
+export function bytesValue(bytes: Uint8Array): { readonly $bytes: string } {
   let hex = '';
   for (const b of bytes) hex += b.toString(16).padStart(2, '0');
   return { $bytes: hex };
 }
 
 /** The `{ $bytes: hex }` driver form → bytes. */
-function valueBytes(value: DriverRowValue | undefined): Uint8Array {
+export function valueBytes(value: DriverRowValue | undefined): Uint8Array {
   if (value === null || value === undefined || typeof value !== 'object') {
     return new Uint8Array(0);
   }
@@ -60,7 +60,7 @@ function valueBytes(value: DriverRowValue | undefined): Uint8Array {
 }
 
 /** A Yjs update that inserts `text` at position 0 of a fresh doc. */
-function textUpdate(text: string): Uint8Array {
+export function textUpdate(text: string): Uint8Array {
   const col = new YjsColumn();
   col.text().insert(0, text);
   const bytes = col.columnBytes();
@@ -69,14 +69,18 @@ function textUpdate(text: string): Uint8Array {
 }
 
 /** Read `text` from a merged crdt column value. */
-function readText(bytes: Uint8Array): string {
+export function readText(bytes: Uint8Array): string {
   const col = new YjsColumn(bytes);
   const text = col.text().toString();
   col.destroy();
   return text;
 }
 
-function noteRow(id: string, title: string, doc: Uint8Array | null): DriverRow {
+export function noteRow(
+  id: string,
+  title: string,
+  doc: Uint8Array | null,
+): DriverRow {
   return {
     id,
     project_id: 'p1',

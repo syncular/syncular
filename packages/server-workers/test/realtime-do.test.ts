@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import {
   decodeMessage,
   encodeMessage,
-  encodeRow,
+  encodeSparseRow,
   MessageStreamScanner,
   type PushCommitFrame,
   type PushResultFrame,
@@ -58,6 +58,7 @@ import {
 
 const PARTITION = 'part-1';
 const ACTOR_ID = 'actor-1';
+const TEST_LOG_EPOCH = 'test-log-epoch';
 
 const TASK_COLUMNS: readonly RowColumn[] = [
   { name: 'id', type: 'string', nullable: false },
@@ -86,7 +87,7 @@ function taskRow(
   doc: Uint8Array | null = null,
   attachment: string | null = null,
 ): Uint8Array {
-  return encodeRow(TASK_COLUMNS, [id, listId, title, doc, attachment]);
+  return encodeSparseRow(TASK_COLUMNS, 0, [id, listId, title, doc, attachment]);
 }
 
 function blobRef(blobId: string, byteLength: number): string {
@@ -132,6 +133,8 @@ async function makeDb(): Promise<D1DatabaseDouble> {
   const db = new D1DatabaseDouble();
   const storage = new D1ServerStorage(db);
   await storage.migrate();
+  // Pin the partition log epoch so one-round pushes are legal (§2.1).
+  await storage.touchPartition(PARTITION, 0, TEST_LOG_EPOCH);
   return db;
 }
 
@@ -170,9 +173,17 @@ function syncRequestBytes(
   clientId: string,
 ): Uint8Array {
   return encodeMessage({
-    wireVersion: 1,
+    wireVersion: 3,
     msgKind: 'request',
-    frames: [{ type: 'REQ_HEADER', clientId, schemaVersion: 1 }, ...frames],
+    frames: [
+      {
+        type: 'REQ_HEADER',
+        clientId,
+        schemaVersion: 1,
+        logEpoch: TEST_LOG_EPOCH,
+      },
+      ...frames,
+    ],
   });
 }
 
@@ -698,6 +709,10 @@ describe('SyncularRealtimeDO (DO double + D1 double, reference codec)', () => {
       enteredPartitionA = resolve;
     });
     const db = await makeDb();
+    // Pin both partitions' epochs so the concurrent pushes are not resets.
+    const registryStorage = new D1ServerStorage(db);
+    await registryStorage.touchPartition('partition-a', 0, TEST_LOG_EPOCH);
+    await registryStorage.touchPartition('partition-b', 0, TEST_LOG_EPOCH);
     const ns = new FakeDurableObjectNamespace(
       db,
       realtimeConfig(async ({ partition }) => {

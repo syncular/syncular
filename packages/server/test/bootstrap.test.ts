@@ -5,6 +5,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   decodeRowsSegment,
+  encodeRow,
   type SegmentInlineFrame,
   type SegmentRefFrame,
 } from '@syncular/core';
@@ -20,7 +21,7 @@ import { subscriptionSection } from '../src/pull';
 import { upsertSql, upsertValues } from '../src/relational-rows';
 import {
   makeContext,
-  taskRow,
+  TASK_COLUMNS,
   pullHeader,
   section,
   seedTask,
@@ -348,7 +349,14 @@ describe('coalesced SQLite image builds', () => {
             rowId,
             serverVersion: 7,
             scopes: { project_id: 'p1' },
-            payload: taskRow(rowId, 'p1'),
+            payload: encodeRow(TASK_COLUMNS, [
+              rowId,
+              'p1',
+              'task',
+              false,
+              null,
+              null,
+            ]),
           },
           'sqlite',
         ) as SqliteValue[]),

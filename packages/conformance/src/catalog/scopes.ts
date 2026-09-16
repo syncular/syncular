@@ -296,7 +296,8 @@ export const scopeScenarios: readonly Scenario[] = [
       );
       checkEqual((await ctx.server.readRows('tasks')).length, 0, 'no write');
 
-      // Re-homing by update: the scope column is stripped server-side.
+      // Re-homing by update: a present scope column with a changed value
+      // rejects whole; it is never silently stripped (§3.4 rule 5).
       const b = await ctx.newClient({
         actorId: 'actor-b',
         clientId: 'client-b',
@@ -312,10 +313,20 @@ export const scopeScenarios: readonly Scenario[] = [
         { op: 'upsert', table: 'tasks', values: task('t1', 'p1', 'home') },
       ]);
       await syncIdle(b);
-      await b.api.mutate([
+      const moved = await b.api.mutate([
         { op: 'upsert', table: 'tasks', values: task('t1', 'p2', 'moved?') },
       ]);
-      await syncIdle(b);
+      const movedReport = await syncOk(b);
+      checkEqual(
+        movedReport.rejected,
+        [moved],
+        'the scope move is rejected, not stripped',
+      );
+      checkEqual(
+        (await b.api.rejections())[0]?.code,
+        'sync.invalid_request',
+        'a present changed scope column rejects with sync.invalid_request',
+      );
       const t1 = (await ctx.server.readRows('tasks')).find(
         (row) => row.rowId === 't1',
       );
@@ -325,16 +336,22 @@ export const scopeScenarios: readonly Scenario[] = [
         'scope columns are immutable on update (§3.4 rule 5)',
       );
       checkEqual(t1?.scopes.project_id, 'p1', 'stored scopes unchanged');
-      checkEqual(t1?.values.title, 'moved?', 'non-scope columns did update');
-      // The client's optimistic p2 value reconciles back to p1.
+      checkEqual(
+        t1?.values.title,
+        'home',
+        'the rejected commit wrote nothing, sibling columns included',
+      );
+      // The client's optimistic p2 row reconciles back on rebuild (§7.2).
+      await syncIdle(b);
       const local = (await b.api.readRows('tasks')).find(
         (row) => row.rowId === 't1',
       );
       checkEqual(
         local?.values.project_id,
         'p1',
-        'the pull half reconciled the stripped column locally',
+        'the rebuild reconciled the rejected optimistic write locally',
       );
+      checkEqual(local?.values.title, 'home', 'the local title reconciled too');
     },
   },
 

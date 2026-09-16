@@ -3,7 +3,7 @@
  *
  * Every synced table is a REAL table in the server database — the app's
  * columns with proper type affinities, queryable with plain SQL/joins/BI —
- * plus five `_sync_*` meta columns:
+ * plus six `_sync_*` meta columns:
  *
  *   _sync_partition       TEXT      partition key (multi-partition servers
  *                                   share one database; same app PK in two
@@ -23,6 +23,10 @@
  *                                   so sync round-trips are byte-identical by
  *                                   construction. Typed columns are a
  *                                   queryable projection.
+ *   _sync_column_versions BLOB/BYTEA §2.2 per-column versions: LEB128
+ *                                   (ordinal, version) pairs for columns
+ *                                   above 1; NULL when none exceeds 1
+ *                                   (every fresh insert). Server-internal.
  *
  * PRIMARY KEY (_sync_partition, _sync_row_id).
  *
@@ -59,6 +63,67 @@ export const SYNC_ROW_ID_COLUMN = '_sync_row_id';
 export const SYNC_VERSION_COLUMN = '_sync_server_version';
 export const SYNC_SCOPES_COLUMN = '_sync_scopes';
 export const SYNC_PAYLOAD_COLUMN = '_sync_payload';
+export const SYNC_COLUMN_VERSIONS_COLUMN = '_sync_column_versions';
+
+/**
+ * §2.2 column-version storage: LEB128 `(ordinal, version)` varint pairs,
+ * ascending ordinal, for the columns whose version exceeds 1. An empty (or
+ * NULL) blob means no column exceeds 1. Server-internal: these bytes never
+ * ride the wire.
+ */
+export function encodeColumnVersions(
+  versions: ReadonlyMap<number, number>,
+): Uint8Array | undefined {
+  const bytes: number[] = [];
+  const varint = (value: number): void => {
+    let rest = value;
+    while (rest >= 0x80) {
+      bytes.push((rest & 0x7f) | 0x80);
+      rest = Math.floor(rest / 128);
+    }
+    bytes.push(rest);
+  };
+  for (const ordinal of [...versions.keys()].sort((a, b) => a - b)) {
+    const version = versions.get(ordinal) ?? 0;
+    if (version <= 1) continue;
+    varint(ordinal);
+    varint(version);
+  }
+  return bytes.length === 0 ? undefined : Uint8Array.from(bytes);
+}
+
+export function decodeColumnVersions(
+  blob: Uint8Array | undefined | null,
+): Map<number, number> {
+  const versions = new Map<number, number>();
+  if (blob === undefined || blob === null) return versions;
+  let offset = 0;
+  const varint = (): number => {
+    let value = 0;
+    let shift = 1;
+    for (;;) {
+      const byte = blob[offset];
+      if (byte === undefined) {
+        throw new Error('truncated _sync_column_versions blob');
+      }
+      offset++;
+      value += (byte & 0x7f) * shift;
+      if ((byte & 0x80) === 0) return value;
+      shift *= 128;
+    }
+  };
+  while (offset < blob.length) {
+    const ordinal = varint();
+    const version = varint();
+    if (version <= 1) {
+      throw new Error(
+        'corrupt _sync_column_versions blob: version at or below 1 is never stored',
+      );
+    }
+    versions.set(ordinal, version);
+  }
+  return versions;
+}
 
 /** SQL-standard identifier quoting (both dialects). */
 export function quoteIdent(name: string): string {
@@ -122,6 +187,7 @@ export function tableColumnNames(table: CompiledTable): string[] {
     SYNC_VERSION_COLUMN,
     SYNC_SCOPES_COLUMN,
     SYNC_PAYLOAD_COLUMN,
+    SYNC_COLUMN_VERSIONS_COLUMN,
   ];
 }
 
@@ -145,6 +211,7 @@ export function createTableDdl(
     `${quoteIdent(SYNC_VERSION_COLUMN)} ${versionType} NOT NULL`,
     `${quoteIdent(SYNC_SCOPES_COLUMN)} ${scopesType} NOT NULL`,
     `${quoteIdent(SYNC_PAYLOAD_COLUMN)} ${payloadType} NOT NULL`,
+    `${quoteIdent(SYNC_COLUMN_VERSIONS_COLUMN)} ${payloadType}`,
     `PRIMARY KEY (${quoteIdent(SYNC_PARTITION_COLUMN)}, ${quoteIdent(SYNC_ROW_ID_COLUMN)})`,
   ];
   return `CREATE TABLE IF NOT EXISTS ${quoteIdent(table.name)} (${defs.join(', ')})`;
@@ -153,14 +220,22 @@ export function createTableDdl(
 /**
  * ALTER TABLE ADD COLUMN statements for schema columns missing from
  * `existingColumns` (introspected). Added columns are nullable (header note).
+ * The `_sync_column_versions` meta column is added to pre-column-version
+ * tables too, materialized or not: it is storage-internal, nullable, and
+ * never part of the app-column migration subset.
  */
 export function addColumnDdl(
   table: CompiledTable,
   existingColumns: ReadonlySet<string>,
   dialect: RelationalDialect,
 ): string[] {
-  if (!table.materialize) return [];
   const out: string[] = [];
+  if (!existingColumns.has(SYNC_COLUMN_VERSIONS_COLUMN)) {
+    out.push(
+      `ALTER TABLE ${quoteIdent(table.name)} ADD COLUMN ${quoteIdent(SYNC_COLUMN_VERSIONS_COLUMN)} ${dialect === 'postgres' ? 'BYTEA' : 'BLOB'}`,
+    );
+  }
+  if (!table.materialize) return out;
   for (const column of table.columns) {
     if (existingColumns.has(column.name)) continue;
     out.push(
@@ -267,7 +342,7 @@ export function upsertValues(
   dialect: RelationalDialect,
 ): unknown[] {
   // A non-materialized table skips the decode entirely — the upsert is a
-  // five-column meta write (the old blob-store cost).
+  // six-column meta write (the old blob-store cost).
   const projection = table.materialize
     ? decodeRow(table.columns, row.payload)
     : undefined;
@@ -282,6 +357,7 @@ export function upsertValues(
     row.serverVersion,
     JSON.stringify(row.scopes),
     row.payload,
+    row.columnVersions ?? null,
   ];
 }
 
@@ -318,7 +394,7 @@ export function selectRowSql(
   dialect: RelationalDialect,
 ): string {
   const p = dialect === 'sqlite' ? ['?', '?'] : ['$1', '$2'];
-  return `SELECT ${quoteIdent(SYNC_ROW_ID_COLUMN)} AS row_id, ${quoteIdent(SYNC_VERSION_COLUMN)} AS server_version, ${quoteIdent(SYNC_SCOPES_COLUMN)} AS scopes, ${quoteIdent(SYNC_PAYLOAD_COLUMN)} AS payload FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(SYNC_PARTITION_COLUMN)}=${p[0]} AND ${quoteIdent(SYNC_ROW_ID_COLUMN)}=${p[1]}`;
+  return `SELECT ${quoteIdent(SYNC_ROW_ID_COLUMN)} AS row_id, ${quoteIdent(SYNC_VERSION_COLUMN)} AS server_version, ${quoteIdent(SYNC_SCOPES_COLUMN)} AS scopes, ${quoteIdent(SYNC_PAYLOAD_COLUMN)} AS payload, ${quoteIdent(SYNC_COLUMN_VERSIONS_COLUMN)} AS column_versions FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(SYNC_PARTITION_COLUMN)}=${p[0]} AND ${quoteIdent(SYNC_ROW_ID_COLUMN)}=${p[1]}`;
 }
 
 export interface IndexRowPageStatement {
@@ -360,7 +436,7 @@ export function indexRowPageStatement(
   params.push(limit);
   const pageLimit = placeholder();
   return {
-    sql: `SELECT ${quoteIdent(SYNC_ROW_ID_COLUMN)} AS row_id, ${quoteIdent(SYNC_VERSION_COLUMN)} AS server_version, ${quoteIdent(SYNC_SCOPES_COLUMN)} AS scopes, ${quoteIdent(SYNC_PAYLOAD_COLUMN)} AS payload FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(SYNC_PARTITION_COLUMN)}=${dialect === 'sqlite' ? '?' : '$1'} AND ${predicates.join(' AND ')} AND ${quoteIdent(SYNC_ROW_ID_COLUMN)}>${after} ORDER BY ${quoteIdent(SYNC_ROW_ID_COLUMN)} LIMIT ${pageLimit}`,
+    sql: `SELECT ${quoteIdent(SYNC_ROW_ID_COLUMN)} AS row_id, ${quoteIdent(SYNC_VERSION_COLUMN)} AS server_version, ${quoteIdent(SYNC_SCOPES_COLUMN)} AS scopes, ${quoteIdent(SYNC_PAYLOAD_COLUMN)} AS payload, ${quoteIdent(SYNC_COLUMN_VERSIONS_COLUMN)} AS column_versions FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(SYNC_PARTITION_COLUMN)}=${dialect === 'sqlite' ? '?' : '$1'} AND ${predicates.join(' AND ')} AND ${quoteIdent(SYNC_ROW_ID_COLUMN)}>${after} ORDER BY ${quoteIdent(SYNC_ROW_ID_COLUMN)} LIMIT ${pageLimit}`,
     params,
   };
 }
@@ -396,7 +472,7 @@ export function scanRowPageSql(
   const after = p(4 + valueCount);
   const limit = p(5 + valueCount);
   const joinPartition = dialect === 'sqlite' ? '?' : '$1';
-  return `SELECT c.row_id AS row_id, r.${quoteIdent(SYNC_VERSION_COLUMN)} AS server_version, r.${quoteIdent(SYNC_SCOPES_COLUMN)} AS scopes, r.${quoteIdent(SYNC_PAYLOAD_COLUMN)} AS payload
+  return `SELECT c.row_id AS row_id, r.${quoteIdent(SYNC_VERSION_COLUMN)} AS server_version, r.${quoteIdent(SYNC_SCOPES_COLUMN)} AS scopes, r.${quoteIdent(SYNC_PAYLOAD_COLUMN)} AS payload, r.${quoteIdent(SYNC_COLUMN_VERSIONS_COLUMN)} AS column_versions
      FROM (SELECT DISTINCT row_id FROM sync_row_scopes
        WHERE partition=${p(1)} AND tbl=${p(2)} AND var=${p(3)} AND value IN (${values.join(',')})
          AND row_id>${after}

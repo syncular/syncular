@@ -12,7 +12,7 @@
       "name": "epoch-reset",
       "bin": "epoch-reset.bin",
       "json": "epoch-reset.json",
-      "covers": "Wire version 2 header-only reset after a partition log epoch change"
+      "covers": "Header-only reset after a partition log epoch change (§2.1)"
     },
     {
       "name": "commits-incremental",
@@ -36,7 +36,7 @@
       "name": "push-conflict",
       "bin": "push-conflict.bin",
       "json": "push-conflict.json",
-      "covers": "Rejected commit; conflict record with serverVersion + serverRow"
+      "covers": "Rejected commit; conflict record with serverVersion, full-row serverRow, and the conflictColumns bitmap (§6.3)"
     },
     {
       "name": "push-cached",

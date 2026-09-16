@@ -163,6 +163,28 @@ class SqliteTransaction implements StorageTransaction {
     return this.#storage.getRow(this.#partition, table, rowId);
   }
 
+  async getTombstoneSeq(
+    table: string,
+    rowId: string,
+  ): Promise<number | undefined> {
+    this.#assertOpen();
+    const row = this.#storage.db
+      .query<{ commit_seq: number }, [string, string, string]>(
+        'SELECT commit_seq FROM sync_tombstones WHERE partition=? AND tbl=? AND row_id=?',
+      )
+      .get(this.#partition, table, rowId);
+    return row?.commit_seq;
+  }
+
+  async clearTombstone(table: string, rowId: string): Promise<void> {
+    this.#assertOpen();
+    this.#storage.db
+      .query(
+        'DELETE FROM sync_tombstones WHERE partition=? AND tbl=? AND row_id=?',
+      )
+      .run(this.#partition, table, rowId);
+  }
+
   getPushResult(
     clientId: string,
     clientCommitId: string,
@@ -302,6 +324,14 @@ class SqliteTransaction implements StorageTransaction {
         JSON.stringify(change.scopes),
         change.payload ?? null,
       );
+      if (change.op === 'delete') {
+        // §5 delete precedence: every applied delete leaves a tombstone,
+        // pruned with the commit log (§4.6).
+        db.query(
+          `INSERT INTO sync_tombstones(partition, tbl, row_id, commit_seq) VALUES (?,?,?,?)
+           ON CONFLICT(partition, tbl, row_id) DO UPDATE SET commit_seq=excluded.commit_seq`,
+        ).run(p, change.table, change.rowId, commitSeq);
+      }
       for (const [variable, value] of Object.entries(change.scopes)) {
         db.query(
           'INSERT OR IGNORE INTO sync_change_scopes(partition, tbl, var, value, commit_seq) VALUES (?,?,?,?,?)',
@@ -831,6 +861,12 @@ export class SqliteServerStorage implements ServerStorage {
         this.db
           .query(
             'DELETE FROM sync_change_scopes WHERE partition=? AND commit_seq<=?',
+          )
+          .run(partition, horizonSeq);
+        // §4.6: tombstones prune in the same pass as the commit log.
+        this.db
+          .query(
+            'DELETE FROM sync_tombstones WHERE partition=? AND commit_seq<=?',
           )
           .run(partition, horizonSeq);
         this.db.exec('COMMIT');

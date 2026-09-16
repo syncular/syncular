@@ -10,7 +10,7 @@ import {
   encodeMessage,
   encodeRemoteOperationRequest,
   decodeRemoteOperationResponse,
-  encodeRow,
+  encodeSparseRow,
   type RowColumn,
 } from '@syncular/core';
 import {
@@ -44,7 +44,9 @@ const SCHEMA: ServerSchema = {
   ],
 };
 
-function makeApp(
+const TEST_LOG_EPOCH = 'test-log-epoch';
+
+async function makeApp(
   events?: SyncularServerEvents,
   operations?: RemoteOperationRegistry,
   storage = new SqliteServerStorage(),
@@ -57,6 +59,8 @@ function makeApp(
     limits: { inlineSegmentMaxBytes: 1 },
     ...(events !== undefined ? { events } : {}),
   };
+  // Pin the partition log epoch so the fixture can push in one round (§2.1).
+  await storage.touchPartition('part-1', 0, TEST_LOG_EPOCH);
   return createSyncularHono({
     config,
     ...(operations !== undefined ? { operations } : {}),
@@ -70,10 +74,15 @@ function makeApp(
 
 function requestBytes(title = 'hello'): Uint8Array {
   return encodeMessage({
-    wireVersion: 1,
+    wireVersion: 3,
     msgKind: 'request',
     frames: [
-      { type: 'REQ_HEADER', clientId: 'client-1', schemaVersion: 1 },
+      {
+        type: 'REQ_HEADER',
+        clientId: 'client-1',
+        schemaVersion: 1,
+        logEpoch: TEST_LOG_EPOCH,
+      },
       {
         type: 'PUSH_COMMIT',
         clientCommitId: 'c1',
@@ -82,7 +91,7 @@ function requestBytes(title = 'hello'): Uint8Array {
             table: 'tasks',
             rowId: 't1',
             op: 'upsert',
-            payload: encodeRow(COLUMNS, ['t1', 'p1', title]),
+            payload: encodeSparseRow(COLUMNS, 0, ['t1', 'p1', title]),
           },
         ],
       },
@@ -126,7 +135,7 @@ describe('hono adapter', () => {
       coverage: () => [],
     };
     const storage = new SqliteServerStorage();
-    const app = makeApp(
+    const app = await makeApp(
       undefined,
       new RemoteOperationRegistry([
         registerRemoteQuery(descriptor, {
@@ -172,7 +181,7 @@ describe('hono adapter', () => {
   });
 
   test('POST /operations rejects the wrong content type with HTTP 415', async () => {
-    const app = makeApp();
+    const app = await makeApp();
 
     const response = await app.request('/operations', {
       method: 'POST',
@@ -188,7 +197,7 @@ describe('hono adapter', () => {
   });
 
   test('POST /sync round-trips SSP2 bytes', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const response = await app.request('/sync', {
       method: 'POST',
       headers: {
@@ -208,7 +217,7 @@ describe('hono adapter', () => {
   });
 
   test('wrong content type is HTTP 415 (§1.1)', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const response = await app.request('/sync', {
       method: 'POST',
       headers: {
@@ -221,7 +230,7 @@ describe('hono adapter', () => {
   });
 
   test('failed authentication is HTTP 401 with the §10.1 error shape', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const response = await app.request('/sync', {
       method: 'POST',
       headers: { 'content-type': SSP2_CONTENT_TYPE },
@@ -234,7 +243,7 @@ describe('hono adapter', () => {
   });
 
   test('GET /segments/:id serves with re-authorization and ETag/304', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const syncResponse = await app.request('/sync', {
       method: 'POST',
       headers: {
@@ -266,7 +275,7 @@ describe('hono adapter', () => {
   });
 
   test('GET /segments/:id negotiates Content-Encoding (§5.8)', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     // A title long enough that the rows segment clears the 1 KiB
     // identity floor.
     const syncResponse = await app.request('/sync', {
@@ -320,7 +329,7 @@ describe('hono adapter', () => {
 
   test('a config events sink flows through the adapter untouched', async () => {
     const events: SyncularServerEvent[] = [];
-    const app = makeApp({
+    const app = await makeApp({
       emit(event) {
         events.push(event);
       },

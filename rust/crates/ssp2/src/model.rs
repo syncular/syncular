@@ -153,6 +153,10 @@ pub enum OpResult {
         message: String,
         server_version: i64,
         server_row: Vec<u8>,
+        /// §6.3 (wire version 3): presence-bitmap layout over the row's
+        /// columns, marking the present columns whose `column_version`
+        /// exceeded the operation's `baseVersion`.
+        conflict_columns: Vec<u8>,
     },
     Error {
         op_index: i32,

@@ -107,7 +107,7 @@ export async function runResponsiveness(
       const bootstrap = !delivered;
       delivered = true;
       return encodeMessage({
-        wireVersion: 2,
+        wireVersion: 3,
         msgKind: 'response',
         frames: [
           { type: 'RESP_HEADER', logEpoch: 'benchmark', resetRequired: false },

@@ -158,6 +158,8 @@ import {
   ensureLocalBookkeepingSchema,
   ensureLocalSyncedSchema,
   fromSqlValue,
+  coerceSqlRepresentation,
+  type JsonRowValue,
   jsonToRowValue,
   LOCAL_SCHEMA_VERSION_KEY,
   normalizeRecordKeys,
@@ -2127,11 +2129,11 @@ export class SyncClient {
 
   #recordMutations(
     mutations: readonly MutationInput[],
-    changedFieldsByIndex: readonly (readonly string[] | undefined)[] = [],
+    partial = false,
   ): string {
     this.#requireActive();
     const clientCommitId = crypto.randomUUID();
-    const operations: OutboxOperation[] = mutations.map((mutation, index) => {
+    const operations: OutboxOperation[] = mutations.map((mutation) => {
       const table = this.#table(mutation.table);
       if (mutation.op === 'delete') {
         return {
@@ -2141,6 +2143,55 @@ export class SyncClient {
           ...(mutation.baseVersion !== undefined
             ? { baseVersion: mutation.baseVersion }
             : {}),
+        };
+      }
+      if (partial) {
+        // §6.7 patch: the values map IS the presence set — the primary key
+        // plus the supplied non-scope columns. Absent columns keep their
+        // stored value; the overlay and the server both apply only the
+        // present ones.
+        const normalized = normalizeRecordKeys(table, mutation.values);
+        const scopeColumns = new Set(table.scopeColumnByVariable.values());
+        const json: Record<string, JsonRowValue> = {};
+        for (const column of table.columns) {
+          if (!normalized.has(column.name)) continue;
+          if (scopeColumns.has(column.name)) {
+            throw new ClientSyncError(
+              'sync.invalid_request',
+              `table ${table.name}: patch cannot write scope column ${JSON.stringify(column.name)} (§3.4)`,
+            );
+          }
+          const value = normalized.get(column.name);
+          if (value === undefined || value === null) {
+            if (!column.nullable) {
+              throw new ClientSyncError(
+                'sync.invalid_request',
+                `table ${table.name}: column ${JSON.stringify(column.name)} is not nullable (§6.1)`,
+              );
+            }
+            json[column.name] = null;
+            continue;
+          }
+          json[column.name] = rowValueToJson(
+            coerceSqlRepresentation(column, value) as RowValue,
+          );
+        }
+        const pkColumn = table.columns[table.primaryKeyIndex] as RowColumn;
+        const pkValue = json[pkColumn.name];
+        if (typeof pkValue !== 'string' || pkValue.length === 0) {
+          throw new ClientSyncError(
+            'sync.invalid_request',
+            `table ${table.name}: upsert requires a non-empty string primary key`,
+          );
+        }
+        return {
+          table: mutation.table,
+          rowId: pkValue,
+          op: 'upsert',
+          ...(mutation.baseVersion !== undefined
+            ? { baseVersion: mutation.baseVersion }
+            : {}),
+          values: json,
         };
       }
       const values = recordToRowValues(table, mutation.values);
@@ -2163,9 +2214,6 @@ export class SyncClient {
           ? { baseVersion: mutation.baseVersion }
           : {}),
         values: json,
-        ...(changedFieldsByIndex[index] !== undefined
-          ? { changedFields: [...(changedFieldsByIndex[index] ?? [])] }
-          : {}),
       };
     });
     this.#applyBatch((batch) => {
@@ -2218,12 +2266,12 @@ export class SyncClient {
   }
 
   /**
-   * Partial-update convenience over the §6.1 full-row wire: read the
-   * current LOCAL row, merge `partial` over it, and record one full-row
-   * upsert through `mutate()`. `partial` keys follow the same two-casing
-   * rule as mutation values (snake_case or camelCase). The row must be
-   * locally present (subscribed/windowed-in); patching an absent row is
-   * an error — there is no base to merge into.
+   * Partial update over the §6.1 sparse wire: record one upsert whose
+   * presence set is the primary key plus the supplied non-scope columns.
+   * `partial` keys follow the same two-casing rule as mutation values
+   * (snake_case or camelCase). Absent columns keep their stored value on
+   * the server and in the local overlay; when the local row is absent the
+   * overlay leaves it absent (§7.1) and the server answers per §5.2.
    */
   patch(
     table: string,
@@ -2234,37 +2282,29 @@ export class SyncClient {
     this.#requireActive();
     const compiled = this.#table(table);
     const pkColumn = compiled.columns[compiled.primaryKeyIndex] as RowColumn;
-    const rows = this.#db.query(
-      `SELECT * FROM ${quoteIdent(compiled.name)} WHERE ${quoteIdent(pkColumn.name)} = ?`,
-      [rowId],
-    );
-    const row = rows[0];
-    if (row === undefined) {
+    const normalized = normalizeRecordKeys(compiled, partial);
+    const pkOverride = normalized.get(pkColumn.name);
+    if (pkOverride !== undefined && pkOverride !== rowId) {
       throw new ClientSyncError(
         'sync.invalid_request',
-        `table ${compiled.name}: no local row with primary key ${JSON.stringify(rowId)} to patch`,
+        `table ${compiled.name}: patch cannot change the primary key`,
       );
-    }
-    const record: Record<string, unknown> = {};
-    for (const column of compiled.columns as readonly RowColumn[]) {
-      record[column.name] = fromSqlValue(column, row[column.name] ?? null);
-    }
-    const normalizedPartial = normalizeRecordKeys(compiled, partial);
-    for (const [name, value] of normalizedPartial) {
-      record[name] = value;
     }
     return this.#recordMutations(
       [
         {
           table,
           op: 'upsert',
-          values: record,
+          values: {
+            ...Object.fromEntries(normalized),
+            [pkColumn.name]: rowId,
+          },
           ...(options?.baseVersion !== undefined
             ? { baseVersion: options.baseVersion }
             : {}),
         },
       ],
-      [[...normalizedPartial.keys()].sort()],
+      true,
     );
   }
 
@@ -3735,6 +3775,10 @@ export class SyncClient {
           message: result.message,
           serverVersion: result.serverVersion,
           serverRow: this.#decodeServerRow(operation?.table, result.serverRow),
+          conflictColumns: this.#decodeConflictColumns(
+            operation?.table,
+            result.conflictColumns,
+          ),
           ...(operation !== undefined ? { operation } : {}),
         };
         this.#conflicts.push(conflict);
@@ -3802,6 +3846,26 @@ export class SyncClient {
       record[column.name] = values[index] ?? null;
     });
     return record;
+  }
+
+  /**
+   * §6.3 `conflictColumns`: decode the presence-layout bitmap into the names
+   * of the present columns whose `column_version` exceeded `baseVersion`. A
+   * custom merge recomputes exactly these columns (§6.5).
+   */
+  #decodeConflictColumns(
+    tableName: string | undefined,
+    bitmap: Uint8Array,
+  ): readonly string[] {
+    if (tableName === undefined) return [];
+    const table = this.#schema.tables.get(tableName);
+    if (table === undefined) return [];
+    const names: string[] = [];
+    table.columns.forEach((column, index) => {
+      const byte = bitmap[index >> 3] ?? 0;
+      if (((byte >> (index & 7)) & 1) === 1) names.push(column.name);
+    });
+    return names;
   }
 
   async #applyCommit(
@@ -4318,9 +4382,26 @@ export class SyncClient {
         deleteLocalRow(this.#db, table, op.rowId);
         continue;
       }
+      // §7.1 overlay: apply the operation's PRESENT columns over the current
+      // local row. A partial operation over an absent local row leaves it
+      // absent — the server answers it with sync.row_deleted or
+      // sync.row_missing, and the local mirror never invents a base.
+      const opValues = op.values ?? {};
+      const full = table.columns.every((column) => column.name in opValues);
+      const local = this.#db.query(
+        `SELECT * FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)} = ?`,
+        [op.rowId],
+      )[0];
+      if (local === undefined && !full) {
+        if (batch !== undefined && !precise) batch.table(op.table);
+        continue;
+      }
       const values = table.columns.map((column) => {
-        const value = op.values?.[column.name];
-        return value === undefined ? null : jsonToRowValue(value);
+        const value = opValues[column.name];
+        if (value !== undefined) return jsonToRowValue(value);
+        return local === undefined
+          ? null
+          : fromSqlValue(column, local[column.name] ?? null);
       });
       // Record the row's scope keys from its scope columns (I2 refinement).
       if (batch !== undefined) {
@@ -4335,12 +4416,10 @@ export class SyncClient {
         }
         if (!precise) batch.table(table.name);
       }
-      const existing = this.#db.query(
-        `SELECT ${quoteIdent(SYNC_VERSION_COLUMN)} AS v FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)} = ?`,
-        [op.rowId],
-      )[0];
       const version =
-        existing === undefined ? OPTIMISTIC_VERSION : (existing.v as number);
+        local === undefined
+          ? OPTIMISTIC_VERSION
+          : (local[SYNC_VERSION_COLUMN] as number);
       upsertLocalRow(this.#db, table, values, version);
     }
   }

@@ -9,7 +9,7 @@ import { encodeMessage } from './message';
 import { MessageStreamScanner } from './stream';
 
 const REQUEST = encodeMessage({
-  wireVersion: 1,
+  wireVersion: 3,
   msgKind: 'request',
   frames: [
     { type: 'REQ_HEADER', clientId: 'c1', schemaVersion: 1 },

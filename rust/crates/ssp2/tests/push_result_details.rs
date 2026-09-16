@@ -6,8 +6,8 @@ fn header() -> Frame {
     Frame::RespHeader {
         required_schema_version: None,
         latest_schema_version: Some(1),
-        log_epoch: None,
-        reset_required: None,
+        log_epoch: Some("epoch-1".to_owned()),
+        reset_required: Some(false),
     }
 }
 
@@ -38,7 +38,7 @@ fn details(commit_id: &str, op_index: i32) -> Frame {
 #[test]
 fn valid_companion_round_trips() {
     let message = Message {
-        wire_version: 1,
+        wire_version: ssp2::decode::WIRE_VERSION,
         msg_kind: MsgKind::Response,
         frames: vec![header(), rejected(), details("commit-1", 0)],
     };
@@ -49,7 +49,7 @@ fn valid_companion_round_trips() {
 #[test]
 fn rejects_orphan_and_mismatched_companions() {
     let orphan = Message {
-        wire_version: 1,
+        wire_version: ssp2::decode::WIRE_VERSION,
         msg_kind: MsgKind::Response,
         frames: vec![header(), details("commit-1", 0)],
     };
@@ -59,7 +59,7 @@ fn rejects_orphan_and_mismatched_companions() {
         .contains("without a preceding PUSH_RESULT"));
 
     let mismatched = Message {
-        wire_version: 1,
+        wire_version: ssp2::decode::WIRE_VERSION,
         msg_kind: MsgKind::Response,
         frames: vec![header(), rejected(), details("other-commit", 0)],
     };
@@ -69,7 +69,7 @@ fn rejects_orphan_and_mismatched_companions() {
         .contains("does not match its rejected PUSH_RESULT"));
 
     let wrong_operation = Message {
-        wire_version: 1,
+        wire_version: ssp2::decode::WIRE_VERSION,
         msg_kind: MsgKind::Response,
         frames: vec![header(), rejected(), details("commit-1", 1)],
     };

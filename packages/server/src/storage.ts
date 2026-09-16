@@ -40,6 +40,13 @@ export interface StoredRow {
   readonly scopes: Record<string, string>;
   /** Row-codec payload (§2.4) for the server's schema version. */
   readonly payload: Uint8Array;
+  /**
+   * §2.2 per-column versions: the `_sync_column_versions` blob (LEB128
+   * (ordinal, version) pairs for columns above 1). Absent when no column
+   * exceeds 1, and for rows written before column versions existed — a row
+   * without the blob carries every column at `serverVersion`.
+   */
+  readonly columnVersions?: Uint8Array;
 }
 
 export interface NewChange {
@@ -312,6 +319,20 @@ export interface AuthoritativeQueryResult {
  */
 export interface StorageTransaction {
   getRow(table: string, rowId: string): Promise<StoredRow | undefined>;
+  /**
+   * §5 delete-precedence tombstone read: the `commit_seq` of the newest
+   * applied delete of this row still within the pruning horizon, or
+   * `undefined` when no tombstone exists. Consulted only when an upsert's
+   * stored row is absent. Required: in-tree adapters implement it on the
+   * transaction's own connection with read-your-own-writes semantics.
+   */
+  getTombstoneSeq(table: string, rowId: string): Promise<number | undefined>;
+  /**
+   * Remove the row's tombstone because the row was recreated in this
+   * transaction (§5: an explicit insert recreates). Called on every insert
+   * over an absent row; a no-op when no tombstone exists.
+   */
+  clearTombstone(table: string, rowId: string): Promise<void>;
   /**
    * Optional transaction-scoped idempotency lookup (§2.3) with the same
    * semantics as `ServerStorage.getPushResult`, including the

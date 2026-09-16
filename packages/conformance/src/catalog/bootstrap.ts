@@ -391,14 +391,15 @@ export const bootstrapScenarios: readonly Scenario[] = [
       checkEqual(t1Server?.version, 3, 'server incremented v2 → v3 (§6.2)');
       checkEqual(t1Server?.values.title, 'guarded-edit', 'the edit landed');
 
-      // A stale baseVersion on the other segment-bootstrapped row
-      // conflicts instead of silently overwriting.
+      // Another writer moves t2 to v2 while A still holds the segment's v1:
+      // a stale baseVersion conflicts instead of silently overwriting (§6.2).
+      await seedTasks(ctx, [task('t2', 'p1', 'two-updated')]);
       const mStale = await a.api.mutate([
         {
           op: 'upsert',
           table: 'tasks',
           values: task('t2', 'p1', 'stale-edit'),
-          baseVersion: 7,
+          baseVersion: 1,
         },
       ]);
       const stale = await syncOk(a);
@@ -409,8 +410,32 @@ export const bootstrapScenarios: readonly Scenario[] = [
       checkEqual(conflict?.rowId, 't2', 'conflict rowId');
       checkEqual(
         conflict?.serverVersion,
-        1,
+        2,
         'the conflict record names the real server version (§6.3)',
+      );
+      checkEqual(
+        conflict?.conflictColumns,
+        ['project_id', 'title', 'done', 'priority', 'meta'],
+        'a full-row write conflicts on every mutable column it presents (§6.3)',
+      );
+
+      // A baseVersion ABOVE the server version is a client bug, not a
+      // conflict: it rejects invalid_request (§6.2).
+      const mAbove = await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: task('t2', 'p1', 'above-edit'),
+          baseVersion: 99,
+        },
+      ]);
+      const above = await syncOk(a);
+      checkEqual(above.rejected, [mAbove], 'the future-based commit rejects');
+      checkEqual(above.conflicts, 0, 'an error record, not a conflict');
+      checkEqual(
+        (await a.api.rejections()).at(-1)?.code,
+        'sync.invalid_request',
+        'baseVersion above server_version is invalid_request (§6.2)',
       );
 
       // §6.5 keep-local rebase: re-push with the conflict's serverVersion

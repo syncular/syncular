@@ -19,6 +19,7 @@
  */
 import {
   decodeRow,
+  decodeSparseRow,
   encodeRow,
   type PushCommitFrame,
   type PushOperation,
@@ -27,6 +28,7 @@ import {
   parseBlobRef,
   type RejectionDetails,
   type RowValue,
+  type SparseRowValue,
 } from '@syncular/core';
 import type { BlobStore } from './blob-store';
 import type { SyncRequestContext } from './context';
@@ -42,6 +44,7 @@ import {
 import type { CompiledSchema, CompiledTable } from './schema';
 import type { ResolvedScopes } from './scopes';
 import { authorizeWrite, renderScopeValue, storedScopesForRow } from './scopes';
+import { decodeColumnVersions, encodeColumnVersions } from './relational-rows';
 import type {
   NewChange,
   StorageTransaction,
@@ -131,6 +134,7 @@ function conflictRecord(
   opIndex: number,
   serverVersion: number,
   serverRow: Uint8Array,
+  conflictColumns: Uint8Array,
 ): OperationOutcome {
   return {
     kind: 'terminate',
@@ -138,11 +142,24 @@ function conflictRecord(
       opIndex,
       status: 'conflict',
       code: 'sync.version_conflict',
-      message: 'row version does not match baseVersion (§6.2)',
+      message: 'present columns moved past baseVersion (§6.2)',
       serverVersion,
       serverRow,
+      conflictColumns,
     },
   };
+}
+
+/** §6.3 `conflictColumns`: a presence-layout bitmap over the marked columns. */
+function conflictColumnsBitmap(
+  columnCount: number,
+  marked: readonly number[],
+): Uint8Array {
+  const bytes = new Uint8Array(Math.ceil(columnCount / 8));
+  for (const index of marked) {
+    bytes[index >> 3] = (bytes[index >> 3] ?? 0) | (1 << (index & 7));
+  }
+  return bytes;
 }
 
 interface BlobApplyContext {
@@ -221,18 +238,22 @@ async function runValidator(
  *
  * A NULL incoming crdt value is a semantic clear, not a merge — it passes
  * through untouched (the app is nulling the column, the same as any other
- * type). Merging only runs for a non-NULL incoming crdt value.
+ * type). Merging only runs for a non-NULL incoming crdt value. `present`
+ * marks the sparse payload's present columns (§6.2): an absent crdt column
+ * is unchanged and never merges.
  */
 async function mergeCrdtColumns(
   table: CompiledTable,
   values: RowValue[],
   storedValues: readonly RowValue[] | undefined,
+  present: readonly boolean[],
   opIndex: number,
   mergers: CrdtMergerRegistry | undefined,
 ): Promise<OperationOutcome | { readonly changed: boolean }> {
   if (table.crdtColumns.length === 0) return { changed: false };
   let changed = false;
   for (const { index, crdtType } of table.crdtColumns) {
+    if (!present[index]) continue;
     const incoming = values[index];
     if (!(incoming instanceof Uint8Array)) continue; // NULL clear or absent
     const merger = mergers?.[crdtType];
@@ -366,7 +387,9 @@ async function applyOperation(
     };
   }
 
-  // upsert — payload presence is enforced by the envelope codec (§6.1).
+  // upsert — payload presence is enforced by the envelope codec (§6.1). The
+  // payload is a sparse row (§2.4, wire version 3): `undefined` marks an
+  // absent column the apply leaves unchanged.
   const payload = op.payload;
   if (payload === undefined) {
     return errorRecord(
@@ -375,9 +398,9 @@ async function applyOperation(
       'upsert without payload',
     );
   }
-  let values: RowValue[];
+  let sparse: SparseRowValue[];
   try {
-    values = decodeRow(table.columns, payload);
+    sparse = decodeSparseRow(table.columns, table.primaryKeyIndex, payload);
   } catch (error) {
     return errorRecord(
       opIndex,
@@ -385,7 +408,7 @@ async function applyOperation(
       `row payload failed row-codec decode (§1.7): ${error instanceof Error ? error.message : String(error)}`,
     );
   }
-  const pkValue = renderScopeValue(values[table.primaryKeyIndex]);
+  const pkValue = renderScopeValue(sparse[table.primaryKeyIndex] ?? null);
   if (pkValue !== op.rowId) {
     return errorRecord(
       opIndex,
@@ -393,6 +416,8 @@ async function applyOperation(
       'payload primary key does not match rowId',
     );
   }
+  const present = sparse.map((value) => value !== undefined);
+  const presentCount = present.filter(Boolean).length;
 
   if (stored !== undefined) {
     // §3.4 step 2: authorize against the STORED row, never the payload.
@@ -403,42 +428,108 @@ async function applyOperation(
         'write denied by scope authorization (§3.4)',
       );
     }
-    if (op.baseVersion === 0) {
-      // Lost insert race (§6.2); the stored row was authorized above,
-      // so disclosure of the winner is permitted.
-      return conflictRecord(opIndex, stored.serverVersion, stored.payload);
-    }
-    if (
-      op.baseVersion !== undefined &&
-      op.baseVersion !== stored.serverVersion
-    ) {
-      return conflictRecord(opIndex, stored.serverVersion, stored.payload);
-    }
-    // §3.4 rule 5: scope columns are immutable on update — keep the
-    // stored row's scope column values on both the baseVersion and
-    // last-write-wins paths.
     const storedValues = decodeRow(table.columns, stored.payload);
-    let mutated = false;
+    // §3.4 rule 5 / §6.2: scope columns are immutable on update. A present
+    // scope column whose value differs from the stored row is
+    // sync.invalid_request; present and equal applies as a no-op.
     for (const pattern of table.scopePatterns) {
-      const storedValue = storedValues[pattern.columnIndex] ?? null;
-      if (values[pattern.columnIndex] !== storedValue) {
-        values[pattern.columnIndex] = storedValue;
-        mutated = true;
+      const incoming = sparse[pattern.columnIndex];
+      if (incoming === undefined) continue;
+      if ((incoming ?? null) !== (storedValues[pattern.columnIndex] ?? null)) {
+        return errorRecord(
+          opIndex,
+          'sync.invalid_request',
+          'scope column is immutable on update (§3.4)',
+        );
       }
     }
-    // §5.10.3: crdt columns merge (stored ⊕ incoming) — never LWW, never
-    // baseVersion-conflict (they were excluded from the checks above).
+    if (op.baseVersion !== undefined && op.baseVersion > stored.serverVersion) {
+      return errorRecord(
+        opIndex,
+        'sync.invalid_request',
+        'baseVersion exceeds the stored server version (§6.2)',
+      );
+    }
+    // §2.2 column versions. A row stored before column versions carries no
+    // blob: every column sits at the row's current serverVersion. With a
+    // blob, an unlisted column sits at 1.
+    const storedVersions = decodeColumnVersions(stored.columnVersions);
+    const effectiveVersion = (index: number): number =>
+      storedVersions.get(index) ??
+      (stored.columnVersions === undefined ? stored.serverVersion : 1);
+    const crdtIndexes = new Set(
+      table.crdtColumns.map((column) => column.index),
+    );
+    if (op.baseVersion === 0) {
+      // Lost insert race (§6.2); the stored row was authorized above, so
+      // disclosure of the winner is permitted. Every present non-crdt
+      // column exceeds baseVersion 0.
+      const marked: number[] = [];
+      for (let i = 0; i < table.columns.length; i++) {
+        if (present[i] && !crdtIndexes.has(i) && i !== table.primaryKeyIndex) {
+          marked.push(i);
+        }
+      }
+      return conflictRecord(
+        opIndex,
+        stored.serverVersion,
+        stored.payload,
+        conflictColumnsBitmap(table.columns.length, marked),
+      );
+    }
+    if (op.baseVersion !== undefined) {
+      // §6.2: conflict when any present non-crdt column moved past
+      // baseVersion. crdt columns merge and never conflict.
+      const marked: number[] = [];
+      for (let i = 0; i < table.columns.length; i++) {
+        if (
+          present[i] &&
+          !crdtIndexes.has(i) &&
+          effectiveVersion(i) > op.baseVersion
+        ) {
+          marked.push(i);
+        }
+      }
+      if (marked.length > 0) {
+        return conflictRecord(
+          opIndex,
+          stored.serverVersion,
+          stored.payload,
+          conflictColumnsBitmap(table.columns.length, marked),
+        );
+      }
+    }
+    // §6.2 apply: write the present non-crdt columns, merge the present
+    // crdt columns (stored ⊕ incoming, §5.10.3), leave absent columns
+    // unchanged, and increment server_version.
+    const values: RowValue[] = [...storedValues];
+    for (let i = 0; i < table.columns.length; i++) {
+      if (!present[i]) continue;
+      values[i] = sparse[i] ?? null;
+    }
     const mergeOutcome = await mergeCrdtColumns(
       table,
       values,
       storedValues,
+      present,
       opIndex,
       crdtMergers,
     );
     if ('kind' in mergeOutcome) return mergeOutcome;
-    if (mergeOutcome.changed) mutated = true;
-    const newPayload = mutated ? encodeRow(table.columns, values) : payload;
     const newVersion = stored.serverVersion + 1;
+    const nextVersions = new Map<number, number>();
+    for (let i = 0; i < table.columns.length; i++) {
+      // The primary key is immutable: its version never advances past the
+      // insert, so it never enters conflictColumns.
+      const version =
+        present[i] && i !== table.primaryKeyIndex
+          ? newVersion
+          : effectiveVersion(i);
+      if (version > 1) nextVersions.set(i, version);
+    }
+    // The stored payload is always the full-row codec (§2.4): the sparse
+    // push payload never reaches storage, segments, or COMMIT frames.
+    const newPayload = encodeRow(table.columns, values);
     // §6.6 / §5.9.6: verify referenced blobs exist before writing.
     const blobCheck = await checkAndRecordBlobs(
       tx,
@@ -449,9 +540,9 @@ async function applyOperation(
       blobCtx,
     );
     if (blobCheck !== undefined) return blobCheck;
-    // §6.7: validate the merged, scope-stripped row that will persist —
-    // for a crdt column the validator sees the MERGED value (§5.10.3), the
-    // state the store holds, not the raw pushed update.
+    // §6.7: validate the merged row that will persist — for a crdt column
+    // the validator sees the MERGED value (§5.10.3), the state the store
+    // holds, not the raw pushed update.
     const updateReject = await runValidator(
       validators,
       table,
@@ -464,11 +555,13 @@ async function applyOperation(
       actorId,
     );
     if (updateReject !== undefined) return updateReject;
+    const columnVersions = encodeColumnVersions(nextVersions);
     const newRow = {
       rowId: op.rowId,
       serverVersion: newVersion,
       scopes: stored.scopes,
       payload: newPayload,
+      ...(columnVersions !== undefined ? { columnVersions } : {}),
     };
     await tx.upsertRow(op.table, newRow, { opIndex });
     return {
@@ -495,7 +588,8 @@ async function applyOperation(
     };
   }
 
-  // Insert path: no stored row.
+  // Insert path: no stored row (§5.2).
+  const values: RowValue[] = sparse.map((value) => value ?? null);
   if (op.baseVersion !== undefined && op.baseVersion !== 0) {
     // Authorize the payload first so absence is not disclosed to actors
     // without the scope; then §6.2: baseVersion ≠ 0, row absent.
@@ -514,6 +608,26 @@ async function applyOperation(
       opIndex,
       'sync.row_missing',
       'upsert with baseVersion targets an absent row (§6.2)',
+    );
+  }
+  if (op.baseVersion === undefined) {
+    // §5.2: a delete within the retention horizon beats an unversioned
+    // upsert; an explicit insert (baseVersion 0) recreates instead.
+    const tombstoneSeq = await tx.getTombstoneSeq(op.table, op.rowId);
+    if (tombstoneSeq !== undefined) {
+      return errorRecord(
+        opIndex,
+        'sync.row_deleted',
+        'a deleted row rejects an unversioned upsert within the retention horizon (§5.2)',
+      );
+    }
+  }
+  if (presentCount < table.columns.length) {
+    // §6.3: an insert requires every column present.
+    return errorRecord(
+      opIndex,
+      'sync.row_missing',
+      'a partial payload targets an absent row (§6.3)',
     );
   }
   const extracted = storedScopesForRow(table, values);
@@ -538,13 +652,14 @@ async function applyOperation(
     table,
     values,
     undefined,
+    present,
     opIndex,
     crdtMergers,
   );
   if ('kind' in insertMerge) return insertMerge;
-  const insertPayload = insertMerge.changed
-    ? encodeRow(table.columns, values)
-    : payload;
+  // The stored payload is the full-row codec (§2.4); every column is
+  // present on an insert.
+  const insertPayload = encodeRow(table.columns, values);
   // §6.6 / §5.9.6: verify referenced blobs exist before writing.
   const blobCheck = await checkAndRecordBlobs(
     tx,
@@ -570,6 +685,8 @@ async function applyOperation(
     actorId,
   );
   if (insertReject !== undefined) return insertReject;
+  // §5.2: an explicit insert recreates — the tombstone goes with it.
+  await tx.clearTombstone(op.table, op.rowId);
   const newRow = {
     rowId: op.rowId,
     serverVersion: 1,
@@ -1005,7 +1122,22 @@ async function enforceReferences(
             return { kind: 'terminate', record: reject.record };
           }
           const nextServerVersion = childRow.serverVersion + 1;
+          // §6.2: the SET NULL upsert writes only the reference column, so
+          // only that column's version moves.
+          const storedVersions = decodeColumnVersions(childRow.columnVersions);
+          const nextVersions = new Map<number, number>();
+          for (let i = 0; i < child.columns.length; i++) {
+            const version =
+              i === reference.columnIndex
+                ? nextServerVersion
+                : (storedVersions.get(i) ??
+                  (childRow.columnVersions === undefined
+                    ? childRow.serverVersion
+                    : 1));
+            if (version > 1) nextVersions.set(i, version);
+          }
           const payload = encodeRow(child.columns, values);
+          const cascadeVersions = encodeColumnVersions(nextVersions);
           await tx.upsertRow(
             child.name,
             {
@@ -1013,6 +1145,9 @@ async function enforceReferences(
               serverVersion: nextServerVersion,
               scopes: childRow.scopes,
               payload,
+              ...(cascadeVersions !== undefined
+                ? { columnVersions: cascadeVersions }
+                : {}),
             },
             { opIndex: syntheticIndex },
           );

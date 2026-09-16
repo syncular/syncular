@@ -1,10 +1,12 @@
 {
   "magic": "SSP2",
-  "wireVersion": 1,
+  "wireVersion": 3,
   "msgKind": "response",
   "frames": [
     {
-      "type": "RESP_HEADER"
+      "type": "RESP_HEADER",
+      "logEpoch": "epoch-2026-07-02-a",
+      "resetRequired": false
     },
     {
       "type": "PUSH_RESULT",
@@ -15,9 +17,10 @@
           "opIndex": 0,
           "status": "conflict",
           "code": "sync.version_conflict",
-          "message": "baseVersion 3 does not match server_version 7",
+          "message": "present columns moved past baseVersion (§6.2)",
           "serverVersion": 7,
-          "serverRow": "AgMAAABuLTIKAAAAcGxhaW4gYm9kefn/////////AAAAAAAAwD8ACgAAAHsiayI6dHJ1ZX0FAAAAAAEC/v8="
+          "serverRow": "AgMAAABuLTIKAAAAcGxhaW4gYm9kefn/////////AAAAAAAAwD8ACgAAAHsiayI6dHJ1ZX0FAAAAAAEC/v8=",
+          "conflictColumns": "Ag=="
         }
       ]
     }

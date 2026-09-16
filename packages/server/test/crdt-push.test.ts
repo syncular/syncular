@@ -9,7 +9,7 @@ import {
   decodeMessage,
   decodeRow,
   encodeMessage,
-  encodeRow,
+  encodeSparseRow,
   type PushResultFrame,
   type RequestFrame,
   type RowColumn,
@@ -22,7 +22,7 @@ import {
   SqliteServerStorage,
   type SyncRequestContext,
 } from '@syncular/server';
-import { overlapAfterTwoOptimisticMisses } from './helpers';
+import { overlapAfterTwoOptimisticMisses, TEST_LOG_EPOCH } from './helpers';
 
 /** A note table: an ordinary `title` (LWW) + a `doc` crdt column. */
 const NOTE_COLUMNS: readonly RowColumn[] = [
@@ -64,7 +64,7 @@ function noteRow(
   title: string,
   doc: Uint8Array | null,
 ): Uint8Array {
-  return encodeRow(NOTE_COLUMNS, [id, projectId, title, doc]);
+  return encodeSparseRow(NOTE_COLUMNS, 0, [id, projectId, title, doc]);
 }
 
 let storage: SqliteServerStorage;
@@ -111,9 +111,17 @@ async function push(
     },
   ];
   const bytes = encodeMessage({
-    wireVersion: 1,
+    wireVersion: 3,
     msgKind: 'request',
-    frames: [{ type: 'REQ_HEADER', clientId, schemaVersion: 1 }, ...frames],
+    frames: [
+      {
+        type: 'REQ_HEADER',
+        clientId,
+        schemaVersion: 1,
+        logEpoch: TEST_LOG_EPOCH,
+      },
+      ...frames,
+    ],
   });
   const out = await handleSyncRequest(bytes, context);
   const message = decodeMessage(out);
@@ -143,6 +151,7 @@ async function storedTitle(rowId: string): Promise<string> {
 describe('CRDT column push merge (SPEC.md §5.10.3)', () => {
   beforeEach(() => {
     storage = new SqliteServerStorage();
+    void storage.touchPartition('part-1', 1_750_000_000_000, TEST_LOG_EPOCH);
     ctx = makeCtx(MERGERS);
   });
 
@@ -178,6 +187,7 @@ describe('CRDT column push merge (SPEC.md §5.10.3)', () => {
     expect([...((await storedDoc('n1')) ?? [])]).toEqual([0, 10, 20]);
 
     const storage2 = new SqliteServerStorage();
+    void storage2.touchPartition('part-1', 1_750_000_000_000, TEST_LOG_EPOCH);
     const saved = storage;
     storage = storage2;
     const ctx2 = makeCtx(MERGERS);

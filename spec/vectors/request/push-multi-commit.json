@@ -1,6 +1,6 @@
 {
   "magic": "SSP2",
-  "wireVersion": 1,
+  "wireVersion": 3,
   "msgKind": "request",
   "frames": [
     {
@@ -17,13 +17,13 @@
           "rowId": "n-1",
           "op": "upsert",
           "baseVersion": 3,
-          "payload": "iAMAAABuLTETAAAA8J+TnSBkw6lqw6AgdnUg8J2EngAAAAAAAAAAAAAMQAEoAAAAeyJ0YWdzIjogWyJhIiwgImIiXSwgICJ1bmljb2RlIjogIvCdlJgifQ=="
+          "payload": "/4gDAAAAbi0xEwAAAPCfk50gZMOpasOgIHZ1IPCdhJ4AAAAAAAAAAAAADEABKAAAAHsidGFncyI6IFsiYSIsICJiIl0sICAidW5pY29kZSI6ICLwnZSYIn0="
         },
         {
           "table": "notes",
           "rowId": "n-2",
           "op": "upsert",
-          "payload": "AgMAAABuLTIKAAAAcGxhaW4gYm9kefn/////////AAAAAAAAwD8ACgAAAHsiayI6dHJ1ZX0FAAAAAAEC/v8="
+          "payload": "/wIDAAAAbi0yCgAAAHBsYWluIGJvZHn5/////////wAAAAAAAMA/AAoAAAB7ImsiOnRydWV9BQAAAAABAv7/"
         }
       ]
     },

@@ -184,7 +184,9 @@ await a.sync(); // wins version + 1
 await b.sync(); // loses against the stale base
 
 expect(b.api.conflicts[0]?.serverRow.title).toBe('A');
-expect(b.api.conflicts[0]?.operation?.changedFields).toEqual(['title']);
+expect(
+  Object.keys(b.api.conflicts[0]?.operation?.values ?? {}),
+).toContain('title');
 ```
 
 Pass `validators` to `createTestSync` to exercise the same business rules as

@@ -564,8 +564,11 @@ export interface ClientConflict {
   readonly code: string;
   readonly serverVersion: number;
   readonly serverRow: DriverRow;
+  /** §6.3: the present columns whose column_version exceeded baseVersion. */
+  readonly conflictColumns?: readonly string[];
   readonly operation?: {
-    readonly changedFields?: readonly string[];
+    /** The sparse operation's presence set, in column declaration order. */
+    readonly present?: readonly string[];
   };
 }
 
@@ -581,7 +584,8 @@ export interface ClientRejection {
     readonly references?: Readonly<Record<string, string>>;
   };
   readonly operation?: {
-    readonly changedFields?: readonly string[];
+    /** The sparse operation's presence set, in column declaration order. */
+    readonly present?: readonly string[];
   };
 }
 
@@ -770,6 +774,10 @@ export interface ClientInstance {
   rejections(): Promise<ClientRejection[]>;
   /** Outbox commit ids still pending, FIFO order (§7.1). */
   pendingCommitIds(): Promise<string[]>;
+  /** The §6.1 sparse push payload bytes of every pending upsert operation,
+   * FIFO — exactly what the next push round would put on the wire. Used by
+   * B.21(h) to pin cross-core byte identity. */
+  pendingPayloads?(): Promise<Uint8Array[]>;
   subscriptionState(id: string): Promise<ClientSubscriptionState | undefined>;
   schemaFloor(): Promise<
     | {

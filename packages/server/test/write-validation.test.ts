@@ -5,7 +5,7 @@
  * protocol code. Driven through bytes, like the rest of the push suite.
  */
 import { describe, expect, test } from 'bun:test';
-import { decodeRow, encodeRow, type RowColumn } from '@syncular/core';
+import { decodeRow, encodeSparseRow, type RowColumn } from '@syncular/core';
 import {
   CommitValidationRejection,
   type CommitValidator,
@@ -540,7 +540,7 @@ function setUnionMerge(
 }
 const MERGERS: CrdtMergerRegistry = { 'set-union': setUnionMerge };
 function noteRow(id: string, doc: Uint8Array | null): Uint8Array {
-  return encodeRow(NOTE_COLUMNS, [id, 'p1', doc]);
+  return encodeSparseRow(NOTE_COLUMNS, 0, [id, 'p1', doc]);
 }
 
 describe('write validation sees the merged CRDT value (§6.7 / §5.10.3)', () => {

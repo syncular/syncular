@@ -284,6 +284,7 @@ describe('useConflicts', () => {
         message: 'stale',
         serverVersion: 2,
         serverRow: {},
+        conflictColumns: ['title'],
       },
     ]);
     act(() => client.emitConflicts());

@@ -6,10 +6,11 @@
  * upgrade to N+1 by re-encoding.
  */
 import {
-  encodeRow,
+  encodeSparseRow,
   type PushCommitFrame,
   type PushOperation,
   type ScopeMap,
+  type SparseRowValue,
 } from '@syncular/core';
 import type { ClientDatabase, SqlRow } from './database';
 import type { EncryptionConfig } from './encryption';
@@ -27,13 +28,13 @@ export interface OutboxOperation {
   readonly op: 'upsert' | 'delete';
   /** Optimistic-concurrency token (§6.2); absent = last-write-wins. */
   readonly baseVersion?: number;
-  /** Full-row values keyed by column name; present iff `op` is `upsert`. */
-  readonly values?: Readonly<Record<string, JsonRowValue>>;
   /**
-   * Local-only normalized columns intentionally supplied to `patch()`.
-   * Absent for full-row mutate/upsert because intent is then unknown.
+   * The PRESENT columns keyed by column name; present iff `op` is `upsert`.
+   * A key the operation writes carries its value; a column the operation
+   * leaves unchanged has no key (§6.1 sparse rows, §7.2.1: intent is the
+   * presence set — `mutate` marks every column, `patch` the supplied ones).
    */
-  readonly changedFields?: readonly string[];
+  readonly values?: Readonly<Record<string, JsonRowValue>>;
 }
 
 export interface OutboxCommit {
@@ -212,10 +213,10 @@ export class OutboxEncodeError extends ClientSyncError {
   }
 }
 
-function orderedValues(
+function sparseValues(
   table: CompiledClientTable,
   values: Readonly<Record<string, JsonRowValue>>,
-) {
+): SparseRowValue[] {
   // Any persisted key that is not a column of the CURRENT schema means the
   // bump removed (or renamed) it — the commit cannot be expressed now.
   for (const key of Object.keys(values)) {
@@ -227,8 +228,7 @@ function orderedValues(
   }
   return table.columns.map((column) => {
     const value = values[column.name];
-    if (value === undefined) return null;
-    return jsonToRowValue(value);
+    return value === undefined ? undefined : jsonToRowValue(value);
   });
 }
 
@@ -270,7 +270,7 @@ export async function encodeOutboxCommit(
         `outbox upsert on ${op.table}/${op.rowId} has no values`,
       );
     }
-    let values = orderedValues(table, op.values);
+    let values = sparseValues(table, op.values);
     if (encryption !== undefined && table.hasEncryptedColumns) {
       // Lazy: opt-in E2EE never enters an encryption-free app's bundle.
       const { encryptRowValues } = await import('./encryption');
@@ -281,7 +281,7 @@ export async function encodeOutboxCommit(
       rowId: op.rowId,
       op: 'upsert',
       ...(op.baseVersion !== undefined ? { baseVersion: op.baseVersion } : {}),
-      payload: encodeRow(table.columns, values),
+      payload: encodeSparseRow(table.columns, table.primaryKeyIndex, values),
     });
   }
   return {

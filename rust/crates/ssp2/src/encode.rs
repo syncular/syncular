@@ -166,6 +166,7 @@ fn encode_frame(frame: &Frame, wire_version: u16) -> (u8, Vec<u8>) {
                         message,
                         server_version,
                         server_row,
+                        conflict_columns,
                     } => {
                         w.i32(*op_index);
                         w.u8(2);
@@ -173,6 +174,7 @@ fn encode_frame(frame: &Frame, wire_version: u16) -> (u8, Vec<u8>) {
                         w.str(message);
                         w.i64(*server_version);
                         w.bytes(server_row);
+                        w.bytes(conflict_columns);
                     }
                     OpResult::Error {
                         op_index,

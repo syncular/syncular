@@ -44,9 +44,9 @@ use crate::bench::{Phase, Recorder};
 use crate::schema::{parse_schema_json, ClientSchema, FtsIndexSchema, TableSchema};
 use crate::transport::{BlobDownload, BlobUploadGrant, SegmentRequest, Transport, TransportError};
 use crate::values::{
-    bytes_to_hex, canonical_scope_json, column_value_to_json, decode_row_bytes, encode_row_json,
-    json_to_column_value, json_to_scope_map, normalize_values_casing, render_row_id_json,
-    scope_map_to_json, sort_scope_map,
+    bytes_to_hex, canonical_scope_json, column_value_to_json, decode_row_bytes,
+    encode_sparse_row_json, full_row_values, json_to_column_value, json_to_scope_map,
+    normalize_values_casing, render_row_id_json, scope_map_to_json, sort_scope_map,
 };
 
 /// §4.2 default: rows and SQLite images, both applied in committed chunks.
@@ -140,6 +140,7 @@ enum SubState {
 mod observation_tests {
     use super::*;
     use crate::native_transport::HostTransport;
+    use crate::values::encode_row_json;
     use serde_json::json;
 
     fn client() -> SyncClient {
@@ -1596,7 +1597,6 @@ mod observation_tests {
                             row_id: row_id.into(),
                             base_version: None,
                             values: None,
-                            changed_fields: None,
                         }]);
                     }
                     let remaining: i64 = client
@@ -1906,7 +1906,14 @@ mod observation_tests {
                 .unwrap();
             assert_eq!(client.local_revision(), revision + 1);
             assert_eq!(client.pending_commit_ids(), vec![id]);
-            assert_eq!(client.query("SELECT * FROM tasks", &[]).unwrap(), before);
+            // The overlay keeps the pending write visible; the row now carries
+            // the server row's version it is layered on (§7.1).
+            let mut expected = before[0].clone();
+            expected.insert("_syncular_version".to_owned(), Value::from(2));
+            assert_eq!(
+                client.query("SELECT * FROM tasks", &[]).unwrap(),
+                vec![expected]
+            );
             assert_eq!(
                 client
                     .conn
@@ -2257,6 +2264,7 @@ mod observation_tests {
                                 &client.encryption,
                             )
                             .unwrap(),
+                            conflict_columns: Vec::new(),
                         }],
                     ),
                     _ => (
@@ -2981,13 +2989,13 @@ mod observation_tests {
             message: "stale base version".to_owned(),
             server_version: 2,
             server_row: Map::from_iter([("id".to_owned(), json!("t1"))]),
+            conflict_columns: vec!["project_id".to_owned()],
             operation: Some(CommitOperation {
                 table: "tasks".to_owned(),
                 row_id: "t1".to_owned(),
                 op: "upsert".to_owned(),
                 base_version: Some(1),
                 values: None,
-                changed_fields: None,
             }),
         };
         let failed_operations = vec![
@@ -2997,7 +3005,6 @@ mod observation_tests {
                 row_id: "t1".to_owned(),
                 base_version: Some(1),
                 values: None,
-                changed_fields: None,
             },
             OutboxOp {
                 upsert: true,
@@ -3005,7 +3012,6 @@ mod observation_tests {
                 row_id: "status-event-1".to_owned(),
                 base_version: Some(0),
                 values: None,
-                changed_fields: None,
             },
         ];
 
@@ -3052,6 +3058,11 @@ mod observation_tests {
             )
             .expect("reopen");
             assert_eq!(reopened.conflicts().len(), 1);
+            assert_eq!(
+                reopened.conflicts()[0].conflict_columns,
+                vec!["project_id".to_owned()],
+                "conflictColumns survives the journal round trip"
+            );
             let outcome = reopened
                 .commit_outcome("losing-commit")
                 .expect("read outcome")
@@ -4059,10 +4070,9 @@ struct OutboxOp {
     row_id: String,
     base_version: Option<i64>,
     /// Schema-agnostic local form (§0): driver JSON values, encoded with
-    /// the current codec at send time.
+    /// the current codec at send time. A key's presence IS the §6.1 sparse
+    /// presence set — both the overlay and the wire payload derive from it.
     values: Option<Map<String, Value>>,
-    /// Local-only patch intent; never encoded into SSP2 PUSH_COMMIT.
-    changed_fields: Option<Vec<String>>,
 }
 
 impl From<&OutboxOp> for CommitOperation {
@@ -4073,7 +4083,6 @@ impl From<&OutboxOp> for CommitOperation {
             op: if operation.upsert { "upsert" } else { "delete" }.to_owned(),
             base_version: operation.base_version,
             values: operation.values.clone(),
-            changed_fields: operation.changed_fields.clone(),
         }
     }
 }
@@ -5190,16 +5199,9 @@ impl SyncClient {
                             .ok_or_else(|| "persisted outbox operation missing rowId".to_owned())?
                             .to_owned(),
                         base_version: entry.get("baseVersion").and_then(Value::as_i64),
+                        // A legacy entry's `changedFields` key is ignored:
+                        // the values map is the presence set (§6.1).
                         values: entry.get("values").and_then(Value::as_object).cloned(),
-                        changed_fields: entry.get("changedFields").and_then(Value::as_array).map(
-                            |values| {
-                                values
-                                    .iter()
-                                    .filter_map(Value::as_str)
-                                    .map(str::to_owned)
-                                    .collect()
-                            },
-                        ),
                     });
                 }
                 commits.push(OutboxCommit {
@@ -6340,7 +6342,6 @@ impl SyncClient {
                     "rowId": op.row_id,
                     "baseVersion": op.base_version,
                     "values": op.values.clone().map(Value::Object),
-                    "changedFields": op.changed_fields,
                 })
             })
             .collect();
@@ -7116,16 +7117,18 @@ impl SyncClient {
                     // before the pk lookup / codec see them.
                     let values = normalize_values_casing(schema_table, values)?;
                     let row_id = render_row_id_json(values.get(&schema_table.primary_key))?;
+                    // §6.7 `mutate` marks every column present: fill missing
+                    // nullable columns with NULL before the payload is built.
+                    let values = full_row_values(schema_table, values)?;
                     // Validate the payload encodes with the current codec
                     // (and, §5.11, that the encrypt seam has its keys).
-                    encode_row_json(schema_table, &row_id, &values, &self.encryption)?;
+                    encode_sparse_row_json(schema_table, &row_id, &values, &self.encryption)?;
                     ops.push(OutboxOp {
                         upsert: true,
                         table,
                         row_id,
                         base_version,
                         values: Some(values),
-                        changed_fields: None,
                     });
                 }
                 Mutation::Delete {
@@ -7142,7 +7145,6 @@ impl SyncClient {
                         row_id,
                         base_version,
                         values: None,
-                        changed_fields: None,
                     });
                 }
             }
@@ -7198,10 +7200,11 @@ impl SyncClient {
         Ok(id)
     }
 
-    /// Merge a partial update over the current visible local row, then record
-    /// the ordinary full-row upsert. This keeps patch semantics identical
-    /// across the TypeScript and native cores without weakening the wire's
-    /// full-row invariant.
+    /// Record one §6.1 sparse upsert: the primary key plus the supplied
+    /// non-scope columns are present; every other column is absent and stays
+    /// untouched on the server and in the local overlay. The row need not be
+    /// locally present — an absent local row leaves the overlay absent (§7.1)
+    /// and the server answers per §5.2.
     pub fn patch(
         &mut self,
         table: &str,
@@ -7214,31 +7217,35 @@ impl SyncClient {
             .table(table)
             .ok_or_else(|| format!("unknown table {table:?}"))?;
         let partial = normalize_values_casing(schema_table, partial)?;
-        let mut values = self
-            .read_rows(table)?
-            .into_iter()
-            .find(|row| row.row_id == row_id)
-            .map(|row| row.values)
-            .ok_or_else(|| {
-                format!(
-                    "sync.invalid_request: table {table:?} has no local row with primary key {row_id:?} to patch"
-                )
-            })?;
-        let mut changed_fields = partial.keys().cloned().collect::<Vec<_>>();
-        changed_fields.sort();
-        values.extend(partial);
-        let row_id_from_values = render_row_id_json(values.get(&schema_table.primary_key))?;
-        if row_id_from_values != row_id {
-            return Err("sync.invalid_request: patch cannot change the primary key".to_owned());
+        if let Some(pk) = partial.get(&schema_table.primary_key) {
+            if pk.as_str() != Some(row_id) {
+                return Err(format!(
+                    "sync.invalid_request: table {table:?}: patch cannot change the primary key"
+                ));
+            }
         }
-        encode_row_json(schema_table, row_id, &values, &self.encryption)?;
+        // User's scope columns are server-emitted only (§3.4); a client patch
+        // never carries one.
+        for scope in &schema_table.scope_variables {
+            if partial.contains_key(&scope.column) {
+                return Err(format!(
+                    "sync.invalid_request: table {table:?}: patch cannot write scope column {:?} (§3.4)",
+                    scope.column
+                ));
+            }
+        }
+        let mut values = partial;
+        values.insert(
+            schema_table.primary_key.clone(),
+            Value::from(row_id.to_owned()),
+        );
+        encode_sparse_row_json(schema_table, row_id, &values, &self.encryption)?;
         self.record_outbox_commit(vec![OutboxOp {
             upsert: true,
             table: table.to_owned(),
             row_id: row_id.to_owned(),
             base_version,
             values: Some(values),
-            changed_fields: Some(changed_fields),
         }])
     }
 
@@ -7247,6 +7254,29 @@ impl SyncClient {
             .iter()
             .map(|c| c.client_commit_id.clone())
             .collect()
+    }
+
+    /// §6.1: the sparse push payload bytes of every pending upsert operation,
+    /// FIFO — exactly what the next push round would put on the wire. Used by
+    /// conformance B.21(h) to pin cross-core byte identity.
+    pub fn pending_payloads(&self) -> Vec<Vec<u8>> {
+        let mut payloads = Vec::new();
+        for commit in &self.outbox {
+            for op in &commit.ops {
+                let Some(values) = op.values.as_ref().filter(|_| op.upsert) else {
+                    continue;
+                };
+                let Some(table) = self.schema.table(&op.table) else {
+                    continue;
+                };
+                if let Ok(payload) =
+                    encode_sparse_row_json(table, &op.row_id, values, &self.encryption)
+                {
+                    payloads.push(payload);
+                }
+            }
+        }
+        payloads
     }
 
     pub fn conflicts(&self) -> &[ConflictRecord] {
@@ -7768,9 +7798,10 @@ impl SyncClient {
                     let payload = op.values.as_ref().and_then(|values| {
                         let table = self.schema.table(&op.table)?;
                         // §0: outbox entries encode at send time with the
-                        // current codec (validated at mutate()). §5.11:
-                        // encrypted columns are encrypted here.
-                        encode_row_json(table, &op.row_id, values, &self.encryption).ok()
+                        // current codec (validated at mutate()). §6.1: the
+                        // values map's keys are the sparse presence set.
+                        // §5.11: encrypted columns are encrypted here.
+                        encode_sparse_row_json(table, &op.row_id, values, &self.encryption).ok()
                     });
                     ssp2::model::Operation {
                         table: op.table.clone(),
@@ -8449,6 +8480,7 @@ impl SyncClient {
                                     message,
                                     server_version,
                                     server_row,
+                                    conflict_columns: conflict_columns_bitmap,
                                 } => {
                                     let operation = operations
                                         .get(*op_index as usize)
@@ -8478,6 +8510,26 @@ impl SyncClient {
                                             map
                                         })
                                         .unwrap_or_default();
+                                    // §6.3: decode the presence-layout bitmap
+                                    // into the marked column names.
+                                    let conflict_columns = self
+                                        .schema
+                                        .table(&table)
+                                        .map(|t| {
+                                            t.columns
+                                                .iter()
+                                                .enumerate()
+                                                .filter(|(index, _)| {
+                                                    conflict_columns_bitmap
+                                                        .get(index / 8)
+                                                        .is_some_and(|byte| {
+                                                            byte & (1 << (index % 8)) != 0
+                                                        })
+                                                })
+                                                .map(|(_, column)| column.name.clone())
+                                                .collect::<Vec<_>>()
+                                        })
+                                        .unwrap_or_default();
                                     let conflict = ConflictRecord {
                                         client_commit_id: client_commit_id.to_owned(),
                                         op_index: *op_index,
@@ -8487,6 +8539,7 @@ impl SyncClient {
                                         message: message.clone(),
                                         server_version: *server_version,
                                         server_row: server_row_json,
+                                        conflict_columns,
                                         operation,
                                     };
                                     journal_results.push(CommitOperationOutcome::Conflict {
@@ -10671,11 +10724,30 @@ impl SyncClient {
                 let Some(values) = op.values.as_ref() else {
                     continue;
                 };
+                // §7.1: the overlay applies the operation's PRESENT columns
+                // over the current local row. A partial operation over an
+                // absent local row leaves it absent — the server answers it
+                // with sync.row_deleted or sync.row_missing (§6.2).
+                let full = table
+                    .columns
+                    .iter()
+                    .all(|column| values.contains_key(&column.name));
+                let local = self.visible_row(table, &op.row_id);
+                if local.is_none() && !full {
+                    continue;
+                }
                 let mut row: Row = Vec::with_capacity(table.columns.len());
                 let mut ok = true;
-                for column in &table.columns {
-                    match json_to_column_value(column, values.get(&column.name)) {
-                        Ok(v) => row.push(v),
+                for (index, column) in table.columns.iter().enumerate() {
+                    let incoming = match values.get(&column.name) {
+                        Some(raw) => json_to_column_value(column, Some(raw)),
+                        None => Ok(local
+                            .as_ref()
+                            .and_then(|(values, _)| values.get(index).cloned())
+                            .flatten()),
+                    };
+                    match incoming {
+                        Ok(value) => row.push(value),
                         Err(_) => {
                             ok = false;
                             break;
@@ -10683,7 +10755,8 @@ impl SyncClient {
                     }
                 }
                 if ok {
-                    let _ = self.write_row(&visible_table(&table.name), &table.name, &row, -1);
+                    let version = local.as_ref().map_or(-1, |(_, version)| *version);
+                    let _ = self.write_row(&visible_table(&table.name), &table.name, &row, version);
                 }
             } else {
                 let sql = format!(
@@ -10697,6 +10770,27 @@ impl SyncClient {
                     .and_then(|mut statement| statement.execute(rusqlite::params![op.row_id]));
             }
         }
+    }
+
+    /// The visible (optimistic) row's values plus version, or `None` when the
+    /// row is absent from the overlay.
+    fn visible_row(&self, table: &TableSchema, row_id: &str) -> Option<(Row, i64)> {
+        let sql = format!(
+            "SELECT * FROM {} WHERE {}",
+            visible_table(&table.name),
+            row_id_predicate(table)
+        );
+        let mut stmt = self.conn.prepare_cached(&sql).ok()?;
+        let mut rows = stmt.query(rusqlite::params![row_id]).ok()?;
+        let row = rows.next().ok()??;
+        let mut values = Vec::with_capacity(table.columns.len());
+        for (index, column) in table.columns.iter().enumerate() {
+            let raw = row.get_ref(index).ok()?;
+            let json = sql_ref_to_json(column, raw);
+            values.push(json_to_column_value(column, Some(&json)).ok()?);
+        }
+        let version: i64 = row.get(table.columns.len()).ok()?;
+        Some((values, version))
     }
 
     fn exec(&self, sql: &str) {

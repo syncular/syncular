@@ -37,7 +37,7 @@ describe('revisioned local observation (SPEC §7.5)', () => {
       schema: CLIENT_SCHEMA,
       transport: async () =>
         encodeMessage({
-          wireVersion: 2,
+          wireVersion: 3,
           msgKind: 'response',
           frames: [
             { type: 'RESP_HEADER', logEpoch: 'epoch-1', resetRequired: false },
@@ -295,7 +295,7 @@ describe('revisioned local observation (SPEC §7.5)', () => {
       clientId: 'observer-append',
       transport: async () =>
         encodeMessage({
-          wireVersion: 2,
+          wireVersion: 3,
           msgKind: 'response',
           frames: [
             { type: 'RESP_HEADER', logEpoch: 'epoch-1', resetRequired: false },
@@ -406,7 +406,7 @@ describe('revisioned local observation (SPEC §7.5)', () => {
               retryable: false,
               recommendedAction: 'retry',
             });
-          return encodeMessage({ wireVersion: 2, msgKind: 'response', frames });
+          return encodeMessage({ wireVersion: 3, msgKind: 'response', frames });
         },
       });
       try {
@@ -507,6 +507,7 @@ describe('revisioned local observation (SPEC §7.5)', () => {
                       null,
                       null,
                     ]),
+                    conflictColumns: new Uint8Array([0b0000_0100]),
                   },
                 ]
               : status === 'rejected'
@@ -546,7 +547,7 @@ describe('revisioned local observation (SPEC §7.5)', () => {
               );
             }
             return encodeMessage({
-              wireVersion: 2,
+              wireVersion: 3,
               msgKind: 'response',
               frames: [
                 {
@@ -696,7 +697,15 @@ describe('revisioned local observation (SPEC §7.5)', () => {
       'project:p1',
     ]);
 
-    client.client.patch('tasks', 't1', { project_id: 'p2' });
+    // Scope columns are immutable on update and never patchable (§3.4); a
+    // scope move is a full-row write the server re-scopes.
+    client.client.mutate([
+      {
+        table: 'tasks',
+        op: 'upsert',
+        values: taskValues('t1', 'p2', 'one'),
+      },
+    ]);
     const moved = batches.at(-1);
     expect(moved?.revision).toBe(2n);
     expect(new Set(moved?.tables[0]?.scopeKeys)).toEqual(

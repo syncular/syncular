@@ -17,6 +17,18 @@
 export const changelog = [
   {
     date: '2026-09-16',
+    title: 'Column-granular writes and delete precedence',
+    body: 'A push payload is a sparse row: a presence bitmap names the columns the operation writes, and the server tracks a column_version per column. Two edits to disjoint columns both apply, with or without baseVersion; a conflict reports conflictColumns naming the contended columns. A delete records a tombstone that beats a concurrent unversioned upsert until the pruning horizon, and an explicit insert recreates the row. changedFields is removed because the values map is the presence set. Wire version 3.',
+    links: [
+      { href: '/concepts-conflicts/', label: 'Column-granular conflicts' },
+      {
+        href: '/guide-concurrency-correction/',
+        label: 'Concurrency and correction',
+      },
+    ],
+  },
+  {
+    date: '2026-09-16',
     title: 'Declared references',
     body: 'A migration column may declare REFERENCES parent(pk) with ON DELETE RESTRICT, CASCADE, or SET NULL. typegen validates the subset, records the reference in the schema IR, and emits the child index. The server enforces the reference once per commit over candidate state, appends CASCADE deletes and SET NULL updates to the same commit, and rejects a violation with sync.reference_violation and structured recovery details. The local replica DDL omits the clause.',
     links: [

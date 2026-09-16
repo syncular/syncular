@@ -1,6 +1,6 @@
 {
   "magic": "SSP2",
-  "wireVersion": 1,
+  "wireVersion": 3,
   "msgKind": "request",
   "frames": [
     {
@@ -17,7 +17,7 @@
           "rowId": "n-2",
           "op": "upsert",
           "baseVersion": 1,
-          "payload": "AgMAAABuLTIKAAAAcGxhaW4gYm9kefn/////////AAAAAAAAwD8ACgAAAHsiayI6dHJ1ZX0FAAAAAAEC/v8="
+          "payload": "/wIDAAAAbi0yCgAAAHBsYWluIGJvZHn5/////////wAAAAAAAMA/AAoAAAB7ImsiOnRydWV9BQAAAAABAv7/"
         }
       ]
     },

@@ -616,6 +616,24 @@ test('Postgres appends each change and all its scopes in one statement', async (
       ).toEqual(
         finish === 'commit' ? [{ idx: 0 }, { idx: 1 }, { idx: 2 }] : [],
       );
+      // §5: the two delete changes leave tombstones; the upsert does not.
+      expect(
+        (
+          await base.query(
+            'SELECT row_id, commit_seq FROM sync_tombstones ORDER BY row_id',
+          )
+        ).rows.map((row) => ({
+          row_id: row.row_id,
+          commit_seq: Number(row.commit_seq),
+        })),
+      ).toEqual(
+        finish === 'commit'
+          ? [
+              { row_id: 'delete', commit_seq: 1 },
+              { row_id: 'unscoped', commit_seq: 1 },
+            ]
+          : [],
+      );
       const entries = await base.query(
         'SELECT tbl, var, value, commit_seq FROM sync_change_scopes ORDER BY var',
       );

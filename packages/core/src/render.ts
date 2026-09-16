@@ -106,6 +106,7 @@ function renderResult(result: PushOperationResult): JsonValue {
       message: result.message,
       serverVersion: result.serverVersion,
       serverRow: bytesToBase64(result.serverRow),
+      conflictColumns: bytesToBase64(result.conflictColumns),
     };
   }
   return {

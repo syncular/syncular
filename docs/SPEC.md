@@ -103,11 +103,15 @@ rationale; the referenced sections carry the normative detail.
       compact column descriptor table — not for inference, but as a
       checksum the receiver validates against its generated schema, and so
       independent tooling can decode segments.
-      Client→server push payloads use the **same generated row codec**
-      (§6.1): the wire is binary in both directions, one encoding per
-      table per schema version, no JSON/binary asymmetry to specify or
-      conformance-test twice. RESOLVED (Benjamin, 2026-07-02): binary
-      both ways — the draft's JSON-push alternative was rejected. The
+      Client→server push payloads use a **sparse variant of the same
+      generated row codec** (§2.4, §6.1): the wire is binary in both
+      directions, one encoding per table per schema version, no
+      JSON/binary asymmetry to specify or conformance-test twice. The
+      sparse form carries a presence bitmap so a push writes only the
+      columns it names; every other surface (COMMIT payloads, segments,
+      images, conflict `serverRow`) keeps the full-row codec. RESOLVED
+      (Benjamin, 2026-07-02): binary both ways — the draft's JSON-push
+      alternative was rejected. The
       server still treats decoded payloads as hostile input and
       authorizes/validates per §3.4; the codec only enforces shape
       (types, null bitmap), never trust. Consequence for outboxes: a
@@ -212,6 +216,18 @@ Two smaller shape decisions:
       canonicalizes to `list(str)` everywhere (§3.2); a single value is a
       one-element list. One shape, no `string | string[]` variance.
 
+- [x] **Wire version 3: sparse push payloads, column versions, tombstones,
+      declared references.** RESOLVED (Benjamin, 2026-09-16,
+      RFC-WRITE-SEMANTICS): a push payload names the columns it writes
+      (§2.4 sparse rows); the server tracks a `column_version` per column
+      and detects conflicts per present column (§2.2, §6.2); every applied
+      delete leaves a tombstone that beats a concurrent unversioned upsert
+      inside the pruning horizon (§6.2); and migrations may declare
+      `REFERENCES` with server-enforced `RESTRICT` / `CASCADE` / `SET NULL`
+      (§6.11). One rule set, always on — no opt-in mode. Wire versions 1
+      and 2 are dropped in the same release: serving two
+      conflict-detection semantics side by side was rejected (§9).
+
 ---
 
 ## 1. Transport bindings and envelope
@@ -264,7 +280,7 @@ Every SSP2 message is:
 ```
 offset  size  field
 0       4     magic          0x53 0x53 0x50 0x32  ("SSP2")
-4       2     wireVersion    u16; this document specifies versions 1 and 2
+4       2     wireVersion    u16; this document specifies version 3
 6       1     msgKind        u8  — 0x01 request, 0x02 response
 7       1     flags          u8  — MUST be 0x00; non-zero is a decode error
 8       …     frames         sequence of frames, terminated by END
@@ -418,15 +434,13 @@ envelope codec rejects a no-content request as a **decode error** under
 
 | Field | Type | Versions | Semantics |
 |---|---|---|---|
-| `clientId` | `str` | 1, 2 | Stable per-device identifier, non-empty. A server MUST reject a `clientId` already bound to a different actor in the same partition or beginning with the reserved `["remote-command",` server-command prefix (`sync.invalid_client_id`) |
-| `schemaVersion` | `i32` | 1, 2 | The client's generated schema version, ≥ 1. Gates codec selection and segment reuse |
-| `logEpoch` | `opt(str)` | 2 | The partition log identity last accepted by this durable client replica (§2.1). An absent value requests epoch acquisition and MUST accompany zero `PUSH_COMMIT` frames |
+| `clientId` | `str` | 3 | Stable per-device identifier, non-empty. A server MUST reject a `clientId` already bound to a different actor in the same partition or beginning with the reserved `["remote-command",` server-command prefix (`sync.invalid_client_id`) |
+| `schemaVersion` | `i32` | 3 | The client's generated schema version, ≥ 1. Gates codec selection and segment reuse |
+| `logEpoch` | `opt(str)` | 3 | The partition log identity last accepted by this durable client replica (§2.1). An absent value requests epoch acquisition and MUST accompany zero `PUSH_COMMIT` frames |
 
-Wire version 1 ends after `schemaVersion`. Wire version 2 adds `logEpoch`.
-The server accepts a version 1 request only while the partition registry does
-not require epoch validation (§2.1). A server MUST reject a version 1 request
-after an epoch rotation with `sync.client_wire_unsupported` before processing
-any push or pull.
+Wire version 3 reads `logEpoch` after `schemaVersion`. Versions 1 and 2 are
+rejected as unknown (§1.2, §9): wire version 3 changed the push payload to
+the sparse row codec (§2.4) and the conflict record shape (§6.3).
 
 ### 1.6 Response message grammar
 
@@ -639,6 +653,24 @@ Every synced row carries a **`server_version`** (`i64`, ≥ 1): starts at 1
 on insert, increments by exactly 1 on every applied upsert. It is the
 optimistic-concurrency token for `baseVersion` conflict detection (§6.2).
 
+Every stored column carries a **`column_version`**: the row's
+`server_version` at the column's last write. An insert sets every column to
+1; an applied upsert sets each present column except the immutable primary
+key to the new `server_version` and leaves absent columns unchanged (§6.2).
+`column_version` is server-internal: it never appears in `COMMIT` frames,
+segments, SQLite images, or conflict records. Relational storage keeps one
+`_sync_column_versions` blob per row encoding `(ordinal, version)` LEB128
+varint pairs for the columns whose version exceeds 1; a row stored before
+column versions existed carries no blob, which reads as every column at the
+row's current `server_version`.
+
+Every applied delete — including a §6.11 cascaded delete — records a
+**tombstone** `(partition, tbl, row_id, commit_seq)` in a server-side
+tombstone table. An upsert consults the table only when its stored row is
+absent (§6.2 delete precedence); pruning removes tombstones with
+`commit_seq ≤ horizonSeq` in the same pass as the commit log (§4.6). An
+insert over an absent row clears the row's tombstone.
+
 **Scope migration** (a row's scope column changes value): the server MUST
 emit, in the same commit, a `delete` change tagged with the old scope
 values and an `upsert` tagged with the new ones, so subscribers of the
@@ -733,9 +765,9 @@ presence bitmap and a null bitmap over all columns, so its bytes differ
 from the full-row codec's.
 
 The sparse row is the `payload` format of push operations (§6.1) at wire
-version 3; §9's window advances to `[3]` when that wire version flips.
-Every other surface keeps the full-row codec: `COMMIT` change payloads,
-rows-segment row data, SQLite images, and conflict `serverRow`.
+version 3 (§9's window is `[3]`). Every other surface keeps the full-row
+codec: `COMMIT` change payloads, rows-segment row data, SQLite images, and
+conflict `serverRow`.
 
 **Client-local FTS5 projections.** The schema IR MAY attach an
 `ftsIndexes` array to a synced table. Each entry names a local FTS5 virtual
@@ -966,12 +998,14 @@ On every push operation:
    partial pass.
 4. Any denial, or a throwing `resolveScopes`, rejects the operation with
    `sync.forbidden` (non-retryable) and rolls back the commit (§6.4).
-5. **Scope columns are immutable on update.** The server MUST strip all
-   declared scope columns from the update set of every upsert that
-   targets an existing row (both the `baseVersion` and last-write-wins
-   paths). Clients cannot re-home a row across scopes by push; scope
-   migration is server-emitted only (§2.2). Scope columns are written
-   only on insert, where step 2 authorized exactly those values.
+5. **Scope columns are immutable on update.** A present scope column on
+   an upsert that targets an existing row MUST equal the stored value;
+   a different value is `sync.invalid_request` and rolls back the commit
+   (§6.4). A present scope column equal to the stored value applies as a
+   no-op, and an absent scope column leaves it unchanged (§6.2). Clients
+   cannot re-home a row across scopes by push; scope migration is
+   server-emitted only (§2.2). Scope columns are written only on insert,
+   where step 2 authorized exactly those values.
 
 Rules 2 and 5 are load-bearing together: authorizing the pushed payload
 instead of the stored row, or letting an update change a scope column,
@@ -1167,6 +1201,11 @@ Servers prune the commit log. The contract:
   It SHOULD keep local rows in place until bootstrap application
   replaces them (§5.6) — `reset` is a staleness signal, not a purge
   signal; only `revoked` purges (§3.3).
+- **Tombstones** (§2.2) prune in the same pass: a pruning run deletes every
+  tombstone with `commit_seq ≤ horizonSeq`. Beyond the horizon the delete
+  precedence rule of §6.2 no longer sees the delete, and the ordinary insert
+  rule applies. Retention defaults therefore bound how long a delete beats a
+  concurrent unversioned upsert.
 - Compaction (dropping superseded intermediate changes for the same
   (table, rowId, scope) older than a host-configured full-history window)
   is allowed and invisible to correct clients: any client whose cursor is
@@ -2275,24 +2314,25 @@ Yjs binding, so one small package owns both.
 #### 5.10.3 The §6.2 push interaction — the pinned merge semantics
 
 This is the heart of the rung. On a push **upsert** against a row (§6.4
-apply), after the §3.4 scope-column strip and the §6.2 `baseVersion`
+apply), after the §3.4 scope-column check and the §6.2 `baseVersion`
 resolution, columns split by kind:
 
-1. **`baseVersion` governs only the non-crdt columns.** The comparison
-   `baseVersion == server_version` (§6.2) and the resulting
-   `sync.version_conflict` are computed **exactly as today** — `crdt`
-   columns are **excluded from the comparison**. The row's single
-   `server_version` still increments by 1 on every applied upsert (§2.2),
-   as the optimistic-concurrency token for the non-crdt columns.
+1. **`baseVersion` governs only the non-crdt columns.** The §6.2 conflict
+   comparison runs over the operation's **present** non-crdt columns
+   (`column_version > baseVersion` marks a conflict); `crdt` columns are
+   **excluded from the comparison**. The row's single `server_version`
+   still increments by 1 on every applied upsert (§2.2).
 
-2. **On a clean apply** (`baseVersion` matches, or `baseVersion` absent =
-   last-write-wins, or an insert), each `crdt` column's stored value is
-   replaced by `merge(stored, incoming)` (§5.10.2) — **never** the raw
-   pushed bytes. Non-crdt columns write last-write-wins / optimistically as
-   today. The merge runs inside the commit transaction (§6.4), so it is part
-   of the atomic apply: a throwing/absent merger rejects the whole commit.
+2. **On a clean apply** (no present comparable column moved past
+   `baseVersion`, or `baseVersion` absent, or an insert), each **present**
+   `crdt` column's stored value is replaced by `merge(stored, incoming)`
+   (§5.10.2) — **never** the raw pushed bytes. An **absent** `crdt` column
+   is unchanged. Present non-crdt columns write; absent columns are
+   unchanged (§6.2). The merge runs inside the commit transaction (§6.4),
+   so it is part of the atomic apply: a throwing/absent merger rejects the
+   whole commit.
 
-3. **On a conflict** (`baseVersion` mismatch on the row's non-crdt state),
+3. **On a conflict** (a present non-crdt column moved past `baseVersion`),
    the operation is rejected `sync.version_conflict` and the commit rolls
    back atomically (§6.4) — **no merge is applied**, preserving commit
    atomicity (a half-applied commit is impossible, §6.4). The crdt edit is
@@ -2301,21 +2341,18 @@ resolution, columns split by kind:
    applies) crdt column state, so the rebasing client sees live collaborative
    state without another round-trip.
 
-**The "crdt-only divergence merges cleanly" rule, pinned.** A client whose
-mutation touches **only** `crdt` columns MUST push it with **`baseVersion`
-absent** (last-write-wins mode). In LWW mode there is no `baseVersion`
-comparison, so the push never conflicts regardless of how far the row's
-`server_version` has advanced; its crdt columns merge (rule 2) and its
-non-crdt columns — which the mutation left at their last-known values — write
-last-write-wins. This is what makes concurrent collaborative editing
+**A crdt-only operation merges cleanly, with or without `baseVersion`.** A
+sparse operation (§6.1) that presents only `crdt` columns — plus the
+immutable primary key every payload carries — has no comparable column and
+therefore never conflicts, regardless of how far the row's other columns
+have advanced. This is what makes concurrent collaborative editing
 conflict-free: two clients editing the same `crdt` column concurrently each
-push a baseVersion-less upsert, both merge, and the merger's commutativity
-makes the result independent of arrival order (Appendix B.14). A client that
-*also* changes a non-crdt column in the same mutation MAY carry a
-`baseVersion` to get optimistic concurrency on that column — and then a
-concurrent non-crdt conflict fires per rule 3, with the crdt state merged
-into the winner's row (rule 2 on the winning push) and surfaced in the
-loser's `serverRow`.
+push a crdt-only patch, both merge, and the merger's commutativity makes the
+result independent of arrival order (Appendix B.14). A mutation that *also*
+presents non-crdt columns gets optimistic concurrency on exactly those
+columns — a concurrent change to any of them fires rule 3, with the crdt
+state merged into the winner's row (rule 2 on the winning push) and surfaced
+in the loser's `serverRow`.
 
 Consequences, all normative:
 
@@ -2359,7 +2396,7 @@ Mechanics for a Yjs client (reference TS path, `@syncular/crdt-yjs`):
 - A `crdt` column is backed by a `Y.Doc` per (table, rowId, column). A local
   edit mutates the doc and yields a Yjs **update** (the bytes since the last
   push). The client writes those update bytes as the column value in a
-  baseVersion-less `mutate` (§5.10.3), applies them to the local doc
+  crdt-only sparse operation (§5.10.3), applies them to the local doc
   optimistically (§7.1), and pushes.
 - On delivery of the server-merged column value (a pull `COMMIT` upsert, a
   segment row, or a conflict `serverRow`), the client applies the merged
@@ -2656,7 +2693,7 @@ Operation record:
 | `rowId` | `str` | |
 | `op` | `u8` | `1` = upsert, `2` = delete |
 | `baseVersion` | `opt(i64)` | Optimistic-concurrency token (§6.2); absent = last-write-wins. Presence is deliberately **not** tied to `op`: a `delete` operation MAY carry a `baseVersion`, which the codec accepts and preserves and the server ignores (deletes perform no version check, §6.2) |
-| `payload` | `opt(bytes)` | Full row encoded with the generated row codec (§2.4) for the request's `schemaVersion` — binary both ways per the §0 decision. MUST be present for `upsert` and absent for `delete`; a violation is a decode error (`sync.invalid_request`). Bytes that fail row-codec decode are rejected by the server as **commit-level** request validation (§1.7): the enclosing commit is `rejected` with one `error` result record (`sync.invalid_request`, §6.3) — the envelope codec carries the payload as opaque `bytes` |
+| `payload` | `opt(bytes)` | One **sparse row** (§2.4) encoded for the request's `schemaVersion`: the columns the operation writes — binary both ways per the §0 decision. MUST be present for `upsert` and absent for `delete`; a violation is a decode error (`sync.invalid_request`). Bytes that fail sparse-row decode are rejected by the server as **commit-level** request validation (§1.7): the enclosing commit is `rejected` with one `error` result record (`sync.invalid_request`, §6.3) — the envelope codec carries the payload as opaque `bytes` |
 
 Servers MUST enforce an operation-count cap per request, counted as the
 **total operations across all `PUSH_COMMIT` frames in the request**
@@ -2667,31 +2704,65 @@ the client splits and retries.
 
 ### 6.2 Conflict detection
 
-The crdt-column interaction of §5.10.3 layers on top — `crdt` columns
-are **excluded** from the `baseVersion` comparison and merge on every
-clean apply; everything below governs the row's non-crdt columns and its
-`server_version`:
+Every stored column carries a **`column_version`** (§2.2): the row's
+`server_version` at the column's last write. An upsert against an
+existing row proceeds in this order:
 
-- `baseVersion` present, row exists: if row's `server_version ==
-  baseVersion`, apply with `server_version = baseVersion + 1`; else
-  **conflict** (`sync.version_conflict`).
-- `baseVersion == 0`, row absent: insert with `server_version = 1`. If a
-  concurrent insert wins the race, the server MUST re-authorize the
-  winner's row against the actor's allowed scopes (§3.4 steps 2–3)
-  **before** disclosing anything: if authorized, return **conflict**
-  with the winner's version and row; if denied, reject with
-  `sync.forbidden` — a conflict record must never leak a row from a
-  scope the actor does not hold.
-- `baseVersion` present and ≠ 0, row absent: error `sync.row_missing`.
-- `baseVersion` absent (upsert): last-write-wins; `server_version`
-  increments from the current value (or 1 on insert).
+1. Authorize against the stored row (§3.4 step 2).
+2. A present scope column whose value differs from the stored row is
+   `sync.invalid_request` (§3.4 rule 5); present and equal applies as a
+   no-op.
+3. `baseVersion > server_version` is `sync.invalid_request`: a client
+   cannot hold a version the server never issued.
+4. `baseVersion == 0` (lost-insert race): the server re-authorizes the
+   winner's row against the actor's allowed scopes (§3.4 steps 2–3)
+   **before** disclosing anything: if authorized, return **conflict**
+   (`sync.version_conflict`) with the winner's version, row, and
+   `conflictColumns` marking every present non-crdt column; if denied,
+   reject with `sync.forbidden` — a conflict record must never leak a
+   row from a scope the actor does not hold.
+5. `baseVersion` present (and ≤ `server_version`): **conflict**
+   (`sync.version_conflict`) when any present non-crdt column has
+   `column_version > baseVersion`; `conflictColumns` (§6.3) marks
+   exactly those columns. Otherwise apply. `crdt` columns are
+   **excluded** from the comparison and merge on every clean apply
+   (§5.10.3); the primary key is immutable and never marks.
+6. `baseVersion` absent: apply (last-write-wins per column).
+
+Apply writes the present non-crdt columns, merges the present `crdt`
+columns (`merge(stored, incoming)`), leaves absent columns unchanged,
+increments `server_version` by 1, and sets the `column_version` of each
+present column except the primary key to the new `server_version`. The
+stored payload is re-encoded full-row (§2.4): a sparse payload never
+reaches storage, segments, or `COMMIT` frames.
+
+For an upsert against an **absent** row, the tombstone table decides
+(§2.2):
+
+| `baseVersion` | Tombstone within horizon | Outcome |
+|---|---|---|
+| `0` | any | insert with `server_version = 1` — explicit intent recreates |
+| `> 0` | any | error `sync.row_missing` (after payload authorization, so absence is not disclosed to an actor without the scope) |
+| absent | yes | reject `sync.row_deleted` — a delete beats a concurrent unversioned upsert |
+| absent | no | insert when every column is present; otherwise `sync.row_missing` (§6.1 intent) |
+
+An insert requires every column present: a partial payload names an
+update, and there is nothing to update. A recreated row clears its
+tombstone. Beyond the pruning horizon the tombstone is gone and the
+insert rule applies (§4.6).
+
+`sync.row_deleted`: category `not-found`, not retryable, action
+`fixRequest`. The client drops the operation on rebuild and journals it
+(§7.2).
+
 - `delete`: no version check. Deleting an **absent** row is `applied`
   (idempotent) with **no authorization check and no emitted change**:
   there is no stored row to select as the §3.4 authorization row, and
   an unconditional `applied` discloses nothing. Deleting an
   **existing** row authorizes against the stored row per §3.4; denial
   is `sync.forbidden` — which necessarily reveals that the row exists,
-  the accepted cost of fail-loud authorization.
+  the accepted cost of fail-loud authorization. Every applied delete,
+  including a §6.11 cascaded delete, records a tombstone (§2.2).
 
 ### 6.3 `PUSH_RESULT` frame
 
@@ -2713,7 +2784,8 @@ Result record — tagged union:
 | conflict: `code` | `str` | e.g. `sync.version_conflict` |
 | conflict: `message` | `str` | |
 | conflict: `serverVersion` | `i64` | Current server row version |
-| conflict: `serverRow` | `bytes` | Current server row encoded with the generated row codec (§2.4) for the request's `schemaVersion` — the client resolves against this without another round-trip |
+| conflict: `serverRow` | `bytes` | Current server row encoded with the generated **full-row** codec (§2.4) for the request's `schemaVersion` — the client resolves against this without another round-trip |
+| conflict: `conflictColumns` | `bytes` | §6.2 evidence: a bitmap in the sparse-row presence-bitmap layout (§2.4) marking the present columns whose `column_version` exceeded `baseVersion`. A `baseVersion = 0` lost-insert conflict marks every present non-crdt column except the primary key |
 | error: `code` | `str` | |
 | error: `message` | `str` | |
 | error: `retryable` | `bool` | |
@@ -2826,10 +2898,11 @@ contract:
 
 - On `conflict`, the losing local operation MUST NOT be blindly retried
   with the same `baseVersion`.
-- The app resolves via **keep-server** (apply `serverRow` locally, drop
-  the local op), **keep-local** (re-push the local payload with
+- The app resolves via **keep-server** (apply `serverRow`, drop the
+  operation), **keep-local** (re-push the same sparse operation with
   `baseVersion = serverVersion` from the conflict record — an explicit
-  overwrite), or **custom merge** (compute a merged payload, push with
+  overwrite), or **custom merge** (compute new values for the columns in
+  `conflictColumns`, push a sparse operation carrying those columns with
   `baseVersion = serverVersion`).
 - Because the commit was rolled back atomically, sibling operations of
   the conflicted one are also unapplied; the client rebases the whole
@@ -2870,10 +2943,10 @@ the feature is off by default and adds no per-operation cost when off.
 
 **When it runs.** For each push operation on a table that has a
 validator, the server runs the validator **after** two gates have already
-passed — (1) the row-codec decode (§6.1) and (2) the §3.4 scope
-authorization (steps 2–5, including the scope-column strip on update) —
-and **inside the commit transaction** (§6.4), immediately before the
-row's write. Running after §3.4 means a validator never sees a row the
+passed — (1) the sparse-row decode (§6.1) and (2) the §3.4 scope
+authorization (steps 2–5, including the scope-column immutability check
+on update) — and **inside the commit transaction** (§6.4), immediately
+before the row's write. Running after §3.4 means a validator never sees a row the
 actor is not authorized to write; running inside the transaction means a
 rejection rolls back atomically like any other operation failure. The
 order is fixed: **decode → scope authorization → validation → write.**
@@ -2883,8 +2956,8 @@ order is fixed: **decode → scope authorization → validation → write.**
 - `op` — `upsert` or `delete`.
 - `table`, `rowId`.
 - `row` — the row **that will persist**, keyed by column name: for an
-  `upsert`, post-scope-strip and **post-CRDT-merge** (see below);
-  `undefined` for a `delete`.
+  `upsert`, the merged full row (present columns over stored values),
+  **post-CRDT-merge** (see below); `undefined` for a `delete`.
 - `stored` — the currently-stored row keyed by column name, or `undefined`
   when there is none (an insert). Present for an update or a delete, so a
   validator can enforce transition rules ("a `closed` invoice cannot
@@ -3288,7 +3361,7 @@ state, so a commit that deletes a parent and its children together passes.
 | Staged upsert whose present, non-null reference column names an absent parent | reject `sync.reference_violation` with `reason = missing_parent`, `fieldPaths = [column]`, and `references = { parent: <parentTable>, row: <parentRowId> }` |
 | Staged delete of a parent with remaining children, `RESTRICT` | reject `sync.reference_violation` with `reason = restricted_delete` and `references = { child: <childTable> }` |
 | Staged delete of a parent, `CASCADE` | the server appends one `delete` operation per child to the same commit, recursively through further `CASCADE` references with a visited set |
-| Staged delete of a parent, `SET NULL` | the server appends one upsert per child that sets the reference column to `NULL` |
+| Staged delete of a parent, `SET NULL` | the server appends one sparse upsert per child that presents only the reference column, set to `NULL` (§6.2: only that column's version moves) |
 | Appended operations exceed the cascade cap (reference default 1,000 per commit) | reject `sync.reference_violation` with `reason = cascade_limit` |
 
 Appended operations run the §6.7 row validators with `op` set to `delete` or
@@ -3321,7 +3394,11 @@ stays static.
   NOT fill the remaining budget. Retries preserve this order and each
   commit's identity. A first commit that alone exceeds the server cap stays
   atomic and receives the request-level `sync.too_many_operations` error.
-- Local reads see outbox state applied optimistically. Reconciliation
+- Local reads see outbox state applied optimistically. The overlay applies
+  each pending operation's **present columns** over the current local row;
+  when the local row is absent and the operation is partial, the overlay
+  leaves the row absent — matching the server's `sync.row_deleted` and
+  `sync.row_missing` outcomes (§6.2). Reconciliation
   is **outbox replay on top**: whenever server data has been applied (a
   pull response or a realtime delta, §8.2 — including one that aborted
   mid-way, §1.4 rule 5), the client re-applies every still-pending
@@ -3439,7 +3516,8 @@ per server commit as specified in §6.4.
 Each journal entry contains the `clientCommitId`, local recording time,
 newest-first local sequence, final status, and every operation result. A
 conflict retains its stable code and message, `serverVersion`, decoded
-`serverRow`, and the losing schema-agnostic local operation. An error retains
+`serverRow`, decoded `conflictColumns`, and the losing schema-agnostic local
+operation. An error retains
 its stable code, message, retryability, accepted §6.3.1 details when present,
 and local operation. For a final `conflict` or `rejected` result, the entry also
 retains the complete ordered schema-agnostic local operation envelope from the
@@ -3459,15 +3537,11 @@ An application may inspect it only inside an authorized, domain-specific
 recovery surface; presence of the envelope does not make full-row edit intent
 known or authorize an automatic merge.
 
-The operation journal also preserves **local edit intent** for an upsert made
-through the client's partial-update API: `changedFields` is the normalized,
-sorted set of non-primary-key fields supplied to `patch`. It survives restart
-and appears on conflict and rejection records so recovery UI can distinguish
-the fields the user meant to change from the rest of the full row payload.
-This metadata is deliberately local-only: it is stored beside the
-schema-agnostic outbox operation and MUST NOT be encoded into `PUSH_COMMIT` or
-trusted by the server. A full-row `mutate` has unknown intent and therefore
-omits `changedFields`; clients MUST NOT infer it by diffing against a mutable
+The retained schema-agnostic operation envelope carries the sparse operation
+itself: the columns a `patch` wrote are exactly the keys of its persisted
+`values` map, so recovery UI derives edit intent from the presence set — no
+parallel intent metadata exists or may be reconstructed. `mutate` marks every
+column present; clients MUST NOT narrow intent by diffing against a mutable
 local base.
 
 The client exposes `commitOutcome(clientCommitId)` and
@@ -4624,17 +4698,18 @@ reconnect" failure mode of an HTTP-pull-only client cannot occur.
 - Every wire-visible change lands **in the same commit** as its updated
   golden vectors (CI-enforced in this tree).
 
-Wire version 2 adds the `logEpoch` and `resetRequired` fields to the header
-frames (§1.5, §1.6). A reference server reads versions 1 and 2. Reference
-clients write version 2. Version 1 remains serviceable until an operator
-rotates a partition epoch; after rotation, accepting version 1 would let a
-client continue across an unobservable log discontinuity, so the server
-rejects it before processing.
+Wire version 3 changes the push operation `payload` to the sparse row codec
+(§2.4), adds `conflictColumns` to the conflict result record (§6.3), and
+introduces column versions (§2.2) and delete-precedence tombstones (§6.2).
+A reference server reads only version 3; reference clients write version 3.
+Versions 1 and 2 are rejected as unknown (§1.2): keeping them serviceable
+alongside version 3 would require two conflict-detection semantics in one
+server.
 
 The reference codec publishes its ordered compatibility window as
 `SUPPORTED_PROTOCOL_WIRE_VERSIONS`. A reference server MUST decode every
 version in that window and encode the response with the request's version.
-The current window has N = 2 versions, `[1, 2]`. Adding a version extends the
+The current window has N = 1 version, `[3]`. Adding a version extends the
 window and its golden vectors before a later release can advance the minimum.
 
 ---
@@ -4663,7 +4738,7 @@ Recommended actions: `refreshAuth`, `checkPermissions`, `fixRequest`,
 `rebootstrap`, `forceResync`, `retryLater`, `splitBatch`,
 `inspectServer`.
 
-### 10.2 Codes (wire versions 1 and 2)
+### 10.2 Codes (wire version 3)
 
 | Code | Category | Retryable | Action | Produced when |
 |---|---|---|---|---|
@@ -4683,7 +4758,8 @@ Recommended actions: `refreshAuth`, `checkPermissions`, `fixRequest`,
 | `sync.invalid_subscription` | invalid-request | no | fixRequest | Duplicate subscription id; undeclared scope key (requested **or** resolved — §3.2) |
 | `sync.empty_commit` | invalid-request | no | fixRequest | `PUSH_COMMIT` with zero operations |
 | `sync.unknown_table` | schema-mismatch | no | regenerateClient | Subscription (request-level) or push operation (commit-level, §1.7) names a table the server doesn't handle |
-| `sync.row_missing` | not-found | no | forceResync | Upsert with `baseVersion ≠ 0` targeting an absent row (§6.2) |
+| `sync.row_missing` | not-found | no | forceResync | Upsert with `baseVersion ≠ 0` targeting an absent row, or a partial payload targeting an absent row without a tombstone (§6.2) |
+| `sync.row_deleted` | not-found | no | fixRequest | An unversioned upsert targeting a row deleted inside the tombstone horizon (§6.2) — the delete wins; the client drops the operation on rebuild — *new in wire version 3*; a push operation-result `error` record only |
 | `sync.version_conflict` | conflict | no | resolveConflict | `baseVersion` mismatch (§6.2) — appears as a conflict result, not a request error |
 | `sync.constraint_violation` | invalid-request | no | fixRequest | Server-side data constraint (unique/FK/not-null) rejected the write; also a §6.7 write-validator that threw a non-host-code error (an unexpected throw, not a deliberate host rejection) |
 | `sync.reference_violation` | invalid-request | no | fixRequest | A declared reference (§6.11) failed: an absent parent, a `RESTRICT` delete with live children, or the cascade cap — *new in SSP2*; a push operation-result `error` record with `reason`/`references` in its §6.3.1 details |
@@ -4698,7 +4774,6 @@ Recommended actions: `refreshAuth`, `checkPermissions`, `fixRequest`,
 | `sync.rate_limited` | rate-limited | yes | retryLater | Request or connection rate cap |
 | `sync.schema_mismatch` | schema-mismatch | no | regenerateClient | Generated client artifacts incompatible with the server (e.g., segment column-table mismatch, §5.2) |
 | `sync.client_schema_unsupported` | schema-mismatch | no | upgradeClient | `schemaVersion` below the server floor (accompanies `requiredSchemaVersion`) |
-| `sync.client_wire_unsupported` | schema-mismatch | no | upgradeClient | A wire version 1 client contacts a partition whose log epoch has rotated (§2.1); request-level, before push or pull processing |
 | `sync.websocket_connection_limit` | rate-limited | yes | retryLater | Realtime connection cap (global or per client) |
 | `blob.not_found` | not-found | no | fixRequest | Blob download for an unknown blob (§5.9.5), or a push referencing an absent blob (§5.9.6, §6.6) — *new in SSP2* |
 | `blob.forbidden` | forbidden | no | checkPermissions | Blob download where no referencing row is authorized for the actor (§5.9.5) — *new in SSP2* |
@@ -4873,13 +4948,13 @@ byte-identical output):
 |---|---|---|
 | 1 | `request/pull-minimal` | Smallest legal request: header + pull + one caught-up subscription |
 | 2 | `request/pull-bootstrap` | Two subscriptions — a single subscription cannot carry both: fresh bootstrap (`cursor = -1`, `params`) + resumed bootstrap (`cursor` at the §4.7 pin, `bootstrapState` round-trip); `accept` bits incl. sqlite + signed URLs |
-| 3 | `request/push-multi-commit` | Two commits: upsert with `baseVersion`, delete, row-codec payload edge cases (NULL bitmap, empty string, non-BMP unicode, `json`-typed column raw-string round-trip) |
+| 3 | `request/push-multi-commit` | Two commits: upsert with `baseVersion`, delete, sparse-row payload edge cases (presence and NULL bitmaps, empty string, non-BMP unicode, `json`-typed column raw-string round-trip) |
 | 4 | `request/combined` | Push + pull in one envelope (§1.5 ordering) |
 | 5 | `response/pull-empty` | Active subscription, zero commits, cursor advanced anyway (§4.5) |
 | 6 | `response/commits-incremental` | Two `COMMIT` frames; row codec exercising every column type incl. NULLs, `bytes`, non-BMP strings; scope map on changes |
 | 7 | `response/bootstrap-segments` | `SEGMENT_REF` (sqlite, with signed URL) + `SEGMENT_REF` (rows, no URL) + `SEGMENT_INLINE`; incomplete `bootstrapState` in `SUB_END` |
 | 8 | `response/push-applied` | All-applied result with `commitSeq` |
-| 9 | `response/push-conflict` | `rejected` commit; conflict record with `serverVersion` + `serverRow` |
+| 9 | `response/push-conflict` | `rejected` commit; conflict record with `serverVersion`, full-row `serverRow`, and the `conflictColumns` bitmap (§6.3) |
 | 10 | `response/push-cached` | Idempotent replay: `status = cached`, original results |
 | 11 | `response/subscription-revoked` | `SUB_START` status `revoked`, reason `sync.scope_revoked`, empty effective scopes |
 | 12 | `response/cursor-reset` | `SUB_START` status `reset`, reason `sync.cursor_expired` (horizon signal) |
@@ -5196,3 +5271,28 @@ Each is a driver-interface script, not a prose test.
     exceeds the 1,000-operation cap rejects with `reason = cascade_limit`.
     (f) A single commit that deletes a parent and its children together
     passes `RESTRICT`. Both pairings (TS×TS, Rust×TS).
+
+20. **Delete precedence (§6.2).** (a) A delete followed by a stale
+    unversioned patch rejects `sync.row_deleted`, and the row stays absent
+    on the server and on both clients. (b) An explicit insert
+    (`baseVersion = 0`) over a fresh tombstone recreates the row at
+    `server_version = 1`. (c) After pruning advances the horizon past the
+    delete (§4.6), an unversioned full-row upsert inserts again — the
+    ordinary insert rule is restored. Both pairings (TS×TS, Rust×TS).
+
+21. **Column-granular writes (§2.4, §6.1–§6.3).** (a) Disjoint unversioned
+    patches to different columns both land. (b) Disjoint patches carrying
+    the same `baseVersion` both land: a column a patch does not present
+    keeps its `column_version`. (c) Two patches of the same column from one
+    base conflict, and `conflictColumns` marks exactly that column.
+    (d) A crdt-only patch with a stale `baseVersion` applies clean while a
+    concurrent non-crdt patch also applies (§5.10.3). (e) A partial
+    payload on an absent row without a tombstone rejects
+    `sync.row_missing`. (f) A present scope column with a changed value
+    rejects `sync.invalid_request` (§3.4 rule 5). (g) The optimistic
+    overlay applies a pending patch's present columns over the current
+    local row and leaves untouched columns at their synced value; a
+    concurrent server change to an untouched column survives the pending
+    sparse patch (§7.1). (h) The Rust and TS clients emit byte-identical
+    sparse payloads for the same patch, pinned against the reference
+    encoding. Both pairings (TS×TS, Rust×TS).

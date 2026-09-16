@@ -122,6 +122,13 @@ export type PushOperationResult =
       message: string;
       serverVersion: number;
       serverRow: Uint8Array;
+      /**
+       * §6.3 (wire version 3): presence-bitmap layout over the row's columns,
+       * marking the present columns whose `column_version` exceeded the
+       * operation's `baseVersion`. A `baseVersion = 0` lost-insert conflict
+       * marks every present non-crdt column.
+       */
+      conflictColumns: Uint8Array;
     }
   | {
       opIndex: number;
@@ -422,6 +429,7 @@ function decodePushResult(r: ByteReader): PushResultFrame {
         message: r.str(),
         serverVersion: r.i64(),
         serverRow: r.bytes(),
+        conflictColumns: r.bytes(),
       });
     } else if (recordStatus === 3) {
       results.push({
@@ -971,6 +979,7 @@ function encodeFrame(
           w.str(result.message);
           w.i64(result.serverVersion);
           w.bytes(result.serverRow);
+          w.bytes(result.conflictColumns);
         } else {
           w.u8(3);
           w.str(result.code);

@@ -5,7 +5,7 @@
  * same allowance as index.test.ts — no socket).
  */
 import { describe, expect, test } from 'bun:test';
-import { encodeMessage, encodeRow, type RowColumn } from '@syncular/core';
+import { encodeMessage, encodeSparseRow, type RowColumn } from '@syncular/core';
 import {
   MemorySegmentStore,
   RingBufferEvents,
@@ -19,6 +19,8 @@ import { Hono } from 'hono';
 import { createSyncularAdminRoutes } from './admin';
 import { ADMIN_CONSOLE_HTML } from './admin-page';
 import { createSyncularHono } from './index';
+
+const TEST_LOG_EPOCH = 'test-log-epoch';
 
 const COLUMNS: readonly RowColumn[] = [
   { name: 'id', type: 'string', nullable: false },
@@ -71,11 +73,18 @@ function harness() {
   app.route('/admin', routes);
 
   async function seed(): Promise<void> {
+    // Pin the partition log epoch so the seed push lands in one round (§2.1).
+    await storage.touchPartition('part-1', 0, TEST_LOG_EPOCH);
     const bytes = encodeMessage({
-      wireVersion: 1,
+      wireVersion: 3,
       msgKind: 'request',
       frames: [
-        { type: 'REQ_HEADER', clientId: 'client-1', schemaVersion: 1 },
+        {
+          type: 'REQ_HEADER',
+          clientId: 'client-1',
+          schemaVersion: 1,
+          logEpoch: TEST_LOG_EPOCH,
+        },
         {
           type: 'PUSH_COMMIT',
           clientCommitId: 'c1',
@@ -84,7 +93,7 @@ function harness() {
               table: 'tasks',
               rowId: 't1',
               op: 'upsert',
-              payload: encodeRow(COLUMNS, ['t1', 'p1', 'hello']),
+              payload: encodeSparseRow(COLUMNS, 0, ['t1', 'p1', 'hello']),
             },
           ],
         },

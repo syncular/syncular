@@ -321,10 +321,10 @@ they are never encoded on the wire or exposed through pending commits, outcome
 envelopes, diagnostics, preferences, or telemetry.
 
 Use `patch(table, rowId, partial, { baseVersion? })` for editor-style partial
-updates. The wire still carries a full row, but the durable local operation
-records a sorted `changedFields` list so conflict and rejection UI knows which
-fields the user intended to touch. That intent is local-only and never enters
-`PUSH_COMMIT`; full-row `mutate` operations omit it.
+updates. The wire carries a sparse operation: the primary key plus the supplied
+columns are present, and the durable local operation keeps the same presence
+set so conflict and rejection UI knows which columns the user touched. A
+full-row `mutate` marks every column present.
 
 ## Application-authorized local security purge
 

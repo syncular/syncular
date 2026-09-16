@@ -9,7 +9,8 @@ import {
   encodeMessage,
   encodeRemoteOperationRequest,
   encodeRemoteOperationRealtimeMessage,
-  encodeRow,
+  encodeSparseRow,
+  PROTOCOL_WIRE_VERSION,
   type PushOperation,
   type PushOperationResult,
   type PushResultDetailsFrame,
@@ -204,7 +205,8 @@ export class SyncRemoteClient {
     }
   >();
   readonly #encryption: EncryptionConfig | undefined;
-  readonly #logEpoch: string | undefined;
+  /** Pinned by config, or acquired on the first prepared commit (§2.1). */
+  #logEpoch: string | undefined;
 
   constructor(config: SyncRemoteClientConfig) {
     if (config.clientId.length === 0) {
@@ -242,6 +244,53 @@ export class SyncRemoteClient {
         'a remote commit must carry at least one mutation (§6.1)',
       );
     }
+    let logEpoch = this.#logEpoch;
+    if (logEpoch === undefined) {
+      // §2.1: a push round binds to the partition log epoch; an acquisition
+      // round carries no push commits.
+      if (this.#transport === undefined) {
+        throw new ClientSyncError(
+          'client.remote_sync_unconfigured',
+          'SyncRemoteClient has no sync transport for ordinary commits',
+        );
+      }
+      const acquisition = decodeMessage(
+        await this.#transport(
+          encodeMessage({
+            wireVersion: PROTOCOL_WIRE_VERSION,
+            msgKind: 'request',
+            frames: [
+              {
+                type: 'REQ_HEADER',
+                clientId: this.#clientId,
+                schemaVersion: schema.version,
+              },
+              // A pull that asks for nothing: the round exists for its epoch.
+              {
+                type: 'PULL_HEADER',
+                limitCommits: 0,
+                limitSnapshotRows: 0,
+                maxSnapshotPages: 0,
+                accept: 0b0011,
+              },
+            ],
+          }),
+        ),
+      );
+      const acquisitionHeader = acquisition.frames[0];
+      if (
+        acquisition.msgKind !== 'response' ||
+        acquisitionHeader?.type !== 'RESP_HEADER' ||
+        acquisitionHeader.logEpoch === undefined
+      ) {
+        throw new ClientSyncError(
+          'client.invalid_host_response',
+          'remote epoch acquisition returned an invalid response',
+        );
+      }
+      logEpoch = acquisitionHeader.logEpoch;
+      this.#logEpoch = logEpoch;
+    }
     const operations: PushOperation[] = [];
     for (const mutation of input.mutations) {
       const table = schema.tables.get(mutation.table);
@@ -277,22 +326,20 @@ export class SyncRemoteClient {
         ...(mutation.baseVersion !== undefined
           ? { baseVersion: mutation.baseVersion }
           : {}),
-        payload: encodeRow(table.columns, values),
+        payload: encodeSparseRow(table.columns, table.primaryKeyIndex, values),
       });
     }
     return {
       requestId: input.requestId,
       bytes: encodeMessage({
-        wireVersion: this.#logEpoch === undefined ? 1 : 2,
+        wireVersion: PROTOCOL_WIRE_VERSION,
         msgKind: 'request',
         frames: [
           {
             type: 'REQ_HEADER',
             clientId: this.#clientId,
             schemaVersion: schema.version,
-            ...(this.#logEpoch !== undefined
-              ? { logEpoch: this.#logEpoch }
-              : {}),
+            logEpoch,
           },
           {
             type: 'PUSH_COMMIT',

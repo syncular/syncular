@@ -13,7 +13,7 @@ import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 import {
   decodeMessage,
   encodeMessage,
-  encodeRow,
+  encodeSparseRow,
   type PushResultFrame,
   type RequestFrame,
   type RowColumn,
@@ -35,6 +35,7 @@ import { FakeDurableObjectNamespace } from './do-double';
 
 const PARTITION = 'part-1';
 const ACTOR_ID = 'actor-1';
+const TEST_LOG_EPOCH = 'test-log-epoch';
 
 const TASK_COLUMNS: readonly RowColumn[] = [
   { name: 'id', type: 'string', nullable: false },
@@ -67,6 +68,8 @@ async function makeHandler(
   const db = new D1DatabaseDouble();
   const storage = new D1ServerStorage(db);
   await storage.migrate();
+  // Pin the partition log epoch so one-round pushes are legal (§2.1).
+  await storage.touchPartition(PARTITION, 0, TEST_LOG_EPOCH);
   const segments = new MemorySegmentStore();
   const blobs = makeBlobs();
   const config: SyncServerConfig = {
@@ -106,9 +109,17 @@ async function makeHandler(
 
 function syncRequest(frames: RequestFrame[], clientId = 'client-1'): Request {
   const bytes = encodeMessage({
-    wireVersion: 1,
+    wireVersion: 3,
     msgKind: 'request',
-    frames: [{ type: 'REQ_HEADER', clientId, schemaVersion: 1 }, ...frames],
+    frames: [
+      {
+        type: 'REQ_HEADER',
+        clientId,
+        schemaVersion: 1,
+        logEpoch: TEST_LOG_EPOCH,
+      },
+      ...frames,
+    ],
   });
   return new Request('https://worker.example/sync', {
     method: 'POST',
@@ -132,7 +143,7 @@ function taskRow(
   title: string,
   attachment: string | null = null,
 ): Uint8Array {
-  return encodeRow(TASK_COLUMNS, [id, listId, title, attachment]);
+  return encodeSparseRow(TASK_COLUMNS, 0, [id, listId, title, attachment]);
 }
 
 /** §5.9.1: a `blob_ref` value is the canonical JSON doc, not the bare id. */
@@ -175,6 +186,7 @@ describe('Workers fetch handler (D1 double + memory stores)', () => {
     const db = new D1DatabaseDouble();
     const directStorage = new D1ServerStorage(db);
     await directStorage.migrate();
+    await directStorage.touchPartition(PARTITION, 0, TEST_LOG_EPOCH);
     const segments = new MemorySegmentStore();
     const namespace = new FakeDurableObjectNamespace(db, {
       syncConfig: (storage) => ({
@@ -226,6 +238,7 @@ describe('Workers fetch handler (D1 double + memory stores)', () => {
     const db = new D1DatabaseDouble();
     const storage = new D1ServerStorage(db);
     await storage.migrate();
+    await storage.touchPartition(PARTITION, 0, TEST_LOG_EPOCH);
     const handler = createWorkersFetchHandler<unknown>(() => ({
       config: {
         schema: SCHEMA,

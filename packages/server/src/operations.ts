@@ -5,8 +5,8 @@ import {
 import {
   decodeRow,
   decodeRemoteOperationRequest,
-  encodeRow,
   encodeRemoteOperationResponse,
+  encodeSparseRow,
   type PushOperation,
   type RemoteOperationResponse,
   type RowValue,
@@ -526,7 +526,7 @@ function commandOperations(
       table: table.name,
       rowId,
       op: 'upsert',
-      payload: encodeRow(table.columns, values),
+      payload: encodeSparseRow(table.columns, table.primaryKeyIndex, values),
     };
   });
 }

@@ -33,7 +33,7 @@ function envelope(
 ): Uint8Array {
   const w = new ByteWriter();
   w.raw(utf8Encode('SSP2'));
-  w.u16(1);
+  w.u16(3);
   w.u8(msgKind);
   w.u8(0);
   for (const frame of frames) {
@@ -56,6 +56,7 @@ const reqHeader = {
   build: (p: ByteWriter) => {
     p.str('client-a');
     p.i32(1);
+    p.u8(0); // logEpoch absent
   },
 };
 
@@ -64,6 +65,8 @@ const respHeader = {
   build: (p: ByteWriter) => {
     p.u8(0);
     p.u8(0);
+    p.str('epoch-test');
+    p.u8(0); // resetRequired false
   },
 };
 
@@ -102,7 +105,7 @@ describe('SSP2 envelope (SPEC.md §1.2)', () => {
   it('rejects an END frame with a non-zero length', () => {
     const w = new ByteWriter();
     w.raw(utf8Encode('SSP2'));
-    w.u16(1);
+    w.u16(3);
     w.u8(1);
     w.u8(0);
     w.u8(FrameType.END);
@@ -117,6 +120,7 @@ describe('SSP2 envelope (SPEC.md §1.2)', () => {
       build: (p: ByteWriter) => {
         p.str('client-a');
         p.i32(1);
+        p.u8(0); // logEpoch absent
         p.u8(0); // extra byte
       },
     };
@@ -173,10 +177,10 @@ describe('SSP2 envelope (SPEC.md §1.2)', () => {
 describe('PUSH_RESULT_DETAILS additive companion', () => {
   it('round-trips bounded structured rejection metadata', () => {
     const message: ResponseMessage = {
-      wireVersion: 1,
+      wireVersion: 3,
       msgKind: 'response',
       frames: [
-        { type: 'RESP_HEADER' },
+        { type: 'RESP_HEADER', logEpoch: 'epoch-test', resetRequired: false },
         {
           type: 'PUSH_RESULT',
           clientCommitId: 'commit-1',
@@ -214,10 +218,10 @@ describe('PUSH_RESULT_DETAILS additive companion', () => {
 
   it('rejects free-form and over-broad metadata', () => {
     const message: ResponseMessage = {
-      wireVersion: 1,
+      wireVersion: 3,
       msgKind: 'response',
       frames: [
-        { type: 'RESP_HEADER' },
+        { type: 'RESP_HEADER', logEpoch: 'epoch-test', resetRequired: false },
         {
           type: 'PUSH_RESULT',
           clientCommitId: 'commit-1',
@@ -272,24 +276,32 @@ describe('PUSH_RESULT_DETAILS additive companion', () => {
 
     expect(() =>
       encodeMessage({
-        wireVersion: 1,
+        wireVersion: 3,
         msgKind: 'response',
-        frames: [{ type: 'RESP_HEADER' }, details],
+        frames: [
+          { type: 'RESP_HEADER', logEpoch: 'epoch-test', resetRequired: false },
+          details,
+        ],
       }),
     ).toThrow('without a preceding PUSH_RESULT');
     expect(() =>
       encodeMessage({
-        wireVersion: 1,
+        wireVersion: 3,
         msgKind: 'response',
-        frames: [{ type: 'RESP_HEADER' }, result, details, details],
+        frames: [
+          { type: 'RESP_HEADER', logEpoch: 'epoch-test', resetRequired: false },
+          result,
+          details,
+          details,
+        ],
       }),
     ).toThrow('duplicate PUSH_RESULT_DETAILS');
     expect(() =>
       encodeMessage({
-        wireVersion: 1,
+        wireVersion: 3,
         msgKind: 'response',
         frames: [
-          { type: 'RESP_HEADER' },
+          { type: 'RESP_HEADER', logEpoch: 'epoch-test', resetRequired: false },
           result,
           { ...details, clientCommitId: 'other-commit' },
         ],
@@ -297,10 +309,10 @@ describe('PUSH_RESULT_DETAILS additive companion', () => {
     ).toThrow('does not match its rejected PUSH_RESULT');
     expect(() =>
       encodeMessage({
-        wireVersion: 1,
+        wireVersion: 3,
         msgKind: 'response',
         frames: [
-          { type: 'RESP_HEADER' },
+          { type: 'RESP_HEADER', logEpoch: 'epoch-test', resetRequired: false },
           result,
           {
             ...details,
@@ -336,7 +348,7 @@ describe('request grammar (SPEC.md §1.5)', () => {
 
   it('rejects PUSH_COMMIT after PULL_HEADER', () => {
     const message: RequestMessage = {
-      wireVersion: 1,
+      wireVersion: 3,
       msgKind: 'request',
       frames: [
         { type: 'REQ_HEADER', clientId: 'c', schemaVersion: 1 },
@@ -500,10 +512,10 @@ describe('response grammar (SPEC.md §1.6)', () => {
 
   it('rejects a COMMIT frame after segment frames in one subscription', () => {
     const message: ResponseMessage = {
-      wireVersion: 1,
+      wireVersion: 3,
       msgKind: 'response',
       frames: [
-        { type: 'RESP_HEADER' },
+        { type: 'RESP_HEADER', logEpoch: 'epoch-test', resetRequired: false },
         {
           type: 'SUB_START',
           id: 's',
@@ -600,10 +612,10 @@ describe('response grammar (SPEC.md §1.6)', () => {
 
   it('rejects PUSH_RESULT after SUB_START', () => {
     const message: ResponseMessage = {
-      wireVersion: 1,
+      wireVersion: 3,
       msgKind: 'response',
       frames: [
-        { type: 'RESP_HEADER' },
+        { type: 'RESP_HEADER', logEpoch: 'epoch-test', resetRequired: false },
         {
           type: 'SUB_START',
           id: 's',
@@ -627,10 +639,10 @@ describe('response grammar (SPEC.md §1.6)', () => {
 
   it('round-trips i64 cursor values at the safe-integer boundary', () => {
     const message: ResponseMessage = {
-      wireVersion: 1,
+      wireVersion: 3,
       msgKind: 'response',
       frames: [
-        { type: 'RESP_HEADER' },
+        { type: 'RESP_HEADER', logEpoch: 'epoch-test', resetRequired: false },
         {
           type: 'SUB_START',
           id: 's',

@@ -520,6 +520,12 @@ pub struct ConflictRecord {
     /// Driver row (bytes as `{"$bytes": hex}`), decoded from the conflict
     /// record's `serverRow` (§6.3).
     pub server_row: Map<String, Value>,
+    /// §6.3 `conflictColumns`: the present columns whose `column_version`
+    /// exceeded `baseVersion`, decoded from the bitmap into column names in
+    /// declaration order. Absent on a legacy journal entry, which reads as an
+    /// empty list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conflict_columns: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub operation: Option<CommitOperation>,
 }
@@ -649,10 +655,6 @@ pub struct CommitOperation {
     pub base_version: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub values: Option<Map<String, Value>>,
-    /// Normalized columns intentionally supplied to `patch()`; absent for a
-    /// full-row mutate/upsert because intent is unknown.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub changed_fields: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

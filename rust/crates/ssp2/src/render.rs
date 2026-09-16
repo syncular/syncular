@@ -337,6 +337,7 @@ fn render_result(result: &OpResult) -> Value {
             message,
             server_version,
             server_row,
+            conflict_columns,
         } => obj(vec![
             ("opIndex", Value::from(*op_index)),
             ("status", Value::from("conflict")),
@@ -344,6 +345,7 @@ fn render_result(result: &OpResult) -> Value {
             ("message", Value::from(message.clone())),
             ("serverVersion", Value::from(*server_version)),
             ("serverRow", Value::from(base64(server_row))),
+            ("conflictColumns", Value::from(base64(conflict_columns))),
         ]),
         OpResult::Error {
             op_index,

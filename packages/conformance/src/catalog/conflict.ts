@@ -62,9 +62,14 @@ export const conflictScenarios: readonly Scenario[] = [
         'the server row rides the conflict record — no extra round-trip (§6.3)',
       );
       checkEqual(
-        conflict?.operation?.changedFields,
+        conflict?.conflictColumns,
         ['title'],
-        'patch intent survives the outbox and identifies the intentional field',
+        'conflictColumns marks exactly the present columns that moved past baseVersion (§6.3)',
+      );
+      checkEqual(
+        conflict?.operation?.present,
+        ['id', 'title'],
+        'the sparse operation\u2019s presence set survives the outbox (§7.2.1)',
       );
 
       // keep-server: apply nothing, just pull — local state equals server.

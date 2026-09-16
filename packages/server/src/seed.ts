@@ -12,7 +12,7 @@
 import {
   decodeMessage,
   encodeMessage,
-  encodeRow,
+  encodeSparseRow,
   PROTOCOL_WIRE_VERSION,
   type PushOperation,
   type PushResultFrame,
@@ -182,7 +182,7 @@ export async function seedMutations(
       table: mutation.table,
       rowId,
       op: 'upsert',
-      payload: encodeRow(table.columns, values),
+      payload: encodeSparseRow(table.columns, pkIndex, values),
     };
   });
 
