@@ -111,8 +111,9 @@ See [Windowed sync](/concepts-windowing/).
 feeds straight back into `mutate()`; rows read through the raw
 `client.database` tier keep them, and hand-built records can carry them by
 accident. Remove the key, or better, use
-`client.patch(table, rowId, partial)` for partial updates; it reads the
-current row, merges, and emits the full-row upsert for you.
+`client.patch(table, rowId, partial)` for partial updates; it records a sparse
+upsert naming only the columns you pass, so stored columns you did not touch
+keep their values.
 
 ## `sync.outbox_incompatible` rejections after a schema bump
 

@@ -53,6 +53,14 @@ Choose `baseVersion` by intent:
 | Deliberate last-write-wins | Omit it |
 | Chain edits on a new/unconfirmed local row | Omit it until a positive confirmed version arrives |
 
+A positive `baseVersion` compares per column, so a stale base conflicts only
+when an operation presents a column that moved past it. An operation that
+leaves the contended column absent applies, and `conflictColumns` reports the
+columns that moved. The server rejects a `baseVersion` above the row's current
+`server_version` with `sync.invalid_request`. An unversioned
+upsert loses to a delete inside the tombstone horizon with `sync.row_deleted`,
+so use `0` to recreate a deleted row deliberately.
+
 A newly optimistic local row uses an internal negative sentinel. That sentinel
 is evidence only that the server has not confirmed the row; it is never a
 server concurrency token. Do not pass it as `baseVersion`. Use `0` when the
@@ -265,8 +273,8 @@ Do not collapse every failed commit into “conflict”:
 
 | Outcome | How to recognize it | What it means |
 | --- | --- | --- |
-| Version conflict | `status === 'conflict'` and `code === 'sync.version_conflict'` | The positive base is stale; `serverVersion` and `serverRow` contain the winner observed by that push. |
-| Protocol rejection | `status === 'rejected'` with a reserved code such as `sync.row_missing` or `sync.constraint_violation` | The request violated a protocol/storage contract. Follow the stable catalog action and retryability, not message text. |
+| Version conflict | `status === 'conflict'` and `code === 'sync.version_conflict'` | The positive base is stale; `serverVersion` and `serverRow` contain the winner observed by that push, and `conflictColumns` names the columns that moved past the base. |
+| Protocol rejection | `status === 'rejected'` with a reserved code such as `sync.row_missing`, `sync.row_deleted`, or `sync.constraint_violation` | The request violated a protocol/storage contract. Follow the stable catalog action and retryability, not message text. |
 | Host/domain rejection | `status === 'rejected'` with an application code such as `appointment.reschedule_aggregate_required` | The authorized proposal violated domain validation. Map the stable code and bounded `details` to application UI. |
 
 Messages are diagnostics. User copy should be selected from stable codes and
@@ -396,7 +404,9 @@ export async function replaceReschedule(
 - **Keep local** reconstructs the authorized local aggregate and compares it
   against the new positive server base.
 - **Merge** constructs explicit values from local intent plus the chosen server
-  state, then uses that same new base.
+  state, then uses that same new base. A conflict names its contended columns
+  in `conflictColumns`, so a custom merge recomputes exactly those columns and
+  can leave the rest at the server values.
 
 If another writer wins before the replacement lands, the replacement safely
 becomes a new active conflict. Omitting `baseVersion` here would turn the

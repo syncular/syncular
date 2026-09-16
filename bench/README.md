@@ -253,6 +253,17 @@ serialization, parsing, and decoding inside Rust, then validates every byte.
 Process elapsed includes startup and stdio delivery of the measurement result.
 It does not measure blob download or byte delivery through a platform binding.
 
+## Sparse patch lane
+
+`bench:patch` queues 500 `patch` calls, each writing two of twenty columns on a
+distinct seeded row, then drains them in one sync round on the loopback
+harness. It reports request and response bytes, the request count, and drain
+time. Request bytes are deterministic; drain time varies.
+
+```sh
+bun run --cwd bench bench:patch 3
+```
+
 ## Postgres
 
 Use a dedicated test database and set `SYNCULAR_PG_URL` before selecting

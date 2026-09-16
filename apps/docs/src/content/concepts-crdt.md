@@ -1,7 +1,7 @@
 # CRDT columns: collaborative text & state
 
-Most columns are **last-write-wins** (LWW): the newest write to a row wins, and
-a concurrent write to the same optimistic-concurrency token conflicts (see
+Most columns are **last-write-wins** (LWW): the newest write to a column wins,
+and two writes to one column from the same `baseVersion` conflict (see
 [Conflicts](/concepts-conflicts/)). A shared document two people edit at the
 same time needs a different model: both edits should survive and **converge**
 into one state.
@@ -47,9 +47,10 @@ Two rules make collaborative editing conflict-free:
    idempotent: concurrent pushes converge order-independently, and a replayed
    update is a no-op (offline outbox replay is safe).
 
-A mutation touching **only** a `crdt` column pushes with `baseVersion` absent
-(last-write-wins mode), so it merges cleanly no matter how far the row has
-advanced.
+A mutation touching **only** a `crdt` column pushes a sparse operation that
+presents that column. The operation has no comparable column, so it never
+conflicts, with or without `baseVersion`, and it merges no matter how far the
+row has advanced.
 
 ## Web client: the `YjsColumn` helper
 
@@ -61,13 +62,11 @@ value:
 ```ts
 import { YjsColumn } from '@syncular/crdt-yjs';
 
-// Load the current merged bytes from the row, edit, push the full state.
+// Load the current merged bytes from the row, edit, push the sparse update.
 const col = new YjsColumn(row.doc);          // row.doc is a Uint8Array | null
 col.text().insert(0, 'Hello ');              // mutate the shared text
-client.mutate([
-  { table: 'notes', op: 'upsert', values: { ...row, doc: col.columnBytes() } },
-  // baseVersion omitted → merges cleanly (crdt-only divergence rule)
-]);
+client.patch('notes', row.id, { doc: col.columnBytes() });
+// the operation presents only the crdt column, so it never conflicts
 
 // On delivery of the server-merged value, apply it back (idempotent).
 col.applyServerBytes(updatedRow.doc);
@@ -100,10 +99,12 @@ await client.crdtApplyUpdate('notes', 'n1', 'doc', updateBytes);  // raw update
 ```
 
 Each edit loads the row's current merged bytes, applies the op with `yrs`,
-re-encodes the whole document state, and pushes it baseVersion-less through the
-normal mutate path: the exact model the `YjsColumn` helper uses on the web,
-one layer down. The `crdtApplyUpdate` escape hatch applies an arbitrary Yjs
-update the app produced with its own `yrs` model (maps, arrays, XML).
+re-encodes the whole document state, and pushes a sparse operation presenting
+the `crdt` column: the exact model the `YjsColumn` helper uses on the web, one
+layer down. The operation carries no comparable column, so it never conflicts,
+with or without `baseVersion`. The `crdtApplyUpdate` escape hatch applies an
+arbitrary Yjs update the app produced with its own `yrs` model (maps, arrays,
+XML).
 
 Cross-core convergence is proven in the conformance suite: a scenario has the
 **Rust** core author edits via `crdtInsertText`/`crdtDeleteText` and the

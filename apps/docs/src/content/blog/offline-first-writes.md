@@ -473,7 +473,7 @@ The rollback bookkeeping is private engine state. The public outcome journal exp
 
 ### Conflicts are explicit and optional
 
-Every server row has a monotonically increasing version. A mutation can include `baseVersion`, meaning “apply this only if the server still stores the version I edited.”
+Every server row has a monotonically increasing version. A mutation can include `baseVersion`, meaning “apply this only if the columns I present still store the version I edited.”
 
 ```ts
 client.patch(
@@ -484,9 +484,9 @@ client.patch(
 );
 ```
 
-If version 3 is still current, the write applies. Otherwise the commit produces a conflict containing the current server row and version. `patch()` also stores which fields the user intended to change. That intent remains local and durable, giving the application better merge evidence without asking the server to trust client-authored metadata.
+If every column the patch presents still holds version 3, the write applies. Otherwise the commit produces a conflict containing the current server row, the current version, and the columns that moved. `patch()` records the fields the user intended to change as the operation's presence set, and the server writes exactly those columns, so a merge can recompute only the contended ones.
 
-Ordinary upserts use last-write-wins when `baseVersion` is absent. The application opts into optimistic concurrency where losing intent would matter.
+Ordinary upserts use last-write-wins per column when `baseVersion` is absent. The application opts into optimistic concurrency where losing intent would matter.
 
 ### Bootstrap is a snapshot
 
@@ -552,7 +552,7 @@ The [Ink & Switch local-first ideals](https://www.inkandswitch.com/local-first/)
 
 - It is server-authoritative. There is no peer-to-peer mode.
 - It targets structured application data; frame-by-frame game state is out of scope.
-- Ordinary writes are not automatically conflict-free. Without `baseVersion`, they are last-write-wins.
+- Ordinary writes are not automatically conflict-free. Without `baseVersion`, they are last-write-wins per column.
 - Synced tables use one text primary key and must declare scopes.
 - Browser persistence requires OPFS; there is no IndexedDB fallback.
 - Scope columns and primary keys cannot be encrypted because the server needs them for routing.

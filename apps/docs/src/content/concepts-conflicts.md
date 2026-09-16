@@ -5,7 +5,7 @@ and queues the commit for the next push. Reads never wait for the server. When
 two clients edit the same row, syncular surfaces a **conflict** for your app to
 resolve.
 
-Normative detail: [SPEC.md §6](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#6-push-and-commit-application) and
+Normative detail: [SPEC.md §6](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#6-push-conflicts-results) and
 [§7](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#7-the-client-outbox).
 For the complete generated-query, React, aggregate-repair, acknowledgement,
 and restart flow, use [Concurrency and conflict correction](/guide-concurrency-correction/).
@@ -51,12 +51,14 @@ encodings
 ## Conflict detection
 
 Pass a `baseVersion` on a mutation to assert "I edited version K." The
-server tracks a `column_version` per column and rejects with a **conflict
-record** when a present non-`crdt` column changed after version K. Absent
-columns are untouched, so two edits to disjoint columns both apply. The
-conflict record's `conflictColumns` names the columns that moved on, so a
-custom merge recomputes exactly those
-([SPEC §6.2](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#6-push-and-commit-application)):
+server tracks a `column_version` per column: the row version at that column's
+last write. A push payload is a sparse row naming the columns the operation
+writes, and the server compares only the present ones. A conflict
+(`sync.version_conflict`) fires when a present non-`crdt` column has
+`column_version > baseVersion`, and `conflictColumns` names exactly those
+columns. Absent columns keep their stored value, so two edits that name
+disjoint columns both apply
+([SPEC §6.2](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#62-conflict-detection)):
 
 ```ts
 client.mutate([
@@ -64,23 +66,43 @@ client.mutate([
 ]);
 ```
 
+The server rejects a `baseVersion` above the row's `server_version` with
+`sync.invalid_request`: a client cannot hold a version the server never
+issued.
+
 The conflict record carries the current server row already decoded, so you can
-resolve without a round-trip:
+resolve without a round-trip, and `conflictColumns` tells a merge which
+columns to recompute:
 
 ```ts
 const client = new SyncClient({
   /* … */
   onConflict: (c) => {
     console.log(c.table, c.rowId, 'server has:', c.serverRow, 'version', c.serverVersion);
-    // present a merge UI, or re-issue with the new baseVersion
+    console.log('contended columns', c.conflictColumns);
   },
 });
 // or drain them after a round:
 client.conflicts; // readonly ConflictRecord[]
 ```
 
-Without a `baseVersion`, upserts are last-write-wins on the server; conflicts
-only arise when you opt into version checking.
+Three resolutions cover a conflict
+([SPEC §6.5](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#65-conflict-resolution-contract-client)):
+
+- **Keep server**: apply `serverRow` and drop the operation.
+- **Keep local**: re-push the same sparse operation with
+  `baseVersion = serverVersion` from the conflict record. This is an
+  explicit overwrite.
+- **Custom merge**: compute new values for the columns named by
+  `conflictColumns`, then push a sparse operation carrying those columns
+  with `baseVersion = serverVersion`.
+
+The server rolls back the whole commit when one operation conflicts, so
+sibling operations of the conflicted one are also unapplied; rebase the whole
+commit.
+
+Without a `baseVersion`, upserts apply with last-write-wins per column;
+conflicts only arise when you opt into version checking.
 
 For an edit form, prefer `patch` after reading the row locally. It records one
 sparse push operation: the primary key plus the columns the caller supplied.
@@ -105,6 +127,19 @@ scope check, or a serving hiccup that is retryable) surfaces as a
 **rejection** instead, with its own list (`client.rejections`) and retry
 semantics driven by the error's `retryable` flag. The
 [error catalog](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#10-errors) is normative.
+
+## Delete precedence
+
+A delete beats a concurrent upsert that carries no `baseVersion`. The server
+records a **tombstone** for every applied delete and keeps it until the
+pruning horizon. An unversioned upsert that finds the row absent and the
+tombstone still inside the horizon rejects with `sync.row_deleted`; the client
+drops the operation and journals the rejection. Pass `baseVersion = 0` to
+recreate the row deliberately: an explicit insert intent clears the tombstone.
+Once pruning advances the horizon past the delete, the tombstone is gone and
+the ordinary insert rule applies again
+([SPEC §6.2](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#62-conflict-detection),
+[SPEC §4.6](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#46-the-pruning-horizon)).
 
 ## Declared reference outcomes
 

@@ -225,8 +225,10 @@ For a table `todos`, the module exports:
 - `schema`: the object passed to both `SyncClient` and `SyncServerConfig`
   (structurally a `ServerSchema` *and* a `ClientSchema`).
 - `TodosRow`: one field per column, in row-codec order.
-- `TodosInsert` / `TodosUpdate`: client-side input conveniences (the wire
-  stays full-row upserts; nothing partial is encoded).
+- `TodosInsert` / `TodosUpdate`: client-side input conveniences honoring
+  nullability (insert requires non-nullable columns; update requires the
+  primary key and makes the rest optional). A `patch` records the supplied
+  columns as a sparse push operation.
 
 For a subscription `todosInList`, a `todosInListSubscription` with a
 `scopes(params)` builder and a typed `params` interface.

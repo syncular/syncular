@@ -19,6 +19,17 @@ Normative detail: [SPEC.md §2](https://github.com/syncular/syncular/blob/main/d
   upsert). It is the optimistic-concurrency token behind conflict detection
   ([Conflicts](/concepts-conflicts/)).
 
+## Push payloads
+
+A push operation is an **upsert** or a **delete**. An upsert payload is a
+**sparse row**: a presence bitmap names the columns the operation writes, and
+the server writes exactly those columns and leaves absent ones unchanged.
+`insert` and `mutate` mark every column present; `patch` marks the
+primary key plus the columns the caller supplied. The sparse encoding exists on
+the push path only: `COMMIT` delivery, rows segments, SQLite images, and a
+conflict's `serverRow` all carry full rows
+([SPEC §2.4](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#24-schema-ir-and-the-generated-row-codec)).
+
 ## Cursors
 
 A subscription's cursor is the last `commitSeq` it has fully applied. Each
@@ -51,7 +62,10 @@ is why the client outbox can retry freely after any network blip, and why
 The log does not grow forever. The server maintains a per-partition
 **`horizonSeq`**; commits at or below it may be pruned. A client whose cursor
 falls behind the horizon gets a `reset` and re-bootstraps; this is the
-designed recovery path ([SPEC §4.6](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#46-the-pruning-horizon)). Operating
+designed recovery path ([SPEC §4.6](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#46-the-pruning-horizon)). The server prunes delete tombstones at or below
+`horizonSeq` in the same pass, so retention bounds delete precedence: a delete
+beats a concurrent unversioned upsert only while its tombstone is inside the
+horizon. Past it, the ordinary insert rule applies. Operating
 the horizon (retention floors, when to prune, what to alert on) is covered in
 [Server setup](/guide-server/) and the
 [server README](https://github.com/syncular/syncular/blob/main/packages/server/README.md#horizon--pruning-operational-guidance).
