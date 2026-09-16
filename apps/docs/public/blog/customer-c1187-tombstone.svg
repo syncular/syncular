@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="990" viewBox="0 0 480 990" role="img" aria-labelledby="title desc">
+  <title id="title">A late edit to deleted customer C-1187 meets a tombstone</title>
+  <desc id="desc">At 14:10 the dispatcher deletes duplicate customer C-1187; the server removes the row and records a tombstone at commit 812. At 15:30 the offline technician patches the same customer's phone number. At 18:00 the phone pushes; the server finds no row, a tombstone inside the horizon, and no baseVersion, and rejects the patch with sync.row_deleted. The phone's rebuild removes C-1187 locally. Under a whole-row payload, the absent row plus a full payload would have recreated the customer at version 1. An insert with baseVersion 0 recreates a row on purpose.</desc>
+  <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="m 1 1 8 4 -8 4" fill="none" stroke="#ffb000" stroke-width="1.5"/></marker></defs>
+  <rect width="480" height="990" fill="#0a0908"/>
+  <g font-family="system-ui, -apple-system, sans-serif" fill="#f4efe4">
+    <text x="24" y="30" font-size="13" letter-spacing="1.2" fill="#ffb000">02 / A LATE EDIT TO DELETED CUSTOMER C-1187</text>
+    <rect x="24" y="48" width="432" height="110" rx="12" fill="#14120e" stroke="#756f64"/>
+    <text x="44" y="77" font-size="15" fill="#b9b2a6">DISPATCHER'S TABLET · 14:10</text>
+    <text x="44" y="112" font-size="22" font-weight="600">delete C-1187</text>
+    <text x="44" y="141" font-size="14" fill="#b9b2a6">Duplicate customer record</text>
+    <path d="M 240 158 V 190" stroke="#ffb000" stroke-width="2" marker-end="url(#arrow)"/>
+    <rect x="24" y="202" width="432" height="130" rx="12" fill="#14120e" stroke="#ffb000" stroke-width="1.5"/>
+    <text x="44" y="231" font-size="15" fill="#ffb000">SYNCULAR SERVER · COMMIT 812</text>
+    <text x="44" y="262" font-size="18">Row C-1187 removed</text>
+    <text x="44" y="290" font-size="16" fill="#ffb000">Tombstone: customers · C-1187 · seq 812</text>
+    <text x="44" y="316" font-size="14" fill="#b9b2a6">Kept until pruning passes commit 812</text>
+    <rect x="24" y="364" width="432" height="130" rx="12" fill="#14120e" stroke="#756f64"/>
+    <text x="44" y="393" font-size="15" fill="#b9b2a6">TECHNICIAN'S PHONE · 15:30 · NO SIGNAL</text>
+    <text x="44" y="428" font-size="22" font-weight="600">patch C-1187</text>
+    <text x="44" y="457" font-size="16" fill="#ffb000">site_phone → +49 30 7654321</text>
+    <text x="44" y="481" font-size="14" fill="#b9b2a6">Queued in the outbox · local row shows the edit</text>
+    <path d="M 240 494 V 546" stroke="#ffb000" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="258" y="525" font-size="14" fill="#b9b2a6">Phone reconnects at 18:00</text>
+    <rect x="24" y="558" width="432" height="180" rx="12" fill="#14120e" stroke="#ffb000" stroke-width="1.5"/>
+    <text x="44" y="587" font-size="15" fill="#ffb000">SYNCULAR SERVER · 18:00</text>
+    <text x="44" y="613" font-size="14" fill="#b9b2a6">Row absent · tombstone inside horizon · no baseVersion</text>
+    <path d="M 44 628 H 436" stroke="#756f64"/>
+    <text x="44" y="660" font-size="20" font-weight="600" fill="#ffb000">Rejected: sync.row_deleted</text>
+    <text x="44" y="688" font-size="14" fill="#b9b2a6">Commit rolled back · outcome journaled on the phone</text>
+    <text x="44" y="716" font-size="16">Phone's rebuild removes C-1187 locally</text>
+    <text x="24" y="776" font-size="13" letter-spacing="1.2" fill="#b9b2a6">WHOLE-ROW PAYLOAD</text>
+    <rect x="24" y="788" width="432" height="80" rx="12" fill="#261c0a" stroke="#756f64"/>
+    <text x="44" y="817" font-size="16">Absent row + full payload = insert</text>
+    <text x="44" y="845" font-size="16" fill="#ffb000">C-1187 recreated at version 1 · the delete is lost</text>
+    <text x="24" y="904" font-size="13" letter-spacing="1.2" fill="#b9b2a6">RECREATE ON PURPOSE</text>
+    <rect x="24" y="916" width="432" height="60" rx="12" fill="#14120e" stroke="#756f64"/>
+    <text x="44" y="945" font-size="16">insert with baseVersion 0</text>
+    <text x="260" y="945" font-size="15" fill="#c1d9a6">clears the tombstone</text>
+  </g>
+</svg>

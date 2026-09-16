@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="920" viewBox="0 0 480 920" role="img" aria-labelledby="title desc">
+  <title id="title">Two offline edits to customer C-2291 under a whole-row payload and under a sparse payload</title>
+  <desc id="desc">The technician's phone patches site_phone and the dispatcher's laptop patches billing_email on the same customer row. With a whole-row payload, the second push carries every column and overwrites the phone's correction. With a sparse payload, each push names only its column, the server writes the present columns, and both corrections are kept in either arrival order.</desc>
+  <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="m 1 1 8 4 -8 4" fill="none" stroke="#ffb000" stroke-width="1.5"/></marker></defs>
+  <rect width="480" height="920" fill="#0a0908"/>
+  <g font-family="system-ui, -apple-system, sans-serif" fill="#f4efe4">
+    <text x="24" y="30" font-size="13" letter-spacing="1.2" fill="#ffb000">01 / TWO EDITS TO CUSTOMER C-2291</text>
+    <rect x="24" y="48" width="432" height="120" rx="12" fill="#14120e" stroke="#756f64"/>
+    <text x="44" y="77" font-size="15" fill="#b9b2a6">TECHNICIAN'S PHONE · NO SIGNAL</text>
+    <text x="44" y="112" font-size="22" font-weight="600">patch C-2291</text>
+    <text x="44" y="145" font-size="16" fill="#ffb000">site_phone → +49 30 1234567</text>
+    <rect x="24" y="184" width="432" height="120" rx="12" fill="#14120e" stroke="#756f64"/>
+    <text x="44" y="213" font-size="15" fill="#b9b2a6">DISPATCHER'S LAPTOP · OFFICE</text>
+    <text x="44" y="248" font-size="22" font-weight="600">patch C-2291</text>
+    <text x="44" y="281" font-size="16" fill="#ffb000">billing_email → billing@example.com</text>
+    <path d="M 240 304 V 340" stroke="#ffb000" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="24" y="368" font-size="13" letter-spacing="1.2" fill="#b9b2a6">WHOLE-ROW PAYLOAD</text>
+    <rect x="24" y="380" width="432" height="200" rx="12" fill="#14120e" stroke="#756f64"/>
+    <text x="44" y="409" font-size="15" fill="#b9b2a6">SERVER ROW C-2291 · every push carries all columns</text>
+    <path d="M 44 424 H 436" stroke="#756f64"/>
+    <text x="44" y="454" font-size="16">1. Phone's row applied</text>
+    <text x="44" y="478" font-size="14" fill="#b9b2a6">site_phone new · billing_email old</text>
+    <text x="44" y="512" font-size="16">2. Laptop's row applied</text>
+    <text x="44" y="536" font-size="14" fill="#b9b2a6">site_phone old · billing_email new</text>
+    <text x="44" y="566" font-size="16" fill="#ffb000">Phone's correction overwritten</text>
+    <text x="24" y="618" font-size="13" letter-spacing="1.2" fill="#ffb000">SPARSE PAYLOAD</text>
+    <rect x="24" y="630" width="432" height="230" rx="12" fill="#14120e" stroke="#ffb000" stroke-width="1.5"/>
+    <text x="44" y="659" font-size="15" fill="#ffb000">SERVER ROW C-2291 · each push names its columns</text>
+    <path d="M 44 674 H 436" stroke="#756f64"/>
+    <text x="44" y="704" font-size="16">1. Phone's patch · site_phone present</text>
+    <text x="44" y="728" font-size="14" fill="#b9b2a6">site_phone new · column_version 2</text>
+    <text x="44" y="762" font-size="16">2. Laptop's patch · billing_email present</text>
+    <text x="44" y="786" font-size="14" fill="#b9b2a6">billing_email new · column_version 3</text>
+    <rect x="44" y="806" width="292" height="27" rx="5" fill="#263020"/>
+    <text x="55" y="825" font-size="15" fill="#c1d9a6">Both corrections kept in either order</text>
+    <text x="44" y="852" font-size="14" fill="#b9b2a6">Row version 3 · absent columns untouched</text>
+    <text x="24" y="896" font-size="14" fill="#b9b2a6">A baseVersion conflict names only the columns that moved.</text>
+  </g>
+</svg>

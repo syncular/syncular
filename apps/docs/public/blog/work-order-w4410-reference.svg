@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="1050" viewBox="0 0 480 1050" role="img" aria-labelledby="title desc">
+  <title id="title">Work order W-4410 for deleted customer C-1187 under ON DELETE RESTRICT</title>
+  <desc id="desc">The tablet deletes customer C-1187 while the offline phone inserts work order W-4410 referencing it. If the delete arrives first, the insert's reference check finds an absent parent and rejects with missing_parent; the phone's rebuild removes W-4410. If the insert arrives first, the delete finds a live child under RESTRICT and rejects with restricted_delete; the tablet's rebuild restores C-1187. Synql, with no server, undoes the delete on every replica so both writes survive. Under CASCADE the delete would append the child delete to the same commit. Without a declared reference, W-4410 is stored pointing at a customer nobody can open.</desc>
+  <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="m 1 1 8 4 -8 4" fill="none" stroke="#ffb000" stroke-width="1.5"/></marker></defs>
+  <rect width="480" height="1050" fill="#0a0908"/>
+  <g font-family="system-ui, -apple-system, sans-serif" fill="#f4efe4">
+    <text x="24" y="30" font-size="13" letter-spacing="1.2" fill="#ffb000">03 / W-4410 FOR DELETED CUSTOMER C-1187</text>
+    <rect x="24" y="48" width="432" height="112" rx="12" fill="#14120e" stroke="#756f64"/>
+    <text x="44" y="77" font-size="15" fill="#b9b2a6">TWO OFFLINE WRITES</text>
+    <text x="44" y="108" font-size="18">Tablet: delete C-1187</text>
+    <text x="44" y="136" font-size="18">Phone: insert W-4410 · customer_id C-1187</text>
+    <text x="24" y="196" font-size="13" letter-spacing="1.2" fill="#ffb000">ORDER A · DELETE ARRIVES FIRST</text>
+    <rect x="24" y="208" width="432" height="180" rx="12" fill="#14120e" stroke="#ffb000" stroke-width="1.5"/>
+    <text x="44" y="237" font-size="16">1. delete C-1187 applied · tombstone 812</text>
+    <text x="44" y="265" font-size="16">2. insert W-4410 staged</text>
+    <text x="44" y="291" font-size="14" fill="#b9b2a6">Reference check: customer_id names an absent parent</text>
+    <path d="M 44 306 H 436" stroke="#756f64"/>
+    <text x="44" y="336" font-size="17" font-weight="600" fill="#ffb000">Rejected · reference_violation · missing_parent</text>
+    <text x="44" y="366" font-size="15">Phone's rebuild removes W-4410</text>
+    <text x="24" y="428" font-size="13" letter-spacing="1.2" fill="#ffb000">ORDER B · INSERT ARRIVES FIRST</text>
+    <rect x="24" y="440" width="432" height="180" rx="12" fill="#14120e" stroke="#ffb000" stroke-width="1.5"/>
+    <text x="44" y="469" font-size="16">1. insert W-4410 applied</text>
+    <text x="44" y="497" font-size="16">2. delete C-1187 staged</text>
+    <text x="44" y="523" font-size="14" fill="#b9b2a6">Reference check: live child under RESTRICT</text>
+    <path d="M 44 538 H 436" stroke="#756f64"/>
+    <text x="44" y="568" font-size="17" font-weight="600" fill="#ffb000">Rejected · reference_violation · restricted_delete</text>
+    <text x="44" y="598" font-size="15">Tablet's rebuild restores C-1187</text>
+    <text x="24" y="660" font-size="13" letter-spacing="1.2" fill="#b9b2a6">SYNQL · NO SERVER</text>
+    <rect x="24" y="672" width="432" height="112" rx="12" fill="#14120e" stroke="#756f64"/>
+    <text x="44" y="701" font-size="16">Both replicas merge the same log</text>
+    <text x="44" y="729" font-size="16">RESTRICT undoes the delete · C-1187 returns</text>
+    <text x="44" y="757" font-size="14" fill="#b9b2a6">Both writes preserved · the duplicate record stays</text>
+    <text x="24" y="824" font-size="13" letter-spacing="1.2" fill="#b9b2a6">ON DELETE CASCADE INSTEAD</text>
+    <rect x="24" y="836" width="432" height="84" rx="12" fill="#14120e" stroke="#756f64"/>
+    <text x="44" y="865" font-size="16">delete C-1187 appends delete W-4410 to the commit</text>
+    <text x="44" y="893" font-size="14" fill="#b9b2a6">Subscribers receive both changes together</text>
+    <text x="24" y="960" font-size="13" letter-spacing="1.2" fill="#b9b2a6">NO DECLARED REFERENCE</text>
+    <rect x="24" y="972" width="432" height="60" rx="12" fill="#261c0a" stroke="#756f64"/>
+    <text x="44" y="1008" font-size="16" fill="#ffb000">W-4410 stored · its customer is deleted</text>
+  </g>
+</svg>
