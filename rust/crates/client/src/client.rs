@@ -219,6 +219,47 @@ mod observation_tests {
         );
     }
 
+    #[cfg(feature = "e2ee")]
+    #[test]
+    fn stored_key_fallback_resolves_an_integer_primary_key() {
+        let schema = json!({
+            "version": 1,
+            "tables": [{
+                "name": "patients",
+                "primaryKey": "id",
+                "columns": [
+                    { "name": "id", "type": "integer", "nullable": false },
+                    { "name": "encryption_key_id", "type": "string", "nullable": true },
+                    { "name": "note", "type": "bytes", "nullable": true,
+                      "encrypted": true, "declaredType": "string" }
+                ],
+                "scopes": []
+            }]
+        });
+        let mut client = SyncClient::new("int-key".into(), &schema, ClientLimits::default())
+            .expect("test client");
+        client.create_synced_tables().unwrap();
+        client
+            .conn
+            .execute(
+                "INSERT INTO patients (id, encryption_key_id, note, _syncular_version)
+                 VALUES (5, 'k1', NULL, 1)",
+                [],
+            )
+            .unwrap();
+        let mut config = crate::values::EncryptionConfig::default();
+        config.keys.insert("k1".to_owned(), vec![0x2A; 32]);
+        config
+            .key_id_columns
+            .insert("patients".to_owned(), "encryption_key_id".to_owned());
+        client.set_encryption(config);
+        let table = client.schema.table("patients").unwrap();
+        let fallback = client
+            .stored_key_fallback(table, "5")
+            .expect("the stored integer key resolves the fallback");
+        assert_eq!(fallback[1], Some(ColumnValue::String("k1".to_owned())));
+    }
+
     #[test]
     fn blob_staging_failures_preserve_durable_state_and_allow_retry() {
         let schema = json!({"version":1,"tables":[{"name":"attachments","primaryKey":"id","columns":[
@@ -7320,14 +7361,11 @@ impl SyncClient {
     fn stored_key_fallback(&self, table: &TableSchema, row_id: &str) -> Option<Row> {
         let selector = self.encryption.key_id_columns.get(&table.name)?;
         let index = table.columns.iter().position(|column| &column.name == selector)?;
-        fn quote_ident(name: &str) -> String {
-            format!("\"{}\"", name.replace('\"', "\"\""))
-        }
         let sql = format!(
-            "SELECT {} FROM {} WHERE {} = ?1",
+            "SELECT {} FROM {} WHERE {}",
             quote_ident(selector),
-            quote_ident(&table.name),
-            quote_ident(&table.primary_key)
+            visible_table(&table.name),
+            row_id_predicate(table)
         );
         let key: Option<String> = self
             .conn
