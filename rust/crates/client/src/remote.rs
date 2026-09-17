@@ -197,9 +197,14 @@ impl SyncRemoteClient {
                     // present in the sparse payload.
                     let values = full_row_values(schema_table, values)
                         .map_err(RemoteClientError::invalid)?;
-                    let payload =
-                        encode_sparse_row_json(schema_table, &row_id, &values, &self.encryption, None)
-                            .map_err(RemoteClientError::invalid)?;
+                    let payload = encode_sparse_row_json(
+                        schema_table,
+                        &row_id,
+                        &values,
+                        &self.encryption,
+                        None,
+                    )
+                    .map_err(RemoteClientError::invalid)?;
                     operations.push(Operation {
                         table,
                         row_id,

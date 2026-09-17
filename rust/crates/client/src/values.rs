@@ -469,9 +469,10 @@ fn encrypt_sparse_row(
     use ssp2::crypto::{encrypt_value, NONCE_LENGTH};
     // Sparse semantics: absent and NULL columns are never re-encrypted, so
     // a patch presenting no encrypted value needs no key (§5.11).
-    let has_present_encrypted = table.encrypted_columns.iter().any(|enc| {
-        matches!(row.get(enc.index), Some(SparseSlot::Value(_)))
-    });
+    let has_present_encrypted = table
+        .encrypted_columns
+        .iter()
+        .any(|enc| matches!(row.get(enc.index), Some(SparseSlot::Value(_))));
     if !has_present_encrypted {
         return Ok(());
     }
@@ -531,9 +532,11 @@ fn encrypt_sparse_row(
     _encryption: &EncryptionConfig,
     _fallback: Option<&Row>,
 ) -> Result<(), String> {
-    if !table.encrypted_columns.iter().any(|enc| {
-        matches!(row.get(enc.index), Some(SparseSlot::Value(_)))
-    }) {
+    if !table
+        .encrypted_columns
+        .iter()
+        .any(|enc| matches!(row.get(enc.index), Some(SparseSlot::Value(_))))
+    {
         return Ok(());
     }
     Err(format!(
@@ -1063,14 +1066,9 @@ mod sparse_key_tests {
         let table = keyed_table();
         // No keys at all: resolution must be skipped, not failed.
         let config = EncryptionConfig::default();
-        let payload = encode_sparse_row_json(
-            &table,
-            "r1",
-            &values(&[("id", json!("r1"))]),
-            &config,
-            None,
-        )
-        .expect("encodes without key resolution");
+        let payload =
+            encode_sparse_row_json(&table, "r1", &values(&[("id", json!("r1"))]), &config, None)
+                .expect("encodes without key resolution");
         assert!(!payload.is_empty());
     }
 

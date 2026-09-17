@@ -4,6 +4,28 @@ Syncular publishes every public npm package and Rust crate in lockstep. The
 current release is **0.21.0** (`v0.21.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
 
+## 0.21.1 release notes
+
+- A sparse `patch` on a table with `keyIdColumns` that omits the key-id
+  column resolves the key from the stored local row instead of falling back
+  to NULL: the selector is read from the present columns first, then the
+  stored row for absent slots only, and a present NULL never reads the
+  fallback. The typeless Rust predicate goes through `row_id_predicate`, so
+  integer and boolean primary keys resolve exactly like string keys.
+- A patch presenting no encrypted column needs no key at all, in either
+  core. An unresolvable key no longer aborts `sync()`: the commit leaves
+  the outbox with its optimistic rows rolled back and records one durable
+  `client.encrypt_failed` rejection, identically in TypeScript and Rust.
+  The error code is client-local and never appears on the wire.
+- The conformance catalog pins the behavior with
+  `encryption/sparse-patch-key-resolution`: keyless and present-NULL
+  patches plus the absent-selector fallback and the ghost-row rejection,
+  each asserting row state on both cores.
+
+Upgrade Syncular packages and crates together. Details:
+[encryption keys](https://syncular.dev/concepts-encryption-keys/) and
+[troubleshooting](https://syncular.dev/troubleshooting/).
+
 ## 0.21.0 release notes
 
 - Migrations may declare one column reference: `REFERENCES parent(pk)` with

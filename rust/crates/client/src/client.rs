@@ -183,9 +183,8 @@ mod observation_tests {
                 "scopes": []
             }]
         });
-        let mut client =
-            SyncClient::new("encrypt-reject".into(), &schema, ClientLimits::default())
-                .expect("test client");
+        let mut client = SyncClient::new("encrypt-reject".into(), &schema, ClientLimits::default())
+            .expect("test client");
         let mut config = crate::values::EncryptionConfig::default();
         config.keys.insert("k1".to_owned(), vec![0x2A; 32]);
         config
@@ -7360,7 +7359,10 @@ impl SyncClient {
     /// value is not a usable key id.
     fn stored_key_fallback(&self, table: &TableSchema, row_id: &str) -> Option<Row> {
         let selector = self.encryption.key_id_columns.get(&table.name)?;
-        let index = table.columns.iter().position(|column| &column.name == selector)?;
+        let index = table
+            .columns
+            .iter()
+            .position(|column| &column.name == selector)?;
         let sql = format!(
             "SELECT {} FROM {} WHERE {}",
             quote_ident(selector),
@@ -7485,9 +7487,13 @@ impl SyncClient {
                     continue;
                 };
                 let fallback = self.stored_key_fallback(table, &op.row_id);
-                if let Ok(payload) =
-                    encode_sparse_row_json(table, &op.row_id, values, &self.encryption, fallback.as_ref())
-                {
+                if let Ok(payload) = encode_sparse_row_json(
+                    table,
+                    &op.row_id,
+                    values,
+                    &self.encryption,
+                    fallback.as_ref(),
+                ) {
                     payloads.push(payload);
                 }
             }
@@ -8000,7 +8006,14 @@ impl SyncClient {
                         // so an encrypt failure cannot reach this encode; the
                         // author seam validated every other failure.
                         let fallback = self.stored_key_fallback(table, &op.row_id);
-                        encode_sparse_row_json(table, &op.row_id, values, &self.encryption, fallback.as_ref()).ok()
+                        encode_sparse_row_json(
+                            table,
+                            &op.row_id,
+                            values,
+                            &self.encryption,
+                            fallback.as_ref(),
+                        )
+                        .ok()
                     });
                     ssp2::model::Operation {
                         table: op.table.clone(),

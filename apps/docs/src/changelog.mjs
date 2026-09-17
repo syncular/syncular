@@ -16,6 +16,15 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-09-17',
+    title: 'Sparse-patch key resolution without sync abort',
+    body: 'A sparse patch that omits the key-id column resolves the key from the stored local row: present columns first, then the stored row for absent slots only, never for a present NULL. A patch with no encrypted column needs no key. An unresolvable key records one durable client.encrypt_failed rejection instead of aborting sync(), identically in both cores; the code is client-local and never on the wire. The conformance catalog pins keyless, present-NULL, fallback, and ghost-row cases on both cores.',
+    links: [
+      { href: '/concepts-encryption-keys/', label: 'Encryption keys' },
+      { href: '/troubleshooting/', label: 'Troubleshooting' },
+    ],
+  },
+  {
     date: '2026-09-16',
     title: 'Column-granular writes and delete precedence',
     body: 'A push payload is a sparse row: a presence bitmap names the columns the operation writes, and the server tracks a column_version per column. Two edits to disjoint columns both apply, with or without baseVersion; a conflict reports conflictColumns naming the contended columns. A delete records a tombstone that beats a concurrent unversioned upsert until the pruning horizon, and an explicit insert recreates the row. changedFields is removed because the values map is the presence set. Wire version 3.',
