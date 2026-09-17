@@ -13,14 +13,17 @@
 //
 // Linkage mirrors the wrapper's local-dev mode: the native-transport
 // libsyncular is vendored into this package's vendor/ (check.sh builds it),
-// and both executables link it via a -L search path; the loader finds it at
+// and both executables link that file by path. The path is spelled out, never
+// `-lsyncular`: the `Syncular` product archive is `libSyncular.a`, which the
+// linker name-resolves for `-lsyncular` on a case-insensitive volume before it
+// reaches vendor/ (see ../Package.swift). The loader finds the dylib at
 // runtime through DYLD_LIBRARY_PATH=vendor (set by check.sh / the run recipe).
 // A shipping .app would instead consume the Syncular.xcframework binaryTarget
 // (see the swift bindings README) — the app code is identical either way.
 import PackageDescription
 
 let linkVendoredCore: [LinkerSetting] = [
-    .unsafeFlags(["-L", "vendor", "-lsyncular"])
+    .unsafeFlags(["vendor/libsyncular.dylib"])
 ]
 
 let package = Package(

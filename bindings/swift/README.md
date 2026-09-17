@@ -69,10 +69,12 @@ The wrapper links the native core; the core is built by
 [`rust/scripts/build-native.sh`](../../rust/scripts/build-native.sh).
 
 1. **Local dev / this package's tests.** `check.sh` builds the mac dylib and
-   copies it to `vendor/`; `Package.swift`'s `Syncular` target links it via a
-   `-L vendor -lsyncular` linker search path, and the loader finds it at runtime
-   through `DYLD_LIBRARY_PATH=vendor` (set by `check.sh`). **No Xcode required** —
-   a Command-Line-Tools mac builds and links the mac slice.
+   copies it to `vendor/`; `Package.swift`'s `Syncular` target links that file by
+   path (`vendor/libsyncular.dylib`, never `-lsyncular`, which name-resolves to
+   this package's own `libSyncular.a` on a case-insensitive volume), and the
+   loader finds it at runtime through `DYLD_LIBRARY_PATH=vendor` (set by
+   `check.sh`). **No Xcode required** — a Command-Line-Tools mac builds and
+   links the mac slice.
 
 2. **Release (a consuming app).** Build the `Syncular.xcframework`
    (`build-native.sh apple` on a **full-Xcode** machine — iOS device + simulator

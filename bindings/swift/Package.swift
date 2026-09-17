@@ -22,6 +22,18 @@
 //      hermetic offline tests run on any mac.
 import PackageDescription
 
+// The vendored native core, spelled as a path rather than as `-L vendor
+// -lsyncular`. This package's own product archive is `libSyncular.a`, which the
+// linker name-resolves for `-lsyncular` on a case-insensitive volume, and the
+// automatic product search paths precede `vendor/` on the link line. That
+// collision links the Swift wrapper archive instead of the C core and fails
+// with undefined `_syncular_client_*` / `_syncular_free_string` symbols.
+#if os(macOS)
+let vendoredCore = "vendor/libsyncular.dylib"
+#else
+let vendoredCore = "vendor/libsyncular.so"
+#endif
+
 let package = Package(
     name: "Syncular",
     platforms: [
@@ -36,18 +48,15 @@ let package = Package(
         .target(
             name: "CSyncularFFI"
         ),
-        // The idiomatic Swift wrapper. Links libsyncular from `vendor/` via
-        // search paths (local-dev mode). unsafeFlags are permitted because this
-        // package is only ever built by its own check.sh / a consuming app that
-        // knows its linkage — it is not a registry dependency of anything.
+        // The idiomatic Swift wrapper. Links the vendored native core
+        // (local-dev mode). unsafeFlags are permitted because this package is
+        // only ever built by its own check.sh / a consuming app that knows its
+        // linkage — it is not a registry dependency of anything.
         .target(
             name: "Syncular",
             dependencies: ["CSyncularFFI"],
             linkerSettings: [
-                .unsafeFlags([
-                    "-L", "vendor",
-                    "-lsyncular",
-                ])
+                .unsafeFlags([vendoredCore])
             ]
         ),
         .testTarget(
