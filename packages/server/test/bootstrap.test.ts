@@ -11,6 +11,8 @@ import {
 } from '@syncular/core';
 import {
   compileSchema,
+  issueSegmentUrl,
+  scopeDigest,
   verifySegmentToken,
   MemorySegmentStore,
   type SqliteValue,
@@ -27,6 +29,7 @@ import {
   seedTask,
   subFrame,
   sync,
+  TEST_LOG_EPOCH,
 } from './helpers';
 
 function inlineSegments(body: { type: string }[]): SegmentInlineFrame[] {
@@ -299,6 +302,113 @@ describe('segment delivery negotiation (§4.2, §5.4, §5.7)', () => {
         nowMs: t.now.ms + 700_000,
       }),
     ).rejects.toMatchObject({ code: 'sync.forbidden' });
+  });
+
+  test('a token verifies against any digest in the record set (§5.4)', async () => {
+    const key = 'set-signing-key';
+    const segmentId = `sha256:${'a'.repeat(64)}`;
+    const issue = await issueSegmentUrl(
+      {
+        key,
+        baseUrl: 'https://cdn.example/segments',
+        ttlSeconds: 600,
+        audience: (partition) => `aud-${partition}`,
+      },
+      {
+        segmentId,
+        partition: 'part-1',
+        scopeDigest: 'digest-a',
+        nowMs: 1_750_000_000_000,
+      },
+    );
+    const token = new URL(issue.url).searchParams.get('st');
+    if (token === null) throw new Error('missing st token');
+    // The stored entry merged a second scope, so 'digest-a' is not primary.
+    await expect(
+      verifySegmentToken(key, token, {
+        segmentId,
+        scopeDigest: ['digest-b', 'digest-a'],
+        audience: 'aud-part-1',
+        nowMs: 1_750_000_000_000,
+      }),
+    ).resolves.toMatchObject({ sd: 'digest-a' });
+    // The single-string shape keeps working.
+    await expect(
+      verifySegmentToken(key, token, {
+        segmentId,
+        scopeDigest: 'digest-a',
+        audience: 'aud-part-1',
+        nowMs: 1_750_000_000_000,
+      }),
+    ).resolves.toMatchObject({ sd: 'digest-a' });
+    // An unrelated digest set is still forbidden.
+    await expect(
+      verifySegmentToken(key, token, {
+        segmentId,
+        scopeDigest: ['digest-b', 'digest-c'],
+        audience: 'aud-part-1',
+        nowMs: 1_750_000_000_000,
+      }),
+    ).rejects.toMatchObject({ code: 'sync.forbidden' });
+  });
+
+  test('a reused descriptor reports the caller digest, not the record primary', async () => {
+    const key = 'frame-signing-key';
+    const t = makeContext({
+      signedUrls: {
+        key,
+        baseUrl: 'https://cdn.example/segments',
+        ttlSeconds: 600,
+        audience: (partition) => `aud-${partition}`,
+      },
+    });
+    const callerDigest = await scopeDigest({ project_id: ['p1'] });
+    // Two byte-identical sqlite publications merge into one entry under
+    // different digests; the second digest becomes the record's primary.
+    const bytes = new Uint8Array([1, 2, 3]);
+    const meta = {
+      partition: 'part-1',
+      logEpoch: TEST_LOG_EPOCH,
+      table: 'tasks',
+      schemaVersion: 1,
+      mediaType: 'sqlite' as const,
+      asOfCommitSeq: 0,
+      rowCount: 0,
+      rowCursor: null,
+      nextRowCursor: null,
+    };
+    await t.segments.put(
+      { ...meta, scopeDigest: callerDigest },
+      bytes,
+      t.now.ms,
+    );
+    const record = await t.segments.put(
+      { ...meta, scopeDigest: 'other-digest' },
+      bytes,
+      t.now.ms,
+    );
+    expect(record.scopeDigest).toBe('other-digest');
+    expect(record.scopeDigests).toEqual(['other-digest', callerDigest]);
+
+    const message = await sync(t, [
+      pullHeader({ accept: 0b1101 }),
+      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
+    ]);
+    const ref = refSegments(section(message, 's1').body)[0];
+    if (ref === undefined) throw new Error('expected SEGMENT_REF');
+    expect(ref.segmentId).toBe(record.segmentId);
+    // The frame and its signed URL carry the caller's digest.
+    expect(ref.scopeDigest).toBe(callerDigest);
+    const token = new URL(ref.url ?? '').searchParams.get('st');
+    if (token === null) throw new Error('missing st token');
+    await expect(
+      verifySegmentToken(key, token, {
+        segmentId: ref.segmentId,
+        scopeDigest: record.scopeDigests,
+        audience: 'aud-part-1',
+        nowMs: t.now.ms,
+      }),
+    ).resolves.toMatchObject({ sd: callerDigest });
   });
 });
 

@@ -157,7 +157,7 @@ beforeAll(async () => {
           new URL(request.url).searchParams.get('st') ?? '',
           {
             segmentId,
-            scopeDigest: segment.record.scopeDigest,
+            scopeDigest: segment.record.scopeDigests,
             audience: 'synthetic-browser-test',
             nowMs: source.now.ms,
           },

@@ -687,7 +687,9 @@ class TsServerInstance implements ServerInstance {
       }
       await verifySegmentToken(SIGNED_URL_KEY, token, {
         segmentId,
-        scopeDigest: entry.record.scopeDigest,
+        // The §5.4 verifier accepts any digest the stored content was
+        // published under: identical bytes are one content address (§5.1).
+        scopeDigest: entry.record.scopeDigests,
         audience: audienceFor(this.#partition),
         nowMs: this.#now.ms,
       });

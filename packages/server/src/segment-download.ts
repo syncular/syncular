@@ -4,8 +4,9 @@
  * A segment reference is not a bearer capability: every download re-runs
  * `resolveScopes`, recomputes the effective scopes from the supplied
  * `X-Syncular-Scopes` requested map, recomputes the scope digest, and
- * compares it with the segment's stored digest. Mismatch, revoked status,
- * or resolution failure ⇒ `sync.forbidden`.
+ * requires that digest to be one of the digests the stored content was
+ * published under (§5.5). Mismatch, revoked status, or resolution failure
+ * ⇒ `sync.forbidden`.
  */
 import type { ScopeMap } from '@syncular/core';
 import type { SyncRequestContext } from './context';
@@ -160,7 +161,10 @@ async function downloadSegment(
     throw syncError('sync.forbidden', 'segment scopes not held (§5.5)');
   }
   const digest = await scopeDigest(outcome.effective);
-  if (digest !== entry.record.scopeDigest) {
+  // §5.1/§5.5: identical bytes are one content address, so a record may
+  // carry several digests. Holding the caller's live digest is the whole
+  // grant; anything else stays forbidden.
+  if (!entry.record.scopeDigests.includes(digest)) {
     throw syncError('sync.forbidden', 'scope digest mismatch (§3.5, §5.5)');
   }
 

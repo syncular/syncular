@@ -3,9 +3,11 @@
  */
 import {
   DEFAULT_SEGMENT_TTL_MS,
+  mergeSegmentRecord,
   type SegmentFindKey,
   type SegmentMetadata,
   type SegmentRecord,
+  segmentBytesEqual,
   type SegmentStore,
   type SegmentStoreStats,
   segmentIdFor,
@@ -40,6 +42,15 @@ export class SqliteSegmentStore implements SegmentStore {
         expires_at_ms INTEGER NOT NULL, bytes BLOB NOT NULL
       );
     `);
+    // One row per scope digest a content address was published under (§5.1):
+    // identical bytes from two scopes share a `segment_id` and must both stay
+    // downloadable (§5.5).
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS sync_segment_scopes(
+        segment_id TEXT NOT NULL, scope_digest TEXT NOT NULL,
+        PRIMARY KEY (segment_id, scope_digest)
+      );
+    `);
     const columns = this.db
       .query<{ name: string }, []>('PRAGMA table_info(sync_segments)')
       .all();
@@ -48,6 +59,23 @@ export class SqliteSegmentStore implements SegmentStore {
         "ALTER TABLE sync_segments ADD COLUMN log_epoch TEXT NOT NULL DEFAULT ''",
       );
     }
+    // Backfill digests recorded before the side table existed, so an
+    // upgraded store keeps `find`/download working for cached segments.
+    this.db.exec(
+      `INSERT OR IGNORE INTO sync_segment_scopes(segment_id, scope_digest)
+       SELECT segment_id, scope_digest FROM sync_segments`,
+    );
+  }
+
+  /** Every digest recorded for a content address, primary first. */
+  #scopeDigestsFor(segmentId: string, primary: string): string[] {
+    const rows = this.db
+      .query<{ scope_digest: string }, [string]>(
+        'SELECT scope_digest FROM sync_segment_scopes WHERE segment_id=?',
+      )
+      .all(segmentId);
+    const digests = rows.map((row) => row.scope_digest);
+    return [primary, ...digests.filter((digest) => digest !== primary)];
   }
 
   async put(
@@ -56,13 +84,23 @@ export class SqliteSegmentStore implements SegmentStore {
     nowMs: number,
   ): Promise<SegmentRecord> {
     const segmentId = await segmentIdFor(bytes);
-    const record: SegmentRecord = {
-      ...metadata,
+    const existing = await this.get(segmentId);
+    if (existing !== undefined && !segmentBytesEqual(existing.bytes, bytes)) {
+      throw new Error(
+        `SqliteSegmentStore: content-address collision at ${segmentId} (§5.1)`,
+      );
+    }
+    const record = mergeSegmentRecord(
+      existing?.record,
+      metadata,
       segmentId,
-      byteLength: bytes.length,
-      createdAtMs: nowMs,
-      expiresAtMs: nowMs + this.#ttlMs,
-    };
+      bytes.length,
+      nowMs,
+      this.#ttlMs,
+    );
+    // The bytes are proven identical to the stored ones, so replacing the
+    // row with the merged record (metadata, digest set, merged times) is the
+    // merge: the other digests live in `sync_segment_scopes` below.
     this.db
       .query(
         `INSERT OR REPLACE INTO sync_segments(
@@ -88,6 +126,12 @@ export class SqliteSegmentStore implements SegmentStore {
         record.expiresAtMs,
         bytes,
       );
+    this.db
+      .query(
+        `INSERT OR IGNORE INTO sync_segment_scopes(segment_id, scope_digest)
+         VALUES (?,?)`,
+      )
+      .run(record.segmentId, metadata.scopeDigest);
     return record;
   }
 
@@ -126,6 +170,7 @@ export class SqliteSegmentStore implements SegmentStore {
         schemaVersion: row.schema_version,
         mediaType: row.media_type === 'sqlite' ? 'sqlite' : 'rows',
         scopeDigest: row.scope_digest,
+        scopeDigests: this.#scopeDigestsFor(row.segment_id, row.scope_digest),
         asOfCommitSeq: row.as_of_commit_seq,
         rowCount: row.row_count,
         rowCursor: row.row_cursor,
@@ -146,6 +191,7 @@ export class SqliteSegmentStore implements SegmentStore {
       .query<
         {
           segment_id: string;
+          scope_digest: string;
           row_count: number;
           next_row_cursor: string | null;
           byte_length: number;
@@ -154,12 +200,13 @@ export class SqliteSegmentStore implements SegmentStore {
         },
         [string, string, string, number, string, string, number, number]
       >(
-        `SELECT segment_id, row_count, next_row_cursor, byte_length,
-                created_at_ms, expires_at_ms
-         FROM sync_segments
-         WHERE partition=? AND log_epoch=? AND tbl=? AND schema_version=? AND media_type=?
-           AND scope_digest=? AND as_of_commit_seq=? AND row_cursor IS NULL
-           AND expires_at_ms > ?
+        `SELECT s.segment_id, s.scope_digest, s.row_count, s.next_row_cursor,
+                s.byte_length, s.created_at_ms, s.expires_at_ms
+         FROM sync_segments s
+         JOIN sync_segment_scopes sc ON sc.segment_id = s.segment_id
+         WHERE s.partition=? AND s.log_epoch=? AND s.tbl=? AND s.schema_version=? AND s.media_type=?
+           AND sc.scope_digest=? AND s.as_of_commit_seq=? AND s.row_cursor IS NULL
+           AND s.expires_at_ms > ?
          LIMIT 1`,
       )
       .get(
@@ -180,7 +227,8 @@ export class SqliteSegmentStore implements SegmentStore {
       table: key.table,
       schemaVersion: key.schemaVersion,
       mediaType: key.mediaType,
-      scopeDigest: key.scopeDigest,
+      scopeDigest: row.scope_digest,
+      scopeDigests: this.#scopeDigestsFor(row.segment_id, row.scope_digest),
       asOfCommitSeq: key.asOfCommitSeq,
       rowCount: row.row_count,
       rowCursor: null,

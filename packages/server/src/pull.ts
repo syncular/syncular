@@ -180,6 +180,7 @@ async function signedUrlFields(
 
 function segmentRefFrame(
   record: SegmentRecord,
+  scopeDigest: string,
   extra: { url?: string; urlExpiresAtMs?: number },
 ): ResponseFrame {
   return {
@@ -190,7 +191,11 @@ function segmentRefFrame(
     byteLength: record.byteLength,
     rowCount: record.rowCount,
     asOfCommitSeq: record.asOfCommitSeq,
-    scopeDigest: record.scopeDigest,
+    // The frame reports the digest THIS subscription is authorized under. A
+    // stored entry can carry several digests when identical content was
+    // published under different scopes (§5.1), and the record's primary
+    // digest is not necessarily the caller's (§5.5).
+    scopeDigest,
     ...(record.rowCursor !== null ? { rowCursor: record.rowCursor } : {}),
     ...(record.nextRowCursor !== null
       ? { nextRowCursor: record.nextRowCursor }
@@ -244,6 +249,7 @@ async function* sqliteImageSegment(
     });
     yield segmentRefFrame(
       existing,
+      digest,
       await signedUrlFields(ctx, limits, existing.segmentId, digest, now),
     );
     return true;
@@ -342,6 +348,7 @@ async function* sqliteImageSegment(
   });
   yield segmentRefFrame(
     record,
+    digest,
     await signedUrlFields(
       ctx,
       limits,
@@ -458,6 +465,7 @@ async function* bootstrapSegments(
       });
       yield segmentRefFrame(
         record,
+        digest,
         await signedUrlFields(ctx, limits, record.segmentId, digest, now),
       );
     }

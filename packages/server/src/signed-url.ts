@@ -264,13 +264,19 @@ const DEFAULT_SKEW_SECONDS = 60;
 /**
  * Verify a segment token per §5.4. Throws `SyncError sync.forbidden` on any
  * failure (MAC, expiry, or claim mismatch).
+ *
+ * `scopeDigest` is the set of scope digests the content was published under.
+ * Pass the stored record's `scopeDigests`: identical bytes are one content
+ * address (§5.1), so a segment published under several scopes is one stored
+ * entry and any of its digests authorizes a download (§5.5). A single string
+ * stays valid for a record with one digest.
  */
 export async function verifySegmentToken(
   key: string | Uint8Array,
   token: string,
   expected: {
     readonly segmentId: string;
-    readonly scopeDigest: string;
+    readonly scopeDigest: string | readonly string[];
     readonly audience: string;
     readonly nowMs: number;
     readonly skewSeconds?: number;
@@ -301,7 +307,11 @@ export async function verifySegmentToken(
     throw forbidden('token expired');
   }
   if (claims.seg !== expected.segmentId) throw forbidden('segment mismatch');
-  if (claims.sd !== expected.scopeDigest)
+  const scopeDigests =
+    typeof expected.scopeDigest === 'string'
+      ? [expected.scopeDigest]
+      : expected.scopeDigest;
+  if (!scopeDigests.includes(claims.sd))
     throw forbidden('scope-digest mismatch');
   if (claims.aud !== expected.audience) throw forbidden('audience mismatch');
   return claims;
