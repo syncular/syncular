@@ -8,15 +8,10 @@ repository = "https://github.com/syncular/syncular"
 
 [dependencies]
 ssp2 = { package = "syncular-ssp2", path = "../ssp2", version = "0.0.0" }
-# Held at 0.32.1: 0.40 bundles SQLite 3.53, whose REAL-to-text conversion
-# renders 1.0 and 1.0000000000000002 as distinct strings, whereas the older
-# bundled SQLite collapsed both to "1.0". `row_id_predicate` resolves a REAL
-# primary key with `CAST(key AS TEXT) = ?1`, so the bundled version decides
-# which rows a rowId matches. Moving the Rust core forward without matching
-# the SQLite the JS cores embed would let the same rowId resolve to different
-# rows per core. `row_id_lookups_preserve_text_matching_and_seek_lossless_keys`
-# pins the old rendering and fails on 0.40.
-rusqlite = { version = "0.32", features = ["bundled"] }
+# The 0.40 line gates the fallible `u64`/`usize` conversions behind this
+# feature, and the client passes both as SQLite parameters. The conversions
+# error on a value SQLite cannot hold instead of truncating it.
+rusqlite = { version = "0.40", features = ["bundled", "fallible_uint"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

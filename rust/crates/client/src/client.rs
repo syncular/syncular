@@ -4490,7 +4490,9 @@ impl rusqlite::ToSql for RowParam<'_> {
 fn owned_sql_value(param: impl rusqlite::ToSql) -> Result<SqlValue, String> {
     match param.to_sql().map_err(|error| error.to_string())? {
         ToSqlOutput::Owned(value) => Ok(value),
-        ToSqlOutput::Borrowed(value) => Ok(value.into()),
+        ToSqlOutput::Borrowed(value) => {
+            SqlValue::try_from(value).map_err(|error| error.to_string())
+        }
         _ => Err("sync.invalid_request: unsupported SQLite key parameter".into()),
     }
 }

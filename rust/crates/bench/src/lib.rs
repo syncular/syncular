@@ -35,6 +35,7 @@ use std::ptr::NonNull;
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
+use rusqlite::trace::{TraceEvent, TraceEventCodes};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use syncular_client::{
@@ -660,52 +661,66 @@ struct SqlCounts {
 fn set_sql_counts(connection: &mut rusqlite::Connection, enabled: bool) {
     SQL_COUNTS.with(|counts| *counts.borrow_mut() = enabled.then(SqlCounts::default));
     if enabled {
-        connection.trace(Some(|sql| {
-            let verb = sql
-                .trim_start()
-                .split(|character: char| !character.is_ascii_alphabetic())
-                .next()
-                .unwrap_or("");
-            let label = [
-                "SELECT",
-                "INSERT",
-                "UPDATE",
-                "DELETE",
-                "SAVEPOINT",
-                "RELEASE",
-                "BEGIN",
-                "COMMIT",
-                "ROLLBACK",
-                "PRAGMA",
-            ]
-            .into_iter()
-            .find(|candidate| verb.eq_ignore_ascii_case(candidate))
-            .unwrap_or("OTHER");
-            SQL_COUNTS.with(|counts| {
-                if let Some(counts) = counts.borrow_mut().as_mut() {
-                    *counts.statements.entry(label).or_default() += 1;
-                }
-            });
-        }));
-        connection.commit_hook(Some(|| {
-            SQL_COUNTS.with(|counts| {
-                if let Some(counts) = counts.borrow_mut().as_mut() {
-                    counts.commits += 1;
-                }
-            });
-            false
-        }));
-        connection.rollback_hook(Some(|| {
-            SQL_COUNTS.with(|counts| {
-                if let Some(counts) = counts.borrow_mut().as_mut() {
-                    counts.rollbacks += 1;
-                }
-            });
-        }));
+        connection.trace_v2(
+            TraceEventCodes::SQLITE_TRACE_STMT,
+            Some(|event| {
+                let TraceEvent::Stmt(_, sql) = event else {
+                    return;
+                };
+                let verb = sql
+                    .trim_start()
+                    .split(|character: char| !character.is_ascii_alphabetic())
+                    .next()
+                    .unwrap_or("");
+                let label = [
+                    "SELECT",
+                    "INSERT",
+                    "UPDATE",
+                    "DELETE",
+                    "SAVEPOINT",
+                    "RELEASE",
+                    "BEGIN",
+                    "COMMIT",
+                    "ROLLBACK",
+                    "PRAGMA",
+                ]
+                .into_iter()
+                .find(|candidate| verb.eq_ignore_ascii_case(candidate))
+                .unwrap_or("OTHER");
+                SQL_COUNTS.with(|counts| {
+                    if let Some(counts) = counts.borrow_mut().as_mut() {
+                        *counts.statements.entry(label).or_default() += 1;
+                    }
+                });
+            }),
+        );
+        connection
+            .commit_hook(Some(|| {
+                SQL_COUNTS.with(|counts| {
+                    if let Some(counts) = counts.borrow_mut().as_mut() {
+                        counts.commits += 1;
+                    }
+                });
+                false
+            }))
+            .expect("SQL count hooks need a connection that owns its handle");
+        connection
+            .rollback_hook(Some(|| {
+                SQL_COUNTS.with(|counts| {
+                    if let Some(counts) = counts.borrow_mut().as_mut() {
+                        counts.rollbacks += 1;
+                    }
+                });
+            }))
+            .expect("SQL count hooks need a connection that owns its handle");
     } else {
-        connection.trace(None);
-        connection.commit_hook(None::<fn() -> bool>);
-        connection.rollback_hook(None::<fn()>);
+        connection.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, None);
+        connection
+            .commit_hook(None::<fn() -> bool>)
+            .expect("SQL count hooks need a connection that owns its handle");
+        connection
+            .rollback_hook(None::<fn()>)
+            .expect("SQL count hooks need a connection that owns its handle");
     }
 }
 
@@ -869,10 +884,16 @@ fn bench_read(mut client: ReadClient<'_>, params: &Value) -> Result<Value, Comma
                 let command_params = json!({"sql": sql, "params": bind});
                 if counter_pass {
                     READ_STATEMENTS.with(|statements| statements.borrow_mut().clear());
-                    client.instance()?.benchmark_connection().trace(Some(|sql| {
-                        READ_STATEMENTS
-                            .with(|statements| statements.borrow_mut().push(sql.to_owned()));
-                    }));
+                    client.instance()?.benchmark_connection().trace_v2(
+                        TraceEventCodes::SQLITE_TRACE_STMT,
+                        Some(|event| {
+                            let TraceEvent::Stmt(_, sql) = event else {
+                                return;
+                            };
+                            READ_STATEMENTS
+                                .with(|statements| statements.borrow_mut().push(sql.to_owned()));
+                        }),
+                    );
                 }
                 let started = Instant::now();
                 let measured = if surface == "database" || (mode == "direct" && surface == "query")
@@ -922,7 +943,10 @@ fn bench_read(mut client: ReadClient<'_>, params: &Value) -> Result<Value, Comma
                     })
                 };
                 if counter_pass {
-                    client.instance()?.benchmark_connection().trace(None);
+                    client
+                        .instance()?
+                        .benchmark_connection()
+                        .trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, None);
                     let statements = READ_STATEMENTS
                         .with(|statements| std::mem::take(&mut *statements.borrow_mut()));
                     if statements.is_empty()
