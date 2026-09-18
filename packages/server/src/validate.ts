@@ -123,7 +123,16 @@ export type CommitValidator = (
   input: ValidateCommitInput,
 ) => void | Promise<void>;
 
-/** Ambient context a validator may consult (§6.7). */
+/**
+ * Ambient context a validator may consult (§6.7).
+ *
+ * A validator runs inside the push transaction. The storage serializes
+ * authoritative queries behind that transaction, so a validator that calls
+ * `queryAuthoritative` waits for the transaction it is already inside and the
+ * push never completes. A rule that must read rows belongs in the
+ * whole-commit `CommitValidator`, whose reader runs get and scan operations on
+ * the same transaction (§6.8).
+ */
 export interface ValidateContext {
   /** Host-authenticated actor (§1.1) performing the write. */
   readonly actorId: string;
@@ -139,6 +148,11 @@ export interface ValidateContext {
  * any other error is treated as a rejection with a generic
  * `sync.constraint_violation` code (a validator SHOULD throw
  * `ValidationRejection` to control the code). MUST NOT mutate the row.
+ *
+ * The hook runs inside the push transaction and cannot issue an authoritative
+ * query: `queryAuthoritative` serializes behind that transaction, so the push
+ * never completes. Read rows with the whole-commit `CommitValidator` reader
+ * instead (§6.8).
  */
 export type Validator = (
   op: ValidateOperation,

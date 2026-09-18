@@ -6,7 +6,12 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { PGlite } from '@electric-sql/pglite';
-import { decodeRow, encodeSparseRow, type RowColumn } from '@syncular/core';
+import {
+  decodeRow,
+  encodeRow,
+  encodeSparseRow,
+  type RowColumn,
+} from '@syncular/core';
 import {
   CommitValidationRejection,
   type CommitValidator,
@@ -15,6 +20,7 @@ import {
   PostgresServerStorage,
   RESERVED_VALIDATION_CODE_PREFIXES,
   type ServerSchema,
+  SqliteServerStorage,
   type SyncularServerEvent,
   type SyncularServerEvents,
   ValidationRejection,
@@ -333,6 +339,80 @@ describe('write validation apply (§6.7)', () => {
     expect(pushResults(message)[0]?.status).toBe('applied');
     expect(ran).toBe(false);
   });
+
+  for (const backend of ['SQLite', 'PostgreSQL/PGlite'] as const) {
+    test(`${backend}: an unrelated queryAuthoritative runs while another transaction is open`, async () => {
+      const db =
+        backend === 'PostgreSQL/PGlite' ? await PGlite.create() : undefined;
+      const storage =
+        backend === 'SQLite'
+          ? new SqliteServerStorage()
+          : new PostgresServerStorage(pgliteExecutor(db!));
+      await storage.ensureSchema(compileSchema(TEST_SCHEMA));
+      const sql = 'SELECT id FROM tasks';
+      const start = sql.indexOf('tasks');
+      const request = {
+        plan: {
+          sql,
+          relations: [{ table: 'tasks', start, end: start + 'tasks'.length }],
+        },
+        params: [],
+        tables: ['tasks'],
+      };
+      try {
+        const seed = await storage.begin('part-1');
+        await seed.upsertRow('tasks', {
+          rowId: 't1',
+          serverVersion: 1,
+          scopes: { project_id: 'p1' },
+          payload: encodeRow(TASK_COLUMNS, [
+            't1',
+            'p1',
+            'one',
+            false,
+            null,
+            null,
+          ]),
+        });
+        await seed.appendCommit({
+          clientId: 'seed',
+          clientCommitId: 'seed-1',
+          actorId: 'seed',
+          createdAtMs: 1,
+          changes: [],
+        });
+        await seed.commit();
+
+        // Hold a transaction open while a separate caller issues a
+        // registered query. The storage serializes that query behind the
+        // open transaction and then serves it; only a query issued from
+        // inside the transaction's own validator execution hangs.
+        const held = await storage.begin('part-1');
+        await held.upsertRow('tasks', {
+          rowId: 't2',
+          serverVersion: 1,
+          scopes: { project_id: 'p1' },
+          payload: encodeRow(TASK_COLUMNS, [
+            't2',
+            'p1',
+            'two',
+            false,
+            null,
+            null,
+          ]),
+        });
+        const pending = storage.queryAuthoritative('part-1', request);
+        await held.rollback();
+        expect(await pending).toEqual({
+          rows: [{ id: 't1' }],
+          maxCommitSeq: 1,
+        });
+      } finally {
+        if (storage instanceof SqliteServerStorage) storage.db.close();
+        else await db?.close();
+      }
+    });
+  }
 });
 
 describe('whole-commit validation (§6.8)', () => {

@@ -560,6 +560,13 @@ export interface ServerStorage {
    * Optional registered-query capability. The implementation MUST replace
    * every generated app-table relation with a partition-filtered relation and
    * return rows plus maxCommitSeq from one consistent database snapshot.
+   *
+   * The storage serializes this call behind an open transaction. A validator
+   * runs inside the push transaction, so a validator that calls
+   * `queryAuthoritative` waits on the transaction it is already inside and
+   * the push never completes. Read candidate state through the whole-commit
+   * `CommitValidator` reader instead (§6.8). A call made from any other
+   * context waits for the open transaction to finish and then runs.
    */
   queryAuthoritative?(
     partition: string,
