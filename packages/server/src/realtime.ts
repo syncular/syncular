@@ -3,7 +3,10 @@
  *
  * A `RealtimeSession` wraps a connected socket's send/receive callbacks:
  * the host feeds inbound text frames to `handleMessage`, binary frames to
- * `handleBinary`, and wires `session.close()` to socket close. Initial
+ * `handleBinary`, and wires `session.close()` to socket close. `handleMessage`
+ * queues the ack's cursor write without awaiting it, so `drain()` is the
+ * awaitable boundary a host uses before closing its storage or ending a
+ * hibernatable event (§8.2). Initial
  * subscription registration comes from the client's most recent pull
  * (§8.1, loaded from the client record); a sync round completed on the
  * connection replaces it at round end (§8.7). Deltas are complete SSP2
@@ -253,6 +256,10 @@ export class RealtimeSession {
       timer?: ReturnType<typeof setTimeout>;
     }
   >();
+  /** Queued control-plane writes (ack cursor persistence, §8.2). */
+  #controlTail: Promise<void> = Promise.resolve();
+  /** First control-plane failure not yet surfaced by `drain()`. */
+  #controlFailure: unknown = undefined;
 
   constructor(
     hub: RealtimeHub,
@@ -313,7 +320,21 @@ export class RealtimeSession {
     this.lastKnownSeq = Math.max(this.lastKnownSeq, this.cursor);
     if (this.cursor >= this.lastKnownSeq) this.wakePending = false;
     // §8.2: acks update the client cursor record without an HTTP pull.
-    void this.#persistCursor();
+    this.#persistCursor();
+  }
+
+  /**
+   * Resolve once every queued control-plane write has settled (§8.2). A host
+   * awaits this before it closes its storage or ends a hibernatable event, so
+   * an ack's cursor write is not abandoned mid-flight. A persistence failure
+   * surfaces here instead of vanishing.
+   */
+  drain(): Promise<void> {
+    return this.#controlTail.then(() => {
+      const failure = this.#controlFailure;
+      this.#controlFailure = undefined;
+      if (failure !== undefined) throw failure;
+    });
   }
 
   /** §8.6.2 inbound presence publish/leave from the client. */
@@ -628,8 +649,11 @@ export class RealtimeSession {
     this.#hub.disconnect(this);
   }
 
-  async #persistCursor(): Promise<void> {
-    try {
+  #persistCursor(): void {
+    // §8.2: start the write now and keep it on the control tail so `drain()`
+    // can await it. Two acks may write concurrently: storage folds them with
+    // `MAX(cursor, ?)`, so neither order loses the later cursor.
+    const write = (async () => {
       await this.#storage.advanceClientCursor(
         this.partition,
         this.clientId,
@@ -638,9 +662,15 @@ export class RealtimeSession {
         this.cursor,
         this.#clock(),
       );
-    } catch {
-      // Cursor persistence is best-effort; the next pull repairs it.
-    }
+    })();
+    write.catch((error: unknown) => {
+      // Best-effort for the connection (the next pull repairs the cursor);
+      // `drain()` carries the first failure to the host.
+      this.#controlFailure ??= error;
+    });
+    this.#controlTail = Promise.allSettled([this.#controlTail, write]).then(
+      () => undefined,
+    );
   }
 
   /** Fire-and-forget send for control text and deltas; a host send
@@ -1103,6 +1133,41 @@ export class RealtimeHub {
     for (const session of this.#sessions) {
       if (session.partition !== partition) continue;
       session.deliverCommit(commit);
+    }
+  }
+
+  /**
+   * Host-initiated, fail-closed registration refresh (§8.7). A host calls this
+   * after it changes an actor's membership or connection state, so the
+   * partition's connected sessions stop using grants the host already revoked
+   * without waiting for the client to happen to run a round.
+   *
+   * This differs deliberately from the round-end refresh
+   * (`RealtimeSession.#refreshRegistrations`), which keeps the previous
+   * registrations when the client record or resolver cannot be read so a
+   * failed round changes nothing. Here an unresolvable session is emptied:
+   * a revoked or unreadable grant must stop receiving deltas rather than live
+   * on until the next round. Presence is reconciled exactly as at round end.
+   */
+  async refreshScopes(partition: string, actorId?: string): Promise<void> {
+    for (const session of [...this.#sessions]) {
+      if (session.partition !== partition) continue;
+      if (actorId !== undefined && session.actorId !== actorId) continue;
+      const previousKeys = this.scopeKeysOf(session.registrations);
+      let registrations: Registration[];
+      try {
+        registrations = await this.loadRegistrations(
+          partition,
+          session.actorId,
+          session.clientId,
+        );
+      } catch {
+        // Fail closed (see the doc above): an unreadable client record drops
+        // every grant on the connection.
+        registrations = [];
+      }
+      session.registrations = registrations;
+      session.reconcilePresence(previousKeys);
     }
   }
 

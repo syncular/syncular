@@ -37,7 +37,11 @@ import type {
   SegmentStore,
   SegmentStoreStats,
 } from './segment-store';
-import { segmentIdFor } from './segment-store';
+import {
+  mergeSegmentRecord,
+  segmentBytesEqual,
+  segmentIdFor,
+} from './segment-store';
 import type { DelegatedPresignConfig, SegmentUrlIssue } from './signed-url';
 import {
   EMPTY_PAYLOAD_SHA256,
@@ -185,6 +189,18 @@ function parseRecordJson(json: string, source: string): SegmentRecord {
   if (!cursorOk(r.rowCursor) || !cursorOk(r.nextRowCursor)) {
     throw new Error(`S3SegmentStore: bad record cursor in ${source}`);
   }
+  const scopeDigest = r.scopeDigest as string;
+  // Records written before §5.1 recorded the digest set carry only the
+  // primary digest; the object is a cache entry with a TTL, so reading it
+  // back as a one-digest record is correct, not a degraded path.
+  const rawDigests = r.scopeDigests;
+  if (
+    rawDigests !== undefined &&
+    (!Array.isArray(rawDigests) ||
+      rawDigests.some((digest) => typeof digest !== 'string'))
+  ) {
+    throw new Error(`S3SegmentStore: bad record scopeDigests in ${source}`);
+  }
   return {
     segmentId: r.segmentId as string,
     partition: r.partition as string,
@@ -192,7 +208,13 @@ function parseRecordJson(json: string, source: string): SegmentRecord {
     table: r.table as string,
     schemaVersion: r.schemaVersion as number,
     mediaType: r.mediaType,
-    scopeDigest: r.scopeDigest as string,
+    scopeDigest,
+    scopeDigests: [
+      scopeDigest,
+      ...((rawDigests ?? []) as string[]).filter(
+        (digest) => digest !== scopeDigest,
+      ),
+    ],
     asOfCommitSeq: r.asOfCommitSeq as number,
     rowCount: r.rowCount as number,
     rowCursor: r.rowCursor,
@@ -369,19 +391,29 @@ export class S3SegmentStore implements SegmentStore {
     nowMs: number,
   ): Promise<SegmentRecord> {
     const segmentId = await segmentIdFor(bytes);
-    const record: SegmentRecord = {
-      ...metadata,
-      segmentId,
-      byteLength: bytes.length,
-      createdAtMs: nowMs,
-      expiresAtMs: nowMs + this.#ttlMs,
-    };
-    const recordJson = recordToJson(record);
-    // Detect an idempotent re-put (same content-address ⇒ same key) so the
-    // stats accumulator counts each distinct segment once, not once per PUT.
     const objectKey = this.objectKeyFor(segmentId);
-    const preexisting = await this.#request('HEAD', objectKey);
-    await preexisting?.arrayBuffer();
+    // The id IS the content address, so an existing object means a second
+    // scope published the same bytes: read it back to prove the bytes really
+    // match (a mismatch is a hash collision, never a silent overwrite) and
+    // to merge the digest set (§5.1).
+    const preexisting = await this.get(segmentId);
+    if (
+      preexisting !== undefined &&
+      !segmentBytesEqual(preexisting.bytes, bytes)
+    ) {
+      throw new Error(
+        `S3SegmentStore: content-address collision at ${segmentId} (§5.1)`,
+      );
+    }
+    const record = mergeSegmentRecord(
+      preexisting?.record,
+      metadata,
+      segmentId,
+      bytes.length,
+      nowMs,
+      this.#ttlMs,
+    );
+    const recordJson = recordToJson(record);
     const isNew = preexisting === undefined;
     const response = await this.#request('PUT', objectKey, {
       body: bytes,
@@ -443,7 +475,7 @@ export class S3SegmentStore implements SegmentStore {
       record.table !== key.table ||
       record.schemaVersion !== key.schemaVersion ||
       record.mediaType !== key.mediaType ||
-      record.scopeDigest !== key.scopeDigest ||
+      !record.scopeDigests.includes(key.scopeDigest) ||
       record.asOfCommitSeq !== key.asOfCommitSeq ||
       record.rowCursor !== null
     ) {

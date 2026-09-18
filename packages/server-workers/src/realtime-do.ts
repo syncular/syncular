@@ -404,11 +404,15 @@ export class SyncularRealtimeHost {
       const session = await this.#sessionFor(ws);
       if (session === undefined) return;
       if (typeof message === 'string') {
-        await session.handleMessage(message);
+        session.handleMessage(message);
       } else {
         // §8.7: tagged binary — sync-round request chunks / acks.
         await session.handleBinary(new Uint8Array(message));
       }
+      // §8.2: an ack persists the cursor without being awaited inside the
+      // session. Drain it inside the hibernatable event so the DO never
+      // ends the event with storage work still in flight.
+      await session.drain();
     });
   }
 
@@ -416,6 +420,8 @@ export class SyncularRealtimeHost {
   async webSocketClose(ws: WebSocketLike): Promise<void> {
     const session = this.#sessions.get(ws);
     if (session !== undefined) {
+      // §8.2: a cursor write queued by the last ack may still be in flight.
+      await session.drain();
       session.close();
       this.#sessions.delete(ws);
     }

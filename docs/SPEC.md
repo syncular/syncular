@@ -1033,7 +1033,12 @@ Segments are bound to the effective scopes they were built for via the
 **scope digest**: SHA-256 over the canonical JSON rendering (§11.2) of
 the effective-scope map (keys sorted, values as sorted unique lists),
 rendered as lowercase hex. Servers MUST recompute and compare digests on
-segment download (§5.5); a digest mismatch is `sync.forbidden`.
+segment download (§5.5); a digest mismatch is `sync.forbidden`. A
+`segmentId` is the hash of the segment bytes (§5.1), so two scopes whose
+rows encode to identical bytes produce one content address. The store
+records every scope digest its content was published under, and a
+download matches when the recomputed digest is one of them (§5.1,
+§5.5).
 
 ---
 
@@ -1483,6 +1488,16 @@ one table at one `asOfCommitSeq`.
 - Servers SHOULD build segments once per (partition, table, scope digest,
   `asOfCommitSeq`, page window, schemaVersion) and share them across
   clients — this is the bootstrap-storm answer together with §5.4.
+- **One stored entry per content address.** The `segmentId` hash does not
+  cover the scope digest, so two scopes whose rows encode to identical
+  bytes publish the same content address. A store keeps one entry per
+  content address and records every scope digest that content was
+  published under: a second publication of existing content merges its
+  digest into the entry, keeps the earliest creation time, and takes the
+  later expiry. `find` and download authorization match any recorded
+  digest (§5.3, §5.5). The bytes already stored under a content address
+  MUST be identical to the bytes being published; a mismatch is a hash
+  collision, and the server MUST fail loudly rather than overwrite.
 
 ### 5.2 Rows segments (`mediaType = rows`) — mandatory
 
@@ -1740,8 +1755,10 @@ satisfies both); it is minted and verified by the same host, and clients
 treat the whole `st` token as opaque — §2.1's "partitions never appear
 on the wire" holds in the sense that no *client-interpretable* partition
 field exists. The verifier MUST check the MAC, `exp` (with ≤ 60 s skew
-allowance), `seg` equality with the requested segment, `sd` equality
-with the segment's stored `scopeDigest`, and `aud` equality with the
+allowance), `seg` equality with the requested segment, `sd` membership in
+the segment's stored scope digests (identical bytes are one content
+address, so a segment published under two scopes is one stored entry:
+§5.1, §5.5), and `aud` equality with the
 value derived from the segment's partition. `sd` binds the token to the
 effective scopes that were authorized at issuance — issuance happens
 inside the pull, immediately after scope resolution, so a signed URL is
@@ -1774,10 +1791,13 @@ for clients without signed-URL support.
 - The server MUST re-authorize on **every** download: run
   `resolveScopes` for the actor, compute effective scopes against the
   supplied requested scopes (§3.2), compute the scope digest (§3.5), and
-  compare with the segment's `scopeDigest`. Mismatch, revoked status, or
-  resolution failure ⇒ HTTP 403 `sync.forbidden`. A segment reference
-  obtained earlier is not a bearer capability; only signed URLs are
-  (deliberately, with short TTL).
+  require that digest to be one of the scope digests the stored segment
+  was published under. A `segmentId` is the hash of the segment bytes
+  (§5.1), so byte-identical content published under two scopes is one
+  stored segment that records both digests; either scope authorizes a
+  download of it. Mismatch, revoked status, or resolution failure ⇒ HTTP
+  403 `sync.forbidden`. A segment reference obtained earlier is not a
+  bearer capability; only signed URLs are (deliberately, with short TTL).
 - A server MAY eventually *forget* an expired segment entirely (object
   stores garbage-collect); from that point the segment is
   indistinguishable from never-existing and `sync.not_found` applies —
@@ -4689,6 +4709,15 @@ client that connects the socket before its first-ever pull starts with
 zero registrations (§8.1) and acquires them from its first socket
 round; the "connected but silently unregistered until the next
 reconnect" failure mode of an HTTP-pull-only client cannot occur.
+
+**Host-initiated refresh.** A host that changes an actor's membership or
+connection state MAY call the hub's `refreshScopes(partition, actorId?)`
+to re-resolve the matching sessions' registrations immediately instead of
+waiting for each client to run a round. The call fails closed: a session
+whose resolver call fails or whose client record cannot be read loses
+every registration, so it receives no further deltas until it
+re-registers. This differs from the round-end rule above, which keeps the
+previous registrations when a round fails.
 
 ---
 

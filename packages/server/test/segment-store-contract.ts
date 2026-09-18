@@ -97,14 +97,51 @@ export function runSegmentStoreContract(
       expect(got?.bytes).toEqual(bytes);
     });
 
-    test('identical bytes collapse to one segmentId; re-put refreshes the record', async () => {
+    test('identical bytes collapse to one segmentId; re-put merges the record', async () => {
       const store = await makeStore();
       const bytes = new Uint8Array([9, 9, 9, 9]);
       const first = await store.put(IMAGE_META, bytes, CONTRACT_NOW);
       const second = await store.put(IMAGE_META, bytes, CONTRACT_NOW + 5_000);
       expect(second.segmentId).toBe(first.segmentId);
       const got = await store.get(first.segmentId);
-      expect(got?.record.createdAtMs).toBe(CONTRACT_NOW + 5_000);
+      // Earliest sighting wins; the later put only extends the TTL.
+      expect(got?.record.createdAtMs).toBe(CONTRACT_NOW);
+      expect(got?.record.expiresAtMs).toBe(
+        CONTRACT_NOW + 5_000 + DEFAULT_SEGMENT_TTL_MS,
+      );
+      expect(got?.record.scopeDigests).toEqual(['digest-a']);
+    });
+
+    test('identical bytes from two scopes keep every digest (§5.1/§5.5)', async () => {
+      const store = await makeStore();
+      const bytes = new Uint8Array([4, 4, 4]);
+      const first = await store.put(IMAGE_META, bytes, CONTRACT_NOW);
+      const second = await store.put(
+        { ...IMAGE_META, scopeDigest: 'digest-b' },
+        bytes,
+        CONTRACT_NOW + 5_000,
+      );
+      expect(second.segmentId).toBe(first.segmentId);
+      const got = await store.get(first.segmentId);
+      if (got === undefined) throw new Error('expected a stored segment');
+      expect(got.record.scopeDigest).toBe('digest-b');
+      expect(got.record.scopeDigests).toEqual(['digest-b', 'digest-a']);
+      expect(got.record.createdAtMs).toBe(CONTRACT_NOW);
+      // Both digests find the one stored entry; a third does not.
+      expect((await store.find(KEY, CONTRACT_NOW + 1))?.segmentId).toBe(
+        first.segmentId,
+      );
+      expect(
+        (
+          await store.find(
+            { ...KEY, scopeDigest: 'digest-b' },
+            CONTRACT_NOW + 1,
+          )
+        )?.segmentId,
+      ).toBe(first.segmentId);
+      expect(
+        await store.find({ ...KEY, scopeDigest: 'digest-c' }, CONTRACT_NOW + 1),
+      ).toBeUndefined();
     });
 
     test('find returns the unexpired whole-table record for the key (§5.3)', async () => {

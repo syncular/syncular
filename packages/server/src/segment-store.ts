@@ -26,9 +26,65 @@ export interface SegmentMetadata {
 
 export interface SegmentRecord extends SegmentMetadata {
   readonly segmentId: string;
+  /**
+   * Every scope digest this content was published under (§3.5). Identical
+   * bytes have one content address, so two scopes whose rows happen to be
+   * byte-identical publish the SAME `segmentId`; the store keeps one entry
+   * per content address and records both digests instead of letting the
+   * second publication overwrite the first. The record's `scopeDigest` is
+   * always `scopeDigests[0]` (the publisher's own digest, so its descriptor
+   * and signed URL stay consistent). A download is
+   * authorized when the caller's freshly computed digest is one of these
+   * (§5.5).
+   */
+  readonly scopeDigests: readonly string[];
   readonly byteLength: number;
   readonly createdAtMs: number;
   readonly expiresAtMs: number;
+}
+
+/** Byte equality for the content-address collision check (§5.1). */
+export function segmentBytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+/**
+ * Merge one publication into the stored entry for the same content address
+ * (§5.1). Identical bytes are one entry: the record takes the incoming
+ * publication's metadata (a later publisher's descriptor, scope digest, and
+ * cursors stay consistent with what it just published), the scope digests
+ * union with the incoming digest first (the record's primary `scopeDigest`),
+ * `createdAtMs` keeps the earliest sighting, and `expiresAtMs` takes the
+ * later expiry. Callers MUST have proven the bytes identical first.
+ */
+export function mergeSegmentRecord(
+  existing: SegmentRecord | undefined,
+  metadata: SegmentMetadata,
+  segmentId: string,
+  byteLength: number,
+  nowMs: number,
+  ttlMs: number,
+): SegmentRecord {
+  return {
+    ...metadata,
+    segmentId,
+    scopeDigests: [
+      metadata.scopeDigest,
+      ...(existing?.scopeDigests ?? []).filter(
+        (digest) => digest !== metadata.scopeDigest,
+      ),
+    ],
+    byteLength,
+    createdAtMs: Math.min(existing?.createdAtMs ?? nowMs, nowMs),
+    expiresAtMs: Math.max(
+      existing?.expiresAtMs ?? nowMs + ttlMs,
+      nowMs + ttlMs,
+    ),
+  };
 }
 
 /**
@@ -81,6 +137,14 @@ export interface SegmentStore {
    * Unexpired record for the §5.3 reuse key (whole-table segments only:
    * `rowCursor` null), or undefined. Servers MUST reuse instead of
    * rebuilding sqlite images while one exists (§5.3).
+   *
+   * The digest matches when it is one of the record's `scopeDigests`
+   * (§5.1). That cannot hand a sqlite image to the wrong digest: a sqlite
+   * image embeds its `scopeDigest` in its bytes, and a merge requires byte
+   * equality, so two images published under different digests are never
+   * byte-identical and never share one entry. Only rows segments merge
+   * across digests, and their bytes carry no digest for a reader to compare
+   * against the descriptor.
    */
   find(key: SegmentFindKey, nowMs: number): Promise<SegmentRecord | undefined>;
   /** Admin/console counters: ADDITIVE, optional. */
@@ -105,13 +169,20 @@ export class MemorySegmentStore implements SegmentStore {
     nowMs: number,
   ): Promise<SegmentRecord> {
     const segmentId = await segmentIdFor(bytes);
-    const record: SegmentRecord = {
-      ...metadata,
+    const existing = this.#entries.get(segmentId);
+    if (existing !== undefined && !segmentBytesEqual(existing.bytes, bytes)) {
+      throw new Error(
+        `MemorySegmentStore: content-address collision at ${segmentId} (§5.1)`,
+      );
+    }
+    const record = mergeSegmentRecord(
+      existing?.record,
+      metadata,
       segmentId,
-      byteLength: bytes.length,
-      createdAtMs: nowMs,
-      expiresAtMs: nowMs + this.#ttlMs,
-    };
+      bytes.length,
+      nowMs,
+      this.#ttlMs,
+    );
     this.#entries.set(segmentId, { record, bytes });
     return record;
   }
@@ -133,7 +204,7 @@ export class MemorySegmentStore implements SegmentStore {
         record.table === key.table &&
         record.schemaVersion === key.schemaVersion &&
         record.mediaType === key.mediaType &&
-        record.scopeDigest === key.scopeDigest &&
+        record.scopeDigests.includes(key.scopeDigest) &&
         record.asOfCommitSeq === key.asOfCommitSeq &&
         record.rowCursor === null &&
         record.expiresAtMs > nowMs
