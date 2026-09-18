@@ -44,6 +44,47 @@ observable state snapshot, and the lower-level `connectRealtime()` /
 supervisor or an equivalent host trigger, remote changes do not converge
 continuously.
 
+## Control-plane boundaries
+
+A session never blocks the socket on control-plane storage. An `ack` frame
+updates the connection cursor in memory and queues the cursor write, so
+`handleMessage` returns without waiting for storage. The host owns that
+boundary and drains it before it lets go of the storage:
+
+```ts
+session.handleMessage(text);
+await session.drain(); // queued cursor writes settled, first failure thrown
+session.close();
+```
+
+`drain()` resolves once every queued cursor write has settled and throws the
+first persistence failure instead of discarding it. The reference Workers
+host awaits it inside each hibernatable event and before it closes a session;
+any host that shuts a database down must await it too, or an ack can be
+abandoned mid-write. `close()` stays synchronous and only disconnects the
+session from the hub.
+
+Membership changes need a different boundary. A session caches its
+registrations and refreshes them on connect and at the end of a socket round
+([SPEC §8.7](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#87-websocket-native-sync-loop)),
+so a commit fanout that lands after a host revokes an actor's access still
+uses the cached grants until the client happens to run a round.
+`RealtimeHub.refreshScopes(partition, actorId?)` is the host-initiated point
+that closes that window:
+
+```ts
+await hub.refreshScopes(partition, actorId); // after a membership change
+await hub.refreshScopes(partition); // after a connection change
+```
+
+It re-resolves the matching sessions through the hub's scope resolver and
+reconciles presence exactly as a round end does. It fails closed: a session
+whose resolver call fails, or whose client record cannot be read, loses every
+registration instead of keeping its previous grants, so it receives no
+further deltas until it re-registers. The round-end path deliberately keeps
+the previous registrations when a round fails, because a failed round must
+change nothing; the host-initiated path has the opposite job.
+
 ## Presence
 
 The socket also carries **presence**: ephemeral, scope-keyed peer state

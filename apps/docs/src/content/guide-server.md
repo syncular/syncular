@@ -153,7 +153,10 @@ const server = Bun.serve<{ clientId: string; session?: RealtimeSession }, never>
       if (typeof message === 'string') ws.data.session?.handleMessage(message);
       else ws.data.session?.handleBinary(new Uint8Array(message));
     },
-    close(ws) {
+    async close(ws) {
+      // Persist any cursor ack still in flight before dropping the session;
+      // `drain()` throws the first persistence failure instead of hiding it.
+      await ws.data.session?.drain();
       ws.data.session?.close();
     },
   },

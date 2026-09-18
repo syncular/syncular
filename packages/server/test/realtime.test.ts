@@ -494,6 +494,62 @@ describe('delta delivery (§8.2)', () => {
   });
 });
 
+describe('control-plane drain (§8.2)', () => {
+  async function connected(t: TestContext, hub: RealtimeHub, wire: Wire) {
+    await sync(t, [
+      pullHeader(),
+      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
+    ]);
+    return hub.connect({
+      partition: 'part-1',
+      actorId: 'actor-1',
+      clientId: 'client-1',
+      send: wire.send,
+    });
+  }
+
+  test('drain resolves only after the acked cursor is persisted', async () => {
+    const t = makeContext();
+    const hub = makeHub(t);
+    const wire = makeWire();
+    const session = await connected(t, hub, wire);
+    const advance = t.storage.advanceClientCursor.bind(t.storage);
+    const gate = Promise.withResolvers<void>();
+    let persisted = 0;
+    t.storage.advanceClientCursor = async (...args) => {
+      await gate.promise;
+      await advance(...args);
+      persisted += 1;
+    };
+
+    session.handleMessage(JSON.stringify({ type: 'ack', cursor: 7 }));
+    const drained = session.drain();
+    // The write is still gated, so nothing has landed yet.
+    expect(persisted).toBe(0);
+    gate.resolve();
+    await drained;
+    expect(persisted).toBe(1);
+    expect(
+      (await t.storage.getClientRecord('part-1', 'client-1'))?.cursor,
+    ).toBe(7);
+  });
+
+  test('a persistence failure surfaces through drain instead of vanishing', async () => {
+    const t = makeContext();
+    const hub = makeHub(t);
+    const wire = makeWire();
+    const session = await connected(t, hub, wire);
+    t.storage.advanceClientCursor = async () => {
+      throw new Error('storage offline');
+    };
+
+    session.handleMessage(JSON.stringify({ type: 'ack', cursor: 3 }));
+    await expect(session.drain()).rejects.toThrow('storage offline');
+    // A later drain is clean: the failure was reported once.
+    await session.drain();
+  });
+});
+
 describe('control plane (§8.3, §8.5)', () => {
   test('hub.wake broadcasts a reset-required wake-up', async () => {
     const t = makeContext();
