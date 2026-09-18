@@ -196,7 +196,7 @@ describe('projection lowering (§5 AS-aliasing)', () => {
   test('snake refs gain AS aliases; camel-clean refs stay verbatim', () => {
     const q = camel('SELECT id, list_id, created_at FROM todos');
     expect(q.sql).toBe(
-      'SELECT id, list_id AS listId, created_at AS createdAt FROM todos',
+      'SELECT id, list_id AS "listId", created_at AS "createdAt" FROM todos',
     );
     expect(q.columns.map((c) => [c.name, c.langName])).toEqual([
       ['id', 'id'],
@@ -207,9 +207,20 @@ describe('projection lowering (§5 AS-aliasing)', () => {
     expect(q.columns[2]).toMatchObject({ type: 'integer', fidelity: 'exact' });
   });
 
+  test('emitted aliases are double-quoted so Postgres preserves their case', () => {
+    // A snake_case column and an explicitly aliased expression both get a
+    // quoted alias: Postgres folds an unquoted alias to lower case.
+    expect(camel('SELECT list_id FROM todos').sql).toBe(
+      'SELECT list_id AS "listId" FROM todos',
+    );
+    expect(camel('SELECT count(*) AS row_count FROM todos').sql).toBe(
+      'SELECT count(*) AS "rowCount" FROM todos',
+    );
+  });
+
   test('an author-written alias is the SQL-truth name and convention-maps', () => {
     const q = camel('SELECT max(created_at) AS last_seen FROM todos');
-    expect(q.sql).toBe('SELECT max(created_at) AS lastSeen FROM todos');
+    expect(q.sql).toBe('SELECT max(created_at) AS "lastSeen" FROM todos');
     expect(q.columns[0]).toMatchObject({
       name: 'last_seen',
       langName: 'lastSeen',
@@ -224,7 +235,7 @@ describe('projection lowering (§5 AS-aliasing)', () => {
   test('bare * expands to the single FROM table (schema-pinned projection)', () => {
     const q = camel('SELECT * FROM todos');
     expect(q.sql).toBe(
-      'SELECT id, list_id AS listId, title, created_at AS createdAt FROM todos',
+      'SELECT id, list_id AS "listId", title, created_at AS "createdAt" FROM todos',
     );
   });
 
@@ -232,7 +243,7 @@ describe('projection lowering (§5 AS-aliasing)', () => {
     const q = camel(
       'SELECT t.* FROM todos t JOIN lists l ON l.id = t.list_id WHERE l.owner_id = :ownerId',
     );
-    expect(q.sql).toContain('t.list_id AS listId');
+    expect(q.sql).toContain('t.list_id AS "listId"');
     expect(q.columns.map((c) => c.langName)).toEqual([
       'id',
       'listId',
@@ -252,7 +263,7 @@ describe('projection lowering (§5 AS-aliasing)', () => {
       'WITH recent AS (SELECT created_at FROM todos) SELECT created_at FROM recent',
     );
     expect(q.sql).toBe(
-      'WITH recent AS (SELECT created_at FROM todos) SELECT created_at AS createdAt FROM recent',
+      'WITH recent AS (SELECT created_at FROM todos) SELECT created_at AS "createdAt" FROM recent',
     );
     // The CTE's inner FROM still pins the invalidation set.
     expect(q.tables).toEqual(['todos']);
@@ -285,7 +296,7 @@ describe('projection lowering (§5 AS-aliasing)', () => {
 
   test('string literals in the projection survive verbatim', () => {
     const q = camel("SELECT 'a, b' AS tag_text, id FROM todos");
-    expect(q.sql).toBe("SELECT 'a, b' AS tagText, id FROM todos");
+    expect(q.sql).toBe('SELECT \'a, b\' AS "tagText", id FROM todos');
   });
 });
 
@@ -300,7 +311,7 @@ describe('QueryIR serialization is deterministic', () => {
       'SELECT id, created_at FROM todos WHERE list_id = :listId',
     );
     expect(doc.queries[0].sql).toBe(
-      'SELECT id, created_at AS createdAt FROM todos WHERE list_id = :listId',
+      'SELECT id, created_at AS "createdAt" FROM todos WHERE list_id = :listId',
     );
     expect(doc.queries[0].columns[1]).toEqual({
       name: 'created_at',

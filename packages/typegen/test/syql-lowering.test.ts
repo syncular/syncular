@@ -343,7 +343,8 @@ describe('revision-1 SYQL lowering', () => {
     expect(rust).toContain('pub status: SyqlPresence<Option<String>>');
     expect(rust).toContain('pub start: i64');
     for (const output of [ts, swift, kotlin, dart, rust]) {
-      expect(output).toContain(
+      // Swift/Kotlin/Dart/Rust literals escape the SQL's own double quotes.
+      expect(output.replaceAll('\\"', '"')).toContain(
         query.syql?.plan.statements[0]?.positionalSql as string,
       );
       expect(output).toContain('invalid generated SYQL statement index');
@@ -362,7 +363,7 @@ describe('revision-1 SYQL lowering', () => {
     expect(rust).toContain('let mut activation_mask = 0usize;');
     expect(rust).toContain('activation_mask * 2 + sort_index');
     for (const statement of query.syql?.plan.statements ?? []) {
-      expect(rust).toContain(statement.positionalSql);
+      expect(rust.replaceAll('\\"', '"')).toContain(statement.positionalSql);
     }
   });
 });

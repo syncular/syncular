@@ -5,19 +5,19 @@
       "name": "booleanResults",
       "file": "boolean-results.sql",
       "sourceSql": "-- Joined boolean projections cover an aliased exact value and a nullable\n-- computed value. TypeScript must lift SQLite's numeric representation for\n-- both while the native emitters keep their existing fromRow behavior.\nSELECT t.id, t.done AS is_done, t.reviewed AS maybe_done\nFROM tasks t\nJOIN docs d ON d.project_id = t.project_id\nORDER BY t.id",
-      "sql": "-- Joined boolean projections cover an aliased exact value and a nullable\n-- computed value. TypeScript must lift SQLite's numeric representation for\n-- both while the native emitters keep their existing fromRow behavior.\nSELECT t.id, t.done AS isDone, t.reviewed AS maybeDone FROM tasks t\nJOIN docs d ON d.project_id = t.project_id\nORDER BY t.id",
-      "positionalSql": "SELECT t.id, t.done AS isDone, t.reviewed AS maybeDone FROM tasks t JOIN docs d ON d.project_id = t.project_id ORDER BY t.id",
+      "sql": "-- Joined boolean projections cover an aliased exact value and a nullable\n-- computed value. TypeScript must lift SQLite's numeric representation for\n-- both while the native emitters keep their existing fromRow behavior.\nSELECT t.id, t.done AS \"isDone\", t.reviewed AS \"maybeDone\" FROM tasks t\nJOIN docs d ON d.project_id = t.project_id\nORDER BY t.id",
+      "positionalSql": "SELECT t.id, t.done AS \"isDone\", t.reviewed AS \"maybeDone\" FROM tasks t JOIN docs d ON d.project_id = t.project_id ORDER BY t.id",
       "relations": [
         {
           "table": "tasks",
-          "start": 60,
-          "end": 65,
+          "start": 64,
+          "end": 69,
           "alias": "t"
         },
         {
           "table": "docs",
-          "start": 73,
-          "end": 77,
+          "start": 77,
+          "end": 81,
           "alias": "d"
         }
       ],
@@ -147,13 +147,13 @@
       "name": "docValueTypes",
       "file": "doc-value-types.sql",
       "sourceSql": "-- Native/Rust query-codegen fidelity for bytes, CRDT, and blob references.\nSELECT id, attachment, body_doc, remote_blob\nFROM docs\nWHERE id = :id",
-      "sql": "-- Native/Rust query-codegen fidelity for bytes, CRDT, and blob references.\nSELECT id, attachment, body_doc AS bodyDoc, remote_blob AS remoteBlob FROM docs\nWHERE id = :id",
-      "positionalSql": "SELECT id, attachment, body_doc AS bodyDoc, remote_blob AS remoteBlob FROM docs WHERE id = ?",
+      "sql": "-- Native/Rust query-codegen fidelity for bytes, CRDT, and blob references.\nSELECT id, attachment, body_doc AS \"bodyDoc\", remote_blob AS \"remoteBlob\" FROM docs\nWHERE id = :id",
+      "positionalSql": "SELECT id, attachment, body_doc AS \"bodyDoc\", remote_blob AS \"remoteBlob\" FROM docs WHERE id = ?",
       "relations": [
         {
           "table": "docs",
-          "start": 75,
-          "end": 79
+          "start": 79,
+          "end": 83
         }
       ],
       "params": [
@@ -229,19 +229,19 @@
       "name": "docWithBody",
       "file": "doc-with-body.sql",
       "sourceSql": "-- Join across docs+tasks (same project); projection mixes both tables.\nSELECT d.id AS doc_id, d.body, t.title AS task_title\nFROM docs d\nJOIN tasks t ON t.project_id = d.project_id\nWHERE d.org_id = :orgId",
-      "sql": "-- Join across docs+tasks (same project); projection mixes both tables.\nSELECT d.id AS docId, d.body, t.title AS taskTitle FROM docs d\nJOIN tasks t ON t.project_id = d.project_id\nWHERE d.org_id = :orgId",
-      "positionalSql": "SELECT d.id AS docId, d.body, t.title AS taskTitle FROM docs d JOIN tasks t ON t.project_id = d.project_id WHERE d.org_id = ?",
+      "sql": "-- Join across docs+tasks (same project); projection mixes both tables.\nSELECT d.id AS \"docId\", d.body, t.title AS \"taskTitle\" FROM docs d\nJOIN tasks t ON t.project_id = d.project_id\nWHERE d.org_id = :orgId",
+      "positionalSql": "SELECT d.id AS \"docId\", d.body, t.title AS \"taskTitle\" FROM docs d JOIN tasks t ON t.project_id = d.project_id WHERE d.org_id = ?",
       "relations": [
         {
           "table": "docs",
-          "start": 56,
-          "end": 60,
+          "start": 60,
+          "end": 64,
           "alias": "d"
         },
         {
           "table": "tasks",
-          "start": 68,
-          "end": 73,
+          "start": 72,
+          "end": 77,
           "alias": "t"
         }
       ],
@@ -600,19 +600,19 @@
       "name": "outerJoinValues",
       "file": "outer-join-values.sql",
       "sourceSql": "-- Required columns from the optional side must be nullable in every emitted\n-- language even though their physical schema columns are NOT NULL.\nSELECT t.id AS task_id, t.title, d.body AS doc_body\nFROM tasks AS t\nLEFT JOIN docs AS d ON d.project_id = t.project_id\nWHERE t.id = :taskId",
-      "sql": "-- Required columns from the optional side must be nullable in every emitted\n-- language even though their physical schema columns are NOT NULL.\nSELECT t.id AS taskId, t.title, d.body AS docBody FROM tasks AS t\nLEFT JOIN docs AS d ON d.project_id = t.project_id\nWHERE t.id = :taskId",
-      "positionalSql": "SELECT t.id AS taskId, t.title, d.body AS docBody FROM tasks AS t LEFT JOIN docs AS d ON d.project_id = t.project_id WHERE t.id = ?",
+      "sql": "-- Required columns from the optional side must be nullable in every emitted\n-- language even though their physical schema columns are NOT NULL.\nSELECT t.id AS \"taskId\", t.title, d.body AS \"docBody\" FROM tasks AS t\nLEFT JOIN docs AS d ON d.project_id = t.project_id\nWHERE t.id = :taskId",
+      "positionalSql": "SELECT t.id AS \"taskId\", t.title, d.body AS \"docBody\" FROM tasks AS t LEFT JOIN docs AS d ON d.project_id = t.project_id WHERE t.id = ?",
       "relations": [
         {
           "table": "tasks",
-          "start": 55,
-          "end": 60,
+          "start": 59,
+          "end": 64,
           "alias": "t"
         },
         {
           "table": "docs",
-          "start": 76,
-          "end": 80,
+          "start": 80,
+          "end": 84,
           "alias": "d"
         }
       ],
@@ -680,13 +680,13 @@
       "name": "projectDocCount",
       "file": "project-doc-count.sql",
       "sourceSql": "-- Aggregate (count(*) → fallback nullable number) + a plain grouped ref.\nSELECT project_id, count(*) AS doc_count\nFROM docs\nGROUP BY project_id",
-      "sql": "-- Aggregate (count(*) → fallback nullable number) + a plain grouped ref.\nSELECT project_id AS projectId, count(*) AS docCount FROM docs\nGROUP BY project_id",
-      "positionalSql": "SELECT project_id AS projectId, count(*) AS docCount FROM docs GROUP BY project_id",
+      "sql": "-- Aggregate (count(*) → fallback nullable number) + a plain grouped ref.\nSELECT project_id AS \"projectId\", count(*) AS \"docCount\" FROM docs\nGROUP BY project_id",
+      "positionalSql": "SELECT project_id AS \"projectId\", count(*) AS \"docCount\" FROM docs GROUP BY project_id",
       "relations": [
         {
           "table": "docs",
-          "start": 58,
-          "end": 62
+          "start": 62,
+          "end": 66
         }
       ],
       "params": [],
@@ -886,13 +886,13 @@
       "name": "reportDocScores",
       "file": "task-reports.sql#2",
       "sourceSql": "-- name: reportDocScores\n-- A separate statement, separately scoped: :minScore is compared to an\n-- expression, so it needs its own `-- param` comment.\n-- param :minScore float\nSELECT id, org_id, score\nFROM docs\nWHERE score > :minScore * 1.0\nORDER BY id",
-      "sql": "-- name: reportDocScores\n-- A separate statement, separately scoped: :minScore is compared to an\n-- expression, so it needs its own `-- param` comment.\n-- param :minScore float\nSELECT id, org_id AS orgId, score FROM docs\nWHERE score > :minScore * 1.0\nORDER BY id",
-      "positionalSql": "SELECT id, org_id AS orgId, score FROM docs WHERE score > ? * 1.0 ORDER BY id",
+      "sql": "-- name: reportDocScores\n-- A separate statement, separately scoped: :minScore is compared to an\n-- expression, so it needs its own `-- param` comment.\n-- param :minScore float\nSELECT id, org_id AS \"orgId\", score FROM docs\nWHERE score > :minScore * 1.0\nORDER BY id",
+      "positionalSql": "SELECT id, org_id AS \"orgId\", score FROM docs WHERE score > ? * 1.0 ORDER BY id",
       "relations": [
         {
           "table": "docs",
-          "start": 39,
-          "end": 43
+          "start": 41,
+          "end": 45
         }
       ],
       "params": [
@@ -1247,20 +1247,20 @@
     {
       "name": "joinedSyncCoverage",
       "file": "joined-sync-coverage.syql",
-      "sourceSql": "select t.id AS taskId, d.id AS docId, d.body from tasks as t\n  join docs as d on d.project_id = t.project_id\n  where t.project_id = :projectId\n    and d.org_id = :orgId\n  order by t.id, d.id",
-      "sql": "select t.id AS taskId, d.id AS docId, d.body from tasks as t\n  join docs as d on d.project_id = t.project_id\n  where t.project_id = :projectId\n    and d.org_id = :orgId\n  order by t.id, d.id",
-      "positionalSql": "select t.id AS taskId, d.id AS docId, d.body from tasks as t join docs as d on d.project_id = t.project_id where t.project_id = ? and d.org_id = ? order by t.id, d.id",
+      "sourceSql": "select t.id AS \"taskId\", d.id AS \"docId\", d.body from tasks as t\n  join docs as d on d.project_id = t.project_id\n  where t.project_id = :projectId\n    and d.org_id = :orgId\n  order by t.id, d.id",
+      "sql": "select t.id AS \"taskId\", d.id AS \"docId\", d.body from tasks as t\n  join docs as d on d.project_id = t.project_id\n  where t.project_id = :projectId\n    and d.org_id = :orgId\n  order by t.id, d.id",
+      "positionalSql": "select t.id AS \"taskId\", d.id AS \"docId\", d.body from tasks as t join docs as d on d.project_id = t.project_id where t.project_id = ? and d.org_id = ? order by t.id, d.id",
       "relations": [
         {
           "table": "tasks",
-          "start": 50,
-          "end": 55,
+          "start": 54,
+          "end": 59,
           "alias": "t"
         },
         {
           "table": "docs",
-          "start": 66,
-          "end": 70,
+          "start": 70,
+          "end": 74,
           "alias": "d"
         }
       ],
@@ -1406,19 +1406,19 @@
           "statements": [
             {
               "activationMask": 0,
-              "sql": "select t.id AS taskId, d.id AS docId, d.body from tasks as t\n  join docs as d on d.project_id = t.project_id\n  where t.project_id = :projectId\n    and d.org_id = :orgId\n  order by t.id, d.id",
-              "positionalSql": "select t.id AS taskId, d.id AS docId, d.body from tasks as t join docs as d on d.project_id = t.project_id where t.project_id = ? and d.org_id = ? order by t.id, d.id",
+              "sql": "select t.id AS \"taskId\", d.id AS \"docId\", d.body from tasks as t\n  join docs as d on d.project_id = t.project_id\n  where t.project_id = :projectId\n    and d.org_id = :orgId\n  order by t.id, d.id",
+              "positionalSql": "select t.id AS \"taskId\", d.id AS \"docId\", d.body from tasks as t join docs as d on d.project_id = t.project_id where t.project_id = ? and d.org_id = ? order by t.id, d.id",
               "relations": [
                 {
                   "table": "tasks",
-                  "start": 50,
-                  "end": 55,
+                  "start": 54,
+                  "end": 59,
                   "alias": "t"
                 },
                 {
                   "table": "docs",
-                  "start": 66,
-                  "end": 70,
+                  "start": 70,
+                  "end": 74,
                   "alias": "d"
                 }
               ],
@@ -1601,14 +1601,14 @@
     {
       "name": "searchTasks",
       "file": "task-search.syql",
-      "sourceSql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks\n  where tasks.project_id = :projectId\n    and case when :__syqlActive0 = 0 then 1 else ( (\n  title like '%' || :needle || '%'\n)) end\n    and case when :__syqlActive1 = 0 then 1 else ( priority >= :minPriority) end\n    and case when :__syqlActive2 = 0 then 1 else ( done = 0\n  ) end order by priority desc, id desc limit min(coalesce(:__syqlLimit, 50), 200)",
-      "sql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks\n  where tasks.project_id = :projectId\n    and case when :__syqlActive0 = 0 then 1 else ( (\n  title like '%' || :needle || '%'\n)) end\n    and case when :__syqlActive1 = 0 then 1 else ( priority >= :minPriority) end\n    and case when :__syqlActive2 = 0 then 1 else ( done = 0\n  ) end order by priority desc, id desc limit min(coalesce(:__syqlLimit, 50), 200)",
-      "positionalSql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks where tasks.project_id = ? and case when ? = 0 then 1 else ( ( title like '%' || ? || '%' )) end and case when ? = 0 then 1 else ( priority >= ?) end and case when ? = 0 then 1 else ( done = 0 ) end order by priority desc, id desc limit min(coalesce(?, 50), 200)",
+      "sourceSql": "select id, title, done, priority, estimated_at AS \"estimatedAt\" from tasks\n  where tasks.project_id = :projectId\n    and case when :__syqlActive0 = 0 then 1 else ( (\n  title like '%' || :needle || '%'\n)) end\n    and case when :__syqlActive1 = 0 then 1 else ( priority >= :minPriority) end\n    and case when :__syqlActive2 = 0 then 1 else ( done = 0\n  ) end order by priority desc, id desc limit min(coalesce(:__syqlLimit, 50), 200)",
+      "sql": "select id, title, done, priority, estimated_at AS \"estimatedAt\" from tasks\n  where tasks.project_id = :projectId\n    and case when :__syqlActive0 = 0 then 1 else ( (\n  title like '%' || :needle || '%'\n)) end\n    and case when :__syqlActive1 = 0 then 1 else ( priority >= :minPriority) end\n    and case when :__syqlActive2 = 0 then 1 else ( done = 0\n  ) end order by priority desc, id desc limit min(coalesce(:__syqlLimit, 50), 200)",
+      "positionalSql": "select id, title, done, priority, estimated_at AS \"estimatedAt\" from tasks where tasks.project_id = ? and case when ? = 0 then 1 else ( ( title like '%' || ? || '%' )) end and case when ? = 0 then 1 else ( priority >= ?) end and case when ? = 0 then 1 else ( done = 0 ) end order by priority desc, id desc limit min(coalesce(?, 50), 200)",
       "relations": [
         {
           "table": "tasks",
-          "start": 67,
-          "end": 72
+          "start": 69,
+          "end": 74
         }
       ],
       "params": [
@@ -1834,13 +1834,13 @@
           "statements": [
             {
               "sortProfile": "priorityAsc",
-              "sql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks\n  where tasks.project_id = :projectId\n    and case when :__syqlActive0 = 0 then 1 else ( (\n  title like '%' || :needle || '%'\n)) end\n    and case when :__syqlActive1 = 0 then 1 else ( priority >= :minPriority) end\n    and case when :__syqlActive2 = 0 then 1 else ( done = 0\n  ) end order by priority asc, id asc limit min(coalesce(:__syqlLimit, 50), 200)",
-              "positionalSql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks where tasks.project_id = ? and case when ? = 0 then 1 else ( ( title like '%' || ? || '%' )) end and case when ? = 0 then 1 else ( priority >= ?) end and case when ? = 0 then 1 else ( done = 0 ) end order by priority asc, id asc limit min(coalesce(?, 50), 200)",
+              "sql": "select id, title, done, priority, estimated_at AS \"estimatedAt\" from tasks\n  where tasks.project_id = :projectId\n    and case when :__syqlActive0 = 0 then 1 else ( (\n  title like '%' || :needle || '%'\n)) end\n    and case when :__syqlActive1 = 0 then 1 else ( priority >= :minPriority) end\n    and case when :__syqlActive2 = 0 then 1 else ( done = 0\n  ) end order by priority asc, id asc limit min(coalesce(:__syqlLimit, 50), 200)",
+              "positionalSql": "select id, title, done, priority, estimated_at AS \"estimatedAt\" from tasks where tasks.project_id = ? and case when ? = 0 then 1 else ( ( title like '%' || ? || '%' )) end and case when ? = 0 then 1 else ( priority >= ?) end and case when ? = 0 then 1 else ( done = 0 ) end order by priority asc, id asc limit min(coalesce(?, 50), 200)",
               "relations": [
                 {
                   "table": "tasks",
-                  "start": 67,
-                  "end": 72
+                  "start": 69,
+                  "end": 74
                 }
               ],
               "binds": [
@@ -1899,13 +1899,13 @@
             },
             {
               "sortProfile": "priorityDesc",
-              "sql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks\n  where tasks.project_id = :projectId\n    and case when :__syqlActive0 = 0 then 1 else ( (\n  title like '%' || :needle || '%'\n)) end\n    and case when :__syqlActive1 = 0 then 1 else ( priority >= :minPriority) end\n    and case when :__syqlActive2 = 0 then 1 else ( done = 0\n  ) end order by priority desc, id desc limit min(coalesce(:__syqlLimit, 50), 200)",
-              "positionalSql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks where tasks.project_id = ? and case when ? = 0 then 1 else ( ( title like '%' || ? || '%' )) end and case when ? = 0 then 1 else ( priority >= ?) end and case when ? = 0 then 1 else ( done = 0 ) end order by priority desc, id desc limit min(coalesce(?, 50), 200)",
+              "sql": "select id, title, done, priority, estimated_at AS \"estimatedAt\" from tasks\n  where tasks.project_id = :projectId\n    and case when :__syqlActive0 = 0 then 1 else ( (\n  title like '%' || :needle || '%'\n)) end\n    and case when :__syqlActive1 = 0 then 1 else ( priority >= :minPriority) end\n    and case when :__syqlActive2 = 0 then 1 else ( done = 0\n  ) end order by priority desc, id desc limit min(coalesce(:__syqlLimit, 50), 200)",
+              "positionalSql": "select id, title, done, priority, estimated_at AS \"estimatedAt\" from tasks where tasks.project_id = ? and case when ? = 0 then 1 else ( ( title like '%' || ? || '%' )) end and case when ? = 0 then 1 else ( priority >= ?) end and case when ? = 0 then 1 else ( done = 0 ) end order by priority desc, id desc limit min(coalesce(?, 50), 200)",
               "relations": [
                 {
                   "table": "tasks",
-                  "start": 67,
-                  "end": 72
+                  "start": 69,
+                  "end": 74
                 }
               ],
               "binds": [
@@ -1964,13 +1964,13 @@
             },
             {
               "sortProfile": "estimatedAtAsc",
-              "sql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks\n  where tasks.project_id = :projectId\n    and case when :__syqlActive0 = 0 then 1 else ( (\n  title like '%' || :needle || '%'\n)) end\n    and case when :__syqlActive1 = 0 then 1 else ( priority >= :minPriority) end\n    and case when :__syqlActive2 = 0 then 1 else ( done = 0\n  ) end order by estimated_at asc, id asc limit min(coalesce(:__syqlLimit, 50), 200)",
-              "positionalSql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks where tasks.project_id = ? and case when ? = 0 then 1 else ( ( title like '%' || ? || '%' )) end and case when ? = 0 then 1 else ( priority >= ?) end and case when ? = 0 then 1 else ( done = 0 ) end order by estimated_at asc, id asc limit min(coalesce(?, 50), 200)",
+              "sql": "select id, title, done, priority, estimated_at AS \"estimatedAt\" from tasks\n  where tasks.project_id = :projectId\n    and case when :__syqlActive0 = 0 then 1 else ( (\n  title like '%' || :needle || '%'\n)) end\n    and case when :__syqlActive1 = 0 then 1 else ( priority >= :minPriority) end\n    and case when :__syqlActive2 = 0 then 1 else ( done = 0\n  ) end order by estimated_at asc, id asc limit min(coalesce(:__syqlLimit, 50), 200)",
+              "positionalSql": "select id, title, done, priority, estimated_at AS \"estimatedAt\" from tasks where tasks.project_id = ? and case when ? = 0 then 1 else ( ( title like '%' || ? || '%' )) end and case when ? = 0 then 1 else ( priority >= ?) end and case when ? = 0 then 1 else ( done = 0 ) end order by estimated_at asc, id asc limit min(coalesce(?, 50), 200)",
               "relations": [
                 {
                   "table": "tasks",
-                  "start": 67,
-                  "end": 72
+                  "start": 69,
+                  "end": 74
                 }
               ],
               "binds": [
@@ -2029,13 +2029,13 @@
             },
             {
               "sortProfile": "estimatedAtDesc",
-              "sql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks\n  where tasks.project_id = :projectId\n    and case when :__syqlActive0 = 0 then 1 else ( (\n  title like '%' || :needle || '%'\n)) end\n    and case when :__syqlActive1 = 0 then 1 else ( priority >= :minPriority) end\n    and case when :__syqlActive2 = 0 then 1 else ( done = 0\n  ) end order by estimated_at desc, id desc limit min(coalesce(:__syqlLimit, 50), 200)",
-              "positionalSql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks where tasks.project_id = ? and case when ? = 0 then 1 else ( ( title like '%' || ? || '%' )) end and case when ? = 0 then 1 else ( priority >= ?) end and case when ? = 0 then 1 else ( done = 0 ) end order by estimated_at desc, id desc limit min(coalesce(?, 50), 200)",
+              "sql": "select id, title, done, priority, estimated_at AS \"estimatedAt\" from tasks\n  where tasks.project_id = :projectId\n    and case when :__syqlActive0 = 0 then 1 else ( (\n  title like '%' || :needle || '%'\n)) end\n    and case when :__syqlActive1 = 0 then 1 else ( priority >= :minPriority) end\n    and case when :__syqlActive2 = 0 then 1 else ( done = 0\n  ) end order by estimated_at desc, id desc limit min(coalesce(:__syqlLimit, 50), 200)",
+              "positionalSql": "select id, title, done, priority, estimated_at AS \"estimatedAt\" from tasks where tasks.project_id = ? and case when ? = 0 then 1 else ( ( title like '%' || ? || '%' )) end and case when ? = 0 then 1 else ( priority >= ?) end and case when ? = 0 then 1 else ( done = 0 ) end order by estimated_at desc, id desc limit min(coalesce(?, 50), 200)",
               "relations": [
                 {
                   "table": "tasks",
-                  "start": 67,
-                  "end": 72
+                  "start": 69,
+                  "end": 74
                 }
               ],
               "binds": [
@@ -2094,13 +2094,13 @@
             },
             {
               "sortProfile": "titleAsc",
-              "sql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks\n  where tasks.project_id = :projectId\n    and case when :__syqlActive0 = 0 then 1 else ( (\n  title like '%' || :needle || '%'\n)) end\n    and case when :__syqlActive1 = 0 then 1 else ( priority >= :minPriority) end\n    and case when :__syqlActive2 = 0 then 1 else ( done = 0\n  ) end order by title asc, id asc limit min(coalesce(:__syqlLimit, 50), 200)",
-              "positionalSql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks where tasks.project_id = ? and case when ? = 0 then 1 else ( ( title like '%' || ? || '%' )) end and case when ? = 0 then 1 else ( priority >= ?) end and case when ? = 0 then 1 else ( done = 0 ) end order by title asc, id asc limit min(coalesce(?, 50), 200)",
+              "sql": "select id, title, done, priority, estimated_at AS \"estimatedAt\" from tasks\n  where tasks.project_id = :projectId\n    and case when :__syqlActive0 = 0 then 1 else ( (\n  title like '%' || :needle || '%'\n)) end\n    and case when :__syqlActive1 = 0 then 1 else ( priority >= :minPriority) end\n    and case when :__syqlActive2 = 0 then 1 else ( done = 0\n  ) end order by title asc, id asc limit min(coalesce(:__syqlLimit, 50), 200)",
+              "positionalSql": "select id, title, done, priority, estimated_at AS \"estimatedAt\" from tasks where tasks.project_id = ? and case when ? = 0 then 1 else ( ( title like '%' || ? || '%' )) end and case when ? = 0 then 1 else ( priority >= ?) end and case when ? = 0 then 1 else ( done = 0 ) end order by title asc, id asc limit min(coalesce(?, 50), 200)",
               "relations": [
                 {
                   "table": "tasks",
-                  "start": 67,
-                  "end": 72
+                  "start": 69,
+                  "end": 74
                 }
               ],
               "binds": [
@@ -2159,13 +2159,13 @@
             },
             {
               "sortProfile": "titleDesc",
-              "sql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks\n  where tasks.project_id = :projectId\n    and case when :__syqlActive0 = 0 then 1 else ( (\n  title like '%' || :needle || '%'\n)) end\n    and case when :__syqlActive1 = 0 then 1 else ( priority >= :minPriority) end\n    and case when :__syqlActive2 = 0 then 1 else ( done = 0\n  ) end order by title desc, id desc limit min(coalesce(:__syqlLimit, 50), 200)",
-              "positionalSql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks where tasks.project_id = ? and case when ? = 0 then 1 else ( ( title like '%' || ? || '%' )) end and case when ? = 0 then 1 else ( priority >= ?) end and case when ? = 0 then 1 else ( done = 0 ) end order by title desc, id desc limit min(coalesce(?, 50), 200)",
+              "sql": "select id, title, done, priority, estimated_at AS \"estimatedAt\" from tasks\n  where tasks.project_id = :projectId\n    and case when :__syqlActive0 = 0 then 1 else ( (\n  title like '%' || :needle || '%'\n)) end\n    and case when :__syqlActive1 = 0 then 1 else ( priority >= :minPriority) end\n    and case when :__syqlActive2 = 0 then 1 else ( done = 0\n  ) end order by title desc, id desc limit min(coalesce(:__syqlLimit, 50), 200)",
+              "positionalSql": "select id, title, done, priority, estimated_at AS \"estimatedAt\" from tasks where tasks.project_id = ? and case when ? = 0 then 1 else ( ( title like '%' || ? || '%' )) end and case when ? = 0 then 1 else ( priority >= ?) end and case when ? = 0 then 1 else ( done = 0 ) end order by title desc, id desc limit min(coalesce(?, 50), 200)",
               "relations": [
                 {
                   "table": "tasks",
-                  "start": 67,
-                  "end": 72
+                  "start": 69,
+                  "end": 74
                 }
               ],
               "binds": [
