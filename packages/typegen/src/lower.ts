@@ -306,16 +306,20 @@ export function lowerProjection(
     const langName = langNames[index] as string;
     if (langName === resultName) return text;
     changed = true;
+    // Double-quote the alias. SQLite preserves the case of an unquoted alias,
+    // PostgreSQL folds it to lower case, so an unquoted `AS membershipId`
+    // returns `membershipid` from Postgres. Both preserve a quoted alias.
+    const alias = `"${langName.replaceAll('"', '""')}"`;
     const explicit = EXPLICIT_ALIAS_RE.exec(text);
     if (explicit !== null && explicit[2] === resultName) {
-      return `${(explicit[1] as string).trim()} AS ${langName}`;
+      return `${(explicit[1] as string).trim()} AS ${alias}`;
     }
     const implicit = TRAILING_IDENT_RE.exec(text);
     if (implicit !== null && implicit[2] === resultName) {
       // Implicit alias (`expr name`) — swap the trailing identifier.
-      return `${(implicit[1] as string).trim()} AS ${langName}`;
+      return `${(implicit[1] as string).trim()} AS ${alias}`;
     }
-    return `${text} AS ${langName}`;
+    return `${text} AS ${alias}`;
   });
   if (!changed) {
     return { sql, changed: false, sqlNames: names, langNames };

@@ -470,7 +470,7 @@ describe('column fidelity', () => {
       nullable: false,
       fidelity: 'exact',
     });
-    expect(q.sql).toContain('_sync_version AS serverVersion');
+    expect(q.sql).toContain('_sync_version AS "serverVersion"');
   });
   test('requires a public alias for the hidden physical name', () => {
     expect(() =>

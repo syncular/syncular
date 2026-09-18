@@ -983,9 +983,16 @@ function splitSelectList(sql: string): SelectItem[] | null {
       if (raw.length === 0) continue;
       // `expr AS alias` or `expr alias` (trailing bare identifier). Only treat
       // a trailing word as an alias when the expr has more than that word.
-      const asMatch = /^(.*?)\s+AS\s+([A-Za-z_][A-Za-z0-9_]*)$/i.exec(raw);
+      // Projection lowering emits the alias double-quoted, so accept both.
+      const asMatch =
+        /^(.*?)\s+AS\s+(?:"((?:[^"]|"")*)"|([A-Za-z_][A-Za-z0-9_]*))$/i.exec(
+          raw,
+        );
       if (asMatch !== null) {
-        items.push({ expr: (asMatch[1] as string).trim(), alias: asMatch[2] });
+        items.push({
+          expr: (asMatch[1] as string).trim(),
+          alias: (asMatch[2] ?? (asMatch[3] as string)).replaceAll('""', '"'),
+        });
       } else {
         items.push({ expr: raw, alias: undefined });
       }

@@ -660,7 +660,8 @@ describe('normative SYQL revision-1 conformance fixtures', () => {
           for (const snippet of item.required[target]) {
             expect(outputs[target]).toContain(snippet);
           }
-          expect(outputs[target]).toContain(
+          // Swift/Kotlin/Dart/Rust literals escape the SQL's own double quotes.
+          expect(outputs[target].replaceAll('\\"', '"')).toContain(
             query.syql?.plan.statements[0]?.positionalSql as string,
           );
         }

@@ -18,6 +18,7 @@ import {
 } from '@syncular/server';
 import { pgliteExecutor } from '@syncular/server/pglite';
 import {
+  projectDocCountQuery,
   searchTasksQuery,
   taskTitlesQuery,
 } from '../../typegen/test/fixtures/basic/syncular.queries';
@@ -290,4 +291,58 @@ describe('authoritative query partition rewriting', () => {
       else await db?.close();
     });
   }
+
+  test('a generated camelCase alias keeps its key on Postgres and SQLite', async () => {
+    // `projectDocCount` is generated (camel naming) as
+    // `project_id AS "projectId", count(*) AS "docCount"`. Postgres folds an
+    // unquoted alias to lower case, so an unquoted emission returns
+    // `projectid`/`doccount` there while SQLite returns the camel keys.
+    const columns: readonly RowColumn[] = [
+      { name: 'id', type: 'string', nullable: false },
+      { name: 'project_id', type: 'string', nullable: false },
+    ];
+    const schema: ServerSchema = {
+      version: 1,
+      tables: [
+        {
+          name: 'docs',
+          columns,
+          primaryKey: 'id',
+          scopes: ['project:{project_id}'],
+        },
+      ],
+    };
+    for (const backend of ['SQLite', 'Postgres'] as const) {
+      const db = backend === 'Postgres' ? await PGlite.create() : undefined;
+      const storage =
+        backend === 'SQLite'
+          ? new SqliteServerStorage()
+          : new PostgresServerStorage(pgliteExecutor(db as PGlite));
+      await storage.ensureSchema(compileSchema(schema));
+      const tx = await storage.begin('part-1');
+      await tx.upsertRow('docs', {
+        rowId: 'doc-1',
+        serverVersion: 1,
+        scopes: { project_id: 'p1' },
+        payload: encodeRow(columns, ['doc-1', 'p1']),
+      });
+      await tx.commit();
+
+      const plan = projectDocCountQuery.relationPlans[0];
+      if (plan === undefined) throw new Error('missing generated plan');
+      const result = await storage.queryAuthoritative?.('part-1', {
+        plan,
+        params: [],
+        tables: projectDocCountQuery.tables,
+      });
+      expect({ backend, keys: Object.keys(result?.rows[0] ?? {}) }).toEqual({
+        backend,
+        keys: ['projectId', 'docCount'],
+      });
+      expect(result?.rows).toEqual([{ projectId: 'p1', docCount: 1 }]);
+
+      if (storage instanceof SqliteServerStorage) storage.db.close();
+      else await db?.close();
+    }
+  });
 });
