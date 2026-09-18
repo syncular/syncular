@@ -205,6 +205,36 @@ for (const backend of ['sqlite', 'postgres', 'd1'] as const) {
   });
 }
 
+test('SQLite per-row scope replacement narrows on the by-row index', () => {
+  const db = new BunSqliteDatabase();
+  const storage = new SqliteServerStorage(db);
+  const insert = db.query(
+    'INSERT OR IGNORE INTO sync_row_scopes(partition, tbl, var, value, row_id) VALUES (?,?,?,?,?)',
+  );
+  // A few thousand rows across many scope variables: the (partition, tbl)
+  // range the inverted PRIMARY KEY can narrow to is deliberately much larger
+  // than the single row being replaced.
+  for (let variable = 0; variable < 16; variable++) {
+    for (let row = 0; row < 256; row++) {
+      insert.run(
+        'part',
+        'docs',
+        `var${variable}`,
+        `value${variable}`,
+        `row-${String(row).padStart(6, '0')}`,
+      );
+    }
+  }
+  const plan = db
+    .query<{ detail: string }, string[]>(
+      'EXPLAIN QUERY PLAN DELETE FROM sync_row_scopes WHERE partition=? AND tbl=? AND row_id=?',
+    )
+    .all('part', 'docs', 'row-000001');
+  expect(plan).toHaveLength(1);
+  expect(plan[0]?.detail).toContain('USING INDEX sync_row_scopes_by_row');
+  storage.db.close();
+});
+
 runStorageContract('sqlite', () => new SqliteServerStorage());
 
 runStorageContract('postgres/pglite', async () => {

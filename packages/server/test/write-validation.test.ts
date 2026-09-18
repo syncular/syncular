@@ -5,18 +5,29 @@
  * protocol code. Driven through bytes, like the rest of the push suite.
  */
 import { describe, expect, test } from 'bun:test';
-import { decodeRow, encodeSparseRow, type RowColumn } from '@syncular/core';
+import { PGlite } from '@electric-sql/pglite';
+import {
+  decodeRow,
+  encodeRow,
+  encodeSparseRow,
+  type RowColumn,
+} from '@syncular/core';
 import {
   CommitValidationRejection,
   type CommitValidator,
+  compileSchema,
   type CrdtMergerRegistry,
+  PostgresServerStorage,
   RESERVED_VALIDATION_CODE_PREFIXES,
   type ServerSchema,
+  SqliteServerStorage,
   type SyncularServerEvent,
   type SyncularServerEvents,
   ValidationRejection,
   type Validator,
 } from '@syncular/server';
+import { pgliteExecutor } from '@syncular/server/pglite';
+import type { PgExecutor, PgQueryable } from '../src/pg-executor';
 import {
   makeContext,
   pushCommit,
@@ -24,6 +35,7 @@ import {
   sync,
   TASK_COLUMNS,
   taskRow,
+  TEST_SCHEMA,
   upsert,
 } from './helpers';
 
@@ -327,6 +339,80 @@ describe('write validation apply (§6.7)', () => {
     expect(pushResults(message)[0]?.status).toBe('applied');
     expect(ran).toBe(false);
   });
+
+  for (const backend of ['SQLite', 'PostgreSQL/PGlite'] as const) {
+    test(`${backend}: an unrelated queryAuthoritative runs while another transaction is open`, async () => {
+      const db =
+        backend === 'PostgreSQL/PGlite' ? await PGlite.create() : undefined;
+      const storage =
+        backend === 'SQLite'
+          ? new SqliteServerStorage()
+          : new PostgresServerStorage(pgliteExecutor(db!));
+      await storage.ensureSchema(compileSchema(TEST_SCHEMA));
+      const sql = 'SELECT id FROM tasks';
+      const start = sql.indexOf('tasks');
+      const request = {
+        plan: {
+          sql,
+          relations: [{ table: 'tasks', start, end: start + 'tasks'.length }],
+        },
+        params: [],
+        tables: ['tasks'],
+      };
+      try {
+        const seed = await storage.begin('part-1');
+        await seed.upsertRow('tasks', {
+          rowId: 't1',
+          serverVersion: 1,
+          scopes: { project_id: 'p1' },
+          payload: encodeRow(TASK_COLUMNS, [
+            't1',
+            'p1',
+            'one',
+            false,
+            null,
+            null,
+          ]),
+        });
+        await seed.appendCommit({
+          clientId: 'seed',
+          clientCommitId: 'seed-1',
+          actorId: 'seed',
+          createdAtMs: 1,
+          changes: [],
+        });
+        await seed.commit();
+
+        // Hold a transaction open while a separate caller issues a
+        // registered query. The storage serializes that query behind the
+        // open transaction and then serves it; only a query issued from
+        // inside the transaction's own validator execution hangs.
+        const held = await storage.begin('part-1');
+        await held.upsertRow('tasks', {
+          rowId: 't2',
+          serverVersion: 1,
+          scopes: { project_id: 'p1' },
+          payload: encodeRow(TASK_COLUMNS, [
+            't2',
+            'p1',
+            'two',
+            false,
+            null,
+            null,
+          ]),
+        });
+        const pending = storage.queryAuthoritative('part-1', request);
+        await held.rollback();
+        expect(await pending).toEqual({
+          rows: [{ id: 't1' }],
+          maxCommitSeq: 1,
+        });
+      } finally {
+        if (storage instanceof SqliteServerStorage) storage.db.close();
+        else await db?.close();
+      }
+    });
+  }
 });
 
 describe('whole-commit validation (§6.8)', () => {
@@ -427,6 +513,61 @@ describe('whole-commit validation (§6.8)', () => {
       exact: 'two',
       scan: ['t1', 't2'],
     });
+  });
+
+  test('serializes a Promise.all of commit reads on one pinned Postgres client', async () => {
+    const db = await PGlite.create();
+    const inner = pgliteExecutor(db);
+    // node-postgres warns about, and node-postgres 9 rejects, a second
+    // statement issued on one connection before the first resolves. This
+    // double stands in for that driver: it fails the push if the storage
+    // ever overlaps two statements on the pinned client.
+    let inFlight = 0;
+    const guard = <T>(work: () => Promise<T>): Promise<T> => {
+      if (inFlight > 0) {
+        throw new Error('overlapping statement on a pinned client');
+      }
+      inFlight += 1;
+      return work().finally(() => {
+        inFlight -= 1;
+      });
+    };
+    // Serialization is the claim under test, so only the pinned client is
+    // guarded: a pool is allowed to run statements concurrently.
+    const exec: PgExecutor = {
+      query: <Row>(text: string, params?: readonly unknown[]) =>
+        inner.query<Row>(text, params),
+      transaction: <T>(fn: (client: PgQueryable) => Promise<T>) =>
+        inner.transaction((client) =>
+          fn({
+            query: <Row>(text: string, params?: readonly unknown[]) =>
+              guard(() => client.query<Row>(text, params)),
+          }),
+        ),
+      close: async () => {
+        await inner.close?.();
+      },
+    };
+    const concurrentReads: CommitValidator = async ({ read }) => {
+      await Promise.all([
+        read.getRow('tasks', 't1'),
+        read.getRow('tasks', 't2'),
+      ]);
+    };
+    const storage = new PostgresServerStorage(exec);
+    await storage.ensureSchema(compileSchema(TEST_SCHEMA));
+    const t = makeContext({
+      storage,
+      commitValidator: concurrentReads,
+    });
+    const message = await sync(t, [
+      pushCommit('concurrent-reads', [
+        upsert('tasks', 't1', taskRow('t1', 'p1', 'one')),
+        upsert('tasks', 't2', taskRow('t2', 'p1', 'two')),
+      ]),
+    ]);
+    expect(pushResults(message)[0]?.status).toBe('applied');
+    await db.close();
   });
 
   test('runs once for an idempotently replayed commit', async () => {

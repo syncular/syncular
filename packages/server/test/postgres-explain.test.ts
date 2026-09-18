@@ -176,6 +176,22 @@ test('trusted exact lookup uses its declared relational index', async () => {
   await db.close();
 });
 
+test('per-row scope replacement is driven by the by-row index', async () => {
+  const { db } = await seededStorage();
+  // `writeRowOn`/`deleteRow` replace a row's scope entries with a
+  // (partition, tbl, row_id) predicate. `row_id` is the LAST column of the
+  // inverted PRIMARY KEY, so without `sync_row_scopes_by_row` the planner
+  // can only narrow to the table's whole scope range.
+  const plan = await explain(
+    db,
+    'DELETE FROM sync_row_scopes WHERE partition=$1 AND tbl=$2 AND row_id=$3',
+    [PARTITION, 'tasks', 'r000003'],
+  );
+  expect(plan).toContain('sync_row_scopes_by_row');
+  expect(plan).not.toContain('Seq Scan on sync_row_scopes');
+  await db.close();
+});
+
 test('listRowsReferencingBlob candidate scan is index-driven (no Seq Scan)', async () => {
   const { db } = await seededStorage();
   // The by-blob secondary index (partition, blob_id) drives the §5.9.5

@@ -122,7 +122,14 @@ import { assertScopeIndexedScan, resolveIndexRowScan } from './storage-query';
  *   - `sync_row_scopes_pk (partition, tbl, var, value, row_id)` — same shape
  *     for `scanRows`, ordered by `row_id`.
  * Both are the PRIMARY KEY, so they are the clustering/covering index for
- * their table. No secondary index is needed for the hot path.
+ * their table.
+ *
+ * `sync_row_scopes_by_row (partition, tbl, row_id)` is the one secondary
+ * scope index: `writeRowOn` and `deleteRow` replace a row's scope entries
+ * with a `(partition, tbl, row_id)` predicate, and `row_id` is the LAST
+ * column of the inverted PRIMARY KEY, so without this index that predicate
+ * scans the table's whole scope range on every row written (a bulk import
+ * costs one such scan per row).
  *
  * Blob reference index (§5.9.4) — parity with the SQLite dialect's
  * `sync_blob_refs`:
@@ -151,6 +158,8 @@ CREATE TABLE IF NOT EXISTS sync_row_scopes(
   var TEXT NOT NULL, value TEXT NOT NULL, row_id TEXT NOT NULL,
   PRIMARY KEY(partition, tbl, var, value, row_id)
 );
+CREATE INDEX IF NOT EXISTS sync_row_scopes_by_row
+  ON sync_row_scopes(partition, tbl, row_id);
 CREATE TABLE IF NOT EXISTS sync_commits(
   partition TEXT NOT NULL, commit_seq BIGINT NOT NULL,
   client_id TEXT NOT NULL, client_commit_id TEXT NOT NULL,
@@ -601,7 +610,23 @@ class PostgresTransaction implements StorageTransaction {
     resolve: () => void,
     reject: (error: unknown) => void,
   ) {
-    this.#client = client;
+    // One pinned connection carries one statement at a time: node-postgres
+    // warns about a concurrently issued second query today and rejects it in
+    // node-postgres 9. A whole-commit validator that fans independent reads
+    // out with Promise.all must not interleave them, so every statement
+    // issued through this transaction is chained on one FIFO — the same
+    // shape as `SqliteServerStorage.queryAuthoritative`.
+    let tail: Promise<void> = Promise.resolve();
+    this.#client = {
+      query: <Row>(text: string, params?: readonly unknown[]) => {
+        const run = tail.then(() => client.query<Row>(text, params));
+        tail = run.then(
+          () => undefined,
+          () => undefined,
+        );
+        return run;
+      },
+    };
     this.#partition = partition;
     this.#resolveTable = resolveTable;
     this.#resolve = resolve;
@@ -976,6 +1001,51 @@ export class PostgresServerStorage implements ServerStorage {
       throw new Error(
         `stored schema version ${stored} is newer than the configured schema (${schema.version}) — refusing to run an older server against a migrated database`,
       );
+    }
+    if (stored !== undefined && stored === schema.version) {
+      // Version equality is not layout equality: a marker written by another
+      // build at the same version describes rows the running codec cannot
+      // decode. Compare the stored layouts instead of trusting the number.
+      const storedLayouts = parseLayouts(
+        typeof marker.rows[0]?.layouts === 'string'
+          ? marker.rows[0].layouts
+          : undefined,
+      );
+      const configuredLayouts = parseLayouts(layoutsOf(schema));
+      let mismatch: string | undefined;
+      for (const [tableName, columns] of Object.entries(configuredLayouts)) {
+        const storedTable = storedLayouts[tableName];
+        const columnCount = Math.max(columns.length, storedTable?.length ?? 0);
+        for (let index = 0; index < columnCount; index++) {
+          const expected = columns[index];
+          const actual = storedTable?.[index];
+          if (
+            expected !== undefined &&
+            actual !== undefined &&
+            actual.name === expected.name &&
+            actual.type === expected.type &&
+            actual.nullable === expected.nullable
+          ) {
+            continue;
+          }
+          mismatch = `table ${JSON.stringify(tableName)} column ${JSON.stringify(expected?.name ?? actual?.name ?? '')}`;
+          break;
+        }
+        if (mismatch !== undefined) break;
+      }
+      if (mismatch === undefined) {
+        for (const tableName of Object.keys(storedLayouts)) {
+          if (!(tableName in configuredLayouts)) {
+            mismatch = `table ${JSON.stringify(tableName)}`;
+            break;
+          }
+        }
+      }
+      if (mismatch !== undefined) {
+        throw new Error(
+          `stored schema layouts disagree with the configured schema at version ${schema.version} (${mismatch}) — refusing to serve a database whose stored rows the running code cannot decode`,
+        );
+      }
     }
     if (stored === undefined || stored < schema.version) {
       // Introspect existing app tables, apply the migration subset

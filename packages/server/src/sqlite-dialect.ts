@@ -36,6 +36,12 @@ import type {
  * range that returns already-ordered rows — the same covering-index shape
  * the Postgres storage documents (§3.1, performance-by-
  * construction).
+ *
+ * `sync_row_scopes_by_row` is the one secondary scope index: a per-row
+ * scope replacement predicates on `(partition, tbl, row_id)`, and `row_id`
+ * is the LAST PRIMARY KEY column, so that predicate cannot narrow the
+ * inverted index. Declared here so every SQLite-family storage (and D1,
+ * which applies this same DDL) keeps the same plan shape as Postgres.
  */
 export const SQLITE_DDL = `
 CREATE TABLE IF NOT EXISTS sync_partitions(
@@ -54,6 +60,8 @@ CREATE TABLE IF NOT EXISTS sync_row_scopes(
   var TEXT NOT NULL, value TEXT NOT NULL, row_id TEXT NOT NULL,
   PRIMARY KEY(partition, tbl, var, value, row_id)
 );
+CREATE INDEX IF NOT EXISTS sync_row_scopes_by_row
+  ON sync_row_scopes(partition, tbl, row_id);
 CREATE TABLE IF NOT EXISTS sync_commits(
   partition TEXT NOT NULL, commit_seq INTEGER NOT NULL,
   client_id TEXT NOT NULL, client_commit_id TEXT NOT NULL,

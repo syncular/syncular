@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { PGlite } from '@electric-sql/pglite';
 import {
+  compileSchema,
   D1ServerStorage,
   MemorySegmentStore,
   PostgresServerStorage,
@@ -42,14 +43,19 @@ const fixtures: readonly StorageFixture[] = [
   },
   {
     name: 'D1',
-    open: async () => ({
+    open: async () => {
       // The fixture runs seed calls sequentially, which supplies the same
       // external serialization that a production D1 host gets from its DO.
-      storage: new D1ServerStorage(new D1DatabaseDouble(), {
+      const storage = new D1ServerStorage(new D1DatabaseDouble(), {
         pushApplySerialized: true,
-      }),
-      close: async () => {},
-    }),
+      });
+      // D1 budgets DDL per invocation and resumes across invocations by
+      // design, so open the fixture by stepping the migration to completion.
+      while (
+        !(await storage.migrateSchema(compileSchema(TEST_SCHEMA))).complete
+      ) {}
+      return { storage, close: async () => {} };
+    },
   },
 ];
 
