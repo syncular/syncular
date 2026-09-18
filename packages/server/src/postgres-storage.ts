@@ -986,6 +986,51 @@ export class PostgresServerStorage implements ServerStorage {
         `stored schema version ${stored} is newer than the configured schema (${schema.version}) — refusing to run an older server against a migrated database`,
       );
     }
+    if (stored !== undefined && stored === schema.version) {
+      // Version equality is not layout equality: a marker written by another
+      // build at the same version describes rows the running codec cannot
+      // decode. Compare the stored layouts instead of trusting the number.
+      const storedLayouts = parseLayouts(
+        typeof marker.rows[0]?.layouts === 'string'
+          ? marker.rows[0].layouts
+          : undefined,
+      );
+      const configuredLayouts = parseLayouts(layoutsOf(schema));
+      let mismatch: string | undefined;
+      for (const [tableName, columns] of Object.entries(configuredLayouts)) {
+        const storedTable = storedLayouts[tableName];
+        const columnCount = Math.max(columns.length, storedTable?.length ?? 0);
+        for (let index = 0; index < columnCount; index++) {
+          const expected = columns[index];
+          const actual = storedTable?.[index];
+          if (
+            expected !== undefined &&
+            actual !== undefined &&
+            actual.name === expected.name &&
+            actual.type === expected.type &&
+            actual.nullable === expected.nullable
+          ) {
+            continue;
+          }
+          mismatch = `table ${JSON.stringify(tableName)} column ${JSON.stringify(expected?.name ?? actual?.name ?? '')}`;
+          break;
+        }
+        if (mismatch !== undefined) break;
+      }
+      if (mismatch === undefined) {
+        for (const tableName of Object.keys(storedLayouts)) {
+          if (!(tableName in configuredLayouts)) {
+            mismatch = `table ${JSON.stringify(tableName)}`;
+            break;
+          }
+        }
+      }
+      if (mismatch !== undefined) {
+        throw new Error(
+          `stored schema layouts disagree with the configured schema at version ${schema.version} (${mismatch}) — refusing to serve a database whose stored rows the running code cannot decode`,
+        );
+      }
+    }
     if (stored === undefined || stored < schema.version) {
       // Introspect existing app tables, apply the migration subset
       // (CREATE TABLE / ADD COLUMN / rebuild indexes), then rewrite stored

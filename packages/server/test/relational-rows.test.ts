@@ -31,6 +31,7 @@ import {
   type StoredRow,
 } from '@syncular/server';
 import { pgliteExecutor } from '@syncular/server/pglite';
+import { BunSqliteDatabase } from '@syncular/server/sqlite';
 import { D1DatabaseDouble } from './d1-double';
 
 const PARTITION = 'part-1';
@@ -479,6 +480,68 @@ describe('server-side schema migration (the subset)', () => {
     const decoded = decodeRow(v2Columns, stored!.payload);
     expect(decoded[2]).toBe('v1 row');
     expect(decoded[v2Columns.length - 1]).toBeNull();
+  });
+
+  test('SQLite rejects a same-version database whose stored layout drifted', async () => {
+    const db = new BunSqliteDatabase();
+    const storage = new SqliteServerStorage(db);
+    await storage.ensureSchema(compileSchema(SCHEMA));
+    await upsert(storage, PARTITION, 'tasks', taskRow('t1', 'p1', 'v1 row'));
+
+    // A second instance over the same database is a restart: the stored
+    // layout matches, so the open proceeds without touching the rows.
+    const restarted = new SqliteServerStorage(db);
+    await restarted.ensureSchema(compileSchema(SCHEMA));
+    expect(await restarted.getRow(PARTITION, 'tasks', 't1')).toBeDefined();
+
+    // Same version, one compiled column the marker never saw: the layout is
+    // drifted and the open must fail naming the table and the column.
+    const drifted = compileSchema({
+      version: 1,
+      tables: [
+        {
+          ...SCHEMA.tables[0]!,
+          columns: [
+            ...TASK_COLUMNS,
+            { name: 'drift', type: 'string', nullable: true },
+          ],
+        },
+        SCHEMA.tables[1]!,
+      ],
+    });
+    await expect(
+      new SqliteServerStorage(db).ensureSchema(drifted),
+    ).rejects.toThrow('table "tasks" column "drift"');
+    db.close();
+  });
+
+  test('Postgres rejects a same-version database whose stored layout drifted', async () => {
+    const db = await PGlite.create();
+    const storage = new PostgresServerStorage(pgliteExecutor(db));
+    await storage.ensureSchema(compileSchema(SCHEMA));
+    await upsert(storage, PARTITION, 'tasks', taskRow('t1', 'p1', 'v1 row'));
+
+    const restarted = new PostgresServerStorage(pgliteExecutor(db));
+    await restarted.ensureSchema(compileSchema(SCHEMA));
+    expect(await restarted.getRow(PARTITION, 'tasks', 't1')).toBeDefined();
+
+    const drifted = compileSchema({
+      version: 1,
+      tables: [
+        {
+          ...SCHEMA.tables[0]!,
+          columns: [
+            ...TASK_COLUMNS,
+            { name: 'drift', type: 'string', nullable: true },
+          ],
+        },
+        SCHEMA.tables[1]!,
+      ],
+    });
+    await expect(
+      new PostgresServerStorage(pgliteExecutor(db)).ensureSchema(drifted),
+    ).rejects.toThrow('table "tasks" column "drift"');
+    await db.close();
   });
 
   test('Postgres preserves existing rows across a nullable column append', async () => {
