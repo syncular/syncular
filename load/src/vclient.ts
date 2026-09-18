@@ -20,6 +20,7 @@ import {
   encodeSparseRow,
   MessageStreamScanner,
   PROTOCOL_WIRE_VERSION,
+  type PushResultFrame,
   parseRealtimeServerEvent,
   REALTIME_TAG_DELTA,
   REALTIME_TAG_ROUND,
@@ -91,12 +92,18 @@ function upsertOp(id: string, project: string, seq: number): RequestFrame {
 function requestBytes(
   clientId: string,
   frames: readonly RequestFrame[],
+  logEpoch?: string,
 ): Uint8Array {
   return encodeMessage({
     wireVersion: PROTOCOL_WIRE_VERSION,
     msgKind: 'request',
     frames: [
-      { type: 'REQ_HEADER', clientId, schemaVersion: SCHEMA.version },
+      {
+        type: 'REQ_HEADER',
+        clientId,
+        schemaVersion: SCHEMA.version,
+        ...(logEpoch !== undefined ? { logEpoch } : {}),
+      },
       ...frames,
     ],
   });
@@ -115,6 +122,51 @@ function assertNoErrorFrames(frames: readonly ResponseFrame[]): void {
       );
     }
   }
+}
+
+/**
+ * A rejected push is a valid response, so an accounting pass alone would not
+ * notice it: the round would report a latency and zero changed rows while the
+ * server discarded every write (§6.3). Treat it as the protocol error it is
+ * and let the scenario's zero-error budget bite.
+ */
+function assertPushAccepted(message: ResponseMessage): void {
+  const rejected = message.frames.find(
+    (frame): frame is PushResultFrame =>
+      frame.type === 'PUSH_RESULT' && frame.status === 'rejected',
+  );
+  if (rejected === undefined) return;
+  throw new VClientError(
+    `push rejected: ${rejected.results
+      .map((result) => (result.status === 'applied' ? 'applied' : result.code))
+      .join(', ')}`,
+  );
+}
+
+/**
+ * §2.1: every round after the first carries the partition log epoch, and the
+ * round that acquires it carries no push commit. A request without the epoch
+ * is answered with a header-only reset response, so a client that never sends
+ * it measures a server that returns nothing at all: no commits, no snapshot,
+ * no segment, and an empty bootstrap that looks complete.
+ */
+function acquiredLogEpoch(message: ResponseMessage): string {
+  const header = message.frames[0];
+  if (header?.type !== 'RESP_HEADER' || header.logEpoch === undefined) {
+    throw new VClientError('epoch acquisition returned no logEpoch');
+  }
+  if (header.requiredSchemaVersion !== undefined) {
+    throw new VClientError(
+      `server requires schema version ${header.requiredSchemaVersion}`,
+    );
+  }
+  return header.logEpoch;
+}
+
+/** True for the header-only §2.1 answer to a round the log restarted under. */
+function isEpochReset(message: ResponseMessage): boolean {
+  const header = message.frames[0];
+  return header?.type === 'RESP_HEADER' && header.resetRequired === true;
 }
 
 interface Accounting {
@@ -197,6 +249,7 @@ export class HttpVClient {
   readonly #baseUrl: string;
   readonly #subs = new Map<string, SubscriptionState>();
   #pushSeq = 0;
+  #logEpoch: string | undefined;
 
   constructor(options: VClientOptions) {
     this.clientId = options.clientId;
@@ -220,8 +273,12 @@ export class HttpVClient {
     }));
   }
 
-  async #round(frames: readonly RequestFrame[]): Promise<RoundResult> {
-    const body = requestBytes(this.clientId, frames);
+  /** The wire round: one request, one response, no epoch bookkeeping. */
+  async #roundRaw(
+    frames: readonly RequestFrame[],
+    logEpoch?: string,
+  ): Promise<RoundResult> {
+    const body = requestBytes(this.clientId, frames, logEpoch);
     const t0 = performance.now();
     const response = await fetch(`${this.#baseUrl}/sync`, {
       method: 'POST',
@@ -240,7 +297,28 @@ export class HttpVClient {
       throw new VClientError('expected a response message');
     }
     const { appliedRows, bootstrapComplete } = account(decoded, this.#subs);
+    assertPushAccepted(decoded);
     return { latencyMs, message: decoded, appliedRows, bootstrapComplete };
+  }
+
+  /**
+   * A round bound to the partition log epoch. The first one acquires it; a
+   * response that reports the log restarted re-acquires and repeats the round
+   * once, which is safe for a push because the server keys idempotency on the
+   * client commit id (§2.3).
+   */
+  async #round(frames: readonly RequestFrame[]): Promise<RoundResult> {
+    let epoch = await this.#ensureLogEpoch();
+    let result = await this.#roundRaw(frames, epoch);
+    if (isEpochReset(result.message)) {
+      this.#logEpoch = undefined;
+      epoch = await this.#ensureLogEpoch();
+      result = await this.#roundRaw(frames, epoch);
+      if (isEpochReset(result.message)) {
+        throw new VClientError('server kept resetting the log epoch');
+      }
+    }
+    return result;
   }
 
   /** One pull round (PULL_HEADER then subscription frames, §1.5 order). */
@@ -262,7 +340,7 @@ export class HttpVClient {
   }
 
   /** One push+pull round; increments the client's write sequence. */
-  pushPull(id: string, project: string): Promise<RoundResult> {
+  async pushPull(id: string, project: string): Promise<RoundResult> {
     this.#pushSeq += 1;
     return this.#round([
       upsertOp(id, project, this.#pushSeq),
@@ -275,6 +353,27 @@ export class HttpVClient {
       },
       ...this.#subFrames(),
     ]);
+  }
+
+  /** Acquire the partition log epoch once: a pull that asks for nothing. */
+  async #ensureLogEpoch(): Promise<string> {
+    const epoch =
+      this.#logEpoch ??
+      acquiredLogEpoch(
+        (
+          await this.#roundRaw([
+            {
+              type: 'PULL_HEADER',
+              limitCommits: 0,
+              limitSnapshotRows: 0,
+              maxSnapshotPages: 0,
+              accept: ACCEPT_ROWS,
+            },
+          ])
+        ).message,
+      );
+    this.#logEpoch = epoch;
+    return epoch;
   }
 
   /**
@@ -364,6 +463,7 @@ export class RealtimeVClient {
   #scanner: MessageStreamScanner | undefined;
   #handlers: RealtimeVClientHandlers = {};
   #pushSeq = 0;
+  #logEpoch: string | undefined;
 
   constructor(options: VClientOptions) {
     this.clientId = options.clientId;
@@ -454,12 +554,15 @@ export class RealtimeVClient {
     }));
   }
 
-  #roundOverSocket(frames: readonly RequestFrame[]): Promise<ResponseMessage> {
+  #roundOverSocket(
+    frames: readonly RequestFrame[],
+    logEpoch?: string,
+  ): Promise<ResponseMessage> {
     const ws = this.#ws;
     if (ws === undefined || ws.readyState !== WebSocket.OPEN) {
       return Promise.reject(new VClientError('socket not open'));
     }
-    const body = requestBytes(this.clientId, frames);
+    const body = requestBytes(this.clientId, frames, logEpoch);
     const tagged = new Uint8Array(body.length + 1);
     tagged[0] = REALTIME_TAG_ROUND;
     tagged.set(body, 1);
@@ -473,7 +576,7 @@ export class RealtimeVClient {
   /** One sync (catch-up) round over the socket; returns latency + rows. */
   async syncRound(): Promise<RoundResult> {
     const t0 = performance.now();
-    const message = await this.#roundOverSocket([
+    const message = await this.#socketRound([
       {
         type: 'PULL_HEADER',
         limitCommits: 200,
@@ -492,7 +595,7 @@ export class RealtimeVClient {
   async pushRound(id: string, project: string): Promise<RoundResult> {
     this.#pushSeq += 1;
     const t0 = performance.now();
-    const message = await this.#roundOverSocket([
+    const message = await this.#socketRound([
       upsertOp(id, project, this.#pushSeq),
       {
         type: 'PULL_HEADER',
@@ -505,7 +608,48 @@ export class RealtimeVClient {
     ]);
     const latencyMs = performance.now() - t0;
     const { appliedRows, bootstrapComplete } = account(message, this.#subs);
+    assertPushAccepted(message);
     return { latencyMs, message, appliedRows, bootstrapComplete };
+  }
+
+  /** The socket round bound to the log epoch; same rule as the HTTP client. */
+  async #socketRound(
+    frames: readonly RequestFrame[],
+  ): Promise<ResponseMessage> {
+    let result = await this.#roundOverSocket(
+      frames,
+      await this.#ensureLogEpoch(),
+    );
+    if (isEpochReset(result)) {
+      this.#logEpoch = undefined;
+      result = await this.#roundOverSocket(
+        frames,
+        await this.#ensureLogEpoch(),
+      );
+      if (isEpochReset(result)) {
+        throw new VClientError('server kept resetting the log epoch');
+      }
+    }
+    return result;
+  }
+
+  /** Acquire the partition log epoch once, over the socket. */
+  async #ensureLogEpoch(): Promise<string> {
+    const epoch =
+      this.#logEpoch ??
+      acquiredLogEpoch(
+        await this.#roundOverSocket([
+          {
+            type: 'PULL_HEADER',
+            limitCommits: 0,
+            limitSnapshotRows: 0,
+            maxSnapshotPages: 0,
+            accept: ACCEPT_ROWS,
+          },
+        ]),
+      );
+    this.#logEpoch = epoch;
+    return epoch;
   }
 
   /** Page a full bootstrap to completion over the socket. */
