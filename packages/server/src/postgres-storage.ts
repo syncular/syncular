@@ -122,7 +122,14 @@ import { assertScopeIndexedScan, resolveIndexRowScan } from './storage-query';
  *   - `sync_row_scopes_pk (partition, tbl, var, value, row_id)` — same shape
  *     for `scanRows`, ordered by `row_id`.
  * Both are the PRIMARY KEY, so they are the clustering/covering index for
- * their table. No secondary index is needed for the hot path.
+ * their table.
+ *
+ * `sync_row_scopes_by_row (partition, tbl, row_id)` is the one secondary
+ * scope index: `writeRowOn` and `deleteRow` replace a row's scope entries
+ * with a `(partition, tbl, row_id)` predicate, and `row_id` is the LAST
+ * column of the inverted PRIMARY KEY, so without this index that predicate
+ * scans the table's whole scope range on every row written (a bulk import
+ * costs one such scan per row).
  *
  * Blob reference index (§5.9.4) — parity with the SQLite dialect's
  * `sync_blob_refs`:
@@ -151,6 +158,8 @@ CREATE TABLE IF NOT EXISTS sync_row_scopes(
   var TEXT NOT NULL, value TEXT NOT NULL, row_id TEXT NOT NULL,
   PRIMARY KEY(partition, tbl, var, value, row_id)
 );
+CREATE INDEX IF NOT EXISTS sync_row_scopes_by_row
+  ON sync_row_scopes(partition, tbl, row_id);
 CREATE TABLE IF NOT EXISTS sync_commits(
   partition TEXT NOT NULL, commit_seq BIGINT NOT NULL,
   client_id TEXT NOT NULL, client_commit_id TEXT NOT NULL,
