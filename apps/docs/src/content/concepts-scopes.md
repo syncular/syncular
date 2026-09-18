@@ -30,10 +30,17 @@ On every pull, per subscription, three maps meet
 | **Allowed** | your `resolveScopes(actor)` | "this actor may see these list ids" (`*` = any) |
 | **Effective** | requested ∩ allowed | what actually syncs |
 
-If the intersection loses a key the client asked for, the subscription is
-**revoked**: syncular returns an error for the whole subscription instead of
-delivering a smaller, unrequested subset. Revocation purges the
-now-unauthorized rows from the local database ([SPEC §3.3](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#33-revocation-and-the-purge-contract)).
+syncular intersects each requested variable on its own. When the allowed set
+keeps some values of a variable and loses others, the effective scopes
+narrow: the subscription stays **active** on the surviving values, rows for
+the lost values stop receiving changes, and those rows stay readable locally
+until the subscription is revoked or a fresh
+[bootstrap](/concepts-bootstrap/) applies the §5.6 first-page rule. The
+server **revokes** the subscription when a requested variable loses every
+requested value. Revocation purges the now-unauthorized rows from the local
+database ([SPEC §3.3](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#33-revocation-and-the-purge-contract)).
+Declare one exact scope value per subscription when the loss of that value
+must revoke the subscription and purge its rows.
 
 ## `resolveScopes`: the one function you write
 

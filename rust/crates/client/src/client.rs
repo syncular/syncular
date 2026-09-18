@@ -218,6 +218,146 @@ mod observation_tests {
         );
     }
 
+    #[test]
+    fn patch_with_a_scope_column_matches_the_stored_local_row() {
+        let mut client = client();
+        client.create_synced_tables().unwrap();
+        client
+            .conn
+            .execute(
+                "INSERT INTO tasks (id, project_id, _syncular_version) VALUES ('t1', 'p1', 1)",
+                [],
+            )
+            .unwrap();
+
+        // §3.4 rule 5: a value equal to the stored local row is a no-op, so
+        // the scope column leaves the presence set.
+        client
+            .patch(
+                "tasks",
+                "t1",
+                Map::from_iter([
+                    ("project_id".to_owned(), json!("p1")),
+                    ("id".to_owned(), json!("t1")),
+                ]),
+                None,
+            )
+            .expect("an equal scope column is a no-op");
+        let values = client.outbox[0].ops[0]
+            .values
+            .clone()
+            .expect("the patch records values");
+        assert_eq!(values.get("id"), Some(&json!("t1")));
+        assert!(!values.contains_key("project_id"));
+
+        // A differing value stays rejected.
+        let differing = client.patch(
+            "tasks",
+            "t1",
+            Map::from_iter([("project_id".to_owned(), json!("p2"))]),
+            None,
+        );
+        assert!(differing
+            .expect_err("a differing scope column is rejected")
+            .contains("patch cannot write scope column"));
+
+        // An absent local row leaves nothing to prove equality against, so
+        // the patch fails closed.
+        let absent = client.patch(
+            "tasks",
+            "ghost",
+            Map::from_iter([("project_id".to_owned(), json!("p1"))]),
+            None,
+        );
+        assert!(absent
+            .expect_err("an absent local row is rejected")
+            .contains("patch cannot write scope column"));
+        assert_eq!(client.pending_commit_ids().len(), 1);
+    }
+
+    #[test]
+    fn patch_scope_column_parity_for_the_primary_key_and_coerced_values() {
+        let schema = json!({
+            "version": 1,
+            "tables": [
+                {
+                    "name": "tenants",
+                    "primaryKey": "tenant_id",
+                    "columns": [
+                        { "name": "tenant_id", "type": "string", "nullable": false },
+                        { "name": "body", "type": "string", "nullable": false }
+                    ],
+                    "scopes": [{ "pattern": "tenant:{tenant_id}" }]
+                },
+                {
+                    "name": "buckets",
+                    "primaryKey": "id",
+                    "columns": [
+                        { "name": "id", "type": "string", "nullable": false },
+                        { "name": "bucket", "type": "float", "nullable": false },
+                        { "name": "body", "type": "string", "nullable": false }
+                    ],
+                    "scopes": [{ "pattern": "bucket:{bucket}" }]
+                }
+            ]
+        });
+        let mut client =
+            SyncClient::new("scope-parity".into(), &schema, ClientLimits::default())
+                .expect("test client");
+        client.create_synced_tables().unwrap();
+
+        // A primary key that is also a scope column with no local row: the
+        // sparse payload's key is the row id being patched, so its value is
+        // proven equal without a stored-row read.
+        client
+            .patch(
+                "tenants",
+                "t1",
+                Map::from_iter([
+                    ("tenant_id".to_owned(), json!("t1")),
+                    ("body".to_owned(), json!("created")),
+                ]),
+                None,
+            )
+            .expect("the primary-key scope column is proven equal by construction");
+
+        // A stored REAL scope value coerces from a supplied integer.
+        client
+            .conn
+            .execute(
+                "INSERT INTO buckets (id, bucket, body, _syncular_version) VALUES ('b1', 2.0, 'seed', 1)",
+                [],
+            )
+            .unwrap();
+        client
+            .patch(
+                "buckets",
+                "b1",
+                Map::from_iter([
+                    ("bucket".to_owned(), json!(2)),
+                    ("body".to_owned(), json!("coerced")),
+                ]),
+                None,
+            )
+            .expect("the stored REAL value coerces from a supplied integer");
+        let values = client.outbox[1].ops[0]
+            .values
+            .clone()
+            .expect("the patch records values");
+        assert!(!values.contains_key("bucket"));
+
+        // A differing value stays rejected.
+        let differing = client.patch(
+            "buckets",
+            "b1",
+            Map::from_iter([("bucket".to_owned(), json!(3))]),
+            None,
+        );
+        assert!(differing
+            .expect_err("a differing scope value is rejected")
+            .contains("patch cannot write scope column"));
+    }
+
     #[cfg(feature = "e2ee")]
     #[test]
     fn stored_key_fallback_resolves_an_integer_primary_key() {
@@ -7340,10 +7480,54 @@ impl SyncClient {
                 ));
             }
         }
-        // User's scope columns are server-emitted only (§3.4); a client patch
-        // never carries one.
+        // §3.4 rule 5 / §6.2: scope columns are immutable on update. The
+        // server accepts a present scope column whose value equals the
+        // stored row and applies it as a no-op, so a decoded envelope
+        // round-trips. The local row is the only value the client can prove
+        // equality against; when the row is absent locally the client cannot
+        // prove equality against the server's stored row and fails closed.
+        // A primary key that is also a scope column needs no stored-row
+        // read: the primary key in a sparse payload is by construction the
+        // row id being patched (§6.1), so its value is proven equal already.
         for scope in &schema_table.scope_variables {
-            if partial.contains_key(&scope.column) {
+            if !partial.contains_key(&scope.column) || scope.column == schema_table.primary_key
+            {
+                continue;
+            }
+            let Some(column) = schema_table
+                .columns
+                .iter()
+                .find(|column| column.name == scope.column)
+            else {
+                continue;
+            };
+            let stored = self
+                .conn
+                .query_row(
+                    &format!(
+                        "SELECT {} FROM {} WHERE {}",
+                        quote_ident(&scope.column),
+                        visible_table(&schema_table.name),
+                        row_id_predicate(schema_table)
+                    ),
+                    rusqlite::params![row_id],
+                    |row| Ok(sql_ref_to_json(column, row.get_ref(0)?)),
+                )
+                .ok();
+            // Decode the supplied value through the same column-type path the
+            // rest of the patch encoding uses, so a value that only equals
+            // the stored one in another number representation still compares
+            // equal.
+            let incoming = json_to_column_value(column, partial.get(&scope.column))
+                .ok()
+                .map(|value| column_value_to_json(&value));
+            // A stored blob never equals a patch value, matching the server's
+            // scope-column comparison (§3.4): bytes are unstorable as scope
+            // values.
+            let equal = stored.as_ref().is_some_and(|stored| {
+                stored.get("$bytes").is_none() && incoming.as_ref() == Some(stored)
+            });
+            if !equal {
                 return Err(format!(
                     "sync.invalid_request: table {table:?}: patch cannot write scope column {:?} (§3.4)",
                     scope.column
@@ -7351,6 +7535,11 @@ impl SyncClient {
             }
         }
         let mut values = partial;
+        // Presence-set semantics: a proven-equal scope column is dropped, so
+        // the patch leaves the stored value untouched (§6.2).
+        for scope in &schema_table.scope_variables {
+            values.remove(&scope.column);
+        }
         values.insert(
             schema_table.primary_key.clone(),
             Value::from(row_id.to_owned()),

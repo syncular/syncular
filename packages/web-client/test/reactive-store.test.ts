@@ -451,6 +451,115 @@ describe('composable windows and domain routing', () => {
     store.dispose();
   });
 
+  test('coverage entries sharing one base claim the union of their units', async () => {
+    const client = new FakeReactiveClient();
+    client.snapshots.push(
+      { revision: 1n, rows: [], coverage: COMPLETE },
+      { revision: 2n, rows: [], coverage: COMPLETE },
+      { revision: 3n, rows: [], coverage: COMPLETE },
+    );
+    const store = new ReactiveClientStore(client);
+    const entry = store.query<Row>(
+      querySpec({
+        coverage: [
+          { base: BASE, units: ['p1'] },
+          { base: { table: 'docs', variable: 'org_id' }, units: ['o1'] },
+          { base: BASE, units: ['p2'] },
+        ],
+      }),
+    );
+    const off = entry.subscribe(() => undefined);
+    await drainMicrotasks();
+
+    // The composed spec's later entry for the same base accumulates, so the
+    // first entry's units survive registration.
+    expect(client.setWindowCalls).toEqual([
+      { base: BASE, units: ['p1', 'p2'] },
+      { base: { table: 'docs', variable: 'org_id' }, units: ['o1'] },
+    ]);
+
+    client.emit(
+      batch(2n, {
+        windows: [
+          {
+            baseKey: 'tasks\0project_id\0{}',
+            table: 'tasks',
+            units: new Set(['p1']),
+          },
+        ],
+      }),
+    );
+    await drainMicrotasks();
+    expect(client.reads).toHaveLength(2);
+
+    client.emit(
+      batch(3n, {
+        windows: [
+          {
+            baseKey: 'tasks\0project_id\0{}',
+            table: 'tasks',
+            units: new Set(['p2']),
+          },
+        ],
+      }),
+    );
+    await drainMicrotasks();
+    expect(client.reads).toHaveLength(3);
+
+    off();
+    store.dispose();
+  });
+
+  test('dependencies sharing one table match a change in any scope', async () => {
+    const client = new FakeReactiveClient();
+    client.snapshots.push(
+      { revision: 1n, rows: [], coverage: COMPLETE },
+      { revision: 2n, rows: [], coverage: COMPLETE },
+      { revision: 3n, rows: [], coverage: COMPLETE },
+    );
+    const store = new ReactiveClientStore(client);
+    const entry = store.query<Row>(
+      querySpec({
+        dependencies: [
+          { table: 'tasks', scopeKeys: ['project:p1'] },
+          { table: 'tasks', scopeKeys: ['project:p2'] },
+        ],
+      }),
+    );
+    const off = entry.subscribe(() => undefined);
+    await drainMicrotasks();
+    expect(client.reads).toHaveLength(1);
+
+    // A scoped dependency that does not cover the change must not mask the
+    // sibling dependency on the same table that does.
+    client.emit(
+      batch(2n, {
+        tables: [{ table: 'tasks', scopeKeys: new Set(['project:p2']) }],
+      }),
+    );
+    await drainMicrotasks();
+    expect(client.reads).toHaveLength(2);
+
+    client.emit(
+      batch(3n, {
+        tables: [{ table: 'tasks', scopeKeys: new Set(['project:p1']) }],
+      }),
+    );
+    await drainMicrotasks();
+    expect(client.reads).toHaveLength(3);
+
+    client.emit(
+      batch(4n, {
+        tables: [{ table: 'tasks', scopeKeys: new Set(['project:p3']) }],
+      }),
+    );
+    await drainMicrotasks();
+    expect(client.reads).toHaveLength(3);
+
+    off();
+    store.dispose();
+  });
+
   test('a status event supersedes an older pending snapshot', async () => {
     const client = new FakeReactiveClient();
     const pending = deferred<SyncStatusSnapshot>();

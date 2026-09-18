@@ -196,15 +196,21 @@ function batchMatches<Row>(
   spec: ReactiveQuerySpec<Row>,
 ): boolean {
   for (const change of batch.tables) {
-    const dependency = spec.dependencies.find(
-      (candidate) => candidate.table === change.table,
-    );
-    if (dependency === undefined) continue;
-    if (dependency.scopeKeys === undefined || change.scopeKeys === undefined) {
-      return true;
-    }
-    for (const key of dependency.scopeKeys) {
-      if (change.scopeKeys.has(key)) return true;
+    // A composed spec carries one dependency per query branch. Every
+    // dependency on the changed table is consulted: a scoped dependency
+    // that does not cover the change must not mask a sibling dependency
+    // on the same table that does.
+    for (const dependency of spec.dependencies) {
+      if (dependency.table !== change.table) continue;
+      if (
+        dependency.scopeKeys === undefined ||
+        change.scopeKeys === undefined
+      ) {
+        return true;
+      }
+      for (const key of dependency.scopeKeys) {
+        if (change.scopeKeys.has(key)) return true;
+      }
     }
   }
   for (const change of batch.windows) {
@@ -389,14 +395,28 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
       this.#onAvailabilityChange();
       if (this.spec.claimCoverage !== false) {
         const claims: Promise<void>[] = [];
+        // A composed spec carries one coverage entry per query branch, and
+        // several branches can target the same base. One claim per distinct
+        // base covers the union of their units; a later entry for the same
+        // base does not replace the earlier one.
+        const unitsByBase = new Map<
+          string,
+          { base: WindowBase; units: Set<string> }
+        >();
         for (const coverage of this.spec.coverage ?? []) {
-          claims.push(
-            this.store.setWindowClaim(
-              this.#owner,
-              coverage.base,
-              coverage.units,
-            ),
-          );
+          const baseKey = windowBaseKey(coverage.base);
+          const existing = unitsByBase.get(baseKey);
+          if (existing === undefined) {
+            unitsByBase.set(baseKey, {
+              base: coverage.base,
+              units: new Set(coverage.units),
+            });
+          } else {
+            for (const unit of coverage.units) existing.units.add(unit);
+          }
+        }
+        for (const { base, units } of unitsByBase.values()) {
+          claims.push(this.store.setWindowClaim(this.#owner, base, [...units]));
         }
         const generation = this.#generation;
         this.#claimPending = claims.length > 0;

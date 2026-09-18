@@ -46,8 +46,15 @@ What one subscription receives:
   **effective scopes** (requested ∩ allowed; see
   [Scopes](/concepts-scopes/)), oldest first. Deletes propagate as ordinary
   `delete` change records in the same stream.
-- If the allowed set loses a requested value, the whole subscription is
-  revoked instead of silently narrowed.
+- If the allowed set loses some values of a requested variable, the
+  effective scopes narrow and the subscription stays active on the surviving
+  values. Rows for the lost values stop receiving changes and stay readable
+  locally until the subscription is revoked or a fresh
+  [bootstrap](/concepts-bootstrap/) applies the §5.6 first-page rule.
+- The subscription is revoked when a requested variable loses every requested
+  value, and revocation purges the rows it held
+  ([Scopes](/concepts-scopes/)). Declare one exact scope value per
+  subscription when the loss of that value must revoke and purge.
 - If the cursor fell below the server's
   [pruning horizon](/concepts-commits/), a reset: the subscription
   re-bootstraps from current state.
