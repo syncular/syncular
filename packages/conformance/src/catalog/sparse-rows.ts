@@ -7,6 +7,7 @@
 import { encodeSparseRow, type RowColumn } from '@syncular/core';
 import { YjsColumn } from '@syncular/crdt-yjs';
 import { check, checkEqual } from '../checks';
+import type { DriverSchema } from '../driver';
 import { FIXTURE_SCHEMA, task } from '../fixture';
 import type { Scenario, ScenarioContext } from '../scenario';
 import {
@@ -21,6 +22,43 @@ import {
 import { expectConverged, syncIdle, syncOk } from './util';
 
 const P1 = { project_id: ['p1'] } as const;
+
+/**
+ * The fixture plus the two shapes §3.4 scope-column parity needs: a primary
+ * key that is also a scope column, and a float scope column whose stored
+ * REAL value coerces from a supplied integer.
+ */
+const PATCH_SCOPE_SCHEMA: DriverSchema = {
+  ...FIXTURE_SCHEMA,
+  tables: [
+    ...FIXTURE_SCHEMA.tables,
+    {
+      name: 'tenants',
+      columns: [
+        { name: 'tenant_id', type: 'string', nullable: false },
+        { name: 'body', type: 'string', nullable: false },
+      ],
+      primaryKey: 'tenant_id',
+      scopes: [{ pattern: 'tenant:{tenant_id}' }],
+    },
+    {
+      name: 'buckets',
+      columns: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'bucket', type: 'float', nullable: false },
+        { name: 'body', type: 'string', nullable: false },
+      ],
+      primaryKey: 'id',
+      scopes: [{ pattern: 'bucket:{bucket}' }],
+    },
+  ],
+};
+
+const PATCH_SCOPE_ALLOWED = {
+  project_id: ['p1'],
+  tenant_id: ['t1'],
+  bucket: ['2'],
+} as const;
 
 const TASK_COLUMNS = (FIXTURE_SCHEMA.tables.find(
   (table) => table.name === 'tasks',
@@ -346,6 +384,153 @@ export const sparseRowScenarios: readonly Scenario[] = [
         Array.from(actual ?? []),
         Array.from(expected),
         'the client payload is byte-identical to the reference sparse encoding',
+      );
+    },
+  },
+
+  {
+    // §3.4 rule 5 / §6.2: a patch that repeats a scope column at its stored
+    // value is a no-op the server accepts, so both cores drop it from the
+    // presence set instead of refusing the commit. A differing value, or a
+    // row with nothing local to compare against, fails closed locally.
+    name: 'sparse-rows/patch-scope-column-matches-stored-local-row',
+    specRefs: ['§3.4', '§6.2', 'B.21'],
+    server: { schema: PATCH_SCOPE_SCHEMA },
+    async run(ctx) {
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        schema: PATCH_SCOPE_SCHEMA,
+        allowed: PATCH_SCOPE_ALLOWED,
+      });
+      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await syncIdle(a);
+      await a.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('t1', 'p1', 'seed') },
+      ]);
+      await syncIdle(a);
+
+      const kept = await a.api.patch('tasks', 't1', {
+        project_id: 'p1',
+        title: 'kept',
+      });
+      const payloads = await a.api.pendingPayloads?.();
+      check(payloads !== undefined, 'the driver exposes pendingPayloads');
+      checkEqual(payloads?.length, 1, 'exactly one pending upsert payload');
+      // id (pk) + title present; project_id, done, priority, meta absent.
+      const expected = encodeSparseRow(TASK_COLUMNS, 0, [
+        't1',
+        undefined,
+        'kept',
+        undefined,
+        undefined,
+        undefined,
+      ]);
+      checkEqual(
+        Array.from(payloads?.[0] ?? []),
+        Array.from(expected),
+        'the equal scope column left the presence set',
+      );
+
+      const report = await syncOk(a);
+      check(
+        report.applied.includes(kept),
+        'the equal-scope patch applied on the server',
+      );
+      const stored = await serverRow(ctx, 't1');
+      checkEqual(
+        stored?.values.project_id,
+        'p1',
+        'the stored scope value held',
+      );
+      checkEqual(stored?.values.title, 'kept', 'the sibling column landed');
+
+      // A differing value rejects locally with the stable code.
+      let differing = '';
+      try {
+        await a.api.patch('tasks', 't1', { project_id: 'p2' });
+      } catch (error) {
+        differing = (error as { code?: string }).code ?? '';
+      }
+      checkEqual(
+        differing,
+        'sync.invalid_request',
+        'a differing scope column rejects locally',
+      );
+
+      // No local row: the client cannot prove equality against the server's
+      // stored row and fails closed the same way.
+      let absent = '';
+      try {
+        await a.api.patch('tasks', 'ghost', { project_id: 'p1' });
+      } catch (error) {
+        absent = (error as { code?: string }).code ?? '';
+      }
+      checkEqual(
+        absent,
+        'sync.invalid_request',
+        'an absent local row rejects locally',
+      );
+
+      // A primary key that is also a scope column: the sparse payload's key
+      // is by construction the row id being patched, so the value is proven
+      // equal without a stored-row read, even with no local row at all.
+      checkEqual(
+        await a.api.readRows('tenants'),
+        [],
+        'the tenant row is absent locally',
+      );
+      const created = await a.api.patch('tenants', 't1', {
+        tenant_id: 't1',
+        body: 'created',
+      });
+      const createdReport = await syncOk(a);
+      check(
+        createdReport.applied.includes(created),
+        'the primary-key scope column patch applied',
+      );
+      const tenant = (await ctx.server.readRows('tenants')).find(
+        (row) => row.rowId === 't1',
+      );
+      checkEqual(tenant?.values.body, 'created', 'the patch wrote the row');
+      checkEqual(tenant?.scopes.tenant_id, 't1', 'the stored scope is the key');
+
+      // A supplied integer for a stored REAL scope value: the value is
+      // decoded through the column type before the comparison, so the two
+      // equal values reach the same representation.
+      await a.api.subscribe({
+        id: 'buckets',
+        table: 'buckets',
+        scopes: { bucket: ['2'] },
+      });
+      await syncIdle(a);
+      await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'buckets',
+          values: { id: 'b1', bucket: 2, body: 'seed' },
+        },
+      ]);
+      await syncIdle(a);
+      const coerced = await a.api.patch('buckets', 'b1', {
+        bucket: 2,
+        body: 'coerced',
+      });
+      const coercedReport = await syncOk(a);
+      check(
+        coercedReport.applied.includes(coerced),
+        'the coerced scope value patch applied',
+      );
+      const bucket = (await ctx.server.readRows('buckets')).find(
+        (row) => row.rowId === 'b1',
+      );
+      checkEqual(bucket?.values.body, 'coerced', 'the sibling column landed');
+      checkEqual(bucket?.scopes.bucket, '2', 'the stored scope value held');
+
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [],
+        'the rejected patches recorded no commit',
       );
     },
   },

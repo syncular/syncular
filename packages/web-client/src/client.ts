@@ -2153,14 +2153,49 @@ export class SyncClient {
         // present ones.
         const normalized = normalizeRecordKeys(table, mutation.values);
         const scopeColumns = new Set(table.scopeColumnByVariable.values());
+        const pkColumn = table.columns[table.primaryKeyIndex] as RowColumn;
         const json: Record<string, JsonRowValue> = {};
         for (const column of table.columns) {
           if (!normalized.has(column.name)) continue;
-          if (scopeColumns.has(column.name)) {
-            throw new ClientSyncError(
-              'sync.invalid_request',
-              `table ${table.name}: patch cannot write scope column ${JSON.stringify(column.name)} (§3.4)`,
-            );
+          // §3.4 rule 5 / §6.2: scope columns are immutable on update. The
+          // server accepts a present scope column whose value equals the
+          // stored row and applies it as a no-op, so a decoded envelope
+          // round-trips. The local row is the only value the client can
+          // prove equality against; when the row is absent locally the
+          // client cannot prove equality against the server's stored row
+          // and fails closed. A primary key that is also a scope column
+          // needs no stored-row read: the primary key in a sparse payload is
+          // by construction the row id being patched (§6.1), so its value is
+          // proven equal already.
+          if (scopeColumns.has(column.name) && column.name !== pkColumn.name) {
+            const pkValue = normalized.get(pkColumn.name);
+            const local =
+              typeof pkValue === 'string' && pkValue.length > 0
+                ? this.#db.query(
+                    `SELECT * FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)} = ?`,
+                    [pkValue],
+                  )[0]
+                : undefined;
+            if (
+              local === undefined ||
+              !Object.is(
+                rowValueToJson(
+                  fromSqlValue(column, local[column.name] ?? null),
+                ),
+                rowValueToJson(
+                  coerceSqlRepresentation(
+                    column,
+                    normalized.get(column.name),
+                  ) as RowValue,
+                ),
+              )
+            ) {
+              throw new ClientSyncError(
+                'sync.invalid_request',
+                `table ${table.name}: patch cannot write scope column ${JSON.stringify(column.name)} (§3.4)`,
+              );
+            }
+            continue;
           }
           const value = normalized.get(column.name);
           if (value === undefined || value === null) {
@@ -2177,7 +2212,6 @@ export class SyncClient {
             coerceSqlRepresentation(column, value) as RowValue,
           );
         }
-        const pkColumn = table.columns[table.primaryKeyIndex] as RowColumn;
         const pkValue = json[pkColumn.name];
         if (typeof pkValue !== 'string' || pkValue.length === 0) {
           throw new ClientSyncError(

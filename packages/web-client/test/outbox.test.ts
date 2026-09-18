@@ -226,6 +226,38 @@ describe('encode-at-send (§6.1)', () => {
       'scope column',
     );
   });
+
+  test('patch drops a scope column proven equal to the stored local row (§3.4)', async () => {
+    const server = makeServer();
+    const a = await makeClient(server, { clientId: 'patch-scope' });
+    a.client.mutate([
+      { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1') },
+    ]);
+    await a.client.syncUntilIdle();
+
+    // Value-equal: the server applies it as a no-op, so the client drops the
+    // column from the presence set and records the patch.
+    a.client.patch('tasks', 't1', { project_id: 'p1', title: 'kept' });
+    expect(
+      Object.keys(a.client.pendingCommits()[0]?.operations[0]?.values ?? {}),
+    ).toEqual(['id', 'title']);
+    await a.client.syncUntilIdle();
+    expect(a.client.pendingCommits()).toEqual([]);
+    expect(
+      a.db.query('SELECT project_id, title FROM tasks WHERE id = ?', ['t1']),
+    ).toEqual([{ project_id: 'p1', title: 'kept' }]);
+
+    // A differing value stays rejected.
+    expect(() => a.client.patch('tasks', 't1', { project_id: 'p2' })).toThrow(
+      'scope column',
+    );
+
+    // An absent local row leaves nothing to prove equality against, so the
+    // client fails closed instead of guessing the server's stored value.
+    expect(() =>
+      a.client.patch('tasks', 'ghost', { project_id: 'p1' }),
+    ).toThrow('scope column');
+  });
 });
 
 describe('mutation validation', () => {
