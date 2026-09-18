@@ -550,6 +550,111 @@ describe('control-plane drain (§8.2)', () => {
   });
 });
 
+describe('host-initiated scope refresh (§8.7)', () => {
+  async function connectedClient(
+    t: TestContext,
+    hub: RealtimeHub,
+    actorId: string,
+    clientId: string,
+  ) {
+    // Bind the client record to its own actor so the connection holds a grant.
+    await t.storage.putClientRecord('part-1', {
+      clientId,
+      actorId,
+      wireVersion: 3,
+      cursor: 0,
+      updatedAtMs: t.now.ms,
+      subscriptions: [
+        {
+          id: `sub-${clientId}`,
+          table: 'tasks',
+          scopes: { project_id: ['p1'] },
+        },
+      ],
+    });
+    const wire = makeWire();
+    const session = await hub.connect({
+      partition: 'part-1',
+      actorId,
+      clientId,
+      send: wire.send,
+    });
+    return { wire, session };
+  }
+
+  function hubWithScopes(
+    t: TestContext,
+    allowed: Map<string, ScopeMap>,
+    failing: Set<string> = new Set(),
+  ): RealtimeHub {
+    allowed.set('actor-1', { project_id: ['p1'] }); // the pushing actor
+    Object.assign(t.ctx, {
+      resolveScopes: ({ actorId }: { actorId: string }): ScopeMap => {
+        if (failing.has(actorId)) throw new Error('resolver down');
+        return allowed.get(actorId) ?? {};
+      },
+    });
+    return makeHub(t);
+  }
+
+  test('a revoked actor stops receiving deltas with no sync round in between', async () => {
+    const t = makeContext();
+    const allowed = new Map<string, ScopeMap>([
+      ['actor-a', { project_id: ['p1'] }],
+      ['actor-b', { project_id: ['p1'] }],
+    ]);
+    const hub = hubWithScopes(t, allowed);
+    const a = await connectedClient(t, hub, 'actor-a', 'client-a');
+    const b = await connectedClient(t, hub, 'actor-b', 'client-b');
+    expect(b.session.registrations).toHaveLength(1);
+
+    // Both hold the grant: the first commit reaches both connections.
+    await sync(t, [
+      pushCommit('c1', [upsert('tasks', 't1', taskRow('t1', 'p1'))]),
+    ]);
+    expect(a.wire.binaries).toHaveLength(1);
+    expect(b.wire.binaries).toHaveLength(1);
+
+    allowed.set('actor-b', {});
+    await hub.refreshScopes('part-1', 'actor-b');
+    expect(b.session.registrations).toHaveLength(0);
+    expect(a.session.registrations).toHaveLength(1);
+
+    // The revoked connection receives nothing; the other still gets the delta.
+    await sync(t, [
+      pushCommit('c2', [upsert('tasks', 't2', taskRow('t2', 'p1'))]),
+    ]);
+    expect(a.wire.binaries).toHaveLength(2);
+    expect(b.wire.binaries).toHaveLength(1);
+  });
+
+  test('a resolver failure during refresh leaves that session receiving nothing', async () => {
+    const t = makeContext();
+    const allowed = new Map<string, ScopeMap>([
+      ['actor-a', { project_id: ['p1'] }],
+      ['actor-b', { project_id: ['p1'] }],
+    ]);
+    const failing = new Set<string>();
+    const hub = hubWithScopes(t, allowed, failing);
+    const a = await connectedClient(t, hub, 'actor-a', 'client-a');
+    const b = await connectedClient(t, hub, 'actor-b', 'client-b');
+    await sync(t, [
+      pushCommit('c1', [upsert('tasks', 't1', taskRow('t1', 'p1'))]),
+    ]);
+    expect(b.wire.binaries).toHaveLength(1);
+
+    failing.add('actor-b');
+    await hub.refreshScopes('part-1', 'actor-b');
+    expect(b.session.registrations).toHaveLength(0);
+
+    await sync(t, [
+      pushCommit('c2', [upsert('tasks', 't2', taskRow('t2', 'p1'))]),
+    ]);
+    expect(a.wire.binaries).toHaveLength(2);
+    expect(b.wire.binaries).toHaveLength(1);
+  });
+});
+
 describe('control plane (§8.3, §8.5)', () => {
   test('hub.wake broadcasts a reset-required wake-up', async () => {
     const t = makeContext();

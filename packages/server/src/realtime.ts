@@ -1136,6 +1136,41 @@ export class RealtimeHub {
     }
   }
 
+  /**
+   * Host-initiated, fail-closed registration refresh (§8.7). A host calls this
+   * after it changes an actor's membership or connection state, so the
+   * partition's connected sessions stop using grants the host already revoked
+   * without waiting for the client to happen to run a round.
+   *
+   * This differs deliberately from the round-end refresh
+   * (`RealtimeSession.#refreshRegistrations`), which keeps the previous
+   * registrations when the client record or resolver cannot be read so a
+   * failed round changes nothing. Here an unresolvable session is emptied:
+   * a revoked or unreadable grant must stop receiving deltas rather than live
+   * on until the next round. Presence is reconciled exactly as at round end.
+   */
+  async refreshScopes(partition: string, actorId?: string): Promise<void> {
+    for (const session of [...this.#sessions]) {
+      if (session.partition !== partition) continue;
+      if (actorId !== undefined && session.actorId !== actorId) continue;
+      const previousKeys = this.scopeKeysOf(session.registrations);
+      let registrations: Registration[];
+      try {
+        registrations = await this.loadRegistrations(
+          partition,
+          session.actorId,
+          session.clientId,
+        );
+      } catch {
+        // Fail closed (see the doc above): an unreadable client record drops
+        // every grant on the connection.
+        registrations = [];
+      }
+      session.registrations = registrations;
+      session.reconcilePresence(previousKeys);
+    }
+  }
+
   /** Broadcast a wake-up (host-initiated resync, schema rollover, §8.3). */
   wake(partition: string, reason: WakeReason): void {
     for (const session of this.#sessions) {

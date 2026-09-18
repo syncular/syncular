@@ -4710,6 +4710,15 @@ zero registrations (§8.1) and acquires them from its first socket
 round; the "connected but silently unregistered until the next
 reconnect" failure mode of an HTTP-pull-only client cannot occur.
 
+**Host-initiated refresh.** A host that changes an actor's membership or
+connection state MAY call the hub's `refreshScopes(partition, actorId?)`
+to re-resolve the matching sessions' registrations immediately instead of
+waiting for each client to run a round. The call fails closed: a session
+whose resolver call fails or whose client record cannot be read loses
+every registration, so it receives no further deltas until it
+re-registers. This differs from the round-end rule above, which keeps the
+previous registrations when a round fails.
+
 ---
 
 ## 9. Versioning and evolution
