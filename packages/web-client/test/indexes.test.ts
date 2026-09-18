@@ -361,6 +361,28 @@ describe('CREATE INDEX subset — client local DDL', () => {
     expect(indexSql(db, 'idx_tasks_project_title')).toMatch(/UNIQUE/);
   });
 
+  test('an ineligible primary-key type fails at compile', () => {
+    // §2.4: a `rowId` is a string, so a primary key type whose string form
+    // differs per renderer, or cannot be reproduced by local storage
+    // comparison, is a schema error rather than a silent lookup miss.
+    for (const type of ['float', 'bytes', 'crdt', 'blob_ref'] as const) {
+      const bad: ClientSchema = {
+        version: 1,
+        tables: [
+          {
+            name: 'tasks',
+            columns: [{ name: 'id', type, nullable: false }],
+            primaryKey: 'id',
+            scopes: ['project:{id}'],
+          },
+        ],
+      };
+      expect(() => compileClientSchema(bad)).toThrow(
+        /primary key "id" has an ineligible column type/,
+      );
+    }
+  });
+
   test('an index naming an unknown column fails at compile', () => {
     const bad: ClientSchema = {
       version: 1,

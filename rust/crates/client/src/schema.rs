@@ -241,6 +241,18 @@ pub fn compile_schema(ir: &SchemaIr) -> Result<ClientSchema, String> {
                     table.name, table.primary_key
                 )
             })?;
+        // §2.4 primary-key eligibility: a primary key MUST render to a
+        // `rowId` string every implementation produces identically and local
+        // storage resolves without deferring to a SQLite build.
+        if !matches!(
+            columns[pk_index].ty,
+            ColumnType::String | ColumnType::Integer | ColumnType::Boolean | ColumnType::Json
+        ) {
+            return Err(format!(
+                "table {:?}: primary key {:?} has an ineligible column type (§2.4); a primary key must be string, integer, boolean, or json",
+                table.name, table.primary_key
+            ));
+        }
         let mut scope_variables = Vec::with_capacity(table.scopes.len());
         for scope in &table.scopes {
             let variable = parse_pattern_variable(&scope.pattern)?;

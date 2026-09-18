@@ -9,7 +9,11 @@ import {
   SUPPORTED_PROTOCOL_WIRE_VERSIONS,
   type RespHeaderFrame,
 } from '@syncular/core';
-import { ERROR_CATALOG, handleSyncRequest } from '@syncular/server';
+import {
+  compileSchema,
+  ERROR_CATALOG,
+  handleSyncRequest,
+} from '@syncular/server';
 import {
   expectSyncError,
   makeContext,
@@ -279,5 +283,23 @@ describe('error catalog (§10.2)', () => {
       recommendedAction: 'inspectServer',
     });
     expect(Object.keys(ERROR_CATALOG)).toHaveLength(37);
+  });
+
+  test('an ineligible primary-key type fails at compile (§2.4)', () => {
+    for (const type of ['float', 'bytes', 'crdt', 'blob_ref'] as const) {
+      expect(() =>
+        compileSchema({
+          version: 1,
+          tables: [
+            {
+              name: 'tasks',
+              columns: [{ name: 'id', type, nullable: false }],
+              primaryKey: 'id',
+              scopes: ['project:{id}'],
+            },
+          ],
+        }),
+      ).toThrow(/primary key "id" has an ineligible column type/);
+    }
   });
 });

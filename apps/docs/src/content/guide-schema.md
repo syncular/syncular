@@ -100,6 +100,15 @@ patterns, subscription templates, and the schema-version history:
 }
 ```
 
+A primary key must be `TEXT`, `INTEGER`, `BOOLEAN`, or `JSON`. Syncular
+addresses a row on the wire by a string form of its primary key, and only
+those types have a string form the TypeScript core, the Rust core, and the
+SQLite build inside each render identically. `REAL`, `FLOAT`, and `DOUBLE`
+are rejected, as are `BLOB` and the `crdt` and `blob_ref` column types.
+Generation fails with the table and column name when a migration declares
+one of the others; the server and client cores reject the same schema at
+compile time if it reaches them another way.
+
 Table array order is the bootstrap order (parents before children). Every table
 present at the head of migration history must be listed; a table retired by
 `DROP TABLE` is omitted. Unknown manifest keys are hard errors.

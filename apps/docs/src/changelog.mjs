@@ -16,6 +16,12 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-09-18',
+    title: 'Primary keys must have one string form',
+    body: 'A primary key must be TEXT, INTEGER, BOOLEAN, or JSON. Syncular addresses a row by a string form of its primary key, and a REAL key has no single form: the shortest round-trip decimal differs between the TypeScript and Rust renderers, and a local lookup resolves the row id through the text rules of the SQLite build inside each core, so one row id could reach different rows per core. REAL, FLOAT, and DOUBLE keys are rejected by typegen, the server, and both client cores, alongside BLOB, crdt, and blob_ref keys, with an error naming the table and column.',
+    links: [{ href: '/guide-schema/', label: 'Schema & typegen' }],
+  },
+  {
     date: '2026-09-17',
     title: 'Sparse-patch key resolution without sync abort',
     body: 'A sparse patch that omits the key-id column resolves the key from the stored local row: present columns first, then the stored row for absent slots only, never for a present NULL. A patch with no encrypted column needs no key. An unresolvable key records one durable client.encrypt_failed rejection instead of aborting sync(), identically in both cores; the code is client-local and never on the wire. The conformance catalog pins keyless, present-NULL, fallback, and ghost-row cases on both cores.',

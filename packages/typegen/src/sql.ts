@@ -795,6 +795,20 @@ function parseCreateTable(
       `table ${name}: primary key ${JSON.stringify(primaryKey)} is not a column`,
     );
   }
+  // §2.4 primary-key eligibility: a primary key MUST render to a `rowId`
+  // string every implementation produces identically and local storage
+  // resolves without deferring to a SQLite build.
+  if (
+    pkColumn.type !== 'string' &&
+    pkColumn.type !== 'integer' &&
+    pkColumn.type !== 'boolean' &&
+    pkColumn.type !== 'json'
+  ) {
+    throw new TypegenError(
+      source,
+      `table ${name}: primary key ${JSON.stringify(primaryKey)} has an ineligible column type ${JSON.stringify(pkColumn.type)}; a primary key must be string, integer, boolean, or json`,
+    );
+  }
   const finalColumns = columns.map((c) =>
     c.name === primaryKey ? { ...c, nullable: false } : c,
   );

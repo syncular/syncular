@@ -665,6 +665,12 @@ describe('unsupported constructs are hard errors that name the construct', () =>
       'CREATE TABLE t (id TEXT PRIMARY KEY); ALTER TABLE t ADD COLUMN x TEXT PRIMARY KEY',
       /PRIMARY KEY is not supported on ADD COLUMN/,
     );
+    // §2.4: only types whose string form every implementation renders
+    // identically and local storage can compare may be a primary key.
+    expectError(
+      'CREATE TABLE t (id REAL PRIMARY KEY)',
+      /primary key "id" has an ineligible column type "float"/,
+    );
   });
 
   test('quoted identifiers', () => {

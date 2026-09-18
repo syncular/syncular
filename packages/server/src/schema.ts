@@ -228,6 +228,21 @@ export function compileSchema(schema: ServerSchema): CompiledSchema {
         `table ${table.name}: primary key ${JSON.stringify(table.primaryKey)} is not a column`,
       );
     }
+    // §2.4 primary-key eligibility: a primary key MUST render to a `rowId`
+    // string every implementation produces identically and local storage
+    // resolves without deferring to a SQLite build.
+    const primaryKeyColumn = table.columns[primaryKeyIndex];
+    if (
+      primaryKeyColumn !== undefined &&
+      primaryKeyColumn.type !== 'string' &&
+      primaryKeyColumn.type !== 'integer' &&
+      primaryKeyColumn.type !== 'boolean' &&
+      primaryKeyColumn.type !== 'json'
+    ) {
+      throw new Error(
+        `table ${table.name}: primary key ${JSON.stringify(table.primaryKey)} has an ineligible column type (§2.4); a primary key must be string, integer, boolean, or json`,
+      );
+    }
     if (table.scopes.length === 0) {
       throw new Error(
         `table ${table.name}: every synced table declares at least one scope pattern (§3.1)`,

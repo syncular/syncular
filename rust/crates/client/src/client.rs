@@ -1585,15 +1585,6 @@ mod observation_tests {
             ),
             ("boolean", vec![json!(false), json!(true)]),
             ("json", vec![json!("null"), json!("1"), json!("{\"a\":1}")]),
-            (
-                "float",
-                vec![
-                    json!(1.0),
-                    json!(1.0000000000000002),
-                    json!(-1.0),
-                    json!(1e20),
-                ],
-            ),
         ];
         for (kind, ids) in cases {
             let schema = json!({"version":1,"tables":[{"name":"tasks","primaryKey":"id",
@@ -1663,11 +1654,6 @@ mod observation_tests {
                         .collect::<Result<Vec<_>, _>>()
                         .unwrap();
                     assert_eq!(old, new, "{kind}, base={base}, row_id={row_id:?}");
-                    // The floating-point text collision is deliberate: an
-                    // indexed numeric equality must not silently lose a match.
-                    if kind == "float" && row_id == "1.0" {
-                        assert_eq!(old.len(), 2);
-                    }
                     let mut batch = ChangeAccumulator::default();
                     assert_eq!(
                         client.record_row_scopes(&mut batch, "tasks", row_id, base),
@@ -1710,7 +1696,7 @@ mod observation_tests {
                 }
                 for (predicate, expected) in [
                     ("CAST(id AS TEXT) = ?1".to_owned(), "SCAN"),
-                    (predicate, if kind == "float" { "SCAN" } else { "SEARCH" }),
+                    (predicate, "SEARCH"),
                 ] {
                     let sql = format!("EXPLAIN QUERY PLAN SELECT project_id FROM {full} WHERE {predicate} LIMIT 1");
                     let details = client
@@ -1727,6 +1713,36 @@ mod observation_tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn primary_keys_reject_every_ineligible_column_type() {
+        // §2.4: a `rowId` is a string, so a primary key type whose string form
+        // differs per renderer, or cannot be reproduced by local storage
+        // comparison, is a schema error rather than a silent lookup miss.
+        for ty in ["float", "bytes", "crdt", "blob_ref"] {
+            let schema = json!({"version":1,"tables":[{"name":"tasks","primaryKey":"id",
+                "columns":[{"name":"id","type":ty,"nullable":false},
+                    {"name":"project_id","type":"string","nullable":false}],
+                "scopes":[{"pattern":"project:{project_id}"}]}]});
+            let error =
+                match SyncClient::new("pk-eligibility".into(), &schema, ClientLimits::default()) {
+                    Ok(_) => panic!("ineligible primary key {ty} must be rejected"),
+                    Err(error) => error,
+                };
+            assert!(
+                error.contains("has an ineligible column type (§2.4)"),
+                "{ty}: {error}"
+            );
+        }
+        for ty in ["string", "integer", "boolean", "json"] {
+            let schema = json!({"version":1,"tables":[{"name":"tasks","primaryKey":"id",
+                "columns":[{"name":"id","type":ty,"nullable":false},
+                    {"name":"project_id","type":"string","nullable":false}],
+                "scopes":[{"pattern":"project:{project_id}"}]}]});
+            SyncClient::new("pk-eligibility".into(), &schema, ClientLimits::default())
+                .unwrap_or_else(|error| panic!("{ty}: {error}"));
         }
     }
 
@@ -3647,7 +3663,6 @@ mod observation_tests {
         for (kind, a, b) in [
             ("string", json!("a"), json!("b")),
             ("integer", json!(1), json!(2)),
-            ("float", json!(1.5), json!(2.5)),
             ("boolean", json!(true), json!(false)),
             ("json", json!("1"), json!("2")),
         ] {

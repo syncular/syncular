@@ -643,7 +643,7 @@ A commit contains one or more **changes**:
 | Field | Semantics |
 |---|---|
 | `table` | Target table name |
-| `rowId` | Primary key rendered as a string |
+| `rowId` | Primary key rendered as a string (§2.4 primary-key eligibility) |
 | `op` | `upsert` or `delete` — the only two operations |
 | `row` | The full row payload after the write (absent for `delete`) |
 | `rowVersion` | The row's `server_version` after the write (absent for `delete`) |
@@ -721,6 +721,22 @@ vector (`segment/crdt-column`, `response/commit-crdt-merge`) so the new tag
 is byte-pinned; existing vectors stay byte-identical (no `crdt` column was
 added to an existing fixture — the §9 rule that a new tag needs pinning is
 met by a *new* case, not by mutating old ones).
+
+**Primary-key eligibility.** A primary-key column MUST have a string form
+that every implementation renders identically and that local storage
+resolves without deferring to a SQLite build. `string`, `integer`,
+`boolean`, and `json` qualify: their rendering is total, injective, and
+byte-stable across implementations. `float` does not. The shortest
+round-trip decimal differs between the reference renderers — ECMAScript
+`Number.prototype.toString` switches to exponent notation at `1e21` and
+below `1e-6`, Rust's `f64::to_string` never does — and local storage
+resolves a `rowId` with a `CAST(... AS TEXT)` comparison, which uses the
+string rules of whichever SQLite the host links. A `float` primary key
+therefore resolves to a different row per core and per SQLite build.
+`bytes`, `crdt`, and `blob_ref` are excluded for the same reason (§5.9.1,
+§5.10). A schema IR whose table names an ineligible primary-key type MUST
+be rejected where the schema is compiled — typegen, server, and client
+core alike — never accepted and then resolved by a fallback comparison.
 
 For every synced table, codegen emits from the schema IR, for both
 sides, a **row codec** for each supported `schemaVersion`:
