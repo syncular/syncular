@@ -15,7 +15,7 @@ import { afterAll, describe, expect, test } from 'bun:test';
 import {
   decodeMessage,
   encodeMessage,
-  encodeRow,
+  encodeSparseRow,
   PROTOCOL_WIRE_VERSION,
   type PushResultFrame,
   type RowColumn,
@@ -241,7 +241,11 @@ gate('Postgres fanout integration (SYNCULAR_PG_URL)', () => {
               table: 'tasks',
               rowId: 'overlap-row',
               op: 'upsert',
-              payload: encodeRow(TASK_COLUMNS, ['overlap-row', 'p1', 'once']),
+              payload: encodeSparseRow(TASK_COLUMNS, 0, [
+                'overlap-row',
+                'p1',
+                'once',
+              ]),
             },
           ],
         },

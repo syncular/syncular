@@ -17,7 +17,7 @@ import {
   decodeMessage,
   decodeRowsSegment,
   encodeMessage,
-  encodeRow,
+  encodeSparseRow,
   MessageStreamScanner,
   PROTOCOL_WIRE_VERSION,
   parseRealtimeServerEvent,
@@ -82,7 +82,7 @@ function upsertOp(id: string, project: string, seq: number): RequestFrame {
         table: TABLE,
         rowId: id,
         op: 'upsert',
-        payload: encodeRow(COLUMNS, values),
+        payload: encodeSparseRow(COLUMNS, 0, values),
       },
     ],
   };
