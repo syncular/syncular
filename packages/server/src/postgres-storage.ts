@@ -610,7 +610,23 @@ class PostgresTransaction implements StorageTransaction {
     resolve: () => void,
     reject: (error: unknown) => void,
   ) {
-    this.#client = client;
+    // One pinned connection carries one statement at a time: node-postgres
+    // warns about a concurrently issued second query today and rejects it in
+    // node-postgres 9. A whole-commit validator that fans independent reads
+    // out with Promise.all must not interleave them, so every statement
+    // issued through this transaction is chained on one FIFO — the same
+    // shape as `SqliteServerStorage.queryAuthoritative`.
+    let tail: Promise<void> = Promise.resolve();
+    this.#client = {
+      query: <Row>(text: string, params?: readonly unknown[]) => {
+        const run = tail.then(() => client.query<Row>(text, params));
+        tail = run.then(
+          () => undefined,
+          () => undefined,
+        );
+        return run;
+      },
+    };
     this.#partition = partition;
     this.#resolveTable = resolveTable;
     this.#resolve = resolve;

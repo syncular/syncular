@@ -5,11 +5,14 @@
  * protocol code. Driven through bytes, like the rest of the push suite.
  */
 import { describe, expect, test } from 'bun:test';
+import { PGlite } from '@electric-sql/pglite';
 import { decodeRow, encodeSparseRow, type RowColumn } from '@syncular/core';
 import {
   CommitValidationRejection,
   type CommitValidator,
+  compileSchema,
   type CrdtMergerRegistry,
+  PostgresServerStorage,
   RESERVED_VALIDATION_CODE_PREFIXES,
   type ServerSchema,
   type SyncularServerEvent,
@@ -17,6 +20,8 @@ import {
   ValidationRejection,
   type Validator,
 } from '@syncular/server';
+import { pgliteExecutor } from '@syncular/server/pglite';
+import type { PgExecutor, PgQueryable } from '../src/pg-executor';
 import {
   makeContext,
   pushCommit,
@@ -24,6 +29,7 @@ import {
   sync,
   TASK_COLUMNS,
   taskRow,
+  TEST_SCHEMA,
   upsert,
 } from './helpers';
 
@@ -427,6 +433,61 @@ describe('whole-commit validation (§6.8)', () => {
       exact: 'two',
       scan: ['t1', 't2'],
     });
+  });
+
+  test('serializes a Promise.all of commit reads on one pinned Postgres client', async () => {
+    const db = await PGlite.create();
+    const inner = pgliteExecutor(db);
+    // node-postgres warns about, and node-postgres 9 rejects, a second
+    // statement issued on one connection before the first resolves. This
+    // double stands in for that driver: it fails the push if the storage
+    // ever overlaps two statements on the pinned client.
+    let inFlight = 0;
+    const guard = <T>(work: () => Promise<T>): Promise<T> => {
+      if (inFlight > 0) {
+        throw new Error('overlapping statement on a pinned client');
+      }
+      inFlight += 1;
+      return work().finally(() => {
+        inFlight -= 1;
+      });
+    };
+    // Serialization is the claim under test, so only the pinned client is
+    // guarded: a pool is allowed to run statements concurrently.
+    const exec: PgExecutor = {
+      query: <Row>(text: string, params?: readonly unknown[]) =>
+        inner.query<Row>(text, params),
+      transaction: <T>(fn: (client: PgQueryable) => Promise<T>) =>
+        inner.transaction((client) =>
+          fn({
+            query: <Row>(text: string, params?: readonly unknown[]) =>
+              guard(() => client.query<Row>(text, params)),
+          }),
+        ),
+      close: async () => {
+        await inner.close?.();
+      },
+    };
+    const concurrentReads: CommitValidator = async ({ read }) => {
+      await Promise.all([
+        read.getRow('tasks', 't1'),
+        read.getRow('tasks', 't2'),
+      ]);
+    };
+    const storage = new PostgresServerStorage(exec);
+    await storage.ensureSchema(compileSchema(TEST_SCHEMA));
+    const t = makeContext({
+      storage,
+      commitValidator: concurrentReads,
+    });
+    const message = await sync(t, [
+      pushCommit('concurrent-reads', [
+        upsert('tasks', 't1', taskRow('t1', 'p1', 'one')),
+        upsert('tasks', 't2', taskRow('t2', 'p1', 'two')),
+      ]),
+    ]);
+    expect(pushResults(message)[0]?.status).toBe('applied');
+    await db.close();
   });
 
   test('runs once for an idempotently replayed commit', async () => {

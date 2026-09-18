@@ -41,6 +41,14 @@ export type PgRow = Record<string, unknown>;
  * `params` use Postgres positional placeholders (`$1`, `$2`, ...). `text`
  * is a single statement (no multi-statement `;`-joined batches — those are
  * driver-specific and defeat parameterization).
+ *
+ * Syncular never overlaps statements on one `PgQueryable`. A client pinned
+ * to a connection by `PgExecutor.transaction` gets every statement chained
+ * on one FIFO by `PostgresServerStorage`, so a host validator that starts
+ * independent reads concurrently still reaches the driver one statement at
+ * a time. An adapter does not need to queue calls itself, and must not
+ * accept two in flight: node-postgres warns about that today and rejects it
+ * in node-postgres 9.
  */
 export interface PgQueryable {
   query<Row = PgRow>(
@@ -58,7 +66,9 @@ export interface PgExecutor extends PgQueryable {
   /**
    * Run `fn` inside a single Postgres transaction on one pinned connection.
    * The executor issues `BEGIN` before `fn`, `COMMIT` on resolve, and
-   * `ROLLBACK` on throw (rethrowing the original error).
+   * `ROLLBACK` on throw (rethrowing the original error). The caller
+   * serializes the statements `fn` issues on the provided client (see
+   * `PgQueryable`), so the driver never sees two of them in flight.
    */
   transaction<T>(fn: (client: PgQueryable) => Promise<T>): Promise<T>;
   /** Release any pooled resources. Optional (pglite/Bun.sql). */
