@@ -16,6 +16,37 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-09-19',
+    title: 'Generated query aliases keep their case on PostgreSQL',
+    body: 'Projection lowering emits every result alias double-quoted. An unquoted alias keeps its case on SQLite and folds to lower case on PostgreSQL, so a generated query selecting `membership_id` reached a PostgreSQL authority as `membershipid` and every read of the camelCase field returned undefined while the same query passed on SQLite. A cross-backend test runs one generated plan through `queryAuthoritative` on PGlite and SQLite and asserts the result keys agree.',
+    links: [{ href: '/tooling-queries/', label: 'Queries' }],
+  },
+  {
+    date: '2026-09-19',
+    title: 'Server storage refuses a same-version layout mismatch',
+    body: 'The SQLite and PostgreSQL storages compare the stored column layouts with the configured schema when the version marker matches, and refuse to serve a database whose layouts disagree, naming the table and column. Version equality was previously taken as layout equality, so a database written by another build at the same version reached serving startup and failed later at a write. Two further storage changes ship with it: `sync_row_scopes` gains a `(partition, tbl, row_id)` index, because the per-row scope replacement predicate could not narrow the inverted primary key on PostgreSQL; and one pinned PostgreSQL transaction client serializes its statements, so a commit validator issuing independent reads with `Promise.all` no longer overlaps queries on one connection.',
+    links: [{ href: '/server-storage/', label: 'Storage backends' }],
+  },
+  {
+    date: '2026-09-19',
+    title:
+      'A segment records every scope digest its content was published under',
+    body: 'Two scopes whose rows are byte-identical produce one content address, and the store kept one record: the second publication overwrote the first scope digest, so the first client was rejected at download with `sync.forbidden`. Empty bootstraps hit this whenever two authorized subscriptions resolved to no rows. A stored segment now carries every digest its identical bytes were published under, and a download, a signed-URL token, and the §5.3 reuse lookup each authorize on any recorded digest. The SEGMENT_REF frame reports the digest the caller holds. Segment bytes, the content address, and the wire frames are unchanged.',
+    links: [{ href: '/concepts-bootstrap/', label: 'Bootstrap' }],
+  },
+  {
+    date: '2026-09-19',
+    title: 'Realtime hosts can drain acknowledgements and refresh grants',
+    body: '`RealtimeSession.drain()` resolves when the queued acknowledgement-cursor writes have settled and throws a persistence failure instead of dropping it, so a host can await its control-plane storage work before closing storage or ending a hibernatable Worker event. `RealtimeHub.refreshScopes(partition, actorId?)` re-resolves matching sessions through the original resolver and empties a session it cannot resolve: commit fanout filters through the registrations resolved at connect and at round end, so an idle connected recipient kept revoked grants until its next round. Hosts call it after changing a membership or connection.',
+    links: [{ href: '/concepts-realtime/', label: 'Realtime' }],
+  },
+  {
+    date: '2026-09-19',
+    title: 'patch accepts a scope column equal to the stored row',
+    body: 'Both cores drop a present scope column from a patch when its value equals the stored local row, matching the server, which applies a value-equal scope column as a no-op and rejects only a differing value. A patch that round-tripped a decoded envelope previously failed on the client although the server would have accepted the commit. A differing value, and a row with nothing local to compare against, still fail closed. A primary key that is also a scope column needs no comparison: the key in a sparse payload is the row id being patched. Composed reactive queries also keep their coverage: several coverage entries on one window base claim the union of their units, and every dependency on a changed table is consulted.',
+    links: [{ href: '/concepts-scopes/', label: 'Scopes' }],
+  },
+  {
     date: '2026-09-18',
     title: 'Primary keys must have one string form',
     body: 'A primary key must be TEXT, INTEGER, BOOLEAN, or JSON. Syncular addresses a row by a string form of its primary key, and a REAL key has no single form: the shortest round-trip decimal differs between the TypeScript and Rust renderers, and a local lookup resolves the row id through the text rules of the SQLite build inside each core, so one row id could reach different rows per core. REAL, FLOAT, and DOUBLE keys are rejected by typegen, the server, and both client cores, alongside BLOB, crdt, and blob_ref keys, with an error naming the table and column.',

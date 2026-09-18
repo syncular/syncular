@@ -81,7 +81,7 @@ const EXPECTED_PLANS = {
     statements: 1,
     inputs: ['listId'],
     bindKinds: ['value'],
-    sql: 'select id, list_id AS listId',
+    sql: 'select id, list_id AS "listId"',
   },
   predicate: {
     backend: 'variants',
