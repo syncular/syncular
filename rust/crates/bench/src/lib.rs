@@ -664,9 +664,13 @@ fn set_sql_counts(connection: &mut rusqlite::Connection, enabled: bool) {
         connection.trace_v2(
             TraceEventCodes::SQLITE_TRACE_STMT,
             Some(|event| {
-                let TraceEvent::Stmt(_, sql) = event else {
+                let TraceEvent::Stmt(stmt, sql) = event else {
                     return;
                 };
+                // `sqlite3_trace` reported the statement with its bound values
+                // substituted; SQLITE_TRACE_STMT hands over the prepared text.
+                // The counters keep counting the expanded form.
+                let sql = stmt.expanded_sql().unwrap_or_else(|| sql.to_owned());
                 let verb = sql
                     .trim_start()
                     .split(|character: char| !character.is_ascii_alphabetic())
@@ -887,11 +891,13 @@ fn bench_read(mut client: ReadClient<'_>, params: &Value) -> Result<Value, Comma
                     client.instance()?.benchmark_connection().trace_v2(
                         TraceEventCodes::SQLITE_TRACE_STMT,
                         Some(|event| {
-                            let TraceEvent::Stmt(_, sql) = event else {
+                            let TraceEvent::Stmt(stmt, sql) = event else {
                                 return;
                             };
-                            READ_STATEMENTS
-                                .with(|statements| statements.borrow_mut().push(sql.to_owned()));
+                            // Recorded statements keep the expanded text, so a
+                            // reader sees the bound values the round sent.
+                            let sql = stmt.expanded_sql().unwrap_or_else(|| sql.to_owned());
+                            READ_STATEMENTS.with(|statements| statements.borrow_mut().push(sql));
                         }),
                     );
                 }
