@@ -202,6 +202,20 @@ function isCount(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
+/** Parse a persisted JSON object; anything else is `undefined`, never a guess. */
+function parseJsonObject(raw: string): Record<string, unknown> | undefined {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return parsed !== null &&
+      typeof parsed === 'object' &&
+      !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function localCorrupt(what: string): never {
   throw new ClientSyncError(
     'sync.local_corrupt',
@@ -292,16 +306,8 @@ function buildLocalSchemaDescriptor(
 
 /** Strict decode: an unknown shape is corruption, never a best guess. */
 function decodeLocalSchemaDescriptor(value: string): LocalSchemaDescriptor {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(value);
-  } catch {
-    return localCorrupt('schema descriptor');
-  }
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return localCorrupt('schema descriptor');
-  }
-  const record = parsed as Record<string, unknown>;
+  const record = parseJsonObject(value);
+  if (record === undefined) return localCorrupt('schema descriptor');
   const keys = Object.keys(record).sort();
   if (
     keys.length !== 3 ||
@@ -360,6 +366,31 @@ export function dropPreviousVersionContainer(db: ClientDatabase): void {
   db.exec(`DROP TABLE IF EXISTS ${quoteIdent(CONTAINER_META_TABLE)}`);
 }
 
+/**
+ * Run `fn` against the container file for exactly one open window, closing the
+ * handle afterwards. The container is only opened where `siblingExists` already
+ * reports it — probing never creates the file. `removeFile` deletes the file
+ * once the handle is closed (a sweep or a discard must leave none). Returns
+ * `undefined` when the file or the host's sibling capability is absent.
+ */
+export function withPreviousVersionContainer<T>(
+  db: ClientDatabase,
+  fn: (container: ClientDatabase) => T,
+  removeFile = false,
+): T | undefined {
+  if (db.siblingExists?.(PREVIOUS_VERSION_CONTAINER_NAME) !== true) {
+    return undefined;
+  }
+  const handle = db.openSibling?.(PREVIOUS_VERSION_CONTAINER_NAME);
+  if (handle === undefined) return undefined;
+  try {
+    return fn(handle.database);
+  } finally {
+    handle.close();
+    if (removeFile) handle.removeFile();
+  }
+}
+
 function containerHasMeta(db: ClientDatabase): boolean {
   return (
     db.query(
@@ -386,16 +417,8 @@ export function readPreviousVersionContainer(
 }
 
 function decodeRecord(value: string): PreviousVersionRecord {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(value);
-  } catch {
-    return localCorrupt('previous-version context');
-  }
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return localCorrupt('previous-version context');
-  }
-  const record = parsed as Record<string, unknown>;
+  const record = parseJsonObject(value);
+  if (record === undefined) return localCorrupt('previous-version context');
   const keys = Object.keys(record).sort();
   if (
     keys.length !== 7 ||
@@ -609,19 +632,13 @@ function decodePreviousVersionPayload(
   table: LocalSchemaDescriptorTable,
   payload: string,
 ): SqlRow {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(payload);
-  } catch {
-    return localCorrupt('previous-version payload');
-  }
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return localCorrupt('previous-version payload');
-  }
-  const record = parsed as Record<string, JsonRowValue>;
+  const record = parseJsonObject(payload);
+  if (record === undefined) return localCorrupt('previous-version payload');
   const row: SqlRow = {};
   for (const column of table.columns) {
-    row[column.name] = jsonToRowValue(record[column.name] ?? null) as SqlValue;
+    row[column.name] = jsonToRowValue(
+      (record[column.name] ?? null) as JsonRowValue,
+    ) as SqlValue;
   }
   return row;
 }
@@ -684,16 +701,8 @@ export function storedPreviousVersionRefusal(
 ): PreviousVersionRefusal | undefined {
   const raw = getMeta(db, PREVIOUS_VERSION_CONTEXT_KEY);
   if (raw === undefined) return undefined;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return undefined;
-  }
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return undefined;
-  }
-  const record = parsed as Record<string, unknown>;
+  const record = parseJsonObject(raw);
+  if (record === undefined) return undefined;
   if (
     record.v !== 1 ||
     (record.reason !== 'no-previous-descriptor' &&
@@ -793,16 +802,8 @@ export function storedPreviousVersionAudit(
 ): PreviousVersionAudit | undefined {
   const raw = getMeta(db, PREVIOUS_VERSION_AUDIT_KEY);
   if (raw === undefined) return undefined;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return undefined;
-  }
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return undefined;
-  }
-  const record = parsed as Record<string, unknown>;
+  const record = parseJsonObject(raw);
+  if (record === undefined) return undefined;
   if (
     record.v !== AUDIT_VERSION ||
     !isCount(record.atMs) ||

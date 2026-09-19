@@ -170,6 +170,7 @@ import {
   setLocalSchemaDescriptor,
   storedPreviousVersionAudit,
   storedPreviousVersionRefusal,
+  withPreviousVersionContainer,
   writePreviousVersionAudit,
   writePreviousVersionRefusal,
 } from './previous-version';
@@ -1043,16 +1044,26 @@ export class SyncClient {
 
   /** D5 step 1: unconditional orphan sweep on the container file. */
   #sweepPreviousVersionContainer(): void {
-    if (!this.#previousVersionExists()) return;
-    const handle = this.#db.openSibling?.(PREVIOUS_VERSION_CONTAINER_NAME);
-    if (handle === undefined) return;
-    try {
-      dropPreviousVersionContainer(handle.database);
-    } finally {
-      handle.close();
-      handle.removeFile();
+    if (this.#dropPreviousVersionContainerFile()) {
+      clearPreviousVersionRefusal(this.#db);
     }
-    clearPreviousVersionRefusal(this.#db);
+  }
+
+  /**
+   * Drop the container file when present and report whether it was. Shared by
+   * the orphan sweep and the discard path; the file is gone either way.
+   */
+  #dropPreviousVersionContainerFile(): boolean {
+    return (
+      withPreviousVersionContainer(
+        this.#db,
+        (container) => {
+          dropPreviousVersionContainer(container);
+          return true;
+        },
+        true,
+      ) === true
+    );
   }
 
   /** §2.1 reset after the server reports a different log continuity. */
@@ -1356,31 +1367,28 @@ export class SyncClient {
         `previousVersionSnapshot names unknown previous table ${JSON.stringify(spec.table)}`,
       );
     }
-    const handle = this.#db.openSibling?.(PREVIOUS_VERSION_CONTAINER_NAME);
-    if (handle === undefined) {
+    const read = withPreviousVersionContainer(this.#db, (container) =>
+      readPreviousVersionRows(
+        container,
+        table,
+        spec.rowIds?.map(String) ?? [],
+        resolvePreviousVersionLimit(spec.limit),
+      ),
+    );
+    if (read === undefined) {
       return this.#previousVersionUnavailable(
         currentVersion,
         'no-previous-descriptor',
       );
     }
-    try {
-      const read = readPreviousVersionRows(
-        handle.database,
-        table,
-        spec.rowIds?.map(String) ?? [],
-        resolvePreviousVersionLimit(spec.limit),
-      );
-      return {
-        state: 'previousVersion',
-        available: true,
-        previousVersion: record.previousVersion,
-        currentVersion,
-        rows: read.rows,
-        truncated: read.truncated,
-      };
-    } finally {
-      handle.close();
-    }
+    return {
+      state: 'previousVersion',
+      available: true,
+      previousVersion: record.previousVersion,
+      currentVersion,
+      rows: read.rows,
+      truncated: read.truncated,
+    };
   }
 
   /** RFC 0005 D6: the pre-reset compatibility audit, advisory only. */
@@ -1419,14 +1427,7 @@ export class SyncClient {
 
   /** Read the container's own metadata; opens the file for that window only. */
   #readPreviousVersionRecord(): PreviousVersionRecord | undefined {
-    if (!this.#previousVersionExists()) return undefined;
-    const handle = this.#db.openSibling?.(PREVIOUS_VERSION_CONTAINER_NAME);
-    if (handle === undefined) return undefined;
-    try {
-      return readPreviousVersionContainer(handle.database);
-    } finally {
-      handle.close();
-    }
+    return withPreviousVersionContainer(this.#db, readPreviousVersionContainer);
   }
 
   /** RFC 0005 A2: presence for `statusSnapshot()`, without creating the file. */
@@ -1464,25 +1465,10 @@ export class SyncClient {
    * state wrap it with {@link #discardPreviousVersion}.
    */
   #dropPreviousVersion(): boolean {
-    let present = false;
-    if (this.#previousVersionExists()) {
-      const handle = this.#db.openSibling?.(PREVIOUS_VERSION_CONTAINER_NAME);
-      if (handle !== undefined) {
-        try {
-          dropPreviousVersionContainer(handle.database);
-        } finally {
-          handle.close();
-          handle.removeFile();
-        }
-        present = true;
-      }
-    }
-    if (
+    const present =
+      this.#dropPreviousVersionContainerFile() ||
       storedPreviousVersionRefusal(this.#db) !== undefined ||
-      storedPreviousVersionAudit(this.#db) !== undefined
-    ) {
-      present = true;
-    }
+      storedPreviousVersionAudit(this.#db) !== undefined;
     this.#db.transaction(() => {
       clearPreviousVersionRefusal(this.#db);
       clearPreviousVersionAudit(this.#db);
