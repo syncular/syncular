@@ -709,7 +709,7 @@ async function createStreamCore(
   const schema = compileSchema(ctx.schema);
   // Relational row tables: create/
   // migrate on first contact; memoized per storage instance thereafter.
-  await ctx.storage.ensureSchema(schema);
+  await ctx.storage.ensureSchema(schema, ctx.checkpoints);
   const registry = await touchAuthenticatedPartition(ctx);
   const plan = await planRequest(request, ctx, schema, registry);
   if (events === undefined) return streamResponse(plan, ctx, schema);

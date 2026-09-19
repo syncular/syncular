@@ -42,7 +42,7 @@ export class SyncServerReadinessError extends Error {
  * `cause` locally for the table/column or storage diagnostic.
  */
 export async function ensureSyncServerReady(
-  config: Pick<SyncServerConfig, 'schema' | 'storage'>,
+  config: Pick<SyncServerConfig, 'schema' | 'storage' | 'checkpoints'>,
 ): Promise<void> {
   let compiled: CompiledSchema;
   try {
@@ -55,7 +55,7 @@ export async function ensureSyncServerReady(
     });
   }
   try {
-    await config.storage.ensureSchema(compiled);
+    await config.storage.ensureSchema(compiled, config.checkpoints);
   } catch (cause) {
     throw new SyncServerReadinessError({
       phase: 'storage_migration',

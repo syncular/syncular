@@ -550,6 +550,28 @@ END`);
   ): Promise<void> {
     // Memoized fast path: same instance, same schema version.
     if (this.#schemaVersion === schema.version) return;
+    // The barrier reads stored state: a checkpoint at this schema version that
+    // is not activated and that this caller did not declare means this process
+    // must not serve. An omitted or empty declaration set declares nothing and
+    // is refused here, never treated as a bypass.
+    const declarations = checkpoints ?? [];
+    const incomplete = this.db
+      .query<{ partition: string; name: string }, [number]>(
+        `SELECT partition, name FROM sync_backfill_checkpoints
+          WHERE schema_version=? AND state<>'activated'`,
+      )
+      .all(schema.version)
+      .filter(
+        (row) =>
+          !declarations.some(
+            (declaration) =>
+              declaration.partition === row.partition &&
+              declaration.name === row.name,
+          ),
+      );
+    if (incomplete.length > 0) {
+      throw new StorageQueryError('sync.storage.checkpoint_incomplete');
+    }
     this.db.exec(SCHEMA_META_DDL_SQLITE);
     const marker = this.db
       .query<{ schema_version: number; layouts: string }, []>(

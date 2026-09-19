@@ -7,12 +7,17 @@
  */
 import { expect, test } from 'bun:test';
 import { PGlite } from '@electric-sql/pglite';
+import { encodeSparseRow } from '@syncular/core';
 import {
   D1ServerStorage,
+  ensureSyncServerReady,
+  MemorySegmentStore,
   PostgresServerStorage,
+  processPushOperationsWithTrace,
   SqliteServerStorage,
   StorageQueryError,
   type ServerStorage,
+  type SyncRequestContext,
   compileSchema,
 } from '@syncular/server';
 import { pgliteExecutor } from '@syncular/server/pglite';
@@ -38,6 +43,8 @@ const FENCE_INSERT_PG =
 
 interface Harness {
   readonly storage: ServerStorage;
+  /** A second process on the same database: a fresh storage instance. */
+  storageAgain(): ServerStorage;
   /** Raw insert: `?` placeholders for SQLite/D1, `$n` for Postgres. */
   insert(sqliteSql: string, pgSql: string, params: unknown[]): Promise<void>;
   /** Raw select: `?` placeholders for SQLite/D1, `$n` for Postgres. */
@@ -58,6 +65,7 @@ async function harnessFn(
     await storage.ensureSchema(SCHEMA);
     return {
       storage,
+      storageAgain: () => new SqliteServerStorage(db),
       insert: async (sqliteSql, _pgSql, params) => {
         db.query(sqliteSql).run(...(params as never[]));
       },
@@ -75,6 +83,7 @@ async function harnessFn(
     await storage.ensureSchema(SCHEMA);
     return {
       storage,
+      storageAgain: () => new PostgresServerStorage(pgliteExecutor(pg)),
       insert: async (_sqliteSql, pgSql, params) => {
         await pg.query(pgSql, params);
       },
@@ -94,6 +103,7 @@ async function harnessFn(
   await storage.ensureSchema(SCHEMA);
   return {
     storage,
+    storageAgain: () => new D1ServerStorage(d1, { pushApplySerialized: true }),
     insert: async (sqliteSql, _pgSql, params) => {
       await d1
         .prepare(sqliteSql)
@@ -944,6 +954,297 @@ for (const backend of ['sqlite', 'postgres/pglite'] as const) {
       expect(await marker()).toBe(2);
       expect(await count('sync_backfill_checkpoints')).toBe(1);
       expect(await count('sync_writer_fence')).toBe(1);
+    } finally {
+      await harness.close();
+    }
+  });
+}
+
+for (const backend of ['sqlite', 'postgres/pglite'] as const) {
+  const key = backend === 'postgres/pglite' ? 'postgres' : 'sqlite';
+  const DECLARATION = {
+    partition: PARTITION,
+    name: 'tasks-projection',
+    schemaVersion: SCHEMA.version,
+  } as const;
+
+  test(`${backend} acceptance: the authoritative path backfills under an idempotency key`, async () => {
+    const harness = await harnessFn(key);
+    try {
+      const tasks = SCHEMA.tables.get('tasks');
+      if (tasks === undefined) throw new Error('contract schema has no tasks');
+      await harness.storage.declareCheckpoint(
+        PARTITION,
+        'tasks-projection',
+        SCHEMA.version,
+        NOW,
+      );
+      const claimed = await harness.storage.claimCheckpoint(
+        PARTITION,
+        'tasks-projection',
+        SCHEMA.version,
+        NOW,
+      );
+      const ctx: SyncRequestContext = {
+        partition: PARTITION,
+        actorId: 'a1',
+        schema: CONTRACT_SCHEMA,
+        storage: harness.storage,
+        segments: new MemorySegmentStore(),
+        resolveScopes: () => ({ project_id: ['p1'] }),
+        clock: () => NOW,
+      };
+      const row = encodeSparseRow(tasks.columns, tasks.primaryKeyIndex, [
+        'proj-1',
+        'p1',
+        null,
+      ]);
+      // The backfill is an ordinary server-authoritative write: the builder
+      // reads the checkpoint CAS and returns the projection operations, so the
+      // CAS, the row version, sync_changes, and the commit-log append all land
+      // in one transaction under this idempotency key.
+      const run = () =>
+        processPushOperationsWithTrace(
+          ctx,
+          SCHEMA,
+          { ok: true, allowed: { project_id: ['p1'] } },
+          'backfill-client',
+          'backfill-batch-1',
+          async (tx) => {
+            const advanced = await tx.advanceCheckpoint(
+              'tasks-projection',
+              claimed.ownerEpoch,
+              0,
+              1,
+              NOW,
+            );
+            if (!advanced) throw new Error('superseded owner');
+            return [
+              {
+                table: 'tasks',
+                rowId: 'proj-1',
+                op: 'upsert' as const,
+                payload: row,
+              },
+            ];
+          },
+        );
+      const first = await run();
+      expect(first.replayed).toBe(false);
+      const seq = first.frame.commitSeq;
+      if (seq === undefined)
+        throw new Error('applied commit has no commit_seq');
+      expect(seq).toBeGreaterThan(0);
+
+      const commits = await harness.query<{ writer_version: number | null }>(
+        'SELECT writer_version FROM sync_commits WHERE partition=? AND commit_seq=?',
+        'SELECT writer_version FROM sync_commits WHERE partition=$1 AND commit_seq=$2',
+        [PARTITION, seq],
+      );
+      const fence = await harness.query<{ required_writer_version: number }>(
+        'SELECT required_writer_version FROM sync_writer_fence WHERE partition=?',
+        'SELECT required_writer_version FROM sync_writer_fence WHERE partition=$1',
+        [PARTITION],
+      );
+      // The append recorded the writer version of an authoritative write, and
+      // that version satisfies the fence the declaration raised.
+      expect(Number(commits[0]?.writer_version)).toBe(SCHEMA.version);
+      expect(Number(commits[0]?.writer_version)).toBeGreaterThanOrEqual(
+        Number(fence[0]?.required_writer_version),
+      );
+
+      const changes = await harness.query<{ commit_seq: number }>(
+        'SELECT commit_seq FROM sync_changes WHERE partition=? AND row_id=?',
+        'SELECT commit_seq FROM sync_changes WHERE partition=$1 AND row_id=$2',
+        [PARTITION, 'proj-1'],
+      );
+      expect(changes.map((change) => Number(change.commit_seq))).toEqual([seq]);
+      expect(
+        (await harness.storage.getRow(PARTITION, 'tasks', 'proj-1'))
+          ?.serverVersion,
+      ).toBe(1);
+
+      expect(
+        await harness.storage.activateCheckpoint(
+          PARTITION,
+          'tasks-projection',
+          claimed.ownerEpoch,
+          1,
+          ['tasks'],
+          NOW,
+        ),
+      ).toBe('activated');
+
+      // RFC acceptance 5: the same batch under the same idempotency key
+      // applies nothing twice, and the checkpoint stays activated.
+      const second = await run();
+      expect(second.replayed).toBe(true);
+      expect(second.frame.commitSeq).toBe(seq);
+      const after = await harness.query<{ n: number }>(
+        `SELECT count(*) AS n FROM sync_changes
+          WHERE partition=? AND row_id=?`,
+        `SELECT count(*) AS n FROM sync_changes
+          WHERE partition=$1 AND row_id=$2`,
+        [PARTITION, 'proj-1'],
+      );
+      expect(Number(after[0]?.n)).toBe(1);
+      expect((await harness.storage.readCheckpoints(PARTITION))[0]?.state).toBe(
+        'activated',
+      );
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test(`${backend} an omitted declaration against an incomplete checkpoint is refused`, async () => {
+    const harness = await harnessFn(key);
+    try {
+      await harness.storage.declareCheckpoint(
+        PARTITION,
+        'tasks-projection',
+        SCHEMA.version,
+        NOW,
+      );
+      // A different process on the same database declares nothing.
+      await expect(
+        harness.storageAgain().ensureSchema(SCHEMA),
+      ).rejects.toMatchObject({ code: 'sync.storage.checkpoint_incomplete' });
+      await expect(
+        harness.storageAgain().ensureSchema(SCHEMA, []),
+      ).rejects.toMatchObject({ code: 'sync.storage.checkpoint_incomplete' });
+      // The primary readiness path is refused too: the thrown storage error
+      // surfaces as the whole-server `sync.schema_not_ready`.
+      await expect(
+        ensureSyncServerReady({
+          schema: CONTRACT_SCHEMA,
+          storage: harness.storageAgain(),
+        }),
+      ).rejects.toMatchObject({ code: 'sync.schema_not_ready' });
+      // A process that declares the checkpoint is allowed to serve.
+      await ensureSyncServerReady({
+        schema: CONTRACT_SCHEMA,
+        storage: harness.storageAgain(),
+        checkpoints: [DECLARATION],
+      });
+      // Activated is terminal: a later process need declare nothing.
+      expect(
+        await harness.storage.activateCheckpoint(
+          PARTITION,
+          'tasks-projection',
+          0,
+          0,
+          ['tasks'],
+          NOW,
+        ),
+      ).toBe('activated');
+      await harness.storageAgain().ensureSchema(SCHEMA);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test(`${backend} a matching declaration restart is a no-op`, async () => {
+    const harness = await harnessFn(key);
+    try {
+      await harness.storage.declareCheckpoint(
+        PARTITION,
+        'tasks-projection',
+        SCHEMA.version,
+        NOW,
+      );
+      const claimed = await harness.storage.claimCheckpoint(
+        PARTITION,
+        'tasks-projection',
+        SCHEMA.version,
+        NOW,
+      );
+      const fenceBefore = await harness.query<{
+        required_writer_version: number;
+      }>(
+        'SELECT required_writer_version FROM sync_writer_fence WHERE partition=?',
+        'SELECT required_writer_version FROM sync_writer_fence WHERE partition=$1',
+        [PARTITION],
+      );
+      await harness.storageAgain().ensureSchema(SCHEMA, [DECLARATION]);
+      const after = (await harness.storage.readCheckpoints(PARTITION))[0];
+      expect(after?.state).toBe('backfilling');
+      expect(after?.ownerEpoch).toBe(claimed.ownerEpoch);
+      const fenceAfter = await harness.query<{
+        required_writer_version: number;
+      }>(
+        'SELECT required_writer_version FROM sync_writer_fence WHERE partition=?',
+        'SELECT required_writer_version FROM sync_writer_fence WHERE partition=$1',
+        [PARTITION],
+      );
+      expect(Number(fenceAfter[0]?.required_writer_version)).toBe(
+        Number(fenceBefore[0]?.required_writer_version),
+      );
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test(`${backend} two processes declaring different sets coexist`, async () => {
+    const harness = await harnessFn(key);
+    try {
+      await harness.storage.declareCheckpoint(
+        PARTITION,
+        'set-a',
+        SCHEMA.version,
+        NOW,
+      );
+      await harness
+        .storageAgain()
+        .declareCheckpoint(PARTITION, 'set-b', SCHEMA.version, NOW);
+      const checkpoints = await harness.storage.readCheckpoints(PARTITION);
+      expect(checkpoints.map((checkpoint) => checkpoint.name)).toEqual([
+        'set-a',
+        'set-b',
+      ]);
+      expect(
+        checkpoints.every((checkpoint) => checkpoint.state === 'declared'),
+      ).toBe(true);
+      const fence = await harness.query<{ required_writer_version: number }>(
+        'SELECT required_writer_version FROM sync_writer_fence WHERE partition=?',
+        'SELECT required_writer_version FROM sync_writer_fence WHERE partition=$1',
+        [PARTITION],
+      );
+      expect(Number(fence[0]?.required_writer_version)).toBe(SCHEMA.version);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test(`${backend} a failed bump rolls back the fence and the declaration`, async () => {
+    const harness = await harnessFn(key);
+    try {
+      await harness.storage.ensureSchema(SCHEMA_V2, [
+        { partition: PARTITION, name: 'ok', schemaVersion: 2 },
+      ]);
+      const SCHEMA_V3 = compileSchema({ ...CONTRACT_SCHEMA, version: 3 });
+      await expect(
+        harness.storageAgain().ensureSchema(SCHEMA_V3, [
+          { partition: PARTITION, name: 'half', schemaVersion: 3 },
+          { partition: PARTITION, name: 'boom', schemaVersion: Number.NaN },
+        ]),
+      ).rejects.toThrow();
+      expect(
+        (await harness.storage.readCheckpoints(PARTITION)).map(
+          (checkpoint) => checkpoint.name,
+        ),
+      ).toEqual(['ok']);
+      const fence = await harness.query<{ required_writer_version: number }>(
+        'SELECT required_writer_version FROM sync_writer_fence WHERE partition=?',
+        'SELECT required_writer_version FROM sync_writer_fence WHERE partition=$1',
+        [PARTITION],
+      );
+      expect(Number(fence[0]?.required_writer_version)).toBe(2);
+      const marker = await harness.query<{ schema_version: number }>(
+        'SELECT schema_version FROM sync_schema_meta WHERE id=1',
+        'SELECT schema_version FROM sync_schema_meta WHERE id=1',
+        [],
+      );
+      expect(Number(marker[0]?.schema_version)).toBe(2);
     } finally {
       await harness.close();
     }

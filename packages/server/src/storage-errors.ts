@@ -29,7 +29,8 @@ export type StorageQueryErrorCode =
   | 'sync.storage.invalid_prune_cursor'
   | 'sync.storage.checkpoint_not_declared'
   | 'sync.storage.checkpoint_unsupported'
-  | 'sync.storage.checkpoint_fence_missing';
+  | 'sync.storage.checkpoint_fence_missing'
+  | 'sync.storage.checkpoint_incomplete';
 
 const STORAGE_QUERY_MESSAGES: Readonly<Record<StorageQueryErrorCode, string>> =
   {
@@ -53,6 +54,8 @@ const STORAGE_QUERY_MESSAGES: Readonly<Record<StorageQueryErrorCode, string>> =
       'this storage backend cannot declare backfill checkpoints',
     'sync.storage.checkpoint_fence_missing':
       'checkpoint activation requires the writer fence raised at declaration',
+    'sync.storage.checkpoint_incomplete':
+      'a declared backfill checkpoint is not activated and this caller did not declare it',
     'sync.storage.scan_requires_scope':
       'scope-indexed row scans require at least one scope variable',
     'sync.storage.index_not_found':

@@ -1143,6 +1143,31 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
     // Memoized fast path: same instance, same schema version.
     if (this.#schemaVersion === schema.version) return;
     await this.migrate();
+    // The barrier reads stored state: a checkpoint at this schema version that
+    // is not activated and that this caller did not declare means this process
+    // must not serve. An omitted or empty declaration set declares nothing and
+    // is refused here, never treated as a bypass.
+    const declarations = checkpoints ?? [];
+    const incomplete = await this.#exec.query<{
+      partition: string;
+      name: string;
+    }>(
+      `SELECT partition, name FROM sync_backfill_checkpoints
+        WHERE schema_version=$1 AND state<>'activated'`,
+      [schema.version],
+    );
+    if (
+      incomplete.rows.some(
+        (row) =>
+          !declarations.some(
+            (declaration) =>
+              declaration.partition === row.partition &&
+              declaration.name === row.name,
+          ),
+      )
+    ) {
+      throw new StorageQueryError('sync.storage.checkpoint_incomplete');
+    }
     await this.#exec.query(SCHEMA_META_DDL_POSTGRES);
     const marker = await this.#exec.query<{
       schema_version: unknown;

@@ -415,7 +415,7 @@ export function registerRemoteQuery<Params>(
           'selected SQL has no generated relation plan; regenerate queries',
         );
       }
-      await ctx.storage.ensureSchema(schema);
+      await ctx.storage.ensureSchema(schema, ctx.checkpoints);
       const prefix = 'SELECT * FROM (';
       let result;
       try {
@@ -603,7 +603,7 @@ export function registerRemoteCommand<Input>(
       }
       const resolved: ResolvedScopes = { ok: true, allowed };
       const schema = compileSchema(ctx.schema);
-      await ctx.storage.ensureSchema(schema);
+      await ctx.storage.ensureSchema(schema, ctx.checkpoints);
       const processed = await processPushOperationsWithTrace(
         ctx,
         schema,

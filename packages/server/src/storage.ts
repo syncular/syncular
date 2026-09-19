@@ -435,9 +435,11 @@ export interface StorageTransaction {
   ): Promise<void>;
   /**
    * Advance this partition's checkpoint only while `owner_epoch` still
-   * matches. A backfill batch composes this with its projection row writes in
-   * the one transaction: false means abort and write nothing. False rather
-   * than a throw for the superseded-owner case.
+   * matches, so the owner-epoch CAS rides inside the caller's transaction.
+   * The host calls this from `processPushOperationsWithTrace`'s operation
+   * builder: the backfill is an ordinary server-authoritative write, and this
+   * CAS commits with that write's row versions and commit-log append. False
+   * means abort and write nothing, rather than a throw for a superseded owner.
    */
   advanceCheckpoint(
     name: string,
