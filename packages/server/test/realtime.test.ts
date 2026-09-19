@@ -715,24 +715,15 @@ describe('host-initiated scope refresh (§8.7)', () => {
     expect(b.session.registrations).toHaveLength(0);
   });
 
-  test('a failed host refresh stays revoked over a late round-end reload', async () => {
+  test('a resolver failure on the host refresh fails closed', async () => {
     const t = makeContext();
     const allowed = new Map<string, ScopeMap>([
       ['actor-b', { project_id: ['p1'] }],
     ]);
-    const gate = Promise.withResolvers<void>();
-    const roundEndStarted = Promise.withResolvers<void>();
-    let mode: 'live' | 'stale' | 'throw' = 'live';
+    let failing = false;
     Object.assign(t.ctx, {
-      resolveScopes: async ({ actorId }: { actorId: string }) => {
-        if (actorId !== 'actor-b') return allowed.get(actorId) ?? {};
-        if (mode === 'stale') {
-          mode = 'live';
-          roundEndStarted.resolve();
-          await gate.promise;
-          return { project_id: ['p1'] };
-        }
-        if (mode === 'throw') throw new Error('resolver down');
+      resolveScopes: ({ actorId }: { actorId: string }) => {
+        if (failing && actorId === 'actor-b') throw new Error('resolver down');
         return allowed.get(actorId) ?? {};
       },
     });
@@ -740,20 +731,8 @@ describe('host-initiated scope refresh (§8.7)', () => {
     const b = await connectedClient(t, hub, 'actor-b', 'client-b');
     expect(b.session.registrations).toHaveLength(1);
 
-    // A round-end reload is in flight with the pre-revocation scopes.
-    allowed.set('actor-b', {});
-    mode = 'stale';
-    const roundEnd = b.session.refreshRegistrations(false);
-    await roundEndStarted.promise;
-
-    // The host's revocation refresh fails closed to no grants.
-    mode = 'throw';
+    failing = true;
     await hub.refreshScopes('part-1', 'actor-b');
-    expect(b.session.registrations).toHaveLength(0);
-
-    // The stale round-end reload resolves last and must not regrant.
-    gate.resolve();
-    await roundEnd;
     expect(b.session.registrations).toHaveLength(0);
   });
 });

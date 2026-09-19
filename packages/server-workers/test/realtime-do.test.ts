@@ -11,7 +11,7 @@
  * with the reference codec (`@syncular/core`), the sockets are in-memory
  * doubles, and the storage is the D1 double.
  */
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import {
   decodeMessage,
   encodeMessage,
@@ -34,6 +34,7 @@ import {
   compileSchema,
   MemoryBlobStore,
   MemorySegmentStore,
+  RealtimeSession,
   type ServerSchema,
   SSP2_CONTENT_TYPE,
   type SyncServerConfig,
@@ -983,42 +984,28 @@ describe('Workers fetch handler realtime route', () => {
 });
 
 describe('socket close cleanup (§8.2)', () => {
-  test('a failed cursor drain still closes the session and drops presence', async () => {
+  test('a rejected drain still closes the session and drops presence', async () => {
     const db = await makeDb();
-    let storage: D1ServerStorage | undefined;
-    const ns = new FakeDurableObjectNamespace(db, {
-      syncConfig: (coordinated) => {
-        storage = coordinated;
-        return {
-          schema: SCHEMA,
-          storage: coordinated,
-          resolveScopes: () => ({ list_id: ['*'] }),
-          segments: new MemorySegmentStore(),
-        };
-      },
-    });
+    const ns = new FakeDurableObjectNamespace(db, realtimeConfig());
     const { do_, server } = await connect(ns, 'client-1');
-    const session = do_.host.connectedSession(server);
-    if (session === undefined) throw new Error('expected a connected session');
-    if (storage === undefined) throw new Error('expected coordinated storage');
-    storage.advanceClientCursor = async () => {
-      throw new Error('storage offline');
-    };
-    let closed = false;
-    const realClose = session.close.bind(session);
-    session.close = () => {
-      closed = true;
-      realClose();
-    };
+    expect(do_.host.sessionCount).toBe(1);
 
-    // Queue the ack's cursor write without a hibernatable event draining it,
-    // so the close handler's drain is the one that observes the failure.
-    session.handleMessage(JSON.stringify({ type: 'ack', cursor: 3 }));
-    await expect(do_.closeSocket(server)).rejects.toThrow('storage offline');
-
-    // The failure surfaced, but close still ran (dropping presence) and the
-    // host forgot the session.
-    expect(closed).toBe(true);
-    expect(do_.host.sessionCount).toBe(0);
+    // Pin the close handler's cleanup: the drain rejects exactly as a
+    // storage outage would, and close() (which removes presence via
+    // hub.disconnect -> dropAllPresence) must still run.
+    const failure = new Error('storage offline');
+    const drainSpy = spyOn(
+      RealtimeSession.prototype,
+      'drain',
+    ).mockRejectedValue(failure);
+    const closeSpy = spyOn(RealtimeSession.prototype, 'close');
+    try {
+      await expect(do_.closeSocket(server)).rejects.toThrow('storage offline');
+      expect(closeSpy).toHaveBeenCalledTimes(1);
+      expect(do_.host.sessionCount).toBe(0);
+    } finally {
+      drainSpy.mockRestore();
+      closeSpy.mockRestore();
+    }
   });
 });

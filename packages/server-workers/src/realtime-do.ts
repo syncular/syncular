@@ -442,11 +442,6 @@ export class SyncularRealtimeHost {
   get sessionCount(): number {
     return this.#sessions.size;
   }
-
-  /** Test/introspection: the connected session bound to a socket, if any. */
-  connectedSession(ws: WebSocketLike): RealtimeSession | undefined {
-    return this.#sessions.get(ws);
-  }
 }
 
 // -- Platform helpers -------------------------------------------------------
