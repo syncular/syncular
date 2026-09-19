@@ -160,35 +160,16 @@ gate('RFC 0007 real-Postgres receipts (SYNCULAR_PG_URL)', () => {
       Date.now(),
     );
     await storage.claimCheckpoint(partition, 'tasks-projection', 1, Date.now());
-    const activated = await storage.activateCheckpoint(
-      partition,
-      'tasks-projection',
-      1,
-      0,
-      ['tasks'],
-      Date.now(),
-    );
-    // RFC0007-DEBUG
-    console.error(
-      'RFC0007-DEBUG',
-      JSON.stringify({
-        activated,
+    expect(
+      await storage.activateCheckpoint(
         partition,
-        coverage: await storage.sourceCoverageSeq(partition, ['tasks']),
-        checkpoints: await storage.readCheckpoints(partition),
-        changes: (
-          await executor.query(
-            'SELECT partition, tbl, commit_seq, row_id FROM sync_changes ORDER BY commit_seq',
-          )
-        ).rows,
-        partitions: (
-          await executor.query(
-            'SELECT partition, max_commit_seq, horizon_seq FROM sync_partitions ORDER BY partition',
-          )
-        ).rows,
-      }),
-    );
-    expect(activated).toBe('activated');
+        'tasks-projection',
+        1,
+        0,
+        ['tasks'],
+        Date.now(),
+      ),
+    ).toBe('activated');
     await expect(rawAppend(executor, partition, 98, 0)).rejects.toThrow(
       /writer_fence_rejected/,
     );

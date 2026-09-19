@@ -886,13 +886,18 @@ class PostgresTransaction implements StorageTransaction {
     nowMs: number,
   ): Promise<boolean> {
     this.#assertOpen();
-    const result = await this.#client.query(
+    // `RETURNING`: the affected-row check must not depend on a driver's
+    // `rowCount` for a statement with no result rows. Bun.sql's canonical
+    // adapter derives `rowCount` from the returned rows, so a bare UPDATE
+    // reports 0 and the CAS would never advance on a real Bun.sql host.
+    const result = await this.#client.query<{ name: string }>(
       `UPDATE sync_backfill_checkpoints
           SET watermark=$1, observed_rows=$2, updated_at_ms=$3
-        WHERE partition=$4 AND name=$5 AND owner_epoch=$6`,
+        WHERE partition=$4 AND name=$5 AND owner_epoch=$6
+        RETURNING name`,
       [watermark, observedRows, nowMs, this.#partition, name, ownerEpoch],
     );
-    return result.rowCount === 1;
+    return result.rows.length === 1;
   }
 
   readServeGate(runningSchemaVersion: number): Promise<ServeGate> {
@@ -1738,14 +1743,15 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
       if (coverage !== 'clean') {
         return coverage === 'changed' ? 'stale' : 'unverifiable';
       }
-      const updated = await client.query(
+      const updated = await client.query<{ partition: string }>(
         `UPDATE sync_backfill_checkpoints
             SET state='activated', watermark=$1, updated_at_ms=$2
           WHERE partition=$3 AND name=$4 AND owner_epoch=$5
-            AND state<>'activated'`,
+            AND state<>'activated'
+          RETURNING partition`,
         [watermark, nowMs, partition, name, ownerEpoch],
       );
-      return updated.rowCount === 1 ? 'activated' : 'stale';
+      return updated.rows.length === 1 ? 'activated' : 'stale';
     });
   }
 
@@ -1781,13 +1787,14 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
     observedRows: number,
     nowMs: number,
   ): Promise<boolean> {
-    const result = await this.#exec.query(
+    const result = await this.#exec.query<{ name: string }>(
       `UPDATE sync_backfill_checkpoints
           SET watermark=$1, observed_rows=$2, updated_at_ms=$3
-        WHERE partition=$4 AND name=$5 AND owner_epoch=$6`,
+        WHERE partition=$4 AND name=$5 AND owner_epoch=$6
+        RETURNING name`,
       [watermark, observedRows, nowMs, partition, name, ownerEpoch],
     );
-    return result.rowCount === 1;
+    return result.rows.length === 1;
   }
 
   async sourceCoverageSeq(

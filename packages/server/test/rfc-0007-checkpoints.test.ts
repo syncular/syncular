@@ -12,6 +12,8 @@ import {
   D1ServerStorage,
   ensureSyncServerReady,
   MemorySegmentStore,
+  type PgExecutor,
+  type PgQueryable,
   PostgresServerStorage,
   processPushOperationsWithTrace,
   SqliteServerStorage,
@@ -1264,6 +1266,68 @@ test('barrier cleanup between processes on one database re-enables declaration-f
     await pg.query('DELETE FROM sync_backfill_checkpoints');
     await pg.query('DELETE FROM sync_writer_fence');
     await new PostgresServerStorage(pgliteExecutor(pg)).ensureSchema(SCHEMA);
+  } finally {
+    await pg.close();
+  }
+});
+
+test('activation and the checkpoint CAS do not depend on driver rowCount', async () => {
+  // A Bun.sql-style adapter reports rowCount as the count of RETURNED rows,
+  // which is 0 for a statement with no RETURNING. RFC 0007's CAS and
+  // activation must therefore use RETURNING and inspect rows, or they
+  // silently never advance on a real Bun.sql host.
+  const pg = await PGlite.create();
+  try {
+    const base = pgliteExecutor(pg);
+    const adapted = (client: PgQueryable): PgQueryable => ({
+      async query<Row = Record<string, unknown>>(
+        text: string,
+        params?: readonly unknown[],
+      ) {
+        const result = await client.query<Row>(text, params);
+        return { rows: result.rows, rowCount: result.rows.length };
+      },
+    });
+    const executor: PgExecutor = {
+      query: (text, params) => adapted(base).query(text, params),
+      transaction: (fn) => base.transaction((client) => fn(adapted(client))),
+      close: () => base.close?.() ?? Promise.resolve(),
+    };
+    const storage = new PostgresServerStorage(executor);
+    await storage.ensureSchema(SCHEMA);
+    await storage.declareCheckpoint(
+      PARTITION,
+      'tasks-projection',
+      SCHEMA.version,
+      NOW,
+    );
+    const claimed = await storage.claimCheckpoint(
+      PARTITION,
+      'tasks-projection',
+      SCHEMA.version,
+      NOW,
+    );
+    expect(
+      await storage.activateCheckpoint(
+        PARTITION,
+        'tasks-projection',
+        claimed.ownerEpoch,
+        0,
+        ['tasks'],
+        NOW,
+      ),
+    ).toBe('activated');
+    const tx = await storage.begin(PARTITION);
+    await tx.lockPartitionForPush?.();
+    const advanced = await tx.advanceCheckpoint(
+      'tasks-projection',
+      claimed.ownerEpoch,
+      0,
+      0,
+      NOW,
+    );
+    await tx.commit();
+    expect(advanced).toBe(true);
   } finally {
     await pg.close();
   }
