@@ -473,6 +473,30 @@ for (const backend of ['sqlite', 'postgres/pglite'] as const) {
   test(`${backend} acceptance 16: an old writer is denied right after a current append`, async () => {
     const harness = await harnessFn(key);
     try {
+      await harness.insert(FENCE_UPSERT, FENCE_UPSERT_PG, [
+        PARTITION,
+        SCHEMA.version,
+      ]);
+      const seq = await append(harness.storage, 'tasks', 't1');
+      const rows = await harness.query<{ writer_version: number | null }>(
+        SELECT_WRITER_VERSION,
+        SELECT_WRITER_VERSION_PG,
+        [PARTITION, seq],
+      );
+      expect(rows[0]?.writer_version).toBe(SCHEMA.version);
+      // Same database, immediately after the aware writer committed. A fence
+      // whose declaration leaked between transactions would allow this.
+      await expect(rawCommit(harness, seq + 1, null)).rejects.toThrow(
+        /writer_fence_rejected/,
+      );
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test(`${backend} declaration installs the checkpoint and the fence together`, async () => {
+    const harness = await harnessFn(key);
+    try {
       const declared = await harness.storage.declareCheckpoint(
         PARTITION,
         'tasks-projection',
@@ -480,18 +504,12 @@ for (const backend of ['sqlite', 'postgres/pglite'] as const) {
         NOW,
       );
       expect(declared.state).toBe('declared');
-      const seq = await append(harness.storage, 'tasks', 't1');
-      const rows = await harness.query<{ writer_version: number }>(
-        SELECT_WRITER_VERSION,
-        SELECT_WRITER_VERSION_PG,
-        [PARTITION, seq],
+      const fence = await harness.query<{ required_writer_version: number }>(
+        'SELECT required_writer_version FROM sync_writer_fence WHERE partition=?',
+        'SELECT required_writer_version FROM sync_writer_fence WHERE partition=$1',
+        [PARTITION],
       );
-      expect(rows[0]?.writer_version).toBe(SCHEMA.version);
-      // Same database, immediately after the aware writer committed. A fence
-      // that leaked a declaration between transactions would allow this.
-      await expect(rawCommit(harness, seq + 1, null)).rejects.toThrow(
-        /writer_fence_rejected/,
-      );
+      expect(fence[0]?.required_writer_version).toBe(SCHEMA.version);
     } finally {
       await harness.close();
     }
