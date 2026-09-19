@@ -667,8 +667,10 @@ function isPreviousVersionReason(
   );
 }
 
-/** Strict decode of the shim's previous-version snapshot — a version-drifted
- * host cannot forge `available: true`. */
+/** Strict decode of the shim's previous-version snapshot — the reply must lie
+ * inside the closed shape the core defines (an available read carries a
+ * previousVersion and no reason; an unavailable read carries a known reason and
+ * no previousVersion). */
 function parsePreviousVersionSnapshot(
   value: JsonValue,
 ): DriverPreviousVersionSnapshot {
@@ -693,6 +695,23 @@ function parsePreviousVersionSnapshot(
   }
   if (object.reason !== undefined && !isPreviousVersionReason(object.reason)) {
     throw new Error('previousVersionSnapshot: malformed reason');
+  }
+  if (object.available) {
+    if (
+      typeof object.previousVersion !== 'number' ||
+      object.reason !== undefined
+    ) {
+      throw new Error(
+        'previousVersionSnapshot: available requires previousVersion and no reason',
+      );
+    }
+  } else if (
+    object.previousVersion !== undefined ||
+    !isPreviousVersionReason(object.reason)
+  ) {
+    throw new Error(
+      'previousVersionSnapshot: unavailable requires a known reason and no previousVersion',
+    );
   }
   const rows = object.rows.map((row) => driverRowOf(row));
   return {
