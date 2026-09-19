@@ -47,6 +47,9 @@ import type {
   LocalDataRebootstrapResult,
   MutationInput,
   PresencePeer,
+  PreviousVersionAudit,
+  PreviousVersionReadSpec,
+  PreviousVersionSnapshot,
   QueryReadSpec,
   QuerySnapshot,
   RejectionRecord,
@@ -60,6 +63,9 @@ import type {
 } from '@syncular/client';
 import {
   decodeLocalDataRebootstrapResult,
+  decodePreviousVersionAuditResult,
+  decodePreviousVersionDiscardResult,
+  decodePreviousVersionSnapshot,
   SECURITY_PREFLIGHT_REQUIRED_CODE,
   withClientDiagnosticsHost,
 } from '@syncular/client';
@@ -225,6 +231,27 @@ function decodeRow(row: Record<string, unknown>): SqlRow {
     out[key] = decodeCell(value);
   }
   return out;
+}
+
+/**
+ * Decode the JSON cell envelopes in an RFC 0005 snapshot reply's rows before
+ * the strict bridge decoder sees them; a malformed reply is passed through
+ * untouched so `decodePreviousVersionSnapshot` rejects it.
+ */
+function decodeSnapshotRows(value: unknown): unknown {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return value;
+  }
+  const source = value as Record<string, unknown>;
+  if (!Array.isArray(source.rows)) return value;
+  return {
+    ...source,
+    rows: source.rows.map((row) =>
+      row !== null && typeof row === 'object' && !Array.isArray(row)
+        ? decodeRow(row as Record<string, unknown>)
+        : row,
+    ),
+  };
 }
 
 /** Resolve the native module + event emitter from the RN runtime when not injected. */
@@ -691,6 +718,31 @@ export class NativeSyncClient implements PromiseMethods<ClientSnapshotMethods> {
   ): Promise<LocalDataRebootstrapResult> {
     return decodeLocalDataRebootstrapResult(
       await this.#command('rebootstrapLocalData', { input }),
+    );
+  }
+
+  async previousVersionSnapshot(
+    spec: PreviousVersionReadSpec,
+  ): Promise<PreviousVersionSnapshot> {
+    return decodePreviousVersionSnapshot(
+      decodeSnapshotRows(
+        await this.#command('previousVersionSnapshot', { spec }),
+      ),
+    );
+  }
+
+  async previousVersionAudit(): Promise<PreviousVersionAudit | undefined> {
+    return decodePreviousVersionAuditResult(
+      await this.#command('previousVersionAudit', {}),
+    );
+  }
+
+  async previousVersionDiscard(): Promise<{
+    present: boolean;
+    discarded: boolean;
+  }> {
+    return decodePreviousVersionDiscardResult(
+      await this.#command('previousVersionDiscard', {}),
     );
   }
 
