@@ -743,8 +743,7 @@ async function createStreamCore(
   const refusal = serveGateRefusal(gate, schema.version, ctx.checkpoints);
   if (refusal !== undefined) throw serveNotReadyError(refusal);
   const plan = await planRequest(request, ctx, schema, registry);
-  const report: RequestReport | undefined =
-    events === undefined ? undefined : { outcome: 'ok' };
+  const report: RequestReport = { outcome: 'ok' };
   // RFC 0007 read-verify-refuse for the streamed read path: the generator
   // builds the whole response (its data reads) before yielding the first
   // frame, then compares the gate token across those reads. Nothing escapes
@@ -772,7 +771,7 @@ async function createStreamCore(
     if (changed !== undefined) throw serveNotReadyError(changed);
     for (const chunk of buffered) yield chunk;
   };
-  if (events === undefined || report === undefined) return verified();
+  if (events === undefined) return verified();
   return instrumentedStream(
     verified(),
     ctx,

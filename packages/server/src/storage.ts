@@ -89,8 +89,6 @@ export type ServeGateRefusal =
   | {
       /** The token changed between two reads: a restore rotated the epoch. */
       readonly kind: 'epoch';
-      readonly expected: string | undefined;
-      readonly actual: string | undefined;
     };
 
 /**
@@ -142,11 +140,7 @@ export function serveGateTokenChanged(
     before.storedSchemaVersion !== after.storedSchemaVersion ||
     before.logEpoch !== after.logEpoch
   ) {
-    return {
-      kind: 'epoch',
-      expected: before.logEpoch,
-      actual: after.logEpoch,
-    };
+    return { kind: 'epoch' };
   }
   return undefined;
 }
