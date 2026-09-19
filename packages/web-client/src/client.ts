@@ -2809,10 +2809,6 @@ export class SyncClient {
    */
   purgeLocalData(input: LocalDataPurgeInput): LocalDataPurgeResult {
     this.#requireStarted();
-    // RFC 0005 D7: the container file cannot be a purge target (its name is not
-    // in the running schema), so purge drops it as a fixed step, before any
-    // mirror row is touched and unconditionally.
-    this.#dropPreviousVersion();
     const purge = compileLocalDataPurge(this.#schema, input);
     const metaKey = localDataPurgeMetaKey(purge.purgeId);
     const appliedPlan = getMeta(this.#db, metaKey);
@@ -2825,6 +2821,10 @@ export class SyncClient {
       }
       return { alreadyApplied: true, purgedRows: 0, droppedCommits: 0 };
     }
+    // RFC 0005 D7: the container file cannot be a purge target (its name is not
+    // in the running schema), so purge drops it as a fixed step, before any
+    // mirror row is touched and unconditionally.
+    this.#dropPreviousVersion();
 
     const rejectionCount = this.#rejections.length;
     try {

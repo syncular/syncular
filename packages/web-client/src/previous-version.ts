@@ -263,7 +263,7 @@ function decodeTable(value: unknown): LocalSchemaDescriptorTable {
  * D1: the semantic local types of every table in the running generated schema,
  * built from {@link localColumnType} — never from SQLite affinity.
  */
-export function buildLocalSchemaDescriptor(
+function buildLocalSchemaDescriptor(
   schema: CompiledClientSchema,
 ): LocalSchemaDescriptor {
   return {
@@ -281,7 +281,7 @@ export function buildLocalSchemaDescriptor(
 }
 
 /** Strict decode: an unknown shape is corruption, never a best guess. */
-export function decodeLocalSchemaDescriptor(
+function decodeLocalSchemaDescriptor(
   value: string,
 ): LocalSchemaDescriptor {
   let parsed: unknown;
