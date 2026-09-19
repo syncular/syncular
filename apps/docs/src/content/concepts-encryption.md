@@ -81,16 +81,18 @@ AES-256-GCM with a fresh random 96-bit nonce per encrypt. A `NULL` value stays
 ## Optional protected values: sidecar tables
 
 The client decrypts at the **whole-row boundary** when a commit or a rows
-segment applies. A row that carries one optional protected value beside
-shared operational data therefore becomes undeliverable in full: a client
-without the key cannot apply **any** column of that row, and the failed apply
-aborts the rest of the sync round. The shared columns are unavailable even
-though the client is authorized for them.
+segment applies. A `NULL` encrypted value stays `NULL` on the wire and needs
+no key, so the problem is a **non-NULL** protected value sharing a row with
+shared operational data: a client without the key cannot apply **any** column
+of that row, and the failed apply aborts the rest of the sync round. The
+shared columns are unavailable even though the client is authorized for them.
 
 Keep the shared row key-free and move the protected value into a **sidecar
 table**. The sidecar holds the protected value under its own `encryptedColumns`
-entry, its own scope, its own subscription and its own `keyIdColumns` entry,
-keyed by the primary row id:
+entry, its own scope and its own subscription, keyed by the primary row id.
+It resolves its key by the normal §5.11 selection: the per-table default
+(`keyId = table`) is enough, and `keyIdColumns` is the optional selector for
+per-scope keys or rotation.
 
 ```jsonc
 // syncular.json
@@ -112,18 +114,19 @@ keyed by the primary row id:
 A client without the sidecar key subscribes to `records` and reads every
 primary column. The protected value is never delivered to it.
 
-### Put presence metadata on the primary, never inside the sidecar
+### A no-key presence signal belongs on the primary
 
-Apply decrypts at the whole-row boundary, so a no-key client cannot read
-**any** column of a sidecar row it cannot decrypt. A plaintext `value_type` or
-`has_value` column beside the encrypted value is unreadable to exactly the
-client that needs it, and the attempt aborts the sync round.
+A presence marker inside the encrypted sidecar row cannot be the only
+presence signal for a no-key client: apply decrypts at the whole-row boundary,
+so that client cannot read **any** column of a row it cannot decrypt, and the
+attempt aborts the sync round. Metadata inside the encrypted row remains valid
+for keyholders.
 
-Put disclosed presence metadata in the plaintext primary, or in another
-plaintext shape the client is already authorized to read. Disclosure is an
-authorization decision: publishing that a protected value exists is itself a
-disclosure, so it happens only where the primary shape's own authorization
-already covers it.
+A presence signal intended for no-key clients belongs in the plaintext primary,
+or another plaintext shape the client is already authorized to read.
+Disclosure is an authorization decision: publishing that a protected value
+exists is itself a disclosure, so it happens only where the primary shape's
+own authorization already covers it.
 
 | State | What a no-key client sees |
 |---|---|
@@ -151,10 +154,11 @@ every correct design. Choose the sidecar shape when you write the schema.
 Decrypt-on-apply is gated by the **receiver's** own manifest, and the wire
 carries no envelope marker. If two peers disagree about a column's
 `encryptedColumns` entry, the receiver that does not mark the column encrypted
-decodes the envelope as its local type. A plaintext-typed column raises an
-incidental codec error; a non-encrypted `bytes` column silently stores the
-envelope in the local mirror. Nothing detects or prevents this today. Every
-peer must agree on the manifest before it exchanges encrypted data.
+decodes the envelope as its local type. A receiver whose local column is not
+`bytes` may fail to decode the envelope or may decode it incorrectly,
+depending on the type; a `bytes` receiver accepts the envelope as raw bytes
+and stores it. Nothing detects or prevents this today. Every peer must agree
+on the manifest before it exchanges encrypted data.
 
 ## What the server can and cannot see: threat model
 
