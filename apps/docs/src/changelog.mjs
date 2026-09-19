@@ -17,6 +17,21 @@
 export const changelog = [
   {
     date: '2026-09-19',
+    title: 'The server refuses to serve until a declared backfill is activated',
+    body: 'A schema change that needs a backfill can now be declared so the storage refuses requests until it is activated. SQLite and PostgreSQL expose a serve gate that answers `sync.schema_not_ready` (retryable, HTTP 503) while a declared checkpoint for the running schema version is incomplete, or when the stored schema version is newer than the running build. D1 keeps its existing host readiness failure and the client recovery protocol does not change. On PostgreSQL the migration transaction takes an exclusive lock on `sync_partitions` as its first statement, so an old binary blocks at its first statement without its cooperation, and a `BEFORE INSERT` trigger on `sync_commits` rejects an append below the required writer version for the partition. Custom storage adapters must implement the new `Storage` members named in the release notes.',
+    links: [
+      { href: '/server-storage/', label: 'Storage backends' },
+      { href: '/concepts-schema-upgrades/', label: 'Schema upgrades' },
+    ],
+  },
+  {
+    date: '2026-09-19',
+    title: 'Optional protected values are documented as an encrypted sidecar',
+    body: 'When a row mixes shared operational columns with an optional non-NULL protected value, the supported shape is a plaintext primary table beside a sidecar table that carries the protected value with its own scope and subscription, keyed by the primary row id. The sidecar resolves its key through the normal selection order, and a client without that key must not subscribe to it: decrypt-on-apply runs at the whole-row boundary, so an undecryptable sidecar row aborts the remainder of the sync round and starves unrelated frames. A presence signal for a no-key client belongs on the plaintext primary, and there is no generate-time diagnostic for an encrypted column that shares a row with plaintext columns. Two conformance scenarios pin the no-key primary read and the fail-closed subscription case.',
+    links: [{ href: '/concepts-encryption/', label: 'Encryption' }],
+  },
+  {
+    date: '2026-09-19',
     title: 'An opt-in cache of the rows a schema bump wipes',
     body: 'A schema bump wipes the local replica before the replacement bootstrap restores anything, so an app can briefly see none of its own rows. `previousVersionContext` is a new opt-in, default-off feature that keeps a bounded, typed, read-only copy of the pre-bump rows in a second database file beside the replica, and exposes `previousVersionSnapshot`, `previousVersionAudit` and `previousVersionDiscard`, with `statusSnapshot().previousVersionContext` reporting presence. The capture is measured before any row is materialized and is all-or-nothing; its semantic types come from a persisted schema descriptor, never from SQLite affinity. The guarantee is narrow: the normal replica query connection does not attach the file, which is not confidentiality against same-origin or filesystem access. An unaware rollback leaves the file in place, the aware-only TTL does not bound that residue, and the supported downgrade procedure calls `previousVersionDiscard()` first.',
     links: [

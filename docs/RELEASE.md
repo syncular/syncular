@@ -1,8 +1,76 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.22.0** (`v0.22.0`). All artifacts use Apache-2.0, except
+current release is **0.23.0** (`v0.23.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.23.0 release notes
+
+0.23.0 is a minor release: it adds a required server storage surface, a new
+catalogued wire error, and a public client capability, so a patch number would
+hide the surface. Upgrade Syncular packages and crates together. SSP2 stays at
+wire version 3; `COMMIT` frames, segments, SQLite images and conflict
+`serverRow` bytes are unchanged.
+
+- **An opt-in previous-version context caches the rows a schema bump wipes.**
+  `previousVersionContext` is default off. With it enabled and
+  `rollbackDiscardAcknowledged: true`, a schema bump keeps a bounded, typed,
+  read-only copy of the pre-reset rows in a second database file beside the
+  replica, for the window between the wipe and the replacement bootstrap. The
+  client exposes `previousVersionSnapshot`, `previousVersionAudit` and
+  `previousVersionDiscard`, and `statusSnapshot()` reports
+  `previousVersionContext: { present, createdAtMs? }`. The bounds are
+  `maxBytes` (8 MiB), `maxRows` (20,000), `maxTables` (32), `maxRowBytes`
+  (1 MiB) and `maxAgeMs` (24 h); every bound must be a positive safe integer or
+  the client rejects with `sync.invalid_request`. The capture is measured before
+  any row is materialized and is all-or-nothing. The container is dropped by
+  replacement-coverage completion, a lease stop state or expiry, scope
+  revocation, the TTL, `purgeLocalData` as a fixed step, explicit discard, and
+  the boot orphan sweep. The guarantee is exactly that the normal replica query
+  connection does not attach the file. It is not confidentiality against
+  same-origin storage access or native filesystem access, and the flag is not a
+  security control. **Stated limitation: neither unaware rollback removes the
+  container.** An unaware same-schema rollback runs no reset and cannot purge a
+  name outside its schema; an unaware schema-changing rollback resets replica
+  tables only and never sees the file. The core has no unaware purge path, so
+  the residue is unbounded in time. A host that enables the feature must call
+  `previousVersionDiscard()` before rolling a build back, or refuse the rollback
+  while `statusSnapshot().previousVersionContext.present` is true. Both cores
+  implement the feature and the conformance catalog covers the schema-bump
+  contract.
+- **The server refuses a request until a declared backfill checkpoint is
+  activated.** SQLite and PostgreSQL storage expose a serve gate that answers
+  `sync.schema_not_ready` (internal, retryable, HTTP 503) while a declared
+  backfill checkpoint for the running schema version is incomplete, or when the
+  stored schema version is newer than the running build. D1 keeps its existing
+  host readiness failure and adds no wire error. The client retries the same
+  request later and its recovery protocol does not change. On PostgreSQL the
+  schema-migration transaction takes `LOCK TABLE sync_partitions IN EXCLUSIVE
+  MODE` as its first statement, so an old binary blocks at its first statement
+  without its cooperation, and a `BEFORE INSERT` trigger on `sync_commits`
+  rejects an append whose `writer_version` is below the partition's required
+  version. **Custom `Storage` adapters must implement the new members**
+  `readServeGate`, `readCheckpoints`, `claimCheckpoint`, `advanceCheckpoint`,
+  `sourceCoverageSeq`, `hasSourceChangesAbove`, `declareCheckpoint` and
+  `activateCheckpoint`; `ensureSchema` accepts host-owned checkpoint
+  declarations and installs them in the migration transaction that bumps the
+  schema marker. The conformance server capability is `backfill-checkpoints`.
+- **The supported shape for optional protected values is documented as a
+  sidecar.** `SPEC` 5.11 and the encryption concepts page describe a plaintext
+  primary row beside a sidecar table that carries the protected value under its
+  own `encryptedColumns` entry, its own scope and its own subscription, keyed by
+  the primary row id and resolving its key through the normal selection order.
+  A client without the sidecar key must not subscribe to it, because
+  decrypt-on-apply runs at the whole-row boundary and an undecryptable row
+  aborts the remainder of the sync round. A presence signal meant for a no-key
+  client belongs on the plaintext primary, and neither core emits a generate-time
+  diagnostic for an encrypted column that shares a row with plaintext columns.
+  The conformance catalog pins the no-key primary read and the fail-closed
+  subscription case.
+
+Details: [server storage](https://syncular.dev/server-storage/),
+[schema upgrades](https://syncular.dev/concepts-schema-upgrades/), and
+[encryption](https://syncular.dev/concepts-encryption/).
 
 ## 0.22.0 release notes
 
