@@ -381,6 +381,15 @@ class TsServerInstance implements ServerInstance {
       begin: (p) => this.#storage.begin(p),
       getMaxCommitSeq: (p) => this.#storage.getMaxCommitSeq(p),
       getHorizonSeq: (p) => this.#storage.getHorizonSeq(p),
+      readCheckpoints: (p) => this.#storage.readCheckpoints(p),
+      claimCheckpoint: (p, n, v, at) =>
+        this.#storage.claimCheckpoint(p, n, v, at),
+      advanceCheckpoint: (p, n, e, w, r, at) =>
+        this.#storage.advanceCheckpoint(p, n, e, w, r, at),
+      sourceCoverageSeq: (p, t) => this.#storage.sourceCoverageSeq(p, t),
+      hasSourceChangesAbove: (p, t, s) =>
+        this.#storage.hasSourceChangesAbove(p, t, s),
+      writerFenceAllows: (p, v) => this.#storage.writerFenceAllows(p, v),
       getPartitionLogEpoch: (p) => this.#storage.getPartitionLogEpoch(p),
       setHorizonSeq: (p, s) => this.#storage.setHorizonSeq(p, s),
       pruneCommitsThrough: (p, s) => this.#storage.pruneCommitsThrough(p, s),

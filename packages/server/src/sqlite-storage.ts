@@ -43,6 +43,7 @@ import { matchesEffective } from './scopes';
 import {
   collectCommitWindowPage,
   deserializePushResult,
+  placeholders,
   SQLITE_DDL,
   type SqliteCommitWindowRecord,
   type SqliteRowRecord,
@@ -80,6 +81,7 @@ import type {
   ServerStorage,
   StorageTransaction,
   StoredCommit,
+  StoredCheckpoint,
   StoredPushResult,
   StoredReaction,
   StoredRow,
@@ -89,6 +91,30 @@ import {
   StorageConstraintError,
 } from './storage-errors';
 import { assertScopeIndexedScan, resolveIndexRowScan } from './storage-query';
+
+interface SqliteCheckpointRecord {
+  partition: string;
+  name: string;
+  schema_version: number;
+  state: StoredCheckpoint['state'];
+  watermark: number;
+  owner_epoch: number;
+  observed_rows: number;
+  updated_at_ms: number;
+}
+
+function toStoredCheckpoint(record: SqliteCheckpointRecord): StoredCheckpoint {
+  return {
+    partition: record.partition,
+    name: record.name,
+    schemaVersion: record.schema_version,
+    state: record.state,
+    watermark: record.watermark,
+    ownerEpoch: record.owner_epoch,
+    observedRows: record.observed_rows,
+    updatedAtMs: record.updated_at_ms,
+  };
+}
 
 interface SqliteReactionRecord {
   partition: string;
@@ -947,6 +973,110 @@ export class SqliteServerStorage implements ServerStorage {
       )
       .get(partition, createdBeforeMs);
     return row?.seq ?? 0;
+  }
+
+  async readCheckpoints(partition: string): Promise<StoredCheckpoint[]> {
+    return this.db
+      .query<SqliteCheckpointRecord, [string]>(
+        `SELECT partition, name, schema_version, state, watermark,
+                owner_epoch, observed_rows, updated_at_ms
+           FROM sync_backfill_checkpoints WHERE partition=? ORDER BY name`,
+      )
+      .all(partition)
+      .map(toStoredCheckpoint);
+  }
+
+  async claimCheckpoint(
+    partition: string,
+    name: string,
+    schemaVersion: number,
+    nowMs: number,
+  ): Promise<StoredCheckpoint> {
+    return this.#serializeWrite(() => {
+      const claimed = this.db
+        .query<SqliteCheckpointRecord, (string | number)[]>(
+          `UPDATE sync_backfill_checkpoints
+              SET owner_epoch=owner_epoch+1,
+                  state=CASE WHEN state='declared' THEN 'backfilling' ELSE state END,
+                  schema_version=?, updated_at_ms=?
+            WHERE partition=? AND name=? AND state<>'activated'
+        RETURNING partition, name, schema_version, state, watermark,
+                  owner_epoch, observed_rows, updated_at_ms`,
+        )
+        .get(schemaVersion, nowMs, partition, name);
+      if (claimed === null) {
+        throw new StorageQueryError('sync.storage.checkpoint_not_declared');
+      }
+      return toStoredCheckpoint(claimed);
+    });
+  }
+
+  async advanceCheckpoint(
+    partition: string,
+    name: string,
+    ownerEpoch: number,
+    watermark: number,
+    observedRows: number,
+    nowMs: number,
+  ): Promise<boolean> {
+    return this.#serializeWrite(() => {
+      const result = this.db
+        .query(
+          `UPDATE sync_backfill_checkpoints
+              SET watermark=?, observed_rows=?, updated_at_ms=?
+            WHERE partition=? AND name=? AND owner_epoch=?`,
+        )
+        .run(watermark, observedRows, nowMs, partition, name, ownerEpoch);
+      return Number(result.changes) === 1;
+    });
+  }
+
+  async sourceCoverageSeq(
+    partition: string,
+    tables: readonly string[],
+  ): Promise<number> {
+    if (tables.length === 0) return 0;
+    const row = this.db
+      .query<{ seq: number | null }, (string | number)[]>(
+        `SELECT max(commit_seq) AS seq FROM sync_changes
+          WHERE partition=? AND tbl IN (${placeholders(tables.length)})`,
+      )
+      .get(partition, ...tables);
+    return row?.seq ?? 0;
+  }
+
+  async hasSourceChangesAbove(
+    partition: string,
+    tables: readonly string[],
+    seq: number,
+  ): Promise<'clean' | 'changed' | 'unverifiable'> {
+    // Read the horizon before the window scan: a horizon past `seq` means the
+    // history that would answer the question is gone, so an empty scan proves
+    // nothing and must not be reported as `clean`.
+    const horizon = await this.getHorizonSeq(partition);
+    if (tables.length === 0) return 'clean';
+    const hit = this.db
+      .query<{ hit: number }, (string | number)[]>(
+        `SELECT 1 AS hit FROM sync_changes
+          WHERE partition=? AND tbl IN (${placeholders(tables.length)})
+            AND commit_seq>? LIMIT 1`,
+      )
+      .get(partition, ...tables, seq);
+    if (hit !== null && hit !== undefined) return 'changed';
+    return horizon > seq ? 'unverifiable' : 'clean';
+  }
+
+  async writerFenceAllows(
+    partition: string,
+    writerVersion: number,
+  ): Promise<boolean> {
+    const row = this.db
+      .query<{ required_writer_version: number }, [string]>(
+        'SELECT required_writer_version FROM sync_writer_fence WHERE partition=?',
+      )
+      .get(partition);
+    // An absent row means no barrier on this partition; writes are allowed.
+    return row === null || writerVersion >= row.required_writer_version;
   }
 
   async getRow(

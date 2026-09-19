@@ -125,6 +125,13 @@ function wrapStorage(
     begin: (p) => storage.begin(p),
     getMaxCommitSeq: (p) => storage.getMaxCommitSeq(p),
     getHorizonSeq: (p) => storage.getHorizonSeq(p),
+    readCheckpoints: (p) => storage.readCheckpoints(p),
+    claimCheckpoint: (p, n, v, at) => storage.claimCheckpoint(p, n, v, at),
+    advanceCheckpoint: (p, n, e, w, r, at) =>
+      storage.advanceCheckpoint(p, n, e, w, r, at),
+    sourceCoverageSeq: (p, t) => storage.sourceCoverageSeq(p, t),
+    hasSourceChangesAbove: (p, t, s) => storage.hasSourceChangesAbove(p, t, s),
+    writerFenceAllows: (p, v) => storage.writerFenceAllows(p, v),
     getPartitionLogEpoch: (p) => storage.getPartitionLogEpoch(p),
     setHorizonSeq: (p, s) => storage.setHorizonSeq(p, s),
     pruneCommitsThrough: (p, s) => storage.pruneCommitsThrough(p, s),

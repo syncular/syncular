@@ -127,6 +127,20 @@ CREATE TABLE IF NOT EXISTS sync_tombstones(
   commit_seq INTEGER NOT NULL,
   PRIMARY KEY(partition, tbl, row_id)
 );
+CREATE TABLE IF NOT EXISTS sync_backfill_checkpoints(
+  partition TEXT NOT NULL, name TEXT NOT NULL,
+  schema_version INTEGER NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('declared','backfilling','activated')),
+  watermark INTEGER NOT NULL DEFAULT 0,
+  owner_epoch INTEGER NOT NULL DEFAULT 0,
+  observed_rows INTEGER NOT NULL DEFAULT 0,
+  updated_at_ms INTEGER NOT NULL,
+  PRIMARY KEY(partition, name)
+);
+CREATE TABLE IF NOT EXISTS sync_writer_fence(
+  partition TEXT PRIMARY KEY,
+  required_writer_version INTEGER NOT NULL
+);
 `;
 
 /** Split the DDL into individual statements (D1 applies them one by one). */

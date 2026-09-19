@@ -102,6 +102,7 @@ import type {
   ServerStorage,
   StorageTransaction,
   StoredChange,
+  StoredCheckpoint,
   StoredCommit,
   StoredPushResult,
   StoredReaction,
@@ -228,6 +229,20 @@ CREATE TABLE IF NOT EXISTS sync_tombstones(
   commit_seq BIGINT NOT NULL,
   PRIMARY KEY(partition, tbl, row_id)
 );
+CREATE TABLE IF NOT EXISTS sync_backfill_checkpoints(
+  partition TEXT NOT NULL, name TEXT NOT NULL,
+  schema_version INTEGER NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('declared','backfilling','activated')),
+  watermark BIGINT NOT NULL DEFAULT 0,
+  owner_epoch BIGINT NOT NULL DEFAULT 0,
+  observed_rows BIGINT NOT NULL DEFAULT 0,
+  updated_at_ms BIGINT NOT NULL,
+  PRIMARY KEY(partition, name)
+);
+CREATE TABLE IF NOT EXISTS sync_writer_fence(
+  partition TEXT PRIMARY KEY,
+  required_writer_version INTEGER NOT NULL
+);
 `;
 
 interface SerializedResult {
@@ -270,6 +285,32 @@ function toBase64(bytes: Uint8Array): string {
 
 function fromBase64(text: string): Uint8Array {
   return new Uint8Array(Buffer.from(text, 'base64'));
+}
+
+interface PostgresCheckpointRecord {
+  partition: string;
+  name: string;
+  schema_version: unknown;
+  state: StoredCheckpoint['state'];
+  watermark: unknown;
+  owner_epoch: unknown;
+  observed_rows: unknown;
+  updated_at_ms: unknown;
+}
+
+function toStoredCheckpoint(
+  record: PostgresCheckpointRecord,
+): StoredCheckpoint {
+  return {
+    partition: record.partition,
+    name: record.name,
+    schemaVersion: asNumber(record.schema_version),
+    state: record.state,
+    watermark: asNumber(record.watermark),
+    ownerEpoch: asNumber(record.owner_epoch),
+    observedRows: asNumber(record.observed_rows),
+    updatedAtMs: asNumber(record.updated_at_ms),
+  };
 }
 
 interface PostgresReactionRecord {
@@ -1410,6 +1451,110 @@ export class PostgresServerStorage implements ServerStorage {
     );
     const seq = rows[0]?.seq;
     return seq === null || seq === undefined ? 0 : asNumber(seq);
+  }
+
+  async readCheckpoints(partition: string): Promise<StoredCheckpoint[]> {
+    const { rows } = await this.#exec.query<PostgresCheckpointRecord>(
+      `SELECT partition, name, schema_version, state, watermark,
+              owner_epoch, observed_rows, updated_at_ms
+         FROM sync_backfill_checkpoints WHERE partition=$1 ORDER BY name`,
+      [partition],
+    );
+    return rows.map(toStoredCheckpoint);
+  }
+
+  async claimCheckpoint(
+    partition: string,
+    name: string,
+    schemaVersion: number,
+    nowMs: number,
+  ): Promise<StoredCheckpoint> {
+    // The UPDATE's own row lock serializes concurrent claims; owner_epoch+1
+    // is evaluated under it, so two claimers never observe the same epoch.
+    const { rows } = await this.#exec.query<PostgresCheckpointRecord>(
+      `UPDATE sync_backfill_checkpoints
+          SET owner_epoch=owner_epoch+1,
+              state=CASE WHEN state='declared' THEN 'backfilling' ELSE state END,
+              schema_version=$1, updated_at_ms=$2
+        WHERE partition=$3 AND name=$4 AND state<>'activated'
+    RETURNING partition, name, schema_version, state, watermark,
+              owner_epoch, observed_rows, updated_at_ms`,
+      [schemaVersion, nowMs, partition, name],
+    );
+    if (rows[0] === undefined) {
+      throw new StorageQueryError('sync.storage.checkpoint_not_declared');
+    }
+    return toStoredCheckpoint(rows[0]);
+  }
+
+  async advanceCheckpoint(
+    partition: string,
+    name: string,
+    ownerEpoch: number,
+    watermark: number,
+    observedRows: number,
+    nowMs: number,
+  ): Promise<boolean> {
+    const result = await this.#exec.query(
+      `UPDATE sync_backfill_checkpoints
+          SET watermark=$1, observed_rows=$2, updated_at_ms=$3
+        WHERE partition=$4 AND name=$5 AND owner_epoch=$6`,
+      [watermark, observedRows, nowMs, partition, name, ownerEpoch],
+    );
+    return result.rowCount === 1;
+  }
+
+  async sourceCoverageSeq(
+    partition: string,
+    tables: readonly string[],
+  ): Promise<number> {
+    if (tables.length === 0) return 0;
+    const tableParams = tables.map((_, index) => `$${index + 2}`).join(',');
+    const { rows } = await this.#exec.query<{ seq: unknown }>(
+      `SELECT max(commit_seq) AS seq FROM sync_changes
+        WHERE partition=$1 AND tbl IN (${tableParams})`,
+      [partition, ...tables],
+    );
+    const seq = rows[0]?.seq;
+    return seq === null || seq === undefined ? 0 : asNumber(seq);
+  }
+
+  async hasSourceChangesAbove(
+    partition: string,
+    tables: readonly string[],
+    seq: number,
+  ): Promise<'clean' | 'changed' | 'unverifiable'> {
+    // Read the horizon before the window scan: a horizon past `seq` means the
+    // history that would answer the question is gone, so an empty scan proves
+    // nothing and must not be reported as `clean`.
+    const horizon = await this.getHorizonSeq(partition);
+    if (tables.length === 0) return 'clean';
+    const tableParams = tables.map((_, index) => `$${index + 2}`).join(',');
+    const { rows } = await this.#exec.query<{ hit: number }>(
+      `SELECT 1 AS hit FROM sync_changes
+        WHERE partition=$1 AND tbl IN (${tableParams}) AND commit_seq>$${tables.length + 2}
+        LIMIT 1`,
+      [partition, ...tables, seq],
+    );
+    if (rows[0] !== undefined) return 'changed';
+    return horizon > seq ? 'unverifiable' : 'clean';
+  }
+
+  async writerFenceAllows(
+    partition: string,
+    writerVersion: number,
+  ): Promise<boolean> {
+    const { rows } = await this.#exec.query<{
+      required_writer_version: unknown;
+    }>(
+      'SELECT required_writer_version FROM sync_writer_fence WHERE partition=$1',
+      [partition],
+    );
+    // An absent row means no barrier on this partition; writes are allowed.
+    return (
+      rows[0] === undefined ||
+      writerVersion >= asNumber(rows[0].required_writer_version)
+    );
   }
 
   getRow(

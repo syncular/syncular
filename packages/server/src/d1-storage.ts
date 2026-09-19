@@ -113,6 +113,7 @@ import type {
   ServerStorage,
   StorageTransaction,
   StoredCommit,
+  StoredCheckpoint,
   StoredPushResult,
   StoredReaction,
   StoredRow,
@@ -1589,6 +1590,81 @@ export class D1ServerStorage implements ServerStorage {
       .bind(partition, createdBeforeMs)
       .first<{ seq: number | null }>();
     return row?.seq ?? 0;
+  }
+
+  async readCheckpoints(_partition: string): Promise<StoredCheckpoint[]> {
+    // D1 supports no declared backfill checkpoints in this release: migrations
+    // run out of band and no database-side fence can be installed atomically
+    // with schema visibility. No checkpoint row can exist.
+    return [];
+  }
+
+  async claimCheckpoint(
+    _partition: string,
+    _name: string,
+    _schemaVersion: number,
+    _nowMs: number,
+  ): Promise<StoredCheckpoint> {
+    throw new StorageQueryError('sync.storage.checkpoint_unsupported');
+  }
+
+  async advanceCheckpoint(
+    _partition: string,
+    _name: string,
+    _ownerEpoch: number,
+    _watermark: number,
+    _observedRows: number,
+    _nowMs: number,
+  ): Promise<boolean> {
+    throw new StorageQueryError('sync.storage.checkpoint_unsupported');
+  }
+
+  async sourceCoverageSeq(
+    partition: string,
+    tables: readonly string[],
+  ): Promise<number> {
+    if (tables.length === 0) return 0;
+    const tableParams = tables.map(() => '?').join(',');
+    const row = await this.#db
+      .prepare(
+        `SELECT max(commit_seq) AS seq FROM sync_changes
+          WHERE partition=? AND tbl IN (${tableParams})`,
+      )
+      .bind(partition, ...tables)
+      .first<{ seq: number | null }>();
+    return row?.seq ?? 0;
+  }
+
+  async hasSourceChangesAbove(
+    partition: string,
+    tables: readonly string[],
+    seq: number,
+  ): Promise<'clean' | 'changed' | 'unverifiable'> {
+    // Read the horizon before the window scan: a horizon past `seq` means the
+    // history that would answer the question is gone, so an empty scan proves
+    // nothing and must not be reported as `clean`.
+    const horizon = await this.getHorizonSeq(partition);
+    if (tables.length === 0) return 'clean';
+    const tableParams = tables.map(() => '?').join(',');
+    const hit = await this.#db
+      .prepare(
+        `SELECT 1 AS hit FROM sync_changes
+          WHERE partition=? AND tbl IN (${tableParams}) AND commit_seq>?
+          LIMIT 1`,
+      )
+      .bind(partition, ...tables, seq)
+      .first<{ hit: number }>();
+    if (hit !== null) return 'changed';
+    return horizon > seq ? 'unverifiable' : 'clean';
+  }
+
+  async writerFenceAllows(
+    _partition: string,
+    _writerVersion: number,
+  ): Promise<boolean> {
+    // No writer fence can be installed on D1 in this release. Existing
+    // deployments never see a barrier, so every write stays allowed.
+    return true;
   }
 
   async getRow(

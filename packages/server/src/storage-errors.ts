@@ -26,7 +26,9 @@ export type StorageQueryErrorCode =
   | 'sync.storage.invalid_limit'
   | 'sync.storage.prune_epoch_mismatch'
   | 'sync.storage.partition_unregistered'
-  | 'sync.storage.invalid_prune_cursor';
+  | 'sync.storage.invalid_prune_cursor'
+  | 'sync.storage.checkpoint_not_declared'
+  | 'sync.storage.checkpoint_unsupported';
 
 const STORAGE_QUERY_MESSAGES: Readonly<Record<StorageQueryErrorCode, string>> =
   {
@@ -44,6 +46,10 @@ const STORAGE_QUERY_MESSAGES: Readonly<Record<StorageQueryErrorCode, string>> =
       'pruning requires a registered partition',
     'sync.storage.invalid_prune_cursor':
       'pruning requires a non-negative safe integer cursor and a non-empty log epoch',
+    'sync.storage.checkpoint_not_declared':
+      'checkpoint claim requires a declared, not yet activated row',
+    'sync.storage.checkpoint_unsupported':
+      'this storage backend cannot declare backfill checkpoints',
     'sync.storage.scan_requires_scope':
       'scope-indexed row scans require at least one scope variable',
     'sync.storage.index_not_found':

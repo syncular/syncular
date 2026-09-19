@@ -31,6 +31,23 @@ export interface CommitPruneResult {
   readonly removedCommits: number;
 }
 
+/** RFC 0007 backfill lifecycle. `activated` is terminal within a schema version. */
+export type CheckpointState = 'declared' | 'backfilling' | 'activated';
+
+/** One host-storage backfill checkpoint row. Never a synced application row. */
+export interface StoredCheckpoint {
+  readonly partition: string;
+  readonly name: string;
+  readonly schemaVersion: number;
+  readonly state: CheckpointState;
+  /** Highest source `commit_seq` the projection was derived from. */
+  readonly watermark: number;
+  /** Monotonic claim counter; a batch is stale when it does not match. */
+  readonly ownerEpoch: number;
+  readonly observedRows: number;
+  readonly updatedAtMs: number;
+}
+
 /** The current stored state of a synced row. */
 export interface StoredRow {
   readonly rowId: string;
@@ -490,6 +507,54 @@ export interface ServerStorage {
     partition: string,
     createdBeforeMs: number,
   ): Promise<number>;
+
+  /** Every declared backfill checkpoint for the partition, ordered by name. */
+  readCheckpoints(partition: string): Promise<StoredCheckpoint[]>;
+  /**
+   * Atomically take ownership of a declared or backfilling checkpoint. Increments
+   * `owner_epoch` and moves `declared` to `backfilling`. Throws
+   * `sync.storage.checkpoint_not_declared` when no claimable row exists (absent,
+   * or already `activated`).
+   */
+  claimCheckpoint(
+    partition: string,
+    name: string,
+    schemaVersion: number,
+    nowMs: number,
+  ): Promise<StoredCheckpoint>;
+  /**
+   * Advance the watermark only while `owner_epoch` still matches. Returns false
+   * for a superseded owner; the stale case never throws.
+   */
+  advanceCheckpoint(
+    partition: string,
+    name: string,
+    ownerEpoch: number,
+    watermark: number,
+    observedRows: number,
+    nowMs: number,
+  ): Promise<boolean>;
+  /** Highest commitSeq carrying a change to one of `tables`; 0 when none. */
+  sourceCoverageSeq(
+    partition: string,
+    tables: readonly string[],
+  ): Promise<number>;
+  /**
+   * Whether any source change sits above `seq`. `unverifiable` when the pruning
+   * horizon has passed `seq`, so the history that would answer the question is
+   * gone; a pruned window is never reported as `clean`.
+   */
+  hasSourceChangesAbove(
+    partition: string,
+    tables: readonly string[],
+    seq: number,
+  ): Promise<'clean' | 'changed' | 'unverifiable'>;
+  /**
+   * Whether `writerVersion` may append to this partition's commit log. False
+   * only when a fence row exists and requires a higher version; an absent row
+   * means no barrier and allows the write.
+   */
+  writerFenceAllows(partition: string, writerVersion: number): Promise<boolean>;
 
   getRow(
     partition: string,
