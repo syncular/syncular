@@ -301,9 +301,8 @@ mod observation_tests {
                 }
             ]
         });
-        let mut client =
-            SyncClient::new("scope-parity".into(), &schema, ClientLimits::default())
-                .expect("test client");
+        let mut client = SyncClient::new("scope-parity".into(), &schema, ClientLimits::default())
+            .expect("test client");
         client.create_synced_tables().unwrap();
 
         // A primary key that is also a scope column with no local row: the
@@ -7490,8 +7489,7 @@ impl SyncClient {
         // read: the primary key in a sparse payload is by construction the
         // row id being patched (§6.1), so its value is proven equal already.
         for scope in &schema_table.scope_variables {
-            if !partial.contains_key(&scope.column) || scope.column == schema_table.primary_key
-            {
+            if !partial.contains_key(&scope.column) || scope.column == schema_table.primary_key {
                 continue;
             }
             let Some(column) = schema_table
