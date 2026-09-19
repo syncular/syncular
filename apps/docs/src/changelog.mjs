@@ -17,6 +17,12 @@
 export const changelog = [
   {
     date: '2026-09-19',
+    title: 'Version-only schema bumps are documented and fail closed',
+    body: 'A Syncular release can change only engine-internal storage, with no application column change, and the application schema version still has to advance because that version is what makes the server apply the storage change. The schema guide now gives the verbatim procedure — append an empty `up.sql`, point `schemaVersions` at it, regenerate, and confirm the bump landed by reading `sync_schema_meta.schema_version` — and states that a marker at the new version whose synced tables are missing an internal column now fails closed at startup rather than at the first write.',
+    links: [{ href: '/guide-schema/', label: 'Schema & typegen' }],
+  },
+  {
+    date: '2026-09-19',
     title: 'Generated query aliases keep their case on PostgreSQL',
     body: 'Projection lowering emits every result alias double-quoted. An unquoted alias keeps its case on SQLite and folds to lower case on PostgreSQL, so a generated query selecting `membership_id` reached a PostgreSQL authority as `membershipid` and every read of the camelCase field returned undefined while the same query passed on SQLite. A cross-backend test runs one generated plan through `queryAuthoritative` on PGlite and SQLite and asserts the result keys agree.',
     links: [{ href: '/tooling-queries/', label: 'Queries' }],
@@ -24,14 +30,14 @@ export const changelog = [
   {
     date: '2026-09-19',
     title: 'Server storage refuses a same-version layout mismatch',
-    body: 'The SQLite and PostgreSQL storages compare the stored column layouts with the configured schema when the version marker matches, and refuse to serve a database whose layouts disagree, naming the table and column. Version equality was previously taken as layout equality, so a database written by another build at the same version reached serving startup and failed later at a write. Two further storage changes ship with it: `sync_row_scopes` gains a `(partition, tbl, row_id)` index, because the per-row scope replacement predicate could not narrow the inverted primary key on PostgreSQL; and one pinned PostgreSQL transaction client serializes its statements, so a commit validator issuing independent reads with `Promise.all` no longer overlaps queries on one connection.',
+    body: 'The SQLite and PostgreSQL storages compare the stored column layouts with the configured schema when the version marker matches, and refuse to serve a database whose layouts disagree, naming the table and column. Version equality was previously taken as layout equality, so a database written by another build at the same version reached serving startup and failed later at a write. At the same version both storages also read the physical tables and refuse a synced table that is missing a storage-internal column, which is the shape a version-only bump whose storage change never applied leaves behind; that check proves the columns exist, and stored types, nullability, and non-column storage internals stay outside it. Two further storage changes ship with it: `sync_row_scopes` gains a `(partition, tbl, row_id)` index, because the per-row scope replacement predicate could not narrow the inverted primary key on PostgreSQL; and one pinned PostgreSQL transaction client serializes its statements, so a commit validator issuing independent reads with `Promise.all` no longer overlaps queries on one connection.',
     links: [{ href: '/server-storage/', label: 'Storage backends' }],
   },
   {
     date: '2026-09-19',
     title:
       'A segment records every scope digest its content was published under',
-    body: 'Two scopes whose rows are byte-identical produce one content address, and the store kept one record: the second publication overwrote the first scope digest, so the first client was rejected at download with `sync.forbidden`. Empty bootstraps hit this whenever two authorized subscriptions resolved to no rows. A stored segment now carries every digest its identical bytes were published under, and a download, a signed-URL token, and the §5.3 reuse lookup each authorize on any recorded digest. The SEGMENT_REF frame reports the digest the caller holds. Segment bytes, the content address, and the wire frames are unchanged.',
+    body: 'Two scopes whose rows are byte-identical produce one content address, and the store kept one record: the second publication overwrote the first scope digest, so the first client was rejected at download with `sync.forbidden`. Empty bootstraps hit this whenever two authorized subscriptions resolved to no rows. A stored segment now carries every digest its identical bytes were published under, and a download, a signed-URL token, and the §5.3 reuse lookup each authorize on any recorded digest. The SEGMENT_REF frame reports the digest the caller holds. The S3 store keeps the mutable record in its own object so the union write is conditional on the record body — an ETag over the immutable bytes is a content hash and cannot separate two writers — and the bytes object is create-only, so a concurrent publication cannot drop another scope digest. Segment bytes, the content address, and the wire frames are unchanged. One defect in this area stays open: a merged entry carries the latest publisher partition and log epoch, so identical content published from two partitions leaves the earlier partition descriptor undownloadable.',
     links: [{ href: '/concepts-bootstrap/', label: 'Bootstrap' }],
   },
   {

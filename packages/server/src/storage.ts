@@ -458,6 +458,19 @@ export interface ServerStorage {
   /** Read continuity without refreshing authenticated activity. */
   getPartitionLogEpoch(partition: string): Promise<string | undefined>;
 
+  /**
+   * Open a storage transaction. This is the raw primitive, not a command
+   * boundary: it acquires NO partition write lock. In-tree SQLite begins
+   * `IMMEDIATE`, so a hand-rolled command on SQLite happens to be serialized
+   * against a concurrent push; PostgreSQL's `BEGIN` takes no row lock, so the
+   * same command races a push on Postgres and a SQLite-only test conceals it.
+   *
+   * A trusted command must therefore run through `registerRemoteCommand`,
+   * which builds after `lockPartitionForPush` and the idempotency recheck and
+   * shares the committed transaction, or call `lockPartitionForPush` before
+   * its first authority, version, or replay read. SSP2 request handling does
+   * this for you; only host-authored commands choose.
+   */
   begin(partition: string): Promise<StorageTransaction>;
 
   getMaxCommitSeq(partition: string): Promise<number>;

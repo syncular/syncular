@@ -85,6 +85,16 @@ raises an error rather than rendering a silently-empty console.
 behave exactly like synced rows. It is the supported seeding recipe for dev
 servers, demos, and ops scripts:
 
+**Fanout is in-process.** A seed run inside the serving process reaches that
+process's realtime hub, so already-connected clients receive the commit. A seed
+run from a separate process against the same shared storage — an ops script, a
+second instance, a `bun run seed` job — cannot reach this process's in-memory
+hub: fresh replicas and reconnects see the commits, connected clients do not
+until they re-pull or reconnect. That is the same limit every out-of-process
+writer has, not a seeding defect. Bridge it the way a multi-instance
+deployment does (`PostgresFanout` on Postgres, the Durable Object on Workers;
+see [Storage backends](/server-storage/)) or reconnect.
+
 ```ts
 import { SeedMutationError, seedMutations } from '@syncular/server';
 

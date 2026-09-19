@@ -35,6 +35,20 @@ surfaces as `client.decrypt_failed` (local to the client, non-retryable) at
 the apply seam. The app decides whether to skip the row, halt, or prompt for a
 re-key.
 
+## What a write sends
+
+A mutation sends the columns it presents, not the whole row: a `patch` carries
+the primary key plus the columns you set, and only those columns are encrypted
+and replaced on the server. An encrypted column a patch omits is untouched and
+stays byte-identical, so ciphertext and nonce are never reused and an immutable
+value inside a mutable row is preserved without the client having to resend it.
+
+Nothing on the wire states which columns a patch *intended* to change. The
+presence set is the intent, and the server sees only encrypted values for the
+columns that are present — it cannot tell an omitted encrypted column from an
+unchanged one. A client that must not rewrite an encrypted value should omit it
+rather than resend the plaintext.
+
 ## Worker, Tauri, and React Native keyrings
 
 Functions do not cross a Web Worker or native command bridge, so Worker,

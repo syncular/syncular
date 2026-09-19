@@ -1,8 +1,79 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.21.0** (`v0.21.0`). All artifacts use Apache-2.0, except
+current release is **0.22.0** (`v0.22.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.22.0 release notes
+
+0.22.0 is a minor release: it adds public realtime APIs, widens a public
+signature, and changes one client acceptance rule, so a patch number would hide
+the surface.
+
+- **Generated camelCase aliases keep their case on PostgreSQL.** Projection
+  lowering emits every result alias double-quoted, because an unquoted alias
+  keeps its case on SQLite and folds to lower case on PostgreSQL. A generated
+  query selecting `membership_id` reached a PostgreSQL authority as
+  `membershipid`, so every read of the camelCase field returned undefined while
+  the same query passed on SQLite. Every generated query file changes.
+- **Server storage refuses a same-version layout mismatch.** SQLite and
+  PostgreSQL compare the stored app-column layouts with the configured schema
+  when the version marker matches and refuse to serve a database whose layouts
+  disagree, naming the table and column. Version equality was previously taken
+  as layout equality. At the same version the storages now also read the
+  physical tables and refuse a synced table that is missing a storage-internal
+  column, which is what a version-only bump whose storage change never applied
+  looks like. That check proves existence: stored types, nullability, and
+  non-column storage internals stay outside it.
+- **`sync_row_scopes` gains a `(partition, tbl, row_id)` index** on SQLite and
+  PostgreSQL, because the per-row scope replacement predicate could not narrow
+  the inverted primary key on PostgreSQL.
+- **One pinned PostgreSQL transaction client serializes its statements**, so a
+  commit validator issuing independent reads with `Promise.all` no longer
+  overlaps queries on one connection.
+- **A stored segment records every scope digest its bytes were published
+  under.** Two scopes whose rows are byte-identical are one content address, and
+  the store kept one record, so the second publication overwrote the first digest
+  and the first client was rejected at download with `sync.forbidden`. Empty
+  bootstraps hit this whenever two authorized subscriptions resolved to no rows.
+  Download, signed-URL token, and the §5.3 reuse lookup each authorize on any
+  recorded digest. The S3 store keeps the mutable record in its own object, so
+  the union write is conditional on the record body and no concurrent publisher
+  can drop another's digest; the bytes object stays immutable. One defect in this
+  area stays open and is not claimed closed: a merged entry carries the latest
+  publisher's partition and log epoch, so identical content published from two
+  partitions leaves the earlier partition's descriptor undownloadable
+  (`sync.not_found`). Digest union is correct and does not address it.
+- **`RealtimeSession.drain()`** resolves when queued acknowledgement-cursor
+  writes have settled and throws a persistence failure instead of dropping it,
+  so a host can await its control-plane storage work before closing storage or
+  ending a hibernatable Worker event. **`RealtimeHub.refreshScopes(partition,
+  actorId?)`** re-resolves matching sessions through the original resolver and
+  empties a session it cannot resolve, because commit fanout filters through the
+  registrations resolved at connect and at round end. A host calls it after
+  changing a membership or a connection.
+- **`patch` accepts a scope column whose value equals the stored row.** Both
+  cores now drop such a column locally, matching the server, which applies a
+  value-equal scope column as a no-op. A patch that round-tripped a decoded
+  envelope previously failed on the client although the server would have
+  accepted it. A differing value, and a row with nothing local to compare
+  against, still fail closed. Composed reactive queries keep their coverage:
+  several coverage entries on one window base claim the union of their units,
+  and every dependency on a changed table is consulted.
+- **Documentation.** The scope guide now states that a narrowing effective-scope
+  echo purges nothing and that only `status = revoked` purges. New sections
+  cover the version-only schema bump for server-internal storage changes, the
+  in-process-only fanout of `seedMutations`, sparse encrypted patch encoding and
+  the absence of server-visible patch intent, and the `storage.begin()`
+  partition-lock asymmetry that makes a hand-rolled command race a push on
+  PostgreSQL while a SQLite-only test conceals it.
+
+**Upgrade note.** `SegmentRecord` now carries a required `scopeDigests` array
+and `verifySegmentToken` accepts `string | readonly string[]` for its expected
+digest. A host that implements `SegmentStore` itself, or constructs a
+`SegmentRecord` by hand, must supply the digest set; a single digest is still
+valid. No wire encoding, no segment byte format, and no stored row format
+changed, so no schema bump is required for 0.22.0 itself.
 
 ## 0.21.1 release notes
 

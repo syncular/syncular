@@ -257,3 +257,52 @@ client keeps its outbox, wipes its local tables, re-bootstraps at the new
 version, and replays the outbox on top. The triggers, what the reset
 preserves, dropped-column handling, the `upgrading` state, and what a bump
 costs are on [Schema upgrades](/concepts-schema-upgrades/).
+
+### A version-only bump (server-internal storage changes)
+
+A Syncular release can change only the engine's own storage — a new internal
+column on every synced table, for example — with no application column change.
+The application schema version still has to advance, because the version is
+what makes the server apply the storage change: `ensureSchema` compares the
+server's `sync_schema_meta` marker with the generated schema version and skips
+all DDL when the two match. A deployment that never advances keeps serving the
+old storage layout while reporting healthy.
+
+Append a migration and point the version at it:
+
+```sh
+mkdir -p migrations/0002_storage_internal
+touch migrations/0002_storage_internal/up.sql
+```
+
+Set `schemaVersions` in `syncular.json` to version `2` through
+`0002_storage_internal`, then regenerate and validate:
+
+```sh
+syncular generate --manifest-dir .
+syncular migrations check --manifest-dir .
+```
+
+`generate` appends the new migration to `syncular.migrations.lock.json`,
+rewrites the generated schema's `version`, and leaves the IR's table shapes
+unchanged. `migrations check` confirms the committed history is still an
+unchanged prefix. The empty `up.sql` is deliberate: migration history is
+immutable, so the version can only advance by appending a migration, and the
+server owns its own internal DDL rather than running application SQL for it.
+
+Deploy the server and let its gate apply the pending version before the port
+opens:
+
+```ts
+await ensureSyncServerReady(config);
+```
+
+A failure surfaces as `sync.schema_not_ready` with a compile or migration
+phase instead of a request-time error. Confirm the bump landed by reading
+`sync_schema_meta.schema_version` on the server database — it must equal the
+new version — and, for a new internal column, that the column exists on a
+synced table (`PRAGMA table_info('todos')` on SQLite,
+`information_schema.columns` on Postgres). A marker still at the old version
+means the bump never ran. From 0.22.0 a marker at the new version whose synced
+tables are missing an internal column fails closed at startup, before the
+first write.

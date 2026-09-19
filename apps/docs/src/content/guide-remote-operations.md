@@ -246,6 +246,18 @@ The command context exposes the request's identity-checked `clientId`, its
 `operationId`, and its `requestId` for stable event and application idempotency
 keys.
 The authorizer can run again on a retry, so it must not have side effects.
+
+### Do not hand-roll a command on `storage.begin()`
+
+`registerRemoteCommand` is the lock: it builds the command after
+`lockPartitionForPush` and the idempotency recheck, and its reads share the
+committed transaction. `storage.begin()` is the raw primitive and acquires no
+partition write lock. In-tree SQLite opens with `BEGIN IMMEDIATE`, so a
+hand-rolled command on SQLite is serialized against a concurrent push by
+accident; PostgreSQL's `BEGIN` takes no row lock, so the same command races the
+push there and a SQLite-only test conceals it. If a host must own the
+transaction, call `lockPartitionForPush()` before its first authority, version,
+or replay read and keep it through the commit.
 Command callbacks should restrict side effects to planning database mutations.
 External calls belong after the commit in an idempotent worker or durable
 reaction.
