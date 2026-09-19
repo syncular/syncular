@@ -371,7 +371,7 @@ class TsServerInstance implements ServerInstance {
   /** Storage with the optional idempotency-lookup fault (§6.3). */
   #wrapStorage(): ServerStorage {
     return {
-      ensureSchema: (s) => this.#storage.ensureSchema(s),
+      ensureSchema: (s, d) => this.#storage.ensureSchema(s, d),
       touchPartition: (p, at, epoch) =>
         this.#storage.touchPartition(p, at, epoch),
       rotatePartitionLogEpoch: (p, epoch, at) =>

@@ -116,7 +116,7 @@ function wrapStorage(
   faults: ServerFaults,
 ): ServerStorage {
   return {
-    ensureSchema: (s) => storage.ensureSchema(s),
+    ensureSchema: (s, d) => storage.ensureSchema(s, d),
     touchPartition: (p, at, epoch) => storage.touchPartition(p, at, epoch),
     rotatePartitionLogEpoch: (p, epoch, at) =>
       storage.rotatePartitionLogEpoch(p, epoch, at),

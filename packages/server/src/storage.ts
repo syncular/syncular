@@ -34,6 +34,16 @@ export interface CommitPruneResult {
 /** RFC 0007 backfill lifecycle. `activated` is terminal within a schema version. */
 export type CheckpointState = 'declared' | 'backfilling' | 'activated';
 
+/**
+ * Host-owned checkpoint installation carried on `ensureSchema`: the schema
+ * bump, the `declared` row, and the raised writer fence commit together.
+ */
+export interface CheckpointDeclaration {
+  readonly partition: string;
+  readonly name: string;
+  readonly schemaVersion: number;
+}
+
 /** One host-storage backfill checkpoint row. Never a synced application row. */
 export interface StoredCheckpoint {
   readonly partition: string;
@@ -424,6 +434,19 @@ export interface StorageTransaction {
     result: StoredPushResult,
   ): Promise<void>;
   /**
+   * Advance this partition's checkpoint only while `owner_epoch` still
+   * matches. A backfill batch composes this with its projection row writes in
+   * the one transaction: false means abort and write nothing. False rather
+   * than a throw for the superseded-owner case.
+   */
+  advanceCheckpoint(
+    name: string,
+    ownerEpoch: number,
+    watermark: number,
+    observedRows: number,
+    nowMs: number,
+  ): Promise<boolean>;
+  /**
    * Blob reference index (§5.9.4) — ADDITIVE, optional. Set the blobIds a
    * row currently references (empty = clear), replacing any prior entries
    * for (table, rowId), inside the same commit transaction (§6.4). A
@@ -455,7 +478,10 @@ export interface ServerStorage {
    * before binding a public port; protocol handlers still call this method
    * lazily as a defensive backstop.
    */
-  ensureSchema(schema: CompiledSchema): Promise<void>;
+  ensureSchema(
+    schema: CompiledSchema,
+    checkpoints?: readonly CheckpointDeclaration[],
+  ): Promise<void>;
 
   /** Create or refresh the authenticated partition registry row (§2.1). */
   touchPartition(

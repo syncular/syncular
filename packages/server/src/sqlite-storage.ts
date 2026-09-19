@@ -58,6 +58,7 @@ import type {
   AuthoritativeQueryRequest,
   AuthoritativeQueryResult,
   AuthoritativeQueryValue,
+  CheckpointDeclaration,
   ClientCursorInfo,
   ClientRecord,
   ClientSubscription,
@@ -245,6 +246,24 @@ class SqliteTransaction implements StorageTransaction {
     // BEGIN IMMEDIATE in the constructor already owns SQLite's writer lock.
     this.#storage.db.exec('SAVEPOINT syncular_push_candidate');
     this.#pushApplySavepoint = true;
+  }
+
+  async advanceCheckpoint(
+    name: string,
+    ownerEpoch: number,
+    watermark: number,
+    observedRows: number,
+    nowMs: number,
+  ): Promise<boolean> {
+    this.#assertOpen();
+    const result = this.#storage.db
+      .query(
+        `UPDATE sync_backfill_checkpoints
+            SET watermark=?, observed_rows=?, updated_at_ms=?
+          WHERE partition=? AND name=? AND owner_epoch=?`,
+      )
+      .run(watermark, observedRows, nowMs, this.#partition, name, ownerEpoch);
+    return Number(result.changes) === 1;
   }
 
   async commitRejectedPushResult(
@@ -525,7 +544,10 @@ END`);
     return table;
   }
 
-  async ensureSchema(schema: CompiledSchema): Promise<void> {
+  async ensureSchema(
+    schema: CompiledSchema,
+    checkpoints?: readonly CheckpointDeclaration[],
+  ): Promise<void> {
     // Memoized fast path: same instance, same schema version.
     if (this.#schemaVersion === schema.version) return;
     this.db.exec(SCHEMA_META_DDL_SQLITE);
@@ -664,6 +686,18 @@ END`);
               'INSERT INTO sync_schema_meta(id, schema_version, layouts) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET schema_version=excluded.schema_version, layouts=excluded.layouts',
             )
             .run(schema.version, layoutsOf(schema));
+          // The host's declared checkpoints install in the schema-bump
+          // transaction, so no observer sees the bumped marker without the
+          // fence, or the fence without its declaration row.
+          const installedAtMs = Date.now();
+          for (const declaration of checkpoints ?? []) {
+            this.#installCheckpoint(
+              declaration.partition,
+              declaration.name,
+              declaration.schemaVersion,
+              installedAtMs,
+            );
+          }
           this.db.exec('COMMIT');
         } catch (error) {
           this.db.exec('ROLLBACK');
@@ -1033,6 +1067,39 @@ END`);
       .map(toStoredCheckpoint);
   }
 
+  /**
+   * Insert the `declared` row and raise the fence, inside the caller's open
+   * transaction. Shared by `declareCheckpoint` and the `ensureSchema`
+   * migration so the schema bump and the fence commit together. Never lowers a
+   * fence and never re-declares an existing row.
+   */
+  #installCheckpoint(
+    partition: string,
+    name: string,
+    schemaVersion: number,
+    nowMs: number,
+  ): void {
+    this.db
+      .query(
+        `INSERT INTO sync_backfill_checkpoints(
+           partition, name, schema_version, state, watermark,
+           owner_epoch, observed_rows, updated_at_ms)
+         VALUES (?,?,?,'declared',0,0,0,?)
+         ON CONFLICT(partition, name) DO NOTHING`,
+      )
+      .run(partition, name, schemaVersion, nowMs);
+    this.db
+      .query(
+        `INSERT INTO sync_writer_fence(partition, required_writer_version)
+         VALUES (?,?)
+         ON CONFLICT(partition) DO UPDATE SET
+           required_writer_version=max(
+             sync_writer_fence.required_writer_version,
+             excluded.required_writer_version)`,
+      )
+      .run(partition, schemaVersion);
+  }
+
   async declareCheckpoint(
     partition: string,
     name: string,
@@ -1045,25 +1112,7 @@ END`);
     return this.#serializeWrite(() => {
       this.db.exec('BEGIN IMMEDIATE');
       try {
-        this.db
-          .query(
-            `INSERT INTO sync_backfill_checkpoints(
-               partition, name, schema_version, state, watermark,
-               owner_epoch, observed_rows, updated_at_ms)
-             VALUES (?,?,?,'declared',0,0,0,?)
-             ON CONFLICT(partition, name) DO NOTHING`,
-          )
-          .run(partition, name, schemaVersion, nowMs);
-        this.db
-          .query(
-            `INSERT INTO sync_writer_fence(partition, required_writer_version)
-             VALUES (?,?)
-             ON CONFLICT(partition) DO UPDATE SET
-               required_writer_version=max(
-                 sync_writer_fence.required_writer_version,
-                 excluded.required_writer_version)`,
-          )
-          .run(partition, schemaVersion);
+        this.#installCheckpoint(partition, name, schemaVersion, nowMs);
         const row = this.db
           .query<SqliteCheckpointRecord, [string, string]>(
             `SELECT partition, name, schema_version, state, watermark,

@@ -90,6 +90,7 @@ import {
 import type {
   AuthoritativeQueryRequest,
   AuthoritativeQueryResult,
+  CheckpointDeclaration,
   ClientCursorInfo,
   ClientRecord,
   ClientSubscription,
@@ -446,6 +447,19 @@ class D1Transaction implements StorageTransaction {
     // D1 has no interactive lock. The caller explicitly asserted that every
     // write for this partition is already serialized (normally by its DO).
     this.#pushApplyCheckpoint = this.#buffer.length;
+  }
+
+  advanceCheckpoint(
+    _name: string,
+    _ownerEpoch: number,
+    _watermark: number,
+    _observedRows: number,
+    _nowMs: number,
+  ): Promise<boolean> {
+    // D1 installs no fence and declares no checkpoints in this release.
+    return Promise.reject(
+      new StorageQueryError('sync.storage.checkpoint_unsupported'),
+    );
   }
 
   async commitRejectedPushResult(
@@ -835,7 +849,15 @@ export class D1ServerStorage implements ServerStorage {
     return table;
   }
 
-  async ensureSchema(schema: CompiledSchema): Promise<void> {
+  async ensureSchema(
+    schema: CompiledSchema,
+    checkpoints?: readonly CheckpointDeclaration[],
+  ): Promise<void> {
+    if (checkpoints !== undefined && checkpoints.length > 0) {
+      // No database-side fence can be installed atomically with schema
+      // visibility here; refuse instead of accepting a weaker guarantee.
+      throw new StorageQueryError('sync.storage.checkpoint_unsupported');
+    }
     if (this.#schemaVersion === schema.version) {
       await this.#schemaDatabase().batch([]);
       return;

@@ -23,6 +23,7 @@ import { CONTRACT_SCHEMA } from './storage-contract';
 const PARTITION = 'part-1';
 const NOW = 1_750_000_000_000;
 const SCHEMA = compileSchema(CONTRACT_SCHEMA);
+const SCHEMA_V2 = compileSchema({ ...CONTRACT_SCHEMA, version: 2 });
 
 const CHECKPOINT_INSERT = `INSERT INTO sync_backfill_checkpoints(
   partition, name, schema_version, state, watermark, owner_epoch, observed_rows, updated_at_ms
@@ -811,6 +812,63 @@ for (const backend of ['sqlite', 'postgres/pglite'] as const) {
       await harness.close();
     }
   });
+
+  test(`${backend} acceptance 10: a superseded batch lands no projection rows`, async () => {
+    const harness = await harnessFn(key);
+    try {
+      await harness.storage.declareCheckpoint(
+        PARTITION,
+        'tasks-projection',
+        SCHEMA.version,
+        NOW,
+      );
+      const stale = await harness.storage.claimCheckpoint(
+        PARTITION,
+        'tasks-projection',
+        SCHEMA.version,
+        NOW,
+      );
+      const owner = await harness.storage.claimCheckpoint(
+        PARTITION,
+        'tasks-projection',
+        SCHEMA.version,
+        NOW,
+      );
+      expect(owner.ownerEpoch).toBe(stale.ownerEpoch + 1);
+      // A backfill batch: one transaction over the CAS and the row writes.
+      const tx = await harness.storage.begin(PARTITION);
+      await tx.lockPartitionForPush?.();
+      const advanced = await tx.advanceCheckpoint(
+        'tasks-projection',
+        stale.ownerEpoch,
+        0,
+        1,
+        NOW + 1,
+      );
+      if (advanced) {
+        await tx.upsertRow('tasks', {
+          rowId: 'proj-stale',
+          serverVersion: 1,
+          scopes: { project_id: 'p1' },
+          payload: new Uint8Array([1]),
+        });
+        await tx.commit();
+      } else {
+        await tx.rollback();
+      }
+      expect(advanced).toBe(false);
+      // The rows the stale owner would have written are absent, not merely
+      // that the call returned false.
+      expect(
+        await harness.storage.getRow(PARTITION, 'tasks', 'proj-stale'),
+      ).toBeUndefined();
+      const after = (await harness.storage.readCheckpoints(PARTITION))[0];
+      expect(after?.state).toBe('backfilling');
+      expect(after?.watermark).toBe(0);
+    } finally {
+      await harness.close();
+    }
+  });
 }
 
 test('D1 refuses declaration and activation, and keeps the no-barrier path', async () => {
@@ -844,3 +902,50 @@ test('D1 refuses declaration and activation, and keeps the no-barrier path', asy
     await harness.close();
   }
 });
+
+for (const backend of ['sqlite', 'postgres/pglite'] as const) {
+  const key = backend === 'postgres/pglite' ? 'postgres' : 'sqlite';
+
+  test(`${backend} ensureSchema installs declarations inside the schema-bump transaction`, async () => {
+    const harness = await harnessFn(key);
+    const count = async (table: string): Promise<number> => {
+      const rows = await harness.query<{ n: number }>(
+        `SELECT count(*) AS n FROM ${table}`,
+        `SELECT count(*) AS n FROM ${table}`,
+        [],
+      );
+      return Number(rows[0]?.n);
+    };
+    const marker = async (): Promise<number | undefined> => {
+      const rows = await harness.query<{ schema_version: number }>(
+        'SELECT schema_version FROM sync_schema_meta WHERE id=1',
+        'SELECT schema_version FROM sync_schema_meta WHERE id=1',
+        [],
+      );
+      return rows[0]?.schema_version;
+    };
+    try {
+      // Force a failure at the declaration insert, after the marker write has
+      // already run inside the same transaction.
+      await expect(
+        harness.storage.ensureSchema(SCHEMA_V2, [
+          { partition: PARTITION, name: 'boom', schemaVersion: Number.NaN },
+        ]),
+      ).rejects.toThrow();
+      // Committed state after the forced failure: no bumped marker, no fence,
+      // no declaration. No observer can see one side without the other.
+      expect(await marker()).toBe(1);
+      expect(await count('sync_backfill_checkpoints')).toBe(0);
+      expect(await count('sync_writer_fence')).toBe(0);
+      // The real bump commits marker, declaration and fence together.
+      await harness.storage.ensureSchema(SCHEMA_V2, [
+        { partition: PARTITION, name: 'ok', schemaVersion: 2 },
+      ]);
+      expect(await marker()).toBe(2);
+      expect(await count('sync_backfill_checkpoints')).toBe(1);
+      expect(await count('sync_writer_fence')).toBe(1);
+    } finally {
+      await harness.close();
+    }
+  });
+}

@@ -79,6 +79,7 @@ import { matchesEffective } from './scopes';
 import type {
   AuthoritativeQueryRequest,
   AuthoritativeQueryResult,
+  CheckpointDeclaration,
   ClientCursorInfo,
   ClientRecord,
   ClientSubscription,
@@ -277,6 +278,38 @@ async function lockPartitionOn(
   await client.query(
     'SELECT max_commit_seq FROM sync_partitions WHERE partition=$1 FOR UPDATE',
     [partition],
+  );
+}
+
+/**
+ * Insert the `declared` row and raise the fence, on the caller's open
+ * transaction. Shared by `declareCheckpoint` and the `ensureSchema`
+ * migration so the schema bump and the fence commit together. Never lowers a
+ * fence and never re-declares an existing row.
+ */
+async function installCheckpointOn(
+  client: PgQueryable,
+  partition: string,
+  name: string,
+  schemaVersion: number,
+  nowMs: number,
+): Promise<void> {
+  await client.query(
+    `INSERT INTO sync_backfill_checkpoints(
+       partition, name, schema_version, state, watermark,
+       owner_epoch, observed_rows, updated_at_ms)
+     VALUES ($1,$2,$3,'declared',0,0,0,$4)
+     ON CONFLICT (partition, name) DO NOTHING`,
+    [partition, name, schemaVersion, nowMs],
+  );
+  await client.query(
+    `INSERT INTO sync_writer_fence(partition, required_writer_version)
+     VALUES ($1,$2)
+     ON CONFLICT (partition) DO UPDATE SET
+       required_writer_version=GREATEST(
+         sync_writer_fence.required_writer_version,
+         EXCLUDED.required_writer_version)`,
+    [partition, schemaVersion],
   );
 }
 
@@ -811,6 +844,23 @@ class PostgresTransaction implements StorageTransaction {
     this.#pushApplySavepoint = true;
   }
 
+  async advanceCheckpoint(
+    name: string,
+    ownerEpoch: number,
+    watermark: number,
+    observedRows: number,
+    nowMs: number,
+  ): Promise<boolean> {
+    this.#assertOpen();
+    const result = await this.#client.query(
+      `UPDATE sync_backfill_checkpoints
+          SET watermark=$1, observed_rows=$2, updated_at_ms=$3
+        WHERE partition=$4 AND name=$5 AND owner_epoch=$6`,
+      [watermark, observedRows, nowMs, this.#partition, name, ownerEpoch],
+    );
+    return result.rowCount === 1;
+  }
+
   async commitRejectedPushResult(
     clientId: string,
     clientCommitId: string,
@@ -1086,7 +1136,10 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
     return table;
   }
 
-  async ensureSchema(schema: CompiledSchema): Promise<void> {
+  async ensureSchema(
+    schema: CompiledSchema,
+    checkpoints?: readonly CheckpointDeclaration[],
+  ): Promise<void> {
     // Memoized fast path: same instance, same schema version.
     if (this.#schemaVersion === schema.version) return;
     await this.migrate();
@@ -1253,6 +1306,19 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
              SET schema_version=EXCLUDED.schema_version, layouts=EXCLUDED.layouts`,
           [schema.version, layoutsOf(schema)],
         );
+        // The host's declared checkpoints install in the schema-bump
+        // transaction, so no observer sees the bumped marker without the
+        // fence, or the fence without its declaration row.
+        const installedAtMs = Date.now();
+        for (const declaration of checkpoints ?? []) {
+          await installCheckpointOn(
+            client,
+            declaration.partition,
+            declaration.name,
+            declaration.schemaVersion,
+            installedAtMs,
+          );
+        }
       });
     }
     this.#tables = schema.tables;
@@ -1534,23 +1600,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
     // protects it is raised together. The fence is raised at declaration, not
     // at activation, so old writers are rejected for the whole backfill.
     return this.#exec.transaction(async (client) => {
-      await client.query(
-        `INSERT INTO sync_backfill_checkpoints(
-           partition, name, schema_version, state, watermark,
-           owner_epoch, observed_rows, updated_at_ms)
-         VALUES ($1,$2,$3,'declared',0,0,0,$4)
-         ON CONFLICT (partition, name) DO NOTHING`,
-        [partition, name, schemaVersion, nowMs],
-      );
-      await client.query(
-        `INSERT INTO sync_writer_fence(partition, required_writer_version)
-         VALUES ($1,$2)
-         ON CONFLICT (partition) DO UPDATE SET
-           required_writer_version=GREATEST(
-             sync_writer_fence.required_writer_version,
-             EXCLUDED.required_writer_version)`,
-        [partition, schemaVersion],
-      );
+      await installCheckpointOn(client, partition, name, schemaVersion, nowMs);
       const { rows } = await client.query<PostgresCheckpointRecord>(
         `SELECT partition, name, schema_version, state, watermark,
                 owner_epoch, observed_rows, updated_at_ms
