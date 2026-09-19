@@ -339,23 +339,30 @@ gate('RFC 0007 real-Postgres receipts (SYNCULAR_PG_URL)', () => {
       if (lock === undefined)
         throw new Error('storage lost the partition lock');
       await lock.call(txB);
-      await txB.appendCommit({
-        clientId: 'old',
-        clientCommitId: 'old-1',
-        actorId: 'a1',
-        createdAtMs: Date.now(),
-        changes: [
-          {
-            table: 'tasks',
-            rowId: 'b1-row',
-            op: 'upsert',
-            rowVersion: 1,
-            scopes: { project_id: 'p1' },
-            payload: new Uint8Array([1]),
-          },
-        ],
-      });
-      await txB.commit();
+      try {
+        await txB.appendCommit({
+          clientId: 'old',
+          clientCommitId: 'old-1',
+          actorId: 'a1',
+          createdAtMs: Date.now(),
+          changes: [
+            {
+              table: 'tasks',
+              rowId: 'b1-row',
+              op: 'upsert',
+              rowVersion: 1,
+              scopes: { project_id: 'p1' },
+              payload: new Uint8Array([1]),
+            },
+          ],
+        });
+        await txB.commit();
+      } catch (error) {
+        // The fence trigger rejects the append; release the connection so the
+        // suite can close its pools.
+        await txB.rollback();
+        throw error;
+      }
     })();
 
     let observedWaiting = 0;
