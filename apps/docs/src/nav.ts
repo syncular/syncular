@@ -41,6 +41,10 @@ export const nav: readonly NavSection[] = [
       { slug: 'concepts-bootstrap', title: 'Bootstrap & segments' },
       { slug: 'concepts-windowing', title: 'Windowed sync' },
       { slug: 'concepts-schema-upgrades', title: 'Schema upgrades' },
+      {
+        slug: 'concepts-previous-version-context',
+        title: 'Previous-version context',
+      },
       { slug: 'concepts-conflicts', title: 'Conflicts & optimistic writes' },
       {
         slug: 'guide-concurrency-correction',
