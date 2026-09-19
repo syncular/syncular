@@ -52,7 +52,9 @@ import type {
   StoredPushResult,
   StoredRow,
 } from './storage';
+import { serveGateRefusal } from './storage';
 import { StorageConstraintError } from './storage-errors';
+import { serveNotReadyError } from './readiness';
 import type {
   CommitValidationReader,
   CommitValidator,
@@ -1356,6 +1358,15 @@ export async function processPushOperationsWithTrace(
       );
     }
     await lockPartitionForPush();
+    // RFC 0007: evaluate the gate on this transaction's own connection while
+    // the partition lock is held, so the migration check and the write share
+    // one transaction and no migration can interleave in between.
+    const gate = await tx.readServeGate(schema.version);
+    const refusal = serveGateRefusal(gate, schema.version, ctx.checkpoints);
+    if (refusal !== undefined) {
+      await tx.rollback();
+      throw serveNotReadyError(refusal);
+    }
     // The optimistic lookup above may have raced another delivery. Re-check
     // only after acquiring partition serialization and before any operation
     // read, validation, merge, or staged write. The re-check runs on the
@@ -1551,6 +1562,13 @@ export async function processPushOperationsWithTrace(
       }
     }
     if (ctx.realtime !== undefined && changes.length > 0) {
+      // RFC 0007 fanout decision: the notification carries the durable commit
+      // entry itself (this commit's `changes`), not a projection read or a pull
+      // window, so fanning it out before the request's buffered read-verify can
+      // never serve a mixed result. Each peer's next pull is gated at the
+      // storage seam; a refused mixed push+pull is safe because the push is
+      // durable and replayable under its commit id. This is commit-entry
+      // durability, not gate inheritance.
       await ctx.realtime.notifyCommit(partition, {
         commitSeq,
         createdAtMs,

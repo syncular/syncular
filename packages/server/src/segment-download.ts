@@ -196,6 +196,22 @@ async function downloadSegment(
   }
   const publication = candidates[candidates.length - 1]!;
 
+  // RFC 0007: a descriptor minted before this partition declared a backfill
+  // checkpoint is not a complete window once the projection becomes
+  // checkpointed. SPEC §9 mints segments per schema version, so refuse and
+  // let the client re-pull for a fresh descriptor.
+  const checkpoints = await ctx.storage.readCheckpoints(ctx.partition);
+  if (
+    checkpoints.some(
+      (checkpoint) => checkpoint.schemaVersion > publication.schemaVersion,
+    )
+  ) {
+    throw syncError(
+      'sync.segment_expired',
+      'segment predates the partition backfill checkpoint — re-pull (§5.1)',
+    );
+  }
+
   return {
     // The returned record is projected onto the selected publication, so its
     // `scopeDigests`/`publications` compatibility view cannot union a grant

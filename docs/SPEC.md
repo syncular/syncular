@@ -839,8 +839,12 @@ that changes rows or DDL. A stale step changes nothing. A different target schem
 cannot take over an unfinished upgrade. Application row reads and transaction
 commits MUST check the migration claim and published schema in the same D1 batch
 as the operation. An unfinished upgrade or a changed schema rejects the operation;
-no mixed-layout payload reaches a client. These are host readiness failures and do
-not add a wire error or change either client's recovery protocol.
+no mixed-layout payload reaches a client. On D1 these remain host readiness
+failures and do not add a wire error. On SQLite and PostgreSQL the server
+delivers the catalogued `sync.schema_not_ready` (§10.2) when a declared backfill
+checkpoint for the running schema version is not activated, or when the stored
+schema version is newer than the running build; the client retries the same
+request later without changing its recovery protocol.
 
 ## 3. Scopes and authorization
 
@@ -4868,6 +4872,7 @@ Recommended actions: `refreshAuth`, `checkPermissions`, `fixRequest`,
 | `sync.missing_scopes` | internal | no | inspectServer | Handler emitted a change without stored scopes (§3.1) |
 | `sync.crdt_merge_failed` | internal | no | inspectServer | A `crdt` column (§2.4 tag 8) was pushed but no merger is registered for its `crdtType`, or the merger threw (§5.10.2) — *new in SSP2*; a push operation-result `error` record only |
 | `sync.idempotency_cache_miss` | internal | yes | retryLater | Cached push result unreadable on replay (§6.3) |
+| `sync.schema_not_ready` | internal | yes | retryLater | The server refuses a request while a declared backfill checkpoint for the running schema version is not activated, or the stored schema version is newer than the running build (§2.4) — *new in SSP2*; request-level. Structure in `details` names the projection; the message never interpolates it |
 | `sync.too_many_operations` | invalid-request | no | splitBatch | Push exceeds the operation cap (§6.1) |
 | `sync.not_found` | not-found | no | forceResync | Unknown segment id (§5.5) or sync resource |
 | `sync.segment_expired` | not-found | yes | retryLater | Segment TTL elapsed (§5.1); re-pull mints fresh descriptors — *new in SSP2* |

@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS sync_commits(
   partition TEXT NOT NULL, commit_seq INTEGER NOT NULL,
   client_id TEXT NOT NULL, client_commit_id TEXT NOT NULL,
   actor_id TEXT NOT NULL, created_at_ms INTEGER NOT NULL,
+  writer_version INTEGER,
   PRIMARY KEY(partition, commit_seq)
 );
 CREATE INDEX IF NOT EXISTS sync_commits_by_time
@@ -126,6 +127,20 @@ CREATE TABLE IF NOT EXISTS sync_tombstones(
   partition TEXT NOT NULL, tbl TEXT NOT NULL, row_id TEXT NOT NULL,
   commit_seq INTEGER NOT NULL,
   PRIMARY KEY(partition, tbl, row_id)
+);
+CREATE TABLE IF NOT EXISTS sync_backfill_checkpoints(
+  partition TEXT NOT NULL, name TEXT NOT NULL,
+  schema_version INTEGER NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('declared','backfilling','activated')),
+  watermark INTEGER NOT NULL DEFAULT 0,
+  owner_epoch INTEGER NOT NULL DEFAULT 0,
+  observed_rows INTEGER NOT NULL DEFAULT 0,
+  updated_at_ms INTEGER NOT NULL,
+  PRIMARY KEY(partition, name)
+);
+CREATE TABLE IF NOT EXISTS sync_writer_fence(
+  partition TEXT PRIMARY KEY,
+  required_writer_version INTEGER NOT NULL
 );
 `;
 

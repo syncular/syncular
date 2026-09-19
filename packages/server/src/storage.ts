@@ -31,6 +31,120 @@ export interface CommitPruneResult {
   readonly removedCommits: number;
 }
 
+/** RFC 0007 backfill lifecycle. `activated` is terminal within a schema version. */
+export type CheckpointState = 'declared' | 'backfilling' | 'activated';
+
+/**
+ * Host-owned checkpoint installation carried on `ensureSchema`: the schema
+ * bump, the `declared` row, and the raised writer fence commit together.
+ */
+export interface CheckpointDeclaration {
+  readonly partition: string;
+  readonly name: string;
+  readonly schemaVersion: number;
+}
+
+/** One host-storage backfill checkpoint row. Never a synced application row. */
+export interface StoredCheckpoint {
+  readonly partition: string;
+  readonly name: string;
+  readonly schemaVersion: number;
+  readonly state: CheckpointState;
+  /** Highest source `commit_seq` the projection was derived from. */
+  readonly watermark: number;
+  /** Monotonic claim counter; a batch is stale when it does not match. */
+  readonly ownerEpoch: number;
+  readonly observedRows: number;
+  readonly updatedAtMs: number;
+}
+
+/**
+ * RFC 0007 serve-gate token, read inside the transaction that produces the
+ * result. `storedSchemaVersion` is the published marker; `logEpoch` is the
+ * partition's log generation, so a restore that presents V -> other -> V is
+ * still distinguishable. `pending` names every incomplete declared checkpoint
+ * at the running schema version, across partitions.
+ */
+export interface ServeGate {
+  readonly storedSchemaVersion: number;
+  readonly logEpoch: string | undefined;
+  readonly pending: readonly {
+    readonly partition: string;
+    readonly name: string;
+  }[];
+}
+
+/** Why `serveGate` refuses, or `undefined` when this request may serve. */
+export type ServeGateRefusal =
+  | {
+      readonly kind: 'schema';
+      readonly stored: number;
+      readonly running: number;
+    }
+  | {
+      readonly kind: 'checkpoint';
+      readonly partition: string;
+      readonly name: string;
+    }
+  | {
+      /** The token changed between two reads: a restore rotated the epoch. */
+      readonly kind: 'epoch';
+    };
+
+/**
+ * Evaluate the RFC 0007 predicate against a gate token. A process that
+ * declares the pending checkpoint may serve while it backfills; any other
+ * process is refused, and a database newer than the running build is always
+ * refused.
+ */
+export function serveGateRefusal(
+  gate: ServeGate,
+  runningSchemaVersion: number,
+  checkpoints: readonly CheckpointDeclaration[] | undefined,
+): ServeGateRefusal | undefined {
+  if (gate.storedSchemaVersion > runningSchemaVersion) {
+    return {
+      kind: 'schema',
+      stored: gate.storedSchemaVersion,
+      running: runningSchemaVersion,
+    };
+  }
+  for (const pending of gate.pending) {
+    const declared = (checkpoints ?? []).some(
+      (declaration) =>
+        declaration.partition === pending.partition &&
+        declaration.name === pending.name,
+    );
+    if (!declared) {
+      return {
+        kind: 'checkpoint',
+        partition: pending.partition,
+        name: pending.name,
+      };
+    }
+  }
+  return undefined;
+}
+
+/**
+ * RFC 0007: compare two gate tokens read around a data read. The token binds
+ * the published schema version and the partition log epoch, so a restore that
+ * presents V → other → V is distinguishable. Returns a refusal when either
+ * changed across the read.
+ */
+export function serveGateTokenChanged(
+  before: ServeGate,
+  after: ServeGate,
+): ServeGateRefusal | undefined {
+  if (
+    before.storedSchemaVersion !== after.storedSchemaVersion ||
+    before.logEpoch !== after.logEpoch
+  ) {
+    return { kind: 'epoch' };
+  }
+  return undefined;
+}
+
 /** The current stored state of a synced row. */
 export interface StoredRow {
   readonly rowId: string;
@@ -407,6 +521,27 @@ export interface StorageTransaction {
     result: StoredPushResult,
   ): Promise<void>;
   /**
+   * Advance this partition's checkpoint only while `owner_epoch` still
+   * matches, so the owner-epoch CAS rides inside the caller's transaction.
+   * The host calls this from `processPushOperationsWithTrace`'s operation
+   * builder: the backfill is an ordinary server-authoritative write, and this
+   * CAS commits with that write's row versions and commit-log append. False
+   * means abort and write nothing, rather than a throw for a superseded owner.
+   */
+  advanceCheckpoint(
+    name: string,
+    ownerEpoch: number,
+    watermark: number,
+    observedRows: number,
+    nowMs: number,
+  ): Promise<boolean>;
+  /**
+   * RFC 0007 serve gate on the caller's own connection, for write paths that
+   * already hold the partition lock: the gate and the write share one
+   * transaction, so a migration cannot interleave between them.
+   */
+  readServeGate(runningSchemaVersion: number): Promise<ServeGate>;
+  /**
    * Blob reference index (§5.9.4) — ADDITIVE, optional. Set the blobIds a
    * row currently references (empty = clear), replacing any prior entries
    * for (table, rowId), inside the same commit transaction (§6.4). A
@@ -438,7 +573,10 @@ export interface ServerStorage {
    * before binding a public port; protocol handlers still call this method
    * lazily as a defensive backstop.
    */
-  ensureSchema(schema: CompiledSchema): Promise<void>;
+  ensureSchema(
+    schema: CompiledSchema,
+    checkpoints?: readonly CheckpointDeclaration[],
+  ): Promise<void>;
 
   /** Create or refresh the authenticated partition registry row (§2.1). */
   touchPartition(
@@ -491,6 +629,84 @@ export interface ServerStorage {
     createdBeforeMs: number,
   ): Promise<number>;
 
+  /** Every declared backfill checkpoint for the partition, ordered by name. */
+  readCheckpoints(partition: string): Promise<StoredCheckpoint[]>;
+  /**
+   * RFC 0007 serve gate: read the published schema version, the partition's
+   * log epoch, and every incomplete declared checkpoint at
+   * `runningSchemaVersion`. Never memoized; the serve paths call it per
+   * request so an already-serving process notices a migration.
+   */
+  readServeGate(
+    partition: string,
+    runningSchemaVersion: number,
+  ): Promise<ServeGate>;
+  /**
+   * Atomically take ownership of a declared or backfilling checkpoint. Increments
+   * `owner_epoch` and moves `declared` to `backfilling`. Throws
+   * `sync.storage.checkpoint_not_declared` when no claimable row exists (absent,
+   * or already `activated`).
+   */
+  claimCheckpoint(
+    partition: string,
+    name: string,
+    schemaVersion: number,
+    nowMs: number,
+  ): Promise<StoredCheckpoint>;
+  /**
+   * Advance the watermark only while `owner_epoch` still matches. Returns false
+   * for a superseded owner; the stale case never throws.
+   */
+  advanceCheckpoint(
+    partition: string,
+    name: string,
+    ownerEpoch: number,
+    watermark: number,
+    observedRows: number,
+    nowMs: number,
+  ): Promise<boolean>;
+  /** Highest commitSeq carrying a change to one of `tables`; 0 when none. */
+  sourceCoverageSeq(
+    partition: string,
+    tables: readonly string[],
+  ): Promise<number>;
+  /**
+   * Whether any source change sits above `seq`. `unverifiable` when the pruning
+   * horizon has passed `seq`, so the history that would answer the question is
+   * gone; a pruned window is never reported as `clean`.
+   */
+  hasSourceChangesAbove(
+    partition: string,
+    tables: readonly string[],
+    seq: number,
+  ): Promise<'clean' | 'changed' | 'unverifiable'>;
+  /**
+   * Install the barrier: insert the checkpoint in `declared` and raise
+   * `required_writer_version` for the partition in one transaction. The fence
+   * is raised at declaration, before any backfill work, so old writers are
+   * rejected for the whole backfill window. Idempotent on an existing declared
+   * or backfilling row.
+   */
+  declareCheckpoint(
+    partition: string,
+    name: string,
+    schemaVersion: number,
+    nowMs: number,
+  ): Promise<StoredCheckpoint>;
+  /**
+   * Activate a declared checkpoint under the partition write lock. Refuses when
+   * the fence is not already raised at the checkpoint's schema version, when a
+   * source change sits above `watermark` (`stale`), or when the pruning horizon
+   * has passed `watermark` (`unverifiable`). `activated` is terminal.
+   */
+  activateCheckpoint(
+    partition: string,
+    name: string,
+    ownerEpoch: number,
+    watermark: number,
+    sources: readonly string[],
+    nowMs: number,
+  ): Promise<'activated' | 'stale' | 'unverifiable'>;
   getRow(
     partition: string,
     table: string,
@@ -589,6 +805,7 @@ export interface ServerStorage {
   queryAuthoritative?(
     partition: string,
     query: AuthoritativeQueryRequest,
+    checkpoints?: readonly CheckpointDeclaration[],
   ): Promise<AuthoritativeQueryResult>;
 
   /**

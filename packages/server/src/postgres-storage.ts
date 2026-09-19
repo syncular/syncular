@@ -1,6 +1,8 @@
 import { validateCommitPruneQuery } from './prune';
 import { StorageQueryError } from './storage-errors';
 import type { CommitPruneQuery, CommitPruneResult } from './storage';
+import { serveGateRefusal } from './storage';
+import { serveNotReadyError } from './readiness';
 /**
  * Postgres server storage: the production database path.
  *
@@ -79,6 +81,7 @@ import { matchesEffective } from './scopes';
 import type {
   AuthoritativeQueryRequest,
   AuthoritativeQueryResult,
+  CheckpointDeclaration,
   ClientCursorInfo,
   ClientRecord,
   ClientSubscription,
@@ -100,8 +103,10 @@ import type {
   ScopeActivityQuery,
   ScopeCommitActivity,
   ServerStorage,
+  ServeGate,
   StorageTransaction,
   StoredChange,
+  StoredCheckpoint,
   StoredCommit,
   StoredPushResult,
   StoredReaction,
@@ -165,6 +170,7 @@ CREATE TABLE IF NOT EXISTS sync_commits(
   partition TEXT NOT NULL, commit_seq BIGINT NOT NULL,
   client_id TEXT NOT NULL, client_commit_id TEXT NOT NULL,
   actor_id TEXT NOT NULL, created_at_ms BIGINT NOT NULL,
+  writer_version BIGINT,
   PRIMARY KEY(partition, commit_seq)
 );
 CREATE INDEX IF NOT EXISTS sync_commits_by_time
@@ -228,6 +234,20 @@ CREATE TABLE IF NOT EXISTS sync_tombstones(
   commit_seq BIGINT NOT NULL,
   PRIMARY KEY(partition, tbl, row_id)
 );
+CREATE TABLE IF NOT EXISTS sync_backfill_checkpoints(
+  partition TEXT NOT NULL, name TEXT NOT NULL,
+  schema_version INTEGER NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('declared','backfilling','activated')),
+  watermark BIGINT NOT NULL DEFAULT 0,
+  owner_epoch BIGINT NOT NULL DEFAULT 0,
+  observed_rows BIGINT NOT NULL DEFAULT 0,
+  updated_at_ms BIGINT NOT NULL,
+  PRIMARY KEY(partition, name)
+);
+CREATE TABLE IF NOT EXISTS sync_writer_fence(
+  partition TEXT PRIMARY KEY,
+  required_writer_version INTEGER NOT NULL
+);
 `;
 
 interface SerializedResult {
@@ -264,12 +284,128 @@ async function lockPartitionOn(
   );
 }
 
+/**
+ * Insert the `declared` row and raise the fence, on the caller's open
+ * transaction. Shared by `declareCheckpoint` and the `ensureSchema`
+ * migration so the schema bump and the fence commit together. Never lowers a
+ * fence and never re-declares an existing row.
+ */
+async function installCheckpointOn(
+  client: PgQueryable,
+  partition: string,
+  name: string,
+  schemaVersion: number,
+  nowMs: number,
+): Promise<void> {
+  await client.query(
+    `INSERT INTO sync_backfill_checkpoints(
+       partition, name, schema_version, state, watermark,
+       owner_epoch, observed_rows, updated_at_ms)
+     VALUES ($1,$2,$3,'declared',0,0,0,$4)
+     ON CONFLICT (partition, name) DO NOTHING`,
+    [partition, name, schemaVersion, nowMs],
+  );
+  await client.query(
+    `INSERT INTO sync_writer_fence(partition, required_writer_version)
+     VALUES ($1,$2)
+     ON CONFLICT (partition) DO UPDATE SET
+       required_writer_version=GREATEST(
+         sync_writer_fence.required_writer_version,
+         EXCLUDED.required_writer_version)`,
+    [partition, schemaVersion],
+  );
+}
+
+/** RFC 0007 serve gate on either the pool or a transaction's client. */
+async function readServeGateOn(
+  client: PgQueryable,
+  partition: string,
+  runningSchemaVersion: number,
+): Promise<ServeGate> {
+  const marker = await client.query<{ schema_version: unknown }>(
+    'SELECT schema_version FROM sync_schema_meta WHERE id=1',
+  );
+  const epoch = await client.query<{ log_epoch: string }>(
+    'SELECT log_epoch FROM sync_partition_registry WHERE partition=$1',
+    [partition],
+  );
+  const pending = await client.query<{ partition: string; name: string }>(
+    `SELECT partition, name FROM sync_backfill_checkpoints
+      WHERE schema_version=$1 AND state<>'activated'`,
+    [runningSchemaVersion],
+  );
+  return {
+    storedSchemaVersion:
+      marker.rows[0] === undefined
+        ? 0
+        : asNumber(marker.rows[0].schema_version),
+    logEpoch: epoch.rows[0]?.log_epoch,
+    pending: pending.rows.map((row) => ({
+      partition: row.partition,
+      name: row.name,
+    })),
+  };
+}
+
+async function hasSourceChangesAboveOn(
+  client: PgQueryable,
+  partition: string,
+  tables: readonly string[],
+  seq: number,
+): Promise<'clean' | 'changed' | 'unverifiable'> {
+  // Read the horizon before the window scan: a horizon past `seq` means the
+  // history that would answer the question is gone, so an empty scan proves
+  // nothing and must not be reported as `clean`.
+  const horizon = await client.query<{ horizon_seq: unknown }>(
+    'SELECT horizon_seq FROM sync_partitions WHERE partition=$1',
+    [partition],
+  );
+  const horizonSeq =
+    horizon.rows[0] === undefined ? 0 : asNumber(horizon.rows[0].horizon_seq);
+  if (tables.length === 0) return 'clean';
+  const tableParams = tables.map((_, index) => `$${index + 2}`).join(',');
+  const hit = await client.query<{ hit: number }>(
+    `SELECT 1 AS hit FROM sync_changes
+      WHERE partition=$1 AND tbl IN (${tableParams}) AND commit_seq>$${tables.length + 2}
+      LIMIT 1`,
+    [partition, ...tables, seq],
+  );
+  if (hit.rows[0] !== undefined) return 'changed';
+  return horizonSeq > seq ? 'unverifiable' : 'clean';
+}
+
 function toBase64(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString('base64');
 }
 
 function fromBase64(text: string): Uint8Array {
   return new Uint8Array(Buffer.from(text, 'base64'));
+}
+
+interface PostgresCheckpointRecord {
+  partition: string;
+  name: string;
+  schema_version: unknown;
+  state: StoredCheckpoint['state'];
+  watermark: unknown;
+  owner_epoch: unknown;
+  observed_rows: unknown;
+  updated_at_ms: unknown;
+}
+
+function toStoredCheckpoint(
+  record: PostgresCheckpointRecord,
+): StoredCheckpoint {
+  return {
+    partition: record.partition,
+    name: record.name,
+    schemaVersion: asNumber(record.schema_version),
+    state: record.state,
+    watermark: asNumber(record.watermark),
+    ownerEpoch: asNumber(record.owner_epoch),
+    observedRows: asNumber(record.observed_rows),
+    updatedAtMs: asNumber(record.updated_at_ms),
+  };
 }
 
 interface PostgresReactionRecord {
@@ -597,6 +733,8 @@ async function getPushResultOn(
 class PostgresTransaction implements StorageTransaction {
   #client: PgQueryable;
   #partition: string;
+  /** Schema version this transaction writes; rides every appended commit row. */
+  #writerVersion: number;
   #resolveTable: (name: string) => CompiledTable;
   #open = true;
   #pushApplySavepoint = false;
@@ -607,6 +745,7 @@ class PostgresTransaction implements StorageTransaction {
   constructor(
     client: PgQueryable,
     partition: string,
+    writerVersion: number,
     resolveTable: (name: string) => CompiledTable,
     resolve: () => void,
     reject: (error: unknown) => void,
@@ -629,6 +768,7 @@ class PostgresTransaction implements StorageTransaction {
       },
     };
     this.#partition = partition;
+    this.#writerVersion = writerVersion;
     this.#resolveTable = resolveTable;
     this.#resolve = resolve;
     this.#reject = reject;
@@ -738,6 +878,35 @@ class PostgresTransaction implements StorageTransaction {
     this.#pushApplySavepoint = true;
   }
 
+  async advanceCheckpoint(
+    name: string,
+    ownerEpoch: number,
+    watermark: number,
+    observedRows: number,
+    nowMs: number,
+  ): Promise<boolean> {
+    this.#assertOpen();
+    // `RETURNING`: the affected-row check must not depend on a driver's
+    // `rowCount` for a statement with no result rows. Bun.sql's canonical
+    // adapter derives `rowCount` from the returned rows, so a bare UPDATE
+    // reports 0 and the CAS would never advance on a real Bun.sql host.
+    const result = await this.#client.query<{ name: string }>(
+      `UPDATE sync_backfill_checkpoints
+          SET watermark=$1, observed_rows=$2, updated_at_ms=$3
+        WHERE partition=$4 AND name=$5 AND owner_epoch=$6
+        RETURNING name`,
+      [watermark, observedRows, nowMs, this.#partition, name, ownerEpoch],
+    );
+    return result.rows.length === 1;
+  }
+
+  readServeGate(runningSchemaVersion: number): Promise<ServeGate> {
+    this.#assertOpen();
+    // The transaction's own client: the gate and the write share one
+    // transaction, so a migration cannot interleave between them.
+    return readServeGateOn(this.#client, this.#partition, runningSchemaVersion);
+  }
+
   async commitRejectedPushResult(
     clientId: string,
     clientCommitId: string,
@@ -826,8 +995,8 @@ class PostgresTransaction implements StorageTransaction {
            SET max_commit_seq = sync_partitions.max_commit_seq + 1
          RETURNING max_commit_seq
        )
-       INSERT INTO sync_commits(partition, commit_seq, client_id, client_commit_id, actor_id, created_at_ms)
-       SELECT $1, max_commit_seq, $2, $3, $4, $5 FROM allocated
+       INSERT INTO sync_commits(partition, commit_seq, client_id, client_commit_id, actor_id, created_at_ms, writer_version)
+       SELECT $1, max_commit_seq, $2, $3, $4, $5, $6 FROM allocated
        RETURNING commit_seq`,
       [
         p,
@@ -835,6 +1004,7 @@ class PostgresTransaction implements StorageTransaction {
         commit.clientCommitId,
         commit.actorId,
         commit.createdAtMs,
+        this.#writerVersion,
       ],
     );
     const commitSeq = asNumber(rows[0]?.commit_seq);
@@ -972,6 +1142,33 @@ export class PostgresServerStorage implements ServerStorage {
     for (const statement of statements) {
       await this.#exec.query(statement);
     }
+    await this.#exec.query(
+      'ALTER TABLE sync_commits ADD COLUMN IF NOT EXISTS writer_version BIGINT',
+    );
+    // Database-side fence: an old binary's INSERT never reaches JS. An absent
+    // `sync_writer_fence` row makes the EXISTS false, so a partition with no
+    // barrier behaves exactly as before. Sent as separate statements because
+    // the dollar-quoted body contains `;`.
+    await this.#exec.query(`CREATE OR REPLACE FUNCTION syncular_writer_fence()
+RETURNS trigger AS $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM sync_writer_fence
+     WHERE partition = NEW.partition
+       AND (NEW.writer_version IS NULL
+            OR NEW.writer_version < required_writer_version)
+  ) THEN
+    RAISE EXCEPTION 'sync.storage.writer_fence_rejected';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql`);
+    await this.#exec.query(
+      'DROP TRIGGER IF EXISTS sync_commits_writer_fence ON sync_commits',
+    );
+    await this.#exec.query(`CREATE TRIGGER sync_commits_writer_fence
+BEFORE INSERT ON sync_commits
+FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
   }
 
   /** Resolve a table's compiled schema; row operations require `ensureSchema`. */
@@ -985,10 +1182,38 @@ export class PostgresServerStorage implements ServerStorage {
     return table;
   }
 
-  async ensureSchema(schema: CompiledSchema): Promise<void> {
+  async ensureSchema(
+    schema: CompiledSchema,
+    checkpoints?: readonly CheckpointDeclaration[],
+  ): Promise<void> {
     // Memoized fast path: same instance, same schema version.
     if (this.#schemaVersion === schema.version) return;
     await this.migrate();
+    // The barrier reads stored state: a checkpoint at this schema version that
+    // is not activated and that this caller did not declare means this process
+    // must not serve. An omitted or empty declaration set declares nothing and
+    // is refused here, never treated as a bypass.
+    const declarations = checkpoints ?? [];
+    const incomplete = await this.#exec.query<{
+      partition: string;
+      name: string;
+    }>(
+      `SELECT partition, name FROM sync_backfill_checkpoints
+        WHERE schema_version=$1 AND state<>'activated'`,
+      [schema.version],
+    );
+    if (
+      incomplete.rows.some(
+        (row) =>
+          !declarations.some(
+            (declaration) =>
+              declaration.partition === row.partition &&
+              declaration.name === row.name,
+          ),
+      )
+    ) {
+      throw new StorageQueryError('sync.storage.checkpoint_incomplete');
+    }
     await this.#exec.query(SCHEMA_META_DDL_POSTGRES);
     const marker = await this.#exec.query<{
       schema_version: unknown;
@@ -1079,6 +1304,17 @@ export class PostgresServerStorage implements ServerStorage {
       );
       const retiredTables = retiredTableNames(schema, layouts);
       await this.#exec.transaction(async (client) => {
+        // RFC 0007 migration barrier: `LOCK TABLE ... EXCLUSIVE` is the FIRST
+        // statement, before any read, DDL, rewrite, marker or checkpoint
+        // install. EXCLUSIVE conflicts with the ROW SHARE that every writer's
+        // `lockPartitionOn` takes (`SELECT … FOR UPDATE`) and with the ROW
+        // EXCLUSIVE of its allocation (`UPDATE sync_partitions` / `INSERT … ON
+        // CONFLICT DO UPDATE`), so an unaware old writer blocks at its first
+        // statement with no cooperation; plain `SELECT` (ACCESS SHARE) still
+        // works. The lock order is acyclic: the migration holds nothing else
+        // when it takes this lock, so a writer already inside completes while
+        // the migration waits.
+        await client.query('LOCK TABLE sync_partitions IN EXCLUSIVE MODE');
         const existing = new Map<string, ReadonlySet<string>>();
         const existingIndexes = new Map<string, ReadonlySet<string>>();
         for (const table of schema.tables.values()) {
@@ -1152,6 +1388,19 @@ export class PostgresServerStorage implements ServerStorage {
              SET schema_version=EXCLUDED.schema_version, layouts=EXCLUDED.layouts`,
           [schema.version, layoutsOf(schema)],
         );
+        // The host's declared checkpoints install in the schema-bump
+        // transaction, so no observer sees the bumped marker without the
+        // fence, or the fence without its declaration row.
+        const installedAtMs = Date.now();
+        for (const declaration of checkpoints ?? []) {
+          await installCheckpointOn(
+            client,
+            declaration.partition,
+            declaration.name,
+            declaration.schemaVersion,
+            installedAtMs,
+          );
+        }
       });
     }
     this.#tables = schema.tables;
@@ -1263,6 +1512,7 @@ export class PostgresServerStorage implements ServerStorage {
         const tx = new PostgresTransaction(
           client,
           partition,
+          this.#schemaVersion ?? 0,
           (name) => this.table(name),
           resolveScope,
           rejectScope,
@@ -1291,6 +1541,7 @@ export class PostgresServerStorage implements ServerStorage {
   async queryAuthoritative(
     partition: string,
     query: AuthoritativeQueryRequest,
+    checkpoints?: readonly CheckpointDeclaration[],
   ): Promise<AuthoritativeQueryResult> {
     if (this.#tables === undefined) {
       throw new Error(
@@ -1310,6 +1561,14 @@ export class PostgresServerStorage implements ServerStorage {
       await client.query(
         'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY',
       );
+      // RFC 0007: evaluate the gate inside this pinned snapshot, so a
+      // migration or an epoch rotation cannot land between the gate read and
+      // the query's own read. The registered-query path uses the pinned
+      // snapshot, not a request-entry check.
+      const runningVersion = this.#schemaVersion ?? 0;
+      const gate = await readServeGateOn(client, partition, runningVersion);
+      const refusal = serveGateRefusal(gate, runningVersion, checkpoints);
+      if (refusal !== undefined) throw serveNotReadyError(refusal);
       const result = await client.query<Readonly<Record<string, unknown>>>(
         postgresPlaceholders(prepared.sql),
         prepared.params,
@@ -1410,6 +1669,174 @@ export class PostgresServerStorage implements ServerStorage {
     );
     const seq = rows[0]?.seq;
     return seq === null || seq === undefined ? 0 : asNumber(seq);
+  }
+
+  async readCheckpoints(partition: string): Promise<StoredCheckpoint[]> {
+    const { rows } = await this.#exec.query<PostgresCheckpointRecord>(
+      `SELECT partition, name, schema_version, state, watermark,
+              owner_epoch, observed_rows, updated_at_ms
+         FROM sync_backfill_checkpoints WHERE partition=$1 ORDER BY name`,
+      [partition],
+    );
+    return rows.map(toStoredCheckpoint);
+  }
+
+  async readServeGate(
+    partition: string,
+    runningSchemaVersion: number,
+  ): Promise<ServeGate> {
+    return readServeGateOn(this.#exec, partition, runningSchemaVersion);
+  }
+
+  async declareCheckpoint(
+    partition: string,
+    name: string,
+    schemaVersion: number,
+    nowMs: number,
+  ): Promise<StoredCheckpoint> {
+    // One transaction: the checkpoint becomes visible and the fence that
+    // protects it is raised together. The fence is raised at declaration, not
+    // at activation, so old writers are rejected for the whole backfill.
+    //
+    // RFC 0007 lock decision: this transaction writes only the checkpoint and
+    // fence rows, no application rows and no schema marker, so it does not
+    // take the migration table lock or a partition lock. The fence it raises is
+    // enforced by the `sync_commits` trigger on every append from the commit
+    // of this transaction onward; a writer that committed before the fence was
+    // visible is pre-barrier by the design's own "from declaration onward"
+    // rule, not a bypass of it.
+    return this.#exec.transaction(async (client) => {
+      await installCheckpointOn(client, partition, name, schemaVersion, nowMs);
+      const { rows } = await client.query<PostgresCheckpointRecord>(
+        `SELECT partition, name, schema_version, state, watermark,
+                owner_epoch, observed_rows, updated_at_ms
+           FROM sync_backfill_checkpoints WHERE partition=$1 AND name=$2`,
+        [partition, name],
+      );
+      const row = rows[0];
+      if (row === undefined) {
+        throw new StorageQueryError('sync.storage.checkpoint_not_declared');
+      }
+      return toStoredCheckpoint(row);
+    });
+  }
+
+  async activateCheckpoint(
+    partition: string,
+    name: string,
+    ownerEpoch: number,
+    watermark: number,
+    sources: readonly string[],
+    nowMs: number,
+  ): Promise<'activated' | 'stale' | 'unverifiable'> {
+    return this.#exec.transaction(async (client) => {
+      // The same `SELECT … FOR UPDATE` partition row lock that
+      // `lockPartitionForPush` takes; a bare `BEGIN` would race a push.
+      await lockPartitionOn(client, partition);
+      const fence = await client.query<{ required_writer_version: unknown }>(
+        'SELECT required_writer_version FROM sync_writer_fence WHERE partition=$1',
+        [partition],
+      );
+      const checkpoint = await client.query<{ schema_version: unknown }>(
+        'SELECT schema_version FROM sync_backfill_checkpoints WHERE partition=$1 AND name=$2',
+        [partition, name],
+      );
+      const fenceRow = fence.rows[0];
+      const checkpointRow = checkpoint.rows[0];
+      if (
+        fenceRow === undefined ||
+        checkpointRow === undefined ||
+        asNumber(fenceRow.required_writer_version) <
+          asNumber(checkpointRow.schema_version)
+      ) {
+        // The barrier is not installed. Activating would certify a state old
+        // writers can still decay; refuse instead of silently proceeding.
+        throw new StorageQueryError('sync.storage.checkpoint_fence_missing');
+      }
+      const coverage = await hasSourceChangesAboveOn(
+        client,
+        partition,
+        sources,
+        watermark,
+      );
+      if (coverage !== 'clean') {
+        return coverage === 'changed' ? 'stale' : 'unverifiable';
+      }
+      const updated = await client.query<{ partition: string }>(
+        `UPDATE sync_backfill_checkpoints
+            SET state='activated', watermark=$1, updated_at_ms=$2
+          WHERE partition=$3 AND name=$4 AND owner_epoch=$5
+            AND state<>'activated'
+          RETURNING partition`,
+        [watermark, nowMs, partition, name, ownerEpoch],
+      );
+      return updated.rows.length === 1 ? 'activated' : 'stale';
+    });
+  }
+
+  async claimCheckpoint(
+    partition: string,
+    name: string,
+    schemaVersion: number,
+    nowMs: number,
+  ): Promise<StoredCheckpoint> {
+    // The UPDATE's own row lock serializes concurrent claims; owner_epoch+1
+    // is evaluated under it, so two claimers never observe the same epoch.
+    const { rows } = await this.#exec.query<PostgresCheckpointRecord>(
+      `UPDATE sync_backfill_checkpoints
+          SET owner_epoch=owner_epoch+1,
+              state=CASE WHEN state='declared' THEN 'backfilling' ELSE state END,
+              schema_version=$1, updated_at_ms=$2
+        WHERE partition=$3 AND name=$4 AND state<>'activated'
+    RETURNING partition, name, schema_version, state, watermark,
+              owner_epoch, observed_rows, updated_at_ms`,
+      [schemaVersion, nowMs, partition, name],
+    );
+    if (rows[0] === undefined) {
+      throw new StorageQueryError('sync.storage.checkpoint_not_declared');
+    }
+    return toStoredCheckpoint(rows[0]);
+  }
+
+  async advanceCheckpoint(
+    partition: string,
+    name: string,
+    ownerEpoch: number,
+    watermark: number,
+    observedRows: number,
+    nowMs: number,
+  ): Promise<boolean> {
+    const result = await this.#exec.query<{ name: string }>(
+      `UPDATE sync_backfill_checkpoints
+          SET watermark=$1, observed_rows=$2, updated_at_ms=$3
+        WHERE partition=$4 AND name=$5 AND owner_epoch=$6
+        RETURNING name`,
+      [watermark, observedRows, nowMs, partition, name, ownerEpoch],
+    );
+    return result.rows.length === 1;
+  }
+
+  async sourceCoverageSeq(
+    partition: string,
+    tables: readonly string[],
+  ): Promise<number> {
+    if (tables.length === 0) return 0;
+    const tableParams = tables.map((_, index) => `$${index + 2}`).join(',');
+    const { rows } = await this.#exec.query<{ seq: unknown }>(
+      `SELECT max(commit_seq) AS seq FROM sync_changes
+        WHERE partition=$1 AND tbl IN (${tableParams})`,
+      [partition, ...tables],
+    );
+    const seq = rows[0]?.seq;
+    return seq === null || seq === undefined ? 0 : asNumber(seq);
+  }
+
+  hasSourceChangesAbove(
+    partition: string,
+    tables: readonly string[],
+    seq: number,
+  ): Promise<'clean' | 'changed' | 'unverifiable'> {
+    return hasSourceChangesAboveOn(this.#exec, partition, tables, seq);
   }
 
   getRow(

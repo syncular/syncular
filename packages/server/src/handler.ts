@@ -51,10 +51,17 @@ import {
   subscriptionSection,
 } from './pull';
 import { type ProcessedPushCommit, processPushCommitWithTrace } from './push';
+import { serveNotReadyError } from './readiness';
 import type { CompiledSchema } from './schema';
 import { compileSchema } from './schema';
 import { computeEffective, type ResolvedScopes } from './scopes';
-import type { ClientSubscription, PartitionRegistryEntry } from './storage';
+import { StorageQueryError } from './storage-errors';
+import {
+  type ClientSubscription,
+  type PartitionRegistryEntry,
+  serveGateRefusal,
+  serveGateTokenChanged,
+} from './storage';
 
 interface RequestPlan {
   readonly wireVersion: number;
@@ -709,13 +716,64 @@ async function createStreamCore(
   const schema = compileSchema(ctx.schema);
   // Relational row tables: create/
   // migrate on first contact; memoized per storage instance thereafter.
-  await ctx.storage.ensureSchema(schema);
+  try {
+    await ctx.storage.ensureSchema(schema, ctx.checkpoints);
+  } catch (error) {
+    if (
+      error instanceof StorageQueryError &&
+      error.code === 'sync.storage.checkpoint_incomplete'
+    ) {
+      const refusal = serveGateRefusal(
+        await ctx.storage.readServeGate(ctx.partition, schema.version),
+        schema.version,
+        ctx.checkpoints,
+      );
+      throw refusal !== undefined ? serveNotReadyError(refusal) : error;
+    }
+    throw error;
+  }
+  // RFC 0007 serve gate: re-read stored state on every request so an
+  // already-serving process notices a migration or a newly declared
+  // checkpoint. Read after `touchAuthenticatedPartition` establishes the
+  // partition's log epoch, so the entry token is the epoch this request
+  // serves under. Nothing has escaped at this point; the push transaction
+  // re-evaluates the gate under the partition lock.
   const registry = await touchAuthenticatedPartition(ctx);
+  const gate = await ctx.storage.readServeGate(ctx.partition, schema.version);
+  const refusal = serveGateRefusal(gate, schema.version, ctx.checkpoints);
+  if (refusal !== undefined) throw serveNotReadyError(refusal);
   const plan = await planRequest(request, ctx, schema, registry);
-  if (events === undefined) return streamResponse(plan, ctx, schema);
   const report: RequestReport = { outcome: 'ok' };
+  // RFC 0007 read-verify-refuse for the streamed read path: the generator
+  // builds the whole response (its data reads) before yielding the first
+  // frame, then compares the gate token across those reads. Nothing escapes
+  // before the verification, and the buffered size is bounded by the request's
+  // pull limits and the server's inline segment cap. Every request verifies,
+  // including a mixed push+pull: a write that already applied when the token
+  // changed is durable and replayable under the same commit id / idempotency
+  // key, so refusing the request is safe (proved in the serve-gate lane).
+  const verified = async function* (): AsyncGenerator<Uint8Array> {
+    const buffered: Uint8Array[] = [];
+    for await (const chunk of streamResponse(plan, ctx, schema, report)) {
+      buffered.push(chunk);
+    }
+    const after = await ctx.storage.readServeGate(
+      ctx.partition,
+      schema.version,
+    );
+    const changed = serveGateTokenChanged(gate, after);
+    const afterRefusal = serveGateRefusal(
+      after,
+      schema.version,
+      ctx.checkpoints,
+    );
+    if (afterRefusal !== undefined) throw serveNotReadyError(afterRefusal);
+    if (changed !== undefined) throw serveNotReadyError(changed);
+    for (const chunk of buffered) yield chunk;
+  };
+  if (events === undefined) return verified();
   return instrumentedStream(
-    streamResponse(plan, ctx, schema, report),
+    verified(),
     ctx,
     events,
     plan,

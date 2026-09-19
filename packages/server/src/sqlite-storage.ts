@@ -1,6 +1,8 @@
 import { validateCommitPruneQuery } from './prune';
 import { StorageQueryError } from './storage-errors';
 import type { CommitPruneQuery, CommitPruneResult } from './storage';
+import { serveGateRefusal } from './storage';
+import { serveNotReadyError } from './readiness';
 /**
  * SQLite server storage over the shared synchronous driver.
  *
@@ -43,6 +45,7 @@ import { matchesEffective } from './scopes';
 import {
   collectCommitWindowPage,
   deserializePushResult,
+  placeholders,
   SQLITE_DDL,
   type SqliteCommitWindowRecord,
   type SqliteRowRecord,
@@ -57,6 +60,7 @@ import type {
   AuthoritativeQueryRequest,
   AuthoritativeQueryResult,
   AuthoritativeQueryValue,
+  CheckpointDeclaration,
   ClientCursorInfo,
   ClientRecord,
   ClientSubscription,
@@ -78,8 +82,10 @@ import type {
   ScopeActivityQuery,
   ScopeCommitActivity,
   ServerStorage,
+  ServeGate,
   StorageTransaction,
   StoredCommit,
+  StoredCheckpoint,
   StoredPushResult,
   StoredReaction,
   StoredRow,
@@ -89,6 +95,30 @@ import {
   StorageConstraintError,
 } from './storage-errors';
 import { assertScopeIndexedScan, resolveIndexRowScan } from './storage-query';
+
+interface SqliteCheckpointRecord {
+  partition: string;
+  name: string;
+  schema_version: number;
+  state: StoredCheckpoint['state'];
+  watermark: number;
+  owner_epoch: number;
+  observed_rows: number;
+  updated_at_ms: number;
+}
+
+function toStoredCheckpoint(record: SqliteCheckpointRecord): StoredCheckpoint {
+  return {
+    partition: record.partition,
+    name: record.name,
+    schemaVersion: record.schema_version,
+    state: record.state,
+    watermark: record.watermark,
+    ownerEpoch: record.owner_epoch,
+    observedRows: record.observed_rows,
+    updatedAtMs: record.updated_at_ms,
+  };
+}
 
 interface SqliteReactionRecord {
   partition: string;
@@ -140,6 +170,8 @@ function toStoredReaction(record: SqliteReactionRecord): StoredReaction {
 class SqliteTransaction implements StorageTransaction {
   #storage: SqliteServerStorage;
   #partition: string;
+  /** Schema version this transaction writes; rides every appended commit row. */
+  #writerVersion: number;
   #open = true;
   #pushApplySavepoint = false;
   readonly #release: () => void;
@@ -147,10 +179,12 @@ class SqliteTransaction implements StorageTransaction {
   constructor(
     storage: SqliteServerStorage,
     partition: string,
+    writerVersion: number,
     release: () => void,
   ) {
     this.#storage = storage;
     this.#partition = partition;
+    this.#writerVersion = writerVersion;
     this.#release = release;
     storage.db.exec('BEGIN IMMEDIATE');
   }
@@ -215,6 +249,31 @@ class SqliteTransaction implements StorageTransaction {
     // BEGIN IMMEDIATE in the constructor already owns SQLite's writer lock.
     this.#storage.db.exec('SAVEPOINT syncular_push_candidate');
     this.#pushApplySavepoint = true;
+  }
+
+  async advanceCheckpoint(
+    name: string,
+    ownerEpoch: number,
+    watermark: number,
+    observedRows: number,
+    nowMs: number,
+  ): Promise<boolean> {
+    this.#assertOpen();
+    const result = this.#storage.db
+      .query(
+        `UPDATE sync_backfill_checkpoints
+            SET watermark=?, observed_rows=?, updated_at_ms=?
+          WHERE partition=? AND name=? AND owner_epoch=?`,
+      )
+      .run(watermark, observedRows, nowMs, this.#partition, name, ownerEpoch);
+    return Number(result.changes) === 1;
+  }
+
+  readServeGate(runningSchemaVersion: number): Promise<ServeGate> {
+    this.#assertOpen();
+    // Same shared connection: this read runs inside this transaction's
+    // BEGIN IMMEDIATE, so the gate and the write share one transaction.
+    return this.#storage.readServeGate(this.#partition, runningSchemaVersion);
   }
 
   async commitRejectedPushResult(
@@ -302,7 +361,7 @@ class SqliteTransaction implements StorageTransaction {
       'UPDATE sync_partitions SET max_commit_seq=? WHERE partition=?',
     ).run(commitSeq, p);
     db.query(
-      'INSERT INTO sync_commits(partition, commit_seq, client_id, client_commit_id, actor_id, created_at_ms) VALUES (?,?,?,?,?,?)',
+      'INSERT INTO sync_commits(partition, commit_seq, client_id, client_commit_id, actor_id, created_at_ms, writer_version) VALUES (?,?,?,?,?,?,?)',
     ).run(
       p,
       commitSeq,
@@ -310,6 +369,7 @@ class SqliteTransaction implements StorageTransaction {
       commit.clientCommitId,
       commit.actorId,
       commit.createdAtMs,
+      this.#writerVersion,
     );
     commit.changes.forEach((change, idx) => {
       db.query(
@@ -455,6 +515,32 @@ export class SqliteServerStorage implements ServerStorage {
         'ALTER TABLE sync_clients ADD COLUMN wire_version INTEGER NOT NULL DEFAULT 1',
       );
     }
+    const commitColumns = this.db
+      .query<{ name: string }, []>('PRAGMA table_info("sync_commits")')
+      .all();
+    if (!commitColumns.some((column) => column.name === 'writer_version')) {
+      // Nullable by design: an old writer omits the column and the trigger's
+      // explicit NULL test rejects it. `ADD COLUMN NOT NULL` is unavailable in
+      // SQLite, and a default would hand old writers a passing value.
+      this.db.exec(
+        'ALTER TABLE sync_commits ADD COLUMN writer_version INTEGER',
+      );
+    }
+    // The fence is database-side: an old binary's INSERT never reaches JS. An
+    // absent `sync_writer_fence` row makes the WHEN clause false, so a
+    // partition with no barrier behaves exactly as before.
+    this.db.exec(`CREATE TRIGGER IF NOT EXISTS sync_commits_writer_fence
+BEFORE INSERT ON sync_commits
+FOR EACH ROW
+WHEN EXISTS (
+  SELECT 1 FROM sync_writer_fence
+   WHERE partition = NEW.partition
+     AND (NEW.writer_version IS NULL
+          OR NEW.writer_version < required_writer_version)
+)
+BEGIN
+  SELECT RAISE(ABORT, 'sync.storage.writer_fence_rejected');
+END`);
   }
 
   /** Resolve a table's compiled schema; row operations require `ensureSchema`. */
@@ -468,9 +554,34 @@ export class SqliteServerStorage implements ServerStorage {
     return table;
   }
 
-  async ensureSchema(schema: CompiledSchema): Promise<void> {
+  async ensureSchema(
+    schema: CompiledSchema,
+    checkpoints?: readonly CheckpointDeclaration[],
+  ): Promise<void> {
     // Memoized fast path: same instance, same schema version.
     if (this.#schemaVersion === schema.version) return;
+    // The barrier reads stored state: a checkpoint at this schema version that
+    // is not activated and that this caller did not declare means this process
+    // must not serve. An omitted or empty declaration set declares nothing and
+    // is refused here, never treated as a bypass.
+    const declarations = checkpoints ?? [];
+    const incomplete = this.db
+      .query<{ partition: string; name: string }, [number]>(
+        `SELECT partition, name FROM sync_backfill_checkpoints
+          WHERE schema_version=? AND state<>'activated'`,
+      )
+      .all(schema.version)
+      .filter(
+        (row) =>
+          !declarations.some(
+            (declaration) =>
+              declaration.partition === row.partition &&
+              declaration.name === row.name,
+          ),
+      );
+    if (incomplete.length > 0) {
+      throw new StorageQueryError('sync.storage.checkpoint_incomplete');
+    }
     this.db.exec(SCHEMA_META_DDL_SQLITE);
     const marker = this.db
       .query<{ schema_version: number; layouts: string }, []>(
@@ -567,41 +678,64 @@ export class SqliteServerStorage implements ServerStorage {
           );
         }
       }
-      this.db.exec('BEGIN IMMEDIATE');
-      try {
-        for (const tableName of retiredTables) {
+      // The migration rewrites application rows (`#rewriteRows`) with no
+      // commit log entry. Serialize it through the same writer queue as
+      // pushes and prune (`#serializeWrite`) rather than trusting the
+      // migration as privileged; `BEGIN IMMEDIATE` then owns SQLite's writer
+      // lock for the whole rewrite.
+      await this.#serializeWrite(() => {
+        this.db.exec('BEGIN IMMEDIATE');
+        try {
+          for (const tableName of retiredTables) {
+            this.db
+              .query('DELETE FROM sync_row_scopes WHERE tbl=?')
+              .run(tableName);
+            this.db
+              .query('DELETE FROM sync_blob_refs WHERE tbl=?')
+              .run(tableName);
+            this.db.exec(dropTableDdl(tableName));
+          }
+          for (const statement of schemaDdl(
+            schema,
+            existing,
+            'sqlite',
+            existingIndexes,
+          )) {
+            this.db.exec(statement);
+          }
+          for (const table of schema.tables.values()) {
+            const oldLayout = layouts[table.name];
+            const plan = rewritePlan(
+              table,
+              oldLayout,
+              existing.get(table.name),
+            );
+            if (!plan.migrate && !plan.backfill) continue;
+            this.#rewriteRows(table, plan.migrate ? oldLayout : undefined);
+          }
           this.db
-            .query('DELETE FROM sync_row_scopes WHERE tbl=?')
-            .run(tableName);
-          this.db
-            .query('DELETE FROM sync_blob_refs WHERE tbl=?')
-            .run(tableName);
-          this.db.exec(dropTableDdl(tableName));
+            .query(
+              'INSERT INTO sync_schema_meta(id, schema_version, layouts) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET schema_version=excluded.schema_version, layouts=excluded.layouts',
+            )
+            .run(schema.version, layoutsOf(schema));
+          // The host's declared checkpoints install in the schema-bump
+          // transaction, so no observer sees the bumped marker without the
+          // fence, or the fence without its declaration row.
+          const installedAtMs = Date.now();
+          for (const declaration of checkpoints ?? []) {
+            this.#installCheckpoint(
+              declaration.partition,
+              declaration.name,
+              declaration.schemaVersion,
+              installedAtMs,
+            );
+          }
+          this.db.exec('COMMIT');
+        } catch (error) {
+          this.db.exec('ROLLBACK');
+          throw error;
         }
-        for (const statement of schemaDdl(
-          schema,
-          existing,
-          'sqlite',
-          existingIndexes,
-        )) {
-          this.db.exec(statement);
-        }
-        for (const table of schema.tables.values()) {
-          const oldLayout = layouts[table.name];
-          const plan = rewritePlan(table, oldLayout, existing.get(table.name));
-          if (!plan.migrate && !plan.backfill) continue;
-          this.#rewriteRows(table, plan.migrate ? oldLayout : undefined);
-        }
-        this.db
-          .query(
-            'INSERT INTO sync_schema_meta(id, schema_version, layouts) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET schema_version=excluded.schema_version, layouts=excluded.layouts',
-          )
-          .run(schema.version, layoutsOf(schema));
-        this.db.exec('COMMIT');
-      } catch (error) {
-        this.db.exec('ROLLBACK');
-        throw error;
-      }
+      });
     }
     this.#tables = schema.tables;
     this.#schemaVersion = schema.version;
@@ -764,7 +898,12 @@ export class SqliteServerStorage implements ServerStorage {
     });
     await previous;
     try {
-      return new SqliteTransaction(this, partition, release);
+      return new SqliteTransaction(
+        this,
+        partition,
+        this.#schemaVersion ?? 0,
+        release,
+      );
     } catch (error) {
       release();
       throw error;
@@ -809,6 +948,7 @@ export class SqliteServerStorage implements ServerStorage {
   async queryAuthoritative(
     partition: string,
     query: AuthoritativeQueryRequest,
+    checkpoints?: readonly CheckpointDeclaration[],
   ): Promise<AuthoritativeQueryResult> {
     if (this.#tables === undefined) {
       throw new Error(
@@ -834,6 +974,13 @@ export class SqliteServerStorage implements ServerStorage {
     try {
       this.db.exec('BEGIN');
       open = true;
+      // RFC 0007: evaluate the gate on this connection after BEGIN. SQLite is
+      // single-writer and the shared connection serializes writers, so the
+      // gate read and the query read cannot straddle a migration.
+      const runningVersion = this.#schemaVersion ?? 0;
+      const gate = await this.readServeGate(partition, runningVersion);
+      const refusal = serveGateRefusal(gate, runningVersion, checkpoints);
+      if (refusal !== undefined) throw serveNotReadyError(refusal);
       const rows = this.db
         .query<Readonly<Record<string, unknown>>, AuthoritativeQueryValue[]>(
           prepared.sql,
@@ -947,6 +1094,262 @@ export class SqliteServerStorage implements ServerStorage {
       )
       .get(partition, createdBeforeMs);
     return row?.seq ?? 0;
+  }
+
+  async readServeGate(
+    partition: string,
+    runningSchemaVersion: number,
+  ): Promise<ServeGate> {
+    const marker = this.db
+      .query<{ schema_version: number }, []>(
+        'SELECT schema_version FROM sync_schema_meta WHERE id=1',
+      )
+      .get();
+    const epoch = this.db
+      .query<{ log_epoch: string }, [string]>(
+        'SELECT log_epoch FROM sync_partition_registry WHERE partition=?',
+      )
+      .get(partition);
+    const pending = this.db
+      .query<{ partition: string; name: string }, [number]>(
+        `SELECT partition, name FROM sync_backfill_checkpoints
+          WHERE schema_version=? AND state<>'activated'`,
+      )
+      .all(runningSchemaVersion);
+    return {
+      storedSchemaVersion: marker?.schema_version ?? 0,
+      logEpoch: epoch?.log_epoch,
+      pending: pending.map((row) => ({
+        partition: row.partition,
+        name: row.name,
+      })),
+    };
+  }
+
+  async readCheckpoints(partition: string): Promise<StoredCheckpoint[]> {
+    return this.db
+      .query<SqliteCheckpointRecord, [string]>(
+        `SELECT partition, name, schema_version, state, watermark,
+                owner_epoch, observed_rows, updated_at_ms
+           FROM sync_backfill_checkpoints WHERE partition=? ORDER BY name`,
+      )
+      .all(partition)
+      .map(toStoredCheckpoint);
+  }
+
+  /**
+   * Insert the `declared` row and raise the fence, inside the caller's open
+   * transaction. Shared by `declareCheckpoint` and the `ensureSchema`
+   * migration so the schema bump and the fence commit together. Never lowers a
+   * fence and never re-declares an existing row.
+   */
+  #installCheckpoint(
+    partition: string,
+    name: string,
+    schemaVersion: number,
+    nowMs: number,
+  ): void {
+    this.db
+      .query(
+        `INSERT INTO sync_backfill_checkpoints(
+           partition, name, schema_version, state, watermark,
+           owner_epoch, observed_rows, updated_at_ms)
+         VALUES (?,?,?,'declared',0,0,0,?)
+         ON CONFLICT(partition, name) DO NOTHING`,
+      )
+      .run(partition, name, schemaVersion, nowMs);
+    this.db
+      .query(
+        `INSERT INTO sync_writer_fence(partition, required_writer_version)
+         VALUES (?,?)
+         ON CONFLICT(partition) DO UPDATE SET
+           required_writer_version=max(
+             sync_writer_fence.required_writer_version,
+             excluded.required_writer_version)`,
+      )
+      .run(partition, schemaVersion);
+  }
+
+  async declareCheckpoint(
+    partition: string,
+    name: string,
+    schemaVersion: number,
+    nowMs: number,
+  ): Promise<StoredCheckpoint> {
+    // One transaction: the checkpoint becomes visible and the fence that
+    // protects it is raised together. The fence is raised at declaration, not
+    // at activation, so old writers are rejected for the whole backfill.
+    return this.#serializeWrite(() => {
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        this.#installCheckpoint(partition, name, schemaVersion, nowMs);
+        const row = this.db
+          .query<SqliteCheckpointRecord, [string, string]>(
+            `SELECT partition, name, schema_version, state, watermark,
+                    owner_epoch, observed_rows, updated_at_ms
+               FROM sync_backfill_checkpoints WHERE partition=? AND name=?`,
+          )
+          .get(partition, name);
+        if (row === null)
+          throw new StorageQueryError('sync.storage.checkpoint_not_declared');
+        this.db.exec('COMMIT');
+        return toStoredCheckpoint(row);
+      } catch (error) {
+        this.db.exec('ROLLBACK');
+        throw error;
+      }
+    });
+  }
+
+  async activateCheckpoint(
+    partition: string,
+    name: string,
+    ownerEpoch: number,
+    watermark: number,
+    sources: readonly string[],
+    nowMs: number,
+  ): Promise<'activated' | 'stale' | 'unverifiable'> {
+    return this.#serializeWrite(() => {
+      // `BEGIN IMMEDIATE` is SQLite's partition write lock; the same writer
+      // lock a push takes. Nothing may observe activation without the fence.
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        const fence = this.db
+          .query<{ required_writer_version: number }, [string]>(
+            'SELECT required_writer_version FROM sync_writer_fence WHERE partition=?',
+          )
+          .get(partition);
+        const checkpoint = this.db
+          .query<{ schema_version: number }, [string, string]>(
+            'SELECT schema_version FROM sync_backfill_checkpoints WHERE partition=? AND name=?',
+          )
+          .get(partition, name);
+        if (
+          fence === null ||
+          checkpoint === null ||
+          fence.required_writer_version < checkpoint.schema_version
+        ) {
+          // The barrier is not installed. Activating would certify a state old
+          // writers can still decay; refuse instead of silently proceeding.
+          throw new StorageQueryError('sync.storage.checkpoint_fence_missing');
+        }
+        const coverage = this.#hasSourceChangesAbove(
+          partition,
+          sources,
+          watermark,
+        );
+        if (coverage !== 'clean') {
+          this.db.exec('ROLLBACK');
+          return coverage === 'changed' ? 'stale' : 'unverifiable';
+        }
+        const updated = this.db
+          .query(
+            `UPDATE sync_backfill_checkpoints
+                SET state='activated', watermark=?, updated_at_ms=?
+              WHERE partition=? AND name=? AND owner_epoch=?
+                AND state<>'activated'`,
+          )
+          .run(watermark, nowMs, partition, name, ownerEpoch);
+        this.db.exec('COMMIT');
+        return Number(updated.changes) === 1 ? 'activated' : 'stale';
+      } catch (error) {
+        this.db.exec('ROLLBACK');
+        throw error;
+      }
+    });
+  }
+
+  async claimCheckpoint(
+    partition: string,
+    name: string,
+    schemaVersion: number,
+    nowMs: number,
+  ): Promise<StoredCheckpoint> {
+    return this.#serializeWrite(() => {
+      const claimed = this.db
+        .query<SqliteCheckpointRecord, (string | number)[]>(
+          `UPDATE sync_backfill_checkpoints
+              SET owner_epoch=owner_epoch+1,
+                  state=CASE WHEN state='declared' THEN 'backfilling' ELSE state END,
+                  schema_version=?, updated_at_ms=?
+            WHERE partition=? AND name=? AND state<>'activated'
+        RETURNING partition, name, schema_version, state, watermark,
+                  owner_epoch, observed_rows, updated_at_ms`,
+        )
+        .get(schemaVersion, nowMs, partition, name);
+      if (claimed === null) {
+        throw new StorageQueryError('sync.storage.checkpoint_not_declared');
+      }
+      return toStoredCheckpoint(claimed);
+    });
+  }
+
+  async advanceCheckpoint(
+    partition: string,
+    name: string,
+    ownerEpoch: number,
+    watermark: number,
+    observedRows: number,
+    nowMs: number,
+  ): Promise<boolean> {
+    return this.#serializeWrite(() => {
+      const result = this.db
+        .query(
+          `UPDATE sync_backfill_checkpoints
+              SET watermark=?, observed_rows=?, updated_at_ms=?
+            WHERE partition=? AND name=? AND owner_epoch=?`,
+        )
+        .run(watermark, observedRows, nowMs, partition, name, ownerEpoch);
+      return Number(result.changes) === 1;
+    });
+  }
+
+  async sourceCoverageSeq(
+    partition: string,
+    tables: readonly string[],
+  ): Promise<number> {
+    if (tables.length === 0) return 0;
+    const row = this.db
+      .query<{ seq: number | null }, (string | number)[]>(
+        `SELECT max(commit_seq) AS seq FROM sync_changes
+          WHERE partition=? AND tbl IN (${placeholders(tables.length)})`,
+      )
+      .get(partition, ...tables);
+    return row?.seq ?? 0;
+  }
+
+  #hasSourceChangesAbove(
+    partition: string,
+    tables: readonly string[],
+    seq: number,
+  ): 'clean' | 'changed' | 'unverifiable' {
+    // Read the horizon before the window scan: a horizon past `seq` means the
+    // history that would answer the question is gone, so an empty scan proves
+    // nothing and must not be reported as `clean`.
+    const horizon =
+      this.db
+        .query<{ horizon_seq: number }, [string]>(
+          'SELECT horizon_seq FROM sync_partitions WHERE partition=?',
+        )
+        .get(partition)?.horizon_seq ?? 0;
+    if (tables.length === 0) return 'clean';
+    const hit = this.db
+      .query<{ hit: number }, (string | number)[]>(
+        `SELECT 1 AS hit FROM sync_changes
+          WHERE partition=? AND tbl IN (${placeholders(tables.length)})
+            AND commit_seq>? LIMIT 1`,
+      )
+      .get(partition, ...tables, seq);
+    if (hit !== null && hit !== undefined) return 'changed';
+    return horizon > seq ? 'unverifiable' : 'clean';
+  }
+
+  async hasSourceChangesAbove(
+    partition: string,
+    tables: readonly string[],
+    seq: number,
+  ): Promise<'clean' | 'changed' | 'unverifiable'> {
+    return this.#hasSourceChangesAbove(partition, tables, seq);
   }
 
   async getRow(

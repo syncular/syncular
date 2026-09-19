@@ -167,6 +167,16 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorCatalogEntry>> = {
     recommendedAction: 'retryLater',
     httpStatus: 500,
   },
+  // §2.4 on a non-D1 backend: the server refuses while a declared backfill
+  // checkpoint is incomplete or the database is newer than the running build.
+  // Formerly host-only; promoted to the §10.2 catalogue so an in-flight
+  // request can be refused with a distinguishable identity.
+  'sync.schema_not_ready': {
+    category: 'internal',
+    retryable: true,
+    recommendedAction: 'retryLater',
+    httpStatus: 503,
+  },
   'sync.too_many_operations': {
     category: 'invalid-request',
     retryable: false,
