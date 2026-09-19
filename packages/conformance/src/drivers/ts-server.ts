@@ -393,7 +393,6 @@ class TsServerInstance implements ServerInstance {
       sourceCoverageSeq: (p, t) => this.#storage.sourceCoverageSeq(p, t),
       hasSourceChangesAbove: (p, t, s) =>
         this.#storage.hasSourceChangesAbove(p, t, s),
-      writerFenceAllows: (p, v) => this.#storage.writerFenceAllows(p, v),
       getPartitionLogEpoch: (p) => this.#storage.getPartitionLogEpoch(p),
       setHorizonSeq: (p, s) => this.#storage.setHorizonSeq(p, s),
       pruneCommitsThrough: (p, s) => this.#storage.pruneCommitsThrough(p, s),
@@ -431,6 +430,7 @@ class TsServerInstance implements ServerInstance {
       getActiveClientCursorFloor: (p, cutoff) =>
         this.#storage.getActiveClientCursorFloor(p, cutoff),
       listClientCursors: (p) => this.#storage.listClientCursors(p),
+      readServeGate: (p, v) => this.#storage.readServeGate(p, v),
       // §5.9.4 blob reference index reads.
       listRowsReferencingBlob: (p, b) =>
         this.#storage.listRowsReferencingBlob(p, b),

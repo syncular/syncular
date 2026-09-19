@@ -134,7 +134,6 @@ function wrapStorage(
       storage.advanceCheckpoint(p, n, e, w, r, at),
     sourceCoverageSeq: (p, t) => storage.sourceCoverageSeq(p, t),
     hasSourceChangesAbove: (p, t, s) => storage.hasSourceChangesAbove(p, t, s),
-    writerFenceAllows: (p, v) => storage.writerFenceAllows(p, v),
     getPartitionLogEpoch: (p) => storage.getPartitionLogEpoch(p),
     setHorizonSeq: (p, s) => storage.setHorizonSeq(p, s),
     pruneCommitsThrough: (p, s) => storage.pruneCommitsThrough(p, s),
@@ -159,6 +158,7 @@ function wrapStorage(
     getActiveClientCursorFloor: (p, cutoff) =>
       storage.getActiveClientCursorFloor(p, cutoff),
     listClientCursors: (p) => storage.listClientCursors(p),
+    readServeGate: (p, v) => storage.readServeGate(p, v),
   };
 }
 

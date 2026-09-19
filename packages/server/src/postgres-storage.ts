@@ -101,6 +101,7 @@ import type {
   ScopeActivityQuery,
   ScopeCommitActivity,
   ServerStorage,
+  ServeGate,
   StorageTransaction,
   StoredChange,
   StoredCheckpoint,
@@ -311,6 +312,37 @@ async function installCheckpointOn(
          EXCLUDED.required_writer_version)`,
     [partition, schemaVersion],
   );
+}
+
+/** RFC 0007 serve gate on either the pool or a transaction's client. */
+async function readServeGateOn(
+  client: PgQueryable,
+  partition: string,
+  runningSchemaVersion: number,
+): Promise<ServeGate> {
+  const marker = await client.query<{ schema_version: unknown }>(
+    'SELECT schema_version FROM sync_schema_meta WHERE id=1',
+  );
+  const epoch = await client.query<{ log_epoch: string }>(
+    'SELECT log_epoch FROM sync_partition_registry WHERE partition=$1',
+    [partition],
+  );
+  const pending = await client.query<{ partition: string; name: string }>(
+    `SELECT partition, name FROM sync_backfill_checkpoints
+      WHERE schema_version=$1 AND state<>'activated'`,
+    [runningSchemaVersion],
+  );
+  return {
+    storedSchemaVersion:
+      marker.rows[0] === undefined
+        ? 0
+        : asNumber(marker.rows[0].schema_version),
+    logEpoch: epoch.rows[0]?.log_epoch,
+    pending: pending.rows.map((row) => ({
+      partition: row.partition,
+      name: row.name,
+    })),
+  };
 }
 
 async function hasSourceChangesAboveOn(
@@ -859,6 +891,13 @@ class PostgresTransaction implements StorageTransaction {
       [watermark, observedRows, nowMs, this.#partition, name, ownerEpoch],
     );
     return result.rowCount === 1;
+  }
+
+  readServeGate(runningSchemaVersion: number): Promise<ServeGate> {
+    this.#assertOpen();
+    // The transaction's own client: the gate and the write share one
+    // transaction, so a migration cannot interleave between them.
+    return readServeGateOn(this.#client, this.#partition, runningSchemaVersion);
   }
 
   async commitRejectedPushResult(
@@ -1615,6 +1654,13 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
     return rows.map(toStoredCheckpoint);
   }
 
+  async readServeGate(
+    partition: string,
+    runningSchemaVersion: number,
+  ): Promise<ServeGate> {
+    return readServeGateOn(this.#exec, partition, runningSchemaVersion);
+  }
+
   async declareCheckpoint(
     partition: string,
     name: string,
@@ -1754,23 +1800,6 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
     seq: number,
   ): Promise<'clean' | 'changed' | 'unverifiable'> {
     return hasSourceChangesAboveOn(this.#exec, partition, tables, seq);
-  }
-
-  async writerFenceAllows(
-    partition: string,
-    writerVersion: number,
-  ): Promise<boolean> {
-    const { rows } = await this.#exec.query<{
-      required_writer_version: unknown;
-    }>(
-      'SELECT required_writer_version FROM sync_writer_fence WHERE partition=$1',
-      [partition],
-    );
-    // An absent row means no barrier on this partition; writes are allowed.
-    return (
-      rows[0] === undefined ||
-      writerVersion >= asNumber(rows[0].required_writer_version)
-    );
   }
 
   getRow(

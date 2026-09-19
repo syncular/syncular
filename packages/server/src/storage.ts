@@ -58,6 +58,70 @@ export interface StoredCheckpoint {
   readonly updatedAtMs: number;
 }
 
+/**
+ * RFC 0007 serve-gate token, read inside the transaction that produces the
+ * result. `storedSchemaVersion` is the published marker; `logEpoch` is the
+ * partition's log generation, so a restore that presents V -> other -> V is
+ * still distinguishable. `pending` names every incomplete declared checkpoint
+ * at the running schema version, across partitions.
+ */
+export interface ServeGate {
+  readonly storedSchemaVersion: number;
+  readonly logEpoch: string | undefined;
+  readonly pending: readonly {
+    readonly partition: string;
+    readonly name: string;
+  }[];
+}
+
+/** Why `serveGate` refuses, or `undefined` when this request may serve. */
+export type ServeGateRefusal =
+  | {
+      readonly kind: 'schema';
+      readonly stored: number;
+      readonly running: number;
+    }
+  | {
+      readonly kind: 'checkpoint';
+      readonly partition: string;
+      readonly name: string;
+    };
+
+/**
+ * Evaluate the RFC 0007 predicate against a gate token. A process that
+ * declares the pending checkpoint may serve while it backfills; any other
+ * process is refused, and a database newer than the running build is always
+ * refused.
+ */
+export function serveGateRefusal(
+  gate: ServeGate,
+  runningSchemaVersion: number,
+  checkpoints: readonly CheckpointDeclaration[] | undefined,
+): ServeGateRefusal | undefined {
+  if (gate.storedSchemaVersion > runningSchemaVersion) {
+    return {
+      kind: 'schema',
+      stored: gate.storedSchemaVersion,
+      running: runningSchemaVersion,
+    };
+  }
+  for (const pending of gate.pending) {
+    const declared = (checkpoints ?? []).some(
+      (declaration) =>
+        declaration.partition === pending.partition &&
+        declaration.name === pending.name,
+    );
+    if (!declared) {
+      return {
+        kind: 'checkpoint',
+        partition: pending.partition,
+        name: pending.name,
+      };
+    }
+  }
+  return undefined;
+}
+
 /** The current stored state of a synced row. */
 export interface StoredRow {
   readonly rowId: string;
@@ -449,6 +513,12 @@ export interface StorageTransaction {
     nowMs: number,
   ): Promise<boolean>;
   /**
+   * RFC 0007 serve gate on the caller's own connection, for write paths that
+   * already hold the partition lock: the gate and the write share one
+   * transaction, so a migration cannot interleave between them.
+   */
+  readServeGate(runningSchemaVersion: number): Promise<ServeGate>;
+  /**
    * Blob reference index (§5.9.4) — ADDITIVE, optional. Set the blobIds a
    * row currently references (empty = clear), replacing any prior entries
    * for (table, rowId), inside the same commit transaction (§6.4). A
@@ -539,6 +609,16 @@ export interface ServerStorage {
   /** Every declared backfill checkpoint for the partition, ordered by name. */
   readCheckpoints(partition: string): Promise<StoredCheckpoint[]>;
   /**
+   * RFC 0007 serve gate: read the published schema version, the partition's
+   * log epoch, and every incomplete declared checkpoint at
+   * `runningSchemaVersion`. Never memoized; the serve paths call it per
+   * request so an already-serving process notices a migration.
+   */
+  readServeGate(
+    partition: string,
+    runningSchemaVersion: number,
+  ): Promise<ServeGate>;
+  /**
    * Atomically take ownership of a declared or backfilling checkpoint. Increments
    * `owner_epoch` and moves `declared` to `backfilling`. Throws
    * `sync.storage.checkpoint_not_declared` when no claimable row exists (absent,
@@ -604,13 +684,6 @@ export interface ServerStorage {
     sources: readonly string[],
     nowMs: number,
   ): Promise<'activated' | 'stale' | 'unverifiable'>;
-  /**
-   * Whether `writerVersion` may append to this partition's commit log. False
-   * only when a fence row exists and requires a higher version; an absent row
-   * means no barrier and allows the write.
-   */
-  writerFenceAllows(partition: string, writerVersion: number): Promise<boolean>;
-
   getRow(
     partition: string,
     table: string,

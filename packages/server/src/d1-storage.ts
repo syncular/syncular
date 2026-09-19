@@ -112,6 +112,7 @@ import type {
   ScopeActivityQuery,
   ScopeCommitActivity,
   ServerStorage,
+  ServeGate,
   StorageTransaction,
   StoredCommit,
   StoredCheckpoint,
@@ -460,6 +461,18 @@ class D1Transaction implements StorageTransaction {
     return Promise.reject(
       new StorageQueryError('sync.storage.checkpoint_unsupported'),
     );
+  }
+
+  async readServeGate(_runningSchemaVersion: number): Promise<ServeGate> {
+    this.#assertOpen();
+    const marker = await this.#db
+      .prepare('SELECT schema_version FROM sync_schema_meta WHERE id=1')
+      .first<{ schema_version: number }>();
+    return {
+      storedSchemaVersion: marker?.schema_version ?? 0,
+      logEpoch: undefined,
+      pending: [],
+    };
   }
 
   async commitRejectedPushResult(
@@ -1621,6 +1634,22 @@ export class D1ServerStorage implements ServerStorage {
     return [];
   }
 
+  async readServeGate(
+    partition: string,
+    _runningSchemaVersion: number,
+  ): Promise<ServeGate> {
+    // D1 has no checkpoints. The published marker is the only gate input;
+    // `#schemaDatabase` already re-checks it per protected batch.
+    const marker = await this.#db
+      .prepare('SELECT schema_version FROM sync_schema_meta WHERE id=1')
+      .first<{ schema_version: number }>();
+    return {
+      storedSchemaVersion: marker?.schema_version ?? 0,
+      logEpoch: await this.getPartitionLogEpoch(partition),
+      pending: [],
+    };
+  }
+
   async declareCheckpoint(
     _partition: string,
     _name: string,
@@ -1698,15 +1727,6 @@ export class D1ServerStorage implements ServerStorage {
       .first<{ hit: number }>();
     if (hit !== null) return 'changed';
     return horizon > seq ? 'unverifiable' : 'clean';
-  }
-
-  async writerFenceAllows(
-    _partition: string,
-    _writerVersion: number,
-  ): Promise<boolean> {
-    // No writer fence can be installed on D1 in this release. Existing
-    // deployments never see a barrier, so every write stays allowed.
-    return true;
   }
 
   async getRow(

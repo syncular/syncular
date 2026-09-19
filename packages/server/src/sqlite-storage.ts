@@ -80,6 +80,7 @@ import type {
   ScopeActivityQuery,
   ScopeCommitActivity,
   ServerStorage,
+  ServeGate,
   StorageTransaction,
   StoredCommit,
   StoredCheckpoint,
@@ -264,6 +265,13 @@ class SqliteTransaction implements StorageTransaction {
       )
       .run(watermark, observedRows, nowMs, this.#partition, name, ownerEpoch);
     return Number(result.changes) === 1;
+  }
+
+  readServeGate(runningSchemaVersion: number): Promise<ServeGate> {
+    this.#assertOpen();
+    // Same shared connection: this read runs inside this transaction's
+    // BEGIN IMMEDIATE, so the gate and the write share one transaction.
+    return this.#storage.readServeGate(this.#partition, runningSchemaVersion);
   }
 
   async commitRejectedPushResult(
@@ -1078,6 +1086,36 @@ END`);
     return row?.seq ?? 0;
   }
 
+  async readServeGate(
+    partition: string,
+    runningSchemaVersion: number,
+  ): Promise<ServeGate> {
+    const marker = this.db
+      .query<{ schema_version: number }, []>(
+        'SELECT schema_version FROM sync_schema_meta WHERE id=1',
+      )
+      .get();
+    const epoch = this.db
+      .query<{ log_epoch: string }, [string]>(
+        'SELECT log_epoch FROM sync_partition_registry WHERE partition=?',
+      )
+      .get(partition);
+    const pending = this.db
+      .query<{ partition: string; name: string }, [number]>(
+        `SELECT partition, name FROM sync_backfill_checkpoints
+          WHERE schema_version=? AND state<>'activated'`,
+      )
+      .all(runningSchemaVersion);
+    return {
+      storedSchemaVersion: marker?.schema_version ?? 0,
+      logEpoch: epoch?.log_epoch,
+      pending: pending.map((row) => ({
+        partition: row.partition,
+        name: row.name,
+      })),
+    };
+  }
+
   async readCheckpoints(partition: string): Promise<StoredCheckpoint[]> {
     return this.db
       .query<SqliteCheckpointRecord, [string]>(
@@ -1302,19 +1340,6 @@ END`);
     seq: number,
   ): Promise<'clean' | 'changed' | 'unverifiable'> {
     return this.#hasSourceChangesAbove(partition, tables, seq);
-  }
-
-  async writerFenceAllows(
-    partition: string,
-    writerVersion: number,
-  ): Promise<boolean> {
-    const row = this.db
-      .query<{ required_writer_version: number }, [string]>(
-        'SELECT required_writer_version FROM sync_writer_fence WHERE partition=?',
-      )
-      .get(partition);
-    // An absent row means no barrier on this partition; writes are allowed.
-    return row === null || writerVersion >= row.required_writer_version;
   }
 
   async getRow(

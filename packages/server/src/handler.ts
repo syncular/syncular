@@ -51,10 +51,16 @@ import {
   subscriptionSection,
 } from './pull';
 import { type ProcessedPushCommit, processPushCommitWithTrace } from './push';
+import { serveNotReadyError } from './readiness';
 import type { CompiledSchema } from './schema';
 import { compileSchema } from './schema';
 import { computeEffective, type ResolvedScopes } from './scopes';
-import type { ClientSubscription, PartitionRegistryEntry } from './storage';
+import { StorageQueryError } from './storage-errors';
+import {
+  type ClientSubscription,
+  type PartitionRegistryEntry,
+  serveGateRefusal,
+} from './storage';
 
 interface RequestPlan {
   readonly wireVersion: number;
@@ -709,7 +715,29 @@ async function createStreamCore(
   const schema = compileSchema(ctx.schema);
   // Relational row tables: create/
   // migrate on first contact; memoized per storage instance thereafter.
-  await ctx.storage.ensureSchema(schema, ctx.checkpoints);
+  try {
+    await ctx.storage.ensureSchema(schema, ctx.checkpoints);
+  } catch (error) {
+    if (
+      error instanceof StorageQueryError &&
+      error.code === 'sync.storage.checkpoint_incomplete'
+    ) {
+      const refusal = serveGateRefusal(
+        await ctx.storage.readServeGate(ctx.partition, schema.version),
+        schema.version,
+        ctx.checkpoints,
+      );
+      throw refusal !== undefined ? serveNotReadyError(refusal) : error;
+    }
+    throw error;
+  }
+  // RFC 0007 serve gate: re-read stored state on every request so an
+  // already-serving process notices a migration or a newly declared
+  // checkpoint. Nothing has escaped at this point; the push transaction
+  // re-evaluates the gate under the partition lock.
+  const gate = await ctx.storage.readServeGate(ctx.partition, schema.version);
+  const refusal = serveGateRefusal(gate, schema.version, ctx.checkpoints);
+  if (refusal !== undefined) throw serveNotReadyError(refusal);
   const registry = await touchAuthenticatedPartition(ctx);
   const plan = await planRequest(request, ctx, schema, registry);
   if (events === undefined) return streamResponse(plan, ctx, schema);

@@ -36,10 +36,6 @@ const CHECKPOINT_INSERT = `INSERT INTO sync_backfill_checkpoints(
 const CHECKPOINT_INSERT_PG = `INSERT INTO sync_backfill_checkpoints(
   partition, name, schema_version, state, watermark, owner_epoch, observed_rows, updated_at_ms
 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`;
-const FENCE_INSERT =
-  'INSERT INTO sync_writer_fence(partition, required_writer_version) VALUES (?,?)';
-const FENCE_INSERT_PG =
-  'INSERT INTO sync_writer_fence(partition, required_writer_version) VALUES ($1,$2)';
 
 interface Harness {
   readonly storage: ServerStorage;
@@ -325,29 +321,6 @@ for (const backend of ['sqlite', 'postgres/pglite', 'd1/double'] as const) {
     }
   });
 
-  test(`${backend} an absent writer fence allows writes and a lower requirement still does`, async () => {
-    const { storage, insert, close } = await harnessFn(key);
-    try {
-      // No row: no barrier on this partition.
-      expect(await storage.writerFenceAllows(PARTITION, 1)).toBe(true);
-      expect(await storage.writerFenceAllows('untouched', 1)).toBe(true);
-      if (key === 'd1') {
-        // D1 installs no fence; every partition keeps the no-barrier path.
-        expect(await storage.writerFenceAllows(PARTITION, 0)).toBe(true);
-        return;
-      }
-
-      await insert(FENCE_INSERT, FENCE_INSERT_PG, [PARTITION, 2]);
-      expect(await storage.writerFenceAllows(PARTITION, 1)).toBe(false);
-      expect(await storage.writerFenceAllows(PARTITION, 2)).toBe(true);
-      expect(await storage.writerFenceAllows(PARTITION, 3)).toBe(true);
-      // A different partition is unaffected by this partition's fence.
-      expect(await storage.writerFenceAllows('other', 1)).toBe(true);
-    } finally {
-      await close();
-    }
-  });
-
   test(`${backend} the checkpoint table is not served as a synced table`, async () => {
     const { storage, close } = await harnessFn(key);
     try {
@@ -371,7 +344,6 @@ test('D1 never declares a checkpoint and the no-barrier path is unchanged', asyn
   const { storage, close } = await harnessFn('d1');
   try {
     expect(await storage.readCheckpoints(PARTITION)).toEqual([]);
-    expect(await storage.writerFenceAllows(PARTITION, 1)).toBe(true);
     // A normal commit still lands exactly as it does today.
     expect(await append(storage, 'tasks', 't1')).toBe(1);
     expect(await storage.getMaxCommitSeq(PARTITION)).toBe(1);
@@ -993,6 +965,9 @@ for (const backend of ['sqlite', 'postgres/pglite'] as const) {
         segments: new MemorySegmentStore(),
         resolveScopes: () => ({ project_id: ['p1'] }),
         clock: () => NOW,
+        // The backfilling process declares its checkpoint; the serve gate
+        // refuses a process that does not.
+        checkpoints: [DECLARATION],
       };
       const row = encodeSparseRow(tasks.columns, tasks.primaryKeyIndex, [
         'proj-1',
@@ -1213,15 +1188,13 @@ for (const backend of ['sqlite', 'postgres/pglite'] as const) {
       // A process is allowed only when it declares every incomplete checkpoint:
       // declaring one of two is refused, declaring both is allowed.
       await expect(
-        harness
-          .storageAgain()
-          .ensureSchema(SCHEMA, [
-            {
-              partition: PARTITION,
-              name: 'set-b',
-              schemaVersion: SCHEMA.version,
-            },
-          ]),
+        harness.storageAgain().ensureSchema(SCHEMA, [
+          {
+            partition: PARTITION,
+            name: 'set-b',
+            schemaVersion: SCHEMA.version,
+          },
+        ]),
       ).rejects.toMatchObject({ code: 'sync.storage.checkpoint_incomplete' });
       await harness.storageAgain().ensureSchema(SCHEMA, [
         { partition: PARTITION, name: 'set-a', schemaVersion: SCHEMA.version },
