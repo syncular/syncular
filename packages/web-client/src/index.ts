@@ -28,7 +28,16 @@ export * from './multi-tab';
 export * from './naming';
 export * from './outbox';
 export * from './outcomes';
-export * from './previous-version';
+// RFC 0005: explicit public surface. Everything else in the module is
+// implementation detail used by `client.ts` (capture, container file, durable
+// refusal/audit codecs), not package API. The feature is opt-in and its
+// consumer-facing contract is exactly the read spec and the two result types.
+export {
+  type PreviousVersionAudit,
+  type PreviousVersionReadSpec,
+  type PreviousVersionReason,
+  type PreviousVersionSnapshot,
+} from './previous-version';
 export * from './query-guard';
 export * from './reactive-store';
 export * from './remote';

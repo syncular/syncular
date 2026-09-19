@@ -42,7 +42,7 @@ import {
 import { getMeta, setMeta } from './state';
 
 /** `_syncular_meta` key holding the persisted {@link LocalSchemaDescriptor}. */
-export const LOCAL_SCHEMA_DESCRIPTOR_KEY = 'localSchemaDescriptor';
+const LOCAL_SCHEMA_DESCRIPTOR_KEY = 'localSchemaDescriptor';
 
 /**
  * `_syncular_meta` key holding only a capture REFUSAL. The successful record
@@ -50,10 +50,10 @@ export const LOCAL_SCHEMA_DESCRIPTOR_KEY = 'localSchemaDescriptor';
  * is present. It stays in the replica because it is small, typed, and useful
  * even when nothing was captured.
  */
-export const PREVIOUS_VERSION_CONTEXT_KEY = 'previousVersionContext';
+const PREVIOUS_VERSION_CONTEXT_KEY = 'previousVersionContext';
 
 /** `_syncular_meta` key holding the pre-reset compatibility audit (D6). */
-export const PREVIOUS_VERSION_AUDIT_KEY = 'previousVersionAudit';
+const PREVIOUS_VERSION_AUDIT_KEY = 'previousVersionAudit';
 
 /**
  * RFC 0005: the code-derived sibling database filename. Never persisted in the
@@ -94,22 +94,22 @@ export type PreviousVersionReason =
   | 'scope-revoked';
 
 /** Refusals that ARE durable, because no container is written for them. */
-export type PreviousVersionRefusalReason =
+type PreviousVersionRefusalReason =
   | 'no-previous-descriptor'
   | 'capture-exceeded-budget';
 
-export interface LocalSchemaDescriptorColumn {
+interface LocalSchemaDescriptorColumn {
   readonly name: string;
   readonly type: RowColumn['type'];
 }
 
-export interface LocalSchemaDescriptorTable {
+interface LocalSchemaDescriptorTable {
   readonly name: string;
   readonly primaryKey: string;
   readonly columns: readonly LocalSchemaDescriptorColumn[];
 }
 
-export interface LocalSchemaDescriptor {
+interface LocalSchemaDescriptor {
   readonly v: 1;
   readonly version: number;
   readonly tables: readonly LocalSchemaDescriptorTable[];
@@ -127,7 +127,7 @@ export interface PreviousVersionRecord {
 }
 
 /** Durable refusal stored in `_syncular_meta` when no container is written. */
-export interface PreviousVersionRefusal {
+interface PreviousVersionRefusal {
   readonly v: 1;
   readonly reason: PreviousVersionRefusalReason;
   readonly tables?: number;
@@ -142,21 +142,24 @@ export interface PreviousVersionCaptureConfig {
   readonly maxRowBytes: number;
 }
 
-export interface PreviousVersionCaptureMeasurement {
+interface PreviousVersionCaptureMeasurement {
   readonly tables: number;
   readonly rows: number;
   readonly bytes: number;
 }
 
-export type PreviousVersionCaptureOutcome =
-  | { readonly ok: true; readonly measurement: PreviousVersionCaptureMeasurement }
+type PreviousVersionCaptureOutcome =
+  | {
+      readonly ok: true;
+      readonly measurement: PreviousVersionCaptureMeasurement;
+    }
   | {
       readonly ok: false;
       readonly reason: 'capture-exceeded-budget';
       readonly measurement: PreviousVersionCaptureMeasurement;
     };
 
-export interface PreviousVersionAuditEntry {
+interface PreviousVersionAuditEntry {
   readonly commitId: string;
   readonly table: string;
   readonly reason: 'unknown-table' | 'unknown-column';
@@ -196,7 +199,10 @@ function isCount(value: unknown): value is number {
 }
 
 function localCorrupt(what: string): never {
-  throw new ClientSyncError('sync.local_corrupt', `persisted ${what} is invalid`);
+  throw new ClientSyncError(
+    'sync.local_corrupt',
+    `persisted ${what} is invalid`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -281,9 +287,7 @@ function buildLocalSchemaDescriptor(
 }
 
 /** Strict decode: an unknown shape is corruption, never a best guess. */
-function decodeLocalSchemaDescriptor(
-  value: string,
-): LocalSchemaDescriptor {
+function decodeLocalSchemaDescriptor(value: string): LocalSchemaDescriptor {
   let parsed: unknown;
   try {
     parsed = JSON.parse(value);
@@ -517,7 +521,8 @@ export function capturePreviousVersion(
       [perTableRows[index] ?? 0],
     )[0]?.total;
     measuredBytes += Number(total ?? 0);
-    if (measuredBytes > config.maxBytes) return over(measuredRows, measuredBytes);
+    if (measuredBytes > config.maxBytes)
+      return over(measuredRows, measuredBytes);
   }
 
   let copiedRows = 0;
@@ -575,14 +580,23 @@ export function capturePreviousVersion(
       createdAtMs: nowMs,
     });
   });
-  return { ok: true, measurement: { tables: tables.length, rows: copiedRows, bytes: measuredBytes } };
+  return {
+    ok: true,
+    measurement: {
+      tables: tables.length,
+      rows: copiedRows,
+      bytes: measuredBytes,
+    },
+  };
 }
 
 function rowIdText(table: LocalSchemaDescriptorTable, row: SqlRow): string {
   const value = row[table.primaryKey] ?? null;
   if (value === null) return '';
   if (value instanceof Uint8Array) {
-    return [...value].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+    return [...value]
+      .map((byte) => byte.toString(16).padStart(2, '0'))
+      .join('');
   }
   return String(value);
 }

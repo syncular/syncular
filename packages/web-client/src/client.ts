@@ -601,9 +601,21 @@ function resolvePreviousVersionCaptureConfig(
 ): PreviousVersionCaptureConfig | undefined {
   if (config === undefined || config.enabled !== true) return undefined;
   return {
-    maxBytes: boundedBudget(config.maxBytes, PREVIOUS_VERSION_DEFAULT_MAX_BYTES, 'maxBytes'),
-    maxRows: boundedBudget(config.maxRows, PREVIOUS_VERSION_DEFAULT_MAX_ROWS, 'maxRows'),
-    maxTables: boundedBudget(config.maxTables, PREVIOUS_VERSION_DEFAULT_MAX_TABLES, 'maxTables'),
+    maxBytes: boundedBudget(
+      config.maxBytes,
+      PREVIOUS_VERSION_DEFAULT_MAX_BYTES,
+      'maxBytes',
+    ),
+    maxRows: boundedBudget(
+      config.maxRows,
+      PREVIOUS_VERSION_DEFAULT_MAX_ROWS,
+      'maxRows',
+    ),
+    maxTables: boundedBudget(
+      config.maxTables,
+      PREVIOUS_VERSION_DEFAULT_MAX_TABLES,
+      'maxTables',
+    ),
     maxRowBytes: boundedBudget(
       config.maxRowBytes,
       PREVIOUS_VERSION_DEFAULT_MAX_ROW_BYTES,
@@ -908,7 +920,11 @@ export class SyncClient {
       // Fresh install: the tables just created match the running code.
       this.#db.transaction(() => {
         ensureLocalSyncedSchema(this.#db, this.#schema);
-        setMeta(this.#db, LOCAL_SCHEMA_VERSION_KEY, String(this.#schema.version));
+        setMeta(
+          this.#db,
+          LOCAL_SCHEMA_VERSION_KEY,
+          String(this.#schema.version),
+        );
         setLocalSchemaDescriptor(this.#db, this.#schema);
       });
       return;
@@ -1314,7 +1330,10 @@ export class SyncClient {
     // dropped by the sync path first, so a read can be the first observer.
     if (this.#previousVersionCoverageComplete()) {
       this.#discardPreviousVersion();
-      return this.#previousVersionUnavailable(currentVersion, 'coverage-complete');
+      return this.#previousVersionUnavailable(
+        currentVersion,
+        'coverage-complete',
+      );
     }
     if (record === undefined) {
       const refusal = storedPreviousVersionRefusal(this.#db);
@@ -1339,7 +1358,10 @@ export class SyncClient {
     }
     const handle = this.#db.openSibling?.(PREVIOUS_VERSION_CONTAINER_NAME);
     if (handle === undefined) {
-      return this.#previousVersionUnavailable(currentVersion, 'no-previous-descriptor');
+      return this.#previousVersionUnavailable(
+        currentVersion,
+        'no-previous-descriptor',
+      );
     }
     try {
       const read = readPreviousVersionRows(
@@ -1508,7 +1530,8 @@ export class SyncClient {
   #reconcilePreviousVersionAtBoot(): void {
     if (!this.#previousVersionExists()) return;
     const record = this.#readPreviousVersionRecord();
-    let discard = record === undefined || record.currentVersion !== this.#schema.version;
+    let discard =
+      record === undefined || record.currentVersion !== this.#schema.version;
     if (
       !discard &&
       record !== undefined &&

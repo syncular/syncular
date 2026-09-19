@@ -336,7 +336,10 @@ const SAH_POOL_MIN_CAPACITY = 3;
  * DELETE/FULL and the existing database/journal files. Shared by the replica
  * and every RFC 0005 sibling file.
  */
-function configureSahCrashRecovery(db: Oo1Database, sqlite3: Sqlite3Static): void {
+function configureSahCrashRecovery(
+  db: Oo1Database,
+  sqlite3: Sqlite3Static,
+): void {
   const { capi, wasm } = sqlite3;
   const stack = wasm.pstack.pointer;
   try {

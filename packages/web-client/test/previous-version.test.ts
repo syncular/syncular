@@ -113,11 +113,16 @@ const THING_ROW = {
 };
 
 function tempPath(label: string): string {
-  return join(mkdtempSync(join(tmpdir(), `syncular-pvc-${label}-`)), 'client.db');
+  return join(
+    mkdtempSync(join(tmpdir(), `syncular-pvc-${label}-`)),
+    'client.db',
+  );
 }
 
 function enabled(
-  overrides: Partial<NonNullable<SyncClientConfig['previousVersionContext']>> = {},
+  overrides: Partial<
+    NonNullable<SyncClientConfig['previousVersionContext']>
+  > = {},
 ): SyncClientConfig['previousVersionContext'] {
   return { enabled: true, ...overrides };
 }
@@ -125,6 +130,14 @@ function enabled(
 /** The sibling file the bun adapter uses for the container. */
 function containerPath(path: string): string {
   return `${path}.prev-context`;
+}
+
+/** The §7.4.3 schema marker; rewritten LAST inside the reset transaction. */
+const MARKER_KEY = 'localSchemaVersion';
+
+/** Correction 2b: a discard must remove the FILE, not merely drop its tables. */
+function expectNoContainerFile(path: string): void {
+  expect(existsSync(containerPath(path))).toBe(false);
 }
 
 function containerTableCount(path: string): number {
@@ -193,7 +206,9 @@ function rawDb(path: string): BunClientDatabase {
 }
 
 function metaValue(db: BunClientDatabase, key: string): string | undefined {
-  const row = db.query('SELECT value FROM _syncular_meta WHERE key = ?', [key])[0];
+  const row = db.query('SELECT value FROM _syncular_meta WHERE key = ?', [
+    key,
+  ])[0];
   return row === undefined ? undefined : String(row.value);
 }
 
@@ -216,9 +231,9 @@ describe('RFC 0005 default off', () => {
       expect(snap.state).toBe('previousVersion');
       expect(snap.available).toBe(false);
       expect(snap.reason).toBe('not-configured');
-      expect(bumped.client.statusSnapshot().previousVersionContext.present).toBe(
-        false,
-      );
+      expect(
+        bumped.client.statusSnapshot().previousVersionContext.present,
+      ).toBe(false);
     } finally {
       await bumped.client.close();
       bumped.db.close();
@@ -255,7 +270,7 @@ describe('RFC 0005 opt-in capture', () => {
       // The container lives in its own file; the replica connection cannot see it.
       expect(
         bumped.db.query(
-          "SELECT 1 AS present FROM sqlite_master WHERE name = ?",
+          'SELECT 1 AS present FROM sqlite_master WHERE name = ?',
           [CONTAINER],
         ),
       ).toHaveLength(0);
@@ -278,7 +293,9 @@ describe('RFC 0005 opt-in capture', () => {
     await seedV1(server, straight);
     {
       const inspect = rawDb(straight);
-      inspect.exec('DELETE FROM _syncular_meta WHERE key = ?', [DESCRIPTOR_KEY]);
+      inspect.exec('DELETE FROM _syncular_meta WHERE key = ?', [
+        DESCRIPTOR_KEY,
+      ]);
       inspect.close();
     }
     const bumped = await openAt(server, straight, V2_SCHEMA, enabled());
@@ -287,6 +304,7 @@ describe('RFC 0005 opt-in capture', () => {
       expect(snap.available).toBe(false);
       expect(snap.reason).toBe('no-previous-descriptor');
       expect(containerTableCount(straight)).toBe(0);
+      expectNoContainerFile(straight);
     } finally {
       await bumped.client.close();
       bumped.db.close();
@@ -296,7 +314,9 @@ describe('RFC 0005 opt-in capture', () => {
     await seedV1(server, backed);
     {
       const inspect = rawDb(backed);
-      inspect.exec('DELETE FROM _syncular_meta WHERE key = ?', [DESCRIPTOR_KEY]);
+      inspect.exec('DELETE FROM _syncular_meta WHERE key = ?', [
+        DESCRIPTOR_KEY,
+      ]);
       inspect.close();
     }
     const awareV1 = await openAt(server, backed, V1_SCHEMA, enabled());
@@ -358,6 +378,7 @@ describe('RFC 0005 budgets abort before materializing', () => {
         expect(snap.available).toBe(false);
         expect(snap.reason).toBe('capture-exceeded-budget');
         expect(containerTableCount(path)).toBe(0);
+        expectNoContainerFile(path);
       } finally {
         await bumped.client.close();
         bumped.db.close();
@@ -430,11 +451,12 @@ describe('RFC 0005 lifetime and discard', () => {
     await seedV1(server, path, { subscribe: true });
     const bumped = await openAt(server, path, V2_SCHEMA, enabled());
     try {
-      expect(bumped.client.statusSnapshot().previousVersionContext.present).toBe(
-        true,
-      );
+      expect(
+        bumped.client.statusSnapshot().previousVersionContext.present,
+      ).toBe(true);
       await bumped.client.sync();
       expect(containerTableCount(path)).toBe(0);
+      expectNoContainerFile(path);
       const snap = bumped.client.previousVersionSnapshot({ table: 'things' });
       expect(snap.available).toBe(false);
       expect(snap.reason).toBe('coverage-complete');
@@ -460,6 +482,7 @@ describe('RFC 0005 lifetime and discard', () => {
       expect(snap.available).toBe(false);
       expect(snap.reason).toBe('expired');
       expect(containerTableCount(path)).toBe(0);
+      expectNoContainerFile(path);
     } finally {
       await bumped.client.close();
       bumped.db.close();
@@ -475,10 +498,13 @@ describe('RFC 0005 lifetime and discard', () => {
     bumped.db.close();
     {
       const inspect = rawDb(path);
-      inspect.exec('INSERT OR REPLACE INTO _syncular_meta(key, value) VALUES (?, ?)', [
-        'leaseState',
-        JSON.stringify({ errorCode: 'sync.auth_lease_revoked' }),
-      ]);
+      inspect.exec(
+        'INSERT OR REPLACE INTO _syncular_meta(key, value) VALUES (?, ?)',
+        [
+          'leaseState',
+          JSON.stringify({ errorCode: 'sync.auth_lease_revoked' }),
+        ],
+      );
       inspect.close();
     }
     const reopened = await openAt(server, path, V2_SCHEMA, enabled());
@@ -488,6 +514,7 @@ describe('RFC 0005 lifetime and discard', () => {
       expect(snap.available).toBe(false);
       expect(snap.reason).toBe('lease-inactive');
       expect(containerTableCount(path)).toBe(0);
+      expectNoContainerFile(path);
     } finally {
       await reopened.client.close();
       reopened.db.close();
@@ -507,6 +534,7 @@ describe('RFC 0005 lifetime and discard', () => {
       expect(snap.available).toBe(false);
       expect(snap.reason).toBe('scope-revoked');
       expect(containerTableCount(path)).toBe(0);
+      expectNoContainerFile(path);
     } finally {
       await bumped.client.close();
       bumped.db.close();
@@ -524,6 +552,7 @@ describe('RFC 0005 lifetime and discard', () => {
         targets: [{ table: 'things', selectors: { project_id: ['p1'] } }],
       });
       expect(containerTableCount(path)).toBe(0);
+      expectNoContainerFile(path);
       const inspect = rawDb(path);
       expect(metaValue(inspect, CONTEXT_KEY)).toBeUndefined();
       expect(metaValue(inspect, AUDIT_KEY)).toBeUndefined();
@@ -548,6 +577,7 @@ describe('RFC 0005 lifetime and discard', () => {
 
     // A2 step 3: direct database query, never the feature's read API.
     expect(containerTableCount(path)).toBe(0);
+    expectNoContainerFile(path);
     const inspect = rawDb(path);
     expect(metaValue(inspect, CONTEXT_KEY)).toBeUndefined();
     expect(metaValue(inspect, AUDIT_KEY)).toBeUndefined();
@@ -564,12 +594,45 @@ describe('RFC 0005 lifetime and discard', () => {
         present: false,
         discarded: false,
       });
-      expect(unaware.client.query('SELECT COUNT(*) AS c FROM things')[0]?.c).toBe(
-        0,
-      );
+      expect(
+        unaware.client.query('SELECT COUNT(*) AS c FROM things')[0]?.c,
+      ).toBe(0);
     } finally {
       await unaware.client.close();
       unaware.db.close();
+    }
+  });
+
+  test('previousVersionDiscard is idempotent and a feature-off no-op success', async () => {
+    const server = v2Server();
+    const path = tempPath('idempotent');
+    await seedV1(server, path);
+    const bumped = await openAt(server, path, V2_SCHEMA, enabled());
+    try {
+      expect(bumped.client.previousVersionDiscard()).toEqual({
+        present: true,
+        discarded: true,
+      });
+      // RFC 0006 key-loss contract: a repeated discard is SUCCESS, not an error.
+      expect(bumped.client.previousVersionDiscard()).toEqual({
+        present: false,
+        discarded: false,
+      });
+      expectNoContainerFile(path);
+    } finally {
+      await bumped.client.close();
+      bumped.db.close();
+    }
+    // The feature-disabled default path must also succeed as a no-op.
+    const off = await openAt(server, path, V2_SCHEMA);
+    try {
+      expect(off.client.previousVersionDiscard()).toEqual({
+        present: false,
+        discarded: false,
+      });
+    } finally {
+      await off.client.close();
+      off.db.close();
     }
   });
 });
@@ -590,9 +653,8 @@ describe('RFC 0005 crash atomicity', () => {
       }
 
       /** The container is a separate file; fault its connection too. */
-      override openSibling(name: string): SiblingDatabase | undefined {
+      override openSibling(name: string): SiblingDatabase {
         const handle = super.openSibling(name);
-        if (handle === undefined) return handle;
         const database = handle.database;
         const original = database.exec.bind(database);
         let fired = false;
@@ -614,15 +676,30 @@ describe('RFC 0005 crash atomicity', () => {
     readonly fail: (sql: string, params: readonly unknown[]) => boolean;
   }> = [
     {
-      label: 'before the wipe (container creation)',
-      fail: (sql) => /CREATE TABLE/.test(sql) && sql.includes(CONTAINER),
+      label: 'capture before the container record is written',
+      fail: (sql) =>
+        sql.startsWith(`CREATE TABLE IF NOT EXISTS "${CONTAINER_META}"`),
     },
     {
-      label: 'during the wipe (drop)',
-      fail: (sql) => /^DROP TABLE/.test(sql) && sql.includes('things'),
+      label: 'capture during row materialization',
+      fail: (sql) => sql.startsWith(`INSERT INTO "${CONTAINER}"(`),
     },
     {
-      label: 'after the wipe (descriptor write)',
+      label: 'capture after the container committed',
+      fail: (sql, params) =>
+        sql.startsWith('DELETE FROM _syncular_meta') &&
+        params[0] === CONTEXT_KEY,
+    },
+    {
+      label: 'reset before the wipe (audit write)',
+      fail: (_sql, params) => params[0] === AUDIT_KEY,
+    },
+    {
+      label: 'reset during the wipe (drop)',
+      fail: (sql) => sql.startsWith('DROP TABLE') && sql.includes('things'),
+    },
+    {
+      label: 'reset after the wipe (descriptor write)',
       fail: (_sql, params) => params[0] === DESCRIPTOR_KEY,
     },
   ];
@@ -640,8 +717,9 @@ describe('RFC 0005 crash atomicity', () => {
       faulting.close();
       {
         const inspect = rawDb(path);
-        // The marker still reads the old version and no partial container exists.
-        expect(metaValue(inspect, DESCRIPTOR_KEY)).toBeDefined();
+        // Marker-last: the reset transaction never committed, so the marker is
+        // still the OLD version and no container can sit beside a matching one.
+        expect(metaValue(inspect, MARKER_KEY)).toBe('1');
         inspect.close();
       }
 
@@ -741,9 +819,10 @@ describe('RFC 0005 stated limitations', () => {
     const aware = await openAt(server, path, V2_SCHEMA, enabled());
     try {
       expect(containerTableCount(path)).toBe(0);
-      expect(aware.client.previousVersionSnapshot({ table: 'things' }).available).toBe(
-        false,
-      );
+      expectNoContainerFile(path);
+      expect(
+        aware.client.previousVersionSnapshot({ table: 'things' }).available,
+      ).toBe(false);
     } finally {
       await aware.client.close();
       aware.db.close();
@@ -773,6 +852,7 @@ describe('RFC 0005 coverage exclusion', () => {
       });
       expect(complete.coverage.complete).toBe(true);
       expect(containerTableCount(path)).toBe(0);
+      expectNoContainerFile(path);
     } finally {
       await bumped.client.close();
       bumped.db.close();

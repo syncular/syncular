@@ -15,10 +15,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  type ClientSchema,
-  RawSqlError,
-} from '@syncular/client';
+import { type ClientSchema, RawSqlError } from '@syncular/client';
 import type { RowColumn } from '@syncular/core';
 import type { ServerSchema } from '@syncular/server';
 import { makeClient, makeServer } from './helpers';
@@ -40,11 +37,15 @@ const COLUMNS_V2: readonly RowColumn[] = [
 
 const V1_SCHEMA: ClientSchema = {
   version: 1,
-  tables: [{ name: 'tasks', columns: COLUMNS_V1, primaryKey: 'id', scopes: SCOPES }],
+  tables: [
+    { name: 'tasks', columns: COLUMNS_V1, primaryKey: 'id', scopes: SCOPES },
+  ],
 };
 const V2_SCHEMA: ClientSchema = {
   version: 2,
-  tables: [{ name: 'tasks', columns: COLUMNS_V2, primaryKey: 'id', scopes: SCOPES }],
+  tables: [
+    { name: 'tasks', columns: COLUMNS_V2, primaryKey: 'id', scopes: SCOPES },
+  ],
 };
 const V2_SERVER: ServerSchema = { version: 2, tables: V2_SCHEMA.tables };
 
@@ -92,7 +93,7 @@ describe('RFC 0005 container is off the replica query connection', () => {
 
       // The replica's own catalog does not list the container.
       expect(
-        db.query("SELECT name FROM sqlite_master WHERE name = ?", [CONTAINER]),
+        db.query('SELECT name FROM sqlite_master WHERE name = ?', [CONTAINER]),
       ).toHaveLength(0);
       // Naming it on the replica connection fails at SQLite — there is no table
       // to read and no guard to bypass.
