@@ -66,6 +66,23 @@ describe('segment download (§5.5)', () => {
     expect(segment.blocks.flat()).toHaveLength(1);
   });
 
+  test('a descriptor minted before the backfill checkpoint is rejected', async () => {
+    const t = makeContext({ limits: { inlineSegmentMaxBytes: 1 } });
+    const ref = await bootstrapRef(t);
+    await t.ctx.storage.declareCheckpoint(
+      'part-1',
+      'tasks-projection',
+      2,
+      t.now.ms,
+    );
+    await expect(
+      handleSegmentDownload(t.ctx, {
+        segmentId: ref.segmentId,
+        scopesHeader: canonicalScopeJson({ project_id: ['p1'] }),
+      }),
+    ).rejects.toMatchObject({ code: 'sync.segment_expired' });
+  });
+
   test('a scope-digest mismatch is forbidden — a ref is not a bearer capability', async () => {
     const t = makeContext({ limits: { inlineSegmentMaxBytes: 1 } });
     const ref = await bootstrapRef(t);

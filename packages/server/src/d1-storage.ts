@@ -90,6 +90,7 @@ import {
 import type {
   AuthoritativeQueryRequest,
   AuthoritativeQueryResult,
+  CheckpointDeclaration,
   ClientCursorInfo,
   ClientRecord,
   ClientSubscription,
@@ -111,8 +112,10 @@ import type {
   ScopeActivityQuery,
   ScopeCommitActivity,
   ServerStorage,
+  ServeGate,
   StorageTransaction,
   StoredCommit,
+  StoredCheckpoint,
   StoredPushResult,
   StoredReaction,
   StoredRow,
@@ -445,6 +448,31 @@ class D1Transaction implements StorageTransaction {
     // D1 has no interactive lock. The caller explicitly asserted that every
     // write for this partition is already serialized (normally by its DO).
     this.#pushApplyCheckpoint = this.#buffer.length;
+  }
+
+  advanceCheckpoint(
+    _name: string,
+    _ownerEpoch: number,
+    _watermark: number,
+    _observedRows: number,
+    _nowMs: number,
+  ): Promise<boolean> {
+    // D1 installs no fence and declares no checkpoints in this release.
+    return Promise.reject(
+      new StorageQueryError('sync.storage.checkpoint_unsupported'),
+    );
+  }
+
+  async readServeGate(_runningSchemaVersion: number): Promise<ServeGate> {
+    this.#assertOpen();
+    const marker = await this.#db
+      .prepare('SELECT schema_version FROM sync_schema_meta WHERE id=1')
+      .first<{ schema_version: number }>();
+    return {
+      storedSchemaVersion: marker?.schema_version ?? 0,
+      logEpoch: undefined,
+      pending: [],
+    };
   }
 
   async commitRejectedPushResult(
@@ -834,7 +862,15 @@ export class D1ServerStorage implements ServerStorage {
     return table;
   }
 
-  async ensureSchema(schema: CompiledSchema): Promise<void> {
+  async ensureSchema(
+    schema: CompiledSchema,
+    checkpoints?: readonly CheckpointDeclaration[],
+  ): Promise<void> {
+    if (checkpoints !== undefined && checkpoints.length > 0) {
+      // No database-side fence can be installed atomically with schema
+      // visibility here; refuse instead of accepting a weaker guarantee.
+      throw new StorageQueryError('sync.storage.checkpoint_unsupported');
+    }
     if (this.#schemaVersion === schema.version) {
       await this.#schemaDatabase().batch([]);
       return;
@@ -1427,7 +1463,11 @@ export class D1ServerStorage implements ServerStorage {
   async queryAuthoritative(
     partition: string,
     query: AuthoritativeQueryRequest,
+    _checkpoints?: readonly CheckpointDeclaration[],
   ): Promise<AuthoritativeQueryResult> {
+    // D1 declares no checkpoints. `#schemaDatabase` prepends a guard that
+    // re-checks the published marker inside this same batch, so condition 2
+    // is already evaluated with the query (§2.4 D1 schema readiness).
     const db = this.#schemaDatabase();
     if (this.#tables === undefined) {
       throw new Error(
@@ -1589,6 +1629,108 @@ export class D1ServerStorage implements ServerStorage {
       .bind(partition, createdBeforeMs)
       .first<{ seq: number | null }>();
     return row?.seq ?? 0;
+  }
+
+  async readCheckpoints(_partition: string): Promise<StoredCheckpoint[]> {
+    // D1 supports no declared backfill checkpoints in this release: migrations
+    // run out of band and no database-side fence can be installed atomically
+    // with schema visibility. No checkpoint row can exist.
+    return [];
+  }
+
+  async readServeGate(
+    partition: string,
+    _runningSchemaVersion: number,
+  ): Promise<ServeGate> {
+    // D1 has no checkpoints. The published marker is the only gate input;
+    // `#schemaDatabase` already re-checks it per protected batch.
+    const marker = await this.#db
+      .prepare('SELECT schema_version FROM sync_schema_meta WHERE id=1')
+      .first<{ schema_version: number }>();
+    return {
+      storedSchemaVersion: marker?.schema_version ?? 0,
+      logEpoch: await this.getPartitionLogEpoch(partition),
+      pending: [],
+    };
+  }
+
+  async declareCheckpoint(
+    _partition: string,
+    _name: string,
+    _schemaVersion: number,
+    _nowMs: number,
+  ): Promise<StoredCheckpoint> {
+    throw new StorageQueryError('sync.storage.checkpoint_unsupported');
+  }
+
+  async activateCheckpoint(
+    _partition: string,
+    _name: string,
+    _ownerEpoch: number,
+    _watermark: number,
+    _sources: readonly string[],
+    _nowMs: number,
+  ): Promise<'activated' | 'stale' | 'unverifiable'> {
+    throw new StorageQueryError('sync.storage.checkpoint_unsupported');
+  }
+
+  async claimCheckpoint(
+    _partition: string,
+    _name: string,
+    _schemaVersion: number,
+    _nowMs: number,
+  ): Promise<StoredCheckpoint> {
+    throw new StorageQueryError('sync.storage.checkpoint_unsupported');
+  }
+
+  async advanceCheckpoint(
+    _partition: string,
+    _name: string,
+    _ownerEpoch: number,
+    _watermark: number,
+    _observedRows: number,
+    _nowMs: number,
+  ): Promise<boolean> {
+    throw new StorageQueryError('sync.storage.checkpoint_unsupported');
+  }
+
+  async sourceCoverageSeq(
+    partition: string,
+    tables: readonly string[],
+  ): Promise<number> {
+    if (tables.length === 0) return 0;
+    const tableParams = tables.map(() => '?').join(',');
+    const row = await this.#db
+      .prepare(
+        `SELECT max(commit_seq) AS seq FROM sync_changes
+          WHERE partition=? AND tbl IN (${tableParams})`,
+      )
+      .bind(partition, ...tables)
+      .first<{ seq: number | null }>();
+    return row?.seq ?? 0;
+  }
+
+  async hasSourceChangesAbove(
+    partition: string,
+    tables: readonly string[],
+    seq: number,
+  ): Promise<'clean' | 'changed' | 'unverifiable'> {
+    // Read the horizon before the window scan: a horizon past `seq` means the
+    // history that would answer the question is gone, so an empty scan proves
+    // nothing and must not be reported as `clean`.
+    const horizon = await this.getHorizonSeq(partition);
+    if (tables.length === 0) return 'clean';
+    const tableParams = tables.map(() => '?').join(',');
+    const hit = await this.#db
+      .prepare(
+        `SELECT 1 AS hit FROM sync_changes
+          WHERE partition=? AND tbl IN (${tableParams}) AND commit_seq>?
+          LIMIT 1`,
+      )
+      .bind(partition, ...tables, seq)
+      .first<{ hit: number }>();
+    if (hit !== null) return 'changed';
+    return horizon > seq ? 'unverifiable' : 'clean';
   }
 
   async getRow(

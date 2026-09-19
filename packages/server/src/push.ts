@@ -52,7 +52,9 @@ import type {
   StoredPushResult,
   StoredRow,
 } from './storage';
+import { serveGateRefusal } from './storage';
 import { StorageConstraintError } from './storage-errors';
+import { serveNotReadyError } from './readiness';
 import type {
   CommitValidationReader,
   CommitValidator,
@@ -1356,6 +1358,15 @@ export async function processPushOperationsWithTrace(
       );
     }
     await lockPartitionForPush();
+    // RFC 0007: evaluate the gate on this transaction's own connection while
+    // the partition lock is held, so the migration check and the write share
+    // one transaction and no migration can interleave in between.
+    const gate = await tx.readServeGate(schema.version);
+    const refusal = serveGateRefusal(gate, schema.version, ctx.checkpoints);
+    if (refusal !== undefined) {
+      await tx.rollback();
+      throw serveNotReadyError(refusal);
+    }
     // The optimistic lookup above may have raced another delivery. Re-check
     // only after acquiring partition serialization and before any operation
     // read, validation, merge, or staged write. The re-check runs on the

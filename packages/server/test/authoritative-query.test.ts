@@ -17,6 +17,7 @@ import {
   SqliteServerStorage,
 } from '@syncular/server';
 import { pgliteExecutor } from '@syncular/server/pglite';
+import { BunSqliteDatabase } from '@syncular/server/sqlite';
 import {
   projectDocCountQuery,
   searchTasksQuery,
@@ -345,4 +346,106 @@ describe('authoritative query partition rewriting', () => {
       else await db?.close();
     }
   });
+});
+
+describe('RFC 0007 gate on the registered-query path', () => {
+  const SCHEMA_V2 = compileSchema({ ...SCHEMA, version: 2 });
+  const NOW = 1_750_000_000_000;
+
+  async function registeredQuery(storage: ServerStorage) {
+    await storage.ensureSchema(compileSchema(SCHEMA));
+    await seed(storage, 'part-1', 'one');
+    return registerRemoteQuery(
+      {
+        id: 'rfc0007-gate',
+        hasParams: false,
+        sql: 'SELECT id, title FROM tasks ORDER BY id',
+        tables: ['tasks'],
+        relationPlans: [
+          relationPlan('SELECT id, title FROM tasks ORDER BY id'),
+        ],
+        resultColumns: [
+          { name: 'id', type: 'string', nullable: false },
+          { name: 'title', type: 'string', nullable: false },
+        ],
+        bind: () => [],
+        dependencies: () => [{ table: 'tasks' }],
+        coverage: () => [],
+      },
+      {
+        maxRows: 10,
+        auth: { access: 'privileged', authorize: () => true },
+      },
+    );
+  }
+
+  function context(
+    storage: ServerStorage,
+    checkpoints?: readonly {
+      partition: string;
+      name: string;
+      schemaVersion: number;
+    }[],
+  ) {
+    return {
+      schema: SCHEMA,
+      storage,
+      segments: new MemorySegmentStore(),
+      partition: 'part-1',
+      actorId: 'reader',
+      resolveScopes: () => ({}),
+      ...(checkpoints !== undefined ? { checkpoints } : {}),
+    };
+  }
+
+  for (const backend of ['SQLite', 'Postgres'] as const) {
+    test(`${backend}: a migration past the running build refuses the query inside the pinned snapshot`, async () => {
+      const db = backend === 'Postgres' ? await PGlite.create() : undefined;
+      const shared = backend === 'SQLite' ? new BunSqliteDatabase() : undefined;
+      const storage =
+        backend === 'SQLite'
+          ? new SqliteServerStorage(shared as BunSqliteDatabase)
+          : new PostgresServerStorage(pgliteExecutor(db as PGlite));
+      const operation = await registeredQuery(storage);
+      // A second process migrates the shared database past the running build.
+      const other =
+        backend === 'SQLite'
+          ? new SqliteServerStorage(shared as BunSqliteDatabase)
+          : new PostgresServerStorage(pgliteExecutor(db as PGlite));
+      await other.ensureSchema(SCHEMA_V2);
+      await expect(
+        operation.run(context(storage) as never, 'reader', undefined as never),
+      ).rejects.toMatchObject({ code: 'sync.schema_not_ready' });
+      if (shared !== undefined) shared.close();
+      else await db?.close();
+    });
+
+    test(`${backend}: a pending checkpoint is refused unless the process declares it`, async () => {
+      const db = backend === 'Postgres' ? await PGlite.create() : undefined;
+      const storage =
+        backend === 'SQLite'
+          ? new SqliteServerStorage()
+          : new PostgresServerStorage(pgliteExecutor(db as PGlite));
+      const operation = await registeredQuery(storage);
+      await storage.declareCheckpoint(
+        'part-1',
+        'tasks-projection',
+        SCHEMA.version,
+        NOW,
+      );
+      await expect(
+        operation.run(context(storage) as never, 'reader', undefined as never),
+      ).rejects.toMatchObject({ code: 'sync.schema_not_ready' });
+      // The declaring process is allowed to read while it backfills.
+      await operation.run(
+        context(storage, [
+          { partition: 'part-1', name: 'tasks-projection', schemaVersion: 1 },
+        ]) as never,
+        'reader',
+        undefined as never,
+      );
+      if (backend === 'SQLite') (storage as SqliteServerStorage).db.close();
+      else await db?.close();
+    });
+  }
 });

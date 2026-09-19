@@ -227,7 +227,8 @@ export type ServerCapability =
   | 'crdt'
   | 'leases'
   | 'validators'
-  | 'commit-validators';
+  | 'commit-validators'
+  | 'backfill-checkpoints';
 
 /**
  * §6.7 declarative write-validation rule (JSON-able so it crosses the
@@ -378,6 +379,14 @@ export interface ServerInstance {
   installCommitValidator?(spec?: CommitValidatorInstallSpec): Promise<void>;
   /** Make `resolveScopes` throw for every actor (fail-loud paths). */
   setResolverFailing(failing: boolean): Promise<void>;
+
+  /**
+   * `backfill-checkpoints`: declare a backfill checkpoint for the scenario
+   * partition at the running schema version, so a serve path can be observed
+   * refusing while it is incomplete. Present only when the server driver
+   * advertises the `backfill-checkpoints` capability.
+   */
+  declareBackfillCheckpoint?(name: string): Promise<void>;
 
   /**
    * `leases`: put the resolver into a live-authorization outage (§7.3.3) —
