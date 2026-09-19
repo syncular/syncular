@@ -282,7 +282,12 @@ describe('error catalog (§10.2)', () => {
       retryable: false,
       recommendedAction: 'inspectServer',
     });
-    expect(Object.keys(ERROR_CATALOG)).toHaveLength(37);
+    expect(ERROR_CATALOG['sync.schema_not_ready']).toMatchObject({
+      category: 'internal',
+      retryable: true,
+      recommendedAction: 'retryLater',
+    });
+    expect(Object.keys(ERROR_CATALOG)).toHaveLength(38);
   });
 
   test('an ineligible primary-key type fails at compile (§2.4)', () => {
