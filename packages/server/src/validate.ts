@@ -126,12 +126,15 @@ export type CommitValidator = (
 /**
  * Ambient context a validator may consult (§6.7).
  *
- * A validator runs inside the push transaction. The storage serializes
- * authoritative queries behind that transaction, so a validator that calls
- * `queryAuthoritative` waits for the transaction it is already inside and the
- * push never completes. A rule that must read rows belongs in the
- * whole-commit `CommitValidator`, whose reader runs get and scan operations on
- * the same transaction (§6.8).
+ * A validator runs inside the push transaction. On a single-connection
+ * executor (SQLite, PGlite) the storage serializes authoritative queries
+ * behind that transaction, so a validator that calls `queryAuthoritative`
+ * waits for the transaction it is already inside and the push never
+ * completes. On a pool-backed executor (`pg`, `Bun.sql`) the query takes a
+ * second connection and returns committed state without the candidate write.
+ * Either way a rule that must read rows belongs in the whole-commit
+ * `CommitValidator`, whose reader runs get and scan operations on the same
+ * transaction (§6.8).
  */
 export interface ValidateContext {
   /** Host-authenticated actor (§1.1) performing the write. */
@@ -149,10 +152,12 @@ export interface ValidateContext {
  * `sync.constraint_violation` code (a validator SHOULD throw
  * `ValidationRejection` to control the code). MUST NOT mutate the row.
  *
- * The hook runs inside the push transaction and cannot issue an authoritative
- * query: `queryAuthoritative` serializes behind that transaction, so the push
- * never completes. Read rows with the whole-commit `CommitValidator` reader
- * instead (§6.8).
+ * The hook runs inside the push transaction and cannot read candidate rows
+ * from an authoritative query: on a single-connection executor
+ * `queryAuthoritative` serializes behind that transaction and the push never
+ * completes, and on a pool-backed executor it reads committed state without
+ * the candidate write. Read rows with the whole-commit `CommitValidator`
+ * reader instead (§6.8).
  */
 export type Validator = (
   op: ValidateOperation,

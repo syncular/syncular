@@ -574,12 +574,17 @@ export interface ServerStorage {
    * every generated app-table relation with a partition-filtered relation and
    * return rows plus maxCommitSeq from one consistent database snapshot.
    *
-   * The storage serializes this call behind an open transaction. A validator
-   * runs inside the push transaction, so a validator that calls
+   * The storage serializes this call behind an open transaction on a
+   * single-connection executor (SQLite, PGlite). A validator runs inside the
+   * push transaction, so on that executor a validator that calls
    * `queryAuthoritative` waits on the transaction it is already inside and
-   * the push never completes. Read candidate state through the whole-commit
-   * `CommitValidator` reader instead (§6.8). A call made from any other
-   * context waits for the open transaction to finish and then runs.
+   * the push never completes. A pool-backed executor (`pg`, `Bun.sql`) hands
+   * the call a second connection instead: the validator does not deadlock,
+   * but it reads committed state without the candidate write. On either
+   * executor read candidate state through the whole-commit `CommitValidator`
+   * reader (§6.8). A call made from any other context waits for the open
+   * transaction to finish on a single-connection executor, and runs
+   * concurrently on a pool-backed one.
    */
   queryAuthoritative?(
     partition: string,

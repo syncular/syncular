@@ -7,6 +7,7 @@ import {
   type CommitFrame,
   decodeMessage,
   parseRealtimeServerEvent,
+  REALTIME_TAG_ROUND,
   type ScopeMap,
   type SubStartFrame,
 } from '@syncular/core';
@@ -19,6 +20,7 @@ import {
   makeContext,
   pullHeader,
   pushCommit,
+  requestBytes,
   subFrame,
   sync,
   type TestContext,
@@ -652,6 +654,107 @@ describe('host-initiated scope refresh (§8.7)', () => {
     ]);
     expect(a.wire.binaries).toHaveLength(2);
     expect(b.wire.binaries).toHaveLength(1);
+  });
+
+  /** Run a §8.7 round on a connected session (0x01-tagged request bytes). */
+  async function runRound(
+    session: {
+      handleBinary(bytes: Uint8Array): Promise<void> | undefined;
+    },
+    clientId: string,
+  ): Promise<void> {
+    const bytes = requestBytes(
+      [pullHeader(), subFrame('s1', 'tasks', { project_id: ['p1'] }, 0)],
+      clientId,
+    );
+    const tagged = new Uint8Array(bytes.length + 1);
+    tagged[0] = REALTIME_TAG_ROUND;
+    tagged.set(bytes, 1);
+    await session.handleBinary(tagged);
+  }
+
+  test('a late host refresh does not regrant scopes a round-end reload revoked', async () => {
+    const t = makeContext();
+    const allowed = new Map<string, ScopeMap>([
+      ['actor-b', { project_id: ['p1'] }],
+    ]);
+    const gate = Promise.withResolvers<void>();
+    const hostStarted = Promise.withResolvers<void>();
+    let deferHost = false;
+    Object.assign(t.ctx, {
+      resolveScopes: async ({ actorId }: { actorId: string }) => {
+        if (deferHost && actorId === 'actor-b') {
+          deferHost = false;
+          hostStarted.resolve();
+          await gate.promise;
+          // The scopes read before the revocation.
+          return { project_id: ['p1'] };
+        }
+        return allowed.get(actorId) ?? {};
+      },
+    });
+    const hub = makeHub(t);
+    const b = await connectedClient(t, hub, 'actor-b', 'client-b');
+    expect(b.session.registrations).toHaveLength(1);
+
+    // The host revokes actor-b; its resolver call is held open.
+    allowed.set('actor-b', {});
+    deferHost = true;
+    const refresh = hub.refreshScopes('part-1', 'actor-b');
+    await hostStarted.promise;
+
+    // The client's next round ends while the revocation resolver is still
+    // in flight; the round-end reload sees the revoked record and empties
+    // the grants.
+    await runRound(b.session, 'client-b');
+    expect(b.session.registrations).toHaveLength(0);
+
+    // The stale host load finishes last and must not regrant.
+    gate.resolve();
+    await refresh;
+    expect(b.session.registrations).toHaveLength(0);
+  });
+
+  test('a failed host refresh stays revoked over a late round-end reload', async () => {
+    const t = makeContext();
+    const allowed = new Map<string, ScopeMap>([
+      ['actor-b', { project_id: ['p1'] }],
+    ]);
+    const gate = Promise.withResolvers<void>();
+    const roundEndStarted = Promise.withResolvers<void>();
+    let mode: 'live' | 'stale' | 'throw' = 'live';
+    Object.assign(t.ctx, {
+      resolveScopes: async ({ actorId }: { actorId: string }) => {
+        if (actorId !== 'actor-b') return allowed.get(actorId) ?? {};
+        if (mode === 'stale') {
+          mode = 'live';
+          roundEndStarted.resolve();
+          await gate.promise;
+          return { project_id: ['p1'] };
+        }
+        if (mode === 'throw') throw new Error('resolver down');
+        return allowed.get(actorId) ?? {};
+      },
+    });
+    const hub = makeHub(t);
+    const b = await connectedClient(t, hub, 'actor-b', 'client-b');
+    expect(b.session.registrations).toHaveLength(1);
+
+    // A round-end reload is in flight with the pre-revocation scopes.
+    allowed.set('actor-b', {});
+    mode = 'stale';
+    const roundEnd = b.session.refreshRegistrations(false);
+    await roundEndStarted.promise;
+
+    // The host's revocation refresh fails closed to no grants.
+    mode = 'throw';
+    await hub.refreshScopes('part-1', 'actor-b');
+    expect(b.session.registrations).toHaveLength(0);
+
+    // The stale round-end reload resolves last and must not regrant.
+    gate.resolve();
+    await roundEnd;
+    expect(b.session.registrations).toHaveLength(0);
   });
 });
 

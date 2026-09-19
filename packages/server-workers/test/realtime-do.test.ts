@@ -981,3 +981,44 @@ describe('Workers fetch handler realtime route', () => {
     expect(response.status).toBe(426);
   });
 });
+
+describe('socket close cleanup (§8.2)', () => {
+  test('a failed cursor drain still closes the session and drops presence', async () => {
+    const db = await makeDb();
+    let storage: D1ServerStorage | undefined;
+    const ns = new FakeDurableObjectNamespace(db, {
+      syncConfig: (coordinated) => {
+        storage = coordinated;
+        return {
+          schema: SCHEMA,
+          storage: coordinated,
+          resolveScopes: () => ({ list_id: ['*'] }),
+          segments: new MemorySegmentStore(),
+        };
+      },
+    });
+    const { do_, server } = await connect(ns, 'client-1');
+    const session = do_.host.connectedSession(server);
+    if (session === undefined) throw new Error('expected a connected session');
+    if (storage === undefined) throw new Error('expected coordinated storage');
+    storage.advanceClientCursor = async () => {
+      throw new Error('storage offline');
+    };
+    let closed = false;
+    const realClose = session.close.bind(session);
+    session.close = () => {
+      closed = true;
+      realClose();
+    };
+
+    // Queue the ack's cursor write without a hibernatable event draining it,
+    // so the close handler's drain is the one that observes the failure.
+    session.handleMessage(JSON.stringify({ type: 'ack', cursor: 3 }));
+    await expect(do_.closeSocket(server)).rejects.toThrow('storage offline');
+
+    // The failure surfaced, but close still ran (dropping presence) and the
+    // host forgot the session.
+    expect(closed).toBe(true);
+    expect(do_.host.sessionCount).toBe(0);
+  });
+});

@@ -420,10 +420,15 @@ export class SyncularRealtimeHost {
   async webSocketClose(ws: WebSocketLike): Promise<void> {
     const session = this.#sessions.get(ws);
     if (session !== undefined) {
-      // §8.2: a cursor write queued by the last ack may still be in flight.
-      await session.drain();
-      session.close();
-      this.#sessions.delete(ws);
+      try {
+        // §8.2: a cursor write queued by the last ack may still be in flight.
+        // The failure must surface, but it must not skip the cleanup below —
+        // a leaked session keeps its presence and its map entry.
+        await session.drain();
+      } finally {
+        session.close();
+        this.#sessions.delete(ws);
+      }
     }
     this.#swallowHello.delete(ws);
   }
@@ -436,6 +441,11 @@ export class SyncularRealtimeHost {
   /** Test/introspection: the number of live sessions on this DO. */
   get sessionCount(): number {
     return this.#sessions.size;
+  }
+
+  /** Test/introspection: the connected session bound to a socket, if any. */
+  connectedSession(ws: WebSocketLike): RealtimeSession | undefined {
+    return this.#sessions.get(ws);
   }
 }
 

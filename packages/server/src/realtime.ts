@@ -260,6 +260,10 @@ export class RealtimeSession {
   #controlTail: Promise<void> = Promise.resolve();
   /** First control-plane failure not yet surfaced by `drain()`. */
   #controlFailure: unknown = undefined;
+  /** Issue counter for registration refreshes (§8.7). */
+  #registrationGeneration = 0;
+  /** Generation of the most recent refresh whose result was applied. */
+  #registrationApplied = 0;
 
   constructor(
     hub: RealtimeHub,
@@ -611,7 +615,7 @@ export class RealtimeSession {
       finishRound();
       // §8.7 registration at round end: reload the persisted list — it
       // only advances on success, so failed rounds change nothing.
-      await this.#refreshRegistrations();
+      await this.refreshRegistrations(false);
     }
   }
 
@@ -622,22 +626,42 @@ export class RealtimeSession {
     await this.#send(tagged);
   }
 
-  async #refreshRegistrations(): Promise<void> {
-    // §8.6.3: a registration change re-derives the presence grant — capture
-    // the keys before, reconcile after (leaves on lost keys, snapshots on
-    // gained keys).
-    const previousKeys = this.#currentScopeKeys();
+  /**
+   * Reload this connection's registrations and reconcile presence (§8.7).
+   * The round-end refresh and the host-initiated `RealtimeHub.refreshScopes`
+   * both route through here under one per-session generation, so a load that
+   * resolves late can never overwrite a newer result: a slow resolver may
+   * return scopes a later refresh already revoked, and the later refresh
+   * keeps the connection's current grants.
+   *
+   * `failClosed` selects the failure semantics. The round-end refresh keeps
+   * the previous registrations so a failed round changes nothing. The host
+   * refresh empties them so a revoked or unreadable grant stops receiving
+   * deltas immediately; it also survives a newer round-end refresh that
+   * failed, because that round applied nothing.
+   */
+  async refreshRegistrations(failClosed: boolean): Promise<void> {
+    const generation = ++this.#registrationGeneration;
+    let registrations: Registration[];
     try {
-      this.registrations = await this.#hub.loadRegistrations(
+      registrations = await this.#hub.loadRegistrations(
         this.partition,
         this.actorId,
         this.clientId,
       );
     } catch {
-      // Fail closed: an unreadable record or resolver failure leaves the
-      // previous registrations in place; the next round repairs it.
-      return;
+      if (!failClosed) return;
+      // Fail closed (host refresh): drop every grant on the connection.
+      registrations = [];
     }
+    // A newer refresh already applied its result; this late one is stale.
+    if (generation < this.#registrationApplied) return;
+    this.#registrationApplied = generation;
+    // §8.6.3: a registration change re-derives the presence grant — capture
+    // the keys before, reconcile after (leaves on lost keys, snapshots on
+    // gained keys).
+    const previousKeys = this.#currentScopeKeys();
+    this.registrations = registrations;
     this.reconcilePresence(previousKeys);
   }
 
@@ -1143,7 +1167,7 @@ export class RealtimeHub {
    * without waiting for the client to happen to run a round.
    *
    * This differs deliberately from the round-end refresh
-   * (`RealtimeSession.#refreshRegistrations`), which keeps the previous
+   * (`RealtimeSession.refreshRegistrations`), which keeps the previous
    * registrations when the client record or resolver cannot be read so a
    * failed round changes nothing. Here an unresolvable session is emptied:
    * a revoked or unreadable grant must stop receiving deltas rather than live
@@ -1153,21 +1177,10 @@ export class RealtimeHub {
     for (const session of [...this.#sessions]) {
       if (session.partition !== partition) continue;
       if (actorId !== undefined && session.actorId !== actorId) continue;
-      const previousKeys = this.scopeKeysOf(session.registrations);
-      let registrations: Registration[];
-      try {
-        registrations = await this.loadRegistrations(
-          partition,
-          session.actorId,
-          session.clientId,
-        );
-      } catch {
-        // Fail closed (see the doc above): an unreadable client record drops
-        // every grant on the connection.
-        registrations = [];
-      }
-      session.registrations = registrations;
-      session.reconcilePresence(previousKeys);
+      // Fail closed (see the doc above): an unreadable client record drops
+      // every grant on the connection. The session's generation guard keeps
+      // this revocation from being overwritten by a slower round-end reload.
+      await session.refreshRegistrations(true);
     }
   }
 
