@@ -3824,6 +3824,10 @@ A client that has never persisted a marker is treated as already at its
 generated version (fresh install — the tables it just created match the
 running code; nothing to reset).
 
+The marker is written together with the persisted schema descriptor
+(§7.4.6.1) in the same transaction; §7.4.1 and §7.4.6.1 describe the two
+`_syncular_meta` keys that always travel as a pair.
+
 #### 7.4.2 The two triggers, one flow
 
 The reset flow (§7.4.3) fires on either of two triggers; both mean "the
@@ -3967,6 +3971,213 @@ and know when it is safe to render:
 The `upgrading` state is purely client-local; nothing about it crosses
 the wire. A server sees a post-reset client as an ordinary fresh
 bootstrapper at the new `schemaVersion`.
+
+#### 7.4.6 Previous-version context — an opt-in pre-reset cache
+
+The §7.4.3 reset wipes the local tables before the replacement bootstrap
+has restored anything, so an app can observe a moment where its own rows
+are gone. A client MAY retain a **bounded, typed, read-only copy** of the
+pre-reset rows for the duration of that window. This is a **feature flag,
+default off**, and never a security control (§7.4.6.6).
+
+- **Default off.** `previousVersionContext` is absent or has
+  `enabled: false` in the ordinary case. With the flag off a schema bump
+  behaves exactly as §7.4.3 describes, with two exceptions that always
+  run: the descriptor write (§7.4.6.1) and the unconditional orphan
+  sweep (§7.4.6.5). The read surface answers `not-configured`.
+- **Host capability.** The container is a SECOND database file beside the
+  replica, opened through the host's sibling-database capability (a
+  non-creating existence probe plus an open that never creates the file).
+  A host without that capability resolves the feature as not configured
+  rather than pretending to capture.
+- **No wire behaviour.** Nothing about this feature crosses the wire: no
+  frame, field, error code or version change. A server sees a client that
+  used it as an ordinary client, and no state it holds is visible to the
+  server.
+- **Configuration.** `previousVersionContext: { enabled, maxBytes?,
+  maxRows?, maxTables?, maxRowBytes?, maxAgeMs? }`. Every numeric bound
+  MUST be a positive safe integer; a violation is
+  `sync.invalid_request`. `enabled` is a feature flag and MUST NOT be
+  described as a security control.
+
+**7.4.6.1 The persisted schema descriptor — the only source of semantic
+types.** A client persists the semantic local type of every table and
+column in the `_syncular_meta` key `localSchemaDescriptor`:
+
+```json
+{ "v": 1, "version": 4, "tables": [
+  { "name": "tasks", "primaryKey": "id",
+    "columns": [ { "name": "id", "type": "string" },
+                 { "name": "done", "type": "boolean" },
+                 { "name": "meta", "type": "json" } ] } ] }
+```
+
+`type` is the semantic local column type — `string`, `integer`, `float`,
+`boolean`, `bytes`, `json`, `blob_ref`, or `crdt` — as the client's own
+local column mapping defines it, never a SQLite storage class. The
+descriptor MUST be written in the SAME transaction as the persisted
+schema-version marker (§7.4.1) at every site that writes the marker,
+including the same-version open path, so an aware client backfills it for
+a database created by an earlier build without needing a schema bump.
+
+**The descriptor is authoritative and semantic types are NEVER inferred
+from SQLite affinity.** Affinity cannot recover them: `boolean` and
+`integer` are both `INTEGER`; `string`, `json` and `blob_ref` are all
+`TEXT`; `bytes` and `crdt` are both `BLOB`. At reset the capture reads
+the STORED descriptor. If it is absent, if its `version` differs from the
+persisted marker, or if it fails strict decode, the capture MUST be
+refused with `no-previous-descriptor`. There is no fallback and no
+inference. The consequence is normative: a database last opened by a
+build without the descriptor that bumps straight to a new schema gets
+`available: false, reason: 'no-previous-descriptor'`; only after one
+aware boot at the unchanged schema version does a later bump capture.
+
+**7.4.6.2 Storage and the exact read guarantee.** The captured rows live
+in a SECOND database file in the replica's own storage directory, never
+in the replica database and never on the replica's query connection. The
+file holds one non-reserved row table, `syncular_prev_context`, with
+columns `(tbl, row_id, payload)` and a primary key on `(tbl, row_id)`,
+plus one container-local metadata table holding the capture record.
+`payload` is a JSON object keyed by the OLD descriptor's column names,
+encoded per semantic type (`bytes` and `crdt` as base64, `boolean` as a
+JSON boolean, `json` as the TEXT string it is stored as locally, numeric
+types as JSON numbers). Reserved `_sync_*` columns are not copied.
+
+The guarantee this buys is EXACTLY: **the normal replica query connection
+does not attach this file, so no SQL an unaware client runs on that
+connection reaches the container.** It is NOT confidentiality against
+same-origin storage access and NOT protection against native filesystem
+access. The container filename is code-derived and is not persisted in
+the replica; that is data-minimisation hygiene, not a control, because
+same-origin storage access and native filesystem access can enumerate
+names regardless. Nothing about the container is secret.
+
+**7.4.6.3 Bounded capture — measured before materializing,
+all-or-nothing.** The bounds are `maxBytes` (default 8 MiB), `maxRows`
+(default 20,000), `maxTables` (default 32) and `maxRowBytes` (default
+1 MiB). Every bound MUST be measured before any row is materialized, in
+this order, aborting at the first violation:
+
+1. table count, from the same `sqlite_master` discovery the reset uses;
+2. row count per table with an early-abort probe —
+   `SELECT COUNT(*) FROM (SELECT 1 FROM <t> LIMIT maxRows + 1)` — not a
+   full `COUNT(*)`;
+3. a single-row oversized probe before any row is materialized:
+   `SELECT 1 FROM <t> WHERE <sum of length(CAST(<col> AS BLOB)) >
+   maxRowBytes LIMIT 1`;
+4. the byte total over a bounded scan only:
+   `SELECT SUM(...) FROM (SELECT <cols> FROM <t> LIMIT maxRows + 1)`;
+5. the copy itself, in batches, inside the container's own transaction.
+
+`CAST(<col> AS BLOB)` is required so TEXT is measured in bytes, not
+characters. Any violation means capture NOTHING: no partial copy, no
+truncated table, no silent subset, and no container file left behind.
+The refusal is recorded durably as `capture-exceeded-budget` with the
+measured table, row and byte totals — counts only, never row content.
+That durable refusal is what the read surface reports as
+`available: false`.
+
+The capture runs inside the §7.4.3 reset, before the wipe, in this order:
+(1) the orphan sweep (§7.4.6.5), unconditionally; (2) the capture into the
+container file, or the durable refusal when the capture is refused;
+(3) the reset transaction, whose LAST writes are the schema-version marker
+(§7.4.1) and the descriptor (§7.4.6.1). A crash before the reset commits
+leaves the old marker, so the next boot re-runs the whole reset and the
+sweep discards any container: the reset is idempotent by the existing
+marker, with no cross-file transaction and no new idempotency token. The
+§2.1 log-epoch reset is not a schema bump: it performs the orphan sweep
+and captures nothing.
+
+**7.4.6.4 Read surface.** `previousVersionSnapshot({ table, rowIds?,
+limit? })` returns `state: 'previousVersion'` — always, never
+`'complete'` — with `available`, `currentVersion`, the captured rows of
+ONE table decoded back to local values through the stored descriptor,
+and `truncated` for a clipped read. `limit` defaults to 50 and is capped
+at 200; a named table that is not in the capture is
+`sync.invalid_request`. `previousVersionAudit()` returns the pre-reset
+audit described below and `previousVersionDiscard()` the executable
+discard.
+Reads run through the same preflight gate as `query()` (§5.11), and the
+container MUST NOT contribute to `querySnapshot().coverage` — a
+previous-version read never makes coverage complete.
+
+The reasons are a closed set: `not-configured`, `no-previous-descriptor`,
+`capture-exceeded-budget`, `coverage-complete`, `expired`,
+`lease-inactive`, `scope-revoked`. A host bridge MUST strictly decode
+every reply: `available: true` is valid only with a named previous
+version, no `reason`, and rows that are valid SQL values; any other shape
+is an invalid host response. A version-drifted host therefore cannot
+forge an available read.
+
+The pre-reset **compatibility audit** is one `_syncular_meta` record,
+`previousVersionAudit`, written before the wipe:
+`{ v, atMs, fromVersion, toVersion, pending, encodable, truncated,
+incompatible: [{ commitId, table, reason, column? }] }`, where `reason`
+is `unknown-table` or `unknown-column`. It records the commit id, table,
+typed reason and offending column ONLY. It MUST NOT contain operations,
+row values, or any part of the commit envelope: the envelope stays in the
+outbox and, on a terminal drop, goes to the §7.2.1 journal unchanged. It
+is bounded at 200 entries with `truncated: true`. The audit is advisory —
+it drops nothing. The §7.4.4 send-time drop remains the only path that
+removes a commit, and a commit the audit names still replays if it
+encodes.
+
+**7.4.6.5 Discard and lifetime.** The container file and both
+`_syncular_meta` records (the refusal and the audit) are dropped — the
+file removed, the records deleted in one transaction — on ANY of:
+
+- **replacement coverage complete** — the §7.4.5 predicate: every
+  `active` subscription has `cursor >= 0` and no resume token. An empty
+  active set is not completion;
+- **lease stop state or expiry** (§7.3.5) or **scope revocation** (§3.3 —
+  any revoked subscription);
+- **`purgeLocalData`** — always and unconditionally, as a fixed step
+  before any mirror row is touched. The container cannot be expressed as
+  a purge target (its name is not in the running schema and its table is
+  not on the replica), so it is dropped as a step of the purge, not as a
+  compiled selector;
+- **TTL exceeded** — `maxAgeMs`, default 24h, checked at boot and at
+  every read;
+- **orphan/stale** — missing or undecodable metadata, or a container whose
+  `currentVersion` differs from the running generated version, discarded
+  at boot before anything can read it;
+- **explicit `previousVersionDiscard()`** — returns
+  `{ present, discarded }`. A no-op is a success: the discard is
+  idempotent by construction and never fails for absence.
+
+`statusSnapshot()` reports
+`previousVersionContext: { present, createdAtMs? }`, probed without
+creating the file, so a host update or rollback path can require the
+discard.
+
+**7.4.6.6 The downgrade residue — a stated limitation.** The TTL is
+**aware-binary-only hygiene**: it is enforced only by an aware client, at
+boot and at read, and it does **NOT** bound the unaware-rollback residue.
+
+A code rollback to a build without this feature leaves the container file
+in place in BOTH cases. An unaware same-schema rollback runs no reset at
+all, and such a client cannot purge the container (its purge selector
+rejects a name that is not in its schema) and never opens the file. An
+unaware schema-changing rollback is no better: its §7.4.3 reset drops
+replica tables only and cannot see a file it does not know about. This is
+a regression from a container stored in the replica, and it is recorded
+here, not retired.
+
+Consequently **the core has NO unaware purge path for the container:**
+absent an aware discard or the host's own storage GC (which is neither
+prompt nor promised), the residue is **unbounded in time**. This MUST be
+stated as a limitation and never as safe or bounded. Nothing in this
+section is confidentiality or secrecy, and no downgrade is claimed to be
+safe.
+
+The supported downgrade procedure is executable, not declarative: before
+rolling a build back, the host MUST call `previousVersionDiscard()` and
+verify the returned `{ present, discarded }`; a rollback path that cannot
+run it MUST call `purgeLocalData`. A host that enables the feature is
+required to wire this into its own update/rollback path, or to refuse the
+rollback while `statusSnapshot().previousVersionContext.present` is true.
+A manual binary replacement that bypasses that path is unsupported and
+MUST NOT be described as safe or bounded.
 
 ### 7.5 Local observation revisions and atomic reactive reads
 
