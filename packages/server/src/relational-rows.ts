@@ -191,6 +191,31 @@ export function tableColumnNames(table: CompiledTable): string[] {
   ];
 }
 
+/**
+ * The physical column set the row codec and the scope index read for one
+ * configured table. The persisted marker's layouts describe the codec's app
+ * columns only and its version number is the schema's, not the database's, so
+ * a same-version database that is missing a storage-internal meta column (a
+ * version-only bump whose ALTER never ran) still has to be refused: compare
+ * the physical table and fail closed without writing a migration.
+ */
+export function assertPhysicalColumns(
+  table: CompiledTable,
+  existingColumns: ReadonlySet<string>,
+): void {
+  if (existingColumns.size === 0) {
+    throw new Error(
+      `table ${JSON.stringify(table.name)} is missing from the database at the stored schema version — refusing to serve a database whose rows the running code cannot read`,
+    );
+  }
+  for (const name of tableColumnNames(table)) {
+    if (existingColumns.has(name)) continue;
+    throw new Error(
+      `table ${JSON.stringify(table.name)} is missing column ${JSON.stringify(name)} at the stored schema version — refusing to serve a database whose rows the running code cannot read`,
+    );
+  }
+}
+
 /** CREATE TABLE IF NOT EXISTS for one app table. */
 export function createTableDdl(
   table: CompiledTable,

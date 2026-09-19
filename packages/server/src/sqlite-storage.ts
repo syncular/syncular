@@ -15,6 +15,7 @@ import {
 } from './authoritative-query';
 import { syncError } from './errors';
 import {
+  assertPhysicalColumns,
   commitWindowPageSql,
   deleteRowSql,
   deleteSqliteRowScopesSql,
@@ -520,6 +521,19 @@ export class SqliteServerStorage implements ServerStorage {
         throw new Error(
           `stored schema layouts disagree with the configured schema at version ${schema.version} (${mismatch}) — refusing to serve a database whose stored rows the running code cannot decode`,
         );
+      }
+      // The persisted layouts describe the codec's app columns only: read the
+      // physical tables so a same-version database missing a
+      // storage-internal column is refused at startup instead of failing at
+      // the first write.
+      for (const table of schema.tables.values()) {
+        const escapedTableName = table.name.replaceAll('"', '""');
+        const columns = this.db
+          .query<{ name: string }, []>(
+            `PRAGMA table_info("${escapedTableName}")`,
+          )
+          .all();
+        assertPhysicalColumns(table, new Set(columns.map((c) => c.name)));
       }
     }
     if (marker === null || marker.schema_version < schema.version) {

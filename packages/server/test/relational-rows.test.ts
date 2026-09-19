@@ -544,6 +544,49 @@ describe('server-side schema migration (the subset)', () => {
     await db.close();
   });
 
+  test('SQLite rejects a same-version database missing a storage meta column', async () => {
+    const db = new BunSqliteDatabase();
+    const storage = new SqliteServerStorage(db);
+    await storage.ensureSchema(compileSchema(SCHEMA));
+    await upsert(storage, PARTITION, 'tasks', taskRow('t1', 'p1', 'v1 row'));
+
+    // A version-only bump whose storage ALTER never ran: the marker version
+    // and the persisted app-column layouts still match, so the physical
+    // table is the only evidence the row codec cannot read it.
+    db.exec('ALTER TABLE tasks DROP COLUMN _sync_column_versions');
+    const marker = db
+      .query<{ schema_version: number }, []>(
+        'SELECT schema_version FROM sync_schema_meta WHERE id=1',
+      )
+      .get();
+    expect(marker?.schema_version).toBe(1);
+    await expect(
+      new SqliteServerStorage(db).ensureSchema(compileSchema(SCHEMA)),
+    ).rejects.toThrow('table "tasks" is missing column "_sync_column_versions"');
+    // Fail closed before any write and without a migration: the row survives.
+    expect(
+      db.query<{ n: number }, []>('SELECT COUNT(*) AS n FROM tasks').get()?.n,
+    ).toBe(1);
+    db.close();
+  });
+
+  test('Postgres rejects a same-version database missing a storage meta column', async () => {
+    const db = await PGlite.create();
+    const storage = new PostgresServerStorage(pgliteExecutor(db));
+    await storage.ensureSchema(compileSchema(SCHEMA));
+    await upsert(storage, PARTITION, 'tasks', taskRow('t1', 'p1', 'v1 row'));
+
+    await db.exec('ALTER TABLE tasks DROP COLUMN "_sync_column_versions"');
+    await expect(
+      new PostgresServerStorage(pgliteExecutor(db)).ensureSchema(
+        compileSchema(SCHEMA),
+      ),
+    ).rejects.toThrow('table "tasks" is missing column "_sync_column_versions"');
+    const survived = await db.query<{ title: string }>('SELECT title FROM tasks');
+    expect(survived.rows).toEqual([{ title: 'v1 row' }]);
+    await db.close();
+  });
+
   test('Postgres preserves existing rows across a nullable column append', async () => {
     const db = await PGlite.create();
     const storage = new PostgresServerStorage(pgliteExecutor(db));

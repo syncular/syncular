@@ -52,6 +52,7 @@ import {
   type PgQueryable,
 } from './pg-executor';
 import {
+  assertPhysicalColumns,
   commitWindowPageSql,
   deleteRowSql,
   dropTableDdl,
@@ -1045,6 +1046,18 @@ export class PostgresServerStorage implements ServerStorage {
         throw new Error(
           `stored schema layouts disagree with the configured schema at version ${schema.version} (${mismatch}) — refusing to serve a database whose stored rows the running code cannot decode`,
         );
+      }
+      // The persisted layouts describe the codec's app columns only: read the
+      // physical tables so a same-version database missing a
+      // storage-internal column is refused at startup instead of failing at
+      // the first write.
+      for (const table of schema.tables.values()) {
+        const { rows } = await this.#exec.query<{ column_name: string }>(
+          `SELECT column_name FROM information_schema.columns
+           WHERE table_schema = current_schema() AND table_name = $1`,
+          [table.name],
+        );
+        assertPhysicalColumns(table, new Set(rows.map((r) => r.column_name)));
       }
     }
     if (stored === undefined || stored < schema.version) {
