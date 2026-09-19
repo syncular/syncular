@@ -53,8 +53,9 @@ export interface ClientDatabase {
   /**
    * RFC 0005: open (creating on demand) the named sibling database file.
    * `undefined` means the host provides no sibling capability, which makes the
-   * previous-version feature unavailable there. The NAME is code-derived and
-   * MUST NEVER be persisted in the replica database.
+   * previous-version feature unavailable there. The NAME is code-derived and is
+   * not persisted in the replica database (data minimisation; not a security
+   * control).
    */
   openSibling?(name: string): SiblingDatabase | undefined;
   /** RFC 0005: non-creating existence probe for {@link openSibling}. */

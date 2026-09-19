@@ -137,7 +137,10 @@ const MARKER_KEY = 'localSchemaVersion';
 
 /** Correction 2b: a discard must remove the FILE, not merely drop its tables. */
 function expectNoContainerFile(path: string): void {
-  expect(existsSync(containerPath(path))).toBe(false);
+  const container = containerPath(path);
+  expect(existsSync(container)).toBe(false);
+  expect(existsSync(`${container}-wal`)).toBe(false);
+  expect(existsSync(`${container}-shm`)).toBe(false);
 }
 
 function containerTableCount(path: string): number {

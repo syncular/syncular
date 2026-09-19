@@ -14,8 +14,10 @@
  * does not attach this file, so no SQL it runs can reach the container. It is
  * NOT protection against arbitrary same-origin access and NOT protection
  * against native filesystem access. The filename is a code constant derived at
- * runtime and MUST NEVER be persisted in the replica database — a name
- * recoverable from the replica would hand an unaware binary the read path back.
+ * runtime and is not persisted in the replica database. That is data
+ * minimisation hygiene, NOT a control: same-origin storage access and native
+ * filesystem access can enumerate names regardless, so nothing is claimed on
+ * its strength.
  *
  * Two further rules shape the implementation:
  *
@@ -56,8 +58,8 @@ const PREVIOUS_VERSION_CONTEXT_KEY = 'previousVersionContext';
 const PREVIOUS_VERSION_AUDIT_KEY = 'previousVersionAudit';
 
 /**
- * RFC 0005: the code-derived sibling database filename. Never persisted in the
- * replica database.
+ * RFC 0005: the code-derived sibling database filename. Kept out of the replica
+ * as data minimisation, not as a security control.
  */
 export const PREVIOUS_VERSION_CONTAINER_NAME = 'prev-context';
 
@@ -82,7 +84,9 @@ export const PREVIOUS_VERSION_MAX_LIMIT = 200;
 /**
  * Every reason the read surface can name. `security-inactive` is absent because
  * `#requireActive()` throws before a read; `purged` and post-TTL are absent
- * because a discard removes the records, so no durable state can name them.
+ * because a discard removes the records, so no durable state can name them;
+ * `namespace-collision` is absent because the container is a separate file and
+ * cannot collide with a replica table.
  */
 export type PreviousVersionReason =
   | 'not-configured'
