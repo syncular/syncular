@@ -928,3 +928,549 @@ pub fn discard_previous_version(
         discarded: present,
     })
 }
+#[cfg(test)]
+mod tests {
+    //! RFC 0005 phase-1 tests: descriptor round-trip and strict decode, the
+    //! container in the sibling FILE with readable typed rows, every budget
+    //! aborting with no file left, the no-descriptor refusal, and a discard
+    //! that removes the PATH (read directly from storage, never through the
+    //! feature's own read API).
+
+    use std::path::{Path, PathBuf};
+
+    use serde_json::json;
+
+    use super::*;
+    use crate::api::{ClientLimits, Mutation};
+    use crate::client::SyncClient;
+    use crate::schema::parse_schema_json;
+
+    /// Removes every temp file the test created, so the container assertion
+    /// "the path is gone" cannot pass because a later case reused the name.
+    struct TempFiles {
+        paths: Vec<PathBuf>,
+    }
+
+    impl TempFiles {
+        fn new(label: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "syncular-prev-context-{label}-{}",
+                uuid::Uuid::new_v4()
+            ));
+            let paths = vec![
+                path.clone(),
+                PathBuf::from(previous_version_container_path(
+                    path.to_str().expect("utf-8 temp path"),
+                )),
+            ];
+            Self { paths }
+        }
+
+        fn replica(&self) -> &Path {
+            &self.paths[0]
+        }
+    }
+
+    impl Drop for TempFiles {
+        fn drop(&mut self) {
+            for path in &self.paths {
+                let _ = std::fs::remove_file(path);
+                let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+                let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+            }
+        }
+    }
+
+    fn schema_json(version: i32) -> Value {
+        json!({
+            "version": version,
+            "tables": [{
+                "name": "things",
+                "primaryKey": "id",
+                "columns": [
+                    { "name": "id", "type": "string", "nullable": false },
+                    { "name": "project_id", "type": "string", "nullable": false },
+                    { "name": "s", "type": "string", "nullable": true },
+                    { "name": "i", "type": "integer", "nullable": true },
+                    { "name": "f", "type": "float", "nullable": true },
+                    { "name": "b", "type": "boolean", "nullable": true },
+                    { "name": "j", "type": "json", "nullable": true },
+                    { "name": "by", "type": "bytes", "nullable": true },
+                    { "name": "cr", "type": "crdt", "nullable": true },
+                    { "name": "br", "type": "blob_ref", "nullable": true },
+                    { "name": "meta", "type": "string", "nullable": true }
+                ],
+                "scopes": []
+            }, {
+                "name": "notes",
+                "primaryKey": "id",
+                "columns": [
+                    { "name": "id", "type": "string", "nullable": false },
+                    { "name": "body", "type": "string", "nullable": true }
+                ],
+                "scopes": []
+            }]
+        })
+    }
+
+    fn schema(version: i32) -> ClientSchema {
+        parse_schema_json(&schema_json(version)).expect("valid test schema")
+    }
+
+    /// The local DDL the client writes: bare column names, no declared type.
+    fn seed_replica(path: &Path, rows: i64) {
+        let replica = Connection::open(path).expect("open replica");
+        replica
+            .execute_batch(
+                "CREATE TABLE _syncular_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 CREATE TABLE things (id, project_id, s, i, f, b, j, by, cr, br, meta);
+                 CREATE TABLE notes (id, body);",
+            )
+            .expect("create local tables");
+        for index in 0..rows {
+            replica
+                .execute(
+                    "INSERT INTO things(rowid, id, project_id, s, i, f, b, j, by, cr, br, meta)
+                       VALUES (?1, ?2, 'p1', 'hello', 7, 1.5, 1, '{\"a\":1}',
+                               x'010203', x'0908', 'blob:xyz', 'm1')",
+                    rusqlite::params![index + 1, format!("r{}", index + 1)],
+                )
+                .expect("insert row");
+        }
+        replica
+            .execute(
+                "INSERT INTO notes(id, body) VALUES ('n1', 'note')",
+                [],
+            )
+            .expect("insert note");
+        // D1: the descriptor the bump's capture reads, exactly as the client
+        // writes it.
+        set_local_schema_descriptor(&replica, &schema(1));
+    }
+
+    fn descriptor() -> LocalSchemaDescriptor {
+        build_local_schema_descriptor(&schema(1))
+    }
+
+    #[test]
+    fn previous_version_descriptor_round_trips_and_rejects_unknown_shapes() {
+        let conn = Connection::open_in_memory().expect("open in-memory");
+        conn.execute_batch("CREATE TABLE _syncular_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            .expect("create meta");
+        let schema = schema(4);
+        set_local_schema_descriptor(&conn, &schema);
+
+        let stored = meta_get(&conn, LOCAL_SCHEMA_DESCRIPTOR_KEY).expect("descriptor written");
+        let parsed: Value = serde_json::from_str(&stored).expect("descriptor is JSON");
+        assert_eq!(parsed.as_object().expect("object").len(), 3, "{stored}");
+        assert_eq!(parsed["v"], json!(1));
+        assert_eq!(parsed["version"], json!(4));
+        let tables = parsed["tables"].as_array().expect("tables array");
+        assert_eq!(tables.len(), 2);
+        assert_eq!(tables[0]["name"], json!("things"));
+        assert_eq!(tables[0]["primaryKey"], json!("id"));
+        assert_eq!(
+            tables[0]["columns"][1],
+            json!({ "name": "project_id", "type": "string" })
+        );
+        assert_eq!(
+            tables[0]["columns"][5],
+            json!({ "name": "b", "type": "boolean" })
+        );
+        assert_eq!(
+            tables[0]["columns"][7],
+            json!({ "name": "by", "type": "bytes" })
+        );
+
+        // Round trip through the strict decoder.
+        assert_eq!(
+            decode_local_schema_descriptor(&stored).expect("strict decode"),
+            build_local_schema_descriptor(&schema)
+        );
+        assert_eq!(
+            load_local_schema_descriptor(&conn).expect("loaded"),
+            build_local_schema_descriptor(&schema)
+        );
+
+        // Strict decode: an unknown shape is corruption, never a best guess.
+        for raw in [
+            r#"{"v":1,"version":4,"tables":[],"extra":1}"#,
+            r#"{"v":2,"version":4,"tables":[]}"#,
+            r#"{"v":1,"version":4}"#,
+            r#"{"v":1,"version":-1,"tables":[]}"#,
+            r#"{"v":1,"version":4,"tables":{}}"#,
+            r#"{"v":1,"version":4,"tables":[{"name":"t","primaryKey":"id"}]}"#,
+            r#"{"v":1,"version":4,"tables":[{"name":"t","primaryKey":"id","columns":[{"name":"a","type":"nope"}]}]}"#,
+            r#"{"v":1,"version":4,"tables":[{"name":"t","primaryKey":"id","columns":[]}],"x":0}"#,
+            "not json",
+        ] {
+            assert!(
+                decode_local_schema_descriptor(raw).is_err(),
+                "must reject {raw}"
+            );
+        }
+
+        // A corrupt stored value reads as absent (the reset then refuses).
+        meta_set(&conn, LOCAL_SCHEMA_DESCRIPTOR_KEY, "{broken");
+        assert_eq!(load_local_schema_descriptor(&conn), None);
+    }
+
+    #[test]
+    fn previous_version_capture_writes_sibling_container_with_readable_rows() {
+        let temp = TempFiles::new("capture");
+        let replica_path = temp.replica().to_str().expect("utf-8 path").to_owned();
+        seed_replica(temp.replica(), 2);
+        let replica = Connection::open(temp.replica()).expect("open replica");
+
+        let outcome = capture_previous_version_from_replica(
+            &replica,
+            &replica_path,
+            1,
+            2,
+            &PreviousVersionContextConfig::default(),
+            1_700_000_000_000,
+        )
+        .expect("capture");
+        let CaptureOutcome::Captured(measurement) = outcome else {
+            panic!("expected a capture, got {outcome:?}");
+        };
+        assert_eq!(measurement.tables, 2);
+        assert_eq!(measurement.rows, 3);
+        assert!(measurement.bytes > 0);
+
+        // The container is a SEPARATE file, and the replica cannot see it.
+        let container_path = previous_version_container_path(&replica_path);
+        assert!(Path::new(&container_path).exists());
+        let visible: i64 = replica
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                rusqlite::params![CONTAINER_TABLE],
+                |row| row.get(0),
+            )
+            .expect("count replica tables");
+        assert_eq!(visible, 0);
+
+        let container = Connection::open(&container_path).expect("open container");
+        let record = read_previous_version_container(&container)
+            .expect("read record")
+            .expect("record present");
+        assert_eq!(record.previous_version, 1);
+        assert_eq!(record.current_version, 2);
+        assert_eq!(record.rows, 3);
+        assert_eq!(record.bytes, measurement.bytes);        assert_eq!(record.created_at_ms, 1_700_000_000_000);
+        assert_eq!(record.tables.len(), 2);
+        assert_eq!(record.tables[0].columns.len(), 11);
+
+        let table = record.table("things").expect("things in the record");
+        let (rows, truncated) = read_previous_version_rows(&container, table, &[], 50)
+            .expect("read rows");
+        assert!(!truncated);
+        assert_eq!(rows.len(), 2);
+        let row = &rows[0];
+        assert_eq!(row["id"], json!("r1"));
+        assert_eq!(row["s"], json!("hello"));
+        assert_eq!(row["i"], json!(7));
+        assert_eq!(row["f"], json!(1.5));
+        assert_eq!(row["b"], json!(true));
+        assert_eq!(row["j"], json!("{\"a\":1}"));
+        assert_eq!(row["br"], json!("blob:xyz"));
+        assert_eq!(row["by"], json!({ "$bytes": "010203" }));
+        assert_eq!(row["cr"], json!({ "$bytes": "0908" }));
+        assert!(!row.contains_key("_syncular_version"));
+        assert!(!row.contains_key("_sync_version"));
+
+        // Row selection and the `limit + 1` truncation probe.
+        let (selected, _) =
+            read_previous_version_rows(&container, table, &["r2".to_owned()], 50).expect("select");
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0]["id"], json!("r2"));
+        let (missing, _) =
+            read_previous_version_rows(&container, table, &["absent".to_owned()], 50)
+                .expect("select missing");
+        assert!(missing.is_empty());
+        let (limited, truncated) =
+            read_previous_version_rows(&container, table, &[], 0).expect("limit 0");
+        assert!(limited.is_empty());
+        assert!(truncated);
+    }
+
+    #[test]
+    fn previous_version_each_budget_refuses_and_leaves_no_file() {
+        let temp = TempFiles::new("budget");
+        let replica_path = temp.replica().to_str().expect("utf-8 path").to_owned();
+        seed_replica(temp.replica(), 2);
+        let replica = Connection::open(temp.replica()).expect("open replica");
+        let container_path = previous_version_container_path(&replica_path);
+
+        let cases = [
+            (
+                "maxTables",
+                PreviousVersionContextConfig {
+                    max_tables: 1,
+                    ..Default::default()
+                },
+                0,
+                false,
+            ),
+            (
+                "maxRows",
+                PreviousVersionContextConfig {
+                    max_rows: 1,
+                    ..Default::default()
+                },
+                2,
+                false,
+            ),
+            (
+                "maxBytes",
+                PreviousVersionContextConfig {
+                    max_bytes: 1,
+                    ..Default::default()
+                },
+                3,
+                true,
+            ),
+            (
+                "maxRowBytes",
+                PreviousVersionContextConfig {
+                    max_row_bytes: 1,
+                    ..Default::default()
+                },
+                3,
+                false,
+            ),
+        ];
+        for (label, config, expected_rows, bytes_measured) in cases {
+            let outcome = capture_previous_version_from_replica(
+                &replica, &replica_path, 1, 2, &config, 1,
+            )
+            .unwrap_or_else(|error| panic!("{label}: {error}"));
+            let CaptureOutcome::Refused {
+                reason,
+                measurement,
+            } = outcome
+            else {
+                panic!("{label}: expected a refusal, got {outcome:?}");
+            };
+            assert_eq!(
+                reason,
+                PreviousVersionRefusalReason::CaptureExceededBudget,
+                "{label}"
+            );
+            assert_eq!(measurement.tables, 2, "{label}");
+            assert_eq!(measurement.rows, expected_rows, "{label}");
+            if bytes_measured {
+                assert!(measurement.bytes > 1, "{label}");
+            } else {
+                assert_eq!(measurement.bytes, 0, "{label}");
+            }
+            // All-or-nothing: no partial copy, and no file at all.
+            assert!(!Path::new(&container_path).exists(), "{label}");
+            let refusal = meta_get(&replica, PREVIOUS_VERSION_CONTEXT_KEY)
+                .unwrap_or_else(|| panic!("{label}: refusal recorded"));
+            assert!(refusal.contains("capture-exceeded-budget"), "{refusal}");
+        }
+    }
+
+    #[test]
+    fn previous_version_missing_or_stale_descriptor_refuses_without_a_file() {
+        let temp = TempFiles::new("no-descriptor");
+        let replica_path = temp.replica().to_str().expect("utf-8 path").to_owned();
+        seed_replica(temp.replica(), 1);
+        let replica = Connection::open(temp.replica()).expect("open replica");
+        let container_path = previous_version_container_path(&replica_path);
+
+        // No descriptor at all: a database last opened by an unaware binary.
+        meta_delete(&replica, LOCAL_SCHEMA_DESCRIPTOR_KEY);
+        let outcome = capture_previous_version_from_replica(
+            &replica,
+            &replica_path,
+            1,
+            2,
+            &PreviousVersionContextConfig::default(),
+            1,
+        )
+        .expect("capture");
+        assert_eq!(
+            outcome,
+            CaptureOutcome::Refused {
+                reason: PreviousVersionRefusalReason::NoPreviousDescriptor,
+                measurement: CaptureMeasurement::default(),
+            }
+        );
+        assert!(!Path::new(&container_path).exists());
+        let refusal = meta_get(&replica, PREVIOUS_VERSION_CONTEXT_KEY).expect("refusal");
+        assert!(refusal.contains("no-previous-descriptor"), "{refusal}");
+
+        // A descriptor for a DIFFERENT version is treated exactly the same.
+        meta_set(
+            &replica,
+            LOCAL_SCHEMA_DESCRIPTOR_KEY,
+            &encode_local_schema_descriptor(&descriptor()),
+        );
+        let outcome = capture_previous_version_from_replica(
+            &replica,
+            &replica_path,
+            3,
+            4,
+            &PreviousVersionContextConfig::default(),
+            1,
+        )
+        .expect("capture");
+        assert!(matches!(
+            outcome,
+            CaptureOutcome::Refused {
+                reason: PreviousVersionRefusalReason::NoPreviousDescriptor,
+                ..
+            }
+        ));
+        assert!(!Path::new(&container_path).exists());
+    }
+
+    #[test]
+    fn previous_version_discard_removes_the_container_path() {
+        let temp = TempFiles::new("discard");
+        let replica_path = temp.replica().to_str().expect("utf-8 path").to_owned();
+        seed_replica(temp.replica(), 1);
+        let replica = Connection::open(temp.replica()).expect("open replica");
+        let container_path = previous_version_container_path(&replica_path);
+
+        let outcome = capture_previous_version_from_replica(
+            &replica,
+            &replica_path,
+            1,
+            2,
+            &PreviousVersionContextConfig::default(),
+            1,
+        )
+        .expect("capture");
+        assert!(matches!(outcome, CaptureOutcome::Captured(_)));
+        assert!(Path::new(&container_path).exists());
+        meta_set(&replica, PREVIOUS_VERSION_AUDIT_KEY, "{\"v\":1}");
+
+        let discarded = discard_previous_version(&replica, &replica_path).expect("discard");
+        assert!(discarded.present);
+        assert!(discarded.discarded);
+        // The PATH is gone — not merely the tables inside it.
+        assert!(!Path::new(&container_path).exists());
+        assert!(!Path::new(&format!("{container_path}-wal")).exists());
+        assert!(!Path::new(&format!("{container_path}-shm")).exists());
+        assert_eq!(meta_get(&replica, PREVIOUS_VERSION_CONTEXT_KEY), None);
+        assert_eq!(meta_get(&replica, PREVIOUS_VERSION_AUDIT_KEY), None);
+
+        // A no-op discard succeeds (the RFC 0006 key-loss contract needs it).
+        let again = discard_previous_version(&replica, &replica_path).expect("discard again");
+        assert!(!again.present);
+        assert!(!again.discarded);
+    }
+
+    #[test]
+    fn previous_version_client_writes_descriptor_and_captures_on_bump() {
+        let temp = TempFiles::new("client");
+        let replica_path = temp.replica().to_str().expect("utf-8 path").to_owned();
+        let container_path = previous_version_container_path(&replica_path);
+
+        // Fresh install at v1: the descriptor is written beside the marker and
+        // the feature (default off) creates no container.
+        {
+            let mut client =
+                SyncClient::open_path("pvc".to_owned(), &schema_json(1), ClientLimits::default(), &replica_path)
+                    .expect("open v1");
+            client
+                .mutate(vec![Mutation::Upsert {
+                    table: "things".to_owned(),
+                    values: Map::from_iter([
+                        ("id".to_owned(), json!("r1")),
+                        ("project_id".to_owned(), json!("p1")),
+                        ("s".to_owned(), json!("hello")),
+                    ]),
+                    base_version: None,
+                }])
+                .expect("seed a local row");
+        }
+        {
+            let inspect = Connection::open(&replica_path).expect("inspect v1");
+            let descriptor = load_local_schema_descriptor(&inspect).expect("descriptor after install");
+            assert_eq!(descriptor.version, 1);
+            assert_eq!(descriptor.tables.len(), 2);
+            assert_eq!(descriptor.table("things").expect("things").columns.len(), 11);
+        }
+        assert!(!Path::new(&container_path).exists());
+
+        // A same-version open backfills a descriptor an unaware binary never wrote.
+        {
+            let inspect = Connection::open(&replica_path).expect("inspect");
+            meta_delete(&inspect, LOCAL_SCHEMA_DESCRIPTOR_KEY);
+        }
+        {
+            let _client =
+                SyncClient::open_path("pvc".to_owned(), &schema_json(1), ClientLimits::default(), &replica_path)
+                    .expect("reopen v1");
+        }
+        {
+            let inspect = Connection::open(&replica_path).expect("inspect v1 again");
+            assert_eq!(
+                load_local_schema_descriptor(&inspect).expect("backfilled").version,
+                1
+            );
+        }
+
+        // The bump captures the v1 row into the sibling file, and the replica
+        // connection still cannot see the container table.
+        {
+            let limits = ClientLimits {
+                previous_version_context: Some(PreviousVersionContextConfig {
+                    enabled: true,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            SyncClient::open_path("pvc".to_owned(), &schema_json(2), limits, &replica_path)
+                .expect("bump to v2");
+        }
+        assert!(Path::new(&container_path).exists());
+        {
+            let inspect = Connection::open(&replica_path).expect("inspect v2");
+            assert_eq!(
+                load_local_schema_descriptor(&inspect).expect("descriptor after bump").version,
+                2
+            );
+            assert_eq!(
+                inspect
+                    .query_row(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE name = ?1",
+                        rusqlite::params![CONTAINER_TABLE],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .expect("replica table count"),
+                0
+            );
+        }
+        {
+            let container = Connection::open(&container_path).expect("open container");
+            let record = read_previous_version_container(&container)
+                .expect("read record")
+                .expect("captured record");
+            assert_eq!(record.previous_version, 1);
+            assert_eq!(record.current_version, 2);
+            assert_eq!(record.rows, 1);
+            let (rows, _) = read_previous_version_rows(
+                &container,
+                record.table("things").expect("things"),
+                &[],
+                50,
+            )
+            .expect("read rows");
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0]["s"], json!("hello"));
+        }
+
+        // Discard removes the path and both metadata records.
+        {
+            let inspect = Connection::open(&replica_path).expect("inspect v2");
+            let outcome = discard_previous_version(&inspect, &replica_path).expect("discard");
+            assert!(outcome.present && outcome.discarded);
+        }
+        assert!(!Path::new(&container_path).exists());
+    }
+}
