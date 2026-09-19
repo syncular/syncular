@@ -43,8 +43,8 @@ use crate::api::{
 use crate::bench::{Phase, Recorder};
 use crate::schema::{parse_schema_json, ClientSchema, FtsIndexSchema, TableSchema};
 use crate::previous_version::{
-    capture_previous_version_from_replica, set_local_schema_descriptor,
-    sweep_previous_version_container, PreviousVersionContextConfig,
+    capture_previous_version_from_replica, reconcile_previous_version_at_boot,
+    set_local_schema_descriptor, sweep_previous_version_container, PreviousVersionContextConfig,
 };
 use crate::transport::{BlobDownload, BlobUploadGrant, SegmentRequest, Transport, TransportError};
 use crate::values::{
@@ -64,7 +64,7 @@ const ACCEPT_SIGNED_URLS: u8 = 1 << 3;
 const MAX_DIAGNOSTIC_DOMAINS: usize = 256;
 
 /// §7.4.1 persisted local schema-version marker (`_syncular_meta` key).
-const LOCAL_SCHEMA_VERSION_KEY: &str = "localSchemaVersion";
+pub(crate) const LOCAL_SCHEMA_VERSION_KEY: &str = "localSchemaVersion";
 const LOCAL_REVISION_KEY: &str = "localRevision";
 const CLIENT_ID_KEY: &str = "clientId";
 const LEASE_STATE_KEY: &str = "leaseState";
@@ -5157,6 +5157,12 @@ impl SyncClient {
             }
             Some(_) => client.run_schema_reset()?,
         }
+        // RFC 0005 D9: the reset sweep cannot see a container whose capture
+        // committed in its OWN file while the replica's savepoint never
+        // released — a crash at that seam leaves a container beside a matching
+        // OLD marker, and the next open at that version runs no reset. Discard
+        // it before anything can read it. No-op when no container exists.
+        client.reconcile_previous_version_at_boot()?;
         client.clear_satisfied_persisted_schema_floor();
         client.prune_unknown_subscriptions()?;
         if marker == Some(client.schema.version) && !client.outbox.is_empty() {
@@ -6174,6 +6180,16 @@ impl SyncClient {
         self.schema_floor = None;
         self.stopped = false;
         self.delete_meta(SCHEMA_FLOOR_KEY);
+    }
+
+    /// RFC 0005 D9: discard an orphan or stale container at boot. The reset
+    /// path already swept it; this covers a same-version or fresh-install open,
+    /// which runs no reset and therefore no sweep.
+    fn reconcile_previous_version_at_boot(&self) -> Result<(), String> {
+        let Some(replica_path) = self.previous_version_replica_path() else {
+            return Ok(());
+        };
+        reconcile_previous_version_at_boot(&self.conn, &replica_path, self.schema.version)
     }
 
     /// RFC 0005 D3: the sibling container path, or `None` when the replica has

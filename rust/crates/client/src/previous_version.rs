@@ -821,6 +821,10 @@ fn remove_previous_version_files(path: &str) {
 /// removes the file, and clears a durable refusal recorded for it, so a
 /// crash-interrupted reset cannot leave a container beside a matching marker.
 /// A no-op when no container file exists.
+///
+/// Everything here is best-effort: the file is the thing being deleted, so a
+/// torn or unreadable container must not refuse its own removal and must not
+/// block the client's open.
 pub fn sweep_previous_version_container(
     replica: &Connection,
     replica_path: &str,
@@ -829,10 +833,10 @@ pub fn sweep_previous_version_container(
     if !std::path::Path::new(&path).exists() {
         return Ok(());
     }
-    let container = Connection::open(&path)
-        .map_err(|error| format!("open previous-version container {path:?}: {error}"))?;
-    drop_previous_version_container(&container)?;
-    let _ = container.close();
+    if let Ok(container) = Connection::open(&path) {
+        let _ = drop_previous_version_container(&container);
+        let _ = container.close();
+    }
     remove_previous_version_files(&path);
     meta_delete(replica, PREVIOUS_VERSION_CONTEXT_KEY);
     Ok(())
@@ -906,8 +910,47 @@ pub struct PreviousVersionDiscardOutcome {
     pub discarded: bool,
 }
 
+/// D9 boot hygiene: a container whose metadata is missing/undecodable, or
+/// whose recorded `currentVersion` is not the running generated schema version,
+/// is discarded before anything can read it.
+///
+/// This is the ONE gap the reset sweep cannot see. The capture commits in the
+/// container's OWN transaction, independent of the replica's savepoint, so a
+/// crash after that commit but before the replica commits leaves a container
+/// whose `currentVersion` is the NEW schema beside the OLD marker. The next
+/// open at the old schema version takes the same-version branch — no reset, no
+/// sweep — and would otherwise serve that container. Idempotent: no container
+/// file means no-op.
+pub fn reconcile_previous_version_at_boot(
+    replica: &Connection,
+    replica_path: &str,
+    current_version: i32,
+) -> Result<(), String> {
+    let path = previous_version_container_path(replica_path);
+    if !std::path::Path::new(&path).exists() {
+        return Ok(());
+    }
+    let record = match Connection::open(&path) {
+        Ok(container) => {
+            let record = read_previous_version_container(&container).unwrap_or(None);
+            let _ = container.close();
+            record
+        }
+        // Unreadable is the same decision as unknown metadata: discard it.
+        Err(_) => None,
+    };
+    if record.is_some_and(|record| record.current_version == current_version) {
+        return Ok(());
+    }
+    discard_previous_version(replica, replica_path)?;
+    Ok(())
+}
+
 /// D7/D9/A2: the executable discard — drop the container and both metadata
-/// records and remove the FILE. Idempotent: a no-op succeeds.
+/// records and remove the FILE. Idempotent: a no-op succeeds, and a container
+/// that cannot even be opened (torn file) is still removed and reported as
+/// discarded rather than failing. This is the RFC 0006 key-loss contract: a
+/// throw here would block reactivation while the plaintext is gone.
 pub fn discard_previous_version(
     replica: &Connection,
     replica_path: &str,
@@ -915,10 +958,10 @@ pub fn discard_previous_version(
     let path = previous_version_container_path(replica_path);
     let mut present = std::path::Path::new(&path).exists();
     if present {
-        let container = Connection::open(&path)
-            .map_err(|error| format!("open previous-version container {path:?}: {error}"))?;
-        drop_previous_version_container(&container)?;
-        let _ = container.close();
+        if let Ok(container) = Connection::open(&path) {
+            let _ = drop_previous_version_container(&container);
+            let _ = container.close();
+        }
         remove_previous_version_files(&path);
     }
     if meta_get(replica, PREVIOUS_VERSION_CONTEXT_KEY).is_some()
@@ -947,7 +990,7 @@ mod tests {
 
     use super::*;
     use crate::api::{ClientLimits, Mutation};
-    use crate::client::SyncClient;
+    use crate::client::{SyncClient, LOCAL_SCHEMA_VERSION_KEY};
     use crate::schema::parse_schema_json;
 
     /// Removes every temp file the test created, so the container assertion
@@ -1049,8 +1092,9 @@ mod tests {
             )
             .expect("insert note");
         // D1: the descriptor the bump's capture reads, exactly as the client
-        // writes it.
+        // writes it — plus the §7.4.1 marker of the version that wrote it.
         set_local_schema_descriptor(&replica, &schema(1));
+        meta_set(&replica, LOCAL_SCHEMA_VERSION_KEY, "1");
     }
 
     fn descriptor() -> LocalSchemaDescriptor {
@@ -1367,6 +1411,136 @@ mod tests {
         let again = discard_previous_version(&replica, &replica_path).expect("discard again");
         assert!(!again.present);
         assert!(!again.discarded);
+    }
+
+    #[test]
+    fn previous_version_torn_container_never_blocks_sweep_discard_or_open() {
+        let temp = TempFiles::new("torn");
+        let replica_path = temp.replica().to_str().expect("utf-8 path").to_owned();
+        let container_path = previous_version_container_path(&replica_path);
+
+        // FIX 1: garbage at the sibling path makes the connection open but
+        // every statement fail with "file is not a database".
+        std::fs::write(&container_path, b"not a sqlite database").expect("write garbage");
+        let replica = Connection::open(temp.replica()).expect("open replica");
+
+        // The sweep must still remove it, and must not error.
+        sweep_previous_version_container(&replica, &replica_path)
+            .expect("a torn container must not fail the sweep");
+        assert!(!Path::new(&container_path).exists());
+
+        // The discard must report it and still remove it.
+        std::fs::write(&container_path, b"not a sqlite database").expect("write garbage again");
+        let discarded = discard_previous_version(&replica, &replica_path)
+            .expect("a torn container must not fail the discard");
+        assert!(discarded.present);
+        assert!(discarded.discarded);
+        assert!(!Path::new(&container_path).exists());
+
+        // And a client opening over a torn container must still open, sweeping
+        // it on the bump path.
+        std::fs::write(&container_path, b"not a sqlite database").expect("write garbage a third time");
+        seed_replica(temp.replica(), 1);
+        {
+            SyncClient::open_path(
+                "pvc".to_owned(),
+                &schema_json(2),
+                ClientLimits::default(),
+                &replica_path,
+            )
+            .expect("a torn container must not block the client open");
+        }
+        assert!(!Path::new(&container_path).exists());
+    }
+
+    #[test]
+    fn previous_version_same_version_open_discards_a_container_it_did_not_bump_to() {
+        // Reproduces the exact cross-file interleaving: the replica savepoint
+        // opens (marker still 1), the sweep runs, the container's OWN
+        // transaction commits {previousVersion: 1, currentVersion: 2}, and the
+        // process dies before the replica savepoint releases. The next open is
+        // at the OLD schema version, so it runs no reset and no sweep.
+        let temp = TempFiles::new("same-version-orphan");
+        let replica_path = temp.replica().to_str().expect("utf-8 path").to_owned();
+        seed_replica(temp.replica(), 1);
+        let replica = Connection::open(temp.replica()).expect("open replica");
+        let container_path = previous_version_container_path(&replica_path);
+
+        let outcome = capture_previous_version_from_replica(
+            &replica,
+            &replica_path,
+            1,
+            2,
+            &PreviousVersionContextConfig::default(),
+            1,
+        )
+        .expect("capture");
+        assert!(matches!(outcome, CaptureOutcome::Captured(_)));
+        assert!(Path::new(&container_path).exists());
+        // The replica never committed: the marker is still 1.
+        assert_eq!(
+            meta_get(&replica, LOCAL_SCHEMA_VERSION_KEY).as_deref(),
+            Some("1")
+        );
+        drop(replica);
+
+        // Opening at the SAME version (1) must discard the stale container
+        // before any read surface can see it, and open normally.
+        {
+            let client = SyncClient::open_path(
+                "pvc".to_owned(),
+                &schema_json(1),
+                ClientLimits::default(),
+                &replica_path,
+            )
+            .expect("the old-schema open must succeed");
+            let rows = client
+                .query("SELECT COUNT(*) AS c FROM things", &[])
+                .expect("the client still serves ordinary queries");
+            assert_eq!(rows.len(), 1);
+        }
+        // Read storage directly, never through a read API.
+        assert!(!Path::new(&container_path).exists());
+        let inspect = Connection::open(&replica_path).expect("inspect after open");
+        assert_eq!(meta_get(&inspect, PREVIOUS_VERSION_CONTEXT_KEY), None);
+        assert_eq!(meta_get(&inspect, PREVIOUS_VERSION_AUDIT_KEY), None);
+        assert_eq!(
+            inspect
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE name = ?1",
+                    rusqlite::params![CONTAINER_TABLE],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("replica table count"),
+            0
+        );
+
+        // A container whose recorded currentVersion MATCHES the running schema
+        // is left alone (it is the container this boot would serve).
+        let temp = TempFiles::new("same-version-live");
+        let replica_path = temp.replica().to_str().expect("utf-8 path").to_owned();
+        seed_replica(temp.replica(), 1);
+        let replica = Connection::open(temp.replica()).expect("open replica");
+        capture_previous_version_from_replica(
+            &replica,
+            &replica_path,
+            1,
+            1,
+            &PreviousVersionContextConfig::default(),
+            1,
+        )
+        .expect("capture");
+        drop(replica);
+        let container_path = previous_version_container_path(&replica_path);
+        assert!(Path::new(&container_path).exists());
+        SyncClient::open_path(
+            "pvc".to_owned(),
+            &schema_json(1),
+            ClientLimits::default(),
+            &replica_path,
+        )
+        .expect("open v1 beside a matching container");
+        assert!(Path::new(&container_path).exists());
     }
 
     #[test]
