@@ -6,12 +6,19 @@
  * Key layout (deterministic — every lookup is a GET/HEAD, never a LIST):
  *
  *   {keyPrefix}seg/sha256/{hex}
- *     The segment bytes, verbatim (the object body MUST be exactly the
- *     content-addressed bytes so presigned GETs serve them directly and
- *     the client's §5.1 hash check passes). The full `SegmentRecord`
- *     (minus bytes) rides along as object user metadata
- *     `x-amz-meta-syncular-record` = base64url(JSON), so `get` is a
- *     single GET.
+ *     The segment bytes, verbatim and immutable (the object body MUST be
+ *     exactly the content-addressed bytes so presigned GETs serve them
+ *     directly and the client's §5.1 hash check passes).
+ *
+ *   {keyPrefix}rec/sha256/{hex}.json
+ *     The `SegmentRecord` (§5.1). It is the one MUTABLE object of the two:
+ *     the scope-digest set is a union that every publication extends, so
+ *     the merge is a read-modify-write. Keeping the record in the body (not
+ *     in the bytes object's user metadata) is what makes that write
+ *     conditional — a body ETag changes when the union changes, while the
+ *     bytes ETag is a content hash and is identical for identical bytes. A
+ *     `412` re-reads and merges again, so no concurrent publication can drop
+ *     another one's digest. `get` therefore reads two objects.
  *
  *   {keyPrefix}find/{sha256Hex(canonical reuse key)}.json
  *     Whole-table reuse pointer (§5.3): written only when
@@ -21,9 +28,14 @@
  *     confirm the segment object itself still exists — lifecycle GC may
  *     remove objects independently of pointers).
  *
+ * Records written before the split kept the record in the bytes object's
+ * user metadata `x-amz-meta-syncular-record`; `get` still reads that shape
+ * and the next `put` materializes the record object from it, so an upgrade
+ * loses no cache entry.
+ *
  * TTL mapping: expiry is **store-side and authoritative** — `expiresAtMs`
- * (put-time + `ttlMs`, default 24 h) is recorded in the object metadata
- * and the pointer; `get` returns expired records so §5.5 can answer
+ * (put-time + `ttlMs`, default 24 h) is recorded in the record and the
+ * pointer; `get` returns expired records so §5.5 can answer
  * `sync.segment_expired`, and `find` filters them out itself. S3 lifecycle
  * expiration is garbage collection only: configure it comfortably ABOVE
  * `ttlMs` (e.g. 2 days for the 24 h default) so clients normally see the
@@ -117,19 +129,8 @@ function parseStatsJson(json: string): StatsAccumulator {
 }
 
 // Runtime-neutral base64url: `Buffer` is not present on
-// Cloudflare Workers without `nodejs_compat`, so the object-metadata record
-// header is (de)coded with `btoa`/`atob`, available in every runtime.
-function utf8ToBase64url(text: string): string {
-  let binary = '';
-  for (const byte of new TextEncoder().encode(text)) {
-    binary += String.fromCharCode(byte);
-  }
-  return btoa(binary)
-    .replaceAll('+', '-')
-    .replaceAll('/', '_')
-    .replace(/=+$/, '');
-}
-
+// Cloudflare Workers without `nodejs_compat`, so a legacy object-metadata
+// record header is decoded with `atob`, available in every runtime.
 function base64urlToUtf8(value: string): string {
   const binary = atob(value.replaceAll('-', '+').replaceAll('_', '/'));
   const bytes = new Uint8Array(binary.length);
@@ -247,6 +248,11 @@ export class S3SegmentStore implements SegmentStore {
   /** `{keyPrefix}seg/sha256/{hex}` — the §5.4 "key embeds the segmentId". */
   objectKeyFor(segmentId: string): string {
     return `${this.#prefix}seg/${segmentId.replace(':', '/')}`;
+  }
+
+  /** `{keyPrefix}rec/sha256/{hex}.json` — the §5.1 record (§5.1 union). */
+  #recordKeyFor(segmentId: string): string {
+    return `${this.#prefix}rec/${segmentId.replace(':', '/')}.json`;
   }
 
   async #findKeyFor(key: SegmentFindKey): Promise<string> {
@@ -394,21 +400,12 @@ export class S3SegmentStore implements SegmentStore {
     nowMs: number,
   ): Promise<SegmentRecord> {
     const segmentId = await segmentIdFor(bytes);
-    const objectKey = this.objectKeyFor(segmentId);
+    await this.#putBytes(segmentId, bytes);
     for (let attempt = 0; attempt < CAS_ATTEMPTS; attempt++) {
-      // The id IS the content address, so an existing object means a second
-      // scope published the same bytes: read it back to prove the bytes really
-      // match (a mismatch is a hash collision, never a silent overwrite) and
-      // to merge the digest set (§5.1).
-      const preexisting = await this.#readWithEtag(segmentId);
-      if (
-        preexisting !== undefined &&
-        !segmentBytesEqual(preexisting.bytes, bytes)
-      ) {
-        throw new Error(
-          `S3SegmentStore: content-address collision at ${segmentId} (§5.1)`,
-        );
-      }
+      // The id IS the content address, so an existing record means a second
+      // scope published the same bytes: read it back and merge the digest set
+      // (§5.1).
+      const preexisting = await this.#readRecord(segmentId);
       const record = mergeSegmentRecord(
         preexisting?.record,
         metadata,
@@ -418,35 +415,28 @@ export class S3SegmentStore implements SegmentStore {
         this.#ttlMs,
       );
       const recordJson = recordToJson(record);
-      // The digest set is monotone (§5.1), and this is a read-modify-write: a
+      // The digest set is monotone (§5.1) and this is a read-modify-write: a
       // concurrent publisher of the same bytes computed its own union from the
       // same pre-state, so an unconditional PUT would drop one of the digests
-      // and make that scope's download `sync.forbidden`. Make the write
-      // conditional on the pre-state read above. In-process dedupe cannot
-      // cover this: two scopes whose rows are byte-identical are two builds,
-      // and two server instances share one bucket.
-      //
-      // Scope of the guarantee: `If-None-Match: *` is an existence test, so
-      // two publishers racing to create the entry cannot both win and both
-      // digests survive. It does NOT cover a concurrent re-publication of an
-      // entry that already exists: the ETag is a content hash, identical bytes
-      // have an identical ETag, and `If-Match` therefore cannot tell the two
-      // writers apart — one digest is still lost. §5.1 states that limit;
-      // closing it needs a publication record addressed by (content address,
-      // scope digest) instead of one merged entry, which is an RFC.
+      // and make that scope's download `sync.forbidden`. The write is
+      // conditional on the record body that was read — the record ETag is the
+      // body hash, so it changes whenever the union does — and a `412`
+      // re-reads and merges again. In-process dedupe cannot cover this: two
+      // scopes whose rows are byte-identical are two builds, and two server
+      // instances share one bucket.
       const conditional: Record<string, string> =
         preexisting?.etag === undefined
           ? { 'if-none-match': '*' }
           : { 'if-match': preexisting.etag };
-      const response = await this.#request('PUT', objectKey, {
-        body: bytes,
-        headers: {
-          'content-type': 'application/octet-stream',
-          [RECORD_META_HEADER]: utf8ToBase64url(recordJson),
-          ...conditional,
+      const response = await this.#request(
+        'PUT',
+        this.#recordKeyFor(segmentId),
+        {
+          body: new TextEncoder().encode(recordJson),
+          headers: { 'content-type': 'application/json', ...conditional },
+          allow412: true,
         },
-        allow412: true,
-      });
+      );
       if (response !== undefined && response.status === 412) {
         await response.arrayBuffer();
         continue;
@@ -479,39 +469,82 @@ export class S3SegmentStore implements SegmentStore {
   }
 
   /**
-   * Read one object plus the ETag that identifies the version read, so a
-   * write can be made conditional on exactly this pre-state (§5.1).
+   * Write the immutable bytes object. Create-only, so a second publisher of
+   * identical bytes is a no-op and a second publisher of DIFFERENT bytes under
+   * the same content address is the hash collision §5.1 requires to fail
+   * loudly instead of overwriting.
    */
-  async #readWithEtag(
-    segmentId: string,
-  ): Promise<
-    | { record: SegmentRecord; bytes: Uint8Array; etag: string | undefined }
-    | undefined
-  > {
-    if (!SEGMENT_ID_PATTERN.test(segmentId)) return undefined;
-    const response = await this.#request('GET', this.objectKeyFor(segmentId));
-    if (response === undefined) return undefined;
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    const meta = response.headers.get(RECORD_META_HEADER);
-    if (meta === null) {
+  async #putBytes(segmentId: string, bytes: Uint8Array): Promise<void> {
+    const key = this.objectKeyFor(segmentId);
+    const response = await this.#request('PUT', key, {
+      body: bytes,
+      headers: {
+        'content-type': 'application/octet-stream',
+        'if-none-match': '*',
+      },
+      allow412: true,
+    });
+    if (response === undefined || response.status !== 412) {
+      await response?.arrayBuffer();
+      return;
+    }
+    await response.arrayBuffer();
+    const current = await this.#request('GET', key);
+    if (current === undefined) return;
+    const stored = new Uint8Array(await current.arrayBuffer());
+    if (!segmentBytesEqual(stored, bytes)) {
       throw new Error(
-        `S3SegmentStore: object for ${segmentId} lacks ${RECORD_META_HEADER}`,
+        `S3SegmentStore: content-address collision at ${segmentId} (§5.1)`,
       );
     }
+  }
+
+  /**
+   * Read the record object plus the ETag of the body that was read, so the
+   * union write can be made conditional on exactly that pre-state (§5.1).
+   *
+   * A record written before the record/bytes split rides in the bytes object's
+   * user metadata; it is read here and its union is materialized into a record
+   * object by the next `put`. That shape carries no usable ETag for the union
+   * (the bytes ETag is a content hash), which is exactly why it was replaced.
+   * A bytes object with neither a record object nor the legacy metadata is an
+   * entry whose record is missing — a cache miss, not corruption, so `get`
+   * reports it as absent and the client re-pulls.
+   */
+  async #readRecord(
+    segmentId: string,
+  ): Promise<{ record: SegmentRecord; etag: string | undefined } | undefined> {
+    if (!SEGMENT_ID_PATTERN.test(segmentId)) return undefined;
+    const response = await this.#request('GET', this.#recordKeyFor(segmentId));
+    if (response !== undefined) {
+      return {
+        record: parseRecordJson(await response.text(), 'segment record'),
+        etag: response.headers.get('etag') ?? undefined,
+      };
+    }
+    const legacy = await this.#request('GET', this.objectKeyFor(segmentId));
+    if (legacy === undefined) return undefined;
+    const meta = legacy.headers.get(RECORD_META_HEADER);
+    await legacy.arrayBuffer();
+    if (meta === null) return undefined;
     return {
       record: parseRecordJson(base64urlToUtf8(meta), segmentId),
-      bytes,
-      etag: response.headers.get('etag') ?? undefined,
+      etag: undefined,
     };
   }
 
   async get(
     segmentId: string,
   ): Promise<{ record: SegmentRecord; bytes: Uint8Array } | undefined> {
-    const entry = await this.#readWithEtag(segmentId);
-    return entry === undefined
-      ? undefined
-      : { record: entry.record, bytes: entry.bytes };
+    if (!SEGMENT_ID_PATTERN.test(segmentId)) return undefined;
+    const record = await this.#readRecord(segmentId);
+    if (record === undefined) return undefined;
+    const response = await this.#request('GET', this.objectKeyFor(segmentId));
+    if (response === undefined) return undefined;
+    return {
+      record: record.record,
+      bytes: new Uint8Array(await response.arrayBuffer()),
+    };
   }
 
   async find(

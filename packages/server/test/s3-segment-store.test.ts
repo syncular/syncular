@@ -120,7 +120,7 @@ describe('concurrent publication of one content address (§5.1)', () => {
     });
     let segmentPuts = 0;
     beforePutHook = async (key) => {
-      if (!key.startsWith(`${prefix}seg/`)) return;
+      if (!key.startsWith(`${prefix}rec/`)) return;
       segmentPuts += 1;
       if (segmentPuts === 1) await gate;
       else release?.();
@@ -153,27 +153,26 @@ describe('concurrent publication of one content address (§5.1)', () => {
     }
   });
 
-  test('a concurrent re-publication of existing content can still drop a digest (§5.1 limit)', async () => {
+  test('a concurrent re-publication of existing content keeps both digests', async () => {
     const store = makeStore();
     const prefix = `t${storeCount}/`;
     const bytes = new Uint8Array();
     await store.put({ ...META, scopeDigest: 'digest-x' }, bytes, NOW);
 
-    // Both writers read the existing entry, then both write: the ETag is a
-    // content hash, identical bytes have an identical ETag, so `If-Match`
-    // cannot tell them apart and the later write wins. This test pins the
-    // documented limit so the spec and the code agree; it is NOT the goal.
-    // Replacing it needs a publication record addressed by (content address,
-    // scope digest) — RFC, not this release.
+    // Both writers read the existing union, then both write. The record body
+    // ETag changes with the union, so the second writer's `If-Match` fails and
+    // it re-reads and merges: this is the case an ETag over the immutable
+    // bytes cannot protect, because identical bytes have an identical bytes
+    // ETag.
     let release: (() => void) | undefined;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
-    let segmentPuts = 0;
+    let recordPuts = 0;
     beforePutHook = async (key) => {
-      if (!key.startsWith(`${prefix}seg/`)) return;
-      segmentPuts += 1;
-      if (segmentPuts === 1) await gate;
+      if (!key.startsWith(`${prefix}rec/`)) return;
+      recordPuts += 1;
+      if (recordPuts === 1) await gate;
       else release?.();
     };
     try {
@@ -187,8 +186,34 @@ describe('concurrent publication of one content address (§5.1)', () => {
     const stored = await store.get(await segmentIdFor(bytes));
     expect(stored?.record.scopeDigests.slice().sort()).toEqual([
       'digest-a',
+      'digest-b',
       'digest-x',
     ]);
+  });
+
+  test('the bytes object is written once and never rewritten', async () => {
+    const store = makeStore();
+    const bytes = new Uint8Array([1, 2, 3]);
+    const record = await store.put(META, bytes, NOW);
+    const bytesKey = store.objectKeyFor(record.segmentId);
+    const stored = stub.objects.get(bytesKey)?.bytes.slice();
+    let bytesPuts = 0;
+    beforePutHook = (key) => {
+      if (key === bytesKey) bytesPuts += 1;
+    };
+    try {
+      // A second publication of the same content adds a digest to the record
+      // and leaves the immutable bytes object alone: only the record carries
+      // the union, so only the record needs a conditional write.
+      await store.put({ ...META, scopeDigest: 'digest-b' }, bytes, NOW + 1);
+    } finally {
+      beforePutHook = undefined;
+    }
+    expect(bytesPuts).toBe(1);
+    expect(stub.objects.get(bytesKey)?.bytes).toEqual(stored);
+    expect((await store.get(record.segmentId))?.record.scopeDigests).toContain(
+      'digest-b',
+    );
   });
 
   test('a later publication keeps every earlier digest (sequential union)', async () => {
@@ -209,13 +234,16 @@ describe('concurrent publication of one content address (§5.1)', () => {
       'digest-a',
       'digest-b',
     ]);
-    // §5.1 limit, pinned: the entry carries the LATEST publisher's partition
-    // and log epoch, and §5.5 refuses a download whose partition or current
-    // log epoch differs (`sync.not_found`, no existence leak — see
+    // OPEN DEFECT (SYNCULAR-SEGMENT-PARTITION-001), pinned as evidence and
+    // NOT claimed fixed: the merged entry carries the LATEST publisher's
+    // partition and log epoch, and §5.5 refuses a download whose partition or
+    // current log epoch differs (`sync.not_found`, no existence leak — see
     // `segment-download.test.ts` "segments from another partition"). So
     // identical content published from two partitions is one entry whose
-    // first-partition descriptor is not downloadable. Fixing that needs a
-    // partition-aware entry, not a digest union: RFC, not this release.
+    // first-partition descriptor is not downloadable. The digest union is
+    // correct and does not address this: the entry needs per-publication
+    // partition/logEpoch/table provenance, or per-publication records keyed by
+    // (segmentId, scope digest, partition, logEpoch).
     expect(stored?.record.partition).toBe('p2');
   });
 });

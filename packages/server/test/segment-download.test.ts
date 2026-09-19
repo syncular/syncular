@@ -123,7 +123,7 @@ describe('segment download (§5.5)', () => {
     ).rejects.toMatchObject({ code: 'sync.not_found' });
   });
 
-  test('identical empty segments across partitions lose the earlier download (§5.1 limit)', async () => {
+  test('identical empty segments across partitions lose the earlier download (open defect)', async () => {
     const segments = new MemorySegmentStore();
     const emptyFirst = { project_id: ['p-empty-a'] };
     const emptySecond = { project_id: ['p-empty-b'] };
@@ -155,12 +155,14 @@ describe('segment download (§5.5)', () => {
     expect(firstRef.segmentId).toBe(secondRef.segmentId);
     const stored = await segments.get(firstRef.segmentId);
     expect(stored?.record.scopeDigests).toHaveLength(2);
-    // §5.1 limit, pinned: the merged entry carries the LATEST publisher's
+    // OPEN DEFECT (SYNCULAR-SEGMENT-PARTITION-001), pinned as evidence and
+    // NOT claimed fixed: the merged entry carries the LATEST publisher's
     // partition, and §5.5 refuses a download whose partition differs (no
     // existence leak), so the first partition cannot download its own
-    // descriptor even though its digest is recorded. Closing this needs a
-    // publication record addressed by (content address, scope digest): RFC,
-    // not this release.
+    // descriptor even though its digest is recorded. The digest union is
+    // correct and does not address this: the entry needs per-publication
+    // provenance, or per-publication records keyed by (segmentId, scope
+    // digest, partition, logEpoch).
     await expect(
       handleSegmentDownload(first.ctx, {
         segmentId: firstRef.segmentId,
