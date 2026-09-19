@@ -1240,3 +1240,31 @@ for (const backend of ['sqlite', 'postgres/pglite'] as const) {
     }
   });
 }
+
+test('barrier cleanup between processes on one database re-enables declaration-free ensureSchema', async () => {
+  // Locally this is pglite (one executor, sequential) — evidence for the
+  // whole-server coverage check and the cleanup the real-Postgres receipt file
+  // applies between its shared-database tests, not concurrency evidence.
+  const pg = await PGlite.create();
+  try {
+    const first = new PostgresServerStorage(pgliteExecutor(pg));
+    await first.ensureSchema(SCHEMA);
+    await first.declareCheckpoint(
+      PARTITION,
+      'tasks-projection',
+      SCHEMA.version,
+      NOW,
+    );
+    // The coverage check is whole-server: any partition's incomplete
+    // checkpoint refuses a later process that declares nothing.
+    await expect(
+      new PostgresServerStorage(pgliteExecutor(pg)).ensureSchema(SCHEMA),
+    ).rejects.toMatchObject({ code: 'sync.storage.checkpoint_incomplete' });
+    // Clearing the barrier tables is the isolation the receipt file applies.
+    await pg.query('DELETE FROM sync_backfill_checkpoints');
+    await pg.query('DELETE FROM sync_writer_fence');
+    await new PostgresServerStorage(pgliteExecutor(pg)).ensureSchema(SCHEMA);
+  } finally {
+    await pg.close();
+  }
+});

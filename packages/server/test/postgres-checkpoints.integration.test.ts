@@ -106,6 +106,13 @@ gate('RFC 0007 real-Postgres receipts (SYNCULAR_PG_URL)', () => {
     const executor = bunSqlExecutor(sql);
     const storage = new PostgresServerStorage(executor);
     await storage.migrate();
+    // The three receipts share one real database. The phase-2a declaration
+    // coverage check is whole-server, not partition-scoped, so a checkpoint
+    // (and its fence) left declared by an earlier receipt would refuse this
+    // one's declaration-free `ensureSchema`. Clear the barrier tables for test
+    // isolation; the gate itself is unchanged.
+    await executor.query('DELETE FROM sync_backfill_checkpoints');
+    await executor.query('DELETE FROM sync_writer_fence');
     const partition = `rfc0007-${crypto.randomUUID()}`;
     await storage.ensureSchema(compileSchema(SCHEMA));
     return { storage, partition, executor };
