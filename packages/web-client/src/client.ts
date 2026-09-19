@@ -1402,7 +1402,7 @@ export class SyncClient {
    * both metadata records, and report whether anything was present.
    */
   previousVersionDiscard(): { present: boolean; discarded: boolean } {
-    this.#requireStarted();
+    this.#requireActive();
     const present = this.#dropPreviousVersion();
     return { present, discarded: present };
   }

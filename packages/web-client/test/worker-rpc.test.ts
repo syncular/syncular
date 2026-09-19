@@ -309,6 +309,21 @@ test('worker preflight gates protected RPCs and activates the host loop later', 
     handle.rebootstrapLocalData({ rebootstrapId: 'blocked-repair' }),
     SECURITY_PREFLIGHT_REQUIRED_CODE,
   );
+  // RFC 0005: the read/discard surface is protected local data, so all three
+  // must be refused during preflight exactly like the Rust dispatcher and the
+  // native bridges (none of them is on the preflight allowlist).
+  await expectRejectsWithCode(
+    handle.previousVersionSnapshot({ table: 'tasks' }),
+    SECURITY_PREFLIGHT_REQUIRED_CODE,
+  );
+  await expectRejectsWithCode(
+    handle.previousVersionAudit(),
+    SECURITY_PREFLIGHT_REQUIRED_CODE,
+  );
+  await expectRejectsWithCode(
+    handle.previousVersionDiscard(),
+    SECURITY_PREFLIGHT_REQUIRED_CODE,
+  );
   expect(events.synced).toEqual([]);
 
   await handle.activateSecurity();
