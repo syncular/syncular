@@ -10,6 +10,7 @@ import { afterAll, beforeAll, expect, test } from 'bun:test';
 import {
   ClientSyncError,
   createSyncClientHandle,
+  INVALID_HOST_RESPONSE_CODE,
   type LeaderLease,
   type LeaderLock,
   NOT_LEADER_CODE,
@@ -51,6 +52,67 @@ async function expectRejectsWithCode(
     return;
   }
   throw new Error(`expected a rejection with code ${code}`);
+}
+
+/** A protocol-correct Worker whose call replies come from a scripted table. */
+function scriptedWorker(
+  answer: (method: string) => {
+    readonly replied: boolean;
+    readonly value?: unknown;
+  },
+): Worker {
+  const listeners = new Set<(event: MessageEvent) => void>();
+  const emit = (data: unknown): void => {
+    for (const listener of listeners) listener({ data } as MessageEvent);
+  };
+  queueMicrotask(() => emit({ t: 'ready' }));
+  return {
+    addEventListener: (
+      type: string,
+      listener: EventListenerOrEventListenerObject,
+    ) => {
+      if (type === 'message' && typeof listener === 'function') {
+        listeners.add(listener as (event: MessageEvent) => void);
+      }
+    },
+    postMessage: (message: {
+      readonly t: string;
+      readonly id?: number;
+      readonly method?: string;
+    }) => {
+      if (message.t === 'init') {
+        queueMicrotask(() =>
+          emit({ t: 'result', id: message.id, value: { clientId: 'host' } }),
+        );
+        return;
+      }
+      if (message.t !== 'call') return;
+      const reply = answer(message.method ?? '');
+      queueMicrotask(() =>
+        emit({
+          t: 'result',
+          id: message.id,
+          value: reply.replied ? reply.value : undefined,
+        }),
+      );
+    },
+    terminate: () => {},
+  } as unknown as Worker;
+}
+
+async function forgedReplyHandle(
+  method: string,
+  value: unknown,
+): Promise<SyncClientHandle> {
+  return createSyncClientHandle({
+    worker: () =>
+      scriptedWorker((called) => ({ replied: called === method, value })),
+    schema: { version: 1, tables: [] },
+    database: { mode: 'custom' },
+    endpoints: { syncUrl: 'https://invalid.test/sync' },
+    autoSync: false,
+    multiTab: false,
+  });
 }
 
 let server: TestServer;
@@ -362,6 +424,174 @@ test('outbox-preserving rebootstrap crosses the worker RPC atomically', async ()
     resetSubscriptions: 1,
   });
 });
+
+test('RFC 0005 previous-version commands cross the worker RPC behind strict decode', async () => {
+  const { handle } = await makeHandle({
+    clientId: 'rpc-previous-version',
+    autoSync: false,
+  });
+  expect(await handle.previousVersionSnapshot({ table: 'tasks' })).toEqual({
+    state: 'previousVersion',
+    available: false,
+    currentVersion: 1,
+    reason: 'not-configured',
+    rows: [],
+    truncated: false,
+  });
+  expect(await handle.previousVersionAudit()).toBeUndefined();
+  expect(await handle.previousVersionDiscard()).toEqual({
+    present: false,
+    discarded: false,
+  });
+});
+
+const FORGED_SNAPSHOT_REPLIES: unknown[] = [
+  {
+    state: 'previousVersion',
+    available: true,
+    currentVersion: 1,
+    rows: [],
+    truncated: false,
+  },
+  {
+    state: 'previousVersion',
+    available: 'true',
+    currentVersion: 1,
+    rows: [],
+    truncated: false,
+    reason: 'not-configured',
+  },
+  {
+    state: 'previousVersion',
+    available: false,
+    currentVersion: 1,
+    rows: [],
+    truncated: false,
+    reason: 'purged',
+  },
+  {
+    state: 'previousVersion',
+    available: false,
+    currentVersion: 1,
+    rows: [],
+    truncated: false,
+  },
+  {
+    state: 'previousVersion',
+    available: false,
+    currentVersion: 1,
+    reason: 'expired',
+  },
+];
+
+test.each(FORGED_SNAPSHOT_REPLIES)(
+  'a forged previousVersionSnapshot reply is rejected, not surfaced %#',
+  async (value) => {
+    const handle = await forgedReplyHandle('previousVersionSnapshot', value);
+    await expectRejectsWithCode(
+      handle.previousVersionSnapshot({ table: 'tasks' }),
+      INVALID_HOST_RESPONSE_CODE,
+    );
+    await handle.close();
+  },
+);
+
+test('a valid available:true snapshot and typed audit survive strict decode', async () => {
+  const snapshot = {
+    state: 'previousVersion',
+    available: true,
+    previousVersion: 3,
+    currentVersion: 4,
+    rows: [{ id: 'r1', done: true, meta: null, blob: new Uint8Array([1, 2]) }],
+    truncated: false,
+  } as const;
+  const snapshotHandle = await forgedReplyHandle(
+    'previousVersionSnapshot',
+    snapshot,
+  );
+  expect(
+    await snapshotHandle.previousVersionSnapshot({ table: 'tasks' }),
+  ).toEqual(snapshot);
+  await snapshotHandle.close();
+
+  const audit = {
+    v: 1,
+    atMs: 5,
+    fromVersion: 3,
+    toVersion: 4,
+    pending: 2,
+    encodable: 1,
+    truncated: false,
+    incompatible: [
+      {
+        commitId: 'c1',
+        table: 'tasks',
+        reason: 'unknown-column',
+        column: 'meta',
+      },
+    ],
+  } as const;
+  const auditHandle = await forgedReplyHandle('previousVersionAudit', audit);
+  expect(await auditHandle.previousVersionAudit()).toEqual(audit);
+  await auditHandle.close();
+});
+
+const FORGED_AUDIT_REPLIES: unknown[] = [
+  {
+    v: 1,
+    atMs: 0,
+    fromVersion: 1,
+    toVersion: 2,
+    pending: 0,
+    encodable: 0,
+    truncated: false,
+    incompatible: [{ commitId: 'c1', table: 'tasks', reason: 'gone' }],
+  },
+  {
+    v: 1,
+    atMs: 0,
+    fromVersion: 1,
+    toVersion: 2,
+    pending: 0,
+    encodable: 0,
+    truncated: false,
+    incompatible: [
+      { commitId: 'c1', table: 'tasks', reason: 'unknown-table', extra: 1 },
+    ],
+  },
+  { v: 1, atMs: 0, fromVersion: 1, toVersion: 2 },
+];
+
+test.each(FORGED_AUDIT_REPLIES)(
+  'a forged previousVersionAudit reply is rejected, not surfaced %#',
+  async (value) => {
+    const handle = await forgedReplyHandle('previousVersionAudit', value);
+    await expectRejectsWithCode(
+      handle.previousVersionAudit(),
+      INVALID_HOST_RESPONSE_CODE,
+    );
+    await handle.close();
+  },
+);
+
+const FORGED_DISCARD_REPLIES: unknown[] = [
+  { present: true },
+  { present: true, discarded: 'yes' },
+  { present: true, discarded: false, extra: true },
+  {},
+];
+
+test.each(FORGED_DISCARD_REPLIES)(
+  'a forged previousVersionDiscard reply is rejected, not surfaced %#',
+  async (value) => {
+    const handle = await forgedReplyHandle('previousVersionDiscard', value);
+    await expectRejectsWithCode(
+      handle.previousVersionDiscard(),
+      INVALID_HOST_RESPONSE_CODE,
+    );
+    await handle.close();
+  },
+);
 
 test('query results carry blobs across the boundary (transfer path)', async () => {
   const { handle } = await makeHandle({

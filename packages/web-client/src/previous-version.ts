@@ -32,6 +32,7 @@
 import type { RowColumn, RowValue } from '@syncular/core';
 import type { ClientDatabase, SqlRow, SqlValue } from './database';
 import { ClientSyncError } from './errors';
+import { INVALID_HOST_RESPONSE_CODE } from './local-rebootstrap';
 import {
   type CompiledClientSchema,
   fromSqlValue,
@@ -201,6 +202,62 @@ export interface PreviousVersionSnapshot {
 function isCount(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
+
+function invalidHostResponse(method: string): never {
+  throw new ClientSyncError(
+    INVALID_HOST_RESPONSE_CODE,
+    `${method} returned an invalid host response`,
+  );
+}
+
+function isSqlValue(value: unknown): value is SqlValue {
+  return (
+    value === null ||
+    typeof value === 'string' ||
+    typeof value === 'boolean' ||
+    typeof value === 'bigint' ||
+    (typeof value === 'number' && Number.isFinite(value)) ||
+    value instanceof Uint8Array
+  );
+}
+
+function isSqlRow(value: unknown): value is SqlRow {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  return Object.values(value as Record<string, unknown>).every(isSqlValue);
+}
+
+const PREVIOUS_VERSION_REASONS: readonly PreviousVersionReason[] = [
+  'not-configured',
+  'no-previous-descriptor',
+  'capture-exceeded-budget',
+  'coverage-complete',
+  'expired',
+  'lease-inactive',
+  'scope-revoked',
+];
+
+const SNAPSHOT_REQUIRED_KEYS = [
+  'available',
+  'currentVersion',
+  'rows',
+  'state',
+  'truncated',
+] as const;
+const SNAPSHOT_OPTIONAL_KEYS = ['previousVersion', 'reason'] as const;
+const DISCARD_KEYS = ['discarded', 'present'] as const;
+const AUDIT_KEYS = [
+  'atMs',
+  'encodable',
+  'fromVersion',
+  'incompatible',
+  'pending',
+  'toVersion',
+  'truncated',
+  'v',
+] as const;
+const AUDIT_ENTRY_KEYS = ['column', 'commitId', 'reason', 'table'] as const;
 
 /** Parse a persisted JSON object; anything else is `undefined`, never a guess. */
 function parseJsonObject(raw: string): Record<string, unknown> | undefined {
@@ -852,4 +909,162 @@ export function clearPreviousVersionAudit(db: ClientDatabase): void {
   db.exec('DELETE FROM _syncular_meta WHERE key = ?', [
     PREVIOUS_VERSION_AUDIT_KEY,
   ]);
+}
+
+// ---------------------------------------------------------------------------
+// Strict bridge decoders (RFC 0005 D10)
+//
+// Compile-time host types are not runtime proof. A version-drifted Worker or
+// native bridge could answer a read command with a forged `available: true`
+// and a peer's protected rows, so every reply is validated against the closed
+// public shape before an application can observe it.
+// ---------------------------------------------------------------------------
+
+/** Strictly decode a Worker/native `previousVersionSnapshot` reply. */
+export function decodePreviousVersionSnapshot(
+  value: unknown,
+): PreviousVersionSnapshot {
+  const method = 'previousVersionSnapshot';
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return invalidHostResponse(method);
+  }
+  const source = value as Record<string, unknown>;
+  const allowed = new Set<string>([
+    ...SNAPSHOT_REQUIRED_KEYS,
+    ...SNAPSHOT_OPTIONAL_KEYS,
+  ]);
+  const keys = Object.keys(source);
+  if (
+    !keys.every((key) => allowed.has(key)) ||
+    SNAPSHOT_REQUIRED_KEYS.some((key) => !(key in source)) ||
+    source.state !== 'previousVersion' ||
+    typeof source.available !== 'boolean' ||
+    !isCount(source.currentVersion) ||
+    typeof source.truncated !== 'boolean' ||
+    !Array.isArray(source.rows) ||
+    !source.rows.every(isSqlRow)
+  ) {
+    return invalidHostResponse(method);
+  }
+  const reason = source.reason;
+  const previousVersion = source.previousVersion;
+  const rows = source.rows as SqlRow[];
+  if (source.available) {
+    // An available read names the previous version and never a refusal.
+    if (!isCount(previousVersion) || reason !== undefined) {
+      return invalidHostResponse(method);
+    }
+    return {
+      state: 'previousVersion',
+      available: true,
+      previousVersion,
+      currentVersion: source.currentVersion,
+      rows,
+      truncated: source.truncated,
+    };
+  }
+  if (
+    previousVersion !== undefined ||
+    reason === undefined ||
+    !PREVIOUS_VERSION_REASONS.includes(reason as PreviousVersionReason)
+  ) {
+    return invalidHostResponse(method);
+  }
+  return {
+    state: 'previousVersion',
+    available: false,
+    currentVersion: source.currentVersion,
+    reason: reason as PreviousVersionReason,
+    rows,
+    truncated: source.truncated,
+  };
+}
+
+/**
+ * Strictly decode a Worker/native `previousVersionAudit` reply. `undefined` is
+ * the legitimate "no audit recorded" answer; anything else malformed throws.
+ */
+export function decodePreviousVersionAuditResult(
+  value: unknown,
+): PreviousVersionAudit | undefined {
+  const method = 'previousVersionAudit';
+  if (value === undefined) return undefined;
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return invalidHostResponse(method);
+  }
+  const source = value as Record<string, unknown>;
+  const keys = Object.keys(source).sort();
+  if (keys.length !== AUDIT_KEYS.length) return invalidHostResponse(method);
+  if (keys.some((key, index) => key !== AUDIT_KEYS[index])) {
+    return invalidHostResponse(method);
+  }
+  if (
+    source.v !== AUDIT_VERSION ||
+    !isCount(source.atMs) ||
+    !isCount(source.fromVersion) ||
+    !isCount(source.toVersion) ||
+    !isCount(source.pending) ||
+    !isCount(source.encodable) ||
+    typeof source.truncated !== 'boolean' ||
+    !Array.isArray(source.incompatible) ||
+    source.incompatible.length > MAX_AUDIT_INCOMPATIBLE
+  ) {
+    return invalidHostResponse(method);
+  }
+  const incompatible: PreviousVersionAuditEntry[] = [];
+  for (const entry of source.incompatible) {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      return invalidHostResponse(method);
+    }
+    const item = entry as Record<string, unknown>;
+    if (
+      !Object.keys(item).every((key) =>
+        (AUDIT_ENTRY_KEYS as readonly string[]).includes(key),
+      ) ||
+      typeof item.commitId !== 'string' ||
+      typeof item.table !== 'string' ||
+      (item.reason !== 'unknown-table' && item.reason !== 'unknown-column') ||
+      (item.column !== undefined && typeof item.column !== 'string')
+    ) {
+      return invalidHostResponse(method);
+    }
+    incompatible.push({
+      commitId: item.commitId,
+      table: item.table,
+      reason: item.reason,
+      ...(typeof item.column === 'string' ? { column: item.column } : {}),
+    });
+  }
+  return {
+    v: 1,
+    atMs: source.atMs,
+    fromVersion: source.fromVersion,
+    toVersion: source.toVersion,
+    pending: source.pending,
+    encodable: source.encodable,
+    truncated: source.truncated,
+    incompatible,
+  };
+}
+
+/** Strictly decode a Worker/native `previousVersionDiscard` reply. */
+export function decodePreviousVersionDiscardResult(value: unknown): {
+  readonly present: boolean;
+  readonly discarded: boolean;
+} {
+  const method = 'previousVersionDiscard';
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return invalidHostResponse(method);
+  }
+  const source = value as Record<string, unknown>;
+  const keys = Object.keys(source).sort();
+  if (
+    keys.length !== DISCARD_KEYS.length ||
+    keys.some((key, index) => key !== DISCARD_KEYS[index]) ||
+    typeof source.present !== 'boolean' ||
+    typeof source.discarded !== 'boolean'
+  ) {
+    return invalidHostResponse(method);
+  }
+  return { present: source.present, discarded: source.discarded };
 }

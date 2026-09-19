@@ -446,6 +446,10 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
     purgeLocalData: (input) => requireClient().purgeLocalData(input),
     rebootstrapLocalData: (input) =>
       requireClient().rebootstrapLocalData(input),
+    previousVersionSnapshot: (spec) =>
+      requireClient().previousVersionSnapshot(spec),
+    previousVersionAudit: () => requireClient().previousVersionAudit(),
+    previousVersionDiscard: () => requireClient().previousVersionDiscard(),
     sync: () => {
       const running = requireClient();
       return serializedSync(() => running.sync());
@@ -512,13 +516,18 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
     },
   };
 
-  // Local purge/rebootstrap rewrite the same durable state an in-flight
-  // sync round captured at send time; running their RPCs on the sync chain
-  // orders them against RPC- and auto-driven rounds (the client core's
-  // reset fence covers hosts that call the core directly).
+  // Local purge/rebootstrap/discard rewrite the same durable state an
+  // in-flight sync round captured at send time, and the RFC 0005 reads observe
+  // (and can themselves trigger the discard of) that same previous-version
+  // container. Running all of them on the sync chain orders them against RPC-
+  // and auto-driven rounds (the client core's reset fence covers hosts that
+  // call the core directly).
   const syncChainMethods: ReadonlySet<WorkerMethod> = new Set<WorkerMethod>([
     'purgeLocalData',
     'rebootstrapLocalData',
+    'previousVersionSnapshot',
+    'previousVersionAudit',
+    'previousVersionDiscard',
   ]);
 
   async function dispatch(message: WorkerCallMessage): Promise<unknown> {

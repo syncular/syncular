@@ -89,6 +89,14 @@ import type {
   CommitOutcomeQuery,
   ResolveCommitOutcomeInput,
 } from './outcomes';
+import {
+  decodePreviousVersionAuditResult,
+  decodePreviousVersionDiscardResult,
+  decodePreviousVersionSnapshot,
+  type PreviousVersionAudit,
+  type PreviousVersionReadSpec,
+  type PreviousVersionSnapshot,
+} from './previous-version';
 import type { ClientSchema } from './schema';
 import type { SubscriptionRecord } from './state';
 import type { WindowBase } from './window';
@@ -543,6 +551,29 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
   ): Promise<LocalDataRebootstrapResult> {
     return decodeLocalDataRebootstrapResult(
       await this.#call('rebootstrapLocalData', [input]),
+    );
+  }
+
+  async previousVersionSnapshot(
+    spec: PreviousVersionReadSpec,
+  ): Promise<PreviousVersionSnapshot> {
+    return decodePreviousVersionSnapshot(
+      await this.#call('previousVersionSnapshot', [spec]),
+    );
+  }
+
+  async previousVersionAudit(): Promise<PreviousVersionAudit | undefined> {
+    return decodePreviousVersionAuditResult(
+      await this.#call('previousVersionAudit', []),
+    );
+  }
+
+  async previousVersionDiscard(): Promise<{
+    present: boolean;
+    discarded: boolean;
+  }> {
+    return decodePreviousVersionDiscardResult(
+      await this.#call('previousVersionDiscard', []),
     );
   }
 

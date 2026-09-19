@@ -42,6 +42,11 @@ import type {
   LocalDataRebootstrapResult,
 } from './local-rebootstrap';
 import type { OutboxCommit } from './outbox';
+import type {
+  PreviousVersionAudit,
+  PreviousVersionReadSpec,
+  PreviousVersionSnapshot,
+} from './previous-version';
 import type { ClientSchema } from './schema';
 import type { SubscriptionRecord } from './state';
 import type { WindowBase } from './window';
@@ -151,6 +156,14 @@ export interface WorkerApi extends Omit<
   rebootstrapLocalData(
     input: LocalDataRebootstrapInput,
   ): LocalDataRebootstrapResult;
+  /** RFC 0005 D7: read the captured previous-schema rows for one table. */
+  previousVersionSnapshot(
+    spec: PreviousVersionReadSpec,
+  ): PreviousVersionSnapshot;
+  /** RFC 0005 D6: the advisory pre-reset compatibility audit, if recorded. */
+  previousVersionAudit(): PreviousVersionAudit | undefined;
+  /** RFC 0005 D9: the executable rollback step — drop the container. */
+  previousVersionDiscard(): { present: boolean; discarded: boolean };
   sync(): Promise<SyncSummary>;
   syncUntilIdle(maxRounds?: number): Promise<SyncSummary>;
   query(sql: string, params?: readonly SqlValue[]): SqlRow[];
