@@ -2548,6 +2548,33 @@ server storage.
    plaintext server-side identity;
 4. an `encryptedColumns` entry naming a column the table does not declare.
 
+**Optional protected values in shared rows — the sidecar shape.** When a row
+mixes shared operational columns with an optional **non-NULL** protected value
+(a `NULL` encrypted value is not encrypted and needs no key), the supported
+shape is two tables: a **plaintext primary** that carries the shared columns
+and leaves `encryptedColumns` empty, and a **sidecar** table that carries the
+protected value under its own `encryptedColumns` entry, its own scope and its
+own subscription, keyed by the primary row id. The sidecar resolves its key by
+the normal selection order (custom `keyIdFor`, configured `keyIdColumns`, then
+the per-table default `keyId = table`); the default is sufficient, and
+`keyIdColumns` is optional. A client without the sidecar key subscribes to the
+primary and reads every primary column. It **MUST NOT** subscribe to a sidecar
+it cannot decrypt: decrypt-on-apply runs at the whole-row boundary (§4.5,
+§5.6), so an undecryptable sidecar row aborts the remainder of the sync round
+and starves unrelated frames in the same response. Presence metadata inside the
+encrypted sidecar row **MUST NOT** be the only presence signal for a no-key
+client: that client cannot read **any** column of a row it cannot decrypt, so
+a plaintext presence column beside the encrypted value is unreadable to
+exactly the client that needs it. Such metadata remains valid for keyholders,
+and a presence signal intended for no-key clients belongs to the plaintext
+primary or to another plaintext shape whose own authorization already covers
+the disclosure; otherwise the client reports `unknown` and claims nothing
+about whether a value exists. Neither core emits a generate-time diagnostic
+for an encrypted column that shares a row with plaintext columns: a correct
+encrypted table necessarily mixes a plaintext primary key, scope columns and
+key selector with the protected payload, so such a diagnostic would fire on
+every correct design.
+
 **The ciphertext envelope — byte-exact, cross-core.** An encrypted column's
 `bytes` value is the following envelope. All fields are contiguous, no
 padding; the whole thing is the `bytes` payload the row codec length-prefixes
