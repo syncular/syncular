@@ -13,6 +13,7 @@ import {
   compileSchema,
   issueSegmentUrl,
   scopeDigest,
+  segmentIdFor,
   verifySegmentToken,
   MemorySegmentStore,
   type SqliteValue,
@@ -409,6 +410,72 @@ describe('segment delivery negotiation (§4.2, §5.4, §5.7)', () => {
         nowMs: t.now.ms,
       }),
     ).resolves.toMatchObject({ sd: callerDigest });
+  });
+
+  test('a token is bound to its partition publication, not the content union (§5.4)', async () => {
+    const key = 'cross-partition-signing-key';
+    const store = new MemorySegmentStore();
+    const bytes = new Uint8Array([1, 2, 3]);
+    const meta = {
+      logEpoch: TEST_LOG_EPOCH,
+      table: 'tasks',
+      schemaVersion: 1,
+      mediaType: 'rows' as const,
+      asOfCommitSeq: 0,
+      rowCount: 0,
+      rowCursor: null,
+      nextRowCursor: null,
+    };
+    await store.put(
+      { ...meta, partition: 'part-1', scopeDigest: 'digest-a' },
+      bytes,
+      1_750_000_000_000,
+    );
+    await store.put(
+      { ...meta, partition: 'part-2', scopeDigest: 'digest-b' },
+      bytes,
+      1_750_000_000_000,
+    );
+    const entry = await store.get(await segmentIdFor(bytes));
+    if (entry === undefined) throw new Error('expected a stored segment');
+    const digestsFor = (partition: string): string[] =>
+      entry.record.publications
+        .filter((publication) => publication.partition === partition)
+        .map((publication) => publication.scopeDigest);
+    const issue = await issueSegmentUrl(
+      {
+        key,
+        baseUrl: 'https://cdn.example/segments',
+        ttlSeconds: 600,
+        audience: (partition) => `aud-${partition}`,
+      },
+      {
+        segmentId: entry.record.segmentId,
+        partition: 'part-1',
+        scopeDigest: 'digest-a',
+        nowMs: 1_750_000_000_000,
+      },
+    );
+    const token = new URL(issue.url).searchParams.get('st');
+    if (token === null) throw new Error('missing st token');
+    await expect(
+      verifySegmentToken(key, token, {
+        segmentId: entry.record.segmentId,
+        scopeDigest: digestsFor('part-1'),
+        audience: 'aud-part-1',
+        nowMs: 1_750_000_000_000,
+      }),
+    ).resolves.toMatchObject({ sd: 'digest-a' });
+    // The same content address under another partition is not this host's
+    // grant: the verifier must select the publication matching its context.
+    await expect(
+      verifySegmentToken(key, token, {
+        segmentId: entry.record.segmentId,
+        scopeDigest: digestsFor('part-2'),
+        audience: 'aud-part-2',
+        nowMs: 1_750_000_000_000,
+      }),
+    ).rejects.toMatchObject({ code: 'sync.forbidden' });
   });
 });
 

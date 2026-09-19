@@ -685,11 +685,14 @@ class TsServerInstance implements ServerInstance {
       if (entry === undefined) {
         throw new SyncError('sync.not_found', 'unknown segment (§5.5)');
       }
+      // The grant is the publication in this host's partition: identical
+      // bytes published elsewhere are one content address but are not this
+      // host's grant (§5.1, §5.4).
       await verifySegmentToken(SIGNED_URL_KEY, token, {
         segmentId,
-        // The §5.4 verifier accepts any digest the stored content was
-        // published under: identical bytes are one content address (§5.1).
-        scopeDigest: entry.record.scopeDigests,
+        scopeDigest: entry.record.publications
+          .filter((publication) => publication.partition === this.#partition)
+          .map((publication) => publication.scopeDigest),
         audience: audienceFor(this.#partition),
         nowMs: this.#now.ms,
       });

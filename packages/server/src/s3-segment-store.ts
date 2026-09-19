@@ -45,14 +45,18 @@
 import type {
   SegmentFindKey,
   SegmentMetadata,
+  SegmentPublication,
   SegmentRecord,
   SegmentStore,
   SegmentStoreStats,
 } from './segment-store';
 import {
   mergeSegmentRecord,
+  publicationRecord,
+  publicationsForRecord,
   segmentBytesEqual,
   segmentIdFor,
+  selectSegmentPublication,
 } from './segment-store';
 import type { DelegatedPresignConfig, SegmentUrlIssue } from './signed-url';
 import {
@@ -146,6 +150,60 @@ function isMediaType(value: unknown): value is 'rows' | 'sqlite' {
   return value === 'rows' || value === 'sqlite';
 }
 
+/** One publication inside a stored record (or a legacy materialized one). */
+function parsePublication(value: unknown, source: string): SegmentPublication {
+  if (typeof value !== 'object' || value === null) {
+    throw new Error(`S3SegmentStore: corrupt publication in ${source}`);
+  }
+  const p = value as Record<string, unknown>;
+  const strings = ['partition', 'logEpoch', 'table', 'scopeDigest'] as const;
+  const numbers = [
+    'schemaVersion',
+    'asOfCommitSeq',
+    'rowCount',
+    'byteLength',
+    'createdAtMs',
+    'expiresAtMs',
+  ] as const;
+  for (const field of strings) {
+    if (typeof p[field] !== 'string') {
+      throw new Error(
+        `S3SegmentStore: bad publication field ${field} in ${source}`,
+      );
+    }
+  }
+  for (const field of numbers) {
+    if (typeof p[field] !== 'number') {
+      throw new Error(
+        `S3SegmentStore: bad publication field ${field} in ${source}`,
+      );
+    }
+  }
+  if (!isMediaType(p.mediaType)) {
+    throw new Error(`S3SegmentStore: bad publication mediaType in ${source}`);
+  }
+  const cursorOk = (v: unknown): v is string | null =>
+    v === null || typeof v === 'string';
+  if (!cursorOk(p.rowCursor) || !cursorOk(p.nextRowCursor)) {
+    throw new Error(`S3SegmentStore: bad publication cursor in ${source}`);
+  }
+  return {
+    partition: p.partition as string,
+    logEpoch: p.logEpoch as string,
+    table: p.table as string,
+    schemaVersion: p.schemaVersion as number,
+    mediaType: p.mediaType,
+    scopeDigest: p.scopeDigest as string,
+    asOfCommitSeq: p.asOfCommitSeq as number,
+    rowCount: p.rowCount as number,
+    rowCursor: p.rowCursor,
+    nextRowCursor: p.nextRowCursor,
+    byteLength: p.byteLength as number,
+    createdAtMs: p.createdAtMs as number,
+    expiresAtMs: p.expiresAtMs as number,
+  };
+}
+
 function parseRecordJson(json: string, source: string): SegmentRecord {
   let parsed: unknown;
   try {
@@ -202,7 +260,11 @@ function parseRecordJson(json: string, source: string): SegmentRecord {
   ) {
     throw new Error(`S3SegmentStore: bad record scopeDigests in ${source}`);
   }
-  return {
+  const rawPublications = r.publications;
+  if (rawPublications !== undefined && !Array.isArray(rawPublications)) {
+    throw new Error(`S3SegmentStore: bad record publications in ${source}`);
+  }
+  const top = {
     segmentId: r.segmentId as string,
     partition: r.partition as string,
     logEpoch: r.logEpoch as string,
@@ -223,6 +285,16 @@ function parseRecordJson(json: string, source: string): SegmentRecord {
     byteLength: r.byteLength as number,
     createdAtMs: r.createdAtMs as number,
     expiresAtMs: r.expiresAtMs as number,
+  };
+  return {
+    ...top,
+    // A record from before per-publication provenance, or a legacy record
+    // whose union came from object metadata, materializes its publications
+    // from the merged top-level context — the old single-record read.
+    publications:
+      rawPublications === undefined
+        ? publicationsForRecord(top)
+        : rawPublications.map((value) => parsePublication(value, source)),
   };
 }
 
@@ -554,19 +626,21 @@ export class S3SegmentStore implements SegmentStore {
     const response = await this.#request('GET', await this.#findKeyFor(key));
     if (response === undefined) return undefined;
     const record = parseRecordJson(await response.text(), 'reuse pointer');
-    if (
-      record.partition !== key.partition ||
-      record.logEpoch !== key.logEpoch ||
-      record.table !== key.table ||
-      record.schemaVersion !== key.schemaVersion ||
-      record.mediaType !== key.mediaType ||
-      !record.scopeDigests.includes(key.scopeDigest) ||
-      record.asOfCommitSeq !== key.asOfCommitSeq ||
-      record.rowCursor !== null
-    ) {
-      return undefined;
-    }
-    if (record.expiresAtMs <= nowMs) return undefined;
+    // The pointer is keyed by the full context, but the record body is the
+    // whole merged entry: select the publication the key names, never the
+    // top-level fields or the digest union (§5.1).
+    const publication = selectSegmentPublication(record, {
+      partition: key.partition,
+      logEpoch: key.logEpoch,
+      table: key.table,
+      schemaVersion: key.schemaVersion,
+      mediaType: key.mediaType,
+      scopeDigest: key.scopeDigest,
+      asOfCommitSeq: key.asOfCommitSeq,
+      rowCursor: null,
+      nowMs,
+    });
+    if (publication === undefined) return undefined;
     // Lifecycle GC may have removed the object while the pointer survived.
     const head = await this.#request(
       'HEAD',
@@ -574,7 +648,7 @@ export class S3SegmentStore implements SegmentStore {
     );
     if (head === undefined) return undefined;
     await head.arrayBuffer();
-    return record;
+    return publicationRecord(record, publication);
   }
 
   /**

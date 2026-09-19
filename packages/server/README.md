@@ -660,14 +660,28 @@ which all three providers accept.
 **Key layout.** Deterministic, so every lookup is a GET/HEAD — never a
 LIST:
 
-- `{keyPrefix}seg/sha256/{hex}` — the segment bytes, verbatim (the
-  object body is exactly the content-addressed bytes, so presigned GETs
-  serve them directly and the client's §5.1 hash check passes). The
-  record metadata rides in object user metadata
-  (`x-amz-meta-syncular-record`, base64url JSON), so `get` is one GET.
+- `{keyPrefix}seg/sha256/{hex}` — the segment bytes, verbatim and
+  immutable (the object body is exactly the content-addressed bytes, so
+  presigned GETs serve them directly and the client's §5.1 hash check
+  passes).
+- `{keyPrefix}rec/sha256/{hex}.json` — the mutable `SegmentRecord`. It
+  carries the `publications` array: one entry per (partition, log epoch,
+  table, schema version, media type, scope digest, pin, cursors) context
+  the content was published under, each with its own TTL. `get` is two
+  GETs (record + bytes). A record written by 0.21 read the metadata from
+  the bytes object's user metadata; `get` still reads that shape and
+  materializes one publication per recorded digest.
 - `{keyPrefix}find/{sha256(reuse key)}.json` — the §5.3 whole-table
   reuse pointer, written only for `rowCursor: null` segments; `find` is
-  one GET plus a HEAD to confirm the segment object still exists.
+  one GET plus a HEAD to confirm the segment object still exists, and it
+  selects the publication the key names.
+
+A host that implements `SegmentStore` itself must return `publications`
+and `scopeDigests` on every `SegmentRecord` (`scopeDigests` is the
+compatibility view over `publications`). Download and `find` select a
+publication matching the caller's partition, live log epoch, and digest;
+they never union digests across contexts. The shared contract suite is
+`test/segment-store-contract.ts`.
 
 **TTL and lifecycle.** Expiry is store-side and authoritative:
 `expiresAtMs` (`put` time + `ttlMs`, default 24 h) is recorded with the

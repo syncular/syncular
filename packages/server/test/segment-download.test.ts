@@ -11,6 +11,7 @@ import {
 import {
   handleSegmentDownload,
   MemorySegmentStore,
+  scopeDigest,
   type SegmentStore,
   SqliteSegmentStore,
 } from '@syncular/server';
@@ -24,6 +25,7 @@ import {
   subFrame,
   sync,
   type TestContext,
+  TEST_LOG_EPOCH,
   upsert,
 } from './helpers';
 
@@ -123,7 +125,7 @@ describe('segment download (§5.5)', () => {
     ).rejects.toMatchObject({ code: 'sync.not_found' });
   });
 
-  test('identical empty segments across partitions lose the earlier download (open defect)', async () => {
+  test('identical empty segments from two partitions both download', async () => {
     const segments = new MemorySegmentStore();
     const emptyFirst = { project_id: ['p-empty-a'] };
     const emptySecond = { project_id: ['p-empty-b'] };
@@ -151,24 +153,133 @@ describe('segment download (§5.5)', () => {
     const firstRef = await refOfPull(first, emptyFirst);
     const secondRef = await refOfPull(second, emptySecond);
     // No rows in scope: both partitions encode the same bytes, so both
-    // publications are one content address with two scope digests.
+    // publications are one content address — but each partition keeps its
+    // own grant.
     expect(firstRef.segmentId).toBe(secondRef.segmentId);
     const stored = await segments.get(firstRef.segmentId);
+    expect(stored?.record.publications).toHaveLength(2);
     expect(stored?.record.scopeDigests).toHaveLength(2);
-    // OPEN DEFECT (SYNCULAR-SEGMENT-PARTITION-001), pinned as evidence and
-    // NOT claimed fixed: the merged entry carries the LATEST publisher's
-    // partition, and §5.5 refuses a download whose partition differs (no
-    // existence leak), so the first partition cannot download its own
-    // descriptor even though its digest is recorded. The digest union is
-    // correct and does not address this: the entry needs per-publication
-    // provenance, or per-publication records keyed by (segmentId, scope
-    // digest, partition, logEpoch).
+
+    const firstResult = await handleSegmentDownload(first.ctx, {
+      segmentId: firstRef.segmentId,
+      scopesHeader: canonicalScopeJson(emptyFirst),
+    });
+    const secondResult = await handleSegmentDownload(second.ctx, {
+      segmentId: secondRef.segmentId,
+      scopesHeader: canonicalScopeJson(emptySecond),
+    });
+    expect(decodeRowsSegment(firstResult.bytes).blocks.flat()).toHaveLength(0);
+    expect(firstResult.bytes).toEqual(secondResult.bytes);
+    // The returned record is projected onto the caller's publication.
+    expect(firstResult.record.partition).toBe('part-1');
+    expect(firstResult.record.scopeDigests).toEqual([firstRef.scopeDigest]);
+    expect(secondResult.record.partition).toBe('part-2');
+    expect(secondResult.record.scopeDigests).toEqual([secondRef.scopeDigest]);
+  });
+
+  test('a rotated log epoch denies the descriptor minted under the old one', async () => {
+    const t = makeContext({ limits: { inlineSegmentMaxBytes: 1 } });
+    const ref = await bootstrapRef(t);
+    await t.storage.rotatePartitionLogEpoch(
+      t.ctx.partition,
+      'rotated-epoch',
+      t.now.ms,
+    );
     await expect(
-      handleSegmentDownload(first.ctx, {
-        segmentId: firstRef.segmentId,
-        scopesHeader: canonicalScopeJson(emptyFirst),
+      handleSegmentDownload(t.ctx, {
+        segmentId: ref.segmentId,
+        scopesHeader: canonicalScopeJson({ project_id: ['p1'] }),
       }),
     ).rejects.toMatchObject({ code: 'sync.not_found' });
+  });
+
+  test('a different actor without the publishing scope is forbidden', async () => {
+    const t = makeContext({ limits: { inlineSegmentMaxBytes: 1 } });
+    const ref = await bootstrapRef(t);
+    t.scopes.value = { project_id: ['p2'] };
+    await expect(
+      handleSegmentDownload(t.ctx, {
+        segmentId: ref.segmentId,
+        scopesHeader: canonicalScopeJson({ project_id: ['p2'] }),
+      }),
+    ).rejects.toMatchObject({ code: 'sync.forbidden' });
+  });
+
+  test('a newer publication for another table does not hide the valid one', async () => {
+    const t = makeContext({ limits: { inlineSegmentMaxBytes: 1 } });
+    const digest = await scopeDigest({ project_id: ['p1'] });
+    const bytes = new Uint8Array([9, 9, 9]);
+    const meta = {
+      partition: t.ctx.partition,
+      logEpoch: TEST_LOG_EPOCH,
+      schemaVersion: 1,
+      mediaType: 'rows' as const,
+      scopeDigest: digest,
+      asOfCommitSeq: 0,
+      rowCount: 0,
+      rowCursor: null,
+      nextRowCursor: null,
+    };
+    // Synthetic same-bytes record: the in-tree encoders put the table name in
+    // the segment bytes, so this shape is reachable only from a malformed or
+    // custom store entry. The newer publication (docs) does not declare
+    // project_id; the earlier valid one (tasks) does.
+    await t.segments.put({ ...meta, table: 'tasks' }, bytes, t.now.ms);
+    const newest = await t.segments.put(
+      { ...meta, table: 'docs' },
+      bytes,
+      t.now.ms + 1,
+    );
+    const result = await handleSegmentDownload(t.ctx, {
+      segmentId: newest.segmentId,
+      scopesHeader: canonicalScopeJson({ project_id: ['p1'] }),
+    });
+    expect(result.record.table).toBe('tasks');
+    expect(result.record.scopeDigests).toEqual([digest]);
+  });
+
+  test('an expired pin does not shadow a live publication of the same bytes (§5.1)', async () => {
+    const t = makeContext({ limits: { inlineSegmentMaxBytes: 1 } });
+    const scopes = { project_id: ['p-none'] };
+    // p-none drives the empty bootstrap; p1/o1 let the intervening commit
+    // advance the pin without landing in that scope.
+    t.scopes.value = {
+      project_id: ['p-none'],
+      projectId: ['p1'],
+      org_id: ['o1'],
+    };
+    const pullEmpty = async (): Promise<SegmentRefFrame> => {
+      const message = await sync(t, [
+        pullHeader(),
+        subFrame('s1', 'tasks', scopes, -1),
+      ]);
+      return refOf(message, 's1');
+    };
+    const firstRef = await pullEmpty();
+    await sync(t, [
+      pushCommit('c1', [upsert('docs', 'd1', docRow('d1', 'o1', 'p1'))]),
+    ]);
+    t.now.ms += 60 * 60 * 1000;
+    const secondRef = await pullEmpty();
+    expect(secondRef.segmentId).toBe(firstRef.segmentId);
+    const stored = await t.ctx.segments.get(firstRef.segmentId);
+    expect(stored?.record.publications).toHaveLength(2);
+    const firstExpiry = stored?.record.publications[0]?.expiresAtMs;
+
+    // Past the first pin's 24 h TTL, inside the second's: the download
+    // selects the live publication, not the expired first one.
+    t.now.ms = (firstExpiry ?? 0) + 1;
+    const result = await handleSegmentDownload(t.ctx, {
+      segmentId: firstRef.segmentId,
+      scopesHeader: canonicalScopeJson(scopes),
+    });
+    expect(result.record.asOfCommitSeq).toBe(secondRef.asOfCommitSeq);
+
+    // An unrelated refresh of the newer publication leaves the expired pin's
+    // own expiry untouched.
+    await pullEmpty();
+    const after = await t.ctx.segments.get(firstRef.segmentId);
+    expect(after?.record.publications[0]?.expiresAtMs).toBe(firstExpiry);
   });
 
   test('expired segments are sync.segment_expired (retryable, §5.1)', async () => {

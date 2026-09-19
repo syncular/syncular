@@ -157,6 +157,94 @@ export function runSegmentStoreContract(
       expect(found?.rowCursor).toBeNull();
     });
 
+    test('one content address keeps every publication and each TTL (§5.1)', async () => {
+      const store = await makeStore();
+      const bytes = new Uint8Array([2, 2, 2]);
+      const first = await store.put(
+        { ...IMAGE_META, scopeDigest: 'digest-a', asOfCommitSeq: 42 },
+        bytes,
+        CONTRACT_NOW,
+      );
+      const second = await store.put(
+        { ...IMAGE_META, scopeDigest: 'digest-b', asOfCommitSeq: 43 },
+        bytes,
+        CONTRACT_NOW + 3_600_000,
+      );
+      expect(second.segmentId).toBe(first.segmentId);
+      let got = await store.get(first.segmentId);
+      expect(got?.record.publications).toHaveLength(2);
+      const aBefore = got?.record.publications.find(
+        (publication) => publication.scopeDigest === 'digest-a',
+      );
+      expect(aBefore?.expiresAtMs).toBe(CONTRACT_NOW + DEFAULT_SEGMENT_TTL_MS);
+
+      // Re-publishing b extends only b's own grant; a's elapsed TTL stays put.
+      await store.put(
+        { ...IMAGE_META, scopeDigest: 'digest-b', asOfCommitSeq: 43 },
+        bytes,
+        CONTRACT_NOW + 7_200_000,
+      );
+      got = await store.get(first.segmentId);
+      const aAfter = got?.record.publications.find(
+        (publication) => publication.scopeDigest === 'digest-a',
+      );
+      expect(aAfter?.expiresAtMs).toBe(aBefore?.expiresAtMs);
+      expect(
+        got?.record.publications.find(
+          (publication) => publication.scopeDigest === 'digest-b',
+        )?.expiresAtMs,
+      ).toBe(CONTRACT_NOW + 7_200_000 + DEFAULT_SEGMENT_TTL_MS);
+
+      // `find` names the publication by its full context, so an expired pin
+      // does not shadow a live one and each is independently reachable.
+      const expiredA = await store.find(
+        { ...KEY, scopeDigest: 'digest-a' },
+        CONTRACT_NOW + DEFAULT_SEGMENT_TTL_MS + 1_000_000,
+      );
+      expect(expiredA).toBeUndefined();
+      const liveB = await store.find(
+        { ...KEY, scopeDigest: 'digest-b', asOfCommitSeq: 43 },
+        CONTRACT_NOW + DEFAULT_SEGMENT_TTL_MS + 1_000_000,
+      );
+      expect(liveB?.scopeDigest).toBe('digest-b');
+      // The returned compatibility view is narrowed to the chosen grant.
+      expect(liveB?.scopeDigests).toEqual(['digest-b']);
+      expect(liveB?.publications).toHaveLength(1);
+    });
+
+    test('identical bytes across tables and pins find by their own key (§5.3)', async () => {
+      const store = await makeStore();
+      const bytes = new Uint8Array([3, 3]);
+      await store.put(
+        { ...IMAGE_META, table: 'tasks', asOfCommitSeq: 1 },
+        bytes,
+        CONTRACT_NOW,
+      );
+      await store.put(
+        { ...IMAGE_META, table: 'docs', asOfCommitSeq: 2 },
+        bytes,
+        CONTRACT_NOW,
+      );
+      const record = await store.get(await segmentIdFor(bytes));
+      expect(record?.record.publications).toHaveLength(2);
+      expect(
+        (
+          await store.find(
+            { ...KEY, table: 'tasks', asOfCommitSeq: 1 },
+            CONTRACT_NOW + 1,
+          )
+        )?.table,
+      ).toBe('tasks');
+      expect(
+        (
+          await store.find(
+            { ...KEY, table: 'docs', asOfCommitSeq: 2 },
+            CONTRACT_NOW + 1,
+          )
+        )?.table,
+      ).toBe('docs');
+    });
+
     test('find never returns expired, paged, or differently-keyed records', async () => {
       const store = await makeStore();
       await store.put(IMAGE_META, new Uint8Array([1, 2]), CONTRACT_NOW);

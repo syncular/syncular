@@ -1036,9 +1036,9 @@ rendered as lowercase hex. Servers MUST recompute and compare digests on
 segment download (§5.5); a digest mismatch is `sync.forbidden`. A
 `segmentId` is the hash of the segment bytes (§5.1), so two scopes whose
 rows encode to identical bytes produce one content address. The store
-records every scope digest its content was published under, and a
-download matches when the recomputed digest is one of them (§5.1,
-§5.5).
+records every publication of that content address, and a download matches
+when the recomputed digest belongs to a publication in the caller's own
+partition and live `logEpoch` (§5.1, §5.5).
 
 ---
 
@@ -1488,24 +1488,34 @@ one table at one `asOfCommitSeq`.
 - Servers SHOULD build segments once per (partition, table, scope digest,
   `asOfCommitSeq`, page window, schemaVersion) and share them across
   clients — this is the bootstrap-storm answer together with §5.4.
-- **One stored entry per content address.** The `segmentId` hash does not
-  cover the scope digest, so two scopes whose rows encode to identical
-  bytes publish the same content address. A store keeps one entry per
-  content address and records every scope digest that content was
-  published under: a second publication of existing content merges its
-  digest into the entry, keeps the earliest creation time, and takes the
-  later expiry. `find` and download authorization match any recorded
-  digest (§5.3, §5.5). The bytes already stored under a content address
-  MUST be identical to the bytes being published; a mismatch is a hash
-  collision, and the server MUST fail loudly rather than overwrite.
+- **One stored entry per content address; one publication per context.**
+  The `segmentId` hash does not cover the scope digest, so two scopes
+  whose rows encode to identical bytes publish the same content address.
+  A store keeps one entry per content address and records every
+  **publication** of it: the full descriptor context (partition,
+  `logEpoch`, table, `schemaVersion`, media type, scope digest,
+  `asOfCommitSeq`, page cursors), each with its own creation time and
+  expiry. `find` and download authorization select the publication
+  matching the caller's own partition, live `logEpoch`, and freshly
+  computed digest (§5.3, §5.5). A digest recorded under a different
+  partition, epoch, table, or pin never authorizes, and one publication's
+  refresh never extends another publication's expiry. A publication whose
+  context already exists merges into that publication's own lifetime; a
+  new context is appended. The bytes already stored under a content
+  address MUST be identical to the bytes being published; a mismatch is a
+  hash collision, and the server MUST fail loudly rather than overwrite.
   A store with conditional writes MUST make the merge conditional on the
   entry it read and retry instead of overwriting it, so two publishers
-  racing to create an entry cannot both win and drop a digest. The
+  racing to create an entry cannot both win and drop a publication. The
   conditional write must be keyed to the mutable record itself: an ETag
   over the immutable content-addressed bytes is a content hash, so it is
   identical for identical bytes and cannot separate two writers extending
-  the same union. A store that keeps the record inside the bytes object
+  the same entry. A store that keeps the record inside the bytes object
   therefore cannot satisfy this and must store it as its own object.
+  A record written before per-publication provenance existed is read as a
+  single publication under its stored context for each recorded digest;
+  segments are cache entries with a TTL, so an in-flight object loses
+  nothing on upgrade.
 
 ### 5.2 Rows segments (`mediaType = rows`) — mandatory
 
@@ -1764,10 +1774,11 @@ treat the whole `st` token as opaque — §2.1's "partitions never appear
 on the wire" holds in the sense that no *client-interpretable* partition
 field exists. The verifier MUST check the MAC, `exp` (with ≤ 60 s skew
 allowance), `seg` equality with the requested segment, `sd` membership in
-the segment's stored scope digests (identical bytes are one content
-address, so a segment published under two scopes is one stored entry:
-§5.1, §5.5), and `aud` equality with the
-value derived from the segment's partition. `sd` binds the token to the
+the scope digests of the segment's stored publications in the partition
+that `aud` names (identical bytes are one content address, but a digest
+recorded under another partition is not this host's grant: §5.1, §5.5),
+and `aud` equality with the value derived from the selected publication's
+partition. `sd` binds the token to the
 effective scopes that were authorized at issuance — issuance happens
 inside the pull, immediately after scope resolution, so a signed URL is
 never minted for scopes the actor did not hold at that moment. TTL SHOULD be ≤ 15 minutes: the
@@ -1799,11 +1810,14 @@ for clients without signed-URL support.
 - The server MUST re-authorize on **every** download: run
   `resolveScopes` for the actor, compute effective scopes against the
   supplied requested scopes (§3.2), compute the scope digest (§3.5), and
-  require that digest to be one of the scope digests the stored segment
-  was published under. A `segmentId` is the hash of the segment bytes
-  (§5.1), so byte-identical content published under two scopes is one
-  stored segment that records both digests; either scope authorizes a
-  download of it. Mismatch, revoked status, or resolution failure ⇒ HTTP
+  require that digest to belong to a stored publication whose partition
+  equals the request's partition and whose `logEpoch` is the partition's
+  live epoch. A `segmentId` is the hash of the segment bytes (§5.1), so
+  byte-identical content published under two scopes is one stored segment
+  that records both publications; either scope authorizes a download of
+  it inside its own partition. A publication in another partition or an
+  older epoch is `sync.not_found` (no existence leak). Mismatch, revoked
+  status, or resolution failure ⇒ HTTP
   403 `sync.forbidden`. A segment reference obtained earlier is not a
   bearer capability; only signed URLs are (deliberately, with short TTL).
 - A server MAY eventually *forget* an expired segment entirely (object

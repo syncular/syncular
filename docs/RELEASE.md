@@ -31,19 +31,26 @@ the surface.
 - **One pinned PostgreSQL transaction client serializes its statements**, so a
   commit validator issuing independent reads with `Promise.all` no longer
   overlaps queries on one connection.
-- **A stored segment records every scope digest its bytes were published
-  under.** Two scopes whose rows are byte-identical are one content address, and
-  the store kept one record, so the second publication overwrote the first digest
-  and the first client was rejected at download with `sync.forbidden`. Empty
-  bootstraps hit this whenever two authorized subscriptions resolved to no rows.
-  Download, signed-URL token, and the §5.3 reuse lookup each authorize on any
-  recorded digest. The S3 store keeps the mutable record in its own object, so
-  the union write is conditional on the record body and no concurrent publisher
-  can drop another's digest; the bytes object stays immutable. One defect in this
-  area stays open and is not claimed closed: a merged entry carries the latest
-  publisher's partition and log epoch, so identical content published from two
-  partitions leaves the earlier partition's descriptor undownloadable
-  (`sync.not_found`). Digest union is correct and does not address it.
+- **A stored segment records every publication of its bytes, not just a
+  digest union.** Two scopes whose rows are byte-identical are one content
+  address, so the store keeps one entry; it now retains every publication of
+  that entry with the full context (partition, `logEpoch`, table,
+  `schemaVersion`, media type, scope digest, `asOfCommitSeq`, page cursors) and
+  each publication's own TTL. Download, signed-URL token, and the §5.3 reuse
+  lookup select the publication matching the caller's partition, live
+  `logEpoch`, and freshly computed digest; a digest recorded under a different
+  partition, epoch, table, or pin never authorizes, and one publication's
+  refresh never extends another's expiry. This closes the earlier
+  cross-partition collapse: byte-identical content published from two
+  partitions is one entry that both partitions can download, and an old-epoch
+  descriptor is denied after a rotation. The S3 store keeps the mutable record
+  in its own object, so the merge is conditional on the record body and no
+  concurrent publisher can drop another's publication; the bytes object stays
+  immutable and content-addressed. Custom `SegmentStore` implementations must
+  return `publications` on `SegmentRecord`; a store reading a pre-0.22 record
+  materializes one publication per recorded digest under the stored context,
+  so an in-flight object keeps working. Segment bytes, the content address,
+  and the SSP2 wire frames are unchanged.
 - **`RealtimeSession.drain()`** resolves when queued acknowledgement-cursor
   writes have settled and throws a persistence failure instead of dropping it,
   so a host can await its control-plane storage work before closing storage or

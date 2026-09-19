@@ -144,6 +144,9 @@ describe('concurrent publication of one content address (§5.1)', () => {
         'digest-a',
         'digest-b',
       ]);
+      // Every concurrent publication also keeps its own partition context:
+      // the digest union alone is not the contract.
+      expect(stored?.record.publications).toHaveLength(2);
       // A lost union is what makes the losing scope's download
       // `sync.forbidden: scope digest mismatch` (§5.5), so both digests
       // surviving IS the contract — not an implementation detail.
@@ -189,6 +192,7 @@ describe('concurrent publication of one content address (§5.1)', () => {
       'digest-b',
       'digest-x',
     ]);
+    expect(stored?.record.publications).toHaveLength(3);
   });
 
   test('the bytes object is written once and never rewritten', async () => {
@@ -216,7 +220,7 @@ describe('concurrent publication of one content address (§5.1)', () => {
     );
   });
 
-  test('a later publication keeps every earlier digest (sequential union)', async () => {
+  test('a later publication keeps every earlier publication (sequential)', async () => {
     const store = makeStore();
     const bytes = new Uint8Array();
     const first = await store.put(
@@ -234,17 +238,28 @@ describe('concurrent publication of one content address (§5.1)', () => {
       'digest-a',
       'digest-b',
     ]);
-    // OPEN DEFECT (SYNCULAR-SEGMENT-PARTITION-001), pinned as evidence and
-    // NOT claimed fixed: the merged entry carries the LATEST publisher's
-    // partition and log epoch, and §5.5 refuses a download whose partition or
-    // current log epoch differs (`sync.not_found`, no existence leak — see
-    // `segment-download.test.ts` "segments from another partition"). So
-    // identical content published from two partitions is one entry whose
-    // first-partition descriptor is not downloadable. The digest union is
-    // correct and does not address this: the entry needs per-publication
-    // partition/logEpoch/table provenance, or per-publication records keyed by
-    // (segmentId, scope digest, partition, logEpoch).
+    expect(stored?.record.publications).toHaveLength(2);
+    // The top-level view is still the latest publisher (compatibility), but
+    // each partition's publication is independently findable.
     expect(stored?.record.partition).toBe('p2');
+    const baseKey = {
+      partition: 'p1',
+      logEpoch: META.logEpoch,
+      table: META.table,
+      schemaVersion: META.schemaVersion,
+      mediaType: META.mediaType,
+      scopeDigest: 'digest-a',
+      asOfCommitSeq: META.asOfCommitSeq,
+    };
+    expect((await store.find(baseKey, NOW + 2))?.partition).toBe('p1');
+    expect(
+      (
+        await store.find(
+          { ...baseKey, partition: 'p2', scopeDigest: 'digest-b' },
+          NOW + 2,
+        )
+      )?.partition,
+    ).toBe('p2');
   });
 });
 

@@ -24,23 +24,142 @@ export interface SegmentMetadata {
   readonly nextRowCursor: string | null;
 }
 
-export interface SegmentRecord extends SegmentMetadata {
-  readonly segmentId: string;
-  /**
-   * Every scope digest this content was published under (§3.5). Identical
-   * bytes have one content address, so two scopes whose rows happen to be
-   * byte-identical publish the SAME `segmentId`; the store keeps one entry
-   * per content address and records both digests instead of letting the
-   * second publication overwrite the first. The record's `scopeDigest` is
-   * always `scopeDigests[0]` (the publisher's own digest, so its descriptor
-   * and signed URL stay consistent). A download is
-   * authorized when the caller's freshly computed digest is one of these
-   * (§5.5).
-   */
-  readonly scopeDigests: readonly string[];
+/**
+ * One publication of a content address (§5.1): the full descriptor context
+ * that authorized the bytes plus that publication's own cache lifetime.
+ * Identical bytes have one content address, so one stored entry carries one
+ * publication per distinct (partition, logEpoch, table, schemaVersion,
+ * mediaType, scopeDigest, asOfCommitSeq, cursors) context it was published
+ * under. Authorization selects a matching publication; it never unions
+ * digests across a different partition or epoch.
+ */
+export interface SegmentPublication extends SegmentMetadata {
   readonly byteLength: number;
   readonly createdAtMs: number;
   readonly expiresAtMs: number;
+}
+
+export interface SegmentRecord extends SegmentMetadata {
+  readonly segmentId: string;
+  /**
+   * Every scope digest this content was published under (§3.5), primary
+   * first. A compatibility view over `publications`; download and `find`
+   * authorize on a matching publication, not on this union.
+   */
+  readonly scopeDigests: readonly string[];
+  /** Every publication of this content address, oldest first (§5.1). */
+  readonly publications: readonly SegmentPublication[];
+  readonly byteLength: number;
+  readonly createdAtMs: number;
+  readonly expiresAtMs: number;
+}
+
+/** Canonical identity of one publication; two equal keys are one grant. */
+export function publicationKey(metadata: SegmentMetadata): string {
+  return JSON.stringify([
+    metadata.partition,
+    metadata.logEpoch,
+    metadata.table,
+    metadata.schemaVersion,
+    metadata.mediaType,
+    metadata.scopeDigest,
+    metadata.asOfCommitSeq,
+    metadata.rowCursor,
+    metadata.nextRowCursor,
+  ]);
+}
+
+/**
+ * Materialize publications for a record written before provenance existed
+ * (in-flight 0.21 objects, §5.1). Only the merged top-level context is
+ * known, so each recorded digest is one publication under it: that is the
+ * old single-record read behavior preserved verbatim.
+ */
+export function publicationsForRecord(
+  record: SegmentMetadata & {
+    readonly scopeDigests: readonly string[];
+    readonly byteLength: number;
+    readonly createdAtMs: number;
+    readonly expiresAtMs: number;
+  },
+): SegmentPublication[] {
+  return record.scopeDigests.map((scopeDigest) => ({
+    partition: record.partition,
+    logEpoch: record.logEpoch,
+    table: record.table,
+    schemaVersion: record.schemaVersion,
+    mediaType: record.mediaType,
+    scopeDigest,
+    asOfCommitSeq: record.asOfCommitSeq,
+    rowCount: record.rowCount,
+    rowCursor: record.rowCursor,
+    nextRowCursor: record.nextRowCursor,
+    byteLength: record.byteLength,
+    createdAtMs: record.createdAtMs,
+    expiresAtMs: record.expiresAtMs,
+  }));
+}
+
+/**
+ * The newest publication matching a context, or undefined (§5.5). Optional
+ * `nowMs` skips publications whose own TTL has elapsed, so an expired
+ * `asOf`/schema publication never shadows a newer live one.
+ */
+export interface SegmentPublicationSelector {
+  readonly partition: string;
+  readonly logEpoch: string;
+  readonly scopeDigest: string;
+  readonly table?: string;
+  readonly schemaVersion?: number;
+  readonly mediaType?: 'rows' | 'sqlite';
+  readonly asOfCommitSeq?: number;
+  readonly rowCursor?: string | null;
+  readonly nowMs?: number;
+}
+
+export function selectSegmentPublication(
+  record: SegmentRecord,
+  context: SegmentPublicationSelector,
+): SegmentPublication | undefined {
+  for (let index = record.publications.length - 1; index >= 0; index--) {
+    const publication = record.publications[index]!;
+    if (
+      publication.partition === context.partition &&
+      publication.logEpoch === context.logEpoch &&
+      publication.scopeDigest === context.scopeDigest &&
+      (context.table === undefined || publication.table === context.table) &&
+      (context.schemaVersion === undefined ||
+        publication.schemaVersion === context.schemaVersion) &&
+      (context.mediaType === undefined ||
+        publication.mediaType === context.mediaType) &&
+      (context.asOfCommitSeq === undefined ||
+        publication.asOfCommitSeq === context.asOfCommitSeq) &&
+      (context.rowCursor === undefined ||
+        publication.rowCursor === context.rowCursor) &&
+      (context.nowMs === undefined || publication.expiresAtMs > context.nowMs)
+    ) {
+      return publication;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Project a record onto one publication. The compatibility view is narrowed
+ * to that grant: `scopeDigests` and `publications` hold only the chosen
+ * publication, so a caller that authorizes from them cannot union a grant
+ * from a different partition or epoch.
+ */
+export function publicationRecord(
+  record: SegmentRecord,
+  publication: SegmentPublication,
+): SegmentRecord {
+  return {
+    ...record,
+    ...publication,
+    scopeDigests: [publication.scopeDigest],
+    publications: [publication],
+  };
 }
 
 /** Byte equality for the content-address collision check (§5.1). */
@@ -59,7 +178,10 @@ export function segmentBytesEqual(a: Uint8Array, b: Uint8Array): boolean {
  * cursors stay consistent with what it just published), the scope digests
  * union with the incoming digest first (the record's primary `scopeDigest`),
  * `createdAtMs` keeps the earliest sighting, and `expiresAtMs` takes the
- * later expiry. Callers MUST have proven the bytes identical first.
+ * later expiry. A publication with the incoming context merges into that
+ * publication's own lifetime; a publication with a new context is appended,
+ * so no context's grant is overwritten or extended by another. Callers MUST
+ * have proven the bytes identical first.
  */
 export function mergeSegmentRecord(
   existing: SegmentRecord | undefined,
@@ -69,6 +191,31 @@ export function mergeSegmentRecord(
   nowMs: number,
   ttlMs: number,
 ): SegmentRecord {
+  const prior = existing?.publications ?? [];
+  const fresh: SegmentPublication = {
+    ...metadata,
+    byteLength,
+    createdAtMs: nowMs,
+    expiresAtMs: nowMs + ttlMs,
+  };
+  const key = publicationKey(metadata);
+  const at = prior.findIndex(
+    (publication) => publicationKey(publication) === key,
+  );
+  // Re-publication of one context merges that publication's lifetime only:
+  // an unrelated refresh must not extend another publication's grant (§5.1).
+  const publications =
+    at < 0
+      ? [...prior, fresh]
+      : prior.map((publication, index) =>
+          index === at
+            ? {
+                ...fresh,
+                createdAtMs: Math.min(publication.createdAtMs, nowMs),
+                expiresAtMs: Math.max(publication.expiresAtMs, nowMs + ttlMs),
+              }
+            : publication,
+        );
   return {
     ...metadata,
     segmentId,
@@ -78,6 +225,7 @@ export function mergeSegmentRecord(
         (digest) => digest !== metadata.scopeDigest,
       ),
     ],
+    publications,
     byteLength,
     createdAtMs: Math.min(existing?.createdAtMs ?? nowMs, nowMs),
     expiresAtMs: Math.max(
@@ -198,18 +346,19 @@ export class MemorySegmentStore implements SegmentStore {
     nowMs: number,
   ): Promise<SegmentRecord | undefined> {
     for (const { record } of this.#entries.values()) {
-      if (
-        record.partition === key.partition &&
-        record.logEpoch === key.logEpoch &&
-        record.table === key.table &&
-        record.schemaVersion === key.schemaVersion &&
-        record.mediaType === key.mediaType &&
-        record.scopeDigests.includes(key.scopeDigest) &&
-        record.asOfCommitSeq === key.asOfCommitSeq &&
-        record.rowCursor === null &&
-        record.expiresAtMs > nowMs
-      ) {
-        return record;
+      const publication = selectSegmentPublication(record, {
+        partition: key.partition,
+        logEpoch: key.logEpoch,
+        table: key.table,
+        schemaVersion: key.schemaVersion,
+        mediaType: key.mediaType,
+        scopeDigest: key.scopeDigest,
+        asOfCommitSeq: key.asOfCommitSeq,
+        rowCursor: null,
+        nowMs,
+      });
+      if (publication !== undefined) {
+        return publicationRecord(record, publication);
       }
     }
     return undefined;

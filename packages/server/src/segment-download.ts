@@ -19,7 +19,7 @@ import { SyncError, syncError } from './errors';
 import { emitEvent } from './events';
 import { compileSchema } from './schema';
 import { computeEffective, type ResolvedScopes, scopeDigest } from './scopes';
-import type { SegmentRecord } from './segment-store';
+import { publicationRecord, type SegmentRecord } from './segment-store';
 
 export interface SegmentDownloadRequest {
   readonly segmentId: string;
@@ -103,34 +103,22 @@ async function downloadSegment(
 ): Promise<SegmentDownloadResult> {
   const registry = await touchAuthenticatedPartition(ctx);
   const entry = await ctx.segments.get(request.segmentId);
-  if (
-    entry === undefined ||
-    entry.record.partition !== ctx.partition ||
-    entry.record.logEpoch !== registry.logEpoch
-  ) {
+  if (entry === undefined) {
     throw syncError('sync.not_found', 'unknown segment (§5.5)');
   }
-  if (entry.record.expiresAtMs <= clockOf(ctx)()) {
-    throw syncError(
-      'sync.segment_expired',
-      'segment TTL elapsed — re-pull to mint fresh descriptors (§5.1)',
-    );
+  // Select the caller's own publication context. A publication under a
+  // different partition or a stale log epoch is not this caller's grant, and
+  // the entry's existence must not leak across that boundary (§5.5).
+  const inContext = entry.record.publications.filter(
+    (publication) =>
+      publication.partition === ctx.partition &&
+      publication.logEpoch === registry.logEpoch,
+  );
+  if (inContext.length === 0) {
+    throw syncError('sync.not_found', 'unknown segment (§5.5)');
   }
 
-  const schema = compileSchema(ctx.schema);
-  const table = schema.tables.get(entry.record.table);
-  if (table === undefined) {
-    throw syncError('sync.not_found', 'segment table no longer served');
-  }
   const requested = parseScopesHeader(request.scopesHeader);
-  for (const [key, values] of Object.entries(requested)) {
-    if (!table.declaredVariables.has(key) || values.includes('*')) {
-      throw syncError(
-        'sync.invalid_subscription',
-        'invalid requested scopes (§3.2)',
-      );
-    }
-  }
 
   let resolved: ResolvedScopes;
   try {
@@ -161,15 +149,58 @@ async function downloadSegment(
     throw syncError('sync.forbidden', 'segment scopes not held (§5.5)');
   }
   const digest = await scopeDigest(outcome.effective);
-  // §5.1/§5.5: identical bytes are one content address, so a record may
-  // carry several digests. Holding the caller's live digest is the whole
-  // grant; anything else stays forbidden.
-  if (!entry.record.scopeDigests.includes(digest)) {
+  // The digest is the grant, but only inside the caller's partition and live
+  // epoch: identical bytes published elsewhere never authorize this caller.
+  const forDigest = inContext.filter(
+    (publication) => publication.scopeDigest === digest,
+  );
+  if (forDigest.length === 0) {
     throw syncError('sync.forbidden', 'scope digest mismatch (§3.5, §5.5)');
   }
+  // TTL is per publication: an unrelated refresh of another publication must
+  // not extend this grant, and an expired old pin must not shadow a live one.
+  const now = clockOf(ctx)();
+  const live = forDigest.filter((publication) => publication.expiresAtMs > now);
+  if (live.length === 0) {
+    throw syncError(
+      'sync.segment_expired',
+      'segment TTL elapsed — re-pull to mint fresh descriptors (§5.1)',
+    );
+  }
+  // Choose among the live candidates that the compiled schema serves and that
+  // declare every requested scope. A malformed or custom record whose newer
+  // publication names another table must not fail the download while an
+  // earlier valid publication of the same bytes exists.
+  const schema = compileSchema(ctx.schema);
+  const candidates = live.filter((publication) => {
+    const table = schema.tables.get(publication.table);
+    return (
+      table !== undefined &&
+      Object.entries(requested).every(
+        ([key, values]) =>
+          table.declaredVariables.has(key) && !values.includes('*'),
+      )
+    );
+  });
+  if (candidates.length === 0) {
+    const served = live.some((publication) =>
+      schema.tables.has(publication.table),
+    );
+    if (!served) {
+      throw syncError('sync.not_found', 'segment table no longer served');
+    }
+    throw syncError(
+      'sync.invalid_subscription',
+      'invalid requested scopes (§3.2)',
+    );
+  }
+  const publication = candidates[candidates.length - 1]!;
 
   return {
-    record: entry.record,
+    // The returned record is projected onto the selected publication, so its
+    // `scopeDigests`/`publications` compatibility view cannot union a grant
+    // from another partition (§5.1).
+    record: publicationRecord(entry.record, publication),
     bytes: entry.bytes,
     headers: {
       'Content-Type': 'application/octet-stream',
