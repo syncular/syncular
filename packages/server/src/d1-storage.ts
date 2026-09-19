@@ -1463,7 +1463,11 @@ export class D1ServerStorage implements ServerStorage {
   async queryAuthoritative(
     partition: string,
     query: AuthoritativeQueryRequest,
+    _checkpoints?: readonly CheckpointDeclaration[],
   ): Promise<AuthoritativeQueryResult> {
+    // D1 declares no checkpoints. `#schemaDatabase` prepends a guard that
+    // re-checks the published marker inside this same batch, so condition 2
+    // is already evaluated with the query (§2.4 D1 schema readiness).
     const db = this.#schemaDatabase();
     if (this.#tables === undefined) {
       throw new Error(

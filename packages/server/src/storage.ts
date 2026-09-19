@@ -85,6 +85,12 @@ export type ServeGateRefusal =
       readonly kind: 'checkpoint';
       readonly partition: string;
       readonly name: string;
+    }
+  | {
+      /** The token changed between two reads: a restore rotated the epoch. */
+      readonly kind: 'epoch';
+      readonly expected: string | undefined;
+      readonly actual: string | undefined;
     };
 
 /**
@@ -118,6 +124,29 @@ export function serveGateRefusal(
         name: pending.name,
       };
     }
+  }
+  return undefined;
+}
+
+/**
+ * RFC 0007: compare two gate tokens read around a data read. The token binds
+ * the published schema version and the partition log epoch, so a restore that
+ * presents V → other → V is distinguishable. Returns a refusal when either
+ * changed across the read.
+ */
+export function serveGateTokenChanged(
+  before: ServeGate,
+  after: ServeGate,
+): ServeGateRefusal | undefined {
+  if (
+    before.storedSchemaVersion !== after.storedSchemaVersion ||
+    before.logEpoch !== after.logEpoch
+  ) {
+    return {
+      kind: 'epoch',
+      expected: before.logEpoch,
+      actual: after.logEpoch,
+    };
   }
   return undefined;
 }
@@ -782,6 +811,7 @@ export interface ServerStorage {
   queryAuthoritative?(
     partition: string,
     query: AuthoritativeQueryRequest,
+    checkpoints?: readonly CheckpointDeclaration[],
   ): Promise<AuthoritativeQueryResult>;
 
   /**

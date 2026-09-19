@@ -1,6 +1,8 @@
 import { validateCommitPruneQuery } from './prune';
 import { StorageQueryError } from './storage-errors';
 import type { CommitPruneQuery, CommitPruneResult } from './storage';
+import { serveGateRefusal } from './storage';
+import { serveNotReadyError } from './readiness';
 /**
  * SQLite server storage over the shared synchronous driver.
  *
@@ -946,6 +948,7 @@ END`);
   async queryAuthoritative(
     partition: string,
     query: AuthoritativeQueryRequest,
+    checkpoints?: readonly CheckpointDeclaration[],
   ): Promise<AuthoritativeQueryResult> {
     if (this.#tables === undefined) {
       throw new Error(
@@ -971,6 +974,13 @@ END`);
     try {
       this.db.exec('BEGIN');
       open = true;
+      // RFC 0007: evaluate the gate on this connection after BEGIN. SQLite is
+      // single-writer and the shared connection serializes writers, so the
+      // gate read and the query read cannot straddle a migration.
+      const runningVersion = this.#schemaVersion ?? 0;
+      const gate = await this.readServeGate(partition, runningVersion);
+      const refusal = serveGateRefusal(gate, runningVersion, checkpoints);
+      if (refusal !== undefined) throw serveNotReadyError(refusal);
       const rows = this.db
         .query<Readonly<Record<string, unknown>>, AuthoritativeQueryValue[]>(
           prepared.sql,

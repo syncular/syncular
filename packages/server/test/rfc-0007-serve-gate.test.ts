@@ -205,3 +205,93 @@ test('acceptance 13: a migration between the entry gate and the push transaction
     db.close();
   }
 });
+
+test('acceptance 13 (pull): a migration during the pull read is refused before any byte escapes', async () => {
+  const db = new BunSqliteDatabase();
+  const a = new SqliteServerStorage(db);
+  const t = makeContext({ storage: a });
+  try {
+    await a.ensureSchema(SCHEMA);
+    await sync(t, [
+      pushCommit('c1', [upsert('tasks', 't1', taskRow('t1', 'p1'))]),
+    ]);
+    let migrated = false;
+    const wrapped = new Proxy(a, {
+      get(target, property) {
+        if (property === 'getMaxCommitSeq') {
+          return async (partition: string) => {
+            if (!migrated) {
+              migrated = true;
+              // The migration lands inside the pull's own data read, after
+              // the entry gate has passed and after RESP_HEADER was built.
+              const b = new SqliteServerStorage(db);
+              await b.ensureSchema(SCHEMA_V2);
+            }
+            return target.getMaxCommitSeq(partition);
+          };
+        }
+        const value = Reflect.get(target, property);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    Object.assign(t.ctx, { storage: wrapped });
+    await expect(
+      handleSyncRequest(requestBytes([pullHeader({ limitCommits: 1 })]), t.ctx),
+    ).rejects.toMatchObject({ code: 'sync.schema_not_ready' });
+    expect(migrated).toBe(true);
+  } finally {
+    db.close();
+  }
+});
+
+test('an epoch rotation during the pull read is refused by the token comparison', async () => {
+  const db = new BunSqliteDatabase();
+  const a = new SqliteServerStorage(db);
+  const t = makeContext({ storage: a });
+  try {
+    await a.ensureSchema(SCHEMA);
+    await sync(t, [
+      pushCommit('c1', [upsert('tasks', 't1', taskRow('t1', 'p1'))]),
+    ]);
+    let rotated = false;
+    const wrapped = new Proxy(a, {
+      get(target, property) {
+        if (property === 'getMaxCommitSeq') {
+          return async (partition: string) => {
+            if (!rotated) {
+              rotated = true;
+              // A restore presents V -> other -> V at the same schema version;
+              // only the epoch distinguishes it.
+              await target.rotatePartitionLogEpoch(
+                partition,
+                'restored-epoch',
+                t.now.ms,
+              );
+            }
+            return target.getMaxCommitSeq(partition);
+          };
+        }
+        const value = Reflect.get(target, property);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    Object.assign(t.ctx, { storage: wrapped });
+    let caught: unknown;
+    try {
+      await handleSyncRequest(
+        requestBytes([pullHeader({ limitCommits: 1 })]),
+        t.ctx,
+      );
+    } catch (error) {
+      caught = error;
+    }
+    const error = caught as { code?: string; details?: string };
+    expect(error.code).toBe('sync.schema_not_ready');
+    expect(JSON.parse(error.details ?? '{}')).toEqual({
+      logEpochChanged: true,
+    });
+    expect(rotated).toBe(true);
+  } finally {
+    db.close();
+  }
+});

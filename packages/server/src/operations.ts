@@ -419,18 +419,22 @@ export function registerRemoteQuery<Params>(
       const prefix = 'SELECT * FROM (';
       let result;
       try {
-        result = await ctx.storage.queryAuthoritative(ctx.partition, {
-          plan: {
-            sql: `${prefix}${selectedSql}) AS "_syncular_registered_query" LIMIT ?`,
-            relations: plan.relations.map((relation) => ({
-              ...relation,
-              start: relation.start + prefix.length,
-              end: relation.end + prefix.length,
-            })),
+        result = await ctx.storage.queryAuthoritative(
+          ctx.partition,
+          {
+            plan: {
+              sql: `${prefix}${selectedSql}) AS "_syncular_registered_query" LIMIT ?`,
+              relations: plan.relations.map((relation) => ({
+                ...relation,
+                start: relation.start + prefix.length,
+                end: relation.end + prefix.length,
+              })),
+            },
+            params: [...descriptor.bind(params), options.maxRows + 1],
+            tables: descriptor.tables,
           },
-          params: [...descriptor.bind(params), options.maxRows + 1],
-          tables: descriptor.tables,
-        });
+          ctx.checkpoints,
+        );
       } catch (error) {
         if (error instanceof SyncError) throw error;
         throw syncError(

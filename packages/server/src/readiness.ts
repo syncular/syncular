@@ -80,9 +80,11 @@ export function serveNotReadyError(refusal: ServeGateRefusal): SyncError {
           partition: refusal.partition,
           projection: refusal.name,
         })
-      : JSON.stringify({
-          storedSchemaVersion: refusal.stored,
-          runningSchemaVersion: refusal.running,
-        }),
+      : refusal.kind === 'epoch'
+        ? JSON.stringify({ logEpochChanged: true })
+        : JSON.stringify({
+            storedSchemaVersion: refusal.stored,
+            runningSchemaVersion: refusal.running,
+          }),
   );
 }

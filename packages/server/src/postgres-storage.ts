@@ -1,6 +1,8 @@
 import { validateCommitPruneQuery } from './prune';
 import { StorageQueryError } from './storage-errors';
 import type { CommitPruneQuery, CommitPruneResult } from './storage';
+import { serveGateRefusal } from './storage';
+import { serveNotReadyError } from './readiness';
 /**
  * Postgres server storage: the production database path.
  *
@@ -1523,6 +1525,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
   async queryAuthoritative(
     partition: string,
     query: AuthoritativeQueryRequest,
+    checkpoints?: readonly CheckpointDeclaration[],
   ): Promise<AuthoritativeQueryResult> {
     if (this.#tables === undefined) {
       throw new Error(
@@ -1542,6 +1545,14 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
       await client.query(
         'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY',
       );
+      // RFC 0007: evaluate the gate inside this pinned snapshot, so a
+      // migration or an epoch rotation cannot land between the gate read and
+      // the query's own read. The registered-query path uses the pinned
+      // snapshot, not a request-entry check.
+      const runningVersion = this.#schemaVersion ?? 0;
+      const gate = await readServeGateOn(client, partition, runningVersion);
+      const refusal = serveGateRefusal(gate, runningVersion, checkpoints);
+      if (refusal !== undefined) throw serveNotReadyError(refusal);
       const result = await client.query<Readonly<Record<string, unknown>>>(
         postgresPlaceholders(prepared.sql),
         prepared.params,

@@ -60,6 +60,7 @@ import {
   type ClientSubscription,
   type PartitionRegistryEntry,
   serveGateRefusal,
+  serveGateTokenChanged,
 } from './storage';
 
 interface RequestPlan {
@@ -733,17 +734,48 @@ async function createStreamCore(
   }
   // RFC 0007 serve gate: re-read stored state on every request so an
   // already-serving process notices a migration or a newly declared
-  // checkpoint. Nothing has escaped at this point; the push transaction
+  // checkpoint. Read after `touchAuthenticatedPartition` establishes the
+  // partition's log epoch, so the entry token is the epoch this request
+  // serves under. Nothing has escaped at this point; the push transaction
   // re-evaluates the gate under the partition lock.
+  const registry = await touchAuthenticatedPartition(ctx);
   const gate = await ctx.storage.readServeGate(ctx.partition, schema.version);
   const refusal = serveGateRefusal(gate, schema.version, ctx.checkpoints);
   if (refusal !== undefined) throw serveNotReadyError(refusal);
-  const registry = await touchAuthenticatedPartition(ctx);
   const plan = await planRequest(request, ctx, schema, registry);
-  if (events === undefined) return streamResponse(plan, ctx, schema);
-  const report: RequestReport = { outcome: 'ok' };
+  const report: RequestReport | undefined =
+    events === undefined ? undefined : { outcome: 'ok' };
+  // RFC 0007 read-verify-refuse for the streamed read path: the generator
+  // builds the whole response (its data reads) before yielding the first
+  // frame, then compares the gate token across those reads. Nothing escapes
+  // before the verification, and the buffered size is bounded by the request's
+  // pull limits and the server's inline segment cap. A write path's own
+  // held-lock gate already refused before any write, so its response is a
+  // committed decision and is not re-refused.
+  const verified = async function* (): AsyncGenerator<Uint8Array> {
+    const buffered: Uint8Array[] = [];
+    for await (const chunk of streamResponse(plan, ctx, schema, report)) {
+      buffered.push(chunk);
+    }
+    if (plan.pushes.length === 0) {
+      const after = await ctx.storage.readServeGate(
+        ctx.partition,
+        schema.version,
+      );
+      const changed = serveGateTokenChanged(gate, after);
+      const afterRefusal = serveGateRefusal(
+        after,
+        schema.version,
+        ctx.checkpoints,
+      );
+      if (afterRefusal !== undefined) throw serveNotReadyError(afterRefusal);
+      if (changed !== undefined) throw serveNotReadyError(changed);
+    }
+    for (const chunk of buffered) yield chunk;
+  };
+  if (events === undefined || report === undefined) return verified();
   return instrumentedStream(
-    streamResponse(plan, ctx, schema, report),
+    verified(),
     ctx,
     events,
     plan,
