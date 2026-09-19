@@ -116,7 +116,7 @@ function wrapStorage(
   faults: ServerFaults,
 ): ServerStorage {
   return {
-    ensureSchema: (s) => storage.ensureSchema(s),
+    ensureSchema: (s, d) => storage.ensureSchema(s, d),
     touchPartition: (p, at, epoch) => storage.touchPartition(p, at, epoch),
     rotatePartitionLogEpoch: (p, epoch, at) =>
       storage.rotatePartitionLogEpoch(p, epoch, at),
@@ -125,6 +125,15 @@ function wrapStorage(
     begin: (p) => storage.begin(p),
     getMaxCommitSeq: (p) => storage.getMaxCommitSeq(p),
     getHorizonSeq: (p) => storage.getHorizonSeq(p),
+    readCheckpoints: (p) => storage.readCheckpoints(p),
+    declareCheckpoint: (p, n, v, at) => storage.declareCheckpoint(p, n, v, at),
+    activateCheckpoint: (p, n, e, w, s, at) =>
+      storage.activateCheckpoint(p, n, e, w, s, at),
+    claimCheckpoint: (p, n, v, at) => storage.claimCheckpoint(p, n, v, at),
+    advanceCheckpoint: (p, n, e, w, r, at) =>
+      storage.advanceCheckpoint(p, n, e, w, r, at),
+    sourceCoverageSeq: (p, t) => storage.sourceCoverageSeq(p, t),
+    hasSourceChangesAbove: (p, t, s) => storage.hasSourceChangesAbove(p, t, s),
     getPartitionLogEpoch: (p) => storage.getPartitionLogEpoch(p),
     setHorizonSeq: (p, s) => storage.setHorizonSeq(p, s),
     pruneCommitsThrough: (p, s) => storage.pruneCommitsThrough(p, s),
@@ -149,6 +158,7 @@ function wrapStorage(
     getActiveClientCursorFloor: (p, cutoff) =>
       storage.getActiveClientCursorFloor(p, cutoff),
     listClientCursors: (p) => storage.listClientCursors(p),
+    readServeGate: (p, v) => storage.readServeGate(p, v),
   };
 }
 

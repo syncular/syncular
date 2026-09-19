@@ -839,8 +839,12 @@ that changes rows or DDL. A stale step changes nothing. A different target schem
 cannot take over an unfinished upgrade. Application row reads and transaction
 commits MUST check the migration claim and published schema in the same D1 batch
 as the operation. An unfinished upgrade or a changed schema rejects the operation;
-no mixed-layout payload reaches a client. These are host readiness failures and do
-not add a wire error or change either client's recovery protocol.
+no mixed-layout payload reaches a client. On D1 these remain host readiness
+failures and do not add a wire error. On SQLite and PostgreSQL the server
+delivers the catalogued `sync.schema_not_ready` (§10.2) when a declared backfill
+checkpoint for the running schema version is not activated, or when the stored
+schema version is newer than the running build; the client retries the same
+request later without changing its recovery protocol.
 
 ## 3. Scopes and authorization
 
@@ -2547,6 +2551,33 @@ server storage.
 3. an **encrypted primary key** — the pk renders the `rowId` (§2.2), a
    plaintext server-side identity;
 4. an `encryptedColumns` entry naming a column the table does not declare.
+
+**Optional protected values in shared rows — the sidecar shape.** When a row
+mixes shared operational columns with an optional **non-NULL** protected value
+(a `NULL` encrypted value is not encrypted and needs no key), the supported
+shape is two tables: a **plaintext primary** that carries the shared columns
+and leaves `encryptedColumns` empty, and a **sidecar** table that carries the
+protected value under its own `encryptedColumns` entry, its own scope and its
+own subscription, keyed by the primary row id. The sidecar resolves its key by
+the normal selection order (custom `keyIdFor`, configured `keyIdColumns`, then
+the per-table default `keyId = table`); the default is sufficient, and
+`keyIdColumns` is optional. A client without the sidecar key subscribes to the
+primary and reads every primary column. It **MUST NOT** subscribe to a sidecar
+it cannot decrypt: decrypt-on-apply runs at the whole-row boundary (§4.5,
+§5.6), so an undecryptable sidecar row aborts the remainder of the sync round
+and starves unrelated frames in the same response. Presence metadata inside the
+encrypted sidecar row **MUST NOT** be the only presence signal for a no-key
+client: that client cannot read **any** column of a row it cannot decrypt, so
+a plaintext presence column beside the encrypted value is unreadable to
+exactly the client that needs it. Such metadata remains valid for keyholders,
+and a presence signal intended for no-key clients belongs to the plaintext
+primary or to another plaintext shape whose own authorization already covers
+the disclosure; otherwise the client reports `unknown` and claims nothing
+about whether a value exists. Neither core emits a generate-time diagnostic
+for an encrypted column that shares a row with plaintext columns: a correct
+encrypted table necessarily mixes a plaintext primary key, scope columns and
+key selector with the protected payload, so such a diagnostic would fire on
+every correct design.
 
 **The ciphertext envelope — byte-exact, cross-core.** An encrypted column's
 `bytes` value is the following envelope. All fields are contiguous, no
@@ -5052,6 +5083,7 @@ Recommended actions: `refreshAuth`, `checkPermissions`, `fixRequest`,
 | `sync.missing_scopes` | internal | no | inspectServer | Handler emitted a change without stored scopes (§3.1) |
 | `sync.crdt_merge_failed` | internal | no | inspectServer | A `crdt` column (§2.4 tag 8) was pushed but no merger is registered for its `crdtType`, or the merger threw (§5.10.2) — *new in SSP2*; a push operation-result `error` record only |
 | `sync.idempotency_cache_miss` | internal | yes | retryLater | Cached push result unreadable on replay (§6.3) |
+| `sync.schema_not_ready` | internal | yes | retryLater | The server refuses a request while a declared backfill checkpoint for the running schema version is not activated, or the stored schema version is newer than the running build (§2.4) — *new in SSP2*; request-level. Structure in `details` names the projection; the message never interpolates it |
 | `sync.too_many_operations` | invalid-request | no | splitBatch | Push exceeds the operation cap (§6.1) |
 | `sync.not_found` | not-found | no | forceResync | Unknown segment id (§5.5) or sync resource |
 | `sync.segment_expired` | not-found | yes | retryLater | Segment TTL elapsed (§5.1); re-pull mints fresh descriptors — *new in SSP2* |

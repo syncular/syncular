@@ -22,6 +22,7 @@ import { DEFAULT_RETENTION, type RetentionPolicy } from './prune';
 import { compileSchema, type ServerSchema } from './schema';
 import type { SegmentStore, SegmentStoreStats } from './segment-store';
 import type {
+  CheckpointDeclaration,
   ClientRecord,
   CommitMetadata,
   ReactionStatus,
@@ -157,6 +158,8 @@ export interface SyncularAdminOptions {
    * a storage instance that has not served a sync request yet.
    */
   readonly schema?: ServerSchema;
+  /** RFC 0007: declarations `inspectRow` carries into `ensureSchema`. */
+  readonly checkpoints?: readonly CheckpointDeclaration[];
   /** The event ring feeding the event tail. Absent ⇒ `events()` is empty. */
   readonly ring?: RingBufferEvents;
   readonly segments?: SegmentStore;
@@ -218,6 +221,7 @@ function toAdminClient(
 export class SyncularAdmin {
   readonly #storage: ServerStorage;
   readonly #schema?: ServerSchema;
+  readonly #checkpoints?: readonly CheckpointDeclaration[];
   readonly #ring?: RingBufferEvents;
   readonly #segments?: SegmentStore;
   readonly #blobs?: BlobStore;
@@ -228,6 +232,8 @@ export class SyncularAdmin {
   constructor(options: SyncularAdminOptions) {
     this.#storage = options.storage;
     if (options.schema !== undefined) this.#schema = options.schema;
+    if (options.checkpoints !== undefined)
+      this.#checkpoints = options.checkpoints;
     if (options.ring !== undefined) this.#ring = options.ring;
     if (options.segments !== undefined) this.#segments = options.segments;
     if (options.blobs !== undefined) this.#blobs = options.blobs;
@@ -248,6 +254,9 @@ export class SyncularAdmin {
     return new SyncularAdmin({
       storage: config.storage,
       schema: config.schema,
+      ...(config.checkpoints !== undefined
+        ? { checkpoints: config.checkpoints }
+        : {}),
       segments: config.segments,
       ...(config.blobs !== undefined ? { blobs: config.blobs } : {}),
       ...(config.leases !== undefined ? { leases: config.leases.store } : {}),
@@ -352,7 +361,10 @@ export class SyncularAdmin {
       'storage',
     );
     if (this.#schema !== undefined) {
-      await this.#storage.ensureSchema(compileSchema(this.#schema));
+      await this.#storage.ensureSchema(
+        compileSchema(this.#schema),
+        this.#checkpoints,
+      );
     }
     const row = await read(partition, table, rowId);
     if (row === undefined) {

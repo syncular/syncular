@@ -7,12 +7,17 @@
  * a structured failure that cannot be confused with request authentication.
  */
 import type { SyncServerConfig } from './context';
+import { type SyncError, syncError } from './errors';
 import { type CompiledSchema, compileSchema } from './schema';
+import type { ServeGateRefusal } from './storage';
 
 export const SYNC_SERVER_READINESS_ERROR_CODE =
   'sync.schema_not_ready' as const;
 
-export type SyncServerReadinessPhase = 'schema_compile' | 'storage_migration';
+export type SyncServerReadinessPhase =
+  | 'schema_compile'
+  | 'storage_migration'
+  | 'backfill_checkpoint';
 
 export class SyncServerReadinessError extends Error {
   override readonly name = 'SyncServerReadinessError';
@@ -42,7 +47,7 @@ export class SyncServerReadinessError extends Error {
  * `cause` locally for the table/column or storage diagnostic.
  */
 export async function ensureSyncServerReady(
-  config: Pick<SyncServerConfig, 'schema' | 'storage'>,
+  config: Pick<SyncServerConfig, 'schema' | 'storage' | 'checkpoints'>,
 ): Promise<void> {
   let compiled: CompiledSchema;
   try {
@@ -55,12 +60,42 @@ export async function ensureSyncServerReady(
     });
   }
   try {
-    await config.storage.ensureSchema(compiled);
+    await config.storage.ensureSchema(compiled, config.checkpoints);
   } catch (cause) {
+    // RFC 0007: a declared-but-incomplete checkpoint is a barrier refusal, not
+    // an ordinary migration failure — hosts distinguish it by `phase` while the
+    // client-visible identity stays `sync.schema_not_ready`.
+    const phase: SyncServerReadinessPhase =
+      (cause as { code?: unknown } | null | undefined)?.code ===
+      'sync.storage.checkpoint_incomplete'
+        ? 'backfill_checkpoint'
+        : 'storage_migration';
     throw new SyncServerReadinessError({
-      phase: 'storage_migration',
+      phase,
       schemaVersion: config.schema.version,
       cause,
     });
   }
+}
+
+/**
+ * RFC 0007: refuse a serve path that observed a closed gate. The projection
+ * name travels in structured details, never in the message.
+ */
+export function serveNotReadyError(refusal: ServeGateRefusal): SyncError {
+  return syncError(
+    SYNC_SERVER_READINESS_ERROR_CODE,
+    'server schema is not ready for this request',
+    refusal.kind === 'checkpoint'
+      ? JSON.stringify({
+          partition: refusal.partition,
+          projection: refusal.name,
+        })
+      : refusal.kind === 'epoch'
+        ? JSON.stringify({ logEpochChanged: true })
+        : JSON.stringify({
+            storedSchemaVersion: refusal.stored,
+            runningSchemaVersion: refusal.running,
+          }),
+  );
 }

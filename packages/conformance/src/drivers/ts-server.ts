@@ -17,6 +17,7 @@ import {
   type BlobUploadPresignConfig,
   CommitValidationRejection,
   type CommitValidator,
+  compileSchema,
   createRealtimeHub,
   handleBlobDownload,
   handleBlobUpload,
@@ -371,7 +372,7 @@ class TsServerInstance implements ServerInstance {
   /** Storage with the optional idempotency-lookup fault (§6.3). */
   #wrapStorage(): ServerStorage {
     return {
-      ensureSchema: (s) => this.#storage.ensureSchema(s),
+      ensureSchema: (s, d) => this.#storage.ensureSchema(s, d),
       touchPartition: (p, at, epoch) =>
         this.#storage.touchPartition(p, at, epoch),
       rotatePartitionLogEpoch: (p, epoch, at) =>
@@ -381,6 +382,18 @@ class TsServerInstance implements ServerInstance {
       begin: (p) => this.#storage.begin(p),
       getMaxCommitSeq: (p) => this.#storage.getMaxCommitSeq(p),
       getHorizonSeq: (p) => this.#storage.getHorizonSeq(p),
+      readCheckpoints: (p) => this.#storage.readCheckpoints(p),
+      declareCheckpoint: (p, n, v, at) =>
+        this.#storage.declareCheckpoint(p, n, v, at),
+      activateCheckpoint: (p, n, e, w, s, at) =>
+        this.#storage.activateCheckpoint(p, n, e, w, s, at),
+      claimCheckpoint: (p, n, v, at) =>
+        this.#storage.claimCheckpoint(p, n, v, at),
+      advanceCheckpoint: (p, n, e, w, r, at) =>
+        this.#storage.advanceCheckpoint(p, n, e, w, r, at),
+      sourceCoverageSeq: (p, t) => this.#storage.sourceCoverageSeq(p, t),
+      hasSourceChangesAbove: (p, t, s) =>
+        this.#storage.hasSourceChangesAbove(p, t, s),
       getPartitionLogEpoch: (p) => this.#storage.getPartitionLogEpoch(p),
       setHorizonSeq: (p, s) => this.#storage.setHorizonSeq(p, s),
       pruneCommitsThrough: (p, s) => this.#storage.pruneCommitsThrough(p, s),
@@ -418,6 +431,7 @@ class TsServerInstance implements ServerInstance {
       getActiveClientCursorFloor: (p, cutoff) =>
         this.#storage.getActiveClientCursorFloor(p, cutoff),
       listClientCursors: (p) => this.#storage.listClientCursors(p),
+      readServeGate: (p, v) => this.#storage.readServeGate(p, v),
       // §5.9.4 blob reference index reads.
       listRowsReferencingBlob: (p, b) =>
         this.#storage.listRowsReferencingBlob(p, b),
@@ -773,6 +787,17 @@ class TsServerInstance implements ServerInstance {
     this.#resolverFailing = failing;
   }
 
+  async declareBackfillCheckpoint(name: string): Promise<void> {
+    const schema = compileSchema(toServerSchema(this.#schema));
+    await this.#storage.ensureSchema(schema);
+    await this.#storage.declareCheckpoint(
+      this.#partition,
+      name,
+      schema.version,
+      this.#now.ms,
+    );
+  }
+
   async setResolverOutage(outage: boolean): Promise<void> {
     this.#resolverOutage = outage;
   }
@@ -897,6 +922,7 @@ export const tsServerDriver: ServerDriver = {
     'leases',
     'validators',
     'commit-validators',
+    'backfill-checkpoints',
   ],
   async create(options: ServerCreateOptions): Promise<ServerInstance> {
     return new TsServerInstance(options);

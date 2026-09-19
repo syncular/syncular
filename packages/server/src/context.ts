@@ -19,6 +19,7 @@ import type {
 } from './signed-url';
 import type { SqliteImageBuilder } from './sqlite-image';
 import type {
+  CheckpointDeclaration,
   PartitionRegistryEntry,
   ServerStorage,
   StoredCommit,
@@ -96,6 +97,13 @@ export interface RealtimeNotifier {
 export interface SyncServerConfig {
   readonly schema: ServerSchema;
   readonly storage: ServerStorage;
+  /**
+   * RFC 0007: the backfill checkpoints this host installs. Every readiness
+   * path carries this set into `ensureSchema`. A process that omits it
+   * declares nothing, and the storage refuses to serve a partition whose
+   * stored state shows a checkpoint that is not activated.
+   */
+  readonly checkpoints?: readonly CheckpointDeclaration[];
   readonly segments: SegmentStore;
   /**
    * Blob store (§5.9). Absent ⇒ blobs unsupported: a table with a
