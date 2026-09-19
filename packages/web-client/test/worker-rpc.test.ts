@@ -445,6 +445,20 @@ test('RFC 0005 previous-version commands cross the worker RPC behind strict deco
   });
 });
 
+test('the worker host forwards previousVersionContext into the worker core', async () => {
+  const { handle } = await makeHandle({
+    clientId: 'rpc-previous-version-enabled',
+    autoSync: false,
+    previousVersionContext: { enabled: true },
+  });
+  const snapshot = await handle.previousVersionSnapshot({ table: 'tasks' });
+  expect(snapshot.state).toBe('previousVersion');
+  expect(snapshot.available).toBe(false);
+  // Default-off would be `not-configured`; an enabled, capture-less host has
+  // no descriptor yet, so the forwarded flag is observable here.
+  expect(snapshot.reason).toBe('no-previous-descriptor');
+});
+
 const FORGED_SNAPSHOT_REPLIES: unknown[] = [
   {
     state: 'previousVersion',

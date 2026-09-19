@@ -38,6 +38,7 @@ import type {
   RejectionRecord,
   SecurityLifecycle,
   SubscribeInput,
+  SyncClientConfig,
   SyncClientLimits,
   SyncSummary,
   WindowState,
@@ -185,6 +186,11 @@ export interface SyncClientHandleConfig {
   readonly securityPreflight?: boolean;
   readonly clientId?: string;
   readonly limits?: SyncClientLimits;
+  /**
+   * RFC 0005 previous-version context, forwarded into the worker's
+   * `SyncClientConfig`. Absent ⇒ the feature stays off (default-off).
+   */
+  readonly previousVersionContext?: SyncClientConfig['previousVersionContext'];
   /** Worker-side host loop (§8.4); default true. */
   readonly autoSync?: boolean;
   /** Default: Web Locks when available, else single-owner. */
@@ -846,6 +852,9 @@ function buildInitConfig(config: SyncClientHandleConfig): WorkerInitConfig {
       : {}),
     ...(config.clientId !== undefined ? { clientId: config.clientId } : {}),
     ...(config.limits !== undefined ? { limits: config.limits } : {}),
+    ...(config.previousVersionContext !== undefined
+      ? { previousVersionContext: config.previousVersionContext }
+      : {}),
     ...(config.autoSync !== undefined ? { autoSync: config.autoSync } : {}),
   };
 }

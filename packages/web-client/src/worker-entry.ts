@@ -347,6 +347,9 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
       ...(config.securityPreflight !== undefined
         ? { securityPreflight: config.securityPreflight }
         : {}),
+      ...(config.previousVersionContext !== undefined
+        ? { previousVersionContext: config.previousVersionContext }
+        : {}),
       onSyncNeeded: (reason) => {
         post({ t: 'event', event: { kind: 'sync-needed', reason } });
         consumeSyncIntent({ kind: 'interactive' });

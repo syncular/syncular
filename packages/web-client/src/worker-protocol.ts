@@ -28,6 +28,7 @@ import type {
   QuerySnapshot,
   SecurityLifecycle,
   SubscribeInput,
+  SyncClientConfig,
   SyncClientLimits,
   SyncSummary,
   WindowState,
@@ -107,6 +108,11 @@ export interface WorkerInitConfig {
   readonly securityPreflight?: boolean;
   readonly clientId?: string;
   readonly limits?: SyncClientLimits;
+  /**
+   * RFC 0005 previous-version context, forwarded verbatim into the worker's
+   * `SyncClientConfig`. Absent ⇒ the feature stays off (default-off).
+   */
+  readonly previousVersionContext?: SyncClientConfig['previousVersionContext'];
   /**
    * Worker-side host loop (§8.4): coalesce interactive work immediately and
    * honor explicit background retry deadlines
