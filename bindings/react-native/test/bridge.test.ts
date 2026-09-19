@@ -144,6 +144,19 @@ function defaultResponder(
         retainedCommits: 3,
         resetSubscriptions: 4,
       });
+    case 'previousVersionSnapshot':
+      return OK({
+        state: 'previousVersion',
+        available: false,
+        currentVersion: 1,
+        reason: 'not-configured',
+        rows: [],
+        truncated: false,
+      });
+    case 'previousVersionAudit':
+      return OK(undefined);
+    case 'previousVersionDiscard':
+      return OK({ present: false, discarded: false });
     case 'statusSnapshot':
       return OK({
         currentSchemaVersion: 1,
@@ -215,6 +228,25 @@ describe('createNativeSyncClient', () => {
     expect(pump.started).toBe(1);
   });
 
+  test('forwards previousVersionContext into the native create envelope', async () => {
+    const { nativeModule, eventEmitter, calls } = makeNative(defaultResponder);
+    await createNativeSyncClient({
+      clientId: 'previous-version',
+      schema: { version: 1, tables: [] },
+      previousVersionContext: { enabled: true, maxRows: 100 },
+      nativeModule,
+      eventEmitter,
+    });
+    const create = calls.find((call) => call.fn === 'create');
+    const createParams = JSON.parse(
+      (create?.arg as { createJson: string }).createJson,
+    );
+    expect(createParams.previousVersionContext).toEqual({
+      enabled: true,
+      maxRows: 100,
+    });
+  });
+
   test('preflight blocks protected work and installs the portable keyring on activation', async () => {
     const { nativeModule, eventEmitter, calls, emit } =
       makeNative(defaultResponder);
@@ -250,6 +282,20 @@ describe('createNativeSyncClient', () => {
     await expect(
       client.rebootstrapLocalData({ rebootstrapId: 'blocked-repair' }),
     ).rejects.toMatchObject({ code: SECURITY_PREFLIGHT_REQUIRED_CODE });
+    await expect(
+      client.previousVersionSnapshot({ table: 'todo' }),
+    ).rejects.toMatchObject({ code: SECURITY_PREFLIGHT_REQUIRED_CODE });
+    await expect(client.previousVersionAudit()).rejects.toMatchObject({
+      code: SECURITY_PREFLIGHT_REQUIRED_CODE,
+    });
+    // Authorized cleanup stays possible while quiesced: the RFC 0006 key-loss
+    // hook runs the discard inside the preflight window, before activation, so
+    // gating it here would turn the physical removal into a skip.
+    expect(await client.previousVersionDiscard()).toEqual({
+      present: false,
+      discarded: false,
+    });
+    expect(await client.securityLifecycle()).toBe('preflight');
     await client.activateSecurity({
       encryption: {
         keys: { 'practice-v2': new Uint8Array(32).fill(0x3c) },
@@ -531,6 +577,162 @@ describe('createNativeSyncClient', () => {
       client.rebootstrapLocalData({ rebootstrapId: 'support-case-001' }),
     ).rejects.toMatchObject({ code: INVALID_HOST_RESPONSE_CODE });
   });
+
+  test('previous-version commands forward their exact envelopes and decode replies', async () => {
+    const { client, calls } = await build();
+    expect(await client.previousVersionSnapshot({ table: 'todo' })).toEqual({
+      state: 'previousVersion',
+      available: false,
+      currentVersion: 1,
+      reason: 'not-configured',
+      rows: [],
+      truncated: false,
+    });
+    const command = calls.findLast(
+      (call) =>
+        call.fn === 'command' &&
+        (call.arg as { method: string }).method === 'previousVersionSnapshot',
+    );
+    expect(command?.arg).toEqual({
+      method: 'previousVersionSnapshot',
+      params: { spec: { table: 'todo' } },
+    });
+    expect(await client.previousVersionAudit()).toBeUndefined();
+    expect(await client.previousVersionDiscard()).toEqual({
+      present: false,
+      discarded: false,
+    });
+  });
+
+  test.each([
+    {
+      state: 'previousVersion',
+      available: true,
+      currentVersion: 1,
+      rows: [],
+      truncated: false,
+    },
+    {
+      state: 'previousVersion',
+      available: false,
+      currentVersion: 1,
+      reason: 'purged',
+      rows: [],
+      truncated: false,
+    },
+    {
+      state: 'previousVersion',
+      available: 'true',
+      currentVersion: 1,
+      reason: 'not-configured',
+      rows: [],
+      truncated: false,
+    },
+  ])(
+    'rejects a forged previousVersionSnapshot bridge reply %#',
+    async (value) => {
+      const { nativeModule, eventEmitter } = makeNative((method, params) => {
+        if (method === 'previousVersionSnapshot') return OK(value);
+        return defaultResponder(method, params);
+      });
+      const client = await createNativeSyncClient({
+        clientId: 'invalid-previous-version-snapshot',
+        schema: { version: 1, tables: [] },
+        nativeModule,
+        eventEmitter,
+      });
+      await expect(
+        client.previousVersionSnapshot({ table: 'todo' }),
+      ).rejects.toMatchObject({ code: INVALID_HOST_RESPONSE_CODE });
+    },
+  );
+
+  test.each([
+    { v: 1, atMs: 0, fromVersion: 1, toVersion: 2 },
+    {
+      v: 1,
+      atMs: 0,
+      fromVersion: 1,
+      toVersion: 2,
+      pending: 0,
+      encodable: 0,
+      truncated: false,
+      incompatible: [{ commitId: 'c1', table: 'todo', reason: 'gone' }],
+    },
+  ])('rejects a forged previousVersionAudit bridge reply %#', async (value) => {
+    const { nativeModule, eventEmitter } = makeNative((method, params) => {
+      if (method === 'previousVersionAudit') return OK(value);
+      return defaultResponder(method, params);
+    });
+    const client = await createNativeSyncClient({
+      clientId: 'invalid-previous-version-audit',
+      schema: { version: 1, tables: [] },
+      nativeModule,
+      eventEmitter,
+    });
+    await expect(client.previousVersionAudit()).rejects.toMatchObject({
+      code: INVALID_HOST_RESPONSE_CODE,
+    });
+  });
+
+  test('previousVersionSnapshot decodes native cell envelopes in rows', async () => {
+    const { nativeModule, eventEmitter } = makeNative((method, params) => {
+      if (method === 'previousVersionSnapshot') {
+        return OK({
+          state: 'previousVersion',
+          available: true,
+          previousVersion: 1,
+          currentVersion: 2,
+          rows: [
+            {
+              id: 'r1',
+              blob: { $bytes: '0102' },
+              n: { $bigint: '9007199254740993' },
+            },
+          ],
+          truncated: false,
+        });
+      }
+      return defaultResponder(method, params);
+    });
+    const client = await createNativeSyncClient({
+      clientId: 'previous-version-envelopes',
+      schema: { version: 1, tables: [] },
+      nativeModule,
+      eventEmitter,
+    });
+    expect(await client.previousVersionSnapshot({ table: 'todo' })).toEqual({
+      state: 'previousVersion',
+      available: true,
+      previousVersion: 1,
+      currentVersion: 2,
+      rows: [{ id: 'r1', blob: new Uint8Array([1, 2]), n: 9007199254740993n }],
+      truncated: false,
+    });
+  });
+
+  test.each([
+    { present: true },
+    { present: true, discarded: 'yes' },
+    { present: false, discarded: false, extra: 1 },
+  ])(
+    'rejects a forged previousVersionDiscard bridge reply %#',
+    async (value) => {
+      const { nativeModule, eventEmitter } = makeNative((method, params) => {
+        if (method === 'previousVersionDiscard') return OK(value);
+        return defaultResponder(method, params);
+      });
+      const client = await createNativeSyncClient({
+        clientId: 'invalid-previous-version-discard',
+        schema: { version: 1, tables: [] },
+        nativeModule,
+        eventEmitter,
+      });
+      await expect(client.previousVersionDiscard()).rejects.toMatchObject({
+        code: INVALID_HOST_RESPONSE_CODE,
+      });
+    },
+  );
 
   test('accessor methods unwrap their command replies', async () => {
     const { client } = await build();

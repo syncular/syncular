@@ -38,6 +38,7 @@ import type {
   RejectionRecord,
   SecurityLifecycle,
   SubscribeInput,
+  SyncClientConfig,
   SyncClientLimits,
   SyncSummary,
   WindowState,
@@ -89,6 +90,14 @@ import type {
   CommitOutcomeQuery,
   ResolveCommitOutcomeInput,
 } from './outcomes';
+import {
+  decodePreviousVersionAuditResult,
+  decodePreviousVersionDiscardResult,
+  decodePreviousVersionSnapshot,
+  type PreviousVersionAudit,
+  type PreviousVersionReadSpec,
+  type PreviousVersionSnapshot,
+} from './previous-version';
 import type { ClientSchema } from './schema';
 import type { SubscriptionRecord } from './state';
 import type { WindowBase } from './window';
@@ -177,6 +186,11 @@ export interface SyncClientHandleConfig {
   readonly securityPreflight?: boolean;
   readonly clientId?: string;
   readonly limits?: SyncClientLimits;
+  /**
+   * RFC 0005 previous-version context, forwarded into the worker's
+   * `SyncClientConfig`. Absent ⇒ the feature stays off (default-off).
+   */
+  readonly previousVersionContext?: SyncClientConfig['previousVersionContext'];
   /** Worker-side host loop (§8.4); default true. */
   readonly autoSync?: boolean;
   /** Default: Web Locks when available, else single-owner. */
@@ -546,6 +560,29 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     );
   }
 
+  async previousVersionSnapshot(
+    spec: PreviousVersionReadSpec,
+  ): Promise<PreviousVersionSnapshot> {
+    return decodePreviousVersionSnapshot(
+      await this.#call('previousVersionSnapshot', [spec]),
+    );
+  }
+
+  async previousVersionAudit(): Promise<PreviousVersionAudit | undefined> {
+    return decodePreviousVersionAuditResult(
+      await this.#call('previousVersionAudit', []),
+    );
+  }
+
+  async previousVersionDiscard(): Promise<{
+    present: boolean;
+    discarded: boolean;
+  }> {
+    return decodePreviousVersionDiscardResult(
+      await this.#call('previousVersionDiscard', []),
+    );
+  }
+
   sync(): Promise<SyncSummary> {
     return this.#call('sync', []);
   }
@@ -815,6 +852,9 @@ function buildInitConfig(config: SyncClientHandleConfig): WorkerInitConfig {
       : {}),
     ...(config.clientId !== undefined ? { clientId: config.clientId } : {}),
     ...(config.limits !== undefined ? { limits: config.limits } : {}),
+    ...(config.previousVersionContext !== undefined
+      ? { previousVersionContext: config.previousVersionContext }
+      : {}),
     ...(config.autoSync !== undefined ? { autoSync: config.autoSync } : {}),
   };
 }

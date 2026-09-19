@@ -28,6 +28,7 @@ import type {
   QuerySnapshot,
   SecurityLifecycle,
   SubscribeInput,
+  SyncClientConfig,
   SyncClientLimits,
   SyncSummary,
   WindowState,
@@ -42,6 +43,11 @@ import type {
   LocalDataRebootstrapResult,
 } from './local-rebootstrap';
 import type { OutboxCommit } from './outbox';
+import type {
+  PreviousVersionAudit,
+  PreviousVersionReadSpec,
+  PreviousVersionSnapshot,
+} from './previous-version';
 import type { ClientSchema } from './schema';
 import type { SubscriptionRecord } from './state';
 import type { WindowBase } from './window';
@@ -103,6 +109,11 @@ export interface WorkerInitConfig {
   readonly clientId?: string;
   readonly limits?: SyncClientLimits;
   /**
+   * RFC 0005 previous-version context, forwarded verbatim into the worker's
+   * `SyncClientConfig`. Absent ⇒ the feature stays off (default-off).
+   */
+  readonly previousVersionContext?: SyncClientConfig['previousVersionContext'];
+  /**
    * Worker-side host loop (§8.4): coalesce interactive work immediately and
    * honor explicit background retry deadlines
    * `syncUntilIdle` rounds inside the worker. Default true.
@@ -151,6 +162,14 @@ export interface WorkerApi extends Omit<
   rebootstrapLocalData(
     input: LocalDataRebootstrapInput,
   ): LocalDataRebootstrapResult;
+  /** RFC 0005 D7: read the captured previous-schema rows for one table. */
+  previousVersionSnapshot(
+    spec: PreviousVersionReadSpec,
+  ): PreviousVersionSnapshot;
+  /** RFC 0005 D6: the advisory pre-reset compatibility audit, if recorded. */
+  previousVersionAudit(): PreviousVersionAudit | undefined;
+  /** RFC 0005 D9: the executable rollback step — drop the container. */
+  previousVersionDiscard(): { present: boolean; discarded: boolean };
   sync(): Promise<SyncSummary>;
   syncUntilIdle(maxRounds?: number): Promise<SyncSummary>;
   query(sql: string, params?: readonly SqlValue[]): SqlRow[];

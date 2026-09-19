@@ -28,6 +28,9 @@ pub use progress::{
     ProgressObserver, ProgressPhase, ProgressState, ProgressSubscription, SyncProgress,
     SyncProgressListener,
 };
+/// RFC 0005 previous-version context: the persisted schema descriptor, the
+/// bounded capture, and the sibling container FILE beside the replica.
+pub mod previous_version;
 pub mod query_guard;
 pub mod realtime_round;
 pub mod remote;

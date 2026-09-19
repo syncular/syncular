@@ -284,6 +284,8 @@ export interface MakeClientOptions {
   readonly blobCacheMaxBytes?: number;
   /** Override only the realtime seam for focused ownership/lifecycle tests. */
   readonly realtime?: RealtimeConnector;
+  /** RFC 0005 previous-version context config. */
+  readonly previousVersionContext?: SyncClientConfig['previousVersionContext'];
 }
 
 export async function makeClient(
@@ -310,6 +312,9 @@ export async function makeClient(
       ? { encryption: options.encryption }
       : {}),
     ...(options.blobs !== undefined ? { blobs: options.blobs } : {}),
+    ...(options.previousVersionContext !== undefined
+      ? { previousVersionContext: options.previousVersionContext }
+      : {}),
     ...(options.blobCacheMaxBytes !== undefined
       ? { blobCacheMaxBytes: options.blobCacheMaxBytes }
       : {}),

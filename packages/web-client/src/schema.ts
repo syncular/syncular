@@ -620,8 +620,10 @@ const RESERVED_TABLE_PREFIX = '_syncular_';
  * generated schema created — discovered from `sqlite_master`, since a
  * bump may add/remove tables) and recreate the synced tables from the
  * NEW schema. Bookkeeping tables (`_syncular_*`: outbox, meta,
- * subscriptions, blob cache) are preserved. Caller owns the surrounding
- * transaction and the subscription-state reset (state.ts).
+ * subscriptions, blob cache) are preserved. RFC 0005's container is not
+ * reachable from here: it lives in its own database file, so this reset cannot
+ * see or destroy it. Caller owns the surrounding transaction and the
+ * subscription-state reset (state.ts).
  */
 export function dropAndRecreateSyncedTables(
   db: ClientDatabase,

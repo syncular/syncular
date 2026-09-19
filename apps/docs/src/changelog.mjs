@@ -17,6 +17,18 @@
 export const changelog = [
   {
     date: '2026-09-19',
+    title: 'An opt-in cache of the rows a schema bump wipes',
+    body: 'A schema bump wipes the local replica before the replacement bootstrap restores anything, so an app can briefly see none of its own rows. `previousVersionContext` is a new opt-in, default-off feature that keeps a bounded, typed, read-only copy of the pre-bump rows in a second database file beside the replica, and exposes `previousVersionSnapshot`, `previousVersionAudit` and `previousVersionDiscard`, with `statusSnapshot().previousVersionContext` reporting presence. The capture is measured before any row is materialized and is all-or-nothing; its semantic types come from a persisted schema descriptor, never from SQLite affinity. The guarantee is narrow: the normal replica query connection does not attach the file, which is not confidentiality against same-origin or filesystem access. An unaware rollback leaves the file in place, the aware-only TTL does not bound that residue, and the supported downgrade procedure calls `previousVersionDiscard()` first.',
+    links: [
+      {
+        href: '/concepts-previous-version-context/',
+        label: 'Previous-version context',
+      },
+      { href: '/concepts-schema-upgrades/', label: 'Schema upgrades' },
+    ],
+  },
+  {
+    date: '2026-09-19',
     title: 'Version-only schema bumps are documented and fail closed',
     body: 'A Syncular release can change only engine-internal storage, with no application column change, and the application schema version still has to advance because that version is what makes the server apply the storage change. The schema guide now gives the verbatim procedure — append an empty `up.sql`, point `schemaVersions` at it, regenerate, and confirm the bump landed by reading `sync_schema_meta.schema_version` — and states that a marker at the new version whose synced tables are missing an internal column now fails closed at startup rather than at the first write.',
     links: [{ href: '/guide-schema/', label: 'Schema & typegen' }],
