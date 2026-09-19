@@ -1232,6 +1232,7 @@ dependencies = [
 name = "syncular-command"
 version = "0.0.0"
 dependencies = [
+ "rusqlite",
  "serde_json",
  "syncular-client",
  "syncular-ssp2",

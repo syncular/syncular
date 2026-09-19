@@ -20,3 +20,9 @@ crdt-yjs = ["syncular-client/crdt-yjs"]
 # §5.11 client-side encryption — forwarded to the client core. Off by default
 # so lean builds skip the crypto crates; the conformance shim enables it.
 e2ee = ["syncular-client/e2ee"]
+
+# Tests read the replica's own storage directly (the RFC 0005 discard assertions
+# must not be satisfied by the feature's read API). Same version/features as the
+# client core, so the bundled SQLite build is shared, not rebuilt.
+[dev-dependencies]
+rusqlite = { version = "0.40", features = ["bundled"] }

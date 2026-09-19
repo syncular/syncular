@@ -24,6 +24,9 @@ use syncular_client::{
     LocalDataPurgeInput, LocalDataRebootstrapInput, Mutation, ResolveCommitOutcomeInput,
     SyncClient, Transport, WindowBase, WindowCoverage,
 };
+use syncular_client::previous_version::{
+    PreviousVersionContextConfig, PreviousVersionReadSpec,
+};
 
 // -- bytes <-> {"$bytes": hex} (the driver-protocol byte envelope) ----------
 
@@ -92,6 +95,97 @@ fn need_client(client: &mut Option<SyncClient>) -> Result<&mut SyncClient, Comma
     client
         .as_mut()
         .ok_or_else(|| client_err("no client instance created".to_owned()))
+}
+
+/// RFC 0005 D8: parse the host's `previousVersionContext` config with the
+/// TS keys and defaults: `enabled` (default false), `maxBytes` 8 MiB,
+/// `maxRows` 20000, `maxTables` 32, `maxRowBytes` 1 MiB, `maxAgeMs` 24h.
+/// Invalid values fail the request loudly rather than silently defaulting.
+pub fn parse_previous_version_context(
+    value: Option<&Value>,
+) -> Result<Option<PreviousVersionContextConfig>, CommandError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let object = value.as_object().ok_or_else(|| {
+        client_err("sync.invalid_request: previousVersionContext must be an object".to_owned())
+    })?;
+    let enabled = match object.get("enabled") {
+        None => false,
+        Some(Value::Bool(enabled)) => *enabled,
+        Some(_) => {
+            return Err(client_err(
+                "sync.invalid_request: previousVersionContext.enabled must be a boolean".to_owned(),
+            ))
+        }
+    };
+    let mut config = PreviousVersionContextConfig {
+        enabled,
+        ..PreviousVersionContextConfig::default()
+    };
+    for (key, slot) in [
+        ("maxBytes", &mut config.max_bytes),
+        ("maxRows", &mut config.max_rows),
+        ("maxTables", &mut config.max_tables),
+        ("maxRowBytes", &mut config.max_row_bytes),
+        ("maxAgeMs", &mut config.max_age_ms),
+    ] {
+        if let Some(raw) = object.get(key) {
+            *slot = raw.as_i64().ok_or_else(|| {
+                client_err(format!(
+                    "sync.invalid_request: previousVersionContext.{key} must be a positive safe integer"
+                ))
+            })?;
+        }
+    }
+    config.validate().map_err(client_err)?;
+    Ok(Some(config))
+}
+
+/// RFC 0005 D7: `previousVersionSnapshot` params — `{table, rowIds?, limit?}`.
+fn parse_previous_version_snapshot_spec(
+    params: &Value,
+) -> Result<PreviousVersionReadSpec, CommandError> {
+    let table = params
+        .get("table")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            client_err("sync.invalid_request: previousVersionSnapshot missing table".to_owned())
+        })?;
+    let row_ids = match params.get("rowIds") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(ids)) => ids
+            .iter()
+            .map(|id| match id {
+                Value::String(id) => Ok(id.clone()),
+                Value::Number(number) => Ok(number.to_string()),
+                Value::Bool(boolean) => Ok(boolean.to_string()),
+                _ => Err(client_err(
+                    "sync.invalid_request: previousVersionSnapshot rowIds must be strings"
+                        .to_owned(),
+                )),
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        Some(_) => {
+            return Err(client_err(
+                "sync.invalid_request: previousVersionSnapshot rowIds must be an array".to_owned(),
+            ))
+        }
+    };
+    let limit = match params.get("limit") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(value.as_i64().ok_or_else(|| {
+            client_err(
+                "sync.invalid_request: previousVersionSnapshot limit must be a positive number"
+                    .to_owned(),
+            )
+        })?),
+    };
+    Ok(PreviousVersionReadSpec {
+        table: table.to_owned(),
+        row_ids,
+        limit,
+    })
 }
 
 pub fn parse_limits(value: Option<&Value>) -> ClientLimits {
@@ -377,6 +471,13 @@ pub fn dispatch<T: Transport>(
                 .get("schema")
                 .ok_or_else(|| client_err("create missing schema".to_owned()))?;
             let limits = parse_limits(params.get("limits"));
+            // RFC 0005 D8: the feature config rides the top-level key the TS
+            // client uses; the Rust core carries it on `ClientLimits` so it is
+            // resolved before the opening schema reset runs.
+            let previous_version_context =
+                parse_previous_version_context(params.get("previousVersionContext"))?;
+            let mut limits = limits;
+            limits.previous_version_context = previous_version_context;
             // §native: a `dbPath` installs a file-backed rusqlite connection so
             // native hosts (Tauri plugin, FFI file variant) persist across
             // restarts; absent it, the default in-memory core (the shim's mode).
@@ -717,6 +818,25 @@ pub fn dispatch<T: Transport>(
         "localRevision" => Ok(json!({
             "revision": need_client(client)?.local_revision().to_string()
         })),
+        "previousVersionSnapshot" | "previous_version_snapshot" => {
+            let spec = parse_previous_version_snapshot_spec(params)?;
+            let snapshot = need_client(client)?.previous_version_snapshot(&spec).map_err(client_err)?;
+            serde_json::to_value(snapshot).map_err(|error| client_err(error.to_string()))
+        }
+        "previousVersionAudit" | "previous_version_audit" => Ok(
+            match need_client(client)?.previous_version_audit() {
+                Some(audit) => serde_json::to_value(audit)
+                    .map_err(|error| client_err(error.to_string()))?,
+                None => Value::Null,
+            },
+        ),
+        "previousVersionDiscard" | "previous_version_discard" => {
+            let outcome = need_client(client)?.previous_version_discard();
+            Ok(json!({
+                "present": outcome.present,
+                "discarded": outcome.discarded,
+            }))
+        }
         "statusSnapshot" => Ok(serde_json::to_value(need_client(client)?.status_snapshot())
             .expect("status serializes")),
         "diagnosticsSnapshot" => {
@@ -1011,10 +1131,13 @@ pub fn dispatch<T: Transport>(
 mod tests {
     use serde_json::{json, Value};
     use syncular_client::{
-        SegmentRequest, SyncClient, Transport, TransportError, SECURITY_PREFLIGHT_REQUIRED_CODE,
+        Mutation, SegmentRequest, SyncClient, Transport, TransportError,
+        SECURITY_PREFLIGHT_REQUIRED_CODE,
     };
 
-    use super::{dispatch, parse_encryption, parse_headers, CreateEffects};
+    use super::{
+        dispatch, parse_encryption, parse_headers, parse_previous_version_context, CreateEffects,
+    };
 
     #[derive(Default)]
     struct NoNetwork {
@@ -1712,5 +1835,373 @@ mod tests {
         )
         .expect_err("direct rotation must respect preflight");
         assert_eq!(gated.0, SECURITY_PREFLIGHT_REQUIRED_CODE);
+    }
+
+    fn schema_v2() -> Value {
+        json!({
+            "version": 2,
+            "tables": [{
+                "name": "todos",
+                "columns": [
+                    { "name": "id", "type": "string", "nullable": false },
+                    { "name": "list_id", "type": "string", "nullable": false },
+                    { "name": "note", "type": "string", "nullable": true }
+                ],
+                "primaryKey": "id",
+                "scopes": [{ "pattern": "list:{list_id}", "column": "list_id" }]
+            }]
+        })
+    }
+
+    fn previous_version_enabled() -> Value {
+        json!({ "enabled": true })
+    }
+
+    fn container_path(db_path: &str) -> String {
+        format!("{db_path}.prev-context")
+    }
+
+    #[test]
+    fn previous_version_config_parser_matches_ts_keys_and_defaults() {
+        assert_eq!(parse_previous_version_context(None).expect("absent"), None);
+        let defaults = parse_previous_version_context(Some(&json!({})))
+            .expect("empty")
+            .expect("present");
+        assert!(!defaults.enabled);
+        assert_eq!(defaults.max_bytes, 8 * 1024 * 1024);
+        assert_eq!(defaults.max_rows, 20_000);
+        assert_eq!(defaults.max_tables, 32);
+        assert_eq!(defaults.max_row_bytes, 1024 * 1024);
+        assert_eq!(defaults.max_age_ms, 24 * 60 * 60 * 1000);
+
+        let configured = parse_previous_version_context(Some(&json!({
+            "enabled": true,
+            "maxBytes": 1024,
+            "maxRows": 3,
+            "maxTables": 2,
+            "maxRowBytes": 5,
+            "maxAgeMs": 7
+        })))
+        .expect("configured")
+        .expect("present");
+        assert!(configured.enabled);
+        assert_eq!(configured.max_bytes, 1024);
+        assert_eq!(configured.max_rows, 3);
+        assert_eq!(configured.max_tables, 2);
+        assert_eq!(configured.max_row_bytes, 5);
+        assert_eq!(configured.max_age_ms, 7);
+
+        // Invalid values fail loudly instead of silently defaulting.
+        for (value, expected) in [
+            (json!([]), "must be an object"),
+            (json!({ "enabled": "yes" }), "enabled must be a boolean"),
+            (json!({ "maxBytes": 0 }), "maxBytes must be a positive safe integer"),
+            (json!({ "maxRows": -1 }), "maxRows must be a positive safe integer"),
+            (json!({ "maxTables": 1.5 }), "maxTables must be a positive safe integer"),
+            (json!({ "maxRowBytes": "1" }), "maxRowBytes must be a positive safe integer"),
+            (json!({ "maxAgeMs": 0 }), "maxAgeMs must be a positive safe integer"),
+        ] {
+            let error = parse_previous_version_context(Some(&value)).expect_err("must fail");
+            assert_eq!(error.0, "sync.invalid_request", "{value}");
+            assert!(error.1.contains(expected), "{value}: {}", error.1);
+        }
+    }
+
+    #[test]
+    fn invalid_previous_version_config_fails_create_loudly() {
+        let mut transport = NoNetwork::default();
+        let mut client: Option<SyncClient> = None;
+        let mut effects = CreateEffects::default();
+        let error = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({ "schema": schema(), "previousVersionContext": { "enabled": true, "maxRows": 0 } }),
+        )
+        .expect_err("invalid config must fail the create");
+        assert_eq!(error.0, "sync.invalid_request");
+        assert!(error.1.contains("maxRows"), "{}", error.1);
+        assert!(client.is_none(), "no client may be installed");
+    }
+
+    #[test]
+    fn previous_version_snapshot_reports_not_configured_by_default() {
+        let mut transport = NoNetwork::default();
+        let mut client: Option<SyncClient> = None;
+        let mut effects = CreateEffects::default();
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({ "schema": schema() }),
+        )
+        .expect("create");
+        let snapshot = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "previousVersionSnapshot",
+            &json!({ "table": "todos" }),
+        )
+        .expect("snapshot");
+        assert_eq!(snapshot["state"], json!("previousVersion"));
+        assert_eq!(snapshot["available"], json!(false));
+        assert_eq!(snapshot["reason"], json!("not-configured"));
+        assert_eq!(snapshot["rows"], json!([]));
+        assert_eq!(snapshot["truncated"], json!(false));
+        assert_eq!(snapshot["currentVersion"], json!(1));
+        let discarded = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "previousVersionDiscard",
+            &json!({}),
+        )
+        .expect("discard");
+        assert_eq!(discarded, json!({ "present": false, "discarded": false }));
+        assert_eq!(
+            dispatch(
+                &mut transport,
+                &mut client,
+                &mut effects,
+                "previousVersionAudit",
+                &json!({}),
+            )
+            .expect("audit"),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn previous_version_commands_round_trip_through_the_dispatcher() {
+        let path = temp_db_path("previous-version");
+        let mut transport = NoNetwork::default();
+        let mut client: Option<SyncClient> = None;
+        let mut effects = CreateEffects::default();
+
+        // A v1 replica with one pending local row and the feature on.
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({
+                "schema": schema(),
+                "dbPath": path,
+                "previousVersionContext": previous_version_enabled()
+            }),
+        )
+        .expect("create v1");
+        client
+            .as_mut()
+            .expect("client")
+            .mutate(vec![Mutation::Upsert {
+                table: "todos".to_owned(),
+                values: serde_json::Map::from_iter([
+                    ("id".to_owned(), json!("t1")),
+                    ("list_id".to_owned(), json!("l1")),
+                ]),
+                base_version: None,
+            }])
+            .expect("seed a local row");
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "shutdown",
+            &json!({}),
+        )
+        .expect("shutdown");
+
+        // The bump captures into the sibling file.
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({
+                "schema": schema_v2(),
+                "dbPath": path,
+                "previousVersionContext": previous_version_enabled()
+            }),
+        )
+        .expect("create v2");
+        assert!(
+            std::path::Path::new(&container_path(&path)).exists(),
+            "the bump must leave a container file"
+        );
+        let status = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "statusSnapshot",
+            &json!({}),
+        )
+        .expect("status");
+        assert_eq!(
+            status["previousVersionContext"]["present"],
+            json!(true),
+            "{status}"
+        );
+        assert!(
+            status["previousVersionContext"]["createdAtMs"].is_i64(),
+            "{status}"
+        );
+
+        let snapshot = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "previousVersionSnapshot",
+            &json!({ "table": "todos" }),
+        )
+        .expect("snapshot");
+        assert_eq!(snapshot["state"], json!("previousVersion"));
+        assert_eq!(snapshot["available"], json!(true));
+        assert_eq!(snapshot["previousVersion"], json!(1));
+        assert_eq!(snapshot["currentVersion"], json!(2));
+        assert_eq!(snapshot["truncated"], json!(false));
+        assert_eq!(snapshot["rows"][0]["id"], json!("t1"));
+        assert_eq!(snapshot["rows"][0]["list_id"], json!("l1"));
+
+        // Unknown previous table and a bad limit are loud request errors.
+        let unknown = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "previousVersionSnapshot",
+            &json!({ "table": "absent" }),
+        )
+        .expect_err("unknown previous table");
+        assert_eq!(unknown.0, "sync.invalid_request");
+        let bad_limit = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "previousVersionSnapshot",
+            &json!({ "table": "todos", "limit": 0 }),
+        )
+        .expect_err("bad limit");
+        assert_eq!(bad_limit.0, "sync.invalid_request");
+
+        // D6: the audit names the pending commit's classification, with no
+        // envelope and nothing dropped.
+        let audit = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "previousVersionAudit",
+            &json!({}),
+        )
+        .expect("audit");
+        assert_eq!(audit["v"], json!(1));
+        assert_eq!(audit["fromVersion"], json!(1));
+        assert_eq!(audit["toVersion"], json!(2));
+        assert_eq!(audit["pending"], json!(1));
+        assert_eq!(audit["encodable"], json!(1));
+        assert_eq!(audit["incompatible"], json!([]));
+        assert!(audit.get("operations").is_none());
+
+        // The executable downgrade step, idempotent.
+        let discarded = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "previousVersionDiscard",
+            &json!({}),
+        )
+        .expect("discard");
+        assert_eq!(discarded, json!({ "present": true, "discarded": true }));
+        assert!(!std::path::Path::new(&container_path(&path)).exists());
+        let again = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "previousVersionDiscard",
+            &json!({}),
+        )
+        .expect("idempotent discard");
+        assert_eq!(again, json!({ "present": false, "discarded": false }));
+
+        // Storage read directly: both metadata records are gone.
+        let inspect = rusqlite::Connection::open(&path).expect("inspect replica");
+        let remaining: i64 = inspect
+            .query_row(
+                "SELECT COUNT(*) FROM _syncular_meta WHERE key IN (?1, ?2)",
+                rusqlite::params!["previousVersionContext", "previousVersionAudit"],
+                |row| row.get(0),
+            )
+            .expect("count meta");
+        assert_eq!(remaining, 0);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn previous_version_ttl_expires_at_read_through_the_dispatcher() {
+        let path = temp_db_path("previous-version-ttl");
+        let mut transport = NoNetwork::default();
+        let mut client: Option<SyncClient> = None;
+        let mut effects = CreateEffects::default();
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({
+                "schema": schema(),
+                "dbPath": path,
+                "previousVersionContext": previous_version_enabled()
+            }),
+        )
+        .expect("create v1");
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "shutdown",
+            &json!({}),
+        )
+        .expect("shutdown");
+
+        // The injected clock is two seconds past the capture, with a TTL far
+        // larger than the boot gap but far smaller than the skew, so the boot
+        // reconcile keeps the container and the read expires it.
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_millis() as i64
+            + 2_000;
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({
+                "schema": schema_v2(),
+                "dbPath": path,
+                "nowMs": now_ms,
+                "previousVersionContext": { "enabled": true, "maxAgeMs": 500 }
+            }),
+        )
+        .expect("create v2");
+        assert!(std::path::Path::new(&container_path(&path)).exists());
+        let snapshot = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "previousVersionSnapshot",
+            &json!({ "table": "todos" }),
+        )
+        .expect("snapshot");
+        assert_eq!(snapshot["available"], json!(false));
+        assert_eq!(snapshot["reason"], json!("expired"));
+        assert_eq!(snapshot["rows"], json!([]));
+        // The TTL discards, and the FILE is what must be gone.
+        assert!(!std::path::Path::new(&container_path(&path)).exists());
+
+        let _ = std::fs::remove_file(&path);
     }
 }
