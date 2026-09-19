@@ -562,7 +562,9 @@ describe('server-side schema migration (the subset)', () => {
     expect(marker?.schema_version).toBe(1);
     await expect(
       new SqliteServerStorage(db).ensureSchema(compileSchema(SCHEMA)),
-    ).rejects.toThrow('table "tasks" is missing column "_sync_column_versions"');
+    ).rejects.toThrow(
+      'table "tasks" is missing column "_sync_column_versions"',
+    );
     // Fail closed before any write and without a migration: the row survives.
     expect(
       db.query<{ n: number }, []>('SELECT COUNT(*) AS n FROM tasks').get()?.n,
@@ -581,8 +583,12 @@ describe('server-side schema migration (the subset)', () => {
       new PostgresServerStorage(pgliteExecutor(db)).ensureSchema(
         compileSchema(SCHEMA),
       ),
-    ).rejects.toThrow('table "tasks" is missing column "_sync_column_versions"');
-    const survived = await db.query<{ title: string }>('SELECT title FROM tasks');
+    ).rejects.toThrow(
+      'table "tasks" is missing column "_sync_column_versions"',
+    );
+    const survived = await db.query<{ title: string }>(
+      'SELECT title FROM tasks',
+    );
     expect(survived.rows).toEqual([{ title: 'v1 row' }]);
     await db.close();
   });

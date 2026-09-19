@@ -1050,11 +1050,16 @@ export class PostgresServerStorage implements ServerStorage {
       // The persisted layouts describe the codec's app columns only: read the
       // physical tables so a same-version database missing a
       // storage-internal column is refused at startup instead of failing at
-      // the first write.
+      // the first write. Resolve through `to_regclass`, which follows the
+      // session's `search_path` exactly as the unqualified row queries do —
+      // `current_schema()` names only the first existing schema, so it would
+      // reject a table that resolves later in the path.
       for (const table of schema.tables.values()) {
         const { rows } = await this.#exec.query<{ column_name: string }>(
-          `SELECT column_name FROM information_schema.columns
-           WHERE table_schema = current_schema() AND table_name = $1`,
+          `SELECT attribute.attname AS column_name
+           FROM pg_attribute attribute
+           WHERE attribute.attrelid = to_regclass($1)
+             AND attribute.attnum > 0 AND NOT attribute.attisdropped`,
           [table.name],
         );
         assertPhysicalColumns(table, new Set(rows.map((r) => r.column_name)));

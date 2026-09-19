@@ -198,6 +198,17 @@ export function tableColumnNames(table: CompiledTable): string[] {
  * a same-version database that is missing a storage-internal meta column (a
  * version-only bump whose ALTER never ran) still has to be refused: compare
  * the physical table and fail closed without writing a migration.
+ *
+ * `existingColumns` must be resolved the way the unqualified row queries
+ * resolve the table — on PostgreSQL, through the session `search_path`, not
+ * `current_schema()`. A search path whose first schema is not where the
+ * configured tables live is outside the supported contract: DDL is created in
+ * that first schema, so `ensureSchema` already writes shadow tables there.
+ *
+ * Scope: this checks that the columns EXIST. Stored types, nullability, and
+ * non-column storage internals (the tombstone bookkeeping) stay outside it,
+ * because a wrong type or nullability is a codec-compatibility question the
+ * persisted layouts answer for app columns.
  */
 export function assertPhysicalColumns(
   table: CompiledTable,
