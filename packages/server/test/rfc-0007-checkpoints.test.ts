@@ -1210,6 +1210,23 @@ for (const backend of ['sqlite', 'postgres/pglite'] as const) {
         [PARTITION],
       );
       expect(Number(fence[0]?.required_writer_version)).toBe(SCHEMA.version);
+      // A process is allowed only when it declares every incomplete checkpoint:
+      // declaring one of two is refused, declaring both is allowed.
+      await expect(
+        harness
+          .storageAgain()
+          .ensureSchema(SCHEMA, [
+            {
+              partition: PARTITION,
+              name: 'set-b',
+              schemaVersion: SCHEMA.version,
+            },
+          ]),
+      ).rejects.toMatchObject({ code: 'sync.storage.checkpoint_incomplete' });
+      await harness.storageAgain().ensureSchema(SCHEMA, [
+        { partition: PARTITION, name: 'set-a', schemaVersion: SCHEMA.version },
+        { partition: PARTITION, name: 'set-b', schemaVersion: SCHEMA.version },
+      ]);
     } finally {
       await harness.close();
     }
