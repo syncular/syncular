@@ -28,6 +28,7 @@ export * from './multi-tab';
 export * from './naming';
 export * from './outbox';
 export * from './outcomes';
+export * from './previous-version';
 export * from './query-guard';
 export * from './reactive-store';
 export * from './remote';

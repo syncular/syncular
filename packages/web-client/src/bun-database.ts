@@ -49,12 +49,15 @@ export class BunClientDatabase implements ClientDatabase {
   }
 
   exec(sql: string, params: readonly SqlValue[] = []): void {
-    this.db.query(sql).run(...coerceParams(params));
-    // `Database.query()` caches prepared statements. Clear that cache after
-    // schema DDL so a reset does not reprepare every later row upsert.
-    if (/^\s*(?:CREATE|DROP|ALTER)\b/i.test(sql)) {
+    // `Database.query()` caches prepared statements. A cached statement can
+    // still hold a read cursor on its table (bun:sqlite leaves EXPLAIN
+    // statements stepped), and that blocks the DDL's own schema lock. Clear
+    // the cache before a schema change so a reset does not reprepare stale
+    // statements and does not deadlock on an earlier read.
+    if (/^\s*(?:ATTACH|CREATE|DETACH|DROP|ALTER)\b/i.test(sql)) {
       this.db.clearQueryCache();
     }
+    this.db.query(sql).run(...coerceParams(params));
   }
 
   query(sql: string, params: readonly SqlValue[] = []): SqlRow[] {

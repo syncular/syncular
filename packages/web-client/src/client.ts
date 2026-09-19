@@ -1272,6 +1272,21 @@ export class SyncClient {
     if (this.#previousVersion === undefined) {
       return this.#previousVersionUnavailable(currentVersion, 'not-configured');
     }
+    const nowMs = this.#now();
+    if (this.#previousVersionLeaseInactive(nowMs)) {
+      this.#discardPreviousVersion();
+      return this.#previousVersionUnavailable(currentVersion, 'lease-inactive');
+    }
+    if (loadSubscriptions(this.#db).some((sub) => sub.status === 'revoked')) {
+      this.#discardPreviousVersion();
+      return this.#previousVersionUnavailable(currentVersion, 'scope-revoked');
+    }
+    // Coverage completion is a live predicate: the container is normally
+    // dropped by the sync path first, so a read can be the first observer.
+    if (this.#previousVersionCoverageComplete()) {
+      this.#discardPreviousVersion();
+      return this.#previousVersionUnavailable(currentVersion, 'coverage-complete');
+    }
     const stored = storedPreviousVersionContext(this.#db);
     if (stored === undefined) {
       return this.#previousVersionUnavailable(
@@ -1282,22 +1297,9 @@ export class SyncClient {
     if ('reason' in stored) {
       return this.#previousVersionUnavailable(currentVersion, stored.reason);
     }
-    const nowMs = this.#now();
-    if (this.#previousVersionLeaseInactive(nowMs)) {
-      this.#discardPreviousVersion();
-      return this.#previousVersionUnavailable(currentVersion, 'lease-inactive');
-    }
-    if (loadSubscriptions(this.#db).some((sub) => sub.status === 'revoked')) {
-      this.#discardPreviousVersion();
-      return this.#previousVersionUnavailable(currentVersion, 'scope-revoked');
-    }
     if (nowMs - stored.createdAtMs > previousVersionMaxAgeMs(this.#config.previousVersionContext)) {
       this.#discardPreviousVersion();
       return this.#previousVersionUnavailable(currentVersion, 'expired');
-    }
-    if (this.#previousVersionCoverageComplete()) {
-      this.#discardPreviousVersion();
-      return this.#previousVersionUnavailable(currentVersion, 'coverage-complete');
     }
     const table = stored.tables.find((entry) => entry.name === spec.table);
     if (table === undefined) {
