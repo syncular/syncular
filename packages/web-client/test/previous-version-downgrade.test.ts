@@ -112,11 +112,15 @@ function gitEnv(): Record<string, string | undefined> {
   return env;
 }
 
-function git(args: readonly string[], cwd = REPO_ROOT): string {
-  const result = Bun.spawnSync({
+function gitExit(args: readonly string[], cwd = REPO_ROOT) {
+  return Bun.spawnSync({
     cmd: ['git', '-C', cwd, ...args],
     env: gitEnv(),
   });
+}
+
+function git(args: readonly string[], cwd = REPO_ROOT): string {
+  const result = gitExit(args, cwd);
   if (result.exitCode !== 0) {
     throw new Error(
       `git ${args.join(' ')} failed (${result.exitCode}): ${result.stderr.toString()}`,
@@ -125,9 +129,38 @@ function git(args: readonly string[], cwd = REPO_ROOT): string {
   return result.stdout.toString().trim();
 }
 
+/**
+ * CI's `check` job checks out the PR merge ref at the default `fetch-depth: 1`,
+ * so the pinned pre-change commit is simply absent there — and `git worktree
+ * add` then dies with `fatal: invalid reference`. A local full clone has the
+ * object, which is why this only ever broke in CI.
+ *
+ * Fetch exactly the pinned object (never a branch head, never a substitute)
+ * and verify what landed before the worktree is created. Skipping the lane is
+ * not an option: the point of this test is the real old binary.
+ */
+function ensureCommit(sha: string): void {
+  if (gitExit(['cat-file', '-e', `${sha}^{commit}`]).exitCode === 0) return;
+  const fetched = gitExit(['fetch', '--no-tags', '--depth=1', 'origin', sha]);
+  if (fetched.exitCode !== 0) {
+    throw new Error(
+      `pinned pre-change commit ${sha} is absent and the shallow fetch failed ` +
+        `(${fetched.exitCode}): ${fetched.stderr.toString().trim()}`,
+    );
+  }
+  const resolved = git(['rev-parse', 'FETCH_HEAD']);
+  if (resolved !== sha) {
+    throw new Error(
+      `pinned pre-change commit ${sha} is absent and the fetch resolved ` +
+        `FETCH_HEAD to ${resolved} instead; refusing to run the old binary lane`,
+    );
+  }
+}
+
 beforeAll(async () => {
   oldParent = mkdtempSync(join(tmpdir(), 'syncular-pvc-downgrade-'));
   oldRoot = join(oldParent, 'base');
+  ensureCommit(BASE_COMMIT);
   git(['worktree', 'add', '--detach', oldRoot, BASE_COMMIT]);
   // The old worktree has no install. Its workspace resolution needs the
   // dependency trees; @syncular/core is byte-identical at HEAD.
