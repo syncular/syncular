@@ -39,10 +39,16 @@ interface Harness {
   readonly storage: ServerStorage;
   /** Raw insert: `?` placeholders for SQLite/D1, `$n` for Postgres. */
   insert(sqliteSql: string, pgSql: string, params: unknown[]): Promise<void>;
+  /** Raw select: `?` placeholders for SQLite/D1, `$n` for Postgres. */
+  query<Row>(
+    sqliteSql: string,
+    pgSql: string,
+    params: unknown[],
+  ): Promise<Row[]>;
   close(): Promise<void>;
 }
 
-async function harness(
+async function harnessFn(
   backend: 'sqlite' | 'postgres' | 'd1',
 ): Promise<Harness> {
   if (backend === 'sqlite') {
@@ -54,6 +60,11 @@ async function harness(
       insert: async (sqliteSql, _pgSql, params) => {
         db.query(sqliteSql).run(...(params as never[]));
       },
+      query: async <Row>(
+        sqliteSql: string,
+        _pgSql: string,
+        params: unknown[],
+      ) => db.query<Row, never[]>(sqliteSql).all(...(params as never[])),
       close: async () => db.close(),
     };
   }
@@ -66,6 +77,11 @@ async function harness(
       insert: async (_sqliteSql, pgSql, params) => {
         await pg.query(pgSql, params);
       },
+      query: async <Row>(
+        _sqliteSql: string,
+        pgSql: string,
+        params: unknown[],
+      ) => (await pg.query<Row>(pgSql, params)).rows,
       close: async () => pg.close(),
     };
   }
@@ -83,6 +99,13 @@ async function harness(
         .bind(...params)
         .run();
     },
+    query: async <Row>(sqliteSql: string, _pgSql: string, params: unknown[]) =>
+      (
+        await d1
+          .prepare(sqliteSql)
+          .bind(...params)
+          .all<Row>()
+      ).results,
     close: async () => undefined,
   };
 }
@@ -122,7 +145,7 @@ for (const backend of ['sqlite', 'postgres/pglite', 'd1/double'] as const) {
         : 'sqlite';
 
   test(`${backend} claimCheckpoint increments owner_epoch without a shared epoch`, async () => {
-    const { storage, insert, close } = await harness(key);
+    const { storage, insert, close } = await harnessFn(key);
     try {
       if (key === 'd1') {
         // D1 supports no declared checkpoint; nothing can exist or be claimed.
@@ -167,7 +190,7 @@ for (const backend of ['sqlite', 'postgres/pglite', 'd1/double'] as const) {
   });
 
   test(`${backend} advanceCheckpoint rejects a superseded epoch and leaves the row unchanged`, async () => {
-    const { storage, insert, close } = await harness(key);
+    const { storage, insert, close } = await harnessFn(key);
     try {
       if (key === 'd1') {
         await expect(
@@ -225,7 +248,7 @@ for (const backend of ['sqlite', 'postgres/pglite', 'd1/double'] as const) {
   });
 
   test(`${backend} source coverage ignores non-source tables`, async () => {
-    const { storage, close } = await harness(key);
+    const { storage, close } = await harnessFn(key);
     try {
       const taskSeq = await append(storage, 'tasks', 't1');
       const docSeq = await append(storage, 'docs', 'd1');
@@ -261,7 +284,7 @@ for (const backend of ['sqlite', 'postgres/pglite', 'd1/double'] as const) {
   });
 
   test(`${backend} a pruned window is unverifiable, never clean`, async () => {
-    const { storage, close } = await harness(key);
+    const { storage, close } = await harnessFn(key);
     try {
       const { logEpoch } = await storage.touchPartition(
         PARTITION,
@@ -292,7 +315,7 @@ for (const backend of ['sqlite', 'postgres/pglite', 'd1/double'] as const) {
   });
 
   test(`${backend} an absent writer fence allows writes and a lower requirement still does`, async () => {
-    const { storage, insert, close } = await harness(key);
+    const { storage, insert, close } = await harnessFn(key);
     try {
       // No row: no barrier on this partition.
       expect(await storage.writerFenceAllows(PARTITION, 1)).toBe(true);
@@ -315,7 +338,7 @@ for (const backend of ['sqlite', 'postgres/pglite', 'd1/double'] as const) {
   });
 
   test(`${backend} the checkpoint table is not served as a synced table`, async () => {
-    const { storage, close } = await harness(key);
+    const { storage, close } = await harnessFn(key);
     try {
       await expect(
         Promise.resolve().then(() =>
@@ -334,7 +357,7 @@ for (const backend of ['sqlite', 'postgres/pglite', 'd1/double'] as const) {
 }
 
 test('D1 never declares a checkpoint and the no-barrier path is unchanged', async () => {
-  const { storage, close } = await harness('d1');
+  const { storage, close } = await harnessFn('d1');
   try {
     expect(await storage.readCheckpoints(PARTITION)).toEqual([]);
     expect(await storage.writerFenceAllows(PARTITION, 1)).toBe(true);
@@ -365,5 +388,441 @@ test('SQLite source-coverage queries run on sync_changes_by_table', () => {
     expect(detail).toContain('sync_changes_by_table');
   } finally {
     storage.db.close();
+  }
+});
+
+// -- RFC 0007 phase 2a: database-side writer fence and activation -----------
+
+const COMMIT_OLD = `INSERT INTO sync_commits(
+  partition, commit_seq, client_id, client_commit_id, actor_id, created_at_ms
+) VALUES (?,?,?,?,?,?)`;
+const COMMIT_OLD_PG = `INSERT INTO sync_commits(
+  partition, commit_seq, client_id, client_commit_id, actor_id, created_at_ms
+) VALUES ($1,$2,$3,$4,$5,$6)`;
+const COMMIT_VERSIONED = `INSERT INTO sync_commits(
+  partition, commit_seq, client_id, client_commit_id, actor_id,
+  created_at_ms, writer_version
+) VALUES (?,?,?,?,?,?,?)`;
+const COMMIT_VERSIONED_PG = `INSERT INTO sync_commits(
+  partition, commit_seq, client_id, client_commit_id, actor_id,
+  created_at_ms, writer_version
+) VALUES ($1,$2,$3,$4,$5,$6,$7)`;
+const FENCE_UPSERT =
+  'INSERT INTO sync_writer_fence(partition, required_writer_version) VALUES (?,?) ON CONFLICT(partition) DO UPDATE SET required_writer_version=excluded.required_writer_version';
+const FENCE_UPSERT_PG =
+  'INSERT INTO sync_writer_fence(partition, required_writer_version) VALUES ($1,$2) ON CONFLICT(partition) DO UPDATE SET required_writer_version=EXCLUDED.required_writer_version';
+const SELECT_WRITER_VERSION =
+  'SELECT writer_version FROM sync_commits WHERE partition=? AND commit_seq=?';
+const SELECT_WRITER_VERSION_PG =
+  'SELECT writer_version FROM sync_commits WHERE partition=$1 AND commit_seq=$2';
+
+/** Raw commit-log append simulating a writer that omits `writer_version`. */
+async function rawCommit(
+  harness: Harness,
+  seq: number,
+  writerVersion: number | null,
+): Promise<void> {
+  if (writerVersion === null) {
+    await harness.insert(COMMIT_OLD, COMMIT_OLD_PG, [
+      PARTITION,
+      seq,
+      'c1',
+      `cc-${seq}`,
+      'a1',
+      NOW,
+    ]);
+    return;
+  }
+  await harness.insert(COMMIT_VERSIONED, COMMIT_VERSIONED_PG, [
+    PARTITION,
+    seq,
+    'c1',
+    `cc-${seq}`,
+    'a1',
+    NOW,
+    writerVersion,
+  ]);
+}
+
+for (const backend of ['sqlite', 'postgres/pglite'] as const) {
+  const key = backend === 'postgres/pglite' ? 'postgres' : 'sqlite';
+
+  test(`${backend} absent fence allows an old writer; raised fence denies`, async () => {
+    const harness = await harnessFn(key);
+    try {
+      // No fence row: the pre-RFC-0007 behaviour for every existing deployment.
+      await rawCommit(harness, 1, null);
+      // A requirement at or below the writer version allows the write.
+      await harness.insert(FENCE_UPSERT, FENCE_UPSERT_PG, [PARTITION, 1]);
+      await rawCommit(harness, 2, 1);
+      // An explicit NULL is rejected while a fence exists, never bypassed by
+      // a NULL comparison.
+      await expect(rawCommit(harness, 3, null)).rejects.toThrow(
+        /writer_fence_rejected/,
+      );
+      // A higher requirement denies a current-version row.
+      await harness.insert(FENCE_UPSERT, FENCE_UPSERT_PG, [PARTITION, 99]);
+      await expect(rawCommit(harness, 4, 1)).rejects.toThrow(
+        /writer_fence_rejected/,
+      );
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test(`${backend} acceptance 16: an old writer is denied right after a current append`, async () => {
+    const harness = await harnessFn(key);
+    try {
+      const declared = await harness.storage.declareCheckpoint(
+        PARTITION,
+        'tasks-projection',
+        SCHEMA.version,
+        NOW,
+      );
+      expect(declared.state).toBe('declared');
+      const seq = await append(harness.storage, 'tasks', 't1');
+      const rows = await harness.query<{ writer_version: number }>(
+        SELECT_WRITER_VERSION,
+        SELECT_WRITER_VERSION_PG,
+        [PARTITION, seq],
+      );
+      expect(rows[0]?.writer_version).toBe(SCHEMA.version);
+      // Same database, immediately after the aware writer committed. A fence
+      // that leaked a declaration between transactions would allow this.
+      await expect(rawCommit(harness, seq + 1, null)).rejects.toThrow(
+        /writer_fence_rejected/,
+      );
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test(`${backend} declaration raises the fence before any backfill`, async () => {
+    const harness = await harnessFn(key);
+    try {
+      await harness.storage.declareCheckpoint(
+        PARTITION,
+        'tasks-projection',
+        SCHEMA.version,
+        NOW,
+      );
+      const claimed = await harness.storage.claimCheckpoint(
+        PARTITION,
+        'tasks-projection',
+        SCHEMA.version,
+        NOW,
+      );
+      expect(claimed.state).toBe('backfilling');
+      // The backfill window: declared, not yet activated, old writers already
+      // rejected. Raising the fence only at activation would pass here.
+      await expect(rawCommit(harness, 1, null)).rejects.toThrow(
+        /writer_fence_rejected/,
+      );
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test(`${backend} acceptance 15: a pruned window never activates`, async () => {
+    const harness = await harnessFn(key);
+    try {
+      const { logEpoch } = await harness.storage.touchPartition(
+        PARTITION,
+        NOW,
+        'epoch',
+      );
+      const seq = await append(harness.storage, 'tasks', 't1');
+      await harness.storage.pruneCommitsThrough(PARTITION, {
+        logEpoch,
+        throughSeq: seq,
+      });
+      await harness.storage.declareCheckpoint(
+        PARTITION,
+        'tasks-projection',
+        SCHEMA.version,
+        NOW,
+      );
+      const claimed = await harness.storage.claimCheckpoint(
+        PARTITION,
+        'tasks-projection',
+        SCHEMA.version,
+        NOW,
+      );
+      expect(
+        await harness.storage.activateCheckpoint(
+          PARTITION,
+          'tasks-projection',
+          claimed.ownerEpoch,
+          0,
+          ['tasks'],
+          NOW,
+        ),
+      ).toBe('unverifiable');
+      const after = (await harness.storage.readCheckpoints(PARTITION))[0];
+      expect(after?.state).toBe('backfilling');
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test(`${backend} acceptance 5: reactivation applies nothing twice`, async () => {
+    const harness = await harnessFn(key);
+    try {
+      const seq = await append(harness.storage, 'tasks', 't1');
+      await harness.storage.declareCheckpoint(
+        PARTITION,
+        'tasks-projection',
+        SCHEMA.version,
+        NOW,
+      );
+      const claimed = await harness.storage.claimCheckpoint(
+        PARTITION,
+        'tasks-projection',
+        SCHEMA.version,
+        NOW,
+      );
+      expect(
+        await harness.storage.activateCheckpoint(
+          PARTITION,
+          'tasks-projection',
+          claimed.ownerEpoch,
+          seq,
+          ['tasks'],
+          NOW + 1,
+        ),
+      ).toBe('activated');
+      const activated = (await harness.storage.readCheckpoints(PARTITION))[0];
+      expect(activated?.state).toBe('activated');
+      expect(
+        await harness.storage.activateCheckpoint(
+          PARTITION,
+          'tasks-projection',
+          claimed.ownerEpoch,
+          seq,
+          ['tasks'],
+          NOW + 2,
+        ),
+      ).toBe('stale');
+      const after = (await harness.storage.readCheckpoints(PARTITION))[0];
+      expect(after?.state).toBe('activated');
+      expect(after?.watermark).toBe(seq);
+      expect(after?.updatedAtMs).toBe(activated?.updatedAtMs);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test(`${backend} acceptance 10: a superseded owner cannot activate`, async () => {
+    const harness = await harnessFn(key);
+    try {
+      const seq = await append(harness.storage, 'tasks', 't1');
+      await harness.storage.declareCheckpoint(
+        PARTITION,
+        'tasks-projection',
+        SCHEMA.version,
+        NOW,
+      );
+      const stale = await harness.storage.claimCheckpoint(
+        PARTITION,
+        'tasks-projection',
+        SCHEMA.version,
+        NOW,
+      );
+      const owner = await harness.storage.claimCheckpoint(
+        PARTITION,
+        'tasks-projection',
+        SCHEMA.version,
+        NOW,
+      );
+      expect(
+        await harness.storage.activateCheckpoint(
+          PARTITION,
+          'tasks-projection',
+          stale.ownerEpoch,
+          seq,
+          ['tasks'],
+          NOW + 1,
+        ),
+      ).toBe('stale');
+      expect(
+        await harness.storage.advanceCheckpoint(
+          PARTITION,
+          'tasks-projection',
+          stale.ownerEpoch,
+          999,
+          1,
+          NOW + 1,
+        ),
+      ).toBe(false);
+      const after = (await harness.storage.readCheckpoints(PARTITION))[0];
+      expect(after?.state).toBe('backfilling');
+      expect(after?.watermark).toBe(0);
+      // The current owner can still activate the same row.
+      expect(
+        await harness.storage.activateCheckpoint(
+          PARTITION,
+          'tasks-projection',
+          owner.ownerEpoch,
+          seq,
+          ['tasks'],
+          NOW + 2,
+        ),
+      ).toBe('activated');
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test(`${backend} activation refuses when the fence was never raised`, async () => {
+    const harness = await harnessFn(key);
+    try {
+      // A declared checkpoint without the matching fence is an inconsistent
+      // database: activating it would certify a state old writers can decay.
+      await harness.insert(CHECKPOINT_INSERT, CHECKPOINT_INSERT_PG, [
+        PARTITION,
+        'tasks-projection',
+        SCHEMA.version,
+        'declared',
+        0,
+        0,
+        0,
+        NOW,
+      ]);
+      const claimed = await harness.storage.claimCheckpoint(
+        PARTITION,
+        'tasks-projection',
+        SCHEMA.version,
+        NOW,
+      );
+      await expect(
+        harness.storage.activateCheckpoint(
+          PARTITION,
+          'tasks-projection',
+          claimed.ownerEpoch,
+          0,
+          ['tasks'],
+          NOW,
+        ),
+      ).rejects.toMatchObject({
+        code: 'sync.storage.checkpoint_fence_missing',
+      });
+      // A fence below the checkpoint's schema version is equally insufficient.
+      await harness.insert(FENCE_UPSERT, FENCE_UPSERT_PG, [
+        PARTITION,
+        SCHEMA.version - 1,
+      ]);
+      await expect(
+        harness.storage.activateCheckpoint(
+          PARTITION,
+          'tasks-projection',
+          claimed.ownerEpoch,
+          0,
+          ['tasks'],
+          NOW,
+        ),
+      ).rejects.toMatchObject({
+        code: 'sync.storage.checkpoint_fence_missing',
+      });
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test(`${backend} activation is one-way`, async () => {
+    const harness = await harnessFn(key);
+    try {
+      const seq = await append(harness.storage, 'tasks', 't1');
+      await harness.storage.declareCheckpoint(
+        PARTITION,
+        'tasks-projection',
+        SCHEMA.version,
+        NOW,
+      );
+      const claimed = await harness.storage.claimCheckpoint(
+        PARTITION,
+        'tasks-projection',
+        SCHEMA.version,
+        NOW,
+      );
+      expect(
+        await harness.storage.activateCheckpoint(
+          PARTITION,
+          'tasks-projection',
+          claimed.ownerEpoch,
+          seq,
+          ['tasks'],
+          NOW,
+        ),
+      ).toBe('activated');
+      // Claiming an activated checkpoint is refused, and re-declaring it
+      // cannot move it back.
+      await expect(
+        harness.storage.claimCheckpoint(
+          PARTITION,
+          'tasks-projection',
+          SCHEMA.version,
+          NOW,
+        ),
+      ).rejects.toMatchObject({
+        code: 'sync.storage.checkpoint_not_declared',
+      });
+      expect(
+        (
+          await harness.storage.declareCheckpoint(
+            PARTITION,
+            'tasks-projection',
+            SCHEMA.version,
+            NOW,
+          )
+        ).state,
+      ).toBe('activated');
+      expect(
+        await harness.storage.activateCheckpoint(
+          PARTITION,
+          'tasks-projection',
+          claimed.ownerEpoch,
+          seq,
+          ['tasks'],
+          NOW + 1,
+        ),
+      ).toBe('stale');
+      expect((await harness.storage.readCheckpoints(PARTITION))[0]?.state).toBe(
+        'activated',
+      );
+    } finally {
+      await harness.close();
+    }
+  });
+}
+
+test('D1 refuses declaration and activation, and keeps the no-barrier path', async () => {
+  const harness = await harnessFn('d1');
+  try {
+    await expect(
+      harness.storage.declareCheckpoint(
+        PARTITION,
+        'tasks-projection',
+        SCHEMA.version,
+        NOW,
+      ),
+    ).rejects.toMatchObject({
+      code: 'sync.storage.checkpoint_unsupported',
+    });
+    await expect(
+      harness.storage.activateCheckpoint(
+        PARTITION,
+        'tasks-projection',
+        1,
+        0,
+        ['tasks'],
+        NOW,
+      ),
+    ).rejects.toMatchObject({
+      code: 'sync.storage.checkpoint_unsupported',
+    });
+    // An old writer still appends: D1 installs no fence in this release.
+    expect(await append(harness.storage, 'tasks', 't1')).toBe(1);
+  } finally {
+    await harness.close();
   }
 });

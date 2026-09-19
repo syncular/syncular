@@ -1599,6 +1599,26 @@ export class D1ServerStorage implements ServerStorage {
     return [];
   }
 
+  async declareCheckpoint(
+    _partition: string,
+    _name: string,
+    _schemaVersion: number,
+    _nowMs: number,
+  ): Promise<StoredCheckpoint> {
+    throw new StorageQueryError('sync.storage.checkpoint_unsupported');
+  }
+
+  async activateCheckpoint(
+    _partition: string,
+    _name: string,
+    _ownerEpoch: number,
+    _watermark: number,
+    _sources: readonly string[],
+    _nowMs: number,
+  ): Promise<'activated' | 'stale' | 'unverifiable'> {
+    throw new StorageQueryError('sync.storage.checkpoint_unsupported');
+  }
+
   async claimCheckpoint(
     _partition: string,
     _name: string,

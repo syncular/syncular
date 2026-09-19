@@ -166,6 +166,7 @@ CREATE TABLE IF NOT EXISTS sync_commits(
   partition TEXT NOT NULL, commit_seq BIGINT NOT NULL,
   client_id TEXT NOT NULL, client_commit_id TEXT NOT NULL,
   actor_id TEXT NOT NULL, created_at_ms BIGINT NOT NULL,
+  writer_version BIGINT,
   PRIMARY KEY(partition, commit_seq)
 );
 CREATE INDEX IF NOT EXISTS sync_commits_by_time
@@ -277,6 +278,33 @@ async function lockPartitionOn(
     'SELECT max_commit_seq FROM sync_partitions WHERE partition=$1 FOR UPDATE',
     [partition],
   );
+}
+
+async function hasSourceChangesAboveOn(
+  client: PgQueryable,
+  partition: string,
+  tables: readonly string[],
+  seq: number,
+): Promise<'clean' | 'changed' | 'unverifiable'> {
+  // Read the horizon before the window scan: a horizon past `seq` means the
+  // history that would answer the question is gone, so an empty scan proves
+  // nothing and must not be reported as `clean`.
+  const horizon = await client.query<{ horizon_seq: unknown }>(
+    'SELECT horizon_seq FROM sync_partitions WHERE partition=$1',
+    [partition],
+  );
+  const horizonSeq =
+    horizon.rows[0] === undefined ? 0 : asNumber(horizon.rows[0].horizon_seq);
+  if (tables.length === 0) return 'clean';
+  const tableParams = tables.map((_, index) => `$${index + 2}`).join(',');
+  const hit = await client.query<{ hit: number }>(
+    `SELECT 1 AS hit FROM sync_changes
+      WHERE partition=$1 AND tbl IN (${tableParams}) AND commit_seq>$${tables.length + 2}
+      LIMIT 1`,
+    [partition, ...tables, seq],
+  );
+  if (hit.rows[0] !== undefined) return 'changed';
+  return horizonSeq > seq ? 'unverifiable' : 'clean';
 }
 
 function toBase64(bytes: Uint8Array): string {
@@ -638,6 +666,8 @@ async function getPushResultOn(
 class PostgresTransaction implements StorageTransaction {
   #client: PgQueryable;
   #partition: string;
+  /** Schema version this transaction writes; rides every appended commit row. */
+  #writerVersion: number;
   #resolveTable: (name: string) => CompiledTable;
   #open = true;
   #pushApplySavepoint = false;
@@ -648,6 +678,7 @@ class PostgresTransaction implements StorageTransaction {
   constructor(
     client: PgQueryable,
     partition: string,
+    writerVersion: number,
     resolveTable: (name: string) => CompiledTable,
     resolve: () => void,
     reject: (error: unknown) => void,
@@ -670,6 +701,7 @@ class PostgresTransaction implements StorageTransaction {
       },
     };
     this.#partition = partition;
+    this.#writerVersion = writerVersion;
     this.#resolveTable = resolveTable;
     this.#resolve = resolve;
     this.#reject = reject;
@@ -867,8 +899,8 @@ class PostgresTransaction implements StorageTransaction {
            SET max_commit_seq = sync_partitions.max_commit_seq + 1
          RETURNING max_commit_seq
        )
-       INSERT INTO sync_commits(partition, commit_seq, client_id, client_commit_id, actor_id, created_at_ms)
-       SELECT $1, max_commit_seq, $2, $3, $4, $5 FROM allocated
+       INSERT INTO sync_commits(partition, commit_seq, client_id, client_commit_id, actor_id, created_at_ms, writer_version)
+       SELECT $1, max_commit_seq, $2, $3, $4, $5, $6 FROM allocated
        RETURNING commit_seq`,
       [
         p,
@@ -876,6 +908,7 @@ class PostgresTransaction implements StorageTransaction {
         commit.clientCommitId,
         commit.actorId,
         commit.createdAtMs,
+        this.#writerVersion,
       ],
     );
     const commitSeq = asNumber(rows[0]?.commit_seq);
@@ -1013,6 +1046,33 @@ export class PostgresServerStorage implements ServerStorage {
     for (const statement of statements) {
       await this.#exec.query(statement);
     }
+    await this.#exec.query(
+      'ALTER TABLE sync_commits ADD COLUMN IF NOT EXISTS writer_version BIGINT',
+    );
+    // Database-side fence: an old binary's INSERT never reaches JS. An absent
+    // `sync_writer_fence` row makes the EXISTS false, so a partition with no
+    // barrier behaves exactly as before. Sent as separate statements because
+    // the dollar-quoted body contains `;`.
+    await this.#exec.query(`CREATE OR REPLACE FUNCTION syncular_writer_fence()
+RETURNS trigger AS $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM sync_writer_fence
+     WHERE partition = NEW.partition
+       AND (NEW.writer_version IS NULL
+            OR NEW.writer_version < required_writer_version)
+  ) THEN
+    RAISE EXCEPTION 'sync.storage.writer_fence_rejected';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql`);
+    await this.#exec.query(
+      'DROP TRIGGER IF EXISTS sync_commits_writer_fence ON sync_commits',
+    );
+    await this.#exec.query(`CREATE TRIGGER sync_commits_writer_fence
+BEFORE INSERT ON sync_commits
+FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
   }
 
   /** Resolve a table's compiled schema; row operations require `ensureSchema`. */
@@ -1304,6 +1364,7 @@ export class PostgresServerStorage implements ServerStorage {
         const tx = new PostgresTransaction(
           client,
           partition,
+          this.#schemaVersion ?? 0,
           (name) => this.table(name),
           resolveScope,
           rejectScope,
@@ -1463,6 +1524,99 @@ export class PostgresServerStorage implements ServerStorage {
     return rows.map(toStoredCheckpoint);
   }
 
+  async declareCheckpoint(
+    partition: string,
+    name: string,
+    schemaVersion: number,
+    nowMs: number,
+  ): Promise<StoredCheckpoint> {
+    // One transaction: the checkpoint becomes visible and the fence that
+    // protects it is raised together. The fence is raised at declaration, not
+    // at activation, so old writers are rejected for the whole backfill.
+    return this.#exec.transaction(async (client) => {
+      await client.query(
+        `INSERT INTO sync_backfill_checkpoints(
+           partition, name, schema_version, state, watermark,
+           owner_epoch, observed_rows, updated_at_ms)
+         VALUES ($1,$2,$3,'declared',0,0,0,$4)
+         ON CONFLICT (partition, name) DO NOTHING`,
+        [partition, name, schemaVersion, nowMs],
+      );
+      await client.query(
+        `INSERT INTO sync_writer_fence(partition, required_writer_version)
+         VALUES ($1,$2)
+         ON CONFLICT (partition) DO UPDATE SET
+           required_writer_version=GREATEST(
+             sync_writer_fence.required_writer_version,
+             EXCLUDED.required_writer_version)`,
+        [partition, schemaVersion],
+      );
+      const { rows } = await client.query<PostgresCheckpointRecord>(
+        `SELECT partition, name, schema_version, state, watermark,
+                owner_epoch, observed_rows, updated_at_ms
+           FROM sync_backfill_checkpoints WHERE partition=$1 AND name=$2`,
+        [partition, name],
+      );
+      const row = rows[0];
+      if (row === undefined) {
+        throw new StorageQueryError('sync.storage.checkpoint_not_declared');
+      }
+      return toStoredCheckpoint(row);
+    });
+  }
+
+  async activateCheckpoint(
+    partition: string,
+    name: string,
+    ownerEpoch: number,
+    watermark: number,
+    sources: readonly string[],
+    nowMs: number,
+  ): Promise<'activated' | 'stale' | 'unverifiable'> {
+    return this.#exec.transaction(async (client) => {
+      // The same `SELECT … FOR UPDATE` partition row lock that
+      // `lockPartitionForPush` takes; a bare `BEGIN` would race a push.
+      await lockPartitionOn(client, partition);
+      const fence = await client.query<{ required_writer_version: unknown }>(
+        'SELECT required_writer_version FROM sync_writer_fence WHERE partition=$1',
+        [partition],
+      );
+      const checkpoint = await client.query<{ schema_version: unknown }>(
+        'SELECT schema_version FROM sync_backfill_checkpoints WHERE partition=$1 AND name=$2',
+        [partition, name],
+      );
+      const fenceRow = fence.rows[0];
+      const checkpointRow = checkpoint.rows[0];
+      if (
+        fenceRow === undefined ||
+        checkpointRow === undefined ||
+        asNumber(fenceRow.required_writer_version) <
+          asNumber(checkpointRow.schema_version)
+      ) {
+        // The barrier is not installed. Activating would certify a state old
+        // writers can still decay; refuse instead of silently proceeding.
+        throw new StorageQueryError('sync.storage.checkpoint_fence_missing');
+      }
+      const coverage = await hasSourceChangesAboveOn(
+        client,
+        partition,
+        sources,
+        watermark,
+      );
+      if (coverage !== 'clean') {
+        return coverage === 'changed' ? 'stale' : 'unverifiable';
+      }
+      const updated = await client.query(
+        `UPDATE sync_backfill_checkpoints
+            SET state='activated', watermark=$1, updated_at_ms=$2
+          WHERE partition=$3 AND name=$4 AND owner_epoch=$5
+            AND state<>'activated'`,
+        [watermark, nowMs, partition, name, ownerEpoch],
+      );
+      return updated.rowCount === 1 ? 'activated' : 'stale';
+    });
+  }
+
   async claimCheckpoint(
     partition: string,
     name: string,
@@ -1519,25 +1673,12 @@ export class PostgresServerStorage implements ServerStorage {
     return seq === null || seq === undefined ? 0 : asNumber(seq);
   }
 
-  async hasSourceChangesAbove(
+  hasSourceChangesAbove(
     partition: string,
     tables: readonly string[],
     seq: number,
   ): Promise<'clean' | 'changed' | 'unverifiable'> {
-    // Read the horizon before the window scan: a horizon past `seq` means the
-    // history that would answer the question is gone, so an empty scan proves
-    // nothing and must not be reported as `clean`.
-    const horizon = await this.getHorizonSeq(partition);
-    if (tables.length === 0) return 'clean';
-    const tableParams = tables.map((_, index) => `$${index + 2}`).join(',');
-    const { rows } = await this.#exec.query<{ hit: number }>(
-      `SELECT 1 AS hit FROM sync_changes
-        WHERE partition=$1 AND tbl IN (${tableParams}) AND commit_seq>$${tables.length + 2}
-        LIMIT 1`,
-      [partition, ...tables, seq],
-    );
-    if (rows[0] !== undefined) return 'changed';
-    return horizon > seq ? 'unverifiable' : 'clean';
+    return hasSourceChangesAboveOn(this.#exec, partition, tables, seq);
   }
 
   async writerFenceAllows(

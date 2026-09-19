@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS sync_commits(
   partition TEXT NOT NULL, commit_seq INTEGER NOT NULL,
   client_id TEXT NOT NULL, client_commit_id TEXT NOT NULL,
   actor_id TEXT NOT NULL, created_at_ms INTEGER NOT NULL,
+  writer_version INTEGER,
   PRIMARY KEY(partition, commit_seq)
 );
 CREATE INDEX IF NOT EXISTS sync_commits_by_time

@@ -550,6 +550,33 @@ export interface ServerStorage {
     seq: number,
   ): Promise<'clean' | 'changed' | 'unverifiable'>;
   /**
+   * Install the barrier: insert the checkpoint in `declared` and raise
+   * `required_writer_version` for the partition in one transaction. The fence
+   * is raised at declaration, before any backfill work, so old writers are
+   * rejected for the whole backfill window. Idempotent on an existing declared
+   * or backfilling row.
+   */
+  declareCheckpoint(
+    partition: string,
+    name: string,
+    schemaVersion: number,
+    nowMs: number,
+  ): Promise<StoredCheckpoint>;
+  /**
+   * Activate a declared checkpoint under the partition write lock. Refuses when
+   * the fence is not already raised at the checkpoint's schema version, when a
+   * source change sits above `watermark` (`stale`), or when the pruning horizon
+   * has passed `watermark` (`unverifiable`). `activated` is terminal.
+   */
+  activateCheckpoint(
+    partition: string,
+    name: string,
+    ownerEpoch: number,
+    watermark: number,
+    sources: readonly string[],
+    nowMs: number,
+  ): Promise<'activated' | 'stale' | 'unverifiable'>;
+  /**
    * Whether `writerVersion` may append to this partition's commit log. False
    * only when a fence row exists and requires a higher version; an absent row
    * means no barrier and allows the write.

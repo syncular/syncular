@@ -166,6 +166,8 @@ function toStoredReaction(record: SqliteReactionRecord): StoredReaction {
 class SqliteTransaction implements StorageTransaction {
   #storage: SqliteServerStorage;
   #partition: string;
+  /** Schema version this transaction writes; rides every appended commit row. */
+  #writerVersion: number;
   #open = true;
   #pushApplySavepoint = false;
   readonly #release: () => void;
@@ -173,10 +175,12 @@ class SqliteTransaction implements StorageTransaction {
   constructor(
     storage: SqliteServerStorage,
     partition: string,
+    writerVersion: number,
     release: () => void,
   ) {
     this.#storage = storage;
     this.#partition = partition;
+    this.#writerVersion = writerVersion;
     this.#release = release;
     storage.db.exec('BEGIN IMMEDIATE');
   }
@@ -328,7 +332,7 @@ class SqliteTransaction implements StorageTransaction {
       'UPDATE sync_partitions SET max_commit_seq=? WHERE partition=?',
     ).run(commitSeq, p);
     db.query(
-      'INSERT INTO sync_commits(partition, commit_seq, client_id, client_commit_id, actor_id, created_at_ms) VALUES (?,?,?,?,?,?)',
+      'INSERT INTO sync_commits(partition, commit_seq, client_id, client_commit_id, actor_id, created_at_ms, writer_version) VALUES (?,?,?,?,?,?,?)',
     ).run(
       p,
       commitSeq,
@@ -336,6 +340,7 @@ class SqliteTransaction implements StorageTransaction {
       commit.clientCommitId,
       commit.actorId,
       commit.createdAtMs,
+      this.#writerVersion,
     );
     commit.changes.forEach((change, idx) => {
       db.query(
@@ -481,6 +486,32 @@ export class SqliteServerStorage implements ServerStorage {
         'ALTER TABLE sync_clients ADD COLUMN wire_version INTEGER NOT NULL DEFAULT 1',
       );
     }
+    const commitColumns = this.db
+      .query<{ name: string }, []>('PRAGMA table_info("sync_commits")')
+      .all();
+    if (!commitColumns.some((column) => column.name === 'writer_version')) {
+      // Nullable by design: an old writer omits the column and the trigger's
+      // explicit NULL test rejects it. `ADD COLUMN NOT NULL` is unavailable in
+      // SQLite, and a default would hand old writers a passing value.
+      this.db.exec(
+        'ALTER TABLE sync_commits ADD COLUMN writer_version INTEGER',
+      );
+    }
+    // The fence is database-side: an old binary's INSERT never reaches JS. An
+    // absent `sync_writer_fence` row makes the WHEN clause false, so a
+    // partition with no barrier behaves exactly as before.
+    this.db.exec(`CREATE TRIGGER IF NOT EXISTS sync_commits_writer_fence
+BEFORE INSERT ON sync_commits
+FOR EACH ROW
+WHEN EXISTS (
+  SELECT 1 FROM sync_writer_fence
+   WHERE partition = NEW.partition
+     AND (NEW.writer_version IS NULL
+          OR NEW.writer_version < required_writer_version)
+)
+BEGIN
+  SELECT RAISE(ABORT, 'sync.storage.writer_fence_rejected');
+END`);
   }
 
   /** Resolve a table's compiled schema; row operations require `ensureSchema`. */
@@ -593,41 +624,52 @@ export class SqliteServerStorage implements ServerStorage {
           );
         }
       }
-      this.db.exec('BEGIN IMMEDIATE');
-      try {
-        for (const tableName of retiredTables) {
+      // The migration rewrites application rows (`#rewriteRows`) with no
+      // commit log entry. Serialize it through the same writer queue as
+      // pushes and prune (`#serializeWrite`) rather than trusting the
+      // migration as privileged; `BEGIN IMMEDIATE` then owns SQLite's writer
+      // lock for the whole rewrite.
+      await this.#serializeWrite(() => {
+        this.db.exec('BEGIN IMMEDIATE');
+        try {
+          for (const tableName of retiredTables) {
+            this.db
+              .query('DELETE FROM sync_row_scopes WHERE tbl=?')
+              .run(tableName);
+            this.db
+              .query('DELETE FROM sync_blob_refs WHERE tbl=?')
+              .run(tableName);
+            this.db.exec(dropTableDdl(tableName));
+          }
+          for (const statement of schemaDdl(
+            schema,
+            existing,
+            'sqlite',
+            existingIndexes,
+          )) {
+            this.db.exec(statement);
+          }
+          for (const table of schema.tables.values()) {
+            const oldLayout = layouts[table.name];
+            const plan = rewritePlan(
+              table,
+              oldLayout,
+              existing.get(table.name),
+            );
+            if (!plan.migrate && !plan.backfill) continue;
+            this.#rewriteRows(table, plan.migrate ? oldLayout : undefined);
+          }
           this.db
-            .query('DELETE FROM sync_row_scopes WHERE tbl=?')
-            .run(tableName);
-          this.db
-            .query('DELETE FROM sync_blob_refs WHERE tbl=?')
-            .run(tableName);
-          this.db.exec(dropTableDdl(tableName));
+            .query(
+              'INSERT INTO sync_schema_meta(id, schema_version, layouts) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET schema_version=excluded.schema_version, layouts=excluded.layouts',
+            )
+            .run(schema.version, layoutsOf(schema));
+          this.db.exec('COMMIT');
+        } catch (error) {
+          this.db.exec('ROLLBACK');
+          throw error;
         }
-        for (const statement of schemaDdl(
-          schema,
-          existing,
-          'sqlite',
-          existingIndexes,
-        )) {
-          this.db.exec(statement);
-        }
-        for (const table of schema.tables.values()) {
-          const oldLayout = layouts[table.name];
-          const plan = rewritePlan(table, oldLayout, existing.get(table.name));
-          if (!plan.migrate && !plan.backfill) continue;
-          this.#rewriteRows(table, plan.migrate ? oldLayout : undefined);
-        }
-        this.db
-          .query(
-            'INSERT INTO sync_schema_meta(id, schema_version, layouts) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET schema_version=excluded.schema_version, layouts=excluded.layouts',
-          )
-          .run(schema.version, layoutsOf(schema));
-        this.db.exec('COMMIT');
-      } catch (error) {
-        this.db.exec('ROLLBACK');
-        throw error;
-      }
+      });
     }
     this.#tables = schema.tables;
     this.#schemaVersion = schema.version;
@@ -790,7 +832,12 @@ export class SqliteServerStorage implements ServerStorage {
     });
     await previous;
     try {
-      return new SqliteTransaction(this, partition, release);
+      return new SqliteTransaction(
+        this,
+        partition,
+        this.#schemaVersion ?? 0,
+        release,
+      );
     } catch (error) {
       release();
       throw error;
@@ -986,6 +1033,113 @@ export class SqliteServerStorage implements ServerStorage {
       .map(toStoredCheckpoint);
   }
 
+  async declareCheckpoint(
+    partition: string,
+    name: string,
+    schemaVersion: number,
+    nowMs: number,
+  ): Promise<StoredCheckpoint> {
+    // One transaction: the checkpoint becomes visible and the fence that
+    // protects it is raised together. The fence is raised at declaration, not
+    // at activation, so old writers are rejected for the whole backfill.
+    return this.#serializeWrite(() => {
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        this.db
+          .query(
+            `INSERT INTO sync_backfill_checkpoints(
+               partition, name, schema_version, state, watermark,
+               owner_epoch, observed_rows, updated_at_ms)
+             VALUES (?,?,?,'declared',0,0,0,?)
+             ON CONFLICT(partition, name) DO NOTHING`,
+          )
+          .run(partition, name, schemaVersion, nowMs);
+        this.db
+          .query(
+            `INSERT INTO sync_writer_fence(partition, required_writer_version)
+             VALUES (?,?)
+             ON CONFLICT(partition) DO UPDATE SET
+               required_writer_version=max(
+                 sync_writer_fence.required_writer_version,
+                 excluded.required_writer_version)`,
+          )
+          .run(partition, schemaVersion);
+        const row = this.db
+          .query<SqliteCheckpointRecord, [string, string]>(
+            `SELECT partition, name, schema_version, state, watermark,
+                    owner_epoch, observed_rows, updated_at_ms
+               FROM sync_backfill_checkpoints WHERE partition=? AND name=?`,
+          )
+          .get(partition, name);
+        if (row === null)
+          throw new StorageQueryError('sync.storage.checkpoint_not_declared');
+        this.db.exec('COMMIT');
+        return toStoredCheckpoint(row);
+      } catch (error) {
+        this.db.exec('ROLLBACK');
+        throw error;
+      }
+    });
+  }
+
+  async activateCheckpoint(
+    partition: string,
+    name: string,
+    ownerEpoch: number,
+    watermark: number,
+    sources: readonly string[],
+    nowMs: number,
+  ): Promise<'activated' | 'stale' | 'unverifiable'> {
+    return this.#serializeWrite(() => {
+      // `BEGIN IMMEDIATE` is SQLite's partition write lock; the same writer
+      // lock a push takes. Nothing may observe activation without the fence.
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        const fence = this.db
+          .query<{ required_writer_version: number }, [string]>(
+            'SELECT required_writer_version FROM sync_writer_fence WHERE partition=?',
+          )
+          .get(partition);
+        const checkpoint = this.db
+          .query<{ schema_version: number }, [string, string]>(
+            'SELECT schema_version FROM sync_backfill_checkpoints WHERE partition=? AND name=?',
+          )
+          .get(partition, name);
+        if (
+          fence === null ||
+          checkpoint === null ||
+          fence.required_writer_version < checkpoint.schema_version
+        ) {
+          // The barrier is not installed. Activating would certify a state old
+          // writers can still decay; refuse instead of silently proceeding.
+          throw new StorageQueryError('sync.storage.checkpoint_fence_missing');
+        }
+        const coverage = this.#hasSourceChangesAbove(
+          partition,
+          sources,
+          watermark,
+        );
+        if (coverage !== 'clean') {
+          this.db.exec('ROLLBACK');
+          return coverage === 'changed' ? 'stale' : 'unverifiable';
+        }
+        const updated = this.db
+          .query(
+            `UPDATE sync_backfill_checkpoints
+                SET state='activated', watermark=?, updated_at_ms=?
+              WHERE partition=? AND name=? AND owner_epoch=?
+                AND state<>'activated'`,
+          )
+          .run(watermark, nowMs, partition, name, ownerEpoch);
+        this.db.exec('COMMIT');
+        return Number(updated.changes) === 1 ? 'activated' : 'stale';
+      } catch (error) {
+        this.db.exec('ROLLBACK');
+        throw error;
+      }
+    });
+  }
+
   async claimCheckpoint(
     partition: string,
     name: string,
@@ -1045,15 +1199,20 @@ export class SqliteServerStorage implements ServerStorage {
     return row?.seq ?? 0;
   }
 
-  async hasSourceChangesAbove(
+  #hasSourceChangesAbove(
     partition: string,
     tables: readonly string[],
     seq: number,
-  ): Promise<'clean' | 'changed' | 'unverifiable'> {
+  ): 'clean' | 'changed' | 'unverifiable' {
     // Read the horizon before the window scan: a horizon past `seq` means the
     // history that would answer the question is gone, so an empty scan proves
     // nothing and must not be reported as `clean`.
-    const horizon = await this.getHorizonSeq(partition);
+    const horizon =
+      this.db
+        .query<{ horizon_seq: number }, [string]>(
+          'SELECT horizon_seq FROM sync_partitions WHERE partition=?',
+        )
+        .get(partition)?.horizon_seq ?? 0;
     if (tables.length === 0) return 'clean';
     const hit = this.db
       .query<{ hit: number }, (string | number)[]>(
@@ -1064,6 +1223,14 @@ export class SqliteServerStorage implements ServerStorage {
       .get(partition, ...tables, seq);
     if (hit !== null && hit !== undefined) return 'changed';
     return horizon > seq ? 'unverifiable' : 'clean';
+  }
+
+  async hasSourceChangesAbove(
+    partition: string,
+    tables: readonly string[],
+    seq: number,
+  ): Promise<'clean' | 'changed' | 'unverifiable'> {
+    return this.#hasSourceChangesAbove(partition, tables, seq);
   }
 
   async writerFenceAllows(
