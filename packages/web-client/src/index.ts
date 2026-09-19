@@ -33,6 +33,9 @@ export * from './outcomes';
 // refusal/audit codecs), not package API. The feature is opt-in and its
 // consumer-facing contract is exactly the read spec and the two result types.
 export {
+  decodePreviousVersionAuditResult,
+  decodePreviousVersionDiscardResult,
+  decodePreviousVersionSnapshot,
   type PreviousVersionAudit,
   type PreviousVersionReadSpec,
   type PreviousVersionReason,

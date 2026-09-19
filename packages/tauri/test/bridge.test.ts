@@ -111,6 +111,19 @@ function defaultResponder(cmd: string, args: Record<string, unknown>): unknown {
         retainedCommits: 3,
         resetSubscriptions: 4,
       });
+    case 'previousVersionSnapshot':
+      return OK({
+        state: 'previousVersion',
+        available: false,
+        currentVersion: 1,
+        reason: 'not-configured',
+        rows: [],
+        truncated: false,
+      });
+    case 'previousVersionAudit':
+      return OK(undefined);
+    case 'previousVersionDiscard':
+      return OK({ present: false, discarded: false });
     case 'querySnapshot':
       return OK({
         revision: '7',
@@ -195,6 +208,28 @@ describe('createTauriSyncClient', () => {
     ).toBe('c1');
   });
 
+  test('forwards previousVersionContext into the native create envelope', async () => {
+    const { tauri, calls } = makeTauri(defaultResponder);
+    await createTauriSyncClient({
+      clientId: 'previous-version',
+      schema: { version: 1, tables: [] },
+      previousVersionContext: { enabled: true, maxRows: 100 },
+      tauri,
+    });
+    const create = calls.find(
+      (c) =>
+        c.cmd === 'plugin:syncular|syncular_command' &&
+        (c.args.command as { method: string }).method === 'create',
+    );
+    expect(
+      (
+        create?.args.command as {
+          params: { previousVersionContext?: unknown };
+        }
+      ).params.previousVersionContext,
+    ).toEqual({ enabled: true, maxRows: 100 });
+  });
+
   test('forwards portable encryption keys and row key-id columns on create', async () => {
     const { tauri, calls } = makeTauri(defaultResponder);
     await createTauriSyncClient({
@@ -261,6 +296,15 @@ describe('createTauriSyncClient', () => {
     await expect(
       client.rebootstrapLocalData({ rebootstrapId: 'blocked-repair' }),
     ).rejects.toMatchObject({ code: SECURITY_PREFLIGHT_REQUIRED_CODE });
+    await expect(
+      client.previousVersionSnapshot({ table: 'todo' }),
+    ).rejects.toMatchObject({ code: SECURITY_PREFLIGHT_REQUIRED_CODE });
+    await expect(client.previousVersionAudit()).rejects.toMatchObject({
+      code: SECURITY_PREFLIGHT_REQUIRED_CODE,
+    });
+    await expect(client.previousVersionDiscard()).rejects.toMatchObject({
+      code: SECURITY_PREFLIGHT_REQUIRED_CODE,
+    });
 
     await client.activateSecurity({
       encryption: {
@@ -524,6 +568,164 @@ describe('createTauriSyncClient', () => {
     await expect(
       client.rebootstrapLocalData({ rebootstrapId: 'support-case-001' }),
     ).rejects.toMatchObject({ code: INVALID_HOST_RESPONSE_CODE });
+  });
+
+  test('previous-version commands forward their exact envelopes and decode replies', async () => {
+    const { client, calls } = await build();
+    expect(await client.previousVersionSnapshot({ table: 'todo' })).toEqual({
+      state: 'previousVersion',
+      available: false,
+      currentVersion: 1,
+      reason: 'not-configured',
+      rows: [],
+      truncated: false,
+    });
+    expect(
+      calls.findLast(
+        (candidate) =>
+          (
+            candidate.args.command as
+              | { method?: string; params?: unknown }
+              | undefined
+          )?.method === 'previousVersionSnapshot',
+      )?.args.command,
+    ).toEqual({
+      method: 'previousVersionSnapshot',
+      params: { spec: { table: 'todo' } },
+    });
+    expect(await client.previousVersionAudit()).toBeUndefined();
+    expect(await client.previousVersionDiscard()).toEqual({
+      present: false,
+      discarded: false,
+    });
+  });
+
+  test.each([
+    {
+      state: 'previousVersion',
+      available: true,
+      currentVersion: 1,
+      rows: [],
+      truncated: false,
+    },
+    {
+      state: 'previousVersion',
+      available: false,
+      currentVersion: 1,
+      reason: 'purged',
+      rows: [],
+      truncated: false,
+    },
+    {
+      state: 'previousVersion',
+      available: 'true',
+      currentVersion: 1,
+      reason: 'not-configured',
+      rows: [],
+      truncated: false,
+    },
+  ])('rejects a forged previousVersionSnapshot reply %#', async (value) => {
+    const { tauri } = makeTauri((cmd, args) => {
+      const method = (args.command as { readonly method?: string } | undefined)
+        ?.method;
+      if (method === 'previousVersionSnapshot') return OK(value);
+      return defaultResponder(cmd, args);
+    });
+    const client = await createTauriSyncClient({
+      clientId: 'invalid-previous-version-snapshot',
+      schema: { version: 1, tables: [] },
+      tauri,
+    });
+    await expect(
+      client.previousVersionSnapshot({ table: 'todo' }),
+    ).rejects.toMatchObject({ code: INVALID_HOST_RESPONSE_CODE });
+  });
+
+  test.each([
+    { v: 1, atMs: 0, fromVersion: 1, toVersion: 2 },
+    {
+      v: 1,
+      atMs: 0,
+      fromVersion: 1,
+      toVersion: 2,
+      pending: 0,
+      encodable: 0,
+      truncated: false,
+      incompatible: [{ commitId: 'c1', table: 'todo', reason: 'gone' }],
+    },
+  ])('rejects a forged previousVersionAudit reply %#', async (value) => {
+    const { tauri } = makeTauri((cmd, args) => {
+      const method = (args.command as { readonly method?: string } | undefined)
+        ?.method;
+      if (method === 'previousVersionAudit') return OK(value);
+      return defaultResponder(cmd, args);
+    });
+    const client = await createTauriSyncClient({
+      clientId: 'invalid-previous-version-audit',
+      schema: { version: 1, tables: [] },
+      tauri,
+    });
+    await expect(client.previousVersionAudit()).rejects.toMatchObject({
+      code: INVALID_HOST_RESPONSE_CODE,
+    });
+  });
+
+  test('previousVersionSnapshot decodes native cell envelopes in rows', async () => {
+    const { tauri } = makeTauri((cmd, args) => {
+      const method = (args.command as { readonly method?: string } | undefined)
+        ?.method;
+      if (method === 'previousVersionSnapshot') {
+        return OK({
+          state: 'previousVersion',
+          available: true,
+          previousVersion: 1,
+          currentVersion: 2,
+          rows: [
+            {
+              id: 'r1',
+              blob: { $bytes: '0102' },
+              n: { $bigint: '9007199254740993' },
+            },
+          ],
+          truncated: false,
+        });
+      }
+      return defaultResponder(cmd, args);
+    });
+    const client = await createTauriSyncClient({
+      clientId: 'previous-version-envelopes',
+      schema: { version: 1, tables: [] },
+      tauri,
+    });
+    expect(await client.previousVersionSnapshot({ table: 'todo' })).toEqual({
+      state: 'previousVersion',
+      available: true,
+      previousVersion: 1,
+      currentVersion: 2,
+      rows: [{ id: 'r1', blob: new Uint8Array([1, 2]), n: 9007199254740993n }],
+      truncated: false,
+    });
+  });
+
+  test.each([
+    { present: true },
+    { present: true, discarded: 'yes' },
+    { present: false, discarded: false, extra: 1 },
+  ])('rejects a forged previousVersionDiscard reply %#', async (value) => {
+    const { tauri } = makeTauri((cmd, args) => {
+      const method = (args.command as { readonly method?: string } | undefined)
+        ?.method;
+      if (method === 'previousVersionDiscard') return OK(value);
+      return defaultResponder(cmd, args);
+    });
+    const client = await createTauriSyncClient({
+      clientId: 'invalid-previous-version-discard',
+      schema: { version: 1, tables: [] },
+      tauri,
+    });
+    await expect(client.previousVersionDiscard()).rejects.toMatchObject({
+      code: INVALID_HOST_RESPONSE_CODE,
+    });
   });
 
   test('query strips reserved _sync_* columns', async () => {

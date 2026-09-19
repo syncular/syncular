@@ -51,6 +51,9 @@ import type {
   LocalDataRebootstrapResult,
   MutationInput,
   PresencePeer,
+  PreviousVersionAudit,
+  PreviousVersionReadSpec,
+  PreviousVersionSnapshot,
   QueryReadSpec,
   QuerySnapshot,
   RejectionRecord,
@@ -58,6 +61,7 @@ import type {
   SecurityLifecycle,
   SqlRow,
   SqlValue,
+  SyncClientConfig,
   SyncStatusSnapshot,
   WindowBase,
   WindowState,
@@ -67,6 +71,9 @@ import type {
 // runtime so every host surfaces byte-identical policy evidence.
 import {
   decodeLocalDataRebootstrapResult,
+  decodePreviousVersionAuditResult,
+  decodePreviousVersionDiscardResult,
+  decodePreviousVersionSnapshot,
   SECURITY_PREFLIGHT_REQUIRED_CODE,
   withClientDiagnosticsHost,
 } from '@syncular/client';
@@ -116,6 +123,12 @@ export interface TauriSyncClientConfig {
   readonly encryption?: EncryptionKeyringConfig;
   /** Open the native replica behind the fail-closed security gate. */
   readonly securityPreflight?: boolean;
+  /**
+   * RFC 0005 previous-version context, forwarded to the native `create`. The
+   * Rust create handler must read this key to enable capture; while it does
+   * not, the native core treats the feature as off (default-off).
+   */
+  readonly previousVersionContext?: SyncClientConfig['previousVersionContext'];
   /**
    * The Tauri primitives. Omit in a real Tauri webview to auto-resolve from
    * `@tauri-apps/api` (peer dep) or the ambient `window.__TAURI__`; inject in
@@ -223,6 +236,27 @@ function decodeRow(row: Record<string, unknown>): SqlRow {
     out[key] = decodeCell(value);
   }
   return out;
+}
+
+/**
+ * Decode the JSON cell envelopes in an RFC 0005 snapshot reply's rows before
+ * the strict bridge decoder sees them; a malformed reply is passed through
+ * untouched so `decodePreviousVersionSnapshot` rejects it.
+ */
+function decodeSnapshotRows(value: unknown): unknown {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return value;
+  }
+  const source = value as Record<string, unknown>;
+  if (!Array.isArray(source.rows)) return value;
+  return {
+    ...source,
+    rows: source.rows.map((row) =>
+      row !== null && typeof row === 'object' && !Array.isArray(row)
+        ? decodeRow(row as Record<string, unknown>)
+        : row,
+    ),
+  };
 }
 
 /** Resolve the Tauri primitives from the ambient environment when not injected. */
@@ -599,6 +633,31 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
   ): Promise<LocalDataRebootstrapResult> {
     return decodeLocalDataRebootstrapResult(
       await this.#command('rebootstrapLocalData', { input }),
+    );
+  }
+
+  async previousVersionSnapshot(
+    spec: PreviousVersionReadSpec,
+  ): Promise<PreviousVersionSnapshot> {
+    return decodePreviousVersionSnapshot(
+      decodeSnapshotRows(
+        await this.#command('previousVersionSnapshot', { spec }),
+      ),
+    );
+  }
+
+  async previousVersionAudit(): Promise<PreviousVersionAudit | undefined> {
+    return decodePreviousVersionAuditResult(
+      await this.#command('previousVersionAudit', {}),
+    );
+  }
+
+  async previousVersionDiscard(): Promise<{
+    present: boolean;
+    discarded: boolean;
+  }> {
+    return decodePreviousVersionDiscardResult(
+      await this.#command('previousVersionDiscard', {}),
     );
   }
 
@@ -984,6 +1043,9 @@ export async function createTauriSyncClient(
           : {}),
         ...(config.securityPreflight !== undefined
           ? { securityPreflight: config.securityPreflight }
+          : {}),
+        ...(config.previousVersionContext !== undefined
+          ? { previousVersionContext: config.previousVersionContext }
           : {}),
       },
     },
