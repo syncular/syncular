@@ -27,12 +27,14 @@ import { runSegmentStoreContract } from './segment-store-contract';
 
 const NOW = 1_750_000_000_000;
 const clock = { ms: NOW };
+let beforePutHook: ((key: string) => Promise<void> | void) | undefined;
 const stub = startS3Stub({
   bucket: 'segments',
   region: 'auto',
   accessKeyId: 'SYNCULARTESTAKID',
   secretAccessKey: 'syncular-test-secret',
   now: () => clock.ms,
+  beforePut: (key) => beforePutHook?.(key),
 });
 afterAll(() => stub.stop());
 
@@ -99,6 +101,122 @@ describe('S3SegmentStore specifics', () => {
       NOW + 1,
     );
     expect(found).toBeUndefined();
+  });
+});
+
+describe('concurrent publication of one content address (§5.1)', () => {
+  test('two scopes publishing identical bytes concurrently keep both digests', async () => {
+    const store = makeStore();
+    const prefix = `t${storeCount}/`;
+    // The empty rows segment: no rows in scope, so two authorized scopes (and
+    // two partitions) encode to identical bytes and share one content
+    // address — EMPTY-SEGMENT-001. Both builds run concurrently, so both
+    // `put`s read the same pre-state; the first write is held until the
+    // second has read it.
+    const bytes = new Uint8Array();
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let segmentPuts = 0;
+    beforePutHook = async (key) => {
+      if (!key.startsWith(`${prefix}seg/`)) return;
+      segmentPuts += 1;
+      if (segmentPuts === 1) await gate;
+      else release?.();
+    };
+    try {
+      const [first, second] = await Promise.all([
+        store.put(
+          { ...META, partition: 'p1', scopeDigest: 'digest-a' },
+          bytes,
+          NOW,
+        ),
+        store.put(
+          { ...META, partition: 'p2', scopeDigest: 'digest-b' },
+          bytes,
+          NOW,
+        ),
+      ]);
+      expect(first.segmentId).toBe(second.segmentId);
+      const stored = await store.get(first.segmentId);
+      expect(stored?.record.scopeDigests.slice().sort()).toEqual([
+        'digest-a',
+        'digest-b',
+      ]);
+      // A lost union is what makes the losing scope's download
+      // `sync.forbidden: scope digest mismatch` (§5.5), so both digests
+      // surviving IS the contract — not an implementation detail.
+      expect(segmentPuts).toBeGreaterThan(1);
+    } finally {
+      beforePutHook = undefined;
+    }
+  });
+
+  test('a concurrent re-publication of existing content can still drop a digest (§5.1 limit)', async () => {
+    const store = makeStore();
+    const prefix = `t${storeCount}/`;
+    const bytes = new Uint8Array();
+    await store.put({ ...META, scopeDigest: 'digest-x' }, bytes, NOW);
+
+    // Both writers read the existing entry, then both write: the ETag is a
+    // content hash, identical bytes have an identical ETag, so `If-Match`
+    // cannot tell them apart and the later write wins. This test pins the
+    // documented limit so the spec and the code agree; it is NOT the goal.
+    // Replacing it needs a publication record addressed by (content address,
+    // scope digest) — RFC, not this release.
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let segmentPuts = 0;
+    beforePutHook = async (key) => {
+      if (!key.startsWith(`${prefix}seg/`)) return;
+      segmentPuts += 1;
+      if (segmentPuts === 1) await gate;
+      else release?.();
+    };
+    try {
+      await Promise.all([
+        store.put({ ...META, scopeDigest: 'digest-a' }, bytes, NOW + 1),
+        store.put({ ...META, scopeDigest: 'digest-b' }, bytes, NOW + 1),
+      ]);
+    } finally {
+      beforePutHook = undefined;
+    }
+    const stored = await store.get(await segmentIdFor(bytes));
+    expect(stored?.record.scopeDigests.slice().sort()).toEqual([
+      'digest-a',
+      'digest-x',
+    ]);
+  });
+
+  test('a later publication keeps every earlier digest (sequential union)', async () => {
+    const store = makeStore();
+    const bytes = new Uint8Array();
+    const first = await store.put(
+      { ...META, partition: 'p1', scopeDigest: 'digest-a' },
+      bytes,
+      NOW,
+    );
+    await store.put(
+      { ...META, partition: 'p2', scopeDigest: 'digest-b' },
+      bytes,
+      NOW + 1,
+    );
+    const stored = await store.get(first.segmentId);
+    expect(stored?.record.scopeDigests.slice().sort()).toEqual([
+      'digest-a',
+      'digest-b',
+    ]);
+    // §5.1 limit, pinned: the entry carries the LATEST publisher's partition
+    // and log epoch, and §5.5 refuses a download whose partition or current
+    // log epoch differs (`sync.not_found`, no existence leak — see
+    // `segment-download.test.ts` "segments from another partition"). So
+    // identical content published from two partitions is one entry whose
+    // first-partition descriptor is not downloadable. Fixing that needs a
+    // partition-aware entry, not a digest union: RFC, not this release.
+    expect(stored?.record.partition).toBe('p2');
   });
 });
 

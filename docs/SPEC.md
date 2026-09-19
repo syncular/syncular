@@ -1498,6 +1498,22 @@ one table at one `asOfCommitSeq`.
   digest (§5.3, §5.5). The bytes already stored under a content address
   MUST be identical to the bytes being published; a mismatch is a hash
   collision, and the server MUST fail loudly rather than overwrite.
+  A store with conditional writes MUST make the merge conditional on the
+  entry it read and retry instead of overwriting it, so two publishers
+  racing to create an entry cannot both win and drop a digest.
+  Two windows remain open in the merged-entry model, both recorded here
+  rather than claimed as closed. A concurrent re-publication of an entry
+  that already exists can still drop a digest on an object store whose
+  conditional write is keyed by a content hash: identical bytes have an
+  identical ETag, so `If-Match` cannot separate the two writers. And the
+  merged entry carries the latest publisher's `partition`, `logEpoch`, and
+  `table` while §5.5 refuses a download whose partition or current log
+  epoch differs from the stored record, so identical content published
+  from two partitions is one entry and the earlier partition's descriptor
+  is not downloadable. Removing either window needs a publication record
+  addressed by (content address, scope digest) instead of one merged
+  entry; an in-process or per-instance lock cannot close them, because two
+  server instances share one bucket.
 
 ### 5.2 Rows segments (`mediaType = rows`) — mandatory
 

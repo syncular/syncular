@@ -123,6 +123,52 @@ describe('segment download (§5.5)', () => {
     ).rejects.toMatchObject({ code: 'sync.not_found' });
   });
 
+  test('identical empty segments across partitions lose the earlier download (§5.1 limit)', async () => {
+    const segments = new MemorySegmentStore();
+    const emptyFirst = { project_id: ['p-empty-a'] };
+    const emptySecond = { project_id: ['p-empty-b'] };
+    const first = makeContext({
+      segments,
+      limits: { inlineSegmentMaxBytes: 1 },
+    });
+    const second = makeContext({
+      segments,
+      partition: 'part-2',
+      limits: { inlineSegmentMaxBytes: 1 },
+    });
+    first.scopes.value = emptyFirst;
+    second.scopes.value = emptySecond;
+    const refOfPull = async (
+      t: TestContext,
+      scopes: Record<string, string[]>,
+    ): Promise<SegmentRefFrame> => {
+      const message = await sync(t, [
+        pullHeader(),
+        subFrame('s1', 'tasks', scopes, -1),
+      ]);
+      return refOf(message, 's1');
+    };
+    const firstRef = await refOfPull(first, emptyFirst);
+    const secondRef = await refOfPull(second, emptySecond);
+    // No rows in scope: both partitions encode the same bytes, so both
+    // publications are one content address with two scope digests.
+    expect(firstRef.segmentId).toBe(secondRef.segmentId);
+    const stored = await segments.get(firstRef.segmentId);
+    expect(stored?.record.scopeDigests).toHaveLength(2);
+    // §5.1 limit, pinned: the merged entry carries the LATEST publisher's
+    // partition, and §5.5 refuses a download whose partition differs (no
+    // existence leak), so the first partition cannot download its own
+    // descriptor even though its digest is recorded. Closing this needs a
+    // publication record addressed by (content address, scope digest): RFC,
+    // not this release.
+    await expect(
+      handleSegmentDownload(first.ctx, {
+        segmentId: firstRef.segmentId,
+        scopesHeader: canonicalScopeJson(emptyFirst),
+      }),
+    ).rejects.toMatchObject({ code: 'sync.not_found' });
+  });
+
   test('expired segments are sync.segment_expired (retryable, §5.1)', async () => {
     const t = makeContext({ limits: { inlineSegmentMaxBytes: 1 } });
     const ref = await bootstrapRef(t);

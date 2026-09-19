@@ -21,6 +21,13 @@ export interface S3StubConfig {
   readonly secretAccessKey: string;
   /** Stub clock for presigned-URL expiry (epoch ms). */
   readonly now: () => number;
+  /**
+   * Awaited before a PUT is applied. Lets a test hold one writer at the
+   * write step while a second writer reads the pre-state, which is how the
+   * read-modify-write interleaving of two concurrent publications is made
+   * deterministic.
+   */
+  readonly beforePut?: (key: string) => Promise<void> | void;
 }
 
 export interface StoredObject {
@@ -265,6 +272,13 @@ export function startS3Stub(config: S3StubConfig): S3Stub {
 
       switch (req.method) {
         case 'PUT': {
+          await config.beforePut?.(key);
+          // The object ETag is a content hash, exactly as S3/R2 derive it, so
+          // it must be computed BEFORE the precondition check: the check and
+          // the write have to be one synchronous step, or two writers can
+          // both pass `If-None-Match: *` and the later `set` silently wins.
+          // (Real S3 conditional writes are atomic.)
+          const etag = `"${await sha256Hex(body)}"`;
           // Conditional writes for optimistic-concurrency (ETag CAS): S3 and
           // R2 honor `If-Match` (update only if the current ETag matches) and
           // `If-None-Match: *` (create only if absent). A failed precondition
@@ -291,7 +305,6 @@ export function startS3Stub(config: S3StubConfig): S3Stub {
               'etag mismatch (If-Match)',
             );
           }
-          const etag = `"${await sha256Hex(body)}"`;
           const headers: Record<string, string> = { etag };
           for (const [name, value] of req.headers) {
             const lower = name.toLowerCase();

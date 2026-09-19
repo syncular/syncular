@@ -93,7 +93,7 @@ const RECORD_META_HEADER = 'x-amz-meta-syncular-record';
  * S3 stats `approximate: true`. They are a health gauge, not an invoice.
  */
 const STATS_KEY_SUFFIX = 'stats/segments.json';
-const STATS_CAS_ATTEMPTS = 16;
+const CAS_ATTEMPTS = 16;
 
 interface StatsAccumulator {
   count: number;
@@ -277,6 +277,8 @@ export class S3SegmentStore implements SegmentStore {
     options?: {
       readonly body?: Uint8Array;
       readonly headers?: Readonly<Record<string, string>>;
+      /** Return a `412` response instead of throwing (conditional writes). */
+      readonly allow412?: boolean;
     },
   ): Promise<Response | undefined> {
     const url = this.#urlFor(key);
@@ -300,6 +302,7 @@ export class S3SegmentStore implements SegmentStore {
       await response.arrayBuffer();
       return undefined;
     }
+    if (options?.allow412 === true && response.status === 412) return response;
     if (!response.ok) {
       const detail = (await response.text()).slice(0, 300);
       throw new Error(
@@ -371,7 +374,7 @@ export class S3SegmentStore implements SegmentStore {
    * that already stored the bytes.
    */
   async #bumpStats(delta: StatsAccumulator): Promise<void> {
-    for (let attempt = 0; attempt < STATS_CAS_ATTEMPTS; attempt++) {
+    for (let attempt = 0; attempt < CAS_ATTEMPTS; attempt++) {
       const { stats, etag } = await this.#readStats();
       const next: StatsAccumulator = {
         count: stats.count + delta.count,
@@ -381,7 +384,7 @@ export class S3SegmentStore implements SegmentStore {
       };
       if (await this.#writeStatsCas(next, etag)) return;
     }
-    // Lost the CAS race `STATS_CAS_ATTEMPTS` times running — leave the
+    // Lost the CAS race `CAS_ATTEMPTS` times running — leave the
     // counters as-is. `stats()` stays APPROXIMATE by contract.
   }
 
@@ -392,62 +395,99 @@ export class S3SegmentStore implements SegmentStore {
   ): Promise<SegmentRecord> {
     const segmentId = await segmentIdFor(bytes);
     const objectKey = this.objectKeyFor(segmentId);
-    // The id IS the content address, so an existing object means a second
-    // scope published the same bytes: read it back to prove the bytes really
-    // match (a mismatch is a hash collision, never a silent overwrite) and
-    // to merge the digest set (§5.1).
-    const preexisting = await this.get(segmentId);
-    if (
-      preexisting !== undefined &&
-      !segmentBytesEqual(preexisting.bytes, bytes)
-    ) {
-      throw new Error(
-        `S3SegmentStore: content-address collision at ${segmentId} (§5.1)`,
+    for (let attempt = 0; attempt < CAS_ATTEMPTS; attempt++) {
+      // The id IS the content address, so an existing object means a second
+      // scope published the same bytes: read it back to prove the bytes really
+      // match (a mismatch is a hash collision, never a silent overwrite) and
+      // to merge the digest set (§5.1).
+      const preexisting = await this.#readWithEtag(segmentId);
+      if (
+        preexisting !== undefined &&
+        !segmentBytesEqual(preexisting.bytes, bytes)
+      ) {
+        throw new Error(
+          `S3SegmentStore: content-address collision at ${segmentId} (§5.1)`,
+        );
+      }
+      const record = mergeSegmentRecord(
+        preexisting?.record,
+        metadata,
+        segmentId,
+        bytes.length,
+        nowMs,
+        this.#ttlMs,
       );
-    }
-    const record = mergeSegmentRecord(
-      preexisting?.record,
-      metadata,
-      segmentId,
-      bytes.length,
-      nowMs,
-      this.#ttlMs,
-    );
-    const recordJson = recordToJson(record);
-    const isNew = preexisting === undefined;
-    const response = await this.#request('PUT', objectKey, {
-      body: bytes,
-      headers: {
-        'content-type': 'application/octet-stream',
-        [RECORD_META_HEADER]: utf8ToBase64url(recordJson),
-      },
-    });
-    await response?.arrayBuffer();
-    if (isNew) {
-      await this.#bumpStats({
-        count: 1,
-        bytes: bytes.length,
-        rowsSegments: metadata.mediaType === 'rows' ? 1 : 0,
-        sqliteSegments: metadata.mediaType === 'sqlite' ? 1 : 0,
-      });
-    }
-    if (metadata.rowCursor === null) {
-      const pointer = await this.#request(
-        'PUT',
-        await this.#findKeyFor(metadata),
-        {
-          body: new TextEncoder().encode(recordJson),
-          headers: { 'content-type': 'application/json' },
+      const recordJson = recordToJson(record);
+      // The digest set is monotone (§5.1), and this is a read-modify-write: a
+      // concurrent publisher of the same bytes computed its own union from the
+      // same pre-state, so an unconditional PUT would drop one of the digests
+      // and make that scope's download `sync.forbidden`. Make the write
+      // conditional on the pre-state read above. In-process dedupe cannot
+      // cover this: two scopes whose rows are byte-identical are two builds,
+      // and two server instances share one bucket.
+      //
+      // Scope of the guarantee: `If-None-Match: *` is an existence test, so
+      // two publishers racing to create the entry cannot both win and both
+      // digests survive. It does NOT cover a concurrent re-publication of an
+      // entry that already exists: the ETag is a content hash, identical bytes
+      // have an identical ETag, and `If-Match` therefore cannot tell the two
+      // writers apart — one digest is still lost. §5.1 states that limit;
+      // closing it needs a publication record addressed by (content address,
+      // scope digest) instead of one merged entry, which is an RFC.
+      const conditional: Record<string, string> =
+        preexisting?.etag === undefined
+          ? { 'if-none-match': '*' }
+          : { 'if-match': preexisting.etag };
+      const response = await this.#request('PUT', objectKey, {
+        body: bytes,
+        headers: {
+          'content-type': 'application/octet-stream',
+          [RECORD_META_HEADER]: utf8ToBase64url(recordJson),
+          ...conditional,
         },
-      );
-      await pointer?.arrayBuffer();
+        allow412: true,
+      });
+      if (response !== undefined && response.status === 412) {
+        await response.arrayBuffer();
+        continue;
+      }
+      await response?.arrayBuffer();
+      if (preexisting === undefined) {
+        await this.#bumpStats({
+          count: 1,
+          bytes: bytes.length,
+          rowsSegments: metadata.mediaType === 'rows' ? 1 : 0,
+          sqliteSegments: metadata.mediaType === 'sqlite' ? 1 : 0,
+        });
+      }
+      if (metadata.rowCursor === null) {
+        const pointer = await this.#request(
+          'PUT',
+          await this.#findKeyFor(metadata),
+          {
+            body: new TextEncoder().encode(recordJson),
+            headers: { 'content-type': 'application/json' },
+          },
+        );
+        await pointer?.arrayBuffer();
+      }
+      return record;
     }
-    return record;
+    throw new Error(
+      `S3SegmentStore: ${CAS_ATTEMPTS} conditional writes in a row lost the race for ${segmentId} — the stored digest set would have dropped a scope`,
+    );
   }
 
-  async get(
+  /**
+   * Read one object plus the ETag that identifies the version read, so a
+   * write can be made conditional on exactly this pre-state (§5.1).
+   */
+  async #readWithEtag(
     segmentId: string,
-  ): Promise<{ record: SegmentRecord; bytes: Uint8Array } | undefined> {
+  ): Promise<
+    | { record: SegmentRecord; bytes: Uint8Array; etag: string | undefined }
+    | undefined
+  > {
     if (!SEGMENT_ID_PATTERN.test(segmentId)) return undefined;
     const response = await this.#request('GET', this.objectKeyFor(segmentId));
     if (response === undefined) return undefined;
@@ -458,8 +498,20 @@ export class S3SegmentStore implements SegmentStore {
         `S3SegmentStore: object for ${segmentId} lacks ${RECORD_META_HEADER}`,
       );
     }
-    const record = parseRecordJson(base64urlToUtf8(meta), segmentId);
-    return { record, bytes };
+    return {
+      record: parseRecordJson(base64urlToUtf8(meta), segmentId),
+      bytes,
+      etag: response.headers.get('etag') ?? undefined,
+    };
+  }
+
+  async get(
+    segmentId: string,
+  ): Promise<{ record: SegmentRecord; bytes: Uint8Array } | undefined> {
+    const entry = await this.#readWithEtag(segmentId);
+    return entry === undefined
+      ? undefined
+      : { record: entry.record, bytes: entry.bytes };
   }
 
   async find(
