@@ -78,7 +78,7 @@ async function rawAppend(
   executor: PgExecutor,
   partition: string,
   commitSeq: number,
-  writerVersion: number,
+  writerVersion: number | null,
 ): Promise<void> {
   await executor.query(
     `INSERT INTO sync_commits(
@@ -144,9 +144,13 @@ gate('RFC 0007 real-Postgres receipts (SYNCULAR_PG_URL)', () => {
       ],
     });
     await tx.commit();
-    // The current writer's append is committed; the old writer's raw insert
-    // is rejected by the database-side trigger.
+    // The current writer's append is committed; an old writer's raw insert and
+    // one that omits writer_version entirely (NULL) are both rejected by the
+    // database-side trigger.
     await expect(rawAppend(executor, partition, 99, 0)).rejects.toThrow(
+      /writer_fence_rejected/,
+    );
+    await expect(rawAppend(executor, partition, 97, null)).rejects.toThrow(
       /writer_fence_rejected/,
     );
   });
@@ -253,5 +257,121 @@ gate('RFC 0007 real-Postgres receipts (SYNCULAR_PG_URL)', () => {
     const after = (await storage.readCheckpoints(partition))[0];
     expect(after?.state).toBe('activated');
     expect(after?.watermark).toBe(1);
+  });
+
+  test('B1: the migration transaction serializes a concurrent push and the fence rejects it', async () => {
+    // Genuine interleaving on two real connections: the migration transaction
+    // is held open after its first statement, a push on a second connection
+    // must actually wait (pg_locks granted=false), the migration commits the
+    // bumped marker and raised fence, and the push's old-writer append is then
+    // rejected by the trigger. Against unfixed code the migration holds no
+    // advisory key, so the push is never blocked and the wait assertion fails.
+    const sqlA = new (BunSQL as new (url: string) => unknown)(PG_URL as string);
+    const sqlB = new (BunSQL as new (url: string) => unknown)(PG_URL as string);
+    const sqlC = new (BunSQL as new (url: string) => unknown)(PG_URL as string);
+    handles.push(sqlA, sqlB, sqlC);
+    const observer = queryableOver(sqlC);
+    const partition = `rfc0007-b1-${crypto.randomUUID()}`;
+    const paused = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+
+    // Hold the migration transaction open after its first statement.
+    const baseA = bunSqlExecutor(sqlA);
+    const gatedA: PgExecutor = {
+      query: baseA.query,
+      async transaction<T>(fn: (client: PgQueryable) => Promise<T>) {
+        return baseA.transaction(async (client) => {
+          let first = true;
+          const gated: PgQueryable = {
+            async query<Row = Record<string, unknown>>(
+              text: string,
+              params?: readonly unknown[],
+            ) {
+              const result = await client.query<Row>(text, params);
+              if (first) {
+                first = false;
+                paused.resolve();
+                await release.promise;
+              }
+              return result;
+            },
+          };
+          return fn(gated);
+        });
+      },
+      close: () => baseA.close?.() ?? Promise.resolve(),
+    };
+
+    const storageB = new PostgresServerStorage(bunSqlExecutor(sqlB));
+    await storageB.ensureSchema(compileSchema(SCHEMA));
+    // Recreate the pre-migration database state for the observer connection.
+    const storageA = new PostgresServerStorage(gatedA);
+
+    const migration = storageA.ensureSchema(
+      compileSchema({ ...SCHEMA, version: 2 }),
+      [{ partition, name: 'tasks-projection', schemaVersion: 2 }],
+    );
+    await paused.promise;
+
+    // The migration holds the exclusive advisory key.
+    const held = async (): Promise<number> =>
+      Number(
+        (
+          await observer.query<{ n: unknown }>(
+            "SELECT count(*) AS n FROM pg_locks WHERE locktype='advisory' AND granted AND mode='ExclusiveLock'",
+          )
+        ).rows[0]?.n,
+      );
+    const waiting = async (): Promise<number> =>
+      Number(
+        (
+          await observer.query<{ n: unknown }>(
+            "SELECT count(*) AS n FROM pg_locks WHERE locktype='advisory' AND NOT granted",
+          )
+        ).rows[0]?.n,
+      );
+    expect(await held()).toBeGreaterThan(0);
+
+    // The push races the open migration transaction on a second connection.
+    const txB = await storageB.begin(partition);
+    const push = (async (): Promise<void> => {
+      const lock = txB.lockPartitionForPush;
+      if (lock === undefined)
+        throw new Error('storage lost the partition lock');
+      await lock.call(txB);
+      await txB.appendCommit({
+        clientId: 'old',
+        clientCommitId: 'old-1',
+        actorId: 'a1',
+        createdAtMs: Date.now(),
+        changes: [
+          {
+            table: 'tasks',
+            rowId: 'b1-row',
+            op: 'upsert',
+            rowVersion: 1,
+            scopes: { project_id: 'p1' },
+            payload: new Uint8Array([1]),
+          },
+        ],
+      });
+      await txB.commit();
+    })();
+
+    let observedWaiting = 0;
+    for (let attempt = 0; attempt < 200 && observedWaiting === 0; attempt++) {
+      observedWaiting = await waiting();
+    }
+    expect(observedWaiting).toBeGreaterThan(0);
+
+    release.resolve();
+    await migration;
+    await expect(push).rejects.toThrow(/writer_fence_rejected/);
+    // The refused push rolled back: nothing it staged is committed.
+    const staged = await observer.query<{ n: unknown }>(
+      'SELECT count(*) AS n FROM sync_commits WHERE partition=$1',
+      [partition],
+    );
+    expect(Number(staged.rows[0]?.n)).toBe(0);
   });
 });
