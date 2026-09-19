@@ -11,6 +11,26 @@ function percentile(values: readonly number[], fraction: number): number {
   );
 }
 
+describe('Bun statement cache', () => {
+  test('schema DDL clears cached prepared statements without clearing after DML', () => {
+    const db = new BunClientDatabase();
+    let clears = 0;
+    const clearQueryCache = db.db.clearQueryCache.bind(db.db);
+    db.db.clearQueryCache = () => {
+      clears += 1;
+      clearQueryCache();
+    };
+
+    db.exec('CREATE TABLE cache_probe(id TEXT PRIMARY KEY)');
+    expect(clears).toBe(1);
+    db.exec("INSERT INTO cache_probe(id) VALUES ('probe')");
+    expect(clears).toBe(1);
+    db.exec('DROP TABLE cache_probe');
+    expect(clears).toBe(2);
+    db.close();
+  });
+});
+
 describe('local querySnapshot performance lanes', () => {
   test('warm p95 and 100/1k/10k scaling stay local-fast', async () => {
     const db = new BunClientDatabase();
