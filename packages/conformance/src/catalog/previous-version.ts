@@ -100,7 +100,9 @@ export const previousVersionScenarios: readonly Scenario[] = [
 
       // App update with no opt-in: the reset runs, the feature stays off.
       await ctx.recreateClient(a, FIXTURE_SCHEMA_V2);
-      const snapshot = await a.api.previousVersionSnapshot?.({ table: 'tasks' });
+      const snapshot = await a.api.previousVersionSnapshot?.({
+        table: 'tasks',
+      });
       check(snapshot !== undefined, 'the driver exposes the read surface');
       checkEqual(snapshot?.available, false, 'no container is available');
       checkEqual(
@@ -108,7 +110,11 @@ export const previousVersionScenarios: readonly Scenario[] = [
         'not-configured',
         'default-off reports not-configured',
       );
-      checkEqual(snapshot?.state, 'previousVersion', 'state is always previousVersion');
+      checkEqual(
+        snapshot?.state,
+        'previousVersion',
+        'state is always previousVersion',
+      );
       checkEqual(snapshot?.rows, [], 'no rows are exposed');
     },
   },
@@ -127,11 +133,25 @@ export const previousVersionScenarios: readonly Scenario[] = [
 
       // "App ships new code": the v2 reset captures the pre-bump mirror.
       await ctx.recreateClient(a, FIXTURE_SCHEMA_V2);
-      const snapshot = await a.api.previousVersionSnapshot?.({ table: 'tasks' });
+      const snapshot = await a.api.previousVersionSnapshot?.({
+        table: 'tasks',
+      });
       checkEqual(snapshot?.available, true, 'the opt-in capture is available');
-      checkEqual(snapshot?.state, 'previousVersion', 'state is previousVersion');
-      checkEqual(snapshot?.previousVersion, 1, 'the capture names the old version');
-      checkEqual(snapshot?.currentVersion, 2, 'the capture names the running version');
+      checkEqual(
+        snapshot?.state,
+        'previousVersion',
+        'state is previousVersion',
+      );
+      checkEqual(
+        snapshot?.previousVersion,
+        1,
+        'the capture names the old version',
+      );
+      checkEqual(
+        snapshot?.currentVersion,
+        2,
+        'the capture names the running version',
+      );
       check(
         snapshot?.previousVersion !== snapshot?.currentVersion,
         'previousVersion differs from currentVersion',
@@ -179,8 +199,14 @@ export const previousVersionScenarios: readonly Scenario[] = [
         'the second discard is a no-op',
       );
       // The read surface agrees: nothing is left to read.
-      const snapshot = await a.api.previousVersionSnapshot?.({ table: 'tasks' });
-      checkEqual(snapshot?.available, false, 'no container survives the discard');
+      const snapshot = await a.api.previousVersionSnapshot?.({
+        table: 'tasks',
+      });
+      checkEqual(
+        snapshot?.available,
+        false,
+        'no container survives the discard',
+      );
     },
   },
 
@@ -206,7 +232,11 @@ export const previousVersionScenarios: readonly Scenario[] = [
       const upgraded = await syncIdle(a);
       checkEqual(upgraded.schemaFloor, undefined, 'converged at v2');
       const after = await a.api.previousVersionSnapshot?.({ table: 'tasks' });
-      checkEqual(after?.available, false, 'coverage completion closed the read');
+      checkEqual(
+        after?.available,
+        false,
+        'coverage completion closed the read',
+      );
       checkEqual(
         after?.reason,
         'coverage-complete',
@@ -238,7 +268,11 @@ export const previousVersionScenarios: readonly Scenario[] = [
       checkEqual(audit?.fromVersion, 1, 'the audit names the old version');
       checkEqual(audit?.toVersion, 2, 'the audit names the new version');
       checkEqual(audit?.pending, 1, 'one pending commit was examined');
-      checkEqual(audit?.encodable, 0, 'the meta-carrying commit is incompatible');
+      checkEqual(
+        audit?.encodable,
+        0,
+        'the meta-carrying commit is incompatible',
+      );
       checkEqual(audit?.truncated, false, 'one entry is not truncated');
       checkEqual(
         audit?.incompatible,

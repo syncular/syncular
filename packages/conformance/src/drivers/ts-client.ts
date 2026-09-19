@@ -230,9 +230,7 @@ async function constructClient(
     ...(blobCacheMaxBytes !== undefined ? { blobCacheMaxBytes } : {}),
     ...(nowMs !== undefined ? { now: () => nowMs } : {}),
     ...(encryption !== undefined ? { encryption } : {}),
-    ...(previousVersionContext !== undefined
-      ? { previousVersionContext }
-      : {}),
+    ...(previousVersionContext !== undefined ? { previousVersionContext } : {}),
     transport: (bytes) => endpoints.sync(bytes),
     segments,
     ...(blobs !== undefined ? { blobs } : {}),
@@ -897,12 +895,6 @@ export const tsClientDriver: ClientDriver = {
     // the client core advertise accept bit 3. §5.9 blob transport likewise.
     const { db, cleanup } = createClientDatabase(options);
     const client = await constructClient(db, options.schema, options);
-    return new TsClientInstance(
-      client,
-      db,
-      options.schema,
-      options,
-      cleanup,
-    );
+    return new TsClientInstance(client, db, options.schema, options, cleanup);
   },
 };

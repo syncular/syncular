@@ -11,11 +11,7 @@
  * weakened to make a pairing green.
  */
 import type { Pairing } from './driver';
-import {
-  createScenarioContext,
-  type Scenario,
-  ScenarioSkip,
-} from './scenario';
+import { createScenarioContext, type Scenario, ScenarioSkip } from './scenario';
 
 export type ScenarioStatus =
   | 'pass'

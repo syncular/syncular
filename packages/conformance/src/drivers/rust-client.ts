@@ -673,7 +673,10 @@ function parsePreviousVersionSnapshot(
   value: JsonValue,
 ): DriverPreviousVersionSnapshot {
   const object = asObject(value, 'previousVersionSnapshot');
-  if (object.state !== 'previousVersion' || typeof object.available !== 'boolean') {
+  if (
+    object.state !== 'previousVersion' ||
+    typeof object.available !== 'boolean'
+  ) {
     throw new Error('previousVersionSnapshot: malformed state');
   }
   if (typeof object.currentVersion !== 'number') {
@@ -722,9 +725,7 @@ function parsePreviousVersionAudit(
             entry.reason === 'unknown-table'
               ? ('unknown-table' as const)
               : ('unknown-column' as const),
-          ...(typeof entry.column === 'string'
-            ? { column: entry.column }
-            : {}),
+          ...(typeof entry.column === 'string' ? { column: entry.column } : {}),
         };
       })
     : [];
