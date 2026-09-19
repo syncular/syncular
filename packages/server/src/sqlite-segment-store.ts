@@ -194,12 +194,19 @@ export class SqliteSegmentStore implements SegmentStore {
           record.expiresAtMs,
           bytes,
         );
+      // Rebuild the digest side table from the merged record so a pruned
+      // (expired) publication's digest disappears from the compatibility
+      // view instead of lingering as a stale scope row.
       this.db
-        .query(
-          `INSERT OR IGNORE INTO sync_segment_scopes(segment_id, scope_digest)
-           VALUES (?,?)`,
-        )
-        .run(record.segmentId, metadata.scopeDigest);
+        .query('DELETE FROM sync_segment_scopes WHERE segment_id=?')
+        .run(record.segmentId);
+      const insertScope = this.db.query(
+        `INSERT OR IGNORE INTO sync_segment_scopes(segment_id, scope_digest)
+         VALUES (?,?)`,
+      );
+      for (const digest of record.scopeDigests) {
+        insertScope.run(record.segmentId, digest);
+      }
       this.db
         .query('DELETE FROM sync_segment_publications WHERE segment_id=?')
         .run(record.segmentId);

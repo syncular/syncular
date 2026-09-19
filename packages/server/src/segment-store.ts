@@ -180,8 +180,11 @@ export function segmentBytesEqual(a: Uint8Array, b: Uint8Array): boolean {
  * `createdAtMs` keeps the earliest sighting, and `expiresAtMs` takes the
  * later expiry. A publication with the incoming context merges into that
  * publication's own lifetime; a publication with a new context is appended,
- * so no context's grant is overwritten or extended by another. Callers MUST
- * have proven the bytes identical first.
+ * so no context's grant is overwritten or extended by another. Publications
+ * whose own TTL has elapsed at `nowMs` are pruned from the stored entry —
+ * SPEC §5.5 lets the cache forget expired grants, and pruning on put keeps
+ * the publication set bounded by live contexts instead of by every context
+ * ever seen. Callers MUST have proven the bytes identical first.
  */
 export function mergeSegmentRecord(
   existing: SegmentRecord | undefined,
@@ -191,7 +194,11 @@ export function mergeSegmentRecord(
   nowMs: number,
   ttlMs: number,
 ): SegmentRecord {
-  const prior = existing?.publications ?? [];
+  // Prune grants that have already elapsed at this write (§5.5): bounded by
+  // live contexts, not by the unbounded set of contexts ever published.
+  const prior = (existing?.publications ?? []).filter(
+    (publication) => publication.expiresAtMs > nowMs,
+  );
   const fresh: SegmentPublication = {
     ...metadata,
     byteLength,
@@ -219,10 +226,15 @@ export function mergeSegmentRecord(
   return {
     ...metadata,
     segmentId,
+    // Compatibility view over the retained publications only, incoming
+    // primary first: a pruned publication's digest is gone, not just its
+    // descriptor.
     scopeDigests: [
       metadata.scopeDigest,
-      ...(existing?.scopeDigests ?? []).filter(
-        (digest) => digest !== metadata.scopeDigest,
+      ...new Set(
+        publications
+          .map((publication) => publication.scopeDigest)
+          .filter((digest) => digest !== metadata.scopeDigest),
       ),
     ],
     publications,

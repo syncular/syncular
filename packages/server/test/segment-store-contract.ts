@@ -212,6 +212,71 @@ export function runSegmentStoreContract(
       expect(liveB?.publications).toHaveLength(1);
     });
 
+    test('prune-on-put forgets an elapsed publication and its digest, keeps live ones', async () => {
+      const store = await makeStore();
+      const bytes = new Uint8Array([6, 6, 6, 6]);
+      // A expires at CONTRACT_NOW + TTL; B is published half a TTL later and
+      // therefore outlives A.
+      await store.put(
+        { ...IMAGE_META, scopeDigest: 'digest-a', asOfCommitSeq: 42 },
+        bytes,
+        CONTRACT_NOW,
+      );
+      await store.put(
+        { ...IMAGE_META, scopeDigest: 'digest-b', asOfCommitSeq: 43 },
+        bytes,
+        CONTRACT_NOW + DEFAULT_SEGMENT_TTL_MS / 2,
+      );
+      const beyond = CONTRACT_NOW + DEFAULT_SEGMENT_TTL_MS + 1_000;
+      // Republishing the live context prunes A's elapsed grant on put.
+      await store.put(
+        { ...IMAGE_META, scopeDigest: 'digest-b', asOfCommitSeq: 43 },
+        bytes,
+        beyond,
+      );
+      let got = await store.get(await segmentIdFor(bytes));
+      expect(got?.record.publications.map((p) => p.scopeDigest)).toEqual([
+        'digest-b',
+      ]);
+      expect(got?.record.scopeDigests).toEqual(['digest-b']);
+      // A new live context is appended after the same put-time prune.
+      await store.put(
+        { ...IMAGE_META, scopeDigest: 'digest-c', asOfCommitSeq: 44 },
+        bytes,
+        beyond,
+      );
+      got = await store.get(await segmentIdFor(bytes));
+      expect(got?.record.publications.map((p) => p.scopeDigest)).toEqual([
+        'digest-b',
+        'digest-c',
+      ]);
+      expect(got?.record.scopeDigests).toEqual(['digest-c', 'digest-b']);
+      // The expired descriptor AND digest are gone; the live ones remain
+      // reachable by their own contexts.
+      expect(
+        got?.record.publications.some((p) => p.scopeDigest === 'digest-a'),
+      ).toBe(false);
+      expect(
+        await store.find({ ...KEY, scopeDigest: 'digest-a' }, beyond),
+      ).toBeUndefined();
+      expect(
+        (
+          await store.find(
+            { ...KEY, scopeDigest: 'digest-b', asOfCommitSeq: 43 },
+            beyond,
+          )
+        )?.scopeDigest,
+      ).toBe('digest-b');
+      expect(
+        (
+          await store.find(
+            { ...KEY, scopeDigest: 'digest-c', asOfCommitSeq: 44 },
+            beyond,
+          )
+        )?.scopeDigest,
+      ).toBe('digest-c');
+    });
+
     test('identical bytes across tables and pins find by their own key (§5.3)', async () => {
       const store = await makeStore();
       const bytes = new Uint8Array([3, 3]);
