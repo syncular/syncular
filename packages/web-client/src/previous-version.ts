@@ -391,20 +391,15 @@ export function withPreviousVersionContainer<T>(
   }
 }
 
-function containerHasMeta(db: ClientDatabase): boolean {
-  return (
-    db.query(
-      "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?",
-      [CONTAINER_META_TABLE],
-    ).length > 0
-  );
-}
-
 /** Read the container's own metadata record; `undefined` when absent/corrupt. */
 export function readPreviousVersionContainer(
   db: ClientDatabase,
 ): PreviousVersionRecord | undefined {
-  if (!containerHasMeta(db)) return undefined;
+  const meta = db.query(
+    "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?",
+    [CONTAINER_META_TABLE],
+  );
+  if (meta.length === 0) return undefined;
   const raw = db.query(
     `SELECT record FROM ${quoteIdent(CONTAINER_META_TABLE)} WHERE id = 1`,
   )[0]?.record;
@@ -467,12 +462,6 @@ function writeRecord(db: ClientDatabase, record: PreviousVersionRecord): void {
 // Bounded capture (D2 / A4)
 // ---------------------------------------------------------------------------
 
-function sumBytesExpression(columns: readonly string[]): string {
-  return columns
-    .map((name) => `COALESCE(LENGTH(CAST(${quoteIdent(name)} AS BLOB)), 0)`)
-    .join(' + ');
-}
-
 /**
  * D2/A4: measure the capture BEFORE materializing anything. Ordered probes,
  * aborting on the first violation:
@@ -533,7 +522,9 @@ export function capturePreviousVersion(
   let measuredBytes = 0;
   for (let index = 0; index < tables.length; index++) {
     const table = tables[index] as LocalSchemaDescriptorTable;
-    const byteSum = sumBytesExpression(table.columns.map((c) => c.name));
+    const byteSum = table.columns
+      .map((c) => `COALESCE(LENGTH(CAST(${quoteIdent(c.name)} AS BLOB)), 0)`)
+      .join(' + ');
     if (table.columns.length === 0) continue;
     const oversized = replica.query(
       `SELECT 1 AS hit FROM ${quoteIdent(table.name)}
