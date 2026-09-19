@@ -19,13 +19,11 @@ use ssp2::{
     decode_message, encode_message, parse_control, render_message, render_rows_segment,
     ControlMessage,
 };
+use syncular_client::previous_version::{PreviousVersionContextConfig, PreviousVersionReadSpec};
 use syncular_client::{
     ClientDiagnosticsRequest, ClientLimits, CommandEffects, CommitOutcomeQuery,
     LocalDataPurgeInput, LocalDataRebootstrapInput, Mutation, ResolveCommitOutcomeInput,
     SyncClient, Transport, WindowBase, WindowCoverage,
-};
-use syncular_client::previous_version::{
-    PreviousVersionContextConfig, PreviousVersionReadSpec,
 };
 
 // -- bytes <-> {"$bytes": hex} (the driver-protocol byte envelope) ----------
@@ -146,12 +144,9 @@ pub fn parse_previous_version_context(
 fn parse_previous_version_snapshot_spec(
     params: &Value,
 ) -> Result<PreviousVersionReadSpec, CommandError> {
-    let table = params
-        .get("table")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            client_err("sync.invalid_request: previousVersionSnapshot missing table".to_owned())
-        })?;
+    let table = params.get("table").and_then(Value::as_str).ok_or_else(|| {
+        client_err("sync.invalid_request: previousVersionSnapshot missing table".to_owned())
+    })?;
     let row_ids = match params.get("rowIds") {
         None | Some(Value::Null) => Vec::new(),
         Some(Value::Array(ids)) => ids
@@ -820,16 +815,19 @@ pub fn dispatch<T: Transport>(
         })),
         "previousVersionSnapshot" | "previous_version_snapshot" => {
             let spec = parse_previous_version_snapshot_spec(params)?;
-            let snapshot = need_client(client)?.previous_version_snapshot(&spec).map_err(client_err)?;
+            let snapshot = need_client(client)?
+                .previous_version_snapshot(&spec)
+                .map_err(client_err)?;
             serde_json::to_value(snapshot).map_err(|error| client_err(error.to_string()))
         }
-        "previousVersionAudit" | "previous_version_audit" => Ok(
-            match need_client(client)?.previous_version_audit() {
-                Some(audit) => serde_json::to_value(audit)
-                    .map_err(|error| client_err(error.to_string()))?,
+        "previousVersionAudit" | "previous_version_audit" => {
+            Ok(match need_client(client)?.previous_version_audit() {
+                Some(audit) => {
+                    serde_json::to_value(audit).map_err(|error| client_err(error.to_string()))?
+                }
                 None => Value::Null,
-            },
-        ),
+            })
+        }
         "previousVersionDiscard" | "previous_version_discard" => {
             let outcome = need_client(client)?.previous_version_discard();
             Ok(json!({
@@ -1895,11 +1893,26 @@ mod tests {
         for (value, expected) in [
             (json!([]), "must be an object"),
             (json!({ "enabled": "yes" }), "enabled must be a boolean"),
-            (json!({ "maxBytes": 0 }), "maxBytes must be a positive safe integer"),
-            (json!({ "maxRows": -1 }), "maxRows must be a positive safe integer"),
-            (json!({ "maxTables": 1.5 }), "maxTables must be a positive safe integer"),
-            (json!({ "maxRowBytes": "1" }), "maxRowBytes must be a positive safe integer"),
-            (json!({ "maxAgeMs": 0 }), "maxAgeMs must be a positive safe integer"),
+            (
+                json!({ "maxBytes": 0 }),
+                "maxBytes must be a positive safe integer",
+            ),
+            (
+                json!({ "maxRows": -1 }),
+                "maxRows must be a positive safe integer",
+            ),
+            (
+                json!({ "maxTables": 1.5 }),
+                "maxTables must be a positive safe integer",
+            ),
+            (
+                json!({ "maxRowBytes": "1" }),
+                "maxRowBytes must be a positive safe integer",
+            ),
+            (
+                json!({ "maxAgeMs": 0 }),
+                "maxAgeMs must be a positive safe integer",
+            ),
         ] {
             let error = parse_previous_version_context(Some(&value)).expect_err("must fail");
             assert_eq!(error.0, "sync.invalid_request", "{value}");

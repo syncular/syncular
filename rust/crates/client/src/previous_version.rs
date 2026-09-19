@@ -371,8 +371,10 @@ fn decode_record(raw: &str) -> Result<PreviousVersionRecord, String> {
             .iter()
             .map(decode_descriptor_table)
             .collect::<Result<Vec<_>, _>>()?,
-        rows: as_count(record.get("rows")).ok_or_else(|| local_corrupt("previous-version context"))?,
-        bytes: as_count(record.get("bytes")).ok_or_else(|| local_corrupt("previous-version context"))?,
+        rows: as_count(record.get("rows"))
+            .ok_or_else(|| local_corrupt("previous-version context"))?,
+        bytes: as_count(record.get("bytes"))
+            .ok_or_else(|| local_corrupt("previous-version context"))?,
         created_at_ms: as_count(record.get("createdAtMs"))
             .ok_or_else(|| local_corrupt("previous-version context"))?,
     })
@@ -465,9 +467,8 @@ pub fn read_previous_version_rows(
             .join(", ");
         format!(" AND row_id IN ({placeholders})")
     };
-    let mut params: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Text(
-        table.name.clone(),
-    )];
+    let mut params: Vec<rusqlite::types::Value> =
+        vec![rusqlite::types::Value::Text(table.name.clone())];
     params.extend(
         row_ids
             .iter()
@@ -551,7 +552,12 @@ pub enum CaptureOutcome {
 fn sum_bytes_expression(columns: &[DescriptorColumn]) -> String {
     columns
         .iter()
-        .map(|column| format!("COALESCE(LENGTH(CAST({} AS BLOB)), 0)", quote_ident(&column.name)))
+        .map(|column| {
+            format!(
+                "COALESCE(LENGTH(CAST({} AS BLOB)), 0)",
+                quote_ident(&column.name)
+            )
+        })
         .collect::<Vec<_>>()
         .join(" + ")
 }
@@ -727,8 +733,9 @@ pub fn capture_previous_version(
         let mut last_row_id = -1i64;
         loop {
             let batch: Vec<(i64, String, String)> = {
-                let mut stmt =
-                    replica.prepare(&select_sql).map_err(|error| error.to_string())?;
+                let mut stmt = replica
+                    .prepare(&select_sql)
+                    .map_err(|error| error.to_string())?;
                 let mut rows = stmt
                     .query(rusqlite::params![last_row_id, COPY_BATCH_ROWS])
                     .map_err(|error| error.to_string())?;
@@ -779,10 +786,7 @@ pub fn capture_previous_version(
         &PreviousVersionRecord {
             previous_version: descriptor.version,
             current_version,
-            tables: tables
-                .iter()
-                .map(|table| (*table).clone())
-                .collect(),
+            tables: tables.iter().map(|table| (*table).clone()).collect(),
             rows: copied_rows,
             bytes: measured_bytes,
             created_at_ms: now_ms,
@@ -1050,7 +1054,10 @@ pub fn previous_version_snapshot(
         if let Some(replica_path) = replica_path {
             discard_previous_version(replica, replica_path)?;
         }
-        Ok(PreviousVersionSnapshot::unavailable(current_version, reason))
+        Ok(PreviousVersionSnapshot::unavailable(
+            current_version,
+            reason,
+        ))
     };
     if lifecycle.lease_inactive {
         return discard(PreviousVersionReason::LeaseInactive);
@@ -1121,7 +1128,9 @@ pub fn stored_previous_version_refusal(
     }
     match record.get("reason").and_then(Value::as_str) {
         Some("no-previous-descriptor") => Some(PreviousVersionRefusalReason::NoPreviousDescriptor),
-        Some("capture-exceeded-budget") => Some(PreviousVersionRefusalReason::CaptureExceededBudget),
+        Some("capture-exceeded-budget") => {
+            Some(PreviousVersionRefusalReason::CaptureExceededBudget)
+        }
         _ => None,
     }
 }
@@ -1217,7 +1226,8 @@ pub fn build_previous_version_audit(
     let mut incompatible_total = 0usize;
     let mut encodable = 0i64;
     for commit in pending {
-        let Some((table, reason, column)) = first_incompatibility(schema, &commit.operations) else {
+        let Some((table, reason, column)) = first_incompatibility(schema, &commit.operations)
+        else {
             encodable += 1;
             continue;
         };
@@ -1361,8 +1371,7 @@ pub fn reconcile_previous_version_at_boot(
         None => true,
         Some(record) => {
             record.current_version != current_version
-                || max_age_ms
-                    .is_some_and(|max_age_ms| now_ms - record.created_at_ms > max_age_ms)
+                || max_age_ms.is_some_and(|max_age_ms| now_ms - record.created_at_ms > max_age_ms)
         }
     };
     if !stale {
@@ -1442,9 +1451,16 @@ mod tests {
 
         // 1. Off and disabled are the same read outcome.
         for config in [None, Some(&PreviousVersionContextConfig::default())] {
-            let snapshot =
-                previous_version_snapshot(&replica, Some(&replica_path), config, lifecycle, 0, 2, &spec)
-                    .expect("snapshot");
+            let snapshot = previous_version_snapshot(
+                &replica,
+                Some(&replica_path),
+                config,
+                lifecycle,
+                0,
+                2,
+                &spec,
+            )
+            .expect("snapshot");
             assert!(!snapshot.available);
             assert_eq!(snapshot.reason, Some(PreviousVersionReason::NotConfigured));
             assert_eq!(snapshot.state, "previousVersion");
@@ -1454,10 +1470,9 @@ mod tests {
         }
 
         // 2. A capture refused for want of a descriptor is a durable reason.
-        let refused = capture_previous_version_from_replica(
-            &replica, &replica_path, 3, 2, &config, 1_000,
-        )
-        .expect("capture");
+        let refused =
+            capture_previous_version_from_replica(&replica, &replica_path, 3, 2, &config, 1_000)
+                .expect("capture");
         assert!(matches!(
             refused,
             CaptureOutcome::Refused {
@@ -1465,10 +1480,20 @@ mod tests {
                 ..
             }
         ));
-        let snapshot =
-            previous_version_snapshot(&replica, Some(&replica_path), Some(&config), lifecycle, 1_000, 2, &spec)
-                .expect("snapshot");
-        assert_eq!(snapshot.reason, Some(PreviousVersionReason::NoPreviousDescriptor));
+        let snapshot = previous_version_snapshot(
+            &replica,
+            Some(&replica_path),
+            Some(&config),
+            lifecycle,
+            1_000,
+            2,
+            &spec,
+        )
+        .expect("snapshot");
+        assert_eq!(
+            snapshot.reason,
+            Some(PreviousVersionReason::NoPreviousDescriptor)
+        );
 
         // 3. A budget refusal keeps its measured reason too.
         let tiny = PreviousVersionContextConfig {
@@ -1478,24 +1503,46 @@ mod tests {
         };
         capture_previous_version_from_replica(&replica, &replica_path, 1, 2, &tiny, 1_000)
             .expect("capture");
-        let snapshot =
-            previous_version_snapshot(&replica, Some(&replica_path), Some(&config), lifecycle, 1_000, 2, &spec)
-                .expect("snapshot");
-        assert_eq!(snapshot.reason, Some(PreviousVersionReason::CaptureExceededBudget));
+        let snapshot = previous_version_snapshot(
+            &replica,
+            Some(&replica_path),
+            Some(&config),
+            lifecycle,
+            1_000,
+            2,
+            &spec,
+        )
+        .expect("snapshot");
+        assert_eq!(
+            snapshot.reason,
+            Some(PreviousVersionReason::CaptureExceededBudget)
+        );
         assert!(!Path::new(&container_path).exists());
 
         // 4. A successful capture is readable with typed rows.
         let recapture = || {
             let outcome = capture_previous_version_from_replica(
-                &replica, &replica_path, 1, 2, &config, 1_000,
+                &replica,
+                &replica_path,
+                1,
+                2,
+                &config,
+                1_000,
             )
             .expect("capture");
             assert!(matches!(outcome, CaptureOutcome::Captured(_)));
         };
         recapture();
-        let snapshot =
-            previous_version_snapshot(&replica, Some(&replica_path), Some(&config), lifecycle, 1_000, 2, &spec)
-                .expect("snapshot");
+        let snapshot = previous_version_snapshot(
+            &replica,
+            Some(&replica_path),
+            Some(&config),
+            lifecycle,
+            1_000,
+            2,
+            &spec,
+        )
+        .expect("snapshot");
         assert!(snapshot.available);
         assert_eq!(snapshot.previous_version, Some(1));
         assert_eq!(snapshot.current_version, 2);
@@ -1513,9 +1560,16 @@ mod tests {
             row_ids: vec!["r2".to_owned()],
             limit: Some(1),
         };
-        let snapshot =
-            previous_version_snapshot(&replica, Some(&replica_path), Some(&config), lifecycle, 1_000, 2, &selected)
-                .expect("snapshot");
+        let snapshot = previous_version_snapshot(
+            &replica,
+            Some(&replica_path),
+            Some(&config),
+            lifecycle,
+            1_000,
+            2,
+            &selected,
+        )
+        .expect("snapshot");
         assert_eq!(snapshot.rows.len(), 1);
         assert_eq!(snapshot.rows[0]["id"], json!("r2"));
         let unknown = PreviousVersionReadSpec {
@@ -1598,7 +1652,12 @@ mod tests {
         let lifecycle = PreviousVersionLifecycle::default();
         let capture_at = || {
             let outcome = capture_previous_version_from_replica(
-                &replica, &replica_path, 1, 2, &config, 1_000,
+                &replica,
+                &replica_path,
+                1,
+                2,
+                &config,
+                1_000,
             )
             .expect("capture");
             assert!(matches!(outcome, CaptureOutcome::Captured(_)));
@@ -1636,8 +1695,14 @@ mod tests {
         // path. This asserts the limitation: the TTL is an aware-binary
         // hygiene bound and nothing else.
         capture_at();
-        reconcile_previous_version_at_boot(&replica, &replica_path, 2, None, 1_000 + max_age_ms * 10)
-            .expect("boot reconcile without a TTL");
+        reconcile_previous_version_at_boot(
+            &replica,
+            &replica_path,
+            2,
+            None,
+            1_000 + max_age_ms * 10,
+        )
+        .expect("boot reconcile without a TTL");
         assert!(Path::new(&container_path).exists());
 
         // Boot: aware, within the TTL → kept; beyond it → discarded.
@@ -1752,7 +1817,6 @@ mod tests {
         assert!(resolve_previous_version_limit(Some(-1)).is_err());
     }
 
-
     /// Removes every temp file the test created, so the container assertion
     /// "the path is gone" cannot pass because a later case reused the name.
     struct TempFiles {
@@ -1846,10 +1910,7 @@ mod tests {
                 .expect("insert row");
         }
         replica
-            .execute(
-                "INSERT INTO notes(id, body) VALUES ('n1', 'note')",
-                [],
-            )
+            .execute("INSERT INTO notes(id, body) VALUES ('n1', 'note')", [])
             .expect("insert note");
         // D1: the descriptor the bump's capture reads, exactly as the client
         // writes it — plus the §7.4.1 marker of the version that wrote it.
@@ -1864,8 +1925,10 @@ mod tests {
     #[test]
     fn previous_version_descriptor_round_trips_and_rejects_unknown_shapes() {
         let conn = Connection::open_in_memory().expect("open in-memory");
-        conn.execute_batch("CREATE TABLE _syncular_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-            .expect("create meta");
+        conn.execute_batch(
+            "CREATE TABLE _syncular_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+        )
+        .expect("create meta");
         let schema = schema(4);
         set_local_schema_descriptor(&conn, &schema);
 
@@ -1966,13 +2029,14 @@ mod tests {
         assert_eq!(record.previous_version, 1);
         assert_eq!(record.current_version, 2);
         assert_eq!(record.rows, 3);
-        assert_eq!(record.bytes, measurement.bytes);        assert_eq!(record.created_at_ms, 1_700_000_000_000);
+        assert_eq!(record.bytes, measurement.bytes);
+        assert_eq!(record.created_at_ms, 1_700_000_000_000);
         assert_eq!(record.tables.len(), 2);
         assert_eq!(record.tables[0].columns.len(), 11);
 
         let table = record.table("things").expect("things in the record");
-        let (rows, truncated) = read_previous_version_rows(&container, table, &[], 50)
-            .expect("read rows");
+        let (rows, truncated) =
+            read_previous_version_rows(&container, table, &[], 50).expect("read rows");
         assert!(!truncated);
         assert_eq!(rows.len(), 2);
         let row = &rows[0];
@@ -2050,10 +2114,9 @@ mod tests {
             ),
         ];
         for (label, config, expected_rows, bytes_measured) in cases {
-            let outcome = capture_previous_version_from_replica(
-                &replica, &replica_path, 1, 2, &config, 1,
-            )
-            .unwrap_or_else(|error| panic!("{label}: {error}"));
+            let outcome =
+                capture_previous_version_from_replica(&replica, &replica_path, 1, 2, &config, 1)
+                    .unwrap_or_else(|error| panic!("{label}: {error}"));
             let CaptureOutcome::Refused {
                 reason,
                 measurement,
@@ -2199,7 +2262,8 @@ mod tests {
 
         // And a client opening over a torn container must still open, sweeping
         // it on the bump path.
-        std::fs::write(&container_path, b"not a sqlite database").expect("write garbage a third time");
+        std::fs::write(&container_path, b"not a sqlite database")
+            .expect("write garbage a third time");
         seed_replica(temp.replica(), 1);
         {
             SyncClient::open_path(
@@ -2312,9 +2376,13 @@ mod tests {
         // Fresh install at v1: the descriptor is written beside the marker and
         // the feature (default off) creates no container.
         {
-            let mut client =
-                SyncClient::open_path("pvc".to_owned(), &schema_json(1), ClientLimits::default(), &replica_path)
-                    .expect("open v1");
+            let mut client = SyncClient::open_path(
+                "pvc".to_owned(),
+                &schema_json(1),
+                ClientLimits::default(),
+                &replica_path,
+            )
+            .expect("open v1");
             client
                 .mutate(vec![Mutation::Upsert {
                     table: "things".to_owned(),
@@ -2329,10 +2397,14 @@ mod tests {
         }
         {
             let inspect = Connection::open(&replica_path).expect("inspect v1");
-            let descriptor = load_local_schema_descriptor(&inspect).expect("descriptor after install");
+            let descriptor =
+                load_local_schema_descriptor(&inspect).expect("descriptor after install");
             assert_eq!(descriptor.version, 1);
             assert_eq!(descriptor.tables.len(), 2);
-            assert_eq!(descriptor.table("things").expect("things").columns.len(), 11);
+            assert_eq!(
+                descriptor.table("things").expect("things").columns.len(),
+                11
+            );
         }
         assert!(!Path::new(&container_path).exists());
 
@@ -2342,14 +2414,20 @@ mod tests {
             meta_delete(&inspect, LOCAL_SCHEMA_DESCRIPTOR_KEY);
         }
         {
-            let _client =
-                SyncClient::open_path("pvc".to_owned(), &schema_json(1), ClientLimits::default(), &replica_path)
-                    .expect("reopen v1");
+            let _client = SyncClient::open_path(
+                "pvc".to_owned(),
+                &schema_json(1),
+                ClientLimits::default(),
+                &replica_path,
+            )
+            .expect("reopen v1");
         }
         {
             let inspect = Connection::open(&replica_path).expect("inspect v1 again");
             assert_eq!(
-                load_local_schema_descriptor(&inspect).expect("backfilled").version,
+                load_local_schema_descriptor(&inspect)
+                    .expect("backfilled")
+                    .version,
                 1
             );
         }
@@ -2371,7 +2449,9 @@ mod tests {
         {
             let inspect = Connection::open(&replica_path).expect("inspect v2");
             assert_eq!(
-                load_local_schema_descriptor(&inspect).expect("descriptor after bump").version,
+                load_local_schema_descriptor(&inspect)
+                    .expect("descriptor after bump")
+                    .version,
                 2
             );
             assert_eq!(

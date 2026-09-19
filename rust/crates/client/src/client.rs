@@ -33,22 +33,21 @@ use crate::api::{
     CommitOutcomeStatus, ConflictRecord, CoverageSnapshot, DiagnosticLastChange,
     DiagnosticLastRound, DiagnosticRoundCounters, DiagnosticSubscription, FetchedBlob, LeaseState,
     LocalDataPurgeInput, LocalDataPurgeResult, LocalDataPurgeTarget, LocalDataRebootstrapInput,
-    LocalDataRebootstrapResult, Mutation, PresencePeer, QueryRow, QuerySnapshot, QueryValue,
-    RejectionDetails, RejectionRecord, ResolveCommitOutcomeInput, RowState, SchemaFloor,
-    PreviousVersionStatus, SubscriptionStateView, SyncIntent, SyncOutcome, SyncReport,
-    SyncStatusSnapshot, TableChange,
-    WindowBase, WindowChange, WindowCoverage, WindowState, WindowUnitRef,
-    CLIENT_DIAGNOSTICS_VERSION, MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
+    LocalDataRebootstrapResult, Mutation, PresencePeer, PreviousVersionStatus, QueryRow,
+    QuerySnapshot, QueryValue, RejectionDetails, RejectionRecord, ResolveCommitOutcomeInput,
+    RowState, SchemaFloor, SubscriptionStateView, SyncIntent, SyncOutcome, SyncReport,
+    SyncStatusSnapshot, TableChange, WindowBase, WindowChange, WindowCoverage, WindowState,
+    WindowUnitRef, CLIENT_DIAGNOSTICS_VERSION, MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
 };
 #[cfg(feature = "bench-internals")]
 use crate::bench::{Phase, Recorder};
-use crate::schema::{parse_schema_json, ClientSchema, FtsIndexSchema, TableSchema};
 use crate::previous_version::{
-    capture_previous_version_from_replica, first_incompatibility, reconcile_previous_version_at_boot,
-    set_local_schema_descriptor, sweep_previous_version_container, PreviousVersionContextConfig,
+    capture_previous_version_from_replica, first_incompatibility,
+    reconcile_previous_version_at_boot, set_local_schema_descriptor,
+    sweep_previous_version_container, PendingCommitAudit, PreviousVersionContextConfig,
     PreviousVersionLifecycle, PreviousVersionReadSpec, PreviousVersionSnapshot,
-    PendingCommitAudit,
 };
+use crate::schema::{parse_schema_json, ClientSchema, FtsIndexSchema, TableSchema};
 use crate::transport::{BlobDownload, BlobUploadGrant, SegmentRequest, Transport, TransportError};
 use crate::values::{
     bytes_to_hex, canonical_scope_json, column_value_to_json, decode_row_bytes,
@@ -4746,7 +4745,8 @@ fn image_cell_param<'a>(column: &Column, value: ValueRef<'a>) -> Result<ToSqlOut
     }
 }
 
-pub(crate) fn sql_ref_to_json(column: &Column, value: rusqlite::types::ValueRef<'_>) -> Value {    use rusqlite::types::ValueRef;
+pub(crate) fn sql_ref_to_json(column: &Column, value: rusqlite::types::ValueRef<'_>) -> Value {
+    use rusqlite::types::ValueRef;
     match value {
         ValueRef::Null => Value::Null,
         ValueRef::Integer(i) => match column.ty {
@@ -5670,10 +5670,7 @@ impl SyncClient {
             self.previous_version.as_ref(),
             PreviousVersionLifecycle {
                 lease_inactive: self.previous_version_lease_inactive(now_ms),
-                scope_revoked: self
-                    .subs
-                    .iter()
-                    .any(|sub| sub.state == SubState::Revoked),
+                scope_revoked: self.subs.iter().any(|sub| sub.state == SubState::Revoked),
                 coverage_complete: self.previous_version_coverage_complete(),
             },
             now_ms,
@@ -5691,7 +5688,9 @@ impl SyncClient {
     /// RFC 0005 A2/D9: the executable downgrade step. Drop the container file
     /// and both metadata records, and report whether anything was present.
     /// Idempotent: absence is a successful no-op.
-    pub fn previous_version_discard(&self) -> crate::previous_version::PreviousVersionDiscardOutcome {
+    pub fn previous_version_discard(
+        &self,
+    ) -> crate::previous_version::PreviousVersionDiscardOutcome {
         self.drop_previous_version()
     }
 
@@ -6588,7 +6587,9 @@ impl SyncClient {
         let incompatible = self
             .outbox
             .iter()
-            .filter(|commit| first_incompatibility(&self.schema, &commit_audit_operations(commit)).is_some())
+            .filter(|commit| {
+                first_incompatibility(&self.schema, &commit_audit_operations(commit)).is_some()
+            })
             .cloned()
             .collect::<Vec<_>>();
         if incompatible.is_empty() {
@@ -11764,7 +11765,6 @@ impl SyncClient {
             let _ = transport.realtime_send(&ack);
         }
     }
-
 }
 
 #[cfg(test)]
@@ -11789,12 +11789,10 @@ mod previous_version_wiring_tests {
 
     fn previous_version_limits() -> crate::api::ClientLimits {
         crate::api::ClientLimits {
-            previous_version_context: Some(
-                crate::previous_version::PreviousVersionContextConfig {
-                    enabled: true,
-                    ..Default::default()
-                },
-            ),
+            previous_version_context: Some(crate::previous_version::PreviousVersionContextConfig {
+                enabled: true,
+                ..Default::default()
+            }),
             ..Default::default()
         }
     }
@@ -11845,13 +11843,10 @@ mod previous_version_wiring_tests {
     #[test]
     fn previous_version_read_reasons_come_from_live_client_state() {
         use crate::previous_version::{
-            PreviousVersionReason, PreviousVersionReadSpec, PREVIOUS_VERSION_CONTAINER_SUFFIX,
+            PreviousVersionReadSpec, PreviousVersionReason, PREVIOUS_VERSION_CONTAINER_SUFFIX,
         };
         let path = std::env::temp_dir()
-            .join(format!(
-                "syncular-prev-wiring-{}.db",
-                uuid::Uuid::new_v4()
-            ))
+            .join(format!("syncular-prev-wiring-{}.db", uuid::Uuid::new_v4()))
             .to_string_lossy()
             .into_owned();
         let container = format!("{path}{PREVIOUS_VERSION_CONTAINER_SUFFIX}");
@@ -11911,9 +11906,7 @@ mod previous_version_wiring_tests {
 
         // A revoked subscription ⇒ scope-revoked.
         recapture_previous_version(&client);
-        client
-            .subs
-            .push(subscription(SubState::Revoked, 0, None));
+        client.subs.push(subscription(SubState::Revoked, 0, None));
         let snapshot = client.previous_version_snapshot(&spec).expect("snapshot");
         assert_eq!(snapshot.reason, Some(PreviousVersionReason::ScopeRevoked));
         assert!(!std::path::Path::new(&container).exists());
@@ -11935,7 +11928,10 @@ mod previous_version_wiring_tests {
         client.subs[0].bootstrap_state = None;
         assert!(client.previous_version_coverage_complete());
         let snapshot = client.previous_version_snapshot(&spec).expect("snapshot");
-        assert_eq!(snapshot.reason, Some(PreviousVersionReason::CoverageComplete));
+        assert_eq!(
+            snapshot.reason,
+            Some(PreviousVersionReason::CoverageComplete)
+        );
         assert!(!std::path::Path::new(&container).exists());
         client.subs.clear();
 
@@ -12022,7 +12018,9 @@ mod previous_version_wiring_tests {
         // Negative control: a still-resuming active subscription is NOT
         // coverage completion, so the container survives the same call.
         recapture_previous_version(&client);
-        client.subs.push(subscription(SubState::Active, 0, Some("resume")));
+        client
+            .subs
+            .push(subscription(SubState::Active, 0, Some("resume")));
         client.previous_version_lifetime_check();
         assert!(exists());
         client.subs.clear();
