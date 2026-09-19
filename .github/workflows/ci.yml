@@ -149,6 +149,11 @@ jobs:
         env:
           SYNCULAR_PG_URL: postgres://postgres@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/syncular_bench
         run: bun test packages/server/test/postgres-fanout.integration.test.ts
+      - name: Real Postgres RFC 0007 barrier receipts
+        if: matrix.core == 'ts'
+        env:
+          SYNCULAR_PG_URL: postgres://postgres@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/syncular_bench
+        run: bun test packages/server/test/postgres-checkpoints.integration.test.ts
       - name: Full-client Postgres replay
         env:
           SYNCULAR_PG_URL: postgres://postgres@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/syncular_bench

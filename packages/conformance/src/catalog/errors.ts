@@ -55,6 +55,11 @@ const EXPECTED_METADATA: Readonly<
     retryable: false,
     recommendedAction: 'splitBatch',
   },
+  'sync.schema_not_ready': {
+    category: 'internal',
+    retryable: true,
+    recommendedAction: 'retryLater',
+  },
 };
 
 function checkMetadata(error: DriverError, code: string, what: string): void {
@@ -92,6 +97,22 @@ async function expectRequestError(
 const P1 = { project_id: ['p1'] } as const;
 
 export const errorScenarios: readonly Scenario[] = [
+  {
+    name: 'errors/schema-not-ready-refusal',
+    specRefs: ['§2.4', '§10.2'],
+    requires: ['backfill-checkpoints'],
+    async run(ctx) {
+      await ctx.server.setAllowedScopes('actor-1', P1);
+      const declare = ctx.server.declareBackfillCheckpoint;
+      check(declare !== undefined, 'driver advertises backfill-checkpoints');
+      await declare?.call(ctx.server, 'tasks-projection');
+      await expectRequestError(
+        'declared checkpoint not activated',
+        'sync.schema_not_ready',
+        () => ctx.rawSync('actor-1', [rawPullHeader()]),
+      );
+    },
+  },
   {
     name: 'errors/request-level-catalog',
     specRefs: ['§1.7', '§4.2', '§10.1', '§10.2'],

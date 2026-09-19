@@ -17,6 +17,7 @@ import {
   type BlobUploadPresignConfig,
   CommitValidationRejection,
   type CommitValidator,
+  compileSchema,
   createRealtimeHub,
   handleBlobDownload,
   handleBlobUpload,
@@ -786,6 +787,17 @@ class TsServerInstance implements ServerInstance {
     this.#resolverFailing = failing;
   }
 
+  async declareBackfillCheckpoint(name: string): Promise<void> {
+    const schema = compileSchema(toServerSchema(this.#schema));
+    await this.#storage.ensureSchema(schema);
+    await this.#storage.declareCheckpoint(
+      this.#partition,
+      name,
+      schema.version,
+      this.#now.ms,
+    );
+  }
+
   async setResolverOutage(outage: boolean): Promise<void> {
     this.#resolverOutage = outage;
   }
@@ -910,6 +922,7 @@ export const tsServerDriver: ServerDriver = {
     'leases',
     'validators',
     'commit-validators',
+    'backfill-checkpoints',
   ],
   async create(options: ServerCreateOptions): Promise<ServerInstance> {
     return new TsServerInstance(options);
