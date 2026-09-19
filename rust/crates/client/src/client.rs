@@ -11764,4 +11764,185 @@ impl SyncClient {
             let _ = transport.realtime_send(&ack);
         }
     }
+
+}
+
+#[cfg(test)]
+mod previous_version_wiring_tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    fn previous_version_schema(version: i32) -> Value {
+        json!({
+            "version": version,
+            "tables": [{
+                "name": "tasks",
+                "primaryKey": "id",
+                "columns": [
+                    { "name": "id", "type": "string", "nullable": false },
+                    { "name": "note", "type": "string", "nullable": true }
+                ],
+                "scopes": []
+            }]
+        })
+    }
+
+    fn previous_version_limits() -> crate::api::ClientLimits {
+        crate::api::ClientLimits {
+            previous_version_context: Some(
+                crate::previous_version::PreviousVersionContextConfig {
+                    enabled: true,
+                    ..Default::default()
+                },
+            ),
+            ..Default::default()
+        }
+    }
+
+    /// The configuration the live client carries, for a direct capture call.
+    fn previous_version_config() -> crate::previous_version::PreviousVersionContextConfig {
+        previous_version_limits()
+            .previous_version_context
+            .expect("configured")
+    }
+
+    /// Capture the container the way a bump would, so a read test starts from a
+    /// container this client's own state will then decide about.
+    fn recapture_previous_version(client: &SyncClient) {
+        let replica_path = client
+            .previous_version_replica_path()
+            .expect("file-backed replica");
+        let outcome = crate::previous_version::capture_previous_version_from_replica(
+            &client.conn,
+            &replica_path,
+            2,
+            2,
+            &previous_version_config(),
+            1,
+        )
+        .expect("capture");
+        assert!(matches!(
+            outcome,
+            crate::previous_version::CaptureOutcome::Captured(_)
+        ));
+    }
+
+    fn subscription(state: SubState, cursor: i64, bootstrap_state: Option<&str>) -> Subscription {
+        Subscription {
+            id: "wiring-sub".to_owned(),
+            table: "tasks".to_owned(),
+            requested: Vec::new(),
+            params: None,
+            cursor,
+            bootstrap_state: bootstrap_state.map(str::to_owned),
+            state,
+            reason_code: None,
+            effective: None,
+            synced_once: false,
+        }
+    }
+
+    #[test]
+    fn previous_version_read_reasons_come_from_live_client_state() {
+        use crate::previous_version::{
+            PreviousVersionReason, PreviousVersionReadSpec, PREVIOUS_VERSION_CONTAINER_SUFFIX,
+        };
+        let path = std::env::temp_dir()
+            .join(format!(
+                "syncular-prev-wiring-{}.db",
+                uuid::Uuid::new_v4()
+            ))
+            .to_string_lossy()
+            .into_owned();
+        let container = format!("{path}{PREVIOUS_VERSION_CONTAINER_SUFFIX}");
+        {
+            let mut setup = SyncClient::open_path(
+                "wiring".to_owned(),
+                &previous_version_schema(1),
+                previous_version_limits(),
+                &path,
+            )
+            .expect("v1 install");
+            setup
+                .mutate(vec![Mutation::Upsert {
+                    table: "tasks".to_owned(),
+                    values: Map::from_iter([("id".to_owned(), json!("t1"))]),
+                    base_version: None,
+                }])
+                .expect("seed a row");
+        }
+        let mut client = SyncClient::open_path(
+            "wiring".to_owned(),
+            &previous_version_schema(2),
+            previous_version_limits(),
+            &path,
+        )
+        .expect("v2 bump captures");
+        assert!(std::path::Path::new(&container).exists());
+        let spec = PreviousVersionReadSpec {
+            table: "tasks".to_owned(),
+            ..Default::default()
+        };
+
+        // §7.3.5 lease error ⇒ lease-inactive, and the read discards.
+        recapture_previous_version(&client);
+        client.lease_state = Some(LeaseState {
+            lease_id: None,
+            expires_at_ms: None,
+            error_code: Some("lease.expired".to_owned()),
+        });
+        let snapshot = client.previous_version_snapshot(&spec).expect("snapshot");
+        assert_eq!(snapshot.reason, Some(PreviousVersionReason::LeaseInactive));
+        assert!(!snapshot.available);
+        assert!(!std::path::Path::new(&container).exists());
+
+        // An expired lease uses the client clock (injected, no sleeps).
+        recapture_previous_version(&client);
+        client.set_now_ms(1_000);
+        client.lease_state = Some(LeaseState {
+            lease_id: Some("lease".to_owned()),
+            expires_at_ms: Some(1_000),
+            error_code: None,
+        });
+        let snapshot = client.previous_version_snapshot(&spec).expect("snapshot");
+        assert_eq!(snapshot.reason, Some(PreviousVersionReason::LeaseInactive));
+        assert!(!std::path::Path::new(&container).exists());
+        client.lease_state = None;
+
+        // A revoked subscription ⇒ scope-revoked.
+        recapture_previous_version(&client);
+        client
+            .subs
+            .push(subscription(SubState::Revoked, 0, None));
+        let snapshot = client.previous_version_snapshot(&spec).expect("snapshot");
+        assert_eq!(snapshot.reason, Some(PreviousVersionReason::ScopeRevoked));
+        assert!(!std::path::Path::new(&container).exists());
+        client.subs.clear();
+
+        // Coverage completion: every ACTIVE subscription has a cursor and no
+        // resume token — a still-resuming subscription is not completion.
+        recapture_previous_version(&client);
+        client
+            .subs
+            .push(subscription(SubState::Active, 0, Some("resume")));
+        assert!(!client.previous_version_coverage_complete());
+        let snapshot = client.previous_version_snapshot(&spec).expect("snapshot");
+        assert!(snapshot.available);
+        assert_eq!(snapshot.previous_version, Some(2));
+        assert_eq!(snapshot.rows.len(), 1);
+
+        recapture_previous_version(&client);
+        client.subs[0].bootstrap_state = None;
+        assert!(client.previous_version_coverage_complete());
+        let snapshot = client.previous_version_snapshot(&spec).expect("snapshot");
+        assert_eq!(snapshot.reason, Some(PreviousVersionReason::CoverageComplete));
+        assert!(!std::path::Path::new(&container).exists());
+        client.subs.clear();
+
+        // With no active subscription at all, coverage is NOT complete.
+        assert!(!client.previous_version_coverage_complete());
+
+        drop(client);
+        let _ = std::fs::remove_file(&path);
+    }
 }
