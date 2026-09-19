@@ -4138,7 +4138,7 @@ The reasons are a closed set: `not-configured`, `no-previous-descriptor`,
 every reply: `available: true` is valid only with a named previous
 version, no `reason`, and rows that are valid SQL values; any other shape
 is an invalid host response. A version-drifted host therefore cannot
-forge an available read.
+present a reply outside this closed shape.
 
 The pre-reset **compatibility audit** is one `_syncular_meta` record,
 `previousVersionAudit`, written before the wipe:
