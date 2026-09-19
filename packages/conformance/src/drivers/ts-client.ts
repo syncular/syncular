@@ -5,6 +5,9 @@
  * and outputs stay JSON-able + bytes; row values convert at this edge.
  */
 
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   compileClientSchema,
   creationTimeBucket,
@@ -37,6 +40,8 @@ import type {
   DriverChangeBatch,
   DriverColumn,
   DriverEncryptionConfig,
+  DriverPreviousVersionAudit,
+  DriverPreviousVersionSnapshot,
   DriverRow,
   DriverRowValue,
   DriverSchema,
@@ -89,6 +94,14 @@ function toRowValue(value: DriverRowValue | undefined): RowValue {
 function toDriverValue(value: RowValue): DriverRowValue {
   if (value instanceof Uint8Array) return { $bytes: bytesToHex(value) };
   return value;
+}
+
+/** A raw SQLite value at the previous-version seam: bytes as `$bytes`, the
+ * rest already JSON-able. */
+function driverSqlValue(value: unknown): DriverRowValue {
+  if (value instanceof Uint8Array) return { $bytes: bytesToHex(value) };
+  if (typeof value === 'bigint') return Number(value);
+  return value as DriverRowValue;
 }
 
 /** Normalize a raw SQLite value by its schema column type. */
@@ -208,6 +221,7 @@ async function constructClient(
   const blobCacheMaxBytes = options.limits?.blobCacheMaxBytes;
   // §5.11: build a key provider from the driver's `{ $bytes: hex }` keys.
   const encryption = buildEncryption(options.encryption);
+  const previousVersionContext = options.previousVersionContext;
   const client = new SyncClient({
     database: db,
     schema: toClientSchema(schema),
@@ -216,6 +230,9 @@ async function constructClient(
     ...(blobCacheMaxBytes !== undefined ? { blobCacheMaxBytes } : {}),
     ...(nowMs !== undefined ? { now: () => nowMs } : {}),
     ...(encryption !== undefined ? { encryption } : {}),
+    ...(previousVersionContext !== undefined
+      ? { previousVersionContext }
+      : {}),
     transport: (bytes) => endpoints.sync(bytes),
     segments,
     ...(blobs !== undefined ? { blobs } : {}),
@@ -239,9 +256,30 @@ async function constructClient(
   return client;
 }
 
+/**
+ * RFC 0005: the container is a SECOND database file beside the replica, so
+ * retained context needs a file-backed replica. Only a scenario that enables
+ * the feature gets a temp replica; every other scenario keeps the in-memory
+ * default (byte-identical 0.22.0 behaviour).
+ */
+function createClientDatabase(options: ClientCreateOptions): {
+  readonly db: BunClientDatabase;
+  readonly cleanup: () => void;
+} {
+  if (options.previousVersionContext?.enabled !== true) {
+    return { db: new BunClientDatabase(), cleanup: () => {} };
+  }
+  const dir = mkdtempSync(join(tmpdir(), 'syncular-conformance-'));
+  return {
+    db: new BunClientDatabase(join(dir, 'replica.db')),
+    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+  };
+}
+
 class TsClientInstance implements ClientInstance {
   #client: SyncClient;
   readonly #db: BunClientDatabase;
+  readonly #cleanup: () => void;
   #schema: DriverSchema;
   readonly #options: ClientCreateOptions;
   readonly #changes: ClientChangeBatch[] = [];
@@ -254,9 +292,11 @@ class TsClientInstance implements ClientInstance {
     db: BunClientDatabase,
     schema: DriverSchema,
     options: ClientCreateOptions,
+    cleanup: () => void = () => {},
   ) {
     this.#client = client;
     this.#db = db;
+    this.#cleanup = cleanup;
     this.#schema = schema;
     this.#options = options;
     client.onChange((batch) => this.#changes.push(batch));
@@ -641,6 +681,47 @@ class TsClientInstance implements ClientInstance {
     return this.#client.statusSnapshot().upgrading;
   }
 
+  // -- RFC 0005 previous-version context ------------------------------------
+
+  async previousVersionSnapshot(spec: {
+    readonly table: string;
+    readonly rowIds?: readonly string[];
+    readonly limit?: number;
+  }): Promise<DriverPreviousVersionSnapshot> {
+    const snapshot = this.#client.previousVersionSnapshot(spec);
+    return {
+      state: snapshot.state,
+      available: snapshot.available,
+      ...(snapshot.previousVersion !== undefined
+        ? { previousVersion: snapshot.previousVersion }
+        : {}),
+      currentVersion: snapshot.currentVersion,
+      ...(snapshot.reason !== undefined ? { reason: snapshot.reason } : {}),
+      rows: snapshot.rows.map((row) =>
+        Object.fromEntries(
+          Object.entries(row).map(([key, value]) => [
+            key,
+            driverSqlValue(value),
+          ]),
+        ),
+      ),
+      truncated: snapshot.truncated,
+    };
+  }
+
+  async previousVersionAudit(): Promise<
+    DriverPreviousVersionAudit | undefined
+  > {
+    return this.#client.previousVersionAudit();
+  }
+
+  async previousVersionDiscard(): Promise<{
+    readonly present: boolean;
+    readonly discarded: boolean;
+  }> {
+    return this.#client.previousVersionDiscard();
+  }
+
   /**
    * §7.4.2 "app ships new code": close the current core, then open a new
    * core with the new schema on the SAME database — the boot-time §7.4.1
@@ -804,6 +885,7 @@ class TsClientInstance implements ClientInstance {
   async close(): Promise<void> {
     await this.#client.close();
     this.#db.close();
+    this.#cleanup();
   }
 }
 
@@ -813,8 +895,14 @@ export const tsClientDriver: ClientDriver = {
     // §5.4 capability negotiation: `constructClient` exposes `fetchUrl` iff
     // the harness endpoints have a URL host — that presence is what makes
     // the client core advertise accept bit 3. §5.9 blob transport likewise.
-    const db = new BunClientDatabase();
+    const { db, cleanup } = createClientDatabase(options);
     const client = await constructClient(db, options.schema, options);
-    return new TsClientInstance(client, db, options.schema, options);
+    return new TsClientInstance(
+      client,
+      db,
+      options.schema,
+      options,
+      cleanup,
+    );
   },
 };

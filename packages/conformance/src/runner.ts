@@ -11,7 +11,11 @@
  * weakened to make a pairing green.
  */
 import type { Pairing } from './driver';
-import { createScenarioContext, type Scenario } from './scenario';
+import {
+  createScenarioContext,
+  type Scenario,
+  ScenarioSkip,
+} from './scenario';
 
 export type ScenarioStatus =
   | 'pass'
@@ -55,16 +59,30 @@ export async function runScenario(
   }
 
   let error: string | undefined;
+  let skippedBecause: string | undefined;
   const ctx = await createScenarioContext(scenario, pairing);
   try {
     await scenario.run(ctx);
   } catch (thrown) {
-    error =
-      thrown instanceof Error
-        ? `${thrown.name}: ${thrown.message}`
-        : String(thrown);
+    if (thrown instanceof ScenarioSkip) {
+      skippedBecause = thrown.reason;
+    } else {
+      error =
+        thrown instanceof Error
+          ? `${thrown.name}: ${thrown.message}`
+          : String(thrown);
+    }
   } finally {
     await ctx.close();
+  }
+
+  if (skippedBecause !== undefined) {
+    return {
+      name: scenario.name,
+      specRefs: scenario.specRefs,
+      status: 'skipped',
+      skippedBecause,
+    };
   }
 
   if (scenario.knownDiscrepancy !== undefined) {
