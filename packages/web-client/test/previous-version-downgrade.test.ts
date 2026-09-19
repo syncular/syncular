@@ -92,9 +92,30 @@ let oldBunDatabase: new (path: string) => {
 };
 
 /** Loud, never-skipped failure if the pre-change checkout cannot be produced. */
+const GIT_ENV_FORBIDDEN = [
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+  'GIT_INDEX_FILE',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_COMMON_DIR',
+] as const;
+
+/**
+ * A pre-push hook runs with `GIT_DIR`/`GIT_INDEX_FILE` pointing at the host
+ * repo; those override `-C`, so a plain `git -C <worktree>` silently resolves
+ * the host HEAD. Strip them so every call acts on the directory it names.
+ */
+function gitEnv(): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = { ...process.env };
+  for (const key of GIT_ENV_FORBIDDEN) delete env[key];
+  return env;
+}
+
 function git(args: readonly string[], cwd = REPO_ROOT): string {
   const result = Bun.spawnSync({
     cmd: ['git', '-C', cwd, ...args],
+    env: gitEnv(),
   });
   if (result.exitCode !== 0) {
     throw new Error(
@@ -129,6 +150,7 @@ afterAll(() => {
   if (oldRoot !== undefined) {
     Bun.spawnSync({
       cmd: ['git', '-C', REPO_ROOT, 'worktree', 'remove', '--force', oldRoot],
+      env: gitEnv(),
     });
   }
   if (oldParent !== undefined)
