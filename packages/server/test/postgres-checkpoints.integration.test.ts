@@ -259,23 +259,36 @@ gate('RFC 0007 real-Postgres receipts (SYNCULAR_PG_URL)', () => {
     expect(after?.watermark).toBe(1);
   });
 
-  test('B1: the migration transaction serializes a concurrent push and the fence rejects it', async () => {
-    // Genuine interleaving on two real connections: the migration transaction
-    // is held open after its first statement, a push on a second connection
-    // must actually wait (pg_locks granted=false), the migration commits the
-    // bumped marker and raised fence, and the push's old-writer append is then
-    // rejected by the trigger. Against unfixed code the migration holds no
-    // advisory key, so the push is never blocked and the wait assertion fails.
+  test('B1: the migration transaction blocks a raw old writer at its first statement', async () => {
+    // Three real connections, ZERO advisory calls, genuine interleaving:
+    //  - `sqlA` runs the schema-bump transaction, held open after its first
+    //    statement (`LOCK TABLE sync_partitions IN EXCLUSIVE MODE`);
+    //  - `sqlB` runs the exact pre-migration (base 8b22d819) writer path with
+    //    raw SQL: `SELECT max_commit_seq … FOR UPDATE`, a pre-migration app-row
+    //    upsert, then a raw `sync_commits` insert that omits `writer_version`;
+    //  - `sqlC` observes `pg_locks` / `pg_stat_activity`.
+    // The old writer must block on the relation lock before any write. Once the
+    // migration commits the raised fence, the trigger rejects the append, the
+    // whole old-writer transaction rolls back (no stale source row), and the
+    // fence is visible. Against `d1468ede` (no migration lock) the writer is
+    // never blocked: `observedWaiting` is 0 and the append lands.
     const sqlA = new (BunSQL as new (url: string) => unknown)(PG_URL as string);
     const sqlB = new (BunSQL as new (url: string) => unknown)(PG_URL as string);
     const sqlC = new (BunSQL as new (url: string) => unknown)(PG_URL as string);
     handles.push(sqlA, sqlB, sqlC);
     const observer = queryableOver(sqlC);
     const partition = `rfc0007-b1-${crypto.randomUUID()}`;
+
+    // Bootstrap the pre-migration database state on a plain connection. Clear
+    // any barrier rows another receipt left behind; the phase-2a coverage check
+    // is whole-server.
+    const bootstrap = new PostgresServerStorage(bunSqlExecutor(sqlB));
+    await observer.query('DELETE FROM sync_backfill_checkpoints');
+    await observer.query('DELETE FROM sync_writer_fence');
+    await bootstrap.ensureSchema(compileSchema(SCHEMA));
+
     const paused = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
-
-    // Hold the migration transaction open after its first statement.
     const baseA = bunSqlExecutor(sqlA);
     const gatedA: PgExecutor = {
       query: baseA.query,
@@ -302,83 +315,112 @@ gate('RFC 0007 real-Postgres receipts (SYNCULAR_PG_URL)', () => {
       close: () => baseA.close?.() ?? Promise.resolve(),
     };
 
-    const storageB = new PostgresServerStorage(bunSqlExecutor(sqlB));
-    await storageB.ensureSchema(compileSchema(SCHEMA));
-    // Recreate the pre-migration database state for the observer connection.
-    const storageA = new PostgresServerStorage(gatedA);
-
-    const migration = storageA.ensureSchema(
+    const migration = new PostgresServerStorage(gatedA).ensureSchema(
       compileSchema({ ...SCHEMA, version: 2 }),
       [{ partition, name: 'tasks-projection', schemaVersion: 2 }],
     );
     await paused.promise;
 
-    // The migration holds the exclusive advisory key.
-    const held = async (): Promise<number> =>
-      Number(
-        (
-          await observer.query<{ n: unknown }>(
-            "SELECT count(*) AS n FROM pg_locks WHERE locktype='advisory' AND granted AND mode='ExclusiveLock'",
-          )
-        ).rows[0]?.n,
-      );
-    const waiting = async (): Promise<number> =>
-      Number(
-        (
-          await observer.query<{ n: unknown }>(
-            "SELECT count(*) AS n FROM pg_locks WHERE locktype='advisory' AND NOT granted",
-          )
-        ).rows[0]?.n,
-      );
-    expect(await held()).toBeGreaterThan(0);
+    // The migration holds `sync_partitions` EXCLUSIVE as a relation lock.
+    const migrationHoldsExclusive = Number(
+      (
+        await observer.query<{ n: unknown }>(
+          `SELECT count(*) AS n FROM pg_locks
+            WHERE locktype='relation'
+              AND relation='sync_partitions'::regclass
+              AND mode='ExclusiveLock' AND granted`,
+        )
+      ).rows[0]?.n,
+    );
+    expect(migrationHoldsExclusive).toBeGreaterThan(0);
 
-    // The push races the open migration transaction on a second connection.
-    const txB = await storageB.begin(partition);
-    const push = (async (): Promise<void> => {
-      const lock = txB.lockPartitionForPush;
-      if (lock === undefined)
-        throw new Error('storage lost the partition lock');
-      await lock.call(txB);
-      try {
-        await txB.appendCommit({
-          clientId: 'old',
-          clientCommitId: 'old-1',
-          actorId: 'a1',
-          createdAtMs: Date.now(),
-          changes: [
-            {
-              table: 'tasks',
-              rowId: 'b1-row',
-              op: 'upsert',
-              rowVersion: 1,
-              scopes: { project_id: 'p1' },
-              payload: new Uint8Array([1]),
-            },
-          ],
-        });
-        await txB.commit();
-      } catch (error) {
-        // The fence trigger rejects the append; release the connection so the
-        // suite can close its pools.
-        await txB.rollback();
-        throw error;
-      }
+    // The exact old writer path: raw SQL, no advisory call anywhere.
+    const writerStarted = Promise.withResolvers<void>();
+    const writer = (async (): Promise<void> => {
+      // oxlint-disable-next-line typescript/no-explicit-any -- dynamic tx handle.
+      await (sqlB as any).begin(async (tx: any) => {
+        writerStarted.resolve();
+        await tx.unsafe(
+          'SELECT max_commit_seq FROM sync_partitions WHERE partition=$1 FOR UPDATE',
+          [partition],
+        );
+        await tx.unsafe(
+          `INSERT INTO tasks(
+             _sync_partition, _sync_row_id, id, project_id, title,
+             _sync_server_version, _sync_scopes, _sync_payload)
+           VALUES ($1,'old-row','old-row','p1','old',1,'{}'::jsonb,'\\x0100'::bytea)
+           ON CONFLICT (_sync_partition, _sync_row_id)
+           DO UPDATE SET title=EXCLUDED.title`,
+          [partition],
+        );
+        await tx.unsafe(
+          `INSERT INTO sync_commits(
+             partition, commit_seq, client_id, client_commit_id, actor_id,
+             created_at_ms)
+           VALUES ($1, 999, 'old', 'old-1', 'a1', $2)`,
+          [partition, Date.now()],
+        );
+      });
     })();
+    await writerStarted.promise;
 
+    const relationWaiter = async (): Promise<number> =>
+      Number(
+        (
+          await observer.query<{ n: unknown }>(
+            `SELECT count(*) AS n FROM pg_locks
+              WHERE locktype='relation'
+                AND relation='sync_partitions'::regclass
+                AND NOT granted`,
+          )
+        ).rows[0]?.n,
+      );
+    const lockWaiter = async (): Promise<number> =>
+      Number(
+        (
+          await observer.query<{ n: unknown }>(
+            "SELECT count(*) AS n FROM pg_stat_activity WHERE wait_event_type='Lock'",
+          )
+        ).rows[0]?.n,
+      );
     let observedWaiting = 0;
-    for (let attempt = 0; attempt < 200 && observedWaiting === 0; attempt++) {
-      observedWaiting = await waiting();
+    let observedLockWaits = 0;
+    for (let attempt = 0; attempt < 500 && observedWaiting === 0; attempt++) {
+      observedWaiting = await relationWaiter();
+      observedLockWaits = await lockWaiter();
     }
-    expect(observedWaiting).toBeGreaterThan(0);
-
+    // Always release the migration before asserting so a failed run never
+    // leaves the migration transaction open.
     release.resolve();
     await migration;
-    await expect(push).rejects.toThrow(/writer_fence_rejected/);
-    // The refused push rolled back: nothing it staged is committed.
-    const staged = await observer.query<{ n: unknown }>(
+    let writerError: unknown;
+    try {
+      await writer;
+    } catch (error) {
+      writerError = error;
+    }
+
+    // The raw old writer was actually blocked on the migration's relation lock.
+    expect(observedWaiting).toBeGreaterThan(0);
+    expect(observedLockWaits).toBeGreaterThan(0);
+
+    // The migration committed the raised fence; the old append was rejected and
+    // the whole old-writer transaction rolled back.
+    const fence = await observer.query<{ required_writer_version: unknown }>(
+      'SELECT required_writer_version FROM sync_writer_fence WHERE partition=$1',
+      [partition],
+    );
+    expect(Number(fence.rows[0]?.required_writer_version)).toBe(2);
+    expect(String(writerError)).toMatch(/writer_fence_rejected/);
+    const sourceRows = await observer.query<{ n: unknown }>(
+      'SELECT count(*) AS n FROM tasks WHERE _sync_partition=$1',
+      [partition],
+    );
+    expect(Number(sourceRows.rows[0]?.n)).toBe(0);
+    const commits = await observer.query<{ n: unknown }>(
       'SELECT count(*) AS n FROM sync_commits WHERE partition=$1',
       [partition],
     );
-    expect(Number(staged.rows[0]?.n)).toBe(0);
+    expect(Number(commits.rows[0]?.n)).toBe(0);
   });
 });

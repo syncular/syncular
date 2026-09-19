@@ -262,39 +262,10 @@ interface SerializedResult {
   details?: import('@syncular/core').RejectionDetails;
 }
 
-const MIGRATION_LOCK_NAMESPACE = 0x53594e43; // "SYNC"
-const MIGRATION_LOCK_ID = 7;
-
-/**
- * RFC 0007 migration barrier. Every writing/reading transaction that takes a
- * partition lock (`lockPartitionOn`) also holds this advisory key SHARED for
- * its lifetime; the schema-bump/backfill transaction takes it EXCLUSIVE before
- * any app-table DDL or rewrite. A push acquires the shared key at
- * `lockPartitionOn`, before its first app-row write, so once the migration
- * holds the exclusive key no push can write application rows or commit, and a
- * new partition cannot start a push. Advisory locks do not interact with row
- * or table locks, so the migration never waits on a lock a blocked push holds:
- * no deadlock cycle exists.
- */
-function migrationLock(
-  client: PgQueryable,
-  exclusive: boolean,
-): Promise<unknown> {
-  return client.query(
-    exclusive
-      ? 'SELECT pg_advisory_xact_lock($1,$2)'
-      : 'SELECT pg_advisory_xact_lock_shared($1,$2)',
-    [MIGRATION_LOCK_NAMESPACE, MIGRATION_LOCK_ID],
-  );
-}
-
 async function lockPartitionOn(
   client: PgQueryable,
   partition: string,
 ): Promise<void> {
-  // Shared migration key first: while a schema bump holds it exclusive, no
-  // push reaches its row lock or writes an app row.
-  await migrationLock(client, false);
   const locked = await client.query(
     'SELECT max_commit_seq FROM sync_partitions WHERE partition=$1 FOR UPDATE',
     [partition],
@@ -1333,12 +1304,17 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
       );
       const retiredTables = retiredTableNames(schema, layouts);
       await this.#exec.transaction(async (client) => {
-        // Exclusive migration key first: serialize the whole rewrite against
-        // every partition-locking transaction. Every push acquires the shared
-        // key in `lockPartitionOn` before writing an app row, so a concurrent
-        // push either completed before this lock or waits here and is then
-        // rejected by the raised fence when it tries to commit.
-        await migrationLock(client, true);
+        // RFC 0007 migration barrier: `LOCK TABLE ... EXCLUSIVE` is the FIRST
+        // statement, before any read, DDL, rewrite, marker or checkpoint
+        // install. EXCLUSIVE conflicts with the ROW SHARE that every writer's
+        // `lockPartitionOn` takes (`SELECT … FOR UPDATE`) and with the ROW
+        // EXCLUSIVE of its allocation (`UPDATE sync_partitions` / `INSERT … ON
+        // CONFLICT DO UPDATE`), so an unaware old writer blocks at its first
+        // statement with no cooperation; plain `SELECT` (ACCESS SHARE) still
+        // works. The lock order is acyclic: the migration holds nothing else
+        // when it takes this lock, so a writer already inside completes while
+        // the migration waits.
+        await client.query('LOCK TABLE sync_partitions IN EXCLUSIVE MODE');
         const existing = new Map<string, ReadonlySet<string>>();
         const existingIndexes = new Map<string, ReadonlySet<string>>();
         for (const table of schema.tables.values()) {
@@ -1724,7 +1700,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
     //
     // RFC 0007 lock decision: this transaction writes only the checkpoint and
     // fence rows, no application rows and no schema marker, so it does not
-    // take the migration key or a partition lock. The fence it raises is
+    // take the migration table lock or a partition lock. The fence it raises is
     // enforced by the `sync_commits` trigger on every append from the commit
     // of this transaction onward; a writer that committed before the fence was
     // visible is pre-barrier by the design's own "from declaration onward"
