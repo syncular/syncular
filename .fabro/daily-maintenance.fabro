@@ -1,0 +1,98 @@
+digraph daily_maintenance {
+    graph [goal="Keep Syncular dependencies current and main green with one bounded daily maintenance pass.", stall_timeout="10800s"]
+
+    start [shape=Mdiamond]
+
+    local_midnight [
+        shape=parallelogram,
+        label="German midnight",
+        script="test \"$(TZ=Europe/Berlin date +%H:%M)\" = 00:00"
+    ]
+
+    sync [
+        shape=parallelogram,
+        label="Sync main",
+        script="test -z \"$(git status --porcelain)\" && git fetch origin main && git switch main && git pull --ff-only"
+    ]
+
+    maintain [
+        shape=box,
+        label="Maintain",
+        backend="api",
+        provider="openrouter",
+        model="deepseek-v4-1-flash",
+        reasoning_effort="medium",
+        prompt="Read AGENTS.md. Inspect open Dependabot pull requests and the newest CI run for the current tip of main. Apply only routine compatible dependency updates locally and repair reproducible failures on current main. Reproduce failures before editing, fix root causes, preserve tests and thresholds, and run focused checks. Leave major or semantic upgrades unchanged and report why. Do not publish, tag, push, merge remote pull requests, or create unrelated work. Commit any verified local changes with a concise imperative message. If main is green and no safe update is open, make no changes."
+    ]
+
+    check [
+        shape=parallelogram,
+        label="Check",
+        timeout="10800s",
+        script="bun run check"
+    ]
+
+    review [
+        shape=box,
+        label="Review",
+        backend="acp",
+        acp.command="CODEX_CONFIG='{\"model\":\"gpt-5.6-sol\",\"model_reasoning_effort\":\"medium\"}' codex-acp",
+        prompt="Review the daily maintenance changes and check result. Do not edit files. Report only concrete blocking findings or APPROVE."
+    ]
+
+    repair [
+        shape=box,
+        label="Repair",
+        backend="api",
+        provider="openrouter",
+        model="deepseek-v4-1-flash",
+        reasoning_effort="high",
+        prompt="Fix only real failures from the check or review. Run focused checks and amend or create the local commit. If there is nothing to fix, make no changes. Do not push or publish."
+    ]
+
+    final_check [
+        shape=parallelogram,
+        label="Final check",
+        timeout="10800s",
+        goal_gate=true,
+        script="bun run check && git diff --check && test -z \"$(git status --porcelain)\""
+    ]
+
+    push [
+        shape=parallelogram,
+        label="Push main",
+        goal_gate=true,
+        script="git fetch origin main; git merge-base --is-ancestor origin/main HEAD; if test \"$(git rev-parse HEAD)\" != \"$(git rev-parse origin/main)\"; then git push origin HEAD:main; fi"
+    ]
+
+    ci [
+        shape=parallelogram,
+        label="Main CI",
+        timeout="10800s",
+        goal_gate=true,
+        script="sleep 15; run=$(gh run list --branch main --limit 1 --json databaseId --jq '.[0].databaseId'); test -n \"$run\" && gh run watch \"$run\" --exit-status"
+    ]
+
+    prose [
+        shape=tab,
+        label="Summary",
+        provider="openrouter",
+        model="muse-spark-1-3",
+        reasoning_effort="medium",
+        prompt="Summarize the verified daily Syncular maintenance outcome in at most ten factual lines."
+    ]
+
+    exit [shape=Msquare]
+
+    start -> local_midnight
+    local_midnight -> sync [condition="outcome=succeeded"]
+    local_midnight -> exit [label="Not midnight"]
+    sync -> maintain -> check
+    check -> review [condition="outcome=succeeded"]
+    check -> repair [condition="outcome=failed"]
+    check -> repair [label="Fallback"]
+    review -> repair -> final_check
+    final_check -> push [condition="outcome=succeeded"]
+    final_check -> exit [label="Fallback"]
+    push -> ci -> prose -> exit
+}

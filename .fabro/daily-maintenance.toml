@@ -1,0 +1,14 @@
+_version = 1
+
+[workflow]
+graph = "daily-maintenance.fabro"
+
+[run]
+goal = "Keep Syncular dependencies current and main green with one bounded daily maintenance pass."
+working_dir = "/Users/bkniffler/.fabro/workspaces/syncular-maintenance"
+
+[run.environment]
+id = "local"
+
+[environments.local]
+provider = "local"
