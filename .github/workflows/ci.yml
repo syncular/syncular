@@ -274,7 +274,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 2
+          # Full history so the path gate can diff against github.event.before.
+          # A shallow checkout made that diff fail silently and skip the gate.
+          fetch-depth: 0
 
       # Path gate: this job is heavy (installs webkit + builds Tauri), so it
       # only does real work when the tauri bindings tree (or this workflow)
@@ -288,7 +290,18 @@ jobs:
           else
             base="${{ github.event.pull_request.base.sha }}"
           fi
-          if git diff --name-only "$base" HEAD 2>/dev/null \
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "No usable base commit; running the tauri bindings gate."
+            exit 0
+          fi
+          # Capture the diff first: a failed diff must fail loudly, never
+          # silently skip the gate (a shallow base is not "no changes").
+          if ! diff_files=$(git diff --name-only "$base" HEAD); then
+            echo "::error::git diff against base $base failed; refusing to skip the tauri bindings gate"
+            exit 1
+          fi
+          if printf '%s\n' "$diff_files" \
               | grep -qE '^bindings/tauri/|^packages/(tauri|react|web-client|typegen)/|^rust/crates/(client|command)/|^\.github/workflows/ci\.yml$'; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
@@ -382,7 +395,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 2
+          # Full history so the path gate can diff against github.event.before.
+          # A shallow checkout made that diff fail silently and skip the gate.
+          fetch-depth: 0
 
       # Path gate: only do real work when the FFI-binding trees (or this
       # workflow) changed. The Swift/Kotlin wrappers depend on the shared FFI
@@ -395,7 +410,18 @@ jobs:
           else
             base="${{ github.event.pull_request.base.sha }}"
           fi
-          if git diff --name-only "$base" HEAD 2>/dev/null \
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "No usable base commit; running the FFI bindings gate."
+            exit 0
+          fi
+          # Capture the diff first: a failed diff must fail loudly, never
+          # silently skip the gate (a shallow base is not "no changes").
+          if ! diff_files=$(git diff --name-only "$base" HEAD); then
+            echo "::error::git diff against base $base failed; refusing to skip the FFI bindings gate"
+            exit 1
+          fi
+          if printf '%s\n' "$diff_files" \
               | grep -qE '^bindings/(swift|kotlin|react-native)/|^packages/typegen/|^rust/crates/ffi/|^rust/crates/command/|^rust/ffi\.h$|^\.github/workflows/ci\.yml$'; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
@@ -478,7 +504,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 2
+          # Full history so the path gate can diff against github.event.before.
+          # A shallow checkout made that diff fail silently and skip the gate.
+          fetch-depth: 0
 
       # Path gate: only do real work when the Flutter binding tree (or the FFI
       # crate it depends on, or this workflow) changed.
@@ -490,7 +518,18 @@ jobs:
           else
             base="${{ github.event.pull_request.base.sha }}"
           fi
-          if git diff --name-only "$base" HEAD 2>/dev/null \
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "No usable base commit; running the Flutter binding gate."
+            exit 0
+          fi
+          # Capture the diff first: a failed diff must fail loudly, never
+          # silently skip the gate (a shallow base is not "no changes").
+          if ! diff_files=$(git diff --name-only "$base" HEAD); then
+            echo "::error::git diff against base $base failed; refusing to skip the Flutter binding gate"
+            exit 1
+          fi
+          if printf '%s\n' "$diff_files" \
               | grep -qE '^bindings/flutter/|^packages/typegen/|^rust/crates/ffi/|^rust/crates/command/|^rust/ffi\.h$|^\.github/workflows/ci\.yml$'; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
