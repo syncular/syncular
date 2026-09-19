@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::previous_version::PreviousVersionContextConfig;
-
 /// Stable dynamic value boundary used by generated named queries.
 pub type QueryValue = Value;
 /// One dynamic query result row, keyed by QueryIR runtime projection name.
@@ -175,6 +174,18 @@ pub struct SyncStatusSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schema_floor: Option<SchemaFloor>,
     pub sync_needed: bool,
+    /// RFC 0005 A2: container presence, so a host can enforce the downgrade
+    /// precondition (`previousVersionDiscard`) instead of documenting it.
+    pub previous_version_context: PreviousVersionStatus,
+}
+
+/// RFC 0005 A2: presence of the previous-version container file.
+#[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviousVersionStatus {
+    pub present: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at_ms: Option<i64>,
 }
 
 pub const CLIENT_DIAGNOSTICS_VERSION: u8 = 1;

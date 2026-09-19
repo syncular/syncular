@@ -28,6 +28,7 @@ use std::collections::BTreeSet;
 
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OptionalExtension};
+use serde::Serialize;
 use serde_json::{json, Map, Value};
 use ssp2::segment::{Column, ColumnType};
 
@@ -62,12 +63,17 @@ const COPY_BATCH_ROWS: i64 = 500;
 /// D2/D8/A4: capture bounds. Every bound is measured before materializing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PreviousVersionContextConfig {
-    /// Feature flag, default off. Never a security control.
+    /// Feature flag, default off. A feature flag, never a security control.
     pub enabled: bool,
     pub max_bytes: i64,
     pub max_rows: i64,
     pub max_tables: i64,
     pub max_row_bytes: i64,
+    /// D7/A1 TTL. Enforced ONLY by an aware binary, at boot and at read. It is
+    /// a hygiene bound for aware binaries and says NOTHING about an unaware
+    /// same-schema rollback, which runs none of this code and therefore leaves
+    /// the container in place indefinitely.
+    pub max_age_ms: i64,
 }
 
 impl Default for PreviousVersionContextConfig {
@@ -78,6 +84,7 @@ impl Default for PreviousVersionContextConfig {
             max_rows: 20_000,
             max_tables: 32,
             max_row_bytes: 1024 * 1024,
+            max_age_ms: 24 * 60 * 60 * 1000,
         }
     }
 }
@@ -91,6 +98,7 @@ impl PreviousVersionContextConfig {
             ("maxRows", self.max_rows),
             ("maxTables", self.max_tables),
             ("maxRowBytes", self.max_row_bytes),
+            ("maxAgeMs", self.max_age_ms),
         ];
         for (name, value) in bounds {
             if value <= 0 || u64::try_from(value).map_or(true, |v| v > MAX_SAFE_INTEGER) {
@@ -207,7 +215,7 @@ fn has_exact_keys(object: &Map<String, Value>, expected: &[&str]) -> bool {
 fn as_count(value: Option<&Value>) -> Option<i64> {
     value
         .and_then(Value::as_i64)
-        .filter(|value| *value >= 0 && u64::try_from(*value).map_or(false, |v| v <= MAX_SAFE_INTEGER))
+        .filter(|value| *value >= 0 && u64::try_from(*value).is_ok_and(|v| v <= MAX_SAFE_INTEGER))
 }
 
 fn decode_descriptor_column(value: &Value) -> Result<DescriptorColumn, String> {
@@ -520,6 +528,13 @@ impl PreviousVersionRefusalReason {
         match self {
             Self::NoPreviousDescriptor => "no-previous-descriptor",
             Self::CaptureExceededBudget => "capture-exceeded-budget",
+        }
+    }
+
+    fn as_read_reason(self) -> PreviousVersionReason {
+        match self {
+            Self::NoPreviousDescriptor => PreviousVersionReason::NoPreviousDescriptor,
+            Self::CaptureExceededBudget => PreviousVersionReason::CaptureExceededBudget,
         }
     }
 }
@@ -904,6 +919,403 @@ pub fn capture_previous_version_from_replica(
     }
 }
 
+/// D7: `limit` defaults to 50 and is capped at 200.
+pub const PREVIOUS_VERSION_DEFAULT_LIMIT: i64 = 50;
+pub const PREVIOUS_VERSION_MAX_LIMIT: i64 = 200;
+
+/// D7: the read surface. `state` is always `previousVersion`, never
+/// `complete`; the container never contributes to `querySnapshot().coverage`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviousVersionSnapshot {
+    pub state: &'static str,
+    pub available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_version: Option<i32>,
+    pub current_version: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<PreviousVersionReason>,
+    pub rows: Vec<Map<String, Value>>,
+    pub truncated: bool,
+}
+
+impl PreviousVersionSnapshot {
+    fn unavailable(current_version: i32, reason: PreviousVersionReason) -> Self {
+        Self {
+            state: PREVIOUS_VERSION_STATE,
+            available: false,
+            previous_version: None,
+            current_version,
+            reason: Some(reason),
+            rows: Vec::new(),
+            truncated: false,
+        }
+    }
+}
+
+/// The one value `state` ever takes (D7).
+pub const PREVIOUS_VERSION_STATE: &str = "previousVersion";
+
+/// Every reason the read surface can name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PreviousVersionReason {
+    NotConfigured,
+    NoPreviousDescriptor,
+    CaptureExceededBudget,
+    CoverageComplete,
+    Expired,
+    LeaseInactive,
+    ScopeRevoked,
+}
+
+/// D7: the in-memory lifecycle facts the read surface consults. The client
+/// computes them from its own state; the module owns the decision so it can be
+/// tested with injected time and injected lifecycle state.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PreviousVersionLifecycle {
+    /// §7.3.5 lease error or expiry.
+    pub lease_inactive: bool,
+    /// §3.3 scope revocation (any revoked subscription).
+    pub scope_revoked: bool,
+    /// §7.4.5 replacement coverage complete.
+    pub coverage_complete: bool,
+}
+
+/// D7 read spec.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PreviousVersionReadSpec {
+    pub table: String,
+    pub row_ids: Vec<String>,
+    pub limit: Option<i64>,
+}
+
+/// D7: `limit` defaults to 50, must be positive, and is capped at 200.
+pub fn resolve_previous_version_limit(limit: Option<i64>) -> Result<i64, String> {
+    match limit {
+        None => Ok(PREVIOUS_VERSION_DEFAULT_LIMIT),
+        Some(limit) if limit >= 1 => Ok(limit.min(PREVIOUS_VERSION_MAX_LIMIT)),
+        Some(_) => Err(
+            "sync.invalid_request: previousVersionSnapshot limit must be a positive number"
+                .to_owned(),
+        ),
+    }
+}
+
+/// Read the container's own metadata record, opening the sibling file for that
+/// window only. `None` when there is no file or the record is unreadable.
+pub fn read_previous_version_record(
+    replica_path: &str,
+) -> Result<Option<PreviousVersionRecord>, String> {
+    let path = previous_version_container_path(replica_path);
+    if !std::path::Path::new(&path).exists() {
+        return Ok(None);
+    }
+    let container = Connection::open(&path)
+        .map_err(|error| format!("open previous-version container {path:?}: {error}"))?;
+    let record = read_previous_version_container(&container);
+    let _ = container.close();
+    // A container this module cannot read is treated as absent metadata, which
+    // the boot reconcile discards on the next open.
+    Ok(record.unwrap_or(None))
+}
+
+/// D7: the read surface. `config` is the resolved feature config (`None` or
+/// `enabled: false` ⇒ not configured); `lifecycle` is computed by the client
+/// from in-memory state; `now_ms` is the injected clock.
+///
+/// Lease stop/expiry, scope revocation, coverage completion and the TTL all
+/// DISCARD the container and close the read with their own reason — closing
+/// reads without discarding would leave the plaintext behind.
+pub fn previous_version_snapshot(
+    replica: &Connection,
+    replica_path: Option<&str>,
+    config: Option<&PreviousVersionContextConfig>,
+    lifecycle: PreviousVersionLifecycle,
+    now_ms: i64,
+    current_version: i32,
+    spec: &PreviousVersionReadSpec,
+) -> Result<PreviousVersionSnapshot, String> {
+    let Some(config) = config.filter(|config| config.enabled) else {
+        return Ok(PreviousVersionSnapshot::unavailable(
+            current_version,
+            PreviousVersionReason::NotConfigured,
+        ));
+    };
+    let record = match replica_path {
+        Some(replica_path) => read_previous_version_record(replica_path)?,
+        None => None,
+    };
+    let discard = |reason: PreviousVersionReason| {
+        if let Some(replica_path) = replica_path {
+            discard_previous_version(replica, replica_path)?;
+        }
+        Ok(PreviousVersionSnapshot::unavailable(current_version, reason))
+    };
+    if lifecycle.lease_inactive {
+        return discard(PreviousVersionReason::LeaseInactive);
+    }
+    if lifecycle.scope_revoked {
+        return discard(PreviousVersionReason::ScopeRevoked);
+    }
+    if lifecycle.coverage_complete {
+        return discard(PreviousVersionReason::CoverageComplete);
+    }
+    let Some(record) = record else {
+        let reason = stored_previous_version_refusal(replica)
+            .unwrap_or(PreviousVersionRefusalReason::NoPreviousDescriptor);
+        return Ok(PreviousVersionSnapshot::unavailable(
+            current_version,
+            reason.as_read_reason(),
+        ));
+    };
+    if now_ms - record.created_at_ms > config.max_age_ms {
+        return discard(PreviousVersionReason::Expired);
+    }
+    let Some(table) = record.table(&spec.table) else {
+        return Err(format!(
+            "sync.invalid_request: previousVersionSnapshot names unknown previous table {:?}",
+            spec.table
+        ));
+    };
+    let Some(replica_path) = replica_path else {
+        return Ok(PreviousVersionSnapshot::unavailable(
+            current_version,
+            PreviousVersionReason::NoPreviousDescriptor,
+        ));
+    };
+    let path = previous_version_container_path(replica_path);
+    let container = Connection::open(&path)
+        .map_err(|error| format!("open previous-version container {path:?}: {error}"))?;
+    let (rows, truncated) = read_previous_version_rows(
+        &container,
+        table,
+        &spec.row_ids,
+        resolve_previous_version_limit(spec.limit)?,
+    )?;
+    let _ = container.close();
+    Ok(PreviousVersionSnapshot {
+        state: PREVIOUS_VERSION_STATE,
+        available: true,
+        previous_version: Some(record.previous_version),
+        current_version,
+        reason: None,
+        rows,
+        truncated,
+    })
+}
+
+/// Decode the durable refusal; `None` when absent or corrupt. The successful
+/// record lives inside the container file, so this key is absent whenever a
+/// container is present.
+pub fn stored_previous_version_refusal(
+    replica: &Connection,
+) -> Option<PreviousVersionRefusalReason> {
+    let raw = meta_get(replica, PREVIOUS_VERSION_CONTEXT_KEY)?;
+    let parsed: Value = serde_json::from_str(&raw).ok()?;
+    let Value::Object(record) = &parsed else {
+        return None;
+    };
+    if as_count(record.get("v")) != Some(1) {
+        return None;
+    }
+    match record.get("reason").and_then(Value::as_str) {
+        Some("no-previous-descriptor") => Some(PreviousVersionRefusalReason::NoPreviousDescriptor),
+        Some("capture-exceeded-budget") => Some(PreviousVersionRefusalReason::CaptureExceededBudget),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PreviousVersionAuditReason {
+    UnknownTable,
+    UnknownColumn,
+}
+
+impl PreviousVersionAuditReason {
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::UnknownTable => "unknown-table",
+            Self::UnknownColumn => "unknown-column",
+        }
+    }
+}
+
+/// D6: one incompatible commit. Records the commit id, table, typed reason and
+/// offending column ONLY — never an operation, row value or envelope field.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviousVersionAuditEntry {
+    pub commit_id: String,
+    pub table: String,
+    pub reason: PreviousVersionAuditReason,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub column: Option<String>,
+}
+
+/// D6: the advisory pre-reset compatibility audit. Bounded at
+/// [`MAX_AUDIT_INCOMPATIBLE`] entries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviousVersionAudit {
+    pub v: i64,
+    pub at_ms: i64,
+    pub from_version: i32,
+    pub to_version: i32,
+    pub pending: i64,
+    pub encodable: i64,
+    pub truncated: bool,
+    pub incompatible: Vec<PreviousVersionAuditEntry>,
+}
+
+pub const MAX_AUDIT_INCOMPATIBLE: usize = 200;
+
+/// One pending outbox commit as the audit needs it: its id, and `(table, value
+/// keys)` per operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingCommitAudit<'a> {
+    pub commit_id: &'a str,
+    pub operations: Vec<(&'a str, Vec<&'a str>)>,
+}
+
+/// The first reason these operations cannot re-encode under `schema`, mirroring
+/// the TS `firstIncompatibility`. Shared with the §7.4.4 send-time drop so the
+/// audit and the drop never disagree about what is incompatible.
+pub fn first_incompatibility<'a>(
+    schema: &ClientSchema,
+    operations: &[(&'a str, Vec<&'a str>)],
+) -> Option<(&'a str, PreviousVersionAuditReason, Option<&'a str>)> {
+    for (table_name, value_keys) in operations {
+        let Some(table) = schema.table(table_name) else {
+            return Some((*table_name, PreviousVersionAuditReason::UnknownTable, None));
+        };
+        for key in value_keys {
+            if !table.columns.iter().any(|column| column.name == *key) {
+                return Some((
+                    *table_name,
+                    PreviousVersionAuditReason::UnknownColumn,
+                    Some(*key),
+                ));
+            }
+        }
+    }
+    None
+}
+
+/// D6: classify pending outbox commits against the NEW compiled schema, before
+/// the wipe. Advisory only — it drops nothing.
+pub fn build_previous_version_audit(
+    schema: &ClientSchema,
+    pending: &[PendingCommitAudit<'_>],
+    from_version: i32,
+    to_version: i32,
+    at_ms: i64,
+) -> PreviousVersionAudit {
+    let mut incompatible = Vec::new();
+    let mut incompatible_total = 0usize;
+    let mut encodable = 0i64;
+    for commit in pending {
+        let Some((table, reason, column)) = first_incompatibility(schema, &commit.operations) else {
+            encodable += 1;
+            continue;
+        };
+        incompatible_total += 1;
+        if incompatible.len() < MAX_AUDIT_INCOMPATIBLE {
+            incompatible.push(PreviousVersionAuditEntry {
+                commit_id: commit.commit_id.to_owned(),
+                table: table.to_owned(),
+                reason,
+                column: column.map(str::to_owned),
+            });
+        }
+    }
+    PreviousVersionAudit {
+        v: 1,
+        at_ms,
+        from_version,
+        to_version,
+        pending: pending.len() as i64,
+        encodable,
+        truncated: incompatible_total > MAX_AUDIT_INCOMPATIBLE,
+        incompatible,
+    }
+}
+
+pub fn write_previous_version_audit(replica: &Connection, audit: &PreviousVersionAudit) {
+    if let Ok(encoded) = serde_json::to_string(audit) {
+        meta_set(replica, PREVIOUS_VERSION_AUDIT_KEY, &encoded);
+    }
+}
+
+/// Strict decode; `None` when absent or malformed.
+pub fn stored_previous_version_audit(replica: &Connection) -> Option<PreviousVersionAudit> {
+    let raw = meta_get(replica, PREVIOUS_VERSION_AUDIT_KEY)?;
+    let parsed: Value = serde_json::from_str(&raw).ok()?;
+    let Value::Object(record) = &parsed else {
+        return None;
+    };
+    if !has_exact_keys(
+        record,
+        &[
+            "atMs",
+            "encodable",
+            "fromVersion",
+            "incompatible",
+            "pending",
+            "toVersion",
+            "truncated",
+            "v",
+        ],
+    ) || as_count(record.get("v")) != Some(1)
+        || record.get("truncated").and_then(Value::as_bool).is_none()
+    {
+        return None;
+    }
+    let count = |key: &str| as_count(record.get(key));
+    let Some(Value::Array(entries)) = record.get("incompatible") else {
+        return None;
+    };
+    let mut incompatible = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let Value::Object(entry) = entry else {
+            return None;
+        };
+        let (Some(Value::String(commit_id)), Some(Value::String(table))) =
+            (entry.get("commitId"), entry.get("table"))
+        else {
+            return None;
+        };
+        let reason = match entry.get("reason").and_then(Value::as_str) {
+            Some("unknown-table") => PreviousVersionAuditReason::UnknownTable,
+            Some("unknown-column") => PreviousVersionAuditReason::UnknownColumn,
+            _ => return None,
+        };
+        let column = match entry.get("column") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(column)) => Some(column.clone()),
+            Some(_) => return None,
+        };
+        incompatible.push(PreviousVersionAuditEntry {
+            commit_id: commit_id.clone(),
+            table: table.clone(),
+            reason,
+            column,
+        });
+    }
+    Some(PreviousVersionAudit {
+        v: 1,
+        at_ms: count("atMs")?,
+        from_version: i32::try_from(count("fromVersion")?).ok()?,
+        to_version: i32::try_from(count("toVersion")?).ok()?,
+        pending: count("pending")?,
+        encodable: count("encodable")?,
+        truncated: record.get("truncated").and_then(Value::as_bool)?,
+        incompatible,
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PreviousVersionDiscardOutcome {
     pub present: bool,
@@ -925,6 +1337,8 @@ pub fn reconcile_previous_version_at_boot(
     replica: &Connection,
     replica_path: &str,
     current_version: i32,
+    max_age_ms: Option<i64>,
+    now_ms: i64,
 ) -> Result<(), String> {
     let path = previous_version_container_path(replica_path);
     if !std::path::Path::new(&path).exists() {
@@ -939,7 +1353,19 @@ pub fn reconcile_previous_version_at_boot(
         // Unreadable is the same decision as unknown metadata: discard it.
         Err(_) => None,
     };
-    if record.is_some_and(|record| record.current_version == current_version) {
+    // D7/A1: the TTL is applied by an AWARE binary only (`max_age_ms` is set
+    // when the feature is configured). It makes no claim about an unaware
+    // same-schema rollback, which runs none of this code.
+    let stale = match &record {
+        // Missing or undecodable metadata: nothing can read it safely.
+        None => true,
+        Some(record) => {
+            record.current_version != current_version
+                || max_age_ms
+                    .is_some_and(|max_age_ms| now_ms - record.created_at_ms > max_age_ms)
+        }
+    };
+    if !stale {
         return Ok(());
     }
     discard_previous_version(replica, replica_path)?;
@@ -992,6 +1418,340 @@ mod tests {
     use crate::api::{ClientLimits, Mutation};
     use crate::client::{SyncClient, LOCAL_SCHEMA_VERSION_KEY};
     use crate::schema::parse_schema_json;
+
+    fn enabled_config() -> PreviousVersionContextConfig {
+        PreviousVersionContextConfig {
+            enabled: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn previous_version_snapshot_reasons_use_injected_lifecycle_and_discard() {
+        let temp = TempFiles::new("read-reasons");
+        let replica_path = temp.replica().to_str().expect("utf-8 path").to_owned();
+        seed_replica(temp.replica(), 2);
+        let replica = Connection::open(temp.replica()).expect("open replica");
+        let container_path = previous_version_container_path(&replica_path);
+        let config = enabled_config();
+        let spec = PreviousVersionReadSpec {
+            table: "things".to_owned(),
+            ..Default::default()
+        };
+        let lifecycle = PreviousVersionLifecycle::default();
+
+        // 1. Off and disabled are the same read outcome.
+        for config in [None, Some(&PreviousVersionContextConfig::default())] {
+            let snapshot =
+                previous_version_snapshot(&replica, Some(&replica_path), config, lifecycle, 0, 2, &spec)
+                    .expect("snapshot");
+            assert!(!snapshot.available);
+            assert_eq!(snapshot.reason, Some(PreviousVersionReason::NotConfigured));
+            assert_eq!(snapshot.state, "previousVersion");
+            assert_eq!(snapshot.current_version, 2);
+            assert!(snapshot.previous_version.is_none());
+            assert!(snapshot.rows.is_empty());
+        }
+
+        // 2. A capture refused for want of a descriptor is a durable reason.
+        let refused = capture_previous_version_from_replica(
+            &replica, &replica_path, 3, 2, &config, 1_000,
+        )
+        .expect("capture");
+        assert!(matches!(
+            refused,
+            CaptureOutcome::Refused {
+                reason: PreviousVersionRefusalReason::NoPreviousDescriptor,
+                ..
+            }
+        ));
+        let snapshot =
+            previous_version_snapshot(&replica, Some(&replica_path), Some(&config), lifecycle, 1_000, 2, &spec)
+                .expect("snapshot");
+        assert_eq!(snapshot.reason, Some(PreviousVersionReason::NoPreviousDescriptor));
+
+        // 3. A budget refusal keeps its measured reason too.
+        let tiny = PreviousVersionContextConfig {
+            max_bytes: 1,
+            enabled: true,
+            ..Default::default()
+        };
+        capture_previous_version_from_replica(&replica, &replica_path, 1, 2, &tiny, 1_000)
+            .expect("capture");
+        let snapshot =
+            previous_version_snapshot(&replica, Some(&replica_path), Some(&config), lifecycle, 1_000, 2, &spec)
+                .expect("snapshot");
+        assert_eq!(snapshot.reason, Some(PreviousVersionReason::CaptureExceededBudget));
+        assert!(!Path::new(&container_path).exists());
+
+        // 4. A successful capture is readable with typed rows.
+        let recapture = || {
+            let outcome = capture_previous_version_from_replica(
+                &replica, &replica_path, 1, 2, &config, 1_000,
+            )
+            .expect("capture");
+            assert!(matches!(outcome, CaptureOutcome::Captured(_)));
+        };
+        recapture();
+        let snapshot =
+            previous_version_snapshot(&replica, Some(&replica_path), Some(&config), lifecycle, 1_000, 2, &spec)
+                .expect("snapshot");
+        assert!(snapshot.available);
+        assert_eq!(snapshot.previous_version, Some(1));
+        assert_eq!(snapshot.current_version, 2);
+        assert_eq!(snapshot.reason, None);
+        assert_eq!(snapshot.state, "previousVersion");
+        assert!(!snapshot.truncated);
+        assert_eq!(snapshot.rows.len(), 2);
+        assert_eq!(snapshot.rows[0]["s"], json!("hello"));
+        assert_eq!(snapshot.rows[0]["b"], json!(true));
+        assert_eq!(snapshot.rows[0]["by"], json!({ "$bytes": "010203" }));
+
+        // Row selection, and an unknown previous table is a loud request error.
+        let selected = PreviousVersionReadSpec {
+            table: "things".to_owned(),
+            row_ids: vec!["r2".to_owned()],
+            limit: Some(1),
+        };
+        let snapshot =
+            previous_version_snapshot(&replica, Some(&replica_path), Some(&config), lifecycle, 1_000, 2, &selected)
+                .expect("snapshot");
+        assert_eq!(snapshot.rows.len(), 1);
+        assert_eq!(snapshot.rows[0]["id"], json!("r2"));
+        let unknown = PreviousVersionReadSpec {
+            table: "absent".to_owned(),
+            ..Default::default()
+        };
+        assert!(previous_version_snapshot(
+            &replica,
+            Some(&replica_path),
+            Some(&config),
+            lifecycle,
+            1_000,
+            2,
+            &unknown
+        )
+        .expect_err("unknown previous table")
+        .contains("unknown previous table"));
+
+        // 5. Lease stop/expiry, scope revocation and coverage completion each
+        // DISCARD the container and close the read with their own reason.
+        for (lifecycle, expected) in [
+            (
+                PreviousVersionLifecycle {
+                    lease_inactive: true,
+                    ..Default::default()
+                },
+                PreviousVersionReason::LeaseInactive,
+            ),
+            (
+                PreviousVersionLifecycle {
+                    scope_revoked: true,
+                    ..Default::default()
+                },
+                PreviousVersionReason::ScopeRevoked,
+            ),
+            (
+                PreviousVersionLifecycle {
+                    coverage_complete: true,
+                    ..Default::default()
+                },
+                PreviousVersionReason::CoverageComplete,
+            ),
+        ] {
+            recapture();
+            assert!(Path::new(&container_path).exists());
+            let snapshot = previous_version_snapshot(
+                &replica,
+                Some(&replica_path),
+                Some(&config),
+                lifecycle,
+                1_000,
+                2,
+                &spec,
+            )
+            .expect("snapshot");
+            assert!(!snapshot.available, "{expected:?}");
+            assert_eq!(snapshot.reason, Some(expected));
+            assert!(snapshot.rows.is_empty());
+            assert!(
+                !Path::new(&container_path).exists(),
+                "{expected:?} must physically remove the container"
+            );
+            assert_eq!(meta_get(&replica, PREVIOUS_VERSION_CONTEXT_KEY), None);
+        }
+    }
+
+    #[test]
+    fn previous_version_ttl_applies_at_read_and_at_boot_with_injected_now() {
+        let temp = TempFiles::new("ttl");
+        let replica_path = temp.replica().to_str().expect("utf-8 path").to_owned();
+        seed_replica(temp.replica(), 1);
+        let replica = Connection::open(temp.replica()).expect("open replica");
+        let container_path = previous_version_container_path(&replica_path);
+        let config = enabled_config();
+        let max_age_ms = config.max_age_ms;
+        let spec = PreviousVersionReadSpec {
+            table: "things".to_owned(),
+            ..Default::default()
+        };
+        let lifecycle = PreviousVersionLifecycle::default();
+        let capture_at = || {
+            let outcome = capture_previous_version_from_replica(
+                &replica, &replica_path, 1, 2, &config, 1_000,
+            )
+            .expect("capture");
+            assert!(matches!(outcome, CaptureOutcome::Captured(_)));
+        };
+
+        // At the boundary the capture is still good; one millisecond later the
+        // read expires it and removes the file.
+        capture_at();
+        let snapshot = previous_version_snapshot(
+            &replica,
+            Some(&replica_path),
+            Some(&config),
+            lifecycle,
+            1_000 + max_age_ms,
+            2,
+            &spec,
+        )
+        .expect("snapshot");
+        assert!(snapshot.available);
+        let snapshot = previous_version_snapshot(
+            &replica,
+            Some(&replica_path),
+            Some(&config),
+            lifecycle,
+            1_001 + max_age_ms,
+            2,
+            &spec,
+        )
+        .expect("snapshot");
+        assert_eq!(snapshot.reason, Some(PreviousVersionReason::Expired));
+        assert!(!Path::new(&container_path).exists());
+
+        // Boot: no TTL without an aware binary (`max_age_ms` is None when the
+        // feature is off) — the container is NOT deleted by an unaware boot
+        // path. This asserts the limitation: the TTL is an aware-binary
+        // hygiene bound and nothing else.
+        capture_at();
+        reconcile_previous_version_at_boot(&replica, &replica_path, 2, None, 1_000 + max_age_ms * 10)
+            .expect("boot reconcile without a TTL");
+        assert!(Path::new(&container_path).exists());
+
+        // Boot: aware, within the TTL → kept; beyond it → discarded.
+        reconcile_previous_version_at_boot(
+            &replica,
+            &replica_path,
+            2,
+            Some(max_age_ms),
+            1_000 + max_age_ms,
+        )
+        .expect("boot reconcile");
+        assert!(Path::new(&container_path).exists());
+        reconcile_previous_version_at_boot(
+            &replica,
+            &replica_path,
+            2,
+            Some(max_age_ms),
+            1_001 + max_age_ms,
+        )
+        .expect("boot reconcile");
+        assert!(!Path::new(&container_path).exists());
+    }
+
+    #[test]
+    fn previous_version_audit_records_typed_reasons_and_round_trips() {
+        let temp = TempFiles::new("audit");
+        seed_replica(temp.replica(), 1);
+        let replica = Connection::open(temp.replica()).expect("open replica");
+        let schema = schema(2);
+
+        let pending = vec![
+            PendingCommitAudit {
+                commit_id: "c1",
+                operations: vec![("things", vec!["id", "removed"])],
+            },
+            PendingCommitAudit {
+                commit_id: "c2",
+                operations: vec![("gone", vec![])],
+            },
+            PendingCommitAudit {
+                commit_id: "c3",
+                operations: vec![("things", vec!["id"])],
+            },
+        ];
+        let audit = build_previous_version_audit(&schema, &pending, 1, 2, 42);
+        assert_eq!(audit.v, 1);
+        assert_eq!(audit.at_ms, 42);
+        assert_eq!(audit.from_version, 1);
+        assert_eq!(audit.to_version, 2);
+        assert_eq!(audit.pending, 3);
+        assert_eq!(audit.encodable, 1);
+        assert!(!audit.truncated);
+        assert_eq!(audit.incompatible.len(), 2);
+        assert_eq!(
+            audit.incompatible[0],
+            PreviousVersionAuditEntry {
+                commit_id: "c1".to_owned(),
+                table: "things".to_owned(),
+                reason: PreviousVersionAuditReason::UnknownColumn,
+                column: Some("removed".to_owned()),
+            }
+        );
+        assert_eq!(
+            audit.incompatible[1],
+            PreviousVersionAuditEntry {
+                commit_id: "c2".to_owned(),
+                table: "gone".to_owned(),
+                reason: PreviousVersionAuditReason::UnknownTable,
+                column: None,
+            }
+        );
+        // The record carries a typed reason and NO envelope, operation or value.
+        let encoded = serde_json::to_string(&audit).expect("encode audit");
+        for forbidden in ["operations", "values", "payload", "envelope", "row_id"] {
+            assert!(!encoded.contains(forbidden), "{encoded}");
+        }
+        assert!(encoded.contains("\"reason\":\"unknown-column\""));
+        assert!(encoded.contains("\"reason\":\"unknown-table\""));
+
+        write_previous_version_audit(&replica, &audit);
+        assert_eq!(stored_previous_version_audit(&replica), Some(audit.clone()));
+        // Strict decode: a malformed record reads as absent.
+        meta_set(&replica, PREVIOUS_VERSION_AUDIT_KEY, "{\"v\":1}");
+        assert_eq!(stored_previous_version_audit(&replica), None);
+        meta_set(
+            &replica,
+            PREVIOUS_VERSION_AUDIT_KEY,
+            "{\"v\":1,\"atMs\":0,\"fromVersion\":1,\"toVersion\":2,\"pending\":0,\"encodable\":0,\"truncated\":false,\"incompatible\":[{\"commitId\":\"c\",\"table\":\"t\",\"reason\":\"other\"}]}",
+        );
+        assert_eq!(stored_previous_version_audit(&replica), None);
+
+        // Bounded at MAX_AUDIT_INCOMPATIBLE entries with `truncated`.
+        let many = (0..MAX_AUDIT_INCOMPATIBLE + 5)
+            .map(|_index| PendingCommitAudit {
+                commit_id: "c",
+                operations: vec![("gone", vec![])],
+            })
+            .collect::<Vec<_>>();
+        let audit = build_previous_version_audit(&schema, &many, 1, 2, 0);
+        assert_eq!(audit.pending, MAX_AUDIT_INCOMPATIBLE as i64 + 5);
+        assert_eq!(audit.encodable, 0);
+        assert_eq!(audit.incompatible.len(), MAX_AUDIT_INCOMPATIBLE);
+        assert!(audit.truncated);
+    }
+
+    #[test]
+    fn previous_version_limit_defaults_and_ceiling_match_ts() {
+        assert_eq!(resolve_previous_version_limit(None), Ok(50));
+        assert_eq!(resolve_previous_version_limit(Some(7)), Ok(7));
+        assert_eq!(resolve_previous_version_limit(Some(999)), Ok(200));
+        assert!(resolve_previous_version_limit(Some(0)).is_err());
+        assert!(resolve_previous_version_limit(Some(-1)).is_err());
+    }
+
 
     /// Removes every temp file the test created, so the container assertion
     /// "the path is gone" cannot pass because a later case reused the name.

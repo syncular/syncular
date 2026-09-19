@@ -35,7 +35,8 @@ use crate::api::{
     LocalDataPurgeInput, LocalDataPurgeResult, LocalDataPurgeTarget, LocalDataRebootstrapInput,
     LocalDataRebootstrapResult, Mutation, PresencePeer, QueryRow, QuerySnapshot, QueryValue,
     RejectionDetails, RejectionRecord, ResolveCommitOutcomeInput, RowState, SchemaFloor,
-    SubscriptionStateView, SyncIntent, SyncOutcome, SyncReport, SyncStatusSnapshot, TableChange,
+    PreviousVersionStatus, SubscriptionStateView, SyncIntent, SyncOutcome, SyncReport,
+    SyncStatusSnapshot, TableChange,
     WindowBase, WindowChange, WindowCoverage, WindowState, WindowUnitRef,
     CLIENT_DIAGNOSTICS_VERSION, MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
 };
@@ -43,8 +44,10 @@ use crate::api::{
 use crate::bench::{Phase, Recorder};
 use crate::schema::{parse_schema_json, ClientSchema, FtsIndexSchema, TableSchema};
 use crate::previous_version::{
-    capture_previous_version_from_replica, reconcile_previous_version_at_boot,
+    capture_previous_version_from_replica, first_incompatibility, reconcile_previous_version_at_boot,
     set_local_schema_descriptor, sweep_previous_version_container, PreviousVersionContextConfig,
+    PreviousVersionLifecycle, PreviousVersionReadSpec, PreviousVersionSnapshot,
+    PendingCommitAudit,
 };
 use crate::transport::{BlobDownload, BlobUploadGrant, SegmentRequest, Transport, TransportError};
 use crate::values::{
@@ -4347,6 +4350,27 @@ struct OutboxCommit {
     ops: Vec<OutboxOp>,
 }
 
+/// One commit's `(table, value keys)` per upsert operation — the classification
+/// shape the §7.4.4 send-time drop and the RFC 0005 D6 audit share, so the two
+/// can never disagree about which commits cannot re-encode.
+fn commit_audit_operations(commit: &OutboxCommit) -> Vec<(&str, Vec<&str>)> {
+    commit
+        .ops
+        .iter()
+        .filter(|operation| operation.upsert)
+        .map(|operation| {
+            (
+                operation.table.as_str(),
+                operation
+                    .values
+                    .as_ref()
+                    .map(|values| values.keys().map(String::as_str).collect())
+                    .unwrap_or_default(),
+            )
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 struct CompiledLocalDataPurgeTarget {
     table: String,
@@ -5075,7 +5099,7 @@ impl SyncClient {
         let schema = parse_schema_json(schema_json)?;
         // RFC 0005 D8: resolve the previous-version config before the opening
         // reset runs — the capture happens inside it. Bad bounds fail loud.
-        let previous_version = match limits.previous_version_context.clone() {
+        let previous_version = match limits.previous_version_context {
             Some(config) => {
                 config.validate()?;
                 Some(config)
@@ -5602,6 +5626,147 @@ impl SyncClient {
             lease_state: self.lease_state.clone(),
             schema_floor: self.schema_floor.clone(),
             sync_needed: self.sync_needed,
+            previous_version_context: self.previous_version_status(),
+        }
+    }
+
+    /// RFC 0005 A2: container presence for a host that must act on it (Diego's
+    /// rollback precondition), read without creating the file.
+    fn previous_version_status(&self) -> PreviousVersionStatus {
+        let Some(replica_path) = self.previous_version_replica_path() else {
+            return PreviousVersionStatus {
+                present: false,
+                created_at_ms: None,
+            };
+        };
+        match crate::previous_version::read_previous_version_record(&replica_path) {
+            Ok(Some(record)) => PreviousVersionStatus {
+                present: true,
+                created_at_ms: Some(record.created_at_ms),
+            },
+            _ => PreviousVersionStatus {
+                present: std::path::Path::new(
+                    &crate::previous_version::previous_version_container_path(&replica_path),
+                )
+                .exists(),
+                created_at_ms: None,
+            },
+        }
+    }
+
+    /// RFC 0005 D7: read captured rows from the previous local schema. `state`
+    /// is always `previousVersion`; the container never makes
+    /// `query_snapshot()` coverage complete. Lease stop/expiry, scope
+    /// revocation, coverage completion and the TTL DISCARD the container and
+    /// close the read with their own reason.
+    pub fn previous_version_snapshot(
+        &self,
+        spec: &PreviousVersionReadSpec,
+    ) -> Result<PreviousVersionSnapshot, String> {
+        let now_ms = self.clock_now_ms();
+        crate::previous_version::previous_version_snapshot(
+            &self.conn,
+            self.previous_version_replica_path().as_deref(),
+            self.previous_version.as_ref(),
+            PreviousVersionLifecycle {
+                lease_inactive: self.previous_version_lease_inactive(now_ms),
+                scope_revoked: self
+                    .subs
+                    .iter()
+                    .any(|sub| sub.state == SubState::Revoked),
+                coverage_complete: self.previous_version_coverage_complete(),
+            },
+            now_ms,
+            self.schema.version,
+            spec,
+        )
+    }
+
+    /// RFC 0005 D6: the advisory pre-reset compatibility audit.
+    #[must_use]
+    pub fn previous_version_audit(&self) -> Option<crate::previous_version::PreviousVersionAudit> {
+        crate::previous_version::stored_previous_version_audit(&self.conn)
+    }
+
+    /// RFC 0005 A2/D9: the executable downgrade step. Drop the container file
+    /// and both metadata records, and report whether anything was present.
+    /// Idempotent: absence is a successful no-op.
+    pub fn previous_version_discard(&self) -> crate::previous_version::PreviousVersionDiscardOutcome {
+        self.drop_previous_version()
+    }
+
+    /// The module's discard has no failure path (it removes the file even when
+    /// the container cannot be opened), so the only error a caller could ever
+    /// see is a bug; report absence rather than claiming a discard happened.
+    fn drop_previous_version(&self) -> crate::previous_version::PreviousVersionDiscardOutcome {
+        let absent = crate::previous_version::PreviousVersionDiscardOutcome {
+            present: false,
+            discarded: false,
+        };
+        let Some(replica_path) = self.previous_version_replica_path() else {
+            return absent;
+        };
+        crate::previous_version::discard_previous_version(&self.conn, &replica_path)
+            .unwrap_or(absent)
+    }
+
+    /// RFC 0005 D7: `leaseState.errorCode` or an expired lease.
+    fn previous_version_lease_inactive(&self, now_ms: i64) -> bool {
+        let Some(lease) = &self.lease_state else {
+            return false;
+        };
+        if lease.error_code.is_some() {
+            return true;
+        }
+        lease.expires_at_ms.is_some_and(|expires| expires <= now_ms)
+    }
+
+    /// RFC 0005 D7: §7.4.5 replacement coverage — every ACTIVE subscription
+    /// has `cursor >= 0` and no resume token. An empty active set is not
+    /// completion (mirrors the TS predicate exactly).
+    fn previous_version_coverage_complete(&self) -> bool {
+        let active = self
+            .subs
+            .iter()
+            .filter(|sub| sub.state == SubState::Active)
+            .collect::<Vec<_>>();
+        if active.is_empty() {
+            return false;
+        }
+        active
+            .iter()
+            .all(|sub| sub.cursor >= 0 && sub.bootstrap_state.is_none())
+    }
+
+    /// RFC 0005 D7: lifetime triggers evaluated once per sync round, after the
+    /// apply. A container that no longer has a reason to exist is discarded so
+    /// the rows do not outlive the window they were kept for.
+    fn previous_version_lifetime_check(&self) {
+        let Some(config) = self.previous_version.filter(|config| config.enabled) else {
+            return;
+        };
+        let now_ms = self.clock_now_ms();
+        if self.previous_version_lease_inactive(now_ms) {
+            let _ = self.drop_previous_version();
+            return;
+        }
+        let Some(replica_path) = self.previous_version_replica_path() else {
+            return;
+        };
+        let Ok(Some(record)) = crate::previous_version::read_previous_version_record(&replica_path)
+        else {
+            return;
+        };
+        if self.subs.iter().any(|sub| sub.state == SubState::Revoked) {
+            let _ = self.drop_previous_version();
+            return;
+        }
+        if now_ms - record.created_at_ms > config.max_age_ms {
+            let _ = self.drop_previous_version();
+            return;
+        }
+        if self.previous_version_coverage_complete() {
+            let _ = self.drop_previous_version();
         }
     }
 
@@ -6182,14 +6347,25 @@ impl SyncClient {
         self.delete_meta(SCHEMA_FLOOR_KEY);
     }
 
-    /// RFC 0005 D9: discard an orphan or stale container at boot. The reset
+    /// RFC 0005 D1: discard an orphan or stale container at boot. The reset
     /// path already swept it; this covers a same-version or fresh-install open,
-    /// which runs no reset and therefore no sweep.
+    /// which runs no reset and therefore no sweep — plus the D7 TTL, which only
+    /// an aware binary can apply.
     fn reconcile_previous_version_at_boot(&self) -> Result<(), String> {
         let Some(replica_path) = self.previous_version_replica_path() else {
             return Ok(());
         };
-        reconcile_previous_version_at_boot(&self.conn, &replica_path, self.schema.version)
+        let max_age_ms = self
+            .previous_version
+            .filter(|config| config.enabled)
+            .map(|config| config.max_age_ms);
+        reconcile_previous_version_at_boot(
+            &self.conn,
+            &replica_path,
+            self.schema.version,
+            max_age_ms,
+            self.clock_now_ms(),
+        )
     }
 
     /// RFC 0005 D3: the sibling container path, or `None` when the replica has
@@ -6251,6 +6427,35 @@ impl SyncClient {
     ) -> Result<(), String> {
         self.upgrading = true;
         batch.status = true;
+        // RFC 0005 D6: classify the pending outbox against the NEW compiled
+        // schema BEFORE the wipe, and record the advisory audit. It drops
+        // nothing — the §7.4.4 send-time drop stays the only path that removes
+        // a commit. The classification is shared with that drop so the two can
+        // never disagree about what is incompatible.
+        if self.previous_version.is_some_and(|config| config.enabled) {
+            let previous_version = self
+                .get_meta(LOCAL_SCHEMA_VERSION_KEY)
+                .and_then(|value| value.parse::<i32>().ok())
+                .unwrap_or(self.schema.version);
+            let pending = self
+                .outbox
+                .iter()
+                .map(|commit| PendingCommitAudit {
+                    commit_id: &commit.client_commit_id,
+                    operations: commit_audit_operations(commit),
+                })
+                .collect::<Vec<_>>();
+            crate::previous_version::write_previous_version_audit(
+                &self.conn,
+                &crate::previous_version::build_previous_version_audit(
+                    &self.schema,
+                    &pending,
+                    previous_version,
+                    self.schema.version,
+                    self.clock_now_ms(),
+                ),
+            );
+        }
         // RFC 0005 D5: the container lives in its own FILE, so the reset can
         // never reach it. Sweep first (unconditional — also on the log-epoch
         // reset, which captures nothing), then capture BEFORE the wipe drops
@@ -6380,25 +6585,10 @@ impl SyncClient {
     /// schema lacks (or a removed table) cannot be encoded. Drop the commit
     /// and raise a client-local `sync.outbox_incompatible` rejection.
     fn drop_incompatible_outbox(&mut self) -> Result<bool, String> {
-        let schema = &self.schema;
         let incompatible = self
             .outbox
             .iter()
-            .filter(|commit| {
-                commit.ops.iter().any(|op| {
-                    if !op.upsert {
-                        return false;
-                    }
-                    match schema.table(&op.table) {
-                        None => true,
-                        Some(table) => op.values.as_ref().is_some_and(|values| {
-                            values
-                                .keys()
-                                .any(|key| !table.columns.iter().any(|c| &c.name == key))
-                        }),
-                    }
-                })
-            })
+            .filter(|commit| first_incompatibility(&self.schema, &commit_audit_operations(commit)).is_some())
             .cloned()
             .collect::<Vec<_>>();
         if incompatible.is_empty() {
@@ -8542,6 +8732,9 @@ impl SyncClient {
             // next round — keep the host's sync signal raised until then.
             self.set_sync_needed(true, true);
         }
+        // RFC 0005 D7: coverage completion, lease end, scope revocation and the
+        // TTL are evaluated once per round, after the apply.
+        self.previous_version_lifetime_check();
         outcome
     }
 
@@ -10418,6 +10611,11 @@ impl SyncClient {
                 dropped_commits: 0,
             });
         }
+
+        // RFC 0005 D7: the container file cannot be a purge target (its name is
+        // not in the running schema), so purge drops it as a fixed step, before
+        // any mirror row is touched and unconditionally.
+        let _ = self.drop_previous_version();
 
         let prior_outbox = self.outbox.clone();
         let prior_rejection_count = self.rejections.len();
