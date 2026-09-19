@@ -128,6 +128,16 @@ const SIDECAR_SCHEMA: DriverSchema = {
       primaryKey: 'id',
       scopes: [{ pattern: 'detail:{detail_scope}' }],
     },
+    {
+      name: 'notes',
+      columns: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'project_id', type: 'string', nullable: false },
+        { name: 'body', type: 'string', nullable: false },
+      ],
+      primaryKey: 'id',
+      scopes: [{ pattern: 'project:{project_id}' }],
+    },
   ],
 };
 
@@ -467,12 +477,15 @@ export const encryptionScenarios: readonly Scenario[] = [
     },
   },
   {
-    // §5.11 sidecar shape: a no-key client subscribes to the plaintext
-    // primary while a non-NULL protected value sits in the encrypted sidecar
-    // committed in the SAME commit as the primary row. The primary row
-    // applies with every column, the round completes, and the protected
-    // value is neither NULL-masked nor delivered as envelope bytes: the
-    // reader's table subscription never yields the sidecar row.
+    // §5.11 sidecar isolation: a no-key client subscribes to the plaintext
+    // primary (and to an unrelated plaintext table) while a non-NULL
+    // protected value sits in the encrypted sidecar committed in the SAME
+    // commit. The reader's table projection never yields the sidecar row, so
+    // the reader executes no decrypt; this proves the sidecar stays isolated
+    // for a primary-only subscriber and that a round carrying sidecar work
+    // does not starve the reader's other subscriptions. It does NOT prove
+    // decrypt-failure semantics: the deliberately-subscribed no-key client is
+    // the negative case below.
     name: 'encryption/sidecar-no-key-primary-read',
     specRefs: ['§5.11'],
     server: SIDECAR_SERVER,
@@ -494,10 +507,16 @@ export const encryptionScenarios: readonly Scenario[] = [
         table: 'record_details',
         scopes: DETAIL_SCOPES,
       });
+      await writer.api.subscribe({
+        id: 'related',
+        table: 'notes',
+        scopes: PRIMARY_SCOPES,
+      });
       await syncIdle(writer);
 
-      // One commit carries both the plaintext primary row and the encrypted
-      // sidecar row, the mixed-shape case a no-key client must survive.
+      // One commit carries both plaintext primary rows, the encrypted sidecar
+      // row, and an unrelated plaintext row: the mixed-shape case a no-key
+      // client must survive without losing its other subscriptions.
       await writer.api.mutate([
         {
           op: 'upsert',
@@ -511,6 +530,16 @@ export const encryptionScenarios: readonly Scenario[] = [
         },
         {
           op: 'upsert',
+          table: 'records',
+          values: {
+            id: 'r2',
+            project_id: 'p1',
+            title: 'Consultation',
+            status_reason_state: 'not_recorded',
+          },
+        },
+        {
+          op: 'upsert',
           table: 'record_details',
           values: {
             id: 'r1',
@@ -518,6 +547,11 @@ export const encryptionScenarios: readonly Scenario[] = [
             detail_scope: 'd1',
             value: PROTECTED_VALUE,
           },
+        },
+        {
+          op: 'upsert',
+          table: 'notes',
+          values: { id: 'n1', project_id: 'p1', body: 'shared note' },
         },
       ]);
       await syncIdle(writer);
@@ -551,7 +585,8 @@ export const encryptionScenarios: readonly Scenario[] = [
       );
 
       // The no-key client is authorized for both scopes but subscribes to
-      // the primary only: subscribing to the sidecar would abort the round.
+      // the primary and to an unrelated plaintext table only: subscribing to
+      // the sidecar would abort the round (the negative case covers that).
       const reader = await ctx.newClient({
         actorId: 'reader',
         clientId: 'client-no-key',
@@ -562,6 +597,11 @@ export const encryptionScenarios: readonly Scenario[] = [
       await reader.api.subscribe({
         id: 'primary',
         table: 'records',
+        scopes: PRIMARY_SCOPES,
+      });
+      await reader.api.subscribe({
+        id: 'related',
+        table: 'notes',
         scopes: PRIMARY_SCOPES,
       });
       await syncIdle(reader);
@@ -586,21 +626,167 @@ export const encryptionScenarios: readonly Scenario[] = [
       checkEqual(
         primaryRow?.values.status_reason_state,
         'protected_source_value',
-        'the disclosed presence marker is readable plaintext',
+        'the presence marker reports a recorded protected value',
+      );
+      // Acceptance item 5's third state (disclosure not authorized, the client
+      // reports `unknown`) has no driver surface: no availability field
+      // distinguishes protected-unavailable from absent, so it cannot be
+      // asserted here. The two authorized marker states are covered.
+      const unrecordedRow = (await reader.api.readRows('records')).find(
+        (r) => r.values.id === 'r2',
+      );
+      checkEqual(
+        unrecordedRow?.values.status_reason_state,
+        'not_recorded',
+        'the presence marker distinguishes a row with no recorded value',
       );
 
-      // The protected value is not delivered at all: not NULL-masked, not
-      // envelope bytes. `readRows` enumerates every declared sidecar column.
+      // An unrelated subscription in the same round is not starved by the
+      // sidecar work in that commit.
+      const noteRow = (await reader.api.readRows('notes')).find(
+        (r) => r.values.id === 'n1',
+      );
+      checkEqual(
+        noteRow?.values.body,
+        'shared note',
+        'the unrelated subscription survived the round intact',
+      );
+
+      // The sidecar is isolated by the reader's table projection: it never
+      // yields a sidecar row, so no decrypt runs here. Structural absence of
+      // the sidecar table is the assertion, not decrypt-failure semantics.
       const readerDetails = await reader.api.readRows('record_details');
       checkEqual(
         readerDetails.length,
         0,
-        'the no-key client received no sidecar row (never NULL, never envelope bytes)',
+        'the primary-only subscriber received no sidecar row',
       );
       checkEqual(
         (await reader.api.subscriptionState('primary'))?.status,
         'active',
         'the primary subscription is active after the round',
+      );
+      checkEqual(
+        (await reader.api.subscriptionState('related'))?.status,
+        'active',
+        'the unrelated subscription is active after the round',
+      );
+
+      // The no-key client cannot mutate the protected value: the encode seam
+      // rejects the commit with no key to encrypt under, and the commit never
+      // reaches the server.
+      await reader.api.mutate([
+        {
+          op: 'upsert',
+          table: 'record_details',
+          values: {
+            id: 'r1',
+            project_id: 'p1',
+            detail_scope: 'd1',
+            value: 'tampered',
+          },
+        },
+      ]);
+      await syncIdle(reader);
+      const rejections = await reader.api.rejections();
+      checkEqual(
+        rejections.length,
+        1,
+        'one durable keyless-mutation rejection',
+      );
+      checkEqual(
+        rejections[0]?.code,
+        'client.encrypt_failed',
+        'a keyless mutation of the protected value is rejected at encode',
+      );
+      checkEqual(
+        (await reader.api.pendingCommitIds()).length,
+        0,
+        'the rejected keyless mutation left the outbox',
+      );
+      const serverAfter = (await ctx.server.readRows('record_details')).find(
+        (r) => r.rowId === 'r1',
+      );
+      checkEqual(
+        serverAfter?.values.value,
+        serverValue,
+        'the server protected value is unchanged after the keyless mutation',
+      );
+    },
+  },
+  {
+    // §5.11 sidecar negative case: a no-key client that DOES subscribe to the
+    // encrypted sidecar must fail closed with `client.decrypt_failed` and must
+    // not apply the protected row. This is what proves the value is neither
+    // NULL-masked nor stored as envelope bytes: a NULL-mask implementation
+    // would apply a row and raise nothing.
+    name: 'encryption/sidecar-no-key-subscribe-fails',
+    specRefs: ['§5.11', '§10.3'],
+    server: SIDECAR_SERVER,
+    async run(ctx: ScenarioContext) {
+      const writer = await ctx.newClient({
+        actorId: 'a',
+        clientId: 'client-writer',
+        schema: SIDECAR_SCHEMA,
+        allowed: SIDECAR_ALLOWED,
+        encryption: writerKeys,
+      });
+      await writer.api.subscribe({
+        id: 'primary',
+        table: 'records',
+        scopes: PRIMARY_SCOPES,
+      });
+      await writer.api.subscribe({
+        id: 'sidecar',
+        table: 'record_details',
+        scopes: DETAIL_SCOPES,
+      });
+      await syncIdle(writer);
+      await writer.api.mutate([
+        {
+          op: 'upsert',
+          table: 'records',
+          values: {
+            id: 'r1',
+            project_id: 'p1',
+            title: 'Colonoscopy',
+            status_reason_state: 'protected_source_value',
+          },
+        },
+        {
+          op: 'upsert',
+          table: 'record_details',
+          values: {
+            id: 'r1',
+            project_id: 'p1',
+            detail_scope: 'd1',
+            value: PROTECTED_VALUE,
+          },
+        },
+      ]);
+      await syncIdle(writer);
+
+      const reader = await ctx.newClient({
+        actorId: 'reader',
+        clientId: 'client-no-key-negative',
+        schema: SIDECAR_SCHEMA,
+        allowed: SIDECAR_ALLOWED,
+        encryption: { keys: {} },
+      });
+      await reader.api.subscribe({
+        id: 'sidecar',
+        table: 'record_details',
+        scopes: DETAIL_SCOPES,
+      });
+      await syncFails(
+        reader,
+        'client.decrypt_failed',
+        'a no-key client subscribed to the encrypted sidecar fails closed',
+      );
+      checkEqual(
+        (await reader.api.readRows('record_details')).length,
+        0,
+        'the undecryptable sidecar row was not applied as NULL or raw bytes',
       );
     },
   },
