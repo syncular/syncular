@@ -8,7 +8,6 @@ import type { RowColumn, RowValue } from '@syncular/core';
 import type { ClientDatabase, SqlRow, SqlValue } from './database';
 import { ClientSyncError } from './errors';
 import { snakeToCamel } from './naming';
-import { PREVIOUS_VERSION_CONTAINER } from './query-guard';
 
 /** `'prefix:{variable}'` shorthand (column name = variable) or explicit. */
 export type ScopePatternSpec = string | { pattern: string; column: string };
@@ -621,11 +620,10 @@ const RESERVED_TABLE_PREFIX = '_syncular_';
  * generated schema created — discovered from `sqlite_master`, since a
  * bump may add/remove tables) and recreate the synced tables from the
  * NEW schema. Bookkeeping tables (`_syncular_*`: outbox, meta,
- * subscriptions, blob cache) are preserved. The RFC 0005 previous-version
- * container is also preserved: it is non-reserved so an *unaware* binary's
- * reset removes it (§7.4.6), but this aware reset captured it a moment ago
- * and must not destroy its own capture. Caller owns the surrounding
- * transaction and the subscription-state reset (state.ts).
+ * subscriptions, blob cache) are preserved. RFC 0005's container is not
+ * reachable from here: it lives in its own database file, so this reset cannot
+ * see or destroy it. Caller owns the surrounding transaction and the
+ * subscription-state reset (state.ts).
  */
 export function dropAndRecreateSyncedTables(
   db: ClientDatabase,
@@ -636,8 +634,7 @@ export function dropAndRecreateSyncedTables(
   const virtualTables = db.query(
     `SELECT name FROM sqlite_master WHERE type = 'table'
        AND sql LIKE 'CREATE VIRTUAL TABLE%'
-       AND name NOT LIKE '${RESERVED_TABLE_PREFIX}%'
-       AND name != '${PREVIOUS_VERSION_CONTAINER}'`,
+       AND name NOT LIKE '${RESERVED_TABLE_PREFIX}%'`,
   );
   for (const row of virtualTables) {
     db.exec(
@@ -648,8 +645,7 @@ export function dropAndRecreateSyncedTables(
   const existing = db.query(
     `SELECT name FROM sqlite_master WHERE type = 'table'
        AND name NOT LIKE '${RESERVED_TABLE_PREFIX}%'
-       AND name NOT LIKE 'sqlite_%'
-       AND name != '${PREVIOUS_VERSION_CONTAINER}'`,
+       AND name NOT LIKE 'sqlite_%'`,
   );
   for (const row of existing) {
     db.exec(`DROP TABLE IF EXISTS ${quoteIdent(String(row.name))}`);

@@ -27,6 +27,7 @@ import {
   assertImageAlias,
   type ClientDatabase,
   runTransaction,
+  type SiblingDatabase,
   type SqlRow,
   type SqlValue,
 } from './database';
@@ -51,6 +52,9 @@ interface Oo1Database {
 
 interface SahPoolUtil {
   OpfsSAHPoolDb: new (filename: string) => Oo1Database;
+  /** RFC 0005: the runtime exposes naming and removal on the pool util. */
+  getFileNames(): string[];
+  unlink(filename: string): boolean;
 }
 
 interface SqliteIoMethods {
@@ -116,11 +120,18 @@ function coerceParams(params: readonly SqlValue[]): unknown[] {
 class WasmClientDatabase implements ClientDatabase {
   readonly #db: Oo1Database;
   readonly #sqlite3: Sqlite3Static;
+  /** RFC 0005: present only for a persistent OPFS database. */
+  readonly #sah: { readonly util: SahPoolUtil } | undefined;
   #tx = { depth: 0 };
 
-  constructor(db: Oo1Database, sqlite3: Sqlite3Static) {
+  constructor(
+    db: Oo1Database,
+    sqlite3: Sqlite3Static,
+    sah?: { readonly util: SahPoolUtil },
+  ) {
     this.#db = db;
     this.#sqlite3 = sqlite3;
+    this.#sah = sah;
   }
 
   exec(sql: string, params: readonly SqlValue[] = []): void {
@@ -145,6 +156,39 @@ class WasmClientDatabase implements ClientDatabase {
 
   transaction<T>(fn: () => T): T {
     return runTransaction(this.#tx, (sql) => this.exec(sql), fn);
+  }
+
+  /**
+   * RFC 0005: a second named file on the same SAH pool directory. The pool
+   * forbids two live instances per directory and charges two slots per
+   * writable database (`.db` plus its transient `-journal`), which is why the
+   * pool's initial capacity must cover three. Removal is the pool's `unlink`,
+   * never OPFS `removeEntry` (the pool stores an opaque entry).
+   */
+  openSibling(name: string): SiblingDatabase | undefined {
+    const sah = this.#sah;
+    if (sah === undefined) return undefined;
+    const fileName = `/${name}.db`;
+    const db = new sah.util.OpfsSAHPoolDb(fileName);
+    try {
+      configureSahCrashRecovery(db, this.#sqlite3);
+    } catch (error) {
+      db.close();
+      throw error;
+    }
+    return {
+      database: new WasmClientDatabase(db, this.#sqlite3),
+      close: () => db.close(),
+      removeFile: () => {
+        sah.util.unlink(fileName);
+      },
+    };
+  }
+
+  siblingExists(name: string): boolean {
+    const sah = this.#sah;
+    if (sah === undefined) return false;
+    return sah.util.getFileNames().includes(`/${name}.db`);
   }
 
   /**
@@ -274,6 +318,66 @@ function opfsSahPoolError(error: unknown, directory: string): ClientSyncError {
   );
 }
 
+/** sqlite-wasm's default SAH pool capacity. */
+const SAH_POOL_DEFAULT_CAPACITY = 6;
+/**
+ * RFC 0005: each writable database consumes two slots (`.db` plus its
+ * transient `-journal`), so a replica plus one container file needs three.
+ * Exhaustion is a loud `SQLITE_CANTOPEN` ("SAH pool is full") that names the
+ * missing journal, not corruption — raise the floor rather than discover it.
+ */
+const SAH_POOL_MIN_CAPACITY = 3;
+
+/**
+ * Do this before the first SQL statement, when SQLite checks for a hot
+ * journal. The SAH-pool callback in sqlite-wasm 3.53 reports a reserved lock
+ * unconditionally, which suppresses crash rollback. The pool already excludes
+ * other owners; report no competing writer, as the other OPFS VFS does. Keep
+ * DELETE/FULL and the existing database/journal files. Shared by the replica
+ * and every RFC 0005 sibling file.
+ */
+function configureSahCrashRecovery(db: Oo1Database, sqlite3: Sqlite3Static): void {
+  const { capi, wasm } = sqlite3;
+  const stack = wasm.pstack.pointer;
+  try {
+    const output = wasm.pstack.allocPtr();
+    if (
+      db.pointer === undefined ||
+      capi.sqlite3_file_control(
+        db.pointer,
+        'main',
+        capi.SQLITE_FCNTL_FILE_POINTER,
+        output,
+      ) !== 0 ||
+      !wasm.peekPtr(output)
+    ) {
+      throw new ClientSyncError(
+        STORAGE_UNAVAILABLE_CODE,
+        'Could not configure OPFS crash recovery',
+      );
+    }
+    const file = new capi.sqlite3_file(wasm.peekPtr(output));
+    const methodsPointer = file.$pMethods;
+    file.dispose(); // Borrowed struct view; SQLite still owns the file.
+    if (!methodsPointer) {
+      throw new ClientSyncError(
+        STORAGE_UNAVAILABLE_CODE,
+        'Could not configure OPFS crash recovery',
+      );
+    }
+    if (!sahIoMethods.has(methodsPointer)) {
+      const methods = new capi.sqlite3_io_methods(methodsPointer);
+      methods.installMethod('xCheckReservedLock', (_file, reserved) => {
+        wasm.poke32(reserved, 0);
+        return 0;
+      });
+      sahIoMethods.set(methodsPointer, methods);
+    }
+  } finally {
+    wasm.pstack.restore(stack);
+  }
+}
+
 /**
  * THE reload-persistent browser mode: a named database on OPFS via the
  * `opfs-sahpool` VFS. Worker-context only — not because SAHPool requires
@@ -329,9 +433,10 @@ export async function openPersistentWasmDatabase(
         // Syncular removes its own rejected entry below, so allow a later
         // open in the same worker to make a real attempt as well.
         forceReinitIfPreviouslyFailed: true,
-        ...(options?.initialCapacity !== undefined
-          ? { initialCapacity: options.initialCapacity }
-          : {}),
+        initialCapacity: Math.max(
+          options?.initialCapacity ?? SAH_POOL_DEFAULT_CAPACITY,
+          SAH_POOL_MIN_CAPACITY,
+        ),
       })
       .catch((error: unknown) => {
         sahPools.delete(directory);
@@ -341,52 +446,11 @@ export async function openPersistentWasmDatabase(
   }
   const util = await pool;
   const db = new util.OpfsSAHPoolDb(`/${name}.db`);
-  const { capi, wasm } = sqlite3;
-  const stack = wasm.pstack.pointer;
   try {
-    // Do this before the first SQL statement, when SQLite checks for a hot
-    // journal. The SAH-pool callback in sqlite-wasm 3.53 reports a reserved
-    // lock unconditionally, which suppresses crash rollback. The pool already
-    // excludes other owners; report no competing writer, as the other OPFS
-    // VFS does. Keep DELETE/FULL and the existing database/journal files.
-    const output = wasm.pstack.allocPtr();
-    if (
-      db.pointer === undefined ||
-      capi.sqlite3_file_control(
-        db.pointer,
-        'main',
-        capi.SQLITE_FCNTL_FILE_POINTER,
-        output,
-      ) !== 0 ||
-      !wasm.peekPtr(output)
-    ) {
-      throw new ClientSyncError(
-        STORAGE_UNAVAILABLE_CODE,
-        'Could not configure OPFS crash recovery',
-      );
-    }
-    const file = new capi.sqlite3_file(wasm.peekPtr(output));
-    const methodsPointer = file.$pMethods;
-    file.dispose(); // Borrowed struct view; SQLite still owns the file.
-    if (!methodsPointer) {
-      throw new ClientSyncError(
-        STORAGE_UNAVAILABLE_CODE,
-        'Could not configure OPFS crash recovery',
-      );
-    }
-    if (!sahIoMethods.has(methodsPointer)) {
-      const methods = new capi.sqlite3_io_methods(methodsPointer);
-      methods.installMethod('xCheckReservedLock', (_file, reserved) => {
-        wasm.poke32(reserved, 0);
-        return 0;
-      });
-      sahIoMethods.set(methodsPointer, methods);
-    }
-    return new WasmClientDatabase(db, sqlite3);
+    configureSahCrashRecovery(db, sqlite3);
+    return new WasmClientDatabase(db, sqlite3, { util });
   } catch (error) {
     db.close();
     throw error;
-  } finally {
-    wasm.pstack.restore(stack);
   }
 }

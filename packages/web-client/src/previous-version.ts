@@ -3,11 +3,21 @@
  *
  * A schema bump wipes the local replica (§7.4.3), so the rows the app could
  * see a moment ago are gone before the server can re-bootstrap them. This
- * module captures a bounded, typed, read-only copy of the pre-reset rows
- * inside the reset transaction so the app can answer "what did this look like
- * before the upgrade" while the replacement bootstrap is in flight.
+ * module captures a bounded, typed, read-only copy of the pre-reset rows so
+ * the app can answer "what did this look like before the upgrade" while the
+ * replacement bootstrap is in flight.
  *
- * Three rules shape the implementation and are load-bearing:
+ * Storage (controller storage move, 2026-09-19): the captured rows live in a
+ * SECOND database file in the replica's own pool directory, opened through
+ * `ClientDatabase.openSibling`, never in the replica database. The guarantee
+ * this buys is stated narrowly: an older client's ordinary query connection
+ * does not attach this file, so no SQL it runs can reach the container. It is
+ * NOT protection against arbitrary same-origin access and NOT protection
+ * against native filesystem access. The filename is a code constant derived at
+ * runtime and MUST NEVER be persisted in the replica database — a name
+ * recoverable from the replica would hand an unaware binary the read path back.
+ *
+ * Two further rules shape the implementation:
  *
  * - The capture is typed by the OLD schema's {@link LocalSchemaDescriptor},
  *   persisted in `_syncular_meta` beside the schema-version marker. SQLite
@@ -16,14 +26,10 @@
  *   descriptor-free capture would be undecodable. It is NEVER inferred.
  * - Every budget is measured before any row is materialized. An over-budget
  *   capture stores nothing.
- * - The container is advisory local data: it never contributes to query
- *   coverage, and it is destroyed by every lifetime trigger (coverage
- *   completion, lease end, scope revocation, TTL, purge, explicit discard).
  */
 import type { RowColumn, RowValue } from '@syncular/core';
 import type { ClientDatabase, SqlRow, SqlValue } from './database';
 import { ClientSyncError } from './errors';
-import { PREVIOUS_VERSION_CONTAINER, previousVersionContainerExists } from './query-guard';
 import {
   type CompiledClientSchema,
   fromSqlValue,
@@ -38,17 +44,30 @@ import { getMeta, setMeta } from './state';
 /** `_syncular_meta` key holding the persisted {@link LocalSchemaDescriptor}. */
 export const LOCAL_SCHEMA_DESCRIPTOR_KEY = 'localSchemaDescriptor';
 
-/** `_syncular_meta` key holding the capture record or its refusal. */
+/**
+ * `_syncular_meta` key holding only a capture REFUSAL. The successful record
+ * lives inside the container file, so this key is absent whenever a container
+ * is present. It stays in the replica because it is small, typed, and useful
+ * even when nothing was captured.
+ */
 export const PREVIOUS_VERSION_CONTEXT_KEY = 'previousVersionContext';
 
 /** `_syncular_meta` key holding the pre-reset compatibility audit (D6). */
 export const PREVIOUS_VERSION_AUDIT_KEY = 'previousVersionAudit';
 
-/** §7.4.3 step 7: the container must not collide with the running schema. */
-export { PREVIOUS_VERSION_CONTAINER };
+/**
+ * RFC 0005: the code-derived sibling database filename. Never persisted in the
+ * replica database.
+ */
+export const PREVIOUS_VERSION_CONTAINER_NAME = 'prev-context';
+
+/** The one non-reserved row table INSIDE the container file (D3). */
+const CONTAINER_TABLE = 'syncular_prev_context';
+
+/** Container-local metadata table holding {@link PreviousVersionRecord}. */
+const CONTAINER_META_TABLE = '_syncular_prev_context_meta';
 
 const DESCRIPTOR_VERSION = 1;
-const CONTEXT_VERSION = 1;
 const AUDIT_VERSION = 1;
 
 /** Rows copied per `INSERT` batch (A4 step 5). */
@@ -60,17 +79,24 @@ const MAX_AUDIT_INCOMPATIBLE = 200;
 /** Read spec `limit` ceiling (D7). */
 export const PREVIOUS_VERSION_MAX_LIMIT = 200;
 
+/**
+ * Every reason the read surface can name. `security-inactive` is absent because
+ * `#requireActive()` throws before a read; `purged` and post-TTL are absent
+ * because a discard removes the records, so no durable state can name them.
+ */
 export type PreviousVersionReason =
   | 'not-configured'
   | 'no-previous-descriptor'
   | 'capture-exceeded-budget'
-  | 'namespace-collision'
   | 'coverage-complete'
   | 'expired'
   | 'lease-inactive'
-  | 'scope-revoked'
-  | 'security-inactive'
-  | 'purged';
+  | 'scope-revoked';
+
+/** Refusals that ARE durable, because no container is written for them. */
+export type PreviousVersionRefusalReason =
+  | 'no-previous-descriptor'
+  | 'capture-exceeded-budget';
 
 export interface LocalSchemaDescriptorColumn {
   readonly name: string;
@@ -89,8 +115,8 @@ export interface LocalSchemaDescriptor {
   readonly tables: readonly LocalSchemaDescriptorTable[];
 }
 
-/** Successful capture record written under {@link PREVIOUS_VERSION_CONTEXT_KEY}. */
-export interface PreviousVersionContextRecord {
+/** Successful capture record, stored INSIDE the container file. */
+export interface PreviousVersionRecord {
   readonly v: 1;
   readonly previousVersion: number;
   readonly currentVersion: number;
@@ -100,25 +126,14 @@ export interface PreviousVersionContextRecord {
   readonly createdAtMs: number;
 }
 
-/**
- * Capture refusal written under the same key. D1/D2 require the read surface
- * to name WHY nothing was captured, and the persisted context record is the
- * only durable place for it.
- */
-export interface PreviousVersionRefusalRecord {
+/** Durable refusal stored in `_syncular_meta` when no container is written. */
+export interface PreviousVersionRefusal {
   readonly v: 1;
-  readonly reason:
-    | 'no-previous-descriptor'
-    | 'capture-exceeded-budget'
-    | 'namespace-collision';
+  readonly reason: PreviousVersionRefusalReason;
   readonly tables?: number;
   readonly rows?: number;
   readonly bytes?: number;
 }
-
-export type PreviousVersionContextStored =
-  | PreviousVersionContextRecord
-  | PreviousVersionRefusalRecord;
 
 export interface PreviousVersionCaptureConfig {
   readonly maxBytes: number;
@@ -134,13 +149,10 @@ export interface PreviousVersionCaptureMeasurement {
 }
 
 export type PreviousVersionCaptureOutcome =
-  | {
-      readonly ok: true;
-      readonly measurement: PreviousVersionCaptureMeasurement;
-    }
+  | { readonly ok: true; readonly measurement: PreviousVersionCaptureMeasurement }
   | {
       readonly ok: false;
-      readonly reason: 'capture-exceeded-budget' | 'namespace-collision';
+      readonly reason: 'capture-exceeded-budget';
       readonly measurement: PreviousVersionCaptureMeasurement;
     };
 
@@ -179,9 +191,73 @@ export interface PreviousVersionSnapshot {
   readonly truncated: boolean;
 }
 
+function isCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function localCorrupt(what: string): never {
+  throw new ClientSyncError('sync.local_corrupt', `persisted ${what} is invalid`);
+}
+
 // ---------------------------------------------------------------------------
 // Descriptor (D1)
 // ---------------------------------------------------------------------------
+
+const COLUMN_TYPES = new Set<RowColumn['type']>([
+  'string',
+  'integer',
+  'float',
+  'boolean',
+  'bytes',
+  'json',
+  'blob_ref',
+  'crdt',
+]);
+
+function decodeColumns(value: unknown): LocalSchemaDescriptorColumn[] {
+  if (!Array.isArray(value)) return localCorrupt('schema descriptor');
+  return value.map((entry) => {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      return localCorrupt('schema descriptor');
+    }
+    const column = entry as Record<string, unknown>;
+    const keys = Object.keys(column).sort();
+    if (
+      keys.length !== 2 ||
+      keys[0] !== 'name' ||
+      keys[1] !== 'type' ||
+      typeof column.name !== 'string' ||
+      typeof column.type !== 'string' ||
+      !COLUMN_TYPES.has(column.type as RowColumn['type'])
+    ) {
+      return localCorrupt('schema descriptor');
+    }
+    return { name: column.name, type: column.type as RowColumn['type'] };
+  });
+}
+
+function decodeTable(value: unknown): LocalSchemaDescriptorTable {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return localCorrupt('schema descriptor');
+  }
+  const table = value as Record<string, unknown>;
+  const keys = Object.keys(table).sort();
+  if (
+    keys.length !== 3 ||
+    keys[0] !== 'columns' ||
+    keys[1] !== 'name' ||
+    keys[2] !== 'primaryKey' ||
+    typeof table.name !== 'string' ||
+    typeof table.primaryKey !== 'string'
+  ) {
+    return localCorrupt('schema descriptor');
+  }
+  return {
+    name: table.name,
+    primaryKey: table.primaryKey,
+    columns: decodeColumns(table.columns),
+  };
+}
 
 /**
  * D1: the semantic local types of every table in the running generated schema,
@@ -204,69 +280,6 @@ export function buildLocalSchemaDescriptor(
   };
 }
 
-const COLUMN_TYPES = new Set<RowColumn['type']>([
-  'string',
-  'integer',
-  'float',
-  'boolean',
-  'bytes',
-  'json',
-  'blob_ref',
-  'crdt',
-]);
-
-function descriptorCorrupt(): never {
-  throw new ClientSyncError(
-    'sync.local_corrupt',
-    'persisted local schema descriptor is invalid',
-  );
-}
-
-function decodeDescriptorColumns(value: unknown): LocalSchemaDescriptorColumn[] {
-  if (!Array.isArray(value)) return descriptorCorrupt();
-  return value.map((entry) => {
-    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
-      return descriptorCorrupt();
-    }
-    const column = entry as Record<string, unknown>;
-    const keys = Object.keys(column).sort();
-    if (
-      keys.length !== 2 ||
-      keys[0] !== 'name' ||
-      keys[1] !== 'type' ||
-      typeof column.name !== 'string' ||
-      typeof column.type !== 'string' ||
-      !COLUMN_TYPES.has(column.type as RowColumn['type'])
-    ) {
-      return descriptorCorrupt();
-    }
-    return { name: column.name, type: column.type as RowColumn['type'] };
-  });
-}
-
-function decodeDescriptorTable(value: unknown): LocalSchemaDescriptorTable {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    return descriptorCorrupt();
-  }
-  const table = value as Record<string, unknown>;
-  const keys = Object.keys(table).sort();
-  if (
-    keys.length !== 3 ||
-    keys[0] !== 'columns' ||
-    keys[1] !== 'name' ||
-    keys[2] !== 'primaryKey' ||
-    typeof table.name !== 'string' ||
-    typeof table.primaryKey !== 'string'
-  ) {
-    return descriptorCorrupt();
-  }
-  return {
-    name: table.name,
-    primaryKey: table.primaryKey,
-    columns: decodeDescriptorColumns(table.columns),
-  };
-}
-
 /** Strict decode: an unknown shape is corruption, never a best guess. */
 export function decodeLocalSchemaDescriptor(
   value: string,
@@ -275,10 +288,10 @@ export function decodeLocalSchemaDescriptor(
   try {
     parsed = JSON.parse(value);
   } catch {
-    return descriptorCorrupt();
+    return localCorrupt('schema descriptor');
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return descriptorCorrupt();
+    return localCorrupt('schema descriptor');
   }
   const record = parsed as Record<string, unknown>;
   const keys = Object.keys(record).sort();
@@ -291,12 +304,12 @@ export function decodeLocalSchemaDescriptor(
     !isCount(record.version) ||
     !Array.isArray(record.tables)
   ) {
-    return descriptorCorrupt();
+    return localCorrupt('schema descriptor');
   }
   return {
     v: 1,
     version: record.version,
-    tables: record.tables.map(decodeDescriptorTable),
+    tables: record.tables.map(decodeTable),
   };
 }
 
@@ -330,49 +343,51 @@ export function loadLocalSchemaDescriptor(
 }
 
 // ---------------------------------------------------------------------------
-// Context record (D5 step 5 / refusal)
+// Container file (D3, moved off the replica connection)
 // ---------------------------------------------------------------------------
 
-function isCount(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+/** Drop both container tables. Also the unconditional orphan sweep (D5). */
+export function dropPreviousVersionContainer(db: ClientDatabase): void {
+  db.exec(`DROP TABLE IF EXISTS ${quoteIdent(CONTAINER_TABLE)}`);
+  db.exec(`DROP TABLE IF EXISTS ${quoteIdent(CONTAINER_META_TABLE)}`);
 }
 
-export function encodePreviousVersionContext(
-  stored: PreviousVersionContextStored,
-): string {
-  return JSON.stringify(stored);
+function containerHasMeta(db: ClientDatabase): boolean {
+  return (
+    db.query(
+      "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?",
+      [CONTAINER_META_TABLE],
+    ).length > 0
+  );
 }
 
-export function decodePreviousVersionContext(
-  value: string,
-): PreviousVersionContextStored {
+/** Read the container's own metadata record; `undefined` when absent/corrupt. */
+export function readPreviousVersionContainer(
+  db: ClientDatabase,
+): PreviousVersionRecord | undefined {
+  if (!containerHasMeta(db)) return undefined;
+  const raw = db.query(
+    `SELECT record FROM ${quoteIdent(CONTAINER_META_TABLE)} WHERE id = 1`,
+  )[0]?.record;
+  if (raw === undefined) return undefined;
+  try {
+    return decodeRecord(String(raw));
+  } catch {
+    return undefined;
+  }
+}
+
+function decodeRecord(value: string): PreviousVersionRecord {
   let parsed: unknown;
   try {
     parsed = JSON.parse(value);
   } catch {
-    return contextCorrupt();
+    return localCorrupt('previous-version context');
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return contextCorrupt();
+    return localCorrupt('previous-version context');
   }
   const record = parsed as Record<string, unknown>;
-  if (record.v !== CONTEXT_VERSION) return contextCorrupt();
-  if (typeof record.reason === 'string') {
-    if (
-      record.reason !== 'no-previous-descriptor' &&
-      record.reason !== 'capture-exceeded-budget' &&
-      record.reason !== 'namespace-collision'
-    ) {
-      return contextCorrupt();
-    }
-    return {
-      v: 1,
-      reason: record.reason,
-      ...(isCount(record.tables) ? { tables: record.tables } : {}),
-      ...(isCount(record.rows) ? { rows: record.rows } : {}),
-      ...(isCount(record.bytes) ? { bytes: record.bytes } : {}),
-    };
-  }
   const keys = Object.keys(record).sort();
   if (
     keys.length !== 7 ||
@@ -383,6 +398,7 @@ export function decodePreviousVersionContext(
     keys[4] !== 'rows' ||
     keys[5] !== 'tables' ||
     keys[6] !== 'v' ||
+    record.v !== 1 ||
     !isCount(record.bytes) ||
     !isCount(record.createdAtMs) ||
     !isCount(record.currentVersion) ||
@@ -390,75 +406,35 @@ export function decodePreviousVersionContext(
     !isCount(record.rows) ||
     !Array.isArray(record.tables)
   ) {
-    return contextCorrupt();
+    return localCorrupt('previous-version context');
   }
   return {
     v: 1,
     previousVersion: record.previousVersion,
     currentVersion: record.currentVersion,
-    tables: record.tables.map(decodeDescriptorTable),
+    tables: record.tables.map(decodeTable),
     rows: record.rows,
     bytes: record.bytes,
     createdAtMs: record.createdAtMs,
   };
 }
 
-function contextCorrupt(): never {
-  throw new ClientSyncError(
-    'sync.local_corrupt',
-    'persisted previous-version context is invalid',
+function writeRecord(db: ClientDatabase, record: PreviousVersionRecord): void {
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS ${quoteIdent(CONTAINER_META_TABLE)} (
+       id INTEGER PRIMARY KEY CHECK (id = 1),
+       record TEXT NOT NULL)`,
   );
-}
-
-function storedContext(
-  db: ClientDatabase,
-): PreviousVersionContextStored | undefined {
-  const raw = getMeta(db, PREVIOUS_VERSION_CONTEXT_KEY);
-  if (raw === undefined) return undefined;
-  try {
-    return decodePreviousVersionContext(raw);
-  } catch {
-    return undefined;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Container lifecycle (D3)
-// ---------------------------------------------------------------------------
-
-/** D5 step 1 / `#runLogEpochReset`: unconditional orphan sweep. */
-export function dropPreviousVersionContainer(db: ClientDatabase): void {
-  db.exec(`DROP TABLE IF EXISTS ${quoteIdent(PREVIOUS_VERSION_CONTAINER)}`);
-}
-
-/**
- * Drop the container and BOTH metadata records in one transaction. Every
- * discard trigger routes through here, including the explicit downgrade
- * procedure, so the post-discard database holds no trace (A2 step 3).
- */
-export function discardPreviousVersion(db: ClientDatabase): void {
-  db.transaction(() => {
-    dropPreviousVersionContainer(db);
-    db.exec('DELETE FROM _syncular_meta WHERE key = ?', [
-      PREVIOUS_VERSION_CONTEXT_KEY,
-    ]);
-    db.exec('DELETE FROM _syncular_meta WHERE key = ?', [
-      PREVIOUS_VERSION_AUDIT_KEY,
-    ]);
-  });
+  db.exec(`DELETE FROM ${quoteIdent(CONTAINER_META_TABLE)}`);
+  db.exec(
+    `INSERT INTO ${quoteIdent(CONTAINER_META_TABLE)}(id, record) VALUES (1, ?)`,
+    [JSON.stringify(record)],
+  );
 }
 
 // ---------------------------------------------------------------------------
 // Bounded capture (D2 / A4)
 // ---------------------------------------------------------------------------
-
-function budgetMeasurement(
-  tables: number,
-  rows: number,
-  bytes: number,
-): PreviousVersionCaptureMeasurement {
-  return { tables, rows, bytes };
-}
 
 function sumBytesExpression(columns: readonly string[]): string {
   return columns
@@ -467,37 +443,30 @@ function sumBytesExpression(columns: readonly string[]): string {
 }
 
 /**
- * D2/A4: measure the capture inside the reset transaction BEFORE materializing
- * anything. Ordered probes, aborting on the first violation:
+ * D2/A4: measure the capture BEFORE materializing anything. Ordered probes,
+ * aborting on the first violation:
  *
  * 1. table count from `sqlite_master`;
  * 2. per-table row count with a `LIMIT maxRows + 1` early-abort probe;
  * 3. a single-row probe for rows larger than `maxRowBytes`;
  * 4. a bounded `SUM` over a `LIMIT`ed subquery;
- * 5. the copy itself, in {@link COPY_BATCH_ROWS} batches.
+ * 5. the copy itself into the CONTAINER file, in {@link COPY_BATCH_ROWS}
+ *    batches and one container transaction.
  */
 export function capturePreviousVersion(
-  db: ClientDatabase,
+  replica: ClientDatabase,
+  container: ClientDatabase,
   oldDescriptor: LocalSchemaDescriptor,
   newSchema: CompiledClientSchema,
   config: PreviousVersionCaptureConfig,
   nowMs: number,
 ): PreviousVersionCaptureOutcome {
-  if (newSchema.tables.has(PREVIOUS_VERSION_CONTAINER)) {
-    return {
-      ok: false,
-      reason: 'namespace-collision',
-      measurement: budgetMeasurement(0, 0, 0),
-    };
-  }
   const discovered = new Set(
-    db
+    replica
       .query(
         `SELECT name FROM sqlite_master WHERE type = 'table'
            AND name NOT LIKE '_syncular_%'
-           AND name NOT LIKE 'sqlite_%'
-           AND name != ?`,
-        [PREVIOUS_VERSION_CONTAINER],
+           AND name NOT LIKE 'sqlite_%'`,
       )
       .map((row) => String(row.name)),
   );
@@ -506,144 +475,110 @@ export function capturePreviousVersion(
   const tables = oldDescriptor.tables.filter((table) =>
     discovered.has(table.name),
   );
-  if (tables.length > config.maxTables) {
-    return {
-      ok: false,
-      reason: 'capture-exceeded-budget',
-      measurement: budgetMeasurement(tables.length, 0, 0),
-    };
-  }
+  const over = (
+    rows: number,
+    bytes: number,
+  ): PreviousVersionCaptureOutcome => ({
+    ok: false,
+    reason: 'capture-exceeded-budget',
+    measurement: { tables: tables.length, rows, bytes },
+  });
+  if (tables.length > config.maxTables) return over(0, 0);
 
   let measuredRows = 0;
   const perTableRows: number[] = [];
   for (const table of tables) {
     const probeRows = Number(
-      db.query(
+      replica.query(
         `SELECT COUNT(*) AS count FROM (SELECT 1 FROM ${quoteIdent(table.name)} LIMIT ?)`,
         [config.maxRows + 1],
       )[0]?.count ?? 0,
     );
     measuredRows += probeRows;
     perTableRows.push(probeRows);
-    if (measuredRows > config.maxRows) {
-      return {
-        ok: false,
-        reason: 'capture-exceeded-budget',
-        measurement: budgetMeasurement(tables.length, measuredRows, 0),
-      };
-    }
+    if (measuredRows > config.maxRows) return over(measuredRows, 0);
   }
 
   let measuredBytes = 0;
   for (let index = 0; index < tables.length; index++) {
     const table = tables[index] as LocalSchemaDescriptorTable;
-    const columns = table.columns.map((column) => column.name);
-    const byteSum = sumBytesExpression(columns);
-    if (columns.length > 0) {
-      const oversized = db.query(
-        `SELECT 1 AS hit FROM ${quoteIdent(table.name)}
-           WHERE (${byteSum}) > ? LIMIT 1`,
-        [config.maxRowBytes],
-      );
-      if (oversized.length > 0) {
-        return {
-          ok: false,
-          reason: 'capture-exceeded-budget',
-          measurement: budgetMeasurement(tables.length, measuredRows, measuredBytes),
-        };
-      }
-      const boundedRows = perTableRows[index] ?? 0;
-      const total = db.query(
-        `SELECT COALESCE(SUM(bytes), 0) AS total FROM (
-           SELECT (${byteSum}) AS bytes FROM ${quoteIdent(table.name)} LIMIT ?
-         )`,
-        [boundedRows],
-      )[0]?.total;
-      measuredBytes += Number(total ?? 0);
-      if (measuredBytes > config.maxBytes) {
-        return {
-          ok: false,
-          reason: 'capture-exceeded-budget',
-          measurement: budgetMeasurement(tables.length, measuredRows, measuredBytes),
-        };
-      }
-    }
+    const byteSum = sumBytesExpression(table.columns.map((c) => c.name));
+    if (table.columns.length === 0) continue;
+    const oversized = replica.query(
+      `SELECT 1 AS hit FROM ${quoteIdent(table.name)}
+         WHERE (${byteSum}) > ? LIMIT 1`,
+      [config.maxRowBytes],
+    );
+    if (oversized.length > 0) return over(measuredRows, measuredBytes);
+    const total = replica.query(
+      `SELECT COALESCE(SUM(bytes), 0) AS total FROM (
+         SELECT (${byteSum}) AS bytes FROM ${quoteIdent(table.name)} LIMIT ?
+       )`,
+      [perTableRows[index] ?? 0],
+    )[0]?.total;
+    measuredBytes += Number(total ?? 0);
+    if (measuredBytes > config.maxBytes) return over(measuredRows, measuredBytes);
   }
 
-  if (tables.length === 0) {
-    writeContextRecord(db, {
+  let copiedRows = 0;
+  container.transaction(() => {
+    dropPreviousVersionContainer(container);
+    container.exec(
+      `CREATE TABLE ${quoteIdent(CONTAINER_TABLE)} (
+         tbl TEXT NOT NULL,
+         row_id TEXT NOT NULL,
+         payload TEXT NOT NULL,
+         PRIMARY KEY (tbl, row_id))`,
+    );
+    for (const table of tables) {
+      const selectColumns = table.columns
+        .map((column) => quoteIdent(column.name))
+        .join(', ');
+      let lastRowId = -1;
+      for (;;) {
+        const rows = replica.query(
+          `SELECT rowid AS _rid, ${selectColumns} FROM ${quoteIdent(table.name)}
+             WHERE rowid > ? ORDER BY rowid ASC LIMIT ?`,
+          [lastRowId, COPY_BATCH_ROWS],
+        );
+        if (rows.length === 0) break;
+        for (const row of rows) {
+          const payload: Record<string, JsonRowValue> = {};
+          for (const column of table.columns) {
+            const value: RowValue = fromSqlValue(
+              { name: column.name, type: column.type, nullable: true },
+              (row[column.name] ?? null) as SqlValue,
+            );
+            payload[column.name] = rowValueToJson(value);
+          }
+          container.exec(
+            `INSERT INTO ${quoteIdent(CONTAINER_TABLE)}(tbl, row_id, payload)
+               VALUES (?, ?, ?)`,
+            [table.name, rowIdText(table, row), JSON.stringify(payload)],
+          );
+        }
+        lastRowId = Number(rows[rows.length - 1]?._rid ?? lastRowId);
+        copiedRows += rows.length;
+      }
+    }
+    writeRecord(container, {
       v: 1,
       previousVersion: oldDescriptor.version,
       currentVersion: newSchema.version,
-      tables: [],
-      rows: 0,
-      bytes: 0,
+      tables: tables.map((table) => ({
+        name: table.name,
+        primaryKey: table.primaryKey,
+        columns: table.columns,
+      })),
+      rows: copiedRows,
+      bytes: measuredBytes,
       createdAtMs: nowMs,
     });
-    return { ok: true, measurement: budgetMeasurement(0, 0, 0) };
-  }
-
-  db.exec(
-    `CREATE TABLE ${quoteIdent(PREVIOUS_VERSION_CONTAINER)} (
-       tbl TEXT NOT NULL,
-       row_id TEXT NOT NULL,
-       payload TEXT NOT NULL,
-       PRIMARY KEY (tbl, row_id))`,
-  );
-  let copiedRows = 0;
-  for (const table of tables) {
-    const columns = table.columns;
-    const selectColumns = columns
-      .map((column) => quoteIdent(column.name))
-      .join(', ');
-    let lastRowId = -1;
-    for (;;) {
-      const rows = db.query(
-        `SELECT rowid AS _rid, ${selectColumns} FROM ${quoteIdent(table.name)}
-           WHERE rowid > ? ORDER BY rowid ASC LIMIT ?`,
-        [lastRowId, COPY_BATCH_ROWS],
-      );
-      if (rows.length === 0) break;
-      for (const row of rows) {
-        const payload: Record<string, JsonRowValue> = {};
-        for (const column of columns) {
-          const value: RowValue = fromSqlValue(
-            { name: column.name, type: column.type, nullable: true },
-            (row[column.name] ?? null) as SqlValue,
-          );
-          payload[column.name] = rowValueToJson(value);
-        }
-        db.exec(
-          `INSERT INTO ${quoteIdent(PREVIOUS_VERSION_CONTAINER)}(tbl, row_id, payload)
-             VALUES (?, ?, ?)`,
-          [table.name, rowIdText(table, row), JSON.stringify(payload)],
-        );
-      }
-      lastRowId = Number(rows[rows.length - 1]?._rid ?? lastRowId);
-      copiedRows += rows.length;
-    }
-  }
-
-  writeContextRecord(db, {
-    v: 1,
-    previousVersion: oldDescriptor.version,
-    currentVersion: newSchema.version,
-    tables: tables.map((table) => ({
-      name: table.name,
-      primaryKey: table.primaryKey,
-      columns: table.columns,
-    })),
-    rows: copiedRows,
-    bytes: measuredBytes,
-    createdAtMs: nowMs,
   });
-  return { ok: true, measurement: budgetMeasurement(tables.length, copiedRows, measuredBytes) };
+  return { ok: true, measurement: { tables: tables.length, rows: copiedRows, bytes: measuredBytes } };
 }
 
-function rowIdText(
-  table: LocalSchemaDescriptorTable,
-  row: SqlRow,
-): string {
+function rowIdText(table: LocalSchemaDescriptorTable, row: SqlRow): string {
   const value = row[table.primaryKey] ?? null;
   if (value === null) return '';
   if (value instanceof Uint8Array) {
@@ -652,26 +587,109 @@ function rowIdText(
   return String(value);
 }
 
-/** Persist a refusal so the read surface can name the missing capture. */
+function decodePreviousVersionPayload(
+  table: LocalSchemaDescriptorTable,
+  payload: string,
+): SqlRow {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(payload);
+  } catch {
+    return localCorrupt('previous-version payload');
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return localCorrupt('previous-version payload');
+  }
+  const record = parsed as Record<string, JsonRowValue>;
+  const row: SqlRow = {};
+  for (const column of table.columns) {
+    row[column.name] = jsonToRowValue(record[column.name] ?? null) as SqlValue;
+  }
+  return row;
+}
+
+/** D7: read one previous table from the container, `limit + 1` rows for truncation. */
+export function readPreviousVersionRows(
+  db: ClientDatabase,
+  table: LocalSchemaDescriptorTable,
+  rowIds: readonly string[],
+  limit: number,
+): { rows: SqlRow[]; truncated: boolean } {
+  const where =
+    rowIds.length === 0
+      ? ''
+      : ` AND row_id IN (${rowIds.map(() => '?').join(', ')})`;
+  const rows = db.query(
+    `SELECT row_id, payload FROM ${quoteIdent(CONTAINER_TABLE)}
+       WHERE tbl = ?${where} ORDER BY row_id ASC LIMIT ?`,
+    [table.name, ...rowIds, limit + 1],
+  );
+  const truncated = rows.length > limit;
+  const visible = truncated ? rows.slice(0, limit) : rows;
+  return {
+    rows: visible.map((row) =>
+      decodePreviousVersionPayload(table, String(row.payload)),
+    ),
+    truncated,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Durable refusal (read surface for a capture that stored nothing)
+// ---------------------------------------------------------------------------
+
 export function writePreviousVersionRefusal(
   db: ClientDatabase,
-  reason: PreviousVersionRefusalRecord['reason'],
+  reason: PreviousVersionRefusalReason,
   measurement: PreviousVersionCaptureMeasurement,
 ): void {
-  writeContextRecord(db, {
+  const refusal: PreviousVersionRefusal = {
     v: 1,
     reason,
     tables: measurement.tables,
     rows: measurement.rows,
     bytes: measurement.bytes,
-  });
+  };
+  setMeta(db, PREVIOUS_VERSION_CONTEXT_KEY, JSON.stringify(refusal));
 }
 
-function writeContextRecord(
+/** Delete the durable refusal. Part of the orphan sweep and of a successful capture. */
+export function clearPreviousVersionRefusal(db: ClientDatabase): void {
+  db.exec('DELETE FROM _syncular_meta WHERE key = ?', [
+    PREVIOUS_VERSION_CONTEXT_KEY,
+  ]);
+}
+
+/** Decode the durable refusal; `undefined` when absent or corrupt. */
+export function storedPreviousVersionRefusal(
   db: ClientDatabase,
-  stored: PreviousVersionContextStored,
-): void {
-  setMeta(db, PREVIOUS_VERSION_CONTEXT_KEY, encodePreviousVersionContext(stored));
+): PreviousVersionRefusal | undefined {
+  const raw = getMeta(db, PREVIOUS_VERSION_CONTEXT_KEY);
+  if (raw === undefined) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return undefined;
+  }
+  const record = parsed as Record<string, unknown>;
+  if (
+    record.v !== 1 ||
+    (record.reason !== 'no-previous-descriptor' &&
+      record.reason !== 'capture-exceeded-budget')
+  ) {
+    return undefined;
+  }
+  return {
+    v: 1,
+    reason: record.reason,
+    ...(isCount(record.tables) ? { tables: record.tables } : {}),
+    ...(isCount(record.rows) ? { rows: record.rows } : {}),
+    ...(isCount(record.bytes) ? { bytes: record.bytes } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -751,16 +769,15 @@ function firstIncompatibility(
   return undefined;
 }
 
-export function encodePreviousVersionAudit(audit: PreviousVersionAudit): string {
-  return JSON.stringify(audit);
-}
-
-export function decodePreviousVersionAudit(
-  value: string,
+/** Strict decode; `undefined` when absent or malformed. */
+export function storedPreviousVersionAudit(
+  db: ClientDatabase,
 ): PreviousVersionAudit | undefined {
+  const raw = getMeta(db, PREVIOUS_VERSION_AUDIT_KEY);
+  if (raw === undefined) return undefined;
   let parsed: unknown;
   try {
-    parsed = JSON.parse(value);
+    parsed = JSON.parse(raw);
   } catch {
     return undefined;
   }
@@ -813,59 +830,16 @@ export function decodePreviousVersionAudit(
   };
 }
 
-/** Decode the stored audit; `undefined` when absent or corrupt. */
-export function storedPreviousVersionAudit(
-  db: ClientDatabase,
-): PreviousVersionAudit | undefined {
-  const raw = getMeta(db, PREVIOUS_VERSION_AUDIT_KEY);
-  if (raw === undefined) return undefined;
-  return decodePreviousVersionAudit(raw);
-}
-
 export function writePreviousVersionAudit(
   db: ClientDatabase,
   audit: PreviousVersionAudit,
 ): void {
-  setMeta(db, PREVIOUS_VERSION_AUDIT_KEY, encodePreviousVersionAudit(audit));
+  setMeta(db, PREVIOUS_VERSION_AUDIT_KEY, JSON.stringify(audit));
 }
 
-// ---------------------------------------------------------------------------
-// Read surface (D7)
-// ---------------------------------------------------------------------------
-
-export function decodePreviousVersionPayload(
-  table: LocalSchemaDescriptorTable,
-  payload: string,
-): SqlRow {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(payload);
-  } catch {
-    return contextCorrupt();
-  }
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return contextCorrupt();
-  }
-  const record = parsed as Record<string, JsonRowValue>;
-  const row: SqlRow = {};
-  for (const column of table.columns) {
-    row[column.name] = jsonToRowValue(record[column.name] ?? null) as SqlValue;
-  }
-  return row;
-}
-
-export function previousVersionStatus(
-  db: ClientDatabase,
-): { present: boolean; createdAtMs?: number } {
-  const stored = storedContext(db);
-  if (stored !== undefined && 'currentVersion' in stored) {
-    return { present: true, createdAtMs: stored.createdAtMs };
-  }
-  return { present: previousVersionContainerExists(db) };
-}
-
-export function storedPreviousVersionContext(
-  db: ClientDatabase,
-): PreviousVersionContextStored | undefined {
-  return storedContext(db);
+/** Delete the advisory audit. Part of a discard, never of a normal bump. */
+export function clearPreviousVersionAudit(db: ClientDatabase): void {
+  db.exec('DELETE FROM _syncular_meta WHERE key = ?', [
+    PREVIOUS_VERSION_AUDIT_KEY,
+  ]);
 }
