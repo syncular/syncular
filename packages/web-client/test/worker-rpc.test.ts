@@ -309,9 +309,10 @@ test('worker preflight gates protected RPCs and activates the host loop later', 
     handle.rebootstrapLocalData({ rebootstrapId: 'blocked-repair' }),
     SECURITY_PREFLIGHT_REQUIRED_CODE,
   );
-  // RFC 0005: the read/discard surface is protected local data, so all three
-  // must be refused during preflight exactly like the Rust dispatcher and the
-  // native bridges (none of them is on the preflight allowlist).
+  // RFC 0005: reads and the audit are protected local data and must be
+  // refused during preflight exactly like the Rust dispatcher and the native
+  // bridges (none of the three is on the preflight allowlist)... except the
+  // authorized discard, which RFC 0006 runs inside the quiesced window.
   await expectRejectsWithCode(
     handle.previousVersionSnapshot({ table: 'tasks' }),
     SECURITY_PREFLIGHT_REQUIRED_CODE,
@@ -320,10 +321,13 @@ test('worker preflight gates protected RPCs and activates the host loop later', 
     handle.previousVersionAudit(),
     SECURITY_PREFLIGHT_REQUIRED_CODE,
   );
-  await expectRejectsWithCode(
-    handle.previousVersionDiscard(),
-    SECURITY_PREFLIGHT_REQUIRED_CODE,
-  );
+  // Authorized cleanup stays possible while quiesced: an unconfigured discard
+  // is a successful no-op, and it does not reactivate the client.
+  expect(await handle.previousVersionDiscard()).toEqual({
+    present: false,
+    discarded: false,
+  });
+  expect(await handle.securityLifecycle()).toBe('preflight');
   expect(events.synced).toEqual([]);
 
   await handle.activateSecurity();

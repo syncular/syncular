@@ -288,9 +288,14 @@ describe('createNativeSyncClient', () => {
     await expect(client.previousVersionAudit()).rejects.toMatchObject({
       code: SECURITY_PREFLIGHT_REQUIRED_CODE,
     });
-    await expect(client.previousVersionDiscard()).rejects.toMatchObject({
-      code: SECURITY_PREFLIGHT_REQUIRED_CODE,
+    // Authorized cleanup stays possible while quiesced: the RFC 0006 key-loss
+    // hook runs the discard inside the preflight window, before activation, so
+    // gating it here would turn the physical removal into a skip.
+    expect(await client.previousVersionDiscard()).toEqual({
+      present: false,
+      discarded: false,
     });
+    expect(await client.securityLifecycle()).toBe('preflight');
     await client.activateSecurity({
       encryption: {
         keys: { 'practice-v2': new Uint8Array(32).fill(0x3c) },

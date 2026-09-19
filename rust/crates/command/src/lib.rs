@@ -441,6 +441,7 @@ pub fn dispatch<T: Transport>(
                 | "beginSecurityPreflight"
                 | "activateSecurity"
                 | "purgeLocalData"
+                | "previousVersionDiscard"
                 | "localRevision"
                 | "statusSnapshot"
                 | "shutdown"
@@ -1440,6 +1441,46 @@ mod tests {
         )
         .expect_err("mutation must be gated");
         assert_eq!(blocked.0, SECURITY_PREFLIGHT_REQUIRED_CODE);
+    }
+
+    #[test]
+    fn preflight_allows_only_the_authorized_previous_version_discard() {
+        let mut transport = NoNetwork::default();
+        let mut client: Option<SyncClient> = None;
+        let mut effects = CreateEffects::default();
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({ "schema": schema(), "securityPreflight": true }),
+        )
+        .expect("preflight create");
+
+        // Reads and the audit observe protected local data: still gated.
+        for method in ["previousVersionSnapshot", "previousVersionAudit"] {
+            let error = dispatch(
+                &mut transport,
+                &mut client,
+                &mut effects,
+                method,
+                &json!({}),
+            )
+            .expect_err("previous-version reads stay gated during preflight");
+            assert_eq!(error.0, SECURITY_PREFLIGHT_REQUIRED_CODE);
+        }
+        // RFC 0006 runs the discard consumer inside the quiesced window, so the
+        // command router must permit it (feature off here: a clean no-op).
+        let discarded = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "previousVersionDiscard",
+            &json!({}),
+        )
+        .expect("authorized cleanup is allowed during preflight");
+        assert_eq!(discarded, json!({ "present": false, "discarded": false }));
+        assert!(client.as_ref().is_some_and(SyncClient::security_preflight));
     }
 
     #[test]

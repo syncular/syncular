@@ -98,7 +98,11 @@ deleted — as soon as any of these is true:
 - the app calls `previousVersionDiscard()`.
 
 `previousVersionDiscard()` returns `{ present, discarded }` and is
-idempotent: discarding nothing succeeds.
+idempotent: discarding nothing succeeds. It is cleanup, not a read: an
+update path may run it while the replica is quiesced in security preflight
+(after the `beginSecurityPreflight()` barrier, before reactivation), where
+it never activates the client. `previousVersionSnapshot()` and
+`previousVersionAudit()` stay read-gated and are refused during preflight.
 
 ## Hosts
 

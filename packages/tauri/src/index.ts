@@ -335,6 +335,7 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
         'beginSecurityPreflight',
         'activateSecurity',
         'purgeLocalData',
+        'previousVersionDiscard',
         'localRevision',
         'statusSnapshot',
         'shutdown',

@@ -368,6 +368,7 @@ export class NativeSyncClient implements PromiseMethods<ClientSnapshotMethods> {
         'beginSecurityPreflight',
         'activateSecurity',
         'purgeLocalData',
+        'previousVersionDiscard',
         'localRevision',
         'statusSnapshot',
         'shutdown',

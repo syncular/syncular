@@ -1400,9 +1400,14 @@ export class SyncClient {
   /**
    * RFC 0005 A2/D9: the executable downgrade step. Drop the container file and
    * both metadata records, and report whether anything was present.
+   *
+   * Authorized cleanup, so it is gated only on `start()` like
+   * `purgeLocalData`, NOT on `active`: RFC 0006 runs the discard consumer
+   * inside the quiesced security-preflight window, after the barrier and
+   * before reactivation. Reads and the audit stay active-gated.
    */
   previousVersionDiscard(): { present: boolean; discarded: boolean } {
-    this.#requireActive();
+    this.#requireStarted();
     const present = this.#dropPreviousVersion();
     return { present, discarded: present };
   }

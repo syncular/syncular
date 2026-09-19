@@ -4128,9 +4128,15 @@ at 200; a named table that is not in the capture is
 `sync.invalid_request`. `previousVersionAudit()` returns the pre-reset
 audit described below and `previousVersionDiscard()` the executable
 discard.
-Reads run through the same preflight gate as `query()` (§5.11), and the
-container MUST NOT contribute to `querySnapshot().coverage` — a
-previous-version read never makes coverage complete.
+`previousVersionSnapshot()` and `previousVersionAudit()` run through the
+same preflight gate as `query()` (§5.11). `previousVersionDiscard()` is
+**authorized cleanup, not a read**: it is gated only on `start()`, like
+`purgeLocalData()`, so the discard consumer an update path runs inside the
+quiesced security-preflight window (after the `beginSecurityPreflight()`
+barrier, before any reactivation) physically removes the container instead
+of being turned into a skip; it never activates the client. The container
+MUST NOT contribute to `querySnapshot().coverage` — a previous-version
+read never makes coverage complete.
 
 The reasons are a closed set: `not-configured`, `no-previous-descriptor`,
 `capture-exceeded-budget`, `coverage-complete`, `expired`,

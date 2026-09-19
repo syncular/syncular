@@ -14,6 +14,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  SECURITY_PREFLIGHT_REQUIRED_CODE,
   type ClientSchema,
   type SiblingDatabase,
   type SqlValue,
@@ -237,6 +238,67 @@ describe('RFC 0005 default off', () => {
       expect(
         bumped.client.statusSnapshot().previousVersionContext.present,
       ).toBe(false);
+    } finally {
+      await bumped.client.close();
+      bumped.db.close();
+    }
+  });
+});
+
+describe('RFC 0005 preflight cleanup boundary', () => {
+  test('reads stay gated while an authorized discard physically drops the container', async () => {
+    const server = v2Server();
+    const path = tempPath('preflight');
+    await seedV1(server, path);
+    const bumped = await openAt(server, path, V2_SCHEMA, enabled());
+    try {
+      expect(
+        bumped.client.previousVersionSnapshot({ table: 'things' }).available,
+      ).toBe(true);
+      expect(containerTableCount(path)).toBe(1);
+      await bumped.client.beginSecurityPreflight();
+      expect(bumped.client.securityLifecycle()).toBe('preflight');
+      for (const read of [
+        () => bumped.client.previousVersionSnapshot({ table: 'things' }),
+        () => bumped.client.previousVersionAudit(),
+      ]) {
+        try {
+          read();
+          throw new Error('expected a preflight rejection');
+        } catch (error) {
+          expect((error as { code?: string }).code).toBe(
+            SECURITY_PREFLIGHT_REQUIRED_CODE,
+          );
+        }
+      }
+      // RFC 0006 runs the discard consumer inside the quiesced window, after
+      // the barrier and before reactivation: the physical removal must succeed
+      // here, and must not flip the lifecycle back to active.
+      expect(bumped.client.previousVersionDiscard()).toEqual({
+        present: true,
+        discarded: true,
+      });
+      expectNoContainerFile(path);
+      expect(bumped.client.securityLifecycle()).toBe('preflight');
+    } finally {
+      await bumped.client.close();
+      bumped.db.close();
+    }
+  });
+
+  test('feature-off discard is a successful no-op during preflight', async () => {
+    const server = v2Server();
+    const path = tempPath('preflight-off');
+    await seedV1(server, path);
+    const bumped = await openAt(server, path, V2_SCHEMA);
+    try {
+      await bumped.client.beginSecurityPreflight();
+      expect(bumped.client.previousVersionDiscard()).toEqual({
+        present: false,
+        discarded: false,
+      });
+      expectNoContainerFile(path);
+      expect(bumped.client.securityLifecycle()).toBe('preflight');
     } finally {
       await bumped.client.close();
       bumped.db.close();
