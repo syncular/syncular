@@ -42,6 +42,10 @@ use crate::api::{
 #[cfg(feature = "bench-internals")]
 use crate::bench::{Phase, Recorder};
 use crate::schema::{parse_schema_json, ClientSchema, FtsIndexSchema, TableSchema};
+use crate::previous_version::{
+    capture_previous_version_from_replica, set_local_schema_descriptor,
+    sweep_previous_version_container, PreviousVersionContextConfig,
+};
 use crate::transport::{BlobDownload, BlobUploadGrant, SegmentRequest, Transport, TransportError};
 use crate::values::{
     bytes_to_hex, canonical_scope_json, column_value_to_json, decode_row_bytes,
@@ -4471,6 +4475,10 @@ pub struct SyncClient {
     /// Fail-closed host bootstrap gate. While set, command hosts permit only
     /// status/lifecycle inspection and an exact authorized local purge.
     security_preflight: bool,
+    /// RFC 0005 D2/D8: the previous-version capture config. `None` (default)
+    /// means the feature is off; the descriptor write and the container orphan
+    /// sweep still happen.
+    previous_version: Option<PreviousVersionContextConfig>,
     /// Per-table primary-key upsert SQL, built once per (full table name) —
     /// the row write path runs per row during bootstrap (§5.6), so the SQL
     /// string (and, via `prepare_cached`, its compiled statement) is reused
@@ -4499,8 +4507,33 @@ pub struct SyncClient {
     last_change: Option<DiagnosticLastChange>,
 }
 
-fn quote_ident(name: &str) -> String {
+pub(crate) fn quote_ident(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
+}
+/// §7.4.1 `_syncular_meta` helpers. Free functions so RFC 0005's
+/// previous-version module reads and writes the SAME records as the client
+/// instead of growing a parallel meta layer.
+pub(crate) fn meta_get(conn: &Connection, key: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT value FROM _syncular_meta WHERE key = ?1",
+        rusqlite::params![key],
+        |row| row.get::<_, String>(0),
+    )
+    .ok()
+}
+
+pub(crate) fn meta_set(conn: &Connection, key: &str, value: &str) {
+    let _ = conn.execute(
+        "INSERT OR REPLACE INTO _syncular_meta (key, value) VALUES (?1, ?2)",
+        rusqlite::params![key, value],
+    );
+}
+
+pub(crate) fn meta_delete(conn: &Connection, key: &str) {
+    let _ = conn.execute(
+        "DELETE FROM _syncular_meta WHERE key = ?1",
+        rusqlite::params![key],
+    );
 }
 
 /// Seek by the existing key while retaining the exact legacy text match.
@@ -4689,8 +4722,7 @@ fn image_cell_param<'a>(column: &Column, value: ValueRef<'a>) -> Result<ToSqlOut
     }
 }
 
-fn sql_ref_to_json(column: &Column, value: rusqlite::types::ValueRef<'_>) -> Value {
-    use rusqlite::types::ValueRef;
+pub(crate) fn sql_ref_to_json(column: &Column, value: rusqlite::types::ValueRef<'_>) -> Value {    use rusqlite::types::ValueRef;
     match value {
         ValueRef::Null => Value::Null,
         ValueRef::Integer(i) => match column.ty {
@@ -5041,6 +5073,15 @@ impl SyncClient {
             );
         }
         let schema = parse_schema_json(schema_json)?;
+        // RFC 0005 D8: resolve the previous-version config before the opening
+        // reset runs — the capture happens inside it. Bad bounds fail loud.
+        let previous_version = match limits.previous_version_context.clone() {
+            Some(config) => {
+                config.validate()?;
+                Some(config)
+            }
+            None => None,
+        };
         let mut client = SyncClient {
             #[cfg(feature = "bench-internals")]
             benchmark_phases: Recorder::default(),
@@ -5062,6 +5103,7 @@ impl SyncClient {
             now_ms: None,
             encryption: crate::values::EncryptionConfig::default(),
             security_preflight: false,
+            previous_version,
             insert_sql: RefCell::new(HashMap::new()),
             overlay_dirty: Cell::new(false),
             #[cfg(test)]
@@ -5103,9 +5145,15 @@ impl SyncClient {
             None => {
                 client.create_synced_tables()?;
                 client.set_meta(LOCAL_SCHEMA_VERSION_KEY, &client.schema.version.to_string());
+                // D1: the descriptor is written beside every marker write.
+                set_local_schema_descriptor(&client.conn, &client.schema);
             }
             Some(version) if version == client.schema.version => {
                 client.create_synced_tables()?;
+                // RFC 0005 D1: the same-version open backfills the descriptor
+                // for a database first opened by an unaware binary, so the
+                // NEXT bump can capture without needing a schema bump first.
+                set_local_schema_descriptor(&client.conn, &client.schema);
             }
             Some(_) => client.run_schema_reset()?,
         }
@@ -5322,13 +5370,7 @@ impl SyncClient {
     // -- meta (§7.4.1 marker, bookkeeping) ------------------------------------
 
     fn get_meta(&self, key: &str) -> Option<String> {
-        self.conn
-            .query_row(
-                "SELECT value FROM _syncular_meta WHERE key = ?1",
-                rusqlite::params![key],
-                |row| row.get::<_, String>(0),
-            )
-            .ok()
+        meta_get(&self.conn, key)
     }
 
     fn get_meta_strict(&self, key: &str) -> Result<Option<String>, String> {
@@ -5345,17 +5387,11 @@ impl SyncClient {
     }
 
     fn set_meta(&self, key: &str, value: &str) {
-        let _ = self.conn.execute(
-            "INSERT OR REPLACE INTO _syncular_meta (key, value) VALUES (?1, ?2)",
-            rusqlite::params![key, value],
-        );
+        meta_set(&self.conn, key, value);
     }
 
     fn delete_meta(&self, key: &str) {
-        let _ = self.conn.execute(
-            "DELETE FROM _syncular_meta WHERE key = ?1",
-            rusqlite::params![key],
-        );
+        meta_delete(&self.conn, key);
     }
 
     fn restore_persisted_state(&mut self) -> Result<(), String> {
@@ -6140,6 +6176,17 @@ impl SyncClient {
         self.delete_meta(SCHEMA_FLOOR_KEY);
     }
 
+    /// RFC 0005 D3: the sibling container path, or `None` when the replica has
+    /// no file — an in-memory replica (and therefore any host without a
+    /// sibling file) has no container, so the feature resolves as off.
+    fn previous_version_replica_path(&self) -> Option<String> {
+        let path = self.conn.path()?;
+        if path.is_empty() {
+            return None;
+        }
+        Some(path.to_owned())
+    }
+
     /// §7.4.3 reset: whole-database local reset EXCEPT the outbox, clientId,
     /// and leaseState. Drops/recreates every synced table from the new
     /// schema, resets subscription sync-state (keeping registrations), clears
@@ -6148,7 +6195,7 @@ impl SyncClient {
     fn run_schema_reset(&mut self) -> Result<(), String> {
         self.begin_observation("syncular_schema_reset")?;
         let mut batch = ChangeAccumulator::default();
-        let result = self.run_schema_reset_observed(&mut batch, true);
+        let result = self.run_schema_reset_observed(&mut batch, true, true);
         if let Err(error) = result {
             self.rollback_observation("syncular_schema_reset");
             return Err(error);
@@ -6164,7 +6211,7 @@ impl SyncClient {
         let resets = self.subs.iter().map(|sub| sub.id.clone()).collect();
         self.begin_observation("syncular_log_epoch_reset")?;
         let mut batch = ChangeAccumulator::default();
-        let result = self.run_schema_reset_observed(&mut batch, false);
+        let result = self.run_schema_reset_observed(&mut batch, false, false);
         if let Err(error) = result {
             self.rollback_observation("syncular_log_epoch_reset");
             return Err(error);
@@ -6184,9 +6231,33 @@ impl SyncClient {
         &mut self,
         batch: &mut ChangeAccumulator,
         drop_incompatible: bool,
+        capture: bool,
     ) -> Result<(), String> {
         self.upgrading = true;
         batch.status = true;
+        // RFC 0005 D5: the container lives in its own FILE, so the reset can
+        // never reach it. Sweep first (unconditional — also on the log-epoch
+        // reset, which captures nothing), then capture BEFORE the wipe drops
+        // any row. A refused capture records its reason and leaves no file.
+        if let Some(replica_path) = self.previous_version_replica_path() {
+            sweep_previous_version_container(&replica_path)?;
+            if capture {
+                if let Some(config) = self.previous_version.filter(|config| config.enabled) {
+                    let previous_version = self
+                        .get_meta(LOCAL_SCHEMA_VERSION_KEY)
+                        .and_then(|value| value.parse::<i32>().ok())
+                        .unwrap_or(self.schema.version);
+                    capture_previous_version_from_replica(
+                        &self.conn,
+                        &replica_path,
+                        previous_version,
+                        self.schema.version,
+                        &config,
+                        self.clock_now_ms(),
+                    )?;
+                }
+            }
+        }
         for table in &self.schema.tables {
             batch.table(&table.name);
         }
@@ -6273,6 +6344,9 @@ impl SyncClient {
         self.delete_meta(SCHEMA_FLOOR_KEY);
         // Rewrite the marker LAST so a crash mid-reset re-runs the reset.
         self.set_meta(LOCAL_SCHEMA_VERSION_KEY, &self.schema.version.to_string());
+        // D1: the descriptor follows every marker write. A crash in between
+        // self-heals on the next same-version open, which backfills it.
+        set_local_schema_descriptor(&self.conn, &self.schema);
         // §7.4.4: drop outbox commits that cannot re-encode under the new
         // schema (a referenced column/table the bump removed), surfacing each
         // as a `sync.outbox_incompatible` rejection.
@@ -10506,7 +10580,7 @@ impl SyncClient {
         self.begin_observation("syncular_local_rebootstrap")?;
         let mut batch = ChangeAccumulator::default();
         let applied = (|| -> Result<(), String> {
-            self.run_schema_reset_observed(&mut batch, false)?;
+            self.run_schema_reset_observed(&mut batch, false, false)?;
             self.conn
                 .execute(
                     "INSERT INTO _syncular_meta(key, value) VALUES (?1, ?2)",

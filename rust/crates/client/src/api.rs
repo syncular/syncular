@@ -8,6 +8,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::previous_version::PreviousVersionContextConfig;
+
 /// Stable dynamic value boundary used by generated named queries.
 pub type QueryValue = Value;
 /// One dynamic query result row, keyed by QueryIR runtime projection name.
@@ -811,4 +813,8 @@ pub struct ClientLimits {
     /// Maximum durable final outcomes. Active conflicts/rejections are never
     /// pruned to satisfy the cap. Defaults to 1,000.
     pub outcome_retention_max_entries: Option<usize>,
+    /// RFC 0005 D8: the previous-version capture config. Absent or
+    /// `enabled: false` runs the feature off (default); the descriptor write
+    /// and the container orphan sweep still happen.
+    pub previous_version_context: Option<PreviousVersionContextConfig>,
 }
