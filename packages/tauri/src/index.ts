@@ -61,6 +61,7 @@ import type {
   SecurityLifecycle,
   SqlRow,
   SqlValue,
+  SyncClientConfig,
   SyncStatusSnapshot,
   WindowBase,
   WindowState,
@@ -122,6 +123,12 @@ export interface TauriSyncClientConfig {
   readonly encryption?: EncryptionKeyringConfig;
   /** Open the native replica behind the fail-closed security gate. */
   readonly securityPreflight?: boolean;
+  /**
+   * RFC 0005 previous-version context, forwarded to the native `create`. The
+   * Rust create handler must read this key to enable capture; while it does
+   * not, the native core treats the feature as off (default-off).
+   */
+  readonly previousVersionContext?: SyncClientConfig['previousVersionContext'];
   /**
    * The Tauri primitives. Omit in a real Tauri webview to auto-resolve from
    * `@tauri-apps/api` (peer dep) or the ambient `window.__TAURI__`; inject in
@@ -1036,6 +1043,9 @@ export async function createTauriSyncClient(
           : {}),
         ...(config.securityPreflight !== undefined
           ? { securityPreflight: config.securityPreflight }
+          : {}),
+        ...(config.previousVersionContext !== undefined
+          ? { previousVersionContext: config.previousVersionContext }
           : {}),
       },
     },

@@ -208,6 +208,28 @@ describe('createTauriSyncClient', () => {
     ).toBe('c1');
   });
 
+  test('forwards previousVersionContext into the native create envelope', async () => {
+    const { tauri, calls } = makeTauri(defaultResponder);
+    await createTauriSyncClient({
+      clientId: 'previous-version',
+      schema: { version: 1, tables: [] },
+      previousVersionContext: { enabled: true, maxRows: 100 },
+      tauri,
+    });
+    const create = calls.find(
+      (c) =>
+        c.cmd === 'plugin:syncular|syncular_command' &&
+        (c.args.command as { method: string }).method === 'create',
+    );
+    expect(
+      (
+        create?.args.command as {
+          params: { previousVersionContext?: unknown };
+        }
+      ).params.previousVersionContext,
+    ).toEqual({ enabled: true, maxRows: 100 });
+  });
+
   test('forwards portable encryption keys and row key-id columns on create', async () => {
     const { tauri, calls } = makeTauri(defaultResponder);
     await createTauriSyncClient({

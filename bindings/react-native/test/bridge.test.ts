@@ -228,6 +228,25 @@ describe('createNativeSyncClient', () => {
     expect(pump.started).toBe(1);
   });
 
+  test('forwards previousVersionContext into the native create envelope', async () => {
+    const { nativeModule, eventEmitter, calls } = makeNative(defaultResponder);
+    await createNativeSyncClient({
+      clientId: 'previous-version',
+      schema: { version: 1, tables: [] },
+      previousVersionContext: { enabled: true, maxRows: 100 },
+      nativeModule,
+      eventEmitter,
+    });
+    const create = calls.find((call) => call.fn === 'create');
+    const createParams = JSON.parse(
+      (create?.arg as { createJson: string }).createJson,
+    );
+    expect(createParams.previousVersionContext).toEqual({
+      enabled: true,
+      maxRows: 100,
+    });
+  });
+
   test('preflight blocks protected work and installs the portable keyring on activation', async () => {
     const { nativeModule, eventEmitter, calls, emit } =
       makeNative(defaultResponder);
