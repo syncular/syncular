@@ -149,7 +149,28 @@ import {
   commitOutcome as readCommitOutcome,
   recordCommitOutcome,
 } from './outcomes';
-import { assertReadOnlyQuery } from './query-guard';
+import { assertReadOnlyQuery, assertProtectedTableAccess, previousVersionContainerExists } from './query-guard';
+import {
+  buildPreviousVersionAudit,
+  capturePreviousVersion,
+  decodePreviousVersionPayload,
+  discardPreviousVersion,
+  dropPreviousVersionContainer,
+  loadLocalSchemaDescriptor,
+  PREVIOUS_VERSION_CONTAINER,
+  PREVIOUS_VERSION_MAX_LIMIT,
+  type PreviousVersionAudit,
+  type PreviousVersionCaptureConfig,
+  type PreviousVersionReason,
+  type PreviousVersionReadSpec,
+  type PreviousVersionSnapshot,
+  previousVersionStatus,
+  setLocalSchemaDescriptor,
+  storedPreviousVersionAudit,
+  storedPreviousVersionContext,
+  writePreviousVersionAudit,
+  writePreviousVersionRefusal,
+} from './previous-version';
 import {
   type ClientSchema,
   type CompiledClientSchema,
@@ -361,6 +382,31 @@ export interface SyncClientConfig {
    * hosts must not materialize key bytes before their preflight has passed.
    */
   readonly securityPreflight?: boolean;
+  /**
+   * RFC 0005 previous-version context. A feature flag, default off: when
+   * absent or `enabled: false`, a schema bump behaves exactly as 0.22.0 did
+   * apart from the schema-descriptor write and the unconditional orphan
+   * sweep. It is not a security control.
+   *
+   * When enabled, the §7.4.3 reset captures a bounded typed copy of the
+   * pre-reset rows and `previousVersionSnapshot()` can read it until
+   * coverage completes, the lease ends, a scope is revoked, the TTL passes,
+   * the data is purged, or the host discards it.
+   */
+  readonly previousVersionContext?: {
+    readonly enabled: boolean;
+    /** Total captured bytes; default 8 MiB. */
+    readonly maxBytes?: number;
+    /** Total captured rows; default 20,000. */
+    readonly maxRows?: number;
+    /** Captured table count; default 32. */
+    readonly maxTables?: number;
+    /** Largest single captured row in bytes; default 1 MiB. */
+    readonly maxRowBytes?: number;
+    /** Aware-binary hygiene TTL; default 24h. It does not bound an
+     * unaware same-schema rollback, which runs none of this code. */
+    readonly maxAgeMs?: number;
+  };
 }
 
 /** The fail-closed local-replica security lifecycle shared by every host. */
@@ -526,6 +572,66 @@ function emptySummary(pushed: number): MutableSummary {
 
 const LOG_EPOCH_META_KEY = 'logEpoch';
 
+/** RFC 0005 defaults (D2/A4/D7). */
+const PREVIOUS_VERSION_DEFAULT_MAX_BYTES = 8 * 1024 * 1024;
+const PREVIOUS_VERSION_DEFAULT_MAX_ROWS = 20_000;
+const PREVIOUS_VERSION_DEFAULT_MAX_TABLES = 32;
+const PREVIOUS_VERSION_DEFAULT_MAX_ROW_BYTES = 1024 * 1024;
+const PREVIOUS_VERSION_DEFAULT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+function boundedBudget(
+  value: number | undefined,
+  fallback: number,
+  name: string,
+): number {
+  if (value === undefined) return fallback;
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new ClientSyncError(
+      'sync.invalid_request',
+      `previousVersionContext.${name} must be a positive safe integer`,
+    );
+  }
+  return value;
+}
+
+function resolvePreviousVersionCaptureConfig(
+  config: SyncClientConfig['previousVersionContext'],
+): PreviousVersionCaptureConfig | undefined {
+  if (config === undefined || config.enabled !== true) return undefined;
+  return {
+    maxBytes: boundedBudget(config.maxBytes, PREVIOUS_VERSION_DEFAULT_MAX_BYTES, 'maxBytes'),
+    maxRows: boundedBudget(config.maxRows, PREVIOUS_VERSION_DEFAULT_MAX_ROWS, 'maxRows'),
+    maxTables: boundedBudget(config.maxTables, PREVIOUS_VERSION_DEFAULT_MAX_TABLES, 'maxTables'),
+    maxRowBytes: boundedBudget(
+      config.maxRowBytes,
+      PREVIOUS_VERSION_DEFAULT_MAX_ROW_BYTES,
+      'maxRowBytes',
+    ),
+  };
+}
+
+function previousVersionMaxAgeMs(
+  config: SyncClientConfig['previousVersionContext'],
+): number {
+  return boundedBudget(
+    config?.maxAgeMs,
+    PREVIOUS_VERSION_DEFAULT_MAX_AGE_MS,
+    'maxAgeMs',
+  );
+}
+
+/** RFC 0005 D7: `limit` defaults to 50 and is capped at 200. */
+function resolvePreviousVersionLimit(limit: number | undefined): number {
+  if (limit === undefined) return 50;
+  if (!Number.isFinite(limit) || limit < 1) {
+    throw new ClientSyncError(
+      'sync.invalid_request',
+      'previousVersionSnapshot limit must be a positive number',
+    );
+  }
+  return Math.min(PREVIOUS_VERSION_MAX_LIMIT, Math.trunc(limit));
+}
+
 function isFinalPushResult(frame: PushResultFrame): boolean {
   return (
     frame.status !== 'rejected' ||
@@ -575,6 +681,8 @@ export class SyncClient {
   readonly #schema: CompiledClientSchema;
   /** §5.11 client-side encryption config; undefined ⇒ E2EE off. */
   #encryption: EncryptionConfig | undefined;
+  /** RFC 0005 resolved capture budgets; undefined ⇒ feature off. */
+  readonly #previousVersion: PreviousVersionCaptureConfig | undefined;
   #securityLifecycle: SecurityLifecycle;
   readonly #now: () => number;
   readonly #outcomeRetentionMaxEntries: number;
@@ -683,6 +791,9 @@ export class SyncClient {
       );
     }
     this.#outcomeRetentionMaxEntries = outcomeRetentionMaxEntries;
+    this.#previousVersion = resolvePreviousVersionCaptureConfig(
+      config.previousVersionContext,
+    );
     this.#hasBlobs = schemaHasBlobs(this.#schema);
   }
 
@@ -735,6 +846,10 @@ export class SyncClient {
     // before the first sync round. A fresh install (no marker) is treated as
     // already at the generated version.
     this.#detectAndResetSchema();
+    // RFC 0005 D9: a container with missing/stale metadata, or past its TTL, is
+    // discarded at boot before anything can read it. The orphan/stale sweep is
+    // unconditional; the TTL is aware-binary hygiene only.
+    this.#reconcilePreviousVersionAtBoot();
     // A registration remains app intent only while its table exists in the
     // running schema. Removed-table registrations would poison every pull.
     const subscriptions = pruneUnknownSubscriptions(
@@ -785,14 +900,22 @@ export class SyncClient {
     const markerJson = getMeta(this.#db, LOCAL_SCHEMA_VERSION_KEY);
     if (markerJson === undefined) {
       // Fresh install: the tables just created match the running code.
-      ensureLocalSyncedSchema(this.#db, this.#schema);
-      setMeta(this.#db, LOCAL_SCHEMA_VERSION_KEY, String(this.#schema.version));
+      this.#db.transaction(() => {
+        ensureLocalSyncedSchema(this.#db, this.#schema);
+        setMeta(this.#db, LOCAL_SCHEMA_VERSION_KEY, String(this.#schema.version));
+        setLocalSchemaDescriptor(this.#db, this.#schema);
+      });
       return;
     }
     const marker = Number(markerJson);
     if (marker === this.#schema.version) {
-      // Same-version opens remain self-healing for absent tables/indexes.
-      ensureLocalSyncedSchema(this.#db, this.#schema);
+      // Same-version opens remain self-healing for absent tables/indexes, and
+      // RFC 0005 D1 backfills the descriptor for a database first opened by
+      // 0.22.0 or earlier WITHOUT a schema bump.
+      this.#db.transaction(() => {
+        ensureLocalSyncedSchema(this.#db, this.#schema);
+        setLocalSchemaDescriptor(this.#db, this.#schema);
+      });
       return;
     }
     this.#runSchemaReset();
@@ -806,9 +929,16 @@ export class SyncClient {
    * The bump is idempotent by the marker (rewritten last).
    */
   #runSchemaReset(): void {
+    const previousVersion = Number(
+      getMeta(this.#db, LOCAL_SCHEMA_VERSION_KEY) ?? this.#schema.version,
+    );
     this.#setUpgrading(true);
     this.#applyBatch((batch) => {
       this.#db.transaction(() => {
+        // D5 step 1: unconditional orphan sweep, then capture and audit while
+        // the OLD tables are still intact and before the wipe.
+        dropPreviousVersionContainer(this.#db);
+        this.#capturePreviousVersion(previousVersion);
         dropAndRecreateSyncedTables(this.#db, this.#schema);
         resetSubscriptionsForBump(this.#db);
         setMeta(
@@ -816,6 +946,7 @@ export class SyncClient {
           LOCAL_SCHEMA_VERSION_KEY,
           String(this.#schema.version),
         );
+        setLocalSchemaDescriptor(this.#db, this.#schema);
       });
       // Whole-DB reset: every synced table's rows changed (I1 eviction-shaped).
       for (const table of this.#schema.tables.values()) batch.table(table.name);
@@ -827,6 +958,51 @@ export class SyncClient {
     this.#replayOutbox();
   }
 
+  /**
+   * RFC 0005 D5 steps 2-6: capture the previous-version context and the
+   * pre-reset compatibility audit, both inside the reset transaction. Called
+   * before the wipe. A refused capture records its reason for the read surface.
+   */
+  #capturePreviousVersion(previousVersion: number): void {
+    const descriptor = loadLocalSchemaDescriptor(this.#db);
+    const pending = listOutbox(this.#db);
+    if (this.#previousVersion !== undefined) {
+      writePreviousVersionAudit(
+        this.#db,
+        buildPreviousVersionAudit(
+          this.#schema,
+          pending,
+          previousVersion,
+          this.#schema.version,
+          this.#now(),
+        ),
+      );
+      if (descriptor === undefined || descriptor.version !== previousVersion) {
+        writePreviousVersionRefusal(this.#db, 'no-previous-descriptor', {
+          tables: 0,
+          rows: 0,
+          bytes: 0,
+        });
+        return;
+      }
+      const outcome = capturePreviousVersion(
+        this.#db,
+        descriptor,
+        this.#schema,
+        this.#previousVersion,
+        this.#now(),
+      );
+      if (!outcome.ok) {
+        writePreviousVersionRefusal(
+          this.#db,
+          outcome.reason,
+          outcome.measurement,
+        );
+      }
+      return;
+    }
+  }
+
   /** §2.1 reset after the server reports a different log continuity. */
   #runLogEpochReset(logEpoch: string): string[] {
     const subscriptions = loadSubscriptions(this.#db);
@@ -834,6 +1010,9 @@ export class SyncClient {
     this.#setUpgrading(true);
     this.#applyBatch((batch) => {
       this.#db.transaction(() => {
+        // RFC 0005 D5: the log-epoch reset is not a schema bump. It performs
+        // the orphan sweep but captures no new shadow.
+        dropPreviousVersionContainer(this.#db);
         dropAndRecreateSyncedTables(this.#db, this.#schema);
         resetSubscriptionsForBump(this.#db);
         setMeta(this.#db, LOG_EPOCH_META_KEY, logEpoch);
@@ -1006,7 +1185,16 @@ export class SyncClient {
   query(sql: string, params?: readonly SqlValue[]): SqlRow[] {
     this.#requireActive();
     assertReadOnlyQuery(sql);
-    return stripSyncColumns(this.#db.query(sql, params));
+    // RFC 0005 D4: while the previous-version container exists, the guard, the
+    // EXPLAIN and the execution share one transaction on this connection so no
+    // schema change can land between the decision and the read.
+    if (!previousVersionContainerExists(this.#db)) {
+      return stripSyncColumns(this.#db.query(sql, params));
+    }
+    return this.#db.transaction(() => {
+      assertProtectedTableAccess(this.#db, sql);
+      return stripSyncColumns(this.#db.query(sql, params));
+    });
   }
 
   /** Current durable local observer revision (SPEC §7.5). */
@@ -1024,6 +1212,7 @@ export class SyncClient {
     this.#requireActive();
     assertReadOnlyQuery(spec.sql);
     return this.#db.transaction(() => {
+      assertProtectedTableAccess(this.#db, spec.sql);
       const revision = getLocalRevision(this.#db);
       const rows = stripSyncColumns(
         this.#db.query(spec.sql, spec.params),
@@ -1066,6 +1255,202 @@ export class SyncClient {
         },
       };
     });
+  }
+
+  // -- previous-version context (RFC 0005) ----------------------------------
+
+  /**
+   * RFC 0005 D7: read captured rows from the previous local schema. `state` is
+   * always `'previousVersion'`; the container never makes `querySnapshot()`
+   * coverage complete.
+   */
+  previousVersionSnapshot(
+    spec: PreviousVersionReadSpec,
+  ): PreviousVersionSnapshot {
+    this.#requireActive();
+    const currentVersion = this.#schema.version;
+    if (this.#previousVersion === undefined) {
+      return this.#previousVersionUnavailable(currentVersion, 'not-configured');
+    }
+    const stored = storedPreviousVersionContext(this.#db);
+    if (stored === undefined) {
+      return this.#previousVersionUnavailable(
+        currentVersion,
+        'no-previous-descriptor',
+      );
+    }
+    if ('reason' in stored) {
+      return this.#previousVersionUnavailable(currentVersion, stored.reason);
+    }
+    const nowMs = this.#now();
+    if (this.#previousVersionLeaseInactive(nowMs)) {
+      this.#discardPreviousVersion();
+      return this.#previousVersionUnavailable(currentVersion, 'lease-inactive');
+    }
+    if (loadSubscriptions(this.#db).some((sub) => sub.status === 'revoked')) {
+      this.#discardPreviousVersion();
+      return this.#previousVersionUnavailable(currentVersion, 'scope-revoked');
+    }
+    if (nowMs - stored.createdAtMs > previousVersionMaxAgeMs(this.#config.previousVersionContext)) {
+      this.#discardPreviousVersion();
+      return this.#previousVersionUnavailable(currentVersion, 'expired');
+    }
+    if (this.#previousVersionCoverageComplete()) {
+      this.#discardPreviousVersion();
+      return this.#previousVersionUnavailable(currentVersion, 'coverage-complete');
+    }
+    const table = stored.tables.find((entry) => entry.name === spec.table);
+    if (table === undefined) {
+      throw new ClientSyncError(
+        'sync.invalid_request',
+        `previousVersionSnapshot names unknown previous table ${JSON.stringify(spec.table)}`,
+      );
+    }
+    const limit = resolvePreviousVersionLimit(spec.limit);
+    const rowIds = spec.rowIds?.map(String) ?? [];
+    const where =
+      rowIds.length === 0
+        ? ''
+        : ` AND row_id IN (${rowIds.map(() => '?').join(', ')})`;
+    const rows = this.#db.query(
+      `SELECT row_id, payload FROM ${quoteIdent(PREVIOUS_VERSION_CONTAINER)}
+         WHERE tbl = ?${where} ORDER BY row_id ASC LIMIT ?`,
+      [spec.table, ...rowIds, limit + 1],
+    );
+    const truncated = rows.length > limit;
+    const visible = truncated ? rows.slice(0, limit) : rows;
+    return {
+      state: 'previousVersion',
+      available: true,
+      previousVersion: stored.previousVersion,
+      currentVersion,
+      rows: visible.map((row) =>
+        decodePreviousVersionPayload(table, String(row.payload)),
+      ),
+      truncated,
+    };
+  }
+
+  /** RFC 0005 D6: the pre-reset compatibility audit, advisory only. */
+  previousVersionAudit(): PreviousVersionAudit | undefined {
+    this.#requireActive();
+    return storedPreviousVersionAudit(this.#db);
+  }
+
+  /**
+   * RFC 0005 A2/D9: the executable downgrade step. Drop the container and both
+   * metadata records, and report whether anything was present.
+   */
+  previousVersionDiscard(): { present: boolean; discarded: boolean } {
+    this.#requireStarted();
+    let present = false;
+    this.#db.transaction(() => {
+      present =
+        previousVersionContainerExists(this.#db) ||
+        storedPreviousVersionContext(this.#db) !== undefined ||
+        storedPreviousVersionAudit(this.#db) !== undefined;
+      discardPreviousVersion(this.#db);
+    });
+    return { present, discarded: present };
+  }
+
+  #previousVersionUnavailable(
+    currentVersion: number,
+    reason: PreviousVersionReason,
+  ): PreviousVersionSnapshot {
+    return {
+      state: 'previousVersion',
+      available: false,
+      currentVersion,
+      reason,
+      rows: [],
+      truncated: false,
+    };
+  }
+
+  #previousVersionLeaseInactive(nowMs: number): boolean {
+    const lease = this.#leaseState;
+    if (lease?.errorCode !== undefined) return true;
+    return lease?.expiresAtMs !== undefined && lease.expiresAtMs <= nowMs;
+  }
+
+  /**
+   * RFC 0005 D7: the §7.4.5 replacement-coverage predicate — every active
+   * subscription has `cursor >= 0` and no resume token. Window units own
+   * subscriptions, so their pendency is included. An empty active set is not
+   * completion.
+   */
+  #previousVersionCoverageComplete(): boolean {
+    const active = loadSubscriptions(this.#db).filter(
+      (sub) => sub.status === 'active',
+    );
+    if (active.length === 0) return false;
+    return active.every(
+      (sub) => sub.cursor >= 0 && sub.bootstrapState === undefined,
+    );
+  }
+
+  #discardPreviousVersion(): boolean {
+    let present = false;
+    this.#db.transaction(() => {
+      present =
+        previousVersionContainerExists(this.#db) ||
+        storedPreviousVersionContext(this.#db) !== undefined ||
+        storedPreviousVersionAudit(this.#db) !== undefined;
+      discardPreviousVersion(this.#db);
+    });
+    if (present) this.#applyBatch((batch) => batch.status());
+    return present;
+  }
+
+  /** RFC 0005 D7: lifetime triggers evaluated after a sync round. */
+  #previousVersionLifetimeCheck(): void {
+    if (this.#previousVersion === undefined) return;
+    const nowMs = this.#now();
+    if (this.#previousVersionLeaseInactive(nowMs)) {
+      this.#discardPreviousVersion();
+      return;
+    }
+    const stored = storedPreviousVersionContext(this.#db);
+    if (stored === undefined || 'reason' in stored) return;
+    if (loadSubscriptions(this.#db).some((sub) => sub.status === 'revoked')) {
+      this.#discardPreviousVersion();
+      return;
+    }
+    if (nowMs - stored.createdAtMs > previousVersionMaxAgeMs(this.#config.previousVersionContext)) {
+      this.#discardPreviousVersion();
+      return;
+    }
+    if (this.#previousVersionCoverageComplete()) {
+      this.#discardPreviousVersion();
+    }
+  }
+
+  /**
+   * RFC 0005 D9 boot hygiene: an orphan/stale container is discarded before any
+   * read. The TTL runs only for an aware binary; it makes no claim about an
+   * unaware same-schema rollback, which executes none of this code.
+   */
+  #reconcilePreviousVersionAtBoot(): void {
+    const container = previousVersionContainerExists(this.#db);
+    const stored = storedPreviousVersionContext(this.#db);
+    const success =
+      stored !== undefined && !('reason' in stored) ? stored : undefined;
+    let discard = false;
+    if (container) {
+      discard = success === undefined || success.currentVersion !== this.#schema.version;
+    } else if (success !== undefined) {
+      discard = true;
+    }
+    if (
+      !discard &&
+      this.#previousVersion !== undefined &&
+      success !== undefined &&
+      this.#now() - success.createdAtMs > previousVersionMaxAgeMs(this.#config.previousVersionContext)
+    ) {
+      discard = true;
+    }
+    if (discard) discardPreviousVersion(this.#db);
   }
 
   // -- live-query invalidation ----------------------------------------------
@@ -1369,6 +1754,7 @@ export class SyncClient {
       leaseState: this.#leaseState,
       schemaFloor: this.#schemaFloor,
       syncNeeded: this.#needsPull,
+      previousVersionContext: previousVersionStatus(this.#db),
     };
   }
 
@@ -2371,6 +2757,10 @@ export class SyncClient {
     const rejectionCount = this.#rejections.length;
     try {
       return this.#applyBatch((batch) => {
+        // RFC 0005 D7: the previous-version container cannot be a purge target
+        // (its name is not in the running schema), so purge drops it as a fixed
+        // step, unconditionally.
+        discardPreviousVersion(this.#db);
         const targetsByTable = this.#localPurgeTargetsByTable(purge);
         // Doomed detection runs to fixpoint, matching the Rust core's rule:
         // a commit is doomed when any of its ops touches a base-matching
@@ -2623,6 +3013,8 @@ export class SyncClient {
       setMeta(this.#db, 'leaseState', JSON.stringify(next));
       batch.status();
     });
+    // RFC 0005 D7: a lease stop state ends the previous-version context.
+    if (next.errorCode !== undefined) this.#discardPreviousVersion();
   }
 
   /** The request-level lease error codes (§7.3.4): stop-and-surface. */
@@ -3776,6 +4168,9 @@ export class SyncClient {
     ) {
       this.#setUpgrading(false);
     }
+    // RFC 0005 D7: coverage completion, lease end, scope revocation and TTL are
+    // evaluated once per round, after the apply.
+    this.#previousVersionLifetimeCheck();
     return { ...summary, bootstrapping };
   }
 

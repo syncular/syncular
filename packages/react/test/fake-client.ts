@@ -314,6 +314,7 @@ export class FakeClient implements SyncClientLike {
       leaseState: this.#leaseState,
       schemaFloor: this.#schemaFloor,
       syncNeeded: this.#syncNeeded,
+      previousVersionContext: { present: false },
     };
   }
 

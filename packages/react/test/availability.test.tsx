@@ -31,6 +31,7 @@ function status(
     leaseState: undefined,
     schemaFloor,
     syncNeeded: false,
+    previousVersionContext: { present: false },
   } as const;
 }
 

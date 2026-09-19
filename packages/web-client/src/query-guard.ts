@@ -17,7 +17,23 @@
  * The guard only fronts the PUBLIC `client.query()` — engine-internal reads
  * call the `ClientDatabase` directly and are trusted, so they are never
  * routed through here.
+ *
+ * RFC 0005 adds a third rule: the previous-version context container is
+ * engine-private local data and MUST NOT be raw-readable through the public
+ * read tier. The check is engine-authoritative (SQLite's own `EXPLAIN` plan
+ * plus `sqlite_master` root pages), never a regex over table names, because a
+ * covering-index read opens the INDEX's root page rather than the table's and
+ * quoted, schema-qualified, CTE, subquery and view forms all defeat text
+ * matching.
  */
+import type { ClientDatabase, SqlRow } from './database';
+
+/**
+ * RFC 0005 D3: the one non-reserved container table holding captured rows from
+ * the previous local schema. Named here (not in the capture module) so the
+ * guard stays dependency-free.
+ */
+export const PREVIOUS_VERSION_CONTAINER = 'syncular_prev_context';
 
 /** Verbs a read-only query may begin with (lowercased). */
 const READ_ONLY_VERBS = new Set([
@@ -190,4 +206,76 @@ export function assertReadOnlyQuery(sql: string): void {
     const main = mainVerbAfterWith(statement);
     if (main !== 'select' && main !== 'values') rejectWrite();
   }
+}
+
+/**
+ * RFC 0005 D4: the root pages that belong to the container table and every
+ * index SQLite created on it (the `PRIMARY KEY (tbl, row_id)` autoindex).
+ * `undefined` means the container does not exist, so no read can reach it.
+ * Root pages are per-database, so this set is only meaningful against opcodes
+ * with `p3 = 0` (`main`).
+ */
+function protectedRootPages(db: ClientDatabase): Set<number> | undefined {
+  const rows = db.query(
+    'SELECT rootpage FROM sqlite_master WHERE tbl_name = ?',
+    [PREVIOUS_VERSION_CONTAINER],
+  );
+  if (rows.length === 0) return undefined;
+  const pages = new Set<number>();
+  for (const row of rows) {
+    const page = Number(row.rootpage);
+    if (Number.isSafeInteger(page) && page > 0) pages.add(page);
+  }
+  return pages;
+}
+
+/** True iff the RFC 0005 container currently exists locally. */
+export function previousVersionContainerExists(db: ClientDatabase): boolean {
+  return protectedRootPages(db) !== undefined;
+}
+
+/**
+ * RFC 0005 D4: refuse a statement that reads `syncular_prev_context`.
+ *
+ * The caller MUST run this inside the same transaction that executes `sql` on
+ * the same connection: the protected root-page set is re-read on every call
+ * and never cached, so a schema change cannot land between the decision and
+ * the read. The check fails closed while the container exists: an unavailable
+ * or unparseable `EXPLAIN`, or any `OpenRead`/`OpenWrite` against an attached
+ * or `temp` database, is a refusal.
+ */
+export function assertProtectedTableAccess(
+  db: ClientDatabase,
+  sql: string,
+): void {
+  const pages = protectedRootPages(db);
+  if (pages === undefined) return;
+  const refuse = (detail: string): never => {
+    throw new RawSqlError(
+      `client.query() refused a statement that reads the ${PREVIOUS_VERSION_CONTAINER} ` +
+        `container (RFC 0005): ${detail}. Read captured previous-version rows ` +
+        'only through client.previousVersionSnapshot().',
+    );
+  };
+  let plan: SqlRow[];
+  try {
+    plan = db.query(`EXPLAIN ${sql}`);
+  } catch {
+    return refuse('EXPLAIN is unavailable');
+  }
+  if (plan.length === 0) return refuse('EXPLAIN returned no plan');
+  let parsed = false;
+  for (const row of plan) {
+    const opcode = row.opcode;
+    if (typeof opcode !== 'string') continue;
+    parsed = true;
+    if (opcode !== 'OpenRead' && opcode !== 'OpenWrite') continue;
+    if (Number(row.p3) !== 0) {
+      return refuse('the statement opens an attached or temporary database');
+    }
+    if (pages.has(Number(row.p2))) {
+      return refuse('the statement opens the protected table or its index');
+    }
+  }
+  if (!parsed) return refuse('the EXPLAIN plan could not be parsed');
 }
