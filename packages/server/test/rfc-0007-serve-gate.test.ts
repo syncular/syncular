@@ -20,7 +20,9 @@ import {
   makeContext,
   pullHeader,
   pushCommit,
+  pushResults,
   requestBytes,
+  subFrame,
   sync,
   taskRow,
   upsert,
@@ -188,17 +190,12 @@ test('acceptance 13: a migration between the entry gate and the push transaction
       },
     });
     Object.assign(t.ctx, { storage: wrapped });
-    // The push transaction's own gate refuses; the response carries the
-    // in-band ERROR frame (§1.6) and the write rolled back.
-    const response = await sync(t, [
-      pushCommit('c1', [upsert('tasks', 't1', taskRow('t1', 'p1'))]),
-    ]);
-    expect(
-      response.frames.some(
-        (frame) =>
-          frame.type === 'ERROR' && frame.code === 'sync.schema_not_ready',
-      ),
-    ).toBe(true);
+    // The push transaction's own gate refuses before any write, and the
+    // buffered read-verify refuses the whole request because the stored
+    // version moved.
+    await expect(
+      sync(t, [pushCommit('c1', [upsert('tasks', 't1', taskRow('t1', 'p1'))])]),
+    ).rejects.toMatchObject({ code: 'sync.schema_not_ready' });
     // The refused write landed nothing.
     expect(await a.getMaxCommitSeq(PARTITION)).toBe(0);
   } finally {
@@ -291,6 +288,66 @@ test('an epoch rotation during the pull read is refused by the token comparison'
       logEpochChanged: true,
     });
     expect(rotated).toBe(true);
+  } finally {
+    db.close();
+  }
+});
+
+test('acceptance 13 (mixed push+pull): the pull half is refused and the applied push replays once', async () => {
+  const db = new BunSqliteDatabase();
+  const a = new SqliteServerStorage(db);
+  const t = makeContext({ storage: a });
+  try {
+    await a.ensureSchema(SCHEMA);
+    let rotated = false;
+    const wrapped = new Proxy(a, {
+      get(target, property) {
+        if (property === 'getMaxCommitSeq') {
+          return async (partition: string) => {
+            if (!rotated) {
+              rotated = true;
+              // The token changes during the pull half's data read, after the
+              // push half already applied.
+              await target.rotatePartitionLogEpoch(
+                partition,
+                'mixed-rotated-epoch',
+                t.now.ms,
+              );
+            }
+            return target.getMaxCommitSeq(partition);
+          };
+        }
+        const value = Reflect.get(target, property);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    Object.assign(t.ctx, { storage: wrapped });
+    await expect(
+      sync(t, [
+        pushCommit('mixed-1', [upsert('tasks', 'm1', taskRow('m1', 'p1'))]),
+        pullHeader({ limitCommits: 1 }),
+        subFrame('s1', 'tasks', { project_id: ['p1'] }, 0),
+      ]),
+    ).rejects.toMatchObject({ code: 'sync.schema_not_ready' });
+    // The push half is durable: it committed before the token changed.
+    expect(await a.getMaxCommitSeq(PARTITION)).toBe(1);
+    expect((await a.getRow(PARTITION, 'tasks', 'm1'))?.serverVersion).toBe(1);
+    // Retrying under the same commit id replays the durable outcome with no
+    // second apply. The request carries the rotated log epoch so it is not a
+    // stale-epoch reset.
+    const retryBytes = requestBytes(
+      [pushCommit('mixed-1', [upsert('tasks', 'm1', taskRow('m1', 'p1'))])],
+      'client-1',
+      1,
+      'mixed-rotated-epoch',
+    );
+    const retry = decodeMessage(await handleSyncRequest(retryBytes, t.ctx));
+    if (retry.msgKind !== 'response') throw new Error('expected a response');
+    const replayed = pushResults(retry)[0];
+    expect(replayed?.status).toBe('cached');
+    expect(replayed?.commitSeq).toBe(1);
+    expect(await a.getMaxCommitSeq(PARTITION)).toBe(1);
+    expect((await a.getRow(PARTITION, 'tasks', 'm1'))?.serverVersion).toBe(1);
   } finally {
     db.close();
   }

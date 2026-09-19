@@ -749,28 +749,27 @@ async function createStreamCore(
   // builds the whole response (its data reads) before yielding the first
   // frame, then compares the gate token across those reads. Nothing escapes
   // before the verification, and the buffered size is bounded by the request's
-  // pull limits and the server's inline segment cap. A write path's own
-  // held-lock gate already refused before any write, so its response is a
-  // committed decision and is not re-refused.
+  // pull limits and the server's inline segment cap. Every request verifies,
+  // including a mixed push+pull: a write that already applied when the token
+  // changed is durable and replayable under the same commit id / idempotency
+  // key, so refusing the request is safe (proved in the serve-gate lane).
   const verified = async function* (): AsyncGenerator<Uint8Array> {
     const buffered: Uint8Array[] = [];
     for await (const chunk of streamResponse(plan, ctx, schema, report)) {
       buffered.push(chunk);
     }
-    if (plan.pushes.length === 0) {
-      const after = await ctx.storage.readServeGate(
-        ctx.partition,
-        schema.version,
-      );
-      const changed = serveGateTokenChanged(gate, after);
-      const afterRefusal = serveGateRefusal(
-        after,
-        schema.version,
-        ctx.checkpoints,
-      );
-      if (afterRefusal !== undefined) throw serveNotReadyError(afterRefusal);
-      if (changed !== undefined) throw serveNotReadyError(changed);
-    }
+    const after = await ctx.storage.readServeGate(
+      ctx.partition,
+      schema.version,
+    );
+    const changed = serveGateTokenChanged(gate, after);
+    const afterRefusal = serveGateRefusal(
+      after,
+      schema.version,
+      ctx.checkpoints,
+    );
+    if (afterRefusal !== undefined) throw serveNotReadyError(afterRefusal);
+    if (changed !== undefined) throw serveNotReadyError(changed);
     for (const chunk of buffered) yield chunk;
   };
   if (events === undefined || report === undefined) return verified();
