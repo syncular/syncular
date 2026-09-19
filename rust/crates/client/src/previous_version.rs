@@ -817,10 +817,14 @@ fn remove_previous_version_files(path: &str) {
     }
 }
 
-/// D5 step 1: the unconditional orphan sweep. Drops the container tables and
-/// removes the file, so a crash-interrupted reset cannot leave a container
-/// beside a matching marker. A no-op when no container file exists.
-pub fn sweep_previous_version_container(replica_path: &str) -> Result<(), String> {
+/// D5 step 1: the unconditional orphan sweep. Drops the container tables,
+/// removes the file, and clears a durable refusal recorded for it, so a
+/// crash-interrupted reset cannot leave a container beside a matching marker.
+/// A no-op when no container file exists.
+pub fn sweep_previous_version_container(
+    replica: &Connection,
+    replica_path: &str,
+) -> Result<(), String> {
     let path = previous_version_container_path(replica_path);
     if !std::path::Path::new(&path).exists() {
         return Ok(());
@@ -830,6 +834,7 @@ pub fn sweep_previous_version_container(replica_path: &str) -> Result<(), String
     drop_previous_version_container(&container)?;
     let _ = container.close();
     remove_previous_version_files(&path);
+    meta_delete(replica, PREVIOUS_VERSION_CONTEXT_KEY);
     Ok(())
 }
 

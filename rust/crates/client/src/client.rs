@@ -6177,11 +6177,11 @@ impl SyncClient {
     }
 
     /// RFC 0005 D3: the sibling container path, or `None` when the replica has
-    /// no file — an in-memory replica (and therefore any host without a
-    /// sibling file) has no container, so the feature resolves as off.
+    /// no file — an in-memory replica returns an empty path, and a `file:` URI
+    /// has no plain sibling path — so the feature resolves as off there.
     fn previous_version_replica_path(&self) -> Option<String> {
         let path = self.conn.path()?;
-        if path.is_empty() {
+        if path.is_empty() || path.starts_with("file:") {
             return None;
         }
         Some(path.to_owned())
@@ -6240,7 +6240,7 @@ impl SyncClient {
         // reset, which captures nothing), then capture BEFORE the wipe drops
         // any row. A refused capture records its reason and leaves no file.
         if let Some(replica_path) = self.previous_version_replica_path() {
-            sweep_previous_version_container(&replica_path)?;
+            sweep_previous_version_container(&self.conn, &replica_path)?;
             if capture {
                 if let Some(config) = self.previous_version.filter(|config| config.enabled) {
                     let previous_version = self
