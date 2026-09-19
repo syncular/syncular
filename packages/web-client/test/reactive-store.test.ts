@@ -26,6 +26,7 @@ const STATUS: SyncStatusSnapshot = {
   leaseState: undefined,
   schemaFloor: undefined,
   syncNeeded: false,
+  previousVersionContext: { present: false },
 };
 
 const COMPLETE = { complete: true, pending: [], missing: [] } as const;

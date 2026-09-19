@@ -3,13 +3,14 @@
  * adapter: synchronous queries, nested transactions, and SQLite image attach.
  */
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   assertImageAlias,
   type ClientDatabase,
   runTransaction,
+  type SiblingDatabase,
   type SqlRow,
   type SqlValue,
 } from './database';
@@ -36,9 +37,11 @@ function normalizeRow(row: Record<string, unknown>): SqlRow {
 
 export class NodeClientDatabase implements ClientDatabase {
   readonly db: DatabaseSync;
+  readonly #path: string;
   #tx = { depth: 0 };
 
   constructor(path = ':memory:') {
+    this.#path = path;
     this.db = new DatabaseSync(path);
     try {
       this.db.exec('PRAGMA journal_mode = WAL');
@@ -56,6 +59,28 @@ export class NodeClientDatabase implements ClientDatabase {
   query(sql: string, params: readonly SqlValue[] = []): SqlRow[] {
     const rows = this.db.prepare(sql).all(...coerceParams(params));
     return rows.map(normalizeRow);
+  }
+
+  /** RFC 0005: a sibling file beside the replica, e.g. `<path>.prev-context`. */
+  openSibling(name: string): SiblingDatabase {
+    const siblingPath =
+      this.#path === ':memory:' ? ':memory:' : `${this.#path}.${name}`;
+    const database = new NodeClientDatabase(siblingPath);
+    return {
+      database,
+      close: () => database.close(),
+      removeFile: () => {
+        if (siblingPath === ':memory:') return;
+        rmSync(siblingPath, { force: true });
+        rmSync(`${siblingPath}-wal`, { force: true });
+        rmSync(`${siblingPath}-shm`, { force: true });
+      },
+    };
+  }
+
+  siblingExists(name: string): boolean {
+    if (this.#path === ':memory:') return false;
+    return existsSync(`${this.#path}.${name}`);
   }
 
   transaction<T>(fn: () => T): T {

@@ -17,6 +17,11 @@
  * The guard only fronts the PUBLIC `client.query()` — engine-internal reads
  * call the `ClientDatabase` directly and are trusted, so they are never
  * routed through here.
+ *
+ * RFC 0005 previously added a third rule here, denying reads of its container
+ * table by root page. That table now lives in its own database file and is not
+ * on the connection `query()` uses, so there is nothing left to guard and the
+ * rule was removed with its EXPLAIN plumbing.
  */
 
 /** Verbs a read-only query may begin with (lowercased). */

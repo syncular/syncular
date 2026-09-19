@@ -9,6 +9,24 @@ export type SqlValue = string | number | bigint | boolean | Uint8Array | null;
 
 export type SqlRow = Record<string, SqlValue>;
 
+/**
+ * RFC 0005: a second database file in this database's own storage scope (the
+ * same on-disk directory, or the same OPFS SAH pool directory). Used to keep
+ * the previous-version container off the connection `query()` and unaware code
+ * use. The read guarantee is narrow: an older client's ordinary query
+ * connection does not attach this file, so no SQL it runs can reach the
+ * container. It is NOT protection against arbitrary same-origin access and NOT
+ * protection against native filesystem access.
+ */
+export interface SiblingDatabase {
+  /** The open connection; the caller closes it before removal. */
+  readonly database: ClientDatabase;
+  /** Close the handle. A live handle blocks physical removal. */
+  close(): void;
+  /** Best-effort physical removal of the backing file. Close the handle first. */
+  removeFile(): void;
+}
+
 export interface ClientDatabase {
   /** Execute a single statement (no result rows). */
   exec(sql: string, params?: readonly SqlValue[]): void;
@@ -32,6 +50,16 @@ export interface ClientDatabase {
     alias: string,
     fn: () => T | Promise<T>,
   ): Promise<T>;
+  /**
+   * RFC 0005: open (creating on demand) the named sibling database file.
+   * `undefined` means the host provides no sibling capability, which makes the
+   * previous-version feature unavailable there. The NAME is code-derived and is
+   * not persisted in the replica database (data minimisation; not a security
+   * control).
+   */
+  openSibling?(name: string): SiblingDatabase | undefined;
+  /** RFC 0005: non-creating existence probe for {@link openSibling}. */
+  siblingExists?(name: string): boolean;
   close(): void;
 }
 

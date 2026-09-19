@@ -30,6 +30,15 @@ export interface SyncStatusSnapshot {
   readonly leaseState: LeaseState | undefined;
   readonly schemaFloor: SchemaFloor | undefined;
   readonly syncNeeded: boolean;
+  /**
+   * RFC 0005 A2: whether a previous-version cache is present, so a host's
+   * update/rollback path can require its discard. `createdAtMs` is the capture
+   * time when a readable cache exists.
+   */
+  readonly previousVersionContext: {
+    readonly present: boolean;
+    readonly createdAtMs?: number;
+  };
 }
 
 export interface ClientChangeBatch {

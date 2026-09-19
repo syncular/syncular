@@ -4,22 +4,17 @@
  * browser entry never touches `bun:sqlite`.
  */
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   assertImageAlias,
   type ClientDatabase,
   runTransaction,
+  type SiblingDatabase,
   type SqlRow,
   type SqlValue,
 } from './database';
-
-declare module 'bun:sqlite' {
-  interface Database {
-    clearQueryCache(): void;
-  }
-}
 
 type BunParam = string | number | bigint | Uint8Array | null;
 
@@ -32,9 +27,11 @@ function coerceParams(params: readonly SqlValue[]): BunParam[] {
 
 export class BunClientDatabase implements ClientDatabase {
   readonly db: Database;
+  readonly #path: string;
   #tx = { depth: 0 };
 
   constructor(path = ':memory:') {
+    this.#path = path;
     this.db = new Database(path);
     // Match native Rust persistence: append durable commits to the WAL
     // instead of creating and syncing a rollback journal per transaction.
@@ -50,15 +47,32 @@ export class BunClientDatabase implements ClientDatabase {
 
   exec(sql: string, params: readonly SqlValue[] = []): void {
     this.db.query(sql).run(...coerceParams(params));
-    // `Database.query()` caches prepared statements. Clear that cache after
-    // schema DDL so a reset does not reprepare every later row upsert.
-    if (/^\s*(?:CREATE|DROP|ALTER)\b/i.test(sql)) {
-      this.db.clearQueryCache();
-    }
   }
 
   query(sql: string, params: readonly SqlValue[] = []): SqlRow[] {
     return this.db.query(sql).all(...coerceParams(params)) as SqlRow[];
+  }
+
+  /** RFC 0005: a sibling file beside the replica, e.g. `<path>.prev-context`. */
+  openSibling(name: string): SiblingDatabase {
+    const siblingPath =
+      this.#path === ':memory:' ? ':memory:' : `${this.#path}.${name}`;
+    const database = new BunClientDatabase(siblingPath);
+    return {
+      database,
+      close: () => database.close(),
+      removeFile: () => {
+        if (siblingPath === ':memory:') return;
+        rmSync(siblingPath, { force: true });
+        rmSync(`${siblingPath}-wal`, { force: true });
+        rmSync(`${siblingPath}-shm`, { force: true });
+      },
+    };
+  }
+
+  siblingExists(name: string): boolean {
+    if (this.#path === ':memory:') return false;
+    return existsSync(`${this.#path}.${name}`);
   }
 
   transaction<T>(fn: () => T): T {
