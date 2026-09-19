@@ -94,8 +94,32 @@ const WORKLOAD = {
  * - `propagationP95CeilingMs` 20 ms: local in-process p95 is 0.2 ms. A
  *   100× allowance absorbs runner noise; breaching 20 ms in-process means
  *   a sleep/poll crept into the sync/realtime loop.
- * - `ownJsRawCeilingBytes` 130 KB: measured 126,687 raw bytes on
- *   2026-09-12, with OPFS crash recovery and live sync progress. Paired
+ * - `ownJsRawCeilingBytes` 148 KB: re-derived 2026-09-19 for RFC 0005
+ *   previous-version context. Measured 143,975 raw / 42,128 gzip on this
+ *   tree (base 8b22d819 = 131,294 raw / 38,541 gzip). The RFC adds 12,681
+ *   raw bytes, all of it feature code the design MANDATES:
+ *   `previous-version.ts` +7,795 — the strict typed schema-descriptor codec
+ *   and its write on every schema apply (D1), the container-file codec
+ *   (D3), the ordered pre-materialization budget probes and bounded copy
+ *   (D2/A4), the compatibility audit and its strict decode (D6), and the
+ *   durable refusal plus the D7 read surface; `client.ts` +3,933 — the
+ *   default-off flag and config validation, capture/sweep/discard/lifetime/
+ *   boot-reconcile wiring (D5/D7/D9), and `previousVersionSnapshot` /
+ *   `previousVersionAudit` / `previousVersionDiscard`; `wasm-database.ts`
+ *   +906 — SAH-pool `openSibling`/`siblingExists`, the pool capacity floor,
+ *   and the shared OPFS crash-recovery helper (D3/D9). A reduction pass
+ *   already removed 536 bytes (one container-window helper, one shared
+ *   JSON-object decoder, two inlined single-use helpers); no honest
+ *   reduction closes the remaining 10,855 bytes to the previous 130 KB
+ *   line, which would require deleting the RFC's validators, budget probes,
+ *   audit or read API. 143,975 × 1.05 = 151,173.75 bytes = 147.63 KiB,
+ *   rounded up to 148 KB (5.26% headroom). The measurement is UNCHANGED in
+ *   kind and remains CONSERVATIVE: one unsplit `Bun.build({minify: true})`
+ *   that counts dynamically imported opt-in modules inside the own-code
+ *   graph on purpose (the E2EE seam, this RFC's lazily loadable pieces).
+ *   `totalGzipCeilingBytes` (600 KB) and every performance budget are
+ *   untouched. Previously 130 KB (2026-09-12): measured 126,687 raw bytes,
+ *   with OPFS crash recovery and live sync progress. Paired
  *   source builds retaining the OPFS fix measure progress at +2,085 raw
  *   bytes (+730 gzip), from 124,602 to 126,687. The previous 122 KB cap
  *   left only 326 bytes before progress; 130 KB restores ~5% headroom.
@@ -176,7 +200,7 @@ const BUDGETS = {
   bootstrapRowsPerSecFloor: 90_000,
   imageBootstrapRowsPerSecFloor: 300_000,
   propagationP95CeilingMs: 20,
-  ownJsRawCeilingBytes: 130 * 1024,
+  ownJsRawCeilingBytes: 148 * 1024,
   totalGzipCeilingBytes: 600 * 1024,
 } as const;
 
