@@ -280,16 +280,8 @@ describe('RFC 0005 separate-file regression against the real 8b22d819 binary', (
     });
     try {
       await oldClient.start();
-      expect(
-        typeof (oldClient as unknown as Record<string, unknown>)[
-          'previousVersionSnapshot'
-        ],
-      ).toBe('undefined');
-      expect(
-        typeof (oldClient as unknown as Record<string, unknown>)[
-          'previousVersionDiscard'
-        ],
-      ).toBe('undefined');
+      expect(Object.hasOwn(oldClient, 'previousVersionSnapshot')).toBe(false);
+      expect(Object.hasOwn(oldClient, 'previousVersionDiscard')).toBe(false);
 
       // (a) The container file and its row survive, because the old binary
       //     ships no sweep. Storage is read directly, never by the feature API.

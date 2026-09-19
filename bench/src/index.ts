@@ -97,7 +97,10 @@ const WORKLOAD = {
  * - `ownJsRawCeilingBytes` 148 KB: re-derived 2026-09-19 for RFC 0005
  *   previous-version context. Measured 143,975 raw / 42,128 gzip on this
  *   tree (base 8b22d819 = 131,294 raw / 38,541 gzip). The RFC adds 12,681
- *   raw bytes, all of it feature code the design MANDATES:
+ *   raw bytes: 12,634 of it feature code the design MANDATES, plus 47 bytes
+ *   of bundler inlining drift in modules whose source did not change
+ *   (`errors.ts` +32, `crypto.ts` +9, `window.ts` +2, seven modules +1,
+ *   `schema/outbox/outcomes` −1 each):
  *   `previous-version.ts` +7,795 — the strict typed schema-descriptor codec
  *   and its write on every schema apply (D1), the container-file codec
  *   (D3), the ordered pre-materialization budget probes and bounded copy
@@ -108,8 +111,9 @@ const WORKLOAD = {
  *   `previousVersionAudit` / `previousVersionDiscard`; `wasm-database.ts`
  *   +906 — SAH-pool `openSibling`/`siblingExists`, the pool capacity floor,
  *   and the shared OPFS crash-recovery helper (D3/D9). A reduction pass
- *   already removed 536 bytes (one container-window helper, one shared
- *   JSON-object decoder, two inlined single-use helpers); no honest
+ *   collapsed duplicate blocks into one container-window helper and one
+ *   shared strict JSON-object decoder and inlined two single-use helpers
+ *   (144,511 → 143,975, −536); no honest
  *   reduction closes the remaining 10,855 bytes to the previous 130 KB
  *   line, which would require deleting the RFC's validators, budget probes,
  *   audit or read API. 143,975 × 1.05 = 151,173.75 bytes = 147.63 KiB,

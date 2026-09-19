@@ -29,9 +29,14 @@ Minified attribution of the delta
 | `packages/web-client/src/previous-version.ts` | +7,795 |
 | `packages/web-client/src/client.ts` | +3,933 |
 | `packages/web-client/src/wasm-database.ts` | +906 |
-| `packages/web-client/src/errors.ts` | +32 (inlining drift) |
+| feature subtotal | +12,634 |
+| bundler inlining drift, source unchanged | +47 |
 
-Every byte is feature code the design mandates: the typed descriptor codec
+Drift is `errors.ts` +32, `crypto.ts` +9, `window.ts` +2, seven modules +1
+(`message`, `bytes`, `row-codec`, `segment`, `stream`, `canonical-json`, core
+`index`), and `schema`/`outbox`/`outcomes` −1 each; 12,634 + 47 = 12,681.
+
+All 12,634 feature bytes are code the design mandates: the typed descriptor codec
 and its write on every schema apply (D1), the off-replica container file
 (D3), the ordered pre-materialization budget probes and bounded copy
 (D2/A4), the compatibility audit (D6), the D7 read surface, the default-off
@@ -39,10 +44,10 @@ wiring and `previousVersionSnapshot` / `previousVersionAudit` /
 `previousVersionDiscard`, and the SAH-pool `openSibling` / `siblingExists`
 plus capacity floor (D3/D9).
 
-A reduction pass removed 536 of the 13,217 bytes the feature first added:
-one container-window helper (`withPreviousVersionContainer`), one shared
-JSON-object decoder (`parseJsonObject`), and two inlined single-use capture
-helpers. No honest reduction closes the remaining 10,855 bytes to the old
+A reduction pass collapsed duplicate blocks into one container-window helper
+(`withPreviousVersionContainer`) and one shared strict JSON-object decoder
+(`parseJsonObject`), and inlined two single-use capture helpers: 13,217 →
+12,681 (−536). No honest reduction closes the remaining 10,855 bytes to the old
 130 KB line; doing so would require deleting the RFC's validators, budget
 probes, audit or read API, which is out of contract.
 
