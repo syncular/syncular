@@ -265,6 +265,8 @@ describe('segment download (§5.5)', () => {
     const stored = await t.ctx.segments.get(firstRef.segmentId);
     expect(stored?.record.publications).toHaveLength(2);
     const firstExpiry = stored?.record.publications[0]?.expiresAtMs;
+    const secondExpiry = stored?.record.publications[1]?.expiresAtMs;
+    expect(secondExpiry).toBeGreaterThan(firstExpiry ?? 0);
 
     // Past the first pin's 24 h TTL, inside the second's: the download
     // selects the live publication, not the expired first one.
@@ -275,11 +277,32 @@ describe('segment download (§5.5)', () => {
     });
     expect(result.record.asOfCommitSeq).toBe(secondRef.asOfCommitSeq);
 
-    // An unrelated refresh of the newer publication leaves the expired pin's
-    // own expiry untouched.
-    await pullEmpty();
+    // An unrelated refresh is a NEW publication context. Prune-on-put forgets
+    // the elapsed pin (SPEC §5.5 lets the cache forget expired grants), so no
+    // stored publication carries its expiry any more; the still-live grant is
+    // retained with its own expiry and is NOT extended by the unrelated
+    // refresh.
+    await sync(t, [
+      pushCommit('c2', [upsert('docs', 'd2', docRow('d2', 'o1', 'p1'))]),
+    ]);
+    const thirdRef = await pullEmpty();
     const after = await t.ctx.segments.get(firstRef.segmentId);
-    expect(after?.record.publications[0]?.expiresAtMs).toBe(firstExpiry);
+    expect(
+      after?.record.publications.some(
+        (publication) => publication.expiresAtMs === firstExpiry,
+      ),
+    ).toBe(false);
+    const liveAfter = after?.record.publications.find(
+      (publication) => publication.asOfCommitSeq === secondRef.asOfCommitSeq,
+    );
+    expect(liveAfter?.expiresAtMs).toBe(secondExpiry);
+
+    // The live grant for this context is still downloadable after the prune.
+    const refreshed = await handleSegmentDownload(t.ctx, {
+      segmentId: firstRef.segmentId,
+      scopesHeader: canonicalScopeJson(scopes),
+    });
+    expect(refreshed.record.asOfCommitSeq).toBe(thirdRef.asOfCommitSeq);
   });
 
   test('expired segments are sync.segment_expired (retryable, §5.1)', async () => {
