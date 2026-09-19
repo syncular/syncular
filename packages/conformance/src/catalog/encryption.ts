@@ -87,6 +87,59 @@ const selectedKeys: DriverEncryptionConfig = {
   keyIdColumns: { secrets: 'encryption_key_id' },
 };
 
+/**
+ * §5.11 sidecar shape: a plaintext primary `records` (no encrypted column)
+ * plus an encrypted sidecar `record_details` under its own scope. The
+ * sidecar's value is encrypted; the primary carries only shared columns and
+ * a disclosed presence marker.
+ */
+const SIDECAR_SCHEMA: DriverSchema = {
+  version: 1,
+  tables: [
+    {
+      name: 'records',
+      columns: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'project_id', type: 'string', nullable: false },
+        { name: 'title', type: 'string', nullable: false },
+        {
+          name: 'status_reason_state',
+          type: 'string',
+          nullable: false,
+        },
+      ],
+      primaryKey: 'id',
+      scopes: [{ pattern: 'project:{project_id}' }],
+    },
+    {
+      name: 'record_details',
+      columns: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'project_id', type: 'string', nullable: false },
+        { name: 'detail_scope', type: 'string', nullable: false },
+        {
+          name: 'value',
+          type: 'bytes',
+          nullable: true,
+          encrypted: true,
+          declaredType: 'string',
+        },
+      ],
+      primaryKey: 'id',
+      scopes: [{ pattern: 'detail:{detail_scope}' }],
+    },
+  ],
+};
+
+const SIDECAR_SERVER = { schema: SIDECAR_SCHEMA } as const;
+const PRIMARY_SCOPES = { project_id: ['p1'] } as const;
+const DETAIL_SCOPES = { detail_scope: ['d1'] } as const;
+const SIDECAR_ALLOWED = { project_id: ['p1'], detail_scope: ['d1'] } as const;
+const PROTECTED_VALUE = 'patient declined to say';
+const writerKeys: DriverEncryptionConfig = {
+  keys: { record_details: { $bytes: KEY_HEX } },
+};
+
 function utf8Hex(text: string): string {
   let hex = '';
   for (const b of new TextEncoder().encode(text)) {
@@ -410,6 +463,144 @@ export const encryptionScenarios: readonly Scenario[] = [
         r1Server?.values.encryption_key_id,
         SELECTED_KEY_ID,
         'the server row kept the stored selector',
+      );
+    },
+  },
+  {
+    // §5.11 sidecar shape: a no-key client subscribes to the plaintext
+    // primary while a non-NULL protected value sits in the encrypted sidecar
+    // committed in the SAME commit as the primary row. The primary row
+    // applies with every column, the round completes, and the protected
+    // value is neither NULL-masked nor delivered as envelope bytes: the
+    // reader's table subscription never yields the sidecar row.
+    name: 'encryption/sidecar-no-key-primary-read',
+    specRefs: ['§5.11'],
+    server: SIDECAR_SERVER,
+    async run(ctx: ScenarioContext) {
+      const writer = await ctx.newClient({
+        actorId: 'a',
+        clientId: 'client-writer',
+        schema: SIDECAR_SCHEMA,
+        allowed: SIDECAR_ALLOWED,
+        encryption: writerKeys,
+      });
+      await writer.api.subscribe({
+        id: 'primary',
+        table: 'records',
+        scopes: PRIMARY_SCOPES,
+      });
+      await writer.api.subscribe({
+        id: 'sidecar',
+        table: 'record_details',
+        scopes: DETAIL_SCOPES,
+      });
+      await syncIdle(writer);
+
+      // One commit carries both the plaintext primary row and the encrypted
+      // sidecar row, the mixed-shape case a no-key client must survive.
+      await writer.api.mutate([
+        {
+          op: 'upsert',
+          table: 'records',
+          values: {
+            id: 'r1',
+            project_id: 'p1',
+            title: 'Colonoscopy',
+            status_reason_state: 'protected_source_value',
+          },
+        },
+        {
+          op: 'upsert',
+          table: 'record_details',
+          values: {
+            id: 'r1',
+            project_id: 'p1',
+            detail_scope: 'd1',
+            value: PROTECTED_VALUE,
+          },
+        },
+      ]);
+      await syncIdle(writer);
+
+      // The key-holding writer reads its own plaintext back, and the server
+      // holds a non-NULL envelope: the fixture is not a masked null.
+      const writerDetail = (await writer.api.readRows('record_details')).find(
+        (r) => r.values.id === 'r1',
+      );
+      checkEqual(
+        writerDetail?.values.value,
+        PROTECTED_VALUE,
+        'the key-holding writer reads the protected value plaintext',
+      );
+      const serverDetail = (await ctx.server.readRows('record_details')).find(
+        (r) => r.rowId === 'r1',
+      );
+      check(serverDetail !== undefined, 'the sidecar row exists on the server');
+      const serverValue = serverDetail?.values.value;
+      check(
+        typeof serverValue === 'object' &&
+          serverValue !== null &&
+          '$bytes' in serverValue,
+        'the server sidecar value is a non-NULL envelope',
+      );
+      check(
+        !(serverValue as { $bytes: string }).$bytes.includes(
+          utf8Hex(PROTECTED_VALUE),
+        ),
+        'the server sidecar value is ciphertext, not plaintext',
+      );
+
+      // The no-key client is authorized for both scopes but subscribes to
+      // the primary only: subscribing to the sidecar would abort the round.
+      const reader = await ctx.newClient({
+        actorId: 'reader',
+        clientId: 'client-no-key',
+        schema: SIDECAR_SCHEMA,
+        allowed: SIDECAR_ALLOWED,
+        encryption: { keys: {} },
+      });
+      await reader.api.subscribe({
+        id: 'primary',
+        table: 'records',
+        scopes: PRIMARY_SCOPES,
+      });
+      await syncIdle(reader);
+
+      const primaryRow = (await reader.api.readRows('records')).find(
+        (r) => r.values.id === 'r1',
+      );
+      check(
+        primaryRow !== undefined,
+        'the no-key client received the primary row',
+      );
+      checkEqual(
+        Object.keys(primaryRow?.values ?? {}).sort(),
+        ['id', 'project_id', 'status_reason_state', 'title'],
+        'the no-key client received every primary column',
+      );
+      checkEqual(
+        primaryRow?.values.title,
+        'Colonoscopy',
+        'the shared primary column is readable without the key',
+      );
+      checkEqual(
+        primaryRow?.values.status_reason_state,
+        'protected_source_value',
+        'the disclosed presence marker is readable plaintext',
+      );
+
+      // The protected value is not delivered at all: not NULL-masked, not
+      // envelope bytes. `readRows` enumerates every declared sidecar column.
+      const readerDetails = await reader.api.readRows('record_details');
+      checkEqual(
+        readerDetails.length,
+        0,
+        'the no-key client received no sidecar row (never NULL, never envelope bytes)',
+      );
+      checkEqual(
+        (await reader.api.subscriptionState('primary'))?.status,
+        'active',
+        'the primary subscription is active after the round',
       );
     },
   },
