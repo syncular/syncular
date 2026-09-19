@@ -600,7 +600,28 @@ export class RealtimeSession {
       // begin its next round as soon as END *arrives* (§8.7 rule 3), so
       // in-flight must end with the send, not with generator cleanup.
       const iterator = stream[Symbol.asyncIterator]();
-      let step = await iterator.next();
+      let step: IteratorResult<Uint8Array>;
+      try {
+        step = await iterator.next();
+      } catch (error) {
+        // The buffered read-verify refusal is thrown on the generator's first
+        // `next()`, before any chunk is yielded (the generator builds the whole
+        // response, then verifies). Nothing has escaped, so it is delivered as
+        // the same §8.4 ERROR frame HTTP returns rather than a silent close. A
+        // throw after the first chunk still takes the §8.7 violation path.
+        if (error instanceof DecodeError || error instanceof SyncError) {
+          const sync =
+            error instanceof SyncError
+              ? error
+              : syncError(error.code, error.message);
+          finishRound();
+          await this.#sendRoundChunk(
+            errorResponseBytes(sync, this.wireVersion, this.logEpoch),
+          );
+          return;
+        }
+        throw error;
+      }
       while (!step.done) {
         const chunk = step.value;
         step = await iterator.next();

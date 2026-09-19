@@ -44,6 +44,30 @@ function errorFrames(bytes: Uint8Array): { code: string; details?: string }[] {
     }));
 }
 
+function roundBytes(bytes: Uint8Array): Uint8Array {
+  const tagged = new Uint8Array(bytes.length + 1);
+  tagged[0] = REALTIME_TAG_ROUND;
+  tagged.set(bytes, 1);
+  return tagged;
+}
+
+function makeWire(): {
+  texts: string[];
+  binaries: Uint8Array[];
+  send: (data: string | Uint8Array) => void;
+} {
+  const texts: string[] = [];
+  const binaries: Uint8Array[] = [];
+  return {
+    texts,
+    binaries,
+    send: (data) => {
+      if (typeof data === 'string') texts.push(data);
+      else binaries.push(data);
+    },
+  };
+}
+
 test('HTTP pull is refused while an undeclared checkpoint is incomplete', async () => {
   const db = new BunSqliteDatabase();
   const storage = new SqliteServerStorage(db);
@@ -62,8 +86,10 @@ test('HTTP pull is refused while an undeclared checkpoint is incomplete', async 
     } catch (error) {
       caught = error;
     }
-    const error = caught as { code?: string; details?: string };
-    expect(error.code).toBe('sync.schema_not_ready');
+    // Assert the contract value explicitly; a missing refusal fails here as a
+    // value mismatch instead of a TypeError on `error.code`.
+    expect(caught).toMatchObject({ code: 'sync.schema_not_ready' });
+    const error = caught as { details?: string };
     // The projection name rides in structured details, never the message.
     expect(JSON.parse(error.details ?? '{}')).toEqual({
       partition: PARTITION,
@@ -348,6 +374,156 @@ test('acceptance 13 (mixed push+pull): the pull half is refused and the applied 
     expect(replayed?.commitSeq).toBe(1);
     expect(await a.getMaxCommitSeq(PARTITION)).toBe(1);
     expect((await a.getRow(PARTITION, 'tasks', 'm1'))?.serverVersion).toBe(1);
+  } finally {
+    db.close();
+  }
+});
+
+test('an in-flight refusal on an established WebSocket session delivers sync.schema_not_ready', async () => {
+  const db = new BunSqliteDatabase();
+  const storage = new SqliteServerStorage(db);
+  const t = makeContext({ storage });
+  try {
+    await storage.ensureSchema(SCHEMA);
+    await sync(t, [
+      pushCommit('c1', [upsert('tasks', 't1', taskRow('t1', 'p1'))]),
+    ]);
+    let armed = false;
+    let rotated = false;
+    const wrapped = new Proxy(storage, {
+      get(target, property) {
+        if (property === 'getMaxCommitSeq') {
+          return async (partition: string) => {
+            if (armed && !rotated) {
+              rotated = true;
+              // The token changes during the round's own data read, after the
+              // entry gate passed but before the first chunk is yielded.
+              await target.rotatePartitionLogEpoch(
+                partition,
+                'ws-inflight-epoch',
+                t.now.ms,
+              );
+            }
+            return target.getMaxCommitSeq(partition);
+          };
+        }
+        const value = Reflect.get(target, property);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const hub = createRealtimeHub({
+      schema: TEST_SCHEMA,
+      storage: wrapped,
+      segments: t.segments,
+      resolveScopes: t.ctx.resolveScopes,
+      ...(t.ctx.clock !== undefined ? { clock: t.ctx.clock } : {}),
+    });
+    const wire = makeWire();
+    const session = await hub.connect({
+      partition: PARTITION,
+      actorId: 'actor-1',
+      clientId: 'client-1',
+      send: wire.send,
+    });
+    // Established session: one successful round first.
+    await session.handleBinary(
+      roundBytes(requestBytes([pullHeader({ limitCommits: 1 })], 'client-1')),
+    );
+    const before = wire.binaries.length;
+    expect(before).toBeGreaterThan(0);
+    armed = true;
+    // The next round is refused mid-flight; the refusal must be a real §8.4
+    // ERROR frame, not the silent socket close the pre-fix path produced.
+    await session.handleBinary(
+      roundBytes(requestBytes([pullHeader({ limitCommits: 1 })], 'client-1')),
+    );
+    const errors = wire.binaries
+      .slice(before)
+      .flatMap((chunk) => errorFrames(chunk));
+    expect(errors.map((frame) => frame.code)).toContain(
+      'sync.schema_not_ready',
+    );
+    expect(rotated).toBe(true);
+    session.close();
+  } finally {
+    db.close();
+  }
+});
+
+test('fanout during a refused mixed push+pull delivers only the durable commit and the peer pull is gated', async () => {
+  const db = new BunSqliteDatabase();
+  const a = new SqliteServerStorage(db);
+  const t = makeContext({ storage: a });
+  try {
+    await a.ensureSchema(SCHEMA);
+    const hub = createRealtimeHub({
+      schema: TEST_SCHEMA,
+      storage: a,
+      segments: t.segments,
+      resolveScopes: t.ctx.resolveScopes,
+      ...(t.ctx.clock !== undefined ? { clock: t.ctx.clock } : {}),
+    });
+    Object.assign(t.ctx, { realtime: hub });
+    // The peer registers a subscription and connects on the real hub.
+    await sync(
+      t,
+      [pullHeader(), subFrame('s1', 'tasks', { project_id: ['p1'] }, -1)],
+      { clientId: 'client-peer' },
+    );
+    const wire = makeWire();
+    const peer = await hub.connect({
+      partition: PARTITION,
+      actorId: 'actor-1',
+      clientId: 'client-peer',
+      send: wire.send,
+    });
+    // The mixed request's pull half migrates the database past the running
+    // build, so the request is refused after its push half fanned out.
+    let migrated = false;
+    const wrapped = new Proxy(a, {
+      get(target, property) {
+        if (property === 'getMaxCommitSeq') {
+          return async (partition: string) => {
+            if (!migrated) {
+              migrated = true;
+              const b = new SqliteServerStorage(db);
+              await b.ensureSchema(SCHEMA_V2);
+            }
+            return target.getMaxCommitSeq(partition);
+          };
+        }
+        const value = Reflect.get(target, property);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    Object.assign(t.ctx, { storage: wrapped });
+    await expect(
+      sync(t, [
+        pushCommit('mixed-fan', [upsert('tasks', 'm1', taskRow('m1', 'p1'))]),
+        pullHeader({ limitCommits: 1 }),
+      ]),
+    ).rejects.toMatchObject({ code: 'sync.schema_not_ready' });
+    expect(migrated).toBe(true);
+    // Fanout carried exactly the durable commit entry — its committed change,
+    // not a projection read — to the peer before the refusal.
+    expect(wire.binaries).toHaveLength(1);
+    const raw = wire.binaries[0] ?? new Uint8Array();
+    expect(raw[0]).toBe(0x00);
+    const delta = decodeMessage(raw.subarray(1));
+    if (delta.msgKind !== 'response') throw new Error('expected a response');
+    const commits = delta.frames.filter((frame) => frame.type === 'COMMIT');
+    expect(commits).toHaveLength(1);
+    expect(commits[0]?.commitSeq).toBe(1);
+    expect(commits[0]?.changes[0]?.rowId).toBe('m1');
+    // The peer's next pull is gated by the same barrier.
+    await peer.handleBinary(
+      roundBytes(requestBytes([pullHeader()], 'client-peer')),
+    );
+    const errors = wire.binaries.flatMap((chunk) => errorFrames(chunk));
+    expect(errors.map((frame) => frame.code)).toContain(
+      'sync.schema_not_ready',
+    );
+    peer.close();
   } finally {
     db.close();
   }

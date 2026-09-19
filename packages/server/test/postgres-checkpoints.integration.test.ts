@@ -89,6 +89,21 @@ async function rawAppend(
   );
 }
 
+/** Wait until at least one backend is blocked on a lock (real interleaving). */
+async function waitForLockWaiter(observer: PgQueryable): Promise<number> {
+  for (let attempt = 0; attempt < 500; attempt++) {
+    const n = Number(
+      (
+        await observer.query<{ n: unknown }>(
+          'SELECT count(*) AS n FROM pg_locks WHERE NOT granted',
+        )
+      ).rows[0]?.n,
+    );
+    if (n > 0) return n;
+  }
+  return 0;
+}
+
 gate('RFC 0007 real-Postgres receipts (SYNCULAR_PG_URL)', () => {
   // oxlint-disable-next-line typescript/no-explicit-any -- dynamic Bun.sql handles.
   const handles: any[] = [];
@@ -155,52 +170,8 @@ gate('RFC 0007 real-Postgres receipts (SYNCULAR_PG_URL)', () => {
     );
   });
 
-  test('acceptance 12: an old writer after activation cannot commit a source mutation', async () => {
+  test('acceptance 11: activation waits behind an in-flight source write, then reports stale', async () => {
     const { storage, partition, executor } = await fresh();
-    await storage.declareCheckpoint(
-      partition,
-      'tasks-projection',
-      1,
-      Date.now(),
-    );
-    await storage.claimCheckpoint(partition, 'tasks-projection', 1, Date.now());
-    expect(
-      await storage.activateCheckpoint(
-        partition,
-        'tasks-projection',
-        1,
-        0,
-        ['tasks'],
-        Date.now(),
-      ),
-    ).toBe('activated');
-    await expect(rawAppend(executor, partition, 98, 0)).rejects.toThrow(
-      /writer_fence_rejected/,
-    );
-    // A current writer still commits after activation.
-    const tx = await storage.begin(partition);
-    const seq = await tx.appendCommit({
-      clientId: 'current',
-      clientCommitId: 'current-2',
-      actorId: 'a1',
-      createdAtMs: Date.now(),
-      changes: [
-        {
-          table: 'tasks',
-          rowId: 'r2',
-          op: 'upsert',
-          rowVersion: 1,
-          scopes: { project_id: 'p1' },
-          payload: new Uint8Array([2]),
-        },
-      ],
-    });
-    await tx.commit();
-    expect(seq).toBeGreaterThan(0);
-  });
-
-  test('acceptance 11: activation loses to a concurrent source write, then retry activates', async () => {
-    const { storage, partition } = await fresh();
     await storage.declareCheckpoint(
       partition,
       'tasks-projection',
@@ -213,39 +184,47 @@ gate('RFC 0007 real-Postgres receipts (SYNCULAR_PG_URL)', () => {
       1,
       Date.now(),
     );
-    // A source write lands after the claim and before activation.
+    // Connection 1 holds the partition lock in an open source-write
+    // transaction: the source mutation is appended but not yet committed.
     const tx = await storage.begin(partition);
+    await tx.lockPartitionForPush?.();
     await tx.appendCommit({
       clientId: 'current',
-      clientCommitId: 'current-3',
+      clientCommitId: 'current-11',
       actorId: 'a1',
       createdAtMs: Date.now(),
       changes: [
         {
           table: 'tasks',
-          rowId: 'r3',
+          rowId: 'r11',
           op: 'upsert',
           rowVersion: 1,
           scopes: { project_id: 'p1' },
-          payload: new Uint8Array([3]),
+          payload: new Uint8Array([11]),
         },
       ],
     });
+    // Connection 2's activation must actually wait on the partition row lock.
+    const sqlA = new (BunSQL as new (url: string) => unknown)(PG_URL as string);
+    handles.push(sqlA);
+    const storageA = new PostgresServerStorage(bunSqlExecutor(sqlA));
+    const activation = storageA.activateCheckpoint(
+      partition,
+      'tasks-projection',
+      owner.ownerEpoch,
+      0,
+      ['tasks'],
+      Date.now(),
+    );
+    expect(await waitForLockWaiter(executor)).toBeGreaterThan(0);
+
+    // The source write commits first; activation then sees coverage above its
+    // watermark and refuses: no false complete.
     await tx.commit();
-    // The stale watermark loses; no false complete.
-    expect(
-      await storage.activateCheckpoint(
-        partition,
-        'tasks-projection',
-        owner.ownerEpoch,
-        0,
-        ['tasks'],
-        Date.now(),
-      ),
-    ).toBe('stale');
+    expect(await activation).toBe('stale');
     // Catch up to the observed coverage and retry.
     expect(
-      await storage.activateCheckpoint(
+      await storageA.activateCheckpoint(
         partition,
         'tasks-projection',
         owner.ownerEpoch,
@@ -254,9 +233,133 @@ gate('RFC 0007 real-Postgres receipts (SYNCULAR_PG_URL)', () => {
         Date.now(),
       ),
     ).toBe('activated');
-    const after = (await storage.readCheckpoints(partition))[0];
+    const after = (await storageA.readCheckpoints(partition))[0];
     expect(after?.state).toBe('activated');
     expect(after?.watermark).toBe(1);
+  });
+
+  test('acceptance 12: an old writer blocked behind activation cannot commit a source mutation', async () => {
+    const { storage, partition, executor } = await fresh();
+    // Create the partition row so the activation transaction locks it on its
+    // first statement (no source change, so the coverage check stays clean).
+    const seed = await storage.begin(partition);
+    await seed.lockPartitionForPush?.();
+    await seed.commit();
+    await storage.declareCheckpoint(
+      partition,
+      'tasks-projection',
+      1,
+      Date.now(),
+    );
+    const owner = await storage.claimCheckpoint(
+      partition,
+      'tasks-projection',
+      1,
+      Date.now(),
+    );
+    // Connection 1 activates under a gated executor held open after it takes
+    // the partition lock.
+    const sqlA = new (BunSQL as new (url: string) => unknown)(PG_URL as string);
+    const sqlB = new (BunSQL as new (url: string) => unknown)(PG_URL as string);
+    handles.push(sqlA, sqlB);
+    const baseA = bunSqlExecutor(sqlA);
+    const paused = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const gatedA: PgExecutor = {
+      query: baseA.query,
+      async transaction<T>(fn: (client: PgQueryable) => Promise<T>) {
+        return baseA.transaction(async (client) => {
+          let first = true;
+          const gated: PgQueryable = {
+            async query<Row = Record<string, unknown>>(
+              text: string,
+              params?: readonly unknown[],
+            ) {
+              const result = await client.query<Row>(text, params);
+              if (first) {
+                first = false;
+                paused.resolve();
+                await release.promise;
+              }
+              return result;
+            },
+          };
+          return fn(gated);
+        });
+      },
+      close: () => baseA.close?.() ?? Promise.resolve(),
+    };
+    const activation = new PostgresServerStorage(gatedA).activateCheckpoint(
+      partition,
+      'tasks-projection',
+      owner.ownerEpoch,
+      0,
+      ['tasks'],
+      Date.now(),
+    );
+    await paused.promise;
+
+    // The exact old writer path: raw SQL, no advisory call anywhere, blocked at
+    // its first statement behind activation.
+    const writerStarted = Promise.withResolvers<void>();
+    const writer = (async (): Promise<void> => {
+      // oxlint-disable-next-line typescript/no-explicit-any -- dynamic tx handle.
+      await (sqlB as any).begin(async (tx: any) => {
+        writerStarted.resolve();
+        await tx.unsafe(
+          'SELECT max_commit_seq FROM sync_partitions WHERE partition=$1 FOR UPDATE',
+          [partition],
+        );
+        await tx.unsafe(
+          `INSERT INTO tasks(
+             _sync_partition, _sync_row_id, id, project_id, title,
+             _sync_server_version, _sync_scopes, _sync_payload)
+           VALUES ($1,'old-12','old-12','p1','old',1,'{}'::jsonb,'\\x0100'::bytea)
+           ON CONFLICT (_sync_partition, _sync_row_id)
+           DO UPDATE SET title=EXCLUDED.title`,
+          [partition],
+        );
+        await tx.unsafe(
+          `INSERT INTO sync_commits(
+             partition, commit_seq, client_id, client_commit_id, actor_id,
+             created_at_ms)
+           VALUES ($1, 999, 'old', 'old-1', 'a1', $2)`,
+          [partition, Date.now()],
+        );
+      });
+    })();
+    await writerStarted.promise;
+    expect(await waitForLockWaiter(executor)).toBeGreaterThan(0);
+
+    release.resolve();
+    expect(await activation).toBe('activated');
+    let writerError: unknown;
+    try {
+      await writer;
+    } catch (error) {
+      writerError = error;
+    }
+    expect(String(writerError)).toMatch(/writer_fence_rejected/);
+    // A current writer still commits after activation.
+    const tx = await storage.begin(partition);
+    const seq = await tx.appendCommit({
+      clientId: 'current',
+      clientCommitId: 'current-12',
+      actorId: 'a1',
+      createdAtMs: Date.now(),
+      changes: [
+        {
+          table: 'tasks',
+          rowId: 'r12',
+          op: 'upsert',
+          rowVersion: 1,
+          scopes: { project_id: 'p1' },
+          payload: new Uint8Array([12]),
+        },
+      ],
+    });
+    await tx.commit();
+    expect(seq).toBeGreaterThan(0);
   });
 
   test('B1: the migration transaction blocks a raw old writer at its first statement', async () => {

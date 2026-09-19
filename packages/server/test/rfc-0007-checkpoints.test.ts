@@ -1090,13 +1090,17 @@ for (const backend of ['sqlite', 'postgres/pglite'] as const) {
         harness.storageAgain().ensureSchema(SCHEMA, []),
       ).rejects.toMatchObject({ code: 'sync.storage.checkpoint_incomplete' });
       // The primary readiness path is refused too: the thrown storage error
-      // surfaces as the whole-server `sync.schema_not_ready`.
+      // surfaces as the whole-server `sync.schema_not_ready`, distinguished
+      // from an ordinary migration failure by the `backfill_checkpoint` phase.
       await expect(
         ensureSyncServerReady({
           schema: CONTRACT_SCHEMA,
           storage: harness.storageAgain(),
         }),
-      ).rejects.toMatchObject({ code: 'sync.schema_not_ready' });
+      ).rejects.toMatchObject({
+        code: 'sync.schema_not_ready',
+        phase: 'backfill_checkpoint',
+      });
       // A process that declares the checkpoint is allowed to serve.
       await ensureSyncServerReady({
         schema: CONTRACT_SCHEMA,

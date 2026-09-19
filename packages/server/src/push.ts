@@ -1562,6 +1562,13 @@ export async function processPushOperationsWithTrace(
       }
     }
     if (ctx.realtime !== undefined && changes.length > 0) {
+      // RFC 0007 fanout decision: the notification carries the durable commit
+      // entry itself (this commit's `changes`), not a projection read or a pull
+      // window, so fanning it out before the request's buffered read-verify can
+      // never serve a mixed result. Each peer's next pull is gated at the
+      // storage seam; a refused mixed push+pull is safe because the push is
+      // durable and replayable under its commit id. This is commit-entry
+      // durability, not gate inheritance.
       await ctx.realtime.notifyCommit(partition, {
         commitSeq,
         createdAtMs,

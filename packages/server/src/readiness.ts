@@ -14,7 +14,10 @@ import type { ServeGateRefusal } from './storage';
 export const SYNC_SERVER_READINESS_ERROR_CODE =
   'sync.schema_not_ready' as const;
 
-export type SyncServerReadinessPhase = 'schema_compile' | 'storage_migration';
+export type SyncServerReadinessPhase =
+  | 'schema_compile'
+  | 'storage_migration'
+  | 'backfill_checkpoint';
 
 export class SyncServerReadinessError extends Error {
   override readonly name = 'SyncServerReadinessError';
@@ -59,8 +62,16 @@ export async function ensureSyncServerReady(
   try {
     await config.storage.ensureSchema(compiled, config.checkpoints);
   } catch (cause) {
+    // RFC 0007: a declared-but-incomplete checkpoint is a barrier refusal, not
+    // an ordinary migration failure — hosts distinguish it by `phase` while the
+    // client-visible identity stays `sync.schema_not_ready`.
+    const phase: SyncServerReadinessPhase =
+      (cause as { code?: unknown } | null | undefined)?.code ===
+      'sync.storage.checkpoint_incomplete'
+        ? 'backfill_checkpoint'
+        : 'storage_migration';
     throw new SyncServerReadinessError({
-      phase: 'storage_migration',
+      phase,
       schemaVersion: config.schema.version,
       cause,
     });
