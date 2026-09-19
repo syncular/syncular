@@ -11945,4 +11945,92 @@ mod previous_version_wiring_tests {
         drop(client);
         let _ = std::fs::remove_file(&path);
     }
+
+    /// RFC 0005 D7 lifetime drops. The read surface already proves the reasons
+    /// come from live state; this proves the OTHER caller —
+    /// `previous_version_lifetime_check`, the once-per-sync-round trigger —
+    /// actually removes the container for lease-inactivity, coverage
+    /// completion and scope revocation, and leaves it alone while the
+    /// replacement bootstrap is still resuming.
+    #[test]
+    fn previous_version_lifetime_check_drops_on_lease_coverage_and_revocation() {
+        let path = std::env::temp_dir()
+            .join(format!(
+                "syncular-prev-lifetime-{}.db",
+                uuid::Uuid::new_v4()
+            ))
+            .to_string_lossy()
+            .into_owned();
+        let container = format!(
+            "{path}{}",
+            crate::previous_version::PREVIOUS_VERSION_CONTAINER_SUFFIX
+        );
+        let exists = || std::path::Path::new(&container).exists();
+        {
+            let mut setup = SyncClient::open_path(
+                "lifetime".to_owned(),
+                &previous_version_schema(1),
+                previous_version_limits(),
+                &path,
+            )
+            .expect("v1 install");
+            setup
+                .mutate(vec![Mutation::Upsert {
+                    table: "tasks".to_owned(),
+                    values: Map::from_iter([("id".to_owned(), json!("t1"))]),
+                    base_version: None,
+                }])
+                .expect("seed a row");
+        }
+        let mut client = SyncClient::open_path(
+            "lifetime".to_owned(),
+            &previous_version_schema(2),
+            previous_version_limits(),
+            &path,
+        )
+        .expect("v2 bump captures");
+        // Pin the clock so the 24h TTL never fires in this test (the TTL has
+        // its own coverage); the capture record's createdAtMs is 1.
+        client.set_now_ms(1_000);
+        assert!(exists());
+
+        // §7.3.5 lease error ⇒ the lifetime check drops the container.
+        client.lease_state = Some(LeaseState {
+            lease_id: None,
+            expires_at_ms: None,
+            error_code: Some("lease.expired".to_owned()),
+        });
+        client.previous_version_lifetime_check();
+        assert!(!exists());
+        client.lease_state = None;
+
+        // §7.4.5 coverage completion (every active sub has a cursor and no
+        // resume token) ⇒ drop.
+        recapture_previous_version(&client);
+        client.subs.push(subscription(SubState::Active, 0, None));
+        client.previous_version_lifetime_check();
+        assert!(!exists());
+        client.subs.clear();
+
+        // §3.3 scope revocation ⇒ drop.
+        recapture_previous_version(&client);
+        client.subs.push(subscription(SubState::Revoked, 0, None));
+        client.previous_version_lifetime_check();
+        assert!(!exists());
+        client.subs.clear();
+
+        // Negative control: a still-resuming active subscription is NOT
+        // coverage completion, so the container survives the same call.
+        recapture_previous_version(&client);
+        client.subs.push(subscription(SubState::Active, 0, Some("resume")));
+        client.previous_version_lifetime_check();
+        assert!(exists());
+        client.subs.clear();
+
+        drop(client);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&container);
+        let _ = std::fs::remove_file(format!("{container}-wal"));
+        let _ = std::fs::remove_file(format!("{container}-shm"));
+    }
 }

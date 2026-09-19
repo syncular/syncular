@@ -16,7 +16,8 @@ import type { DriverSyncProgress } from '../driver';
  * `rust/target/{debug,release}/conformance-shim`. `ensureRustShim`
  * builds it via cargo when asked to.
  */
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   MessageStreamScanner,
@@ -39,6 +40,9 @@ import type {
   CodecDriver,
   CodecRoundtrip,
   DriverChangeBatch,
+  DriverPreviousVersionAudit,
+  DriverPreviousVersionReason,
+  DriverPreviousVersionSnapshot,
   DriverRow,
   DriverRowValue,
   DriverSchema,
@@ -644,6 +648,99 @@ function stringListOf(value: JsonValue | undefined): readonly string[] {
   return Array.isArray(value) ? value.map(String) : [];
 }
 
+const PREVIOUS_VERSION_REASONS: readonly DriverPreviousVersionReason[] = [
+  'not-configured',
+  'no-previous-descriptor',
+  'capture-exceeded-budget',
+  'coverage-complete',
+  'expired',
+  'lease-inactive',
+  'scope-revoked',
+];
+
+function isPreviousVersionReason(
+  value: unknown,
+): value is DriverPreviousVersionReason {
+  return (
+    typeof value === 'string' &&
+    (PREVIOUS_VERSION_REASONS as readonly string[]).includes(value)
+  );
+}
+
+/** Strict decode of the shim's previous-version snapshot — a version-drifted
+ * host cannot forge `available: true`. */
+function parsePreviousVersionSnapshot(
+  value: JsonValue,
+): DriverPreviousVersionSnapshot {
+  const object = asObject(value, 'previousVersionSnapshot');
+  if (
+    object.state !== 'previousVersion' ||
+    typeof object.available !== 'boolean'
+  ) {
+    throw new Error('previousVersionSnapshot: malformed state');
+  }
+  if (typeof object.currentVersion !== 'number') {
+    throw new Error('previousVersionSnapshot: malformed currentVersion');
+  }
+  if (typeof object.truncated !== 'boolean' || !Array.isArray(object.rows)) {
+    throw new Error('previousVersionSnapshot: malformed rows');
+  }
+  if (
+    object.previousVersion !== undefined &&
+    typeof object.previousVersion !== 'number'
+  ) {
+    throw new Error('previousVersionSnapshot: malformed previousVersion');
+  }
+  if (object.reason !== undefined && !isPreviousVersionReason(object.reason)) {
+    throw new Error('previousVersionSnapshot: malformed reason');
+  }
+  const rows = object.rows.map((row) => driverRowOf(row));
+  return {
+    state: 'previousVersion',
+    available: object.available,
+    ...(typeof object.previousVersion === 'number'
+      ? { previousVersion: object.previousVersion }
+      : {}),
+    currentVersion: object.currentVersion,
+    ...(isPreviousVersionReason(object.reason)
+      ? { reason: object.reason }
+      : {}),
+    rows,
+    truncated: object.truncated,
+  };
+}
+
+function parsePreviousVersionAudit(
+  value: JsonValue,
+): DriverPreviousVersionAudit | undefined {
+  if (value === null || value === undefined) return undefined;
+  const object = asObject(value, 'previousVersionAudit');
+  const incompatible = Array.isArray(object.incompatible)
+    ? object.incompatible.map((raw) => {
+        const entry = asObject(raw, 'previousVersionAudit.incompatible');
+        return {
+          commitId: String(entry.commitId),
+          table: String(entry.table),
+          reason:
+            entry.reason === 'unknown-table'
+              ? ('unknown-table' as const)
+              : ('unknown-column' as const),
+          ...(typeof entry.column === 'string' ? { column: entry.column } : {}),
+        };
+      })
+    : [];
+  return {
+    v: 1,
+    atMs: Number(object.atMs),
+    fromVersion: Number(object.fromVersion),
+    toVersion: Number(object.toVersion),
+    pending: Number(object.pending),
+    encodable: Number(object.encodable),
+    truncated: object.truncated === true,
+    incompatible,
+  };
+}
+
 function driverRowOf(value: JsonValue | undefined): DriverRow {
   if (typeof value !== 'object' || value === null || Array.isArray(value))
     return {};
@@ -684,11 +781,13 @@ function detailsOf(value: JsonValue): NonNullable<ClientRejection['details']> {
 
 class RustClientInstance implements ClientInstance {
   readonly #shim: ShimProcess;
+  readonly #cleanup: () => void;
   readonly #intents: DriverSyncIntent[] = [];
   #epochEstablished = false;
 
-  constructor(shim: ShimProcess) {
+  constructor(shim: ShimProcess, cleanup: () => void = () => {}) {
     this.#shim = shim;
+    this.#cleanup = cleanup;
   }
 
   async subscribe(input: {
@@ -1103,6 +1202,45 @@ class RustClientInstance implements ClientInstance {
     return (await this.statusSnapshot()).upgrading;
   }
 
+  // -- RFC 0005 previous-version context ------------------------------------
+
+  async previousVersionSnapshot(spec: {
+    readonly table: string;
+    readonly rowIds?: readonly string[];
+    readonly limit?: number;
+  }): Promise<DriverPreviousVersionSnapshot> {
+    const result = await this.#shim.call('previousVersionSnapshot', {
+      table: spec.table,
+      ...(spec.rowIds !== undefined
+        ? { rowIds: spec.rowIds as unknown as JsonValue }
+        : {}),
+      ...(spec.limit !== undefined ? { limit: spec.limit } : {}),
+    });
+    return parsePreviousVersionSnapshot(result);
+  }
+
+  async previousVersionAudit(): Promise<
+    DriverPreviousVersionAudit | undefined
+  > {
+    return parsePreviousVersionAudit(
+      await this.#shim.call('previousVersionAudit', {}),
+    );
+  }
+
+  async previousVersionDiscard(): Promise<{
+    readonly present: boolean;
+    readonly discarded: boolean;
+  }> {
+    const result = asObject(
+      await this.#shim.call('previousVersionDiscard', {}),
+      'previousVersionDiscard',
+    );
+    return {
+      present: result.present === true,
+      discarded: result.discarded === true,
+    };
+  }
+
   /**
    * §7.4.2 "app ships new code": swap the shim's core to a new schema on the
    * SAME in-memory DB (identity, outbox, tables preserved). The §7.4.1
@@ -1242,6 +1380,7 @@ class RustClientInstance implements ClientInstance {
 
   async close(): Promise<void> {
     await this.#shim.close();
+    this.#cleanup();
   }
 }
 
@@ -1251,6 +1390,16 @@ export const rustClientDriver: ClientDriver = {
   async create(options: ClientCreateOptions): Promise<ClientInstance> {
     const binary = ensureRustShim();
     const shim = new ShimProcess(binary, options.endpoints);
+    // RFC 0005: retained context lives in a sibling file, so the feature needs
+    // a file-backed replica. Only an enabled scenario gets a temp replica; the
+    // default stays the shim's in-memory core.
+    let dbPath: string | undefined;
+    let cleanup: () => void = () => {};
+    if (options.previousVersionContext?.enabled === true) {
+      const dir = mkdtempSync(join(tmpdir(), 'syncular-conformance-rust-'));
+      dbPath = join(dir, 'replica.db');
+      cleanup = () => rmSync(dir, { recursive: true, force: true });
+    }
     await shim.call('create', {
       clientId: options.clientId,
       schema: options.schema as unknown as JsonValue,
@@ -1265,8 +1414,16 @@ export const rustClientDriver: ClientDriver = {
       ...(options.encryption !== undefined
         ? { encryption: options.encryption as unknown as JsonValue }
         : {}),
+      // RFC 0005 D8: the Rust command crate parses this TS-keyed config.
+      ...(options.previousVersionContext !== undefined
+        ? {
+            previousVersionContext:
+              options.previousVersionContext as unknown as JsonValue,
+          }
+        : {}),
+      ...(dbPath !== undefined ? { dbPath } : {}),
     });
-    return new RustClientInstance(shim);
+    return new RustClientInstance(shim, cleanup);
   },
 };
 

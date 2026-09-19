@@ -19,6 +19,7 @@ import { observationScenarios } from './observation';
 import { offlineScenarios } from './offline';
 import { deletePrecedenceScenarios } from './delete-precedence';
 import { presenceScenarios } from './presence';
+import { previousVersionScenarios } from './previous-version';
 import { realtimeScenarios } from './realtime';
 import { remoteProducerScenarios } from './remote-producer';
 import { reconnectStormScenarios } from './reconnect-storm';
@@ -49,6 +50,7 @@ export const CATALOG: readonly Scenario[] = [
   ...leaseScenarios,
   ...lifecycleScenarios,
   ...schemaBumpScenarios,
+  ...previousVersionScenarios,
   ...realtimeScenarios,
   ...remoteProducerScenarios,
   ...wsRoundScenarios,

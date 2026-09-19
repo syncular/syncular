@@ -627,6 +627,71 @@ export interface DriverEncryptionConfig {
   readonly keyIdColumns?: Readonly<Record<string, string>>;
 }
 
+/**
+ * RFC 0005 previous-version context config. `enabled` is a feature flag and
+ * the only required key; it is NOT a security control. Absent or
+ * `enabled: false` means the client behaves as 0.22.0 did apart from the
+ * schema-descriptor write and the unconditional orphan sweep, and
+ * `previousVersionSnapshot` reports `reason: 'not-configured'`.
+ */
+export interface ClientPreviousVersionContextOptions {
+  readonly enabled: boolean;
+  /** Total captured bytes; driver default 8 MiB. */
+  readonly maxBytes?: number;
+  /** Total captured rows; driver default 20,000. */
+  readonly maxRows?: number;
+  /** Captured table count; driver default 32. */
+  readonly maxTables?: number;
+  /** Largest single captured row in bytes; driver default 1 MiB. */
+  readonly maxRowBytes?: number;
+  /** Aware-binary hygiene TTL; driver default 24h. It does not bound an
+   * unaware same-schema rollback, which runs none of the aware code. */
+  readonly maxAgeMs?: number;
+}
+
+/** RFC 0005 D7: every reason the read surface can name. */
+export type DriverPreviousVersionReason =
+  | 'not-configured'
+  | 'no-previous-descriptor'
+  | 'capture-exceeded-budget'
+  | 'coverage-complete'
+  | 'expired'
+  | 'lease-inactive'
+  | 'scope-revoked';
+
+/** RFC 0005 D7 read result. `state` is always `'previousVersion'`. */
+export interface DriverPreviousVersionSnapshot {
+  readonly state: 'previousVersion';
+  readonly available: boolean;
+  readonly previousVersion?: number;
+  readonly currentVersion: number;
+  readonly reason?: DriverPreviousVersionReason;
+  readonly rows: readonly Record<string, DriverRowValue>[];
+  readonly truncated: boolean;
+}
+
+/** RFC 0005 D6: one pending commit that cannot re-encode under the new
+ * schema. It names a typed reason and the offending column ONLY — never an
+ * operation, a row value, or any part of the commit envelope. */
+export interface DriverPreviousVersionAuditEntry {
+  readonly commitId: string;
+  readonly table: string;
+  readonly reason: 'unknown-table' | 'unknown-column';
+  readonly column?: string;
+}
+
+/** RFC 0005 D6 pre-reset compatibility audit (advisory; drops nothing). */
+export interface DriverPreviousVersionAudit {
+  readonly v: 1;
+  readonly atMs: number;
+  readonly fromVersion: number;
+  readonly toVersion: number;
+  readonly pending: number;
+  readonly encodable: number;
+  readonly truncated: boolean;
+  readonly incompatible: readonly DriverPreviousVersionAuditEntry[];
+}
+
 export interface ClientCreateOptions {
   readonly clientId: string;
   readonly schema: DriverSchema;
@@ -640,6 +705,8 @@ export interface ClientCreateOptions {
   readonly nowMs?: number;
   /** §5.11 client-side encryption keys; absent ⇒ E2EE off. */
   readonly encryption?: DriverEncryptionConfig;
+  /** RFC 0005 previous-version context; absent ⇒ feature off. */
+  readonly previousVersionContext?: ClientPreviousVersionContextOptions;
 }
 
 /** §4.8 window base a scenario windows on: table + variable + fixed scopes. */
@@ -800,6 +867,27 @@ export interface ClientInstance {
   /** §7.4.5: true while a schema-bump reset + first re-bootstrap is in
    * flight (undefined for a driver that predates the schema-bump rung). */
   upgrading?(): Promise<boolean>;
+
+  /**
+   * RFC 0005 D7: read the captured pre-bump rows. Present iff the client
+   * driver implements retained previous-version context — a driver that omits
+   * it makes a scenario that needs it SKIP (never a silent pass). `state` is
+   * always `'previousVersion'`; the container never makes
+   * `querySnapshot().coverage` complete.
+   */
+  previousVersionSnapshot?(spec: {
+    readonly table: string;
+    readonly rowIds?: readonly string[];
+    readonly limit?: number;
+  }): Promise<DriverPreviousVersionSnapshot>;
+  /** RFC 0005 D6: the advisory pre-reset compatibility audit, or undefined. */
+  previousVersionAudit?(): Promise<DriverPreviousVersionAudit | undefined>;
+  /** RFC 0005 A2/D9: drop the container and both metadata records. Idempotent
+   * — a second call reports `{ present: false, discarded: false }`. */
+  previousVersionDiscard?(): Promise<{
+    readonly present: boolean;
+    readonly discarded: boolean;
+  }>;
 
   /**
    * §7.4.2: the "app ships new code" step — recreate the client core with a

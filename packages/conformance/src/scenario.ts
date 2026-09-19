@@ -20,6 +20,7 @@ import {
 import type {
   ClientInstance,
   ClientLimitsOptions,
+  ClientPreviousVersionContextOptions,
   DriverEncryptionConfig,
   DriverError,
   DriverSchema,
@@ -40,6 +41,22 @@ import { FIXTURE_SCHEMA, PARTITION } from './fixture';
 import { decodeResponse, rawPullHeader, rawRequestBytes } from './raw';
 
 export const DEFAULT_NOW_MS = 1_750_000_000_000;
+
+/**
+ * Raised by a scenario that cannot run against this pairing because the
+ * CLIENT driver lacks an optional method it needs. The runner reports it as
+ * `skipped` — distinct from a silent early return, which would report a pass
+ * for a scenario that asserted nothing.
+ */
+export class ScenarioSkip extends Error {
+  override readonly name = 'ScenarioSkip';
+  readonly reason: string;
+
+  constructor(reason: string) {
+    super(reason);
+    this.reason = reason;
+  }
+}
 
 /** A request-level server error surfaced through the transport (§1.1). */
 export class EndpointError extends Error {
@@ -320,6 +337,8 @@ export interface NewClientOptions {
   readonly nowMs?: number;
   /** §5.11 client-side encryption keys; absent ⇒ E2EE off. */
   readonly encryption?: DriverEncryptionConfig;
+  /** RFC 0005 previous-version context; absent ⇒ feature off. */
+  readonly previousVersionContext?: ClientPreviousVersionContextOptions;
 }
 
 // ---------------------------------------------------------------------------
@@ -509,6 +528,9 @@ export class ScenarioContext {
       ...(options.nowMs !== undefined ? { nowMs: options.nowMs } : {}),
       ...(options.encryption !== undefined
         ? { encryption: options.encryption }
+        : {}),
+      ...(options.previousVersionContext !== undefined
+        ? { previousVersionContext: options.previousVersionContext }
         : {}),
       endpoints: {
         ...(fetchSegmentUrl !== undefined ? { fetchSegmentUrl } : {}),
