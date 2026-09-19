@@ -3,13 +3,20 @@
  * items 1-8 and 10: default off, opt-in typed round-trip, no-descriptor, the
  * pre-materialization budgets, the D6 audit, lifetime/discard, crash
  * atomicity, and coverage exclusion.
+ *
+ * Storage note: the container now lives in a SECOND database file beside the
+ * replica (`<path>.prev-context`), so every "container absent" assertion reads
+ * that file directly, never the feature's own read API (A2 step 3).
  */
 import { describe, expect, test } from 'bun:test';
+import { existsSync } from 'node:fs';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   type ClientSchema,
+  type SiblingDatabase,
+  type SqlValue,
   type SyncClientConfig,
 } from '@syncular/client';
 import type { RowColumn } from '@syncular/core';
@@ -18,6 +25,7 @@ import type { ServerSchema } from '@syncular/server';
 import { makeClient, makeServer, type TestServer } from './helpers';
 
 const CONTAINER = 'syncular_prev_context';
+const CONTAINER_META = '_syncular_prev_context_meta';
 const CONTEXT_KEY = 'previousVersionContext';
 const AUDIT_KEY = 'previousVersionAudit';
 const DESCRIPTOR_KEY = 'localSchemaDescriptor';
@@ -114,6 +122,26 @@ function enabled(
   return { enabled: true, ...overrides };
 }
 
+/** The sibling file the bun adapter uses for the container. */
+function containerPath(path: string): string {
+  return `${path}.prev-context`;
+}
+
+function containerTableCount(path: string): number {
+  if (!existsSync(containerPath(path))) return 0;
+  const db = new BunClientDatabase(containerPath(path));
+  try {
+    return Number(
+      db.query(
+        "SELECT COUNT(*) AS c FROM sqlite_master WHERE type = 'table' AND name = ?",
+        [CONTAINER],
+      )[0]?.c ?? 0,
+    );
+  } finally {
+    db.close();
+  }
+}
+
 /** Seed a v1 local replica (descriptor written by D1) and close it. */
 async function seedV1(
   server: TestServer,
@@ -164,15 +192,6 @@ function rawDb(path: string): BunClientDatabase {
   return new BunClientDatabase(path);
 }
 
-function containerTableCount(db: BunClientDatabase): number {
-  return Number(
-    db.query(
-      "SELECT COUNT(*) AS c FROM sqlite_master WHERE type = 'table' AND name = ?",
-      [CONTAINER],
-    )[0]?.c ?? 0,
-  );
-}
-
 function metaValue(db: BunClientDatabase, key: string): string | undefined {
   const row = db.query('SELECT value FROM _syncular_meta WHERE key = ?', [key])[0];
   return row === undefined ? undefined : String(row.value);
@@ -185,8 +204,8 @@ describe('RFC 0005 default off', () => {
     await seedV1(server, path);
     const bumped = await openAt(server, path, V2_SCHEMA);
     try {
+      expect(containerTableCount(path)).toBe(0);
       const inspect = rawDb(path);
-      expect(containerTableCount(inspect)).toBe(0);
       expect(metaValue(inspect, CONTEXT_KEY)).toBeUndefined();
       inspect.close();
       // The §7.4.3 reset still ran: the table is empty at the new schema.
@@ -233,6 +252,13 @@ describe('RFC 0005 opt-in capture', () => {
       expect(
         bumped.client.statusSnapshot().previousVersionContext.present,
       ).toBe(true);
+      // The container lives in its own file; the replica connection cannot see it.
+      expect(
+        bumped.db.query(
+          "SELECT 1 AS present FROM sqlite_master WHERE name = ?",
+          [CONTAINER],
+        ),
+      ).toHaveLength(0);
       // Unknown previous table is a loud request error.
       expect(() =>
         bumped.client.previousVersionSnapshot({ table: 'notes' }),
@@ -260,9 +286,7 @@ describe('RFC 0005 opt-in capture', () => {
       const snap = bumped.client.previousVersionSnapshot({ table: 'things' });
       expect(snap.available).toBe(false);
       expect(snap.reason).toBe('no-previous-descriptor');
-      const inspect = rawDb(straight);
-      expect(containerTableCount(inspect)).toBe(0);
-      inspect.close();
+      expect(containerTableCount(straight)).toBe(0);
     } finally {
       await bumped.client.close();
       bumped.db.close();
@@ -333,9 +357,7 @@ describe('RFC 0005 budgets abort before materializing', () => {
         const snap = bumped.client.previousVersionSnapshot({ table: 'things' });
         expect(snap.available).toBe(false);
         expect(snap.reason).toBe('capture-exceeded-budget');
-        const inspect = rawDb(path);
-        expect(containerTableCount(inspect)).toBe(0);
-        inspect.close();
+        expect(containerTableCount(path)).toBe(0);
       } finally {
         await bumped.client.close();
         bumped.db.close();
@@ -412,9 +434,7 @@ describe('RFC 0005 lifetime and discard', () => {
         true,
       );
       await bumped.client.sync();
-      const inspect = rawDb(path);
-      expect(containerTableCount(inspect)).toBe(0);
-      inspect.close();
+      expect(containerTableCount(path)).toBe(0);
       const snap = bumped.client.previousVersionSnapshot({ table: 'things' });
       expect(snap.available).toBe(false);
       expect(snap.reason).toBe('coverage-complete');
@@ -439,9 +459,7 @@ describe('RFC 0005 lifetime and discard', () => {
       const snap = bumped.client.previousVersionSnapshot({ table: 'things' });
       expect(snap.available).toBe(false);
       expect(snap.reason).toBe('expired');
-      const inspect = rawDb(path);
-      expect(containerTableCount(inspect)).toBe(0);
-      inspect.close();
+      expect(containerTableCount(path)).toBe(0);
     } finally {
       await bumped.client.close();
       bumped.db.close();
@@ -465,15 +483,11 @@ describe('RFC 0005 lifetime and discard', () => {
     }
     const reopened = await openAt(server, path, V2_SCHEMA, enabled());
     try {
-      const inspect = rawDb(path);
-      expect(containerTableCount(inspect)).toBe(1);
-      inspect.close();
+      expect(containerTableCount(path)).toBe(1);
       const snap = reopened.client.previousVersionSnapshot({ table: 'things' });
       expect(snap.available).toBe(false);
       expect(snap.reason).toBe('lease-inactive');
-      const after = rawDb(path);
-      expect(containerTableCount(after)).toBe(0);
-      after.close();
+      expect(containerTableCount(path)).toBe(0);
     } finally {
       await reopened.client.close();
       reopened.db.close();
@@ -492,9 +506,7 @@ describe('RFC 0005 lifetime and discard', () => {
       const snap = bumped.client.previousVersionSnapshot({ table: 'things' });
       expect(snap.available).toBe(false);
       expect(snap.reason).toBe('scope-revoked');
-      const inspect = rawDb(path);
-      expect(containerTableCount(inspect)).toBe(0);
-      inspect.close();
+      expect(containerTableCount(path)).toBe(0);
     } finally {
       await bumped.client.close();
       bumped.db.close();
@@ -511,8 +523,8 @@ describe('RFC 0005 lifetime and discard', () => {
         purgeId: 'pvc-purge',
         targets: [{ table: 'things', selectors: { project_id: ['p1'] } }],
       });
+      expect(containerTableCount(path)).toBe(0);
       const inspect = rawDb(path);
-      expect(containerTableCount(inspect)).toBe(0);
       expect(metaValue(inspect, CONTEXT_KEY)).toBeUndefined();
       expect(metaValue(inspect, AUDIT_KEY)).toBeUndefined();
       inspect.close();
@@ -535,8 +547,8 @@ describe('RFC 0005 lifetime and discard', () => {
     bumped.db.close();
 
     // A2 step 3: direct database query, never the feature's read API.
+    expect(containerTableCount(path)).toBe(0);
     const inspect = rawDb(path);
-    expect(containerTableCount(inspect)).toBe(0);
     expect(metaValue(inspect, CONTEXT_KEY)).toBeUndefined();
     expect(metaValue(inspect, AUDIT_KEY)).toBeUndefined();
     inspect.close();
@@ -576,6 +588,23 @@ describe('RFC 0005 crash atomicity', () => {
         }
         super.exec(sql, params as never);
       }
+
+      /** The container is a separate file; fault its connection too. */
+      override openSibling(name: string): SiblingDatabase | undefined {
+        const handle = super.openSibling(name);
+        if (handle === undefined) return handle;
+        const database = handle.database;
+        const original = database.exec.bind(database);
+        let fired = false;
+        database.exec = (sql: string, params: readonly SqlValue[] = []) => {
+          if (!fired && shouldFail(sql, params)) {
+            fired = true;
+            throw new Error('simulated crash');
+          }
+          original(sql, params);
+        };
+        return handle;
+      }
     }
     return new FaultDatabase(path);
   }
@@ -588,7 +617,10 @@ describe('RFC 0005 crash atomicity', () => {
       label: 'before the wipe (container creation)',
       fail: (sql) => /CREATE TABLE/.test(sql) && sql.includes(CONTAINER),
     },
-    { label: 'during the wipe (drop)', fail: (sql) => /^DROP TABLE/.test(sql) },
+    {
+      label: 'during the wipe (drop)',
+      fail: (sql) => /^DROP TABLE/.test(sql) && sql.includes('things'),
+    },
     {
       label: 'after the wipe (descriptor write)',
       fail: (_sql, params) => params[0] === DESCRIPTOR_KEY,
@@ -615,9 +647,7 @@ describe('RFC 0005 crash atomicity', () => {
 
       const recovered = await openAt(server, path, V2_SCHEMA, enabled());
       try {
-        const inspect = rawDb(path);
-        expect(containerTableCount(inspect)).toBe(1);
-        inspect.close();
+        expect(containerTableCount(path)).toBe(1);
         const snap = recovered.client.previousVersionSnapshot({
           table: 'things',
         });
@@ -632,7 +662,7 @@ describe('RFC 0005 crash atomicity', () => {
 });
 
 describe('RFC 0005 stated limitations', () => {
-  test('an unaware schema-changing rollback drops the container; the old path boots', async () => {
+  test('an unaware schema-changing rollback does NOT remove the container file', async () => {
     const server = v2Server();
     const path = tempPath('downgrade');
     await seedV1(server, path);
@@ -640,7 +670,8 @@ describe('RFC 0005 stated limitations', () => {
     await bumped.client.close();
     bumped.db.close();
 
-    // The 0.22.0 §7.4.3 drop, verbatim: every non-reserved table.
+    // The 0.22.0 §7.4.3 drop, verbatim: every non-reserved table in the REPLICA.
+    // It cannot see the container file, so the file and its rows survive.
     const unawareDb = rawDb(path);
     const dropped: string[] = [];
     for (const row of unawareDb.query(
@@ -649,9 +680,9 @@ describe('RFC 0005 stated limitations', () => {
       unawareDb.exec(`DROP TABLE IF EXISTS ${String(row.name)}`);
       dropped.push(String(row.name));
     }
-    expect(dropped).toContain(CONTAINER);
-    expect(containerTableCount(unawareDb)).toBe(0);
+    expect(dropped).not.toContain(CONTAINER);
     unawareDb.close();
+    expect(containerTableCount(path)).toBe(1);
 
     const unaware = await openAt(server, path, V2_SCHEMA);
     try {
@@ -674,9 +705,7 @@ describe('RFC 0005 stated limitations', () => {
     // The unaware binary runs no reset at the same schema version and executes
     // none of our cleanup, so the container is still there. This is residual
     // exposure, not a mitigation.
-    const inspect = rawDb(path);
-    expect(containerTableCount(inspect)).toBe(1);
-    inspect.close();
+    expect(containerTableCount(path)).toBe(1);
   });
 
   test('the TTL fires only in an aware binary', async () => {
@@ -693,9 +722,7 @@ describe('RFC 0005 stated limitations', () => {
     bumped.db.close();
     // Time passes and no aware binary opens the database: nothing deletes it.
     server.now.ms += 10 * 24 * 60 * 60 * 1000;
-    const inspect = rawDb(path);
-    expect(containerTableCount(inspect)).toBe(1);
-    inspect.close();
+    expect(containerTableCount(path)).toBe(1);
   });
 
   test('an orphan container is discarded at the next aware boot', async () => {
@@ -706,15 +733,14 @@ describe('RFC 0005 stated limitations', () => {
     await bumped.client.close();
     bumped.db.close();
     {
-      const inspect = rawDb(path);
-      inspect.exec('DELETE FROM _syncular_meta WHERE key = ?', [CONTEXT_KEY]);
-      inspect.close();
+      // Orphan: the row table exists with no container metadata.
+      const container = new BunClientDatabase(containerPath(path));
+      container.exec(`DROP TABLE ${CONTAINER_META}`);
+      container.close();
     }
     const aware = await openAt(server, path, V2_SCHEMA, enabled());
     try {
-      const inspect = rawDb(path);
-      expect(containerTableCount(inspect)).toBe(0);
-      inspect.close();
+      expect(containerTableCount(path)).toBe(0);
       expect(aware.client.previousVersionSnapshot({ table: 'things' }).available).toBe(
         false,
       );
@@ -739,18 +765,14 @@ describe('RFC 0005 coverage exclusion', () => {
         coverage: [{ base, units: ['p1'] }],
       });
       expect(pending.coverage.complete).toBe(false);
-      const inspect = rawDb(path);
-      expect(containerTableCount(inspect)).toBe(1);
-      inspect.close();
+      expect(containerTableCount(path)).toBe(1);
       await bumped.client.sync();
       const complete = bumped.client.querySnapshot({
         sql: 'SELECT 1 AS one',
         coverage: [{ base, units: ['p1'] }],
       });
       expect(complete.coverage.complete).toBe(true);
-      const after = rawDb(path);
-      expect(containerTableCount(after)).toBe(0);
-      after.close();
+      expect(containerTableCount(path)).toBe(0);
     } finally {
       await bumped.client.close();
       bumped.db.close();
