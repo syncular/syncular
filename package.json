@@ -56,10 +56,10 @@
   "devDependencies": {
     "@syncular/typegen": "workspace:*",
     "@types/bun": "latest",
-    "knip": "^6.29.0",
+    "knip": "^6.37.0",
     "oxfmt": "^0.60.0",
     "oxlint": "^1.75.0",
     "sharp": "^0.35.3",
-    "typescript": "^5.9.0"
+    "typescript": "^5.9.3"
   }
 }
