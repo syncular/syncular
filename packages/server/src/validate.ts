@@ -20,6 +20,10 @@ import {
   type RowValue,
   type ScopeMap,
 } from '@syncular/core';
+import type {
+  AuthoritativeQueryRequest,
+  AuthoritativeQueryResult,
+} from './storage';
 
 /**
  * §6.7 reserved code prefixes. A host validator code MUST NOT start with
@@ -104,6 +108,17 @@ export interface CommitValidationReader {
     rowId: string,
   ): Promise<CommitValidationRow | undefined>;
   scanRows(input: CommitValidationScanInput): Promise<CommitValidationRow[]>;
+  /**
+   * Run a generated registered query on the commit transaction (§6.8). The
+   * request has the shape `ServerStorage.queryAuthoritative` takes; the
+   * storage binds every relation to the commit's partition. SQLite and
+   * PostgreSQL return the final candidate state; D1 fails with
+   * `sync.storage.query_over_staged_writes` when the query reads a table the
+   * commit has written.
+   */
+  queryAuthoritative(
+    query: AuthoritativeQueryRequest,
+  ): Promise<AuthoritativeQueryResult>;
 }
 
 export interface ValidateCommitInput {
@@ -126,21 +141,31 @@ export type CommitValidator = (
 /**
  * Ambient context a validator may consult (§6.7).
  *
- * A validator runs inside the push transaction. On a single-connection
- * executor (SQLite, PGlite) the storage serializes authoritative queries
- * behind that transaction, so a validator that calls `queryAuthoritative`
- * waits for the transaction it is already inside and the push never
- * completes. On a pool-backed executor (`pg`, `Bun.sql`) the query takes a
- * second connection and returns committed state without the candidate write.
- * Either way a rule that must read rows belongs in the whole-commit
- * `CommitValidator`, whose reader runs get and scan operations on the same
- * transaction (§6.8).
+ * A validator runs inside the push transaction. It MUST NOT call
+ * `ServerStorage.queryAuthoritative`: on a single-connection executor
+ * (SQLite, PGlite) that call waits for the transaction the validator is
+ * inside and the push never completes, and on a pool-backed executor (`pg`,
+ * `Bun.sql`) it reads committed state without the staged writes, or waits
+ * forever once push transactions hold every pool connection. An authority
+ * read calls `queryAuthoritative` on this context instead.
  */
 export interface ValidateContext {
   /** Host-authenticated actor (§1.1) performing the write. */
   readonly actorId: string;
   /** The partition (§1.1) the commit targets. */
   readonly partition: string;
+  /**
+   * Run a generated registered query on the push transaction (§6.7). The
+   * request has the shape `ServerStorage.queryAuthoritative` takes; the
+   * storage binds every relation to the commit's partition. SQLite and
+   * PostgreSQL return the transaction's snapshot, including the operations
+   * staged before this one; D1 fails with
+   * `sync.storage.query_over_staged_writes` when the query reads a table the
+   * commit has written.
+   */
+  readonly queryAuthoritative: (
+    query: AuthoritativeQueryRequest,
+  ) => Promise<AuthoritativeQueryResult>;
 }
 
 /**
@@ -152,12 +177,12 @@ export interface ValidateContext {
  * `sync.constraint_violation` code (a validator SHOULD throw
  * `ValidationRejection` to control the code). MUST NOT mutate the row.
  *
- * The hook runs inside the push transaction and cannot read candidate rows
- * from an authoritative query: on a single-connection executor
- * `queryAuthoritative` serializes behind that transaction and the push never
- * completes, and on a pool-backed executor it reads committed state without
- * the candidate write. Read rows with the whole-commit `CommitValidator`
- * reader instead (§6.8).
+ * The hook runs inside the push transaction. An authority read uses
+ * `ctx.queryAuthoritative`, which executes on that transaction; calling
+ * `ServerStorage.queryAuthoritative` from here deadlocks on a
+ * single-connection executor and reads committed state on a pool-backed one.
+ * A rule over sibling operations belongs in the whole-commit
+ * `CommitValidator` (§6.8).
  */
 export type Validator = (
   op: ValidateOperation,

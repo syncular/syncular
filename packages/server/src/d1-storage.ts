@@ -45,6 +45,7 @@ import type { CommitPruneQuery, CommitPruneResult } from './storage';
 import { decodeRow, type RowValue } from '@syncular/core';
 import {
   bindAuthoritativePartition,
+  type BoundAuthoritativeQuery,
   prepareAuthoritativeQuery,
 } from './authoritative-query';
 import { syncError } from './errors';
@@ -202,6 +203,49 @@ function relationalValuesEqual(left: RowValue, right: RowValue): boolean {
   return Object.is(left, right);
 }
 
+/** Run one partition-bound registered query and the cursor read as one batch. */
+async function queryAuthoritativeOn(
+  db: Pick<D1Database, 'prepare' | 'batch'>,
+  partition: string,
+  prepared: BoundAuthoritativeQuery,
+): Promise<AuthoritativeQueryResult> {
+  const results = await db.batch([
+    db.prepare(prepared.sql).bind(...prepared.params),
+    db
+      .prepare('SELECT max_commit_seq FROM sync_partitions WHERE partition=?')
+      .bind(partition),
+  ]);
+  const rowsResult = results[0];
+  const cursorResult = results[1];
+  if (
+    typeof rowsResult !== 'object' ||
+    rowsResult === null ||
+    !('results' in rowsResult) ||
+    !Array.isArray(rowsResult.results) ||
+    typeof cursorResult !== 'object' ||
+    cursorResult === null ||
+    !('results' in cursorResult) ||
+    !Array.isArray(cursorResult.results)
+  ) {
+    throw new Error('D1 registered query returned an invalid batch result');
+  }
+  const cursor = cursorResult.results[0];
+  const maxCommitSeq =
+    typeof cursor === 'object' &&
+    cursor !== null &&
+    'max_commit_seq' in cursor &&
+    typeof cursor.max_commit_seq === 'number'
+      ? cursor.max_commit_seq
+      : 0;
+  return {
+    rows: rowsResult.results.filter(
+      (row): row is Readonly<Record<string, unknown>> =>
+        typeof row === 'object' && row !== null,
+    ),
+    maxCommitSeq,
+  };
+}
+
 /** Read-your-own-writes overlay entry: a buffered upsert, or a deletion. */
 type PendingRow =
   | { readonly kind: 'row'; readonly row: StoredRow }
@@ -213,6 +257,10 @@ class D1Transaction implements StorageTransaction {
   readonly #db: Pick<D1Database, 'prepare' | 'batch'>;
   readonly #partition: string;
   readonly #resolveTable: (name: string) => CompiledTable;
+  /** Storage-owned relation rewrite, bound to this transaction's partition. */
+  readonly #prepareQuery: (
+    query: AuthoritativeQueryRequest,
+  ) => BoundAuthoritativeQuery;
   readonly #pushApplySerialized: boolean;
   readonly #buffer: BufferedStatement[] = [];
   #open = true;
@@ -241,11 +289,13 @@ class D1Transaction implements StorageTransaction {
     db: Pick<D1Database, 'prepare' | 'batch'>,
     partition: string,
     resolveTable: (name: string) => CompiledTable,
+    prepareQuery: (query: AuthoritativeQueryRequest) => BoundAuthoritativeQuery,
     pushApplySerialized: boolean,
   ) {
     this.#db = db;
     this.#partition = partition;
     this.#resolveTable = resolveTable;
+    this.#prepareQuery = prepareQuery;
     this.#pushApplySerialized = pushApplySerialized;
   }
 
@@ -436,6 +486,25 @@ class D1Transaction implements StorageTransaction {
     return [...rows.values()]
       .sort((left, right) => left.rowId.localeCompare(right.rowId))
       .slice(0, query.limit);
+  }
+
+  async queryAuthoritative(
+    query: AuthoritativeQueryRequest,
+  ): Promise<AuthoritativeQueryResult> {
+    this.#assertOpen();
+    // D1 buffers writes until commit() and cannot overlay them on generated
+    // SQL, so a read over a written table would return committed state
+    // without this transaction's staged rows. Refuse it instead.
+    for (const key of this.#pending.keys()) {
+      if (query.tables.includes(key.slice(0, key.indexOf('\u0000')))) {
+        throw new StorageQueryError('sync.storage.query_over_staged_writes');
+      }
+    }
+    return queryAuthoritativeOn(
+      this.#db,
+      this.#partition,
+      this.#prepareQuery(query),
+    );
   }
 
   async lockPartitionForPush(): Promise<void> {
@@ -1448,6 +1517,7 @@ export class D1ServerStorage implements ServerStorage {
           throw new StorageQueryError('sync.storage.schema_changed');
         return table;
       },
+      (query) => this.#prepareAuthoritativeQuery(partition, query),
       this.#pushApplySerialized,
     );
   }
@@ -1469,12 +1539,23 @@ export class D1ServerStorage implements ServerStorage {
     // re-checks the published marker inside this same batch, so condition 2
     // is already evaluated with the query (§2.4 D1 schema readiness).
     const db = this.#schemaDatabase();
+    return queryAuthoritativeOn(
+      db,
+      partition,
+      this.#prepareAuthoritativeQuery(partition, query),
+    );
+  }
+
+  #prepareAuthoritativeQuery(
+    partition: string,
+    query: AuthoritativeQueryRequest,
+  ): BoundAuthoritativeQuery {
     if (this.#tables === undefined) {
       throw new Error(
         'ensureSchema(schema) must run before registered queries',
       );
     }
-    const prepared = bindAuthoritativePartition(
+    return bindAuthoritativePartition(
       prepareAuthoritativeQuery(
         query.plan,
         query.params,
@@ -1483,41 +1564,6 @@ export class D1ServerStorage implements ServerStorage {
       ),
       partition,
     );
-    const results = await db.batch([
-      db.prepare(prepared.sql).bind(...prepared.params),
-      db
-        .prepare('SELECT max_commit_seq FROM sync_partitions WHERE partition=?')
-        .bind(partition),
-    ]);
-    const rowsResult = results[0];
-    const cursorResult = results[1];
-    if (
-      typeof rowsResult !== 'object' ||
-      rowsResult === null ||
-      !('results' in rowsResult) ||
-      !Array.isArray(rowsResult.results) ||
-      typeof cursorResult !== 'object' ||
-      cursorResult === null ||
-      !('results' in cursorResult) ||
-      !Array.isArray(cursorResult.results)
-    ) {
-      throw new Error('D1 registered query returned an invalid batch result');
-    }
-    const cursor = cursorResult.results[0];
-    const maxCommitSeq =
-      typeof cursor === 'object' &&
-      cursor !== null &&
-      'max_commit_seq' in cursor &&
-      typeof cursor.max_commit_seq === 'number'
-        ? cursor.max_commit_seq
-        : 0;
-    return {
-      rows: rowsResult.results.filter(
-        (row): row is Readonly<Record<string, unknown>> =>
-          typeof row === 'object' && row !== null,
-      ),
-      maxCommitSeq,
-    };
   }
 
   async getPartitionLogEpoch(partition: string): Promise<string | undefined> {

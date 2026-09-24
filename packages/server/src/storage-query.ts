@@ -1,6 +1,12 @@
 import type { ScopeMap } from '@syncular/core';
 import type { CompiledTable, IndexSchema } from './schema';
-import type { IndexRowScanQuery, RowScanQuery } from './storage';
+import type {
+  AuthoritativeQueryRequest,
+  AuthoritativeQueryResult,
+  IndexRowScanQuery,
+  RowScanQuery,
+  StorageTransaction,
+} from './storage';
 import { StorageQueryError } from './storage-errors';
 
 /**
@@ -50,4 +56,20 @@ export function resolveIndexRowScan(
     throw new StorageQueryError('sync.storage.index_value_count_mismatch');
   }
   return index;
+}
+
+/**
+ * §6.7/§6.8 transaction-bound registered query for every host hook that runs
+ * inside a push transaction. A storage transaction without the capability
+ * fails; the call never falls back to `ServerStorage.queryAuthoritative`,
+ * which reads outside the transaction.
+ */
+export async function transactionQuery(
+  tx: StorageTransaction,
+  query: AuthoritativeQueryRequest,
+): Promise<AuthoritativeQueryResult> {
+  if (tx.queryAuthoritative === undefined) {
+    throw new StorageQueryError('sync.storage.transaction_query_unsupported');
+  }
+  return tx.queryAuthoritative(query);
 }

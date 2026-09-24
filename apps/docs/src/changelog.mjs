@@ -16,6 +16,17 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-09-25',
+    title: 'Push hooks run generated authority reads on the push transaction',
+    body: "Row validators, the whole-commit validator, the reaction planner, and remote command callbacks run inside the push transaction, and each now receives a transaction-bound `queryAuthoritative` (`context.queryAuthoritative`, or `read.queryAuthoritative` on the candidate-state reader). It takes the request `storage.queryAuthoritative` takes, built from a generated query descriptor; the storage binds every relation to the commit's partition and runs the statement on the push transaction's connection. On SQLite and PostgreSQL the read returns the rows staged earlier in the commit, and a push completes on a one-connection pool. Calling `storage.queryAuthoritative` from these hooks still waits forever on SQLite and PGlite and reads committed state on a pool. D1 refuses a read over a table the commit has already written with `sync.storage.query_over_staged_writes`, and a custom storage transaction without the capability fails with `sync.storage.transaction_query_unsupported`.",
+    links: [
+      {
+        href: '/guide-remote-operations/#read-a-generated-query-inside-a-push-transaction',
+        label: 'Read a generated query inside a push transaction',
+      },
+    ],
+  },
+  {
     date: '2026-09-19',
     title: 'The server refuses to serve until a declared backfill is activated',
     body: 'A schema change that needs a backfill can now be declared so the storage refuses requests until it is activated. SQLite and PostgreSQL expose a serve gate that answers `sync.schema_not_ready` (retryable, HTTP 503) while a declared checkpoint for the running schema version is incomplete, or when the stored schema version is newer than the running build. D1 keeps its existing host readiness failure and the client recovery protocol does not change. On PostgreSQL the migration transaction takes an exclusive lock on `sync_partitions` as its first statement, so an old binary blocks at its first statement without its cooperation, and a `BEFORE INSERT` trigger on `sync_commits` rejects an append below the required writer version for the partition. Custom storage adapters must implement the new `Storage` members named in the release notes.',

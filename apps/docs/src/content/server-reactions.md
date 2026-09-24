@@ -73,7 +73,9 @@ the persisted handler key from
 cannot collide.
 
 The planner may use its candidate-state `read` API when the operations do not
-contain enough information. Reads observe all staged sibling operations. Keep
+contain enough information. Reads observe all staged sibling operations.
+`read.queryAuthoritative` runs a generated registered query on the same
+transaction ([Read a generated query inside a push transaction](/guide-remote-operations/#read-a-generated-query-inside-a-push-transaction)). Keep
 the planner short and deterministic because the authoritative transaction and
 partition serialization remain open until it returns.
 

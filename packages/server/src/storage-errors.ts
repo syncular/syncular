@@ -30,7 +30,9 @@ export type StorageQueryErrorCode =
   | 'sync.storage.checkpoint_not_declared'
   | 'sync.storage.checkpoint_unsupported'
   | 'sync.storage.checkpoint_fence_missing'
-  | 'sync.storage.checkpoint_incomplete';
+  | 'sync.storage.checkpoint_incomplete'
+  | 'sync.storage.transaction_query_unsupported'
+  | 'sync.storage.query_over_staged_writes';
 
 const STORAGE_QUERY_MESSAGES: Readonly<Record<StorageQueryErrorCode, string>> =
   {
@@ -56,6 +58,10 @@ const STORAGE_QUERY_MESSAGES: Readonly<Record<StorageQueryErrorCode, string>> =
       'checkpoint activation requires the writer fence raised at declaration',
     'sync.storage.checkpoint_incomplete':
       'a declared backfill checkpoint is not activated and this caller did not declare it',
+    'sync.storage.transaction_query_unsupported':
+      'this storage transaction cannot run registered queries',
+    'sync.storage.query_over_staged_writes':
+      'registered query reads a table this transaction has buffered writes for',
     'sync.storage.scan_requires_scope':
       'scope-indexed row scans require at least one scope variable',
     'sync.storage.index_not_found':

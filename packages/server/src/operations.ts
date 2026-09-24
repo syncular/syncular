@@ -22,8 +22,13 @@ import { SyncError, syncError } from './errors';
 import { processPushOperationsWithTrace } from './push';
 import { compileSchema } from './schema';
 import { authorizeWrite, type ResolvedScopes } from './scopes';
-import type { AuthoritativeQueryValue } from './storage';
+import type {
+  AuthoritativeQueryRequest,
+  AuthoritativeQueryResult,
+  AuthoritativeQueryValue,
+} from './storage';
 import type { StorageTransaction } from './storage';
+import { transactionQuery } from './storage-query';
 import { toValidateRow, type ValidateRow } from './validate';
 
 export interface RemoteQueryDependency {
@@ -107,6 +112,14 @@ export interface RemoteCommandContext {
   readonly operationId: string;
   readonly requestId: string;
   getRow(table: string, rowId: string): Promise<ValidateRow | undefined>;
+  /**
+   * Run a generated registered query on the command's push transaction
+   * (§6.7). The storage binds every relation to the partition; unlike
+   * `getRow`, the rows are not filtered by the actor's scopes.
+   */
+  queryAuthoritative(
+    query: AuthoritativeQueryRequest,
+  ): Promise<AuthoritativeQueryResult>;
 }
 
 export interface RemoteCommandOptions<Input> {
@@ -570,6 +583,7 @@ function commandContext(
         decodeRow(table.columns, stored.payload),
       );
     },
+    queryAuthoritative: (query) => transactionQuery(tx, query),
   };
 }
 

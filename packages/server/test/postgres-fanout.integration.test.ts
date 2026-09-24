@@ -17,6 +17,7 @@ import {
   encodeMessage,
   encodeSparseRow,
   PROTOCOL_WIRE_VERSION,
+  type PushOperation,
   type PushResultFrame,
   type RowColumn,
   type WakeReason,
@@ -34,6 +35,7 @@ import {
   PostgresServerStorage,
   type ServerSchema,
   type ServerStorage,
+  ValidationRejection,
 } from '@syncular/server';
 
 const PG_URL = process.env.SYNCULAR_PG_URL;
@@ -438,3 +440,189 @@ gate('Postgres fanout integration (SYNCULAR_PG_URL)', () => {
     expect(FANOUT_CHANNEL).toBe('syncular_commit');
   });
 });
+
+gate(
+  'Postgres push-transaction authority reads on a one-connection pool (SYNCULAR_PG_URL)',
+  () => {
+    // oxlint-disable-next-line typescript/no-explicit-any -- dynamic Bun.sql handles.
+    const handles: any[] = [];
+    afterAll(async () => {
+      for (const h of handles) await h.end?.().catch(() => {});
+    });
+
+    const MEMBER_COLUMNS: readonly RowColumn[] = [
+      { name: 'id', type: 'string', nullable: false },
+      { name: 'project_id', type: 'string', nullable: false },
+      { name: 'actor_id', type: 'string', nullable: false },
+      { name: 'role', type: 'string', nullable: false },
+    ];
+    const AUTH_SCHEMA: ServerSchema = {
+      version: 1,
+      tables: [
+        ...SYNC_SCHEMA.tables,
+        {
+          name: 'members',
+          columns: MEMBER_COLUMNS,
+          primaryKey: 'id',
+          scopes: ['project:{project_id}'],
+        },
+      ],
+    };
+    // The shape typegen emits for
+    // `SELECT role FROM members WHERE project_id = :projectId AND actor_id = :actorId`.
+    const ROLE_SQL =
+      'SELECT role FROM members WHERE project_id = ? AND actor_id = ?';
+    const roleOf = (actorId: string) => ({
+      plan: {
+        sql: ROLE_SQL,
+        relations: [
+          {
+            table: 'members',
+            start: ROLE_SQL.indexOf('members'),
+            end: ROLE_SQL.indexOf('members') + 'members'.length,
+          },
+        ],
+      },
+      params: ['p1', actorId],
+      tables: ['members'],
+    });
+    const member = (actorId: string, role: string) => ({
+      table: 'members',
+      rowId: `m-${actorId}`,
+      op: 'upsert' as const,
+      payload: encodeSparseRow(MEMBER_COLUMNS, 0, [
+        `m-${actorId}`,
+        'p1',
+        actorId,
+        role,
+      ]),
+    });
+    const task = (id: string) => ({
+      table: 'tasks',
+      rowId: id,
+      op: 'upsert' as const,
+      payload: encodeSparseRow(TASK_COLUMNS, 0, [id, 'p1', 'title']),
+    });
+
+    test('accepted, revoked, cross-partition, and concurrent role changes complete on one connection', async () => {
+      // A fresh database keeps this schema apart from the other receipts.
+      const admin = new (BunSQL as new (url: string) => unknown)(
+        PG_URL as string,
+      );
+      handles.push(admin);
+      const database = `authq_${crypto.randomUUID().replaceAll('-', '')}`;
+      // oxlint-disable-next-line typescript/no-explicit-any -- Bun.sql unsafe.
+      await (admin as any).unsafe(`CREATE DATABASE ${database}`);
+      const url = new URL(PG_URL as string);
+      url.pathname = `/${database}`;
+      // oxlint-disable-next-line typescript/no-explicit-any -- Bun.sql options.
+      const pool = new (BunSQL as new (options: any) => unknown)({
+        url: url.toString(),
+        max: 1,
+      });
+      handles.push(pool);
+      const storage = new PostgresServerStorage(bunSqlExecutor(pool));
+      await storage.migrate();
+      await storage.ensureSchema(compileSchema(AUTH_SCHEMA));
+      for (const partition of ['part-1', 'part-2']) {
+        await storage.touchPartition(partition, Date.now(), 'epoch');
+      }
+
+      const push = async (
+        partition: string,
+        actorId: string,
+        clientCommitId: string,
+        operations: PushOperation[],
+      ) => {
+        const message = decodeMessage(
+          await handleSyncRequest(
+            encodeMessage({
+              wireVersion: PROTOCOL_WIRE_VERSION,
+              msgKind: 'request',
+              frames: [
+                {
+                  type: 'REQ_HEADER',
+                  clientId: `client-${actorId}`,
+                  schemaVersion: 1,
+                  logEpoch: 'epoch',
+                },
+                { type: 'PUSH_COMMIT', clientCommitId, operations },
+              ],
+            }),
+            {
+              partition,
+              actorId,
+              schema: AUTH_SCHEMA,
+              storage,
+              segments: new MemorySegmentStore(),
+              resolveScopes: () => ({ project_id: ['p1'] }),
+              validators: {
+                tasks: async (_op, ctx) => {
+                  const { rows } = await ctx.queryAuthoritative(
+                    roleOf(ctx.actorId),
+                  );
+                  if (rows[0]?.role !== 'editor') {
+                    throw new ValidationRejection('app.not_editor');
+                  }
+                },
+              },
+            },
+          ),
+        );
+        if (message.msgKind !== 'response')
+          throw new Error('expected response');
+        const result = message.frames.find(
+          (frame): frame is PushResultFrame => frame.type === 'PUSH_RESULT',
+        );
+        if (result === undefined) throw new Error('expected a push result');
+        return result;
+      };
+
+      await push('part-1', 'admin', 'grant-a1', [member('a1', 'editor')]);
+      await push('part-2', 'admin', 'grant-a2', [member('a2', 'editor')]);
+      expect(
+        (await storage.queryAuthoritative('part-1', roleOf('a1'))).rows,
+      ).toEqual([{ role: 'editor' }]);
+
+      expect(
+        await push('part-1', 'a1', 'accepted', [task('t1')]),
+      ).toMatchObject({ status: 'applied' });
+      expect(
+        await push('part-1', 'a2', 'cross-partition', [task('t2')]),
+      ).toMatchObject({
+        status: 'rejected',
+        results: [{ code: 'app.not_editor' }],
+      });
+      expect(
+        await push('part-1', 'a1', 'self-revoke', [
+          member('a1', 'viewer'),
+          task('t3'),
+        ]),
+      ).toMatchObject({
+        status: 'rejected',
+        results: [{ opIndex: 1, code: 'app.not_editor' }],
+      });
+
+      const [revoke, write] = await Promise.all([
+        push('part-1', 'admin', 'revoke-a1', [member('a1', 'viewer')]),
+        push('part-1', 'a1', 'racing', [task('t4')]),
+      ]);
+      expect(revoke).toMatchObject({ status: 'applied' });
+      if (write.status === 'applied') {
+        expect(write.commitSeq ?? 0).toBeLessThan(revoke.commitSeq ?? 0);
+      } else {
+        expect(write).toMatchObject({ results: [{ code: 'app.not_editor' }] });
+      }
+      expect(await push('part-1', 'a1', 'revoked', [task('t5')])).toMatchObject(
+        {
+          status: 'rejected',
+          results: [{ code: 'app.not_editor' }],
+        },
+      );
+      // oxlint-disable-next-line typescript/no-explicit-any -- Bun.sql handle.
+      await (pool as any).end();
+      // oxlint-disable-next-line typescript/no-explicit-any -- Bun.sql unsafe.
+      await (admin as any).unsafe(`DROP DATABASE ${database}`);
+    });
+  },
+);

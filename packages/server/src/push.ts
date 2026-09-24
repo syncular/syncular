@@ -54,6 +54,7 @@ import type {
 } from './storage';
 import { serveGateRefusal } from './storage';
 import { StorageConstraintError } from './storage-errors';
+import { transactionQuery } from './storage-query';
 import { serveNotReadyError } from './readiness';
 import type {
   CommitValidationReader,
@@ -186,6 +187,7 @@ async function runValidator(
   values: readonly RowValue[] | undefined,
   storedValues: readonly RowValue[] | undefined,
   opIndex: number,
+  tx: StorageTransaction,
   partition: string,
   actorId: string,
 ): Promise<TerminatingOutcome | undefined> {
@@ -206,7 +208,11 @@ async function runValidator(
             ? toValidateRow(table.columns, storedValues)
             : undefined,
       },
-      { actorId, partition },
+      {
+        actorId,
+        partition,
+        queryAuthoritative: (query) => transactionQuery(tx, query),
+      },
     );
   } catch (error) {
     if (error instanceof ValidationRejection) {
@@ -363,6 +369,7 @@ async function applyOperation(
       undefined,
       storedValues,
       opIndex,
+      tx,
       partition,
       actorId,
     );
@@ -553,6 +560,7 @@ async function applyOperation(
       values,
       storedValues,
       opIndex,
+      tx,
       partition,
       actorId,
     );
@@ -683,6 +691,7 @@ async function applyOperation(
     values,
     undefined,
     opIndex,
+    tx,
     partition,
     actorId,
   );
@@ -836,6 +845,7 @@ function commitValidationReader(
         serverVersion: stored.serverVersion,
       }));
     },
+    queryAuthoritative: (query) => transactionQuery(tx, query),
   };
 }
 
@@ -1084,6 +1094,7 @@ async function enforceReferences(
             undefined,
             storedValues,
             item.originOpIndex,
+            tx,
             partition,
             actorId,
           );
@@ -1117,6 +1128,7 @@ async function enforceReferences(
             values,
             storedValues,
             item.originOpIndex,
+            tx,
             partition,
             actorId,
           );

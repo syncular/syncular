@@ -168,6 +168,18 @@ the stable code/details to localized copy instead of displaying that message.
 
 Validators are per-operation. A validator must not mutate the row it receives.
 
+A validator that decides from other rows (a membership, a role, a grant) calls
+`context.queryAuthoritative` with the request `storage.queryAuthoritative`
+takes, built from a generated query descriptor. The storage binds every
+relation to the commit's partition and runs the statement on the push
+transaction's connection, so the read sees the operations staged before this
+one and needs no second pool connection. Never call
+`storage.queryAuthoritative` from a validator: on SQLite and PGlite it waits
+for the push transaction and the push never completes, and on a pool it reads
+committed state. The whole-commit reader, the reaction planner reader, and the
+remote command context expose the same method. See
+[Read a generated query inside a push transaction](https://syncular.dev/guide-remote-operations/#read-a-generated-query-inside-a-push-transaction).
+
 For a multi-row or multi-table invariant, install `commitValidator`. It runs
 once after every operation is staged in the same transaction, and can inspect
 both the decoded sibling operations and final candidate state:
@@ -215,8 +227,8 @@ const config: SyncServerConfig = {
 };
 ```
 
-The callback also receives `read.getRow()` and bounded `read.scanRows()` APIs.
-Those reads see the final candidate state, including staged sibling upserts and
+The callback also receives `read.getRow()`, bounded `read.scanRows()`, and
+`read.queryAuthoritative()` APIs. Those reads see the final candidate state, including staged sibling upserts and
 deletes. Syncular serializes the partition before any operation read so two
 aggregate validators cannot both accept mutually invalid candidates. It also
 re-checks idempotency after taking that lock and persists a rejected outcome
