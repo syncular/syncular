@@ -245,6 +245,15 @@ class SqliteTransaction implements StorageTransaction {
     return this.#storage.scanRowsByIndex(this.#partition, query);
   }
 
+  async queryAuthoritative(
+    query: AuthoritativeQueryRequest,
+  ): Promise<AuthoritativeQueryResult> {
+    this.#assertOpen();
+    // Same shared connection: the query runs inside this transaction's
+    // BEGIN IMMEDIATE and observes every row staged so far.
+    return this.#storage.runAuthoritativeQuery(this.#partition, query);
+  }
+
   async lockPartitionForPush(): Promise<void> {
     this.#assertOpen();
     // BEGIN IMMEDIATE in the constructor already owns SQLite's writer lock.
@@ -914,11 +923,16 @@ END`);
     return row?.max_commit_seq ?? 0;
   }
 
-  async queryAuthoritative(
+  /**
+   * Internal: rewrite and run one registered query on the shared connection.
+   * The caller owns the transaction: `queryAuthoritative` opens a read
+   * transaction behind the FIFO; `SqliteTransaction.queryAuthoritative` runs
+   * inside the push transaction's `BEGIN IMMEDIATE`.
+   */
+  runAuthoritativeQuery(
     partition: string,
     query: AuthoritativeQueryRequest,
-    checkpoints?: readonly CheckpointDeclaration[],
-  ): Promise<AuthoritativeQueryResult> {
+  ): AuthoritativeQueryResult {
     if (this.#tables === undefined) {
       throw new Error(
         'ensureSchema(schema) must run before registered queries',
@@ -933,6 +947,24 @@ END`);
       ),
       partition,
     );
+    const rows = this.db
+      .query<Readonly<Record<string, unknown>>, AuthoritativeQueryValue[]>(
+        prepared.sql,
+      )
+      .all(...prepared.params);
+    const cursor = this.db
+      .query<{ max_commit_seq: number }, [string]>(
+        'SELECT max_commit_seq FROM sync_partitions WHERE partition=?',
+      )
+      .get(partition);
+    return { rows, maxCommitSeq: cursor?.max_commit_seq ?? 0 };
+  }
+
+  async queryAuthoritative(
+    partition: string,
+    query: AuthoritativeQueryRequest,
+    checkpoints?: readonly CheckpointDeclaration[],
+  ): Promise<AuthoritativeQueryResult> {
     const previous = this.#transactionTail;
     let release!: () => void;
     this.#transactionTail = new Promise<void>((resolve) => {
@@ -950,19 +982,10 @@ END`);
       const gate = await this.readServeGate(partition, runningVersion);
       const refusal = serveGateRefusal(gate, runningVersion, checkpoints);
       if (refusal !== undefined) throw serveNotReadyError(refusal);
-      const rows = this.db
-        .query<Readonly<Record<string, unknown>>, AuthoritativeQueryValue[]>(
-          prepared.sql,
-        )
-        .all(...prepared.params);
-      const cursor = this.db
-        .query<{ max_commit_seq: number }, [string]>(
-          'SELECT max_commit_seq FROM sync_partitions WHERE partition=?',
-        )
-        .get(partition);
+      const result = this.runAuthoritativeQuery(partition, query);
       this.db.exec('COMMIT');
       open = false;
-      return { rows, maxCommitSeq: cursor?.max_commit_seq ?? 0 };
+      return result;
     } catch (error) {
       if (open) this.db.exec('ROLLBACK');
       throw error;

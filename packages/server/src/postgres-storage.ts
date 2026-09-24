@@ -43,6 +43,7 @@ import { serveNotReadyError } from './readiness';
 import type { PushOperationResult } from '@syncular/core';
 import {
   bindAuthoritativePartition,
+  type BoundAuthoritativeQuery,
   postgresPlaceholders,
   prepareAuthoritativeQuery,
 } from './authoritative-query';
@@ -731,9 +732,36 @@ async function getPushResultOn(
   }
 }
 
+/** Run one partition-bound registered query and the cursor read on `client`. */
+async function queryAuthoritativeOn(
+  client: PgQueryable,
+  partition: string,
+  prepared: BoundAuthoritativeQuery,
+): Promise<AuthoritativeQueryResult> {
+  const result = await client.query<Readonly<Record<string, unknown>>>(
+    postgresPlaceholders(prepared.sql),
+    prepared.params,
+  );
+  const cursor = await client.query<{ max_commit_seq: unknown }>(
+    'SELECT max_commit_seq FROM sync_partitions WHERE partition=$1',
+    [partition],
+  );
+  return {
+    rows: result.rows,
+    maxCommitSeq:
+      cursor.rows[0] === undefined
+        ? 0
+        : asNumber(cursor.rows[0].max_commit_seq),
+  };
+}
+
 class PostgresTransaction implements StorageTransaction {
   #client: PgQueryable;
   #partition: string;
+  /** Storage-owned relation rewrite, bound to this transaction's partition. */
+  readonly #prepareQuery: (
+    query: AuthoritativeQueryRequest,
+  ) => BoundAuthoritativeQuery;
   /** Schema version this transaction writes; rides every appended commit row. */
   #writerVersion: number;
   #resolveTable: (name: string) => CompiledTable;
@@ -748,6 +776,7 @@ class PostgresTransaction implements StorageTransaction {
     partition: string,
     writerVersion: number,
     resolveTable: (name: string) => CompiledTable,
+    prepareQuery: (query: AuthoritativeQueryRequest) => BoundAuthoritativeQuery,
     resolve: () => void,
     reject: (error: unknown) => void,
   ) {
@@ -771,6 +800,7 @@ class PostgresTransaction implements StorageTransaction {
     this.#partition = partition;
     this.#writerVersion = writerVersion;
     this.#resolveTable = resolveTable;
+    this.#prepareQuery = prepareQuery;
     this.#resolve = resolve;
     this.#reject = reject;
   }
@@ -869,6 +899,19 @@ class PostgresTransaction implements StorageTransaction {
       this.#resolveTable(query.table),
       this.#partition,
       query,
+    );
+  }
+
+  queryAuthoritative(
+    query: AuthoritativeQueryRequest,
+  ): Promise<AuthoritativeQueryResult> {
+    this.#assertOpen();
+    // Runs on this transaction's pinned client, so the read observes every
+    // staged row and never waits for a second pool connection.
+    return queryAuthoritativeOn(
+      this.#client,
+      this.#partition,
+      this.#prepareQuery(query),
     );
   }
 
@@ -1497,6 +1540,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
           partition,
           this.#schemaVersion ?? 0,
           (name) => this.table(name),
+          (query) => this.#prepareAuthoritativeQuery(partition, query),
           resolveScope,
           rejectScope,
         );
@@ -1521,17 +1565,16 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
     return rows[0] === undefined ? 0 : asNumber(rows[0].max_commit_seq);
   }
 
-  async queryAuthoritative(
+  #prepareAuthoritativeQuery(
     partition: string,
     query: AuthoritativeQueryRequest,
-    checkpoints?: readonly CheckpointDeclaration[],
-  ): Promise<AuthoritativeQueryResult> {
+  ): BoundAuthoritativeQuery {
     if (this.#tables === undefined) {
       throw new Error(
         'ensureSchema(schema) must run before registered queries',
       );
     }
-    const prepared = bindAuthoritativePartition(
+    return bindAuthoritativePartition(
       prepareAuthoritativeQuery(
         query.plan,
         query.params,
@@ -1540,6 +1583,14 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
       ),
       partition,
     );
+  }
+
+  async queryAuthoritative(
+    partition: string,
+    query: AuthoritativeQueryRequest,
+    checkpoints?: readonly CheckpointDeclaration[],
+  ): Promise<AuthoritativeQueryResult> {
+    const prepared = this.#prepareAuthoritativeQuery(partition, query);
     return this.#exec.transaction(async (client) => {
       await client.query(
         'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY',
@@ -1552,21 +1603,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
       const gate = await readServeGateOn(client, partition, runningVersion);
       const refusal = serveGateRefusal(gate, runningVersion, checkpoints);
       if (refusal !== undefined) throw serveNotReadyError(refusal);
-      const result = await client.query<Readonly<Record<string, unknown>>>(
-        postgresPlaceholders(prepared.sql),
-        prepared.params,
-      );
-      const cursor = await client.query<{ max_commit_seq: unknown }>(
-        'SELECT max_commit_seq FROM sync_partitions WHERE partition=$1',
-        [partition],
-      );
-      return {
-        rows: result.rows,
-        maxCommitSeq:
-          cursor.rows[0] === undefined
-            ? 0
-            : asNumber(cursor.rows[0].max_commit_seq),
-      };
+      return queryAuthoritativeOn(client, partition, prepared);
     });
   }
 

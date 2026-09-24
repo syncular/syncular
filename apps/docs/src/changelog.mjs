@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-09-25',
+    title: 'Push hooks run generated authority reads on the push transaction',
+    body: "Row validators, the whole-commit validator, the reaction planner, and remote command callbacks run inside the push transaction, and each now receives a transaction-bound `queryAuthoritative` (`context.queryAuthoritative`, or `read.queryAuthoritative` on the candidate-state reader). It takes the request `storage.queryAuthoritative` takes, built from a generated query descriptor; the storage binds every relation to the commit's partition and runs the statement on the push transaction's connection. On SQLite and PostgreSQL the read returns the rows staged earlier in the commit, and a push completes on a one-connection pool. Calling `storage.queryAuthoritative` from these hooks still waits forever on SQLite and PGlite and reads committed state on a pool. D1 refuses a read over a table the commit has already written with `sync.storage.query_over_staged_writes`, and a custom storage transaction without the capability fails with `sync.storage.transaction_query_unsupported`.",
+    links: [
+      {
+        href: '/guide-remote-operations/#read-a-generated-query-inside-a-push-transaction',
+        label: 'Read a generated query inside a push transaction',
+      },
+    ],
+  },
+  {
+    date: '2026-09-25',
     title:
       'Same-version readiness checks storage-internal columns on every backend',
     body: 'At a matching schema version, `ensureSchema` on SQLite, PostgreSQL, and D1 now checks each synced table against the storage layout: a missing table or column, a `_sync_*` column whose type or nullability differs from what the storage creates, or a primary key other than `(_sync_partition, _sync_row_id)` refuses the open with `StorageQueryError` code `sync.storage.physical_layout_mismatch`. The stored-layout comparison now fails with `sync.storage.stored_layout_mismatch`. Both carry the table and column in `details` and keep them out of the message. D1 previously trusted a matching version marker without either check, so a replica whose internal columns drifted answered healthy and failed at the first write. D1 also refuses a same-version database missing a core table its request path reads or writes, such as `sync_tombstones`, with `reason: missing_table`, because D1 creates those tables only in `migrate()` or during a schema upgrade. On D1 the check reads `sqlite_master` once plus one `PRAGMA table_info` per synced table the first time a storage instance opens.',

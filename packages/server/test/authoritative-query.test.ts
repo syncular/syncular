@@ -2,12 +2,24 @@ import { join } from 'node:path';
 import { generate, scanTableRefs } from '../../typegen/src';
 import { describe, expect, test } from 'bun:test';
 import { PGlite } from '@electric-sql/pglite';
-import { encodeRow, type RowColumn } from '@syncular/core';
+import {
+  decodeMessage,
+  encodeMessage,
+  encodeRow,
+  encodeSparseRow,
+  PROTOCOL_WIRE_VERSION,
+  type PushOperation,
+  type PushResultFrame,
+  type RowColumn,
+} from '@syncular/core';
 import {
   bindAuthoritativePartition,
+  type CommitValidator,
   compileSchema,
   D1ServerStorage,
+  handleSyncRequest,
   MemorySegmentStore,
+  registerRemoteCommand,
   registerRemoteQuery,
   PostgresServerStorage,
   postgresPlaceholders,
@@ -15,10 +27,13 @@ import {
   type ServerSchema,
   type ServerStorage,
   SqliteServerStorage,
+  ValidationRejection,
+  type ValidatorRegistry,
 } from '@syncular/server';
 import { pgliteExecutor } from '@syncular/server/pglite';
 import { BunSqliteDatabase } from '@syncular/server/sqlite';
 import {
+  docsInProjectQuery,
   projectDocCountQuery,
   searchTasksQuery,
   taskTitlesQuery,
@@ -448,4 +463,388 @@ describe('RFC 0007 gate on the registered-query path', () => {
       else await db?.close();
     });
   }
+});
+
+describe('transaction-bound registered queries in push hooks (§6.7, §6.8)', () => {
+  // The fixture's `docs` rows act as grants: a body `editor:<actorId>` lets
+  // that actor write tasks in the doc's project. Every hook reads them with
+  // the generated `docsInProject` descriptor, unchanged.
+  const IR_SCHEMA: ServerSchema = {
+    version: IR.schemaVersion,
+    tables: IR.tables.map((table) => ({
+      name: table.name,
+      columns: table.columns,
+      primaryKey: table.primaryKey,
+      scopes: table.scopes.map((scope) => ({
+        pattern: scope.pattern,
+        column: scope.column,
+      })),
+    })),
+  };
+  const table = (name: string) => {
+    const found = IR.tables.find((candidate) => candidate.name === name);
+    if (found === undefined) throw new Error('missing fixture table');
+    return found.columns;
+  };
+  const DOC_COLUMNS = table('docs');
+  const IR_TASK_COLUMNS = table('tasks');
+  const plan = docsInProjectQuery.relationPlans[0];
+  if (plan === undefined) throw new Error('missing generated plan');
+  const grants = (projectId: string) => ({
+    plan,
+    params: docsInProjectQuery.bind({ orgId: 'o1', projectId }),
+    tables: docsInProjectQuery.tables,
+  });
+  const grant = (id: string, body: string): PushOperation => ({
+    table: 'docs',
+    rowId: id,
+    op: 'upsert',
+    payload: encodeSparseRow(DOC_COLUMNS, 0, [
+      id,
+      'o1',
+      'p1',
+      body,
+      null,
+      null,
+      null,
+      null,
+    ]),
+  });
+  const task = (id: string): PushOperation => ({
+    table: 'tasks',
+    rowId: id,
+    op: 'upsert',
+    payload: encodeSparseRow(IR_TASK_COLUMNS, 0, [
+      id,
+      'p1',
+      'title',
+      false,
+      null,
+      null,
+      null,
+      null,
+      null,
+    ]),
+  });
+
+  async function open(backend: 'SQLite' | 'Postgres' | 'D1') {
+    const db = backend === 'Postgres' ? await PGlite.create() : undefined;
+    const storage =
+      backend === 'SQLite'
+        ? new SqliteServerStorage()
+        : backend === 'D1'
+          ? new D1ServerStorage(new D1DatabaseDouble(), {
+              pushApplySerialized: true,
+            })
+          : new PostgresServerStorage(pgliteExecutor(db as PGlite));
+    const compiled = compileSchema(IR_SCHEMA);
+    // The fixture needs more DDL than one default D1 migration budget.
+    if (storage instanceof D1ServerStorage) {
+      await storage.migrateSchema(compiled, { maxStatements: 1000 });
+    }
+    await storage.ensureSchema(compiled);
+    for (const partition of ['part-1', 'part-2']) {
+      await storage.touchPartition(partition, 1, 'epoch');
+    }
+    const seen: string[][] = [];
+    const failures: unknown[] = [];
+    const validators: ValidatorRegistry = {
+      tasks: async (_op, ctx) => {
+        let bodies: string[];
+        try {
+          const { rows } = await ctx.queryAuthoritative(grants('p1'));
+          bodies = rows.map((row) => String(row.body));
+        } catch (error) {
+          failures.push(error);
+          throw error;
+        }
+        seen.push(bodies);
+        if (!bodies.includes(`editor:${ctx.actorId}`)) {
+          throw new ValidationRejection('app.not_editor', 'not an editor');
+        }
+      },
+    };
+    const context = (partition: string, actorId: string) => ({
+      schema: IR_SCHEMA,
+      storage,
+      segments: new MemorySegmentStore(),
+      partition,
+      actorId,
+      resolveScopes: () => ({
+        project_id: ['p1'],
+        projectId: ['p1'],
+        org_id: ['o1'],
+      }),
+    });
+    const push = async (
+      partition: string,
+      actorId: string,
+      clientCommitId: string,
+      operations: PushOperation[],
+      commitValidator?: CommitValidator,
+    ): Promise<PushResultFrame> => {
+      const message = decodeMessage(
+        await handleSyncRequest(
+          encodeMessage({
+            wireVersion: PROTOCOL_WIRE_VERSION,
+            msgKind: 'request',
+            frames: [
+              {
+                type: 'REQ_HEADER',
+                clientId: `client-${actorId}`,
+                schemaVersion: IR.schemaVersion,
+                logEpoch: 'epoch',
+              },
+              { type: 'PUSH_COMMIT', clientCommitId, operations },
+            ],
+          }),
+          {
+            ...context(partition, actorId),
+            validators,
+            ...(commitValidator === undefined ? {} : { commitValidator }),
+          },
+        ),
+      );
+      if (message.msgKind !== 'response') throw new Error('expected response');
+      const result = message.frames.find(
+        (frame): frame is PushResultFrame => frame.type === 'PUSH_RESULT',
+      );
+      if (result === undefined) throw new Error('expected a push result');
+      return result;
+    };
+    const close = async () => {
+      if (storage instanceof SqliteServerStorage) storage.db.close();
+      else await db?.close();
+    };
+    return { storage, context, push, seen, failures, close };
+  }
+
+  for (const backend of ['SQLite', 'Postgres', 'D1'] as const) {
+    test(`${backend}: a row validator runs the pre-push authority read on the push transaction`, async () => {
+      const { storage, push, seen, close } = await open(backend);
+      try {
+        await push('part-1', 'admin', 'grant-a1', [grant('g-a1', 'editor:a1')]);
+        const before = await storage.queryAuthoritative?.(
+          'part-1',
+          grants('p1'),
+        );
+        expect(before?.rows).toEqual([{ id: 'g-a1', body: 'editor:a1' }]);
+
+        expect(
+          await push('part-1', 'a1', 'accepted', [task('t1')]),
+        ).toMatchObject({ status: 'applied' });
+        expect(seen).toEqual([['editor:a1']]);
+      } finally {
+        await close();
+      }
+    });
+
+    test(`${backend}: the authority read cannot see another partition's grant`, async () => {
+      const { push, seen, close } = await open(backend);
+      try {
+        await push('part-2', 'admin', 'grant-a2', [grant('g-a2', 'editor:a2')]);
+        expect(
+          await push('part-1', 'a2', 'cross-partition', [task('t1')]),
+        ).toMatchObject({
+          status: 'rejected',
+          results: [{ status: 'error', code: 'app.not_editor' }],
+        });
+        expect(seen).toEqual([[]]);
+      } finally {
+        await close();
+      }
+    });
+
+    test(`${backend}: a committed revocation rejects the next write`, async () => {
+      const { push, seen, close } = await open(backend);
+      try {
+        await push('part-1', 'admin', 'grant-a1', [grant('g-a1', 'editor:a1')]);
+        await push('part-1', 'admin', 'revoke-a1', [grant('g-a1', 'revoked')]);
+        expect(
+          await push('part-1', 'a1', 'revoked', [task('t1')]),
+        ).toMatchObject({
+          status: 'rejected',
+          results: [{ status: 'error', code: 'app.not_editor' }],
+        });
+        expect(seen).toEqual([['revoked']]);
+      } finally {
+        await close();
+      }
+    });
+  }
+
+  for (const backend of ['SQLite', 'Postgres'] as const) {
+    test(`${backend}: a revocation staged earlier in the same commit is visible`, async () => {
+      const { push, seen, close } = await open(backend);
+      try {
+        await push('part-1', 'admin', 'grant-a1', [grant('g-a1', 'editor:a1')]);
+        expect(
+          await push('part-1', 'a1', 'self-revoke', [
+            grant('g-a1', 'revoked'),
+            task('t1'),
+          ]),
+        ).toMatchObject({
+          status: 'rejected',
+          results: [{ opIndex: 1, code: 'app.not_editor' }],
+        });
+        expect(seen).toEqual([['revoked']]);
+      } finally {
+        await close();
+      }
+    });
+
+    test(`${backend}: the whole-commit reader sees a grant staged by a sibling`, async () => {
+      const { push, close } = await open(backend);
+      const observed: string[][] = [];
+      try {
+        expect(
+          await push(
+            'part-1',
+            'admin',
+            'staged-grant',
+            [grant('g-a3', 'editor:a3')],
+            async ({ read }) => {
+              const { rows } = await read.queryAuthoritative(grants('p1'));
+              observed.push(rows.map((row) => String(row.body)));
+            },
+          ),
+        ).toMatchObject({ status: 'applied' });
+        expect(observed).toEqual([['editor:a3']]);
+      } finally {
+        await close();
+      }
+    });
+
+    test(`${backend}: a concurrent revocation never lets a write through on stale authority`, async () => {
+      const { push, close } = await open(backend);
+      try {
+        await push('part-1', 'admin', 'grant-a1', [grant('g-a1', 'editor:a1')]);
+        const [revoke, write] = await Promise.all([
+          push('part-1', 'admin', 'revoke-a1', [grant('g-a1', 'revoked')]),
+          push('part-1', 'a1', 'racing', [task('t1')]),
+        ]);
+        expect(revoke).toMatchObject({ status: 'applied' });
+        if (write.status === 'applied') {
+          expect(write.commitSeq ?? 0).toBeLessThan(revoke.commitSeq ?? 0);
+        } else {
+          expect(write).toMatchObject({
+            status: 'rejected',
+            results: [{ code: 'app.not_editor' }],
+          });
+        }
+      } finally {
+        await close();
+      }
+    });
+  }
+
+  for (const backend of ['SQLite', 'Postgres', 'D1'] as const) {
+    test(`${backend}: a remote command reads authority on its push transaction`, async () => {
+      const { context, push, close } = await open(backend);
+      const command = registerRemoteCommand<{ readonly taskId: string }>(
+        { id: 'create-task' },
+        {
+          authorize: () => true,
+          run: async (commandContext, input) => {
+            const { rows } = await commandContext.queryAuthoritative(
+              grants('p1'),
+            );
+            if (
+              !rows.some(
+                (row) => row.body === `editor:${commandContext.actorId}`,
+              )
+            ) {
+              throw new ValidationRejection('app.not_editor', 'not an editor');
+            }
+            return [
+              {
+                table: 'tasks',
+                op: 'upsert',
+                values: {
+                  id: input.taskId,
+                  project_id: 'p1',
+                  title: 'title',
+                  done: false,
+                  reviewed: null,
+                  priority: null,
+                  meta: null,
+                  estimate: null,
+                  estimated_at: null,
+                },
+              },
+            ];
+          },
+        },
+      );
+      try {
+        await push('part-1', 'admin', 'grant-a1', [grant('g-a1', 'editor:a1')]);
+        await push('part-2', 'admin', 'grant-a2', [grant('g-a2', 'editor:a2')]);
+        expect(
+          await command.run(context('part-1', 'a1'), 'client-a1', 'r1', {
+            taskId: 't1',
+          }),
+        ).toMatchObject({ kind: 'command', status: 'applied' });
+        await expect(
+          command.run(context('part-1', 'a2'), 'client-a2', 'r2', {
+            taskId: 't2',
+          }),
+        ).rejects.toMatchObject({ code: 'app.not_editor' });
+      } finally {
+        await close();
+      }
+    });
+  }
+
+  test('D1: a read over a table the commit has written fails with a stable code', async () => {
+    const { push, failures, close } = await open('D1');
+    try {
+      await push('part-1', 'admin', 'grant-a1', [grant('g-a1', 'editor:a1')]);
+      expect(
+        await push('part-1', 'a1', 'self-revoke', [
+          grant('g-a1', 'revoked'),
+          task('t1'),
+        ]),
+      ).toMatchObject({
+        status: 'rejected',
+        results: [{ opIndex: 1, code: 'sync.constraint_violation' }],
+      });
+      expect(failures).toEqual([
+        expect.objectContaining({
+          code: 'sync.storage.query_over_staged_writes',
+        }),
+      ]);
+    } finally {
+      await close();
+    }
+  });
+
+  test('a storage transaction without the capability fails with a stable code', async () => {
+    const { storage, push, failures, close } = await open('SQLite');
+    const begin = storage.begin.bind(storage);
+    storage.begin = async (partition) => {
+      const tx = await begin(partition);
+      return new Proxy(tx, {
+        get: (target, property) => {
+          if (property === 'queryAuthoritative') return undefined;
+          const value = Reflect.get(target, property, target);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+    };
+    try {
+      expect(
+        await push('part-1', 'a1', 'unsupported', [task('t1')]),
+      ).toMatchObject({
+        status: 'rejected',
+        results: [{ code: 'sync.constraint_violation' }],
+      });
+      expect(failures).toEqual([
+        expect.objectContaining({
+          code: 'sync.storage.transaction_query_unsupported',
+        }),
+      ]);
+    } finally {
+      await close();
+    }
+  });
 });

@@ -162,6 +162,66 @@ Registration also requires generated result-column metadata. The server validate
 and returns only those columns, so driver-specific or undeclared fields do not
 cross the operation boundary.
 
+## Read a generated query inside a push transaction
+
+Row validators, the whole-commit validator, the reaction planner, and command
+`run` callbacks execute inside the push transaction. Each receives a
+transaction-bound `queryAuthoritative`: `context.queryAuthoritative` in a row
+validator or a command, `read.queryAuthoritative` in the whole-commit
+validator or the reaction planner. It takes the request that
+`storage.queryAuthoritative` takes, built from the same generated descriptor:
+
+```ts
+import { ValidationRejection, type Validator } from '@syncular/server';
+import { clinicRoleQuery } from './syncular.queries';
+
+const [rolePlan] = clinicRoleQuery.relationPlans;
+if (rolePlan === undefined) throw new Error('regenerate queries');
+
+export const requireScheduler: Validator = async (operation, context) => {
+  const clinicId = String(operation.row?.clinic_id ?? operation.stored?.clinic_id);
+  const { rows } = await context.queryAuthoritative({
+    plan: rolePlan,
+    params: clinicRoleQuery.bind({ clinicId, actorId: context.actorId }),
+    tables: clinicRoleQuery.tables,
+  });
+  if (rows[0]?.role !== 'scheduler') {
+    throw new ValidationRejection(
+      'app.scheduler_required',
+      'scheduler role required',
+    );
+  }
+};
+```
+
+For a descriptor with `sqlFor`, select the plan whose `sql` equals
+`sqlFor(params)`, as the registered-query handler does.
+
+The storage binds every relation to the commit's partition and runs the
+statement on the push transaction's connection. The read returns the rows the
+commit staged before the current operation, returns no row of another
+partition, and needs no second connection, so a push completes on a pool of
+one connection. Pushes to a partition are serialized, so a revocation that a
+concurrent push commits first is visible to every push that applies after it.
+
+Do not call `storage.queryAuthoritative` from these hooks. On SQLite and
+PGlite it waits for the transaction the hook is inside, and the push never
+completes. On a `pg` or `Bun.sql` pool it reads committed state without the
+staged writes, and it blocks once push transactions hold every connection.
+
+D1 buffers writes until commit. A D1 query over a table the commit has already
+written throws `StorageQueryError` with code
+`sync.storage.query_over_staged_writes`; read those rows with `read.getRow` or
+`read.scanRows`, which overlay the buffered writes. A custom storage
+transaction without the capability throws
+`sync.storage.transaction_query_unsupported`. Inside a validator either error
+rejects the commit with `sync.constraint_violation`.
+
+The query is bound to the partition and ignores the actor's scopes. A
+command's `getRow` returns `undefined` for a row outside the actor's scopes;
+`queryAuthoritative` returns every matching row of the partition, so the hook
+decides what the actor may act on.
+
 ## Server-authoritative commands
 
 Commands run custom code after the partition write lock and idempotency

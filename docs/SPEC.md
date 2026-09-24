@@ -3094,6 +3094,31 @@ order is fixed: **decode → scope authorization → validation → write.**
   validator can enforce transition rules ("a `closed` invoice cannot
   reopen") and distinguish create from update.
 - ambient `actorId` (§1.1) and `partition`.
+- `queryAuthoritative(request)`: the transaction-bound registered query
+  (below).
+
+**Authority reads inside the transaction.** A validator that decides from
+other rows (a membership, a role, a grant) runs a generated registered query
+through the context's `queryAuthoritative`. The request has the shape the
+storage-level registered query takes: the generated relation plan, its bound
+parameters, and its table set. The storage rewrites every relation to the
+commit's partition, as it does for a registered query (REMOTE.md), and runs
+the statement on the push transaction's own connection. The validator
+therefore reads the transaction's snapshot, including every operation staged
+before this one, sees no row of another partition, and never waits for a
+second connection. A validator MUST NOT call the storage-level registered
+query: on a single-connection executor it waits for the transaction the
+validator is inside and the push never completes, and on a pooled executor it
+reads committed state without the staged writes and waits indefinitely once
+push transactions hold every pool connection.
+
+D1 buffers writes until commit and cannot overlay them on generated SQL, so a
+D1 transaction-bound query over a table the commit has already written fails
+with the host storage error `sync.storage.query_over_staged_writes`; it never
+returns committed state as if it were the candidate. A custom storage
+transaction without the capability fails with
+`sync.storage.transaction_query_unsupported`. Inside a validator either error
+is an unexpected throw and rejects the commit with `sync.constraint_violation`.
 
 **CRDT columns — the pinned choice.** For a `crdt` column (§5.10) the
 validator sees the **merged** value (`merge(stored, incoming)`, §5.10.3) —
@@ -3237,6 +3262,11 @@ reader:
   omitted scope map MUST fail with the privacy-safe host error
   `sync.storage.scan_requires_scope`; it MUST NOT return an
   indistinguishable empty result.
+- `queryAuthoritative(request)` runs a generated registered query on the
+  commit transaction with the §6.7 transaction-bound semantics: every
+  relation is bound to the commit's partition and the result reflects the
+  final candidate state (D1 refuses a query over a table the commit has
+  written with `sync.storage.query_over_staged_writes`).
 
 The reader is a server-host capability inside the already authenticated
 partition, not client-derived authorization. A host MUST request only the

@@ -474,6 +474,21 @@ export interface StorageTransaction {
    */
   scanRowsByIndex?(query: IndexRowScanQuery): Promise<StoredRow[]>;
   /**
+   * Optional transaction-bound registered query (§6.7, §6.8): the relation
+   * rewrite of `ServerStorage.queryAuthoritative`, bound to this
+   * transaction's partition and executed on this transaction's connection.
+   * A hook inside the push transaction therefore reads the transaction's
+   * snapshot and never waits for a second connection. The push layer has
+   * already evaluated the serve gate on this transaction, so the call takes
+   * no checkpoint declarations. SQLite and PostgreSQL return the staged
+   * writes of this transaction. D1 buffers writes until commit and fails
+   * with `sync.storage.query_over_staged_writes` when the query reads a
+   * table this transaction has written.
+   */
+  queryAuthoritative?(
+    query: AuthoritativeQueryRequest,
+  ): Promise<AuthoritativeQueryResult>;
+  /**
    * Serialize every push apply for this partition before any operation read,
    * validation, merge, or write. The push layer re-checks idempotency only
    * after this resolves and retains the lock through terminal-result commit.
@@ -790,17 +805,18 @@ export interface ServerStorage {
    * every generated app-table relation with a partition-filtered relation and
    * return rows plus maxCommitSeq from one consistent database snapshot.
    *
-   * The storage serializes this call behind an open transaction on a
-   * single-connection executor (SQLite, PGlite). A validator runs inside the
-   * push transaction, so on that executor a validator that calls
-   * `queryAuthoritative` waits on the transaction it is already inside and
-   * the push never completes. A pool-backed executor (`pg`, `Bun.sql`) hands
-   * the call a second connection instead: the validator does not deadlock,
-   * but it reads committed state without the candidate write. On either
-   * executor read candidate state through the whole-commit `CommitValidator`
-   * reader (§6.8). A call made from any other context waits for the open
-   * transaction to finish on a single-connection executor, and runs
-   * concurrently on a pool-backed one.
+   * Do not call this method from a hook that runs inside the push
+   * transaction (a row validator, the whole-commit validator, or a reaction
+   * planner). On a single-connection executor (SQLite, PGlite) the storage
+   * serializes this call behind the open transaction, so the hook waits on
+   * the transaction it is inside and the push never completes. A pool-backed
+   * executor (`pg`, `Bun.sql`) runs the call on a second connection: it reads
+   * committed state without the transaction's staged writes, and it waits
+   * forever when the push transactions hold every pool connection. Those
+   * hooks call the transaction-bound `queryAuthoritative` on
+   * `ValidateContext` or on the candidate-state reader instead (§6.7, §6.8).
+   * A call from any other context waits for the open transaction on a
+   * single-connection executor and runs concurrently on a pool-backed one.
    */
   queryAuthoritative?(
     partition: string,

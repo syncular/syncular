@@ -32,7 +32,9 @@ export type StorageQueryErrorCode =
   | 'sync.storage.checkpoint_fence_missing'
   | 'sync.storage.checkpoint_incomplete'
   | 'sync.storage.stored_layout_mismatch'
-  | 'sync.storage.physical_layout_mismatch';
+  | 'sync.storage.physical_layout_mismatch'
+  | 'sync.storage.transaction_query_unsupported'
+  | 'sync.storage.query_over_staged_writes';
 
 const STORAGE_QUERY_MESSAGES: Readonly<Record<StorageQueryErrorCode, string>> =
   {
@@ -62,6 +64,10 @@ const STORAGE_QUERY_MESSAGES: Readonly<Record<StorageQueryErrorCode, string>> =
       'stored schema layouts disagree with the configured schema at the same version',
     'sync.storage.physical_layout_mismatch':
       'a synced table does not match the storage layout the running code reads and writes',
+    'sync.storage.transaction_query_unsupported':
+      'this storage transaction cannot run registered queries',
+    'sync.storage.query_over_staged_writes':
+      'registered query reads a table this transaction has buffered writes for',
     'sync.storage.scan_requires_scope':
       'scope-indexed row scans require at least one scope variable',
     'sync.storage.index_not_found':
