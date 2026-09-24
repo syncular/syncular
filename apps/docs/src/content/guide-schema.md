@@ -303,6 +303,7 @@ phase instead of a request-time error. Confirm the bump landed by reading
 new version — and, for a new internal column, that the column exists on a
 synced table (`PRAGMA table_info('todos')` on SQLite,
 `information_schema.columns` on Postgres). A marker still at the old version
-means the bump never ran. From 0.22.0 a marker at the new version whose synced
-tables are missing an internal column fails closed at startup, before the
-first write.
+means the bump never ran. A marker at the new version whose synced tables are
+missing an internal column, or carry one with the wrong type, nullability, or
+primary key, fails closed at startup with
+`sync.storage.physical_layout_mismatch`, before the first write.

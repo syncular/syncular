@@ -59,14 +59,16 @@ meta columns:
 ```sql
 CREATE TABLE todos(
   _sync_partition       TEXT NOT NULL,
+  _sync_row_id          TEXT NOT NULL,
   id                    TEXT NOT NULL,
   list_id               TEXT,
   title                 TEXT,
   done                  INTEGER,
-  _sync_server_version  INTEGER NOT NULL,
+  _sync_server_version  INTEGER NOT NULL,   -- BIGINT on Postgres
   _sync_scopes          TEXT NOT NULL,      -- JSONB on Postgres
-  _sync_payload         BLOB NOT NULL,
-  PRIMARY KEY (_sync_partition, id)
+  _sync_payload         BLOB NOT NULL,      -- BYTEA on Postgres
+  _sync_column_versions BLOB,               -- BYTEA on Postgres
+  PRIMARY KEY (_sync_partition, _sync_row_id)
 );
 ```
 
@@ -79,6 +81,31 @@ App hosts create and migrate these tables by calling
 `ensureSyncServerReady(config)` before binding a port
 ([Server setup](/guide-server/)); the low-level `storage.ensureSchema`
 accepts a compiled schema directly.
+
+When the stored schema version equals the running one, `ensureSchema` still
+checks the database before serving, on all three backends. It compares the
+stored column layouts with the configured schema, then reads each synced table
+from the catalog (`PRAGMA table_info` on SQLite and D1, `pg_attribute` on
+Postgres). A missing table or column, a `_sync_*` column whose type or
+nullability differs from the declaration above, or a primary key other than
+`(_sync_partition, _sync_row_id)` fails the open with `StorageQueryError`:
+
+| Code | Cause | `details` |
+|---|---|---|
+| `sync.storage.stored_layout_mismatch` | Stored layouts differ from the configured schema | `table`, `column` |
+| `sync.storage.physical_layout_mismatch` | A synced table differs from the storage layout | `table`, `column`, `reason`, and `expected`/`actual` for a type or nullability mismatch |
+
+`reason` is one of `missing_table`, `missing_column`, `type`, `nullability`,
+or `primary_key`. Neither refusal writes DDL. A table from before
+`_sync_column_versions` existed gains the column only through a schema-version
+bump ([version-only bumps](/guide-schema/#a-version-only-bump-server-internal-storage-changes)).
+D1 also refuses a missing core table that its request path reads or writes
+(`sync_tombstones`, `sync_commits`, `sync_clients`, and the rest of the
+`sync_*` tables except `sync_backfill_checkpoints` and `sync_writer_fence`),
+because D1 creates those tables only in `migrate()` or during a schema
+upgrade. On D1 the check costs one `sqlite_master` read plus one
+`PRAGMA table_info` statement per synced table the first time a storage
+instance opens.
 
 A per-table `materialize` flag on the server schema controls the
 projection:

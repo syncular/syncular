@@ -821,6 +821,40 @@ application-table star projections.
 
 ---
 
+#### Same-version storage readiness
+
+A server storage opening a database whose stored schema version equals the
+running schema version MUST NOT treat the version marker as proof of layout. It
+MUST refuse to serve, without writing DDL or rows, in two cases:
+
+1. The persisted per-table layouts (column name, type, nullability) differ from
+   the running schema: `sync.storage.stored_layout_mismatch`.
+2. The database catalog disagrees with the storage layout of a synced table:
+   `sync.storage.physical_layout_mismatch`. The table is missing, a configured
+   column is missing, a storage-internal column (`_sync_partition`,
+   `_sync_row_id`, `_sync_server_version`, `_sync_scopes`, `_sync_payload`,
+   `_sync_column_versions`) has a declared type or nullability other than the
+   one the storage creates, or the primary key is not
+   `(_sync_partition, _sync_row_id)`. App-column types and nullability are
+   answered by the persisted layouts, because columns added by a migration are
+   nullable in the database regardless of the schema.
+
+Both errors carry `table`, and `column` where one applies, in structured
+details; the physical refusal also carries `reason` (`missing_table`,
+`missing_column`, `type`, `nullability`, `primary_key`) and, for a type or
+nullability refusal, `expected` and `actual`. The message never names them.
+Only a schema-version bump adds `_sync_column_versions` to a table created
+before column versions (§2.2); a same-version open refuses that table. The
+check covers SQLite, PostgreSQL, and D1. SQLite applies the idempotent DDL of
+the core storage tables, including the tombstone table (§2.2), when the storage
+is constructed, and PostgreSQL on every `ensureSchema`, independently of the
+marker. D1 creates them only in `migrate()` and in the core phase of a schema
+upgrade, so a same-version D1 open reads `sqlite_master` in one statement and
+refuses with `sync.storage.physical_layout_mismatch` (`reason: missing_table`)
+when a core table its request path reads or writes is absent; the checkpoint
+and writer-fence tables, which D1 does not use, are not required. These
+refusals are host readiness failures and add no wire error.
+
 #### D1 schema readiness
 
 A D1 schema upgrade MUST save row-rewrite progress in the same atomic batch as

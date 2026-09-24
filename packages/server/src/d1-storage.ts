@@ -50,6 +50,8 @@ import {
 import { syncError } from './errors';
 import {
   assertAppendOnlyMigration,
+  assertPhysicalColumns,
+  assertStoredLayouts,
   commitWindowPageSql,
   deleteRowSql,
   deleteSqliteRowScopesSql,
@@ -81,6 +83,7 @@ import {
   asUint8Array,
   collectCommitWindowPage,
   deserializePushResult,
+  placeholders,
   type SqliteCommitWindowRecord,
   type SqliteRowRecord,
   serializePushResult,
@@ -805,6 +808,27 @@ export interface D1ServerStorageOptions {
   readonly commitValidationSerialized?: boolean;
 }
 
+/**
+ * The core tables `D1ServerStorage` reads or writes outside schema migration.
+ * `migrateSchema` creates them in its core phase, which runs only when the
+ * version marker advances, so a same-version open refuses a database missing
+ * one. `sync_backfill_checkpoints` and `sync_writer_fence` stay out: D1
+ * declares no checkpoints and installs no fence.
+ */
+const D1_CORE_TABLES = [
+  'sync_partitions',
+  'sync_partition_registry',
+  'sync_row_scopes',
+  'sync_commits',
+  'sync_changes',
+  'sync_change_scopes',
+  'sync_push_results',
+  'sync_reactions',
+  'sync_clients',
+  'sync_blob_refs',
+  'sync_tombstones',
+] as const;
+
 interface D1MigrationState {
   phase: 'core' | 'prepare' | 'ddl' | 'rewrite';
   offset: number;
@@ -946,6 +970,39 @@ export class D1ServerStorage implements ServerStorage {
       this.#db.prepare('SELECT * FROM sync_schema_migration WHERE id=1'),
     );
     if (claim === null && marker?.schema_version === schema.version) {
+      assertStoredLayouts(schema, marker.layouts);
+      statementsExecuted++;
+      const present = await this.#db
+        .prepare(
+          `SELECT name FROM sqlite_master WHERE type='table' AND name IN (${placeholders(D1_CORE_TABLES.length)})`,
+        )
+        .bind(...D1_CORE_TABLES)
+        .all<{ name: string }>();
+      const presentNames = new Set(present.results.map((row) => row.name));
+      for (const name of D1_CORE_TABLES) {
+        if (!presentNames.has(name)) {
+          throw new StorageQueryError('sync.storage.physical_layout_mismatch', {
+            table: name,
+            reason: 'missing_table',
+          });
+        }
+      }
+      for (const table of tables) {
+        statementsExecuted++;
+        const { results } = await this.#db
+          .prepare(`PRAGMA table_info(${quoteIdent(table.name)})`)
+          .all<{ name: string; type: string; notnull: number; pk: number }>();
+        assertPhysicalColumns(
+          table,
+          results.map((column) => ({
+            name: column.name,
+            type: column.type,
+            notNull: column.notnull === 1,
+            primaryKeyPosition: column.pk,
+          })),
+          'sqlite',
+        );
+      }
       this.#tables = schema.tables;
       this.#schemaVersion = schema.version;
       return { complete: true, statementsExecuted };
