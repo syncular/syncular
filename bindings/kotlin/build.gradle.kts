@@ -9,7 +9,7 @@
 // Android consumption path is documented in README.md.
 
 plugins {
-    kotlin("jvm") version "1.9.24"
+    kotlin("jvm") version "2.4.20"
 }
 
 repositories {

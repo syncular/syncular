@@ -31,7 +31,7 @@ fun main() {
         for (t in todos) println("  [${if (t.done) "x" else " "}] ${t.id}  ${t.title}")
     }
 
-    generateSequence(::readLine).forEach { line ->
+    generateSequence(::readlnOrNull).forEach { line ->
         val trimmed = line.trim()
         if (trimmed.isEmpty()) return@forEach
         val parts = trimmed.split(" ", limit = 2)

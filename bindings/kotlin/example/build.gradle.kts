@@ -8,7 +8,7 @@
 // GUI — it is a terminal app, deterministic under piped stdin.
 
 plugins {
-    kotlin("jvm") version "1.9.24"
+    kotlin("jvm") version "2.4.20"
     application
 }
 
@@ -41,7 +41,7 @@ val vendoredLib: String? =
         ?.absolutePath
 
 tasks.named<JavaExec>("run") {
-    // Forward stdin so the app's readLine loop drives interactively / piped.
+    // Forward stdin so the app's readlnOrNull loop drives interactively / piped.
     standardInput = System.`in`
     vendoredLib?.let { systemProperty("syncular.library.path", it) }
 }
