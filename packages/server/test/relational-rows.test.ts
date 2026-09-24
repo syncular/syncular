@@ -237,6 +237,206 @@ describe('partition-scoped declared unique indexes', () => {
   }
 });
 
+// --- same-version schema readiness (stored layouts + physical tables) -------
+
+describe('same-version schema readiness', () => {
+  type Backend = 'sqlite' | 'postgres' | 'd1';
+  type AnyStorage =
+    | SqliteServerStorage
+    | PostgresServerStorage
+    | D1ServerStorage;
+
+  /** D1 upgrades run through the resumable step API. */
+  async function ensure(storage: AnyStorage, schema: ServerSchema) {
+    if (storage instanceof D1ServerStorage) await migrateD1(storage, schema);
+    else await storage.ensureSchema(compileSchema(schema));
+  }
+
+  /** One database per test; `open` is a fresh storage instance (a restart). */
+  async function database(backend: Backend): Promise<{
+    open(): AnyStorage;
+    exec(statements: readonly string[]): Promise<void>;
+    count(): Promise<number>;
+    close(): Promise<void>;
+  }> {
+    if (backend === 'postgres') {
+      const pg = await PGlite.create();
+      return {
+        open: () => new PostgresServerStorage(pgliteExecutor(pg)),
+        exec: async (statements) => {
+          for (const sql of statements) await pg.exec(sql);
+        },
+        count: async () =>
+          (
+            await pg.query<{ n: number }>(
+              'SELECT COUNT(*)::int AS n FROM tasks',
+            )
+          ).rows[0]!.n,
+        close: () => pg.close(),
+      };
+    }
+    const db = new BunSqliteDatabase();
+    const d1 = backend === 'd1' ? new D1DatabaseDouble(db.native) : undefined;
+    return {
+      open: () =>
+        d1 !== undefined
+          ? new D1ServerStorage(d1)
+          : new SqliteServerStorage(db),
+      exec: async (statements) => {
+        for (const sql of statements) db.exec(sql);
+      },
+      count: async () =>
+        db.query<{ n: number }, []>('SELECT COUNT(*) AS n FROM tasks').get()!.n,
+      close: async () => db.close(),
+    };
+  }
+
+  const blob = (backend: Backend): string =>
+    backend === 'postgres' ? 'BYTEA' : 'BLOB';
+
+  /** Each case leaves the marker and stored layouts untouched. */
+  const drifts: readonly {
+    readonly name: string;
+    readonly sql: (backend: Backend, ddl: string) => readonly string[];
+    readonly details: (backend: Backend) => Record<string, string>;
+  }[] = [
+    {
+      name: 'a missing meta column',
+      sql: () => ['ALTER TABLE tasks DROP COLUMN _sync_column_versions'],
+      details: () => ({
+        table: 'tasks',
+        column: '_sync_column_versions',
+        reason: 'missing_column',
+      }),
+    },
+    {
+      name: 'a meta column of the wrong type',
+      sql: () => [
+        'ALTER TABLE tasks DROP COLUMN _sync_column_versions',
+        'ALTER TABLE tasks ADD COLUMN _sync_column_versions TEXT',
+      ],
+      details: (backend) => ({
+        table: 'tasks',
+        column: '_sync_column_versions',
+        reason: 'type',
+        expected: blob(backend),
+        actual: backend === 'postgres' ? 'text' : 'TEXT',
+      }),
+    },
+    {
+      name: 'a NOT NULL column-versions meta column',
+      sql: (backend) => [
+        'ALTER TABLE tasks DROP COLUMN _sync_column_versions',
+        `ALTER TABLE tasks ADD COLUMN _sync_column_versions ${blob(backend)} NOT NULL DEFAULT ${backend === 'postgres' ? "'\\x00'::bytea" : "x'00'"}`,
+      ],
+      details: () => ({
+        table: 'tasks',
+        column: '_sync_column_versions',
+        reason: 'nullability',
+        expected: 'nullable',
+        actual: 'not_null',
+      }),
+    },
+    {
+      name: 'a table without the (partition, row id) primary key',
+      sql: (_backend, ddl) => [
+        'ALTER TABLE tasks RENAME TO tasks_old',
+        ddl.replace(/, PRIMARY KEY \([^)]*\)/, ''),
+        'INSERT INTO tasks SELECT * FROM tasks_old',
+        'DROP TABLE tasks_old',
+      ],
+      details: () => ({
+        table: 'tasks',
+        column: '_sync_partition',
+        reason: 'primary_key',
+      }),
+    },
+  ];
+
+  for (const backend of ['sqlite', 'postgres', 'd1'] as const) {
+    const dialect = backend === 'postgres' ? 'postgres' : 'sqlite';
+    const tasks = compileSchema(SCHEMA).tables.get('tasks')!;
+
+    test(`${backend}: a restart over a healthy database opens`, async () => {
+      const db = await database(backend);
+      const storage = db.open();
+      await ensure(storage, SCHEMA);
+      await upsert(storage, PARTITION, 'tasks', taskRow('t1', 'p1', 'row'));
+      const restarted = db.open();
+      await restarted.ensureSchema(compileSchema(SCHEMA));
+      expect(await restarted.getRow(PARTITION, 'tasks', 't1')).toBeDefined();
+      await db.close();
+    });
+
+    test(`${backend}: drifted stored layouts are refused`, async () => {
+      const db = await database(backend);
+      await ensure(db.open(), SCHEMA);
+      // Same version, one compiled column the marker never saw.
+      const drifted = compileSchema({
+        version: 1,
+        tables: [
+          {
+            ...SCHEMA.tables[0]!,
+            columns: [
+              ...TASK_COLUMNS,
+              { name: 'drift', type: 'string', nullable: true },
+            ],
+          },
+          SCHEMA.tables[1]!,
+        ],
+      });
+      await expect(db.open().ensureSchema(drifted)).rejects.toMatchObject({
+        code: 'sync.storage.stored_layout_mismatch',
+        details: { table: 'tasks', column: 'drift' },
+      });
+      await db.close();
+    });
+
+    for (const drift of drifts) {
+      test(`${backend}: ${drift.name} is refused at the same version`, async () => {
+        const db = await database(backend);
+        const storage = db.open();
+        await ensure(storage, SCHEMA);
+        await upsert(storage, PARTITION, 'tasks', taskRow('t1', 'p1', 'row'));
+        await db.exec(drift.sql(backend, createTableDdl(tasks, dialect)));
+        const refused = db.open().ensureSchema(compileSchema(SCHEMA));
+        await expect(refused).rejects.toMatchObject({
+          name: 'StorageQueryError',
+          code: 'sync.storage.physical_layout_mismatch',
+          details: drift.details(backend),
+        });
+        // Fail closed before any write and without a migration.
+        expect(await db.count()).toBe(1);
+        await db.close();
+      });
+    }
+
+    test(`${backend}: a version bump still adds a missing column-versions column`, async () => {
+      const db = await database(backend);
+      const storage = db.open();
+      await ensure(storage, SCHEMA);
+      await upsert(storage, PARTITION, 'tasks', taskRow('t1', 'p1', 'row'));
+      // A table from before column versions existed: the bump path owns the
+      // ADD COLUMN, and the next same-version open accepts the result.
+      await db.exec(['ALTER TABLE tasks DROP COLUMN _sync_column_versions']);
+      await ensure(db.open(), nullableAppendSchema());
+      const restarted = db.open();
+      await restarted.ensureSchema(compileSchema(nullableAppendSchema()));
+      expect(await restarted.getRow(PARTITION, 'tasks', 't1')).toBeDefined();
+      const v2Row = taskRow('t2', 'p1', 'row');
+      await upsert(restarted, PARTITION, 'tasks', {
+        ...v2Row,
+        payload: encodeRow(nullableAppendSchema().tables[0]!.columns, [
+          ...decodeRow(TASK_COLUMNS, v2Row.payload),
+          null,
+        ]),
+      });
+      expect(await db.count()).toBe(2);
+      await db.close();
+    });
+  }
+});
+
 // --- 4. the row-codec round-trip invariant (per column type) ---------------
 
 describe('row-codec round-trip invariant (encode∘decode = id)', () => {
@@ -480,117 +680,6 @@ describe('server-side schema migration (the subset)', () => {
     const decoded = decodeRow(v2Columns, stored!.payload);
     expect(decoded[2]).toBe('v1 row');
     expect(decoded[v2Columns.length - 1]).toBeNull();
-  });
-
-  test('SQLite rejects a same-version database whose stored layout drifted', async () => {
-    const db = new BunSqliteDatabase();
-    const storage = new SqliteServerStorage(db);
-    await storage.ensureSchema(compileSchema(SCHEMA));
-    await upsert(storage, PARTITION, 'tasks', taskRow('t1', 'p1', 'v1 row'));
-
-    // A second instance over the same database is a restart: the stored
-    // layout matches, so the open proceeds without touching the rows.
-    const restarted = new SqliteServerStorage(db);
-    await restarted.ensureSchema(compileSchema(SCHEMA));
-    expect(await restarted.getRow(PARTITION, 'tasks', 't1')).toBeDefined();
-
-    // Same version, one compiled column the marker never saw: the layout is
-    // drifted and the open must fail naming the table and the column.
-    const drifted = compileSchema({
-      version: 1,
-      tables: [
-        {
-          ...SCHEMA.tables[0]!,
-          columns: [
-            ...TASK_COLUMNS,
-            { name: 'drift', type: 'string', nullable: true },
-          ],
-        },
-        SCHEMA.tables[1]!,
-      ],
-    });
-    await expect(
-      new SqliteServerStorage(db).ensureSchema(drifted),
-    ).rejects.toThrow('table "tasks" column "drift"');
-    db.close();
-  });
-
-  test('Postgres rejects a same-version database whose stored layout drifted', async () => {
-    const db = await PGlite.create();
-    const storage = new PostgresServerStorage(pgliteExecutor(db));
-    await storage.ensureSchema(compileSchema(SCHEMA));
-    await upsert(storage, PARTITION, 'tasks', taskRow('t1', 'p1', 'v1 row'));
-
-    const restarted = new PostgresServerStorage(pgliteExecutor(db));
-    await restarted.ensureSchema(compileSchema(SCHEMA));
-    expect(await restarted.getRow(PARTITION, 'tasks', 't1')).toBeDefined();
-
-    const drifted = compileSchema({
-      version: 1,
-      tables: [
-        {
-          ...SCHEMA.tables[0]!,
-          columns: [
-            ...TASK_COLUMNS,
-            { name: 'drift', type: 'string', nullable: true },
-          ],
-        },
-        SCHEMA.tables[1]!,
-      ],
-    });
-    await expect(
-      new PostgresServerStorage(pgliteExecutor(db)).ensureSchema(drifted),
-    ).rejects.toThrow('table "tasks" column "drift"');
-    await db.close();
-  });
-
-  test('SQLite rejects a same-version database missing a storage meta column', async () => {
-    const db = new BunSqliteDatabase();
-    const storage = new SqliteServerStorage(db);
-    await storage.ensureSchema(compileSchema(SCHEMA));
-    await upsert(storage, PARTITION, 'tasks', taskRow('t1', 'p1', 'v1 row'));
-
-    // A version-only bump whose storage ALTER never ran: the marker version
-    // and the persisted app-column layouts still match, so the physical
-    // table is the only evidence the row codec cannot read it.
-    db.exec('ALTER TABLE tasks DROP COLUMN _sync_column_versions');
-    const marker = db
-      .query<{ schema_version: number }, []>(
-        'SELECT schema_version FROM sync_schema_meta WHERE id=1',
-      )
-      .get();
-    expect(marker?.schema_version).toBe(1);
-    await expect(
-      new SqliteServerStorage(db).ensureSchema(compileSchema(SCHEMA)),
-    ).rejects.toThrow(
-      'table "tasks" is missing column "_sync_column_versions"',
-    );
-    // Fail closed before any write and without a migration: the row survives.
-    expect(
-      db.query<{ n: number }, []>('SELECT COUNT(*) AS n FROM tasks').get()?.n,
-    ).toBe(1);
-    db.close();
-  });
-
-  test('Postgres rejects a same-version database missing a storage meta column', async () => {
-    const db = await PGlite.create();
-    const storage = new PostgresServerStorage(pgliteExecutor(db));
-    await storage.ensureSchema(compileSchema(SCHEMA));
-    await upsert(storage, PARTITION, 'tasks', taskRow('t1', 'p1', 'v1 row'));
-
-    await db.exec('ALTER TABLE tasks DROP COLUMN "_sync_column_versions"');
-    await expect(
-      new PostgresServerStorage(pgliteExecutor(db)).ensureSchema(
-        compileSchema(SCHEMA),
-      ),
-    ).rejects.toThrow(
-      'table "tasks" is missing column "_sync_column_versions"',
-    );
-    const survived = await db.query<{ title: string }>(
-      'SELECT title FROM tasks',
-    );
-    expect(survived.rows).toEqual([{ title: 'v1 row' }]);
-    await db.close();
   });
 
   test('Postgres preserves existing rows across a nullable column append', async () => {

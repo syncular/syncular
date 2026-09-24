@@ -16,6 +16,8 @@ Errors carry stable codes. Arriving from a stack trace, start here:
 | `sync.invalid_client_id` | A client id was reused under a different actor | [Seeding data](/server-operations/#seeding-data) |
 | `sync.forbidden` | A write failed the scope check | [Scopes & authorization](/concepts-scopes/) |
 | `sync.storage.scan_requires_scope` | A row scan omitted its mandatory scope filter | [Storage backends](/server-storage/#choosing-the-right-row-lookup) |
+| `sync.storage.stored_layout_mismatch` | Stored layouts disagree with the schema at the same version | [Storage backends](/server-storage/#materialized-app-tables) |
+| `sync.storage.physical_layout_mismatch` | A synced table's columns or key differ from the storage layout | [Storage backends](/server-storage/#materialized-app-tables) |
 | `client.not_leader` | Another tab owns the origin leader lock | [below](#clientnot_leader-on-a-second-tab) |
 | `client.storage_busy` | The OPFS pool is still held by another engine | [below](#clientstorage_busy-while-opening-the-app) |
 | `client.worker_restart_required` | A stale dev-server worker graph | [below](#clientworker_restart_required-after-a-package-upgrade) |

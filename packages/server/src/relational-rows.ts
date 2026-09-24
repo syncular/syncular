@@ -55,6 +55,7 @@ import {
 } from '@syncular/core';
 import type { CompiledSchema, CompiledTable, IndexSchema } from './schema';
 import type { StoredRow } from './storage';
+import { StorageQueryError } from './storage-errors';
 
 export type RelationalDialect = 'sqlite' | 'postgres';
 
@@ -192,38 +193,112 @@ export function tableColumnNames(table: CompiledTable): string[] {
 }
 
 /**
- * The physical column set the row codec and the scope index read for one
- * configured table. The persisted marker's layouts describe the codec's app
+ * The storage-internal columns of every synced table, in `createTableDdl`
+ * order (app columns sit between the row id and the version). The same-version
+ * physical check compares a table against exactly these declarations.
+ */
+function syncMetaColumns(dialect: RelationalDialect): readonly {
+  readonly name: string;
+  readonly type: string;
+  readonly notNull: boolean;
+}[] {
+  const payloadType = dialect === 'postgres' ? 'BYTEA' : 'BLOB';
+  return [
+    { name: SYNC_PARTITION_COLUMN, type: 'TEXT', notNull: true },
+    { name: SYNC_ROW_ID_COLUMN, type: 'TEXT', notNull: true },
+    {
+      name: SYNC_VERSION_COLUMN,
+      type: dialect === 'postgres' ? 'BIGINT' : 'INTEGER',
+      notNull: true,
+    },
+    {
+      name: SYNC_SCOPES_COLUMN,
+      type: dialect === 'postgres' ? 'JSONB' : 'TEXT',
+      notNull: true,
+    },
+    { name: SYNC_PAYLOAD_COLUMN, type: payloadType, notNull: true },
+    { name: SYNC_COLUMN_VERSIONS_COLUMN, type: payloadType, notNull: false },
+  ];
+}
+
+/** One physical column of a synced table, read from the database catalog. */
+export interface PhysicalColumn {
+  readonly name: string;
+  /** Declared type (SQLite) or `format_type` (PostgreSQL); compared case-insensitively. */
+  readonly type: string;
+  readonly notNull: boolean;
+  /** 1-based position in the primary key; 0 when the column is not in it. */
+  readonly primaryKeyPosition: number;
+}
+
+/**
+ * Refuse a same-version database whose physical table the row store cannot
+ * read or write. The persisted marker's layouts describe the codec's app
  * columns only and its version number is the schema's, not the database's, so
- * a same-version database that is missing a storage-internal meta column (a
- * version-only bump whose ALTER never ran) still has to be refused: compare
- * the physical table and fail closed without writing a migration.
+ * a same-version database whose storage-internal meta columns drifted (a
+ * version-only bump whose ALTER never ran, or a table written by another
+ * build) is only visible in the catalog. Every configured column must exist;
+ * the meta columns must also carry the type, nullability, and primary-key
+ * position `createTableDdl` declares. App-column types and nullability stay
+ * with the stored layouts: migration-added app columns are nullable by design.
+ * Fails closed without writing a migration.
  *
- * `existingColumns` must be resolved the way the unqualified row queries
- * resolve the table — on PostgreSQL, through the session `search_path`, not
+ * `columns` must be resolved the way the unqualified row queries resolve the
+ * table: on PostgreSQL, through the session `search_path`, not
  * `current_schema()`. A search path whose first schema is not where the
  * configured tables live is outside the supported contract: DDL is created in
  * that first schema, so `ensureSchema` already writes shadow tables there.
  *
- * Scope: this checks that the columns EXIST. Stored types, nullability, and
- * non-column storage internals (the tombstone bookkeeping) stay outside it,
- * because a wrong type or nullability is a codec-compatibility question the
- * persisted layouts answer for app columns.
+ * Core storage tables (`sync_tombstones`, `sync_commits`, ...) are outside
+ * this check: every open re-applies their `CREATE TABLE IF NOT EXISTS` DDL
+ * and column additions, independently of the version marker.
  */
 export function assertPhysicalColumns(
   table: CompiledTable,
-  existingColumns: ReadonlySet<string>,
+  columns: readonly PhysicalColumn[],
+  dialect: RelationalDialect,
 ): void {
-  if (existingColumns.size === 0) {
-    throw new Error(
-      `table ${JSON.stringify(table.name)} is missing from the database at the stored schema version — refusing to serve a database whose rows the running code cannot read`,
-    );
-  }
+  const refuse = (details: Record<string, string>): never => {
+    throw new StorageQueryError('sync.storage.physical_layout_mismatch', {
+      table: table.name,
+      ...details,
+    });
+  };
+  if (columns.length === 0) refuse({ reason: 'missing_table' });
+  const byName = new Map(columns.map((column) => [column.name, column]));
   for (const name of tableColumnNames(table)) {
-    if (existingColumns.has(name)) continue;
-    throw new Error(
-      `table ${JSON.stringify(table.name)} is missing column ${JSON.stringify(name)} at the stored schema version — refusing to serve a database whose rows the running code cannot read`,
-    );
+    if (!byName.has(name)) refuse({ column: name, reason: 'missing_column' });
+  }
+  for (const expected of syncMetaColumns(dialect)) {
+    const actual = byName.get(expected.name);
+    if (actual === undefined) continue;
+    if (actual.type.toUpperCase() !== expected.type) {
+      refuse({
+        column: expected.name,
+        reason: 'type',
+        expected: expected.type,
+        actual: actual.type,
+      });
+    }
+    if (actual.notNull !== expected.notNull) {
+      refuse({
+        column: expected.name,
+        reason: 'nullability',
+        expected: expected.notNull ? 'not_null' : 'nullable',
+        actual: actual.notNull ? 'not_null' : 'nullable',
+      });
+    }
+  }
+  for (const column of columns) {
+    const expected =
+      column.name === SYNC_PARTITION_COLUMN
+        ? 1
+        : column.name === SYNC_ROW_ID_COLUMN
+          ? 2
+          : 0;
+    if (column.primaryKeyPosition !== expected) {
+      refuse({ column: column.name, reason: 'primary_key' });
+    }
   }
 }
 
@@ -232,22 +307,20 @@ export function createTableDdl(
   table: CompiledTable,
   dialect: RelationalDialect,
 ): string {
-  const versionType = dialect === 'postgres' ? 'BIGINT' : 'INTEGER';
-  const scopesType = dialect === 'postgres' ? 'JSONB' : 'TEXT';
-  const payloadType = dialect === 'postgres' ? 'BYTEA' : 'BLOB';
+  const [partition, rowId, ...trailing] = syncMetaColumns(dialect).map(
+    (column) =>
+      `${quoteIdent(column.name)} ${column.type}${column.notNull ? ' NOT NULL' : ''}`,
+  );
   const defs = [
-    `${quoteIdent(SYNC_PARTITION_COLUMN)} TEXT NOT NULL`,
-    `${quoteIdent(SYNC_ROW_ID_COLUMN)} TEXT NOT NULL`,
+    partition,
+    rowId,
     ...(table.materialize
       ? table.columns.map((column) => {
           const notNull = column.nullable ? '' : ' NOT NULL';
           return `${quoteIdent(column.name)} ${columnSqlType(column, dialect)}${notNull}`;
         })
       : []),
-    `${quoteIdent(SYNC_VERSION_COLUMN)} ${versionType} NOT NULL`,
-    `${quoteIdent(SYNC_SCOPES_COLUMN)} ${scopesType} NOT NULL`,
-    `${quoteIdent(SYNC_PAYLOAD_COLUMN)} ${payloadType} NOT NULL`,
-    `${quoteIdent(SYNC_COLUMN_VERSIONS_COLUMN)} ${payloadType}`,
+    ...trailing,
     `PRIMARY KEY (${quoteIdent(SYNC_PARTITION_COLUMN)}, ${quoteIdent(SYNC_ROW_ID_COLUMN)})`,
   ];
   return `CREATE TABLE IF NOT EXISTS ${quoteIdent(table.name)} (${defs.join(', ')})`;
@@ -658,6 +731,48 @@ export function layoutsOf(schema: CompiledSchema): string {
 export function parseLayouts(json: string | null | undefined): StoredLayouts {
   if (json === null || json === undefined || json.length === 0) return {};
   return JSON.parse(json) as StoredLayouts;
+}
+
+/**
+ * Version equality is not layout equality: a marker written by another build
+ * at the same version describes rows the running codec cannot decode. Refuse
+ * when the stored layouts disagree with the configured schema, naming the
+ * first table (and column) that differs.
+ */
+export function assertStoredLayouts(
+  schema: CompiledSchema,
+  storedJson: string | null | undefined,
+): void {
+  const storedLayouts = parseLayouts(storedJson);
+  const configuredLayouts = parseLayouts(layoutsOf(schema));
+  for (const [tableName, columns] of Object.entries(configuredLayouts)) {
+    const stored = storedLayouts[tableName];
+    const columnCount = Math.max(columns.length, stored?.length ?? 0);
+    for (let index = 0; index < columnCount; index++) {
+      const expected = columns[index];
+      const actual = stored?.[index];
+      if (
+        expected !== undefined &&
+        actual !== undefined &&
+        actual.name === expected.name &&
+        actual.type === expected.type &&
+        actual.nullable === expected.nullable
+      ) {
+        continue;
+      }
+      throw new StorageQueryError('sync.storage.stored_layout_mismatch', {
+        table: tableName,
+        column: expected?.name ?? actual?.name ?? '',
+      });
+    }
+  }
+  for (const tableName of Object.keys(storedLayouts)) {
+    if (!(tableName in configuredLayouts)) {
+      throw new StorageQueryError('sync.storage.stored_layout_mismatch', {
+        table: tableName,
+      });
+    }
+  }
 }
 
 /**

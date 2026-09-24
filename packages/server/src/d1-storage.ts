@@ -50,6 +50,8 @@ import {
 import { syncError } from './errors';
 import {
   assertAppendOnlyMigration,
+  assertPhysicalColumns,
+  assertStoredLayouts,
   commitWindowPageSql,
   deleteRowSql,
   deleteSqliteRowScopesSql,
@@ -946,6 +948,23 @@ export class D1ServerStorage implements ServerStorage {
       this.#db.prepare('SELECT * FROM sync_schema_migration WHERE id=1'),
     );
     if (claim === null && marker?.schema_version === schema.version) {
+      assertStoredLayouts(schema, marker.layouts);
+      for (const table of tables) {
+        statementsExecuted++;
+        const { results } = await this.#db
+          .prepare(`PRAGMA table_info(${quoteIdent(table.name)})`)
+          .all<{ name: string; type: string; notnull: number; pk: number }>();
+        assertPhysicalColumns(
+          table,
+          results.map((column) => ({
+            name: column.name,
+            type: column.type,
+            notNull: column.notnull === 1,
+            primaryKeyPosition: column.pk,
+          })),
+          'sqlite',
+        );
+      }
       this.#tables = schema.tables;
       this.#schemaVersion = schema.version;
       return { complete: true, statementsExecuted };

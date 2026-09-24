@@ -55,6 +55,7 @@ import {
 } from './pg-executor';
 import {
   assertPhysicalColumns,
+  assertStoredLayouts,
   commitWindowPageSql,
   deleteRowSql,
   dropTableDdl,
@@ -1229,65 +1230,47 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
       );
     }
     if (stored !== undefined && stored === schema.version) {
-      // Version equality is not layout equality: a marker written by another
-      // build at the same version describes rows the running codec cannot
-      // decode. Compare the stored layouts instead of trusting the number.
-      const storedLayouts = parseLayouts(
+      assertStoredLayouts(
+        schema,
         typeof marker.rows[0]?.layouts === 'string'
           ? marker.rows[0].layouts
           : undefined,
       );
-      const configuredLayouts = parseLayouts(layoutsOf(schema));
-      let mismatch: string | undefined;
-      for (const [tableName, columns] of Object.entries(configuredLayouts)) {
-        const storedTable = storedLayouts[tableName];
-        const columnCount = Math.max(columns.length, storedTable?.length ?? 0);
-        for (let index = 0; index < columnCount; index++) {
-          const expected = columns[index];
-          const actual = storedTable?.[index];
-          if (
-            expected !== undefined &&
-            actual !== undefined &&
-            actual.name === expected.name &&
-            actual.type === expected.type &&
-            actual.nullable === expected.nullable
-          ) {
-            continue;
-          }
-          mismatch = `table ${JSON.stringify(tableName)} column ${JSON.stringify(expected?.name ?? actual?.name ?? '')}`;
-          break;
-        }
-        if (mismatch !== undefined) break;
-      }
-      if (mismatch === undefined) {
-        for (const tableName of Object.keys(storedLayouts)) {
-          if (!(tableName in configuredLayouts)) {
-            mismatch = `table ${JSON.stringify(tableName)}`;
-            break;
-          }
-        }
-      }
-      if (mismatch !== undefined) {
-        throw new Error(
-          `stored schema layouts disagree with the configured schema at version ${schema.version} (${mismatch}) — refusing to serve a database whose stored rows the running code cannot decode`,
-        );
-      }
-      // The persisted layouts describe the codec's app columns only: read the
-      // physical tables so a same-version database missing a
-      // storage-internal column is refused at startup instead of failing at
-      // the first write. Resolve through `to_regclass`, which follows the
-      // session's `search_path` exactly as the unqualified row queries do —
+      // Resolve through `to_regclass`, which follows the session's
+      // `search_path` exactly as the unqualified row queries do:
       // `current_schema()` names only the first existing schema, so it would
       // reject a table that resolves later in the path.
       for (const table of schema.tables.values()) {
-        const { rows } = await this.#exec.query<{ column_name: string }>(
-          `SELECT attribute.attname AS column_name
+        const { rows } = await this.#exec.query<{
+          name: string;
+          type: string;
+          not_null: boolean;
+          pk: number | null;
+        }>(
+          `SELECT attribute.attname AS name,
+                  format_type(attribute.atttypid, attribute.atttypmod) AS type,
+                  attribute.attnotnull AS not_null,
+                  (SELECT key.position::int
+                     FROM pg_index pk,
+                          unnest(pk.indkey::int2[]) WITH ORDINALITY
+                            AS key(attnum, position)
+                    WHERE pk.indrelid = attribute.attrelid AND pk.indisprimary
+                      AND key.attnum = attribute.attnum) AS pk
            FROM pg_attribute attribute
            WHERE attribute.attrelid = to_regclass($1)
              AND attribute.attnum > 0 AND NOT attribute.attisdropped`,
           [table.name],
         );
-        assertPhysicalColumns(table, new Set(rows.map((r) => r.column_name)));
+        assertPhysicalColumns(
+          table,
+          rows.map((row) => ({
+            name: row.name,
+            type: row.type,
+            notNull: row.not_null,
+            primaryKeyPosition: row.pk ?? 0,
+          })),
+          'postgres',
+        );
       }
     }
     if (stored === undefined || stored < schema.version) {

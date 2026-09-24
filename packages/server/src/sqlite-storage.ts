@@ -18,6 +18,7 @@ import {
 import { syncError } from './errors';
 import {
   assertPhysicalColumns,
+  assertStoredLayouts,
   commitWindowPageSql,
   deleteRowSql,
   deleteSqliteRowScopesSql,
@@ -594,57 +595,25 @@ END`);
       );
     }
     if (marker !== null && marker.schema_version === schema.version) {
-      // Version equality is not layout equality: a marker written by another
-      // build at the same version describes rows the running codec cannot
-      // decode. Compare the stored layouts instead of trusting the number.
-      const storedLayouts = parseLayouts(marker.layouts);
-      const configuredLayouts = parseLayouts(layoutsOf(schema));
-      let mismatch: string | undefined;
-      for (const [tableName, columns] of Object.entries(configuredLayouts)) {
-        const stored = storedLayouts[tableName];
-        const columnCount = Math.max(columns.length, stored?.length ?? 0);
-        for (let index = 0; index < columnCount; index++) {
-          const expected = columns[index];
-          const actual = stored?.[index];
-          if (
-            expected !== undefined &&
-            actual !== undefined &&
-            actual.name === expected.name &&
-            actual.type === expected.type &&
-            actual.nullable === expected.nullable
-          ) {
-            continue;
-          }
-          mismatch = `table ${JSON.stringify(tableName)} column ${JSON.stringify(expected?.name ?? actual?.name ?? '')}`;
-          break;
-        }
-        if (mismatch !== undefined) break;
-      }
-      if (mismatch === undefined) {
-        for (const tableName of Object.keys(storedLayouts)) {
-          if (!(tableName in configuredLayouts)) {
-            mismatch = `table ${JSON.stringify(tableName)}`;
-            break;
-          }
-        }
-      }
-      if (mismatch !== undefined) {
-        throw new Error(
-          `stored schema layouts disagree with the configured schema at version ${schema.version} (${mismatch}) — refusing to serve a database whose stored rows the running code cannot decode`,
-        );
-      }
-      // The persisted layouts describe the codec's app columns only: read the
-      // physical tables so a same-version database missing a
-      // storage-internal column is refused at startup instead of failing at
-      // the first write.
+      assertStoredLayouts(schema, marker.layouts);
       for (const table of schema.tables.values()) {
         const escapedTableName = table.name.replaceAll('"', '""');
         const columns = this.db
-          .query<{ name: string }, []>(
-            `PRAGMA table_info("${escapedTableName}")`,
-          )
+          .query<
+            { name: string; type: string; notnull: number; pk: number },
+            []
+          >(`PRAGMA table_info("${escapedTableName}")`)
           .all();
-        assertPhysicalColumns(table, new Set(columns.map((c) => c.name)));
+        assertPhysicalColumns(
+          table,
+          columns.map((column) => ({
+            name: column.name,
+            type: column.type,
+            notNull: column.notnull === 1,
+            primaryKeyPosition: column.pk,
+          })),
+          'sqlite',
+        );
       }
     }
     if (marker === null || marker.schema_version < schema.version) {

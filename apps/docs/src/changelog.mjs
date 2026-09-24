@@ -16,6 +16,19 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-09-25',
+    title:
+      'Same-version readiness checks storage-internal columns on every backend',
+    body: 'At a matching schema version, `ensureSchema` on SQLite, PostgreSQL, and D1 now checks each synced table against the storage layout: a missing table or column, a `_sync_*` column whose type or nullability differs from what the storage creates, or a primary key other than `(_sync_partition, _sync_row_id)` refuses the open with `StorageQueryError` code `sync.storage.physical_layout_mismatch`. The stored-layout comparison now fails with `sync.storage.stored_layout_mismatch`. Both carry the table and column in `details` and keep them out of the message. D1 previously trusted a matching version marker without either check, so a replica whose internal columns drifted answered healthy and failed at the first write. On D1 the check reads one `PRAGMA table_info` per synced table the first time a storage instance opens.',
+    links: [
+      {
+        href: '/server-storage/#materialized-app-tables',
+        label: 'Storage backends',
+      },
+      { href: '/guide-schema/', label: 'Schema & typegen' },
+    ],
+  },
+  {
     date: '2026-09-19',
     title: 'The server refuses to serve until a declared backfill is activated',
     body: 'A schema change that needs a backfill can now be declared so the storage refuses requests until it is activated. SQLite and PostgreSQL expose a serve gate that answers `sync.schema_not_ready` (retryable, HTTP 503) while a declared checkpoint for the running schema version is incomplete, or when the stored schema version is newer than the running build. D1 keeps its existing host readiness failure and the client recovery protocol does not change. On PostgreSQL the migration transaction takes an exclusive lock on `sync_partitions` as its first statement, so an old binary blocks at its first statement without its cooperation, and a `BEFORE INSERT` trigger on `sync_commits` rejects an append below the required writer version for the partition. Custom storage adapters must implement the new `Storage` members named in the release notes.',

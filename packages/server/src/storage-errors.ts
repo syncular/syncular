@@ -30,7 +30,9 @@ export type StorageQueryErrorCode =
   | 'sync.storage.checkpoint_not_declared'
   | 'sync.storage.checkpoint_unsupported'
   | 'sync.storage.checkpoint_fence_missing'
-  | 'sync.storage.checkpoint_incomplete';
+  | 'sync.storage.checkpoint_incomplete'
+  | 'sync.storage.stored_layout_mismatch'
+  | 'sync.storage.physical_layout_mismatch';
 
 const STORAGE_QUERY_MESSAGES: Readonly<Record<StorageQueryErrorCode, string>> =
   {
@@ -56,6 +58,10 @@ const STORAGE_QUERY_MESSAGES: Readonly<Record<StorageQueryErrorCode, string>> =
       'checkpoint activation requires the writer fence raised at declaration',
     'sync.storage.checkpoint_incomplete':
       'a declared backfill checkpoint is not activated and this caller did not declare it',
+    'sync.storage.stored_layout_mismatch':
+      'stored schema layouts disagree with the configured schema at the same version',
+    'sync.storage.physical_layout_mismatch':
+      'a synced table does not match the storage layout the running code reads and writes',
     'sync.storage.scan_requires_scope':
       'scope-indexed row scans require at least one scope variable',
     'sync.storage.index_not_found':
@@ -70,15 +76,21 @@ const STORAGE_QUERY_MESSAGES: Readonly<Record<StorageQueryErrorCode, string>> =
 
 /**
  * Host-only query error. Messages never include identifiers, values, SQL,
- * paths, or row data; callers branch on `code`, never message text.
+ * paths, or row data; callers branch on `code`, never message text. The
+ * schema-readiness codes name the offending table and column in `details`.
  */
 export class StorageQueryError extends Error {
   override readonly name = 'StorageQueryError';
   readonly code: StorageQueryErrorCode;
+  readonly details: Readonly<Record<string, string>> | undefined;
 
-  constructor(code: StorageQueryErrorCode) {
+  constructor(
+    code: StorageQueryErrorCode,
+    details?: Readonly<Record<string, string>>,
+  ) {
     super(STORAGE_QUERY_MESSAGES[code]);
     this.code = code;
+    this.details = details;
   }
 }
 
