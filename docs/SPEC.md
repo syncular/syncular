@@ -845,11 +845,15 @@ details; the physical refusal also carries `reason` (`missing_table`,
 nullability refusal, `expected` and `actual`. The message never names them.
 Only a schema-version bump adds `_sync_column_versions` to a table created
 before column versions (§2.2); a same-version open refuses that table. The
-check covers SQLite, PostgreSQL, and D1. Core storage tables, including the
-tombstone table (§2.2), stay outside it: SQLite applies their idempotent DDL
-when the storage is constructed, PostgreSQL on every `ensureSchema`, and D1 in
-`migrate()` and in the core phase of a schema upgrade. These refusals are host
-readiness failures and add no wire error.
+check covers SQLite, PostgreSQL, and D1. SQLite applies the idempotent DDL of
+the core storage tables, including the tombstone table (§2.2), when the storage
+is constructed, and PostgreSQL on every `ensureSchema`, independently of the
+marker. D1 creates them only in `migrate()` and in the core phase of a schema
+upgrade, so a same-version D1 open reads `sqlite_master` in one statement and
+refuses with `sync.storage.physical_layout_mismatch` (`reason: missing_table`)
+when a core table its request path reads or writes is absent; the checkpoint
+and writer-fence tables, which D1 does not use, are not required. These
+refusals are host readiness failures and add no wire error.
 
 #### D1 schema readiness
 

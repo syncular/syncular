@@ -99,8 +99,13 @@ nullability differs from the declaration above, or a primary key other than
 or `primary_key`. Neither refusal writes DDL. A table from before
 `_sync_column_versions` existed gains the column only through a schema-version
 bump ([version-only bumps](/guide-schema/#a-version-only-bump-server-internal-storage-changes)).
-On D1 the check costs one `PRAGMA table_info` statement per synced table the
-first time a storage instance opens.
+D1 also refuses a missing core table that its request path reads or writes
+(`sync_tombstones`, `sync_commits`, `sync_clients`, and the rest of the
+`sync_*` tables except `sync_backfill_checkpoints` and `sync_writer_fence`),
+because D1 creates those tables only in `migrate()` or during a schema
+upgrade. On D1 the check costs one `sqlite_master` read plus one
+`PRAGMA table_info` statement per synced table the first time a storage
+instance opens.
 
 A per-table `materialize` flag on the server schema controls the
 projection:

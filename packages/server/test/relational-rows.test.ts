@@ -353,6 +353,32 @@ describe('same-version schema readiness', () => {
     },
   ];
 
+  test('d1: a same-version database missing a core table it writes is refused', async () => {
+    const db = await database('d1');
+    const storage = db.open();
+    await ensure(storage, SCHEMA);
+    await upsert(storage, PARTITION, 'tasks', taskRow('t1', 'p1', 'row'));
+    // A database whose core phase predates the tombstone table: the marker
+    // never advanced, so no migration step recreated it.
+    await db.exec(['DROP TABLE sync_tombstones']);
+    await expect(
+      db.open().ensureSchema(compileSchema(SCHEMA)),
+    ).rejects.toMatchObject({
+      code: 'sync.storage.physical_layout_mismatch',
+      details: { table: 'sync_tombstones', reason: 'missing_table' },
+    });
+    // Tables the D1 request path never touches are not required.
+    await db.exec([
+      'CREATE TABLE sync_tombstones(partition TEXT NOT NULL, tbl TEXT NOT NULL, row_id TEXT NOT NULL, commit_seq INTEGER NOT NULL, PRIMARY KEY(partition, tbl, row_id))',
+      'DROP TABLE sync_writer_fence',
+      'DROP TABLE sync_backfill_checkpoints',
+    ]);
+    const reopened = db.open();
+    await reopened.ensureSchema(compileSchema(SCHEMA));
+    expect(await reopened.getRow(PARTITION, 'tasks', 't1')).toBeDefined();
+    await db.close();
+  });
+
   for (const backend of ['sqlite', 'postgres', 'd1'] as const) {
     const dialect = backend === 'postgres' ? 'postgres' : 'sqlite';
     const tasks = compileSchema(SCHEMA).tables.get('tasks')!;
