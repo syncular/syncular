@@ -1,8 +1,14 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.25.1** (`v0.25.1`). All artifacts use Apache-2.0, except
+current release is **0.25.2** (`v0.25.2`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.25.2 release notes
+
+0.25.2 is a patch release for the TypeScript client's reactive store. The wire protocol, the Rust core, and the public API do not change.
+
+- **Unread query snapshots are shared.** A live query without a successful read publishes one frozen snapshot per phase and availability, with a shared empty `rows` array. A query whose parameters or coverage change before its first read completes returns the same snapshot object, so `useSyncExternalStore` does not re-render for the switch. The snapshot and its `rows` array are frozen.
 
 ## 0.25.1 release notes
 
