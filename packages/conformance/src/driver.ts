@@ -76,6 +76,11 @@ export interface DriverTable {
   readonly columns: readonly DriverColumn[];
   readonly primaryKey: string;
   readonly scopes: readonly DriverScopePattern[];
+  readonly indexes?: readonly {
+    readonly name: string;
+    readonly columns: readonly string[];
+    readonly unique: boolean;
+  }[];
   /** §6.11 declared references. The server enforces them; a client core
    * ignores them (the local replica DDL omits the clause). */
   readonly references?: readonly {

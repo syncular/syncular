@@ -79,12 +79,18 @@ function toServerSchema(schema: DriverSchema): ServerSchema {
       // §6.11: typegen emits one non-unique index per reference column; the
       // hand-written conformance fixture synthesizes the same declaration.
       ...(table.references !== undefined
+        ? { references: table.references }
+        : {}),
+      ...(table.indexes !== undefined || table.references !== undefined
         ? {
-            references: table.references,
-            indexes: table.references.map((reference) => ({
-              name: `idx_${table.name}_${reference.column}_ref`,
-              columns: [reference.column],
-            })),
+            indexes: [
+              ...(table.indexes ?? []),
+              ...(table.references ?? []).map((reference) => ({
+                name: `idx_${table.name}_${reference.column}_ref`,
+                columns: [reference.column],
+                unique: false,
+              })),
+            ],
           }
         : {}),
     })),

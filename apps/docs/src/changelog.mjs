@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-09-25',
+    title: 'Local unique constraint failures roll back the commit',
+    body: 'TypeScript and Rust clients now fail a local commit with `sync.constraint_violation` when its optimistic writes conflict with a declared secondary unique index. The client rolls back every sibling write and the outbox append in the same SQLite transaction, and the local revision does not advance. Rust previously ignored the failed overlay write and queued a commit whose optimistic row was absent.',
+    links: [
+      {
+        href: '/concepts-commits/#local-constraint-failures',
+        label: 'Commits, cursors & idempotency',
+      },
+    ],
+  },
+  {
+    date: '2026-09-25',
     title: 'A sync query can join a table to itself',
     body: '`syncular generate` now accepts a `sync query` that reads one table through several aliases when every alias binds the same declared scopes with the same operator and parameters, for example two `catalogue_codes` instances each constrained by `catalogue_set_id = :catalogueSetId`. Identical proofs select the same window base and units, so the descriptor holds one coverage entry and one dependency for that table, and the TypeScript and Rust clients report the query ready when that one window completes. An unconstrained alias, or aliases that differ in a parameter, operator, unit dimension, or fixed scope, still fail with `SYQL6005_INVALID_SYNC_QUERY`. An ordinary `query` over a self-join with identical proofs now gets an exact dependency in place of table-wide invalidation. A self-join has no inferred row identity.',
     links: [

@@ -3567,6 +3567,11 @@ stays static.
   optimistic state exactly when the commit that produced it has drained
   (`applied`/`cached`) or been dropped; pending writes stay visible
   throughout.
+- A local commit that violates a declared secondary unique index against the
+  current optimistic overlay MUST fail atomically with
+  `sync.constraint_violation`. The client MUST leave no operation from that
+  commit in the overlay or durable outbox and MUST NOT advance its local
+  observation revision.
 
 **Client storage durability boundary.** Durable in this section means that the
 outbox is transactionally persisted in the client's selected local store while

@@ -1945,7 +1945,7 @@ mod observation_tests {
                                     ("project_id".into(), Value::from(format!("p{}", index % 3))),
                                     (
                                         "title".into(),
-                                        Value::from(format!("needle{}", (index + offset) % 5)),
+                                        Value::from(format!("needle{}", (index + offset) % 16)),
                                     ),
                                 ]),
                                 base_version: None,
@@ -2046,7 +2046,7 @@ mod observation_tests {
                 table: "tasks".into(),
                 values: Map::from_iter([
                     ("id".into(), Value::from("a")),
-                    ("title".into(), Value::from("occupied")),
+                    ("title".into(), Value::from("available")),
                 ]),
                 base_version: None,
             }])
@@ -2059,9 +2059,9 @@ mod observation_tests {
                     0
                 ))
                 .unwrap(),
-            "original"
+            "available"
         );
-        for (title, expected) in [("available", "occupied"), ("occupied", "original")] {
+        for (title, expected) in [("available", "original"), ("occupied", "available")] {
             let change = ssp2::model::Change {
                 table_index: 0,
                 row_id: "b".into(),
@@ -2234,7 +2234,7 @@ mod observation_tests {
                                 ),
                                 (
                                     "title".to_owned(),
-                                    Value::from(format!("needle{}", (index + offset) % 5)),
+                                    Value::from(format!("needle{}", (index + offset) % 24)),
                                 ),
                             ]),
                             base_version: None,
@@ -3678,7 +3678,7 @@ mod observation_tests {
                             values: Map::from_iter([
                                 ("id".into(), Value::from("a")),
                                 ("project_id".into(), Value::from("p1")),
-                                ("title".into(), Value::from("occupied")),
+                                ("title".into(), Value::from("available")),
                             ]),
                             base_version: None,
                         },
@@ -3837,13 +3837,13 @@ mod observation_tests {
                         table: "tasks".into(),
                         values: Map::from_iter([
                             ("id".into(), a.clone()),
-                            ("title".into(), json!("occupied")),
+                            ("title".into(), json!("available")),
                         ]),
                         base_version: None,
                     }])
                     .unwrap();
                 client.overlay_rebuild_count.set(0);
-                for (title, expected) in [("available", "occupied"), ("occupied", "original")] {
+                for (title, expected) in [("available", "original"), ("occupied", "available")] {
                     let values = vec![
                         json_to_column_value(&table.columns[0], Some(&b)).unwrap(),
                         Some(ColumnValue::String(title.into())),
@@ -7716,16 +7716,24 @@ impl SyncClient {
             return Err(error);
         }
         let was_dirty = self.overlay_dirty.get();
-        // A clean overlay already contains the FIFO fold of every previous
-        // commit. Appending a commit only needs its own operations applied.
-        if !was_dirty {
-            self.apply_outbox_ops(&commit.ops);
-        }
-        let id = commit.client_commit_id.clone();
-        self.outbox.push(commit);
+        // A clean overlay contains the FIFO fold of every previous commit, so
+        // the new commit applies over it. §7.1: an operation that does not
+        // apply (a secondary unique collision) fails the whole commit; the
+        // savepoint rollback removes the outbox entry and every visible write.
         if was_dirty {
             self.rebuild_overlay();
         }
+        if let Some(error) = commit
+            .ops
+            .iter()
+            .find_map(|op| self.apply_outbox_op(op).err())
+        {
+            self.rollback_observation("syncular_mutation");
+            self.overlay_dirty.set(was_dirty);
+            return Err(error);
+        }
+        let id = commit.client_commit_id.clone();
+        self.outbox.push(commit);
         batch.status = true;
         if let Err(error) = self.finish_observation("syncular_mutation", batch) {
             self.rollback_observation("syncular_mutation");
@@ -11423,6 +11431,10 @@ impl SyncClient {
         self.overlay_dirty.set(false);
     }
 
+    /// §7.1 replay: every operation is applied over the current visible
+    /// state. An operation that no longer applies (a server row now holds its
+    /// unique value) stays pending and invisible until a later replay admits
+    /// it or the server answers its push.
     fn apply_outbox_ops<'a>(&self, ops: impl IntoIterator<Item = &'a OutboxOp>) {
         #[cfg(feature = "bench-internals")]
         let mut phase = self.benchmark_phases.start(Phase::PendingReplay);
@@ -11431,59 +11443,61 @@ impl SyncClient {
             if let Some(phase) = &mut phase {
                 phase.unit();
             }
-            let Some(table) = self.schema.table(&op.table) else {
-                continue;
+            let _ = self.apply_outbox_op(op);
+        }
+    }
+
+    fn apply_outbox_op(&self, op: &OutboxOp) -> Result<(), String> {
+        let Some(table) = self.schema.table(&op.table) else {
+            return Ok(());
+        };
+        let visible = visible_table(&table.name);
+        if !op.upsert {
+            let sql = format!("DELETE FROM {visible} WHERE {}", row_id_predicate(table));
+            self.conn
+                .prepare_cached(&sql)
+                .and_then(|mut statement| statement.execute(rusqlite::params![op.row_id]))
+                .map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+        let Some(values) = op.values.as_ref() else {
+            return Ok(());
+        };
+        // §7.1: the overlay applies the operation's PRESENT columns
+        // over the current local row. A partial operation over an
+        // absent local row leaves it absent — the server answers it
+        // with sync.row_deleted or sync.row_missing (§6.2).
+        let full = table
+            .columns
+            .iter()
+            .all(|column| values.contains_key(&column.name));
+        let local = self.visible_row(table, &op.row_id);
+        if local.is_none() && !full {
+            return Ok(());
+        }
+        let mut row: Row = Vec::with_capacity(table.columns.len());
+        for (index, column) in table.columns.iter().enumerate() {
+            let incoming = match values.get(&column.name) {
+                Some(raw) => json_to_column_value(column, Some(raw)),
+                None => Ok(local
+                    .as_ref()
+                    .and_then(|(values, _)| values.get(index).cloned())
+                    .flatten()),
             };
-            if op.upsert {
-                let Some(values) = op.values.as_ref() else {
-                    continue;
-                };
-                // §7.1: the overlay applies the operation's PRESENT columns
-                // over the current local row. A partial operation over an
-                // absent local row leaves it absent — the server answers it
-                // with sync.row_deleted or sync.row_missing (§6.2).
-                let full = table
-                    .columns
-                    .iter()
-                    .all(|column| values.contains_key(&column.name));
-                let local = self.visible_row(table, &op.row_id);
-                if local.is_none() && !full {
-                    continue;
-                }
-                let mut row: Row = Vec::with_capacity(table.columns.len());
-                let mut ok = true;
-                for (index, column) in table.columns.iter().enumerate() {
-                    let incoming = match values.get(&column.name) {
-                        Some(raw) => json_to_column_value(column, Some(raw)),
-                        None => Ok(local
-                            .as_ref()
-                            .and_then(|(values, _)| values.get(index).cloned())
-                            .flatten()),
-                    };
-                    match incoming {
-                        Ok(value) => row.push(value),
-                        Err(_) => {
-                            ok = false;
-                            break;
-                        }
-                    }
-                }
-                if ok {
-                    let version = local.as_ref().map_or(-1, |(_, version)| *version);
-                    let _ = self.write_row(&visible_table(&table.name), &table.name, &row, version);
-                }
-            } else {
-                let sql = format!(
-                    "DELETE FROM {} WHERE {}",
-                    visible_table(&table.name),
-                    row_id_predicate(table)
-                );
-                let _ = self
-                    .conn
-                    .prepare_cached(&sql)
-                    .and_then(|mut statement| statement.execute(rusqlite::params![op.row_id]));
+            match incoming {
+                Ok(value) => row.push(value),
+                Err(_) => return Ok(()),
             }
         }
+        let version = local.as_ref().map_or(-1, |(_, version)| *version);
+        self.write_row(&visible, &table.name, &row, version)
+            .map_err(|error| {
+                if error.starts_with("UNIQUE constraint failed:") {
+                    "sync.constraint_violation: local write violates a unique constraint".to_owned()
+                } else {
+                    error
+                }
+            })
     }
 
     /// The visible (optimistic) row's values plus version, or `None` when the

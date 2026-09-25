@@ -57,6 +57,14 @@ Exactly-once apply per client commit; at-least-once delivery of results. This
 is why the client outbox can retry freely after any network blip, and why
 [offline replay](/platform-web/#offline-replay) is safe.
 
+## Local constraint failures
+
+The client applies a new local commit to the optimistic read model inside the
+same SQLite transaction that appends its outbox entry. A write that conflicts
+with a declared secondary unique index throws `sync.constraint_violation`.
+The transaction leaves no rows from the commit, no outbox entry, and no local
+revision change.
+
 ## The pruning horizon
 
 The log does not grow forever. The server maintains a per-partition
