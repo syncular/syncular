@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-09-25',
+    title: 'A sync query can join a table to itself',
+    body: '`syncular generate` now accepts a `sync query` that reads one table through several aliases when every alias binds the same declared scopes with the same operator and parameters, for example two `catalogue_codes` instances each constrained by `catalogue_set_id = :catalogueSetId`. Identical proofs select the same window base and units, so the descriptor holds one coverage entry and one dependency for that table, and the TypeScript and Rust clients report the query ready when that one window completes. An unconstrained alias, or aliases that differ in a parameter, operator, unit dimension, or fixed scope, still fail with `SYQL6005_INVALID_SYNC_QUERY`. An ordinary `query` over a self-join with identical proofs now gets an exact dependency in place of table-wide invalidation. A self-join has no inferred row identity.',
+    links: [
+      {
+        href: '/syql/#query-and-sync-query',
+        label: 'SYQL: query and sync query',
+      },
+    ],
+  },
+  {
+    date: '2026-09-25',
     title: 'Push hooks run generated authority reads on the push transaction',
     body: "Row validators, the whole-commit validator, the reaction planner, and remote command callbacks run inside the push transaction, and each now receives a transaction-bound `queryAuthoritative` (`context.queryAuthoritative`, or `read.queryAuthoritative` on the candidate-state reader). It takes the request `storage.queryAuthoritative` takes, built from a generated query descriptor; the storage binds every relation to the commit's partition and runs the statement on the push transaction's connection. On SQLite and PostgreSQL the read returns the rows staged earlier in the commit, and a push completes on a one-connection pool. Calling `storage.queryAuthoritative` from these hooks still waits forever on SQLite and PGlite and reads committed state on a pool. D1 refuses a read over a table the commit has already written with `sync.storage.query_over_staged_writes`, and a custom storage transaction without the capability fails with `sync.storage.transaction_query_unsupported`.",
     links: [

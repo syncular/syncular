@@ -77,6 +77,60 @@ fn generated_plain_query_runs_and_snapshots_against_the_real_client() {
 }
 
 #[test]
+fn generated_self_join_sync_query_runs_with_one_coalesced_coverage_entry() {
+    let mut client = SyncClient::new(
+        "generated-self-join-test".to_owned(),
+        &fixture_schema(),
+        ClientLimits::default(),
+    )
+    .expect("create client");
+    let task = |id: &str, project: &str, priority: i64| Mutation::Upsert {
+        table: "tasks".to_owned(),
+        values: Map::from_iter([
+            ("id".to_owned(), json!(id)),
+            ("project_id".to_owned(), json!(project)),
+            ("title".to_owned(), json!(id)),
+            ("done".to_owned(), json!(false)),
+            ("priority".to_owned(), json!(priority)),
+        ]),
+        base_version: None,
+    };
+    client
+        .mutate(vec![
+            task("a1", "p1", 1),
+            task("a2", "p1", 1),
+            task("a3", "p1", 2),
+            task("b1", "p2", 1),
+        ])
+        .expect("insert local rows");
+
+    let params = generated::task_priority_peers::Params::new("p1".to_owned());
+    let dependencies = generated::task_priority_peers::dependencies(&params);
+    assert_eq!(dependencies.len(), 1);
+    assert_eq!(
+        dependencies[0].scope_keys.as_deref(),
+        Some(["project:p1".to_owned()].as_slice())
+    );
+    let coverage = generated::task_priority_peers::coverage(&params);
+    assert_eq!(coverage.len(), 1);
+    assert_eq!(coverage[0].base.table, "tasks");
+    assert_eq!(coverage[0].base.variable, "project_id");
+    assert_eq!(coverage[0].units, ["p1"]);
+    assert!(generated::task_priority_peers::DESCRIPTOR.row_key.is_none());
+
+    let snapshot =
+        generated::task_priority_peers::snapshot(&mut client, &params).expect("typed snapshot");
+    let pairs: Vec<_> = snapshot
+        .rows
+        .iter()
+        .map(|row| (row.task_id.as_str(), row.peer_id.as_str()))
+        .collect();
+    assert_eq!(pairs, [("a1", "a2"), ("a2", "a1")]);
+    assert!(!snapshot.coverage.complete);
+    assert_eq!(snapshot.coverage.missing.len(), 1);
+}
+
+#[test]
 fn generated_rows_cover_every_query_ir_value_type() {
     let mut client = SyncClient::new(
         "generated-value-test".to_owned(),

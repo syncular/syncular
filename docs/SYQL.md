@@ -364,9 +364,12 @@ todos.list_id = :listId
 
 Required equality and `IN` predicates over declared scope columns may produce
 exact dependencies. The predicate must be an unconditional outer conjunct;
-predicates under `when`, `OR`, or an ambiguous table reference do not. If any
-instance of a read table cannot be scoped safely, that table falls back to
-table-wide invalidation.
+predicates under `when`, `OR`, or an ambiguous table reference do not. A table
+read through several instances (a self-join) produces one dependency when every
+instance carries an identical scope proof: the same scope variables, each with
+the same operator and the same set of parameters. If any instance of a read
+table cannot be scoped safely, or the instances' proofs differ, that table
+falls back to table-wide invalidation.
 
 ### 13.1 Ordinary query
 
@@ -385,23 +388,47 @@ sync query listTodos(listId) {
 }
 ```
 
-Coverage MUST resolve every read schema table, with exactly one instance of
-each table, and MUST bind every scope declared by every table through required,
-non-null equality or `IN` predicates. The result descriptor contains one
-coverage entry per read table; a client may report the query complete only when
-all entries are complete.
+Coverage MUST resolve every read schema table and MUST bind every scope
+declared by every table instance through required, non-null equality or `IN`
+predicates. The result descriptor contains one coverage entry per read table; a
+client may report the query complete only when all entries are complete.
 
 A scope proof may propagate between qualified scope columns joined by a
 required outer `WHERE` equality or by a simple mandatory `ON` equality. For
 example, `details.list_id = todos.list_id` inherits the required bind proven for
 `todos.list_id`. An `ON` clause containing `OR`, `NOT`, a subquery, or a CTE is
-not a proof. A self-join cannot claim coverage because its table instances
-cannot be represented independently by the table-level readiness boundary.
-Scope predicates under `OR`, negation, a conditional, or a nested query are not
+not a proof. Scope predicates under `OR`, negation, a conditional, or a nested query are not
 proofs. An `IN` proof may contain only required binds. Otherwise compilation
 fails; it never silently widens coverage or treats invalidation as readiness.
 Comma-separated table sources are outside the proof-compatible SQL subset and
 MUST fail generation with guidance to use an explicit `JOIN ... ON` relation.
+
+A table read through several instances (a self-join) claims coverage only when
+every instance carries an identical scope proof: the same scope variables, each
+with the same operator and the same set of parameters, whether proven directly
+or inherited through a join equality. Identical proofs select the same window
+base and the same units, so the compiler emits one coverage entry and one
+dependency for that table. An unproven instance, or instances whose proofs
+differ in any parameter, operator, unit dimension, or fixed scope, fail
+compilation: the table-level readiness boundary has one window base per table
+and cannot represent two instances with different scopes.
+
+```syql
+sync query relatedCodes(catalogueSetId) {
+  select c.id, rc.id as related_id
+  from catalogue_codes as c
+  join catalogue_relations as r
+    on r.code_id = c.id and r.catalogue_set_id = c.catalogue_set_id
+  join catalogue_codes as rc on rc.id = r.related_code_id
+  where c.catalogue_set_id = :catalogueSetId
+    and rc.catalogue_set_id = :catalogueSetId;
+}
+```
+
+This query has one coverage entry for `catalogue_codes/catalogue_set_id` and
+one for `catalogue_relations/catalogue_set_id`, each with unit
+`:catalogueSetId`. The `by` anchor of a multi-scope self-join may name any of
+its instances.
 
 ```syql
 sync query listTodosWithDetails(listId) {
@@ -469,7 +496,9 @@ projection containing a base table's primary key commonly produces that
 projected column as the row key.
 
 When identity cannot be proved, it is omitted and consumers use unkeyed
-reconciliation. A stable identity is required when another feature, such as a
+reconciliation. A query that reads one table through several instances has no
+inferred identity, because one instance's primary key does not identify a
+joined result row. A stable identity is required when another feature, such as a
 bounded dynamic sort, depends on it.
 
 ## 15. Lowering and execution

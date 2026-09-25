@@ -1625,6 +1625,17 @@ class Validator {
         table.ftsIndexes.map((index) => [index.name, table.name] as const),
       ),
     );
+    // Several instances of one table (a self-join) share one dependency and
+    // one coverage entry only when their proofs are identical. Scopes follow
+    // the table's declaration order, so only the parameter sets need sorting.
+    const proofKey = (candidate: Candidate): string =>
+      JSON.stringify(
+        candidate.scopes.map((scope) => [
+          scope.binding.variable,
+          scope.operator,
+          [...scope.binding.params].sort(),
+        ]),
+      );
     const dependencies = [
       ...new Set(refs.map((ref) => ftsOwners.get(ref.table) ?? ref.table)),
     ]
@@ -1633,28 +1644,18 @@ class Validator {
         const instances = resolvedCandidates.filter(
           (item) => item.ref.table === table,
         );
+        const first = instances[0];
         if (
-          instances.length !== 1 ||
-          instances.some((item) => item.scopes.length === 0)
+          first === undefined ||
+          first.scopes.length === 0 ||
+          instances.some((item) => proofKey(item) !== proofKey(first))
         ) {
           return { table, scopes: [] };
         }
-        const scopes = instances
-          .flatMap((item) => item.scopes.map((scope) => scope.binding))
-          .reduce<QueryScopeBinding[]>((out, scope) => {
-            const existing = out.find(
-              (item) => item.variable === scope.variable,
-            );
-            if (existing === undefined) out.push(scope);
-            else {
-              out[out.indexOf(existing)] = {
-                ...existing,
-                params: [...new Set([...existing.params, ...scope.params])],
-              };
-            }
-            return out;
-          }, []);
-        return { table, scopes };
+        return {
+          table,
+          scopes: first.scopes.map((scope) => scope.binding),
+        };
       });
 
     if (!logical.declaration.sync) return { dependencies, coverage: [] };
@@ -1667,9 +1668,6 @@ class Validator {
       );
       return (
         table !== undefined &&
-        syncedCandidates.filter(
-          (item) => item.ref.table === candidate.ref.table,
-        ).length === 1 &&
         table.scopes.length > 0 &&
         candidate.scopes.length === table.scopes.length
       );
@@ -1679,7 +1677,21 @@ class Validator {
       this.#fail(
         'SYQL6005_INVALID_SYNC_QUERY',
         logical.declaration.syncBy?.span ?? logical.declaration.nameSpan,
-        'sync query coverage cannot be proven for every read table from required equality/IN predicates over every declared scope; split the query or add an exact compatible scope proof',
+        'sync query coverage cannot be proven for every read table instance from required equality/IN predicates over every declared scope; split the query or add an exact compatible scope proof',
+      );
+    }
+    const divergent = eligible.find((candidate) =>
+      eligible.some(
+        (other) =>
+          other.ref.table === candidate.ref.table &&
+          proofKey(other) !== proofKey(candidate),
+      ),
+    );
+    if (divergent !== undefined) {
+      this.#fail(
+        'SYQL6005_INVALID_SYNC_QUERY',
+        logical.declaration.syncBy?.span ?? logical.declaration.nameSpan,
+        `sync query reads ${divergent.ref.table} through several instances whose scope proofs differ; every instance must bind the same scopes with the same operator and parameters, or the query must be split`,
       );
     }
     const byCandidate =
@@ -1737,61 +1749,67 @@ class Validator {
     ): boolean =>
       left.length === right.length &&
       left.every((value) => right.includes(value));
-    const coverage = eligible.map((candidate): QueryCoverageBinding => {
-      const table = this.#ir.tables.find(
-        (item) => item.name === candidate.ref.table,
-      );
-      if (table === undefined) throw new Error('eligible table disappeared');
-      const byVariable = new Map(
-        candidate.scopes.map((scope) => [scope.binding.variable, scope]),
-      );
-      let unit: InferredScope | undefined;
-      if (candidate === byCandidate) {
-        unit = anchorUnit;
-      } else if (table.scopes.length === 1) {
-        unit = candidate.scopes[0];
-      } else if (anchorUnit !== undefined) {
-        const matching = candidate.scopes.filter((scope) =>
-          sameParams(scope.binding.params, anchorUnit.binding.params),
+    const coverage = eligible
+      .filter(
+        (candidate) =>
+          eligible.find((item) => item.ref.table === candidate.ref.table) ===
+          candidate,
+      )
+      .map((candidate): QueryCoverageBinding => {
+        const table = this.#ir.tables.find(
+          (item) => item.name === candidate.ref.table,
         );
-        if (matching.length === 1) unit = matching[0];
-      }
-      if (unit === undefined) {
-        this.#fail(
-          'SYQL6005_INVALID_SYNC_QUERY',
-          syncBy?.span ?? logical.declaration.nameSpan,
-          `joined multi-scope table ${table.name} has no unambiguous unit dimension compatible with the selected anchor; split the query`,
+        if (table === undefined) throw new Error('eligible table disappeared');
+        const byVariable = new Map(
+          candidate.scopes.map((scope) => [scope.binding.variable, scope]),
         );
-      }
-      const fixedScopes = table.scopes
-        .filter((scope) => scope.variable !== unit.binding.variable)
-        .map((scope) => {
-          const fixed = byVariable.get(scope.variable) as
-            | InferredScope
-            | undefined;
-          if (
-            fixed === undefined ||
-            fixed.operator !== 'equal' ||
-            fixed.binding.params.length !== 1
-          ) {
-            this.#fail(
-              'SYQL6005_INVALID_SYNC_QUERY',
-              syncBy?.span ?? logical.declaration.nameSpan,
-              `fixed sync scope ${table.name}.${scope.column} must use one required equality bind`,
-            );
-          }
-          return {
-            variable: fixed.binding.variable,
-            params: fixed.binding.params,
-          };
-        });
-      return {
-        table: table.name,
-        variable: unit.binding.variable,
-        units: unit.binding.params,
-        fixedScopes,
-      };
-    });
+        let unit: InferredScope | undefined;
+        if (candidate.ref.table === byCandidate?.ref.table) {
+          unit = anchorUnit;
+        } else if (table.scopes.length === 1) {
+          unit = candidate.scopes[0];
+        } else if (anchorUnit !== undefined) {
+          const matching = candidate.scopes.filter((scope) =>
+            sameParams(scope.binding.params, anchorUnit.binding.params),
+          );
+          if (matching.length === 1) unit = matching[0];
+        }
+        if (unit === undefined) {
+          this.#fail(
+            'SYQL6005_INVALID_SYNC_QUERY',
+            syncBy?.span ?? logical.declaration.nameSpan,
+            `joined multi-scope table ${table.name} has no unambiguous unit dimension compatible with the selected anchor; split the query`,
+          );
+        }
+        const fixedScopes = table.scopes
+          .filter((scope) => scope.variable !== unit.binding.variable)
+          .map((scope) => {
+            const fixed = byVariable.get(scope.variable) as
+              | InferredScope
+              | undefined;
+            if (
+              fixed === undefined ||
+              fixed.operator !== 'equal' ||
+              fixed.binding.params.length !== 1
+            ) {
+              this.#fail(
+                'SYQL6005_INVALID_SYNC_QUERY',
+                syncBy?.span ?? logical.declaration.nameSpan,
+                `fixed sync scope ${table.name}.${scope.column} must use one required equality bind`,
+              );
+            }
+            return {
+              variable: fixed.binding.variable,
+              params: fixed.binding.params,
+            };
+          });
+        return {
+          table: table.name,
+          variable: unit.binding.variable,
+          units: unit.binding.params,
+          fixedScopes,
+        };
+      });
     // Code-point order keeps emitted metadata byte-identical across locales.
     coverage.sort((left, right) =>
       left.table < right.table ? -1 : left.table > right.table ? 1 : 0,

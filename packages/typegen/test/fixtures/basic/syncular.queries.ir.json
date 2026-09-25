@@ -1446,6 +1446,145 @@
       }
     },
     {
+      "name": "taskPriorityPeers",
+      "file": "self-join-sync-coverage.syql",
+      "sourceSql": "select a.id AS \"taskId\", b.id AS \"peerId\", b.title from tasks as a\n  join tasks as b on b.priority = a.priority and b.id <> a.id\n  where a.project_id = :projectId\n    and b.project_id = :projectId\n  order by a.id, b.id",
+      "sql": "select a.id AS \"taskId\", b.id AS \"peerId\", b.title from tasks as a\n  join tasks as b on b.priority = a.priority and b.id <> a.id\n  where a.project_id = :projectId\n    and b.project_id = :projectId\n  order by a.id, b.id",
+      "positionalSql": "select a.id AS \"taskId\", b.id AS \"peerId\", b.title from tasks as a join tasks as b on b.priority = a.priority and b.id <> a.id where a.project_id = ?1 and b.project_id = ?1 order by a.id, b.id",
+      "relations": [
+        {
+          "table": "tasks",
+          "start": 56,
+          "end": 61,
+          "alias": "a"
+        },
+        {
+          "table": "tasks",
+          "start": 72,
+          "end": 77,
+          "alias": "b"
+        }
+      ],
+      "params": [
+        {
+          "name": "projectId",
+          "langName": "projectId",
+          "type": "string"
+        }
+      ],
+      "columns": [
+        {
+          "name": "task_id",
+          "langName": "taskId",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "id"
+          }
+        },
+        {
+          "name": "peer_id",
+          "langName": "peerId",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "id"
+          }
+        },
+        {
+          "name": "title",
+          "langName": "title",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "title"
+          }
+        }
+      ],
+      "tables": [
+        "tasks"
+      ],
+      "reactive": {
+        "dependencies": [
+          {
+            "table": "tasks",
+            "scopes": [
+              {
+                "variable": "project_id",
+                "pattern": "project:{project_id}",
+                "params": [
+                  "projectId"
+                ]
+              }
+            ]
+          }
+        ],
+        "coverage": [
+          {
+            "table": "tasks",
+            "variable": "project_id",
+            "units": [
+              "projectId"
+            ],
+            "fixedScopes": []
+          }
+        ]
+      },
+      "syql": {
+        "revision": 1,
+        "inputs": [
+          {
+            "kind": "value",
+            "name": "projectId",
+            "langName": "projectId",
+            "type": "string",
+            "nullable": false,
+            "required": true
+          }
+        ],
+        "plan": {
+          "backend": "variants",
+          "activationControls": [],
+          "conditions": [],
+          "statements": [
+            {
+              "activationMask": 0,
+              "sql": "select a.id AS \"taskId\", b.id AS \"peerId\", b.title from tasks as a\n  join tasks as b on b.priority = a.priority and b.id <> a.id\n  where a.project_id = :projectId\n    and b.project_id = :projectId\n  order by a.id, b.id",
+              "positionalSql": "select a.id AS \"taskId\", b.id AS \"peerId\", b.title from tasks as a join tasks as b on b.priority = a.priority and b.id <> a.id where a.project_id = ?1 and b.project_id = ?1 order by a.id, b.id",
+              "relations": [
+                {
+                  "table": "tasks",
+                  "start": 56,
+                  "end": 61,
+                  "alias": "a"
+                },
+                {
+                  "table": "tasks",
+                  "start": 72,
+                  "end": 77,
+                  "alias": "b"
+                }
+              ],
+              "binds": [
+                {
+                  "kind": "value",
+                  "name": "projectId",
+                  "type": "string",
+                  "input": "projectId"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
       "name": "taskMetaFilter",
       "file": "task-meta-filter.syql",
       "sourceSql": "select id, meta\n  from tasks\n  where tasks.project_id = :projectId\n    and 1\n  order by id",
