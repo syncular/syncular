@@ -7,10 +7,34 @@ import { decodeMessage } from '@syncular/core';
 import { check, checkEqual } from '../checks';
 import { task } from '../fixture';
 import { responsePushResults } from '../raw';
+import type { DriverSchema } from '../driver';
 import type { Scenario } from '../scenario';
 import { expectConverged, syncFails, syncIdle, syncOk } from './util';
 
 const P1 = { project_id: ['p1'] } as const;
+const UNIQUE_SCHEMA: DriverSchema = {
+  version: 1,
+  tables: [
+    {
+      name: 'tasks',
+      columns: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'project_id', type: 'string', nullable: false },
+        { name: 'title', type: 'string', nullable: false },
+        { name: 'done', type: 'boolean', nullable: false },
+      ],
+      primaryKey: 'id',
+      scopes: [{ pattern: 'project:{project_id}' }],
+      indexes: [
+        {
+          name: 'idx_tasks_project_title',
+          columns: ['project_id', 'title'],
+          unique: true,
+        },
+      ],
+    },
+  ],
+};
 
 async function bootstrapped(
   ctx: Parameters<Scenario['run']>[0],
@@ -24,6 +48,51 @@ async function bootstrapped(
 }
 
 export const offlineScenarios: readonly Scenario[] = [
+  {
+    name: 'offline/local-unique-violation-is-atomic',
+    specRefs: ['§7.1'],
+    server: { schema: UNIQUE_SCHEMA },
+    async run(ctx) {
+      const client = await ctx.newClient({
+        actorId: 'actor',
+        clientId: 'local-unique',
+        schema: UNIQUE_SCHEMA,
+        allowed: P1,
+      });
+      let code: unknown;
+      try {
+        await client.api.mutate([
+          {
+            op: 'upsert',
+            table: 'tasks',
+            values: { id: 't1', project_id: 'p1', title: 'same', done: false },
+          },
+          {
+            op: 'upsert',
+            table: 'tasks',
+            values: { id: 't2', project_id: 'p1', title: 'same', done: false },
+          },
+        ]);
+      } catch (error) {
+        if (error instanceof Error && 'code' in error) code = error.code;
+      }
+      checkEqual(
+        code,
+        'sync.constraint_violation',
+        'local unique violation has a stable error code',
+      );
+      checkEqual(
+        await client.api.pendingCommitIds(),
+        [],
+        'failed commit leaves no outbox entry',
+      );
+      checkEqual(
+        await client.api.readRows('tasks'),
+        [],
+        'failed commit leaves no optimistic rows',
+      );
+    },
+  },
   {
     name: 'offline/first-handshake-drains-without-subscriptions',
     specRefs: ['§7.1', '§2.1', '§8.4'],

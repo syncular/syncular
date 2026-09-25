@@ -75,6 +75,7 @@ function toClientSchema(schema: DriverSchema): ClientSchema {
       name: table.name,
       columns: table.columns,
       primaryKey: table.primaryKey,
+      ...(table.indexes ? { indexes: table.indexes } : {}),
       ...(table.ftsIndexes ? { ftsIndexes: table.ftsIndexes } : {}),
       scopes: table.scopes.map((scope) =>
         scope.column !== undefined

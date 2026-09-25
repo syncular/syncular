@@ -2809,7 +2809,24 @@ export class SyncClient {
             );
           }
         }
-        this.#applyOperationsLocally(operations, batch);
+        try {
+          this.#applyOperationsLocally(operations, batch);
+        } catch (error) {
+          if (
+            error instanceof Error &&
+            error.message.includes('UNIQUE constraint failed:') &&
+            (('errno' in error && error.errno === 2067) ||
+              ('errcode' in error && error.errcode === 2067) ||
+              ('resultCode' in error &&
+                (error.resultCode === 19 || error.resultCode === 2067)))
+          ) {
+            throw new ClientSyncError(
+              'sync.constraint_violation',
+              'local write violates a unique constraint',
+            );
+          }
+          throw error;
+        }
         batch.status();
       });
       this.#needsPull = true;

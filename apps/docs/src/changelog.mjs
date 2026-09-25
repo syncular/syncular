@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-09-25',
+    title: 'Local unique constraint failures roll back the commit',
+    body: 'TypeScript and Rust clients now fail a local commit with `sync.constraint_violation` when its optimistic writes conflict with a declared secondary unique index. The client rolls back every sibling write and the outbox append in the same SQLite transaction, and the local revision does not advance. Rust previously ignored the failed overlay write and queued a commit whose optimistic row was absent.',
+    links: [
+      {
+        href: '/concepts-commits/#local-constraint-failures',
+        label: 'Commits, cursors & idempotency',
+      },
+    ],
+  },
+  {
+    date: '2026-09-25',
     title: 'Failed local query reads expose bounded diagnostics',
     body: 'Generated TypeScript and Rust queries now identify their snapshot reads with a stable query id and generated table dependencies. A failed owned read adds a privacy-safe `queryFailures` entry to client diagnostics until the query reads successfully. The list retains 256 entries and contains no SQL, parameters, rows, paths, or driver prose. SQLite corruption and I/O failures raise the stable non-retryable codes `client.storage_corrupt` and `client.storage_io`; other read failures keep their existing application error and use `client.query_failed` only in diagnostics. React live queries now enter `error` after a failed refresh while retaining the last successful rows and revision.',
     links: [
