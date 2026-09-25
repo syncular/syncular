@@ -190,6 +190,7 @@ pub struct PreviousVersionStatus {
 
 pub const CLIENT_DIAGNOSTICS_VERSION: u8 = 1;
 pub const MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS: usize = 256;
+pub const MAX_DIAGNOSTIC_QUERY_FAILURES: usize = 256;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -289,6 +290,22 @@ pub struct ClientDiagnosticsStorage {
     pub pressure_reason_code: Option<String>,
 }
 
+/// §7.6: the latest owned snapshot read of one query id failed.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticQueryFailure {
+    pub id: String,
+    /// Distinct generated table names, ascending.
+    pub tables: Vec<String>,
+    /// `client.storage_corrupt`, `client.storage_io`, or `client.query_failed`.
+    pub code: String,
+    /// SQLite extended result code, when the driver exposed one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sqlite_code: Option<i32>,
+    /// First failure since this id's last successful read.
+    pub at_ms: i64,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientDiagnosticsSnapshot {
@@ -306,6 +323,7 @@ pub struct ClientDiagnosticsSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_change: Option<DiagnosticLastChange>,
     pub storage: ClientDiagnosticsStorage,
+    pub query_failures: Vec<DiagnosticQueryFailure>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -402,6 +420,70 @@ pub struct CoverageSnapshot {
     pub complete: bool,
     pub pending: Vec<WindowUnitRef>,
     pub missing: Vec<WindowUnitRef>,
+}
+
+/// §7.5: the query that owns a snapshot read. The id is application-owned,
+/// stable, and PHI-free; generated named queries pass their `ID` and `TABLES`.
+#[derive(Debug, Clone, Copy)]
+pub struct QueryOwner<'a> {
+    pub id: &'a str,
+    pub tables: &'a [&'a str],
+}
+
+/// §7.5: a failed snapshot read. `code` is `client.storage_corrupt` or
+/// `client.storage_io` when SQLite reported corruption or I/O failure, and
+/// `None` for every other failure, which keeps its existing message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryReadFailure {
+    pub code: Option<&'static str>,
+    pub sqlite_code: Option<i32>,
+    pub message: String,
+}
+
+impl std::fmt::Display for QueryReadFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.code {
+            Some(code) => write!(f, "{code}: {}", self.message),
+            None => f.write_str(&self.message),
+        }
+    }
+}
+
+impl From<String> for QueryReadFailure {
+    fn from(message: String) -> Self {
+        Self {
+            code: None,
+            sqlite_code: None,
+            message,
+        }
+    }
+}
+
+impl From<rusqlite::Error> for QueryReadFailure {
+    /// Classify by SQLite's primary result code, never by message text.
+    fn from(error: rusqlite::Error) -> Self {
+        let sqlite_code = match &error {
+            rusqlite::Error::SqliteFailure(failure, _) => Some(failure.extended_code),
+            _ => None,
+        };
+        match sqlite_code.map(|code| code & 0xff) {
+            Some(11 | 26) => Self {
+                code: Some("client.storage_corrupt"),
+                sqlite_code,
+                message: "local SQLite storage is corrupt".to_owned(),
+            },
+            Some(10) => Self {
+                code: Some("client.storage_io"),
+                sqlite_code,
+                message: "local SQLite storage I/O failed".to_owned(),
+            },
+            _ => Self {
+                code: None,
+                sqlite_code,
+                message: error.to_string(),
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]

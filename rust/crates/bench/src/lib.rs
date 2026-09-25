@@ -923,7 +923,7 @@ fn bench_read(mut client: ReadClient<'_>, params: &Value) -> Result<Value, Comma
                 } else if mode == "direct" {
                     let snapshot = client
                         .instance()?
-                        .query_snapshot(sql, bind, &[])
+                        .query_snapshot(sql, bind, &[], None)
                         .map_err(client_err);
                     let elapsed = started.elapsed().as_nanos() as u64;
                     snapshot.and_then(|snapshot| {

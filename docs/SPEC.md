@@ -4335,6 +4335,21 @@ rows from one read with coverage or revision from another. A result at revision
 promise completion order, IPC order, frame scheduling, and render timing never
 override revision order.
 
+**Read failure.** A read request MAY name its owning query as
+`owner: {id, tables}`: an application-owned, stable, PHI-free id and the
+generated table names the query depends on. Reactive integrations pass the
+observation's query id and dependency tables. A snapshot read that fails with
+SQLite primary result code `SQLITE_CORRUPT` (11) or `SQLITE_NOTADB` (26)
+raises non-retryable `client.storage_corrupt`; primary code `SQLITE_IOERR`
+(10) raises non-retryable `client.storage_io`. Both carry fixed message text.
+The core classifies by the numeric result code the SQLite driver exposes,
+never by message text, and records the extended result code in the owner's
+diagnostics entry (§7.6). Every other read failure keeps its existing host
+error code. A reactive observation whose latest read failed publishes phase
+`error` with that error and keeps the rows and revision of its last successful
+read. It publishes `ready` again only after a read succeeds, so `ready` with
+zero rows always means an answerable empty result.
+
 **Change batch.** After an observer transaction commits, the core emits exactly
 one batch carrying its revision and the domains changed by that transaction:
 
@@ -4394,11 +4409,24 @@ The snapshot is one bounded observation containing:
   `failed`), and optional stable reason code;
 - the last sync round as bounded counters or a stable failure code, and the
   last revisioned change as generated table/window names plus changed-domain
-  booleans; and
+  booleans;
 - aggregate SQLite/outbox/outcome/blob-cache byte estimates and storage state
   (`healthy`, `pressure`, or `unreadable`). Failure to open storage remains the
   stable startup error `client.storage_unavailable`; no snapshot can be read
-  from a replica which did not open.
+  from a replica which did not open; and
+- `queryFailures`: one entry per owner id (§7.5) whose latest owned snapshot
+  read failed, carrying the id, the owner's distinct tables in ascending
+  order, the stable `code` (`client.storage_corrupt`, `client.storage_io`, or
+  `client.query_failed` for any other read failure), the SQLite extended
+  result code as `sqliteCode` when the driver exposed one, and `atMs`, the
+  time of the first failure since that owner's last successful read. A
+  successful owned read removes the owner's entry. A repeated failure with
+  the same code, SQLite code, and tables leaves the entry unchanged; any
+  other failure replaces it and moves it last. Entries are ordered by
+  `atMs` insertion, at most 256 are retained, and the oldest entry is
+  dropped first. Hosts which run snapshot reads on a separate read
+  connection report each owned failure, and the first success after it, to
+  the owning core.
 
 `request.expectedSubscriptions` MAY name at most 256 application-owned,
 PHI-free `{id, table}` pairs. A missing registration is returned as
@@ -4416,7 +4444,7 @@ ids, actor ids, lease ids, auth headers/tokens, encryption keys, mutation or
 rollback bodies, stack traces, arbitrary server/transport prose, or
 application-defined metadata. Error/reason fields are bounded code-like
 values; an invalid value becomes `client.unknown_failure`. Subscription ids
-are returned by design, so applications MUST keep them stable, code-like, and
+and query owner ids are returned by design, so applications MUST keep them stable, code-like, and
 free of patient/user data.
 
 The core emits diagnostics only after the state it describes is committed.
@@ -5201,6 +5229,11 @@ result; non-retryable and sanitized before application code],
 in-flight TypeScript realtime connector before its socket could become active;
 client-local, non-wire, and sanitized],
 `client.worker_failed` [a browser worker failed outside wire semantics],
+`client.storage_corrupt` [§7.5 — a local snapshot read hit SQLite
+`SQLITE_CORRUPT` or `SQLITE_NOTADB`; non-retryable], `client.storage_io`
+[§7.5 — a local snapshot read hit SQLite `SQLITE_IOERR`; non-retryable],
+`client.query_failed` [§7.6 — the diagnostics code for any other failed
+owned snapshot read; never raised as an error],
 `client.worker_restart_required` [a browser worker module
 graph refers to a retired bundler chunk and the page must reload without
 deleting its local replica], `storage.*`, `worker.*`, `runtime.*`) — client

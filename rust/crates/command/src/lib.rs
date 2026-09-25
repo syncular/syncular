@@ -22,8 +22,8 @@ use ssp2::{
 use syncular_client::previous_version::{PreviousVersionContextConfig, PreviousVersionReadSpec};
 use syncular_client::{
     ClientDiagnosticsRequest, ClientLimits, CommandEffects, CommitOutcomeQuery,
-    LocalDataPurgeInput, LocalDataRebootstrapInput, Mutation, ResolveCommitOutcomeInput,
-    SyncClient, Transport, WindowBase, WindowCoverage,
+    LocalDataPurgeInput, LocalDataRebootstrapInput, Mutation, QueryOwner,
+    ResolveCommitOutcomeInput, SyncClient, Transport, WindowBase, WindowCoverage,
 };
 
 // -- bytes <-> {"$bytes": hex} (the driver-protocol byte envelope) ----------
@@ -803,8 +803,40 @@ pub fn dispatch<T: Transport>(
                     .unwrap_or_default();
                 coverage.push(WindowCoverage { base, units });
             }
+            // §7.5 owner: `{id, tables}`, both required when present.
+            let owner = match params.get("owner") {
+                None | Some(Value::Null) => None,
+                Some(value) => {
+                    let id = value
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .filter(|id| !id.is_empty());
+                    let tables = value
+                        .get("tables")
+                        .and_then(Value::as_array)
+                        .and_then(|list| {
+                            list.iter()
+                                .map(Value::as_str)
+                                .collect::<Option<Vec<&str>>>()
+                        });
+                    match (id, tables) {
+                        (Some(id), Some(tables)) => Some((id, tables)),
+                        _ => {
+                            return Err(client_err(
+                                "sync.invalid_request: querySnapshot owner must be {id: non-empty string, tables: string[]}"
+                                    .to_owned(),
+                            ))
+                        }
+                    }
+                }
+            };
             let mut snapshot = need_client(client)?
-                .query_snapshot(sql, bind, &coverage)
+                .query_snapshot(
+                    sql,
+                    bind,
+                    &coverage,
+                    owner.as_ref().map(|(id, tables)| QueryOwner { id, tables }),
+                )
                 .map_err(client_err)?;
             let rows = std::mem::take(&mut snapshot.rows);
             let mut result = serde_json::to_value(snapshot).expect("snapshot serializes");

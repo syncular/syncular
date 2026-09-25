@@ -671,6 +671,67 @@ export const observationScenarios: readonly Scenario[] = [
     },
   },
   {
+    name: 'observation/owned-query-failure-diagnostics',
+    specRefs: ['§7.5', '§7.6'],
+    async run(ctx) {
+      const handle = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: { project_id: ['p1'] },
+      });
+      const observation = requireObservation(handle.api);
+      check(
+        handle.api.diagnosticsSnapshot !== undefined,
+        'query diagnostics are available',
+      );
+      if (handle.api.diagnosticsSnapshot === undefined) return;
+
+      let failed = false;
+      try {
+        await observation.querySnapshot(
+          'SELECT private_value FROM missing_private_table',
+          [],
+          [],
+          { id: 'queries:missing', tables: ['tasks', 'tasks'] },
+        );
+      } catch {
+        failed = true;
+      }
+      check(failed, 'invalid owned query fails');
+      const diagnostics = await handle.api.diagnosticsSnapshot();
+      checkEqual(
+        diagnostics.queryFailures,
+        [
+          {
+            id: 'queries:missing',
+            tables: ['tasks'],
+            code: 'client.query_failed',
+            ...(diagnostics.queryFailures[0]?.sqliteCode !== undefined
+              ? { sqliteCode: diagnostics.queryFailures[0].sqliteCode }
+              : {}),
+            atMs: diagnostics.queryFailures[0]?.atMs,
+          },
+        ],
+        'failed owned read records only bounded query identity evidence',
+      );
+      check(
+        !JSON.stringify(diagnostics).includes('private_value') &&
+          !JSON.stringify(diagnostics).includes('missing_private_table'),
+        'query diagnostics omit SQL',
+      );
+
+      await observation.querySnapshot('SELECT id FROM tasks', [], [], {
+        id: 'queries:missing',
+        tables: ['tasks'],
+      });
+      checkEqual(
+        (await handle.api.diagnosticsSnapshot()).queryFailures,
+        [],
+        'successful owned read clears its failure',
+      );
+    },
+  },
+  {
     name: 'observation/persistent-open-catch-up-intent',
     specRefs: ['§7.5', '§8.4'],
     async run(ctx) {

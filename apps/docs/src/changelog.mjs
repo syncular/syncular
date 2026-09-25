@@ -17,6 +17,21 @@
 export const changelog = [
   {
     date: '2026-09-25',
+    title: 'Failed local query reads expose bounded diagnostics',
+    body: 'Generated TypeScript and Rust queries now identify their snapshot reads with a stable query id and generated table dependencies. A failed owned read adds a privacy-safe `queryFailures` entry to client diagnostics until the query reads successfully. The list retains 256 entries and contains no SQL, parameters, rows, paths, or driver prose. SQLite corruption and I/O failures raise the stable non-retryable codes `client.storage_corrupt` and `client.storage_io`; other read failures keep their existing application error and use `client.query_failed` only in diagnostics. React live queries now enter `error` after a failed refresh while retaining the last successful rows and revision.',
+    links: [
+      {
+        href: '/platform-react/#generated-live-queries',
+        label: 'React live queries',
+      },
+      {
+        href: '/platform-rust/#generated-queries',
+        label: 'Rust generated queries',
+      },
+    ],
+  },
+  {
+    date: '2026-09-25',
     title: 'Push hooks run generated authority reads on the push transaction',
     body: "Row validators, the whole-commit validator, the reaction planner, and remote command callbacks run inside the push transaction, and each now receives a transaction-bound `queryAuthoritative` (`context.queryAuthoritative`, or `read.queryAuthoritative` on the candidate-state reader). It takes the request `storage.queryAuthoritative` takes, built from a generated query descriptor; the storage binds every relation to the commit's partition and runs the statement on the push transaction's connection. On SQLite and PostgreSQL the read returns the rows staged earlier in the commit, and a push completes on a one-connection pool. Calling `storage.queryAuthoritative` from these hooks still waits forever on SQLite and PGlite and reads committed state on a pool. D1 refuses a read over a table the commit has already written with `sync.storage.query_over_staged_writes`, and a custom storage transaction without the capability fails with `sync.storage.transaction_query_unsupported`.",
     links: [

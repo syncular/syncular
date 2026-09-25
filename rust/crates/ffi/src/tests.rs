@@ -115,7 +115,7 @@ fn query_commands_borrow_parameters_and_move_rows_without_payload_copies() {
             .client
             .as_mut()
             .unwrap()
-            .query_snapshot(sql, &bind, &[])
+            .query_snapshot(sql, &bind, &[], None)
             .unwrap(),
     )
     .unwrap();
@@ -150,7 +150,7 @@ fn query_commands_borrow_parameters_and_move_rows_without_payload_copies() {
             .client
             .as_mut()
             .unwrap()
-            .query_snapshot("SELECT 1 AS id WHERE 0", &[], &[coverage])
+            .query_snapshot("SELECT 1 AS id WHERE 0", &[], &[coverage], None)
             .unwrap(),
     )
     .unwrap();

@@ -653,6 +653,7 @@ export class NativeSyncClient implements PromiseMethods<ClientSnapshotMethods> {
       sql: spec.sql,
       params: (spec.params ?? []).map(encodeParam),
       coverage: spec.coverage ?? [],
+      ...(spec.owner !== undefined ? { owner: spec.owner } : {}),
     })) as {
       revision: string;
       rows: Record<string, unknown>[];

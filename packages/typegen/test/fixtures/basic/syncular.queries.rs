@@ -5,7 +5,7 @@
 use std::error::Error;
 use std::fmt;
 use syncular_client::{
-    CoverageSnapshot, QueryRow, QueryValue, SyncClient, WindowBase, WindowCoverage,
+    CoverageSnapshot, QueryOwner, QueryRow, QueryValue, SyncClient, WindowBase, WindowCoverage,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -330,7 +330,12 @@ pub mod boolean_results {
         let selected = select(params)?;
         let required_coverage = coverage(params);
         let snapshot = client
-            .query_snapshot(selected.sql, &selected.params, &required_coverage)
+            .query_snapshot(
+                selected.sql,
+                &selected.params,
+                &required_coverage,
+                Some(QueryOwner { id: ID, tables: TABLES }),
+            )
             .map_err(|message| QueryError::Client { query: ID, message })?;
         let rows = snapshot.rows.into_iter().map(decode).collect::<Result<_, _>>()?;
         Ok(TypedQuerySnapshot {
@@ -425,7 +430,12 @@ pub mod find_doc_by_org {
         let selected = select(params)?;
         let required_coverage = coverage(params);
         let snapshot = client
-            .query_snapshot(selected.sql, &selected.params, &required_coverage)
+            .query_snapshot(
+                selected.sql,
+                &selected.params,
+                &required_coverage,
+                Some(QueryOwner { id: ID, tables: TABLES }),
+            )
             .map_err(|message| QueryError::Client { query: ID, message })?;
         let rows = snapshot.rows.into_iter().map(decode).collect::<Result<_, _>>()?;
         Ok(TypedQuerySnapshot {
@@ -535,7 +545,12 @@ pub mod doc_value_types {
         let selected = select(params)?;
         let required_coverage = coverage(params);
         let snapshot = client
-            .query_snapshot(selected.sql, &selected.params, &required_coverage)
+            .query_snapshot(
+                selected.sql,
+                &selected.params,
+                &required_coverage,
+                Some(QueryOwner { id: ID, tables: TABLES }),
+            )
             .map_err(|message| QueryError::Client { query: ID, message })?;
         let rows = snapshot.rows.into_iter().map(decode).collect::<Result<_, _>>()?;
         Ok(TypedQuerySnapshot {
@@ -633,7 +648,12 @@ pub mod doc_with_body {
         let selected = select(params)?;
         let required_coverage = coverage(params);
         let snapshot = client
-            .query_snapshot(selected.sql, &selected.params, &required_coverage)
+            .query_snapshot(
+                selected.sql,
+                &selected.params,
+                &required_coverage,
+                Some(QueryOwner { id: ID, tables: TABLES }),
+            )
             .map_err(|message| QueryError::Client { query: ID, message })?;
         let rows = snapshot.rows.into_iter().map(decode).collect::<Result<_, _>>()?;
         Ok(TypedQuerySnapshot {
@@ -739,7 +759,12 @@ pub mod docs_in_project {
         let selected = select(params)?;
         let required_coverage = coverage(params);
         let snapshot = client
-            .query_snapshot(selected.sql, &selected.params, &required_coverage)
+            .query_snapshot(
+                selected.sql,
+                &selected.params,
+                &required_coverage,
+                Some(QueryOwner { id: ID, tables: TABLES }),
+            )
             .map_err(|message| QueryError::Client { query: ID, message })?;
         let rows = snapshot.rows.into_iter().map(decode).collect::<Result<_, _>>()?;
         Ok(TypedQuerySnapshot {
@@ -843,7 +868,12 @@ pub mod host_boolean {
         let selected = select(params)?;
         let required_coverage = coverage(params);
         let snapshot = client
-            .query_snapshot(selected.sql, &selected.params, &required_coverage)
+            .query_snapshot(
+                selected.sql,
+                &selected.params,
+                &required_coverage,
+                Some(QueryOwner { id: ID, tables: TABLES }),
+            )
             .map_err(|message| QueryError::Client { query: ID, message })?;
         let rows = snapshot.rows.into_iter().map(decode).collect::<Result<_, _>>()?;
         Ok(TypedQuerySnapshot {
@@ -962,7 +992,12 @@ pub mod list_project_tasks {
         let selected = select(params)?;
         let required_coverage = coverage(params);
         let snapshot = client
-            .query_snapshot(selected.sql, &selected.params, &required_coverage)
+            .query_snapshot(
+                selected.sql,
+                &selected.params,
+                &required_coverage,
+                Some(QueryOwner { id: ID, tables: TABLES }),
+            )
             .map_err(|message| QueryError::Client { query: ID, message })?;
         let rows = snapshot.rows.into_iter().map(decode).collect::<Result<_, _>>()?;
         Ok(TypedQuerySnapshot {
@@ -1063,7 +1098,12 @@ pub mod outer_join_values {
         let selected = select(params)?;
         let required_coverage = coverage(params);
         let snapshot = client
-            .query_snapshot(selected.sql, &selected.params, &required_coverage)
+            .query_snapshot(
+                selected.sql,
+                &selected.params,
+                &required_coverage,
+                Some(QueryOwner { id: ID, tables: TABLES }),
+            )
             .map_err(|message| QueryError::Client { query: ID, message })?;
         let rows = snapshot.rows.into_iter().map(decode).collect::<Result<_, _>>()?;
         Ok(TypedQuerySnapshot {
@@ -1156,7 +1196,12 @@ pub mod project_doc_count {
         let selected = select(params)?;
         let required_coverage = coverage(params);
         let snapshot = client
-            .query_snapshot(selected.sql, &selected.params, &required_coverage)
+            .query_snapshot(
+                selected.sql,
+                &selected.params,
+                &required_coverage,
+                Some(QueryOwner { id: ID, tables: TABLES }),
+            )
             .map_err(|message| QueryError::Client { query: ID, message })?;
         let rows = snapshot.rows.into_iter().map(decode).collect::<Result<_, _>>()?;
         Ok(TypedQuerySnapshot {
@@ -1257,7 +1302,12 @@ pub mod reporting_tasks_by_priority {
         let selected = select(params)?;
         let required_coverage = coverage(params);
         let snapshot = client
-            .query_snapshot(selected.sql, &selected.params, &required_coverage)
+            .query_snapshot(
+                selected.sql,
+                &selected.params,
+                &required_coverage,
+                Some(QueryOwner { id: ID, tables: TABLES }),
+            )
             .map_err(|message| QueryError::Client { query: ID, message })?;
         let rows = snapshot.rows.into_iter().map(decode).collect::<Result<_, _>>()?;
         Ok(TypedQuerySnapshot {
@@ -1364,7 +1414,12 @@ pub mod report_open_tasks {
         let selected = select(params)?;
         let required_coverage = coverage(params);
         let snapshot = client
-            .query_snapshot(selected.sql, &selected.params, &required_coverage)
+            .query_snapshot(
+                selected.sql,
+                &selected.params,
+                &required_coverage,
+                Some(QueryOwner { id: ID, tables: TABLES }),
+            )
             .map_err(|message| QueryError::Client { query: ID, message })?;
         let rows = snapshot.rows.into_iter().map(decode).collect::<Result<_, _>>()?;
         Ok(TypedQuerySnapshot {
@@ -1465,7 +1520,12 @@ pub mod report_doc_scores {
         let selected = select(params)?;
         let required_coverage = coverage(params);
         let snapshot = client
-            .query_snapshot(selected.sql, &selected.params, &required_coverage)
+            .query_snapshot(
+                selected.sql,
+                &selected.params,
+                &required_coverage,
+                Some(QueryOwner { id: ID, tables: TABLES }),
+            )
             .map_err(|message| QueryError::Client { query: ID, message })?;
         let rows = snapshot.rows.into_iter().map(decode).collect::<Result<_, _>>()?;
         Ok(TypedQuerySnapshot {
@@ -1559,7 +1619,12 @@ pub mod task_titles {
         let selected = select(params)?;
         let required_coverage = coverage(params);
         let snapshot = client
-            .query_snapshot(selected.sql, &selected.params, &required_coverage)
+            .query_snapshot(
+                selected.sql,
+                &selected.params,
+                &required_coverage,
+                Some(QueryOwner { id: ID, tables: TABLES }),
+            )
             .map_err(|message| QueryError::Client { query: ID, message })?;
         let rows = snapshot.rows.into_iter().map(decode).collect::<Result<_, _>>()?;
         Ok(TypedQuerySnapshot {
@@ -1672,7 +1737,12 @@ pub mod task_value_types {
         let selected = select(params)?;
         let required_coverage = coverage(params);
         let snapshot = client
-            .query_snapshot(selected.sql, &selected.params, &required_coverage)
+            .query_snapshot(
+                selected.sql,
+                &selected.params,
+                &required_coverage,
+                Some(QueryOwner { id: ID, tables: TABLES }),
+            )
             .map_err(|message| QueryError::Client { query: ID, message })?;
         let rows = snapshot.rows.into_iter().map(decode).collect::<Result<_, _>>()?;
         Ok(TypedQuerySnapshot {
@@ -1778,7 +1848,12 @@ pub mod tasks_in_projects {
         let selected = select(params)?;
         let required_coverage = coverage(params);
         let snapshot = client
-            .query_snapshot(selected.sql, &selected.params, &required_coverage)
+            .query_snapshot(
+                selected.sql,
+                &selected.params,
+                &required_coverage,
+                Some(QueryOwner { id: ID, tables: TABLES }),
+            )
             .map_err(|message| QueryError::Client { query: ID, message })?;
         let rows = snapshot.rows.into_iter().map(decode).collect::<Result<_, _>>()?;
         Ok(TypedQuerySnapshot {
@@ -1873,7 +1948,12 @@ pub mod tasks_since {
         let selected = select(params)?;
         let required_coverage = coverage(params);
         let snapshot = client
-            .query_snapshot(selected.sql, &selected.params, &required_coverage)
+            .query_snapshot(
+                selected.sql,
+                &selected.params,
+                &required_coverage,
+                Some(QueryOwner { id: ID, tables: TABLES }),
+            )
             .map_err(|message| QueryError::Client { query: ID, message })?;
         let rows = snapshot.rows.into_iter().map(decode).collect::<Result<_, _>>()?;
         Ok(TypedQuerySnapshot {
@@ -2003,7 +2083,12 @@ pub mod joined_sync_coverage {
         let selected = select(params)?;
         let required_coverage = coverage(params);
         let snapshot = client
-            .query_snapshot(selected.sql, &selected.params, &required_coverage)
+            .query_snapshot(
+                selected.sql,
+                &selected.params,
+                &required_coverage,
+                Some(QueryOwner { id: ID, tables: TABLES }),
+            )
             .map_err(|message| QueryError::Client { query: ID, message })?;
         let rows = snapshot.rows.into_iter().map(decode).collect::<Result<_, _>>()?;
         Ok(TypedQuerySnapshot {
@@ -2119,7 +2204,12 @@ pub mod task_meta_filter {
         let selected = select(params)?;
         let required_coverage = coverage(params);
         let snapshot = client
-            .query_snapshot(selected.sql, &selected.params, &required_coverage)
+            .query_snapshot(
+                selected.sql,
+                &selected.params,
+                &required_coverage,
+                Some(QueryOwner { id: ID, tables: TABLES }),
+            )
             .map_err(|message| QueryError::Client { query: ID, message })?;
         let rows = snapshot.rows.into_iter().map(decode).collect::<Result<_, _>>()?;
         Ok(TypedQuerySnapshot {
@@ -2294,7 +2384,12 @@ pub mod search_tasks {
         let selected = select(params)?;
         let required_coverage = coverage(params);
         let snapshot = client
-            .query_snapshot(selected.sql, &selected.params, &required_coverage)
+            .query_snapshot(
+                selected.sql,
+                &selected.params,
+                &required_coverage,
+                Some(QueryOwner { id: ID, tables: TABLES }),
+            )
             .map_err(|message| QueryError::Client { query: ID, message })?;
         let rows = snapshot.rows.into_iter().map(decode).collect::<Result<_, _>>()?;
         Ok(TypedQuerySnapshot {
@@ -2419,7 +2514,12 @@ pub mod task_estimate_range {
         let selected = select(params)?;
         let required_coverage = coverage(params);
         let snapshot = client
-            .query_snapshot(selected.sql, &selected.params, &required_coverage)
+            .query_snapshot(
+                selected.sql,
+                &selected.params,
+                &required_coverage,
+                Some(QueryOwner { id: ID, tables: TABLES }),
+            )
             .map_err(|message| QueryError::Client { query: ID, message })?;
         let rows = snapshot.rows.into_iter().map(decode).collect::<Result<_, _>>()?;
         Ok(TypedQuerySnapshot {

@@ -755,6 +755,17 @@ export type DriverSyncIntent =
   | { readonly kind: 'interactive' }
   | { readonly kind: 'background'; readonly delayMs: number };
 
+export interface DriverQueryFailure {
+  readonly id: string;
+  readonly tables: readonly string[];
+  readonly code:
+    | 'client.storage_corrupt'
+    | 'client.storage_io'
+    | 'client.query_failed';
+  readonly sqliteCode?: number;
+  readonly atMs: number;
+}
+
 export interface DriverSyncProgress {
   readonly attempt: number;
   readonly state: 'running' | 'complete' | 'failed';
@@ -811,6 +822,7 @@ export interface ClientInstance {
       readonly base: DriverWindowBase;
       readonly units: readonly string[];
     }[],
+    owner?: { readonly id: string; readonly tables: readonly string[] },
   ): Promise<{
     readonly revision: string;
     readonly rows: readonly Record<string, DriverRowValue>[];
@@ -825,6 +837,9 @@ export interface ClientInstance {
         readonly unit: string;
       }[];
     };
+  }>;
+  diagnosticsSnapshot?(): Promise<{
+    readonly queryFailures: readonly DriverQueryFailure[];
   }>;
   drainProgress?(): Promise<readonly DriverSyncProgress[]>;
   progressSnapshot?(): Promise<DriverSyncProgress | undefined>;

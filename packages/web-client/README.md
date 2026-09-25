@@ -288,7 +288,12 @@ and generated table names, never scopes. It lets a support screen distinguish
 an absent registration from a legitimate zero-row completed bootstrap. The
 snapshot also distinguishes reset, revocation, failure, schema floor, lease
 stop, pending outbox, offline transport, and storage pressure/unreadability.
-Worker leaders and followers return identical evidence with their honest role.
+`queryFailures` retains at most 256 failed owned snapshot reads until each query
+reads successfully. An entry contains only its stable PHI-free owner id,
+generated table names, a stable code, an optional numeric SQLite result code,
+and the first failure time. It excludes SQL, parameters, rows, and SQLite error
+prose. Worker leaders and followers return identical evidence with their honest
+role.
 
 The contract intentionally excludes scope values, rows and clinical row
 counts, SQL, paths, client/actor/lease ids, auth, keys, mutation bodies, stack

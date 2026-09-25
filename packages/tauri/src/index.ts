@@ -556,6 +556,7 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
         sql: spec.sql,
         params: (spec.params ?? []).map(encodeParam),
         coverage: spec.coverage ?? [],
+        ...(spec.owner !== undefined ? { owner: spec.owner } : {}),
       },
     );
     if (reply.error !== undefined) {

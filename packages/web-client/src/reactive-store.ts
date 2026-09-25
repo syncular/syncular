@@ -572,6 +572,12 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
           ...(this.spec.coverage !== undefined
             ? { coverage: this.spec.coverage }
             : {}),
+          owner: {
+            id: this.spec.id,
+            tables: this.spec.dependencies.map(
+              (dependency) => dependency.table,
+            ),
+          },
         });
         if (generation !== this.#generation || this.#listeners.size === 0)
           return;
@@ -621,11 +627,12 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
       } while (this.#requested && this.#listeners.size > 0);
     } catch (error) {
       if (generation !== this.#generation || this.#listeners.size === 0) return;
-      const wrapped = errorOf(error);
+      // SPEC §7.5: a failed latest read is never `ready`; the last
+      // successful rows and revision stay available beside the error.
       this.#publish({
         ...this.#state,
-        phase: this.#state.revision === undefined ? 'error' : this.#state.phase,
-        error: wrapped,
+        phase: 'error',
+        error: errorOf(error),
         isRefreshing: false,
         availability: this.store.availabilitySnapshot(),
       });

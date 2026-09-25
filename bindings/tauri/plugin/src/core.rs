@@ -28,7 +28,8 @@ use std::collections::VecDeque;
 
 use serde_json::{json, Value};
 use syncular_client::{
-    ClientDiagnosticsRequest, ClientDiagnosticsSnapshot, SyncClient, SyncIntent,
+    ClientDiagnosticsRequest, ClientDiagnosticsSnapshot, QueryOwner, QueryReadFailure, SyncClient,
+    SyncIntent,
 };
 use syncular_command::{dispatch, CreateEffects};
 
@@ -197,6 +198,27 @@ impl SyncularCore {
             return json!({ "result": null });
         }
         self.command(&json!({ "method": "syncUntilIdle", "params": {} }))
+    }
+
+    /// §7.6: record an owned snapshot read the read sidecar ran.
+    pub fn record_query_read(
+        &mut self,
+        id: &str,
+        tables: &[String],
+        failure: Option<&QueryReadFailure>,
+    ) {
+        let Some(client) = self.client.as_mut() else {
+            return;
+        };
+        let tables: Vec<&str> = tables.iter().map(String::as_str).collect();
+        client.record_query_read(
+            QueryOwner {
+                id,
+                tables: &tables,
+            },
+            failure,
+        );
+        self.emit_diagnostics_if_changed();
     }
 
     /// Owner-mailbox wake from the native realtime reader.

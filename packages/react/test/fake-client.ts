@@ -237,6 +237,7 @@ export class FakeClient implements SyncClientLike {
       ),
       subscriptionsTruncated: false,
       storage: { status: 'healthy' },
+      queryFailures: [],
     };
   }
 

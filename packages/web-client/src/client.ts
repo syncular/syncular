@@ -76,13 +76,15 @@ import {
   type ClientDiagnosticsStorage,
   type DiagnosticLastChange,
   type DiagnosticLastRound,
+  type DiagnosticQueryFailure,
   type DiagnosticRoundCounters,
   type DiagnosticSubscription,
   MAX_DIAGNOSTIC_DOMAINS,
   MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
+  MAX_DIAGNOSTIC_QUERY_FAILURES,
 } from './diagnostics';
 import type { EncryptionConfig } from './encryption';
-import { ClientSyncError } from './errors';
+import { ClientSyncError, classifySqliteFailure } from './errors';
 import {
   ChangeAccumulator,
   ChangeEmitter,
@@ -480,6 +482,17 @@ export interface QueryReadSpec {
   readonly sql: string;
   readonly params?: readonly SqlValue[];
   readonly coverage?: readonly WindowCoverage[];
+  /**
+   * SPEC §7.5: the owning query. A failed owned read is reported in
+   * `diagnosticsSnapshot().queryFailures` until the owner reads successfully.
+   * The id is application-owned and must never contain PHI.
+   */
+  readonly owner?: QueryOwner;
+}
+
+export interface QueryOwner {
+  readonly id: string;
+  readonly tables: readonly string[];
 }
 
 export interface QuerySnapshot<Row = SqlRow> {
@@ -757,6 +770,8 @@ export class SyncClient {
   #diagnosticsPending = false;
   #lastRound: DiagnosticLastRound | undefined;
   #lastChange: DiagnosticLastChange | undefined;
+  /** SPEC §7.6: owner id -> latest failed owned read, oldest first. */
+  readonly #queryFailures = new Map<string, DiagnosticQueryFailure>();
   /** The batch accumulator; non-undefined only inside `#applyBatch`. */
   #batch: ChangeAccumulator | undefined;
   /**
@@ -1250,7 +1265,11 @@ export class SyncClient {
     assertReadOnlyQuery(sql);
     // RFC 0005's container lives in a separate database file, so this
     // connection cannot see it and there is no table-access guard to run.
-    return stripSyncColumns(this.#db.query(sql, params));
+    try {
+      return stripSyncColumns(this.#db.query(sql, params));
+    } catch (error) {
+      throw classifySqliteFailure(error).error;
+    }
   }
 
   /** Current durable local observer revision (SPEC §7.5). */
@@ -1266,50 +1285,88 @@ export class SyncClient {
    */
   querySnapshot<Row = SqlRow>(spec: QueryReadSpec): QuerySnapshot<Row> {
     this.#requireActive();
-    assertReadOnlyQuery(spec.sql);
-    return this.#db.transaction(() => {
-      const revision = getLocalRevision(this.#db);
-      const rows = stripSyncColumns(
-        this.#db.query(spec.sql, spec.params),
-      ) as unknown as readonly Row[];
-      const pending: WindowUnitRef[] = [];
-      const missing: WindowUnitRef[] = [];
-      for (const requested of spec.coverage ?? []) {
-        const baseKey = windowBaseKey(requested.base);
-        const live = new Map(
-          loadWindowUnits(this.#db, baseKey).map((entry) => [
-            entry.unit,
-            entry.subId,
-          ]),
-        );
-        for (const unit of new Set(requested.units)) {
-          const subId = live.get(unit);
-          const ref = { baseKey, unit };
-          if (subId === undefined) {
-            missing.push(ref);
-            continue;
-          }
-          const sub = getSubscription(this.#db, subId);
-          if (
-            sub === undefined ||
-            sub.status !== 'active' ||
-            sub.cursor < 0 ||
-            sub.bootstrapState !== undefined
-          ) {
-            pending.push(ref);
+    const owner = spec.owner;
+    let snapshot: QuerySnapshot<Row>;
+    try {
+      assertReadOnlyQuery(spec.sql);
+      snapshot = this.#db.transaction(() => {
+        const revision = getLocalRevision(this.#db);
+        const rows = stripSyncColumns(
+          this.#db.query(spec.sql, spec.params),
+        ) as unknown as readonly Row[];
+        const pending: WindowUnitRef[] = [];
+        const missing: WindowUnitRef[] = [];
+        for (const requested of spec.coverage ?? []) {
+          const baseKey = windowBaseKey(requested.base);
+          const live = new Map(
+            loadWindowUnits(this.#db, baseKey).map((entry) => [
+              entry.unit,
+              entry.subId,
+            ]),
+          );
+          for (const unit of new Set(requested.units)) {
+            const subId = live.get(unit);
+            const ref = { baseKey, unit };
+            if (subId === undefined) {
+              missing.push(ref);
+              continue;
+            }
+            const sub = getSubscription(this.#db, subId);
+            if (
+              sub === undefined ||
+              sub.status !== 'active' ||
+              sub.cursor < 0 ||
+              sub.bootstrapState !== undefined
+            ) {
+              pending.push(ref);
+            }
           }
         }
+        return {
+          revision,
+          rows,
+          coverage: {
+            complete: pending.length === 0 && missing.length === 0,
+            pending,
+            missing,
+          },
+        };
+      });
+    } catch (error) {
+      const failure = classifySqliteFailure(error);
+      const sqliteCode = failure.sqliteCode;
+      const code = failure.code ?? 'client.query_failed';
+      if (owner !== undefined) {
+        const tables = [...new Set(owner.tables)].sort();
+        const previous = this.#queryFailures.get(owner.id);
+        if (
+          previous === undefined ||
+          previous.code !== code ||
+          previous.sqliteCode !== sqliteCode ||
+          previous.tables.join('\0') !== tables.join('\0')
+        ) {
+          this.#queryFailures.delete(owner.id);
+          this.#queryFailures.set(owner.id, {
+            id: owner.id,
+            tables,
+            code,
+            ...(sqliteCode !== undefined ? { sqliteCode } : {}),
+            atMs: this.#now(),
+          });
+          for (const id of this.#queryFailures.keys()) {
+            if (this.#queryFailures.size <= MAX_DIAGNOSTIC_QUERY_FAILURES)
+              break;
+            this.#queryFailures.delete(id);
+          }
+          this.#emitDiagnostics();
+        }
       }
-      return {
-        revision,
-        rows,
-        coverage: {
-          complete: pending.length === 0 && missing.length === 0,
-          pending,
-          missing,
-        },
-      };
-    });
+      throw failure.error;
+    }
+    if (owner !== undefined && this.#queryFailures.delete(owner.id)) {
+      this.#emitDiagnostics();
+    }
+    return snapshot;
   }
 
   // -- previous-version context (RFC 0005) ----------------------------------
@@ -1729,6 +1786,7 @@ export class SyncClient {
         ? { lastChange: this.#lastChange }
         : {}),
       storage: this.#diagnosticStorage(),
+      queryFailures: [...this.#queryFailures.values()],
     };
   }
 

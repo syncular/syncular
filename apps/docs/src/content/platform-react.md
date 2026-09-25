@@ -74,7 +74,8 @@ refresh }`:
 - `loading`: no complete answer and no partial rows yet;
 - `partial`: rows exist while required coverage is incomplete;
 - `ready`: the atomic snapshot is complete, including a true empty result;
-- `error`: the initial read failed.
+- `error`: the latest read failed. The result keeps rows and revision from the
+  last successful read.
 
 ```tsx
 if (todos.phase === 'loading') return <Skeleton />;
@@ -116,9 +117,11 @@ const result = useRawSql(
 ```
 
 It has the same phase/revision result. Options include `dependencies`,
-`coverage`, `rowKey`, `claimCoverage`, `enabled`, and `id`. The legacy
-`tables`/`scopeKeys` shorthand remains available. If dependencies are omitted,
-a conservative `FROM`/`JOIN` scanner is used.
+`coverage`, `rowKey`, `claimCoverage`, `enabled`, and `id`. Set `id` to a stable,
+PHI-free value for support diagnostics; the default diagnostic id is `raw` and
+never contains SQL. The legacy `tables`/`scopeKeys` shorthand remains
+available. If dependencies are omitted, a conservative `FROM`/`JOIN` scanner
+is used.
 
 The core guards raw SQL read-only: exactly one `SELECT`, `WITH`, `EXPLAIN`,
 `PRAGMA`, or `VALUES` statement. Writes always use mutations and the outbox.

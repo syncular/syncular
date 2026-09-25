@@ -37,6 +37,7 @@ function diagnostics(
     subscriptions: [],
     subscriptionsTruncated: false,
     storage: { status: 'healthy' },
+    queryFailures: [],
   };
 }
 
