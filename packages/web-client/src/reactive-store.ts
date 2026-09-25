@@ -360,17 +360,38 @@ class ObservationCache {
   }
 }
 
+const EMPTY_ROWS: readonly never[] = Object.freeze([]);
+const unreadQuerySnapshots = new Map<string, LiveQueryResult<never>>();
+
+/** One frozen snapshot per phase and availability for entries that have no
+ * successful read, so switching between unread entries keeps the snapshot and
+ * `rows` identity. */
+function unreadQuerySnapshot(
+  phase: LiveQueryPhase,
+  availability: SyncAvailability,
+): LiveQueryResult<never> {
+  const key = canonicalValue([phase, availability]);
+  let snapshot = unreadQuerySnapshots.get(key);
+  if (snapshot === undefined) {
+    snapshot = Object.freeze({
+      rows: EMPTY_ROWS,
+      phase,
+      revision: undefined,
+      error: undefined,
+      isRefreshing: false,
+      availability,
+    });
+    unreadQuerySnapshots.set(key, snapshot);
+  }
+  return snapshot;
+}
+
 class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
   readonly #owner = Symbol('query-window-claim');
   readonly #listeners = new Set<() => void>();
-  #state: LiveQueryResult<Row> = {
-    rows: [],
-    phase: 'loading',
-    revision: undefined,
-    error: undefined,
-    isRefreshing: false,
-    availability: { state: 'ready' },
-  };
+  #state: LiveQueryResult<Row> = unreadQuerySnapshot('loading', {
+    state: 'ready',
+  });
   #delegate: QueryEntry<Row> | undefined;
   #generation = 0;
   #scheduled = false;
@@ -476,14 +497,7 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
     this.#desiredRevision = 0n;
     this.#claimError = undefined;
     this.#claimPending = false;
-    this.#state = {
-      rows: [],
-      phase: 'loading',
-      revision: undefined,
-      error: undefined,
-      isRefreshing: false,
-      availability: { state: 'ready' },
-    };
+    this.#state = unreadQuerySnapshot('loading', { state: 'ready' });
   }
 
   dispose(): void {
@@ -513,7 +527,13 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
     ) {
       return;
     }
-    this.#state = next;
+    this.#state =
+      next.revision === undefined &&
+      next.rows.length === 0 &&
+      next.error === undefined &&
+      !next.isRefreshing
+        ? unreadQuerySnapshot(next.phase, next.availability)
+        : next;
     for (const listener of this.#listeners) listener();
   }
 

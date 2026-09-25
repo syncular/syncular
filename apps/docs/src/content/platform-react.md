@@ -160,7 +160,10 @@ conflict-only changes do not rerun SQL.
 
 A hook re-renders only when its value changes. A query re-read keeps each
 unchanged row object, and keeps the `rows` array when no row changed,
-including an empty result that stays empty. The status, conflict, and outcome
+including an empty result that stays empty. Queries without a successful read
+share one frozen snapshot per phase and availability, so a query whose
+parameters or coverage change before its first read returns the same result
+object and `rows` array. The status, conflict, and outcome
 hooks compare each new snapshot by value and keep the current object when it is
 equal. The comparison matches `Date` values by time and compares `Error` and
 other class instances by identity.

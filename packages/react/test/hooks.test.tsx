@@ -97,6 +97,32 @@ describe('useRawSql', () => {
     view.unmount();
   });
 
+  test('growing coverage before the first complete read keeps rows identity and renders once', async () => {
+    const client = new FakeClient();
+    const base = { table: 'tasks', variable: 'project_id' };
+    let renders = 0;
+    const view = renderHook(
+      ({ units }: { units: readonly string[] }) => {
+        renders += 1;
+        return useRawSql('SELECT * FROM tasks', [], {
+          coverage: [{ base, units }],
+        });
+      },
+      { wrapper: wrapper(client), initialProps: { units: ['p1'] } },
+    );
+    await flushEffects();
+    expect(view.result.current.phase).toBe('loading');
+    const rows = view.result.current.rows;
+    const before = renders;
+
+    view.rerender({ units: ['p1', 'p2'] });
+    await flushEffects();
+    expect(view.result.current.phase).toBe('loading');
+    expect(view.result.current.rows).toBe(rows);
+    expect(renders).toBe(before + 1);
+    view.unmount();
+  });
+
   test('runs on mount and returns rows', async () => {
     const client = new FakeClient();
     client.setRows('tasks', [{ id: 't1', title: 'hello' }]);

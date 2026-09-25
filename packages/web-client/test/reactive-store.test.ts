@@ -805,6 +805,36 @@ describe('composable windows and domain routing', () => {
 });
 
 describe('keyed reconciliation performance', () => {
+  test('switching query identity before the first read keeps the unread snapshot identity', async () => {
+    const client = new FakeReactiveClient();
+    const pending = {
+      complete: false,
+      pending: [{ baseKey: 'tasks', unit: 'p1' }],
+      missing: [],
+    };
+    client.snapshots.push({ revision: 1n, rows: [], coverage: pending });
+    const store = new ReactiveClientStore(client);
+    const first = store.query<Row>(querySpec({ params: ['p1'] }));
+    const offFirst = first.subscribe(() => undefined);
+    const initial = first.getSnapshot();
+    expect(Object.isFrozen(initial)).toBe(true);
+    expect(Object.isFrozen(initial.rows)).toBe(true);
+
+    const second = store.query<Row>(querySpec({ params: ['p1', 'p2'] }));
+    let notifications = 0;
+    const offSecond = second.subscribe(() => {
+      notifications += 1;
+    });
+    offFirst();
+    expect(second.getSnapshot()).toBe(initial);
+    await drainMicrotasks();
+    expect(client.reads).toHaveLength(1);
+    expect(notifications).toBe(0);
+    expect(second.getSnapshot()).toBe(initial);
+    offSecond();
+    store.dispose();
+  });
+
   for (const rowKey of [undefined, (row: Row) => [row.id]]) {
     test(`an empty result read again keeps its identity and does not notify (${rowKey === undefined ? 'positional' : 'keyed'})`, async () => {
       const client = new FakeReactiveClient();

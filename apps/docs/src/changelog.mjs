@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-09-26',
+    title: 'Query identity changes before the first read keep the snapshot',
+    body: "A live query that has no successful read now publishes a shared, frozen snapshot per phase and availability. When a query's parameters or coverage change before its first read completes, the new query returns the same snapshot object and `rows` array, and React does not re-render for the switch.",
+    links: [
+      {
+        href: '/platform-react/#changes-windows-and-other-hooks',
+        label: 'React hooks',
+      },
+    ],
+  },
+  {
+    date: '2026-09-26',
     title: 'Unchanged live results no longer re-render React',
     body: 'A live query that reads an empty result again now keeps its previous `rows` array and does not notify subscribers. `useSyncStatus`, `useConflicts`, and `useCommitOutcomes` compare each new snapshot by value and skip the notification when it is equal, so a sync batch with an unchanged status no longer re-renders every status subscriber. Row reconciliation compares mapped `Date` values by time and class instances by identity.',
     links: [
