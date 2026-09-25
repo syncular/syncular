@@ -72,8 +72,9 @@ class FakeReactiveClient implements ReactiveQueryClient {
     readonly base: WindowBase;
     readonly units: readonly string[];
   }> = [];
-  readonly snapshots: Array<QuerySnapshot<Row> | Promise<QuerySnapshot<Row>>> =
-    [];
+  readonly snapshots: Array<
+    QuerySnapshot<object> | Promise<QuerySnapshot<object>>
+  > = [];
   statusCalls = 0;
   conflictCalls = 0;
   rejectionCalls = 0;
@@ -686,6 +687,85 @@ describe('composable windows and domain routing', () => {
     store.dispose();
   });
 
+  test('repeated equal status batches keep the snapshot and do not notify', async () => {
+    const client = new FakeReactiveClient();
+    const store = new ReactiveClientStore(client);
+    await drainMicrotasks();
+    const initial = store.status.getSnapshot();
+    let notifications = 0;
+    const off = store.status.subscribe(() => {
+      notifications += 1;
+    });
+
+    client.emit(batch(1n, { status: { ...STATUS } }));
+    client.emit(batch(2n, { status: { ...STATUS } }));
+    store.status.refresh();
+    await drainMicrotasks();
+    expect(notifications).toBe(0);
+    expect(store.status.getSnapshot()).toBe(initial);
+
+    client.emit(batch(3n, { status: { ...STATUS, outbox: 1 } }));
+    expect(notifications).toBe(1);
+    expect(store.status.getSnapshot().status?.outbox).toBe(1);
+    off();
+    store.dispose();
+  });
+
+  test('a repeated status read failure notifies for each new error', async () => {
+    const client = new FakeReactiveClient();
+    client.statusSnapshot = () => Promise.reject(new Error('status failed'));
+    const store = new ReactiveClientStore(client);
+    await drainMicrotasks();
+    const first = store.status.getSnapshot().error;
+    let notifications = 0;
+    const off = store.status.subscribe(() => {
+      notifications += 1;
+    });
+    store.status.refresh();
+    await drainMicrotasks();
+    expect(notifications).toBe(1);
+    expect(store.status.getSnapshot().error).not.toBe(first);
+    off();
+    store.dispose();
+  });
+
+  for (const source of ['conflicts', 'outcomes'] as const) {
+    test(`${source} refreshes with equal content do not notify`, async () => {
+      const client = new FakeReactiveClient();
+      const outcome: CommitOutcome = {
+        sequence: 1,
+        clientCommitId: 'c1',
+        status: 'applied',
+        recordedAtMs: 0,
+        results: [],
+        resolution: 'active',
+      };
+      if (source === 'conflicts') client.conflicts = () => [{ ...outcome }];
+      else client.commitOutcomes = () => [{ ...outcome }];
+      const store = new ReactiveClientStore(client);
+      await drainMicrotasks();
+      const entry = store[source];
+      const initial = entry.getSnapshot();
+      let notifications = 0;
+      const off = entry.subscribe(() => {
+        notifications += 1;
+      });
+      client.emit(
+        batch(1n, {
+          conflictsChanged: true,
+          rejectionsChanged: true,
+          outcomesChanged: true,
+        }),
+      );
+      entry.refresh();
+      await drainMicrotasks();
+      expect(notifications).toBe(0);
+      expect(entry.getSnapshot()).toBe(initial);
+      off();
+      store.dispose();
+    });
+  }
+
   test('treats window release after client closure as best-effort teardown', async () => {
     const client = new FakeReactiveClient();
     const store = new ReactiveClientStore(client);
@@ -725,6 +805,87 @@ describe('composable windows and domain routing', () => {
 });
 
 describe('keyed reconciliation performance', () => {
+  for (const rowKey of [undefined, (row: Row) => [row.id]]) {
+    test(`an empty result read again keeps its identity and does not notify (${rowKey === undefined ? 'positional' : 'keyed'})`, async () => {
+      const client = new FakeReactiveClient();
+      client.snapshots.push(
+        { revision: 1n, rows: [], coverage: COMPLETE },
+        { revision: 2n, rows: [], coverage: COMPLETE },
+        { revision: 3n, rows: [{ id: 'a', title: 'A' }], coverage: COMPLETE },
+      );
+      const store = new ReactiveClientStore(client);
+      const entry = store.query<Row>(querySpec({ rowKey }));
+      let notifications = 0;
+      const off = entry.subscribe(() => {
+        notifications += 1;
+      });
+      await drainMicrotasks();
+      const empty = entry.getSnapshot();
+      expect(empty.phase).toBe('ready');
+      notifications = 0;
+
+      client.emit(batch(2n, { tables: [{ table: 'tasks' }] }));
+      await drainMicrotasks();
+      expect(client.reads).toHaveLength(2);
+      expect(notifications).toBe(0);
+      expect(entry.getSnapshot()).toBe(empty);
+
+      client.emit(batch(3n, { tables: [{ table: 'tasks' }] }));
+      await drainMicrotasks();
+      expect(notifications).toBe(1);
+      expect(entry.getSnapshot().rows).toEqual([{ id: 'a', title: 'A' }]);
+      off();
+      store.dispose();
+    });
+  }
+
+  test('mapped rows compare dates by time and class instances by identity', async () => {
+    class Label {
+      constructor(readonly text: string) {}
+    }
+    interface MappedRow {
+      readonly id: string;
+      readonly due: Date;
+      readonly label?: Label;
+    }
+    const client = new FakeReactiveClient();
+    const label = new Label('x');
+    const rows = [
+      { id: 'a', due: new Date(1) },
+      { id: 'a', due: new Date(1) },
+      { id: 'a', due: new Date(2) },
+      { id: 'a', due: new Date(2), label },
+      { id: 'a', due: new Date(2), label: new Label('x') },
+    ];
+    for (const [index, row] of rows.entries()) {
+      client.snapshots.push({
+        revision: BigInt(index + 1),
+        rows: [row],
+        coverage: COMPLETE,
+      });
+    }
+    const store = new ReactiveClientStore(client);
+    const entry = store.query<MappedRow>({
+      ...querySpec(),
+      rowKey: (row: MappedRow) => [row.id],
+    });
+    const off = entry.subscribe(() => undefined);
+    await drainMicrotasks();
+    const seen = [entry.getSnapshot().rows[0]];
+    for (let revision = 2n; revision <= 5n; revision += 1n) {
+      client.emit(batch(revision, { tables: [{ table: 'tasks' }] }));
+      await drainMicrotasks();
+      seen.push(entry.getSnapshot().rows[0]);
+    }
+    expect(seen[1]).toBe(seen[0]);
+    expect(seen[2]).not.toBe(seen[1]);
+    expect(seen[2]?.due.getTime()).toBe(2);
+    expect(seen[3]).not.toBe(seen[2]);
+    expect(seen[4]).not.toBe(seen[3]);
+    off();
+    store.dispose();
+  });
+
   test('preserves row identities through a prepend, delete, and reorder', async () => {
     const client = new FakeReactiveClient();
     const first = [

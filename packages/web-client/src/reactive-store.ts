@@ -249,6 +249,18 @@ function valuesEqual(left: unknown, right: unknown): boolean {
   ) {
     return false;
   }
+  if (left instanceof Date || right instanceof Date) {
+    return (
+      left instanceof Date &&
+      right instanceof Date &&
+      Object.is(left.getTime(), right.getTime())
+    );
+  }
+  // Errors and class instances keep state outside their enumerable keys.
+  for (const value of [left, right]) {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return false;
+  }
   const leftRecord = left as Record<string, unknown>;
   const rightRecord = right as Record<string, unknown>;
   const keys = Object.keys(leftRecord);
@@ -265,7 +277,7 @@ function reconcileRows<Row>(
   fresh: readonly Row[],
   rowKey: ((row: Row) => readonly SqlValue[]) | undefined,
 ): readonly Row[] {
-  if (previous.length === 0) return fresh;
+  if (previous.length === 0) return fresh.length === 0 ? previous : fresh;
   if (rowKey === undefined) {
     let changed = previous.length !== fresh.length;
     const next = fresh.map((row, index) => {
@@ -668,7 +680,7 @@ class ValueEntry<T> implements ExternalStoreEntry<T> {
   }
   set(next: T): void {
     this.invalidate();
-    if (next === this.value) return;
+    if (valuesEqual(next, this.value)) return;
     this.value = next;
     for (const listener of this.#listeners) listener();
   }

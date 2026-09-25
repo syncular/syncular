@@ -16,6 +16,17 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-09-26',
+    title: 'Unchanged live results no longer re-render React',
+    body: 'A live query that reads an empty result again now keeps its previous `rows` array and does not notify subscribers. `useSyncStatus`, `useConflicts`, and `useCommitOutcomes` compare each new snapshot by value and skip the notification when it is equal, so a sync batch with an unchanged status no longer re-renders every status subscriber. Row reconciliation compares mapped `Date` values by time and class instances by identity.',
+    links: [
+      {
+        href: '/platform-react/#changes-windows-and-other-hooks',
+        label: 'React hooks',
+      },
+    ],
+  },
+  {
     date: '2026-09-25',
     title: 'Local unique constraint failures roll back the commit',
     body: 'TypeScript and Rust clients now fail a local commit with `sync.constraint_violation` when its optimistic writes conflict with a declared secondary unique index. The client rolls back every sibling write and the outbox append in the same SQLite transaction, and the local revision does not advance. Rust previously ignored the failed overlay write and queued a commit whose optimistic row was absent.',

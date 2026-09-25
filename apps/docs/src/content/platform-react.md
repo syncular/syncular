@@ -158,6 +158,13 @@ change batch. Scope keys stay associated with their table. Window completion
 can invalidate a zero-row query without pretending a row changed. Status and
 conflict-only changes do not rerun SQL.
 
+A hook re-renders only when its value changes. A query re-read keeps each
+unchanged row object, and keeps the `rows` array when no row changed,
+including an empty result that stays empty. The status, conflict, and outcome
+hooks compare each new snapshot by value and keep the current object when it is
+equal. The comparison matches `Date` values by time and compares `Error` and
+other class instances by identity.
+
 Generated query coverage uses unioned claims. `useWindow(base)` is retained
 for explicit prefetching and dynamic query builders; it is not needed for an
 ordinary generated query.
