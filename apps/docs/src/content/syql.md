@@ -145,14 +145,36 @@ sync query listTodos(listId) {
 }
 ```
 
-Coverage is accepted only when the covered table has one SQL instance and
-every declared schema scope is proven from required, non-null equality/`IN`
-predicates. A required scope bind may propagate through a qualified,
-mandatory scope-column equality in `WHERE` or a simple `JOIN ... ON` clause.
-Predicates under `OR`, negation, `when`, or nested queries never prove
-coverage, and an `IN` proof may contain only required binds. Ambiguous
-joins, optional boolean branches, nested SQL, and self-joins fail closed
-instead of claiming partial readiness.
+Coverage is accepted only when every declared schema scope of every table
+instance is proven from required, non-null equality/`IN` predicates. A
+required scope bind may propagate through a qualified, mandatory scope-column
+equality in `WHERE` or a simple `JOIN ... ON` clause. Predicates under `OR`,
+negation, `when`, or nested queries never prove coverage, and an `IN` proof may
+contain only required binds. Ambiguous joins, optional boolean branches, and
+nested SQL fail closed instead of claiming partial readiness.
+
+A self-join claims coverage when every instance of the table binds the same
+scopes with the same operator and parameters:
+
+```syql
+sync query relatedCodes(catalogueSetId) {
+  select c.id, rc.id as related_id
+  from catalogue_codes as c
+  join catalogue_relations as r
+    on r.code_id = c.id and r.catalogue_set_id = c.catalogue_set_id
+  join catalogue_codes as rc on rc.id = r.related_code_id
+  where c.catalogue_set_id = :catalogueSetId
+    and rc.catalogue_set_id = :catalogueSetId;
+}
+```
+
+Both `catalogue_codes` instances select the same window base and unit, so the
+generated descriptor holds one coverage entry and one dependency for that
+table. If one instance is unconstrained, or the instances differ in a
+parameter, operator, unit dimension, or fixed scope, generation fails with
+`SYQL6005_INVALID_SYNC_QUERY`; split the query instead. A self-join has no
+inferred row identity, so the result reconciles unkeyed and cannot use a
+bounded `limit`.
 
 For a table with multiple scopes, choose the unit dimension:
 

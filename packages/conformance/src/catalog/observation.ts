@@ -671,6 +671,52 @@ export const observationScenarios: readonly Scenario[] = [
     },
   },
   {
+    // SYQL §13.2: a self-join whose instances carry identical scope proofs
+    // claims one coverage entry for the shared base, and readiness follows
+    // that single window.
+    name: 'observation/self-join-coalesced-coverage',
+    specRefs: ['§4.8', '§7.5'],
+    async run(ctx) {
+      await seedTasks(ctx, [
+        task('a1', 'p1', 'a1', false, 1),
+        task('a2', 'p1', 'a2', false, 1),
+        task('a3', 'p1', 'a3', false, 2),
+        task('b1', 'p2', 'b1', false, 1),
+      ]);
+      const handle = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: { project_id: ['p1', 'p2'] },
+      });
+      const observation = requireObservation(handle.api);
+      const sql =
+        'SELECT a.id AS task_id, b.id AS peer_id FROM tasks AS a ' +
+        'JOIN tasks AS b ON b.priority = a.priority AND b.id <> a.id ' +
+        'WHERE a.project_id = ?1 AND b.project_id = ?1 ORDER BY a.id, b.id';
+      const coverage = [{ base: BASE, units: ['p1'] }];
+
+      await handle.api.setWindow?.(BASE, ['p1']);
+      const pending = await observation.querySnapshot(sql, ['p1'], coverage);
+      check(
+        !pending.coverage.complete,
+        'self-join is pending before bootstrap',
+      );
+      checkEqual(pending.rows, [], 'pending self-join has no local rows');
+
+      await syncIdle(handle);
+      const ready = await observation.querySnapshot(sql, ['p1'], coverage);
+      check(ready.coverage.complete, 'one window completes the self-join');
+      checkEqual(
+        ready.rows,
+        [
+          { task_id: 'a1', peer_id: 'a2' },
+          { task_id: 'a2', peer_id: 'a1' },
+        ],
+        'self-join pairs stay inside the covered unit',
+      );
+    },
+  },
+  {
     name: 'observation/persistent-open-catch-up-intent',
     specRefs: ['§7.5', '§8.4'],
     async run(ctx) {

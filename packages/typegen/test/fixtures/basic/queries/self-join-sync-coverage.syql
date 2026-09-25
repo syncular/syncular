@@ -1,0 +1,8 @@
+sync query taskPriorityPeers(projectId) {
+  select a.id as task_id, b.id as peer_id, b.title
+  from tasks as a
+  join tasks as b on b.priority = a.priority and b.id <> a.id
+  where a.project_id = :projectId
+    and b.project_id = :projectId
+  order by a.id, b.id;
+}

@@ -13,6 +13,7 @@ import {
   type PushResultFrame,
 } from '@syncular/core';
 import { BunClientDatabase } from '@syncular/client/bun';
+import { taskPriorityPeersQuery } from '../../typegen/test/fixtures/basic/syncular.queries';
 import {
   CLIENT_SCHEMA,
   TASK_COLUMNS,
@@ -783,6 +784,54 @@ describe('revisioned local observation (SPEC §7.5)', () => {
     expect(missing.pending).toEqual([]);
     expect(missing.missing).toEqual([
       { baseKey: 'docs\0projectId\0{"org_id":["o1"]}', unit: 'p1' },
+    ]);
+  });
+
+  test('a generated self-join sync query claims one window and becomes ready', async () => {
+    const server = makeServer();
+    const writer = await makeClient(server, { clientId: 'self-join-writer' });
+    writer.client.mutate(
+      [
+        taskValues('a1', 'p1', 'a1', false, 1),
+        taskValues('a2', 'p1', 'a2', false, 1),
+        taskValues('a3', 'p1', 'a3', false, 2),
+        taskValues('b1', 'p2', 'b1', false, 1),
+      ].map((values) => ({ table: 'tasks', op: 'upsert', values })),
+    );
+    await writer.client.syncUntilIdle();
+
+    const reader = await makeClient(server, { clientId: 'self-join-reader' });
+    const params = { projectId: 'p1' };
+    const coverage = taskPriorityPeersQuery.coverage(params);
+    // Both `tasks` instances carry the same proof, so the descriptor names
+    // the base and its dependency once.
+    expect(coverage).toEqual([{ base: BASE, units: ['p1'] }]);
+    expect(taskPriorityPeersQuery.dependencies(params)).toEqual([
+      { table: 'tasks', scopeKeys: ['project:p1'] },
+    ]);
+    expect(taskPriorityPeersQuery.rowKey).toBeUndefined();
+    const spec = {
+      sql:
+        taskPriorityPeersQuery.sqlFor?.(params) ?? taskPriorityPeersQuery.sql,
+      params: taskPriorityPeersQuery.bind(params),
+      coverage,
+    };
+
+    await reader.client.setWindowCommand(BASE, ['p1']);
+    const pending = reader.client.querySnapshot(spec);
+    expect(pending.coverage.complete).toBe(false);
+    expect(pending.rows).toEqual([]);
+
+    await reader.client.syncUntilIdle();
+    const ready = reader.client.querySnapshot(spec);
+    expect(ready.coverage).toEqual({
+      complete: true,
+      pending: [],
+      missing: [],
+    });
+    expect(ready.rows.map(taskPriorityPeersQuery.mapRow)).toEqual([
+      { taskId: 'a1', peerId: 'a2', title: 'a2' },
+      { taskId: 'a2', peerId: 'a1', title: 'a1' },
     ]);
   });
 

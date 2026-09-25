@@ -524,7 +524,7 @@ describe('SYQL schema/SQL validation', () => {
     const query = validate(`query q(listId) {
 
         select a.id as leftId, b.id as rightId
-        from todos as a join todos as b on a.list_id = b.list_id
+        from todos as a join todos as b on b.id = a.assignee_id
         where a.list_id = :listId
       ;
     }`).queries[0];
@@ -533,6 +533,39 @@ describe('SYQL schema/SQL validation', () => {
     ]);
     expect(query?.reactive.coverage).toEqual([]);
     expect(query?.identity).toBeUndefined();
+  });
+
+  test('a self-join with differing proofs falls back table-wide', () => {
+    const query = validate(`query q(listId, otherId) {
+      select a.id as leftId, b.id as rightId
+      from todos as a join todos as b on b.id = a.assignee_id
+      where a.list_id = :listId and b.list_id = :otherId;
+    }`).queries[0];
+    expect(query?.reactive.dependencies).toEqual([
+      { table: 'todos', scopes: [] },
+    ]);
+  });
+
+  test('an identically scoped self-join coalesces its dependency', () => {
+    const query = validate(`query q(listId) {
+      select a.id as leftId, b.id as rightId
+      from todos as a join todos as b on b.id = a.assignee_id
+      where a.list_id = :listId and b.list_id = :listId;
+    }`).queries[0];
+    expect(query?.reactive.dependencies).toEqual([
+      {
+        table: 'todos',
+        scopes: [
+          {
+            table: 'todos',
+            variable: 'list_id',
+            pattern: 'list:{list_id}',
+            params: ['listId'],
+          },
+        ],
+      },
+    ]);
+    expect(query?.reactive.coverage).toEqual([]);
   });
 
   test('rejects unsafe scope proofs and falls back conservatively', () => {
@@ -567,11 +600,118 @@ describe('SYQL schema/SQL validation', () => {
     const error = frontendError(() =>
       validate(`sync query q(listId) by a.list_id {
         select a.id as leftId, b.id as rightId
-        from todos as a join todos as b on a.list_id = b.list_id
+        from todos as a join todos as b on b.id = a.assignee_id
         where a.list_id = :listId;
       }`),
     );
     expect(error.code).toBe('SYQL6005_INVALID_SYNC_QUERY');
+    expect(error.message).toContain('every read table instance');
+  });
+
+  test('a self-join with identical proofs claims one coalesced coverage entry', () => {
+    const listScope = {
+      table: 'todos',
+      variable: 'list_id',
+      pattern: 'list:{list_id}',
+      params: ['listId'],
+    };
+    for (const where of [
+      'a.list_id = :listId and b.list_id = :listId',
+      // An inner-join ON equality carries the anchor proof to the other side.
+      'a.list_id = :listId and b.list_id = a.list_id',
+    ]) {
+      const query = validate(`sync query q(listId) {
+        select a.id as leftId, b.id as rightId, d.body
+        from todos as a
+        join todos as b on b.id = a.assignee_id
+        join todo_details as d
+          on d.todo_id = b.id and d.list_id = b.list_id
+        where ${where};
+      }`).queries[0];
+      expect(query?.reactive.dependencies).toEqual([
+        {
+          table: 'todo_details',
+          scopes: [{ ...listScope, table: 'todo_details' }],
+        },
+        { table: 'todos', scopes: [listScope] },
+      ]);
+      expect(query?.reactive.coverage).toEqual([
+        {
+          table: 'todo_details',
+          variable: 'list_id',
+          units: ['listId'],
+          fixedScopes: [],
+        },
+        {
+          table: 'todos',
+          variable: 'list_id',
+          units: ['listId'],
+          fixedScopes: [],
+        },
+      ]);
+      expect(query?.identity).toBeUndefined();
+    }
+
+    for (const anchor of ['a', 'b']) {
+      const query =
+        validate(`sync query q(roomId, threadId) by ${anchor}.thread_id {
+        select a.id as leftId, b.id as rightId
+        from messages as a join messages as b on b.id = a.body
+        where a.room_id = :roomId and b.room_id = :roomId
+          and a.thread_id = :threadId and b.thread_id = :threadId;
+      }`).queries[0];
+      expect(query?.reactive.coverage).toEqual([
+        {
+          table: 'messages',
+          variable: 'thread_id',
+          units: ['threadId'],
+          fixedScopes: [{ variable: 'room_id', params: ['roomId'] }],
+        },
+      ]);
+    }
+  });
+
+  test('a self-join with differing proofs cannot claim sync coverage', () => {
+    for (const source of [
+      // differing parameters
+      `sync query q(listId, otherId) {
+        select a.id as leftId, b.id as rightId
+        from todos as a join todos as b on b.id = a.assignee_id
+        where a.list_id = :listId and b.list_id = :otherId;
+      }`,
+      // differing operator
+      `sync query q(listId) {
+        select a.id as leftId, b.id as rightId
+        from todos as a join todos as b on b.id = a.assignee_id
+        where a.list_id = :listId and b.list_id in (:listId);
+      }`,
+      // differing parameter sets for the same unit dimension
+      `sync query q(listId, otherId) {
+        select a.id as leftId, b.id as rightId
+        from todos as a join todos as b on b.id = a.assignee_id
+        where a.list_id in (:listId, :otherId) and b.list_id in (:listId);
+      }`,
+      // differing units on the selected dimension
+      `sync query q(roomId, left, right) by a.thread_id {
+        select a.id as leftId, b.id as rightId
+        from messages as a join messages as b on b.id = a.body
+        where a.room_id = :roomId and b.room_id = :roomId
+          and a.thread_id = :left and b.thread_id = :right;
+      }`,
+      // differing fixed scopes
+      `sync query q(roomId, otherRoom, threadId) by a.thread_id {
+        select a.id as leftId, b.id as rightId
+        from messages as a join messages as b on b.id = a.body
+        where a.room_id = :roomId and b.room_id = :otherRoom
+          and a.thread_id = :threadId and b.thread_id = :threadId;
+      }`,
+    ]) {
+      const error = frontendError(() => validate(source));
+      expect(error.code).toBe('SYQL6005_INVALID_SYNC_QUERY');
+      expect(error.message).toContain(
+        'through several instances whose scope proofs differ',
+      );
+    }
   });
 
   test('rejects nondeterministic snapshot-external SQL', () => {
