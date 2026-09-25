@@ -1,8 +1,52 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.23.0** (`v0.23.0`). All artifacts use Apache-2.0, except
+current release is **0.24.0** (`v0.24.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.24.0 release notes
+
+0.24.0 is a minor release: it adds a public server hook capability, an
+optional `StorageTransaction` member, four catalogued storage error codes, and
+readiness refusals that an existing database can now hit, so a patch number
+would hide the surface. Upgrade Syncular packages and crates together. SSP2
+stays at wire version 3, and neither client core changes.
+
+- **Push hooks read generated queries on the push transaction.** Row
+  validators and remote command callbacks receive `ctx.queryAuthoritative`,
+  and the whole-commit validator and the reaction planner receive
+  `read.queryAuthoritative`. Each takes the request `storage.queryAuthoritative`
+  takes (`{ plan, params, tables }` from a generated query descriptor), binds
+  every relation to the commit's partition, and runs on the push transaction's
+  connection. On SQLite and PostgreSQL the read sees the rows staged earlier in
+  the commit, and a push completes on a one-connection pool. Calling the
+  top-level `storage.queryAuthoritative` from these hooks still waits on the
+  transaction it is inside. D1 buffers writes until commit, so a read over a
+  table the commit has already written fails with
+  `sync.storage.query_over_staged_writes`. The capability is the optional
+  `StorageTransaction.queryAuthoritative`; a custom storage transaction without
+  it fails with `sync.storage.transaction_query_unsupported`. On the remote
+  command context the read is bound to the partition and is not filtered by the
+  actor's scopes.
+- **Same-version readiness checks storage-internal columns on every backend.**
+  At a matching schema version, `ensureSchema` on SQLite, PostgreSQL, and D1
+  refuses a synced table that is missing, lacks a configured column, carries a
+  `_sync_*` column whose type or nullability differs from the storage DDL, or
+  has a primary key other than `(_sync_partition, _sync_row_id)`, with
+  `sync.storage.physical_layout_mismatch` and `details`
+  `{ table, column?, reason, expected?, actual? }`. The stored-layout
+  comparison fails with `sync.storage.stored_layout_mismatch`. D1 previously
+  trusted a matching marker without either check; it now also refuses a
+  same-version database missing a core table its request path uses, such as
+  `sync_tombstones`, and reads `sqlite_master` once plus one `PRAGMA
+  table_info` per synced table the first time a storage instance opens.
+- **The Kotlin bindings build with Kotlin 2.4.20.** Kotlin Gradle plugin 1.9.24
+  uses APIs Gradle 10 removes.
+
+**Upgrade note.** A database that served under 0.23.0 with drifted internal
+columns now refuses to open at the same schema version. Bump the schema
+version to apply the storage DDL, or on D1 run `migrate()` to create missing
+core tables. Hosts that match refusals by message text must match the new codes.
 
 ## 0.23.0 release notes
 
