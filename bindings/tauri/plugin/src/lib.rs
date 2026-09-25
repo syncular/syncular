@@ -45,7 +45,7 @@ pub mod core;
 pub mod transport;
 
 use core::SyncularCore;
-use syncular_client::{FileQuerySnapshotReader, WindowBase, WindowCoverage};
+use syncular_client::{FileQuerySnapshotReader, QueryReadFailure, WindowBase, WindowCoverage};
 
 /// The Tauri event name carrying derived client-observable events.
 pub const EVENT_NAME: &str = "syncular://event";
@@ -124,6 +124,12 @@ enum Request {
     },
     /// Native realtime reader wake; contains no data (the transport buffer does).
     TransportWake,
+    /// §7.6: an owned read-sidecar failure, or the first success after one.
+    QueryRead {
+        id: String,
+        tables: Vec<String>,
+        failure: Option<QueryReadFailure>,
+    },
     #[cfg(test)]
     Block {
         duration: Duration,
@@ -140,6 +146,7 @@ enum ReadRequest {
         sql: String,
         params: Vec<Value>,
         coverage: Vec<WindowCoverage>,
+        owner: Option<(String, Vec<String>)>,
         reply: Sender<Value>,
     },
     Shutdown,
@@ -249,22 +256,46 @@ impl SyncularState {
     }
 }
 
-fn run_reader_thread(path: String, rx: Receiver<ReadRequest>) {
+fn run_reader_thread(path: String, rx: Receiver<ReadRequest>, owner_tx: Sender<Request>) {
     let mut reader = FileQuerySnapshotReader::new(path);
+    // §7.6: owner ids whose last sidecar read failed. Only a failure or the
+    // first success after one reaches the owning core's mailbox.
+    let mut failing = std::collections::HashSet::<String>::new();
     while let Ok(request) = rx.recv() {
         match request {
             ReadRequest::QuerySnapshot {
                 sql,
                 params,
                 coverage,
+                owner,
                 reply,
             } => {
-                let value = match reader.query_snapshot(&sql, &params, &coverage) {
+                let result = reader.query_snapshot(&sql, &params, &coverage);
+                let value = match &result {
                     Ok(snapshot) => json!({ "result": snapshot }),
-                    Err(message) => json!({
-                        "error": { "code": "client.failed", "message": message }
+                    Err(failure) => json!({
+                        "error": {
+                            "code": failure.code.unwrap_or("client.failed"),
+                            "message": failure.message,
+                        }
                     }),
                 };
+                if let Some((id, tables)) = owner {
+                    let failure = result.err();
+                    let report = if failure.is_some() {
+                        failing.insert(id.clone());
+                        true
+                    } else {
+                        failing.remove(&id)
+                    };
+                    if report {
+                        let _ = owner_tx.send(Request::QueryRead {
+                            id,
+                            tables,
+                            failure,
+                        });
+                    }
+                }
                 let _ = reply.send(value);
             }
             ReadRequest::Shutdown => return,
@@ -381,6 +412,14 @@ where
             }
             Request::TransportWake => {
                 core.poll_transport();
+                pump_events(&mut core, &*emit);
+            }
+            Request::QueryRead {
+                id,
+                tables,
+                failure,
+            } => {
+                core.record_query_read(&id, &tables, failure.as_ref());
                 pump_events(&mut core, &*emit);
             }
             #[cfg(test)]
@@ -608,6 +647,7 @@ async fn syncular_query_snapshot<R: Runtime>(
     sql: String,
     params: Option<Value>,
     coverage: Option<Value>,
+    owner: Option<Value>,
 ) -> Result<Value, String> {
     let state = app.state::<SyncularState>();
     let _read_guard = match state.security_gate.enter_read() {
@@ -626,11 +666,39 @@ async fn syncular_query_snapshot<R: Runtime>(
             Ok(value) => value,
             Err(message) => return Ok(client_error(message)),
         };
+        // §7.5 owner: the same `{id, tables}` contract the command router parses.
+        let parsed_owner = match &owner {
+            None | Some(Value::Null) => None,
+            Some(value) => {
+                let id = value
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.is_empty());
+                let tables = value
+                    .get("tables")
+                    .and_then(Value::as_array)
+                    .and_then(|list| {
+                        list.iter()
+                            .map(|table| table.as_str().map(str::to_owned))
+                            .collect::<Option<Vec<String>>>()
+                    });
+                match (id, tables) {
+                    (Some(id), Some(tables)) => Some((id.to_owned(), tables)),
+                    _ => {
+                        return Ok(json!({ "error": {
+                            "code": "sync.invalid_request",
+                            "message": "sync.invalid_request: querySnapshot owner must be {id: non-empty string, tables: string[]}",
+                        } }))
+                    }
+                }
+            }
+        };
         let (reply_tx, reply_rx) = std::sync::mpsc::channel();
         state.send_read(ReadRequest::QuerySnapshot {
             sql,
             params: bind,
             coverage: parsed_coverage,
+            owner: parsed_owner,
             reply: reply_tx,
         })?;
         return reply_rx
@@ -642,7 +710,12 @@ async fn syncular_query_snapshot<R: Runtime>(
     state.send(Request::Command {
         command: json!({
             "method": "querySnapshot",
-            "params": { "sql": sql, "params": params_value, "coverage": coverage_value }
+            "params": {
+                "sql": sql,
+                "params": params_value,
+                "coverage": coverage_value,
+                "owner": owner.unwrap_or(Value::Null),
+            }
         }),
         reply: reply_tx,
     })?;
@@ -678,7 +751,10 @@ pub fn init<R: Runtime>(config: SyncularConfig) -> TauriPlugin<R> {
                     let path = path.clone();
                     std::thread::Builder::new()
                         .name("syncular-read".to_owned())
-                        .spawn(move || run_reader_thread(path, reader_rx))
+                        .spawn({
+                            let owner_tx = tx.clone();
+                            move || run_reader_thread(path, reader_rx, owner_tx)
+                        })
                         .map_err(|e| format!("failed to spawn syncular read thread: {e}"))?;
                     Some(Mutex::new(reader_tx))
                 }
@@ -1074,7 +1150,8 @@ mod tests {
 
         let (read_tx, read_rx) = channel::<ReadRequest>();
         let read_path = path.to_string_lossy().into_owned();
-        let reader = std::thread::spawn(move || run_reader_thread(read_path, read_rx));
+        let owner_tx = tx.clone();
+        let reader = std::thread::spawn(move || run_reader_thread(read_path, read_rx, owner_tx));
 
         // Model a slow HTTP/WS round on the mutable owner. The dedicated read
         // mailbox must still return the durable local snapshot immediately.
@@ -1091,6 +1168,7 @@ mod tests {
                 sql: "SELECT 1 AS value".to_owned(),
                 params: Vec::new(),
                 coverage: Vec::new(),
+                owner: None,
                 reply: snapshot_tx,
             })
             .expect("post snapshot");
@@ -1098,6 +1176,53 @@ mod tests {
             .recv_timeout(Duration::from_millis(50))
             .expect("local snapshot must not wait for the owner");
         assert_eq!(snapshot["result"]["rows"][0]["value"], 1);
+
+        let (failed_tx, failed_rx) = channel();
+        read_tx
+            .send(ReadRequest::QuerySnapshot {
+                sql: "SELECT private_value FROM missing_private_table".to_owned(),
+                params: Vec::new(),
+                coverage: Vec::new(),
+                owner: Some(("queries:missing".to_owned(), vec!["tasks".to_owned()])),
+                reply: failed_tx,
+            })
+            .expect("post failed snapshot");
+        assert_eq!(
+            failed_rx.recv().expect("failed snapshot reply")["error"]["code"],
+            "client.failed"
+        );
+        let (diagnostics_tx, diagnostics_rx) = channel();
+        tx.send(Request::Command {
+            command: json!({ "method": "diagnosticsSnapshot", "params": {} }),
+            reply: diagnostics_tx,
+        })
+        .expect("post diagnostics");
+        assert_eq!(
+            diagnostics_rx.recv().expect("diagnostics reply")["result"]["queryFailures"][0]["id"],
+            "queries:missing"
+        );
+
+        let (recovered_tx, recovered_rx) = channel();
+        read_tx
+            .send(ReadRequest::QuerySnapshot {
+                sql: "SELECT 1 AS value".to_owned(),
+                params: Vec::new(),
+                coverage: Vec::new(),
+                owner: Some(("queries:missing".to_owned(), vec!["tasks".to_owned()])),
+                reply: recovered_tx,
+            })
+            .expect("post recovered snapshot");
+        assert!(recovered_rx.recv().expect("recovered snapshot reply")["result"].is_object());
+        let (cleared_tx, cleared_rx) = channel();
+        tx.send(Request::Command {
+            command: json!({ "method": "diagnosticsSnapshot", "params": {} }),
+            reply: cleared_tx,
+        })
+        .expect("post cleared diagnostics");
+        assert_eq!(
+            cleared_rx.recv().expect("cleared diagnostics reply")["result"]["queryFailures"],
+            json!([])
+        );
 
         read_tx.send(ReadRequest::Shutdown).expect("stop reader");
         reader.join().expect("join reader");

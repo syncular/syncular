@@ -10,6 +10,7 @@ import type { SecurityLifecycle } from './client';
 export const CLIENT_DIAGNOSTICS_VERSION = 1 as const;
 export const MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS = 256;
 export const MAX_DIAGNOSTIC_DOMAINS = 256;
+export const MAX_DIAGNOSTIC_QUERY_FAILURES = 256;
 
 export type ClientDiagnosticsHostKind =
   | 'direct'
@@ -127,6 +128,22 @@ export interface ClientDiagnosticsStorage {
   readonly pressureReasonCode?: 'client.blob_cache_over_limit';
 }
 
+/** The latest owned snapshot read of one query id failed (SPEC §7.6). */
+export interface DiagnosticQueryFailure {
+  /** Application-owned stable query id. It must never contain PHI. */
+  readonly id: string;
+  /** Distinct generated table names the query depends on, ascending. */
+  readonly tables: readonly string[];
+  readonly code:
+    | 'client.storage_corrupt'
+    | 'client.storage_io'
+    | 'client.query_failed';
+  /** SQLite extended result code, when the driver exposed one. */
+  readonly sqliteCode?: number;
+  /** First failure since this id's last successful read. */
+  readonly atMs: number;
+}
+
 export interface ClientDiagnosticsSnapshot {
   readonly version: typeof CLIENT_DIAGNOSTICS_VERSION;
   readonly capturedAtMs: number;
@@ -154,6 +171,7 @@ export interface ClientDiagnosticsSnapshot {
   readonly lastRound?: DiagnosticLastRound;
   readonly lastChange?: DiagnosticLastChange;
   readonly storage: ClientDiagnosticsStorage;
+  readonly queryFailures: readonly DiagnosticQueryFailure[];
 }
 
 export type ClientDiagnosticsListener = (

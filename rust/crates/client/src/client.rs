@@ -31,13 +31,15 @@ use crate::api::{
     ClientDiagnosticsStorage, ClientLimits, CommandEffects, CommitOperation,
     CommitOperationOutcome, CommitOutcome, CommitOutcomeQuery, CommitOutcomeResolution,
     CommitOutcomeStatus, ConflictRecord, CoverageSnapshot, DiagnosticLastChange,
-    DiagnosticLastRound, DiagnosticRoundCounters, DiagnosticSubscription, FetchedBlob, LeaseState,
-    LocalDataPurgeInput, LocalDataPurgeResult, LocalDataPurgeTarget, LocalDataRebootstrapInput,
-    LocalDataRebootstrapResult, Mutation, PresencePeer, PreviousVersionStatus, QueryRow,
-    QuerySnapshot, QueryValue, RejectionDetails, RejectionRecord, ResolveCommitOutcomeInput,
-    RowState, SchemaFloor, SubscriptionStateView, SyncIntent, SyncOutcome, SyncReport,
-    SyncStatusSnapshot, TableChange, WindowBase, WindowChange, WindowCoverage, WindowState,
-    WindowUnitRef, CLIENT_DIAGNOSTICS_VERSION, MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
+    DiagnosticLastRound, DiagnosticQueryFailure, DiagnosticRoundCounters, DiagnosticSubscription,
+    FetchedBlob, LeaseState, LocalDataPurgeInput, LocalDataPurgeResult, LocalDataPurgeTarget,
+    LocalDataRebootstrapInput, LocalDataRebootstrapResult, Mutation, PresencePeer,
+    PreviousVersionStatus, QueryOwner, QueryReadFailure, QueryRow, QuerySnapshot, QueryValue,
+    RejectionDetails, RejectionRecord, ResolveCommitOutcomeInput, RowState, SchemaFloor,
+    SubscriptionStateView, SyncIntent, SyncOutcome, SyncReport, SyncStatusSnapshot, TableChange,
+    WindowBase, WindowChange, WindowCoverage, WindowState, WindowUnitRef,
+    CLIENT_DIAGNOSTICS_VERSION, MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
+    MAX_DIAGNOSTIC_QUERY_FAILURES,
 };
 #[cfg(feature = "bench-internals")]
 use crate::bench::{Phase, Recorder};
@@ -3414,6 +3416,7 @@ mod observation_tests {
                 "SELECT id, project_id, _sync_version AS server_version FROM tasks ORDER BY id",
                 &[],
                 &coverage,
+                None,
             )
             .expect("owner snapshot");
         let mut reader = FileQuerySnapshotReader::new(path.to_string_lossy());
@@ -3441,6 +3444,93 @@ mod observation_tests {
         drop(reader);
         drop(client);
         std::fs::remove_file(path).expect("remove temp database");
+    }
+
+    #[test]
+    fn owned_query_failures_classify_order_bound_and_clear() {
+        let io = QueryReadFailure::from(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(266),
+            Some("private SQLite prose".to_owned()),
+        ));
+        assert_eq!(io.code, Some("client.storage_io"));
+        assert_eq!(io.sqlite_code, Some(266));
+        assert_eq!(io.message, "local SQLite storage I/O failed");
+        let corrupt = QueryReadFailure::from(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(26),
+            None,
+        ));
+        assert_eq!(corrupt.code, Some("client.storage_corrupt"));
+
+        let mut client = client();
+        let generic = QueryReadFailure::from("private query prose".to_owned());
+        client.record_query_read(
+            QueryOwner {
+                id: "first",
+                tables: &["tasks", "tasks"],
+            },
+            Some(&generic),
+        );
+        client.record_query_read(
+            QueryOwner {
+                id: "second",
+                tables: &["tasks"],
+            },
+            Some(&generic),
+        );
+        client.record_query_read(
+            QueryOwner {
+                id: "first",
+                tables: &["docs"],
+            },
+            Some(&io),
+        );
+        let failures = &client
+            .diagnostics_snapshot(&Default::default())
+            .expect("diagnostics")
+            .query_failures;
+        assert_eq!(
+            failures
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["second", "first"]
+        );
+        assert_eq!(failures[1].tables, vec!["docs"]);
+        assert_eq!(failures[1].code, "client.storage_io");
+
+        for index in 0..=MAX_DIAGNOSTIC_QUERY_FAILURES {
+            client.record_query_read(
+                QueryOwner {
+                    id: &format!("query-{index}"),
+                    tables: &["tasks"],
+                },
+                Some(&generic),
+            );
+        }
+        let failures = &client
+            .diagnostics_snapshot(&Default::default())
+            .expect("bounded diagnostics")
+            .query_failures;
+        assert_eq!(failures.len(), MAX_DIAGNOSTIC_QUERY_FAILURES);
+        assert_eq!(failures.last().expect("last failure").id, "query-256");
+
+        client
+            .query_snapshot(
+                "SELECT id FROM tasks",
+                &[],
+                &[],
+                Some(QueryOwner {
+                    id: "query-256",
+                    tables: &["tasks"],
+                }),
+            )
+            .expect("successful owned read");
+        assert!(client
+            .diagnostics_snapshot(&Default::default())
+            .expect("cleared diagnostics")
+            .query_failures
+            .iter()
+            .all(|entry| entry.id != "query-256"));
     }
 
     #[test]
@@ -4528,6 +4618,8 @@ pub struct SyncClient {
     retry_delay_ms: u64,
     last_round: Option<DiagnosticLastRound>,
     last_change: Option<DiagnosticLastChange>,
+    /// §7.6: latest failed owned snapshot read per owner id, oldest first.
+    query_failures: Vec<DiagnosticQueryFailure>,
 }
 
 pub(crate) fn quote_ident(name: &str) -> String {
@@ -4832,29 +4924,28 @@ fn sql_ref_to_json_dynamic(value: rusqlite::types::ValueRef<'_>) -> Value {
     }
 }
 
+/// §7.5: SQLite failures classify by result code into [`QueryReadFailure`].
 fn query_connection(
     conn: &Connection,
     sql: &str,
     params: &[QueryValue],
-) -> Result<Vec<QueryRow>, String> {
+) -> Result<Vec<QueryRow>, QueryReadFailure> {
     crate::query_guard::assert_read_only_query(sql)?;
     let lowered_sql = crate::query_guard::lower_public_query_sql(sql);
     let bound: Vec<SqlValue> = params
         .iter()
         .map(json_param_to_sql)
         .collect::<Result<_, _>>()?;
-    let mut stmt = conn.prepare(&lowered_sql).map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(&lowered_sql)?;
     let column_names: Vec<String> = stmt.column_names().into_iter().map(str::to_owned).collect();
     let bound_refs: Vec<&dyn rusqlite::ToSql> =
         bound.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
-    let mut sql_rows = stmt
-        .query(bound_refs.as_slice())
-        .map_err(|e| e.to_string())?;
+    let mut sql_rows = stmt.query(bound_refs.as_slice())?;
     let mut out = Vec::new();
-    while let Some(row) = sql_rows.next().map_err(|e| e.to_string())? {
+    while let Some(row) = sql_rows.next()? {
         let mut record = Map::new();
         for (i, name) in column_names.iter().enumerate() {
-            let value = row.get_ref(i).map_err(|e| e.to_string())?;
+            let value = row.get_ref(i)?;
             record.insert(name.clone(), sql_ref_to_json_dynamic(value));
         }
         out.push(record);
@@ -4862,26 +4953,25 @@ fn query_connection(
     Ok(out)
 }
 
-fn persisted_window_state(conn: &Connection, base: &WindowBase) -> Result<WindowState, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT windows.unit, subscriptions.state_json
-               FROM _syncular_windows AS windows
-               JOIN _syncular_subscriptions AS subscriptions
-                 ON subscriptions.id = windows.sub_id
-              WHERE windows.base = ?1
-              ORDER BY windows.unit ASC",
-        )
-        .map_err(|error| error.to_string())?;
-    let rows = stmt
-        .query_map(rusqlite::params![window_base_key(base)], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .map_err(|error| error.to_string())?;
+fn persisted_window_state(
+    conn: &Connection,
+    base: &WindowBase,
+) -> Result<WindowState, QueryReadFailure> {
+    let mut stmt = conn.prepare(
+        "SELECT windows.unit, subscriptions.state_json
+           FROM _syncular_windows AS windows
+           JOIN _syncular_subscriptions AS subscriptions
+             ON subscriptions.id = windows.sub_id
+          WHERE windows.base = ?1
+          ORDER BY windows.unit ASC",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![window_base_key(base)], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
     let mut units = Vec::new();
     let mut pending = Vec::new();
     for row in rows {
-        let (unit, raw) = row.map_err(|error| error.to_string())?;
+        let (unit, raw) = row?;
         let state: Value = serde_json::from_str(&raw)
             .map_err(|error| format!("invalid persisted window subscription: {error}"))?;
         let is_pending = state.get("status").and_then(Value::as_str) != Some("active")
@@ -4902,9 +4992,8 @@ fn snapshot_connection(
     sql: &str,
     params: &[Value],
     coverage: &[WindowCoverage],
-) -> Result<QuerySnapshot, String> {
-    conn.execute_batch("SAVEPOINT syncular_snapshot_read")
-        .map_err(|error| error.to_string())?;
+) -> Result<QuerySnapshot, QueryReadFailure> {
+    conn.execute_batch("SAVEPOINT syncular_snapshot_read")?;
     let result = (|| {
         let revision = conn
             .query_row(
@@ -4945,8 +5034,7 @@ fn snapshot_connection(
     })();
     match result {
         Ok(snapshot) => {
-            conn.execute_batch("RELEASE syncular_snapshot_read")
-                .map_err(|error| error.to_string())?;
+            conn.execute_batch("RELEASE syncular_snapshot_read")?;
             Ok(snapshot)
         }
         Err(error) => {
@@ -4992,12 +5080,14 @@ impl FileQuerySnapshotReader {
             .ok_or_else(|| "read sidecar connection missing".to_owned())
     }
 
+    /// Hosts report an owned failure, and the first success after it, to the
+    /// owning core through [`SyncClient::record_query_read`] (§7.6).
     pub fn query_snapshot(
         &mut self,
         sql: &str,
         params: &[Value],
         coverage: &[WindowCoverage],
-    ) -> Result<QuerySnapshot, String> {
+    ) -> Result<QuerySnapshot, QueryReadFailure> {
         snapshot_connection(self.connection()?, sql, params, coverage)
     }
 }
@@ -5140,6 +5230,7 @@ impl SyncClient {
             retry_delay_ms: 250,
             last_round: None,
             last_change: None,
+            query_failures: Vec::new(),
         };
         // The row write path leans on the prepared-statement cache (two
         // insert statements per synced table, plus the bookkeeping
@@ -5936,6 +6027,7 @@ impl SyncClient {
             last_round: self.last_round.clone(),
             last_change: self.last_change.clone(),
             storage: self.diagnostics_storage(),
+            query_failures: self.query_failures.clone(),
         })
     }
 
@@ -8409,7 +8501,7 @@ impl SyncClient {
     /// arbitrary SQL can alias, join, and compute — there is no schema column
     /// to consult per output cell, unlike [`read_rows`].
     pub fn query(&self, sql: &str, params: &[QueryValue]) -> Result<Vec<QueryRow>, String> {
-        query_connection(&self.conn, sql, params)
+        query_connection(&self.conn, sql, params).map_err(|failure| failure.to_string())
     }
 
     /// Repository benchmark and conformance access, present only with `bench-internals`.
@@ -8432,13 +8524,60 @@ impl SyncClient {
     }
 
     /// Rows, coverage, and local revision from one SQLite read snapshot.
+    /// §7.5 atomic snapshot read. An `owner` records a failure in
+    /// `diagnostics_snapshot().query_failures` until its next successful read.
     pub fn query_snapshot(
         &mut self,
         sql: &str,
         params: &[QueryValue],
         coverage: &[WindowCoverage],
+        owner: Option<QueryOwner<'_>>,
     ) -> Result<QuerySnapshot, String> {
-        snapshot_connection(&self.conn, sql, params, coverage)
+        let result = snapshot_connection(&self.conn, sql, params, coverage);
+        if let Some(owner) = owner {
+            self.record_query_read(owner, result.as_ref().err());
+        }
+        result.map_err(|failure| failure.to_string())
+    }
+
+    /// §7.6: record the outcome of one owned snapshot read, including reads a
+    /// host ran on a separate connection. A success removes the owner's entry;
+    /// an identical failure leaves it unchanged; a changed failure moves last.
+    pub fn record_query_read(&mut self, owner: QueryOwner<'_>, failure: Option<&QueryReadFailure>) {
+        let position = self
+            .query_failures
+            .iter()
+            .position(|entry| entry.id == owner.id);
+        let Some(failure) = failure else {
+            if let Some(index) = position {
+                self.query_failures.remove(index);
+            }
+            return;
+        };
+        let tables: Vec<String> = BTreeSet::from_iter(owner.tables.iter().copied())
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let code = failure.code.unwrap_or("client.query_failed").to_owned();
+        if position.is_some_and(|index| {
+            let entry = &self.query_failures[index];
+            entry.tables == tables && entry.code == code && entry.sqlite_code == failure.sqlite_code
+        }) {
+            return;
+        }
+        if let Some(index) = position {
+            self.query_failures.remove(index);
+        }
+        self.query_failures.push(DiagnosticQueryFailure {
+            id: owner.id.to_owned(),
+            tables,
+            code,
+            sqlite_code: failure.sqlite_code,
+            at_ms: self.clock_now_ms(),
+        });
+        if self.query_failures.len() > MAX_DIAGNOSTIC_QUERY_FAILURES {
+            self.query_failures.remove(0);
+        }
     }
 
     // -- request building ---------------------------------------------------------

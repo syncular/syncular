@@ -17,6 +17,21 @@
 export const changelog = [
   {
     date: '2026-09-25',
+    title: 'Failed local query reads expose bounded diagnostics',
+    body: 'Generated TypeScript and Rust queries now identify their snapshot reads with a stable query id and generated table dependencies. A failed owned read adds a privacy-safe `queryFailures` entry to client diagnostics until the query reads successfully. The list retains 256 entries and contains no SQL, parameters, rows, paths, or driver prose. SQLite corruption and I/O failures raise the stable non-retryable codes `client.storage_corrupt` and `client.storage_io`; other read failures keep their existing application error and use `client.query_failed` only in diagnostics. React live queries now enter `error` after a failed refresh while retaining the last successful rows and revision.',
+    links: [
+      {
+        href: '/platform-react/#generated-live-queries',
+        label: 'React live queries',
+      },
+      {
+        href: '/platform-rust/#generated-queries',
+        label: 'Rust generated queries',
+      },
+    ],
+  },
+  {
+    date: '2026-09-25',
     title: 'A sync query can join a table to itself',
     body: '`syncular generate` now accepts a `sync query` that reads one table through several aliases when every alias binds the same declared scopes with the same operator and parameters, for example two `catalogue_codes` instances each constrained by `catalogue_set_id = :catalogueSetId`. Identical proofs select the same window base and units, so the descriptor holds one coverage entry and one dependency for that table, and the TypeScript and Rust clients report the query ready when that one window completes. An unconstrained alias, or aliases that differ in a parameter, operator, unit dimension, or fixed scope, still fail with `SYQL6005_INVALID_SYNC_QUERY`. An ordinary `query` over a self-join with identical proofs now gets an exact dependency in place of table-wide invalidation. A self-join has no inferred row identity.',
     links: [

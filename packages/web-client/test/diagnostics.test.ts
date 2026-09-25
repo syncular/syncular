@@ -3,6 +3,7 @@ import {
   type ClientSchema,
   ClientSyncError,
   MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
+  MAX_DIAGNOSTIC_QUERY_FAILURES,
   SECURITY_PREFLIGHT_REQUIRED_CODE,
 } from '@syncular/client';
 import { CLIENT_SCHEMA, makeClient, makeServer, taskValues } from './helpers';
@@ -147,6 +148,81 @@ describe('privacy-safe client diagnostics', () => {
       return;
     }
     throw new Error('expected diagnostics to remain protected in preflight');
+  });
+
+  test('classifies, orders, bounds, and clears owned query failures', async () => {
+    const server = makeServer();
+    const fixture = await makeClient(server, {
+      clientId: 'diagnostics-query-failures',
+    });
+    const database = fixture.db as unknown as {
+      query: typeof fixture.db.query;
+    };
+    const originalQuery = database.query.bind(fixture.db);
+    let sqliteCode = 266;
+    database.query = (sql, params) => {
+      if (sql === 'SELECT id FROM tasks /* fail-owned */') {
+        const error = new Error('private SQLite prose');
+        error.name = 'SQLiteError';
+        Object.assign(error, { errno: sqliteCode });
+        throw error;
+      }
+      return originalQuery(sql, params);
+    };
+
+    const owner = { id: 'queries:listTasks', tables: ['tasks', 'tasks'] };
+    expect(() =>
+      fixture.client.querySnapshot({
+        sql: 'SELECT id FROM tasks /* fail-owned */',
+        owner,
+      }),
+    ).toThrow('local SQLite storage I/O failed');
+    expect(fixture.client.diagnosticsSnapshot().queryFailures).toEqual([
+      {
+        id: 'queries:listTasks',
+        tables: ['tasks'],
+        code: 'client.storage_io',
+        sqliteCode: 266,
+        atMs: server.now.ms,
+      },
+    ]);
+
+    server.now.ms += 1;
+    sqliteCode = 11;
+    expect(() =>
+      fixture.client.querySnapshot({
+        sql: 'SELECT id FROM tasks /* fail-owned */',
+        owner,
+      }),
+    ).toThrow('local SQLite storage is corrupt');
+    expect(fixture.client.diagnosticsSnapshot().queryFailures[0]).toEqual({
+      id: 'queries:listTasks',
+      tables: ['tasks'],
+      code: 'client.storage_corrupt',
+      sqliteCode: 11,
+      atMs: server.now.ms,
+    });
+
+    database.query = originalQuery;
+    fixture.client.querySnapshot({ sql: 'SELECT id FROM tasks', owner });
+    expect(fixture.client.diagnosticsSnapshot().queryFailures).toEqual([]);
+
+    for (let index = 0; index <= MAX_DIAGNOSTIC_QUERY_FAILURES; index += 1) {
+      expect(() =>
+        fixture.client.querySnapshot({
+          sql: `SELECT * FROM missing_${index}`,
+          owner: { id: `query-${index}`, tables: ['tasks'] },
+        }),
+      ).toThrow();
+    }
+    const bounded = fixture.client.diagnosticsSnapshot().queryFailures;
+    expect(bounded).toHaveLength(MAX_DIAGNOSTIC_QUERY_FAILURES);
+    expect(bounded[0]?.id).toBe('query-1');
+    expect(bounded.at(-1)).toMatchObject({
+      id: `query-${MAX_DIAGNOSTIC_QUERY_FAILURES}`,
+      code: 'client.query_failed',
+    });
+    expect(JSON.stringify(bounded)).not.toContain('missing_');
   });
 
   test('reports lease health without exposing the lease handle', async () => {

@@ -44,13 +44,15 @@ pub use api::{
     ClientDiagnosticsSnapshot, ClientDiagnosticsStorage, ClientLimits, CommandEffects,
     CommitOperation, CommitOperationOutcome, CommitOutcome, CommitOutcomeQuery,
     CommitOutcomeResolution, CommitOutcomeStatus, ConflictRecord, CoverageSnapshot,
-    DiagnosticLastChange, DiagnosticLastRound, DiagnosticRoundCounters, DiagnosticSubscription,
-    ExpectedDiagnosticSubscription, FetchedBlob, LocalDataPurgeInput, LocalDataPurgeResult,
-    LocalDataPurgeTarget, LocalDataRebootstrapInput, LocalDataRebootstrapResult, Mutation,
-    PresencePeer, QueryRow, QuerySnapshot, QueryValue, RejectionRecord, ResolveCommitOutcomeInput,
-    RowState, SchemaFloor, SubscriptionStateView, SyncIntent, SyncOutcome, SyncReport,
-    SyncStatusSnapshot, TableChange, TimeBucketUnit, WindowBase, WindowChange, WindowCoverage,
-    WindowState, WindowUnitRef, CLIENT_DIAGNOSTICS_VERSION, MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
+    DiagnosticLastChange, DiagnosticLastRound, DiagnosticQueryFailure, DiagnosticRoundCounters,
+    DiagnosticSubscription, ExpectedDiagnosticSubscription, FetchedBlob, LocalDataPurgeInput,
+    LocalDataPurgeResult, LocalDataPurgeTarget, LocalDataRebootstrapInput,
+    LocalDataRebootstrapResult, Mutation, PresencePeer, QueryOwner, QueryReadFailure, QueryRow,
+    QuerySnapshot, QueryValue, RejectionRecord, ResolveCommitOutcomeInput, RowState, SchemaFloor,
+    SubscriptionStateView, SyncIntent, SyncOutcome, SyncReport, SyncStatusSnapshot, TableChange,
+    TimeBucketUnit, WindowBase, WindowChange, WindowCoverage, WindowState, WindowUnitRef,
+    CLIENT_DIAGNOSTICS_VERSION, MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
+    MAX_DIAGNOSTIC_QUERY_FAILURES,
 };
 pub use client::{FileQuerySnapshotReader, SyncClient, SECURITY_PREFLIGHT_REQUIRED_CODE};
 pub use schema::{compile_schema, parse_schema_json, ClientSchema};

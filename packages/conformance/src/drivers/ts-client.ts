@@ -439,6 +439,7 @@ class TsClientInstance implements ClientInstance {
       readonly base: DriverWindowBase;
       readonly units: readonly string[];
     }[] = [],
+    owner?: { readonly id: string; readonly tables: readonly string[] },
   ) {
     const snapshot = this.#client.querySnapshot({
       sql,
@@ -460,6 +461,7 @@ class TsClientInstance implements ClientInstance {
         },
         units: item.units,
       })),
+      ...(owner !== undefined ? { owner } : {}),
     });
     return {
       revision: snapshot.revision.toString(),
@@ -477,6 +479,11 @@ class TsClientInstance implements ClientInstance {
       ),
       coverage: snapshot.coverage,
     };
+  }
+
+  async diagnosticsSnapshot() {
+    const { queryFailures } = this.#client.diagnosticsSnapshot();
+    return { queryFailures };
   }
 
   async drainProgress() {

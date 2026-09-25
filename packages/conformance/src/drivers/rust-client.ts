@@ -1,4 +1,4 @@
-import type { DriverSyncProgress } from '../driver';
+import type { DriverQueryFailure, DriverSyncProgress } from '../driver';
 /**
  * Rust ClientDriver: spawns the `conformance-shim` binary (the Rust client
  * core on rusqlite, `rust/crates/client`) — one subprocess per
@@ -969,11 +969,13 @@ class RustClientInstance implements ClientInstance {
       readonly base: DriverWindowBase;
       readonly units: readonly string[];
     }[] = [],
+    owner?: { readonly id: string; readonly tables: readonly string[] },
   ) {
     return (await this.#shim.call('querySnapshot', {
       sql,
       params: params as unknown as JsonValue,
       coverage: coverage as unknown as JsonValue,
+      ...(owner !== undefined ? { owner: owner as unknown as JsonValue } : {}),
     })) as unknown as {
       readonly revision: string;
       readonly rows: readonly Record<string, DriverRowValue>[];
@@ -988,6 +990,12 @@ class RustClientInstance implements ClientInstance {
           readonly unit: string;
         }[];
       };
+    };
+  }
+
+  async diagnosticsSnapshot() {
+    return (await this.#shim.call('diagnosticsSnapshot', {})) as unknown as {
+      readonly queryFailures: readonly DriverQueryFailure[];
     };
   }
 

@@ -24,7 +24,11 @@ export interface UseRawSqlOptions<Row = SqlRow> {
   /** Generated coverage claims its windows by default. */
   readonly claimCoverage?: boolean;
   readonly enabled?: boolean;
-  /** Stable identity override for a raw query cache entry. */
+  /**
+   * Stable, PHI-free query id. It names the query in
+   * `diagnosticsSnapshot().queryFailures`; without it the query reports as
+   * `raw`.
+   */
   readonly id?: string;
 }
 
@@ -81,7 +85,9 @@ export function useRawSql<Row = SqlRow>(
   const entry = useMemo(
     () =>
       store.query<Row>({
-        id: options?.id ?? `raw:${identity}`,
+        // The store keys entries by SQL, params, and dependencies as well, so
+        // the id only names the query in diagnostics and never carries SQL.
+        id: options?.id ?? 'raw',
         sql,
         ...(params !== undefined ? { params } : {}),
         dependencies,

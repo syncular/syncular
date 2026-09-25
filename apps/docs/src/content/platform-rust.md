@@ -165,6 +165,13 @@ let view = list_todos::snapshot(&mut client, &params)?;
 println!("revision={}, complete={}", view.revision, view.coverage.complete);
 ```
 
+Generated snapshots pass the descriptor id and table dependencies as the read
+owner. A failed read appears in `diagnostics_snapshot().query_failures` until
+the same query reads successfully. The entry contains no SQL, parameters, rows,
+or SQLite error prose. SQLite corruption and I/O failures use
+`client.storage_corrupt` and `client.storage_io`; every other read failure uses
+`client.query_failed` in diagnostics.
+
 The generated `select` function exposes the exact compiler-checked SQL and
 positional values for diagnostics. `DESCRIPTOR` additionally carries the
 QueryIR-hash identity, table and scope dependencies, `WindowCoverage`, and an

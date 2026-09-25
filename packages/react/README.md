@@ -66,8 +66,8 @@ availability, refresh }`. `availability` is the typed `ready`, `migrating`, or
   schema is incompatible or the browser leader is unreachable. `isLoading`
   is `false`; previously read rows remain available for deliberate read-only
   UI, and `availability.reason` identifies the boundary;
-- `error`: the initial read failed. A later refresh error keeps existing rows
-  and phase visible through `error`/`isRefreshing`.
+- `error`: the latest read failed. A refresh error keeps the rows and revision
+  from the last successful read while setting `isRefreshing` to `false`.
 
 ## Provider and async initialization
 
@@ -278,6 +278,13 @@ mirrored store. The maintained fixture and upgrade guidance live in the
 [React guide](https://syncular.dev/platform-react/#router-transition-scheduling).
 
 ### Privacy-safe support view
+
+Failed generated and raw live-query reads appear in
+`diagnosticsSnapshot().queryFailures` until that query reads successfully.
+Each entry contains only the stable PHI-free query id, generated table names,
+a stable error code, an optional SQLite result code, and the first failure
+time. It never contains SQL, parameters, rows, or SQLite error prose. Raw SQL
+uses the diagnostic id `raw` unless `useRawSql` receives an explicit `id`.
 
 Use application-owned, stable, PHI-free subscription ids to make missing
 registration distinguishable from a completed zero-row bootstrap. The hook

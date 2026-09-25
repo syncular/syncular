@@ -227,6 +227,47 @@ describe('revision race gates', () => {
     store.dispose();
   });
 
+  test('a failed refresh keeps rows and revision but leaves ready phase', async () => {
+    const client = new FakeReactiveClient();
+    client.snapshots.push({
+      revision: 1n,
+      rows: [{ id: 'one', title: 'first' }],
+      coverage: COMPLETE,
+    });
+    const store = new ReactiveClientStore(client);
+    const entry = store.query<Row>(querySpec());
+    const off = entry.subscribe(() => undefined);
+    await drainMicrotasks();
+
+    const failure = new Error('refresh failed');
+    client.snapshots.push(Promise.reject(failure));
+    entry.refresh();
+    await drainMicrotasks();
+    expect(entry.getSnapshot()).toMatchObject({
+      phase: 'error',
+      revision: 1n,
+      rows: [{ id: 'one', title: 'first' }],
+      error: failure,
+      isRefreshing: false,
+    });
+    expect(client.reads.at(-1)?.owner).toEqual({
+      id: 'queries:listTasks:hash',
+      tables: ['tasks'],
+    });
+
+    client.snapshots.push({ revision: 2n, rows: [], coverage: COMPLETE });
+    entry.refresh();
+    await drainMicrotasks();
+    expect(entry.getSnapshot()).toMatchObject({
+      phase: 'ready',
+      revision: 2n,
+      rows: [],
+      error: undefined,
+    });
+    off();
+    store.dispose();
+  });
+
   test('zero-row completion changes loading directly to ready atomically', async () => {
     const client = new FakeReactiveClient();
     client.snapshots.push({

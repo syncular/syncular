@@ -60,9 +60,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .unwrap_or_default();
                 match reader.query_snapshot(sql, &params, &[]) {
                     Ok(snapshot) => json!({ "result": snapshot }),
-                    Err(message) => {
-                        json!({ "error": { "code": "client.failed", "message": message } })
-                    }
+                    Err(failure) => json!({ "error": {
+                        "code": failure.code.unwrap_or("client.failed"),
+                        "message": failure.message,
+                    } }),
                 }
             }
             Some("exec") => {
