@@ -2199,7 +2199,12 @@ pub mod task_priority_peers {
         let selected = select(params)?;
         let required_coverage = coverage(params);
         let snapshot = client
-            .query_snapshot(selected.sql, &selected.params, &required_coverage)
+            .query_snapshot(
+                selected.sql,
+                &selected.params,
+                &required_coverage,
+                Some(QueryOwner { id: ID, tables: TABLES }),
+            )
             .map_err(|message| QueryError::Client { query: ID, message })?;
         let rows = snapshot.rows.into_iter().map(decode).collect::<Result<_, _>>()?;
         Ok(TypedQuerySnapshot {

@@ -1,8 +1,16 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.24.0** (`v0.24.0`). All artifacts use Apache-2.0, except
+current release is **0.25.0** (`v0.25.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.25.0 release notes
+
+0.25.0 adds client query diagnostics and changes local constraint handling. Upgrade Syncular packages and crates together. SSP2 remains at wire version 3.
+
+- **SYQL self-joins can claim exact coverage.** A `sync query` may read a table through multiple aliases when every alias has the same exact scope proof. The generated query claims one window base and dependency for that table. An unproven or differently scoped alias still fails with `SYQL6005_INVALID_SYNC_QUERY`.
+- **Owned local query failures appear in diagnostics.** Generated TypeScript and Rust queries identify reads by query id and table dependencies. `queryFailures` retains at most 256 entries without SQL, parameters, rows, paths, or driver prose; a successful read clears its entry. SQLite corruption and I/O failures use `client.storage_corrupt` and `client.storage_io`. A failed React live-query refresh enters `error` while retaining its last successful rows and revision.
+- **Local UNIQUE violations reject the whole commit.** TypeScript and Rust clients return `sync.constraint_violation` when an optimistic write conflicts with a declared secondary unique index. The transaction rolls back sibling writes and the outbox append; the local revision does not advance. Rust previously queued a commit even when its optimistic row was absent.
 
 ## 0.24.0 release notes
 
