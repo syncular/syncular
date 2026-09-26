@@ -1,9 +1,8 @@
 // Astro replaces the hand-rolled generator: markdown + Shiki highlighting
 // (css-variables theme, colored by the teletype palette in public/style.css),
-// same URLs, still a fully static dist/. Subpath deploys (GitHub Pages
-// project site) are handled by the post-build rebase step (see package.json
-// build script + scripts/rebase.mjs), not Astro's `base`, so authored links
-// stay root-absolute exactly as before.
+// same URLs, still a fully static dist/. The site serves at the domain root,
+// so authored links, the search index, and search result links are
+// root-absolute.
 import { defineConfig } from 'astro/config';
 import { fileURLToPath } from 'node:url';
 import { reflectReleaseVersion } from './scripts/release-version.mjs';

@@ -4,9 +4,9 @@
   "type": "module",
   "scripts": {
     "analytics": "node scripts/analytics.mjs",
-    "build": "astro build && node scripts/agent-assets.mjs && node scripts/rebase.mjs",
+    "build": "astro build && node scripts/agent-assets.mjs",
     "dev": "astro dev",
-    "deploy": "astro build && node scripts/agent-assets.mjs && node scripts/rebase.mjs && wrangler deploy"
+    "deploy": "astro build && node scripts/agent-assets.mjs && wrangler deploy"
   },
   "dependencies": {
     "astro": "^7.1.1"

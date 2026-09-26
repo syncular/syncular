@@ -27,15 +27,14 @@ WebMCP tools when `navigator.modelContext` is available.
 ## Local build / dev
 
 ```sh
-bun run build     # astro build + agent assets + scripts/rebase.mjs -> dist/
+bun run build     # astro build + agent assets -> dist/
 bun run dev       # astro dev at http://localhost:3100
 ```
 
 `dist/` is a plain static bundle: one directory per page, `style.css`, and
 self-hosted `fonts/` (IBM Plex Mono woff2 — no CDN at runtime). Nothing about
-it is host-specific. Internal links are authored root-absolute and rewritten
-to an optional `DOCS_BASE` by the post-build rebase step. The production custom
-domain uses the default `/`.
+it is host-specific except the path: internal links, the search index, and
+search results are root-absolute, so the site must serve at a domain root.
 
 The repository root `package.json` is the release-version authority. Source
 install snippets use `0.0.0`; the Markdown processor, landing page, and agent
@@ -49,8 +48,7 @@ route (`syncular.dev/*`) over the apex's existing proxied DNS record.
 `wrangler.jsonc` holds the config. `.github/workflows/docs.yml` builds and
 deploys documentation changes from `main`; `.github/workflows/release.yml`
 also deploys the tagged version after npm and crates.io publication succeeds.
-Both use the same concurrency group so deployments cannot race. The domain
-serves at root, so `DOCS_BASE` stays unset.
+Both use the same concurrency group so deployments cannot race.
 
 The deployment uses a small Worker script with a static assets binding. Static
 files still come from `dist/`; the Worker adds request-dependent behavior that
