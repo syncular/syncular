@@ -26,7 +26,7 @@ libc = { version = "0.2", optional = true }
 # converge. Only the app-facing materialize/edit helpers need it; round-trip
 # of opaque crdt bytes stays free (a crdt column is a bytes column, §2.4).
 [dependencies.yrs]
-version = "0.27"
+version = "0.28"
 optional = true
 
 # §5.11 client-side encryption. rand_core supplies the production CSPRNG nonce
