@@ -53,7 +53,9 @@ Two callbacks handle all of the security, and both run in **your**
 backend: `authenticate` maps a request to `{ actorId, partition }` (or
 `null` for a 401), and `resolveScopes` maps that identity to the scope
 values it may read and write. See
-[Scopes & authorization](/concepts-scopes/).
+[Authentication](/guide-auth/) for a bearer-token and cookie
+`authenticate`, and [Scopes & authorization](/concepts-scopes/) for
+`resolveScopes`.
 
 Run `ensureSyncServerReady(config)` before binding a port. It accepts the
 generated `ServerSchema`, compiles it, and applies the storage projection
@@ -199,6 +201,8 @@ sockets. Multi-instance deployments add a fanout bridge
 
 ## Where to go next
 
+- [Authentication](/guide-auth/): verify tokens in `authenticate`, send
+  and rotate them from every client.
 - [Storage backends](/server-storage/): SQLite, Postgres, D1, segment and
   blob stores, signed URLs and CDN.
 - [Cloudflare Workers](/server-workers/): D1 + R2 + Durable Object realtime.

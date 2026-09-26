@@ -57,9 +57,14 @@ export interface SyncWorkerOverrides {
   readonly createSegments?: (
     config: WorkerInitConfig,
   ) => SegmentDownloader | undefined;
+  /**
+   * Custom realtime connector, e.g. one that mints a fresh ticket per
+   * connection attempt. `headers` reads the current host auth set.
+   */
   readonly createRealtime?: (
     config: WorkerInitConfig,
     clientId: string,
+    headers: () => Readonly<Record<string, string>>,
   ) => RealtimeConnector | undefined;
 }
 
@@ -129,6 +134,7 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
   let client: SyncClient | undefined;
   let database: ClientDatabase | undefined;
   let offline = false;
+  let headers: Readonly<Record<string, string>> = {};
   let closed = false;
 
   // -- one sync loop: RPC-driven and auto-driven rounds serialize ----------
@@ -266,6 +272,8 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
       );
     }
     autoSync = config.autoSync ?? true;
+    headers = config.headers ?? {};
+    const http = { headers: () => headers };
 
     for (let attempt = 0; ; attempt++) {
       try {
@@ -297,18 +305,18 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
     const transport = gateOffline(
       overrides.createTransport !== undefined
         ? overrides.createTransport(config)
-        : httpSyncTransport(config.endpoints.syncUrl),
+        : httpSyncTransport(config.endpoints.syncUrl, http),
     );
     const segments =
       overrides.createSegments !== undefined
         ? overrides.createSegments(config)
         : config.endpoints.segmentsUrl !== undefined
-          ? httpSegmentDownloader(config.endpoints.segmentsUrl)
+          ? httpSegmentDownloader(config.endpoints.segmentsUrl, http)
           : undefined;
     // §5.9 blob transport: only when a blobs URL is configured.
     const blobs =
       config.endpoints.blobsUrl !== undefined
-        ? httpBlobTransport(config.endpoints.blobsUrl)
+        ? httpBlobTransport(config.endpoints.blobsUrl, http)
         : undefined;
 
     // Realtime needs the (possibly persisted) clientId for the
@@ -392,7 +400,7 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
     await started.start();
     realtimeConnector =
       overrides.createRealtime !== undefined
-        ? overrides.createRealtime(config, started.clientId)
+        ? overrides.createRealtime(config, started.clientId, http.headers)
         : config.endpoints.realtimeUrl !== undefined
           ? webSocketRealtimeConnector(
               config.endpoints.realtimeUrl.replace(
@@ -490,6 +498,9 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
     presence: (scopeKey) => requireClient().presence(scopeKey),
     uploadBlob: (bytes, options) => requireClient().uploadBlob(bytes, options),
     fetchBlob: (blobIdOrRef) => requireClient().fetchBlob(blobIdOrRef),
+    setHeaders: (next) => {
+      headers = next;
+    },
     setOffline: (value) => {
       offline = value;
       if (offline) client?.disconnectRealtime();

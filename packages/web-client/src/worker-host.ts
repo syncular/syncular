@@ -180,6 +180,12 @@ export interface SyncClientHandleConfig {
   readonly schema: ClientSchema;
   readonly database: WorkerDatabaseInit;
   readonly endpoints: WorkerEndpoints;
+  /**
+   * Host auth headers for sync, segment, and blob requests (e.g.
+   * `Authorization`). Rotate with `setHeaders`. Realtime authenticates
+   * through `realtimeUrl`, because WebSockets cannot carry headers.
+   */
+  readonly headers?: Readonly<Record<string, string>>;
   /** Structured-clone-safe E2EE keyring installed only in the leader worker. */
   readonly encryption?: EncryptionKeyringConfig;
   /** Open the worker-owned replica behind the fail-closed security gate. */
@@ -689,6 +695,19 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     return this.#call('fetchBlob', [blobIdOrRef]);
   }
 
+  /**
+   * Replace the full host auth header set. The next HTTP request uses it;
+   * a live realtime socket keeps its handshake credentials. A follower
+   * forwards to the leader and keeps the set for its own promotion.
+   */
+  setHeaders(headers: Readonly<Record<string, string>>): Promise<void> {
+    this.__headers = headers;
+    return this.#call('setHeaders', [headers]);
+  }
+
+  /** @internal — the latest `setHeaders` set, carried into a promotion. */
+  __headers: Readonly<Record<string, string>> | undefined;
+
   /** Sever/restore transport + realtime inside the worker (demos). */
   setOffline(offline: boolean): Promise<void> {
     return this.#call('setOffline', [offline]);
@@ -839,11 +858,15 @@ async function startWorkerCore(options: {
   }
 }
 
-function buildInitConfig(config: SyncClientHandleConfig): WorkerInitConfig {
+function buildInitConfig(
+  config: SyncClientHandleConfig,
+  headers = config.headers,
+): WorkerInitConfig {
   return {
     schema: config.schema,
     database: config.database,
     endpoints: config.endpoints,
+    ...(headers !== undefined ? { headers } : {}),
     ...(config.encryption !== undefined
       ? { encryption: config.encryption }
       : {}),
@@ -1086,7 +1109,7 @@ async function bootFollower(
     try {
       const core = await startWorkerCore({
         config,
-        initConfig: buildInitConfig(config),
+        initConfig: buildInitConfig(config, handle.__headers ?? config.headers),
         lease,
         dispatchEvent: (event) => {
           fireConfigCallbacks(config, event);

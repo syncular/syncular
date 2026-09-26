@@ -17,6 +17,12 @@
 export const changelog = [
   {
     date: '2026-09-26',
+    title: 'Browser handles send and rotate auth headers',
+    body: '`createSyncClientHandle` accepts `headers`, which the worker attaches to every sync, segment, and blob request, and `handle.setHeaders(...)` replaces them at runtime. A follower tab forwards the call to the leader and starts a promoted worker with its latest set. The HTTP transports also accept `headers` as a function read on every request, and `startSyncWorker({ createRealtime })` receives the current headers so a custom connector can mint a realtime ticket per attempt. A new Authentication page shows the server `authenticate` callback and the client wiring on every platform.',
+    links: [{ href: '/guide-auth/', label: 'Authentication' }],
+  },
+  {
+    date: '2026-09-26',
     title: 'Query identity changes before the first read keep the snapshot',
     body: "A live query that has no successful read now publishes a shared, frozen snapshot per phase and availability. When a query's parameters or coverage change before its first read completes, the new query returns the same snapshot object and `rows` array, and React does not re-render for the switch.",
     links: [

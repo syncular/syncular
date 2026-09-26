@@ -71,7 +71,9 @@ A 60-second ticket outlives one connection attempt and no more. The built-in
 connector takes a fixed URL, so a rotating flow supplies a custom connector
 that fetches a fresh ticket for each attempt; the
 [realtime supervisor](/platform-web/#the-realtime-supervisor) calls it on
-every reconnect. `webSocketRealtimeConnector` with a fixed ticket URL stays
+every reconnect. In the browser worker, `startSyncWorker({ createRealtime })`
+installs that connector and hands it the current auth headers
+([Authentication](/guide-auth/#browser-authenticate-the-realtime-socket)). `webSocketRealtimeConnector` with a fixed ticket URL stays
 fine for tickets whose lifetime covers the process (a deploy-scoped service
 credential).
 
@@ -81,6 +83,7 @@ closing the socket server-side.
 
 ## Where to go next
 
+- [Authentication](/guide-auth/): the HTTP side of the same identity.
 - [Server-side sync clients](/guide-server-clients/): where the client-side
   ticket wiring appears.
 - [Remote server operations](/guide-remote-operations/): the same rule for

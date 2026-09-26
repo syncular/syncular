@@ -63,6 +63,7 @@ export const nav: readonly NavSection[] = [
     title: 'Server',
     items: [
       { slug: 'guide-server', title: 'Server setup' },
+      { slug: 'guide-auth', title: 'Authentication' },
       { slug: 'server-storage', title: 'Storage backends' },
       { slug: 'server-workers', title: 'Cloudflare Workers' },
       { slug: 'server-partitions', title: 'Partitions & multi-tenancy' },

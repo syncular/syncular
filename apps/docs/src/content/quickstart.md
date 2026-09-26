@@ -126,7 +126,8 @@ console.log(`syncular quickstart server: http://localhost:${port}`);
 `resolveScopes` decides which rows an actor may sync, and it runs in **your**
 backend. Here the demo actor may see every list (`['*']`); a real backend
 returns the list ids the authenticated user belongs to. See
-[Scopes & authorization](/concepts-scopes/).
+[Authentication](/guide-auth/) for a real `authenticate` and
+[Scopes & authorization](/concepts-scopes/) for `resolveScopes`.
 
 ```sh
 bun run server       # http://localhost:8787

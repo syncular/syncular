@@ -102,6 +102,12 @@ export interface WorkerInitConfig {
   readonly schema: ClientSchema;
   readonly database: WorkerDatabaseInit;
   readonly endpoints: WorkerEndpoints;
+  /**
+   * Host auth headers for sync, segment, and blob requests. `setHeaders`
+   * replaces the whole set at runtime. WebSockets cannot carry headers, so
+   * realtime authenticates through `realtimeUrl` (cookie or ticket).
+   */
+  readonly headers?: Readonly<Record<string, string>>;
   /** Portable raw keyring installed inside the worker-owned client core. */
   readonly encryption?: EncryptionKeyringConfig;
   /** Open the worker-owned replica behind the fail-closed security gate. */
@@ -190,6 +196,8 @@ export interface WorkerApi extends Omit<
     options?: { readonly mediaType?: string; readonly name?: string },
   ): Promise<BlobRef>;
   fetchBlob(blobIdOrRef: string): Promise<CachedBlob>;
+  /** Replace the host auth header set; the next HTTP request uses it. */
+  setHeaders(headers: Readonly<Record<string, string>>): void;
   /** Sever/restore the transport + realtime (offline simulation, demos). */
   setOffline(offline: boolean): void;
   close(): Promise<void>;

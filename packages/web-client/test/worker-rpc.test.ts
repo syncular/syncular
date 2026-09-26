@@ -820,6 +820,23 @@ test('worker realtime connect is single-owner across repeated RPC calls', async 
   await handle.disconnectRealtime();
 });
 
+test('host auth headers reach /sync and rotate through setHeaders', async () => {
+  const { handle } = await makeHandle({
+    clientId: 'rpc-auth',
+    autoSync: false,
+    headers: { Authorization: 'Bearer expired' },
+  });
+  const seenBefore = http.syncAuthorizations.length;
+  await expectRejectsWithCode(handle.sync(), 'sync.auth_required');
+
+  await handle.setHeaders({ Authorization: 'Bearer fresh' });
+  await handle.sync();
+  expect(http.syncAuthorizations.slice(seenBefore)).toEqual([
+    'Bearer expired',
+    'Bearer fresh',
+  ]);
+});
+
 test('offline gate queues, reconnect drains through the worker', async () => {
   const { handle } = await makeHandle({
     clientId: 'rpc-off',

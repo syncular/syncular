@@ -51,6 +51,29 @@ describe('httpSegmentDownloader', () => {
     expect(seen[0]?.headers.authorization).toBe('Bearer host-token');
   });
 
+  test('a headers function is read on every request', async () => {
+    const { seen, doFetch } = fakeFetch();
+    let token = 'first';
+    const downloader = httpSegmentDownloader('https://host/segments', {
+      fetch: doFetch,
+      headers: () => ({ authorization: `Bearer ${token}` }),
+    });
+    const request = {
+      segmentId: 'sha256:ab',
+      table: 'tasks',
+      requestedScopesJson: '{}',
+    };
+    await downloader(request);
+    token = 'second';
+    await downloader(request);
+    await downloader.fetchUrl?.('https://cdn.example/x');
+    expect(seen.map((entry) => entry.headers.authorization)).toEqual([
+      'Bearer first',
+      'Bearer second',
+      undefined,
+    ]);
+  });
+
   test('fetchUrl exists (advertises bit 3) and sends NO headers (§5.4)', async () => {
     const { seen, doFetch } = fakeFetch();
     const downloader = httpSegmentDownloader('https://host/segments', {

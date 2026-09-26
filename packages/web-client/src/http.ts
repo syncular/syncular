@@ -35,8 +35,22 @@ async function throwHttpError(response: Response): Promise<never> {
 }
 
 export interface HttpTransportOptions {
-  readonly headers?: Readonly<Record<string, string>>;
+  /**
+   * Host auth headers. A function is read on every request, so a rotated
+   * token applies from the next request on. Signed-URL fetches never
+   * carry them (§5.4, §5.9.5).
+   */
+  readonly headers?:
+    | Readonly<Record<string, string>>
+    | (() => Readonly<Record<string, string>>);
   readonly fetch?: typeof fetch;
+}
+
+function hostHeaders(
+  options: HttpTransportOptions | undefined,
+): Readonly<Record<string, string>> | undefined {
+  const headers = options?.headers;
+  return typeof headers === 'function' ? headers() : headers;
 }
 
 /** POST `<mount>/sync` with SSP2 bodies (§1.1). */
@@ -50,7 +64,7 @@ export function httpSyncTransport(
       method: 'POST',
       headers: {
         'Content-Type': SSP2_CONTENT_TYPE,
-        ...options?.headers,
+        ...hostHeaders(options),
       },
       body: request.slice().buffer as ArrayBuffer,
     });
@@ -70,7 +84,7 @@ export function httpRemoteOperationTransport(
       method: 'POST',
       headers: {
         'Content-Type': 'application/vnd.syncular.operations.v1+json',
-        ...options?.headers,
+        ...hostHeaders(options),
       },
       body: request.slice().buffer as ArrayBuffer,
     });
@@ -188,7 +202,7 @@ export function httpSegmentDownloader(
       {
         headers: {
           'X-Syncular-Scopes': request.requestedScopesJson,
-          ...options?.headers,
+          ...hostHeaders(options),
         },
       },
     );
@@ -232,7 +246,7 @@ export function httpBlobTransport(
         method: 'PUT',
         headers: {
           'Content-Type': mediaType ?? 'application/octet-stream',
-          ...options?.headers,
+          ...hostHeaders(options),
         },
         body: bytes.slice().buffer as ArrayBuffer,
       });
@@ -240,7 +254,7 @@ export function httpBlobTransport(
     },
     download: async (blobId) => {
       const response = await doFetch(blobUrl(blobId), {
-        headers: { ...options?.headers },
+        headers: { ...hostHeaders(options) },
       });
       if (!response.ok) await throwHttpError(response);
       // §5.9.5 always-issue: a JSON body with `url` means presigned delivery;
@@ -284,7 +298,7 @@ export function httpBlobTransport(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...options?.headers,
+          ...hostHeaders(options),
         },
         body: JSON.stringify({
           byteLength,

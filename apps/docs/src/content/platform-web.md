@@ -53,6 +53,11 @@ const handle = await createSyncClientHandle({
 });
 ```
 
+Pass `headers` (for example `Authorization`) to authenticate sync, segment,
+and blob requests, and rotate them with `handle.setHeaders(...)`. The
+realtime socket authenticates by cookie or ticket; see
+[Authentication](/guide-auth/#browser-send-and-rotate-the-header).
+
 The handle exposes the same logical API as `SyncClient` (`subscribe` /
 `mutate` / `sync` / `query` / conflicts / …), every method a promise. It
 acquires the Web Locks leader lock before spawning the worker, so there is one

@@ -2,7 +2,8 @@
 
 Scopes are the authorization core, and you write them yourself. They decide,
 per user, which rows sync, and the decision runs in **your** backend, next to
-your auth, so it stays in agreement with the rest of your access control.
+your auth ([Authentication](/guide-auth/)), so it stays in agreement with the
+rest of your access control.
 
 Normative detail lives in [SPEC.md §3](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#3-scopes-and-authorization);
 this page is the mental model.

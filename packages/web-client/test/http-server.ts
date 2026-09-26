@@ -21,6 +21,8 @@ export interface HttpTestServer {
   readonly realtimeUrl: string;
   readonly realtimeOpened: number;
   readonly realtimeActive: number;
+  /** `Authorization` header of every /sync request, in arrival order. */
+  readonly syncAuthorizations: readonly (string | null)[];
   onRealtimeChange(listener: () => void): () => void;
   stop(): Promise<void>;
 }
@@ -54,11 +56,18 @@ export function serveOverHttp(
   const realtimeListeners = new Set<() => void>();
   let realtimeOpened = 0;
   let realtimeActive = 0;
+  const syncAuthorizations: (string | null)[] = [];
   const bunServer = Bun.serve<SocketData>({
     port: 0,
     async fetch(request, s) {
       const url = new URL(request.url);
       if (url.pathname === '/sync' && request.method === 'POST') {
+        const authorization = request.headers.get('Authorization');
+        syncAuthorizations.push(authorization);
+        // The one credential this host rejects, for the auth-rotation test.
+        if (authorization === 'Bearer expired') {
+          return errorResponse(new SyncError('sync.auth_required'));
+        }
         try {
           const bytes = new Uint8Array(await request.arrayBuffer());
           const response = await handleSyncRequest(
@@ -136,6 +145,7 @@ export function serveOverHttp(
     syncUrl: `${base}/sync`,
     segmentsUrl: `${base}/segments`,
     realtimeUrl: `ws://localhost:${bunServer.port}/realtime?clientId={clientId}`,
+    syncAuthorizations,
     onRealtimeChange(listener) {
       realtimeListeners.add(listener);
       return () => {
