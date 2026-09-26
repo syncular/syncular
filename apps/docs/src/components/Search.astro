@@ -1,0 +1,163 @@
+---
+// Docs search: a trigger button plus a centered teletype dialog. ⌘K / Ctrl+K
+// (and `/` outside text fields) opens it from anywhere on the page. The
+// section index (/search-index.json) loads on first open. Handlers are
+// document-level, so they survive <ClientRouter> swaps without re-binding.
+---
+
+<button
+  type="button"
+  class="search-trigger"
+  data-search-open
+  aria-haspopup="dialog"
+  aria-keyshortcuts="Meta+K Control+K"
+>
+  <span>search</span><kbd data-search-shortcut>⌘K</kbd>
+</button>
+<dialog class="search-dialog" data-search-dialog aria-label="Search the docs">
+  <div class="search-box">
+    <span class="search-prompt" aria-hidden="true">&gt;</span>
+    <input
+      type="search"
+      data-search-input
+      placeholder="search the docs"
+      autocomplete="off"
+      spellcheck="false"
+      role="combobox"
+      aria-expanded="true"
+      aria-controls="search-results"
+      aria-autocomplete="list"
+    />
+    <kbd>esc</kbd>
+  </div>
+  <ol id="search-results" class="search-results" role="listbox" data-search-results>
+  </ol>
+  <p class="search-status" data-search-status aria-live="polite"></p>
+</dialog>
+
+<script>
+  import { highlight, searchIndex, type SearchSection } from '../search';
+
+  let index: Promise<SearchSection[]> | undefined;
+  let selected = 0;
+
+  const dialog = () =>
+    document.querySelector<HTMLDialogElement>('[data-search-dialog]');
+  const input = () =>
+    document.querySelector<HTMLInputElement>('[data-search-input]');
+  const links = () => [
+    ...document.querySelectorAll<HTMLAnchorElement>('[data-search-results] a'),
+  ];
+
+  const select = (next: number) => {
+    const all = links();
+    if (all.length === 0) return;
+    selected = (next + all.length) % all.length;
+    all.forEach((link, i) => {
+      link.setAttribute('aria-selected', String(i === selected));
+    });
+    all[selected]?.scrollIntoView({ block: 'nearest' });
+    input()?.setAttribute('aria-activedescendant', all[selected]?.id ?? '');
+  };
+
+  const render = async () => {
+    const query = input()?.value ?? '';
+    const results = document.querySelector('[data-search-results]');
+    const status = document.querySelector('[data-search-status]');
+    if (results === null || status === null) return;
+    index ??= fetch('/search-index.json').then((response) => {
+      if (!response.ok) throw new Error(`search index HTTP ${response.status}`);
+      return response.json() as Promise<SearchSection[]>;
+    });
+    let sections: SearchSection[];
+    try {
+      sections = await index;
+    } catch {
+      index = undefined;
+      results.innerHTML = '';
+      status.textContent = 'search index failed to load';
+      return;
+    }
+    if (query !== (input()?.value ?? '')) return;
+    const hits = searchIndex(sections, query);
+    results.innerHTML = hits
+      .map(
+        ({ section, excerpt }, i) =>
+          `<li role="presentation"><a id="search-hit-${i}" role="option" href="${section.href}">` +
+          `<span class="search-hit-path">${highlight(section.page, query)}${
+            section.heading === section.page
+              ? ''
+              : ` <span aria-hidden="true">›</span> ${highlight(section.heading, query)}`
+          }</span>` +
+          `<span class="search-hit-text">${highlight(excerpt, query)}</span></a></li>`,
+      )
+      .join('');
+    status.textContent =
+      query.trim() === ''
+        ? 'type to search · ↑↓ to move · enter to open'
+        : hits.length === 0
+          ? 'no matches'
+          : '';
+    select(0);
+  };
+
+  const open = () => {
+    const d = dialog();
+    if (d === null || d.open) return;
+    d.showModal();
+    input()?.select();
+    void render();
+  };
+
+  document.addEventListener('keydown', (event) => {
+    const target = event.target as HTMLElement | null;
+    const typing =
+      target !== null &&
+      (target.isContentEditable ||
+        ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName));
+    if (
+      (event.key.toLowerCase() === 'k' && (event.metaKey || event.ctrlKey)) ||
+      (event.key === '/' && !typing)
+    ) {
+      event.preventDefault();
+      open();
+      return;
+    }
+    if (!dialog()?.open) return;
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      select(selected + (event.key === 'ArrowDown' ? 1 : -1));
+    } else if (event.key === 'Enter' && target === input()) {
+      event.preventDefault();
+      links()[selected]?.click();
+    }
+  });
+
+  document.addEventListener('input', (event) => {
+    if (event.target === input()) void render();
+  });
+
+  document.addEventListener('click', (event) => {
+    const target = event.target as Element | null;
+    if (target?.closest('[data-search-open]')) {
+      open();
+      return;
+    }
+    const d = dialog();
+    if (d?.open !== true) return;
+    // A result click navigates; a click on the backdrop (the dialog itself,
+    // outside its content box) dismisses.
+    if (target?.closest('[data-search-results] a') || target === d) d.close();
+  });
+
+  // Docs pages swap the trigger in with <ClientRouter>; blog and landing
+  // pages load once. Label it for this platform in both cases.
+  const labelShortcut = () => {
+    const shortcut = document.querySelector('[data-search-shortcut]');
+    if (shortcut !== null && !/Mac|iPhone|iPad/.test(navigator.userAgent)) {
+      shortcut.textContent = 'Ctrl K';
+    }
+  };
+  labelShortcut();
+  document.addEventListener('astro:page-load', labelShortcut);
+</script>

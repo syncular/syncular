@@ -10,6 +10,7 @@
 // back to a normal full navigation automatically.
 import { ClientRouter } from 'astro:transitions';
 import PageMeta from '../components/PageMeta.astro';
+import Search from '../components/Search.astro';
 import { nav } from '../nav';
 import { DEFAULT_DESCRIPTION } from '../seo';
 // package.json at the repository root is the one release-version authority.
@@ -56,6 +57,7 @@ const releasedVersion = rootPkg.version;
       />
       <div class="sidebar-top">
         <a class="brand" href="/">syncular</a>
+        <Search />
         <label class="sidebar-burger" for="sidebar-toggle"></label>
       </div>
       {

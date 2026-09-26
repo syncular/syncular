@@ -17,6 +17,12 @@
 export const changelog = [
   {
     date: '2026-09-26',
+    title: 'Docs search',
+    body: 'The documentation site now has a search dialog. Press ⌘K (Ctrl+K on Windows and Linux) or `/` on any docs, blog, or landing page, or use the search button in the sidebar. Results link to the matching section of each page, and API names inside code blocks are searchable.',
+    links: [{ href: '/what-is/', label: 'Documentation' }],
+  },
+  {
+    date: '2026-09-26',
     title: 'Browser handles send and rotate auth headers',
     body: '`createSyncClientHandle` accepts `headers`, which the worker attaches to every sync, segment, and blob request, and `handle.setHeaders(...)` replaces them at runtime. A follower tab forwards the call to the leader and starts a promoted worker with its latest set. The HTTP transports also accept `headers` as a function read on every request, and `startSyncWorker({ createRealtime })` receives the current headers so a custom connector can mint a realtime ticket per attempt. A new Authentication page shows the server `authenticate` callback and the client wiring on every platform.',
     links: [{ href: '/guide-auth/', label: 'Authentication' }],

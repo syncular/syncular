@@ -8,6 +8,12 @@ the landing page is `src/pages/index.astro`. Syntax highlighting is Shiki at
 build time (`css-variables` theme, colored by the palette in
 `public/style.css`), so the published site ships no highlighter JavaScript.
 
+Search is built in. `src/pages/search-index.json.ts` splits every content page
+at its h1–h3 headings into a static `/search-index.json` (about 150 KB
+gzipped), and `src/components/Search.astro` fetches it on first open and ranks
+sections in the browser with `src/search.ts`. ⌘K, Ctrl+K, or `/` opens the
+dialog on docs, blog, and landing pages.
+
 The build also generates agent-discovery assets from the complete docs and blog
 tree: `sitemap.xml`, `robots.txt`, `llms.txt`, Markdown page copies, an RFC 9727
 API catalog, an OpenAPI description for public discovery endpoints, Auth.md

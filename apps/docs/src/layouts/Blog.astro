@@ -3,6 +3,7 @@
 // readable article column. Blog posts remain plain Markdown sources.
 import rootPkg from '../../../../package.json';
 import PageMeta from '../components/PageMeta.astro';
+import Search from '../components/Search.astro';
 
 interface Props {
   title: string;
@@ -63,6 +64,7 @@ const formattedDate = publishedAt
           <a class="accent" href="/blog/">BLOG</a>
           <a href="/demos/">DEMOS</a>
           <a href="https://github.com/syncular/syncular">GITHUB</a>
+          <Search />
           <a href="/quickstart/">QUICKSTART</a>
         </nav>
       </header>

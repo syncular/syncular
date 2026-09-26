@@ -5,6 +5,7 @@
 // at build time.
 import { Code } from 'astro:components';
 import PageMeta from '../components/PageMeta.astro';
+import Search from '../components/Search.astro';
 import { TABS } from '../snippets';
 import rootPkg from '../../../../package.json';
 
@@ -76,6 +77,7 @@ const description =
           <a href="/blog/">BLOG</a>
           <a href="https://demo.syncular.dev/">DEMO</a>
           <a href="https://github.com/syncular/syncular">GITHUB</a>
+          <Search />
           <a class="accent" href="/quickstart/">QUICKSTART</a>
         </nav>
       </header>
