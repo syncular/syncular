@@ -192,6 +192,13 @@ pub const CLIENT_DIAGNOSTICS_VERSION: u8 = 1;
 pub const MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS: usize = 256;
 pub const MAX_DIAGNOSTIC_QUERY_FAILURES: usize = 256;
 
+/// §8.8 client-local code: the `required` policy refused a sync round because
+/// the realtime socket is not connected. Never a wire code (§10.3).
+pub const REALTIME_UNAVAILABLE_CODE: &str = "sync.realtime_unavailable";
+/// §8.8 client-local code: a connected socket ended without a deliberate
+/// disconnect and the round reported no transport code. Never a wire code.
+pub const REALTIME_LOST_CODE: &str = "client.realtime_lost";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExpectedDiagnosticSubscription {
@@ -212,7 +219,12 @@ pub struct ClientDiagnosticsHost {
     pub kind: String,
     pub role: String,
     pub connectivity: String,
-    pub realtime: String,
+    pub realtime: RealtimeState,
+    pub realtime_policy: RealtimePolicy,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub realtime_reason_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub realtime_retry_delay_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -343,6 +355,43 @@ pub struct ClientDiagnosticsReplica {
     pub local_revision: String,
     pub sync_needed: bool,
     pub pending_outbox: usize,
+}
+
+/// §8.8: how this client treats the realtime binding for sync rounds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RealtimePolicy {
+    Required,
+    #[default]
+    Optional,
+    Off,
+}
+
+impl RealtimePolicy {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RealtimePolicy::Required => "required",
+            RealtimePolicy::Optional => "optional",
+            RealtimePolicy::Off => "off",
+        }
+    }
+}
+
+/// §8.8: the explicit availability state of the realtime binding. The
+/// TypeScript host adds `unsupported` (no connector configured) and `unknown`
+/// (a wrapper without evidence); the Rust core reaches neither because a
+/// transport always carries a connect path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RealtimeState {
+    Connected,
+    Connecting,
+    #[default]
+    Disconnected,
+    Lost,
+    Refused,
+    Disabled,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -573,7 +622,19 @@ pub struct SyncReport {
 #[derive(Debug, Clone)]
 pub enum SyncOutcome {
     Ok(SyncReport),
-    Failed { error_code: String, message: String },
+    Failed {
+        error_code: String,
+        message: String,
+    },
+    /// §8.8: the `required` policy refused a round because the socket is not
+    /// connected. `reason_code` is present for `lost` and `refused` states,
+    /// and `retry_delay_ms` is the delay of the background retry intent this
+    /// outcome scheduled.
+    RealtimeUnavailable {
+        state: RealtimeState,
+        reason_code: Option<String>,
+        retry_delay_ms: u64,
+    },
 }
 
 impl SyncOutcome {
@@ -596,6 +657,34 @@ impl SyncOutcome {
                 map.insert("ok".to_owned(), Value::Bool(false));
                 map.insert("errorCode".to_owned(), Value::from(error_code.clone()));
                 map.insert("message".to_owned(), Value::from(message.clone()));
+                Value::Object(map)
+            }
+            SyncOutcome::RealtimeUnavailable {
+                state,
+                reason_code,
+                retry_delay_ms,
+            } => {
+                let mut map = Map::new();
+                map.insert("ok".to_owned(), Value::Bool(false));
+                map.insert(
+                    "errorCode".to_owned(),
+                    Value::from(REALTIME_UNAVAILABLE_CODE),
+                );
+                map.insert(
+                    "message".to_owned(),
+                    Value::from("realtime is required and the realtime socket is not connected"),
+                );
+                map.insert(
+                    "realtimeState".to_owned(),
+                    serde_json::to_value(state).expect("state serializes"),
+                );
+                if let Some(reason_code) = reason_code {
+                    map.insert(
+                        "realtimeReasonCode".to_owned(),
+                        Value::from(reason_code.clone()),
+                    );
+                }
+                map.insert("retryDelayMs".to_owned(), Value::from(*retry_delay_ms));
                 Value::Object(map)
             }
         }

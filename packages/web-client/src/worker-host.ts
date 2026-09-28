@@ -50,6 +50,7 @@ import {
   type ClientDiagnosticsListener,
   type ClientDiagnosticsRequest,
   type ClientDiagnosticsSnapshot,
+  type RealtimePolicy,
   withClientDiagnosticsHost,
 } from './diagnostics';
 import type { EncryptionKeyringConfig } from './encryption';
@@ -192,6 +193,11 @@ export interface SyncClientHandleConfig {
   readonly securityPreflight?: boolean;
   readonly clientId?: string;
   readonly limits?: SyncClientLimits;
+  /**
+   * SPEC §8.8 realtime policy for the worker-owned core, forwarded into
+   * `WorkerInitConfig`. Absent ⇒ `optional`.
+   */
+  readonly realtimePolicy?: RealtimePolicy;
   /**
    * RFC 0005 previous-version context, forwarded into the worker's
    * `SyncClientConfig`. Absent ⇒ the feature stays off (default-off).
@@ -875,6 +881,9 @@ function buildInitConfig(
       : {}),
     ...(config.clientId !== undefined ? { clientId: config.clientId } : {}),
     ...(config.limits !== undefined ? { limits: config.limits } : {}),
+    ...(config.realtimePolicy !== undefined
+      ? { realtimePolicy: config.realtimePolicy }
+      : {}),
     ...(config.previousVersionContext !== undefined
       ? { previousVersionContext: config.previousVersionContext }
       : {}),

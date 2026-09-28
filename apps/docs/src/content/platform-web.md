@@ -56,7 +56,11 @@ const handle = await createSyncClientHandle({
 Pass `headers` (for example `Authorization`) to authenticate sync, segment,
 and blob requests, and rotate them with `handle.setHeaders(...)`. The
 realtime socket authenticates by cookie or ticket; see
-[Authentication](/guide-auth/#browser-send-and-rotate-the-header).
+[Authentication](/guide-auth/#browser-send-and-rotate-the-header). Set
+`realtimePolicy: 'required'` when the socket is the designated sync path:
+sync then refuses a round with `RealtimeUnavailableError` instead of using
+`POST /sync` while the socket is not connected
+([Realtime](/concepts-realtime/#required-realtime)).
 
 The handle exposes the same logical API as `SyncClient` (`subscribe` /
 `mutate` / `sync` / `query` / conflicts / …), every method a promise. It
@@ -208,10 +212,12 @@ repeated or concurrent connects cannot orphan another socket.
 After connection, deltas arrive over the socket and server wake-ups raise an
 immediate sync intent. With `autoSync`, the worker owns coalescing those
 intents; the page reacts to revisioned changes and re-queries. The supervisor
-is still required for reconnect policy. HTTP sync remains available while the
-socket is absent, but it is not continuous remote convergence unless a host
-event, deadline, or explicit command actually starts a round. On a direct
-`SyncClient`, provide `onSyncNeeded` and run `sync()` when it fires.
+is still required for reconnect policy. Under the default `optional` policy,
+an HTTP round runs whenever the socket is absent, so continuous convergence
+still needs a host event, deadline, or explicit command to start that round;
+`realtimePolicy: 'required'` refuses the round instead
+([Realtime](/concepts-realtime/#required-realtime)). On a direct `SyncClient`,
+provide `onSyncNeeded` and run `sync()` when it fires.
 
 ## Offline replay
 

@@ -568,7 +568,22 @@ export type ClientSyncResult =
       readonly ok: false;
       readonly errorCode: string;
       readonly message: string;
+      /** SPEC §8.8: present on a `sync.realtime_unavailable` refusal. */
+      readonly realtimeState?: string;
+      readonly realtimeReasonCode?: string;
+      readonly retryDelayMs?: number;
     };
+
+/** SPEC §8.8: how a client treats the realtime binding. */
+export type DriverRealtimePolicy = 'required' | 'optional' | 'off';
+
+/** SPEC §8.8: the explicit realtime availability evidence. */
+export interface DriverRealtimeAvailability {
+  readonly realtime: string;
+  readonly realtimePolicy?: string;
+  readonly realtimeReasonCode?: string;
+  readonly realtimeRetryDelayMs?: number;
+}
 
 export interface ClientConflict {
   readonly clientCommitId: string;
@@ -712,6 +727,11 @@ export interface ClientCreateOptions {
   readonly endpoints: ClientEndpoints;
   readonly limits?: ClientLimitsOptions;
   /**
+   * SPEC §8.8 realtime policy; absent ⇒ the core default (`optional`).
+   * `required` refuses a sync round while the socket is not connected.
+   */
+  readonly realtimePolicy?: DriverRealtimePolicy;
+  /**
    * Pin the client clock (epoch ms). Scenarios exercising the §5.4
    * `urlExpiresAtMs` check set this to the server's virtual now — a
    * wall-clock client would misjudge virtual-clock expiries.
@@ -845,6 +865,7 @@ export interface ClientInstance {
   }>;
   diagnosticsSnapshot?(): Promise<{
     readonly queryFailures: readonly DriverQueryFailure[];
+    readonly host: DriverRealtimeAvailability;
   }>;
   drainProgress?(): Promise<readonly DriverSyncProgress[]>;
   progressSnapshot?(): Promise<DriverSyncProgress | undefined>;
@@ -945,6 +966,12 @@ export interface ClientInstance {
 
   connectRealtime(): Promise<void>;
   disconnectRealtime(): Promise<void>;
+  /**
+   * SPEC §8.8: the socket dies without a deliberate disconnect (the host's
+   * loss notification). A driver that omits it makes a scenario that needs
+   * loss SKIP, never silently pass.
+   */
+  loseRealtime?(): Promise<void>;
   /** §8: a hello/wake-up asked for a pull that has not run yet. */
   syncNeeded(): Promise<boolean>;
 

@@ -1,4 +1,8 @@
-import type { DriverQueryFailure, DriverSyncProgress } from '../driver';
+import type {
+  DriverQueryFailure,
+  DriverRealtimeAvailability,
+  DriverSyncProgress,
+} from '../driver';
 /**
  * Rust ClientDriver: spawns the `conformance-shim` binary (the Rust client
  * core on rusqlite, `rust/crates/client`) — one subprocess per
@@ -212,6 +216,15 @@ function parseClientSyncResult(value: JsonValue): ClientSyncResult {
         ok: false,
         errorCode: value.errorCode,
         message: value.message,
+        ...(typeof value.realtimeState === 'string'
+          ? { realtimeState: value.realtimeState }
+          : {}),
+        ...(typeof value.realtimeReasonCode === 'string'
+          ? { realtimeReasonCode: value.realtimeReasonCode }
+          : {}),
+        ...(typeof value.retryDelayMs === 'number'
+          ? { retryDelayMs: value.retryDelayMs }
+          : {}),
       };
     }
   }
@@ -537,6 +550,17 @@ class ShimProcess {
       tagged.set(request, 1);
       connection.sendBinary(tagged);
     });
+  }
+
+  /**
+   * SPEC §8.8 harness-only loss injection: the socket dies underneath the
+   * native core. The shim learns about it from the failed next round, which
+   * is exactly how a native transport reports a dead socket.
+   */
+  severRealtime(): void {
+    this.#connection?.close();
+    this.#connection = undefined;
+    this.#failRound('realtime socket lost (§8.7)');
   }
 
   #failRound(reason: string): void {
@@ -996,6 +1020,7 @@ class RustClientInstance implements ClientInstance {
   async diagnosticsSnapshot() {
     return (await this.#shim.call('diagnosticsSnapshot', {})) as unknown as {
       readonly queryFailures: readonly DriverQueryFailure[];
+      readonly host: DriverRealtimeAvailability;
     };
   }
 
@@ -1200,6 +1225,10 @@ class RustClientInstance implements ClientInstance {
 
   async disconnectRealtime(): Promise<void> {
     await this.#shim.call('disconnectRealtime', {});
+  }
+
+  async loseRealtime(): Promise<void> {
+    this.#shim.severRealtime();
   }
 
   async syncNeeded(): Promise<boolean> {
@@ -1447,6 +1476,9 @@ export const rustClientDriver: ClientDriver = {
             previousVersionContext:
               options.previousVersionContext as unknown as JsonValue,
           }
+        : {}),
+      ...(options.realtimePolicy !== undefined
+        ? { realtimePolicy: options.realtimePolicy }
         : {}),
       ...(dbPath !== undefined ? { dbPath } : {}),
     });

@@ -16,6 +16,7 @@ import {
   type ClientSchema,
   type EncryptionConfig,
   type MutationInput,
+  RealtimeUnavailableError,
   SYNC_VERSION_COLUMN,
   SyncClient,
   type SyncIntent,
@@ -137,6 +138,22 @@ function errorCodeOf(error: unknown): { code: string; message: string } {
   return { code: 'transport.failed', message: String(error) };
 }
 
+/** SPEC §8.8: the typed evidence a `required` refusal carries. */
+function realtimeRefusal(error: unknown): {
+  readonly realtimeState?: string;
+  readonly realtimeReasonCode?: string;
+  readonly retryDelayMs?: number;
+} {
+  if (!(error instanceof RealtimeUnavailableError)) return {};
+  return {
+    realtimeState: error.state,
+    ...(error.reasonCode !== undefined
+      ? { realtimeReasonCode: error.reasonCode }
+      : {}),
+    retryDelayMs: error.retryDelayMs,
+  };
+}
+
 function toReport(summary: SyncSummary): ClientSyncResult {
   return {
     ok: true,
@@ -169,7 +186,7 @@ async function constructClient(
   db: BunClientDatabase,
   schema: DriverSchema,
   options: ClientCreateOptions,
-): Promise<SyncClient> {
+): Promise<{ client: SyncClient; loseRealtime: () => void }> {
   const endpoints = options.endpoints;
   const nowMs = options.nowMs;
   const fetchSegmentUrl = endpoints.fetchSegmentUrl?.bind(endpoints);
@@ -223,10 +240,14 @@ async function constructClient(
   // §5.11: build a key provider from the driver's `{ $bytes: hex }` keys.
   const encryption = buildEncryption(options.encryption);
   const previousVersionContext = options.previousVersionContext;
+  let loseRealtime: (() => void) | undefined;
   const client = new SyncClient({
     database: db,
     schema: toClientSchema(schema),
     clientId: options.clientId,
+    ...(options.realtimePolicy !== undefined
+      ? { realtimePolicy: options.realtimePolicy }
+      : {}),
     ...(options.limits !== undefined ? { limits: options.limits } : {}),
     ...(blobCacheMaxBytes !== undefined ? { blobCacheMaxBytes } : {}),
     ...(nowMs !== undefined ? { now: () => nowMs } : {}),
@@ -241,6 +262,9 @@ async function constructClient(
         onBinary: (bytes) => handlers.onBinary(bytes),
         onClose: () => handlers.onClose?.(),
       });
+      // SPEC §8.8 loss injection: the socket dies without the client's
+      // deliberate disconnect; the connector reports it like any host.
+      loseRealtime = () => handlers.onClose?.();
       return {
         send: (text) => connection.send(text),
         sendBytes: (bytes) => connection.sendBinary(bytes),
@@ -252,7 +276,8 @@ async function constructClient(
     },
   });
   await client.start();
-  return client;
+  // The connector runs at connect time, so the loss hook reads the slot then.
+  return { client, loseRealtime: () => loseRealtime?.() };
 }
 
 /**
@@ -281,6 +306,7 @@ class TsClientInstance implements ClientInstance {
   readonly #cleanup: () => void;
   #schema: DriverSchema;
   readonly #options: ClientCreateOptions;
+  #loseRealtime: () => void;
   readonly #changes: ClientChangeBatch[] = [];
   readonly #progress: SyncProgress[] = [];
   readonly #intents: SyncIntent[] = [];
@@ -292,12 +318,14 @@ class TsClientInstance implements ClientInstance {
     schema: DriverSchema,
     options: ClientCreateOptions,
     cleanup: () => void = () => {},
+    loseRealtime: () => void = () => {},
   ) {
     this.#client = client;
     this.#db = db;
     this.#cleanup = cleanup;
     this.#schema = schema;
     this.#options = options;
+    this.#loseRealtime = loseRealtime;
     client.onChange((batch) => this.#changes.push(batch));
     client.onProgress((progress) => this.#progress.push(progress));
   }
@@ -483,8 +511,22 @@ class TsClientInstance implements ClientInstance {
   }
 
   async diagnosticsSnapshot() {
-    const { queryFailures } = this.#client.diagnosticsSnapshot();
-    return { queryFailures };
+    const snapshot = this.#client.diagnosticsSnapshot();
+    return {
+      queryFailures: snapshot.queryFailures,
+      host: {
+        realtime: snapshot.host.realtime,
+        ...(snapshot.host.realtimePolicy !== undefined
+          ? { realtimePolicy: snapshot.host.realtimePolicy }
+          : {}),
+        ...(snapshot.host.realtimeReasonCode !== undefined
+          ? { realtimeReasonCode: snapshot.host.realtimeReasonCode }
+          : {}),
+        ...(snapshot.host.realtimeRetryDelayMs !== undefined
+          ? { realtimeRetryDelayMs: snapshot.host.realtimeRetryDelayMs }
+          : {}),
+      },
+    };
   }
 
   async drainProgress() {
@@ -543,7 +585,7 @@ class TsClientInstance implements ClientInstance {
       return first;
     } catch (error) {
       const { code, message } = errorCodeOf(error);
-      return { ok: false, errorCode: code, message };
+      return { ok: false, errorCode: code, message, ...realtimeRefusal(error) };
     }
   }
 
@@ -556,7 +598,7 @@ class TsClientInstance implements ClientInstance {
       return result;
     } catch (error) {
       const { code, message } = errorCodeOf(error);
-      return { ok: false, errorCode: code, message };
+      return { ok: false, errorCode: code, message, ...realtimeRefusal(error) };
     }
   }
 
@@ -737,10 +779,12 @@ class TsClientInstance implements ClientInstance {
   async recreateWithSchema(schema: DriverSchema): Promise<ClientInstance> {
     // Release the leader lock the old core holds; the DB stays open.
     await this.#client.close();
-    this.#client = await constructClient(this.#db, schema, {
+    const reopened = await constructClient(this.#db, schema, {
       ...this.#options,
       schema,
     });
+    this.#client = reopened.client;
+    this.#loseRealtime = reopened.loseRealtime;
     this.#client.onChange((batch) => this.#changes.push(batch));
     if (this.#client.statusSnapshot().syncNeeded) {
       this.#intents.push({ kind: 'interactive' });
@@ -755,6 +799,10 @@ class TsClientInstance implements ClientInstance {
 
   async disconnectRealtime(): Promise<void> {
     this.#client.disconnectRealtime();
+  }
+
+  async loseRealtime(): Promise<void> {
+    this.#loseRealtime();
   }
 
   async syncNeeded(): Promise<boolean> {
@@ -902,7 +950,18 @@ export const tsClientDriver: ClientDriver = {
     // the harness endpoints have a URL host — that presence is what makes
     // the client core advertise accept bit 3. §5.9 blob transport likewise.
     const { db, cleanup } = createClientDatabase(options);
-    const client = await constructClient(db, options.schema, options);
-    return new TsClientInstance(client, db, options.schema, options, cleanup);
+    const { client, loseRealtime } = await constructClient(
+      db,
+      options.schema,
+      options,
+    );
+    return new TsClientInstance(
+      client,
+      db,
+      options.schema,
+      options,
+      cleanup,
+      loseRealtime,
+    );
   },
 };

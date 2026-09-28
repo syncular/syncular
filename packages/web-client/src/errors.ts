@@ -1,3 +1,5 @@
+import type { RealtimeState } from './diagnostics';
+
 /** A persistent local store is temporarily owned by another live engine. */
 export const STORAGE_BUSY_CODE = 'client.storage_busy';
 
@@ -10,13 +12,19 @@ export const STORAGE_CORRUPT_CODE = 'client.storage_corrupt';
 /** A local read hit SQLITE_IOERR (SPEC §7.5). */
 export const STORAGE_IO_CODE = 'client.storage_io';
 
+/** SPEC §8.8: a round under `realtimePolicy: 'required'` found no socket. */
+export const REALTIME_UNAVAILABLE_CODE = 'sync.realtime_unavailable';
+
+/** SPEC §8.8: a connected socket ended without a deliberate disconnect. */
+export const REALTIME_LOST_CODE = 'client.realtime_lost';
+
 /**
  * Client-side errors. Protocol codes from the SPEC.md §10 catalog are surfaced
  * unchanged. Host/runtime-only conditions may use the separate `client.*`
  * namespace and never travel on the wire.
  */
 export class ClientSyncError extends Error {
-  override readonly name = 'ClientSyncError';
+  override readonly name: string = 'ClientSyncError';
   readonly code: string;
   readonly retryable: boolean;
 
@@ -24,6 +32,35 @@ export class ClientSyncError extends Error {
     super(message);
     this.code = code;
     this.retryable = retryable;
+  }
+}
+
+/**
+ * SPEC §8.8: the `required` realtime policy refused a round because the
+ * socket is not connected. `state` is the availability state that refused
+ * (`connecting`, `lost`, `refused`, or `disconnected`), `reasonCode` is the
+ * stable code behind a `lost` or `refused` state, and `retryDelayMs` is the
+ * delay of the background retry intent the client scheduled with this throw.
+ */
+export class RealtimeUnavailableError extends ClientSyncError {
+  override readonly name = 'RealtimeUnavailableError';
+  readonly state: RealtimeState;
+  readonly reasonCode: string | undefined;
+  readonly retryDelayMs: number;
+
+  constructor(
+    state: RealtimeState,
+    reasonCode: string | undefined,
+    retryDelayMs: number,
+  ) {
+    super(
+      REALTIME_UNAVAILABLE_CODE,
+      'realtime is required and the realtime socket is not connected',
+      true,
+    );
+    this.state = state;
+    this.reasonCode = reasonCode;
+    this.retryDelayMs = retryDelayMs;
   }
 }
 

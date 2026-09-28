@@ -173,7 +173,11 @@ This baseline follows WebView connectivity/visibility. A desktop app with
 native sleep/wake evidence should expose it through the same structural
 lifecycle signal. The supervisor owns bounded reconnect and catch-up; the
 native core guarantees repeated connect commands still own only one socket.
-See [Realtime](/concepts-realtime/) for phases and diagnostics.
+Create the client with `realtimePolicy: 'required'` when the socket is the
+designated sync path: a round while it is down then fails with
+`sync.realtime_unavailable` instead of using `POST /sync`.
+See [Realtime](/concepts-realtime/#required-realtime) for phases and
+diagnostics.
 
 ## React bindings (optional)
 

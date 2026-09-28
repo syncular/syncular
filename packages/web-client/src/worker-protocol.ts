@@ -34,7 +34,7 @@ import type {
   WindowState,
 } from './client';
 import type { SqlRow, SqlValue } from './database';
-import type { ClientDiagnosticsSnapshot } from './diagnostics';
+import type { ClientDiagnosticsSnapshot, RealtimePolicy } from './diagnostics';
 import type { EncryptionKeyringConfig } from './encryption';
 import type { ClientChangeBatch, LocalRevision } from './invalidation';
 import type { LocalDataPurgeInput, LocalDataPurgeResult } from './local-purge';
@@ -114,6 +114,11 @@ export interface WorkerInitConfig {
   readonly securityPreflight?: boolean;
   readonly clientId?: string;
   readonly limits?: SyncClientLimits;
+  /**
+   * SPEC §8.8 realtime policy for the worker-owned core; forwarded verbatim.
+   * Absent ⇒ `optional` (a connected socket, otherwise `POST /sync`).
+   */
+  readonly realtimePolicy?: RealtimePolicy;
   /**
    * RFC 0005 previous-version context, forwarded verbatim into the worker's
    * `SyncClientConfig`. Absent ⇒ the feature stays off (default-off).

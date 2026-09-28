@@ -23,6 +23,7 @@ import type {
   ClientPreviousVersionContextOptions,
   DriverEncryptionConfig,
   DriverError,
+  DriverRealtimePolicy,
   DriverSchema,
   DriverScopeMap,
   Pairing,
@@ -339,6 +340,8 @@ export interface NewClientOptions {
   readonly encryption?: DriverEncryptionConfig;
   /** RFC 0005 previous-version context; absent ⇒ feature off. */
   readonly previousVersionContext?: ClientPreviousVersionContextOptions;
+  /** SPEC §8.8 realtime policy; absent ⇒ the core default (`optional`). */
+  readonly realtimePolicy?: DriverRealtimePolicy;
 }
 
 // ---------------------------------------------------------------------------
@@ -532,6 +535,9 @@ export class ScenarioContext {
       ...(options.previousVersionContext !== undefined
         ? { previousVersionContext: options.previousVersionContext }
         : {}),
+      ...(options.realtimePolicy !== undefined
+        ? { realtimePolicy: options.realtimePolicy }
+        : {}),
       endpoints: {
         ...(fetchSegmentUrl !== undefined ? { fetchSegmentUrl } : {}),
         ...(uploadBlob !== undefined ? { uploadBlob } : {}),
@@ -581,6 +587,10 @@ export class ScenarioContext {
           return result.bytes;
         },
         connectRealtime: async (sink: RealtimeSink) => {
+          if (faults.refuseNextRealtimeConnect) {
+            faults.refuseNextRealtimeConnect = false;
+            throw new TransportFault('injected: realtime connect refused');
+          }
           const result = await server.connectRealtime(actorId, clientId, {
             onText: (text) => {
               realtime.observeServerText(text);

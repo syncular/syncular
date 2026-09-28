@@ -349,6 +349,9 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
       },
       ...(config.clientId !== undefined ? { clientId: config.clientId } : {}),
       ...(config.limits !== undefined ? { limits: config.limits } : {}),
+      ...(config.realtimePolicy !== undefined
+        ? { realtimePolicy: config.realtimePolicy }
+        : {}),
       ...(config.encryption !== undefined
         ? { encryption: encryptionConfigFromKeyring(config.encryption) }
         : {}),

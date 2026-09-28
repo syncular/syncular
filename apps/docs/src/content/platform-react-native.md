@@ -149,7 +149,11 @@ from `@syncular/client` with an `AppState`-backed lifecycle signal plus the
 app's connectivity and protection signals. Keep calling `pause()` /
 `resume()` to control the native event pump; repeated connection attempts are
 idempotent, so the supervisor adds policy without creating a second native
-socket. See [Realtime](/platform-web/#the-realtime-supervisor).
+socket. Create the client with `realtimePolicy: 'required'` when the socket
+is the designated sync path: a round while it is down then fails with
+`sync.realtime_unavailable` instead of using `POST /sync`.
+See [Realtime](/concepts-realtime/#required-realtime) for the states and
+diagnostics.
 
 Final commit outcomes use the native SQLite journal: `commitOutcome`,
 `commitOutcomes`, and `resolveCommitOutcome` survive process restarts, and

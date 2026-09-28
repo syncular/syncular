@@ -23,17 +23,32 @@ export type ClientDiagnosticsHostRole =
   | 'follower'
   | 'unknown';
 export type ClientDiagnosticsConnectivity = 'online' | 'offline' | 'unknown';
-export type ClientDiagnosticsRealtime =
+/**
+ * SPEC §8.8: how a client treats the realtime binding for sync rounds. The
+ * default is `optional`.
+ */
+export type RealtimePolicy = 'required' | 'optional' | 'off';
+export type RealtimeState =
   | 'connected'
+  | 'connecting'
   | 'disconnected'
+  | 'lost'
+  | 'refused'
   | 'unsupported'
+  | 'disabled'
   | 'unknown';
 
 export interface ClientDiagnosticsHost {
   readonly kind: ClientDiagnosticsHostKind;
   readonly role: ClientDiagnosticsHostRole;
   readonly connectivity: ClientDiagnosticsConnectivity;
-  readonly realtime: ClientDiagnosticsRealtime;
+  readonly realtime: RealtimeState;
+  /** Present on core-emitted snapshots; host wrappers may forward only `realtime`. */
+  readonly realtimePolicy?: RealtimePolicy;
+  /** Stable code behind a `lost` or `refused` state (SPEC §8.8). */
+  readonly realtimeReasonCode?: string;
+  /** Next retry delay in ms while the socket is not connected. */
+  readonly realtimeRetryDelayMs?: number;
 }
 
 export interface ExpectedDiagnosticSubscription {

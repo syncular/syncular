@@ -4,8 +4,15 @@
  * with post-apply acks, and wake-up → coalesced catch-up pull.
  */
 import { describe, expect, test } from 'bun:test';
-import type { RealtimeHandlers, RealtimeSocket } from '@syncular/client';
 import {
+  ClientSyncError,
+  SyncClient,
+  type RealtimeHandlers,
+  type RealtimeSocket,
+} from '@syncular/client';
+import { BunClientDatabase } from '@syncular/client/bun';
+import {
+  CLIENT_SCHEMA,
   makeClient,
   makeServer,
   PARTITION,
@@ -361,4 +368,223 @@ test('migrated readiness helpers and callers use completion signals without wall
       /\b(?:setTimeout|setInterval|(?:Bun\.)?sleep)\s*\(/,
     );
   }
+});
+
+describe('realtime policy (§8.8)', () => {
+  test('required refuses a round before the socket connects and never uses HTTP', async () => {
+    const server = makeServer();
+    const local = await makeClient(server, {
+      clientId: 'required-never-connected',
+      realtimePolicy: 'required',
+    });
+    local.client.subscribe({
+      id: 's1',
+      table: 'tasks',
+      scopes: { project_id: ['p1'] },
+    });
+    await expect(local.client.sync()).rejects.toMatchObject({
+      name: 'RealtimeUnavailableError',
+      code: 'sync.realtime_unavailable',
+      state: 'disconnected',
+      retryable: true,
+      retryDelayMs: 250,
+    });
+    expect(local.httpRounds.count).toBe(0);
+    expect(local.intents).toContainEqual({
+      kind: 'background',
+      delayMs: 250,
+    });
+    const host = local.client.diagnosticsSnapshot().host;
+    expect(host.realtime).toBe('disconnected');
+    expect(host.realtimePolicy).toBe('required');
+    expect(host.realtimeReasonCode).toBeUndefined();
+    expect(host.realtimeRetryDelayMs).toBe(250);
+    await local.client.close();
+    local.db.close();
+    server.storage.db.close();
+  });
+
+  test('required rides the socket, marks an unexpected close lost, and reconnects', async () => {
+    const server = makeServer();
+    let sever: (() => void) | undefined;
+    const local = await makeClient(server, {
+      clientId: 'required-round-trip',
+      realtimePolicy: 'required',
+      realtime: async (handlers) => {
+        const session = await server.hub.connect({
+          partition: PARTITION,
+          actorId: 'actor-1',
+          clientId: 'required-round-trip',
+          send: (data) => {
+            if (typeof data === 'string') handlers.onText(data);
+            else handlers.onBinary(data);
+          },
+          closeSocket: () => handlers.onClose?.(),
+        });
+        // The connector reports an unexpected close (the host's socket loss
+        // notification, §8.8); a deliberate disconnect goes through the
+        // client and clears the state itself.
+        sever = () => handlers.onClose?.();
+        return {
+          send: (text) => session.handleMessage(text),
+          sendBytes: (bytes) => session.handleBinary(bytes),
+          close: () => session.close(),
+        };
+      },
+    });
+    local.client.subscribe({
+      id: 's1',
+      table: 'tasks',
+      scopes: { project_id: ['p1'] },
+    });
+    await local.client.connectRealtime();
+    expect(local.client.diagnosticsSnapshot().host.realtime).toBe('connected');
+    await local.client.syncUntilIdle();
+    // The boot round rode the socket, not the request/response seam.
+    expect(local.httpRounds.count).toBe(0);
+
+    sever?.();
+    expect(local.client.diagnosticsSnapshot().host).toMatchObject({
+      realtime: 'lost',
+      realtimeReasonCode: 'client.realtime_lost',
+    });
+    await expect(local.client.sync()).rejects.toMatchObject({
+      code: 'sync.realtime_unavailable',
+      state: 'lost',
+      reasonCode: 'client.realtime_lost',
+    });
+    expect(local.httpRounds.count).toBe(0);
+
+    await local.client.connectRealtime();
+    expect(local.client.diagnosticsSnapshot().host).toMatchObject({
+      realtime: 'connected',
+    });
+    await local.client.syncUntilIdle();
+    expect(local.httpRounds.count).toBe(0);
+    await local.client.close();
+    local.db.close();
+    server.storage.db.close();
+  });
+
+  test('a refused handshake is a visible state and a required round still does not fall back', async () => {
+    const server = makeServer();
+    const local = await makeClient(server, {
+      clientId: 'required-refused',
+      realtimePolicy: 'required',
+      realtime: async () => {
+        throw new ClientSyncError(
+          'transport.failed',
+          'simulated handshake refusal',
+          true,
+        );
+      },
+    });
+    await expect(local.client.connectRealtime()).rejects.toMatchObject({
+      code: 'transport.failed',
+    });
+    expect(local.client.diagnosticsSnapshot().host).toMatchObject({
+      realtime: 'refused',
+      realtimeReasonCode: 'transport.failed',
+      realtimePolicy: 'required',
+    });
+    await expect(local.client.sync()).rejects.toMatchObject({
+      code: 'sync.realtime_unavailable',
+      state: 'refused',
+      reasonCode: 'transport.failed',
+    });
+    expect(local.httpRounds.count).toBe(0);
+    expect(local.client.diagnosticsSnapshot().host.realtimeRetryDelayMs).toBe(
+      250,
+    );
+    await local.client.close();
+    local.db.close();
+    server.storage.db.close();
+  });
+
+  test('an in-flight connect is visible as connecting', async () => {
+    const server = makeServer();
+    let release!: (socket: RealtimeSocket) => void;
+    const local = await makeClient(server, {
+      clientId: 'connecting-state',
+      realtimePolicy: 'required',
+      realtime: () =>
+        new Promise<RealtimeSocket>((resolve) => {
+          release = resolve;
+        }),
+    });
+    const connecting = local.client.connectRealtime();
+    await Promise.resolve();
+    expect(local.client.diagnosticsSnapshot().host.realtime).toBe('connecting');
+    release({
+      send: () => undefined,
+      sendBytes: () => undefined,
+      close: () => undefined,
+    });
+    await connecting;
+    expect(local.client.diagnosticsSnapshot().host).toMatchObject({
+      realtime: 'connected',
+    });
+    await local.client.close();
+    local.db.close();
+    server.storage.db.close();
+  });
+
+  test('off never touches the realtime seam and refuses an explicit connect', async () => {
+    const server = makeServer();
+    const local = await makeClient(server, {
+      clientId: 'policy-off',
+      realtimePolicy: 'off',
+    });
+    await expect(local.client.connectRealtime()).rejects.toMatchObject({
+      code: 'sync.invalid_request',
+    });
+    local.client.subscribe({
+      id: 's1',
+      table: 'tasks',
+      scopes: { project_id: ['p1'] },
+    });
+    await local.client.syncUntilIdle();
+    expect(local.httpRounds.count).toBeGreaterThan(0);
+    expect(local.client.diagnosticsSnapshot().host).toMatchObject({
+      realtime: 'disabled',
+      realtimePolicy: 'off',
+    });
+    await local.client.close();
+    local.db.close();
+    server.storage.db.close();
+  });
+
+  test('optional keeps the HTTP round and reports the explicit state', async () => {
+    const server = makeServer();
+    const local = await makeClient(server, { clientId: 'policy-optional' });
+    local.client.subscribe({
+      id: 's1',
+      table: 'tasks',
+      scopes: { project_id: ['p1'] },
+    });
+    await local.client.syncUntilIdle();
+    expect(local.httpRounds.count).toBeGreaterThan(0);
+    expect(local.client.diagnosticsSnapshot().host).toMatchObject({
+      realtime: 'disconnected',
+      realtimePolicy: 'optional',
+    });
+    await local.client.close();
+    local.db.close();
+    server.storage.db.close();
+  });
+
+  test('required without a realtime connector is refused at construction', () => {
+    expect(
+      () =>
+        new SyncClient({
+          database: new BunClientDatabase(),
+          schema: CLIENT_SCHEMA,
+          clientId: 'required-without-connector',
+          transport: async () => {
+            throw new Error('unused transport');
+          },
+          realtimePolicy: 'required',
+        }),
+    ).toThrow(/realtimePolicy 'required' needs a realtime connector/);
+  });
 });

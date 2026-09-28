@@ -8,7 +8,7 @@
  */
 import { check, checkEqual } from '../checks';
 import { task } from '../fixture';
-import type { Scenario, ScenarioContext } from '../scenario';
+import { ScenarioSkip, type Scenario, type ScenarioContext } from '../scenario';
 import { expectConverged, seedTasks, syncIdle, syncOk } from './util';
 
 const P1 = { project_id: ['p1'] } as const;
@@ -185,6 +185,243 @@ export const realtimeScenarios: readonly Scenario[] = [
         variable: 'project_id',
         values: ['p1'],
       });
+    },
+  },
+
+  {
+    name: 'realtime/required-policy-refuses-http-without-a-socket',
+    specRefs: ['§8.7', '§8.8'],
+    async run(ctx) {
+      const handle = await ctx.newClient({
+        actorId: 'actor-required',
+        clientId: 'client-required',
+        realtimePolicy: 'required',
+      });
+      await handle.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      const denied = await handle.api.sync();
+      check(!denied.ok, 'a required round without a socket cannot succeed');
+      if (!denied.ok) {
+        checkEqual(
+          denied.errorCode,
+          'sync.realtime_unavailable',
+          'the refusal is the typed §8.8 code',
+        );
+        checkEqual(
+          denied.realtimeState,
+          'disconnected',
+          'the refusal names the availability state',
+        );
+        check(
+          denied.retryDelayMs !== undefined && denied.retryDelayMs > 0,
+          'the refusal carries the next retry delay',
+        );
+      }
+      checkEqual(
+        handle.sentRequests.length,
+        0,
+        'required never falls back to an HTTP sync round',
+      );
+      const diagnostics = await handle.api.diagnosticsSnapshot?.();
+      checkEqual(
+        diagnostics?.host.realtime,
+        'disconnected',
+        'diagnostics expose the explicit state',
+      );
+      checkEqual(
+        diagnostics?.host.realtimePolicy,
+        'required',
+        'diagnostics expose the configured policy',
+      );
+    },
+  },
+
+  {
+    name: 'realtime/required-policy-refuses-after-socket-loss',
+    specRefs: ['§8.8'],
+    async run(ctx) {
+      const handle = await ctx.newClient({
+        actorId: 'actor-loss',
+        clientId: 'client-loss',
+        realtimePolicy: 'required',
+      });
+      if (handle.api.loseRealtime === undefined) {
+        throw new ScenarioSkip('client driver has no realtime loss injection');
+      }
+      await handle.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await handle.api.connectRealtime();
+      await syncIdle(handle);
+      checkEqual(
+        handle.sentRequests.length,
+        0,
+        'the boot round rode the socket',
+      );
+
+      await handle.api.loseRealtime();
+      const failed = await handle.api.sync();
+      check(!failed.ok, 'the round on the dead socket cannot succeed');
+      const refused = await handle.api.sync();
+      check(!refused.ok, 'the required round after the loss is refused');
+      if (!refused.ok) {
+        checkEqual(
+          refused.errorCode,
+          'sync.realtime_unavailable',
+          'the refusal is the typed §8.8 code',
+        );
+        checkEqual(
+          refused.realtimeState,
+          'lost',
+          'the loss is the explicit state',
+        );
+        check(
+          typeof refused.realtimeReasonCode === 'string' &&
+            refused.realtimeReasonCode.length > 0,
+          'the loss carries its reason code',
+        );
+      }
+      checkEqual(
+        handle.sentRequests.length,
+        0,
+        'required never falls back to HTTP after a loss',
+      );
+      const diagnostics = await handle.api.diagnosticsSnapshot?.();
+      checkEqual(
+        diagnostics?.host.realtime,
+        'lost',
+        'diagnostics report the loss',
+      );
+      check(
+        typeof diagnostics?.host.realtimeReasonCode === 'string' &&
+          diagnostics.host.realtimeReasonCode.length > 0,
+        'diagnostics carry the loss reason',
+      );
+
+      await handle.api.connectRealtime();
+      await syncIdle(handle);
+      checkEqual(
+        handle.sentRequests.length,
+        0,
+        'the reconnected round rode the socket',
+      );
+      checkEqual(
+        (await handle.api.diagnosticsSnapshot?.())?.host.realtime,
+        'connected',
+        'reconnect returns the state to connected',
+      );
+    },
+  },
+
+  {
+    name: 'realtime/required-policy-exposes-a-refused-handshake',
+    specRefs: ['§8.8'],
+    async run(ctx) {
+      const handle = await ctx.newClient({
+        actorId: 'actor-refused',
+        clientId: 'client-refused',
+        realtimePolicy: 'required',
+      });
+      handle.faults.refuseNextRealtimeConnect = true;
+      let connectRefused = false;
+      try {
+        await handle.api.connectRealtime();
+      } catch {
+        connectRefused = true;
+      }
+      check(connectRefused, 'the refused handshake surfaces to the host');
+
+      const denied = await handle.api.sync();
+      check(
+        !denied.ok,
+        'the required round after a refused handshake is refused',
+      );
+      if (!denied.ok) {
+        checkEqual(
+          denied.errorCode,
+          'sync.realtime_unavailable',
+          'the refusal is the typed §8.8 code',
+        );
+        checkEqual(
+          denied.realtimeState,
+          'refused',
+          'the failed attempt is the explicit state',
+        );
+        checkEqual(
+          denied.realtimeReasonCode,
+          'transport.lost',
+          'the refusal carries the transport reason',
+        );
+      }
+      checkEqual(
+        handle.sentRequests.length,
+        0,
+        'required never falls back to HTTP after a refused handshake',
+      );
+      const diagnostics = await handle.api.diagnosticsSnapshot?.();
+      checkEqual(
+        diagnostics?.host.realtime,
+        'refused',
+        'diagnostics report the refused state',
+      );
+      checkEqual(
+        diagnostics?.host.realtimeReasonCode,
+        'transport.lost',
+        'diagnostics carry the refusal reason',
+      );
+
+      await handle.api.connectRealtime();
+      checkEqual(
+        (await handle.api.diagnosticsSnapshot?.())?.host.realtime,
+        'connected',
+        'the next attempt connects',
+      );
+    },
+  },
+
+  {
+    name: 'realtime/required-policy-reconnect-restores-socket-rounds',
+    specRefs: ['§8.4', '§8.8'],
+    async run(ctx) {
+      const handle = await ctx.newClient({
+        actorId: 'actor-reconnect',
+        clientId: 'client-reconnect',
+        realtimePolicy: 'required',
+      });
+      await handle.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await handle.api.connectRealtime();
+      await syncIdle(handle);
+      checkEqual(
+        handle.sentRequests.length,
+        0,
+        'the boot round rode the socket',
+      );
+
+      await handle.api.disconnectRealtime();
+      const denied = await handle.api.sync();
+      check(!denied.ok, 'a deliberate disconnect refuses the required round');
+      if (!denied.ok) {
+        checkEqual(
+          denied.realtimeState,
+          'disconnected',
+          'a deliberate disconnect is not a loss',
+        );
+      }
+      checkEqual(
+        handle.sentRequests.length,
+        0,
+        'the deliberate disconnect never falls back to HTTP',
+      );
+
+      await handle.api.connectRealtime();
+      await syncIdle(handle);
+      checkEqual(
+        handle.sentRequests.length,
+        0,
+        'reconnect restored socket rounds',
+      );
+      checkEqual(
+        (await handle.api.diagnosticsSnapshot?.())?.host.realtime,
+        'connected',
+        'the state returns to connected',
+      );
     },
   },
 ];

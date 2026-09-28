@@ -263,6 +263,13 @@ is connected the core routes sync rounds through `Transport::realtime_sync`;
 the connected socket carries the sync rounds themselves. See
 [Realtime](/concepts-realtime/).
 
+`set_realtime_policy(RealtimePolicy::Required)` designates the socket as the
+sync path. While the socket is not connected, `sync` returns
+`SyncOutcome::RealtimeUnavailable { state, reason_code, retry_delay_ms }`
+without calling `Transport::sync`, and `realtime_state()` reports
+`connecting`, `disconnected`, `lost`, `refused`, or `disabled`. The policy
+defaults to `RealtimePolicy::Optional`, which keeps the HTTP round.
+
 ## Where to go next
 
 - **[Embedding via C FFI](/platform-ffi/)**: this crate packaged as

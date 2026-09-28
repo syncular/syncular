@@ -529,7 +529,10 @@ export class RealtimeSupervisor {
     if (this.#stopped) return;
     this.#diagnosticConnectivity = snapshot.host.connectivity;
     this.#diagnosticSecurity = snapshot.securityLifecycle;
-    if (snapshot.host.realtime === 'unsupported') {
+    if (
+      snapshot.host.realtime === 'unsupported' ||
+      snapshot.host.realtime === 'disabled'
+    ) {
       const disconnect =
         this.#connected || this.#transportConnected || this.#connecting;
       this.#realtimeSupported = false;
@@ -563,7 +566,18 @@ export class RealtimeSupervisor {
       void this.#adoptConnectedTransport();
       return;
     }
-    if (snapshot.host.realtime === 'disconnected') {
+    if (snapshot.host.realtime === 'connecting') {
+      // An attempt is already in flight; the supervisor's own #connect (or
+      // the host's direct call) owns the outcome.
+      this.#transportConnected = false;
+      this.#connected = false;
+      return;
+    }
+    if (
+      snapshot.host.realtime === 'disconnected' ||
+      snapshot.host.realtime === 'lost' ||
+      snapshot.host.realtime === 'refused'
+    ) {
       this.#transportConnected = false;
       this.#connected = false;
       if (this.#connecting) return;

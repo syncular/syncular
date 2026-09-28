@@ -21,6 +21,65 @@ when a client selects the socket transport.
   and server-to-server integration.
 - Segment downloads are HTTP-only (the CDN bulk path).
 
+## Required realtime
+
+`realtimePolicy` decides what a sync round does when the socket is not
+connected. The default is `optional`.
+
+| Policy | Behavior |
+|---|---|
+| `optional` | A connected socket carries the round; otherwise the round uses `POST /sync`. |
+| `required` | A connected socket carries the round. While the socket is not connected, `sync()` rejects with `RealtimeUnavailableError` and never uses `POST /sync`. |
+| `off` | Rounds always use `POST /sync`, and `connectRealtime()` fails with `sync.invalid_request`. |
+
+```ts
+const client = new SyncClient({
+  database,
+  schema,
+  clientId,
+  transport: httpSyncTransport('/sync'),
+  realtime: webSocketRealtimeConnector('wss://example.com/realtime?clientId={clientId}'),
+  realtimePolicy: 'required', // the socket is the designated sync path
+});
+```
+
+Use `required` when the application treats the socket as the designated sync
+path and a silently downgraded HTTP round would misrepresent the state of the
+world. `required` without a `realtime` connector is refused at construction
+with `sync.invalid_request`. The worker handle and the Tauri and React Native
+create configs accept the same key and forward it to their client core.
+
+`RealtimeUnavailableError` extends `ClientSyncError` with the typed state that
+refused the round:
+
+```ts
+try {
+  await client.sync();
+} catch (error) {
+  if (error instanceof RealtimeUnavailableError) {
+    // error.state: 'connecting' | 'lost' | 'refused' | 'disconnected'
+    // error.reasonCode: the stable code behind a lost or refused state
+    // error.retryDelayMs: the delay of the background retry intent
+  }
+}
+```
+
+Diagnostics report the same vocabulary. `diagnosticsSnapshot().host` carries
+`realtime` (`connected`, `connecting`, `disconnected`, `lost`, `refused`,
+`disabled`, or `unsupported`), `realtimePolicy`, `realtimeReasonCode`, and
+`realtimeRetryDelayMs`. A socket that closes without a deliberate
+`disconnectRealtime()` becomes `lost` with a reason code; a failed connect
+attempt becomes `refused`. Both states schedule one background
+retry intent, whose delay is the `retryDelayMs` on the refusal and on the
+diagnostics entry. A successful connect returns the state to `connected` and
+clears the reason and delay. The Rust core exposes the same states through
+`set_realtime_policy`, `realtime_state()`, and
+`SyncOutcome::RealtimeUnavailable`.
+
+`optional` keeps the historical behavior and still reports the explicit
+state, so an application can render "realtime connecting" or "realtime lost"
+without a policy change.
+
 ## Deltas and wake-ups
 
 When a commit lands that a connected client cares about, the server pushes it

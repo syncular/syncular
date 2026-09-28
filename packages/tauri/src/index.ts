@@ -117,6 +117,12 @@ export interface TauriSyncClientConfig {
   /** §4.2 client limits, forwarded to the native `create`. */
   readonly limits?: Record<string, unknown>;
   /**
+   * SPEC §8.8 realtime policy, forwarded to the native `create`. Absent ⇒
+   * `optional`. `required` refuses a sync round while the socket is not
+   * connected instead of falling back to HTTP.
+   */
+  readonly realtimePolicy?: SyncClientConfig['realtimePolicy'];
+  /**
    * Portable E2EE keys and declarative per-row key-id columns. Raw keys are
    * encoded into the native command envelope and never sent to the server.
    */
@@ -1040,6 +1046,9 @@ export async function createTauriSyncClient(
         ...(config.clientId !== undefined ? { clientId: config.clientId } : {}),
         schema: config.schema,
         ...(config.limits !== undefined ? { limits: config.limits } : {}),
+        ...(config.realtimePolicy !== undefined
+          ? { realtimePolicy: config.realtimePolicy }
+          : {}),
         ...(config.encryption !== undefined
           ? { encryption: encodeEncryption(config.encryption) }
           : {}),

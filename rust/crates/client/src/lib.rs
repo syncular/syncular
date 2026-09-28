@@ -48,11 +48,12 @@ pub use api::{
     DiagnosticSubscription, ExpectedDiagnosticSubscription, FetchedBlob, LocalDataPurgeInput,
     LocalDataPurgeResult, LocalDataPurgeTarget, LocalDataRebootstrapInput,
     LocalDataRebootstrapResult, Mutation, PresencePeer, QueryOwner, QueryReadFailure, QueryRow,
-    QuerySnapshot, QueryValue, RejectionRecord, ResolveCommitOutcomeInput, RowState, SchemaFloor,
-    SubscriptionStateView, SyncIntent, SyncOutcome, SyncReport, SyncStatusSnapshot, TableChange,
-    TimeBucketUnit, WindowBase, WindowChange, WindowCoverage, WindowState, WindowUnitRef,
-    CLIENT_DIAGNOSTICS_VERSION, MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
-    MAX_DIAGNOSTIC_QUERY_FAILURES,
+    QuerySnapshot, QueryValue, RealtimePolicy, RealtimeState, RejectionRecord,
+    ResolveCommitOutcomeInput, RowState, SchemaFloor, SubscriptionStateView, SyncIntent,
+    SyncOutcome, SyncReport, SyncStatusSnapshot, TableChange, TimeBucketUnit, WindowBase,
+    WindowChange, WindowCoverage, WindowState, WindowUnitRef, CLIENT_DIAGNOSTICS_VERSION,
+    MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS, MAX_DIAGNOSTIC_QUERY_FAILURES, REALTIME_LOST_CODE,
+    REALTIME_UNAVAILABLE_CODE,
 };
 pub use client::{FileQuerySnapshotReader, SyncClient, SECURITY_PREFLIGHT_REQUIRED_CODE};
 pub use schema::{compile_schema, parse_schema_json, ClientSchema};

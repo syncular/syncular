@@ -119,6 +119,12 @@ export interface NativeSyncClientConfig {
   readonly clientId?: string;
   /** §4.2 client limits, forwarded to the native `create`. */
   readonly limits?: Record<string, unknown>;
+  /**
+   * SPEC §8.8 realtime policy, forwarded to the native `create`. Absent ⇒
+   * `optional`. `required` refuses a sync round while the socket is not
+   * connected instead of falling back to HTTP.
+   */
+  readonly realtimePolicy?: SyncClientConfig['realtimePolicy'];
   /** Portable E2EE keyring installed in the Rust core. */
   readonly encryption?: EncryptionKeyringConfig;
   /** Open the native replica behind the fail-closed security gate. */
@@ -1130,6 +1136,9 @@ export async function createNativeSyncClient(
   const createParams: Record<string, unknown> = { schema: config.schema };
   if (config.clientId !== undefined) createParams.clientId = config.clientId;
   if (config.limits !== undefined) createParams.limits = config.limits;
+  if (config.realtimePolicy !== undefined) {
+    createParams.realtimePolicy = config.realtimePolicy;
+  }
   if (config.dbPath !== undefined) createParams.dbPath = config.dbPath;
   if (config.securityPreflight === true && config.encryption !== undefined) {
     subscription.remove();

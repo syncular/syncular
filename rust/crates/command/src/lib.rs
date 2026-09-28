@@ -22,7 +22,7 @@ use ssp2::{
 use syncular_client::previous_version::{PreviousVersionContextConfig, PreviousVersionReadSpec};
 use syncular_client::{
     ClientDiagnosticsRequest, ClientLimits, CommandEffects, CommitOutcomeQuery,
-    LocalDataPurgeInput, LocalDataRebootstrapInput, Mutation, QueryOwner,
+    LocalDataPurgeInput, LocalDataRebootstrapInput, Mutation, QueryOwner, RealtimePolicy,
     ResolveCommitOutcomeInput, SyncClient, Transport, WindowBase, WindowCoverage,
 };
 
@@ -210,6 +210,24 @@ pub fn parse_limits(value: Option<&Value>) -> ClientLimits {
         .and_then(Value::as_u64)
         .map(|value| value as usize);
     limits
+}
+
+/// §8.8: parse the `realtimePolicy` create param. Absent ⇒ `optional`.
+fn parse_realtime_policy(value: Option<&Value>) -> Result<RealtimePolicy, CommandError> {
+    match value {
+        None => Ok(RealtimePolicy::Optional),
+        Some(Value::String(text)) => match text.as_str() {
+            "required" => Ok(RealtimePolicy::Required),
+            "optional" => Ok(RealtimePolicy::Optional),
+            "off" => Ok(RealtimePolicy::Off),
+            other => Err(client_err(format!(
+                "sync.invalid_request: realtimePolicy must be 'required', 'optional', or 'off', got {other:?}"
+            ))),
+        },
+        Some(_) => Err(client_err(
+            "sync.invalid_request: realtimePolicy must be a string".to_owned(),
+        )),
+    }
 }
 
 /// §5.11: parse the `encryption` config into the client's portable keyring.
@@ -484,6 +502,12 @@ pub fn dispatch<T: Transport>(
                     SyncClient::new_with_identity(client_id, schema, limits).map_err(client_err)?
                 }
             };
+            // §8.8: the realtime policy rides the create params; absent ⇒
+            // `optional` (today's socket-or-HTTP behavior).
+            let realtime_policy = parse_realtime_policy(params.get("realtimePolicy"))?;
+            instance
+                .set_realtime_policy(realtime_policy)
+                .map_err(client_err)?;
             // Harness clock pin (§5.4 expiry runs on the virtual clock).
             if let Some(now_ms) = params.get("nowMs").and_then(Value::as_i64) {
                 instance.set_now_ms(now_ms);
@@ -1275,6 +1299,55 @@ mod tests {
         )
         .expect("deliberate reconnect command");
         assert_eq!(transport.realtime_connects, 2);
+    }
+
+    #[test]
+    fn native_command_realtime_policy_rides_create_and_refuses_http() {
+        let mut transport = NoNetwork::default();
+        let mut client: Option<SyncClient> = None;
+        let mut effects = CreateEffects::default();
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({ "schema": schema(), "realtimePolicy": "required" }),
+        )
+        .expect("create client with a required realtime policy");
+        let result = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "sync",
+            &json!({}),
+        )
+        .expect("sync command");
+        assert_eq!(result["ok"], json!(false));
+        assert_eq!(result["errorCode"], json!("sync.realtime_unavailable"));
+        assert_eq!(result["realtimeState"], json!("disconnected"));
+        assert_eq!(result["retryDelayMs"], json!(250));
+        let snapshot = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "diagnosticsSnapshot",
+            &json!({}),
+        )
+        .expect("diagnostics command");
+        assert_eq!(snapshot["host"]["realtime"], json!("disconnected"));
+        assert_eq!(snapshot["host"]["realtimePolicy"], json!("required"));
+        assert_eq!(snapshot["host"]["realtimeRetryDelayMs"], json!(250));
+
+        let mut second: Option<SyncClient> = None;
+        let error = dispatch(
+            &mut transport,
+            &mut second,
+            &mut effects,
+            "create",
+            &json!({ "schema": schema(), "realtimePolicy": "always" }),
+        )
+        .expect_err("an unknown policy is refused");
+        assert_eq!(error.0, "sync.invalid_request");
     }
 
     #[test]

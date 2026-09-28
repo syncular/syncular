@@ -82,9 +82,16 @@ import {
   MAX_DIAGNOSTIC_DOMAINS,
   MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
   MAX_DIAGNOSTIC_QUERY_FAILURES,
+  type RealtimePolicy,
+  type RealtimeState,
 } from './diagnostics';
 import type { EncryptionConfig } from './encryption';
-import { ClientSyncError, classifySqliteFailure } from './errors';
+import {
+  ClientSyncError,
+  classifySqliteFailure,
+  REALTIME_LOST_CODE,
+  RealtimeUnavailableError,
+} from './errors';
 import {
   ChangeAccumulator,
   ChangeEmitter,
@@ -344,6 +351,15 @@ export interface SyncClientConfig {
    */
   readonly blobCacheMaxBytes?: number;
   readonly realtime?: RealtimeConnector;
+  /**
+   * SPEC §8.8: how sync rounds treat the realtime binding. `optional`
+   * (default) rides a connected socket and otherwise uses `POST /sync`.
+   * `required` refuses a round with `RealtimeUnavailableError` while the
+   * socket is not connected and never falls back to HTTP. `off` never uses
+   * realtime; an explicit `connectRealtime` fails with `sync.invalid_request`.
+   * `required` without a `realtime` connector is refused at construction.
+   */
+  readonly realtimePolicy?: RealtimePolicy;
   /** Stable per-device id (§1.5); defaults to a persisted random UUID. */
   readonly clientId?: string;
   readonly leaderLock?: LeaderLock;
@@ -672,6 +688,12 @@ function isFinalPushResult(frame: PushResultFrame): boolean {
   );
 }
 
+/** The stable `code` of a thrown realtime transport error, when it has one. */
+function realtimeErrorCode(error: unknown): string | undefined {
+  const code = (error as { code?: unknown } | undefined)?.code;
+  return typeof code === 'string' ? code : undefined;
+}
+
 /** Canonical client reads, shared by synchronous cores and promise hosts. */
 export type ClientSnapshotMethods = Pick<
   SyncClient,
@@ -725,6 +747,11 @@ export class SyncClient {
   #conflicts: ConflictRecord[] = [];
   #rejections: RejectionRecord[] = [];
   #socket: RealtimeSocket | undefined;
+  /** SPEC §8.8: the explicit realtime availability state and its evidence. */
+  readonly #realtimePolicy: RealtimePolicy;
+  #realtimeState: RealtimeState;
+  #realtimeReasonCode: string | undefined;
+  #realtimeRetryDelayMs: number | undefined;
   #realtimeConnectPromise: Promise<void> | undefined;
   #realtimeGeneration = 0;
   #pendingRound: PendingRound | undefined;
@@ -802,9 +829,33 @@ export class SyncClient {
         'securityPreflight and encryption are mutually exclusive; install keys with activateSecurity after preflight',
       );
     }
-    this.#config = config;
     this.#db = config.database;
     this.#schema = compileClientSchema(config.schema);
+    const realtimePolicy = config.realtimePolicy ?? 'optional';
+    if (
+      realtimePolicy !== 'required' &&
+      realtimePolicy !== 'optional' &&
+      realtimePolicy !== 'off'
+    ) {
+      throw new ClientSyncError(
+        'sync.invalid_request',
+        "realtimePolicy must be 'required', 'optional', or 'off'",
+      );
+    }
+    if (realtimePolicy === 'required' && config.realtime === undefined) {
+      throw new ClientSyncError(
+        'sync.invalid_request',
+        "realtimePolicy 'required' needs a realtime connector",
+      );
+    }
+    this.#config = config;
+    this.#realtimePolicy = realtimePolicy;
+    this.#realtimeState =
+      realtimePolicy === 'off'
+        ? 'disabled'
+        : config.realtime === undefined
+          ? 'unsupported'
+          : 'disconnected';
     this.#encryption = config.encryption;
     this.#securityLifecycle =
       config.securityPreflight === true ? 'preflight' : 'active';
@@ -1751,12 +1802,14 @@ export class SyncClient {
         kind: 'direct',
         role: 'single',
         connectivity,
-        realtime:
-          this.#config.realtime === undefined
-            ? 'unsupported'
-            : this.#socket === undefined
-              ? 'disconnected'
-              : 'connected',
+        realtime: this.#realtimeState,
+        realtimePolicy: this.#realtimePolicy,
+        ...(this.#realtimeReasonCode !== undefined
+          ? { realtimeReasonCode: this.#realtimeReasonCode }
+          : {}),
+        ...(this.#realtimeRetryDelayMs !== undefined
+          ? { realtimeRetryDelayMs: this.#realtimeRetryDelayMs }
+          : {}),
       },
       securityLifecycle: this.#securityLifecycle,
       schema: {
@@ -3532,9 +3585,20 @@ export class SyncClient {
         explicitlyRetryable === true ||
         (explicitlyRetryable === undefined && typeof code !== 'string');
       if (retryable) {
+        const realtimeUnavailable = error instanceof RealtimeUnavailableError;
+        const delay = realtimeUnavailable
+          ? error.retryDelayMs
+          : this.#retryDelayMs;
+        if (
+          realtimeUnavailable ||
+          this.#realtimeState === 'lost' ||
+          this.#realtimeState === 'refused'
+        ) {
+          this.#realtimeRetryDelayMs = delay;
+        }
         const intent: SyncIntent = {
           kind: 'background',
-          delayMs: this.#retryDelayMs,
+          delayMs: delay,
         };
         this.#retryDelayMs = Math.min(this.#retryDelayMs * 2, 30_000);
         this.#emitSyncIntent(intent);
@@ -3593,50 +3657,60 @@ export class SyncClient {
    * is connected (the socket IS the sync-round
    * transport, not a fallback pair), otherwise through the configured
    * `SyncTransport` seam (loopback/conformance hosts, HTTP-only
-   * producers).
+   * producers). Under `realtimePolicy: 'required'` an unconnected socket
+   * refuses the round with `RealtimeUnavailableError` instead of using the
+   * seam (SPEC §8.8).
    */
   #roundTrip(request: Uint8Array): Promise<Uint8Array> {
     const socket = this.#socket;
-    if (socket === undefined) {
-      return Promise.resolve()
-        .then(() => this.#config.transport(request))
-        .catch((error: unknown) => {
-          if (
-            error instanceof ClientSyncError ||
-            typeof (error as { code?: unknown })?.code === 'string'
-          ) {
-            throw error;
-          }
-          throw new ClientSyncError(
-            'sync.transport_failed',
-            `transport round failed: ${error instanceof Error ? error.message : String(error)}`,
-            true,
+    if (socket !== undefined && this.#realtimePolicy !== 'off') {
+      return new Promise<Uint8Array>((resolve, reject) => {
+        // sync() already enforces one round in flight (§8.7).
+        this.#pendingRound = {
+          scanner: new MessageStreamScanner(),
+          resolve,
+          reject,
+        };
+        const tagged = new Uint8Array(request.length + 1);
+        tagged[0] = REALTIME_TAG_ROUND;
+        tagged.set(request, 1);
+        try {
+          socket.sendBytes(tagged);
+        } catch (error) {
+          this.#pendingRound = undefined;
+          // The socket could not carry the round: record the same loss the
+          // Rust core records when its realtime round call fails (§8.8).
+          this.#setRealtimeState('lost', 'sync.transport_failed');
+          reject(
+            new ClientSyncError(
+              'sync.transport_failed',
+              `socket round send failed: ${error instanceof Error ? error.message : String(error)}`,
+              true,
+            ),
           );
-        });
+        }
+      });
     }
-    return new Promise<Uint8Array>((resolve, reject) => {
-      // sync() already enforces one round in flight (§8.7).
-      this.#pendingRound = {
-        scanner: new MessageStreamScanner(),
-        resolve,
-        reject,
-      };
-      const tagged = new Uint8Array(request.length + 1);
-      tagged[0] = REALTIME_TAG_ROUND;
-      tagged.set(request, 1);
-      try {
-        socket.sendBytes(tagged);
-      } catch (error) {
-        this.#pendingRound = undefined;
-        reject(
-          new ClientSyncError(
-            'sync.transport_failed',
-            `socket round send failed: ${error instanceof Error ? error.message : String(error)}`,
-            true,
-          ),
+    if (this.#realtimePolicy === 'required') {
+      // §8.8: the designated realtime path is down. Refuse the round; the
+      // HTTP binding is not an alternative for a `required` client.
+      throw this.#realtimeUnavailableError();
+    }
+    return Promise.resolve()
+      .then(() => this.#config.transport(request))
+      .catch((error: unknown) => {
+        if (
+          error instanceof ClientSyncError ||
+          typeof (error as { code?: unknown })?.code === 'string'
+        ) {
+          throw error;
+        }
+        throw new ClientSyncError(
+          'sync.transport_failed',
+          `transport round failed: ${error instanceof Error ? error.message : String(error)}`,
+          true,
         );
-      }
-    });
+      });
   }
 
   /** Abort the in-flight socket round (socket closed or disconnected). */
@@ -3649,13 +3723,51 @@ export class SyncClient {
 
   // -- realtime (§8 client side) ----------------------------------------------
 
+  /**
+   * SPEC §8.8: record an availability transition and the evidence behind it.
+   * The reason and retry delay belong to the state that is no longer
+   * connected; `connected` and a policy-restricted state clear them.
+   */
+  #setRealtimeState(state: RealtimeState, reasonCode?: string): void {
+    this.#realtimeState = state;
+    this.#realtimeReasonCode =
+      reasonCode === undefined ? undefined : this.#diagnosticCode(reasonCode);
+    if (
+      state === 'connected' ||
+      state === 'disabled' ||
+      state === 'unsupported'
+    ) {
+      this.#realtimeRetryDelayMs = undefined;
+    }
+    this.#emitDiagnostics();
+  }
+
+  #realtimeUnavailableError(): RealtimeUnavailableError {
+    this.#realtimeRetryDelayMs = this.#retryDelayMs;
+    return new RealtimeUnavailableError(
+      this.#realtimeState,
+      this.#realtimeReasonCode,
+      this.#retryDelayMs,
+    );
+  }
+
   connectRealtime(): Promise<void> {
     this.#requireActive();
+    if (this.#realtimePolicy === 'off') {
+      return Promise.reject(
+        new ClientSyncError(
+          'sync.invalid_request',
+          "realtimePolicy is 'off'; realtime connect is refused",
+        ),
+      );
+    }
     if (this.#socket !== undefined) return Promise.resolve();
     if (this.#realtimeConnectPromise !== undefined) {
       return this.#realtimeConnectPromise;
     }
     const generation = this.#realtimeGeneration;
+    // The attempt is visible synchronously; runners of the task share it.
+    this.#setRealtimeState('connecting');
     const task = this.#runProtectedAsync(() =>
       this.#connectRealtime(generation),
     );
@@ -3684,40 +3796,53 @@ export class SyncClient {
       );
     }
     let openedSocket: RealtimeSocket | undefined;
-    const socket = await connector({
-      onText: (text) => {
-        if (generation !== this.#realtimeGeneration || !this.#started) return;
-        this.#handleRealtimeText(text);
-      },
-      onBinary: (bytes) => {
-        if (generation !== this.#realtimeGeneration || !this.#started) return;
-        this.#routeRealtimeBinary(bytes);
-      },
-      onClose: () => {
-        if (openedSocket === undefined || this.#socket !== openedSocket) return;
-        this.#socket = undefined;
-        this.#presence.clear(); // §8.6.1: presence is per-connection
-        this.#abortPendingRound('realtime socket closed mid-round (§8.7)');
-        this.#emitDiagnostics();
-      },
-    });
-    openedSocket = socket;
-    if (this.#securityLifecycle === 'preflight') {
-      socket.close();
-      throw new ClientSyncError(
-        SECURITY_PREFLIGHT_REQUIRED_CODE,
-        'realtime connected after the client entered security preflight',
-      );
+    try {
+      const socket = await connector({
+        onText: (text) => {
+          if (generation !== this.#realtimeGeneration || !this.#started) return;
+          this.#handleRealtimeText(text);
+        },
+        onBinary: (bytes) => {
+          if (generation !== this.#realtimeGeneration || !this.#started) return;
+          this.#routeRealtimeBinary(bytes);
+        },
+        onClose: () => {
+          if (openedSocket === undefined || this.#socket !== openedSocket)
+            return;
+          this.#socket = undefined;
+          this.#presence.clear(); // §8.6.1: presence is per-connection
+          // §8.8: an undesired close is a visible lost state, not a silent
+          // downgrade to HTTP rounds.
+          this.#setRealtimeState('lost', REALTIME_LOST_CODE);
+          this.#abortPendingRound('realtime socket closed mid-round (§8.7)');
+          this.#emitDiagnostics();
+        },
+      });
+      openedSocket = socket;
+      if (this.#securityLifecycle === 'preflight') {
+        socket.close();
+        throw new ClientSyncError(
+          SECURITY_PREFLIGHT_REQUIRED_CODE,
+          'realtime connected after the client entered security preflight',
+        );
+      }
+      if (generation !== this.#realtimeGeneration || !this.#started) {
+        socket.close();
+        throw new ClientSyncError(
+          'client.realtime_cancelled',
+          'realtime connection was cancelled before activation',
+        );
+      }
+      this.#socket = socket;
+      this.#setRealtimeState('connected');
+    } catch (error) {
+      // A superseded attempt leaves the successor's (or the deliberate
+      // disconnect's) state alone.
+      if (generation === this.#realtimeGeneration) {
+        this.#setRealtimeState('refused', realtimeErrorCode(error));
+      }
+      throw error;
     }
-    if (generation !== this.#realtimeGeneration || !this.#started) {
-      socket.close();
-      throw new ClientSyncError(
-        'client.realtime_cancelled',
-        'realtime connection was cancelled before activation',
-      );
-    }
-    this.#socket = socket;
-    this.#emitDiagnostics();
   }
 
   disconnectRealtime(): void {
@@ -3727,7 +3852,13 @@ export class SyncClient {
     this.#socket = undefined;
     this.#presence.clear(); // §8.6.1: presence is per-connection
     this.#abortPendingRound('realtime socket disconnected mid-round (§8.7)');
-    this.#emitDiagnostics();
+    this.#setRealtimeState(
+      this.#realtimePolicy === 'off'
+        ? 'disabled'
+        : this.#config.realtime === undefined
+          ? 'unsupported'
+          : 'disconnected',
+    );
   }
 
   /**

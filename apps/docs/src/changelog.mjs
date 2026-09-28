@@ -16,6 +16,14 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-09-28',
+    title: 'Realtime connectivity is an explicit policy and state',
+    body: "`realtimePolicy: 'required'` designates the socket as the sync path: while it is not connected, `sync()` raises `RealtimeUnavailableError` with the availability state, an optional reason code, and the next retry delay, and no HTTP round runs. The default `optional` keeps today's behavior and still reports the explicit states. Diagnostics carry `realtime` (`connected`, `connecting`, `disconnected`, `lost`, `refused`, `disabled`, or `unsupported`), `realtimePolicy`, `realtimeReasonCode`, and `realtimeRetryDelayMs`. The Rust core exposes the same states through `set_realtime_policy`, `realtime_state()`, and `SyncOutcome::RealtimeUnavailable`. The worker handle and the Tauri and React Native create configs forward the policy.",
+    links: [
+      { href: '/concepts-realtime/#required-realtime', label: 'Realtime' },
+    ],
+  },
+  {
     date: '2026-09-26',
     title: 'Docs search',
     body: 'The documentation site now has a search dialog. Press ⌘K (Ctrl+K on Windows and Linux) or `/` on any docs, blog, or landing page, or use the search button in the sidebar. Results link to the matching section of each page, and API names inside code blocks are searchable.',

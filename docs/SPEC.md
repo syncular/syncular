@@ -4404,7 +4404,12 @@ realtime); the underlying evidence remains equivalent.
 
 The snapshot is one bounded observation containing:
 
-- capture time; host kind/role/connectivity/realtime; security lifecycle;
+- capture time; host kind/role/connectivity/realtime; security lifecycle.
+  The realtime entry carries the configured policy (`required`, `optional`,
+  or `off`), the availability state (`connected`, `connecting`,
+  `disconnected`, `lost`, `refused`, `disabled`, or the TypeScript-only
+  `unsupported`), the stable reason code for a `lost` or `refused` state,
+  and `realtimeRetryDelayMs` when a retry is scheduled;
 - generated schema version, migration state, and any required/latest floor;
 - decimal local revision, sync-needed state, and pending outbox commit count;
 - lease health (`none`, `active`, `expired`, or `stopped`), expiry, and a
@@ -5086,6 +5091,64 @@ every registration, so it receives no further deltas until it
 re-registers. This differs from the round-end rule above, which keeps the
 previous registrations when a round fails.
 
+### 8.8 Realtime policy and connectivity state
+
+A client configures how a sync round treats the realtime binding with one
+`realtimePolicy` value:
+
+| Policy | Sync-round behavior |
+|---|---|
+| `optional` | A connected socket carries the round (§8.7). A round entered while the socket is not connected uses `POST /sync`. The default. |
+| `required` | A connected socket carries the round. A round entered while the socket is not connected fails with `sync.realtime_unavailable` and MUST NOT use `POST /sync`. |
+| `off` | Sync rounds always use `POST /sync`, and an explicit connect fails with `sync.invalid_request`. |
+
+`optional` preserves the behavior of every deployment that treats the
+socket as an enhancement. A host that treats realtime as the designated sync
+path selects `required`, and a socket that is down then becomes a visible
+state. `required` with no realtime connector configured is a configuration
+error the TypeScript client refuses at construction with
+`sync.invalid_request`; the Rust core cannot observe a connector before its
+transport attempts a connect, so it reports the attempt's failure as
+`refused` instead.
+
+**Availability states.** Both reference clients track the realtime binding
+through the same state names.
+
+| State | Meaning |
+|---|---|
+| `connected` | The socket is open and owned; rounds ride it. |
+| `connecting` | A connect attempt is in flight. |
+| `disconnected` | Configured without a policy restriction, and no connection attempt is in flight or has ended deliberately. |
+| `lost` | A connection existed and ended without a deliberate disconnect. |
+| `refused` | A connect attempt failed. |
+| `disabled` | The policy is `off`. |
+| `unsupported` | TypeScript hosts only: no realtime connector is configured. The Rust core leaves the state at `disconnected` for a transport it never connects. |
+
+`lost` and `refused` carry a stable reason code: the transport or
+client-local code that reported the failure (`transport.failed`,
+`sync.websocket_connection_limit`, …), with `client.realtime_lost` when the
+close path supplies no code. Both states also expose the next retry delay as
+`realtimeRetryDelayMs` when the client has scheduled one. A successful
+connect returns the state to `connected` and clears the reason and delay.
+
+**Required-policy round refusal.** Under `required`, a sync round entered
+while the state is not `connected` fails before any sync request reaches a
+transport. The failure is a distinct typed state, never one of the §10 wire
+codes: TypeScript raises `RealtimeUnavailableError` and Rust returns
+`SyncOutcome::RealtimeUnavailable`, and both surface the availability state,
+an optional reason code, and the retry delay. The client schedules one
+`background(delayMs)` retry intent (§7.4.4) with that delay and does not
+schedule another for the same refusal.
+
+**Loss detection.** A realtime round whose transport call fails marks the
+state `lost` with the transport's code as the reason, and the client stops
+treating that socket as usable for rounds. A later round under `required`
+fails with `sync.realtime_unavailable`; under `optional` or `off` it uses
+`POST /sync`. A host that observes the socket close reports it by
+disconnecting, which returns the state to `disconnected`; the TypeScript
+connector's close callback performs the same transition as `lost` before a
+deliberate disconnect clears it.
+
 ---
 
 ## 9. Versioning and evolution
@@ -5232,7 +5295,12 @@ command bridge returned a malformed value for a strictly decoded public
 result; non-retryable and sanitized before application code],
 `client.realtime_cancelled` [§8.4 — disconnect or close invalidated an
 in-flight TypeScript realtime connector before its socket could become active;
-client-local, non-wire, and sanitized],
+client-local, non-wire, and sanitized], `client.realtime_lost` [§8.8 — a
+connected socket ended without a deliberate disconnect and the close path
+carried no transport code; the diagnostics reason for state `lost`],
+`sync.realtime_unavailable` [§8.8 — a round under the `required` realtime
+policy was refused because the socket is not connected; client-local,
+retryable, and never on the wire],
 `client.worker_failed` [a browser worker failed outside wire semantics],
 `client.storage_corrupt` [§7.5 — a local snapshot read hit SQLite
 `SQLITE_CORRUPT` or `SQLITE_NOTADB`; non-retryable], `client.storage_io`

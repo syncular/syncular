@@ -41,6 +41,7 @@ use crate::api::{
     CLIENT_DIAGNOSTICS_VERSION, MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
     MAX_DIAGNOSTIC_QUERY_FAILURES,
 };
+use crate::api::{RealtimePolicy, RealtimeState, REALTIME_UNAVAILABLE_CODE};
 #[cfg(feature = "bench-internals")]
 use crate::bench::{Phase, Recorder};
 use crate::previous_version::{
@@ -681,7 +682,8 @@ mod observation_tests {
                 client.subs[0].synced_once = true;
                 client.subs[0].effective = Some(vec![("project_id".into(), vec!["p1".into()])]);
                 client.persist_sub(&client.subs[0]).unwrap();
-                client.realtime_connected = true;
+                client.realtime_state = RealtimeState::Connected;
+                client.realtime_reason_code = None;
                 client.drain_change_batches();
                 let mut transport = CountingRealtimeTransport::default();
                 let (_, meta) = client.build_request(false);
@@ -1096,6 +1098,9 @@ mod observation_tests {
         messages: Vec<String>,
         blob_uploads: Vec<(String, Vec<u8>)>,
         blob_download: Option<Vec<u8>>,
+        sync_calls: usize,
+        realtime_sync_calls: usize,
+        refuse_connect: bool,
     }
 
     impl Transport for CountingRealtimeTransport {
@@ -1117,10 +1122,12 @@ mod observation_tests {
         }
 
         fn sync(&mut self, _request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            self.sync_calls += 1;
             Err(TransportError::new("sync.transport_failed", "offline"))
         }
 
         fn realtime_sync(&mut self, _request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            self.realtime_sync_calls += 1;
             Err(TransportError::new("sync.transport_failed", "offline"))
         }
 
@@ -1134,6 +1141,9 @@ mod observation_tests {
 
         fn realtime_connect(&mut self) -> Result<(), TransportError> {
             self.connects += 1;
+            if self.refuse_connect {
+                return Err(TransportError::new("transport.failed", "refused"));
+            }
             Ok(())
         }
 
@@ -1279,6 +1289,163 @@ mod observation_tests {
             .connect_realtime(&mut transport)
             .expect("deliberate reconnect");
         assert_eq!(transport.connects, 2);
+    }
+
+    #[test]
+    fn required_policy_refuses_a_round_without_a_socket_and_never_uses_http() {
+        let mut client = client();
+        client
+            .set_realtime_policy(RealtimePolicy::Required)
+            .expect("set policy");
+        let mut transport = CountingRealtimeTransport::default();
+        match client.sync(&mut transport) {
+            SyncOutcome::RealtimeUnavailable {
+                state,
+                reason_code,
+                retry_delay_ms,
+            } => {
+                assert_eq!(state, RealtimeState::Disconnected);
+                assert_eq!(reason_code, None);
+                assert_eq!(retry_delay_ms, 250);
+            }
+            other => panic!("expected RealtimeUnavailable, got {other:?}"),
+        }
+        assert_eq!(transport.sync_calls, 0);
+        assert!(matches!(
+            client.drain_sync_intents().as_slice(),
+            [SyncIntent::Background { delay_ms: 250 }]
+        ));
+        let snapshot = client
+            .diagnostics_snapshot(&ClientDiagnosticsRequest::default())
+            .expect("diagnostics");
+        assert_eq!(snapshot.host.realtime, RealtimeState::Disconnected);
+        assert_eq!(snapshot.host.realtime_policy, RealtimePolicy::Required);
+        assert_eq!(snapshot.host.realtime_reason_code, None);
+        assert_eq!(snapshot.host.realtime_retry_delay_ms, Some(250));
+        assert_eq!(
+            snapshot
+                .last_round
+                .as_ref()
+                .and_then(|round| round.error_code.clone()),
+            Some(REALTIME_UNAVAILABLE_CODE.to_owned())
+        );
+    }
+
+    #[test]
+    fn refused_handshake_is_a_visible_state_and_a_required_round_does_not_fall_back() {
+        let mut client = client();
+        client
+            .set_realtime_policy(RealtimePolicy::Required)
+            .expect("set policy");
+        let mut transport = CountingRealtimeTransport {
+            refuse_connect: true,
+            ..Default::default()
+        };
+        assert!(client.connect_realtime(&mut transport).is_err());
+        assert_eq!(client.realtime_state(), RealtimeState::Refused);
+        let snapshot = client
+            .diagnostics_snapshot(&ClientDiagnosticsRequest::default())
+            .expect("diagnostics");
+        assert_eq!(
+            snapshot.host.realtime_reason_code.as_deref(),
+            Some("transport.failed")
+        );
+        match client.sync(&mut transport) {
+            SyncOutcome::RealtimeUnavailable {
+                state, reason_code, ..
+            } => {
+                assert_eq!(state, RealtimeState::Refused);
+                assert_eq!(reason_code.as_deref(), Some("transport.failed"));
+            }
+            other => panic!("expected RealtimeUnavailable, got {other:?}"),
+        }
+        assert_eq!(transport.sync_calls, 0);
+        assert_eq!(transport.realtime_sync_calls, 0);
+    }
+
+    #[test]
+    fn a_failed_socket_round_is_lost_and_the_next_required_round_refuses_http() {
+        let mut client = client();
+        client
+            .set_realtime_policy(RealtimePolicy::Required)
+            .expect("set policy");
+        let mut transport = CountingRealtimeTransport::default();
+        client.connect_realtime(&mut transport).expect("connect");
+        assert_eq!(client.realtime_state(), RealtimeState::Connected);
+        assert!(
+            client.set_realtime_policy(RealtimePolicy::Off).is_err(),
+            "a policy change cannot silently re-route a connected socket"
+        );
+        assert!(matches!(
+            client.sync(&mut transport),
+            SyncOutcome::Failed { ref error_code, .. } if error_code == "sync.transport_failed"
+        ));
+        assert_eq!(client.realtime_state(), RealtimeState::Lost);
+        assert_eq!(transport.realtime_sync_calls, 1);
+        assert_eq!(transport.sync_calls, 0);
+        let snapshot = client
+            .diagnostics_snapshot(&ClientDiagnosticsRequest::default())
+            .expect("diagnostics");
+        assert_eq!(
+            snapshot.host.realtime_reason_code.as_deref(),
+            Some("sync.transport_failed")
+        );
+        assert_eq!(snapshot.host.realtime_retry_delay_ms, Some(250));
+        match client.sync(&mut transport) {
+            SyncOutcome::RealtimeUnavailable {
+                state, reason_code, ..
+            } => {
+                assert_eq!(state, RealtimeState::Lost);
+                assert_eq!(reason_code.as_deref(), Some("sync.transport_failed"));
+            }
+            other => panic!("expected RealtimeUnavailable, got {other:?}"),
+        }
+        assert_eq!(transport.sync_calls, 0);
+        client.disconnect_realtime(&mut transport);
+        assert_eq!(client.realtime_state(), RealtimeState::Disconnected);
+        assert_eq!(transport.closes, 1);
+        client.connect_realtime(&mut transport).expect("reconnect");
+        assert_eq!(client.realtime_state(), RealtimeState::Connected);
+        assert_eq!(transport.connects, 2);
+    }
+
+    #[test]
+    fn off_policy_uses_http_and_refuses_an_explicit_connect() {
+        let mut client = client();
+        client
+            .set_realtime_policy(RealtimePolicy::Off)
+            .expect("set policy");
+        let mut transport = CountingRealtimeTransport::default();
+        assert!(client.connect_realtime(&mut transport).is_err());
+        assert_eq!(client.realtime_state(), RealtimeState::Disabled);
+        assert!(matches!(
+            client.sync(&mut transport),
+            SyncOutcome::Failed { .. }
+        ));
+        assert_eq!(transport.sync_calls, 1);
+        assert_eq!(transport.realtime_sync_calls, 0);
+        let snapshot = client
+            .diagnostics_snapshot(&ClientDiagnosticsRequest::default())
+            .expect("diagnostics");
+        assert_eq!(snapshot.host.realtime, RealtimeState::Disabled);
+        assert_eq!(snapshot.host.realtime_policy, RealtimePolicy::Off);
+    }
+
+    #[test]
+    fn optional_policy_keeps_the_http_round() {
+        let mut client = client();
+        let mut transport = CountingRealtimeTransport::default();
+        assert!(matches!(
+            client.sync(&mut transport),
+            SyncOutcome::Failed { .. }
+        ));
+        assert_eq!(transport.sync_calls, 1);
+        assert_eq!(transport.realtime_sync_calls, 0);
+        let snapshot = client
+            .diagnostics_snapshot(&ClientDiagnosticsRequest::default())
+            .expect("diagnostics");
+        assert_eq!(snapshot.host.realtime, RealtimeState::Disconnected);
+        assert_eq!(snapshot.host.realtime_policy, RealtimePolicy::Optional);
     }
 
     #[test]
@@ -4575,7 +4742,12 @@ pub struct SyncClient {
     upgrading: bool,
     /// §8.4 coalesced sync-needed signal.
     sync_needed: bool,
-    realtime_connected: bool,
+    /// §8.8: how sync rounds treat the realtime binding, and its exact
+    /// availability state with the evidence behind a lost or refused one.
+    realtime_policy: RealtimePolicy,
+    realtime_state: RealtimeState,
+    realtime_reason_code: Option<String>,
+    realtime_retry_delay_ms: Option<u64>,
     /// §8.6 presence: scopeKey → (`actorId clientId` peer key → peer).
     presence: HashMap<String, HashMap<String, PresencePeer>>,
     /// Client clock (epoch ms) for the §5.4 `urlExpiresAtMs` check; the
@@ -5212,7 +5384,10 @@ impl SyncClient {
             stopped: false,
             upgrading: false,
             sync_needed: false,
-            realtime_connected: false,
+            realtime_policy: RealtimePolicy::Optional,
+            realtime_state: RealtimeState::Disconnected,
+            realtime_reason_code: None,
+            realtime_retry_delay_ms: None,
             presence: HashMap::new(),
             now_ms: None,
             encryption: crate::values::EncryptionConfig::default(),
@@ -5997,11 +6172,10 @@ impl SyncClient {
                 kind: "direct".to_owned(),
                 role: "single".to_owned(),
                 connectivity: connectivity.to_owned(),
-                realtime: if self.realtime_connected {
-                    "connected".to_owned()
-                } else {
-                    "disconnected".to_owned()
-                },
+                realtime: self.realtime_state,
+                realtime_policy: self.realtime_policy,
+                realtime_reason_code: self.realtime_reason_code.clone(),
+                realtime_retry_delay_ms: self.realtime_retry_delay_ms,
             },
             security_lifecycle: self.security_lifecycle().to_owned(),
             schema: ClientDiagnosticsSchema {
@@ -6087,11 +6261,12 @@ impl SyncClient {
         self.sync_intent_queue.drain(..).collect()
     }
 
-    fn schedule_background_retry(&mut self) {
-        self.sync_intent_queue.push_back(SyncIntent::Background {
-            delay_ms: self.retry_delay_ms,
-        });
+    fn schedule_background_retry(&mut self) -> u64 {
+        let delay_ms = self.retry_delay_ms;
+        self.sync_intent_queue
+            .push_back(SyncIntent::Background { delay_ms });
         self.retry_delay_ms = (self.retry_delay_ms * 2).min(30_000);
+        delay_ms
     }
 
     fn reset_background_retry(&mut self) {
@@ -8736,6 +8911,10 @@ impl SyncClient {
                 p.state = ProgressState::Failed;
                 p.error_code = Some(Self::diagnostic_code(error_code));
             }
+            SyncOutcome::RealtimeUnavailable { .. } => {
+                p.state = ProgressState::Failed;
+                p.error_code = Some(REALTIME_UNAVAILABLE_CODE.to_owned());
+            }
         });
         let completed_at_ms = self.clock_now_ms();
         self.last_round = Some(match &outcome {
@@ -8767,6 +8946,14 @@ impl SyncClient {
                 duration_ms: completed_at_ms.saturating_sub(started_at_ms).max(0),
                 counters: None,
                 error_code: Some(Self::diagnostic_code(error_code)),
+            },
+            SyncOutcome::RealtimeUnavailable { .. } => DiagnosticLastRound {
+                status: "failed".to_owned(),
+                started_at_ms,
+                completed_at_ms,
+                duration_ms: completed_at_ms.saturating_sub(started_at_ms).max(0),
+                counters: None,
+                error_code: Some(REALTIME_UNAVAILABLE_CODE.to_owned()),
             },
         });
         outcome
@@ -8821,19 +9008,40 @@ impl SyncClient {
         // §8.7: rounds ride the socket whenever it is connected (one
         // loop, no fallback pair); the transport seam stays bytes-in /
         // bytes-out either way. Registration-at-round-end is server-side.
-        let round = if self.realtime_connected {
+        // §8.8: under `required`, a round entered while the socket is not
+        // connected is refused as a typed state and NEVER falls back to the
+        // request/response binding.
+        let round = if self.realtime_state == RealtimeState::Connected {
             transport.realtime_sync(&request_bytes)
+        } else if self.realtime_policy == RealtimePolicy::Required {
+            let retry_delay_ms = self.schedule_background_retry();
+            self.realtime_retry_delay_ms = Some(retry_delay_ms);
+            return SyncOutcome::RealtimeUnavailable {
+                state: self.realtime_state,
+                reason_code: self.realtime_reason_code.clone(),
+                retry_delay_ms,
+            };
         } else {
             transport.sync(&request_bytes)
         };
+        let realtime_round = self.realtime_state == RealtimeState::Connected;
         let response_bytes = match round {
             Ok(bytes) => bytes,
             Err(TransportError { code, message }) => {
+                // §8.8: the socket could not carry the round. Record the loss
+                // with the transport's code so a later round refuses under
+                // `required` and reports the explicit state.
+                if realtime_round {
+                    self.set_realtime_state(RealtimeState::Lost, Some(&code));
+                }
                 // §7.3.5: a request-level lease code stops-and-surfaces —
                 // record it in leaseState (no local-data purge, §7.3.4).
                 self.record_lease_error(&code);
                 if Self::retryable_transport_code(&code) {
-                    self.schedule_background_retry();
+                    let retry_delay_ms = self.schedule_background_retry();
+                    if realtime_round {
+                        self.realtime_retry_delay_ms = Some(retry_delay_ms);
+                    }
                 }
                 return SyncOutcome::Failed {
                     error_code: code,
@@ -8874,6 +9082,7 @@ impl SyncClient {
                 self.schedule_background_retry();
             }
             SyncOutcome::Failed { .. } => {}
+            SyncOutcome::RealtimeUnavailable { .. } => {}
         }
         if meta.deferred_commits > 0 {
             // §6.1 splitBatch: commits past the operation cap wait for the
@@ -8901,7 +9110,8 @@ impl SyncClient {
                 .iter()
                 .map(|sub| (sub.id.clone(), sub.bootstrap_state.clone()))
                 .collect::<Vec<_>>();
-            match self.sync(transport) {
+            let outcome = self.sync(transport);
+            match outcome {
                 SyncOutcome::Failed {
                     error_code,
                     message,
@@ -8911,6 +9121,7 @@ impl SyncClient {
                         message,
                     };
                 }
+                SyncOutcome::RealtimeUnavailable { .. } => return outcome,
                 SyncOutcome::Ok(report) => {
                     if max_rounds.is_none()
                         && report.segment_rows_applied > 0
@@ -11666,23 +11877,95 @@ impl SyncClient {
 
     // -- realtime (§8) ---------------------------------------------------------------
 
-    pub fn connect_realtime(&mut self, transport: &mut dyn Transport) -> Result<(), String> {
-        if self.realtime_connected {
-            return Ok(());
+    /// §8.8: the configured realtime policy.
+    #[must_use]
+    pub fn realtime_policy(&self) -> RealtimePolicy {
+        self.realtime_policy
+    }
+
+    /// §8.8: the explicit realtime availability state.
+    #[must_use]
+    pub fn realtime_state(&self) -> RealtimeState {
+        self.realtime_state
+    }
+
+    /// §8.8: set the realtime policy. Refused while the socket is connected:
+    /// a policy change never silently re-routes an ownership state.
+    pub fn set_realtime_policy(&mut self, policy: RealtimePolicy) -> Result<(), String> {
+        if self.realtime_state == RealtimeState::Connected && policy != self.realtime_policy {
+            return Err(
+                "sync.invalid_request: disconnect realtime before changing the realtime policy"
+                    .to_owned(),
+            );
         }
-        transport
-            .realtime_connect_for_client(&self.client_id)
-            .map_err(|e| format!("{}: {}", e.code, e.message))?;
-        self.realtime_connected = true;
+        self.realtime_policy = policy;
+        match policy {
+            RealtimePolicy::Off => self.set_realtime_state(RealtimeState::Disabled, None),
+            RealtimePolicy::Required | RealtimePolicy::Optional
+                if self.realtime_state == RealtimeState::Disabled =>
+            {
+                self.set_realtime_state(RealtimeState::Disconnected, None);
+            }
+            RealtimePolicy::Required | RealtimePolicy::Optional => {}
+        }
         Ok(())
     }
 
+    /// Record an availability transition, keeping the reason code bounded and
+    /// code-like (§7.6) and clearing it where it cannot apply.
+    fn set_realtime_state(&mut self, state: RealtimeState, reason_code: Option<&str>) {
+        self.realtime_state = state;
+        self.realtime_reason_code = reason_code.map(Self::diagnostic_code);
+        if matches!(state, RealtimeState::Connected | RealtimeState::Disabled) {
+            self.realtime_reason_code = None;
+            self.realtime_retry_delay_ms = None;
+        }
+    }
+
+    #[must_use]
+    fn realtime_connected(&self) -> bool {
+        self.realtime_state == RealtimeState::Connected
+    }
+
+    pub fn connect_realtime(&mut self, transport: &mut dyn Transport) -> Result<(), String> {
+        if self.realtime_policy == RealtimePolicy::Off {
+            return Err(
+                "sync.invalid_request: realtime is off; realtime connect is refused".to_owned(),
+            );
+        }
+        if self.realtime_connected() {
+            return Ok(());
+        }
+        self.realtime_state = RealtimeState::Connecting;
+        match transport.realtime_connect_for_client(&self.client_id) {
+            Ok(()) => {
+                self.set_realtime_state(RealtimeState::Connected, None);
+                Ok(())
+            }
+            Err(error) => {
+                self.set_realtime_state(RealtimeState::Refused, Some(&error.code));
+                Err(format!("{}: {}", error.code, error.message))
+            }
+        }
+    }
+
     pub fn disconnect_realtime(&mut self, transport: &mut dyn Transport) {
-        if !self.realtime_connected {
+        // A deliberately disconnected or policy-disabled client has nothing
+        // to release; a `lost` socket still does (the host owns the handle).
+        if self.realtime_state == RealtimeState::Disconnected
+            || self.realtime_state == RealtimeState::Disabled
+        {
             return;
         }
         let _ = transport.realtime_close();
-        self.realtime_connected = false;
+        self.set_realtime_state(
+            if self.realtime_policy == RealtimePolicy::Off {
+                RealtimeState::Disabled
+            } else {
+                RealtimeState::Disconnected
+            },
+            None,
+        );
         self.presence.clear(); // §8.6.1: presence is per-connection
     }
 
@@ -11697,7 +11980,7 @@ impl SyncClient {
         scope_key: &str,
         doc: Option<&Value>,
     ) -> Result<(), String> {
-        if !self.realtime_connected {
+        if !self.realtime_connected() {
             return Err("setPresence requires a connected realtime socket (§8.6)".to_string());
         }
         let text = encode_presence_publish(scope_key, doc);
@@ -11899,7 +12182,7 @@ impl SyncClient {
     /// cursor across active, non-bootstrapping subscriptions that have
     /// synced at least once. No such subscription, no ack.
     fn ack_after_pull(&mut self, transport: &mut dyn Transport) {
-        if !self.realtime_connected {
+        if !self.realtime_connected() {
             return;
         }
         let floor = self

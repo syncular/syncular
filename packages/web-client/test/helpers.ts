@@ -268,6 +268,8 @@ export interface TestClient {
   readonly faults: ClientFaults;
   readonly wakes: Array<'hello' | string>;
   readonly intents: SyncIntent[];
+  /** Rounds that used the request/response transport (§8.8 oracle). */
+  readonly httpRounds: { count: number };
 }
 
 export interface MakeClientOptions {
@@ -284,6 +286,8 @@ export interface MakeClientOptions {
   readonly blobCacheMaxBytes?: number;
   /** Override only the realtime seam for focused ownership/lifecycle tests. */
   readonly realtime?: RealtimeConnector;
+  /** SPEC §8.8 realtime policy; absent ⇒ `optional`. */
+  readonly realtimePolicy?: SyncClientConfig['realtimePolicy'];
   /** RFC 0005 previous-version context config. */
   readonly previousVersionContext?: SyncClientConfig['previousVersionContext'];
 }
@@ -301,12 +305,16 @@ export async function makeClient(
   };
   const wakes: Array<'hello' | string> = [];
   const intents: SyncIntent[] = [];
+  const httpRounds = { count: 0 };
   let segmentCalls = 0;
   const config: SyncClientConfig = {
     database: db,
     schema: options.schema ?? CLIENT_SCHEMA,
     clientId: options.clientId,
     now: () => server.now.ms,
+    ...(options.realtimePolicy !== undefined
+      ? { realtimePolicy: options.realtimePolicy }
+      : {}),
     ...(options.limits !== undefined ? { limits: options.limits } : {}),
     ...(options.encryption !== undefined
       ? { encryption: options.encryption }
@@ -319,6 +327,7 @@ export async function makeClient(
       ? { blobCacheMaxBytes: options.blobCacheMaxBytes }
       : {}),
     transport: async (bytes) => {
+      httpRounds.count += 1;
       const response = await handleSyncRequest(bytes, server.ctxFor(actorId));
       if (faults.dropResponseOnce) {
         faults.dropResponseOnce = false;
@@ -388,7 +397,7 @@ export async function makeClient(
     'logEpoch',
     TEST_LOG_EPOCH,
   ]);
-  return { client, db, faults, wakes, intents };
+  return { client, db, faults, wakes, intents, httpRounds };
 }
 
 /**

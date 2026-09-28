@@ -17,7 +17,8 @@
  * - drop response    — the server processed it, the ack is lost;
  * - duplicate        — the request is delivered twice (replayed bytes);
  * - truncate         — the response is cut short (decode-error surfacing);
- * - segment faults   — the same, at the segment download hop.
+ * - segment faults   — the same, at the segment download hop;
+ * - realtime refusal — the next realtime connect fails before any socket opens.
  */
 
 /** Deterministic PRNG (mulberry32) — seeded per scenario. */
@@ -65,6 +66,8 @@ export class TransportFaults {
   dropNextUrlFetches = 0;
   /** Corrupt the next signed-URL fetch's bytes (§5.1 tamper). */
   corruptNextUrlFetch = false;
+  /** Refuse the next realtime connect (a refused §8.8 handshake). */
+  refuseNextRealtimeConnect = false;
 
   readonly #random: () => number;
 
