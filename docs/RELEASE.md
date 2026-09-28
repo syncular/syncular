@@ -1,8 +1,35 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.26.0** (`v0.26.0`). All artifacts use Apache-2.0, except
+current release is **0.26.1** (`v0.26.1`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.26.1 release notes
+
+0.26.1 is a patch release for the TypeScript browser client's multi-tab
+replica. SSP2 stays at wire version 3, and the server, the Rust core and the
+Tauri plugin do not change. Upgrade Syncular packages and crates together.
+
+- **A hidden leader tab no longer blocks its followers.** The leader ran a
+  main-thread heartbeat timer, and a follower went `blocked` with
+  `client.follower_timeout` when no announcement arrived within
+  `followerCallTimeoutMs`. Browsers throttle the timers of hidden tabs
+  (Chrome's intensive throttling wakes them about once a minute) while still
+  dispatching their `BroadcastChannel` messages, so a live background leader
+  blocked every visible follower. Followers now probe: after a third of
+  `followerCallTimeoutMs` without an announcement, a follower posts a `hello`,
+  which the leader answers from its message handler, and it goes `blocked` only
+  when that probe stays unanswered for the rest of the timeout. A hung leader
+  still blocks its followers within `followerCallTimeoutMs`, a closed leader
+  still hands over through its Web Lock, and a blocked follower keeps probing
+  and rebinds when the leader answers. A single call past its deadline rejects
+  on its own and leaves the handle bound. Remove any raised
+  `followerCallTimeoutMs` that worked around background-tab throttling.
+
+**Upgrade note.** Reload every open tab of the origin after upgrading. A tab
+running 0.26.0 or older as a follower next to a leader on 0.26.1 waits for the
+removed leader heartbeat and reports the leader unreachable until it reloads.
+A 0.26.1 follower next to an older leader works.
 
 ## 0.26.0 release notes
 
