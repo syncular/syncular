@@ -195,14 +195,42 @@ flushed to the new leader on its announce; past the deadline they fail
 loudly with `client.follower_timeout` (never a silent hang), and an
 overflowing queue rejects rather than growing unbounded.
 
-Leader announcements continue as heartbeats while followers are attached. If
-a tab can acquire neither a response nor a new lock grant before the configured
-`followerCallTimeoutMs`, `handle.leadership` becomes
+**Leader liveness.** Followers probe the leader; the leader runs no liveness
+timer. A bound follower that has heard no announcement for a third of
+`followerCallTimeoutMs` (default 10 s) posts a `hello`, and the leader answers
+every `hello` with an announcement from its message handler. Browsers throttle
+the timers of hidden tabs (Chrome's intensive throttling wakes them about once
+a minute) but still dispatch their `BroadcastChannel` messages, so a leader in
+a background tab keeps its followers bound. When a probe stays unanswered for
+the rest of `followerCallTimeoutMs`, `handle.leadership` becomes
 `{ state: 'blocked', reason: 'leader-unreachable', code:
-'client.follower_timeout', retryable: true }`. Calls then reject immediately.
-A later announcement rebinds the same handle; a granted Web Lock promotes it.
-An unreachable `BroadcastChannel` is never treated as evidence that the lock
-owner is stale, so it never authorizes a second worker or database owner.
+'client.follower_timeout', retryable: true }` and calls reject immediately.
+A leader tab that processes no messages (hung or frozen) therefore blocks its
+followers within `followerCallTimeoutMs`; a closed leader releases its Web
+Lock and hands over without waiting for that deadline. A blocked follower keeps
+probing at the same interval: an answer rebinds the same handle, and a granted
+Web Lock promotes it. A single call that runs past `followerCallTimeoutMs`
+rejects with `client.follower_timeout` and leaves the handle bound, because
+reachability is decided by the probe alone. An unreachable `BroadcastChannel`
+is never treated as evidence that the lock owner is stale, so it never
+authorizes a second worker or database owner.
+
+**Upgrade note: reload every open tab.** Followers running 0.26.0 or older
+wait for a leader heartbeat that current leaders no longer send. Such a tab
+next to a current leader reports `leader-unreachable` with
+`client.follower_timeout` after `followerCallTimeoutMs`, unless a current
+follower's probe happens to make the leader announce, and stays that way
+until it reloads. A current follower next to an older leader works, because
+older leaders answer every `hello`. After upgrading, reload every open tab of
+the origin.
+
+**A hidden leader keeps leadership.** A visible tab does not take leadership
+from a hidden leader. Web Locks `steal` revokes the lease while the leader's
+worker still holds the OPFS database and may be mid-commit, so a transfer
+needs a cooperative close-and-release handshake, and every focus change
+between tabs would restart the worker, reopen the database, and reconnect the
+realtime socket. A hidden leader answers its followers from its message
+handler, so leadership moves only when the leader tab closes.
 
 **Presence semantics — one device, one peer.** All tabs share the leader's
 single connection, so a device is exactly ONE presence peer collectively:

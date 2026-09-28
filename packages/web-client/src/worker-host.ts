@@ -220,7 +220,11 @@ export interface SyncClientHandleConfig {
   readonly multiTab?: boolean;
   /** Cross-tab channel factory (default `BroadcastChannel`); injectable for tests. */
   readonly channelFactory?: (name: string) => CrossTabChannel;
-  /** Deadline for a follower call (covers the leader-handover gap). */
+  /**
+   * Deadline for a follower call (covers the leader-handover gap), and the
+   * bound on leader silence: a follower probes after a third of it and goes
+   * `blocked` when the probe stays unanswered for the rest. Default 10 s.
+   */
   readonly followerCallTimeoutMs?: number;
   /** Fires when this handle's role changes (follower → leader on promotion). */
   readonly onRoleChange?: (role: HandleRole) => void;
@@ -1029,10 +1033,6 @@ async function bootLeader(
             epoch: parts.epoch ?? 0,
             clientId,
             invoke,
-            heartbeatMs: Math.max(
-              10,
-              Math.floor((config.followerCallTimeoutMs ?? 10_000) / 3),
-            ),
           });
         }
       : undefined;
@@ -1139,10 +1139,6 @@ async function bootFollower(
                   epoch: nextEpoch,
                   clientId,
                   invoke,
-                  heartbeatMs: Math.max(
-                    10,
-                    Math.floor((config.followerCallTimeoutMs ?? 10_000) / 3),
-                  ),
                 });
               },
             }

@@ -11,11 +11,12 @@
  * survive `postMessage` on a BroadcastChannel):
  *
  *   follower → leader
- *     hello  {t,epoch?,fromId}                — "who's the leader?" on join
+ *     hello  {t,epoch?,fromId}                — "who's the leader?" on join,
+ *                                                and the follower's liveness probe
  *     req    {t,epoch,fromId,reqId,method,args}
- *     bye    {t,fromId}                        — follower leaving (best effort)
  *   leader → all
- *     announce {t,epoch,clientId}             — "I am the leader, this epoch"
+ *     announce {t,epoch,clientId}             — "I am the leader, this epoch";
+ *                                                the answer to every hello
  *     res      {t,epoch,reqId,ok,value|error} — reply to one req
  *     event    {t,epoch,event}                — fan-out (invalidate/presence/…)
  *
@@ -28,6 +29,16 @@
  * one. Epoch is derived deterministically from a per-origin clock: each
  * promoter reads the highest epoch it has seen and adds one, so successive
  * leaders always strictly increase it even across the lock-handover gap.
+ *
+ * Liveness is follower-driven: the leader runs no timer. Browsers throttle
+ * the timers of a hidden tab (Chrome's intensive throttling wakes them about
+ * once a minute) but still dispatch its BroadcastChannel messages, so a leader
+ * heartbeat misses its schedule in a background leader tab while that tab is
+ * alive. Instead, a bound follower that has heard no `announce` for a third of
+ * its call timeout posts a `hello`, and goes `blocked` only when that probe
+ * stays unanswered for the rest of the timeout. A leader tab whose main thread
+ * processes no messages (hung or frozen) therefore still blocks its followers
+ * within `callTimeoutMs`, and a closed leader hands over through the lock.
  *
  * Presence identity: all tabs share the leader's one connection, so a device
  * is exactly ONE presence peer collectively — `(actorId, leaderClientId)`.
@@ -76,16 +87,6 @@ interface HelloMessage {
   readonly epoch?: number;
 }
 
-interface ByeMessage {
-  readonly t: 'bye';
-  readonly fromId: string;
-}
-
-interface BoundMessage {
-  readonly t: 'bound';
-  readonly fromId: string;
-}
-
 interface ReqMessage {
   readonly t: 'req';
   readonly epoch: number;
@@ -118,8 +119,6 @@ interface EventMessage {
 
 export type MultiTabMessage =
   | HelloMessage
-  | ByeMessage
-  | BoundMessage
   | ReqMessage
   | AnnounceMessage
   | ResMessage
@@ -181,9 +180,6 @@ export class LeaderBridge {
     args: readonly unknown[],
   ) => Promise<unknown>;
   readonly #onMessage: (event: { data: MultiTabMessage }) => void;
-  readonly #heartbeatMs: number;
-  readonly #followers = new Set<string>();
-  #heartbeat: ReturnType<typeof setInterval> | undefined;
   #closed = false;
 
   constructor(options: {
@@ -191,21 +187,17 @@ export class LeaderBridge {
     epoch: number;
     clientId: string;
     invoke: (method: string, args: readonly unknown[]) => Promise<unknown>;
-    heartbeatMs?: number;
   }) {
     this.#channel = options.channel;
     this.#epoch = options.epoch;
     this.#clientId = options.clientId;
     this.#invoke = options.invoke;
-    this.#heartbeatMs =
-      options.heartbeatMs ??
-      Math.max(50, Math.floor(DEFAULT_FOLLOWER_CALL_TIMEOUT_MS / 3));
     this.#onMessage = (event) => this.#handle(event.data);
     this.#channel.addEventListener('message', this.#onMessage);
     this.announce();
   }
 
-  /** Re-announce leadership (on promotion and on a follower `hello`). */
+  /** Announce leadership (on promotion and in answer to every `hello`). */
   announce(): void {
     if (this.#closed) return;
     this.#channel.postMessage({
@@ -224,21 +216,8 @@ export class LeaderBridge {
   #handle(message: MultiTabMessage): void {
     if (this.#closed) return;
     if (message.t === 'hello') {
-      // A follower joined (or is contesting) — tell it who leads.
-      this.#trackFollower(message.fromId);
+      // A follower joined or probes liveness: tell it who leads.
       this.announce();
-      return;
-    }
-    if (message.t === 'bound') {
-      this.#trackFollower(message.fromId);
-      return;
-    }
-    if (message.t === 'bye') {
-      this.#followers.delete(message.fromId);
-      if (this.#followers.size === 0 && this.#heartbeat !== undefined) {
-        clearInterval(this.#heartbeat);
-        this.#heartbeat = undefined;
-      }
       return;
     }
     if (message.t !== 'req') return;
@@ -281,17 +260,9 @@ export class LeaderBridge {
     );
   }
 
-  #trackFollower(fromId: string): void {
-    this.#followers.add(fromId);
-    if (this.#heartbeat !== undefined) return;
-    this.#heartbeat = setInterval(() => this.announce(), this.#heartbeatMs);
-  }
-
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
-    if (this.#heartbeat !== undefined) clearInterval(this.#heartbeat);
-    this.#heartbeat = undefined;
     this.#channel.removeEventListener('message', this.#onMessage);
     this.#channel.close();
   }
@@ -301,18 +272,24 @@ export class LeaderBridge {
 // Follower side: proxy the logical API to the leader over the channel
 // ---------------------------------------------------------------------------
 
+/**
+ * Timer seam for {@link FollowerLink}: run `callback` after `delayMs` and
+ * return a function that cancels it. Tests inject a manual clock.
+ */
+type FollowerSchedule = (callback: () => void, delayMs: number) => () => void;
+
 interface QueuedCall {
   readonly method: string;
   readonly args: readonly unknown[];
   readonly resolve: (value: unknown) => void;
   readonly reject: (error: unknown) => void;
-  timer: ReturnType<typeof setTimeout> | undefined;
+  cancelTimer: (() => void) | undefined;
 }
 
 interface InFlight {
   readonly resolve: (value: unknown) => void;
   readonly reject: (error: unknown) => void;
-  timer: ReturnType<typeof setTimeout> | undefined;
+  readonly cancelTimer: () => void;
 }
 
 /**
@@ -320,7 +297,9 @@ interface InFlight {
  * matching `res`; queues calls (bounded, timed) while no leader is bound (the
  * handover gap) and flushes them once an `announce` binds a new leader.
  * Feeds fanned-out events to `onEvent`. Learns leadership changes and hands
- * the resolved leader `clientId` back through `onLeaderChange`.
+ * the resolved leader `clientId` back through `onLeaderChange`. Probes the
+ * bound leader with `hello` after a quiet period and reports `blocked` only
+ * when a probe goes unanswered (see the module comment).
  */
 export class FollowerLink {
   readonly #channel: CrossTabChannel;
@@ -329,7 +308,10 @@ export class FollowerLink {
   readonly #onLeaderChange: (clientId: string) => void;
   readonly #onStateChange: (state: LeadershipState) => void;
   readonly #callTimeoutMs: number;
+  /** Quiet period before a bound follower probes; also the blocked re-probe interval. */
+  readonly #probeAfterMs: number;
   readonly #queueLimit: number;
+  readonly #schedule: FollowerSchedule;
   readonly #onMessage: (event: { data: MultiTabMessage }) => void;
 
   /** -1 until the first `announce` binds us to a leader. */
@@ -345,8 +327,8 @@ export class FollowerLink {
     state: 'waiting',
     reason: 'leader-announcement',
   };
-  #waitingTimer: ReturnType<typeof setTimeout> | undefined;
-  #blockedTimer: ReturnType<typeof setTimeout> | undefined;
+  #cancelProbe: (() => void) | undefined;
+  #cancelBlocked: (() => void) | undefined;
   /** Resolvers waiting for the first `announce` to bind a leader. */
   #bindWaiters: Array<() => void> = [];
 
@@ -358,6 +340,7 @@ export class FollowerLink {
     onStateChange?: (state: LeadershipState) => void;
     callTimeoutMs?: number;
     queueLimit?: number;
+    schedule?: FollowerSchedule;
   }) {
     this.#channel = options.channel;
     this.#fromId = options.fromId;
@@ -366,12 +349,19 @@ export class FollowerLink {
     this.#onStateChange = options.onStateChange ?? (() => {});
     this.#callTimeoutMs =
       options.callTimeoutMs ?? DEFAULT_FOLLOWER_CALL_TIMEOUT_MS;
+    this.#probeAfterMs = Math.max(1, Math.floor(this.#callTimeoutMs / 3));
     this.#queueLimit = options.queueLimit ?? DEFAULT_FOLLOWER_QUEUE_LIMIT;
+    this.#schedule =
+      options.schedule ??
+      ((callback, delayMs) => {
+        const timer = setTimeout(callback, delayMs);
+        return () => clearTimeout(timer);
+      });
     this.#onMessage = (event) => this.#handle(event.data);
     this.#channel.addEventListener('message', this.#onMessage);
-    // Ask the current leader to announce itself.
-    this.#channel.postMessage({ t: 'hello', fromId: this.#fromId });
     this.#armUnboundDeadline();
+    // Ask the current leader to announce itself.
+    this.#probe();
   }
 
   get epoch(): number {
@@ -413,7 +403,7 @@ export class FollowerLink {
       );
     }
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const cancelTimer = this.#schedule(() => {
         this.#dropBindWaiter(settle);
         this.#setBlocked();
         reject(
@@ -425,7 +415,7 @@ export class FollowerLink {
         );
       }, timeoutMs);
       const settle = (): void => {
-        clearTimeout(timer);
+        cancelTimer();
         resolve();
       };
       this.#bindWaiters.push(settle);
@@ -466,7 +456,7 @@ export class FollowerLink {
         args,
         resolve,
         reject,
-        timer: undefined,
+        cancelTimer: undefined,
       };
       if (this.#epoch < 0) {
         // No leader bound yet — queue with a deadline so we never hang.
@@ -481,7 +471,7 @@ export class FollowerLink {
           );
           return;
         }
-        queued.timer = setTimeout(() => {
+        queued.cancelTimer = this.#schedule(() => {
           this.#dropQueued(queued);
           this.#setBlocked();
           reject(
@@ -501,12 +491,14 @@ export class FollowerLink {
 
   #send(queued: QueuedCall): void {
     const reqId = this.#nextReqId++;
-    const inflight: InFlight = {
+    // The deadline fails this one call. Leader reachability is decided by the
+    // liveness probe alone, so a slow call against a live leader leaves the
+    // link bound.
+    this.#inFlight.set(reqId, {
       resolve: queued.resolve,
       reject: queued.reject,
-      timer: setTimeout(() => {
+      cancelTimer: this.#schedule(() => {
         this.#inFlight.delete(reqId);
-        this.#setBlocked();
         queued.reject(
           new ClientSyncError(
             FOLLOWER_TIMEOUT_CODE,
@@ -515,8 +507,7 @@ export class FollowerLink {
           ),
         );
       }, this.#callTimeoutMs),
-    };
-    this.#inFlight.set(reqId, inflight);
+    });
     this.#channel.postMessage({
       t: 'req',
       epoch: this.#epoch,
@@ -551,10 +542,7 @@ export class FollowerLink {
         leaderClientId: message.clientId,
         epoch: message.epoch,
       });
-      this.#armBoundDeadline();
-      if (changed) {
-        this.#channel.postMessage({ t: 'bound', fromId: this.#fromId });
-      }
+      this.#armLivenessProbe();
       this.#resolveBindWaiters();
       this.#flushQueue();
       return;
@@ -566,7 +554,7 @@ export class FollowerLink {
       const inflight = this.#inFlight.get(message.reqId);
       if (inflight === undefined) return;
       this.#inFlight.delete(message.reqId);
-      if (inflight.timer !== undefined) clearTimeout(inflight.timer);
+      inflight.cancelTimer();
       if (message.ok) {
         inflight.resolve(message.value);
       } else {
@@ -593,8 +581,8 @@ export class FollowerLink {
     const pending = this.#queue;
     this.#queue = [];
     for (const queued of pending) {
-      if (queued.timer !== undefined) clearTimeout(queued.timer);
-      queued.timer = undefined;
+      queued.cancelTimer?.();
+      queued.cancelTimer = undefined;
       this.#send(queued);
     }
   }
@@ -611,11 +599,7 @@ export class FollowerLink {
     this.#leaderClientId = '';
     this.#setState({ state: 'waiting', reason: 'handover' });
     this.#armUnboundDeadline();
-    this.#channel.postMessage({
-      t: 'hello',
-      fromId: this.#fromId,
-      epoch: this.#maxEpochSeen,
-    });
+    this.#probe();
   }
 
   close(): void {
@@ -623,18 +607,17 @@ export class FollowerLink {
     this.#closed = true;
     this.#clearReachabilityTimers();
     this.#channel.removeEventListener('message', this.#onMessage);
-    this.#channel.postMessage({ t: 'bye', fromId: this.#fromId });
     const closedError = new ClientSyncError(
       WORKER_FAILED_CODE,
       'the follower link was closed',
     );
     for (const inflight of this.#inFlight.values()) {
-      if (inflight.timer !== undefined) clearTimeout(inflight.timer);
+      inflight.cancelTimer();
       inflight.reject(closedError);
     }
     this.#inFlight.clear();
     for (const queued of this.#queue) {
-      if (queued.timer !== undefined) clearTimeout(queued.timer);
+      queued.cancelTimer?.();
       queued.reject(closedError);
     }
     this.#queue = [];
@@ -667,6 +650,19 @@ export class FollowerLink {
     }
   }
 
+  /** Ask the leader to announce itself; every live leader answers a `hello`. */
+  #probe(): void {
+    this.#channel.postMessage({
+      t: 'hello',
+      fromId: this.#fromId,
+      epoch: this.#maxEpochSeen,
+    });
+  }
+
+  /**
+   * No leader answered in time. Calls reject immediately from here on; keep
+   * probing so a leader that answers again rebinds this link.
+   */
   #setBlocked(): void {
     this.#clearReachabilityTimers();
     this.#setState({
@@ -675,34 +671,45 @@ export class FollowerLink {
       code: FOLLOWER_TIMEOUT_CODE,
       retryable: true,
     });
+    const reprobe = (): void => {
+      this.#cancelProbe = this.#schedule(() => {
+        reprobe();
+        this.#probe();
+      }, this.#probeAfterMs);
+    };
+    reprobe();
   }
 
   #armUnboundDeadline(): void {
     this.#clearReachabilityTimers();
-    this.#blockedTimer = setTimeout(
+    this.#cancelBlocked = this.#schedule(
       () => this.#setBlocked(),
       this.#callTimeoutMs,
     );
   }
 
-  #armBoundDeadline(): void {
+  /**
+   * An announce just proved the leader alive. After a quiet period, probe it;
+   * block only if that probe stays unanswered for the rest of the call
+   * timeout. The deadline is armed before the probe is posted so a reply that
+   * arrives synchronously clears it.
+   */
+  #armLivenessProbe(): void {
     this.#clearReachabilityTimers();
-    this.#waitingTimer = setTimeout(
-      () => {
-        this.#setState({ state: 'waiting', reason: 'leader-announcement' });
-      },
-      Math.max(1, Math.floor((this.#callTimeoutMs * 2) / 3)),
-    );
-    this.#blockedTimer = setTimeout(
-      () => this.#setBlocked(),
-      this.#callTimeoutMs,
-    );
+    this.#cancelProbe = this.#schedule(() => {
+      this.#cancelProbe = undefined;
+      this.#cancelBlocked = this.#schedule(
+        () => this.#setBlocked(),
+        this.#callTimeoutMs - this.#probeAfterMs,
+      );
+      this.#probe();
+    }, this.#probeAfterMs);
   }
 
   #clearReachabilityTimers(): void {
-    if (this.#waitingTimer !== undefined) clearTimeout(this.#waitingTimer);
-    if (this.#blockedTimer !== undefined) clearTimeout(this.#blockedTimer);
-    this.#waitingTimer = undefined;
-    this.#blockedTimer = undefined;
+    this.#cancelProbe?.();
+    this.#cancelBlocked?.();
+    this.#cancelProbe = undefined;
+    this.#cancelBlocked = undefined;
   }
 }

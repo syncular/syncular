@@ -136,6 +136,19 @@ leader closes. Remove the `multiTab: false` opt-out, or keep it and render
 the not-leader state deliberately ("already open in another tab"). Details
 in [Web (browser)](/platform-web/).
 
+## `client.follower_timeout` in a follower tab
+
+The follower's probe to the leader tab got no answer within
+`followerCallTimeoutMs` (default 10 s), so `handle.leadership` is `blocked`
+with reason `leader-unreachable` and calls reject immediately. A leader in a
+hidden or throttled tab still answers probes; this state means the leader
+tab's main thread processed no messages for the whole window, for example
+during a long synchronous task or while the browser froze the tab. The
+follower keeps probing and rebinds when the leader answers; closing the leader
+tab promotes a follower. Render the blocked state. Raising
+`followerCallTimeoutMs` only delays detection of a hung leader.
+Details in [Web (browser)](/platform-web/#multi-tab).
+
 ## `client.storage_busy` while opening the app
 
 The OPFS SAH pool is still owned by another live engine, or a recently closed

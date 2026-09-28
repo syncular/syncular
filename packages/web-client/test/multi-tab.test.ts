@@ -190,6 +190,77 @@ async function expectRejectsWithCode(
   throw new Error(`expected a rejection with code ${code}`);
 }
 
+/**
+ * A manual clock for FollowerLink's timer seam: time moves only on `advance`,
+ * which runs every due timer in deadline order.
+ */
+function manualClock(): {
+  schedule: (callback: () => void, delayMs: number) => () => void;
+  advance: (ms: number) => void;
+} {
+  let now = 0;
+  const timers = new Set<{ readonly at: number; readonly run: () => void }>();
+  return {
+    schedule: (run, delayMs) => {
+      const timer = { at: now + delayMs, run };
+      timers.add(timer);
+      return () => {
+        timers.delete(timer);
+      };
+    },
+    advance: (ms) => {
+      const end = now + ms;
+      for (;;) {
+        let next: { readonly at: number; readonly run: () => void } | undefined;
+        for (const timer of timers) {
+          if (timer.at <= end && (next === undefined || timer.at < next.at)) {
+            next = timer;
+          }
+        }
+        if (next === undefined) break;
+        timers.delete(next);
+        now = next.at;
+        next.run();
+      }
+      now = end;
+    },
+  };
+}
+
+/** Two channel ends that deliver to each other synchronously. */
+function channelPair(): {
+  leader: CrossTabChannel;
+  follower: CrossTabChannel;
+  fromLeader: MultiTabMessage[];
+  fromFollower: MultiTabMessage[];
+} {
+  const leaderListeners = new Set<(event: { data: MultiTabMessage }) => void>();
+  const followerListeners = new Set<
+    (event: { data: MultiTabMessage }) => void
+  >();
+  const fromLeader: MultiTabMessage[] = [];
+  const fromFollower: MultiTabMessage[] = [];
+  const end = (
+    own: Set<(event: { data: MultiTabMessage }) => void>,
+    peer: Set<(event: { data: MultiTabMessage }) => void>,
+    log: MultiTabMessage[],
+  ): CrossTabChannel => ({
+    postMessage: (message) => {
+      log.push(message);
+      for (const listener of peer) listener({ data: message });
+    },
+    addEventListener: (_type, listener) => own.add(listener),
+    removeEventListener: (_type, listener) => own.delete(listener),
+    close: noop,
+  });
+  return {
+    leader: end(leaderListeners, followerListeners, fromLeader),
+    follower: end(followerListeners, leaderListeners, fromFollower),
+    fromLeader,
+    fromFollower,
+  };
+}
+
 let server: TestServer;
 let http: HttpTestServer;
 const open: SyncClientHandle[] = [];
@@ -535,6 +606,7 @@ test('stale-epoch replies from a dead leader are discarded', async () => {
 
 test('waitUntilBound resolves on announce and rejects on bind timeout', async () => {
   const { FollowerLink } = await import('../src/multi-tab');
+  const clock = manualClock();
   let listener: ((e: { data: unknown }) => void) | undefined;
   const channel = {
     postMessage: noop,
@@ -551,6 +623,7 @@ test('waitUntilBound resolves on announce and rejects on bind timeout', async ()
     onEvent: noop,
     onLeaderChange: noop,
     callTimeoutMs: 40,
+    schedule: clock.schedule,
   });
   expect(link.bound).toBe(false);
   const bound = link.waitUntilBound();
@@ -570,13 +643,17 @@ test('waitUntilBound resolves on announce and rejects on bind timeout', async ()
     onEvent: noop,
     onLeaderChange: noop,
     callTimeoutMs: 20,
+    schedule: clock.schedule,
   });
-  await expectRejectsWithCode(lonely.waitUntilBound(), FOLLOWER_TIMEOUT_CODE);
+  const lonelyBound = lonely.waitUntilBound();
+  clock.advance(20);
+  await expectRejectsWithCode(lonelyBound, FOLLOWER_TIMEOUT_CODE);
   lonely.close();
 });
 
 test('a follower call times out loudly when no leader answers', async () => {
   const { FollowerLink } = await import('../src/multi-tab');
+  const clock = manualClock();
   const channel = {
     postMessage: noop,
     addEventListener: noop,
@@ -590,9 +667,160 @@ test('a follower call times out loudly when no leader answers', async () => {
     onEvent: noop,
     onLeaderChange: noop,
     callTimeoutMs: 30,
+    schedule: clock.schedule,
   });
   // No announce ever arrives → queued → deadline fires loudly (no hang).
-  await expectRejectsWithCode(link.call('query', ['x']), FOLLOWER_TIMEOUT_CODE);
+  const call = link.call('query', ['x']);
+  clock.advance(30);
+  await expectRejectsWithCode(call, FOLLOWER_TIMEOUT_CODE);
+  link.close();
+});
+
+test('a leader answering probes keeps its follower bound without running a timer', async () => {
+  // The leader tab is hidden: its timers never fire, but it still handles
+  // channel messages. Only the follower's clock advances.
+  const { FollowerLink, LeaderBridge } = await import('../src/multi-tab');
+  const clock = manualClock();
+  const channels = channelPair();
+  const link = new FollowerLink({
+    channel: channels.follower,
+    fromId: 'f',
+    onEvent: noop,
+    onLeaderChange: noop,
+    callTimeoutMs: 300,
+    schedule: clock.schedule,
+  });
+  const bridge = new LeaderBridge({
+    channel: channels.leader,
+    epoch: 1,
+    clientId: 'lead',
+    invoke: (method) =>
+      method === 'slow' ? new Promise(noop) : Promise.resolve(`${method}-ok`),
+  });
+  expect(link.leadershipState).toEqual({
+    state: 'follower',
+    leaderClientId: 'lead',
+    epoch: 1,
+  });
+
+  clock.advance(300 * 20);
+  expect(link.leadershipState.state).toBe('follower');
+  // One probe per 100 ms of leader silence, each answered by an announce.
+  expect(
+    channels.fromFollower.filter((message) => message.t === 'hello').length,
+  ).toBe(61);
+  expect(
+    channels.fromLeader.filter((message) => message.t === 'announce').length,
+  ).toBe(61);
+  expect(await link.call('query', [])).toBe('query-ok');
+
+  // A call the leader does not finish fails on its own deadline; the link
+  // stays bound because the leader still answers probes.
+  const slow = link.call('slow', []);
+  clock.advance(300);
+  await expectRejectsWithCode(slow, FOLLOWER_TIMEOUT_CODE);
+  expect(link.leadershipState.state).toBe('follower');
+  expect(await link.call('query', [])).toBe('query-ok');
+  bridge.close();
+  link.close();
+});
+
+test('a leader that processes no messages blocks its follower until a probe is answered', async () => {
+  const { FollowerLink } = await import('../src/multi-tab');
+  const clock = manualClock();
+  const posted: MultiTabMessage[] = [];
+  let deliver: ((event: { data: MultiTabMessage }) => void) | undefined;
+  const channel: CrossTabChannel = {
+    postMessage: (message) => posted.push(message),
+    addEventListener: (_type, listener) => {
+      deliver = listener;
+    },
+    removeEventListener: noop,
+    close: noop,
+  };
+  const states: string[] = [];
+  const link = new FollowerLink({
+    channel,
+    fromId: 'f',
+    onEvent: noop,
+    onLeaderChange: noop,
+    onStateChange: (state) => states.push(state.state),
+    callTimeoutMs: 300,
+    schedule: clock.schedule,
+  });
+  deliver?.({ data: { t: 'announce', epoch: 1, clientId: 'lead' } });
+  // From here on the leader tab is hung: nothing it would answer arrives.
+  posted.length = 0;
+  clock.advance(99);
+  expect(posted).toEqual([]);
+  clock.advance(1);
+  expect(posted).toEqual([{ t: 'hello', fromId: 'f', epoch: 1 }]);
+  expect(link.leadershipState.state).toBe('follower');
+  clock.advance(199);
+  expect(link.leadershipState.state).toBe('follower');
+  clock.advance(1);
+  expect(link.leadershipState).toEqual({
+    state: 'blocked',
+    reason: 'leader-unreachable',
+    code: FOLLOWER_TIMEOUT_CODE,
+    retryable: true,
+  });
+  await expectRejectsWithCode(link.call('query', []), FOLLOWER_TIMEOUT_CODE);
+
+  // A blocked link keeps probing, and an answer rebinds the same link.
+  posted.length = 0;
+  clock.advance(100);
+  expect(posted).toEqual([{ t: 'hello', fromId: 'f', epoch: 1 }]);
+  deliver?.({ data: { t: 'announce', epoch: 1, clientId: 'lead' } });
+  expect(link.leadershipState.state).toBe('follower');
+  expect(states).toEqual(['follower', 'blocked', 'follower']);
+  link.close();
+});
+
+test('a handover rebinds the follower and flushes calls queued in the gap', async () => {
+  const { FollowerLink, LeaderBridge } = await import('../src/multi-tab');
+  const clock = manualClock();
+  const channels = channelPair();
+  const link = new FollowerLink({
+    channel: channels.follower,
+    fromId: 'f',
+    onEvent: noop,
+    onLeaderChange: noop,
+    callTimeoutMs: 300,
+    schedule: clock.schedule,
+  });
+  const first = new LeaderBridge({
+    channel: channels.leader,
+    epoch: 1,
+    clientId: 'first',
+    invoke: () => Promise.resolve('first'),
+  });
+  expect(await link.call('query', [])).toBe('first');
+
+  // The leader tab closes and its lock is granted onward: the link unbinds,
+  // queues calls, and binds to whichever leader announces the next epoch.
+  first.close();
+  link.unbind();
+  expect(link.leadershipState).toEqual({
+    state: 'waiting',
+    reason: 'handover',
+  });
+  const queued = link.call('query', []);
+  const second = new LeaderBridge({
+    channel: channels.leader,
+    epoch: link.maxEpochSeen + 1,
+    clientId: 'second',
+    invoke: () => Promise.resolve('second'),
+  });
+  expect(await queued).toBe('second');
+  expect(link.leadershipState).toEqual({
+    state: 'follower',
+    leaderClientId: 'second',
+    epoch: 2,
+  });
+  clock.advance(300 * 10);
+  expect(link.leadershipState.state).toBe('follower');
+  second.close();
   link.close();
 });
 

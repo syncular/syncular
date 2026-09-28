@@ -245,6 +245,20 @@ the same OPFS database: the handle object survives, `role` flips to
 reference. All tabs share the leader's one connection, so a device is exactly
 one presence peer.
 
+Followers check that the leader is alive by probing it. A follower that has
+heard nothing from the leader for a third of `followerCallTimeoutMs` (default
+10 s) posts a probe on the channel, and the leader tab answers it from its
+message handler. Browsers throttle the timers of hidden tabs but still deliver
+their channel messages, so a leader in a background tab keeps every visible
+follower working. When a probe stays unanswered for the rest of
+`followerCallTimeoutMs`, `handle.leadership` becomes `blocked` with reason
+`leader-unreachable` and code `client.follower_timeout`, and calls reject
+immediately; a leader tab that processes no messages (hung or frozen) reaches
+this state within `followerCallTimeoutMs`. A blocked follower keeps probing and
+rebinds when the leader answers. A visible tab never takes leadership from a
+hidden leader: leadership moves only when the leader tab closes and its Web
+Lock passes to a follower.
+
 Pass `multiTab: false` to opt out: a losing tab is then a
 `role === 'follower'` handle whose calls reject with `client.not_leader`, a
 defined state your code can detect and render. Use this when your app must

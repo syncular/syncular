@@ -16,6 +16,12 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-09-29',
+    title: 'A hidden leader tab no longer blocks its followers',
+    body: 'Follower tabs now check leader liveness by probing: after a third of `followerCallTimeoutMs` without hearing from the leader, a follower posts a probe that the leader tab answers from its message handler, and the follower goes `blocked` with `client.follower_timeout` only when that probe stays unanswered. The leader runs no heartbeat timer, so browser timer throttling in a hidden leader tab no longer blocks visible followers. A hung leader still blocks its followers within `followerCallTimeoutMs`, a blocked follower rebinds when the leader answers again, and one slow call rejects on its own deadline without blocking the handle. Remove any raised `followerCallTimeoutMs` that worked around background-tab throttling. Upgrade note: after upgrading, reload every open tab of the origin. A tab running 0.26.0 or older as a follower next to a leader on this release waits for the removed leader heartbeat and reports the leader unreachable (`client.follower_timeout`) until it reloads; a current follower next to an older leader works.',
+    links: [{ href: '/platform-web/#multi-tab', label: 'Multi-tab' }],
+  },
+  {
     date: '2026-09-28',
     title: 'Realtime connectivity is an explicit policy and state',
     body: "`realtimePolicy: 'required'` designates the socket as the sync path: while it is not connected, `sync()` raises `RealtimeUnavailableError` with the availability state, an optional reason code, and the next retry delay, and no HTTP round runs. The default `optional` keeps today's behavior and still reports the explicit states. Diagnostics carry `realtime` (`connected`, `connecting`, `disconnected`, `lost`, `refused`, `disabled`, or `unsupported`), `realtimePolicy`, `realtimeReasonCode`, and `realtimeRetryDelayMs`. The Rust core exposes the same states through `set_realtime_policy`, `realtime_state()`, and `SyncOutcome::RealtimeUnavailable`. The worker handle and the Tauri and React Native create configs forward the policy.",
