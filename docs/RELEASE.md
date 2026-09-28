@@ -1,8 +1,45 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.25.2** (`v0.25.2`). All artifacts use Apache-2.0, except
+current release is **0.26.0** (`v0.26.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.26.0 release notes
+
+0.26.0 is a minor release: it adds an explicit realtime policy and connectivity
+state to both client cores. SSP2 stays at wire version 3, no server behavior
+changes, and the TypeScript-only and Rust-only APIs keep working. Upgrade
+Syncular packages and crates together.
+
+- **`realtimePolicy` makes the realtime path an explicit choice.**
+  `realtimePolicy: 'required'` designates the socket as the sync path: a sync
+  round entered while the socket is not connected fails with the client-local
+  `sync.realtime_unavailable` and never uses `POST /sync`. TypeScript raises
+  `RealtimeUnavailableError` and Rust returns
+  `SyncOutcome::RealtimeUnavailable`, both carrying the availability state
+  (`connecting`, `disconnected`, `lost`, or `refused`), the stable reason code
+  behind a `lost` or `refused` state, and the delay of the background retry
+  intent the client scheduled. `optional` is the default and keeps the
+  historical behavior. `off` never uses realtime and refuses an explicit
+  `connectRealtime()` with `sync.invalid_request`. `required` without a
+  TypeScript `realtime` connector is refused at construction. The worker
+  handle and the Tauri and React Native create configs forward the key.
+- **Diagnostics expose the realtime availability state.**
+  `diagnosticsSnapshot().host` carries `realtime` (`connected`, `connecting`,
+  `disconnected`, `lost`, `refused`, `disabled`, or `unsupported`),
+  `realtimePolicy`, `realtimeReasonCode`, and `realtimeRetryDelayMs`. A
+  socket that dies marks the state `lost` with the transport's code, and the
+  core stops treating that socket as usable for rounds. `client.realtime_lost`
+  is the reason when the close path carries no code. The diagnostics snapshot
+  version stays 1: the new fields are additive and existing consumers that
+  read `host.realtime` as a string keep working.
+- **The Rust core exposes the same states.** `SyncClient::set_realtime_policy`
+  and `realtime_state()` carry the policy and state, `RealtimePolicy` and
+  `RealtimeState` are public enums, and the command/FFI router accepts
+  `realtimePolicy` in `create`.
+- **The test kit refuses a realtime connect on demand.**
+  `TransportFaults.refuseNextRealtimeConnect` fails the next realtime connect
+  before a socket opens, so a test can drive the `refused` state.
 
 ## 0.25.2 release notes
 
