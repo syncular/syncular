@@ -1,8 +1,36 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.26.1** (`v0.26.1`). All artifacts use Apache-2.0, except
+current release is **0.26.2** (`v0.26.2`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.26.2 release notes
+
+0.26.2 is a patch release for the TypeScript server's pull path
+(SYNCULAR-PULL-ROUNDTRIPS-001). SSP2 stays at wire version 3, response frames
+do not change, and the Rust core, the clients and the Tauri plugin do not
+change. Upgrade Syncular packages and crates together.
+
+- **A pull's storage statements grow with tables, not subscriptions.** The
+  pull path read the commit window and re-read the pruning horizon once per
+  subscription, strictly in sequence, so a 68-subscription pull against
+  PostgreSQL issued 146 statements to catch up and 79 to bootstrap. A pull now
+  starts the window read or first snapshot page of every subscription before
+  awaiting any of them and re-reads the horizon once after all window reads.
+  `PostgresServerStorage` answers the page reads of one table with one
+  `LATERAL` statement in which every subscription keeps its own scope filter,
+  cursor and limit, and `D1ServerStorage` sends them as one `db.batch` round
+  trip. The same 68-subscription pull now issues 11 statements to catch up and
+  10 to bootstrap, the counts of an 8-subscription pull. The horizon check
+  still follows every window read, so a prune during a read still answers
+  `reset`.
+- **The PostgreSQL serve gate is one statement.** Every request reads the
+  RFC 0007 serve gate on entry and again before it releases the response; the
+  schema marker, log epoch and incomplete-checkpoint reads now share one
+  statement and one snapshot.
+- **Custom storages receive concurrent page reads.** A custom `ServerStorage`
+  now sees the `readCommitWindow` and `scanRows` calls of one pull
+  concurrently. `SqliteServerStorage` keeps answering them one at a time.
 
 ## 0.26.1 release notes
 
