@@ -652,11 +652,13 @@ export function commitWindowPageSql(
  * subscription keeps its own keyset cursor and LIMIT. Rows arrive ordered
  * by (i, row_id).
  *
- * Params: [partition, specs (jsonb text), tbl].
+ * Params: [partition, specs (JSON text), tbl]. The specs bind as text before
+ * the JSONB cast, so a driver that JSON-encodes a string bound to a `jsonb`
+ * parameter (Bun.sql) cannot turn the array into a JSON string.
  */
 export function scanRowBatchSql(table: CompiledTable): string {
   return `SELECT s.i AS sub, c.row_id AS row_id, r.${quoteIdent(SYNC_VERSION_COLUMN)} AS server_version, r.${quoteIdent(SYNC_SCOPES_COLUMN)} AS scopes, r.${quoteIdent(SYNC_PAYLOAD_COLUMN)} AS payload, r.${quoteIdent(SYNC_COLUMN_VERSIONS_COLUMN)} AS column_versions
-     FROM jsonb_to_recordset($2::jsonb) AS s(i int, var text, vals text[], after text, lim int)
+     FROM jsonb_to_recordset($2::text::jsonb) AS s(i int, var text, vals text[], after text, lim int)
      CROSS JOIN LATERAL (SELECT DISTINCT row_id FROM sync_row_scopes
        WHERE partition=$1 AND tbl=$3 AND var=s.var AND value=ANY(s.vals)
          AND row_id>s.after
@@ -673,11 +675,12 @@ export function scanRowBatchSql(table: CompiledTable): string {
  * the same index-first candidate subquery through a LATERAL join. Rows
  * arrive ordered by (i, commit_seq, idx).
  *
- * Params: [partition, specs (jsonb text), tbl].
+ * Params: [partition, specs (JSON text), tbl], the specs bound as text like
+ * `scanRowBatchSql`.
  */
 export const COMMIT_WINDOW_BATCH_SQL = `SELECT s.i AS sub, c.commit_seq AS commit_seq, m.actor_id AS actor_id, m.created_at_ms AS created_at_ms,
        ch.tbl AS tbl, ch.row_id AS row_id, ch.op AS op, ch.row_version AS row_version, ch.scopes AS scopes, ch.payload AS payload
-     FROM jsonb_to_recordset($2::jsonb) AS s(i int, var text, vals text[], after bigint, through bigint, lim int)
+     FROM jsonb_to_recordset($2::text::jsonb) AS s(i int, var text, vals text[], after bigint, through bigint, lim int)
      CROSS JOIN LATERAL (SELECT DISTINCT commit_seq FROM sync_change_scopes
        WHERE partition=$1 AND tbl=$3 AND var=s.var AND value=ANY(s.vals)
          AND commit_seq>s.after AND commit_seq<=s.through
