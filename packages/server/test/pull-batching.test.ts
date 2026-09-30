@@ -242,6 +242,8 @@ async function counted(
   return { bootstrapStatements, incrementalStatements };
 }
 
+// Each test seeds about 200 pushes per storage; CI runners need more than
+// bun's 5 s default.
 describe('pull statement count (SYNCULAR-PULL-ROUNDTRIPS-001)', () => {
   const postgres = async () => {
     const db = await PGlite.create();
@@ -273,7 +275,7 @@ describe('pull statement count (SYNCULAR-PULL-ROUNDTRIPS-001)', () => {
     const large = await counted(68, d1);
     expect(large.bootstrapStatements).toBe(small.bootstrapStatements);
     expect(large.incrementalStatements).toBe(small.incrementalStatements);
-  });
+  }, 60_000);
 
   test('PostgreSQL: statements grow with tables, not subscriptions', async () => {
     const small = await counted(8, postgres);
@@ -284,7 +286,7 @@ describe('pull statement count (SYNCULAR-PULL-ROUNDTRIPS-001)', () => {
     // 5 ms per round trip keeps a 68-subscription pull far under 500 ms.
     expect(large.incrementalStatements * 5).toBeLessThan(500);
     expect(large.bootstrapStatements * 5).toBeLessThan(500);
-  });
+  }, 60_000);
 
   test('PostgreSQL serves the frames of the per-subscription SQLite path', async () => {
     const db = await PGlite.create();
@@ -302,5 +304,5 @@ describe('pull statement count (SYNCULAR-PULL-ROUNDTRIPS-001)', () => {
     // round-b commit; the p0 tasks subscription also delivers 70 hot commits.
     expect(commits.length).toBe(PROJECTS + (PROJECTS - 1) + 70);
     await db.close();
-  });
+  }, 60_000);
 });
