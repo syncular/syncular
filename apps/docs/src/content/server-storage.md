@@ -287,6 +287,18 @@ by changes in the same commit. Empty-scope changes still enter the log. Serializ
 scopes bind as text before JSONB parsing so driver JSON encoding cannot turn them
 into a JSON string. Existing change rows with string-form scopes remain readable.
 
+A pull starts the commit-window read or first snapshot page of every
+subscription before it awaits any of them, then re-reads the pruning horizon
+once. `PostgresServerStorage` queues the page reads issued in one microtask
+turn and sends one `LATERAL` statement per table, in which each subscription
+keeps its own scope filter, cursor, and limit. A pull therefore issues a
+number of statements that grows with the tables it reads: in the server test
+suite, a 68-subscription pull over two tables issues 10 statements to
+bootstrap and 11 to catch up, the same counts as an 8-subscription pull. The
+serve gate reads the schema marker, the log epoch, and incomplete checkpoints
+in one statement. A custom `ServerStorage` receives these `readCommitWindow`
+and `scanRows` calls concurrently and may batch them the same way.
+
 The server library never imports a Postgres driver. You wire yours through
 the minimal `PgExecutor` interface (`query(text, params)` plus a
 `transaction(fn)` scope). Bun.sql or node-postgres both adapt in ~20
@@ -352,7 +364,8 @@ await fanout.notifyCommit(partition, commitSeq);
 
 D1 is SQLite over an async, batch-at-a-time API; `D1ServerStorage` shares
 the schema and value codecs with `SqliteServerStorage` and differs only in
-execution shape. It ships in `@syncular/server` but its home is the Workers
+execution shape. The concurrent page reads of a pull leave as one
+`db.batch` round trip. It ships in `@syncular/server` but its home is the Workers
 deployment: per-partition write serialization, migration workflow, and the
 Durable Object are covered in [Cloudflare Workers](/server-workers/).
 

@@ -17,11 +17,13 @@ import { expect, test } from 'bun:test';
 import { PGlite } from '@electric-sql/pglite';
 import { encodeRow, type RowColumn } from '@syncular/core';
 import {
+  COMMIT_WINDOW_BATCH_SQL,
   commitWindowPageSql,
   compileSchema,
   indexRowPageStatement,
   PostgresServerStorage,
   type ServerSchema,
+  scanRowBatchSql,
   scanRowPageSql,
 } from '@syncular/server';
 import { pgliteExecutor } from '@syncular/server/pglite';
@@ -146,6 +148,55 @@ test('scanRows page scan is index-driven (no Seq Scan)', async () => {
     'p3',
     '',
     64,
+  ]);
+  expect(plan).toContain('Index');
+  expect(plan).not.toContain('Seq Scan on sync_row_scopes');
+  expect(plan).not.toContain('Seq Scan on tasks');
+  await db.close();
+});
+
+test('batched readCommitWindow pages stay index-driven per subscription', async () => {
+  const { db } = await seededStorage();
+  const plan = await explain(db, COMMIT_WINDOW_BATCH_SQL, [
+    PARTITION,
+    JSON.stringify([
+      {
+        i: 0,
+        var: 'project_id',
+        vals: ['p3'],
+        after: 0,
+        through: ROWS,
+        lim: 64,
+      },
+      {
+        i: 1,
+        var: 'project_id',
+        vals: ['p4', 'p5'],
+        after: 9,
+        through: ROWS,
+        lim: 64,
+      },
+    ]),
+    'tasks',
+  ]);
+  expect(plan).toContain('Index');
+  expect(plan).not.toContain('Seq Scan on sync_change_scopes');
+  expect(plan).not.toContain('Seq Scan on sync_commits');
+  expect(plan).not.toContain('Seq Scan on sync_changes');
+  await db.close();
+});
+
+test('batched scanRows pages stay index-driven per subscription', async () => {
+  const { db } = await seededStorage();
+  const table = compileSchema(SCHEMA).tables.get('tasks');
+  if (table === undefined) throw new Error('tasks not compiled');
+  const plan = await explain(db, scanRowBatchSql(table), [
+    PARTITION,
+    JSON.stringify([
+      { i: 0, var: 'project_id', vals: ['p3'], after: '', lim: 64 },
+      { i: 1, var: 'project_id', vals: ['p4', 'p5'], after: 'r0', lim: 64 },
+    ]),
+    'tasks',
   ]);
   expect(plan).toContain('Index');
   expect(plan).not.toContain('Seq Scan on sync_row_scopes');

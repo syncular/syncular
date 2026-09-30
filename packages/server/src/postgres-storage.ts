@@ -53,11 +53,12 @@ import {
   asNumber,
   type PgExecutor,
   type PgQueryable,
+  type PgRow,
 } from './pg-executor';
 import {
   assertPhysicalColumns,
   assertStoredLayouts,
-  commitWindowPageSql,
+  COMMIT_WINDOW_BATCH_SQL,
   deleteRowSql,
   dropTableDdl,
   indexRowPageStatement,
@@ -70,6 +71,7 @@ import {
   rewriteValues,
   SCHEMA_META_DDL_POSTGRES,
   type StoredColumnLayout,
+  scanRowBatchSql,
   scanRowPageSql,
   schemaDdl,
   selectRowScopesSql,
@@ -324,28 +326,29 @@ async function readServeGateOn(
   partition: string,
   runningSchemaVersion: number,
 ): Promise<ServeGate> {
-  const marker = await client.query<{ schema_version: unknown }>(
-    'SELECT schema_version FROM sync_schema_meta WHERE id=1',
+  // One statement: every request reads the gate twice (entry and verify),
+  // so its parts share one round trip and one snapshot.
+  const { rows } = await client.query<{
+    schema_version: unknown;
+    log_epoch: string | null;
+    pending: unknown;
+  }>(
+    `SELECT (SELECT schema_version FROM sync_schema_meta WHERE id=1) AS schema_version,
+            (SELECT log_epoch FROM sync_partition_registry WHERE partition=$1) AS log_epoch,
+            (SELECT json_agg(json_build_object('partition', partition, 'name', name))
+               FROM sync_backfill_checkpoints
+              WHERE schema_version=$2 AND state<>'activated') AS pending`,
+    [partition, runningSchemaVersion],
   );
-  const epoch = await client.query<{ log_epoch: string }>(
-    'SELECT log_epoch FROM sync_partition_registry WHERE partition=$1',
-    [partition],
-  );
-  const pending = await client.query<{ partition: string; name: string }>(
-    `SELECT partition, name FROM sync_backfill_checkpoints
-      WHERE schema_version=$1 AND state<>'activated'`,
-    [runningSchemaVersion],
-  );
+  const row = rows[0];
   return {
-    storedSchemaVersion:
-      marker.rows[0] === undefined
-        ? 0
-        : asNumber(marker.rows[0].schema_version),
-    logEpoch: epoch.rows[0]?.log_epoch,
-    pending: pending.rows.map((row) => ({
-      partition: row.partition,
-      name: row.name,
-    })),
+    // asNumber maps the NULL of a missing marker row to 0.
+    storedSchemaVersion: asNumber(row?.schema_version),
+    logEpoch: row?.log_epoch ?? undefined,
+    pending:
+      row?.pending === null || row?.pending === undefined
+        ? []
+        : asJson<{ partition: string; name: string }[]>(row.pending),
   };
 }
 
@@ -569,7 +572,7 @@ interface ChangeRecord {
 }
 
 /**
- * One result row of `commitWindowPageSql` (candidate LEFT JOIN commit meta
+ * One result row of `COMMIT_WINDOW_BATCH_SQL` (candidate LEFT JOIN commit meta
  * LEFT JOIN changes): meta/change columns are NULL when the joined row
  * vanished (LEFT JOIN contract).
  */
@@ -1166,14 +1169,74 @@ class RollbackSignal extends Error {
   }
 }
 
+/** One page read waiting in `PostgresServerStorage#batchedPage`. */
+interface PendingPage {
+  readonly spec: Record<string, unknown>;
+  readonly resolve: (rows: PgRow[]) => void;
+  readonly reject: (error: unknown) => void;
+}
+
 export class PostgresServerStorage implements ServerStorage {
   readonly #exec: PgExecutor;
   /** Set by `ensureSchema`: app-table lookup for the relational row store. */
   #tables: ReadonlyMap<string, CompiledTable> | undefined;
   #schemaVersion: number | undefined;
+  /**
+   * Page reads waiting for the end of the current microtask turn, keyed by
+   * statement and fixed params. A pull starts the window read (or first
+   * snapshot page) of every subscription before awaiting any of them, so the
+   * reads of one table leave as ONE set-based statement instead of one round
+   * trip per subscription (SYNCULAR-PULL-ROUNDTRIPS-001).
+   */
+  readonly #pageBatches = new Map<string, PendingPage[]>();
 
   constructor(exec: PgExecutor) {
     this.#exec = exec;
+  }
+
+  /**
+   * Queue one page read into the batch for (`sql`, `partition`, `table`).
+   * The batch runs as a single statement with the queued specs bound as a
+   * JSON array (`$2`); each spec gets its position as `i`, and the result
+   * rows are split back by their `sub` column.
+   */
+  #batchedPage<Row>(
+    sql: string,
+    partition: string,
+    table: string,
+    spec: Record<string, unknown>,
+  ): Promise<Row[]> {
+    const key = `${sql}\u0000${partition}\u0000${table}`;
+    let batch = this.#pageBatches.get(key);
+    if (batch === undefined) {
+      const queued: PendingPage[] = [];
+      batch = queued;
+      this.#pageBatches.set(key, queued);
+      queueMicrotask(() => {
+        this.#pageBatches.delete(key);
+        const specs = JSON.stringify(
+          queued.map((entry, i) => ({ ...entry.spec, i })),
+        );
+        this.#exec.query<PgRow>(sql, [partition, specs, table]).then(
+          ({ rows }) => {
+            const grouped = queued.map((): PgRow[] => []);
+            for (const row of rows) grouped[asNumber(row.sub)]?.push(row);
+            queued.forEach((entry, i) => entry.resolve(grouped[i] ?? []));
+          },
+          (error: unknown) => {
+            for (const entry of queued) entry.reject(error);
+          },
+        );
+      });
+    }
+    const target = batch;
+    return new Promise<Row[]>((resolve, reject) => {
+      target.push({
+        spec,
+        resolve: (rows) => resolve(rows as Row[]),
+        reject,
+      });
+    });
   }
 
   /** Apply the schema DDL (idempotent). Call once before use. */
@@ -2091,27 +2154,26 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
     // Candidates via the inverted index (one variable): the (partition, tbl,
     // var, value, commit_seq) PK makes the candidate subquery an index range
     // scan returning commit_seq already ascending (see postgres-explain
-    // .test.ts), LEFT JOINed to the commit meta + the table's changes — one
-    // round trip per page, never two per candidate (see
-    // `commitWindowPageSql`). Exact multi-variable verification against the
-    // stored scope map happens below.
-    const sql = commitWindowPageSql(firstValues.length, 'postgres');
+    // .test.ts), LEFT JOINed to the commit meta + the table's changes. Pages
+    // of concurrent window reads on the same table share one statement (see
+    // `COMMIT_WINDOW_BATCH_SQL`). Exact multi-variable verification against
+    // the stored scope map happens below.
     const commits: StoredCommit[] = [];
     let deliveredChanges = 0;
     let afterSeq = query.afterSeq;
     const batchSize = Math.max(64, query.limitChanges);
     while (deliveredChanges < query.limitChanges) {
-      const { rows: records } = await this.#exec.query<CommitWindowRecord>(
-        sql,
-        [
-          partition,
-          query.table,
-          firstVariable,
-          ...firstValues,
-          afterSeq,
-          query.throughSeq,
-          batchSize,
-        ],
+      const records = await this.#batchedPage<CommitWindowRecord>(
+        COMMIT_WINDOW_BATCH_SQL,
+        partition,
+        query.table,
+        {
+          var: firstVariable,
+          vals: firstValues,
+          after: afterSeq,
+          through: query.throughSeq,
+          lim: batchSize,
+        },
       );
       if (records.length === 0) break;
       // Fold the page: rows arrive ordered (commit_seq, idx); consecutive
@@ -2170,25 +2232,25 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
     if (firstValues.length === 0) return [];
     // Candidates via the inverted index (ordered + LIMITed at the covering
     // PK) LEFT JOINed to the row table — one round trip per page, never one
-    // per row (see `scanRowPageSql`). Exact multi-variable verification
+    // per row, and pages of concurrent scans on the same table share one
+    // statement (see `scanRowBatchSql`). Exact multi-variable verification
     // against the stored scope map happens below.
-    const sql = scanRowPageSql(
-      this.table(query.table),
-      firstValues.length,
-      'postgres',
-    );
+    const sql = scanRowBatchSql(this.table(query.table));
     const rows: StoredRow[] = [];
     let afterRowId = query.afterRowId ?? '';
     const batchSize = Math.max(64, query.limit);
     while (rows.length < query.limit) {
-      const { rows: records } = await this.#exec.query<RowRecord>(sql, [
+      const records = await this.#batchedPage<RowRecord>(
+        sql,
         partition,
         query.table,
-        firstVariable,
-        ...firstValues,
-        afterRowId,
-        batchSize,
-      ]);
+        {
+          var: firstVariable,
+          vals: firstValues,
+          after: afterRowId,
+          lim: batchSize,
+        },
+      );
       if (records.length === 0) break;
       for (const record of records) {
         afterRowId = record.row_id;

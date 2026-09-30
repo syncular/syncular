@@ -208,6 +208,26 @@ function segmentRefFrame(
 }
 
 /**
+ * §5.3: the sqlite-image lane — whole-table, chosen only at the start of a
+ * table (a mid-table resume stays on the rows lane, never switching lanes),
+ * and only when the client advertised bit 2. §5.11: a table with any
+ * encrypted column is image-INELIGIBLE — an image copies ciphertext
+ * wholesale with no per-row decrypt pass, so it MUST be served on the rows
+ * lane (which decrypts per row on the client).
+ */
+function sqliteLaneEligible(
+  limits: PullLimits,
+  plan: SubscriptionPlan,
+  startRowCursor: string | null,
+): boolean {
+  return (
+    (limits.accept & ACCEPT_SQLITE) !== 0 &&
+    startRowCursor === null &&
+    plan.table.encryptedColumnIndices.length === 0
+  );
+}
+
+/**
  * §5.3 sqlite-image lane: only at the start of a table, only when the
  * client advertised bit 2, and only when the snapshot exceeds one rows
  * page. Reuses an unexpired stored image for the same (partition, table,
@@ -369,6 +389,7 @@ async function* bootstrapSegments(
   startRowCursor: string | null,
   trace: PullSectionTrace | undefined,
   logEpoch: string,
+  firstPage: StoredRow[] | undefined,
 ): AsyncGenerator<
   ResponseFrame,
   { complete: boolean; rowCursor: string | null }
@@ -377,17 +398,7 @@ async function* bootstrapSegments(
   const serverLimits = limitsOf(ctx);
   const digest = await scopeDigest(plan.effective);
   const now = clockOf(ctx)();
-  // §5.3: the sqlite-image lane — whole-table, chosen only at the start
-  // of a table (a mid-table resume stays on the rows lane, never
-  // switching lanes), and only when the client advertised bit 2.
-  // §5.11: a table with any encrypted column is image-INELIGIBLE — an image
-  // copies ciphertext wholesale with no per-row decrypt pass, so it MUST be
-  // served on the rows lane (which decrypts per row on the client).
-  if (
-    (limits.accept & ACCEPT_SQLITE) !== 0 &&
-    startRowCursor === null &&
-    plan.table.encryptedColumnIndices.length === 0
-  ) {
+  if (sqliteLaneEligible(limits, plan, startRowCursor)) {
     const imaged = yield* sqliteImageSegment(
       ctx,
       schema,
@@ -402,12 +413,15 @@ async function* bootstrapSegments(
   }
   let rowCursor = startRowCursor;
   for (let page = 0; page < limits.maxSnapshotPages; page++) {
-    const scanned = await storage.scanRows(partition, {
-      table: plan.table.name,
-      scopeFilter: plan.effective,
-      afterRowId: rowCursor,
-      limit: limits.limitSnapshotRows + 1,
-    });
+    const scanned =
+      page === 0 && firstPage !== undefined
+        ? firstPage
+        : await storage.scanRows(partition, {
+            table: plan.table.name,
+            scopeFilter: plan.effective,
+            afterRowId: rowCursor,
+            limit: limits.limitSnapshotRows + 1,
+          });
     const pageRows = scanned.slice(0, limits.limitSnapshotRows);
     const hasMore = scanned.length > limits.limitSnapshotRows;
     // §5.2: every row record carries the row's current server_version.
@@ -476,6 +490,86 @@ async function* bootstrapSegments(
 }
 
 /**
+ * The storage reads a section needs before its first frame. A pull starts
+ * them for every subscription before awaiting any, so a storage that batches
+ * concurrent page reads (PostgreSQL) answers all subscriptions of one table
+ * with one statement, and the horizon re-check runs once per pull.
+ */
+export interface PreparedSection {
+  /** §4.5 window read for an incremental cursor; empty when none was read. */
+  readonly commits: StoredCommit[];
+  /** Horizon to judge the cursor against, re-read after any window read. */
+  readonly horizonSeq: number;
+  /** First rows-lane snapshot page, read when the sqlite lane is excluded. */
+  readonly firstPage: StoredRow[] | undefined;
+}
+
+/** Run the pre-frame storage reads of every subscription concurrently. */
+export async function prepareSections(
+  ctx: SyncRequestContext,
+  limits: PullLimits,
+  plans: readonly SubscriptionPlan[],
+  maxSeq: number,
+  horizonSeq: number,
+): Promise<PreparedSection[]> {
+  const reads = plans.map((plan) => {
+    const sub = plan.frame;
+    if (plan.status === 'revoked') return {};
+    const token = parseBootstrapToken(sub.bootstrapState, sub.table);
+    if (
+      token === undefined &&
+      sub.cursor >= 0 &&
+      sub.cursor >= horizonSeq &&
+      sub.cursor <= maxSeq
+    ) {
+      return {
+        commits: ctx.storage.readCommitWindow(ctx.partition, {
+          table: sub.table,
+          scopeFilter: plan.effective,
+          afterSeq: sub.cursor,
+          throughSeq: maxSeq,
+          limitChanges: limits.limitCommits + 1,
+        }),
+      };
+    }
+    // §4.6 reset: no reads.
+    if (token === undefined && sub.cursor >= 0 && sub.cursor < horizonSeq) {
+      return {};
+    }
+    // Bootstrapping: the same resume decision `preparedSection` makes (§4.7).
+    const startCursor =
+      token !== undefined && token.asOfCommitSeq >= horizonSeq
+        ? token.rowCursor
+        : null;
+    if (sqliteLaneEligible(limits, plan, startCursor)) return {};
+    return {
+      firstPage: ctx.storage.scanRows(ctx.partition, {
+        table: plan.table.name,
+        scopeFilter: plan.effective,
+        afterRowId: startCursor,
+        limit: limits.limitSnapshotRows + 1,
+      }),
+    };
+  });
+  const settled = await Promise.all(
+    reads.map(async (read) => ({
+      commits: read.commits === undefined ? undefined : await read.commits,
+      firstPage: await read.firstPage,
+    })),
+  );
+  // Validate continuity before committing to an active section. A prune
+  // during a paged read can otherwise make an incomplete window look empty.
+  const windowHorizon = settled.some((read) => read.commits !== undefined)
+    ? Math.max(horizonSeq, await ctx.storage.getHorizonSeq(ctx.partition))
+    : horizonSeq;
+  return settled.map((read) => ({
+    commits: read.commits ?? [],
+    horizonSeq: read.commits === undefined ? horizonSeq : windowHorizon,
+    firstPage: read.firstPage,
+  }));
+}
+
+/**
  * Produce the `SUB_START … SUB_END` section for one subscription (§1.6),
  * returning the cursor recorded for the retention watermark (§4.5).
  */
@@ -486,6 +580,37 @@ export async function* subscriptionSection(
   plan: SubscriptionPlan,
   maxSeq: number,
   horizonSeq: number,
+  trace?: PullSectionTrace,
+  logEpoch?: string,
+): AsyncGenerator<ResponseFrame, SubscriptionResult> {
+  const [prepared] = await prepareSections(
+    ctx,
+    limits,
+    [plan],
+    maxSeq,
+    horizonSeq,
+  );
+  if (prepared === undefined) throw new Error('prepareSections lost a plan');
+  return yield* preparedSection(
+    ctx,
+    schema,
+    limits,
+    plan,
+    maxSeq,
+    prepared,
+    trace,
+    logEpoch,
+  );
+}
+
+/** The section of one subscription whose reads `prepareSections` ran. */
+export async function* preparedSection(
+  ctx: SyncRequestContext,
+  schema: CompiledSchema,
+  limits: PullLimits,
+  plan: SubscriptionPlan,
+  maxSeq: number,
+  prepared: PreparedSection,
   trace?: PullSectionTrace,
   logEpoch?: string,
 ): AsyncGenerator<ResponseFrame, SubscriptionResult> {
@@ -508,28 +633,7 @@ export async function* subscriptionSection(
   }
 
   const token = parseBootstrapToken(sub.bootstrapState, sub.table);
-
-  let commits: StoredCommit[] = [];
-  if (
-    token === undefined &&
-    sub.cursor >= 0 &&
-    sub.cursor >= horizonSeq &&
-    sub.cursor <= maxSeq
-  ) {
-    commits = await ctx.storage.readCommitWindow(ctx.partition, {
-      table: sub.table,
-      scopeFilter: plan.effective,
-      afterSeq: sub.cursor,
-      throughSeq: maxSeq,
-      limitChanges: limits.limitCommits + 1,
-    });
-    // Validate continuity before committing to an active section. A prune
-    // during a paged read can otherwise make an incomplete window look empty.
-    horizonSeq = Math.max(
-      horizonSeq,
-      await ctx.storage.getHorizonSeq(ctx.partition),
-    );
-  }
+  const { commits, horizonSeq } = prepared;
 
   // §4.6: a cursor behind the horizon (and not resuming a bootstrap)
   // cannot compute deltas — answer `reset` and echo the cursor.
@@ -575,6 +679,7 @@ export async function* subscriptionSection(
       startCursor,
       trace,
       logEpoch,
+      prepared.firstPage,
     );
     if (outcome.complete) {
       yield { type: 'SUB_END', nextCursor: asOf };

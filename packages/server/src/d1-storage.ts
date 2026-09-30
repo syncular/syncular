@@ -915,12 +915,29 @@ interface D1MigrationClaim {
   state: string;
 }
 
+/** The reads queued for one `D1ServerStorage#batchedAll` round trip. */
+interface PendingReads {
+  readonly db: Pick<D1Database, 'prepare' | 'batch'>;
+  readonly entries: {
+    readonly statement: D1PreparedStatement;
+    readonly resolve: (rows: unknown[]) => void;
+    readonly reject: (error: unknown) => void;
+  }[];
+}
+
 export class D1ServerStorage implements ServerStorage {
   readonly #db: D1Database;
   readonly #pushApplySerialized: boolean;
   /** Set by `ensureSchema`: app-table lookup for the relational row store. */
   #tables: ReadonlyMap<string, CompiledTable> | undefined;
   #schemaVersion: number | undefined;
+  /**
+   * Page reads waiting for the end of the current microtask turn. A pull
+   * starts the window read (or first snapshot page) of every subscription
+   * before awaiting any of them, so they leave as ONE `db.batch` round trip
+   * instead of one per subscription (SYNCULAR-PULL-ROUNDTRIPS-001).
+   */
+  #pendingReads: PendingReads | undefined;
 
   constructor(db: D1Database, options: D1ServerStorageOptions = {}) {
     this.#db = db;
@@ -1400,6 +1417,53 @@ export class D1ServerStorage implements ServerStorage {
   }
 
   /** Every protected read or write shares a transaction with its schema check. */
+  /** Queue one read into the current turn's `db.batch` (see `#pendingReads`). */
+  #batchedAll<T>(sql: string, params: unknown[]): Promise<T[]> {
+    let pending = this.#pendingReads;
+    if (pending === undefined) {
+      const created: PendingReads = {
+        db: this.#schemaDatabase(),
+        entries: [],
+      };
+      pending = created;
+      this.#pendingReads = created;
+      queueMicrotask(() => {
+        this.#pendingReads = undefined;
+        created.db.batch(created.entries.map((entry) => entry.statement)).then(
+          (results) => {
+            created.entries.forEach((entry, i) => {
+              const result = results[i];
+              if (
+                typeof result !== 'object' ||
+                result === null ||
+                !('results' in result) ||
+                !Array.isArray(result.results)
+              ) {
+                entry.reject(
+                  new Error('D1 query returned an invalid batch result'),
+                );
+              } else {
+                entry.resolve(result.results);
+              }
+            });
+          },
+          (error: unknown) => {
+            for (const entry of created.entries) entry.reject(error);
+          },
+        );
+      });
+    }
+    const target = pending;
+    const statement = target.db.prepare(sql).bind(...params);
+    return new Promise<T[]>((resolve, reject) => {
+      target.entries.push({
+        statement,
+        resolve: (rows) => resolve(rows as T[]),
+        reject,
+      });
+    });
+  }
+
   #schemaDatabase(): Pick<D1Database, 'prepare' | 'batch'> {
     if (this.#schemaVersion === undefined)
       throw new StorageQueryError('sync.storage.schema_changed');
@@ -2086,37 +2150,34 @@ export class D1ServerStorage implements ServerStorage {
     partition: string,
     query: CommitWindowQuery,
   ): Promise<StoredCommit[]> {
-    const db = this.#schemaDatabase();
     const variables = Object.keys(query.scopeFilter).sort();
     const firstVariable = variables[0];
     if (firstVariable === undefined) return [];
     const firstValues = query.scopeFilter[firstVariable] ?? [];
     if (firstValues.length === 0) return [];
     // Candidates via the inverted index (one variable) LEFT JOINed to the
-    // commit meta + the table's changes — one D1 round trip per page, never
-    // two per candidate (see `commitWindowPageSql`). Exact multi-variable
-    // verification against the stored scope map in `collectCommitWindowPage`.
+    // commit meta + the table's changes — one statement per page, never two
+    // per candidate (see `commitWindowPageSql`), and concurrent pages share
+    // one D1 round trip. Exact multi-variable verification against the
+    // stored scope map in `collectCommitWindowPage`.
     const sql = commitWindowPageSql(firstValues.length, 'sqlite');
     const commits: StoredCommit[] = [];
     let deliveredChanges = 0;
     let afterSeq = query.afterSeq;
     const batchSize = Math.max(64, query.limitChanges);
     while (deliveredChanges < query.limitChanges) {
-      const { results: records } = await db
-        .prepare(sql)
-        .bind(
-          partition,
-          query.table,
-          firstVariable,
-          ...firstValues,
-          afterSeq,
-          query.throughSeq,
-          batchSize,
-          partition,
-          partition,
-          query.table,
-        )
-        .all<SqliteCommitWindowRecord>();
+      const records = await this.#batchedAll<SqliteCommitWindowRecord>(sql, [
+        partition,
+        query.table,
+        firstVariable,
+        ...firstValues,
+        afterSeq,
+        query.throughSeq,
+        batchSize,
+        partition,
+        partition,
+        query.table,
+      ]);
       if (records.length === 0) break;
       const page = collectCommitWindowPage(
         records,
@@ -2132,12 +2193,12 @@ export class D1ServerStorage implements ServerStorage {
   }
 
   async scanRows(partition: string, query: RowScanQuery): Promise<StoredRow[]> {
-    const db = this.#schemaDatabase();
     const firstVariable = assertScopeIndexedScan(query);
     const firstValues = query.scopeFilter[firstVariable] ?? [];
     if (firstValues.length === 0) return [];
     // Candidates via the inverted index LEFT JOINed to the row table — one
-    // D1 round trip per page, never one per row (see `scanRowPageSql`).
+    // statement per page, never one per row (see `scanRowPageSql`), and
+    // concurrent pages share one D1 round trip.
     // Exact multi-variable verification against the stored scope map below.
     const sql = scanRowPageSql(
       this.table(query.table),
@@ -2148,18 +2209,17 @@ export class D1ServerStorage implements ServerStorage {
     let afterRowId = query.afterRowId ?? '';
     const batchSize = Math.max(64, query.limit);
     while (rows.length < query.limit) {
-      const { results: records } = await db
-        .prepare(sql)
-        .bind(
-          partition,
-          query.table,
-          firstVariable,
-          ...firstValues,
-          afterRowId,
-          batchSize,
-          partition,
-        )
-        .all<SqliteRowRecord & { payload: Uint8Array | null }>();
+      const records = await this.#batchedAll<
+        SqliteRowRecord & { payload: Uint8Array | null }
+      >(sql, [
+        partition,
+        query.table,
+        firstVariable,
+        ...firstValues,
+        afterRowId,
+        batchSize,
+        partition,
+      ]);
       if (records.length === 0) break;
       for (const record of records) {
         afterRowId = record.row_id;

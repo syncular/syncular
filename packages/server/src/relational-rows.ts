@@ -644,6 +644,50 @@ export function commitWindowPageSql(
      ORDER BY c.commit_seq, ch.idx`;
 }
 
+/**
+ * PostgreSQL set-based form of `scanRowPageSql`: one statement answers the
+ * page of every subscription scanning `table` in a pull. `$2` is a JSON array
+ * of `{i, var, vals, after, lim}` records; each record runs the same
+ * index-first candidate subquery through a LATERAL join, so every
+ * subscription keeps its own keyset cursor and LIMIT. Rows arrive ordered
+ * by (i, row_id).
+ *
+ * Params: [partition, specs (jsonb text), tbl].
+ */
+export function scanRowBatchSql(table: CompiledTable): string {
+  return `SELECT s.i AS sub, c.row_id AS row_id, r.${quoteIdent(SYNC_VERSION_COLUMN)} AS server_version, r.${quoteIdent(SYNC_SCOPES_COLUMN)} AS scopes, r.${quoteIdent(SYNC_PAYLOAD_COLUMN)} AS payload, r.${quoteIdent(SYNC_COLUMN_VERSIONS_COLUMN)} AS column_versions
+     FROM jsonb_to_recordset($2::jsonb) AS s(i int, var text, vals text[], after text, lim int)
+     CROSS JOIN LATERAL (SELECT DISTINCT row_id FROM sync_row_scopes
+       WHERE partition=$1 AND tbl=$3 AND var=s.var AND value=ANY(s.vals)
+         AND row_id>s.after
+       ORDER BY row_id LIMIT s.lim) c
+     LEFT JOIN ${quoteIdent(table.name)} r
+       ON r.${quoteIdent(SYNC_PARTITION_COLUMN)}=$1 AND r.${quoteIdent(SYNC_ROW_ID_COLUMN)}=c.row_id
+     ORDER BY s.i, c.row_id`;
+}
+
+/**
+ * PostgreSQL set-based form of `commitWindowPageSql`: one statement answers
+ * the window page of every subscription reading `tbl` in a pull. `$2` is a
+ * JSON array of `{i, var, vals, after, through, lim}` records, each running
+ * the same index-first candidate subquery through a LATERAL join. Rows
+ * arrive ordered by (i, commit_seq, idx).
+ *
+ * Params: [partition, specs (jsonb text), tbl].
+ */
+export const COMMIT_WINDOW_BATCH_SQL = `SELECT s.i AS sub, c.commit_seq AS commit_seq, m.actor_id AS actor_id, m.created_at_ms AS created_at_ms,
+       ch.tbl AS tbl, ch.row_id AS row_id, ch.op AS op, ch.row_version AS row_version, ch.scopes AS scopes, ch.payload AS payload
+     FROM jsonb_to_recordset($2::jsonb) AS s(i int, var text, vals text[], after bigint, through bigint, lim int)
+     CROSS JOIN LATERAL (SELECT DISTINCT commit_seq FROM sync_change_scopes
+       WHERE partition=$1 AND tbl=$3 AND var=s.var AND value=ANY(s.vals)
+         AND commit_seq>s.after AND commit_seq<=s.through
+       ORDER BY commit_seq LIMIT s.lim) c
+     LEFT JOIN sync_commits m
+       ON m.partition=$1 AND m.commit_seq=c.commit_seq
+     LEFT JOIN sync_changes ch
+       ON ch.partition=$1 AND ch.commit_seq=c.commit_seq AND ch.tbl=$3
+     ORDER BY s.i, c.commit_seq, ch.idx`;
+
 /** SELECT a row's version + scope map (admin/blob authz). Params: [partition, rowId]. */
 export function selectRowScopesSql(
   table: CompiledTable,

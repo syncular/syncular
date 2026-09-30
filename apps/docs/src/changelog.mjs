@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-09-30',
+    title: 'Pull statements grow with tables, not subscriptions',
+    body: 'A pull starts the commit-window read or first snapshot page of every subscription before awaiting any of them and re-reads the pruning horizon once. `PostgresServerStorage` answers the page reads of one table with one statement, and `D1ServerStorage` sends them as one `db.batch` round trip. A 68-subscription PostgreSQL pull over two tables issues 11 statements to catch up and 10 to bootstrap, down from 146 and 79 (SYNCULAR-PULL-ROUNDTRIPS-001). The PostgreSQL serve gate reads its three parts in one statement. Response frames do not change.',
+    links: [
+      {
+        href: '/server-storage/#postgres-postgresserverstorage',
+        label: 'Postgres storage',
+      },
+    ],
+  },
+  {
+    date: '2026-09-30',
     title: 'Local native builds prune old Rust intermediates',
     body: 'The development checks, native packaging and binding gates now prune stale Cargo caches before building on macOS/Linux. The cleanup keeps recent artifacts and skips target folders locked by another Cargo build. Use bun run rust for Rust-core commands and bun run rust:clean --dry-run to preview the policy.',
     links: [

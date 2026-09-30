@@ -47,8 +47,9 @@ import {
   ACCEPT_INLINE_ROWS,
   clampPullLimits,
   type PullSectionTrace,
+  prepareSections,
+  preparedSection,
   type SubscriptionPlan,
-  subscriptionSection,
 } from './pull';
 import { type ProcessedPushCommit, processPushCommitWithTrace } from './push';
 import { serveNotReadyError } from './readiness';
@@ -542,16 +543,25 @@ async function* streamResponse(
       const limits = clampPullLimits(plan.pull);
       const maxSeq = await ctx.storage.getMaxCommitSeq(ctx.partition);
       const horizonSeq = await ctx.storage.getHorizonSeq(ctx.partition);
-      for (const subscription of plan.subscriptions) {
+      const prepared = await prepareSections(
+        ctx,
+        limits,
+        plan.subscriptions,
+        maxSeq,
+        horizonSeq,
+      );
+      for (const [index, subscription] of plan.subscriptions.entries()) {
         const trace: PullSectionTrace | undefined =
           summaries !== undefined ? { segments: [] } : undefined;
-        const section = subscriptionSection(
+        const reads = prepared[index];
+        if (reads === undefined) throw new Error('prepareSections lost a plan');
+        const section = preparedSection(
           ctx,
           schema,
           limits,
           subscription,
           maxSeq,
-          horizonSeq,
+          reads,
           trace,
           plan.logEpoch,
         );
