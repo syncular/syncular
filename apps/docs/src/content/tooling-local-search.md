@@ -77,6 +77,9 @@ references a schema-declared FTS projection. Typegen treats the projected
 `_syncular_source_id` as exact non-null text and can use it with the owner key
 to prove stable identity for a bounded query.
 
+A search that ranks many matches and returns a few wide rows ranks narrow rows
+in a materialized CTE first; see [ranked top-N](/syql/#ranked-top-n).
+
 The projection maps back to its owning synced table for reactive dependencies.
 A content change therefore invalidates generated React queries normally.
 Synchronization coverage still comes from predicates on the synced owner; the

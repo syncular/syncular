@@ -16,6 +16,28 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-10-01',
+    title: 'A failed sync round ends a waiting query in `error`',
+    body: "A live query whose required coverage is incomplete publishes phase `error` when the latest sync attempt fails, with a `SyncRoundFailedError` carrying the attempt's stable code (for example `sync.transport_failed`) and number. It keeps its rows and revision, stays `error` across local re-reads, and returns to `loading` or `partial` when the next attempt starts. `useQuery` and `useRawSql` show the same phase, so an interrupted bootstrap no longer renders as an endless `loading` (SYNCULAR-QUERY-PHASE-STALL-001).",
+    links: [
+      {
+        href: '/platform-react/#generated-live-queries',
+        label: 'Query phases',
+      },
+    ],
+  },
+  {
+    date: '2026-10-01',
+    title: 'Ranked top-N queries read wide rows after the limit',
+    body: 'SYQL accepts `AS [NOT] MATERIALIZED` on a CTE and proves scope coverage, column lineage, and row identity per SELECT scope: the outer statement and each top-level CTE body. A bounded query can rank narrow rows in a materialized CTE and join the wide table by `ON t.pk = cte.key`; SQLite 3.51 and later sort only the CTE rows and read a wide row only for a returned row (SYNCULAR-SYQL-TOPN-001). An outer scope predicate no longer proves a subquery instance that reuses its alias; such a sync query now fails with `SYQL6005_INVALID_SYNC_QUERY`.',
+    links: [
+      {
+        href: '/syql/#ranked-top-n',
+        label: 'Ranked top-N',
+      },
+    ],
+  },
+  {
     date: '2026-09-30',
     title: 'Publish SQLite images for hosts without a SQLite engine',
     body: 'A bootstrap on the sqlite-image lane pins at the newest change in its scope, so a stored image stays current across commits to other tables and scopes. `publishSqliteImage` stores the image a pull for a table and scope set looks up, from a Bun process with the production storage, and a Workers host serves it. `GET /segments/:id` streams segments above 16 MiB from a segment store that implements `open` (`S3SegmentStore` does), gzip-encoded when accepted. `writeSqliteImage` is exported for custom builders.',

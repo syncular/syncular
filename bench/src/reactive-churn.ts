@@ -19,6 +19,7 @@ export async function reactiveChurn(count = 10_000) {
         change = undefined;
       };
     },
+    onProgress: () => () => undefined,
     querySnapshot<Row>(spec: QueryReadSpec): QuerySnapshot<Row> {
       const rows = Array.from({ length: 10 }, (_, index) => ({
         id: `${spec.params?.[0]}:${index}`,

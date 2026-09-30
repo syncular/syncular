@@ -9,6 +9,12 @@ import {
   type QueryNamingOptions,
   type QueryReactiveMetadata,
   type QueryScopeBinding,
+  type CteScope,
+  PLAIN_REF_RE,
+  type SelectItem,
+  type SqlRelations,
+  scanRelations,
+  splitSelectList,
   scanTableRefs,
   stripCommentsAndStrings,
   type TableRef,
@@ -307,6 +313,7 @@ const SQL_PAREN_KEYWORDS = new Set([
   'in',
   'join',
   'limit',
+  'materialized',
   'not',
   'offset',
   'on',
@@ -331,6 +338,15 @@ const OUTER_CLAUSE_ENDERS = new Set([
   'intersect',
   'except',
 ]);
+
+/** One identity field and the relation column that proves it. */
+interface IdentityTerm {
+  readonly field: string;
+  readonly qualifier: string;
+  readonly column: string;
+  /** The physical table or CTE name, for diagnostics. */
+  readonly relation: string;
+}
 
 function typeText(type: SyqlValueType | IrColumnType): string {
   return typeof type === 'string'
@@ -450,9 +466,9 @@ class Validator {
       location,
     );
     this.#validateDeterminism(activeSql, logical.declaration.statement.span);
-    let refs: TableRef[];
+    let relations: SqlRelations;
     try {
-      refs = scanTableRefs(activeSql, this.#ir);
+      relations = scanRelations(activeSql, this.#ir);
     } catch (error) {
       // Preserve SQLite's source-spanned diagnostics for invalid relations.
       this.#validateSqlite(activeSql, logical, []);
@@ -462,6 +478,7 @@ class Validator {
         error instanceof Error ? error.message : String(error),
       );
     }
+    const refs = relations.tables;
     this.#validatePortableProfile(
       activeSql,
       logical.declaration.statement.span,
@@ -556,21 +573,25 @@ class Validator {
       }
     }
 
-    const reactive = this.#inferReactive(logical, markerSql, refs, bindSymbols);
-    const identity = this.#proveIdentity(
+    const reactive = this.#inferReactive(
+      logical,
+      markerSql,
+      relations,
+      bindSymbols,
+    );
+    const identityTerms = this.#proveIdentity(
       logical.declaration,
       activeSql,
-      refs,
+      relations,
       analysis,
     );
+    const identity = identityTerms?.map((term) => term.field);
     this.#validateStableOrder(
       logical.declaration,
       activeSql,
       activeStructure,
       sort,
-      identity,
-      analysis,
-      refs,
+      identityTerms,
     );
     const reactiveWithIdentity: QueryReactiveMetadata = {
       ...reactive,
@@ -1245,9 +1266,15 @@ class Validator {
   #inferReactive(
     logical: SyqlLogicalQuery,
     markerSql: string,
-    refs: readonly TableRef[],
+    relations: SqlRelations,
     symbols: ReadonlyMap<string, BindSymbol>,
   ): QueryReactiveMetadata {
+    // Each instance is proven only by predicates of its own SELECT scope: the
+    // outer statement or a top-level CTE body. Positions are classified in
+    // the marker rendering; instances in the active rendering, whose CTE
+    // bodies are identical because `when` is confined to the outer clauses.
+    const refs = relations.tables;
+    const refScope = (ref: TableRef): string => relations.scopeAt(ref.start);
     type InferredScope = {
       readonly binding: QueryScopeBinding;
       readonly operator: 'equal' | 'in';
@@ -1261,11 +1288,26 @@ class Validator {
       cleaned,
       logical.declaration.statement.span.file,
     );
+    const markerScopes = scanRelations(markerSql, this.#ir);
     const escapeRegex = (value: string): string =>
       value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const requiredAt = (index: number): boolean => {
+      const scope = markerScopes.scopeAt(index);
+      if (scope === 'nested') return false;
+      const cte = markerScopes.cteScopes.find(
+        (candidate) => `cte:${candidate.name}` === scope,
+      );
+      const scopeItems =
+        cte === undefined
+          ? structure.outer
+          : structure.tokens.filter(
+              (item) =>
+                item.depth === 1 &&
+                item.token.span.start.offset >= cte.start &&
+                item.token.span.end.offset <= cte.end,
+            );
       let whereStart: number | undefined;
-      for (const item of structure.outer) {
+      for (const item of scopeItems) {
         if (item.token.span.start.offset >= index) break;
         const lower = tokenLower(item.token);
         if (lower === 'where') whereStart = item.token.span.end.offset;
@@ -1274,11 +1316,13 @@ class Validator {
       if (whereStart === undefined) return false;
 
       const clauseEnd =
-        structure.outer.find(
+        scopeItems.find(
           (item) =>
             item.token.span.start.offset > index &&
             OUTER_CLAUSE_ENDERS.has(tokenLower(item.token) ?? ''),
-        )?.token.span.start.offset ?? cleaned.length;
+        )?.token.span.start.offset ??
+        cte?.end ??
+        cleaned.length;
       const matchStack: number[] = [];
       for (let cursor = whereStart; cursor < index; cursor += 1) {
         if (cleaned[cursor] === '(') matchStack.push(cursor);
@@ -1380,10 +1424,12 @@ class Validator {
       };
     };
     const refByAlias = new Map(
-      refs.map((ref) => [ref.alias.toLowerCase(), ref] as const),
+      refs.map(
+        (ref) => [`${refScope(ref)}\0${ref.alias.toLowerCase()}`, ref] as const,
+      ),
     );
-    const scopeNode = (alias: string, column: string): string =>
-      `${alias.toLowerCase()}\0${column.toLowerCase()}`;
+    const scopeNode = (scope: string, alias: string, column: string): string =>
+      `${scope}\0${alias.toLowerCase()}\0${column.toLowerCase()}`;
     const parents = new Map<string, string>();
     const find = (node: string): string => {
       const parent = parents.get(node);
@@ -1437,8 +1483,12 @@ class Validator {
       }
       return seen;
     };
-    const scopeColumn = (alias: string, column: string): boolean => {
-      const ref = refByAlias.get(alias.toLowerCase());
+    const scopeColumn = (
+      scope: string,
+      alias: string,
+      column: string,
+    ): boolean => {
+      const ref = refByAlias.get(`${scope}\0${alias.toLowerCase()}`);
       const table = this.#ir.tables.find((item) => item.name === ref?.table);
       return (
         table?.scopes.some(
@@ -1459,15 +1509,16 @@ class Validator {
       const leftColumn = match[2] as string;
       const rightAlias = match[3] as string;
       const rightColumn = match[4] as string;
+      const index = match.index ?? 0;
+      const scope = markerScopes.scopeAt(index);
       if (
-        !scopeColumn(leftAlias, leftColumn) ||
-        !scopeColumn(rightAlias, rightColumn)
+        !scopeColumn(scope, leftAlias, leftColumn) ||
+        !scopeColumn(scope, rightAlias, rightColumn)
       ) {
         continue;
       }
-      const index = match.index ?? 0;
-      const leftNode = scopeNode(leftAlias, leftColumn);
-      const rightNode = scopeNode(rightAlias, rightColumn);
+      const leftNode = scopeNode(scope, leftAlias, leftColumn);
+      const rightNode = scopeNode(scope, rightAlias, rightColumn);
       if (requiredAt(index)) {
         union(leftNode, rightNode);
         continue;
@@ -1514,6 +1565,7 @@ class Validator {
         const alias = escapeRegex(ref.alias);
         const column = escapeRegex(scope.column);
         const unqualifiedMatches = refs.filter((candidate) => {
+          if (refScope(candidate) !== refScope(ref)) return false;
           const other = this.#ir.tables.find(
             (item) => item.name === candidate.table,
           );
@@ -1528,8 +1580,10 @@ class Validator {
           `${subject}\\s*(?:=|==|\\bIS\\b)\\s*:([A-Za-z_][A-Za-z0-9_]*)\\b|:([A-Za-z_][A-Za-z0-9_]*)\\b\\s*(?:=|==)\\s*${subject}`,
           'gi',
         );
+        const inScope = (index: number): boolean =>
+          markerScopes.scopeAt(index) === refScope(ref) && requiredAt(index);
         for (const match of cleaned.matchAll(equality)) {
-          if (!requiredAt(match.index)) continue;
+          if (!inScope(match.index)) continue;
           const name = match[1] ?? match[2];
           if (name !== undefined && required.has(name)) {
             found.push({ name, operator: 'equal' });
@@ -1537,7 +1591,7 @@ class Validator {
         }
         const inList = new RegExp(`${subject}\\s+IN\\s*\\(([^)]*)\\)`, 'gi');
         for (const match of cleaned.matchAll(inList)) {
-          if (!requiredAt(match.index)) continue;
+          if (!inScope(match.index)) continue;
           const body = match[1] ?? '';
           const bodyStart = match.index + match[0].length - body.length - 1;
           const bodyTokens = significant(
@@ -1576,7 +1630,10 @@ class Validator {
               : 'equal',
           };
           inferred.push(evidence);
-          directScopeEvidence.set(scopeNode(ref.alias, scope.column), evidence);
+          directScopeEvidence.set(
+            scopeNode(refScope(ref), ref.alias, scope.column),
+            evidence,
+          );
         }
       }
       candidates.push({ ref, scopes: inferred });
@@ -1594,7 +1651,7 @@ class Validator {
         const direct = directByVariable.get(scope.variable);
         if (direct !== undefined) return [direct];
         const reachable = reachableProofNodes(
-          scopeNode(candidate.ref.alias, scope.column),
+          scopeNode(refScope(candidate.ref), candidate.ref.alias, scope.column),
         );
         const inherited = [...directScopeEvidence.entries()]
           .filter(([node]) => reachable.has(node))
@@ -1887,23 +1944,18 @@ class Validator {
       .trimStart()}`.trim();
   }
 
+  /**
+   * Proves the result identity per SELECT scope. Each physical relation of a
+   * scope contributes its primary key and each CTE relation the identity of
+   * its body, except that a physical relation joined by a required inner
+   * `ON rel.pk = cte.key` equality to a CTE is determined by that CTE row.
+   */
   #proveIdentity(
     query: SyqlQueryDeclaration,
     sql: string,
-    refs: readonly TableRef[],
+    relations: SqlRelations,
     analysis: AnalyzedQuery,
-  ): readonly string[] | undefined {
-    const cleaned = stripCommentsAndStrings(sql);
-    const nonSimple =
-      /\b(?:DISTINCT|GROUP\s+BY|UNION|INTERSECT|EXCEPT|LEFT\s+JOIN|RIGHT\s+JOIN|FULL\s+JOIN)\b/i.test(
-        cleaned,
-      ) ||
-      /\b(?:count|sum|total|avg|min|max|group_concat)\s*\(/i.test(cleaned) ||
-      (cleaned.match(/\bSELECT\b/gi)?.length ?? 0) !== 1 ||
-      new Set(refs.map((ref) => `${ref.table}\0${ref.alias}`)).size !==
-        refs.length ||
-      new Set(refs.map((ref) => ref.table)).size !== refs.length;
-
+  ): readonly IdentityTerm[] | undefined {
     const resultNames = new Set<string>();
     for (const column of analysis.columns) {
       if (!IDENT_RE.test(column.name)) {
@@ -1923,28 +1975,212 @@ class Validator {
       resultNames.add(column.name);
     }
 
-    if (nonSimple || refs.length === 0) return undefined;
-    const inferred: string[] = [];
-    for (const ref of refs) {
-      const table = this.#ir.tables.find((item) => item.name === ref.table);
-      const primaryKey =
-        table?.primaryKey ??
-        (this.#ir.tables.some((item) =>
-          item.ftsIndexes.some((index) => index.name === ref.table),
-        )
-          ? '_syncular_source_id'
-          : undefined);
-      const column = analysis.columns.find(
-        (candidate) =>
-          primaryKey !== undefined &&
-          candidate.origin?.table === ref.table &&
-          candidate.origin.column === primaryKey &&
-          !candidate.nullable,
+    const cleaned = stripCommentsAndStrings(sql);
+    const simple = (text: string): boolean =>
+      !/\b(?:DISTINCT|GROUP\s+BY|UNION|INTERSECT|EXCEPT|LEFT\s+JOIN|RIGHT\s+JOIN|FULL\s+JOIN)\b/i.test(
+        text,
+      ) &&
+      !/\b(?:count|sum|total|avg|min|max|group_concat)\s*\(/i.test(text) &&
+      (text.match(/\bSELECT\b/gi)?.length ?? 0) === 1;
+    const refs = relations.tables;
+    if (relations.cteScopes.length === 0) {
+      if (
+        !simple(cleaned) ||
+        refs.length === 0 ||
+        new Set(refs.map((ref) => ref.table)).size !== refs.length
+      ) {
+        return undefined;
+      }
+      const inferred: IdentityTerm[] = [];
+      for (const ref of refs) {
+        const primaryKey = this.#primaryKey(ref.table);
+        const column = analysis.columns.find(
+          (candidate) =>
+            primaryKey !== undefined &&
+            candidate.origin?.table === ref.table &&
+            candidate.origin.column === primaryKey &&
+            !candidate.nullable,
+        );
+        if (column === undefined || primaryKey === undefined) return undefined;
+        inferred.push({
+          field: column.langName,
+          qualifier: ref.alias,
+          column: primaryKey,
+          relation: ref.table,
+        });
+      }
+      return inferred;
+    }
+
+    // A statement with CTEs: every SELECT is a scope, and each scope proves
+    // its keys syntactically from its own projection.
+    const lastCte = relations.cteScopes.at(-1) as CteScope;
+    if (
+      relations.recursive ||
+      (cleaned.match(/\bSELECT\b/gi)?.length ?? 0) !==
+        relations.cteScopes.length + 1
+    ) {
+      return undefined;
+    }
+    const cteKeys = new Map<string, readonly string[]>();
+    const scopeKeys = (
+      scope: string,
+      text: string,
+    ):
+      | { readonly index: number; readonly term: Omit<IdentityTerm, 'field'> }[]
+      | undefined => {
+      if (!simple(text)) return undefined;
+      const tables = refs.filter(
+        (ref) => relations.scopeAt(ref.start) === scope,
       );
-      if (column === undefined) return undefined;
-      inferred.push(column.langName);
+      const ctes = relations.cteRefs.filter(
+        (ref) => relations.scopeAt(ref.start) === scope,
+      );
+      const aliases = [...tables, ...ctes].map((ref) =>
+        ref.alias.toLowerCase(),
+      );
+      if (
+        tables.length + ctes.length === 0 ||
+        new Set(tables.map((ref) => ref.table)).size !== tables.length ||
+        new Set(aliases).size !== aliases.length
+      ) {
+        return undefined;
+      }
+      const items = splitSelectList(text);
+      if (items === null) return undefined;
+      const projected = (qualifier: string, column: string): number =>
+        items.findIndex((item) => {
+          const plain = PLAIN_REF_RE.exec(item.expr);
+          return (
+            plain !== null &&
+            plain[2]?.toLowerCase() === column.toLowerCase() &&
+            (plain[1] === undefined
+              ? aliases.length === 1
+              : plain[1].toLowerCase() === qualifier.toLowerCase())
+          );
+        });
+      // Required inner-join equalities: depth-0 AND conjuncts of ON clauses.
+      const conjuncts: string[] = [];
+      const tokens = significant(lexSyqlSqlSource('query SQL', text));
+      let depth = 0;
+      let on: string[][] | undefined;
+      const flush = (): void => {
+        if (on === undefined) return;
+        const parts = on.map((part) => part.join('').toLowerCase());
+        if (
+          !parts.some((part) =>
+            /\b(?:or|not|select|case|between|collate)\b/.test(part),
+          )
+        ) {
+          conjuncts.push(...parts.map((part) => part.replace(/\s+/g, '')));
+        }
+        on = undefined;
+      };
+      for (const token of tokens) {
+        if (token.text === ')') depth -= 1;
+        const lower = tokenLower(token);
+        if (
+          depth === 0 &&
+          token.kind === 'identifier' &&
+          [
+            'on',
+            'join',
+            'where',
+            'group',
+            'order',
+            'limit',
+            'window',
+            'inner',
+            'cross',
+          ].includes(lower ?? '')
+        ) {
+          flush();
+          if (lower === 'on') on = [[]];
+        } else if (on !== undefined) {
+          if (depth === 0 && lower === 'and') on.push([]);
+          else
+            on.at(-1)?.push(
+              token.kind === 'identifier' ? `${token.text} ` : token.text,
+            );
+        }
+        if (token.text === '(') depth += 1;
+      }
+      flush();
+      const keys: { index: number; term: Omit<IdentityTerm, 'field'> }[] = [];
+      for (const ref of tables) {
+        const primaryKey = this.#primaryKey(ref.table);
+        if (primaryKey === undefined) return undefined;
+        const left = `${ref.alias}.${primaryKey}`.toLowerCase();
+        const determined = ctes.some((cte) =>
+          (cteKeys.get(cte.name) ?? []).some((key) => {
+            const right = `${cte.alias}.${key}`.toLowerCase();
+            return (
+              conjuncts.includes(`${left}=${right}`) ||
+              conjuncts.includes(`${left}==${right}`) ||
+              conjuncts.includes(`${right}=${left}`) ||
+              conjuncts.includes(`${right}==${left}`)
+            );
+          }),
+        );
+        if (determined) continue;
+        const index = projected(ref.alias, primaryKey);
+        if (index < 0) return undefined;
+        keys.push({
+          index,
+          term: {
+            qualifier: ref.alias,
+            column: primaryKey,
+            relation: ref.table,
+          },
+        });
+      }
+      for (const cte of ctes) {
+        const bodyKeys = cteKeys.get(cte.name);
+        if (bodyKeys === undefined) return undefined;
+        for (const key of bodyKeys) {
+          const index = projected(cte.alias, key);
+          if (index < 0) return undefined;
+          keys.push({
+            index,
+            term: { qualifier: cte.alias, column: key, relation: cte.name },
+          });
+        }
+      }
+      return keys;
+    };
+    for (const cte of relations.cteScopes) {
+      if (cte.renamed) continue;
+      const text = cleaned.slice(cte.start, cte.end);
+      const keys = scopeKeys(`cte:${cte.name}`, text);
+      const items = splitSelectList(text);
+      if (keys === undefined || items === null) continue;
+      cteKeys.set(
+        cte.name,
+        keys.map(({ index }) => {
+          const item = items[index] as SelectItem;
+          return item.alias ?? (PLAIN_REF_RE.exec(item.expr)?.[2] as string);
+        }),
+      );
+    }
+    const main = scopeKeys('main', cleaned.slice(lastCte.end + 1));
+    if (main === undefined || main.length === 0) return undefined;
+    const inferred: IdentityTerm[] = [];
+    for (const { index, term } of main) {
+      const column = analysis.columns[index];
+      if (column === undefined || column.nullable) return undefined;
+      inferred.push({ field: column.langName, ...term });
     }
     return inferred;
+  }
+
+  #primaryKey(tableName: string): string | undefined {
+    const table = this.#ir.tables.find((item) => item.name === tableName);
+    if (table !== undefined) return table.primaryKey;
+    return this.#ir.tables.some((item) =>
+      item.ftsIndexes.some((index) => index.name === tableName),
+    )
+      ? '_syncular_source_id'
+      : undefined;
   }
 
   #validateStableOrder(
@@ -1952,9 +2188,7 @@ class Validator {
     sql: string,
     structure: SqlStructure,
     sort: SyqlValidatedSort | undefined,
-    identity: readonly string[] | undefined,
-    analysis: AnalyzedQuery,
-    refs: readonly TableRef[],
+    identity: readonly IdentityTerm[] | undefined,
   ): void {
     const bounded =
       query.limit !== undefined ||
@@ -2003,36 +2237,25 @@ class Validator {
         );
       }
       const suffix = terms.slice(terms.length - identity.length);
-      identity.forEach((field, index) => {
-        const result = analysis.columns.find(
-          (column) => column.langName === field,
-        );
-        const origin = result?.origin;
+      identity.forEach((term, index) => {
         const match =
           /^(?:([A-Za-z_][A-Za-z0-9_]*)\.)?([A-Za-z_][A-Za-z0-9_]*)\s+(?:asc|desc)$/i.exec(
             suffix[index] ?? '',
           );
-        if (
-          origin === undefined ||
-          match === null ||
-          match[2] !== origin.column
-        ) {
+        if (match === null || match[2] !== term.column) {
           this.#fail(
             'SYQL6006_INVALID_SORT',
             order.span,
-            `order ${order.name} must end with plain ${origin?.column ?? field} ASC/DESC identity term`,
+            `order ${order.name} must end with plain ${term.column} ASC/DESC identity term`,
           );
         }
         const qualifier = match[1];
-        if (qualifier !== undefined) {
-          const ref = refs.find((candidate) => candidate.alias === qualifier);
-          if (ref?.table !== origin.table) {
-            this.#fail(
-              'SYQL6006_INVALID_SORT',
-              order.span,
-              `identity order qualifier ${qualifier} does not resolve to ${origin.table}`,
-            );
-          }
+        if (qualifier !== undefined && qualifier !== term.qualifier) {
+          this.#fail(
+            'SYQL6006_INVALID_SORT',
+            order.span,
+            `identity order qualifier ${qualifier} does not resolve to ${term.relation}`,
+          );
         }
       });
     }

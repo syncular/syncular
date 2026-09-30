@@ -7,7 +7,10 @@ import {
   type QueryReadSpec,
   type QuerySnapshot,
   ReactiveClientStore,
+  ProgressEmitter,
   type ReactiveQueryClient,
+  type SyncProgressListener,
+  SyncRoundFailedError,
   type SyncStatusSnapshot,
   type WindowBase,
   type WindowState,
@@ -67,6 +70,7 @@ async function drainMicrotasks(turns = 12): Promise<void> {
 
 class FakeReactiveClient implements ReactiveQueryClient {
   readonly listeners = new Set<ClientChangeListener>();
+  readonly progress = new ProgressEmitter();
   readonly reads: QueryReadSpec[] = [];
   readonly setWindowCalls: Array<{
     readonly base: WindowBase;
@@ -86,6 +90,10 @@ class FakeReactiveClient implements ReactiveQueryClient {
   onChange(listener: ClientChangeListener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  onProgress(listener: SyncProgressListener): () => void {
+    return this.progress.on(listener);
   }
 
   emit(change: ClientChangeBatch): void {
@@ -310,6 +318,146 @@ describe('revision race gates', () => {
     expect(entry.getSnapshot().rows).toEqual([]);
     expect(phases).not.toContain('partial');
     off();
+    store.dispose();
+  });
+});
+
+describe('failed sync rounds', () => {
+  const PENDING = {
+    complete: false,
+    pending: [{ baseKey: 'tasks', unit: 'p1' }],
+    missing: [],
+  } as const;
+  const windowBatch = (revision: bigint) =>
+    batch(revision, {
+      windows: [
+        {
+          baseKey: 'tasks\0project_id\0{}',
+          table: 'tasks',
+          units: new Set(['p1']),
+        },
+      ],
+    });
+  const running = (attempt: number) => ({
+    attempt,
+    state: 'running' as const,
+    phase: 'request' as const,
+    bytesReceived: 0,
+    rowsProcessed: 0,
+  });
+
+  test('pending coverage turns error on failure and loading when a retry starts', async () => {
+    const client = new FakeReactiveClient();
+    // The initial read and the read after claim registration.
+    client.snapshots.push(
+      { revision: 1n, rows: [], coverage: PENDING },
+      { revision: 1n, rows: [], coverage: PENDING },
+    );
+    const store = new ReactiveClientStore(client);
+    const entry = store.query<Row>(
+      querySpec({ coverage: [{ base: BASE, units: ['p1'] }] }),
+    );
+    const phases: string[] = [];
+    const off = entry.subscribe(() => phases.push(entry.getSnapshot().phase));
+    await drainMicrotasks();
+    expect(entry.getSnapshot().phase).toBe('loading');
+
+    client.progress.emit(running(1));
+    client.progress.update({
+      state: 'failed',
+      errorCode: 'sync.transport_failed',
+    });
+    const failed = entry.getSnapshot();
+    expect(failed.phase).toBe('error');
+    expect(failed.error).toBeInstanceOf(SyncRoundFailedError);
+    expect(failed.error).toMatchObject({
+      code: 'sync.transport_failed',
+      attempt: 1,
+    });
+
+    // A local change re-reads but cannot clear the failure before a retry.
+    client.snapshots.push({ revision: 2n, rows: [], coverage: PENDING });
+    client.emit(
+      batch(2n, {
+        tables: [{ table: 'tasks', scopeKeys: new Set(['project:p1']) }],
+      }),
+    );
+    await drainMicrotasks();
+    expect(client.reads).toHaveLength(3);
+    expect(entry.getSnapshot().error).toBe(failed.error);
+
+    client.snapshots.push({ revision: 2n, rows: [], coverage: PENDING });
+    client.progress.emit(running(2));
+    expect(entry.getSnapshot()).toMatchObject({
+      phase: 'loading',
+      error: undefined,
+    });
+    await drainMicrotasks();
+    expect(client.reads).toHaveLength(4);
+    expect(entry.getSnapshot().phase).toBe('loading');
+
+    client.snapshots.push({
+      revision: 3n,
+      rows: [{ id: 't1', title: 'first' }],
+      coverage: COMPLETE,
+    });
+    client.progress.update({ state: 'complete' });
+    client.emit(windowBatch(3n));
+    await drainMicrotasks();
+    expect(entry.getSnapshot()).toMatchObject({
+      phase: 'ready',
+      error: undefined,
+      rows: [{ id: 't1', title: 'first' }],
+    });
+    expect(phases).toEqual(['error', 'loading', 'ready']);
+    off();
+    store.dispose();
+  });
+
+  test('partial rows survive a failure; complete queries ignore it', async () => {
+    const client = new FakeReactiveClient();
+    client.progress.emit(running(4));
+    client.progress.update({
+      state: 'failed',
+      errorCode: 'sync.scope_revoked',
+    });
+    const cached = {
+      revision: 1n,
+      rows: [{ id: 't1', title: 'cached' }],
+      coverage: PENDING,
+    };
+    client.snapshots.push(cached, cached);
+    const store = new ReactiveClientStore(client);
+    const partial = store.query<Row>(
+      querySpec({ coverage: [{ base: BASE, units: ['p1'] }] }),
+    );
+    const offPartial = partial.subscribe(() => {});
+    await drainMicrotasks();
+    client.snapshots.push({ revision: 1n, rows: [], coverage: COMPLETE });
+    const complete = store.query<Row>(querySpec({ id: 'queries:local:hash' }));
+    const offComplete = complete.subscribe(() => {});
+    await drainMicrotasks();
+
+    // Mounted after the failure: the first read already reports it.
+    expect(partial.getSnapshot()).toMatchObject({
+      phase: 'error',
+      rows: [{ id: 't1', title: 'cached' }],
+      revision: 1n,
+      error: { code: 'sync.scope_revoked', attempt: 4 },
+    });
+    expect(complete.getSnapshot().phase).toBe('ready');
+
+    client.snapshots.push(cached);
+    client.progress.emit(running(5));
+    expect(partial.getSnapshot()).toMatchObject({
+      phase: 'partial',
+      error: undefined,
+      rows: [{ id: 't1', title: 'cached' }],
+    });
+    expect(complete.getSnapshot().phase).toBe('ready');
+    await drainMicrotasks();
+    offPartial();
+    offComplete();
     store.dispose();
   });
 });

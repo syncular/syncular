@@ -148,9 +148,11 @@ sync query listTodos(listId) {
 Coverage is accepted only when every declared schema scope of every table
 instance is proven from required, non-null equality/`IN` predicates. A
 required scope bind may propagate through a qualified, mandatory scope-column
-equality in `WHERE` or a simple `JOIN ... ON` clause. Predicates under `OR`,
-negation, `when`, or nested queries never prove coverage, and an `IN` proof may
-contain only required binds. Ambiguous joins, optional boolean branches, and
+equality in `WHERE` or a simple `JOIN ... ON` clause. The body of a top-level
+CTE is a scope of its own: its `WHERE` proves the instances it reads, and the
+outer `WHERE` proves only the outer instances. Predicates under `OR`,
+negation, `when`, or other nested queries never prove coverage, and an `IN`
+proof may contain only required binds. Ambiguous joins, optional boolean branches, and
 nested SQL fail closed instead of claiming partial readiness.
 
 A self-join claims coverage when every instance of the table binds the same
@@ -172,9 +174,9 @@ Both `catalogue_codes` instances select the same window base and unit, so the
 generated descriptor holds one coverage entry and one dependency for that
 table. If one instance is unconstrained, or the instances differ in a
 parameter, operator, unit dimension, or fixed scope, generation fails with
-`SYQL6005_INVALID_SYNC_QUERY`; split the query instead. A self-join has no
-inferred row identity, so the result reconciles unkeyed and cannot use a
-bounded `limit`.
+`SYQL6005_INVALID_SYNC_QUERY`; split the query instead. A self-join within
+one SELECT has no inferred row identity, so the result reconciles unkeyed and
+cannot use a bounded `limit`.
 
 For a table with multiple scopes, choose the unit dimension:
 
@@ -234,6 +236,56 @@ every generated runtime.
 The compiler infers result identity from schema primary keys, SQL lineage, and
 projection aliases. When proof is not possible, the generated query uses
 unkeyed reconciliation.
+
+## Ranked top-N
+
+A search that ranks every match and returns a page of wide rows ranks narrow
+rows in a materialized CTE and reads the wide row after the limit:
+
+```syql
+sync query searchCodes(setId, searchQuery, codeQuery: string) by c.set_id {
+  with ranked as materialized (
+    select codes_fts._syncular_source_id as fts_source_id, hit.id as code_id,
+      case when hit.code = :codeQuery collate nocase then 0 else 1 end
+        as code_rank,
+      bm25(codes_fts) as score
+    from codes_fts
+    join codes hit on hit.id = codes_fts._syncular_source_id
+    where codes_fts match :searchQuery and hit.set_id = :setId
+    order by code_rank, score, fts_source_id, code_id
+  )
+  select ranked.fts_source_id, ranked.code_id as id, c.code, c.title,
+    c.description
+  from ranked
+  cross join codes c on c.id = ranked.code_id
+  where c.set_id = :setId
+  order by ranked.code_rank, ranked.score, ranked.fts_source_id asc,
+    ranked.code_id asc
+  limit 80;
+}
+```
+
+The rules that make this compile:
+
+- The CTE body projects the key of every relation it reads, here
+  `fts_source_id` and `code_id`. Those columns are the CTE's identity.
+- The outer query projects the CTE identity columns and joins the wide table
+  with `ON c.id = ranked.code_id`. That equality determines `c`, so the result
+  identity is `(ftsSourceId, id)` and the wide table adds no key.
+- The outer `ORDER BY` repeats the CTE order and ends with the CTE identity
+  terms. The CTE's `ORDER BY` alone does not order the result.
+- Each instance of a synced table proves its scope in its own `WHERE`. Here
+  both `codes` instances bind `set_id = :setId`, so the query has one coverage
+  entry.
+- The CTE carries no `LIMIT`; a nested `LIMIT` fails with
+  `SYQL6003_NONDETERMINISTIC_SQL`.
+
+`CROSS JOIN` keeps the CTE scan as SQLite's outer loop. On SQLite 3.51 and
+later, which the browser build and the Rust core bundle, the plan is
+`MATERIALIZE ranked`, `SCAN ranked`, and a primary-key `SEARCH` of `c`: SQLite
+sorts only the narrow CTE rows and reads a wide row only for a returned row.
+The [SYQL specification](https://github.com/syncular/syncular/blob/main/docs/SYQL.md#143-ranked-top-n)
+states the identity rules.
 
 Unannotated input types are inferred from all SQL and predicate uses. Add a
 type when SQL provides no evidence. Conflicting evidence is a compile error.

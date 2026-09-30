@@ -64,7 +64,7 @@
 import { TypegenError } from './errors';
 import { isSyqlTrivia, lexSyqlSqlSource, type SyqlToken } from './syql-lexer';
 import type { IrColumn, IrColumnType, IrDocument, IrTable } from './ir';
-import { lowerProjection, mainVerbAfterWith } from './lower';
+import { findProjection, lowerProjection, mainVerbAfterWith } from './lower';
 import { buildNamingMap, type NamingMode, type NamingTarget } from './naming';
 
 /** The SQL decltype keyword → §2.4 type map (mirrors sql.ts TYPE_MAP so a
@@ -747,7 +747,42 @@ function sqlIdentifier(token: SyqlToken | undefined): string | undefined {
   return quote === '[' ? value : value.split(`${quote}${quote}`).join(quote);
 }
 
+/** A common table expression read in a FROM/JOIN position. */
+export interface CteRef {
+  /** Lowercased CTE name. */
+  readonly name: string;
+  /** Alias (or the CTE name when un-aliased). */
+  readonly alias: string;
+  readonly start: number;
+  readonly nullable: boolean;
+}
+
+/** A CTE of the top-level `WITH` whose body is one SELECT scope. */
+export interface CteScope {
+  /** Lowercased CTE name. */
+  readonly name: string;
+  /** Offsets of the body text between the CTE parentheses. */
+  readonly start: number;
+  readonly end: number;
+  /** True for `name(a, b) AS (...)`, which renames the body columns. */
+  readonly renamed: boolean;
+}
+
+export interface SqlRelations {
+  readonly tables: TableRef[];
+  readonly cteRefs: CteRef[];
+  readonly cteScopes: CteScope[];
+  readonly recursive: boolean;
+  /** `main` for the outer statement, `cte:<name>` directly inside a
+   * top-level CTE body, `nested` inside any other subquery. */
+  readonly scopeAt: (offset: number) => string;
+}
+
 export function scanTableRefs(sql: string, ir: IrDocument): TableRef[] {
+  return scanRelations(sql, ir).tables;
+}
+
+export function scanRelations(sql: string, ir: IrDocument): SqlRelations {
   const tokens = lexSyqlSqlSource('query SQL', sql).filter(
     (token) => !isSyqlTrivia(token) && token.kind !== 'eof',
   );
@@ -820,31 +855,51 @@ export function scanTableRefs(sql: string, ir: IrDocument): TableRef[] {
     }
   }
   const ctes: { name: string; start: number; end: number }[] = [];
+  const cteScopes: (CteScope & { open: number })[] = [];
+  let recursive = false;
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
     if (token?.kind !== 'identifier' || token.text.toLowerCase() !== 'with')
       continue;
     const scopeEnd = closes.get(parents[index] ?? -1) ?? tokens.length;
     let cursor = index + 1;
-    if (tokens[cursor]?.text.toLowerCase() === 'recursive') cursor += 1;
+    if (tokens[cursor]?.text.toLowerCase() === 'recursive') {
+      recursive = true;
+      cursor += 1;
+    }
     for (;;) {
       const name = sqlIdentifier(tokens[cursor]);
       if (name === undefined) break;
       cursor += 1;
-      if (tokens[cursor]?.text === '(')
-        cursor = (closes.get(cursor) ?? scopeEnd) + 1;
+      const renamed = tokens[cursor]?.text === '(';
+      if (renamed) cursor = (closes.get(cursor) ?? scopeEnd) + 1;
       if (tokens[cursor]?.text.toLowerCase() !== 'as') break;
       cursor += 1;
       if (tokens[cursor]?.text.toLowerCase() === 'not') cursor += 1;
       if (tokens[cursor]?.text.toLowerCase() === 'materialized') cursor += 1;
       if (tokens[cursor]?.text !== '(') break;
       ctes.push({ name: name.toLowerCase(), start: index, end: scopeEnd });
+      const close = tokens[closes.get(cursor) ?? -1];
+      if (
+        index === 0 &&
+        close !== undefined &&
+        tokens[cursor + 1]?.text.toLowerCase() === 'select'
+      ) {
+        cteScopes.push({
+          name: name.toLowerCase(),
+          open: cursor,
+          start: (tokens[cursor] as SyqlToken).span.end.offset,
+          end: close.span.start.offset,
+          renamed,
+        });
+      }
       cursor = (closes.get(cursor) ?? scopeEnd) + 1;
       if (tokens[cursor]?.text !== ',') break;
       cursor += 1;
     }
   }
   const refs: TableRef[] = [];
+  const cteRefs: CteRef[] = [];
   const relationStartByDepth = new Map<number, number>();
   const nullableGroups: { start: number; end: number }[] = [];
   for (let index = 0; index < tokens.length; index += 1) {
@@ -872,6 +927,10 @@ export function scanTableRefs(sql: string, ir: IrDocument): TableRef[] {
         const ref = refs[prior];
         if (ref !== undefined) refs[prior] = { ...ref, nullable: true };
       }
+      // Conservative: any CTE read before a RIGHT/FULL join is optional.
+      cteRefs.forEach((ref, prior) => {
+        cteRefs[prior] = { ...ref, nullable: true };
+      });
     }
     if (
       (outerKind === 'left' || outerKind === 'full') &&
@@ -899,24 +958,6 @@ export function scanTableRefs(sql: string, ir: IrDocument): TableRef[] {
         'schema-qualified relations are unsupported; use application table names',
       );
     }
-    if (
-      ctes.some(
-        (cte) =>
-          cte.name === rawTable.toLowerCase() &&
-          cursor > cte.start &&
-          cursor < cte.end,
-      )
-    )
-      continue;
-    const table = known.get(rawTable.toLowerCase());
-    if (table === undefined)
-      throw new TypegenError(
-        'query SQL',
-        `unresolved table relation ${JSON.stringify(rawTable)}`,
-      );
-    const tableDepth = depths[cursor] ?? operatorDepth;
-    if (operator === 'from' || !relationStartByDepth.has(tableDepth))
-      relationStartByDepth.set(tableDepth, refs.length);
     let aliasToken = tokens[cursor + 1];
     if (
       aliasToken?.kind === 'identifier' &&
@@ -929,21 +970,76 @@ export function scanTableRefs(sql: string, ir: IrDocument): TableRef[] {
         !RESERVED_ALIAS.has(aliasToken.text.toLowerCase()))
         ? sqlIdentifier(aliasToken)
         : undefined;
+    const nullable =
+      outerKind === 'left' ||
+      outerKind === 'full' ||
+      nullableGroups.some(
+        (group) => cursor > group.start && cursor < group.end,
+      );
+    if (
+      ctes.some(
+        (cte) =>
+          cte.name === rawTable.toLowerCase() &&
+          cursor > cte.start &&
+          cursor < cte.end,
+      )
+    ) {
+      cteRefs.push({
+        name: rawTable.toLowerCase(),
+        alias: explicitAlias ?? rawTable,
+        start: tableToken.span.start.offset,
+        nullable,
+      });
+      continue;
+    }
+    const table = known.get(rawTable.toLowerCase());
+    if (table === undefined)
+      throw new TypegenError(
+        'query SQL',
+        `unresolved table relation ${JSON.stringify(rawTable)}`,
+      );
+    const tableDepth = depths[cursor] ?? operatorDepth;
+    if (operator === 'from' || !relationStartByDepth.has(tableDepth))
+      relationStartByDepth.set(tableDepth, refs.length);
     refs.push({
       table,
       start: tableToken.span.start.offset,
       end: tableToken.span.end.offset,
       alias: explicitAlias ?? table,
       ...(explicitAlias === undefined ? {} : { explicitAlias }),
-      nullable:
-        outerKind === 'left' ||
-        outerKind === 'full' ||
-        nullableGroups.some(
-          (group) => cursor > group.start && cursor < group.end,
-        ),
+      nullable,
     });
   }
-  return refs;
+  const selectOpens = tokens.flatMap((token, index) => {
+    const close = tokens[closes.get(index) ?? -1];
+    const next = tokens[index + 1];
+    return token.text === '(' &&
+      close !== undefined &&
+      next?.kind === 'identifier' &&
+      ['select', 'with', 'values'].includes(next.text.toLowerCase())
+      ? [
+          {
+            index,
+            start: token.span.start.offset,
+            end: close.span.start.offset,
+          },
+        ]
+      : [];
+  });
+  return {
+    tables: refs,
+    cteRefs,
+    cteScopes: cteScopes.map(({ open: _open, ...scope }) => scope),
+    recursive,
+    scopeAt(offset) {
+      const innermost = selectOpens
+        .filter((open) => open.start < offset && offset < open.end)
+        .at(-1);
+      if (innermost === undefined) return 'main';
+      const cte = cteScopes.find((scope) => scope.open === innermost.index);
+      return cte === undefined ? 'nested' : `cte:${cte.name}`;
+    },
+  };
 }
 
 // -- SELECT column → source resolution ---------------------------------------
@@ -955,53 +1051,40 @@ export function scanTableRefs(sql: string, ir: IrDocument): TableRef[] {
 // FROM/JOIN tables. When found, that IR column is the source (exact fidelity);
 // otherwise it is a computed expression (fallback fidelity).
 
-interface SelectItem {
+export interface SelectItem {
   /** The raw expression text (before any `AS alias`). */
   readonly expr: string;
   /** The explicit `AS alias`, if any. */
   readonly alias: string | undefined;
 }
 
-/** Split a SELECT list on top-level commas (parens-aware). Returns null when
- * the query isn't a plain `SELECT … FROM …` we can split (e.g. `SELECT *`). */
-function splitSelectList(sql: string): SelectItem[] | null {
-  const cleaned = stripCommentsAndStrings(sql).replace(/\s+/g, ' ').trim();
-  const m = /^SELECT\s+(?:DISTINCT\s+)?(.*?)\sFROM\s/i.exec(cleaned);
-  if (m === null || m[1] === undefined) return null;
-  const list = m[1];
-  if (list.trim() === '*' || /(^|,|\.)\s*\*/.test(list)) return null; // SELECT * / t.*
+/** Split the outermost SELECT list of `sql` into items. Returns null when the
+ * statement has no outer `SELECT … FROM` or projects `*` / `t.*`. */
+export function splitSelectList(sql: string): SelectItem[] | null {
+  const projection = findProjection(stripCommentsAndStrings(sql));
+  if (projection === null) return null;
   const items: SelectItem[] = [];
-  let depth = 0;
-  let start = 0;
-  for (let i = 0; i <= list.length; i++) {
-    const ch = list[i];
-    if (ch === '(') depth += 1;
-    else if (ch === ')') depth -= 1;
-    if ((ch === ',' && depth === 0) || i === list.length) {
-      const raw = list.slice(start, i).trim();
-      start = i + 1;
-      if (raw.length === 0) continue;
-      // `expr AS alias` or `expr alias` (trailing bare identifier). Only treat
-      // a trailing word as an alias when the expr has more than that word.
-      // Projection lowering emits the alias double-quoted, so accept both.
-      const asMatch =
-        /^(.*?)\s+AS\s+(?:"((?:[^"]|"")*)"|([A-Za-z_][A-Za-z0-9_]*))$/i.exec(
-          raw,
-        );
-      if (asMatch !== null) {
-        items.push({
-          expr: (asMatch[1] as string).trim(),
-          alias: (asMatch[2] ?? (asMatch[3] as string)).replaceAll('""', '"'),
-        });
-      } else {
-        items.push({ expr: raw, alias: undefined });
-      }
+  for (const { text } of projection.items) {
+    const raw = text.replace(/\s+/g, ' ');
+    if (raw === '*' || /\.\s*\*$/.test(raw)) return null;
+    // `expr AS alias` or `expr alias` (trailing bare identifier). Only treat
+    // a trailing word as an alias when the expr has more than that word.
+    // Projection lowering emits the alias double-quoted, so accept both.
+    const asMatch =
+      /^(.*?)\s+AS\s+(?:"((?:[^"]|"")*)"|([A-Za-z_][A-Za-z0-9_]*))$/i.exec(raw);
+    if (asMatch !== null) {
+      items.push({
+        expr: (asMatch[1] as string).trim(),
+        alias: (asMatch[2] ?? (asMatch[3] as string)).replaceAll('""', '"'),
+      });
+    } else {
+      items.push({ expr: raw, alias: undefined });
     }
   }
   return items;
 }
 
-const PLAIN_REF_RE = new RegExp(`^(?:(${IDENT})\\.)?(${IDENT})$`);
+export const PLAIN_REF_RE = new RegExp(`^(?:(${IDENT})\\.)?(${IDENT})$`);
 
 interface ResolvedSource {
   readonly table: string;
@@ -1614,11 +1697,46 @@ export function analyzeStatement(
 
   // Columns: pair bun's column names + decltypes with our source resolution
   // (against the LOWERED sql — aliased plain refs still resolve exactly).
+  // Each item resolves against the relations of its own SELECT scope; a
+  // qualified reference to a top-level CTE resolves through the CTE body.
+  const scoped = scanRelations(sql, ir);
+  const resolveInScope = (
+    item: SelectItem,
+    scope: string,
+  ): ResolvedSource | null => {
+    const direct = resolveSource(
+      item,
+      scoped.tables.filter((ref) => scoped.scopeAt(ref.start) === scope),
+      ir,
+    );
+    const plain = PLAIN_REF_RE.exec(item.expr);
+    if (direct !== null || plain?.[1] === undefined) return direct;
+    const cteRef = scoped.cteRefs.find(
+      (ref) =>
+        scoped.scopeAt(ref.start) === scope &&
+        ref.alias.toLowerCase() === plain[1]?.toLowerCase(),
+    );
+    const body = scoped.cteScopes.find((cte) => cte.name === cteRef?.name);
+    if (cteRef === undefined || body === undefined || body.renamed) return null;
+    const bodyItem = splitSelectList(sql.slice(body.start, body.end))?.find(
+      (candidate) =>
+        (
+          candidate.alias ?? PLAIN_REF_RE.exec(candidate.expr)?.[2]
+        )?.toLowerCase() === plain[2]?.toLowerCase(),
+    );
+    const source =
+      bodyItem === undefined
+        ? null
+        : resolveInScope(bodyItem, `cte:${body.name}`);
+    return source === null
+      ? null
+      : { ...source, nullableByJoin: source.nullableByJoin || cteRef.nullable };
+  };
   const items = splitSelectList(sql);
   const columns: QueryColumn[] = described.columnNames.map((colName, index) => {
     const decl = described.declaredTypes[index];
     const item = items?.[index];
-    const source = item !== undefined ? resolveSource(item, refs, ir) : null;
+    const source = item !== undefined ? resolveInScope(item, 'main') : null;
     const sqlName = sqlNames[index] ?? colName;
     const langName = langNames[index] ?? colName;
     const syncVersionNullable =

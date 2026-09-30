@@ -36,6 +36,22 @@ export class ClientSyncError extends Error {
 }
 
 /**
+ * SPEC §7.5: the latest sync attempt failed while a live query still waited
+ * for its required coverage. `code` is the attempt's static progress error
+ * code; `attempt` is the progress attempt that failed. The query returns to
+ * waiting when the next attempt starts.
+ */
+export class SyncRoundFailedError extends ClientSyncError {
+  override readonly name = 'SyncRoundFailedError';
+  readonly attempt: number;
+
+  constructor(code: string, attempt: number) {
+    super(code, 'the sync round failed before the query coverage completed');
+    this.attempt = attempt;
+  }
+}
+
+/**
  * SPEC §8.8: the `required` realtime policy refused a round because the
  * socket is not connected. `state` is the availability state that refused
  * (`connecting`, `lost`, `refused`, or `disconnected`), `reasonCode` is the

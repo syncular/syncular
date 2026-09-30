@@ -74,8 +74,12 @@ refresh }`:
 - `loading`: no complete answer and no partial rows yet;
 - `partial`: rows exist while required coverage is incomplete;
 - `ready`: the atomic snapshot is complete, including a true empty result;
-- `error`: the latest read failed. The result keeps rows and revision from the
-  last successful read.
+- `error`: the latest read failed, or the latest sync attempt failed while
+  required coverage was incomplete. The result keeps rows and revision from
+  the last successful read. A failed attempt sets `error` to a
+  `SyncRoundFailedError` whose `code` is the attempt's stable error code (for
+  example `sync.transport_failed`); the query returns to `loading` or
+  `partial` when the next attempt starts.
 
 ```tsx
 if (todos.phase === 'loading') return <Skeleton />;

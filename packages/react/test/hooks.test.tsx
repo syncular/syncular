@@ -123,6 +123,62 @@ describe('useRawSql', () => {
     view.unmount();
   });
 
+  test('a failed round surfaces as error until the retry starts', async () => {
+    const client = new FakeClient();
+    const base = { table: 'tasks', variable: 'project_id' };
+    const view = renderHook(
+      () =>
+        useRawSql('SELECT * FROM tasks', [], {
+          coverage: [{ base, units: ['p1'] }],
+        }),
+      { wrapper: wrapper(client) },
+    );
+    await flushEffects();
+    expect(view.result.current.phase).toBe('loading');
+
+    const running = (attempt: number) => ({
+      attempt,
+      state: 'running' as const,
+      phase: 'download' as const,
+      bytesReceived: 0,
+      rowsProcessed: 0,
+    });
+    await act(async () => {
+      client.progress.emit(running(1));
+      client.progress.update({
+        state: 'failed',
+        errorCode: 'sync.transport_failed',
+      });
+    });
+    expect(view.result.current).toMatchObject({
+      phase: 'error',
+      isLoading: false,
+      error: { code: 'sync.transport_failed' },
+      rows: [],
+    });
+
+    await act(async () => {
+      client.progress.emit(running(2));
+    });
+    expect(view.result.current).toMatchObject({
+      phase: 'loading',
+      isLoading: true,
+      error: undefined,
+    });
+
+    await act(async () => {
+      client.setRows('tasks', [{ id: 't1', title: 'synced' }]);
+      client.completeBootstrap(base);
+    });
+    await flushEffects();
+    expect(view.result.current).toMatchObject({
+      phase: 'ready',
+      error: undefined,
+      rows: [{ id: 't1', title: 'synced' }],
+    });
+    view.unmount();
+  });
+
   test('runs on mount and returns rows', async () => {
     const client = new FakeClient();
     client.setRows('tasks', [{ id: 't1', title: 'hello' }]);

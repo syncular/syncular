@@ -4368,6 +4368,20 @@ error code. A reactive observation whose latest read failed publishes phase
 read. It publishes `ready` again only after a read succeeds, so `ready` with
 zero rows always means an answerable empty result.
 
+**Failed transfer.** A reactive observation whose latest successful read has
+incomplete coverage waits on sync attempts (§7.6 progress). When the latest
+attempt ends `failed`, the observation publishes phase `error` with a
+`ClientSyncError` whose `code` is the attempt's `errorCode` and whose
+`attempt` is the attempt number; it keeps the rows and revision of its last
+successful read, so an incomplete result with rows moves from `partial` to
+`error`. A later read that is still incomplete keeps that error. When progress
+reports any other attempt, the observation returns to `loading` (no rows) or
+`partial` (rows) and reads again. A read with complete coverage publishes
+`ready` regardless of attempt state, and an observation that is already
+`ready` ignores attempt failures. An observation that starts after a failed
+attempt reports the failure on its first incomplete read, because progress
+delivers its latest snapshot on subscription.
+
 **Change batch.** After an observer transaction commits, the core emits exactly
 one batch carrying its revision and the domains changed by that transaction:
 

@@ -1,8 +1,43 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.26.6** (`v0.26.6`). All artifacts use Apache-2.0, except
+current release is **0.27.0** (`v0.27.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.27.0 release notes
+
+0.27.0 is a minor release for SYQL and for live-query phases in the TypeScript
+reactive store. SSP2 stays at wire version 3, the server and the Rust core do
+not change, and every package and crate ships together.
+
+- **Ranked top-N queries (SYNCULAR-SYQL-TOPN-001).** The SYQL validator read
+  `AS MATERIALIZED (` in a CTE as a call to a function `materialized()` and
+  rejected it with `SYQL6002_INVALID_SQL`. It now accepts
+  `AS [NOT] MATERIALIZED`. Typegen treats the outer statement and each
+  top-level CTE body as separate SELECT scopes for scope proofs, column lineage,
+  and row identity (SYQL §8, §13, §14.2). A CTE reference contributes the
+  identity of its body, and a table joined by a required
+  `ON t.pk = cte.key` contributes none, so a bounded query can rank narrow
+  rows in a materialized CTE and read the wide row in the outer scope with
+  exact column types. On SQLite 3.51 and later the plan sorts only the CTE
+  rows (SYQL §14.3). Nested `LIMIT` stays rejected.
+- **A failed sync attempt ends a waiting query in `error`
+  (SYNCULAR-QUERY-PHASE-STALL-001).** A live query whose required coverage was
+  incomplete stayed `loading` or `partial` after the sync round that would
+  complete it failed. It now publishes `error` with a `SyncRoundFailedError`
+  carrying the attempt's progress `errorCode` and `attempt`, keeps its rows and
+  revision, and returns to `loading` or `partial` when the next attempt starts
+  (SPEC §7.5). `useQuery` and `useRawSql` expose the same phase on the web,
+  worker, Tauri, and React Native hosts.
+
+**Upgrade notes.** `ReactiveQueryClient` requires `onProgress`; every shipped
+client already implements it, and a custom client passed to
+`ReactiveClientStore` must forward its progress events. A scope predicate now
+proves only instances of its own SELECT scope. A `sync query` whose subquery
+reused an outer alias and relied on the outer predicate for its coverage proof
+fails with `SYQL6005_INVALID_SYNC_QUERY`; add the scope predicate inside the
+subquery or split the query. Code that treated `error` as a read failure only
+should check for `SyncRoundFailedError`.
 
 ## 0.26.6 release notes
 

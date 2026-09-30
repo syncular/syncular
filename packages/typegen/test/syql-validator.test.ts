@@ -5,6 +5,7 @@ import {
   analyzeSyqlSemantics,
   buildSyqlModuleGraph,
   type IrDocument,
+  makeQueryDb,
   type QueryDb,
   SyqlFrontendError,
   synthesizeDdl,
@@ -99,29 +100,7 @@ const IR: IrDocument = {
   extensions: {},
 };
 
-function makeDb(): QueryDb {
-  const sqlite = new Database(':memory:');
-  sqlite.run(synthesizeDdl(IR));
-  return {
-    analyze(sql: string) {
-      const statement = sqlite.prepare(sql);
-      try {
-        const columnNames = statement.columnNames;
-        (statement as unknown as { all: () => unknown[] }).all();
-        const declaredTypes = (
-          statement as unknown as { declaredTypes: (string | null)[] }
-        ).declaredTypes;
-        const paramsCount = (statement as unknown as { paramsCount: number })
-          .paramsCount;
-        return { columnNames, declaredTypes, paramsCount };
-      } finally {
-        statement.finalize();
-      }
-    },
-  };
-}
-
-const db = makeDb();
+const db: QueryDb = makeQueryDb(IR).db;
 const root = resolve('/virtual/syql-validator');
 
 function validate(source: string) {
@@ -943,5 +922,190 @@ describe('SYQL schema/SQL validation', () => {
     expect(error.code).toBe('SYQL6002_INVALID_SQL');
     expect(error.detail).toBe('unknown column `missing`');
     expect(error.span.start).toMatchObject({ line: 1, column: 21 });
+  });
+});
+
+describe('ranked materialized CTE top-N', () => {
+  const ranked = (outer: string, body = RANKED_BODY) => `sync query searchTodos(
+    listId, searchQuery: string, titleQuery: string,
+  ) by t.list_id {
+    with ranked as materialized (${body})
+    ${outer}
+  }`;
+  const RANKED_BODY = `
+      select todos_fts._syncular_source_id as fts_source_id, hit.id as todo_id,
+        case when hit.title = :titleQuery collate nocase then 0 else 1 end
+          as title_rank,
+        bm25(todos_fts) as score
+      from todos_fts
+      join todos hit on hit.id = todos_fts._syncular_source_id
+      where todos_fts match :searchQuery and hit.list_id = :listId
+      order by title_rank, score, fts_source_id, todo_id`;
+  const OUTER = `
+    select ranked.fts_source_id, ranked.todo_id as id, t.title, t.status,
+      t.position, t.created_at
+    from ranked
+    cross join todos t on t.id = ranked.todo_id
+    where t.list_id = :listId
+    order by ranked.title_rank, ranked.score, ranked.fts_source_id asc,
+      ranked.todo_id asc
+    limit 80;`;
+
+  test('accepts AS [NOT] MATERIALIZED as CTE syntax', () => {
+    for (const hint of ['materialized', 'not materialized']) {
+      const query = validate(`query q(listId) {
+        with scoped as ${hint} (
+          select id from todos where list_id = :listId
+        )
+        select id from scoped;
+      }`).queries[0];
+      expect(query?.analysis.columns.map((column) => column.name)).toEqual([
+        'id',
+      ]);
+    }
+  });
+
+  test('proves identity, exact types, and coverage per SELECT scope', () => {
+    const query = validate(ranked(OUTER)).queries[0];
+    expect(query?.identity).toEqual(['ftsSourceId', 'id']);
+    expect(query?.reactive.rowKey).toEqual(['ftsSourceId', 'id']);
+    expect(
+      query?.analysis.columns.map(({ name, type, nullable, fidelity }) => ({
+        name,
+        type,
+        nullable,
+        fidelity,
+      })),
+    ).toEqual([
+      {
+        name: 'fts_source_id',
+        type: 'string',
+        nullable: false,
+        fidelity: 'exact',
+      },
+      { name: 'id', type: 'string', nullable: false, fidelity: 'exact' },
+      { name: 'title', type: 'string', nullable: false, fidelity: 'exact' },
+      { name: 'status', type: 'string', nullable: true, fidelity: 'exact' },
+      {
+        name: 'position',
+        type: 'integer',
+        nullable: false,
+        fidelity: 'exact',
+      },
+      {
+        name: 'created_at',
+        type: 'integer',
+        nullable: false,
+        fidelity: 'exact',
+      },
+    ]);
+    expect(query?.reactive.coverage).toEqual([
+      {
+        table: 'todos',
+        variable: 'list_id',
+        units: ['listId'],
+        fixedScopes: [],
+      },
+    ]);
+    expect(query?.analysis.relations.map((relation) => relation.table)).toEqual(
+      ['todos_fts', 'todos', 'todos'],
+    );
+  });
+
+  test('ranks narrow rows and reads wide rows only after the limit', () => {
+    const query = validate(ranked(OUTER)).queries[0];
+    const sqlite = new Database(':memory:');
+    sqlite.run(synthesizeDdl(IR));
+    const plan = (
+      sqlite
+        .query(`explain query plan ${query?.analysis.positionalSql}`)
+        .all('title', 'word', 'list-1') as {
+        id: number;
+        parent: number;
+        detail: string;
+      }[]
+    ).map((row) => ({
+      detail: row.detail,
+      outer: row.parent === 0,
+    }));
+    sqlite.close();
+    expect(plan[0]).toEqual({ detail: 'MATERIALIZE ranked', outer: true });
+    // The only sort orders the narrow CTE rows inside the materialization.
+    expect(
+      plan.filter((row) => row.detail.startsWith('USE TEMP B-TREE')),
+    ).toEqual([{ detail: 'USE TEMP B-TREE FOR ORDER BY', outer: false }]);
+    expect(plan.filter((row) => row.outer).map((row) => row.detail)).toEqual([
+      'MATERIALIZE ranked',
+      'SCAN ranked',
+      expect.stringMatching(
+        /^SEARCH t USING INDEX sqlite_autoindex_todos_1 \(id=\?\)$/,
+      ),
+    ]);
+  });
+
+  test('requires the CTE identity in the projection and the order suffix', () => {
+    const missingKey = frontendError(() =>
+      validate(
+        ranked(
+          OUTER.replace(
+            'ranked.fts_source_id, ranked.todo_id as id',
+            'ranked.todo_id as id',
+          ),
+        ),
+      ),
+    );
+    expect(missingKey.code).toBe('SYQL6006_INVALID_SORT');
+    expect(missingKey.message).toContain('proven identity');
+
+    const partialOrder = frontendError(() =>
+      validate(
+        ranked(
+          OUTER.replace(
+            ', ranked.fts_source_id asc,\n      ranked.todo_id asc',
+            '',
+          ),
+        ),
+      ),
+    );
+    expect(partialOrder.code).toBe('SYQL6006_INVALID_SORT');
+
+    // Without the required ON equality to a CTE key, the physical relation
+    // contributes its own key, which this projection lacks.
+    const undetermined = frontendError(() =>
+      validate(
+        ranked(
+          OUTER.replace(
+            'on t.id = ranked.todo_id',
+            'on t.id = ranked.todo_id or t.id = ranked.fts_source_id',
+          ),
+        ),
+      ),
+    );
+    expect(undetermined.code).toBe('SYQL6006_INVALID_SORT');
+
+    const nestedLimit = frontendError(() =>
+      validate(ranked(OUTER, `${RANKED_BODY} limit 80`)),
+    );
+    expect(nestedLimit.code).toBe('SYQL6003_NONDETERMINISTIC_SQL');
+  });
+
+  test('proves each instance only from predicates of its own scope', () => {
+    const unscopedBody = frontendError(() =>
+      validate(
+        ranked(OUTER, RANKED_BODY.replace(' and hit.list_id = :listId', '')),
+      ),
+    );
+    expect(unscopedBody.code).toBe('SYQL6005_INVALID_SYNC_QUERY');
+
+    // An outer predicate does not prove a subquery instance that reuses the
+    // outer alias.
+    const sharedAlias = frontendError(() =>
+      validate(`sync query q(listId) {
+        select t.id from todos t
+        where t.list_id = :listId
+          and exists (select 1 from todos t where t.status = 'open');
+      }`),
+    );
+    expect(sharedAlias.code).toBe('SYQL6005_INVALID_SYNC_QUERY');
   });
 });

@@ -254,6 +254,12 @@ as `random()`, current-time keywords, `datetime('now')`, and
 expressions are rejected until the compiler can prove a local stable identity
 and total order for those shapes.
 
+A CTE declaration MAY carry SQLite's `AS MATERIALIZED` or `AS NOT MATERIALIZED`
+hint. Each body of a top-level CTE whose first token is `SELECT` is a SELECT
+scope of its own for scope proofs (§13), column lineage, and identity (§14). An
+`ORDER BY` in a CTE body neither bounds nor orders the result; only the outer
+`ORDER BY` does. §14.3 uses both rules for a ranked top-N.
+
 ## 9. Reusable predicates
 
 A predicate is a closed SQL expression template:
@@ -363,8 +369,12 @@ todos.list_id = :listId
 ```
 
 Required equality and `IN` predicates over declared scope columns may produce
-exact dependencies. The predicate must be an unconditional outer conjunct;
-predicates under `when`, `OR`, or an ambiguous table reference do not. A table
+exact dependencies. The predicate must be an unconditional conjunct of the
+`WHERE` clause of the SELECT scope that reads the instance: the outer
+statement or the body of a top-level CTE (§8). Predicates under `when`, `OR`,
+an ambiguous table reference, or any other nested statement do not. A
+predicate proves only instances of its own scope, even when another scope
+reuses the alias. A table
 read through several instances (a self-join) produces one dependency when every
 instance carries an identical scope proof: the same scope variables, each with
 the same operator and the same set of parameters. If any instance of a read
@@ -397,8 +407,8 @@ A scope proof may propagate between qualified scope columns joined by a
 required outer `WHERE` equality or by a simple mandatory `ON` equality. For
 example, `details.list_id = todos.list_id` inherits the required bind proven for
 `todos.list_id`. An `ON` clause containing `OR`, `NOT`, a subquery, or a CTE is
-not a proof. Scope predicates under `OR`, negation, a conditional, or a nested query are not
-proofs. An `IN` proof may contain only required binds. Otherwise compilation
+not a proof. Scope predicates under `OR`, negation, a conditional, or a nested
+query other than a top-level CTE body are not proofs. An `IN` proof may contain only required binds. Otherwise compilation
 fails; it never silently widens coverage or treats invalidation as readiness.
 Comma-separated table sources are outside the proof-compatible SQL subset and
 MUST fail generation with guidance to use an explicit `JOIN ... ON` relation.
@@ -496,10 +506,74 @@ projection containing a base table's primary key commonly produces that
 projected column as the row key.
 
 When identity cannot be proved, it is omitted and consumers use unkeyed
-reconciliation. A query that reads one table through several instances has no
-inferred identity, because one instance's primary key does not identify a
-joined result row. A stable identity is required when another feature, such as a
-bounded dynamic sort, depends on it.
+reconciliation. A SELECT scope that reads one table through several instances
+has no inferred identity, because one instance's primary key does not identify
+a joined result row. A stable identity is required when another feature, such
+as a bounded dynamic sort, depends on it.
+
+A statement with top-level CTEs proves identity per SELECT scope (§8). Every
+scope MUST be one `SELECT` without `DISTINCT`, `GROUP BY`, aggregates,
+compound operators, outer joins, or subqueries, and MUST read each table at
+most once; `WITH RECURSIVE`, a CTE column list, or any other nested statement
+leaves the query without inferred identity. Within a scope:
+
+- a physical relation contributes its primary key, and an FTS projection its
+  `_syncular_source_id`;
+- a reference to a CTE contributes the identity proven for the CTE body, under
+  the body's result names;
+- a physical relation joined by a required inner `ON` conjunct
+  `rel.pk = cte.key`, where `cte.key` is part of that CTE's identity,
+  contributes nothing, because each CTE row matches at most one of its rows.
+  The conjunct MUST be a plain equality of two qualified columns in an `ON`
+  clause without `OR`, `NOT`, `CASE`, `BETWEEN`, `COLLATE`, or a subquery.
+
+Each contributed column MUST appear in the scope's projection as a plain column
+reference, qualified unless the scope reads one relation, and every outer
+identity field MUST be non-null. A bounded
+order ends with the identity terms, qualified by the relation that contributes
+them.
+
+### 14.3 Ranked top-N
+
+A bounded query that ranks many candidate rows and returns a few wide rows
+ranks narrow rows in a materialized CTE and reads the wide row in the outer
+scope:
+
+```syql
+sync query searchCodes(setId, searchQuery, codeQuery: string) by c.set_id {
+  with ranked as materialized (
+    select codes_fts._syncular_source_id as fts_source_id, hit.id as code_id,
+      case when hit.code = :codeQuery collate nocase then 0 else 1 end
+        as code_rank,
+      bm25(codes_fts) as score
+    from codes_fts
+    join codes hit on hit.id = codes_fts._syncular_source_id
+    where codes_fts match :searchQuery and hit.set_id = :setId
+    order by code_rank, score, fts_source_id, code_id
+  )
+  select ranked.fts_source_id, ranked.code_id as id, c.code, c.title,
+    c.description
+  from ranked
+  cross join codes c on c.id = ranked.code_id
+  where c.set_id = :setId
+  order by ranked.code_rank, ranked.score, ranked.fts_source_id asc,
+    ranked.code_id asc
+  limit 80;
+}
+```
+
+The CTE identity is `(fts_source_id, code_id)`. `c` is determined by
+`c.id = ranked.code_id`, so the result identity is `(ftsSourceId, id)` and the
+order ends with the two CTE identity terms. Each `codes` instance carries the
+same `set_id` proof in its own scope, so the query has one coverage entry.
+
+The outer `ORDER BY` repeats the CTE order, and `CROSS JOIN` keeps the CTE scan
+as SQLite's outer loop. SQLite 3.51 and later then satisfy the outer order from
+the materialized CTE: the plan is `MATERIALIZE ranked`, `SCAN ranked`, and a
+primary-key `SEARCH` of `c`, with the only sort inside the materialization, so
+SQLite reads the wide row only for rows it returns. SQLite 3.46.0, the floor of
+the portable profile, sorts the joined rows again and returns the same result.
+The browser build and the Rust core bundle SQLite 3.53.
 
 ## 15. Lowering and execution
 

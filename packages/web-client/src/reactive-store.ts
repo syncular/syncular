@@ -11,13 +11,14 @@ import type {
   WindowState,
 } from './client';
 import type { SqlValue } from './database';
-import { ClientSyncError } from './errors';
+import { ClientSyncError, SyncRoundFailedError } from './errors';
 import type {
   ClientChangeBatch,
   ClientChangeListener,
   SyncStatusSnapshot,
 } from './invalidation';
 import type { LeadershipState } from './multi-tab';
+import type { SyncProgressListener } from './progress';
 import { type WindowBase, windowBaseKey } from './window';
 
 export interface QueryDependency {
@@ -63,6 +64,7 @@ export interface ReactiveQueryClient extends Pick<
   ): QuerySnapshot<Row> | Promise<QuerySnapshot<Row>>;
   leadershipSnapshot?(): LeadershipState | undefined;
   onLeadershipChange?(listener: (state: LeadershipState) => void): () => void;
+  onProgress(listener: SyncProgressListener): () => void;
   conflicts(): readonly unknown[] | Promise<readonly unknown[]>;
   rejections(): readonly unknown[] | Promise<readonly unknown[]>;
   setWindow(base: WindowBase, units: readonly string[]): void | Promise<void>;
@@ -401,6 +403,7 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
   #claimError: Error | undefined;
   #claimPending = false;
   #offStatus: (() => void) | undefined;
+  #offRound: (() => void) | undefined;
 
   constructor(
     readonly store: ReactiveClientStore,
@@ -424,6 +427,9 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
     if (this.#listeners.size === 1) {
       this.#offStatus = this.store.status.subscribe(() =>
         this.#onAvailabilityChange(),
+      );
+      this.#offRound = this.store.roundFailure.subscribe(() =>
+        this.#onRoundFailureChange(),
       );
       this.#onAvailabilityChange();
       if (this.spec.claimCoverage !== false) {
@@ -479,6 +485,8 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
         this.cache.deactivate(this.key, this);
         this.#offStatus?.();
         this.#offStatus = undefined;
+        this.#offRound?.();
+        this.#offRound = undefined;
         this.store.releaseWindowClaims(this.#owner);
       }
     };
@@ -504,6 +512,8 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
     this.#listeners.clear();
     this.#offStatus?.();
     this.#offStatus = undefined;
+    this.#offRound?.();
+    this.#offRound = undefined;
     this.store.releaseWindowClaims(this.#owner);
     this.reset();
   }
@@ -581,6 +591,33 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
     if (wasBlocked) this.#requestRead();
   }
 
+  /** SPEC §7.5 failed transfer: incomplete coverage stops waiting on a failed
+   * sync attempt and resumes waiting when the next attempt starts. */
+  #onRoundFailureChange(): void {
+    const failure = this.store.roundFailure.getSnapshot();
+    if (failure !== undefined) {
+      if (this.#state.phase === 'loading' || this.#state.phase === 'partial')
+        this.#publish({
+          ...this.#state,
+          phase: 'error',
+          error: failure,
+          isRefreshing: false,
+        });
+      return;
+    }
+    if (
+      this.#state.phase === 'error' &&
+      this.#state.error instanceof SyncRoundFailedError
+    ) {
+      this.#publish({
+        ...this.#state,
+        phase: this.#state.rows.length > 0 ? 'partial' : 'loading',
+        error: undefined,
+      });
+      this.#requestRead();
+    }
+  }
+
   async #readLoop(): Promise<void> {
     if (this.#running || this.#listeners.size === 0) return;
     const generation = this.#generation;
@@ -643,16 +680,21 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
           mappedRows,
           this.spec.rowKey,
         );
+        const roundFailure = snapshot.coverage.complete
+          ? undefined
+          : this.store.roundFailure.getSnapshot();
         const phase: LiveQueryPhase = snapshot.coverage.complete
           ? 'ready'
-          : rows.length > 0
-            ? 'partial'
-            : 'loading';
+          : roundFailure !== undefined
+            ? 'error'
+            : rows.length > 0
+              ? 'partial'
+              : 'loading';
         this.#publish({
           rows,
           phase,
           revision: snapshot.revision,
-          error: undefined,
+          error: roundFailure,
           isRefreshing: false,
           availability,
         });
@@ -819,6 +861,9 @@ export class ReactiveClientStore {
   readonly status: ExternalStoreEntry<StatusStoreSnapshot>;
   readonly conflicts: ExternalStoreEntry<ConflictStoreSnapshot>;
   readonly outcomes: ExternalStoreEntry<OutcomeStoreSnapshot>;
+  /** The latest sync attempt's failure until the next attempt starts. */
+  readonly roundFailure: ExternalStoreEntry<SyncRoundFailedError | undefined>;
+  #offProgress: (() => void) | undefined;
 
   constructor(readonly client: ReactiveQueryClient) {
     const status = new ValueEntry<StatusStoreSnapshot>(
@@ -887,6 +932,13 @@ export class ReactiveClientStore {
     this.status = status;
     this.conflicts = conflicts;
     this.outcomes = outcomes;
+    const roundFailure: ValueEntry<SyncRoundFailedError | undefined> =
+      new ValueEntry<SyncRoundFailedError | undefined>(
+        undefined,
+        async (): Promise<SyncRoundFailedError | undefined> =>
+          roundFailure.getSnapshot(),
+      );
+    this.roundFailure = roundFailure;
     this.start();
   }
 
@@ -1094,6 +1146,25 @@ export class ReactiveClientStore {
       }
       if (batch.outcomesChanged) this.outcomes.refresh();
     });
+    const roundFailure = this.roundFailure as ValueEntry<
+      SyncRoundFailedError | undefined
+    >;
+    this.#offProgress = this.client.onProgress((progress) => {
+      const current = roundFailure.getSnapshot();
+      if (progress.state === 'failed' && current?.attempt !== progress.attempt)
+        roundFailure.set(
+          new SyncRoundFailedError(
+            progress.errorCode ?? 'client.unknown_failure',
+            progress.attempt,
+          ),
+        );
+      else if (
+        progress.state !== 'failed' &&
+        current !== undefined &&
+        progress.attempt !== current.attempt
+      )
+        roundFailure.set(undefined);
+    });
     this.#offLeadership = this.client.onLeadershipChange?.((leadership) => {
       const previous = this.status.getSnapshot();
       (this.status as ValueEntry<StatusStoreSnapshot>).set({
@@ -1117,6 +1188,11 @@ export class ReactiveClientStore {
     this.#offChange = undefined;
     this.#offLeadership?.();
     this.#offLeadership = undefined;
+    this.#offProgress?.();
+    this.#offProgress = undefined;
+    (this.roundFailure as ValueEntry<SyncRoundFailedError | undefined>).set(
+      undefined,
+    );
     for (const group of this.#windowClaims.values()) {
       for (const waiter of group.waiters.splice(0)) {
         waiter.reject(
