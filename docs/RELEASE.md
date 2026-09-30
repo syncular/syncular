@@ -1,8 +1,17 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.26.2** (`v0.26.2`). All artifacts use Apache-2.0, except
+current release is **0.26.3** (`v0.26.3`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.26.3 release notes
+
+0.26.3 ships the 0.26.2 changes below to npm. The 0.26.2 tag published every
+crate, and its npm job stopped at the release gate because the new pull
+statement-count tests exceeded bun's 5 s default test timeout on the CI
+runner, so no 0.26.2 npm package exists. 0.26.3 gives those tests a 60 s
+timeout; the packages and crates carry the same code as 0.26.2. Pin 0.26.3
+for every Syncular npm package and crate.
 
 ## 0.26.2 release notes
 
