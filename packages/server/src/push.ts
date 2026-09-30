@@ -696,8 +696,12 @@ async function applyOperation(
     actorId,
   );
   if (insertReject !== undefined) return insertReject;
-  // §5.2: an explicit insert recreates — the tombstone goes with it.
-  await tx.clearTombstone(op.table, op.rowId);
+  // §5.2: an explicit insert recreates — the tombstone goes with it. An
+  // unversioned insert already proved above, under the partition lock, that
+  // no tombstone exists (this commit writes its own only in `appendCommit`).
+  if (op.baseVersion !== undefined) {
+    await tx.clearTombstone(op.table, op.rowId);
+  }
   const newRow = {
     rowId: op.rowId,
     serverVersion: 1,
@@ -1415,6 +1419,18 @@ export async function processPushOperationsWithTrace(
     const stagedWrites: StagedWrite[] = [];
     let terminated: PushOperationResult | undefined;
     const operations = await buildOperations(tx);
+    if (tx.prefetchRows !== undefined) {
+      const targets = new Map<string, string[]>();
+      for (const op of operations) {
+        if (!schema.tables.has(op.table)) continue;
+        const ids = targets.get(op.table) ?? [];
+        ids.push(op.rowId);
+        targets.set(op.table, ids);
+      }
+      for (const [table, rowIds] of targets) {
+        await tx.prefetchRows(table, rowIds);
+      }
+    }
     for (let opIndex = 0; opIndex < operations.length; opIndex++) {
       const op = operations[opIndex];
       if (op === undefined) continue;

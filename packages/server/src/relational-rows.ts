@@ -691,6 +691,20 @@ export const COMMIT_WINDOW_BATCH_SQL = `SELECT s.i AS sub, c.commit_seq AS commi
        ON ch.partition=$1 AND ch.commit_seq=c.commit_seq AND ch.tbl=$3
      ORDER BY s.i, c.commit_seq, ch.idx`;
 
+/**
+ * PostgreSQL push read-ahead: every requested row id with its stored row
+ * (NULL columns when absent, `selectRowSql` shape) and its §5 delete
+ * tombstone. Params: [partition, rowIds as JSON array text, tbl].
+ */
+export function prefetchRowsSql(table: CompiledTable): string {
+  return `SELECT ids.id AS lookup_id, r.${quoteIdent(SYNC_ROW_ID_COLUMN)} AS row_id, r.${quoteIdent(SYNC_VERSION_COLUMN)} AS server_version, r.${quoteIdent(SYNC_SCOPES_COLUMN)} AS scopes, r.${quoteIdent(SYNC_PAYLOAD_COLUMN)} AS payload, r.${quoteIdent(SYNC_COLUMN_VERSIONS_COLUMN)} AS column_versions, t.commit_seq AS tombstone_seq
+     FROM jsonb_array_elements_text($2::text::jsonb) AS ids(id)
+     LEFT JOIN ${quoteIdent(table.name)} r
+       ON r.${quoteIdent(SYNC_PARTITION_COLUMN)}=$1 AND r.${quoteIdent(SYNC_ROW_ID_COLUMN)}=ids.id
+     LEFT JOIN sync_tombstones t
+       ON t.partition=$1 AND t.tbl=$3 AND t.row_id=ids.id`;
+}
+
 /** SELECT a row's version + scope map (admin/blob authz). Params: [partition, rowId]. */
 export function selectRowScopesSql(
   table: CompiledTable,

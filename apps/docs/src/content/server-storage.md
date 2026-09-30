@@ -281,13 +281,23 @@ allocation feeds the commit insert through its returned sequence, retaining the
 partition lock and transaction rollback behavior. Change rows and their scope
 entries remain in that same commit transaction.
 
-Each change insert also populates its inverted scope entries in one statement.
-The statement expands the inserted scope object and deduplicates entries shared
-by changes in the same commit. Empty-scope changes still enter the log. Serialized
+One statement appends all of a commit's changes and populates their inverted
+scope entries and delete tombstones. The statement expands each inserted scope
+object and deduplicates entries shared by changes in the same commit.
+Empty-scope changes still enter the log. Serialized
 scopes bind as text before JSONB parsing so driver JSON encoding cannot turn them
 into a JSON string. Existing change rows with string-form scopes remain readable.
 
-A pull starts the commit-window read or first snapshot page of every
+Before a commit applies its operations, the push reads every row they target
+and its delete tombstone with one statement per table, and each operation reads
+that snapshot until the operation or an earlier one in the commit writes the
+row. A row write is one statement: the upsert plus the row's scope-index
+entries. A commit that inserts rows into two tables costs 10 statements plus one
+per row, whatever the number of scope variables per row, and runs in its own
+transaction.
+
+An HTTP `POST /sync` request and a realtime socket round run the same
+handler, so both get the reads below. A pull starts the commit-window read or first snapshot page of every
 subscription before it awaits any of them, then re-reads the pruning horizon
 once. `PostgresServerStorage` queues the page reads issued in one microtask
 turn and sends one `LATERAL` statement per table, in which each subscription

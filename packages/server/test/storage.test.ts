@@ -584,7 +584,7 @@ test('Postgres allocates the sequence and commit metadata in one statement with 
   }
 });
 
-test('Postgres appends each change and all its scopes in one statement', async () => {
+test("Postgres appends a commit's changes and all their scopes in one statement", async () => {
   const db = await PGlite.create();
   const base = pgliteExecutor(db);
   const statements: string[] = [];
@@ -632,7 +632,8 @@ test('Postgres appends each change and all its scopes in one statement', async (
             changes,
           }),
         ).toBe(1);
-        expect(statements).toHaveLength(1 + changes.length);
+        // The commit allocation, then one statement for every change.
+        expect(statements).toHaveLength(2);
         await tx[finish]();
       } catch (error) {
         await tx.rollback();

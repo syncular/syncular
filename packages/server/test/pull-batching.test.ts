@@ -7,6 +7,7 @@ import { describe, expect, test } from 'bun:test';
 import { PGlite } from '@electric-sql/pglite';
 import {
   decodeMessage,
+  REALTIME_TAG_ROUND,
   type PushOperation,
   type RequestFrame,
   type ResponseMessage,
@@ -14,6 +15,7 @@ import {
 } from '@syncular/core';
 import {
   compileSchema,
+  createRealtimeHub,
   type D1Database,
   type D1PreparedStatement,
   D1ServerStorage,
@@ -29,6 +31,7 @@ import {
 import { pgliteExecutor } from '@syncular/server/pglite';
 import { D1DatabaseDouble } from './d1-double';
 import {
+  del,
   docRow,
   pullHeader,
   pushCommit,
@@ -46,9 +49,9 @@ const PROJECTS = 34;
 /** Counts every statement the storage sends, pool and transaction alike. */
 function countingExecutor(inner: PgExecutor): {
   executor: PgExecutor;
-  count: { statements: number };
+  count: { statements: number; transactions: number };
 } {
-  const count = { statements: 0 };
+  const count = { statements: 0, transactions: 0 };
   const counted = (client: PgQueryable): PgQueryable => ({
     query: (text, params) => {
       count.statements += 1;
@@ -59,7 +62,10 @@ function countingExecutor(inner: PgExecutor): {
     count,
     executor: {
       query: counted(inner).query,
-      transaction: (fn) => inner.transaction((client) => fn(counted(client))),
+      transaction: (fn) => {
+        count.transactions += 1;
+        return inner.transaction((client) => fn(counted(client)));
+      },
     },
   };
 }
@@ -303,6 +309,137 @@ describe('pull statement count (SYNCULAR-PULL-ROUNDTRIPS-001)', () => {
     // 34 tasks and 33 docs subscriptions each deliver their project's
     // round-b commit; the p0 tasks subscription also delivers 70 hot commits.
     expect(commits.length).toBe(PROJECTS + (PROJECTS - 1) + 70);
+    await db.close();
+  }, 60_000);
+});
+
+/**
+ * A realtime client's first round (§8.7) carrying its outbox and every
+ * subscription: `count` push commits of three writes each, then a bootstrap
+ * of `subscriptionCount` subscriptions, driven through `handleBinary`.
+ */
+async function firstSocketRound(
+  subscriptionCount: number,
+  commitCount: number,
+) {
+  const db = await PGlite.create();
+  const counting = countingExecutor(pgliteExecutor(db));
+  const ctx = await context(new PostgresServerStorage(counting.executor));
+  await seed(ctx, 'a');
+  const hub = createRealtimeHub({
+    schema: ctx.schema,
+    storage: ctx.storage,
+    segments: ctx.segments,
+    resolveScopes: ctx.resolveScopes,
+    clock: () => 1_750_000_000_000,
+  });
+  const chunks: Uint8Array[] = [];
+  const session = await hub.connect({
+    partition: ctx.partition,
+    actorId: ctx.actorId,
+    clientId: 'client-1',
+    send: (data) => {
+      if (typeof data !== 'string') chunks.push(data.subarray(1));
+    },
+  });
+  const frames: RequestFrame[] = [];
+  for (let i = 0; i < commitCount; i++) {
+    const project = `p${i % PROJECTS}`;
+    frames.push(
+      pushCommit(`outbox-${i}`, [
+        upsert('tasks', `outbox-t${i}`, taskRow(`outbox-t${i}`, project)),
+        upsert('docs', `outbox-d${i}`, docRow(`outbox-d${i}`, 'o1', project)),
+        upsert('docs', `outbox-e${i}`, docRow(`outbox-e${i}`, 'o1', project)),
+      ]),
+    );
+  }
+  frames.push(pullHeader(), ...subscriptions(subscriptionCount));
+  const request = requestBytes(frames);
+  const tagged = new Uint8Array(request.length + 1);
+  tagged[0] = REALTIME_TAG_ROUND;
+  tagged.set(request, 1);
+  counting.count.statements = 0;
+  counting.count.transactions = 0;
+  await session.handleBinary(tagged);
+  const response = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
+  let offset = 0;
+  for (const chunk of chunks) {
+    response.set(chunk, offset);
+    offset += chunk.length;
+  }
+  const message = decodeMessage(response);
+  const counts = { ...counting.count };
+  session.close();
+  await db.close();
+  return { message, counts };
+}
+
+describe('first realtime socket round (SYNCULAR-PULL-ROUNDTRIPS-001)', () => {
+  test('PostgreSQL: statements grow with commits and tables, transactions with commits only', async () => {
+    const small = await firstSocketRound(8, 10);
+    const large = await firstSocketRound(68, 10);
+    for (const { message } of [small, large]) {
+      expect(message.frames.some((frame) => frame.type === 'ERROR')).toBe(
+        false,
+      );
+      expect(
+        message.frames.filter(
+          (frame) => frame.type === 'PUSH_RESULT' && frame.status === 'applied',
+        ),
+      ).toHaveLength(10);
+    }
+    expect(
+      large.message.frames.filter((frame) => frame.type === 'SUB_START'),
+    ).toHaveLength(68);
+    // Each PUSH_COMMIT is its own atomic transaction (§6.4); the pull half
+    // of the round opens none and its statements do not depend on the
+    // subscription count.
+    expect(small.counts.transactions).toBe(10);
+    expect(large.counts.transactions).toBe(10);
+    expect(large.counts.statements).toBe(small.counts.statements);
+    // Per commit: 8 fixed statements (idempotency lookup and locked
+    // re-check, partition lock, serve gate, savepoint, commit allocation,
+    // change log, push result), one read-ahead per table, one write per
+    // row; the pull half adds 11 for the round.
+    expect(large.counts.statements).toBe(10 * (8 + 2 + 3) + 11);
+  }, 60_000);
+});
+
+describe('push read-ahead (SYNCULAR-PULL-ROUNDTRIPS-001)', () => {
+  test('PostgreSQL answers repeated writes to one row like SQLite', async () => {
+    const run = async (storage: ServerStorage) => {
+      const ctx = await context(storage);
+      const t = (title: string) => taskRow('r1', 'p1', title);
+      return sync(ctx, [
+        // Insert, versioned update, delete, then an unversioned re-insert:
+        // every operation must see the previous one's write.
+        pushCommit('same-row', [
+          upsert('tasks', 'r1', t('a')),
+          upsert('tasks', 'r1', t('b'), 1),
+          del('tasks', 'r1'),
+          upsert('tasks', 'r1', t('c')),
+        ]),
+        // Delete, explicit re-insert, delete again: two tombstone candidates.
+        pushCommit('twice-deleted', [
+          del('tasks', 'r1'),
+          upsert('tasks', 'r1', t('d'), 0),
+          del('tasks', 'r1'),
+        ]),
+        // The tombstone rejects an unversioned upsert.
+        pushCommit('after-delete', [upsert('tasks', 'r1', t('e'))]),
+        pullHeader(),
+        subFrame('s', 'tasks', { project_id: ['p1'] }, 0),
+      ]);
+    };
+    const db = await PGlite.create();
+    const postgres = await run(new PostgresServerStorage(pgliteExecutor(db)));
+    const sqlite = await run(new SqliteServerStorage());
+    expect(postgres.frames).toEqual(sqlite.frames);
+    expect(pushResults(postgres).map((result) => result.status)).toEqual([
+      'applied',
+      'applied',
+      'rejected',
+    ]);
     await db.close();
   }, 60_000);
 });

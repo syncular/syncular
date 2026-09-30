@@ -434,6 +434,14 @@ export interface AuthoritativeQueryResult {
 export interface StorageTransaction {
   getRow(table: string, rowId: string): Promise<StoredRow | undefined>;
   /**
+   * Optional read-ahead: the push layer names every row a commit's
+   * operations target, per table, before it applies them. A storage with
+   * per-statement network cost reads them in one statement and answers the
+   * following `getRow` calls from that snapshot until the row is written in
+   * this transaction.
+   */
+  prefetchRows?(table: string, rowIds: readonly string[]): Promise<void>;
+  /**
    * §5 delete-precedence tombstone read: the `commit_seq` of the newest
    * applied delete of this row still within the pruning horizon, or
    * `undefined` when no tombstone exists. Consulted only when an upsert's

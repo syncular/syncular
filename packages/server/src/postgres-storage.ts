@@ -76,6 +76,7 @@ import {
   schemaDdl,
   selectRowScopesSql,
   selectRowSql,
+  prefetchRowsSql,
   selectRowsForRewriteSql,
   upsertSql,
   upsertValues,
@@ -697,21 +698,31 @@ async function writeRowOn(
   partition: string,
   row: StoredRow,
 ): Promise<void> {
+  // One statement per row write: the upsert, and the scope index synced to
+  // the row's scope map (entries outside it deleted, missing ones inserted).
+  // No index entry is touched twice, so the writable CTEs cannot conflict.
+  // The scopes bind as text before the JSONB cast (see `appendCommit`).
+  const params = upsertValues(compiled, partition, row, 'postgres');
+  const n = params.length;
   await q.query(
-    upsertSql(compiled, 'postgres'),
-    upsertValues(compiled, partition, row, 'postgres'),
+    `WITH upserted AS (${upsertSql(compiled, 'postgres')}),
+     scope AS (SELECT key, value FROM jsonb_each_text($${n + 1}::text::jsonb)),
+     removed AS (
+       DELETE FROM sync_row_scopes
+        WHERE partition=$${n + 2} AND tbl=$${n + 3} AND row_id=$${n + 4}
+          AND (var, value) NOT IN (SELECT key, value FROM scope)
+     )
+     INSERT INTO sync_row_scopes(partition, tbl, var, value, row_id)
+     SELECT $${n + 2}, $${n + 3}, key, value, $${n + 4} FROM scope
+     ON CONFLICT DO NOTHING`,
+    [
+      ...params,
+      JSON.stringify(row.scopes),
+      partition,
+      compiled.name,
+      row.rowId,
+    ],
   );
-  await q.query(
-    'DELETE FROM sync_row_scopes WHERE partition=$1 AND tbl=$2 AND row_id=$3',
-    [partition, compiled.name, row.rowId],
-  );
-  for (const [variable, value] of Object.entries(row.scopes)) {
-    await q.query(
-      `INSERT INTO sync_row_scopes(partition, tbl, var, value, row_id)
-       VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
-      [partition, compiled.name, variable, value, row.rowId],
-    );
-  }
 }
 
 async function getPushResultOn(
@@ -770,6 +781,13 @@ class PostgresTransaction implements StorageTransaction {
   #resolveTable: (name: string) => CompiledTable;
   #open = true;
   #pushApplySavepoint = false;
+  /**
+   * `prefetchRows` results keyed `table\u0000rowId`; `null` records a row
+   * (or tombstone) read as absent. A write in this transaction drops the
+   * key, so the next read goes to the database again.
+   */
+  readonly #prefetchedRows = new Map<string, StoredRow | null>();
+  readonly #prefetchedTombstones = new Map<string, number | null>();
   /** Resolves/rejects the `transaction(fn)` wrapper (see `begin`). */
   #resolve: () => void;
   #reject: (error: unknown) => void;
@@ -814,6 +832,10 @@ class PostgresTransaction implements StorageTransaction {
 
   getRow(table: string, rowId: string): Promise<StoredRow | undefined> {
     this.#assertOpen();
+    const prefetched = this.#prefetchedRows.get(`${table}\u0000${rowId}`);
+    if (prefetched !== undefined) {
+      return Promise.resolve(prefetched ?? undefined);
+    }
     return getRowOn(
       this.#client,
       this.#resolveTable(table),
@@ -822,11 +844,47 @@ class PostgresTransaction implements StorageTransaction {
     );
   }
 
+  async prefetchRows(table: string, rowIds: readonly string[]): Promise<void> {
+    this.#assertOpen();
+    const ids = [...new Set(rowIds)].filter(
+      (rowId) => !this.#prefetchedRows.has(`${table}\u0000${rowId}`),
+    );
+    if (ids.length === 0) return;
+    const { rows } = await this.#client.query<
+      Omit<RowRecord, 'row_id'> & {
+        lookup_id: string;
+        row_id: string | null;
+        tombstone_seq: unknown;
+      }
+    >(prefetchRowsSql(this.#resolveTable(table)), [
+      this.#partition,
+      JSON.stringify(ids),
+      table,
+    ]);
+    for (const record of rows) {
+      const key = `${table}\u0000${record.lookup_id}`;
+      this.#prefetchedRows.set(
+        key,
+        record.row_id === null
+          ? null
+          : toStoredRow({ ...record, row_id: record.row_id }),
+      );
+      this.#prefetchedTombstones.set(
+        key,
+        record.tombstone_seq === null || record.tombstone_seq === undefined
+          ? null
+          : asNumber(record.tombstone_seq),
+      );
+    }
+  }
+
   async getTombstoneSeq(
     table: string,
     rowId: string,
   ): Promise<number | undefined> {
     this.#assertOpen();
+    const prefetched = this.#prefetchedTombstones.get(`${table}\u0000${rowId}`);
+    if (prefetched !== undefined) return prefetched ?? undefined;
     const { rows } = await this.#client.query<{ commit_seq: unknown }>(
       'SELECT commit_seq FROM sync_tombstones WHERE partition=$1 AND tbl=$2 AND row_id=$3',
       [this.#partition, table, rowId],
@@ -837,6 +895,7 @@ class PostgresTransaction implements StorageTransaction {
 
   async clearTombstone(table: string, rowId: string): Promise<void> {
     this.#assertOpen();
+    this.#prefetchedTombstones.delete(`${table}\u0000${rowId}`);
     await this.#client.query(
       'DELETE FROM sync_tombstones WHERE partition=$1 AND tbl=$2 AND row_id=$3',
       [this.#partition, table, rowId],
@@ -976,6 +1035,7 @@ class PostgresTransaction implements StorageTransaction {
     context?: { readonly opIndex: number },
   ): Promise<void> {
     this.#assertOpen();
+    this.#prefetchedRows.delete(`${table}\u0000${row.rowId}`);
     try {
       await writeRowOn(
         this.#client,
@@ -993,18 +1053,16 @@ class PostgresTransaction implements StorageTransaction {
 
   async deleteRow(table: string, rowId: string): Promise<void> {
     this.#assertOpen();
+    this.#prefetchedRows.delete(`${table}\u0000${rowId}`);
+    // One statement: the row, its scope-index entries, and (§5.9.4: a
+    // deleted row references no blobs) its blob references.
     await this.#client.query(
-      deleteRowSql(this.#resolveTable(table), 'postgres'),
-      [this.#partition, rowId],
-    );
-    await this.#client.query(
-      'DELETE FROM sync_row_scopes WHERE partition=$1 AND tbl=$2 AND row_id=$3',
-      [this.#partition, table, rowId],
-    );
-    // §5.9.4: a deleted row references no blobs.
-    await this.#client.query(
-      'DELETE FROM sync_blob_refs WHERE partition=$1 AND tbl=$2 AND row_id=$3',
-      [this.#partition, table, rowId],
+      `WITH deleted AS (${deleteRowSql(this.#resolveTable(table), 'postgres')}),
+       unscoped AS (
+         DELETE FROM sync_row_scopes WHERE partition=$1 AND tbl=$3 AND row_id=$2
+       )
+       DELETE FROM sync_blob_refs WHERE partition=$1 AND tbl=$3 AND row_id=$2`,
+      [this.#partition, rowId, table],
     );
   }
 
@@ -1030,6 +1088,8 @@ class PostgresTransaction implements StorageTransaction {
 
   async appendCommit(commit: NewCommit): Promise<number> {
     this.#assertOpen();
+    // The commit writes its delete tombstones below.
+    this.#prefetchedTombstones.clear();
     const q = this.#client;
     const p = this.#partition;
     // Allocate the next dense commitSeq under a per-partition row lock: the
@@ -1055,42 +1115,46 @@ class PostgresTransaction implements StorageTransaction {
       ],
     );
     const commitSeq = asNumber(rows[0]?.commit_seq);
-    for (let idx = 0; idx < commit.changes.length; idx++) {
-      const change = commit.changes[idx];
-      if (change === undefined) continue;
-      // Bind serialized scopes as text before parsing JSONB. Drivers that
-      // encode JSONB parameters would otherwise store this string as a scalar.
-      // One statement per change: scopes AND the §5 delete tombstone ride the
-      // same writable-CTE chain.
-      await q.query(
-        `WITH inserted AS (
-           INSERT INTO sync_changes(partition, commit_seq, idx, tbl, row_id, op, row_version, scopes, payload)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8::text::jsonb,$9)
-           RETURNING partition, tbl, row_id, op, commit_seq, scopes
-         ),
-         scoped AS (
-           INSERT INTO sync_change_scopes(partition, tbl, var, value, commit_seq)
-           SELECT inserted.partition, inserted.tbl, scope.key, scope.value, inserted.commit_seq
-           FROM inserted CROSS JOIN LATERAL jsonb_each_text(inserted.scopes) AS scope
-           ON CONFLICT DO NOTHING
-         )
-         INSERT INTO sync_tombstones(partition, tbl, row_id, commit_seq)
-         SELECT partition, tbl, row_id, commit_seq FROM inserted WHERE op = 2
-         ON CONFLICT (partition, tbl, row_id)
-         DO UPDATE SET commit_seq = excluded.commit_seq`,
-        [
-          p,
-          commitSeq,
-          idx,
-          change.table,
-          change.rowId,
-          change.op === 'upsert' ? 1 : 2,
-          change.rowVersion ?? null,
-          JSON.stringify(change.scopes),
-          change.payload ?? null,
-        ],
+    if (commit.changes.length === 0) return commitSeq;
+    // One statement for the whole commit: its changes, their inverted scope
+    // entries, and the §5 delete tombstones ride one writable-CTE chain.
+    // Serialized scopes bind as text before parsing JSONB; drivers that
+    // encode JSONB parameters would otherwise store the string as a scalar.
+    // A commit can delete one row twice, so the tombstone insert keeps one
+    // row per key (every candidate carries the same commit_seq).
+    const params: unknown[] = [p, commitSeq];
+    const values = commit.changes.map((change, idx) => {
+      const base = params.length;
+      params.push(
+        idx,
+        change.table,
+        change.rowId,
+        change.op === 'upsert' ? 1 : 2,
+        change.rowVersion ?? null,
+        JSON.stringify(change.scopes),
+        change.payload ?? null,
       );
-    }
+      return `($1,$2::bigint,$${base + 1}::int,$${base + 2},$${base + 3},$${base + 4}::smallint,$${base + 5}::bigint,$${base + 6}::text::jsonb,$${base + 7}::bytea)`;
+    });
+    await q.query(
+      `WITH inserted AS (
+         INSERT INTO sync_changes(partition, commit_seq, idx, tbl, row_id, op, row_version, scopes, payload)
+         VALUES ${values.join(',')}
+         RETURNING partition, tbl, row_id, op, commit_seq, scopes
+       ),
+       scoped AS (
+         INSERT INTO sync_change_scopes(partition, tbl, var, value, commit_seq)
+         SELECT inserted.partition, inserted.tbl, scope.key, scope.value, inserted.commit_seq
+         FROM inserted CROSS JOIN LATERAL jsonb_each_text(inserted.scopes) AS scope
+         ON CONFLICT DO NOTHING
+       )
+       INSERT INTO sync_tombstones(partition, tbl, row_id, commit_seq)
+       SELECT DISTINCT ON (tbl, row_id) partition, tbl, row_id, commit_seq
+         FROM inserted WHERE op = 2
+       ON CONFLICT (partition, tbl, row_id)
+       DO UPDATE SET commit_seq = excluded.commit_seq`,
+      params,
+    );
     return commitSeq;
   }
 
