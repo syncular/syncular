@@ -5,7 +5,7 @@ import {
 } from '@syncular/core';
 import type { RealtimeNotifier, SyncRequestContext } from './context';
 import { REMOTE_COMMAND_CLIENT_ID_PREFIX } from './context';
-import { SyncError, syncError } from './errors';
+import { reportError, SyncError, syncError } from './errors';
 import type {
   RegisteredRemoteQuery,
   RemoteOperationRegistry,
@@ -180,6 +180,9 @@ class WatchSession implements RemoteOperationWatchSession {
         } catch (error) {
           if (this.#isClosed || this.#watches.get(state.watchId) !== state) {
             return;
+          }
+          if (!(error instanceof SyncError)) {
+            reportError(error, this.#ctx.onError, 'operations');
           }
           this.#sendError(
             state.watchId,

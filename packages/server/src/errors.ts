@@ -171,6 +171,14 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorCatalogEntry>> = {
   // checkpoint is incomplete or the database is newer than the running build.
   // Formerly host-only; promoted to the §10.2 catalogue so an in-flight
   // request can be refused with a distinguishable identity.
+  // An exception outside this catalog (host code, storage, network) reached
+  // an adapter; the original goes to `onError`, never onto the wire.
+  'sync.internal_error': {
+    category: 'internal',
+    retryable: true,
+    recommendedAction: 'retryLater',
+    httpStatus: 500,
+  },
   'sync.schema_not_ready': {
     category: 'internal',
     retryable: true,
@@ -309,4 +317,52 @@ export function errorBody(error: SyncError): {
       ? { details: JSON.parse(error.details) as unknown }
       : {}),
   };
+}
+
+/** The adapter surface that caught an exception reported through `onError`. */
+export type SyncularErrorRoute =
+  | 'sync'
+  | 'operations'
+  | 'segments'
+  | 'blobs'
+  | 'admin'
+  | 'realtime';
+
+/**
+ * Host error reporting: receives every exception that is not a `SyncError`
+ * before the adapter answers `sync.internal_error` (or the remote-operation
+ * `operation.*` failure code), with the surface that caught it.
+ */
+export type SyncularErrorHandler = (
+  error: unknown,
+  context: { readonly route: SyncularErrorRoute },
+) => void;
+
+/**
+ * The protocol error for an exception an adapter caught. A `SyncError`
+ * passes through unchanged. Anything else goes to `onError` and becomes
+ * `sync.internal_error` (§10.2), whose message never carries the exception
+ * text.
+ */
+export function adapterSyncError(
+  error: unknown,
+  onError: SyncularErrorHandler | undefined,
+  route: SyncularErrorRoute,
+): SyncError {
+  if (error instanceof SyncError) return error;
+  reportError(error, onError, route);
+  return new SyncError('sync.internal_error', 'internal server error');
+}
+
+/** Hand `error` to the host's `onError`; a throwing handler is contained. */
+export function reportError(
+  error: unknown,
+  onError: SyncularErrorHandler | undefined,
+  route: SyncularErrorRoute,
+): void {
+  try {
+    onError?.(error, { route });
+  } catch {
+    // The report is best effort; the response stays the catalog error.
+  }
 }

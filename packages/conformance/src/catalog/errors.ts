@@ -6,7 +6,7 @@
  * client SDK's interpretation.
  */
 import { check, checkEqual } from '../checks';
-import type { DriverError } from '../driver';
+import { type DriverError, STORAGE_FAULT_SECRET } from '../driver';
 import { task } from '../fixture';
 import {
   rawInvalidRequestBytes,
@@ -17,6 +17,7 @@ import {
   responsePushResults,
 } from '../raw';
 import type { Scenario, ScenarioContext } from '../scenario';
+import { syncIdle } from './util';
 
 /** The §10.2 metadata this catalog asserts (code → fixed fields). */
 const EXPECTED_METADATA: Readonly<
@@ -60,6 +61,11 @@ const EXPECTED_METADATA: Readonly<
     retryable: true,
     recommendedAction: 'retryLater',
   },
+  'sync.internal_error': {
+    category: 'internal',
+    retryable: true,
+    recommendedAction: 'retryLater',
+  },
 };
 
 function checkMetadata(error: DriverError, code: string, what: string): void {
@@ -97,6 +103,76 @@ async function expectRequestError(
 const P1 = { project_id: ['p1'] } as const;
 
 export const errorScenarios: readonly Scenario[] = [
+  {
+    name: 'errors/internal-error-retryable',
+    specRefs: ['§10.1', '§10.2'],
+    requires: ['storage-fault'],
+    async run(ctx) {
+      await ctx.server.setAllowedScopes('actor-1', P1);
+      const fail = ctx.server.failNextCommitRead;
+      const reported = ctx.server.reportedErrors;
+      check(
+        fail !== undefined && reported !== undefined,
+        'driver advertises storage-fault',
+      );
+      if (fail === undefined || reported === undefined) return;
+
+      // Wire: a thrown storage exception answers the retryable catalog code
+      // and never carries the exception text.
+      await fail.call(ctx.server);
+      const raw = await ctx.rawSync('actor-1', [
+        rawPullHeader(),
+        rawSubscription('s1', 'tasks', P1, 0),
+      ]);
+      check(!raw.ok, 'the failed pull is a request-level error');
+      if (!raw.ok) {
+        checkMetadata(raw.error, 'sync.internal_error', 'storage exception');
+        check(
+          !raw.error.message.includes(STORAGE_FAULT_SECRET),
+          'the exception text stays off the wire',
+        );
+      }
+      checkEqual(
+        (await reported.call(ctx.server)).filter((message) =>
+          message.includes(STORAGE_FAULT_SECRET),
+        ).length,
+        1,
+        'the host hook received the original exception once',
+      );
+
+      // Client: the failed round schedules a background retry, and the
+      // retry succeeds.
+      const handle = await ctx.newClient({
+        actorId: 'actor-1',
+        clientId: 'client-1',
+        allowed: P1,
+      });
+      await handle.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await syncIdle(handle);
+      const intents = handle.api.drainSyncIntents;
+      check(intents !== undefined, 'sync intents are available');
+      if (intents === undefined) return;
+      await intents.call(handle.api);
+      await fail.call(ctx.server);
+      const failed = await handle.api.sync();
+      check(!failed.ok, 'the client round failed');
+      if (!failed.ok) {
+        checkEqual(
+          failed.errorCode,
+          'sync.internal_error',
+          'client error code',
+        );
+      }
+      check(
+        (await intents.call(handle.api)).some(
+          (intent) => intent.kind === 'background',
+        ),
+        'the retryable failure scheduled a background retry',
+      );
+      const retried = await handle.api.sync();
+      check(retried.ok, 'the retry succeeded');
+    },
+  },
   {
     name: 'errors/schema-not-ready-refusal',
     specRefs: ['§2.4', '§10.2'],

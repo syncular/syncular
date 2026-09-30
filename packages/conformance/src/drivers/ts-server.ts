@@ -12,6 +12,7 @@ import {
 } from '@syncular/core';
 import { yjsCrdtMergers } from '@syncular/crdt-yjs';
 import {
+  adapterSyncError,
   type BlobPresignConfig,
   type BlobStore,
   type BlobUploadPresignConfig,
@@ -62,6 +63,7 @@ import type {
   ServerRowState,
   ValidatorInstallSpec,
 } from '../driver';
+import { STORAGE_FAULT_SECRET } from '../driver';
 import { bytesToHex } from '../raw';
 
 function toServerSchema(schema: DriverSchema): ServerSchema {
@@ -256,6 +258,8 @@ class TsServerInstance implements ServerInstance {
   #resolverFailing = false;
   #resolverOutage = false;
   #failNextIdempotencyLookup = false;
+  #failNextCommitRead = false;
+  readonly #reportedErrors: string[] = [];
   #pruneDuringNextCommitRead = false;
   #reversedNotifications:
     | Array<{
@@ -348,6 +352,7 @@ class TsServerInstance implements ServerInstance {
       // and limits (one handler, two framings).
       segments: this.#segments,
       limits: this.#limits,
+      onError: (error) => this.#report(error),
       ...(this.#signedUrls !== undefined
         ? { signedUrls: this.#signedUrls }
         : {}),
@@ -416,6 +421,10 @@ class TsServerInstance implements ServerInstance {
         return this.#storage.getPushResult(p, c, id);
       },
       readCommitWindow: async (p, q) => {
+        if (this.#failNextCommitRead) {
+          this.#failNextCommitRead = false;
+          throw new Error(`injected storage failure ${STORAGE_FAULT_SECRET}`);
+        }
         if (this.#pruneDuringNextCommitRead) {
           this.#pruneDuringNextCommitRead = false;
           const logEpoch = await this.#storage.getPartitionLogEpoch(p);
@@ -427,6 +436,8 @@ class TsServerInstance implements ServerInstance {
         }
         return this.#storage.readCommitWindow(p, q);
       },
+      latestScopedChangeSeq: (p, q) =>
+        this.#storage.latestScopedChangeSeq(p, q),
       scanRows: (p, q) => this.#storage.scanRows(p, q),
       getClientRecord: (p, c) => this.#storage.getClientRecord(p, c),
       putClientRecord: (p, r) => this.#storage.putClientRecord(p, r),
@@ -445,8 +456,15 @@ class TsServerInstance implements ServerInstance {
     };
   }
 
+  #report(error: unknown): void {
+    this.#reportedErrors.push(
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+
   #ctx(actorId: string): SyncRequestContext {
     return {
+      onError: (error) => this.#report(error),
       partition: this.#partition,
       actorId,
       schema: toServerSchema(this.#schema),
@@ -503,10 +521,10 @@ class TsServerInstance implements ServerInstance {
       const bytes = await handleSyncRequest(request, this.#ctx(actorId));
       return { ok: true, bytes };
     } catch (error) {
-      if (error instanceof SyncError) {
-        return { ok: false, error: toDriverError(error) };
-      }
-      throw error;
+      // The HTTP adapter's mapping: a non-catalog exception is reported and
+      // answers `sync.internal_error` (§10.2).
+      const sync = adapterSyncError(error, (e) => this.#report(e), 'sync');
+      return { ok: false, error: toDriverError(sync) };
     }
   }
 
@@ -910,6 +928,14 @@ class TsServerInstance implements ServerInstance {
     this.#failNextIdempotencyLookup = true;
   }
 
+  async failNextCommitRead(): Promise<void> {
+    this.#failNextCommitRead = true;
+  }
+
+  async reportedErrors(): Promise<readonly string[]> {
+    return [...this.#reportedErrors];
+  }
+
   async close(): Promise<void> {
     this.#storage.db.close();
   }
@@ -920,6 +946,7 @@ export const tsServerDriver: ServerDriver = {
   capabilities: [
     'backup-restore',
     'idempotency-fault',
+    'storage-fault',
     'concurrent-storage-faults',
     'signed-urls',
     'blobs',

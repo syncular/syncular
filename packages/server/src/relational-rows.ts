@@ -705,6 +705,35 @@ export function prefetchRowsSql(table: CompiledTable): string {
        ON t.partition=$1 AND t.tbl=$3 AND t.row_id=ids.id`;
 }
 
+/**
+ * SQLite/D1: the newest `commit_seq` in the inverted change-scope index for
+ * one variable's values, as one index-only max per value (a `(partition,
+ * tbl, var, value)` prefix), so the cost is independent of the table's
+ * history. Bind order: [partition, tbl, var, value] per value.
+ */
+export function latestScopedChangeSeqSql(valueCount: number): string {
+  const perValue: string[] = [];
+  for (let i = 0; i < valueCount; i++) {
+    perValue.push(
+      'SELECT (SELECT max(commit_seq) FROM sync_change_scopes WHERE partition=? AND tbl=? AND var=? AND value=?) AS seq',
+    );
+  }
+  return `SELECT max(seq) AS seq FROM (${perValue.join(' UNION ALL ')})`;
+}
+
+/**
+ * PostgreSQL set-based form of `latestScopedChangeSeqSql` for the
+ * subscriptions of one table in a pull. `$2` is a JSON array of
+ * `{i, var, vals}` records. Params: [partition, specs (JSON text), tbl].
+ */
+export const LATEST_SCOPED_CHANGE_BATCH_SQL = `SELECT s.i AS sub,
+       (SELECT max(latest.seq) FROM (
+          SELECT (SELECT max(commit_seq) FROM sync_change_scopes
+                   WHERE partition=$1 AND tbl=$3 AND var=s.var AND value=v.value) AS seq
+            FROM jsonb_array_elements_text(s.vals) AS v(value)) AS latest) AS seq
+     FROM jsonb_to_recordset($2::text::jsonb) AS s(i int, var text, vals jsonb)
+    ORDER BY s.i`;
+
 /** SELECT a row's version + scope map (admin/blob authz). Params: [partition, rowId]. */
 export function selectRowScopesSql(
   table: CompiledTable,

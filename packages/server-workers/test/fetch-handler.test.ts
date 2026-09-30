@@ -266,7 +266,12 @@ describe('Workers fetch handler (D1 double + memory stores)', () => {
       {},
       { waitUntil: () => {} },
     );
-    expect(response.status).toBe(400);
+    // The missing coordinator is a host misconfiguration, not a client
+    // error: the adapter answers the retryable internal code (§10.2).
+    expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({
+      code: 'sync.internal_error',
+    });
     expect(await storage.getMaxCommitSeq(PARTITION)).toBe(0);
     expect(
       await storage.getPushResult(PARTITION, 'client-1', 'unsafe-stateless'),

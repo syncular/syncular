@@ -78,6 +78,20 @@ describe('S3SegmentStore specifics', () => {
     expect(stub.objects.has(store.objectKeyFor(record.segmentId))).toBe(true);
   });
 
+  test('open streams the object body with the stored record', async () => {
+    const store = makeStore();
+    const bytes = new Uint8Array(64 * 1024).map((_, i) => i % 253);
+    const record = await store.put(META, bytes, NOW);
+    const opened = await store.open(record.segmentId);
+    if (opened === undefined) throw new Error('expected the stored segment');
+    expect(opened.record.segmentId).toBe(record.segmentId);
+    expect(opened.byteLength).toBe(bytes.length);
+    expect(
+      new Uint8Array(await new Response(opened.body).arrayBuffer()),
+    ).toEqual(bytes);
+    expect(await store.open('sha256:short')).toBeUndefined();
+  });
+
   test('get rejects malformed segment ids without touching the bucket', async () => {
     const store = makeStore();
     expect(await store.get('../../etc/passwd')).toBeUndefined();

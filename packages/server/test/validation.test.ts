@@ -287,7 +287,13 @@ describe('error catalog (§10.2)', () => {
       retryable: true,
       recommendedAction: 'retryLater',
     });
-    expect(Object.keys(ERROR_CATALOG)).toHaveLength(38);
+    expect(ERROR_CATALOG['sync.internal_error']).toMatchObject({
+      category: 'internal',
+      retryable: true,
+      recommendedAction: 'retryLater',
+      httpStatus: 500,
+    });
+    expect(Object.keys(ERROR_CATALOG)).toHaveLength(39);
   });
 
   test('an ineligible primary-key type fails at compile (§2.4)', () => {

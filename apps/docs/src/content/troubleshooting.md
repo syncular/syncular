@@ -13,6 +13,7 @@ Errors carry stable codes. Arriving from a stack trace, start here:
 | `sync.outbox_incompatible` | A pending commit references a dropped column | [below](#syncoutbox_incompatible-rejections-after-a-schema-bump) |
 | `sync.unknown_table` | A subscription names a table the schema retired | [Schema upgrades](/concepts-schema-upgrades/) |
 | `sync.schema_not_ready` | The server booted without a readiness check | [Server setup](/guide-server/) |
+| `sync.internal_error` | A storage, network, or host-code exception reached the server adapter; the client retries | [Reporting server errors](/guide-server/#reporting-server-errors) |
 | `sync.invalid_client_id` | A client id was reused under a different actor | [Seeding data](/server-operations/#seeding-data) |
 | `sync.forbidden` | A write failed the scope check | [Scopes & authorization](/concepts-scopes/) |
 | `sync.storage.scan_requires_scope` | A row scan omitted its mandatory scope filter | [Storage backends](/server-storage/#choosing-the-right-row-lookup) |

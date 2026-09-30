@@ -81,6 +81,7 @@ export {
   IMAGE_VERSION_COLUMN,
   type SqliteImageBuilder,
   type SqliteImageInput,
+  writeSqliteImage,
 } from './sqlite-image';
 export * from './sqlite-blob-store';
 export * from './sqlite-lease-store';

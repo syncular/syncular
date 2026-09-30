@@ -72,8 +72,13 @@ export default {
 HTTP-only transport remains fully conformant, but D1 writes are not stateless:
 the `coordinator` forwards authenticated `/sync` rounds through the partition
 DO. WebSocket upgrades are optional; the DO binding and FIFO are mandatory for
-D1 pushes. Workers has no SQLite engine, so there is no `sqliteImageBuilder`;
-clients advertising that lane receive rows instead.
+D1 pushes. Workers has no SQLite engine, so there is no `sqliteImageBuilder`:
+a client advertising the image lane receives a stored image when one exists
+for its scope and rows otherwise. Store images for large tables from a Bun
+process with `publishSqliteImage`
+([Bootstrap & segments](/concepts-bootstrap/#publishing-images-from-another-host));
+`GET /segments/:id` streams them out of an `S3SegmentStore` without buffering
+them in the isolate.
 
 ## D1 storage
 

@@ -5,17 +5,21 @@
  * blobs. Realtime upgrades are runtime-specific and stay with the host.
  */
 import {
+  adapterSyncError,
   encodeSegmentBody,
+  encodeSegmentStream,
   errorBody,
   handleBlobDownload,
   handleBlobUpload,
   handleBlobUploadGrant,
-  handleSegmentDownload,
+  openSegmentDownload,
   handleRemoteOperation,
   type RemoteOperationRegistry,
   handleSyncRequest,
+  SEGMENT_STREAM_THRESHOLD_BYTES,
   SSP2_CONTENT_TYPE,
   SyncError,
+  type SyncularErrorRoute,
   type SyncServerConfig,
 } from '@syncular/server';
 import { Hono } from 'hono';
@@ -31,16 +35,27 @@ export interface SyncularHonoOptions {
   ) => Promise<{ actorId: string; partition: string } | null>;
 }
 
-function errorResponse(error: unknown): Response {
-  const sync =
-    error instanceof SyncError
-      ? error
-      : new SyncError('sync.invalid_request', String(error));
-  return Response.json(errorBody(sync), { status: sync.httpStatus });
-}
-
 export function createSyncularHono(options: SyncularHonoOptions): Hono {
   const app = new Hono();
+  // A `SyncError` answers with its catalog status. Any other exception goes
+  // to `config.onError` and answers 500 `sync.internal_error` (§10.2).
+  const errorResponse = (
+    error: unknown,
+    route: SyncularErrorRoute = 'sync',
+  ): Response => {
+    const sync = adapterSyncError(error, options.config.onError, route);
+    return Response.json(errorBody(sync), { status: sync.httpStatus });
+  };
+  // Throws outside a route's own try, such as from `authenticate`.
+  app.onError((error, c) => {
+    const segment = c.req.path.split('/')[1];
+    return errorResponse(
+      error,
+      segment === 'operations' || segment === 'segments' || segment === 'blobs'
+        ? segment
+        : 'sync',
+    );
+  });
 
   app.post('/sync', async (c) => {
     const contentType = c.req.header('content-type')?.split(';')[0]?.trim();
@@ -84,15 +99,19 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
     const auth = await options.authenticate(c.req.raw);
     if (auth === null)
       return errorResponse(new SyncError('sync.auth_required'));
-    const bytes = new Uint8Array(await c.req.arrayBuffer());
-    const out = await handleRemoteOperation(
-      bytes,
-      { ...options.config, ...auth },
-      options.operations,
-    );
-    return c.body(out.slice().buffer as ArrayBuffer, 200, {
-      'Content-Type': 'application/vnd.syncular.operations.v1+json',
-    });
+    try {
+      const bytes = new Uint8Array(await c.req.arrayBuffer());
+      const out = await handleRemoteOperation(
+        bytes,
+        { ...options.config, ...auth },
+        options.operations,
+      );
+      return c.body(out.slice().buffer as ArrayBuffer, 200, {
+        'Content-Type': 'application/vnd.syncular.operations.v1+json',
+      });
+    } catch (error) {
+      return errorResponse(error, 'operations');
+    }
   });
 
   app.get('/segments/:segmentId', async (c) => {
@@ -100,7 +119,7 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
     if (auth === null)
       return errorResponse(new SyncError('sync.auth_required'));
     try {
-      const result = await handleSegmentDownload(
+      const result = await openSegmentDownload(
         { ...options.config, ...auth },
         {
           segmentId: c.req.param('segmentId'),
@@ -108,16 +127,32 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
         },
       );
       if (c.req.header('if-none-match') === result.headers.ETag) {
+        await result.body.cancel();
         return c.body(null, 304, result.headers);
+      }
+      const acceptEncoding = c.req.header('accept-encoding');
+      if (result.byteLength > SEGMENT_STREAM_THRESHOLD_BYTES) {
+        // A large segment (a sqlite image) is relayed without buffering;
+        // only a streaming codec applies (§5.8).
+        const encoded = encodeSegmentStream(result.body, acceptEncoding);
+        return new Response(encoded.body, {
+          status: 200,
+          headers: {
+            ...result.headers,
+            ...(encoded.contentEncoding !== undefined
+              ? { 'Content-Encoding': encoded.contentEncoding }
+              : { 'Content-Length': String(result.byteLength) }),
+          },
+        });
       }
       // §5.8 shipped default: compress the body per Accept-Encoding
       // (zstd preferred, gzip fallback, identity otherwise). Content
       // addresses are over the uncompressed bytes (§5.1) — fetch
       // decodes transparently on the client.
-      const encoded = encodeSegmentBody(
-        result.bytes,
-        c.req.header('accept-encoding'),
+      const bytes = new Uint8Array(
+        await new Response(result.body).arrayBuffer(),
       );
+      const encoded = encodeSegmentBody(bytes, acceptEncoding);
       return c.body(encoded.bytes.slice().buffer as ArrayBuffer, 200, {
         ...result.headers,
         ...(encoded.contentEncoding !== undefined
@@ -125,7 +160,7 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
           : {}),
       });
     } catch (error) {
-      return errorResponse(error);
+      return errorResponse(error, 'segments');
     }
   });
 
@@ -150,7 +185,7 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
       );
       return c.body(null, 200);
     } catch (error) {
-      return errorResponse(error);
+      return errorResponse(error, 'blobs');
     }
   });
 
@@ -176,7 +211,7 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
       );
       return c.json(grant, 200);
     } catch (error) {
-      return errorResponse(error);
+      return errorResponse(error, 'blobs');
     }
   });
 
@@ -206,7 +241,7 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
         ...result.headers,
       });
     } catch (error) {
-      return errorResponse(error);
+      return errorResponse(error, 'blobs');
     }
   });
 

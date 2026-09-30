@@ -17,6 +17,28 @@
 export const changelog = [
   {
     date: '2026-09-30',
+    title: 'Publish SQLite images for hosts without a SQLite engine',
+    body: 'A bootstrap on the sqlite-image lane pins at the newest change in its scope, so a stored image stays current across commits to other tables and scopes. `publishSqliteImage` stores the image a pull for a table and scope set looks up, from a Bun process with the production storage, and a Workers host serves it. `GET /segments/:id` streams segments above 16 MiB from a segment store that implements `open` (`S3SegmentStore` does), gzip-encoded when accepted. `writeSqliteImage` is exported for custom builders.',
+    links: [
+      {
+        href: '/concepts-bootstrap/#publishing-images-from-another-host',
+        label: 'Publishing images',
+      },
+    ],
+  },
+  {
+    date: '2026-09-30',
+    title: 'Unexpected server exceptions are retryable and reported',
+    body: 'An exception that is not a `SyncError` answers HTTP 500 with the new retryable `sync.internal_error`, and a fixed message that never contains the exception text. The sync config takes `onError(error, { route })`, which receives the original exception from every adapter route, socket round, and remote operation. The Rust core now schedules a background retry after any catalog-retryable server code, as the TypeScript core does.',
+    links: [
+      {
+        href: '/guide-server/#reporting-server-errors',
+        label: 'Reporting server errors',
+      },
+    ],
+  },
+  {
+    date: '2026-09-30',
     title: 'PostgreSQL push commits cost fewer statements',
     body: 'A push commit on `PostgresServerStorage` reads every row its operations target, with the delete tombstones, in one statement per table, writes each row and its scope-index entries in one statement, and appends all of its changes in one statement. A first realtime round carrying 10 three-row commits and 68 subscriptions issues 141 statements in 10 transactions, down from 400 (SYNCULAR-PULL-ROUNDTRIPS-001). HTTP `POST /sync` and realtime socket rounds share the path.',
     links: [

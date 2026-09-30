@@ -40,7 +40,7 @@ import { serveNotReadyError } from './readiness';
  * would leave gaps on rollback, which the pull-window arithmetic in §4.5
  * does not tolerate). Cross-partition pushes never contend.
  */
-import type { PushOperationResult } from '@syncular/core';
+import type { PushOperationResult, ScopeMap } from '@syncular/core';
 import {
   bindAuthoritativePartition,
   type BoundAuthoritativeQuery,
@@ -59,6 +59,7 @@ import {
   assertPhysicalColumns,
   assertStoredLayouts,
   COMMIT_WINDOW_BATCH_SQL,
+  LATEST_SCOPED_CHANGE_BATCH_SQL,
   deleteRowSql,
   dropTableDdl,
   indexRowPageStatement,
@@ -2204,6 +2205,26 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
       completed: rows.filter((row) => row.status === 'completed').length,
       deadLetter: rows.filter((row) => row.status === 'dead-letter').length,
     };
+  }
+
+  async latestScopedChangeSeq(
+    partition: string,
+    query: { readonly table: string; readonly scopeFilter: ScopeMap },
+  ): Promise<number> {
+    const firstVariable = Object.keys(query.scopeFilter).sort()[0];
+    const values =
+      firstVariable === undefined
+        ? []
+        : (query.scopeFilter[firstVariable] ?? []);
+    if (firstVariable === undefined || values.length === 0) return 0;
+    // Concurrent reads of one table in a pull share one statement.
+    const [row] = await this.#batchedPage<{ seq: unknown }>(
+      LATEST_SCOPED_CHANGE_BATCH_SQL,
+      partition,
+      query.table,
+      { var: firstVariable, vals: values },
+    );
+    return row === undefined ? 0 : asNumber(row.seq);
   }
 
   async readCommitWindow(

@@ -92,3 +92,38 @@ export function encodeSegmentBody(
   }
   return { bytes };
 }
+
+/**
+ * Segments above this size are relayed as a stream instead of being
+ * buffered and compressed in memory: a sqlite image can exceed the memory of
+ * a Workers isolate (128 MB).
+ */
+export const SEGMENT_STREAM_THRESHOLD_BYTES = 16 * 1024 * 1024;
+
+export interface EncodedSegmentStream {
+  readonly body: ReadableStream<Uint8Array<ArrayBuffer>>;
+  /** Absent ⇒ identity (no `Content-Encoding` header). */
+  readonly contentEncoding?: 'gzip';
+}
+
+/**
+ * Compress a streamed segment body per §5.8 with the runtime's
+ * `CompressionStream`: gzip when the client accepts it, identity otherwise
+ * (zstd has no standard streaming codec).
+ */
+export function encodeSegmentStream(
+  body: ReadableStream<Uint8Array<ArrayBuffer>>,
+  acceptEncoding: string | undefined,
+): EncodedSegmentStream {
+  if (
+    acceptEncoding === undefined ||
+    !accepts(acceptEncoding, 'gzip') ||
+    typeof CompressionStream !== 'function'
+  ) {
+    return { body };
+  }
+  return {
+    body: body.pipeThrough(new CompressionStream('gzip')),
+    contentEncoding: 'gzip',
+  };
+}

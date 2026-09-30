@@ -15,11 +15,13 @@ import {
   bindAuthoritativePartition,
   prepareAuthoritativeQuery,
 } from './authoritative-query';
+import type { ScopeMap } from '@syncular/core';
 import { syncError } from './errors';
 import {
   assertPhysicalColumns,
   assertStoredLayouts,
   commitWindowPageSql,
+  latestScopedChangeSeqSql,
   deleteRowSql,
   deleteSqliteRowScopesSql,
   dropTableDdl,
@@ -1589,6 +1591,31 @@ END`);
           .length,
       };
     });
+  }
+
+  async latestScopedChangeSeq(
+    partition: string,
+    query: { readonly table: string; readonly scopeFilter: ScopeMap },
+  ): Promise<number> {
+    const firstVariable = Object.keys(query.scopeFilter).sort()[0];
+    const values =
+      firstVariable === undefined
+        ? []
+        : (query.scopeFilter[firstVariable] ?? []);
+    if (firstVariable === undefined || values.length === 0) return 0;
+    const row = this.db
+      .query<{ seq: number | null }, string[]>(
+        latestScopedChangeSeqSql(values.length),
+      )
+      .get(
+        ...values.flatMap((value) => [
+          partition,
+          query.table,
+          firstVariable,
+          value,
+        ]),
+      );
+    return row?.seq ?? 0;
   }
 
   async readCommitWindow(

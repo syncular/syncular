@@ -49,6 +49,7 @@ import type {
   SegmentRecord,
   SegmentStore,
   SegmentStoreStats,
+  SegmentStream,
 } from './segment-store';
 import {
   mergeSegmentRecord,
@@ -616,6 +617,20 @@ export class S3SegmentStore implements SegmentStore {
     return {
       record: record.record,
       bytes: new Uint8Array(await response.arrayBuffer()),
+    };
+  }
+
+  /** The record plus the object GET's body, never buffered (see `get`). */
+  async open(segmentId: string): Promise<SegmentStream | undefined> {
+    if (!SEGMENT_ID_PATTERN.test(segmentId)) return undefined;
+    const record = await this.#readRecord(segmentId);
+    if (record === undefined) return undefined;
+    const response = await this.#request('GET', this.objectKeyFor(segmentId));
+    if (response === undefined || response.body === null) return undefined;
+    return {
+      record: record.record,
+      body: response.body,
+      byteLength: record.record.byteLength,
     };
   }
 

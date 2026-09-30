@@ -7,6 +7,7 @@
 import type { ScopeMap } from '@syncular/core';
 import type { BlobStore } from './blob-store';
 import type { CrdtMergerRegistry } from './crdt-merger';
+import type { SyncularErrorHandler } from './errors';
 import type { SyncularServerEvents } from './events';
 import type { LeaseStore } from './lease-store';
 import type { AnyReactionPlanner } from './reactions';
@@ -192,6 +193,14 @@ export interface SyncServerConfig {
    * event objects are built. A throwing sink never affects processing.
    */
   readonly events?: SyncularServerEvents;
+  /**
+   * Host error reporting (§10.2 `sync.internal_error`). Receives the original
+   * exception whenever a request, socket round, segment or blob download,
+   * or remote operation fails with something other than a `SyncError`; the
+   * client sees only the catalog code. Like the events sink, a throwing
+   * handler never changes the response.
+   */
+  readonly onError?: SyncularErrorHandler;
 }
 
 /** Per-request context: the config plus host-authenticated identity. */

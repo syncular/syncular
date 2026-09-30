@@ -150,6 +150,7 @@ function wrapStorage(
       return storage.getPushResult(p, c, id);
     },
     readCommitWindow: (p, q) => storage.readCommitWindow(p, q),
+    latestScopedChangeSeq: (p, q) => storage.latestScopedChangeSeq(p, q),
     scanRows: (p, q) => storage.scanRows(p, q),
     getClientRecord: (p, c) => storage.getClientRecord(p, c),
     putClientRecord: (p, r) => storage.putClientRecord(p, r),

@@ -9,13 +9,18 @@ import {
   type PullHeaderFrame,
   type ResponseFrame,
   type ScopeMap,
+  type SegmentRefFrame,
   type SegmentRow,
   type SubscriptionFrame,
 } from '@syncular/core';
-import type { SyncRequestContext } from './context';
+import type { SyncRequestContext, SyncServerConfig } from './context';
 import { clockOf, limitsOf } from './context';
 import type { PullSegmentSummary } from './events';
-import type { CompiledSchema, CompiledTable } from './schema';
+import {
+  type CompiledSchema,
+  type CompiledTable,
+  compileSchema,
+} from './schema';
 import { scopeDigest } from './scopes';
 import type { SegmentRecord, SegmentStore } from './segment-store';
 import { issueSegmentUrl } from './signed-url';
@@ -244,21 +249,11 @@ async function* sqliteImageSegment(
   digest: string,
   trace: PullSectionTrace | undefined,
   logEpoch: string,
+  existing: SegmentRecord | undefined,
+  probe: StoredRow[],
 ): AsyncGenerator<ResponseFrame, boolean> {
   const { storage, segments, partition } = ctx;
   const now = clockOf(ctx)();
-  const existing = await segments.find(
-    {
-      partition,
-      logEpoch,
-      table: plan.table.name,
-      schemaVersion: schema.version,
-      mediaType: 'sqlite',
-      scopeDigest: digest,
-      asOfCommitSeq: asOf,
-    },
-    now,
-  );
   if (existing !== undefined) {
     trace?.segments.push({
       mediaType: 'sqlite',
@@ -276,12 +271,7 @@ async function* sqliteImageSegment(
   }
   // Eligibility probe (§5.3): image only when the snapshot exceeds one
   // rows page — smaller tables stay on the (typically inline) rows lane.
-  const probe = await storage.scanRows(partition, {
-    table: plan.table.name,
-    scopeFilter: plan.effective,
-    afterRowId: null,
-    limit: limits.limitSnapshotRows + 1,
-  });
+  // The probe is the rows lane's first page, read by `prepareSections`.
   if (probe.length <= limits.limitSnapshotRows) return false;
   // §5.3: building an image needs a SQLite engine. The host injects the
   // builder through `sqliteImageBuilder`; when omitted we default to the
@@ -389,7 +379,8 @@ async function* bootstrapSegments(
   startRowCursor: string | null,
   trace: PullSectionTrace | undefined,
   logEpoch: string,
-  firstPage: StoredRow[] | undefined,
+  firstPage: StoredRow[],
+  image: SegmentRecord | undefined,
 ): AsyncGenerator<
   ResponseFrame,
   { complete: boolean; rowCursor: string | null }
@@ -408,13 +399,15 @@ async function* bootstrapSegments(
       digest,
       trace,
       logEpoch,
+      image,
+      firstPage,
     );
     if (imaged) return { complete: true, rowCursor: null };
   }
   let rowCursor = startRowCursor;
   for (let page = 0; page < limits.maxSnapshotPages; page++) {
     const scanned =
-      page === 0 && firstPage !== undefined
+      page === 0
         ? firstPage
         : await storage.scanRows(partition, {
             table: plan.table.name,
@@ -492,27 +485,45 @@ async function* bootstrapSegments(
 /**
  * The storage reads a section needs before its first frame. A pull starts
  * them for every subscription before awaiting any, so a storage that batches
- * concurrent page reads (PostgreSQL) answers all subscriptions of one table
- * with one statement, and the horizon re-check runs once per pull.
+ * concurrent page reads (PostgreSQL, D1) answers all subscriptions of one
+ * table with one statement, and the horizon re-check runs once per pull.
  */
 export interface PreparedSection {
   /** §4.5 window read for an incremental cursor; empty when none was read. */
   readonly commits: StoredCommit[];
   /** Horizon to judge the cursor against, re-read after any window read. */
   readonly horizonSeq: number;
-  /** First rows-lane snapshot page, read when the sqlite lane is excluded. */
+  /**
+   * A bootstrap's first snapshot page (`limitSnapshotRows + 1` rows from the
+   * resume cursor), which is also the §5.3 image eligibility probe.
+   */
   readonly firstPage: StoredRow[] | undefined;
+  /** §4.7 pin of a fresh bootstrap; absent ⇒ `maxCommitSeq`. */
+  readonly pin: number | undefined;
+  /** §5.3 stored image for a sqlite-lane bootstrap's reuse key, if any. */
+  readonly image: SegmentRecord | undefined;
+}
+
+interface PendingSection {
+  readonly commits?: Promise<StoredCommit[]>;
+  readonly firstPage?: Promise<StoredRow[]>;
+  readonly lane?: Promise<{
+    readonly pin: number | undefined;
+    readonly image: SegmentRecord | undefined;
+  }>;
 }
 
 /** Run the pre-frame storage reads of every subscription concurrently. */
 export async function prepareSections(
   ctx: SyncRequestContext,
+  schema: CompiledSchema,
   limits: PullLimits,
   plans: readonly SubscriptionPlan[],
   maxSeq: number,
   horizonSeq: number,
+  logEpoch: string,
 ): Promise<PreparedSection[]> {
-  const reads = plans.map((plan) => {
+  const reads = plans.map((plan): PendingSection => {
     const sub = plan.frame;
     if (plan.status === 'revoked') return {};
     const token = parseBootstrapToken(sub.bootstrapState, sub.table);
@@ -537,24 +548,55 @@ export async function prepareSections(
       return {};
     }
     // Bootstrapping: the same resume decision `preparedSection` makes (§4.7).
-    const startCursor =
+    const resume =
       token !== undefined && token.asOfCommitSeq >= horizonSeq
-        ? token.rowCursor
-        : null;
-    if (sqliteLaneEligible(limits, plan, startCursor)) return {};
-    return {
-      firstPage: ctx.storage.scanRows(ctx.partition, {
-        table: plan.table.name,
-        scopeFilter: plan.effective,
-        afterRowId: startCursor,
-        limit: limits.limitSnapshotRows + 1,
-      }),
-    };
+        ? token
+        : undefined;
+    const startCursor = resume?.rowCursor ?? null;
+    const firstPage = ctx.storage.scanRows(ctx.partition, {
+      table: plan.table.name,
+      scopeFilter: plan.effective,
+      afterRowId: startCursor,
+      limit: limits.limitSnapshotRows + 1,
+    });
+    if (!sqliteLaneEligible(limits, plan, startCursor)) return { firstPage };
+    // §4.7: a fresh sqlite-lane bootstrap pins at the newest change in its
+    // scope (never below the horizon, never above maxCommitSeq), so a stored
+    // image stays the reuse key's match until this scope changes (§5.3).
+    const pinned =
+      resume !== undefined
+        ? Promise.resolve({ asOf: resume.asOfCommitSeq, pin: undefined })
+        : ctx.storage
+            .latestScopedChangeSeq(ctx.partition, {
+              table: plan.table.name,
+              scopeFilter: plan.effective,
+            })
+            .then((latest) => {
+              const pin = Math.min(maxSeq, Math.max(latest, horizonSeq));
+              return { asOf: pin, pin };
+            });
+    const lane = pinned.then(async ({ asOf, pin }) => ({
+      pin,
+      image: await ctx.segments.find(
+        {
+          partition: ctx.partition,
+          logEpoch,
+          table: plan.table.name,
+          schemaVersion: schema.version,
+          mediaType: 'sqlite',
+          scopeDigest: await scopeDigest(plan.effective),
+          asOfCommitSeq: asOf,
+        },
+        clockOf(ctx)(),
+      ),
+    }));
+    return { firstPage, lane };
   });
   const settled = await Promise.all(
     reads.map(async (read) => ({
       commits: read.commits === undefined ? undefined : await read.commits,
       firstPage: await read.firstPage,
+      lane: await read.lane,
     })),
   );
   // Validate continuity before committing to an active section. A prune
@@ -566,6 +608,8 @@ export async function prepareSections(
     commits: read.commits ?? [],
     horizonSeq: read.commits === undefined ? horizonSeq : windowHorizon,
     firstPage: read.firstPage,
+    pin: read.lane?.pin,
+    image: read.lane?.image,
   }));
 }
 
@@ -583,12 +627,17 @@ export async function* subscriptionSection(
   trace?: PullSectionTrace,
   logEpoch?: string,
 ): AsyncGenerator<ResponseFrame, SubscriptionResult> {
+  if (logEpoch === undefined || logEpoch.length === 0) {
+    throw new Error('subscriptionSection requires a non-empty log epoch');
+  }
   const [prepared] = await prepareSections(
     ctx,
+    schema,
     limits,
     [plan],
     maxSeq,
     horizonSeq,
+    logEpoch,
   );
   if (prepared === undefined) throw new Error('prepareSections lost a plan');
   return yield* preparedSection(
@@ -660,8 +709,11 @@ export async function* preparedSection(
       token !== undefined && token.asOfCommitSeq >= horizonSeq
         ? token
         : undefined;
-    const asOf = resume?.asOfCommitSeq ?? maxSeq;
+    const asOf = resume?.asOfCommitSeq ?? prepared.pin ?? maxSeq;
     const startCursor = resume?.rowCursor ?? null;
+    if (prepared.firstPage === undefined) {
+      throw new Error('prepareSections did not read the bootstrap page');
+    }
     yield {
       type: 'SUB_START',
       id: sub.id,
@@ -680,6 +732,7 @@ export async function* preparedSection(
       trace,
       logEpoch,
       prepared.firstPage,
+      prepared.image,
     );
     if (outcome.complete) {
       yield { type: 'SUB_END', nextCursor: asOf };
@@ -739,4 +792,124 @@ export async function* preparedSection(
     : Math.max(sub.cursor, lastDeliveredSeq);
   yield { type: 'SUB_END', nextCursor };
   return { nextCursor, active: true };
+}
+
+export interface PublishSqliteImageInput {
+  /** The sync config the serving host runs, plus a `sqliteImageBuilder`. */
+  readonly config: SyncServerConfig;
+  readonly partition: string;
+  readonly table: string;
+  /**
+   * The effective scopes the subscribing clients hold for `table` (§3.2):
+   * the reuse key carries their digest, so publish once per distinct scope
+   * set that clients subscribe with.
+   */
+  readonly scopes: ScopeMap;
+}
+
+export interface PublishedSqliteImage {
+  readonly segmentId: string;
+  /** The §4.7 scope pin the image is stored under. */
+  readonly asOfCommitSeq: number;
+  readonly scopeDigest: string;
+  readonly rowCount: number;
+  readonly byteLength: number;
+  /** `reused` when an unexpired image for the same reuse key already existed. */
+  readonly origin: 'built' | 'reused';
+}
+
+/**
+ * Publish the §5.3 sqlite image that a pull for (`table`, `scopes`) looks
+ * up, from a host with a SQLite engine (a Bun process with the production
+ * storage). It runs the pull's own bootstrap path (the §4.7 scope pin, the
+ * reuse key, the build), so the stored identity is exactly the one a
+ * serving host without a builder finds. The image stays current until a
+ * change reaches the scope; its lifetime is the segment store's TTL at
+ * publication.
+ */
+export async function publishSqliteImage(
+  input: PublishSqliteImageInput,
+): Promise<PublishedSqliteImage> {
+  const { config, partition } = input;
+  if (config.sqliteImageBuilder === undefined) {
+    throw new Error('publishSqliteImage requires config.sqliteImageBuilder');
+  }
+  const schema = compileSchema(config.schema);
+  const table = schema.tables.get(input.table);
+  if (table === undefined) {
+    throw new Error('publishSqliteImage: the schema has no such table');
+  }
+  await config.storage.ensureSchema(schema, config.checkpoints);
+  const logEpoch = await config.storage.getPartitionLogEpoch(partition);
+  if (logEpoch === undefined) {
+    throw new Error('publishSqliteImage: the partition has no log epoch');
+  }
+  const ctx: SyncRequestContext = {
+    ...config,
+    partition,
+    actorId: 'syncular.image-publisher',
+  };
+  const plan: SubscriptionPlan = {
+    frame: {
+      type: 'SUBSCRIPTION',
+      id: 'image',
+      table: input.table,
+      scopes: input.scopes,
+      cursor: -1,
+    },
+    table,
+    status: 'active',
+    effective: input.scopes,
+  };
+  // One-row pages make every table above one row image-eligible (§5.3).
+  const limits: PullLimits = {
+    limitCommits: 1,
+    limitSnapshotRows: 1,
+    maxSnapshotPages: 1,
+    accept: ACCEPT_SQLITE,
+  };
+  const maxSeq = await config.storage.getMaxCommitSeq(partition);
+  const horizonSeq = await config.storage.getHorizonSeq(partition);
+  const trace: PullSectionTrace = { segments: [] };
+  const [prepared] = await prepareSections(
+    ctx,
+    schema,
+    limits,
+    [plan],
+    maxSeq,
+    horizonSeq,
+    logEpoch,
+  );
+  if (prepared === undefined) throw new Error('prepareSections lost a plan');
+  let ref: SegmentRefFrame | undefined;
+  for await (const frame of preparedSection(
+    ctx,
+    schema,
+    limits,
+    plan,
+    maxSeq,
+    prepared,
+    trace,
+    logEpoch,
+  )) {
+    if (frame.type === 'SEGMENT_REF' && frame.mediaType === 'sqlite') {
+      ref = frame;
+    }
+  }
+  const image = trace.segments.find(
+    (segment) => segment.mediaType === 'sqlite',
+  );
+  if (ref === undefined || image === undefined) {
+    throw new Error(
+      'publishSqliteImage: the scope holds at most one row, which pulls serve inline',
+    );
+  }
+  return {
+    segmentId: ref.segmentId,
+    asOfCommitSeq: ref.asOfCommitSeq,
+    scopeDigest: ref.scopeDigest,
+    rowCount: ref.rowCount,
+    byteLength: ref.byteLength,
+    origin: image.origin === 'reused' ? 'reused' : 'built',
+  };
 }

@@ -89,6 +89,28 @@ An HTTP-only deployment is conformant: clients that never open the socket
 sync over `POST /sync` with identical semantics. Realtime is a second
 binding onto the same handler.
 
+## Reporting server errors
+
+A `SyncError` answers with its catalog code and HTTP status. Any other
+exception (a storage or network failure, a bug in a validator or resolver
+helper) answers HTTP 500 with `sync.internal_error`, which clients retry with
+backoff, and a fixed message that never contains the exception text. Pass
+`onError` in the sync config to receive the original exception:
+
+```ts
+const config: SyncServerConfig = {
+  // ...
+  onError: (error, { route }) => Sentry.captureException(error, { tags: { route } }),
+};
+createSyncularHono({ config, authenticate });
+```
+
+`route` names the surface that caught it: `sync`, `operations`, `segments`,
+`blobs`, `realtime` (a socket round, answered in-band with the same code), or
+`admin` (`createSyncularAdminRoutes` takes its own `onError`). A remote
+operation that fails unexpectedly still answers its `operation.*` code and
+reports the original. A throwing `onError` does not change the response.
+
 ## Realtime hub wiring
 
 `createRealtimeHub` builds the transport-agnostic hub; passing it as

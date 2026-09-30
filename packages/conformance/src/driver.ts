@@ -225,6 +225,7 @@ export type RealtimeConnectResult =
 export type ServerCapability =
   | 'backup-restore'
   | 'idempotency-fault'
+  | 'storage-fault'
   | 'concurrent-storage-faults'
   | 'signed-urls'
   | 'blobs'
@@ -427,6 +428,15 @@ export interface ServerInstance {
    * unreadable record (§6.3 `sync.idempotency_cache_miss`).
    */
   failNextIdempotencyLookup?(): Promise<void>;
+
+  /**
+   * `storage-fault`: the next commit-window read throws a plain exception
+   * carrying `STORAGE_FAULT_SECRET`, which reaches the adapter as a
+   * non-catalog failure (§10.2 `sync.internal_error`).
+   */
+  failNextCommitRead?(): Promise<void>;
+  /** `storage-fault`: exceptions the server handed to its `onError` hook. */
+  reportedErrors?(): Promise<readonly string[]>;
 
   /** Prune through the pinned window on its next read, after the round's horizon read. */
   pruneDuringNextCommitRead?(): Promise<void>;
@@ -1071,3 +1081,6 @@ export interface Pairing {
   readonly client: ClientDriver;
   readonly codec: CodecDriver;
 }
+
+/** Marker text inside the `storage-fault` exception; never on the wire. */
+export const STORAGE_FAULT_SECRET = 'storage-fault-secret-7f3a';

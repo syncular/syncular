@@ -18,7 +18,7 @@ import {
   RESOLVER_OUTAGE,
   touchAuthenticatedPartition,
 } from './context';
-import { SyncError, syncError } from './errors';
+import { reportError, SyncError, syncError } from './errors';
 import { processPushOperationsWithTrace } from './push';
 import { compileSchema } from './schema';
 import { authorizeWrite, type ResolvedScopes } from './scopes';
@@ -450,6 +450,7 @@ export function registerRemoteQuery<Params>(
         );
       } catch (error) {
         if (error instanceof SyncError) throw error;
+        reportError(error, ctx.onError, 'operations');
         throw syncError(
           'operation.query_failed',
           'registered query execution failed',
@@ -463,6 +464,7 @@ export function registerRemoteQuery<Params>(
         rows = normalizeQueryRows(result.rows, descriptor.resultColumns);
       } catch (error) {
         if (error instanceof SyncError) throw error;
+        reportError(error, ctx.onError, 'operations');
         throw syncError(
           'operation.query_failed',
           'registered query result decoding failed',
@@ -766,6 +768,9 @@ export async function handleRemoteOperation(
       ),
     );
   } catch (error) {
+    if (!(error instanceof SyncError)) {
+      reportError(error, ctx.onError, 'operations');
+    }
     return encodeRemoteOperationError(error, 'operation.execution_failed');
   }
 }

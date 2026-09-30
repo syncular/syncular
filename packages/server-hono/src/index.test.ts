@@ -17,6 +17,8 @@ import {
   MemorySegmentStore,
   registerRemoteQuery,
   RemoteOperationRegistry,
+  SEGMENT_STREAM_THRESHOLD_BYTES,
+  scopeDigest,
   type ServerSchema,
   SqliteServerStorage,
   SSP2_CONTENT_TYPE,
@@ -350,5 +352,159 @@ describe('hono adapter', () => {
     expect(types).toContain('request.handled');
     const handled = events.find((e) => e.type === 'request.handled');
     expect(handled).toMatchObject({ outcome: 'ok', kind: 'sync' });
+  });
+});
+
+describe('unexpected exceptions (SYNCULAR-ERROR-CLASS-001)', () => {
+  const SECRET = 'Network connection lost. secret-7f3a';
+
+  async function faultyApp(options: {
+    storage?: SqliteServerStorage;
+    segments?: MemorySegmentStore;
+  }) {
+    const storage = options.storage ?? new SqliteServerStorage();
+    const reported: { error: unknown; route: string }[] = [];
+    await storage.touchPartition('part-1', 0, TEST_LOG_EPOCH);
+    const app = createSyncularHono({
+      config: {
+        schema: SCHEMA,
+        storage,
+        segments: options.segments ?? new MemorySegmentStore(),
+        resolveScopes: () => ({ project_id: ['p1'] }),
+        limits: { inlineSegmentMaxBytes: 1 },
+        onError: (error, { route }) => reported.push({ error, route }),
+      },
+      authenticate: async () => ({ actorId: 'actor-1', partition: 'part-1' }),
+    });
+    return { app, reported };
+  }
+
+  async function expectInternalError(response: Response): Promise<void> {
+    expect(response.status).toBe(500);
+    const text = await response.text();
+    expect(text).not.toContain('secret-7f3a');
+    expect(JSON.parse(text)).toMatchObject({
+      code: 'sync.internal_error',
+      category: 'internal',
+      retryable: true,
+      recommendedAction: 'retryLater',
+    });
+  }
+
+  test('a storage exception in a pull answers 500 sync.internal_error and reaches onError', async () => {
+    const storage = new SqliteServerStorage();
+    storage.scanRows = async () => {
+      throw new Error(SECRET);
+    };
+    const { app, reported } = await faultyApp({ storage });
+    await expectInternalError(
+      await app.request('/sync', {
+        method: 'POST',
+        headers: { 'content-type': SSP2_CONTENT_TYPE },
+        body: requestBytes().slice().buffer as ArrayBuffer,
+      }),
+    );
+    expect(reported).toHaveLength(1);
+    expect(reported[0]?.route).toBe('sync');
+    expect((reported[0]?.error as Error).message).toBe(SECRET);
+  });
+
+  test('a segment-store exception in a download answers 500 and reaches onError', async () => {
+    const segments = new MemorySegmentStore();
+    const { app, reported } = await faultyApp({ segments });
+    const sync = await app.request('/sync', {
+      method: 'POST',
+      headers: { 'content-type': SSP2_CONTENT_TYPE },
+      body: requestBytes().slice().buffer as ArrayBuffer,
+    });
+    const ref = decodeMessage(
+      new Uint8Array(await sync.arrayBuffer()),
+    ).frames.find((f) => f.type === 'SEGMENT_REF');
+    if (ref?.type !== 'SEGMENT_REF') throw new Error('expected SEGMENT_REF');
+    segments.get = async () => {
+      throw new Error(SECRET);
+    };
+    segments.open = async () => {
+      throw new Error(SECRET);
+    };
+    await expectInternalError(
+      await app.request(`/segments/${ref.segmentId}`, {
+        headers: {
+          'x-syncular-scopes': canonicalScopeJson({ project_id: ['p1'] }),
+        },
+      }),
+    );
+    expect(reported.map((entry) => entry.route)).toEqual(['segments']);
+    expect((reported[0]?.error as Error).message).toBe(SECRET);
+  });
+
+  test('a SyncError keeps its catalog status and never reaches onError', async () => {
+    const { app, reported } = await faultyApp({});
+    const response = await app.request('/sync', {
+      method: 'POST',
+      headers: { 'content-type': SSP2_CONTENT_TYPE },
+      body: new Uint8Array([1, 2, 3]).buffer as ArrayBuffer,
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      code: 'sync.invalid_request',
+      retryable: false,
+    });
+    expect(reported).toHaveLength(0);
+  });
+});
+
+describe('large segment downloads', () => {
+  test('a segment above the stream threshold is relayed from SegmentStore.open', async () => {
+    const storage = new SqliteServerStorage();
+    await storage.touchPartition('part-1', 0, TEST_LOG_EPOCH);
+    const segments = new MemorySegmentStore();
+    const bytes = new Uint8Array(SEGMENT_STREAM_THRESHOLD_BYTES + 1024);
+    for (let i = 0; i < bytes.length; i++) bytes[i] = i % 251;
+    const record = await segments.put(
+      {
+        partition: 'part-1',
+        logEpoch: TEST_LOG_EPOCH,
+        table: 'tasks',
+        schemaVersion: 1,
+        mediaType: 'sqlite',
+        scopeDigest: await scopeDigest({ project_id: ['p1'] }),
+        asOfCommitSeq: 0,
+        rowCount: 0,
+        rowCursor: null,
+        nextRowCursor: null,
+      },
+      bytes,
+      Date.now(),
+    );
+    // The route must not buffer through `get`.
+    segments.get = async () => {
+      throw new Error('get must not be called for a streamed segment');
+    };
+    const app = createSyncularHono({
+      config: {
+        schema: SCHEMA,
+        storage,
+        segments,
+        resolveScopes: () => ({ project_id: ['p1'] }),
+      },
+      authenticate: async () => ({ actorId: 'actor-1', partition: 'part-1' }),
+    });
+    const headers = {
+      'x-syncular-scopes': canonicalScopeJson({ project_id: ['p1'] }),
+    };
+    const identity = await app.request(`/segments/${record.segmentId}`, {
+      headers,
+    });
+    expect(identity.status).toBe(200);
+    expect(identity.headers.get('content-length')).toBe(String(bytes.length));
+    expect(new Uint8Array(await identity.arrayBuffer())).toEqual(bytes);
+    const gzip = await app.request(`/segments/${record.segmentId}`, {
+      headers: { ...headers, 'accept-encoding': 'gzip' },
+    });
+    expect(gzip.headers.get('content-encoding')).toBe('gzip');
+    expect(Bun.gunzipSync(new Uint8Array(await gzip.arrayBuffer()))).toEqual(
+      bytes,
+    );
   });
 });

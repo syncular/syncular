@@ -68,6 +68,7 @@
  * re-pull. See `durableObjectRealtimeNotifier` for that caller side.
  */
 import {
+  adapterSyncError,
   createRealtimeHub,
   D1ServerStorage,
   errorBody,
@@ -296,10 +297,7 @@ export class SyncularRealtimeHost {
         headers: { 'content-type': SSP2_CONTENT_TYPE },
       });
     } catch (error) {
-      const sync =
-        error instanceof SyncError
-          ? error
-          : new SyncError('sync.invalid_request', String(error));
+      const sync = adapterSyncError(error, this.#getHub().onError, 'sync');
       return Response.json(errorBody(sync), { status: sync.httpStatus });
     }
   }
@@ -345,10 +343,8 @@ export class SyncularRealtimeHost {
       this.#sessions.set(server, session);
     } catch (error) {
       server.close(1011, 'realtime connect failed');
-      return new Response(
-        error instanceof Error ? error.message : 'connect failed',
-        { status: 400 },
-      );
+      const sync = adapterSyncError(error, this.#getHub().onError, 'realtime');
+      return Response.json(errorBody(sync), { status: sync.httpStatus });
     }
     // `webSocket` is a workerd-only ResponseInit field (the 101 upgrade
     // handshake); the standard lib type has no slot for it.

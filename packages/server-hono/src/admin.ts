@@ -11,12 +11,14 @@
  * entirely the host's and mandatory.
  */
 import {
+  adapterSyncError,
   errorBody,
   matchesRingQuery,
   type RingEventQuery,
   type ReactionStatus,
   SyncError,
   type SyncularAdmin,
+  type SyncularErrorHandler,
   type SyncularServerEvent,
 } from '@syncular/server';
 import { Hono } from 'hono';
@@ -41,14 +43,11 @@ export interface SyncularAdminRoutesOptions {
    * When unset, `partition` is required on every data endpoint.
    */
   readonly defaultPartition?: string;
-}
-
-function jsonError(error: unknown): Response {
-  const sync =
-    error instanceof SyncError
-      ? error
-      : new SyncError('sync.invalid_request', String(error));
-  return Response.json(errorBody(sync), { status: sync.httpStatus });
+  /**
+   * Host error reporting: receives every exception that is not a
+   * `SyncError`, which answers 500 `sync.internal_error` (§10.2).
+   */
+  readonly onError?: SyncularErrorHandler;
 }
 
 function intParam(value: string | undefined, fallback: number): number {
@@ -72,6 +71,12 @@ export function createSyncularAdminRoutes(
     );
   }
   const app = new Hono();
+  const jsonError = (error: unknown): Response => {
+    const sync = adapterSyncError(error, options.onError, 'admin');
+    return Response.json(errorBody(sync), { status: sync.httpStatus });
+  };
+  // Throws outside a route's own try, such as from `authorize`.
+  app.onError((error) => jsonError(error));
 
   /** Resolve the request's partition (query, else default) — required. */
   function partitionOf(c: {

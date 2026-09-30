@@ -328,6 +328,14 @@ class TsClientInstance implements ClientInstance {
     this.#loseRealtime = loseRealtime;
     client.onChange((batch) => this.#changes.push(batch));
     client.onProgress((progress) => this.#progress.push(progress));
+    this.#recordBackgroundIntents(client);
+  }
+
+  /** Retry scheduling after a failed round; mutation intents arrive as effects. */
+  #recordBackgroundIntents(client: SyncClient): void {
+    client.onSyncIntent((intent) => {
+      if (intent.kind === 'background') this.#intents.push(intent);
+    });
   }
 
   async subscribe(input: {
@@ -786,6 +794,7 @@ class TsClientInstance implements ClientInstance {
     this.#client = reopened.client;
     this.#loseRealtime = reopened.loseRealtime;
     this.#client.onChange((batch) => this.#changes.push(batch));
+    this.#recordBackgroundIntents(this.#client);
     if (this.#client.statusSnapshot().syncNeeded) {
       this.#intents.push({ kind: 'interactive' });
     }

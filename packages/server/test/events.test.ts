@@ -409,6 +409,7 @@ function wrapStorage(
     getRow: (p, t, r) => storage.getRow(p, t, r),
     getPushResult: (p, c, id) => storage.getPushResult(p, c, id),
     readCommitWindow: () => onReadCommitWindow(),
+    latestScopedChangeSeq: (p, q) => storage.latestScopedChangeSeq(p, q),
     scanRows: (p, q) => storage.scanRows(p, q),
     getClientRecord: (p, c) => storage.getClientRecord(p, c),
     putClientRecord: (p, r) => storage.putClientRecord(p, r),

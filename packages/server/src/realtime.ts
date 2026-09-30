@@ -39,7 +39,13 @@ import {
   RESOLVER_OUTAGE,
   touchAuthenticatedPartition,
 } from './context';
-import { SyncError, syncError } from './errors';
+import {
+  adapterSyncError,
+  reportError,
+  SyncError,
+  type SyncularErrorHandler,
+  syncError,
+} from './errors';
 import { emitEvent, type SyncularServerEvents } from './events';
 import { createSyncResponseStream } from './handler';
 import { type CompiledSchema, compileSchema } from './schema';
@@ -581,19 +587,18 @@ export class RealtimeSession {
         );
       } catch (error) {
         // §8.7 failures: what HTTP reports as status+JSON becomes a
-        // minimal RESP_HEADER/ERROR/END response stream on the socket.
-        if (error instanceof DecodeError || error instanceof SyncError) {
-          const sync =
-            error instanceof SyncError
-              ? error
-              : syncError(error.code, error.message);
-          finishRound(); // END is in this one chunk
-          await this.#sendRoundChunk(
-            errorResponseBytes(sync, this.wireVersion, this.logEpoch),
-          );
-          return;
-        }
-        throw error;
+        // minimal RESP_HEADER/ERROR/END response stream on the socket. An
+        // exception outside the catalog is reported and answers
+        // `sync.internal_error`, exactly like the HTTP adapter's 500.
+        const sync =
+          error instanceof DecodeError
+            ? syncError(error.code, error.message)
+            : adapterSyncError(error, this.#hub.onError, 'realtime');
+        finishRound(); // END is in this one chunk
+        await this.#sendRoundChunk(
+          errorResponseBytes(sync, this.wireVersion, this.logEpoch),
+        );
+        return;
       }
       // Fetch-ahead so the round stops being "in flight" the moment the
       // chunk carrying END is handed to send: the client may legally
@@ -604,23 +609,22 @@ export class RealtimeSession {
       try {
         step = await iterator.next();
       } catch (error) {
-        // The buffered read-verify refusal is thrown on the generator's first
-        // `next()`, before any chunk is yielded (the generator builds the whole
-        // response, then verifies). Nothing has escaped, so it is delivered as
-        // the same §8.4 ERROR frame HTTP returns rather than a silent close. A
-        // throw after the first chunk still takes the §8.7 violation path.
-        if (error instanceof DecodeError || error instanceof SyncError) {
-          const sync =
-            error instanceof SyncError
-              ? error
-              : syncError(error.code, error.message);
-          finishRound();
-          await this.#sendRoundChunk(
-            errorResponseBytes(sync, this.wireVersion, this.logEpoch),
-          );
-          return;
-        }
-        throw error;
+        // The generator builds the whole response (and runs the read-verify
+        // refusal) on its first `next()`, before any chunk is yielded.
+        // Nothing has escaped, so a failure there is delivered as the same
+        // §8.4 ERROR frame HTTP returns rather than a silent close; a
+        // non-catalog exception is reported and answers
+        // `sync.internal_error`. A throw after the first chunk still takes
+        // the §8.7 violation path.
+        const sync =
+          error instanceof DecodeError
+            ? syncError(error.code, error.message)
+            : adapterSyncError(error, this.#hub.onError, 'realtime');
+        finishRound();
+        await this.#sendRoundChunk(
+          errorResponseBytes(sync, this.wireVersion, this.logEpoch),
+        );
+        return;
       }
       while (!step.done) {
         const chunk = step.value;
@@ -628,9 +632,10 @@ export class RealtimeSession {
         if (step.done) finishRound();
         await this.#sendRoundChunk(chunk);
       }
-    } catch {
+    } catch (error) {
       // A host failure mid-stream leaves the byte stream unfinishable —
       // fail loud, drop the connection (§8.7 / §1.4 abort rule).
+      reportError(error, this.#hub.onError, 'realtime');
       this.#violation('sync round failed mid-stream');
     } finally {
       finishRound();
@@ -1059,8 +1064,16 @@ export class RealtimeHub {
       ...(this.#config.events !== undefined
         ? { events: this.#config.events }
         : {}),
+      ...(this.#config.onError !== undefined
+        ? { onError: this.#config.onError }
+        : {}),
       realtime: this,
     };
+  }
+
+  /** The host's error reporter (`SyncServerConfig.onError`), if any. */
+  get onError(): SyncularErrorHandler | undefined {
+    return this.#config.onError;
   }
 
   requestContext(session: RealtimeSession): SyncRequestContext {

@@ -14,6 +14,7 @@ import {
 import {
   createRealtimeHub,
   type RealtimeHub,
+  SqliteServerStorage,
   type StoredCommit,
 } from '@syncular/server';
 import {
@@ -941,5 +942,63 @@ describe('presence (§8.6)', () => {
     );
     expect(lastPresence(a.wire)?.error).toBe('presence.too_large');
     expect(presenceEvents(b.wire)).toHaveLength(0); // never fanned out
+  });
+});
+
+describe('unexpected exceptions in a socket round (SYNCULAR-ERROR-CLASS-001)', () => {
+  test('a storage exception answers an in-band sync.internal_error and reaches onError', async () => {
+    const t = makeContext();
+    const reported: { error: unknown; route: string }[] = [];
+    const hub = createRealtimeHub({
+      schema: t.ctx.schema,
+      storage: t.ctx.storage,
+      segments: t.segments,
+      resolveScopes: t.ctx.resolveScopes,
+      onError: (error, { route }) => reported.push({ error, route }),
+    });
+    const wire = makeWire();
+    const session = await hub.connect({
+      partition: 'part-1',
+      actorId: 'actor-1',
+      clientId: 'client-1',
+      send: wire.send,
+    });
+    t.storage.scanRows = async () => {
+      throw new Error('Network connection lost. secret-7f3a');
+    };
+    const bytes = requestBytes(
+      [pullHeader(), subFrame('s1', 'tasks', { project_id: ['p1'] }, -1)],
+      'client-1',
+    );
+    const tagged = new Uint8Array(bytes.length + 1);
+    tagged[0] = REALTIME_TAG_ROUND;
+    tagged.set(bytes, 1);
+    await session.handleBinary(tagged);
+    expect(wire.binaries).toHaveLength(1);
+    const message = decodeMessage(wire.binaries[0]!.subarray(1));
+    const error = message.frames.find((frame) => frame.type === 'ERROR');
+    expect(error).toMatchObject({
+      code: 'sync.internal_error',
+      category: 'internal',
+      retryable: true,
+      recommendedAction: 'retryLater',
+    });
+    expect(JSON.stringify(message.frames)).not.toContain('secret-7f3a');
+    expect(reported).toHaveLength(1);
+    expect(reported[0]?.route).toBe('realtime');
+    expect((reported[0]?.error as Error).message).toContain('secret-7f3a');
+    // The connection survives: the next round is served normally.
+    wire.binaries.length = 0;
+    t.storage.scanRows = SqliteServerStorage.prototype.scanRows.bind(t.storage);
+    await session.handleBinary(tagged);
+    const chunks = wire.binaries.map((chunk) => chunk.subarray(1));
+    const joined = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
+    let offset = 0;
+    for (const chunk of chunks) {
+      joined.set(chunk, offset);
+      offset += chunk.length;
+    }
+    const next = decodeMessage(joined);
+    expect(next.frames.some((frame) => frame.type === 'ERROR')).toBe(false);
   });
 });

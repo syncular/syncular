@@ -1311,7 +1311,17 @@ Bootstrap is **resumable, pinned, and paged**:
 
 - On start, the server pins `asOfCommitSeq = maxCommitSeq` and computes
   the table list for the subscription (the handler-declared bootstrap
-  order — parents before children so foreign keys apply cleanly).
+  order — parents before children so foreign keys apply cleanly). A
+  bootstrap eligible for the sqlite lane (§5.3: the client advertised
+  `accept` bit 2 and the table has no encrypted column) instead pins at its
+  **scope pin**: the newest commit whose change to the table carries a value
+  of the subscription's first scope variable (keys sorted) in the inverted
+  change-scope index, raised to `horizonSeq` and capped at `maxCommitSeq`.
+  That index is the `readCommitWindow` candidate set, so no change the
+  subscription would receive lies in `(scope pin, maxCommitSeq]`: the
+  snapshot at the scope pin is the snapshot at `maxCommitSeq`, and the next
+  incremental pull replays an empty window. The scope pin keeps a stored
+  image's reuse key (§5.3) stable across commits outside the scope.
 - The resume token (`SUB_END.bootstrapState`) is a JSON document with the
   shape `{ "asOfCommitSeq": i, "tables": [..], "tableIndex": i,
   "rowCursor": string|null }`. **Clients MUST treat it as opaque** and
@@ -1719,7 +1729,10 @@ client while an unexpired one exists for that key — the §5.1
 build-once SHOULD made hard for the format where identical bytes cannot
 be assumed. This is the bootstrap-storm answer: N clients holding the
 same scopes at the same pin download one image (from the CDN, with
-§5.4 signed URLs).
+§5.4 signed URLs). Because a sqlite-lane bootstrap pins at its scope pin
+(§4.7), a stored image stays the match for its key until a change reaches
+its scope; a host without a SQLite engine serves images a publisher stored
+under that key and serves the rows lane when none exists.
 
 **Eligibility.** Servers SHOULD produce a sqlite segment when the
 client advertises `accept` bit 2 (§4.2) and the table's snapshot
@@ -5249,6 +5262,7 @@ Recommended actions: `refreshAuth`, `checkPermissions`, `fixRequest`,
 | `sync.missing_scopes` | internal | no | inspectServer | Handler emitted a change without stored scopes (§3.1) |
 | `sync.crdt_merge_failed` | internal | no | inspectServer | A `crdt` column (§2.4 tag 8) was pushed but no merger is registered for its `crdtType`, or the merger threw (§5.10.2) — *new in SSP2*; a push operation-result `error` record only |
 | `sync.idempotency_cache_miss` | internal | yes | retryLater | Cached push result unreadable on replay (§6.3) |
+| `sync.internal_error` | internal | yes | retryLater | An exception outside this catalog (host code, storage, network) ended the request or socket round (HTTP 500 or an in-band `ERROR` before the first response byte). The message never carries the exception text; the host receives the original through its error hook |
 | `sync.schema_not_ready` | internal | yes | retryLater | The server refuses a request while a declared backfill checkpoint for the running schema version is not activated, or the stored schema version is newer than the running build (§2.4) — *new in SSP2*; request-level. Structure in `details` names the projection; the message never interpolates it |
 | `sync.too_many_operations` | invalid-request | no | splitBatch | Push exceeds the operation cap (§6.1) |
 | `sync.not_found` | not-found | no | forceResync | Unknown segment id (§5.5) or sync resource |

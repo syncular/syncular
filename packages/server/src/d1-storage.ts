@@ -42,7 +42,7 @@ import type { CommitPruneQuery, CommitPruneResult } from './storage';
  * This mirrors PostgreSQL's per-partition row lock, achieved by placement
  * rather than a lock D1 does not expose.
  */
-import { decodeRow, type RowValue } from '@syncular/core';
+import { decodeRow, type RowValue, type ScopeMap } from '@syncular/core';
 import {
   bindAuthoritativePartition,
   type BoundAuthoritativeQuery,
@@ -54,6 +54,7 @@ import {
   assertPhysicalColumns,
   assertStoredLayouts,
   commitWindowPageSql,
+  latestScopedChangeSeqSql,
   deleteRowSql,
   deleteSqliteRowScopesSql,
   dropTableDdl,
@@ -2144,6 +2145,24 @@ export class D1ServerStorage implements ServerStorage {
       completed: results.filter((row) => row.status === 'completed').length,
       deadLetter: results.filter((row) => row.status === 'dead-letter').length,
     };
+  }
+
+  async latestScopedChangeSeq(
+    partition: string,
+    query: { readonly table: string; readonly scopeFilter: ScopeMap },
+  ): Promise<number> {
+    const firstVariable = Object.keys(query.scopeFilter).sort()[0];
+    const values =
+      firstVariable === undefined
+        ? []
+        : (query.scopeFilter[firstVariable] ?? []);
+    if (firstVariable === undefined || values.length === 0) return 0;
+    // Concurrent reads of a pull share one `db.batch` round trip.
+    const [row] = await this.#batchedAll<{ seq: number | null }>(
+      latestScopedChangeSeqSql(values.length),
+      values.flatMap((value) => [partition, query.table, firstVariable, value]),
+    );
+    return row?.seq ?? 0;
   }
 
   async readCommitWindow(

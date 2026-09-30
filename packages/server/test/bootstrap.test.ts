@@ -11,6 +11,7 @@ import {
 } from '@syncular/core';
 import {
   compileSchema,
+  type SyncularServerEvent,
   issueSegmentUrl,
   scopeDigest,
   segmentIdFor,
@@ -23,7 +24,9 @@ import { Database } from 'bun:sqlite';
 import { subscriptionSection } from '../src/pull';
 import { upsertSql, upsertValues } from '../src/relational-rows';
 import {
+  docRow,
   makeContext,
+  pushCommit,
   TASK_COLUMNS,
   pullHeader,
   section,
@@ -31,6 +34,7 @@ import {
   subFrame,
   sync,
   TEST_LOG_EPOCH,
+  upsert,
 } from './helpers';
 
 function inlineSegments(body: { type: string }[]): SegmentInlineFrame[] {
@@ -683,6 +687,9 @@ test('image build identity includes scopes, partition, epoch, pin, schema and ow
   await tx.commit();
   const variants = [
     {
+      // The §4.7 scope pin: the newest change to this project at or
+      // below the round's maxCommitSeq (part-2 holds rows but no commits).
+      asOf: 2,
       partition: 'part-1',
       epoch: 'epoch1',
       pin: 4,
@@ -691,6 +698,7 @@ test('image build identity includes scopes, partition, epoch, pin, schema and ow
       segments: t.segments,
     },
     {
+      asOf: 0,
       partition: 'part-2',
       epoch: 'epoch1',
       pin: 4,
@@ -699,6 +707,7 @@ test('image build identity includes scopes, partition, epoch, pin, schema and ow
       segments: t.segments,
     },
     {
+      asOf: 2,
       partition: 'part-1',
       epoch: 'epoch2',
       pin: 4,
@@ -707,14 +716,16 @@ test('image build identity includes scopes, partition, epoch, pin, schema and ow
       segments: t.segments,
     },
     {
+      asOf: 1,
       partition: 'part-1',
       epoch: 'epoch1',
-      pin: 5,
+      pin: 1,
       project: 'p1',
       version: 1,
       segments: t.segments,
     },
     {
+      asOf: 4,
       partition: 'part-1',
       epoch: 'epoch1',
       pin: 4,
@@ -723,6 +734,7 @@ test('image build identity includes scopes, partition, epoch, pin, schema and ow
       segments: t.segments,
     },
     {
+      asOf: 2,
       partition: 'part-1',
       epoch: 'epoch1',
       pin: 4,
@@ -731,6 +743,7 @@ test('image build identity includes scopes, partition, epoch, pin, schema and ow
       segments: t.segments,
     },
     {
+      asOf: 2,
       partition: 'part-1',
       epoch: 'epoch1',
       pin: 4,
@@ -770,7 +783,7 @@ test('image build identity includes scopes, partition, epoch, pin, schema and ow
       for await (const frame of stream)
         if (frame.type === 'SEGMENT_REF') refs.push(frame);
       expect(refs).toHaveLength(1);
-      expect(refs[0]?.asOfCommitSeq).toBe(variant.pin);
+      expect(refs[0]?.asOfCommitSeq).toBe(variant.asOf);
       const stored = await variant.segments.get(refs[0]!.segmentId);
       expect(stored?.record).toMatchObject({
         partition: variant.partition,
@@ -842,5 +855,84 @@ test('returning one subscription stream does not cancel a build awaited by anoth
   });
   expect(builds).toBe(1);
   await streams[1]!.return({ nextCursor: 2, active: true });
+  t.storage.db.close();
+});
+
+test('a stored image survives commits outside its scope (§4.7 scope pin)', async () => {
+  let builds = 0;
+  const served: SyncularServerEvent[] = [];
+  const t = makeContext({
+    sqliteImageBuilder: async (input) => {
+      builds += 1;
+      return buildSqliteImage(input);
+    },
+    events: { emit: (event) => served.push(event) },
+  });
+  t.scopes.value = {
+    project_id: ['p1', 'p2'],
+    org_id: ['o1'],
+    projectId: ['p1'],
+  };
+  await seedTask(t, 'one', 'r1', 'p1');
+  const pin = await seedTask(t, 'two', 'r2', 'p1');
+  const bootstrap = (clientId: string) =>
+    sync(
+      t,
+      [
+        pullHeader({ accept: 0b0111, limitSnapshotRows: 1 }),
+        subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
+      ],
+      { clientId },
+    );
+  const origins = () =>
+    served.flatMap((event) =>
+      event.type === 'pull.served'
+        ? event.subscriptions.flatMap((sub) =>
+            sub.segments.map((segment) => segment.origin),
+          )
+        : [],
+    );
+  const first = section(await bootstrap('client-a'), 's1');
+  const firstRef = refSegments(first.body)[0];
+  expect(firstRef?.asOfCommitSeq).toBe(pin);
+  expect(first.end.nextCursor).toBe(pin);
+  expect(origins()).toEqual(['built']);
+
+  // An unrelated table and another project of the same table move
+  // maxCommitSeq, but no change reaches the p1 scope.
+  await sync(t, [
+    pushCommit('doc', [upsert('docs', 'd1', docRow('d1', 'o1', 'p1'))]),
+  ]);
+  const other = await seedTask(t, 'three', 'r3', 'p2');
+  expect(other).toBeGreaterThan(pin);
+
+  served.length = 0;
+  const second = section(await bootstrap('client-b'), 's1');
+  expect(refSegments(second.body)[0]?.segmentId).toBe(firstRef?.segmentId);
+  expect(second.end.nextCursor).toBe(pin);
+  expect(origins()).toEqual(['reused']);
+  expect(builds).toBe(1);
+
+  // The client continues from the pin: the window (pin, maxCommitSeq] holds
+  // no change for its scope, and the cursor advances to maxCommitSeq.
+  const caughtUp = section(
+    await sync(
+      t,
+      [
+        pullHeader({ accept: 0b0111 }),
+        subFrame('s1', 'tasks', { project_id: ['p1'] }, pin),
+      ],
+      { clientId: 'client-b' },
+    ),
+    's1',
+  );
+  expect(caughtUp.body.filter((frame) => frame.type === 'COMMIT')).toEqual([]);
+  expect(caughtUp.end.nextCursor).toBe(other);
+
+  // A change inside the scope moves the pin, so the next bootstrap builds.
+  const moved = await seedTask(t, 'four', 'r4', 'p1');
+  const third = section(await bootstrap('client-c'), 's1');
+  expect(refSegments(third.body)[0]?.asOfCommitSeq).toBe(moved);
+  expect(builds).toBe(2);
   t.storage.db.close();
 });

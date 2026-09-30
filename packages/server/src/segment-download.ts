@@ -19,7 +19,11 @@ import { SyncError, syncError } from './errors';
 import { emitEvent } from './events';
 import { compileSchema } from './schema';
 import { computeEffective, type ResolvedScopes, scopeDigest } from './scopes';
-import { publicationRecord, type SegmentRecord } from './segment-store';
+import {
+  bytesStream,
+  publicationRecord,
+  type SegmentRecord,
+} from './segment-store';
 
 export interface SegmentDownloadRequest {
   readonly segmentId: string;
@@ -30,6 +34,15 @@ export interface SegmentDownloadRequest {
 export interface SegmentDownloadResult {
   readonly record: SegmentRecord;
   readonly bytes: Uint8Array;
+  /** Response headers per §5.5. */
+  readonly headers: Record<string, string>;
+}
+
+/** `openSegmentDownload`: the authorized segment as a byte stream. */
+export interface SegmentStreamResult {
+  readonly record: SegmentRecord;
+  readonly body: ReadableStream<Uint8Array<ArrayBuffer>>;
+  readonly byteLength: number;
   /** Response headers per §5.5. */
   readonly headers: Record<string, string>;
 }
@@ -60,16 +73,52 @@ function parseScopesHeader(header: string): ScopeMap {
   return scopes;
 }
 
-export async function handleSegmentDownload(
+export function handleSegmentDownload(
   ctx: SyncRequestContext,
   request: SegmentDownloadRequest,
 ): Promise<SegmentDownloadResult> {
+  return withDownloadEvent(
+    ctx,
+    request,
+    () => downloadSegment(ctx, request),
+    (result) => result.bytes.length,
+  );
+}
+
+/**
+ * The §5.5 download as a stream: the same authorization as
+ * `handleSegmentDownload`, with the bytes read through `SegmentStore.open`
+ * when the store provides it, so a host with bounded memory (a Worker)
+ * relays a large sqlite image without buffering it. A store without `open`
+ * serves its `get` bytes as a one-chunk stream.
+ */
+export function openSegmentDownload(
+  ctx: SyncRequestContext,
+  request: SegmentDownloadRequest,
+): Promise<SegmentStreamResult> {
+  return withDownloadEvent(
+    ctx,
+    request,
+    () => openSegment(ctx, request),
+    (result) => result.byteLength,
+  );
+}
+
+/** Emit `segment.downloaded` around a download when an events sink exists. */
+async function withDownloadEvent<
+  Result extends { readonly record: SegmentRecord },
+>(
+  ctx: SyncRequestContext,
+  request: SegmentDownloadRequest,
+  run: () => Promise<Result>,
+  bytesOf: (result: Result) => number,
+): Promise<Result> {
   const events = ctx.events;
-  if (events === undefined) return downloadSegment(ctx, request);
+  if (events === undefined) return run();
   const clock = clockOf(ctx);
   const startedAtMs = clock();
   try {
-    const result = await downloadSegment(ctx, request);
+    const result = await run();
     emitEvent(events, {
       type: 'segment.downloaded',
       atMs: clock(),
@@ -78,7 +127,7 @@ export async function handleSegmentDownload(
       segmentId: request.segmentId,
       outcome: 'ok',
       mediaType: result.record.mediaType,
-      bytes: result.bytes.length,
+      bytes: bytesOf(result),
       durationMs: clock() - startedAtMs,
     });
     return result;
@@ -106,13 +155,82 @@ async function downloadSegment(
   if (entry === undefined) {
     throw syncError('sync.not_found', 'unknown segment (§5.5)');
   }
+  const record = await authorizePublication(
+    ctx,
+    request,
+    registry.logEpoch,
+    entry.record,
+  );
+  return { record, bytes: entry.bytes, headers: segmentHeaders(record) };
+}
+
+async function openSegment(
+  ctx: SyncRequestContext,
+  request: SegmentDownloadRequest,
+): Promise<SegmentStreamResult> {
+  const registry = await touchAuthenticatedPartition(ctx);
+  const opened =
+    ctx.segments.open !== undefined
+      ? await ctx.segments.open(request.segmentId)
+      : await ctx.segments.get(request.segmentId).then((entry) =>
+          entry === undefined
+            ? undefined
+            : {
+                record: entry.record,
+                body: bytesStream(entry.bytes),
+                byteLength: entry.bytes.length,
+              },
+        );
+  if (opened === undefined) {
+    throw syncError('sync.not_found', 'unknown segment (§5.5)');
+  }
+  let record: SegmentRecord;
+  try {
+    record = await authorizePublication(
+      ctx,
+      request,
+      registry.logEpoch,
+      opened.record,
+    );
+  } catch (error) {
+    await opened.body.cancel();
+    throw error;
+  }
+  return {
+    record,
+    body: opened.body,
+    byteLength: opened.byteLength,
+    headers: segmentHeaders(record),
+  };
+}
+
+function segmentHeaders(record: SegmentRecord): Record<string, string> {
+  return {
+    'Content-Type': 'application/octet-stream',
+    ETag: `"${record.segmentId}"`,
+    'Cache-Control': 'private, max-age=0',
+    // Accept-Encoding: the body may be served compressed (§5.8).
+    Vary: 'Authorization, X-Syncular-Scopes, Accept-Encoding',
+  };
+}
+
+/**
+ * Select and authorize the caller's publication of a stored segment
+ * (§5.5), projected onto that publication.
+ */
+async function authorizePublication(
+  ctx: SyncRequestContext,
+  request: SegmentDownloadRequest,
+  logEpoch: string,
+  stored: SegmentRecord,
+): Promise<SegmentRecord> {
   // Select the caller's own publication context. A publication under a
   // different partition or a stale log epoch is not this caller's grant, and
   // the entry's existence must not leak across that boundary (§5.5).
-  const inContext = entry.record.publications.filter(
+  const inContext = stored.publications.filter(
     (publication) =>
       publication.partition === ctx.partition &&
-      publication.logEpoch === registry.logEpoch,
+      publication.logEpoch === logEpoch,
   );
   if (inContext.length === 0) {
     throw syncError('sync.not_found', 'unknown segment (§5.5)');
@@ -212,18 +330,8 @@ async function downloadSegment(
     );
   }
 
-  return {
-    // The returned record is projected onto the selected publication, so its
-    // `scopeDigests`/`publications` compatibility view cannot union a grant
-    // from another partition (§5.1).
-    record: publicationRecord(entry.record, publication),
-    bytes: entry.bytes,
-    headers: {
-      'Content-Type': 'application/octet-stream',
-      ETag: `"${entry.record.segmentId}"`,
-      'Cache-Control': 'private, max-age=0',
-      // Accept-Encoding: the body may be served compressed (§5.8).
-      Vary: 'Authorization, X-Syncular-Scopes, Accept-Encoding',
-    },
-  };
+  // The returned record is projected onto the selected publication, so its
+  // `scopeDigests`/`publications` compatibility view cannot union a grant
+  // from another partition (§5.1).
+  return publicationRecord(stored, publication);
 }

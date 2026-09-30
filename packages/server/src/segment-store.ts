@@ -283,6 +283,25 @@ export interface SegmentStoreStats {
   readonly approximate?: boolean;
 }
 
+/** `SegmentStore.open`: a stored segment with its bytes as a stream. */
+export interface SegmentStream {
+  readonly record: SegmentRecord;
+  readonly body: ReadableStream<Uint8Array<ArrayBuffer>>;
+  readonly byteLength: number;
+}
+
+/** One buffered segment as a single-chunk `SegmentStream` body. */
+export function bytesStream(
+  bytes: Uint8Array,
+): ReadableStream<Uint8Array<ArrayBuffer>> {
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(new Uint8Array(bytes));
+      controller.close();
+    },
+  });
+}
+
 export interface SegmentStore {
   put(
     metadata: SegmentMetadata,
@@ -307,6 +326,13 @@ export interface SegmentStore {
    * against the descriptor.
    */
   find(key: SegmentFindKey, nowMs: number): Promise<SegmentRecord | undefined>;
+  /**
+   * Optional streaming read: the record plus the bytes as a stream, so the
+   * download route relays a segment larger than the host's memory (a
+   * sqlite image through a Worker). Returns expired records like `get`.
+   * Stores without it are served through `get`.
+   */
+  open?(segmentId: string): Promise<SegmentStream | undefined>;
   /** Admin/console counters: ADDITIVE, optional. */
   stats?(): Promise<SegmentStoreStats>;
 }
@@ -351,6 +377,16 @@ export class MemorySegmentStore implements SegmentStore {
     segmentId: string,
   ): Promise<{ record: SegmentRecord; bytes: Uint8Array } | undefined> {
     return this.#entries.get(segmentId);
+  }
+
+  async open(segmentId: string): Promise<SegmentStream | undefined> {
+    const entry = this.#entries.get(segmentId);
+    if (entry === undefined) return undefined;
+    return {
+      record: entry.record,
+      body: bytesStream(entry.bytes),
+      byteLength: entry.bytes.length,
+    };
   }
 
   async find(

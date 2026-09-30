@@ -545,10 +545,12 @@ async function* streamResponse(
       const horizonSeq = await ctx.storage.getHorizonSeq(ctx.partition);
       const prepared = await prepareSections(
         ctx,
+        schema,
         limits,
         plan.subscriptions,
         maxSeq,
         horizonSeq,
+        plan.logEpoch,
       );
       for (const [index, subscription] of plan.subscriptions.entries()) {
         const trace: PullSectionTrace | undefined =

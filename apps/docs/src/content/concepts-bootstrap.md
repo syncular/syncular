@@ -77,6 +77,50 @@ the wire ([SPEC §5.8](https://github.com/syncular/syncular/blob/main/docs/SPEC.
 Clients rely on native fetch decoding, so no decompression code ships in the
 client bundle.
 
+## Publishing images from another host
+
+A Workers host has no SQLite engine, so it cannot build images; it serves an
+image only when one is already stored under the key its pull looks up (table,
+schema version, scope digest, log epoch, pin). A bootstrap on the sqlite lane
+pins at its **scope pin**: the newest commit that changed a row in its scope, capped
+at the round's `maxCommitSeq` and raised to the pruning horizon
+([SPEC §4.7](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#47-bootstrap-state-machine)).
+Commits to other tables or other scopes leave the pin, and so the stored
+image, current.
+
+`publishSqliteImage` stores that image from a host that has an engine, such
+as a Bun process with the production PostgreSQL storage and the segment store
+the serving host reads:
+
+```ts
+import { publishSqliteImage, S3SegmentStore } from '@syncular/server';
+import { buildSqliteImage } from '@syncular/server/sqlite';
+
+const segments = new S3SegmentStore({ ...r2, ttlMs: 30 * 24 * 60 * 60 * 1000 });
+const image = await publishSqliteImage({
+  config: { ...syncConfig, segments, sqliteImageBuilder: buildSqliteImage },
+  partition: 'main',
+  table: 'catalogue_codes',
+  scopes: { catalogue_set_id: [catalogueSetId] },
+});
+// { segmentId, asOfCommitSeq, scopeDigest, rowCount, byteLength, origin }
+```
+
+It runs the pull's own bootstrap path, so the stored identity is exactly the
+one a serving pull finds; `origin` is `reused` when the current image already
+exists. `scopes` are the effective scopes the subscribing clients hold: publish
+once per distinct scope set. The image lives for the segment store's `ttlMs`
+at publication; publish again after every change to the scope and before the
+TTL runs out. A change to the scope moves the pin, and until the next
+publication the serving host answers on the rows lane.
+
+`GET /segments/:id` relays a segment above 16 MiB as a stream, gzip-encoded
+when the client accepts it, when the segment store implements `open`
+(`S3SegmentStore` and `MemorySegmentStore` do). A custom store without `open`
+is read whole into memory. With `signedUrls: s3PresignedUrls(store)`, image
+descriptors carry a presigned URL and clients download from the bucket
+directly.
+
 ## Setting it up
 
 The sqlite-image path and signed URLs are opt-in on the server side (a segment

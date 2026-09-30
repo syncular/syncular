@@ -1047,6 +1047,88 @@ mod observation_tests {
         assert_eq!(client.diagnostics_storage(), restored);
     }
 
+    /// Answers every round with one server `ERROR` frame (§1.6).
+    struct ServerErrorTransport {
+        code: &'static str,
+        retryable: bool,
+    }
+
+    impl Transport for ServerErrorTransport {
+        fn sync(&mut self, _request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            Ok(encode_message(&Message {
+                wire_version: WIRE_VERSION,
+                msg_kind: MsgKind::Response,
+                frames: vec![
+                    Frame::RespHeader {
+                        required_schema_version: None,
+                        latest_schema_version: None,
+                        log_epoch: Some("epoch-1".to_owned()),
+                        reset_required: Some(false),
+                    },
+                    Frame::Error {
+                        code: self.code.to_owned(),
+                        message: "server error".to_owned(),
+                        category: "internal".to_owned(),
+                        retryable: self.retryable,
+                        recommended_action: "retryLater".to_owned(),
+                        details: None,
+                    },
+                ],
+            }))
+        }
+
+        fn realtime_sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            self.sync(request)
+        }
+
+        fn download_segment(
+            &mut self,
+            _request: &SegmentRequest,
+            _on_progress: &mut dyn FnMut(u64),
+        ) -> Result<Vec<u8>, TransportError> {
+            Err(TransportError::new("sync.transport_failed", "offline"))
+        }
+
+        fn realtime_connect(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+
+        fn realtime_send(&mut self, _text: &str) -> Result<(), TransportError> {
+            Ok(())
+        }
+
+        fn realtime_close(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn retryable_server_error_schedules_a_background_retry() {
+        let mut client = client();
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        let mut transport = ServerErrorTransport {
+            code: "sync.internal_error",
+            retryable: true,
+        };
+        assert!(matches!(
+            client.sync(&mut transport),
+            SyncOutcome::Failed { ref error_code, .. } if error_code == "sync.internal_error"
+        ));
+        assert!(matches!(
+            client.drain_sync_intents().as_slice(),
+            [SyncIntent::Background { delay_ms: 250 }]
+        ));
+        let mut transport = ServerErrorTransport {
+            code: "sync.invalid_request",
+            retryable: false,
+        };
+        assert!(matches!(
+            client.sync(&mut transport),
+            SyncOutcome::Failed { ref error_code, .. } if error_code == "sync.invalid_request"
+        ));
+        assert!(client.drain_sync_intents().is_empty());
+    }
+
     #[test]
     fn background_retry_deadlines_back_off_and_reset() {
         let mut client = client();
@@ -6279,6 +6361,26 @@ impl SyncClient {
             || code == "sync.transport_failed"
     }
 
+    /// A failed round worth a background retry: a transport failure, or a
+    /// §10.2 code the catalog marks retryable (clients may hardcode the
+    /// catalog metadata, §10.1). Matches the TypeScript core, which retries
+    /// on the server's `retryable` flag.
+    fn retryable_failure_code(code: &str) -> bool {
+        Self::retryable_transport_code(code)
+            || matches!(
+                code,
+                "sync.auth_required"
+                    | "sync.auth_lease_required"
+                    | "sync.auth_lease_revoked"
+                    | "sync.internal_error"
+                    | "sync.idempotency_cache_miss"
+                    | "sync.schema_not_ready"
+                    | "sync.segment_expired"
+                    | "sync.rate_limited"
+                    | "sync.websocket_connection_limit"
+            )
+    }
+
     fn diagnostic_code(code: &str) -> String {
         let valid = !code.is_empty()
             && code.len() <= 96
@@ -8975,7 +9077,7 @@ impl SyncClient {
         // rows, so the server-side existence check (§6.6) passes.
         if self.get_meta(LOG_EPOCH_KEY).is_some() && self.schema_has_blobs() {
             if let Err(TransportError { code, message }) = self.flush_blob_uploads(transport) {
-                if Self::retryable_transport_code(&code) {
+                if Self::retryable_failure_code(&code) {
                     self.schedule_background_retry();
                 }
                 return SyncOutcome::Failed {
@@ -9037,7 +9139,7 @@ impl SyncClient {
                 // §7.3.5: a request-level lease code stops-and-surfaces —
                 // record it in leaseState (no local-data purge, §7.3.4).
                 self.record_lease_error(&code);
-                if Self::retryable_transport_code(&code) {
+                if Self::retryable_failure_code(&code) {
                     let retry_delay_ms = self.schedule_background_retry();
                     if realtime_round {
                         self.realtime_retry_delay_ms = Some(retry_delay_ms);
@@ -9076,9 +9178,7 @@ impl SyncClient {
         }
         match &outcome {
             SyncOutcome::Ok(_) => self.reset_background_retry(),
-            SyncOutcome::Failed { error_code, .. }
-                if Self::retryable_transport_code(error_code) =>
-            {
+            SyncOutcome::Failed { error_code, .. } if Self::retryable_failure_code(error_code) => {
                 self.schedule_background_retry();
             }
             SyncOutcome::Failed { .. } => {}

@@ -805,6 +805,19 @@ export interface ServerStorage {
     query: CommitWindowQuery,
   ): Promise<StoredCommit[]>;
 
+  /**
+   * Newest commitSeq whose change to `query.table` carries a value of the
+   * filter's first variable (keys sorted) in the inverted change-scope index:
+   * the `readCommitWindow` candidate rule, so no change a window read would
+   * deliver for this filter sits above it. 0 when the index holds none (never
+   * written, or pruned). The §4.7 sqlite-lane bootstrap pin reads it; it MUST
+   * be an index lookup per value, independent of the table's history.
+   */
+  latestScopedChangeSeq(
+    partition: string,
+    query: { readonly table: string; readonly scopeFilter: ScopeMap },
+  ): Promise<number>;
+
   /** Scope-filtered snapshot scan, ordered by rowId (bootstrap paging). */
   scanRows(partition: string, query: RowScanQuery): Promise<StoredRow[]>;
 
