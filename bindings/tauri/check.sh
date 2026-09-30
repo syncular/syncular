@@ -12,6 +12,7 @@
 set -euo pipefail
 
 cd "$(dirname "$0")"
+bun ../../scripts/rust-cache.ts target
 
 echo "== frontend deps (bun install, workspace root) =="
 # The example is a workspace member; install at the repo root so its deps

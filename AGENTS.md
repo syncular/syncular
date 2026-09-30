@@ -155,8 +155,10 @@ bun run check        # typecheck + oxlint/oxfmt + knip + tests. THE gate (pre-pu
 - Tests are split: `test:main` plus an isolated multi-tab lane (documented
   bun worker+sqlite segfault, see the root package.json note; retry once is
   expected, do not "fix" it).
-- Rust: `cargo test` / `clippy -D warnings` in `rust/`; the tauri plugin
-  builds in `bindings/tauri/` separately.
+- Rust: `bun run rust test` / `bun run rust clippy --all-targets -- -D warnings`
+  run the core gate with automatic cache pruning. Use `bindings/tauri/check.sh`
+  for the separate Tauri workspace. Cache policy lives in the
+  [contributor guide](apps/docs/src/content/contributing.md#local-rust-build-caches).
 - Lint/format: oxlint (`.oxlintrc.json`) + oxfmt (`.oxfmtrc.json`); knip
   guards unused files/deps/exports (`knip.json`). `bun run lint:fix` before
   committing; generated files (`*.generated.ts`, `*.queries.ts`) are excluded

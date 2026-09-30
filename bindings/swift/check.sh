@@ -19,6 +19,7 @@ cd "$(dirname "$0")"
 SWIFT_DIR="$(pwd)"
 V2_DIR="$(cd ../.. && pwd)"
 RUST_DIR="${V2_DIR}/rust"
+bun "${RUST_DIR}/../scripts/rust-cache.ts" "${RUST_DIR}/target"
 
 # -- generated schema freshness (runs even without a Swift toolchain) ---------
 # The example's Swift schema (Sources/TodoKit/Syncular.generated.swift) is

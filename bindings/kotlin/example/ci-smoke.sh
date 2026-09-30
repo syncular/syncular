@@ -16,6 +16,7 @@ EXAMPLE_DIR="$(pwd)"
 KOTLIN_DIR="$(cd .. && pwd)"
 V2_DIR="$(cd ../../.. && pwd)"
 RUST_DIR="${V2_DIR}/rust"
+bun "${RUST_DIR}/../scripts/rust-cache.ts" "${RUST_DIR}/target"
 QUICKSTART_DIR="${V2_DIR}/examples/quickstart"
 
 GRADLE_CMD=""

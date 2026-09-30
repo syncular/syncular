@@ -5,6 +5,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 RUST_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+bun "${RUST_DIR}/../scripts/rust-cache.ts" "${RUST_DIR}/target"
 HEADER_DIR="${RUST_DIR}"                       # ffi.h lives at rust/ffi.h
 TARGET_DIR="${RUST_DIR}/target"
 

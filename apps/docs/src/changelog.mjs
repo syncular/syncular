@@ -16,6 +16,17 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-09-30',
+    title: 'Local native builds prune old Rust intermediates',
+    body: 'The development checks, native packaging and binding gates now prune stale Cargo caches before building on macOS/Linux. The cleanup keeps recent artifacts and skips target folders locked by another Cargo build. Use bun run rust for Rust-core commands and bun run rust:clean --dry-run to preview the policy.',
+    links: [
+      {
+        href: '/contributing/#local-rust-build-caches',
+        label: 'Build cache policy',
+      },
+    ],
+  },
+  {
     date: '2026-09-29',
     title: 'A hidden leader tab no longer blocks its followers',
     body: 'Follower tabs now check leader liveness by probing: after a third of `followerCallTimeoutMs` without hearing from the leader, a follower posts a probe that the leader tab answers from its message handler, and the follower goes `blocked` with `client.follower_timeout` only when that probe stays unanswered. The leader runs no heartbeat timer, so browser timer throttling in a hidden leader tab no longer blocks visible followers. A hung leader still blocks its followers within `followerCallTimeoutMs`, a blocked follower rebinds when the leader answers again, and one slow call rejects on its own deadline without blocking the handle. Remove any raised `followerCallTimeoutMs` that worked around background-tab throttling. Upgrade note: after upgrading, reload every open tab of the origin. A tab running 0.26.0 or older as a follower next to a leader on this release waits for the removed leader heartbeat and reports the leader unreachable (`client.follower_timeout`) until it reloads; a current follower next to an older leader works.',

@@ -19,6 +19,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 RUST_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+bun "${RUST_DIR}/../scripts/rust-cache.ts" "${RUST_DIR}/target" || exit $?
 OUT_ROOT="${SYNCULAR_NATIVE_OUT:-${RUST_DIR}/target/native}"
 FEATURES="${SYNCULAR_FFI_FEATURES:-native-transport}"
 PROFILE="${SYNCULAR_FFI_PROFILE:-release}"

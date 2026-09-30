@@ -21,6 +21,7 @@ FLUTTER_DIR="$(pwd)"
 SYNCULAR_PKG="${FLUTTER_DIR}/syncular"
 V2_DIR="$(cd ../.. && pwd)"
 RUST_DIR="${V2_DIR}/rust"
+bun "${RUST_DIR}/../scripts/rust-cache.ts" "${RUST_DIR}/target"
 
 # -- generated schema freshness (runs even without a Dart SDK) ----------------
 # The example's Dart schema (example/lib/syncular.generated.dart) is produced by

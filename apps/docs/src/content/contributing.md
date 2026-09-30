@@ -17,6 +17,25 @@ welcome.
 - Keep a contribution focused. Review every changed line and be prepared to
   explain the choices in it.
 
+## Local Rust build caches
+
+Run `bun run rust test` or `bun run rust clippy --all-targets -- -D warnings`
+for the Rust core. These commands prune caches before invoking Cargo.
+`bun run check:code`, native packaging, FFI smoke tests and the binding check
+scripts also run cleanup. Direct `cargo` commands do not run this hook.
+
+Cleanup requires Python 3 on macOS/Linux. It removes hashed Cargo
+intermediates and incremental caches unused for 14 days. Above 8 GiB per
+target folder, it removes older entries unused for at least 24 hours first.
+It retains fresh artifacts, final binaries and exported native packages.
+A Cargo profile lock held by another build skips cleanup for that target
+folder. Windows builds retain their caches without automatic pruning.
+
+Preview with `bun run rust:clean --dry-run`. Set `RUST_CACHE_MAX_GIB`,
+`RUST_CACHE_MAX_AGE_DAYS` or `RUST_CACHE_MIN_AGE_HOURS` to change the policy.
+A custom `CARGO_TARGET_DIR` must be absolute. The size limit is a pruning
+target: recent and final outputs can exceed it until they become eligible.
+
 ## LLM assistance
 
 Use them for whatever helps: tests, reproductions, benchmarks, tooling, docs,

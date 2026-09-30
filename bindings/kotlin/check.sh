@@ -20,6 +20,7 @@ cd "$(dirname "$0")"
 KOTLIN_DIR="$(pwd)"
 V2_DIR="$(cd ../.. && pwd)"
 RUST_DIR="${V2_DIR}/rust"
+bun "${RUST_DIR}/../scripts/rust-cache.ts" "${RUST_DIR}/target"
 
 # -- generated schema freshness (runs even without a JDK/Gradle) --------------
 # The example's Kotlin schema (example/src/main/kotlin/dev/syncular/example/
