@@ -1,8 +1,63 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.26.5** (`v0.26.5`). All artifacts use Apache-2.0, except
+current release is **0.26.6** (`v0.26.6`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.26.6 release notes
+
+0.26.6 is a patch release for the TypeScript server's error handling
+(SYNCULAR-ERROR-CLASS-001) and for serving SQLite images from hosts without a
+SQLite engine. SSP2 stays at wire version 3. The error catalog gains one code,
+the Rust core changes its retry scheduling, and every package and crate ships
+together.
+
+- **Unexpected exceptions answer `sync.internal_error`.** An adapter answered
+  any exception that was not a `SyncError` with HTTP 400
+  `sync.invalid_request` and the exception text as the message, so clients
+  stopped retrying a transient fault, internal messages reached clients, and
+  hosts saw nothing. The new §10.2 code `sync.internal_error` (category
+  `internal`, retryable, `retryLater`, HTTP 500) answers every such case in
+  `createSyncularHono` (sync, operations, segments, blobs, and throws from
+  `authenticate`), `createSyncularAdminRoutes`, the Workers Durable Object's
+  HTTP sync and connect paths, and a realtime socket round (in-band, before
+  the first response byte; a mid-stream failure still drops the connection).
+  The message is fixed and never carries the exception text.
+- **`onError` receives the original exception.** `SyncServerConfig.onError`
+  (and `SyncularAdminRoutesOptions.onError`) receives `(error, { route })`
+  for each of those cases and for remote operations that fail unexpectedly,
+  which keep their `operation.*` code. A throwing handler does not change the
+  response.
+- **The Rust core retries catalog-retryable server codes.** It scheduled a
+  background retry only after transport failures; a server answer carrying
+  `sync.internal_error`, `sync.rate_limited`, `sync.schema_not_ready`, or
+  another code §10.2 marks retryable now schedules one, as the TypeScript core
+  does. The conformance scenario `errors/internal-error-retryable` pins both
+  cores.
+- **Sqlite-lane bootstraps pin at their scope.** A bootstrap eligible for the
+  §5.3 image lane pins at the newest commit that changed a row in its scope,
+  capped at `maxCommitSeq` and raised to the horizon (§4.7), where it pinned
+  at `maxCommitSeq`. A stored image therefore stays the match for its reuse
+  key across commits to other tables or scopes. The next incremental pull
+  replays the empty window from the pin. The pin, the image lookup, and the
+  eligibility probe of every such subscription are read before the first
+  frame, batched per table like the rest of the pull.
+- **`publishSqliteImage` stores images offline.** It runs the pull's bootstrap
+  path for one table and scope set with a `sqliteImageBuilder`, so a Bun
+  process with the production storage stores the image a Workers host finds.
+  `writeSqliteImage` is exported for custom builders. An image lives for the
+  segment store's `ttlMs` at publication.
+- **Large segments stream.** `SegmentStore.open` (optional; implemented by
+  `S3SegmentStore` and `MemorySegmentStore`) returns the record and a byte
+  stream. `openSegmentDownload` authorizes like `handleSegmentDownload` and
+  returns the stream, and the Hono segments route relays a segment above
+  16 MiB without buffering it, gzip-encoded when accepted.
+
+**Upgrade note.** `ServerStorage` gains the required
+`latestScopedChangeSeq(partition, { table, scopeFilter })`; the three in-tree
+storages implement it, and a custom storage must add it (an index-only
+`max(commit_seq)` over `sync_change_scopes` per first-variable value).
+Treat HTTP 500 `sync.internal_error` as retryable in custom clients.
 
 ## 0.26.5 release notes
 
