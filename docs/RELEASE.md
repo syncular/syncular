@@ -1,8 +1,23 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.26.3** (`v0.26.3`). All artifacts use Apache-2.0, except
+current release is **0.26.4** (`v0.26.4`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.26.4 release notes
+
+0.26.4 is a patch release for the TypeScript server's PostgreSQL storage.
+SSP2 stays at wire version 3, and the Rust core, the clients and the Tauri
+plugin do not change. Upgrade Syncular packages and crates together, and do
+not deploy the 0.26.3 npm packages against PostgreSQL.
+
+- **Batched pull reads work on Bun.sql.** The 0.26.2 batched commit-window and
+  row-scan statements bound their per-subscription specs as a `jsonb`
+  parameter. Bun.sql JSON-encodes a string bound to `jsonb`, so PostgreSQL
+  received a JSON string and every pull on a Bun.sql executor failed with
+  `cannot call jsonb_to_recordset on a non-array`. The specs now bind as text
+  before the JSONB cast, which every driver passes through unchanged.
+  node-postgres and PGlite executors were not affected.
 
 ## 0.26.3 release notes
 
