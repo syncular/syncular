@@ -1,8 +1,40 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.26.4** (`v0.26.4`). All artifacts use Apache-2.0, except
+current release is **0.26.5** (`v0.26.5`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.26.5 release notes
+
+0.26.5 is a patch release for the TypeScript server's PostgreSQL push path
+(SYNCULAR-PULL-ROUNDTRIPS-001). SSP2 stays at wire version 3, push results
+and response frames do not change, and the Rust core, the clients and the
+Tauri plugin do not change. Upgrade Syncular packages and crates together.
+
+A realtime socket round (§8.7) runs the same handler as `POST /sync`, so a
+client's first round carries its whole outbox as well as every subscription.
+Each push commit stays one transaction (§6.4) with its serve-gate check under
+the partition lock; the statements inside it drop:
+
+- **Target rows are read ahead per table.** Before a commit applies its
+  operations, `StorageTransaction.prefetchRows` (optional; implemented by
+  `PostgresServerStorage`) reads every targeted row and its delete tombstone
+  in one statement per table. `getRow` and `getTombstoneSeq` answer from that
+  snapshot until the transaction writes the row.
+- **A row write is one statement.** The upsert and the row's scope-index
+  entries share one statement, where the write previously sent the upsert, a
+  scope delete and one insert per scope variable. A row delete removes the
+  row, its scope entries and its blob references in one statement.
+- **A commit's changes append in one statement.** The change log, its
+  inverted scope entries and the delete tombstones of every change in a commit
+  share one statement.
+- **An unversioned insert skips the no-op tombstone delete.** It has already
+  proved, under the partition lock, that no tombstone exists.
+
+A first socket round with 10 three-row push commits and 68 subscriptions over
+two tables issues 141 statements in 10 transactions on 0.26.5; 0.26.1 issued
+400 in 10 transactions. A pull-only round of 68 subscriptions issues 11
+statements and opens no transaction; 0.26.1 issued 80.
 
 ## 0.26.4 release notes
 
