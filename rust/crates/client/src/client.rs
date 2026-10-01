@@ -10771,7 +10771,7 @@ impl SyncClient {
                         };
                         for (i, column) in table.columns.iter().enumerate() {
                             let cell = row.get_ref(i).map_err(|e| invalid(e.to_string()))?;
-                            let param = image_cell_param(column, cell).map_err(&invalid)?;
+                            let param = image_cell_param(column, cell).map_err(invalid)?;
                             ins.raw_bind_parameter(i + 1, &param)
                                 .map_err(|e| invalid(e.to_string()))?;
                             if let Some(mirror) = &mut mirror {
