@@ -4,6 +4,9 @@ import {
   type CommitOutcome,
   type ClientChangeListener,
   canonicalValue,
+  ClientSyncError,
+  FOLLOWER_TIMEOUT_CODE,
+  type LeadershipState,
   type QueryReadSpec,
   type QuerySnapshot,
   ReactiveClientStore,
@@ -146,6 +149,30 @@ class FakeReactiveClient implements ReactiveQueryClient {
   }
 }
 
+/** A follower tab's client: leadership changes arrive from the leader link. */
+class FakeFollowerClient extends FakeReactiveClient {
+  leadership: LeadershipState = {
+    state: 'follower',
+    leaderClientId: 'lead',
+    epoch: 1,
+  };
+  readonly leadershipListeners = new Set<(state: LeadershipState) => void>();
+
+  leadershipSnapshot(): LeadershipState {
+    return this.leadership;
+  }
+
+  onLeadershipChange(listener: (state: LeadershipState) => void): () => void {
+    this.leadershipListeners.add(listener);
+    return () => this.leadershipListeners.delete(listener);
+  }
+
+  setLeadership(state: LeadershipState): void {
+    this.leadership = state;
+    for (const listener of this.leadershipListeners) listener(state);
+  }
+}
+
 function querySpec(overrides: Record<string, unknown> = {}) {
   return {
     id: 'queries:listTasks:hash',
@@ -189,6 +216,85 @@ describe('reactive cache identity', () => {
     expect(left.getSnapshot().phase).toBe('ready');
     offLeft();
     offRight();
+    store.dispose();
+  });
+});
+
+describe('leader link recovery', () => {
+  test('a coverage claim that failed while the leader was unreachable is claimed again on rebind', async () => {
+    const client = new FakeFollowerClient();
+    const store = new ReactiveClientStore(client);
+    store.start();
+    await drainMicrotasks();
+    const retained = store.retainWindow(BASE, ['p2']);
+    const unreachable = new ClientSyncError(
+      FOLLOWER_TIMEOUT_CODE,
+      'the follower cannot reach the tab that owns the database',
+      true,
+    );
+    client.setWindowFailure = unreachable;
+    client.setLeadership({
+      state: 'blocked',
+      reason: 'leader-unreachable',
+      code: FOLLOWER_TIMEOUT_CODE,
+      retryable: true,
+    });
+    const entry = store.query<Row>(
+      querySpec({ coverage: [{ base: BASE, units: ['p1'] }] }),
+    );
+    const off = entry.subscribe(() => {});
+    await drainMicrotasks();
+    await expect(retained.ready).rejects.toBe(unreachable);
+    expect(entry.getSnapshot()).toMatchObject({
+      phase: 'blocked',
+      availability: { state: 'blocked', reason: 'leader-unreachable' },
+    });
+
+    client.setWindowFailure = undefined;
+    client.snapshots.push({
+      revision: 1n,
+      rows: [{ id: 't1', title: 'first' }],
+      coverage: COMPLETE,
+    });
+    const before = client.setWindowCalls.length;
+    client.setLeadership({
+      state: 'follower',
+      leaderClientId: 'lead',
+      epoch: 2,
+    });
+    await drainMicrotasks(24);
+    expect(entry.getSnapshot()).toMatchObject({
+      phase: 'ready',
+      rows: [{ id: 't1', title: 'first' }],
+    });
+    expect(client.setWindowCalls.slice(before).at(-1)).toEqual({
+      base: BASE,
+      units: ['p1', 'p2'],
+    });
+    off();
+    retained.release();
+    store.dispose();
+  });
+
+  test('a follower of another build reports leader-incompatible availability', async () => {
+    const client = new FakeFollowerClient();
+    const store = new ReactiveClientStore(client);
+    store.start();
+    await drainMicrotasks();
+    client.setLeadership({
+      state: 'blocked',
+      reason: 'leader-incompatible',
+      code: 'client.leader_incompatible',
+      leader: 'older',
+      retryable: true,
+    });
+    expect(store.availabilitySnapshot()).toEqual({
+      state: 'blocked',
+      reason: 'leader-incompatible',
+      currentSchemaVersion: 1,
+      leader: 'older',
+      retryable: true,
+    });
     store.dispose();
   });
 });

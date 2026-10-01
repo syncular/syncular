@@ -10,12 +10,37 @@ export type SyncAvailability =
         | 'client-upgrade-required'
         | 'server-behind'
         | 'incompatible-schema'
-        | 'leader-unreachable';
+        | 'leader-unreachable'
+        | 'leader-incompatible';
       readonly currentSchemaVersion: number;
+      /** `leader-incompatible`: whether the tab holding the database runs an
+       * older or a newer build than this one. */
+      readonly leader?: 'older' | 'newer';
       readonly requiredSchemaVersion?: number;
       readonly latestServerSchemaVersion?: number;
       readonly retryable: boolean;
     };
+
+/** The availability of a tab whose leader link is blocked. */
+export function blockedLeadershipAvailability(
+  leadership: Extract<LeadershipState, { state: 'blocked' }>,
+  currentSchemaVersion: number,
+): SyncAvailability {
+  return leadership.reason === 'leader-incompatible'
+    ? {
+        state: 'blocked',
+        reason: 'leader-incompatible',
+        currentSchemaVersion,
+        leader: leadership.leader,
+        retryable: true,
+      }
+    : {
+        state: 'blocked',
+        reason: 'leader-unreachable',
+        currentSchemaVersion,
+        retryable: true,
+      };
+}
 
 /** Classify schema and browser-ownership state without parsing diagnostics. */
 export function classifySyncAvailability(
@@ -24,12 +49,7 @@ export function classifySyncAvailability(
 ): SyncAvailability {
   const currentSchemaVersion = status.currentSchemaVersion;
   if (leadership?.state === 'blocked') {
-    return {
-      state: 'blocked',
-      reason: 'leader-unreachable',
-      currentSchemaVersion,
-      retryable: true,
-    };
+    return blockedLeadershipAvailability(leadership, currentSchemaVersion);
   }
   const required = status.schemaFloor?.requiredSchemaVersion;
   const latest = status.schemaFloor?.latestSchemaVersion;

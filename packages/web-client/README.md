@@ -209,20 +209,34 @@ A leader tab that processes no messages (hung or frozen) therefore blocks its
 followers within `followerCallTimeoutMs`; a closed leader releases its Web
 Lock and hands over without waiting for that deadline. A blocked follower keeps
 probing at the same interval: an answer rebinds the same handle, and a granted
-Web Lock promotes it. A single call that runs past `followerCallTimeoutMs`
-rejects with `client.follower_timeout` and leaves the handle bound, because
-reachability is decided by the probe alone. An unreachable `BroadcastChannel`
-is never treated as evidence that the lock owner is stale, so it never
-authorizes a second worker or database owner.
+Web Lock promotes it. An unreachable `BroadcastChannel` is never treated as
+evidence that the lock owner is stale, so it never authorizes a second worker
+or database owner.
 
-**Upgrade note: reload every open tab.** Followers running 0.26.0 or older
-wait for a leader heartbeat that current leaders no longer send. Such a tab
-next to a current leader reports `leader-unreachable` with
-`client.follower_timeout` after `followerCallTimeoutMs`, unless a current
-follower's probe happens to make the leader announce, and stays that way
-until it reloads. A current follower next to an older leader works, because
-older leaders answer every `hello`. After upgrading, reload every open tab of
-the origin.
+**Forwarded calls have no deadline.** The leader's core serializes window
+edits and sync rounds, so a follower's `setWindow` can wait behind a long
+bootstrap download, exactly as the same call does in the leader tab. While
+the leader answers probes, a forwarded call waits for its result. It rejects
+with `client.follower_timeout` when the link goes `blocked`, with
+`client.leader_handover` when another leader announces or this tab promotes
+before the answer arrives, and with `client.worker_failed` when the handle
+closes. Only calls queued while no leader is bound keep the
+`followerCallTimeoutMs` deadline.
+
+**Tabs of different builds never serve each other.** Every `hello`, `req`,
+and `announce` carries `MULTI_TAB_PROTOCOL_VERSION` and the schema version.
+A follower whose leader differs sends it nothing: `handle.leadership` becomes
+`{ state: 'blocked', reason: 'leader-incompatible', code:
+'client.leader_incompatible', leader: 'older' | 'newer', retryable: true }`
+and calls reject with `client.leader_incompatible`. A leader that hears a
+`hello` from a newer tab closes its core and releases the Web Lock; the newer
+tab promotes, and the former leader stays blocked with `leader: 'newer'`
+until it reloads. A leader answers a request with another identity with a
+`client.leader_incompatible` error. Tabs running 0.29.1 or older send no
+identity and count as older: they never step down, so a newer tab next to
+one shows `leader: 'older'` until that tab reloads or closes. Bump
+`MULTI_TAB_PROTOCOL_VERSION` with every change to a message shape or to a
+forwarded method's arguments or result.
 
 **A hidden leader keeps leadership.** A visible tab does not take leadership
 from a hidden leader. Web Locks `steal` revokes the lease while the leader's
@@ -291,8 +305,9 @@ errors or inspecting generated schema modules:
 ```
 
 The state is a discriminated union covering startup, migration,
-`client-upgrade-required`, `server-behind`, `incompatible-schema`, and
-`leader-unreachable`. Recovery changes the same handle/provider back to its
+`client-upgrade-required`, `server-behind`, `incompatible-schema`,
+`leader-unreachable`, and `leader-incompatible` (with `leader: 'older' |
+'newer'`). Recovery changes the same handle/provider back to its
 children; a blocked live query has `phase === 'blocked'`, never an indefinite
 loading state.
 

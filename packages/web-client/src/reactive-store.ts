@@ -1,4 +1,5 @@
 import {
+  blockedLeadershipAvailability,
   classifySyncAvailability,
   type SyncAvailability,
 } from './availability';
@@ -432,51 +433,7 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
         this.#onRoundFailureChange(),
       );
       this.#onAvailabilityChange();
-      if (this.spec.claimCoverage !== false) {
-        const claims: Promise<void>[] = [];
-        // A composed spec carries one coverage entry per query branch, and
-        // several branches can target the same base. One claim per distinct
-        // base covers the union of their units; a later entry for the same
-        // base does not replace the earlier one.
-        const unitsByBase = new Map<
-          string,
-          { base: WindowBase; units: Set<string> }
-        >();
-        for (const coverage of this.spec.coverage ?? []) {
-          const baseKey = windowBaseKey(coverage.base);
-          const existing = unitsByBase.get(baseKey);
-          if (existing === undefined) {
-            unitsByBase.set(baseKey, {
-              base: coverage.base,
-              units: new Set(coverage.units),
-            });
-          } else {
-            for (const unit of coverage.units) existing.units.add(unit);
-          }
-        }
-        for (const { base, units } of unitsByBase.values()) {
-          claims.push(this.store.setWindowClaim(this.#owner, base, [...units]));
-        }
-        const generation = this.#generation;
-        this.#claimPending = claims.length > 0;
-        if (claims.length > 0)
-          void Promise.all(claims).then(
-            () => {
-              if (generation !== this.#generation || this.#listeners.size === 0)
-                return;
-              this.#claimPending = false;
-              if (!this.#running && this.#state.phase !== 'ready')
-                this.#requestRead();
-            },
-            (error: unknown) => {
-              if (generation !== this.#generation || this.#listeners.size === 0)
-                return;
-              this.#claimPending = false;
-              this.#claimError = errorOf(error);
-              this.#requestRead();
-            },
-          );
-      }
+      this.#claimCoverage();
       this.#requestRead();
     }
     return () => {
@@ -491,6 +448,54 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
       }
     };
   };
+
+  /** Claim this query's window coverage; a failure surfaces on the next read. */
+  #claimCoverage(): void {
+    if (this.spec.claimCoverage === false) return;
+    const claims: Promise<void>[] = [];
+    // A composed spec carries one coverage entry per query branch, and
+    // several branches can target the same base. One claim per distinct
+    // base covers the union of their units; a later entry for the same
+    // base does not replace the earlier one.
+    const unitsByBase = new Map<
+      string,
+      { base: WindowBase; units: Set<string> }
+    >();
+    for (const coverage of this.spec.coverage ?? []) {
+      const baseKey = windowBaseKey(coverage.base);
+      const existing = unitsByBase.get(baseKey);
+      if (existing === undefined) {
+        unitsByBase.set(baseKey, {
+          base: coverage.base,
+          units: new Set(coverage.units),
+        });
+      } else {
+        for (const unit of coverage.units) existing.units.add(unit);
+      }
+    }
+    for (const { base, units } of unitsByBase.values()) {
+      claims.push(this.store.setWindowClaim(this.#owner, base, [...units]));
+    }
+    const generation = this.#generation;
+    this.#claimPending = claims.length > 0;
+    if (claims.length > 0)
+      void Promise.all(claims).then(
+        () => {
+          if (generation !== this.#generation || this.#listeners.size === 0)
+            return;
+          this.#claimPending = false;
+          if (!this.#running && this.#state.phase !== 'ready')
+            this.#requestRead();
+        },
+        (error: unknown) => {
+          if (generation !== this.#generation || this.#listeners.size === 0)
+            return;
+          this.#claimPending = false;
+          this.#claimError = errorOf(error);
+          this.#requestRead();
+        },
+      );
+  }
 
   refresh = (): void => {
     if (this.#delegate !== undefined) this.#delegate.refresh();
@@ -579,6 +584,12 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
       return;
     }
     const wasBlocked = this.#state.phase === 'blocked';
+    // A claim that failed while the leader link was blocked is retried with
+    // the link: its stored error would otherwise fail every later read.
+    if (wasBlocked && this.#claimError !== undefined) {
+      this.#claimError = undefined;
+      this.#claimCoverage();
+    }
     this.#publish({
       ...this.#state,
       phase: wasBlocked
@@ -979,12 +990,10 @@ export class ReactiveClientStore {
     const snapshot = this.status.getSnapshot();
     if (snapshot.status === undefined) {
       return snapshot.leadership?.state === 'blocked'
-        ? {
-            state: 'blocked',
-            reason: 'leader-unreachable',
-            currentSchemaVersion: this.client.currentSchemaVersion ?? 0,
-            retryable: true,
-          }
+        ? blockedLeadershipAvailability(
+            snapshot.leadership,
+            this.client.currentSchemaVersion ?? 0,
+          )
         : { state: 'ready' };
     }
     return classifySyncAvailability(snapshot.status, snapshot.leadership);
@@ -1173,6 +1182,13 @@ export class ReactiveClientStore {
         leadership,
       });
       if (previous.isLoading) this.status.refresh();
+      // Window edits that failed while no leader served this tab apply now;
+      // an applied group compares equal and makes no call.
+      if (leadership.state === 'leader' || leadership.state === 'follower') {
+        for (const group of this.#windowClaims.values()) {
+          if (group.claims.size > 0) this.#scheduleWindow(group);
+        }
+      }
     });
     this.status.refresh();
     this.conflicts.refresh();

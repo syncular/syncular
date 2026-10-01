@@ -255,9 +255,21 @@ follower working. When a probe stays unanswered for the rest of
 `leader-unreachable` and code `client.follower_timeout`, and calls reject
 immediately; a leader tab that processes no messages (hung or frozen) reaches
 this state within `followerCallTimeoutMs`. A blocked follower keeps probing and
-rebinds when the leader answers. A visible tab never takes leadership from a
-hidden leader: leadership moves only when the leader tab closes and its Web
-Lock passes to a follower.
+rebinds when the leader answers. A forwarded call has no deadline of its
+own: the leader's core can run a follower's `setWindow` after a long
+bootstrap download, and the follower waits for it while the leader answers
+probes. The call rejects when the link blocks or another leader takes over.
+A visible tab never takes leadership from a hidden leader: leadership moves
+only when the leader tab closes and its Web Lock passes to a follower.
+
+Tabs of different builds never serve each other. Each tab sends its
+`MULTI_TAB_PROTOCOL_VERSION` and schema version with every message. A
+follower whose leader differs becomes `blocked` with reason
+`leader-incompatible`, code `client.leader_incompatible`, and `leader:
+'older'` or `'newer'`. A leader that hears from a newer tab closes its core
+and releases the lock, so the newer tab promotes and the older one stays
+blocked until it reloads. Tabs running 0.29.1 or older send no version and
+never step down; reload or close them.
 
 Pass `multiTab: false` to opt out: a losing tab is then a
 `role === 'follower'` handle whose calls reject with `client.not_leader`, a

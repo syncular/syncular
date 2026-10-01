@@ -13,8 +13,11 @@ import {
   createSyncClientHandle,
   FOLLOWER_TIMEOUT_CODE,
   isolatedReplicaNames,
+  LEADER_HANDOVER_CODE,
+  LEADER_INCOMPATIBLE_CODE,
   type LeaderLease,
   type LeaderLock,
+  MULTI_TAB_PROTOCOL_VERSION,
   type MultiTabMessage,
   NOT_LEADER_CODE,
   SECURITY_PREFLIGHT_REQUIRED_CODE,
@@ -35,6 +38,9 @@ const WORKER_URL = new URL('./rpc-worker.ts', import.meta.url).href;
 
 /** A shared no-op for the minimal channel stubs below. */
 const noop = (): void => undefined;
+
+/** The identity every tab in a FollowerLink/LeaderBridge unit test shares. */
+const ID = { protocol: MULTI_TAB_PROTOCOL_VERSION, schemaVersion: 1 } as const;
 
 /**
  * An in-process exclusive lock with real Web-Locks semantics: `tryAcquire`
@@ -571,13 +577,14 @@ test('stale-epoch replies from a dead leader are discarded', async () => {
     // oxlint-disable-next-line typescript/no-explicit-any -- minimal channel stub
     channel: channel as any,
     fromId: 'f',
+    identity: ID,
     onEvent: (e) => events.push(e),
     onLeaderChange: noop,
     callTimeoutMs: 50,
   });
 
   // Bind to epoch 5.
-  listener?.({ data: { t: 'announce', epoch: 5, clientId: 'c5' } });
+  listener?.({ data: { t: 'announce', epoch: 5, clientId: 'c5', ...ID } });
   expect(link.epoch).toBe(5);
 
   const call = link.call('query', ['SELECT 1']);
@@ -620,6 +627,7 @@ test('waitUntilBound resolves on announce and rejects on bind timeout', async ()
     // oxlint-disable-next-line typescript/no-explicit-any -- minimal channel stub
     channel: channel as any,
     fromId: 'f',
+    identity: ID,
     onEvent: noop,
     onLeaderChange: noop,
     callTimeoutMs: 40,
@@ -628,7 +636,7 @@ test('waitUntilBound resolves on announce and rejects on bind timeout', async ()
   expect(link.bound).toBe(false);
   const bound = link.waitUntilBound();
   // An announce binds the link → the waiter resolves.
-  listener?.({ data: { t: 'announce', epoch: 1, clientId: 'c1' } });
+  listener?.({ data: { t: 'announce', epoch: 1, clientId: 'c1', ...ID } });
   await bound;
   expect(link.bound).toBe(true);
   // Already bound → resolves synchronously (no new announce needed).
@@ -640,6 +648,7 @@ test('waitUntilBound resolves on announce and rejects on bind timeout', async ()
     // oxlint-disable-next-line typescript/no-explicit-any -- minimal channel stub
     channel: { ...channel, addEventListener: noop } as any,
     fromId: 'g',
+    identity: ID,
     onEvent: noop,
     onLeaderChange: noop,
     callTimeoutMs: 20,
@@ -664,6 +673,7 @@ test('a follower call times out loudly when no leader answers', async () => {
     // oxlint-disable-next-line typescript/no-explicit-any -- minimal channel stub
     channel: channel as any,
     fromId: 'f',
+    identity: ID,
     onEvent: noop,
     onLeaderChange: noop,
     callTimeoutMs: 30,
@@ -685,6 +695,7 @@ test('a leader answering probes keeps its follower bound without running a timer
   const link = new FollowerLink({
     channel: channels.follower,
     fromId: 'f',
+    identity: ID,
     onEvent: noop,
     onLeaderChange: noop,
     callTimeoutMs: 300,
@@ -694,6 +705,8 @@ test('a leader answering probes keeps its follower bound without running a timer
     channel: channels.leader,
     epoch: 1,
     clientId: 'lead',
+    identity: ID,
+    onNewerTab: noop,
     invoke: (method) =>
       method === 'slow' ? new Promise(noop) : Promise.resolve(`${method}-ok`),
   });
@@ -714,15 +727,286 @@ test('a leader answering probes keeps its follower bound without running a timer
   ).toBe(61);
   expect(await link.call('query', [])).toBe('query-ok');
 
-  // A call the leader does not finish fails on its own deadline; the link
-  // stays bound because the leader still answers probes.
-  const slow = link.call('slow', []);
-  clock.advance(300);
-  await expectRejectsWithCode(slow, FOLLOWER_TIMEOUT_CODE);
-  expect(link.leadershipState.state).toBe('follower');
-  expect(await link.call('query', [])).toBe('query-ok');
   bridge.close();
   link.close();
+});
+
+test('a call a live leader runs behind a long sync round waits past the follower timeout', async () => {
+  // The leader's worker serializes setWindow behind a running sync round (a
+  // large bootstrap download). The leader tab still answers every probe, so
+  // the follower's call waits for the result like a call in the leader tab.
+  const { FollowerLink, LeaderBridge } = await import('../src/multi-tab');
+  const clock = manualClock();
+  const channels = channelPair();
+  const link = new FollowerLink({
+    channel: channels.follower,
+    fromId: 'f',
+    identity: ID,
+    onEvent: noop,
+    onLeaderChange: noop,
+    callTimeoutMs: 300,
+    schedule: clock.schedule,
+  });
+  let finishRound: (() => void) | undefined;
+  const bridge = new LeaderBridge({
+    channel: channels.leader,
+    epoch: 1,
+    clientId: 'lead',
+    identity: ID,
+    onNewerTab: noop,
+    invoke: (method) =>
+      method === 'setWindow'
+        ? new Promise((resolve) => {
+            finishRound = () => resolve('window-applied');
+          })
+        : Promise.resolve(`${method}-ok`),
+  });
+  let settled: unknown;
+  const call = link.call('setWindow', []);
+  void call.then(
+    (value) => {
+      settled = value;
+    },
+    (error: unknown) => {
+      settled = error;
+    },
+  );
+  clock.advance(300 * 10);
+  await Promise.resolve();
+  expect(settled).toBeUndefined();
+  expect(link.leadershipState.state).toBe('follower');
+  finishRound?.();
+  expect(await call).toBe('window-applied');
+  bridge.close();
+  link.close();
+});
+
+test('calls in flight reject when the leader stops answering probes', async () => {
+  const { FollowerLink } = await import('../src/multi-tab');
+  const clock = manualClock();
+  let deliver: ((event: { data: MultiTabMessage }) => void) | undefined;
+  const link = new FollowerLink({
+    channel: {
+      postMessage: noop,
+      addEventListener: (_type, listener) => {
+        deliver = listener;
+      },
+      removeEventListener: noop,
+      close: noop,
+    },
+    fromId: 'f',
+    identity: ID,
+    onEvent: noop,
+    onLeaderChange: noop,
+    callTimeoutMs: 300,
+    schedule: clock.schedule,
+  });
+  deliver?.({ data: { t: 'announce', epoch: 1, clientId: 'lead', ...ID } });
+  // The leader tab freezes after it received the call.
+  const call = link.call('query', []);
+  clock.advance(300);
+  expect(link.leadershipState.state).toBe('blocked');
+  await expectRejectsWithCode(call, FOLLOWER_TIMEOUT_CODE);
+  link.close();
+});
+
+test('calls in flight to a previous leader reject when another leader announces', async () => {
+  const { FollowerLink } = await import('../src/multi-tab');
+  const clock = manualClock();
+  let deliver: ((event: { data: MultiTabMessage }) => void) | undefined;
+  const link = new FollowerLink({
+    channel: {
+      postMessage: noop,
+      addEventListener: (_type, listener) => {
+        deliver = listener;
+      },
+      removeEventListener: noop,
+      close: noop,
+    },
+    fromId: 'f',
+    identity: ID,
+    onEvent: noop,
+    onLeaderChange: noop,
+    callTimeoutMs: 300,
+    schedule: clock.schedule,
+  });
+  deliver?.({ data: { t: 'announce', epoch: 1, clientId: 'first', ...ID } });
+  const call = link.call('query', []);
+  deliver?.({ data: { t: 'announce', epoch: 2, clientId: 'second', ...ID } });
+  await expectRejectsWithCode(call, LEADER_HANDOVER_CODE);
+  expect(link.leadershipState).toEqual({
+    state: 'follower',
+    leaderClientId: 'second',
+    epoch: 2,
+  });
+  link.close();
+});
+
+test('a follower never sends calls to a leader of another build', async () => {
+  const { FollowerLink } = await import('../src/multi-tab');
+  const clock = manualClock();
+  const posted: MultiTabMessage[] = [];
+  let deliver: ((event: { data: MultiTabMessage }) => void) | undefined;
+  const states: unknown[] = [];
+  const link = new FollowerLink({
+    channel: {
+      postMessage: (message) => posted.push(message),
+      addEventListener: (_type, listener) => {
+        deliver = listener;
+      },
+      removeEventListener: noop,
+      close: noop,
+    },
+    fromId: 'f',
+    identity: ID,
+    onEvent: noop,
+    onLeaderChange: noop,
+    onStateChange: (state) => states.push(state),
+    callTimeoutMs: 300,
+    schedule: clock.schedule,
+  });
+  const bound = link.waitUntilBound();
+  const queued = link.call('query', []);
+  // A leader from before protocol 1 announces without an identity.
+  deliver?.({ data: { t: 'announce', epoch: 3, clientId: 'legacy' } });
+  await bound;
+  expect(link.leadershipState).toEqual({
+    state: 'blocked',
+    reason: 'leader-incompatible',
+    code: LEADER_INCOMPATIBLE_CODE,
+    leader: 'older',
+    retryable: true,
+  });
+  await expectRejectsWithCode(queued, LEADER_INCOMPATIBLE_CODE);
+  await expectRejectsWithCode(link.call('query', []), LEADER_INCOMPATIBLE_CODE);
+  // A leader with a newer schema blocks it the other way round.
+  deliver?.({
+    data: {
+      t: 'announce',
+      epoch: 4,
+      clientId: 'newer',
+      protocol: ID.protocol,
+      schemaVersion: ID.schemaVersion + 1,
+    },
+  });
+  expect(link.leadershipState).toMatchObject({ leader: 'newer' });
+  expect(posted.filter((message) => message.t === 'req')).toEqual([]);
+  // Blocking is not reachability: no deadline flips it to leader-unreachable.
+  clock.advance(300 * 10);
+  expect(link.leadershipState).toMatchObject({ reason: 'leader-incompatible' });
+  // A leader of this build binds the link.
+  deliver?.({ data: { t: 'announce', epoch: 5, clientId: 'same', ...ID } });
+  expect(link.leadershipState).toEqual({
+    state: 'follower',
+    leaderClientId: 'same',
+    epoch: 5,
+  });
+  link.close();
+});
+
+test('a leader yields to a newer tab and refuses calls from another build', async () => {
+  const { LeaderBridge } = await import('../src/multi-tab');
+  const channels = channelPair();
+  let yielded = 0;
+  const bridge = new LeaderBridge({
+    channel: channels.leader,
+    epoch: 1,
+    clientId: 'lead',
+    identity: ID,
+    onNewerTab: () => {
+      yielded += 1;
+    },
+    invoke: () => Promise.resolve('served'),
+  });
+  // A request from a tab before protocol 1 carries no identity.
+  channels.follower.postMessage({
+    t: 'req',
+    epoch: 1,
+    fromId: 'legacy',
+    reqId: 7,
+    method: 'query',
+    args: [],
+  });
+  await Promise.resolve();
+  expect(channels.fromLeader.at(-1)).toEqual({
+    t: 'res',
+    epoch: 1,
+    reqId: 7,
+    ok: false,
+    error: {
+      code: LEADER_INCOMPATIBLE_CODE,
+      message: 'the leader runs a different protocol or schema version',
+      retryable: true,
+    },
+  });
+  // An older tab's hello is answered; it blocks itself on the announce.
+  channels.follower.postMessage({
+    t: 'hello',
+    fromId: 'older',
+    protocol: ID.protocol,
+    schemaVersion: ID.schemaVersion - 1,
+  });
+  expect(channels.fromLeader.at(-1)).toMatchObject({ t: 'announce', ...ID });
+  expect(yielded).toBe(0);
+  // A newer tab's hello makes the leader step down without announcing.
+  const sent = channels.fromLeader.length;
+  channels.follower.postMessage({
+    t: 'hello',
+    fromId: 'newer',
+    protocol: ID.protocol + 1,
+    schemaVersion: ID.schemaVersion,
+  });
+  expect(yielded).toBe(1);
+  expect(channels.fromLeader.length).toBe(sent);
+  channels.follower.postMessage({ t: 'hello', fromId: 'f', ...ID });
+  bridge.announce();
+  expect(channels.fromLeader.length).toBe(sent);
+});
+
+test('a newer tab takes over from an older leader, which stays blocked', async () => {
+  const lock = makeSharedLock();
+  const lockName = `mt-newer-${lockSeq++}`;
+  const partition = new ChannelPartition();
+  const initConfigs: WorkerInitConfig[] = [];
+  const make = async (
+    schemaVersion: number,
+    clientId: string,
+  ): Promise<SyncClientHandle> => {
+    const handle = await createSyncClientHandle({
+      worker: () => fakeReadyWorker(clientId, initConfigs),
+      schema: { ...CLIENT_SCHEMA, version: schemaVersion },
+      database: { mode: 'custom' },
+      endpoints: { syncUrl: http.syncUrl },
+      autoSync: false,
+      leaderLock: lock,
+      lockName,
+      channelFactory: partition.factory,
+      followerCallTimeoutMs: 1_000,
+    });
+    open.push(handle);
+    return handle;
+  };
+  const older = await make(CLIENT_SCHEMA.version, 'older');
+  expect(older.role).toBe('leader');
+  const newer = await make(CLIENT_SCHEMA.version + 1, 'newer');
+  await waitFor(() => newer.role === 'leader', 'newer tab promotion');
+  expect(newer.leadership).toEqual({ state: 'leader', clientId: 'newer' });
+  expect(older.role).toBe('follower');
+  expect(older.leadership).toEqual({
+    state: 'blocked',
+    reason: 'leader-incompatible',
+    code: LEADER_INCOMPATIBLE_CODE,
+    leader: 'newer',
+    retryable: true,
+  });
+  await expectRejectsWithCode(
+    older.query('SELECT 1'),
+    LEADER_INCOMPATIBLE_CODE,
+  );
+  expect(initConfigs.map((config) => config.schema.version)).toEqual([
+    CLIENT_SCHEMA.version,
+    CLIENT_SCHEMA.version + 1,
+  ]);
 });
 
 test('a leader that processes no messages blocks its follower until a probe is answered', async () => {
@@ -742,19 +1026,20 @@ test('a leader that processes no messages blocks its follower until a probe is a
   const link = new FollowerLink({
     channel,
     fromId: 'f',
+    identity: ID,
     onEvent: noop,
     onLeaderChange: noop,
     onStateChange: (state) => states.push(state.state),
     callTimeoutMs: 300,
     schedule: clock.schedule,
   });
-  deliver?.({ data: { t: 'announce', epoch: 1, clientId: 'lead' } });
+  deliver?.({ data: { t: 'announce', epoch: 1, clientId: 'lead', ...ID } });
   // From here on the leader tab is hung: nothing it would answer arrives.
   posted.length = 0;
   clock.advance(99);
   expect(posted).toEqual([]);
   clock.advance(1);
-  expect(posted).toEqual([{ t: 'hello', fromId: 'f', epoch: 1 }]);
+  expect(posted).toEqual([{ t: 'hello', fromId: 'f', epoch: 1, ...ID }]);
   expect(link.leadershipState.state).toBe('follower');
   clock.advance(199);
   expect(link.leadershipState.state).toBe('follower');
@@ -770,8 +1055,8 @@ test('a leader that processes no messages blocks its follower until a probe is a
   // A blocked link keeps probing, and an answer rebinds the same link.
   posted.length = 0;
   clock.advance(100);
-  expect(posted).toEqual([{ t: 'hello', fromId: 'f', epoch: 1 }]);
-  deliver?.({ data: { t: 'announce', epoch: 1, clientId: 'lead' } });
+  expect(posted).toEqual([{ t: 'hello', fromId: 'f', epoch: 1, ...ID }]);
+  deliver?.({ data: { t: 'announce', epoch: 1, clientId: 'lead', ...ID } });
   expect(link.leadershipState.state).toBe('follower');
   expect(states).toEqual(['follower', 'blocked', 'follower']);
   link.close();
@@ -784,6 +1069,7 @@ test('a handover rebinds the follower and flushes calls queued in the gap', asyn
   const link = new FollowerLink({
     channel: channels.follower,
     fromId: 'f',
+    identity: ID,
     onEvent: noop,
     onLeaderChange: noop,
     callTimeoutMs: 300,
@@ -793,6 +1079,8 @@ test('a handover rebinds the follower and flushes calls queued in the gap', asyn
     channel: channels.leader,
     epoch: 1,
     clientId: 'first',
+    identity: ID,
+    onNewerTab: noop,
     invoke: () => Promise.resolve('first'),
   });
   expect(await link.call('query', [])).toBe('first');
@@ -810,6 +1098,8 @@ test('a handover rebinds the follower and flushes calls queued in the gap', asyn
     channel: channels.leader,
     epoch: link.maxEpochSeen + 1,
     clientId: 'second',
+    identity: ID,
+    onNewerTab: noop,
     invoke: () => Promise.resolve('second'),
   });
   expect(await queued).toBe('second');

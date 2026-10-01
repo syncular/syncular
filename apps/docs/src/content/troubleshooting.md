@@ -150,6 +150,15 @@ tab promotes a follower. Render the blocked state. Raising
 `followerCallTimeoutMs` only delays detection of a hung leader.
 Details in [Web (browser)](/platform-web/#multi-tab).
 
+## `client.leader_incompatible` in a follower tab
+
+The tab that holds the database runs another `MULTI_TAB_PROTOCOL_VERSION` or
+schema version, so `handle.leadership` is `blocked` with reason
+`leader-incompatible`. With `leader: 'newer'`, reload this tab. With
+`leader: 'older'`, reload or close the other tab: a current leader steps down
+for a newer tab by itself, and a leader running 0.29.1 or older never does.
+Once a leader of this build holds the lock, the same handle binds or promotes.
+
 ## `client.storage_busy` while opening the app
 
 The OPFS SAH pool is still owned by another live engine, or a recently closed

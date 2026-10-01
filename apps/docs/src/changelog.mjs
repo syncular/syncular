@@ -17,6 +17,18 @@
 export const changelog = [
   {
     date: '2026-10-01',
+    title:
+      'Multi-tab followers wait for a busy leader and never follow another build',
+    body: "A follower's forwarded call no longer fails after `followerCallTimeoutMs` while the leader answers probes, so a `setWindow` that waits behind a long bootstrap download completes. Calls reject when the link blocks or another leader takes over (`client.leader_handover`). Every cross-tab message carries `MULTI_TAB_PROTOCOL_VERSION` and the schema version: a follower whose leader runs another build is `blocked` with reason `leader-incompatible`, and a leader steps down for a newer tab (SYNCULAR-FOLLOWER-CALL-DEADLINE-001, SYNCULAR-MULTI-TAB-VERSION-001).",
+    links: [
+      {
+        href: '/platform-web/#multi-tab',
+        label: 'Web (browser)',
+      },
+    ],
+  },
+  {
+    date: '2026-10-01',
     title: 'Streamed segments reach Workers clients encoded once',
     body: "`GET /segments/:id` on Cloudflare Workers gzipped a segment above 16 MiB itself and declared `Content-Encoding: gzip`; workerd then gzipped the response again, so a client that decoded it once failed content-address verification and retried without end. The route now marks every body it encodes with `encodeBody: 'manual'`, and a workerd test verifies the content address of a streamed segment after one decode (SYNCULAR-WORKERS-SEGMENT-ENCODING-001).",
     links: [

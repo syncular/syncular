@@ -1,8 +1,56 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.29.1** (`v0.29.1`). All artifacts use Apache-2.0, except
+current release is **0.30.0** (`v0.30.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.30.0 release notes
+
+0.30.0 is a minor release for the TypeScript browser client's multi-tab
+replica: `LeadershipState` and `SyncAvailability` gain a blocked reason, and
+the leader/follower messages gain fields. SSP2 stays at wire version 3, and the
+server, the Rust core and the Tauri plugin do not change. Upgrade Syncular
+packages and crates together.
+
+- **A busy leader no longer fails its followers' calls
+  (SYNCULAR-FOLLOWER-CALL-DEADLINE-001).** Each forwarded call carried its own
+  `followerCallTimeoutMs` deadline. The leader's core runs `setWindow` after
+  the sync round in progress, so a follower that opened a new window during a
+  long bootstrap download got `client.follower_timeout` after 10 s although
+  the leader answered every probe; a retained window then never registered
+  and the page waited for its rows without end. A forwarded call now has no
+  deadline. It rejects with `client.follower_timeout` when the link blocks,
+  with the new `client.leader_handover` when another leader announces or the
+  tab promotes, and with `client.worker_failed` when the handle closes. Calls
+  queued while no leader is bound keep their deadline.
+- **Tabs of different builds never serve each other
+  (SYNCULAR-MULTI-TAB-VERSION-001).** A leader served every follower of the
+  origin, so a tab opened before a deploy kept serving tabs with a newer
+  schema and client. Every `hello`, `req` and `announce` now carries
+  `MULTI_TAB_PROTOCOL_VERSION` (1) and the schema version. A follower whose
+  leader differs becomes `blocked` with reason `leader-incompatible`, code
+  `client.leader_incompatible` and `leader: 'older' | 'newer'`, and sends it
+  nothing. A leader that hears a `hello` from a newer tab closes its core and
+  releases the Web Lock, so the newer tab promotes; the former leader stays
+  blocked with `leader: 'newer'`. A leader answers a request with another
+  identity with a `client.leader_incompatible` error. `SyncAvailability`
+  reports `leader-incompatible` with the same `leader` field.
+- **Live queries recover with the leader link.** A coverage claim that failed
+  while the link was blocked stayed as the query's error after the link
+  recovered. The reactive store now claims it again when the query leaves
+  `blocked`, and re-applies every claimed window group when the tab becomes a
+  follower or the leader again.
+- **A follower that fails its security preflight releases the lock queue.**
+  `createSyncClientHandle` with `securityPreflight: true` threw when the
+  follower's preflight call failed but left the handle waiting for the Web
+  Lock, so it later promoted into a database nobody held. It now closes the
+  handle before it rethrows.
+
+**Upgrade notes.** Tabs running 0.29.1 or older send no identity and count as
+older: a 0.30.0 tab next to such a leader stays blocked with `leader:
+'older'` until the older tab reloads or closes. Render `leader-incompatible`
+next to `leader-unreachable`, and drop code that retried
+`client.follower_timeout` on calls against a live leader.
 
 ## 0.29.1 release notes
 

@@ -80,10 +80,13 @@ import {
   broadcastChannelFactory,
   type CrossTabChannel,
   FollowerLink,
+  LEADER_INCOMPATIBLE_CODE,
   LeaderBridge,
   type LeadershipState,
+  MULTI_TAB_PROTOCOL_VERSION,
   multiTabChannelName,
   newTabId,
+  type TabIdentity,
 } from './multi-tab';
 import type { OutboxCommit } from './outbox';
 import type {
@@ -397,6 +400,33 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     }
   }
 
+  /**
+   * @internal — a newer tab asked for the database: close the core and
+   * release the lock so that tab promotes. This tab stays blocked until it
+   * reloads with the newer build.
+   */
+  __yieldToNewerTab(): void {
+    const core = this.#core;
+    if (core === undefined) return;
+    this.#core = undefined;
+    this.#role = 'follower';
+    this.__setLeadership({
+      state: 'blocked',
+      reason: 'leader-incompatible',
+      code: LEADER_INCOMPATIBLE_CODE,
+      leader: 'newer',
+      retryable: true,
+    });
+    for (const listener of this.#roleListeners) {
+      try {
+        listener('follower');
+      } catch {
+        /* a UI listener must never break the handover */
+      }
+    }
+    void core.close(true);
+  }
+
   /** @internal — apply a follower reachability snapshot in place. */
   __setLeadership(state: LeadershipState): void {
     this.#leadership = state;
@@ -495,6 +525,18 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     if (this.#closed) {
       return Promise.reject(
         new ClientSyncError(WORKER_FAILED_CODE, 'the handle is closed'),
+      );
+    }
+    if (
+      this.#leadership.state === 'blocked' &&
+      this.#leadership.reason === 'leader-incompatible'
+    ) {
+      return Promise.reject(
+        new ClientSyncError(
+          LEADER_INCOMPATIBLE_CODE,
+          'the tab that owns the database runs a different protocol or schema version',
+          true,
+        ),
       );
     }
     if (this.#role === 'follower') {
@@ -1017,6 +1059,8 @@ async function bootLeader(
     fireConfigCallbacks(config, event);
     handleRef.handle?.__dispatchEvent(event);
   };
+  // A newer tab may say hello before the handle exists; yield once it does.
+  let newerTab = false;
   const makeBridge =
     config.multiTab !== false
       ? (
@@ -1032,7 +1076,12 @@ async function bootLeader(
             channel,
             epoch: parts.epoch ?? 0,
             clientId,
+            identity: tabIdentity(config),
             invoke,
+            onNewerTab: () => {
+              newerTab = true;
+              handleRef.handle?.__yieldToNewerTab();
+            },
           });
         }
       : undefined;
@@ -1058,7 +1107,15 @@ async function bootLeader(
     leadershipListeners: parts.leadershipListeners,
   });
   handleRef.handle = handle;
+  if (newerTab) handle.__yieldToNewerTab();
   return handle;
+}
+
+function tabIdentity(config: SyncClientHandleConfig): TabIdentity {
+  return {
+    protocol: MULTI_TAB_PROTOCOL_VERSION,
+    schemaVersion: config.schema.version,
+  };
 }
 
 /**
@@ -1080,6 +1137,7 @@ async function bootFollower(
   const follower = new FollowerLink({
     channel,
     fromId: newTabId(),
+    identity: tabIdentity(config),
     onEvent: (event) => handleRef.handle?.__dispatchEvent(event),
     onLeaderChange: (clientId) => {
       // Learn the leader's shared client id (best-effort; the handle exposes
@@ -1115,6 +1173,8 @@ async function bootFollower(
     const nextEpoch = follower.maxEpochSeen + 1;
     // Unbind the link so any late leader traffic is ignored, then promote.
     follower.unbind();
+    // A newer tab may say hello before this core is installed.
+    let newerTab = false;
     try {
       const core = await startWorkerCore({
         config,
@@ -1138,7 +1198,12 @@ async function bootFollower(
                   channel: promoteChannel,
                   epoch: nextEpoch,
                   clientId,
+                  identity: tabIdentity(config),
                   invoke,
+                  onNewerTab: () => {
+                    newerTab = true;
+                    handle.__yieldToNewerTab();
+                  },
                 });
               },
             }
@@ -1152,6 +1217,7 @@ async function bootFollower(
         return;
       }
       handle.__becomeLeader(core);
+      if (newerTab) handle.__yieldToNewerTab();
     } catch {
       // Promotion failed to spawn a worker — release so the next tab tries.
       await lease.release();
@@ -1193,7 +1259,14 @@ async function bootFollower(
   // the shared origin replica behind the same barrier before it is returned;
   // otherwise an already-running leader would silently ignore the request.
   if (config.securityPreflight === true) {
-    await handle.beginSecurityPreflight();
+    try {
+      await handle.beginSecurityPreflight();
+    } catch (error) {
+      // The caller never receives this handle, so it must not stay queued for
+      // the lock and promote into a database nobody holds.
+      await handle.close();
+      throw error;
+    }
   }
   return handle;
 }
