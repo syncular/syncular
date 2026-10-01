@@ -154,6 +154,15 @@ jobs:
         env:
           SYNCULAR_PG_URL: postgres://postgres@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/syncular_bench
         run: bun test packages/server/test/postgres-checkpoints.integration.test.ts
+      - name: Real Postgres commit above the bind-parameter limit
+        if: matrix.core == 'ts'
+        env:
+          SYNCULAR_PG_ADMIN_URL: postgres://postgres@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/syncular_bench
+          SYNCULAR_PG_URL: postgres://postgres@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/syncular_bulk
+        run: >-
+          bun -e "const sql = new Bun.SQL(process.env.SYNCULAR_PG_ADMIN_URL);
+          await sql.unsafe('CREATE DATABASE syncular_bulk'); await sql.end()"
+          && bun test packages/server/test/seed-storage.test.ts
       - name: Full-client Postgres replay
         env:
           SYNCULAR_PG_URL: postgres://postgres@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/syncular_bench

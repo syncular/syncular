@@ -1,8 +1,31 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.30.2** (`v0.30.2`). All artifacts use Apache-2.0, except
+current release is **0.30.3** (`v0.30.3`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.30.3 release notes
+
+0.30.3 is a patch release for `PostgresServerStorage`. SSP2 stays at wire
+version 3, no public API changes, and every package and crate ships together.
+
+- **A commit of any size appends on PostgreSQL (SYNCULAR-PG-BIND-LIMIT-001).**
+  Since 0.26.5 (`3266edf1`) the storage appended all of a commit's changes,
+  their inverted scope entries, and their delete tombstones in one
+  writable-CTE statement with 7 bound parameters per change. The Bind message
+  carries the parameter count in 16 bits, so a commit above about 9,360
+  changes failed on PostgreSQL (`bind message has 32835 parameter formats but
+  0 parameters`, 08P01) and silently corrupted PGlite 0.5 state above 32,767
+  parameters. The storage now runs the same chain for each 4,096 changes
+  (28,674 parameters) inside the commit's transaction, under the same
+  `commit_seq`, with the commit-global `idx`; a row deleted in two chunks keeps
+  one tombstone at that `commit_seq`. A 72,016-change seed stores identical
+  commit windows, tombstones and rows on SQLite, PGlite and PostgreSQL 18; the
+  real-PostgreSQL case runs in CI. A 150,015-change commit appends in 1.48 s
+  on PostgreSQL 18 (local Docker, 37 statements). The other dynamic lists in
+  the PostgreSQL and D1 storages are bounded by the schema's table count or
+  the reaction registry; D1 already refuses statements above its 100-parameter
+  cap.
 
 ## 0.30.2 release notes
 

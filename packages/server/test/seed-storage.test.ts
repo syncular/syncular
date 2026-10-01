@@ -13,6 +13,7 @@ import {
 } from '@syncular/server';
 import { pgliteExecutor } from '@syncular/server/pglite';
 import { D1DatabaseDouble } from './d1-double';
+import { BunSQL, bunSqlExecutor, PG_URL } from './pg-real';
 import { TEST_SCHEMA } from './helpers';
 
 interface StorageFixture {
@@ -163,5 +164,150 @@ describe('seed rejection provenance', () => {
         await close();
       }
     });
+  }
+});
+
+describe('a commit above the PostgreSQL bind-parameter limit', () => {
+  // 7 bound parameters per change: 72,000 changes would bind 504,002 in one
+  // statement, far past PostgreSQL's 65,535.
+  const UPSERTS = 72_000;
+  const PROJECTS = 10;
+  const target = { actorId: 'actor-1', clientId: 'bulk' };
+  const deleted = Array.from({ length: 15 }, (_, k) => `old-${k}`);
+
+  /** One atomic commit; deletes sit every 5,000 changes, and `old-1` is
+   * deleted twice, in different statement chunks. */
+  function bulkCommit() {
+    const mutations: Parameters<typeof seedMutations>[2][number][] = [];
+    for (let i = 0; i < UPSERTS; i += 1) {
+      if (i % 5_000 === 0)
+        mutations.push({
+          table: 'tasks',
+          op: 'delete',
+          rowId: deleted[i / 5_000] ?? 'old-0',
+        });
+      mutations.push({
+        table: 'tasks',
+        op: 'upsert',
+        values: {
+          id: `bulk-${String(i).padStart(6, '0')}`,
+          project_id: `p${i % PROJECTS}`,
+          title: `bulk row ${i}`,
+          done: i % 2 === 0,
+        },
+      });
+    }
+    mutations.push({ table: 'tasks', op: 'delete', rowId: 'old-1' });
+    return mutations;
+  }
+
+  async function stored(fixture: StorageFixture) {
+    const { storage, close } = await fixture.open();
+    // A real database outlives the test; a fresh partition isolates each run.
+    const partition = `bulk-${crypto.randomUUID()}`;
+    const projects = Array.from({ length: PROJECTS }, (_, k) => `p${k}`);
+    const config: SyncServerConfig = {
+      schema: TEST_SCHEMA,
+      storage,
+      segments: new MemorySegmentStore(),
+      resolveScopes: () => ({ project_id: projects }),
+      clock: () => 1_000,
+      limits: { maxOperationsPerRequest: 100_000 },
+    };
+    try {
+      await seedMutations(
+        config,
+        { ...target, partition, commitId: 'baseline' },
+        deleted.map((id, k) => ({
+          table: 'tasks' as const,
+          op: 'upsert' as const,
+          values: {
+            id,
+            project_id: `p${k % PROJECTS}`,
+            title: id,
+            done: false,
+          },
+        })),
+      );
+      const started = performance.now();
+      await seedMutations(
+        config,
+        { ...target, partition, commitId: 'bulk' },
+        bulkCommit(),
+      );
+      const ms = performance.now() - started;
+      const maxSeq = await storage.getMaxCommitSeq(partition);
+      const windows = [];
+      for (const project of projects) {
+        const commits = await storage.readCommitWindow(partition, {
+          table: 'tasks',
+          scopeFilter: { project_id: [project] },
+          afterSeq: 1,
+          throughSeq: maxSeq,
+          limitChanges: 1_000_000,
+        });
+        windows.push(
+          commits.map((commit) => ({
+            commitSeq: commit.commitSeq,
+            changes: commit.changes.map((change) => ({
+              rowId: change.rowId,
+              op: change.op,
+              rowVersion: change.rowVersion,
+              scopes: change.scopes,
+              payload: Buffer.from(change.payload ?? []).toString('hex'),
+            })),
+          })),
+        );
+      }
+      const tx = await storage.begin(partition);
+      const tombstones: Record<string, number | undefined> = {};
+      for (const id of deleted)
+        tombstones[id] = await tx.getTombstoneSeq('tasks', id);
+      const sample = await tx.getRow('tasks', 'bulk-071999');
+      await tx.rollback();
+      return { ms, maxSeq, windows, tombstones, sample };
+    } finally {
+      await close();
+    }
+  }
+
+  const url = PG_URL;
+  const Sql = BunSQL;
+  const realPg: StorageFixture | undefined =
+    url !== undefined && Sql !== undefined
+      ? {
+          name: 'PostgreSQL/SYNCULAR_PG_URL',
+          open: async () => {
+            const executor = bunSqlExecutor(new Sql(url));
+            return {
+              storage: new PostgresServerStorage(executor),
+              close: () => executor.close(),
+            };
+          },
+        }
+      : undefined;
+  const postgres = [fixtures[1] as StorageFixture, ...(realPg ? [realPg] : [])];
+
+  for (const fixture of postgres) {
+    test(`${fixture.name} stores it atomically, identical to SQLite`, async () => {
+      const sqlite = await stored(fixtures[0] as StorageFixture);
+      const pg = await stored(fixture);
+      console.log(
+        `${UPSERTS + deleted.length + 1}-change commit: SQLite ${sqlite.ms.toFixed(0)} ms, ${fixture.name} ${pg.ms.toFixed(0)} ms`,
+      );
+      expect(pg.maxSeq).toBe(2);
+      expect(pg.windows.flat()).toHaveLength(PROJECTS);
+      expect(
+        pg.windows
+          .flat()
+          .reduce((sum, commit) => sum + commit.changes.length, 0),
+        // The second delete of `old-1` finds the row gone and records nothing.
+      ).toBe(UPSERTS + deleted.length);
+      expect(Object.values(pg.tombstones)).toEqual(deleted.map(() => 2));
+      expect(pg.sample).toBeDefined();
+      expect(pg.windows).toEqual(sqlite.windows);
+      expect(pg.tombstones).toEqual(sqlite.tombstones);
+      expect(pg.sample).toEqual(sqlite.sample);
+    }, 600_000);
   }
 });

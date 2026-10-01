@@ -1117,45 +1117,56 @@ class PostgresTransaction implements StorageTransaction {
     );
     const commitSeq = asNumber(rows[0]?.commit_seq);
     if (commit.changes.length === 0) return commitSeq;
-    // One statement for the whole commit: its changes, their inverted scope
-    // entries, and the §5 delete tombstones ride one writable-CTE chain.
+    // One writable-CTE chain per chunk of changes: the changes, their
+    // inverted scope entries, and the §5 delete tombstones. A statement binds
+    // at most a 16-bit count of parameters, so a chunk carries
+    // PG_CHANGES_PER_STATEMENT changes; every chunk runs in the
+    // commit's transaction under the same commit_seq with its global idx.
     // Serialized scopes bind as text before parsing JSONB; drivers that
     // encode JSONB parameters would otherwise store the string as a scalar.
-    // A commit can delete one row twice, so the tombstone insert keeps one
-    // row per key (every candidate carries the same commit_seq).
-    const params: unknown[] = [p, commitSeq];
-    const values = commit.changes.map((change, idx) => {
-      const base = params.length;
-      params.push(
-        idx,
-        change.table,
-        change.rowId,
-        change.op === 'upsert' ? 1 : 2,
-        change.rowVersion ?? null,
-        JSON.stringify(change.scopes),
-        change.payload ?? null,
+    // A commit can delete one row twice, so a chunk's tombstone insert keeps
+    // one row per key and a later chunk updates it to the same commit_seq.
+    for (
+      let first = 0;
+      first < commit.changes.length;
+      first += PG_CHANGES_PER_STATEMENT
+    ) {
+      const params: unknown[] = [p, commitSeq];
+      const values = commit.changes
+        .slice(first, first + PG_CHANGES_PER_STATEMENT)
+        .map((change, offset) => {
+          const base = params.length;
+          params.push(
+            first + offset,
+            change.table,
+            change.rowId,
+            change.op === 'upsert' ? 1 : 2,
+            change.rowVersion ?? null,
+            JSON.stringify(change.scopes),
+            change.payload ?? null,
+          );
+          return `($1,$2::bigint,$${base + 1}::int,$${base + 2},$${base + 3},$${base + 4}::smallint,$${base + 5}::bigint,$${base + 6}::text::jsonb,$${base + 7}::bytea)`;
+        });
+      await q.query(
+        `WITH inserted AS (
+           INSERT INTO sync_changes(partition, commit_seq, idx, tbl, row_id, op, row_version, scopes, payload)
+           VALUES ${values.join(',')}
+           RETURNING partition, tbl, row_id, op, commit_seq, scopes
+         ),
+         scoped AS (
+           INSERT INTO sync_change_scopes(partition, tbl, var, value, commit_seq)
+           SELECT inserted.partition, inserted.tbl, scope.key, scope.value, inserted.commit_seq
+           FROM inserted CROSS JOIN LATERAL jsonb_each_text(inserted.scopes) AS scope
+           ON CONFLICT DO NOTHING
+         )
+         INSERT INTO sync_tombstones(partition, tbl, row_id, commit_seq)
+         SELECT DISTINCT ON (tbl, row_id) partition, tbl, row_id, commit_seq
+           FROM inserted WHERE op = 2
+         ON CONFLICT (partition, tbl, row_id)
+         DO UPDATE SET commit_seq = excluded.commit_seq`,
+        params,
       );
-      return `($1,$2::bigint,$${base + 1}::int,$${base + 2},$${base + 3},$${base + 4}::smallint,$${base + 5}::bigint,$${base + 6}::text::jsonb,$${base + 7}::bytea)`;
-    });
-    await q.query(
-      `WITH inserted AS (
-         INSERT INTO sync_changes(partition, commit_seq, idx, tbl, row_id, op, row_version, scopes, payload)
-         VALUES ${values.join(',')}
-         RETURNING partition, tbl, row_id, op, commit_seq, scopes
-       ),
-       scoped AS (
-         INSERT INTO sync_change_scopes(partition, tbl, var, value, commit_seq)
-         SELECT inserted.partition, inserted.tbl, scope.key, scope.value, inserted.commit_seq
-         FROM inserted CROSS JOIN LATERAL jsonb_each_text(inserted.scopes) AS scope
-         ON CONFLICT DO NOTHING
-       )
-       INSERT INTO sync_tombstones(partition, tbl, row_id, commit_seq)
-       SELECT DISTINCT ON (tbl, row_id) partition, tbl, row_id, commit_seq
-         FROM inserted WHERE op = 2
-       ON CONFLICT (partition, tbl, row_id)
-       DO UPDATE SET commit_seq = excluded.commit_seq`,
-      params,
-    );
+    }
     return commitSeq;
   }
 
@@ -1233,6 +1244,11 @@ class RollbackSignal extends Error {
     this.name = 'RollbackSignal';
   }
 }
+
+/** Changes per sync_changes statement: 2 + 7 × 4,096 = 28,674 bound
+ * parameters. The Bind message counts parameters in 16 bits; PostgreSQL reads
+ * up to 65,535, and PGlite 0.5 corrupts its state above 32,767. */
+const PG_CHANGES_PER_STATEMENT = 4096;
 
 /** One page read waiting in `PostgresServerStorage#batchedPage`. */
 interface PendingPage {

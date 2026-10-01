@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-10-01',
+    title: 'PostgreSQL stores commits of any size',
+    body: "`PostgresServerStorage` appended a commit's changes in one statement with seven bound parameters per change, so a commit above about 9,360 changes overflowed the 16-bit parameter count of PostgreSQL's Bind message and failed. It now appends 4,096 changes per statement inside the same transaction and under the same `commit_seq`; a 150,015-change commit appends in 1.48 s on PostgreSQL 18 (SYNCULAR-PG-BIND-LIMIT-001).",
+    links: [
+      {
+        href: '/guide-server/',
+        label: 'Server guide',
+      },
+    ],
+  },
+  {
+    date: '2026-10-01',
     title: 'A rejected window claim is claimed again',
     body: "A live query whose window claim was rejected for a reason other than leader loss, for example a transport failure, stayed in `error` until its last subscriber left. The reactive store now claims again on a committed row change of one of the query's tables, once per sync attempt, when a leader serves the tab, and on `refresh()` (SYNCULAR-CLAIM-STICKY-001).",
     links: [

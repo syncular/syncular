@@ -17,11 +17,7 @@ import {
   PostgresServerStorage,
   type ServerSchema,
 } from '@syncular/server';
-
-const PG_URL = process.env.SYNCULAR_PG_URL;
-
-// oxlint-disable-next-line typescript/no-explicit-any -- Bun.sql is version-fluid.
-const BunSQL = (Bun as any).SQL as undefined | (new (url: string) => any);
+import { BunSQL, bunSqlExecutor, PG_URL, queryableOver } from './pg-real';
 
 const gate =
   PG_URL !== undefined && BunSQL !== undefined ? describe : describe.skip;
@@ -41,37 +37,6 @@ const SCHEMA: ServerSchema = {
     },
   ],
 };
-
-// oxlint-disable-next-line typescript/no-explicit-any -- driver handle is dynamic.
-function queryableOver(handle: any): PgQueryable {
-  return {
-    async query<Row = Record<string, unknown>>(
-      text: string,
-      params?: readonly unknown[],
-    ) {
-      const rows = (await handle.unsafe(
-        text,
-        params ? [...params] : [],
-      )) as Row[];
-      return { rows, rowCount: rows.length };
-    },
-  };
-}
-
-// oxlint-disable-next-line typescript/no-explicit-any -- driver handle is dynamic.
-function bunSqlExecutor(sql: any): PgExecutor {
-  const q = queryableOver(sql);
-  return {
-    query: q.query,
-    async transaction<T>(fn: (client: PgQueryable) => Promise<T>): Promise<T> {
-      // oxlint-disable-next-line typescript/no-explicit-any -- dynamic tx handle.
-      return sql.begin(async (tx: any) => fn(queryableOver(tx)));
-    },
-    async close() {
-      await sql.end();
-    },
-  };
-}
 
 /** A raw commit-log insert that bypasses the storage's writer_version. */
 async function rawAppend(
