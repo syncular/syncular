@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-10-01',
+    title: 'Streamed segments reach Workers clients encoded once',
+    body: "`GET /segments/:id` on Cloudflare Workers gzipped a segment above 16 MiB itself and declared `Content-Encoding: gzip`; workerd then gzipped the response again, so a client that decoded it once failed content-address verification and retried without end. The route now marks every body it encodes with `encodeBody: 'manual'`, and a workerd test verifies the content address of a streamed segment after one decode (SYNCULAR-WORKERS-SEGMENT-ENCODING-001).",
+    links: [
+      {
+        href: '/concepts-bootstrap/#setting-it-up',
+        label: 'Bootstrap',
+      },
+    ],
+  },
+  {
+    date: '2026-10-01',
     title: 'FTS queries read source ids without a content row per match',
     body: "Typegen emits FTS joins that read `_syncular_source_id` through the client's source-id mapping table on the projection rowid, so FTS5 no longer fetches the content row of every match. The authored SQL, its types, its identity, and its rows stay the same; a 50,000-match search took 53.9 ms against 73.6 ms. Both client cores keep one mapping row per projection row, pinned by a conformance scenario (SYNCULAR-FTS-SOURCE-ID-001).",
     links: [

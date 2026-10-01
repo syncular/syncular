@@ -117,7 +117,9 @@ publication the serving host answers on the rows lane.
 `GET /segments/:id` relays a segment above 16 MiB as a stream, gzip-encoded
 when the client accepts it, when the segment store implements `open`
 (`S3SegmentStore` and `MemorySegmentStore` do). A custom store without `open`
-is read whole into memory. With `signedUrls: s3PresignedUrls(store)`, image
+is read whole into memory. The route marks every body it encodes with
+`encodeBody: 'manual'`, so workerd delivers it once; a Workers host needs no
+wrapper of its own. With `signedUrls: s3PresignedUrls(store)`, image
 descriptors carry a presigned URL and clients download from the bucket
 directly.
 

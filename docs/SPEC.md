@@ -1954,7 +1954,12 @@ bite:
   MUST verify the content address over the decoded bytes.
 - Servers MUST NOT double-compress: segment bytes are stored and
   addressed uncompressed; compression is applied per response by the
-  serving hop, never baked into the stored object.
+  serving hop, never baked into the stored object. A serving hop that
+  encodes the body itself MUST mark it as encoded where the runtime
+  would encode a response that declares `Content-Encoding` again. On
+  Cloudflare Workers the reference route sets `encodeBody: 'manual'`;
+  without it workerd gzips the gzip body and a client that decodes once
+  fails §5.1 verification.
 
 Shipped defaults (reference server; decided 2026-07-03 on measured
 data — 100k-row bench table, Bun 1.3):

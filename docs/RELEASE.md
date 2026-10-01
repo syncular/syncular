@@ -1,8 +1,31 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.29.0** (`v0.29.0`). All artifacts use Apache-2.0, except
+current release is **0.29.1** (`v0.29.1`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.29.1 release notes
+
+0.29.1 is a patch release for `@syncular/server-hono` on Cloudflare Workers.
+SSP2 stays at wire version 3, no public API changes, and every package and
+crate ships together.
+
+- **Streamed segments are encoded once on Workers
+  (SYNCULAR-WORKERS-SEGMENT-ENCODING-001).** For a segment above
+  `SEGMENT_STREAM_THRESHOLD_BYTES` the segment route gzips the body with
+  `CompressionStream` and declares `Content-Encoding: gzip`. workerd encodes
+  every response that declares `Content-Encoding` unless the body is marked
+  `encodeBody: 'manual'`, so a Workers client received gzip inside gzip and
+  failed §5.1 content-address verification. The route now sets
+  `encodeBody: 'manual'` on every body it encodes, buffered or streamed; other
+  runtimes ignore the member. SPEC §5.8 states the rule. A workerd test
+  (Miniflare) serves a 16 MiB + 4 KiB segment through
+  `createWorkersFetchHandler` and verifies its content address after one
+  client decode; without the fix one decode yields 123,073 gzip bytes. No
+  other Syncular response sets `Content-Encoding`.
+
+**Upgrade notes.** Remove a host wrapper that re-marked segment responses as
+`encodeBody: 'manual'`; it is now redundant.
 
 ## 0.29.0 release notes
 

@@ -49,6 +49,7 @@
     "@syncular/server-hono": "workspace:*"
   },
   "devDependencies": {
-    "@syncular/core": "workspace:*"
+    "@syncular/core": "workspace:*",
+    "miniflare": "4.20260701.0"
   }
 }

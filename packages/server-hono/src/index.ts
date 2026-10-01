@@ -143,6 +143,7 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
               ? { 'Content-Encoding': encoded.contentEncoding }
               : { 'Content-Length': String(result.byteLength) }),
           },
+          ...ALREADY_ENCODED,
         });
       }
       // §5.8 shipped default: compress the body per Accept-Encoding
@@ -153,11 +154,15 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
         await new Response(result.body).arrayBuffer(),
       );
       const encoded = encodeSegmentBody(bytes, acceptEncoding);
-      return c.body(encoded.bytes.slice().buffer as ArrayBuffer, 200, {
-        ...result.headers,
-        ...(encoded.contentEncoding !== undefined
-          ? { 'Content-Encoding': encoded.contentEncoding }
-          : {}),
+      return new Response(encoded.bytes.slice().buffer as ArrayBuffer, {
+        status: 200,
+        headers: {
+          ...result.headers,
+          ...(encoded.contentEncoding !== undefined
+            ? { 'Content-Encoding': encoded.contentEncoding }
+            : {}),
+        },
+        ...ALREADY_ENCODED,
       });
     } catch (error) {
       return errorResponse(error, 'segments');
@@ -247,3 +252,13 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
 
   return app;
 }
+/**
+ * The segment route encodes its own body (§5.8) and declares
+ * `Content-Encoding`. workerd encodes every response that declares one again
+ * unless `encodeBody: 'manual'` marks the body as encoded, so a Workers client
+ * would decode gzip inside gzip and fail §5.1 verification
+ * (SYNCULAR-WORKERS-SEGMENT-ENCODING-001). Other runtimes ignore the member.
+ */
+const ALREADY_ENCODED: { readonly encodeBody: 'manual' } = {
+  encodeBody: 'manual',
+};
