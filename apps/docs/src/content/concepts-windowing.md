@@ -138,6 +138,11 @@ removal still requires acknowledgement before those units are held again. A
 failed window edit invalidates the cached acknowledgement, so retry reconciles
 ownership with the core even if an earlier eviction chunk already committed.
 
+A query whose claim was rejected shows phase `error` with the rejection. The
+store claims again when a row of one of its tables changes, once per sync
+attempt (so the client's retry backoff paces it), when a leader serves the tab
+again, and on `refresh()`. A long-lived reader recovers without remounting.
+
 Claims compose. If two mounted consumers require `{A,B}` and `{B,C}` on the
 same base, the effective core window is `{A,B,C}`. Unmounting the first drops
 only `A`; it cannot overwrite the second consumer's claim.

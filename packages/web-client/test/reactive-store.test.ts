@@ -332,6 +332,123 @@ describe('leader link recovery', () => {
   });
 });
 
+describe('rejected claim recovery (SPEC §7.7)', () => {
+  const failure = () =>
+    new ClientSyncError(
+      'window.transport_failed',
+      'the window edit failed',
+      true,
+    );
+  const ready = {
+    revision: 2n,
+    rows: [{ id: 't1', title: 'first' }],
+    coverage: COMPLETE,
+  };
+
+  /** An entry whose only claim was rejected, outside any leadership change. */
+  async function rejected() {
+    const client = new FakeReactiveClient();
+    const store = new ReactiveClientStore(client);
+    store.start();
+    await drainMicrotasks();
+    client.setWindowFailure = failure();
+    const entry = store.query<Row>(
+      querySpec({ coverage: [{ base: BASE, units: ['p1'] }] }),
+    );
+    const off = entry.subscribe(() => {});
+    await drainMicrotasks(24);
+    expect(entry.getSnapshot()).toMatchObject({
+      phase: 'error',
+      error: { code: 'window.transport_failed' },
+    });
+    expect(client.setWindowCalls).toHaveLength(1);
+    client.setWindowFailure = undefined;
+    client.snapshots.push(ready, ready);
+    return { client, store, entry, off };
+  }
+
+  test('a committed change of a dependency claims again', async () => {
+    const { client, store, entry, off } = await rejected();
+    client.emit(
+      batch(2n, {
+        tables: [{ table: 'tasks', scopeKeys: new Set(['project:p1']) }],
+      }),
+    );
+    await drainMicrotasks(24);
+    expect(entry.getSnapshot()).toMatchObject({
+      phase: 'ready',
+      rows: [{ id: 't1', title: 'first' }],
+    });
+    expect(client.setWindowCalls).toHaveLength(2);
+    off();
+    store.dispose();
+  });
+
+  test('a window-only batch does not claim again', async () => {
+    const { client, store, entry, off } = await rejected();
+    client.emit(
+      batch(2n, {
+        windows: [
+          {
+            baseKey: 'tasks\0project_id\0{}',
+            table: 'tasks',
+            units: new Set(['p1']),
+          },
+        ],
+      }),
+    );
+    await drainMicrotasks(24);
+    expect(entry.getSnapshot().phase).toBe('error');
+    expect(client.setWindowCalls).toHaveLength(1);
+    off();
+    store.dispose();
+  });
+
+  test('refresh claims again', async () => {
+    const { client, store, entry, off } = await rejected();
+    entry.refresh();
+    await drainMicrotasks(24);
+    expect(entry.getSnapshot().phase).toBe('ready');
+    expect(client.setWindowCalls).toHaveLength(2);
+    off();
+    store.dispose();
+  });
+
+  test('each new sync attempt claims once again, never in between', async () => {
+    const { client, store, entry, off } = await rejected();
+    client.setWindowFailure = failure();
+    const running = (attempt: number) => ({
+      attempt,
+      state: 'running' as const,
+      phase: 'request' as const,
+      bytesReceived: 0,
+      rowsProcessed: 0,
+    });
+    client.progress.emit(running(1));
+    client.progress.update({ phase: 'download', bytesReceived: 10 });
+    await drainMicrotasks(48);
+    expect(client.setWindowCalls).toHaveLength(2);
+    expect(entry.getSnapshot().phase).toBe('error');
+    client.progress.update({
+      state: 'failed',
+      errorCode: 'sync.transport_failed',
+    });
+    await drainMicrotasks(48);
+    expect(client.setWindowCalls).toHaveLength(2);
+
+    client.setWindowFailure = undefined;
+    client.progress.emit(running(2));
+    await drainMicrotasks(48);
+    expect(client.setWindowCalls).toHaveLength(3);
+    expect(entry.getSnapshot()).toMatchObject({
+      phase: 'ready',
+      rows: [{ id: 't1', title: 'first' }],
+    });
+    off();
+    store.dispose();
+  });
+});
+
 describe('revision race gates', () => {
   test('never publishes a result older than an observed matching revision', async () => {
     const client = new FakeReactiveClient();

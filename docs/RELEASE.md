@@ -1,8 +1,26 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.30.1** (`v0.30.1`). All artifacts use Apache-2.0, except
+current release is **0.30.2** (`v0.30.2`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.30.2 release notes
+
+0.30.2 is a patch release for the TypeScript reactive store, which the web,
+worker, Tauri, and React Native hosts share. SSP2 stays at wire version 3, the
+server and the Rust core do not change, and every package and crate ships
+together.
+
+- **A rejected window claim is claimed again (SYNCULAR-CLAIM-STICKY-001).** A
+  query entry kept a rejected `setWindowClaim` and failed every read with it
+  until its last subscriber left. 0.30.0 claimed again only when a leader
+  served the tab again, so a claim rejected for another reason (a transport
+  failure, a server refusal) left a long-lived reader in `error` for the life
+  of the tab. The store now also claims again on a committed row change of one
+  of the entry's dependency tables, once per sync attempt (the client's §7.6
+  retry schedule paces it), and on `refresh()` (SPEC §7.7). A window-only
+  change batch does not claim again, because a failed window edit can produce
+  one.
 
 ## 0.30.1 release notes
 

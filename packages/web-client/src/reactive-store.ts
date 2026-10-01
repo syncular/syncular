@@ -316,7 +316,7 @@ function reconcileRows<Row>(
 interface CachedObservation {
   onChange(batch: ClientChangeBatch): void;
   /** A leader serves this tab again (it leads or follows a bound leader). */
-  onLeaderServing?(): void;
+  reclaim?(): void;
   reset(): void;
   dispose(): void;
 }
@@ -358,8 +358,8 @@ class ObservationCache {
   onChange(batch: ClientChangeBatch): void {
     for (const entry of this.#active) entry.onChange(batch);
   }
-  onLeaderServing(): void {
-    for (const entry of this.#active) entry.onLeaderServing?.();
+  reclaim(): void {
+    for (const entry of this.#active) entry.reclaim?.();
   }
   clear(): void {
     for (const entry of this.#entries.values()) entry.dispose();
@@ -504,6 +504,7 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
 
   refresh = (): void => {
     if (this.#delegate !== undefined) this.#delegate.refresh();
+    else if (this.#claimError !== undefined) this.reclaim();
     else this.#requestRead(true);
   };
 
@@ -528,9 +529,9 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
     this.reset();
   }
 
-  /** A claim rejected while no leader served this tab (blocked, handover,
-   * another build) is claimed again; its stored error would fail every read. */
-  onLeaderServing(): void {
+  /** SPEC §7.7: a rejected claim is claimed again; its stored error would
+   * fail every read until the last subscriber leaves. */
+  reclaim(): void {
     if (this.#delegate !== undefined || this.#claimError === undefined) return;
     this.#claimError = undefined;
     this.#claimCoverage();
@@ -542,7 +543,16 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
     if (batch.revision > this.#desiredRevision) {
       this.#desiredRevision = batch.revision;
     }
-    if (this.#listeners.size > 0) this.#requestRead();
+    if (this.#listeners.size === 0) return;
+    // A committed row change of a dependency claims again; a window-only
+    // batch, which a failed window edit can itself produce, does not.
+    const rowChange = batch.tables.some((change) =>
+      this.spec.dependencies.some(
+        (dependency) => dependency.table === change.table,
+      ),
+    );
+    if (rowChange && this.#claimError !== undefined) this.reclaim();
+    else this.#requestRead();
   }
 
   #publish(next: LiveQueryResult<Row>): void {
@@ -1078,6 +1088,16 @@ export class ReactiveClientStore {
     }
   }
 
+  /** Apply every claimed window group again and claim again for query entries
+   * whose claim was rejected. An applied group compares equal and makes no
+   * call; a group whose edit is in flight applies once more after it. */
+  #reclaimWindows(): void {
+    for (const group of this.#windowClaims.values()) {
+      if (group.claims.size > 0) this.#scheduleWindow(group);
+    }
+    this.#queries.reclaim();
+  }
+
   #scheduleWindow(group: WindowClaimGroup): void {
     group.requested = true;
     if (group.scheduled || group.running) return;
@@ -1166,7 +1186,14 @@ export class ReactiveClientStore {
     const roundFailure = this.roundFailure as ValueEntry<
       SyncRoundFailedError | undefined
     >;
+    let claimedAttempt: number | undefined;
     this.#offProgress = this.client.onProgress((progress) => {
+      // A new sync attempt is the client's retry schedule (§7.6): window
+      // claims that failed are claimed again once per attempt.
+      if (progress.state === 'running' && progress.attempt !== claimedAttempt) {
+        claimedAttempt = progress.attempt;
+        this.#reclaimWindows();
+      }
       const current = roundFailure.getSnapshot();
       if (progress.state === 'failed' && current?.attempt !== progress.attempt)
         roundFailure.set(
@@ -1192,12 +1219,8 @@ export class ReactiveClientStore {
       if (previous.isLoading) this.status.refresh();
       // Window edits that failed while no leader served this tab apply now;
       // an applied group compares equal and makes no call.
-      if (leadership.state === 'leader' || leadership.state === 'follower') {
-        for (const group of this.#windowClaims.values()) {
-          if (group.claims.size > 0) this.#scheduleWindow(group);
-        }
-        this.#queries.onLeaderServing();
-      }
+      if (leadership.state === 'leader' || leadership.state === 'follower')
+        this.#reclaimWindows();
     });
     this.status.refresh();
     this.conflicts.refresh();

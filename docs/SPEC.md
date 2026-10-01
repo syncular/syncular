@@ -4562,7 +4562,13 @@ They MUST retain security/availability checks, revision ordering, and the snapsh
 coverage result. Claim registration is an ownership operation, not proof of data
 completeness. Claim success refreshes an incomplete snapshot; failure remains observable
 even when a prior snapshot contained rows. Unmounted or replaced observers MUST
-ignore late registration results.
+ignore late registration results. A rejected claim MUST NOT persist for the
+observer's lifetime: the store claims again when a committed row change of one
+of the observer's dependency tables arrives, when a sync attempt starts (once
+per attempt, so the client's retry schedule of §7.6 paces it), when a leader
+serves the tab again, and when the application calls `refresh`. A window-only
+change batch does not claim again, because a failed window edit can produce
+one. Reads keep reporting the rejection until a claim succeeds.
 
 A retained window belongs to its explicit owner. Adding an observer whose units
 are already acknowledged MUST NOT wait for an unrelated widening operation.

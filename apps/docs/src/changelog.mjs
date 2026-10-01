@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-10-01',
+    title: 'A rejected window claim is claimed again',
+    body: "A live query whose window claim was rejected for a reason other than leader loss, for example a transport failure, stayed in `error` until its last subscriber left. The reactive store now claims again on a committed row change of one of the query's tables, once per sync attempt, when a leader serves the tab, and on `refresh()` (SYNCULAR-CLAIM-STICKY-001).",
+    links: [
+      {
+        href: '/concepts-windowing/',
+        label: 'Windowing',
+      },
+    ],
+  },
+  {
+    date: '2026-10-01',
     title: 'A promoted tab runs the calls it queued during the handover',
     body: 'A follower that won the Web Lock rejected the calls it had queued for the next leader with `client.worker_failed` when it installed its own core, and its live queries kept that rejection. The new core now runs them, and the reactive store claims a rejected coverage claim again whenever a leader serves the tab.',
     links: [
