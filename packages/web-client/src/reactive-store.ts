@@ -315,6 +315,8 @@ function reconcileRows<Row>(
 
 interface CachedObservation {
   onChange(batch: ClientChangeBatch): void;
+  /** A leader serves this tab again (it leads or follows a bound leader). */
+  onLeaderServing?(): void;
   reset(): void;
   dispose(): void;
 }
@@ -355,6 +357,9 @@ class ObservationCache {
   }
   onChange(batch: ClientChangeBatch): void {
     for (const entry of this.#active) entry.onChange(batch);
+  }
+  onLeaderServing(): void {
+    for (const entry of this.#active) entry.onLeaderServing?.();
   }
   clear(): void {
     for (const entry of this.#entries.values()) entry.dispose();
@@ -523,6 +528,15 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
     this.reset();
   }
 
+  /** A claim rejected while no leader served this tab (blocked, handover,
+   * another build) is claimed again; its stored error would fail every read. */
+  onLeaderServing(): void {
+    if (this.#delegate !== undefined || this.#claimError === undefined) return;
+    this.#claimError = undefined;
+    this.#claimCoverage();
+    this.#requestRead();
+  }
+
   onChange(batch: ClientChangeBatch): void {
     if (!batchMatches(batch, this.spec)) return;
     if (batch.revision > this.#desiredRevision) {
@@ -584,12 +598,6 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
       return;
     }
     const wasBlocked = this.#state.phase === 'blocked';
-    // A claim that failed while the leader link was blocked is retried with
-    // the link: its stored error would otherwise fail every later read.
-    if (wasBlocked && this.#claimError !== undefined) {
-      this.#claimError = undefined;
-      this.#claimCoverage();
-    }
     this.#publish({
       ...this.#state,
       phase: wasBlocked
@@ -1188,6 +1196,7 @@ export class ReactiveClientStore {
         for (const group of this.#windowClaims.values()) {
           if (group.claims.size > 0) this.#scheduleWindow(group);
         }
+        this.#queries.onLeaderServing();
       }
     });
     this.status.refresh();

@@ -842,6 +842,44 @@ test('calls in flight to a previous leader reject when another leader announces'
   link.close();
 });
 
+test('a tab that wins the lock runs the calls queued for the next leader on its own core', async () => {
+  const { FollowerLink } = await import('../src/multi-tab');
+  const clock = manualClock();
+  let deliver: ((event: { data: MultiTabMessage }) => void) | undefined;
+  const link = new FollowerLink({
+    channel: {
+      postMessage: noop,
+      addEventListener: (_type, listener) => {
+        deliver = listener;
+      },
+      removeEventListener: noop,
+      close: noop,
+    },
+    fromId: 'f',
+    identity: ID,
+    onEvent: noop,
+    onLeaderChange: noop,
+    callTimeoutMs: 300,
+    schedule: clock.schedule,
+  });
+  deliver?.({ data: { t: 'announce', epoch: 1, clientId: 'lead', ...ID } });
+  const sentToOldLeader = link.call('query', ['old']);
+  // The old leader released the lock to this tab.
+  link.unbind();
+  await expectRejectsWithCode(sentToOldLeader, LEADER_HANDOVER_CODE);
+  const queued = link.call('setWindow', ['gap']);
+  const invoked: unknown[] = [];
+  link.handOver((method, args) => {
+    invoked.push([method, ...args]);
+    return Promise.resolve('own-core');
+  });
+  expect(await queued).toBe('own-core');
+  expect(invoked).toEqual([['setWindow', 'gap']]);
+  // The queued call's handover deadline no longer applies.
+  clock.advance(300 * 2);
+  await expectRejectsWithCode(link.call('query', []), 'client.worker_failed');
+});
+
 test('a follower never sends calls to a leader of another build', async () => {
   const { FollowerLink } = await import('../src/multi-tab');
   const clock = manualClock();

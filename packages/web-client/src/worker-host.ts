@@ -385,7 +385,8 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
 
   /** @internal — swap this handle from follower to leader (promotion). */
   __becomeLeader(core: LeaderCore): void {
-    this.#follower?.close();
+    // Calls queued for the next leader run on this tab's own core.
+    this.#follower?.handOver(core.invoke);
     this.#follower = undefined;
     this.#core = core;
     this.#clientId = core.clientId;

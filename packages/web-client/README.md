@@ -221,7 +221,8 @@ with `client.follower_timeout` when the link goes `blocked`, with
 `client.leader_handover` when another leader announces or this tab promotes
 before the answer arrives, and with `client.worker_failed` when the handle
 closes. Only calls queued while no leader is bound keep the
-`followerCallTimeoutMs` deadline.
+`followerCallTimeoutMs` deadline; when this tab wins the lock itself, its own
+core runs them.
 
 **Tabs of different builds never serve each other.** Every `hello`, `req`,
 and `announce` carries `MULTI_TAB_PROTOCOL_VERSION` and the schema version.

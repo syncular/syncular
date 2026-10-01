@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-10-01',
+    title: 'A promoted tab runs the calls it queued during the handover',
+    body: 'A follower that won the Web Lock rejected the calls it had queued for the next leader with `client.worker_failed` when it installed its own core, and its live queries kept that rejection. The new core now runs them, and the reactive store claims a rejected coverage claim again whenever a leader serves the tab.',
+    links: [
+      {
+        href: '/platform-web/#multi-tab',
+        label: 'Web (browser)',
+      },
+    ],
+  },
+  {
+    date: '2026-10-01',
     title:
       'Multi-tab followers wait for a busy leader and never follow another build',
     body: "A follower's forwarded call no longer fails after `followerCallTimeoutMs` while the leader answers probes, so a `setWindow` that waits behind a long bootstrap download completes. Calls reject when the link blocks or another leader takes over (`client.leader_handover`). Every cross-tab message carries `MULTI_TAB_PROTOCOL_VERSION` and the schema version: a follower whose leader runs another build is `blocked` with reason `leader-incompatible`, and a leader steps down for a newer tab (SYNCULAR-FOLLOWER-CALL-DEADLINE-001, SYNCULAR-MULTI-TAB-VERSION-001).",

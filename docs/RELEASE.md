@@ -1,8 +1,32 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.30.0** (`v0.30.0`). All artifacts use Apache-2.0, except
+current release is **0.30.1** (`v0.30.1`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.30.1 release notes
+
+0.30.1 is a patch release for the TypeScript browser client's multi-tab
+replica. SSP2 stays at wire version 3, there are no public API changes, and
+every package and crate ships together.
+
+- **A promoted tab runs the calls it queued during the handover.** When the
+  leader released the Web Lock, the follower that won it unbound its link,
+  queued new calls for the next leader, and then closed the link to install
+  its own core, which rejected those calls with `client.worker_failed` ("the
+  follower link was closed"). The tab's live queries kept that rejection as
+  their coverage-claim error and never read again. `__becomeLeader` now hands
+  the queued calls to the new core.
+- **A rejected coverage claim is claimed again when a leader serves the tab.**
+  0.30.0 claimed again only when a query left `blocked`. The reactive store
+  now claims again for every live query with a claim error whenever the tab
+  becomes the leader or binds to a leader, which also covers claims rejected
+  during a handover or against a leader of another build. A claim rejected for
+  any other reason still keeps its error until the last subscriber leaves.
+
+A Diego browser check holds the Web Lock in a tab that answers nothing, and
+in a tab that answers like 0.29.1, then closes it. On 0.30.0 the second tab
+showed its notice and never loaded after promotion; on 0.30.1 it loads.
 
 ## 0.30.0 release notes
 

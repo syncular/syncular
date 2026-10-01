@@ -276,6 +276,39 @@ describe('leader link recovery', () => {
     store.dispose();
   });
 
+  test('a claim rejected during a handover is claimed again when this tab leads', async () => {
+    const client = new FakeFollowerClient();
+    const store = new ReactiveClientStore(client);
+    store.start();
+    await drainMicrotasks();
+    client.setLeadership({ state: 'waiting', reason: 'handover' });
+    client.setWindowFailure = new ClientSyncError(
+      'client.worker_failed',
+      'the follower link was closed',
+    );
+    const entry = store.query<Row>(
+      querySpec({ coverage: [{ base: BASE, units: ['p1'] }] }),
+    );
+    const off = entry.subscribe(() => {});
+    await drainMicrotasks();
+    expect(entry.getSnapshot().phase).toBe('error');
+
+    client.setWindowFailure = undefined;
+    client.snapshots.push({
+      revision: 1n,
+      rows: [{ id: 't1', title: 'first' }],
+      coverage: COMPLETE,
+    });
+    client.setLeadership({ state: 'leader', clientId: 'own' });
+    await drainMicrotasks(24);
+    expect(entry.getSnapshot()).toMatchObject({
+      phase: 'ready',
+      rows: [{ id: 't1', title: 'first' }],
+    });
+    off();
+    store.dispose();
+  });
+
   test('a follower of another build reports leader-incompatible availability', async () => {
     const client = new FakeFollowerClient();
     const store = new ReactiveClientStore(client);

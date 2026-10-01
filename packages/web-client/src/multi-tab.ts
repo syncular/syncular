@@ -724,6 +724,22 @@ export class FollowerLink {
     this.#probe();
   }
 
+  /**
+   * This tab won the lock and runs its own core: calls queued for the next
+   * leader run on `invoke` instead of failing, then the link closes.
+   */
+  handOver(
+    invoke: (method: string, args: readonly unknown[]) => Promise<unknown>,
+  ): void {
+    const queued = this.#queue;
+    this.#queue = [];
+    for (const call of queued) {
+      call.cancelTimer?.();
+      invoke(call.method, call.args).then(call.resolve, call.reject);
+    }
+    this.close();
+  }
+
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
