@@ -23,6 +23,9 @@ pub struct SyncProgress {
     pub rows_total: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_code: Option<String>,
+    /// Present on `failed` when the core scheduled a background retry.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_delay_ms: Option<u64>,
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -126,6 +129,7 @@ impl ProgressObserver {
             rows_processed: 0,
             rows_total: None,
             error_code: None,
+            retry_delay_ms: None,
         });
     }
     pub(crate) fn update(&self, update: impl FnOnce(&mut SyncProgress)) {

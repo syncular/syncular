@@ -366,6 +366,7 @@ describe('failed sync rounds', () => {
     client.progress.update({
       state: 'failed',
       errorCode: 'sync.transport_failed',
+      retryDelayMs: 250,
     });
     const failed = entry.getSnapshot();
     expect(failed.phase).toBe('error');
@@ -373,6 +374,8 @@ describe('failed sync rounds', () => {
     expect(failed.error).toMatchObject({
       code: 'sync.transport_failed',
       attempt: 1,
+      retryable: true,
+      retryDelayMs: 250,
     });
 
     // A local change re-reads but cannot clear the failure before a retry.
@@ -414,7 +417,7 @@ describe('failed sync rounds', () => {
     store.dispose();
   });
 
-  test('partial rows survive a failure; complete queries ignore it', async () => {
+  test('partial rows survive a final failure; complete queries ignore it', async () => {
     const client = new FakeReactiveClient();
     client.progress.emit(running(4));
     client.progress.update({
@@ -443,7 +446,12 @@ describe('failed sync rounds', () => {
       phase: 'error',
       rows: [{ id: 't1', title: 'cached' }],
       revision: 1n,
-      error: { code: 'sync.scope_revoked', attempt: 4 },
+      error: {
+        code: 'sync.scope_revoked',
+        attempt: 4,
+        retryable: false,
+        retryDelayMs: undefined,
+      },
     });
     expect(complete.getSnapshot().phase).toBe('ready');
 

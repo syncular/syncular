@@ -79,7 +79,10 @@ refresh }`:
   the last successful read. A failed attempt sets `error` to a
   `SyncRoundFailedError` whose `code` is the attempt's stable error code (for
   example `sync.transport_failed`); the query returns to `loading` or
-  `partial` when the next attempt starts.
+  `partial` when the next attempt starts. `retryable` is true when the client
+  scheduled a background retry, and `retryDelayMs` is that retry's delay in
+  milliseconds (250, doubling per consecutive failure up to 30,000). A
+  failure with `retryable: false` has no automatic next attempt.
 
 ```tsx
 if (todos.phase === 'loading') return <Skeleton />;

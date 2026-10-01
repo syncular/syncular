@@ -1156,6 +1156,7 @@ export class ReactiveClientStore {
           new SyncRoundFailedError(
             progress.errorCode ?? 'client.unknown_failure',
             progress.attempt,
+            progress.retryDelayMs,
           ),
         );
       else if (

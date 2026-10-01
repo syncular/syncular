@@ -779,6 +779,7 @@ export class SyncClient {
   #localResetEpoch = 0;
   /** Retry policy belongs to the operation that classified the failure. */
   #retryDelayMs = 250;
+  #roundRetryDelayMs: number | undefined;
   readonly #hasBlobs: boolean;
   /** §8.6 presence: scopeKey → (peerKey `actorId clientId` → peer). */
   readonly #presence = new Map<string, Map<string, PresencePeer>>();
@@ -3399,6 +3400,9 @@ export class SyncClient {
               typeof code === 'string'
                 ? this.#diagnosticCode(code)
                 : 'client.unknown_failure',
+            ...(this.#roundRetryDelayMs !== undefined
+              ? { retryDelayMs: this.#roundRetryDelayMs }
+              : {}),
           });
           this.#lastRound = {
             status: 'failed',
@@ -3454,6 +3458,7 @@ export class SyncClient {
   }
 
   async #runSync(): Promise<SyncSummary> {
+    this.#roundRetryDelayMs = undefined;
     this.#progress.emit({
       attempt: ++this.#progressAttempt,
       state: 'running',
@@ -3601,6 +3606,7 @@ export class SyncClient {
           delayMs: delay,
         };
         this.#retryDelayMs = Math.min(this.#retryDelayMs * 2, 30_000);
+        this.#roundRetryDelayMs = delay;
         this.#emitSyncIntent(intent);
       }
       throw error;

@@ -361,6 +361,8 @@ Counters reset when the payload changes or a new attempt starts.
 failure can roll back. `complete` follows checkpoint persistence and optimistic
 read-model reconciliation for that round. It does not mean every subscription
 has finished bootstrap. Failures retain the last counters and set `errorCode`.
+A failure that scheduled a background retry also sets `retryDelayMs`, the
+retry's delay: 250 ms, doubling per consecutive failure up to 30,000 ms.
 Unsubscribing stops observations and leaves sync running.
 
 React views can call `useSyncProgress(client)` from `@syncular/react`. The hook

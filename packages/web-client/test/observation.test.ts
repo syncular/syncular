@@ -886,4 +886,31 @@ describe('revisioned local observation (SPEC §7.5)', () => {
       delayMs: 250,
     });
   });
+
+  test('failed progress carries the scheduled retry delay, doubling to the 30 s cap', async () => {
+    const client = await makeClient(makeServer(), { clientId: 'retry-cap' });
+    const delays: Array<number | undefined> = [];
+    for (let failure = 0; failure < 9; failure++) {
+      client.faults.dropResponseOnce = true;
+      await expect(client.client.sync()).rejects.toThrow(
+        'simulated response loss',
+      );
+      const progress = client.client.progressSnapshot();
+      expect(progress?.state).toBe('failed');
+      const intent = client.intents.at(-1);
+      expect(intent?.kind === 'background' ? intent.delayMs : undefined).toBe(
+        progress?.retryDelayMs,
+      );
+      delays.push(progress?.retryDelayMs);
+    }
+    expect(delays).toEqual([
+      250, 500, 1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000,
+    ]);
+
+    await client.client.sync();
+    expect(client.client.progressSnapshot()).toMatchObject({
+      state: 'complete',
+    });
+    expect(client.client.progressSnapshot()?.retryDelayMs).toBeUndefined();
+  });
 });

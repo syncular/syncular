@@ -641,6 +641,9 @@ function progressValue(value: JsonValue): DriverSyncProgress {
     ...(typeof object.errorCode === 'string'
       ? { errorCode: object.errorCode }
       : {}),
+    ...(typeof object.retryDelayMs === 'number'
+      ? { retryDelayMs: object.retryDelayMs }
+      : {}),
   };
 }
 

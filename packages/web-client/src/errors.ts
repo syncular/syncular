@@ -38,16 +38,25 @@ export class ClientSyncError extends Error {
 /**
  * SPEC §7.5: the latest sync attempt failed while a live query still waited
  * for its required coverage. `code` is the attempt's static progress error
- * code; `attempt` is the progress attempt that failed. The query returns to
- * waiting when the next attempt starts.
+ * code; `attempt` is the progress attempt that failed. `retryable` is true when
+ * the client scheduled a background retry for the attempt, and `retryDelayMs`
+ * is that retry's delay from the failure; a non-retryable failure has no
+ * delay and no automatic next attempt. The query returns to waiting when the
+ * next attempt starts.
  */
 export class SyncRoundFailedError extends ClientSyncError {
   override readonly name = 'SyncRoundFailedError';
   readonly attempt: number;
+  readonly retryDelayMs: number | undefined;
 
-  constructor(code: string, attempt: number) {
-    super(code, 'the sync round failed before the query coverage completed');
+  constructor(code: string, attempt: number, retryDelayMs: number | undefined) {
+    super(
+      code,
+      'the sync round failed before the query coverage completed',
+      retryDelayMs !== undefined,
+    );
     this.attempt = attempt;
+    this.retryDelayMs = retryDelayMs;
   }
 }
 

@@ -1,8 +1,36 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.27.0** (`v0.27.0`). All artifacts use Apache-2.0, except
+current release is **0.28.0** (`v0.28.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.28.0 release notes
+
+0.28.0 is a minor release: it adds public client surface to failed sync
+progress and to `SyncRoundFailedError`, and it changes Rust retry scheduling,
+so a patch number would hide the surface. SSP2 stays at wire version 3, the
+server does not change, and every package and crate ships together.
+
+- **A failed-round query error says whether a retry follows
+  (SYNCULAR-ROUND-FAILURE-RETRY-001).** `SyncRoundFailedError` passed
+  `retryable = false` to `ClientSyncError` for every failure and carried no
+  retry timing, so an application could not tell a failure the client retries
+  from a final one. Failed sync progress now carries `retryDelayMs` when the
+  round scheduled a background retry intent, in both cores (§7.6): 250 ms
+  after the first consecutive retryable failure, doubling up to 30,000 ms.
+  `SyncRoundFailedError` exposes `retryable` (true exactly when that delay is
+  present) and `retryDelayMs` (§7.5). The field is a delay because the host
+  scheduler owns the timer; an absolute time would claim a deadline the core
+  does not control and would cross worker and native clocks.
+- **The Rust core re-pulls after a segment content-address mismatch.** §5.1
+  requires the client to discard the segment and re-pull. The TypeScript core
+  scheduled a background retry for the mismatch; the Rust core failed the
+  round with `sync.invalid_request` and scheduled none. It now schedules the
+  retry. The conformance scenarios `bootstrap/live-progress-failure-and-retry`
+  and `errors/internal-error-retryable` pin the retry delay in both cores.
+
+**Upgrade notes.** No code change is required. A Rust-core host now receives a
+background sync intent after a corrupt segment download.
 
 ## 0.27.0 release notes
 

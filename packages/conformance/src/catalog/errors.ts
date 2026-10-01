@@ -105,7 +105,7 @@ const P1 = { project_id: ['p1'] } as const;
 export const errorScenarios: readonly Scenario[] = [
   {
     name: 'errors/internal-error-retryable',
-    specRefs: ['§10.1', '§10.2'],
+    specRefs: ['§7.6', '§10.1', '§10.2'],
     requires: ['storage-fault'],
     async run(ctx) {
       await ctx.server.setAllowedScopes('actor-1', P1);
@@ -163,12 +163,24 @@ export const errorScenarios: readonly Scenario[] = [
           'client error code',
         );
       }
-      check(
-        (await intents.call(handle.api)).some(
-          (intent) => intent.kind === 'background',
-        ),
+      checkEqual(
+        await intents.call(handle.api),
+        [{ kind: 'background', delayMs: 250 }],
         'the retryable failure scheduled a background retry',
       );
+      checkEqual(
+        (await handle.api.progressSnapshot?.())?.retryDelayMs,
+        250,
+        'failed progress carries the scheduled retry delay (§7.6)',
+      );
+      await fail.call(ctx.server);
+      check(!(await handle.api.sync()).ok, 'the second round failed');
+      checkEqual(
+        (await handle.api.progressSnapshot?.())?.retryDelayMs,
+        500,
+        'the retry delay doubles',
+      );
+      await intents.call(handle.api);
       const retried = await handle.api.sync();
       check(retried.ok, 'the retry succeeded');
     },

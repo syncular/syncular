@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-10-01',
+    title: 'A failed-round query error says whether a retry follows',
+    body: '`SyncRoundFailedError` carries `retryable` and `retryDelayMs`. A retryable failure names the delay of the background retry the client scheduled (250 ms, doubling per consecutive failure up to 30 s); a non-retryable failure has no automatic next attempt. Failed sync progress carries the same `retryDelayMs` in the TypeScript and Rust cores. The Rust core now re-pulls after a segment content-address mismatch, as the TypeScript core does (SYNCULAR-ROUND-FAILURE-RETRY-001).',
+    links: [
+      {
+        href: '/platform-react/#generated-live-queries',
+        label: 'Query phases',
+      },
+    ],
+  },
+  {
+    date: '2026-10-01',
     title: 'A failed sync round ends a waiting query in `error`',
     body: "A live query whose required coverage is incomplete publishes phase `error` when the latest sync attempt fails, with a `SyncRoundFailedError` carrying the attempt's stable code (for example `sync.transport_failed`) and number. It keeps its rows and revision, stays `error` across local re-reads, and returns to `loading` or `partial` when the next attempt starts. `useQuery` and `useRawSql` show the same phase, so an interrupted bootstrap no longer renders as an endless `loading` (SYNCULAR-QUERY-PHASE-STALL-001).",
     links: [

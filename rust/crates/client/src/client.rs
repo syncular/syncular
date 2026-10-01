@@ -1118,6 +1118,10 @@ mod observation_tests {
             client.drain_sync_intents().as_slice(),
             [SyncIntent::Background { delay_ms: 250 }]
         ));
+        assert_eq!(
+            client.progress().snapshot().unwrap().retry_delay_ms,
+            Some(250)
+        );
         let mut transport = ServerErrorTransport {
             code: "sync.invalid_request",
             retryable: false,
@@ -1127,6 +1131,29 @@ mod observation_tests {
             SyncOutcome::Failed { ref error_code, .. } if error_code == "sync.invalid_request"
         ));
         assert!(client.drain_sync_intents().is_empty());
+        let progress = client.progress().snapshot().unwrap();
+        assert_eq!(progress.state, ProgressState::Failed);
+        assert_eq!(progress.retry_delay_ms, None);
+    }
+
+    #[test]
+    fn failed_progress_retry_delay_doubles_to_the_cap() {
+        let mut client = client();
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        let mut transport = ServerErrorTransport {
+            code: "sync.internal_error",
+            retryable: true,
+        };
+        let delays: Vec<Option<u64>> = (0..9)
+            .map(|_| {
+                client.sync(&mut transport);
+                client.progress().snapshot().unwrap().retry_delay_ms
+            })
+            .collect();
+        assert_eq!(
+            delays,
+            [250, 500, 1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000].map(Some)
+        );
     }
 
     #[test]
@@ -4870,6 +4897,8 @@ pub struct SyncClient {
     sync_intent_queue: VecDeque<SyncIntent>,
     /// Explicit exponential retry policy for transient transport failures.
     retry_delay_ms: u64,
+    /// §7.6: the background retry the current round scheduled, if any.
+    round_retry_delay_ms: Option<u64>,
     last_round: Option<DiagnosticLastRound>,
     last_change: Option<DiagnosticLastChange>,
     /// §7.6: latest failed owned snapshot read per owner id, oldest first.
@@ -5485,6 +5514,7 @@ impl SyncClient {
             change_queue: VecDeque::new(),
             sync_intent_queue: VecDeque::new(),
             retry_delay_ms: 250,
+            round_retry_delay_ms: None,
             last_round: None,
             last_change: None,
             query_failures: Vec::new(),
@@ -6348,6 +6378,7 @@ impl SyncClient {
         self.sync_intent_queue
             .push_back(SyncIntent::Background { delay_ms });
         self.retry_delay_ms = (self.retry_delay_ms * 2).min(30_000);
+        self.round_retry_delay_ms = Some(delay_ms);
         delay_ms
     }
 
@@ -8999,8 +9030,10 @@ impl SyncClient {
 
     pub fn sync(&mut self, transport: &mut dyn Transport) -> SyncOutcome {
         self.progress.start();
+        self.round_retry_delay_ms = None;
         let started_at_ms = self.clock_now_ms();
         let outcome = self.sync_inner(transport);
+        let retry_delay_ms = self.round_retry_delay_ms;
         self.progress.update(|p| match &outcome {
             SyncOutcome::Ok(report) if report.failed.is_empty() => {
                 p.state = ProgressState::Complete
@@ -9012,10 +9045,12 @@ impl SyncClient {
             SyncOutcome::Failed { error_code, .. } => {
                 p.state = ProgressState::Failed;
                 p.error_code = Some(Self::diagnostic_code(error_code));
+                p.retry_delay_ms = retry_delay_ms;
             }
             SyncOutcome::RealtimeUnavailable { .. } => {
                 p.state = ProgressState::Failed;
                 p.error_code = Some(REALTIME_UNAVAILABLE_CODE.to_owned());
+                p.retry_delay_ms = retry_delay_ms;
             }
         });
         let completed_at_ms = self.clock_now_ms();
@@ -10186,6 +10221,8 @@ impl SyncClient {
                         .strip_prefix("sha256:")
                         .unwrap_or(segment_id.as_str());
                     if bytes_to_hex(&digest) != expected {
+                        // §5.1: the client discards the segment and re-pulls.
+                        self.schedule_background_retry();
                         return Err(SectionError::Abort(
                             "sync.invalid_request".to_owned(),
                             "segment bytes do not match the content address (§5.1)".to_owned(),

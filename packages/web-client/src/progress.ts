@@ -11,6 +11,8 @@ export interface SyncProgress {
   readonly rowsProcessed: number;
   readonly rowsTotal?: number;
   readonly errorCode?: string;
+  /** Present on `failed` when the core scheduled a background retry. */
+  readonly retryDelayMs?: number;
 }
 
 export type SyncProgressListener = (progress: SyncProgress) => void;

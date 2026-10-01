@@ -122,6 +122,11 @@ export const bootstrapScenarios: readonly Scenario[] = [
         'sync.invalid_request',
         'failure has a stable code',
       );
+      checkEqual(
+        failure?.retryDelayMs,
+        250,
+        'the client re-pulls after a content-address mismatch',
+      );
       await syncOk(a);
       const complete = await progress();
       checkEqual(complete?.state, 'complete', 'retry completes');
@@ -130,6 +135,11 @@ export const bootstrapScenarios: readonly Scenario[] = [
         'retry has a new identity',
       );
       checkEqual(complete?.errorCode, undefined, 'retry clears the failure');
+      checkEqual(
+        complete?.retryDelayMs,
+        undefined,
+        'retry clears the retry delay',
+      );
       checkEqual(complete?.rowsProcessed, 3, 'actual imported rows');
       checkEqual(complete?.rowsTotal, 3, 'declared total rows');
       checkEqual(

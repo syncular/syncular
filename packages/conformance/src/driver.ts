@@ -809,6 +809,7 @@ export interface DriverSyncProgress {
   readonly rowsProcessed: number;
   readonly rowsTotal?: number;
   readonly errorCode?: string;
+  readonly retryDelayMs?: number;
 }
 
 export interface ClientInstance {

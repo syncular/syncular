@@ -1527,7 +1527,8 @@ one table at one `asOfCommitSeq`.
 - A client MUST verify the hash of downloaded segment bytes against the
   `segmentId` before applying, and reject on mismatch
   (`sync.integrity_rejected` is *not* in the SSP2 catalog — the client
-  discards the segment and re-pulls; a persistent mismatch is
+  fails the round with `sync.invalid_request`, discards the segment, and
+  re-pulls through a scheduled background retry (§7.6); a persistent mismatch is
   `sync.not_found` territory server-side).
 - Segments are cache entries, not durable state: servers MAY expire them
   at any time (default TTL 24 h). An expired segment yields
@@ -4371,8 +4372,12 @@ zero rows always means an answerable empty result.
 **Failed transfer.** A reactive observation whose latest successful read has
 incomplete coverage waits on sync attempts (§7.6 progress). When the latest
 attempt ends `failed`, the observation publishes phase `error` with a
-`ClientSyncError` whose `code` is the attempt's `errorCode` and whose
-`attempt` is the attempt number; it keeps the rows and revision of its last
+`ClientSyncError` whose `code` is the attempt's `errorCode`, whose
+`attempt` is the attempt number, whose `retryable` is true exactly when the
+failed attempt carries `retryDelayMs`, and whose `retryDelayMs` is that value
+(absent otherwise). `retryable: false` means the client scheduled no automatic
+attempt; the next attempt starts only when the host or application calls
+`sync`. The observation keeps the rows and revision of its last
 successful read, so an incomplete result with rows moves from `partial` to
 `error`. A later read that is still incomplete keeps that error. When progress
 reports any other attempt, the observation returns to `loading` (no rows) or
@@ -4527,6 +4532,15 @@ per-block transactions; SQLite images commit in chunks of at most 1,024 rows
 and reconciled the optimistic read model. It means the round completed, not that
 all subscriptions have finished bootstrap. `failed` carries a static `errorCode`
 and retains the last observed counters; processed rows may have rolled back.
+When the failed round scheduled a background retry intent, `failed` also
+carries `retryDelayMs`, the intent's `delayMs`: 250 ms after the first
+consecutive retryable failure, doubling per further failure up to 30,000 ms,
+and back to 250 ms after a successful round. The value is a delay because the
+host scheduler owns the timer and may start the attempt earlier (a wake-up, an
+interactive sync) or later (a suspended process); an absolute time would claim
+a deadline the core does not control, and it would cross worker and native
+bridges whose clocks the core does not share. A failure without a scheduled
+retry omits `retryDelayMs`.
 A failed subscription makes the progress attempt failed even when the ordinary
 sync summary returns that subscription failure without throwing. Progress does
 not claim cancellation or recovery when a worker or process disappears.
