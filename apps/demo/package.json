@@ -12,7 +12,7 @@
     "@syncular/server": "workspace:*",
     "@syncular/server-hono": "workspace:*",
     "@syncular/client": "workspace:*",
-    "hono": "^4.12.34"
+    "hono": "^4.13.7"
   },
   "devDependencies": {
     "@syncular/typegen": "workspace:*",

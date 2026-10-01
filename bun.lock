@@ -21,7 +21,7 @@
         "@syncular/client": "workspace:*",
         "@syncular/server": "workspace:*",
         "@syncular/server-hono": "workspace:*",
-        "hono": "^4.12.34",
+        "hono": "^4.13.7",
       },
       "devDependencies": {
         "@syncular/typegen": "workspace:*",
@@ -195,7 +195,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@syncular/server": "workspace:*",
-        "hono": "^4.12.34",
+        "hono": "^4.13.7",
       },
       "devDependencies": {
         "@syncular/core": "workspace:*",
@@ -1091,7 +1091,7 @@
 
     "hermes-parser": ["hermes-parser@0.36.0", "", { "dependencies": { "hermes-estree": "0.36.0" } }, "sha512-GdpwMmH5x6IpC1cijvcvYnlPB60Mh6kTSF/NFdYV/j56gYdi+0RIakYs+eqOV+bbO0SW7mgVVGSsTJxyPQfo3w=="],
 
-    "hono": ["hono@4.13.5", "", {}, "sha512-O6+/eCYRkzzzy0rPWwKLiGBR1nFuUPZynnwjxN1MBA62NNqbT0wQEzQyK2gSO5yDIDB336sXQleAhOHrzlYyKw=="],
+    "hono": ["hono@4.13.9", "", {}, "sha512-7dMkQmZoC4E6F7AtaQSPhlWAdnBti+j7rreMZl8QB4jFiEhP9TWbGWUMi8WYzBCgmgulxuvLQupKqo+Co6Omyg=="],
 
     "html-escaper": ["html-escaper@3.0.3", "", {}, "sha512-RuMffC89BOWQoY0WKGpIhn5gX3iI54O6nRA0yC124NYVtzjmFWBIiFd8M0x+ZdX0P9R4lADg1mgP8C7PxGOWuQ=="],
 

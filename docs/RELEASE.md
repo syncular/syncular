@@ -29,6 +29,10 @@ server does not change, and every package and crate ships together.
   retry. The conformance scenarios `bootstrap/live-progress-failure-and-retry`
   and `errors/internal-error-retryable` pin the retry delay in both cores.
 
+- **`@syncular/server-hono` requires hono `^4.13.7`.** Earlier hono releases
+  render plain strings unescaped in `hono/jsx` boundary components
+  (GHSA-hxh3-vqpv-xpqv).
+
 **Upgrade notes.** No code change is required. A Rust-core host now receives a
 background sync intent after a corrupt segment download.
 
