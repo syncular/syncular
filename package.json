@@ -13,6 +13,7 @@
     "bindings/tauri/example"
   ],
   "overrides": {
+    "devalue": "5.9.4",
     "dompurify": "3.4.16",
     "js-yaml": "4.3.2",
     "nanoid": "3.3.18",
