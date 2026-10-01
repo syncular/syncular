@@ -17,6 +17,28 @@
 export const changelog = [
   {
     date: '2026-10-01',
+    title: 'FTS queries read source ids without a content row per match',
+    body: "Typegen emits FTS joins that read `_syncular_source_id` through the client's source-id mapping table on the projection rowid, so FTS5 no longer fetches the content row of every match. The authored SQL, its types, its identity, and its rows stay the same; a 50,000-match search took 53.9 ms against 73.6 ms. Both client cores keep one mapping row per projection row, pinned by a conformance scenario (SYNCULAR-FTS-SOURCE-ID-001).",
+    links: [
+      {
+        href: '/tooling-local-search/#query-it',
+        label: 'Local search',
+      },
+    ],
+  },
+  {
+    date: '2026-10-01',
+    title: 'A ranked top-N CTE can keep only its page',
+    body: 'A top-level CTE body may end in `LIMIT <n>` when its `ORDER BY` ends with the CTE identity, so a search ranks narrow rows and SQLite keeps only the page in its sort. The unbounded materialized form sorts every match and costs about 30 % more on narrow rows; the guidance now says so (SYNCULAR-SYQL-TOPN-001).',
+    links: [
+      {
+        href: '/syql/#ranked-top-n',
+        label: 'Ranked top-N',
+      },
+    ],
+  },
+  {
+    date: '2026-10-01',
     title: 'A failed-round query error says whether a retry follows',
     body: '`SyncRoundFailedError` carries `retryable` and `retryDelayMs`. A retryable failure names the delay of the background retry the client scheduled (250 ms, doubling per consecutive failure up to 30 s); a non-retryable failure has no automatic next attempt. Failed sync progress carries the same `retryDelayMs` in the TypeScript and Rust cores. The Rust core now re-pulls after a segment content-address mismatch, as the TypeScript core does (SYNCULAR-ROUND-FAILURE-RETRY-001).',
     links: [

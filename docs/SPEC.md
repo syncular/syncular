@@ -795,8 +795,12 @@ ciphertext envelope. This metadata is client-only: it MUST NOT create a server t
 wire table, scope, codec column, subscription target, or mutation target.
 Reference clients materialize the same contentful FTS5 projection over the
 visible table with an internal `_syncular_source_id UNINDEXED` column equal to
-the string form of the application primary key. They MUST keep it
-transactionally current across insert/update/delete, optimistic overlay
+the string form of the application primary key, and a mapping table
+`_syncular_fts_<projection>(id INTEGER PRIMARY KEY, source_id TEXT NOT NULL
+UNIQUE)` with exactly one row per projection row, whose `id` equals the
+projection rowid and whose `source_id` equals its `_syncular_source_id`.
+Generated query SQL reads source ids through the mapping table (SYQL §15). They
+MUST keep both tables transactionally current across insert/update/delete, optimistic overlay
 rebuild, purge, and schema reset. If FTS5 is unavailable, local schema creation
 MUST fail loudly; a client MUST NOT silently omit the projection or replace
 `MATCH` with a `LIKE` scan. Purge, revocation, schema reset, and protected local

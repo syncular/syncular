@@ -1082,11 +1082,92 @@ describe('ranked materialized CTE top-N', () => {
       ),
     );
     expect(undetermined.code).toBe('SYQL6006_INVALID_SORT');
+  });
 
-    const nestedLimit = frontendError(() =>
-      validate(ranked(OUTER, `${RANKED_BODY} limit 80`)),
-    );
-    expect(nestedLimit.code).toBe('SYQL6003_NONDETERMINISTIC_SQL');
+  test('a bounded narrow stage returns the rows and order of the plain form', () => {
+    const plain = validate(`sync query plainTodos(
+      listId, searchQuery: string, titleQuery: string,
+    ) by t.list_id {
+      select todos_fts._syncular_source_id as fts_source_id, t.id, t.title,
+        t.status, t.position, t.created_at
+      from todos_fts
+      join todos t on t.id = todos_fts._syncular_source_id
+      where todos_fts match :searchQuery and t.list_id = :listId
+      order by case when t.title = :titleQuery collate nocase then 0 else 1 end,
+        bm25(todos_fts), todos_fts._syncular_source_id asc, t.id asc
+      limit 80;
+    }`).queries[0];
+    const unbounded = validate(ranked(OUTER)).queries[0];
+    const bounded = validate(ranked(OUTER, `${RANKED_BODY} limit 80`))
+      .queries[0];
+    const viaAlias = validate(
+      ranked(
+        OUTER,
+        `${RANKED_BODY.replace(
+          'fts_source_id, todo_id',
+          'todos_fts._syncular_source_id desc, hit.id',
+        )} limit 80`,
+      ),
+    ).queries[0];
+    expect(bounded?.identity).toEqual(['ftsSourceId', 'id']);
+
+    const sqlite = new Database(':memory:');
+    sqlite.run(synthesizeDdl(IR));
+    // 300 hits in the list with tied scores, 40 outside it, inserted out of
+    // order; the client keeps the mapping id equal to the projection rowid.
+    for (let index = 0; index < 340; index += 1) {
+      const n = (index * 7919) % 340;
+      const id = `todo-${String(n).padStart(3, '0')}`;
+      const list = n < 300 ? 'list-1' : 'list-2';
+      const title = n % 50 === 7 ? 'word seven' : `word ${n % 5}`;
+      sqlite.run(
+        'insert into todos (id, list_id, title, status, position, created_at) values (?, ?, ?, null, ?, ?)',
+        [id, list, title, n, n],
+      );
+      sqlite.run('insert into _syncular_fts_todos_fts (source_id) values (?)', [
+        id,
+      ]);
+      sqlite.run(
+        'insert into todos_fts (rowid, _syncular_source_id, title) values ((select id from _syncular_fts_todos_fts where source_id = ?), ?, ?)',
+        [id, id, title],
+      );
+    }
+    const run = (sql: string | undefined) =>
+      sqlite
+        .query(sql ?? '')
+        .all({
+          ':listId': 'list-1',
+          ':searchQuery': 'word',
+          ':titleQuery': 'word seven',
+        })
+        .map((row) => JSON.stringify(row));
+    const expected = run(plain?.analysis.sql);
+    expect(expected).toHaveLength(80);
+    expect(run(unbounded?.analysis.sql)).toEqual(expected);
+    expect(run(bounded?.analysis.sql)).toEqual(expected);
+    expect(run(viaAlias?.analysis.sql)).not.toEqual(expected);
+    expect(run(viaAlias?.analysis.sql)).toHaveLength(80);
+    sqlite.close();
+  });
+
+  test('a CTE LIMIT requires a total body order and nothing else bounded', () => {
+    for (const body of [
+      // The order does not end with the CTE identity.
+      `${RANKED_BODY.replace(', fts_source_id, todo_id', '')} limit 80`,
+      `${RANKED_BODY.replace('fts_source_id, todo_id', 'todo_id, fts_source_id')} limit 80`,
+      `${RANKED_BODY.replace(/order by[^]*$/, '')} limit 80`,
+      `${RANKED_BODY} limit 80 offset 5`,
+      `${RANKED_BODY} limit 80 + 0`,
+      `${RANKED_BODY} limit 0`,
+      // A nested subquery stays unbounded.
+      RANKED_BODY.replace(
+        'hit.list_id = :listId',
+        'hit.id in (select id from todos where list_id = :listId limit 5)',
+      ),
+    ]) {
+      const error = frontendError(() => validate(ranked(OUTER, body)));
+      expect(error.code).toBe('SYQL6003_NONDETERMINISTIC_SQL');
+    }
   });
 
   test('proves each instance only from predicates of its own scope', () => {

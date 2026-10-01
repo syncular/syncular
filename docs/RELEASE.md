@@ -1,8 +1,40 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.28.0** (`v0.28.0`). All artifacts use Apache-2.0, except
+current release is **0.29.0** (`v0.29.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.29.0 release notes
+
+0.29.0 is a minor release: SYQL accepts a new statement shape and typegen
+changes the SQL it emits for every FTS join, so a patch number would hide the
+surface. SSP2 stays at wire version 3, the server does not change, and every
+package and crate ships together. Regenerate queries to pick up both changes.
+
+- **FTS joins read source ids through the mapping table
+  (SYNCULAR-FTS-SOURCE-ID-001).** A query that read
+  `fts._syncular_source_id` made FTS5 fetch the content row of every match.
+  Typegen now joins each FTS relation that `FROM` or an inner `JOIN`
+  introduces to `_syncular_fts_<projection>` on the projection rowid and reads
+  `source_id` there (SYQL §15). The authored SQL keeps its types, identity, and
+  coverage; SQLite prepares the lowered statement and must return the same
+  result names. SPEC now names the mapping table both client cores already
+  kept. The bytecode of the lowered form carries no read of the projection's
+  source-id column, and on 50,000 matches it took 53.9 ms against 73.6 ms
+  (Bun 1.4.0, macOS arm64). The conformance scenario
+  `observation/fts-source-id-mapping` pins the mapping invariant, identical
+  rows, and the absent column read on both cores.
+- **Bounded ranked top-N (SYNCULAR-SYQL-TOPN-001).** A top-level CTE body may
+  end in `LIMIT <n>` when its identity is proven and its `ORDER BY` ends with
+  that identity; any other nested `LIMIT` still fails with
+  `SYQL6003_NONDETERMINISTIC_SQL` (SYQL §14.3). The total order makes the kept
+  rows a function of the database state. §14.3 now names the cost of the
+  unbounded `MATERIALIZED` form: it sorts every candidate and measured about
+  30 % slower than the plain form on narrow rows.
+
+**Upgrade notes.** Regenerate queries. Code that read `analysis.sql` or a
+statement's `sql` from typegen output sees the lowered FTS join; the authored
+text stays in `sourceSql`.
 
 ## 0.28.0 release notes
 

@@ -778,11 +778,21 @@ export interface SqlRelations {
   readonly scopeAt: (offset: number) => string;
 }
 
-export function scanTableRefs(sql: string, ir: IrDocument): TableRef[] {
-  return scanRelations(sql, ir).tables;
+export function scanTableRefs(
+  sql: string,
+  ir: IrDocument,
+  lowered = false,
+): TableRef[] {
+  return scanRelations(sql, ir, lowered).tables;
 }
 
-export function scanRelations(sql: string, ir: IrDocument): SqlRelations {
+/** `lowered` scans emitted SQL, whose FTS mapping reads
+ * ({@link lowerFtsSourceIds}) are internal and not relations of the query. */
+export function scanRelations(
+  sql: string,
+  ir: IrDocument,
+  lowered = false,
+): SqlRelations {
   const tokens = lexSyqlSqlSource('query SQL', sql).filter(
     (token) => !isSyqlTrivia(token) && token.kind !== 'eof',
   );
@@ -793,6 +803,15 @@ export function scanRelations(sql: string, ir: IrDocument): SqlRelations {
         (index) => [index.name.toLowerCase(), index.name] as const,
       ),
     ]),
+  );
+  const mappings = new Set(
+    lowered
+      ? ir.tables.flatMap((table) =>
+          table.ftsIndexes.map((index) =>
+            ftsMappingTable(index.name).toLowerCase(),
+          ),
+        )
+      : [],
   );
   const closes = new Map<number, number>();
   const parents: number[] = [];
@@ -992,6 +1011,7 @@ export function scanRelations(sql: string, ir: IrDocument): SqlRelations {
       });
       continue;
     }
+    if (mappings.has(rawTable.toLowerCase())) continue;
     const table = known.get(rawTable.toLowerCase());
     if (table === undefined)
       throw new TypegenError(
@@ -1582,10 +1602,231 @@ export function synthesizeDdl(ir: IrDocument): string {
       const tokenize = index.tokenize.replaceAll("'", "''");
       lines.push(
         `CREATE VIRTUAL TABLE ${index.name} USING fts5(${FTS_SOURCE_ID_COLUMN} UNINDEXED, ${index.columns.join(', ')}, tokenize='${tokenize}');`,
+        `CREATE TABLE ${ftsMappingTable(index.name)} (id INTEGER PRIMARY KEY, source_id TEXT NOT NULL UNIQUE);`,
       );
     }
   }
   return lines.join('\n');
+}
+
+/** SPEC client-local FTS5 projections: the source-id mapping table whose `id`
+ * equals the projection rowid. */
+export function ftsMappingTable(index: string): string {
+  return `_syncular_fts_${index}`;
+}
+
+const FTS_LOWERING_STOPS = new Set([
+  'join',
+  'inner',
+  'left',
+  'right',
+  'full',
+  'cross',
+  'natural',
+  'where',
+  'group',
+  'having',
+  'order',
+  'limit',
+  'window',
+  'union',
+  'except',
+  'intersect',
+]);
+const SELECT_LIST_BOUNDARIES = new Set([
+  'select',
+  'from',
+  'where',
+  'group',
+  'having',
+  'order',
+  'limit',
+  'on',
+  'join',
+  'window',
+  'values',
+]);
+
+/**
+ * SYQL §15 FTS source-id lowering. Reading an FTS projection's
+ * `_syncular_source_id` makes FTS5 fetch the content row of every hit. Each
+ * FTS relation introduced by `FROM` or an inner `JOIN` gains a join to its
+ * mapping table on the projection rowid, and every reference that SQLite binds
+ * to that relation reads the mapping's `source_id` instead. The mapping
+ * columns carry `__syql_fts_` names, so no authored unqualified name changes
+ * its binding. A bare projected reference keeps its result name through an
+ * explicit alias. References this pass cannot bind with certainty keep
+ * reading the projection; both read the same value.
+ */
+export function lowerFtsSourceIds(sql: string, ir: IrDocument): string {
+  const ftsNames = new Set(
+    ir.tables.flatMap((table) => table.ftsIndexes.map((index) => index.name)),
+  );
+  const relations = scanRelations(sql, ir);
+  if (!relations.tables.some((ref) => ftsNames.has(ref.table))) return sql;
+  const tokens = lexSyqlSqlSource('query SQL', sql).filter(
+    (token) => !isSyqlTrivia(token) && token.kind !== 'eof',
+  );
+  const depths: number[] = [];
+  const closes = new Map<number, number>();
+  const stack: number[] = [];
+  tokens.forEach((token, index) => {
+    if (token.text === ')') {
+      const open = stack.pop();
+      if (open !== undefined) closes.set(open, index);
+    }
+    depths[index] = stack.length;
+    if (token.text === '(') stack.push(index);
+  });
+  const lower = (index: number): string | undefined => {
+    const token = tokens[index];
+    return token?.kind === 'identifier' ? token.text.toLowerCase() : undefined;
+  };
+  // Every SELECT scope as an offset range; the outer statement spans all.
+  const scopes = [
+    { start: -1, end: sql.length + 1 },
+    ...tokens.flatMap((token, index) => {
+      const close = tokens[closes.get(index) ?? -1];
+      const next = lower(index + 1);
+      return token.text === '(' &&
+        close !== undefined &&
+        (next === 'select' || next === 'with' || next === 'values')
+        ? [{ start: token.span.start.offset, end: close.span.start.offset }]
+        : [];
+    }),
+  ];
+  const scopeAt = (offset: number) =>
+    scopes
+      .filter((scope) => scope.start < offset && offset < scope.end)
+      .reduce((inner, scope) =>
+        scope.end - scope.start < inner.end - inner.start ? scope : inner,
+      );
+  const tokenAt = (offset: number) =>
+    tokens.findIndex((token) => token.span.start.offset === offset);
+  const bindings = [
+    ...relations.tables.map((ref) => ({ alias: ref.alias, start: ref.start })),
+    ...relations.cteRefs.map((ref) => ({ alias: ref.alias, start: ref.start })),
+  ].map((relation) => ({ ...relation, scope: scopeAt(relation.start) }));
+
+  const edits: { start: number; end: number; text: string }[] = [];
+  const lowered = new Map<number, string>();
+  for (const ref of relations.tables) {
+    if (!ftsNames.has(ref.table) || ref.nullable) continue;
+    const at = tokenAt(ref.start);
+    const operator = lower(at - 1);
+    if (operator !== 'from' && operator !== 'join') continue;
+    let after = at + 1;
+    if (lower(after) === 'as') after += 1;
+    if (ref.explicitAlias !== undefined) after += 1;
+    const depth = depths[at] ?? 0;
+    let insertAt = (tokens[after - 1] as SyqlToken).span.end.offset;
+    if (lower(after) === 'on') {
+      let cursor = after + 1;
+      while (
+        cursor < tokens.length &&
+        (depths[cursor] ?? 0) >= depth &&
+        !(
+          depths[cursor] === depth &&
+          (tokens[cursor]?.text === ',' ||
+            FTS_LOWERING_STOPS.has(lower(cursor) ?? ''))
+        )
+      )
+        cursor += 1;
+      insertAt = (tokens[cursor - 1] as SyqlToken).span.end.offset;
+    } else if (lower(after) === 'using') {
+      const close = tokens[closes.get(after + 1) ?? -1];
+      if (close === undefined) continue;
+      insertAt = close.span.end.offset;
+    }
+    const n = lowered.size + 1;
+    const mapping = `__syql_fts_${n}`;
+    lowered.set(ref.start, `${mapping}.__syql_fts_source_${n}`);
+    edits.push({
+      start: insertAt,
+      end: insertAt,
+      text: ` JOIN (SELECT id AS __syql_fts_rowid_${n}, source_id AS __syql_fts_source_${n} FROM ${ftsMappingTable(ref.table)}) AS ${mapping} ON ${mapping}.__syql_fts_rowid_${n} = ${(tokens[ref.explicitAlias === undefined ? at : after - 1] as SyqlToken).text}.rowid`,
+    });
+  }
+  if (lowered.size === 0) return sql;
+
+  // An authored `AS _syncular_source_id` alias could capture an unqualified
+  // ORDER BY reference; leave unqualified references alone then.
+  const aliased = tokens.some(
+    (token, index) =>
+      lower(index - 1) === 'as' &&
+      sqlIdentifier(token)?.toLowerCase() === FTS_SOURCE_ID_COLUMN,
+  );
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index] as SyqlToken;
+    if (
+      sqlIdentifier(token)?.toLowerCase() !== FTS_SOURCE_ID_COLUMN ||
+      lower(index - 1) === 'as' ||
+      tokens[index + 1]?.text === '.' ||
+      tokens[index + 1]?.text === '('
+    )
+      continue;
+    const qualified = tokens[index - 1]?.text === '.';
+    const first = qualified ? index - 2 : index;
+    const firstToken = tokens[first] as SyqlToken;
+    const scope = scopeAt(token.span.start.offset);
+    let target: string | undefined;
+    if (qualified) {
+      const qualifier = sqlIdentifier(firstToken)?.toLowerCase();
+      const bound = bindings
+        .filter(
+          (relation) =>
+            relation.alias.toLowerCase() === qualifier &&
+            relation.scope.start < token.span.start.offset &&
+            token.span.start.offset < relation.scope.end,
+        )
+        .reduce<(typeof bindings)[number] | undefined>(
+          (inner, relation) =>
+            inner === undefined ||
+            relation.scope.end - relation.scope.start <
+              inner.scope.end - inner.scope.start
+              ? relation
+              : inner,
+          undefined,
+        );
+      target = bound === undefined ? undefined : lowered.get(bound.start);
+    } else if (!aliased) {
+      const own = bindings.filter((relation) => relation.scope === scope);
+      target = own.length === 1 ? lowered.get(own[0]?.start ?? -1) : undefined;
+    }
+    if (target === undefined) continue;
+    // A bare select-list item keeps its result name.
+    let boundary = first - 1;
+    while (
+      boundary >= 0 &&
+      !(
+        depths[boundary] === depths[first] &&
+        SELECT_LIST_BOUNDARIES.has(lower(boundary) ?? '')
+      ) &&
+      (depths[boundary] ?? 0) >= (depths[first] ?? 0)
+    )
+      boundary -= 1;
+    const previous = tokens[first - 1]?.text.toLowerCase();
+    const next = tokens[index + 1]?.text.toLowerCase();
+    const bare =
+      lower(boundary) === 'select' &&
+      (previous === ',' ||
+        previous === 'select' ||
+        previous === 'distinct' ||
+        previous === 'all') &&
+      (next === ',' || next === 'from');
+    edits.push({
+      start: firstToken.span.start.offset,
+      end: token.span.end.offset,
+      text: bare ? `${target} AS ${token.text}` : target,
+    });
+  }
+  return edits
+    .sort((a, b) => b.start - a.start || b.end - a.end)
+    .reduce(
+      (text, edit) =>
+        text.slice(0, edit.start) + edit.text + text.slice(edit.end),
+      sql,
+    );
 }
 
 /**
@@ -1840,18 +2081,37 @@ export function analyzeStatement(
 
   const reactive = inferReactiveMetadata(sql, refs, ir, params, columns);
 
+  const physical = lowerFtsSourceIds(sql, ir);
+  if (physical !== sql) {
+    const lowered = analyze(physical);
+    if (
+      lowered.paramsCount !== described.paramsCount ||
+      lowered.columnNames.length !== described.columnNames.length ||
+      lowered.columnNames.some((n, i) => n !== described.columnNames[i])
+    ) {
+      throw new TypegenError(
+        file,
+        `internal: FTS source-id lowering changed the result columns [${described.columnNames.join(', ')}] to [${lowered.columnNames.join(', ')}]`,
+      );
+    }
+  }
+
   return {
     name,
     file,
     sourceSql,
-    sql,
-    positionalSql: toPositionalSql(sql),
-    relations: scanTableRefs(toPositionalSql(sql), ir).map((ref) => ({
-      table: ref.table,
-      start: ref.start,
-      end: ref.end,
-      ...(ref.explicitAlias === undefined ? {} : { alias: ref.explicitAlias }),
-    })),
+    sql: physical,
+    positionalSql: toPositionalSql(physical),
+    relations: scanTableRefs(toPositionalSql(physical), ir, true).map(
+      (ref) => ({
+        table: ref.table,
+        start: ref.start,
+        end: ref.end,
+        ...(ref.explicitAlias === undefined
+          ? {}
+          : { alias: ref.explicitAlias }),
+      }),
+    ),
     params,
     columns,
     tables,

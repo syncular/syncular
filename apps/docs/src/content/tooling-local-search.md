@@ -77,8 +77,16 @@ references a schema-declared FTS projection. Typegen treats the projected
 `_syncular_source_id` as exact non-null text and can use it with the owner key
 to prove stable identity for a bounded query.
 
+Reading `_syncular_source_id` from the projection makes FTS5 fetch the content
+row of every match. The client keeps a mapping table whose key equals the
+projection rowid, and the generated SQL reads each source id through it. The
+authored query, its types, and its rows stay the same; on 50,000 matches the
+generated form took 53.9 ms against 73.6 ms for the authored form (Bun 1.4.0,
+macOS arm64). `highlight` and `snippet` still read the content row of every
+match they are evaluated for.
+
 A search that ranks many matches and returns a few wide rows ranks narrow rows
-in a materialized CTE first; see [ranked top-N](/syql/#ranked-top-n).
+in a bounded CTE first; see [ranked top-N](/syql/#ranked-top-n).
 
 The projection maps back to its owning synced table for reactive dependencies.
 A content change therefore invalidates generated React queries normally.

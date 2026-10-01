@@ -240,11 +240,11 @@ unkeyed reconciliation.
 ## Ranked top-N
 
 A search that ranks every match and returns a page of wide rows ranks narrow
-rows in a materialized CTE and reads the wide row after the limit:
+rows in a CTE that keeps only the page, and reads the wide row after the limit:
 
 ```syql
 sync query searchCodes(setId, searchQuery, codeQuery: string) by c.set_id {
-  with ranked as materialized (
+  with ranked as (
     select codes_fts._syncular_source_id as fts_source_id, hit.id as code_id,
       case when hit.code = :codeQuery collate nocase then 0 else 1 end
         as code_rank,
@@ -253,6 +253,7 @@ sync query searchCodes(setId, searchQuery, codeQuery: string) by c.set_id {
     join codes hit on hit.id = codes_fts._syncular_source_id
     where codes_fts match :searchQuery and hit.set_id = :setId
     order by code_rank, score, fts_source_id, code_id
+    limit 80
   )
   select ranked.fts_source_id, ranked.code_id as id, c.code, c.title,
     c.description
@@ -269,6 +270,10 @@ The rules that make this compile:
 
 - The CTE body projects the key of every relation it reads, here
   `fts_source_id` and `code_id`. Those columns are the CTE's identity.
+- The CTE `LIMIT` is an integer literal without `OFFSET`, and the CTE
+  `ORDER BY` ends with every identity column, spelled as its alias or its
+  projected column. Any other nested `LIMIT` fails with
+  `SYQL6003_NONDETERMINISTIC_SQL`.
 - The outer query projects the CTE identity columns and joins the wide table
   with `ON c.id = ranked.code_id`. That equality determines `c`, so the result
   identity is `(ftsSourceId, id)` and the wide table adds no key.
@@ -277,15 +282,17 @@ The rules that make this compile:
 - Each instance of a synced table proves its scope in its own `WHERE`. Here
   both `codes` instances bind `set_id = :setId`, so the query has one coverage
   entry.
-- The CTE carries no `LIMIT`; a nested `LIMIT` fails with
-  `SYQL6003_NONDETERMINISTIC_SQL`.
 
-`CROSS JOIN` keeps the CTE scan as SQLite's outer loop. On SQLite 3.51 and
-later, which the browser build and the Rust core bundle, the plan is
-`MATERIALIZE ranked`, `SCAN ranked`, and a primary-key `SEARCH` of `c`: SQLite
-sorts only the narrow CTE rows and reads a wide row only for a returned row.
-The [SYQL specification](https://github.com/syncular/syncular/blob/main/docs/SYQL.md#143-ranked-top-n)
-states the identity rules.
+Apply every filter inside the CTE. An outer filter that removes kept rows
+returns fewer rows than the page. SQLite keeps at most 80 rows in the CTE sort
+and reads a wide row only for a returned row.
+
+Without the CTE `LIMIT`, mark the CTE `as materialized`. SQLite then sorts
+every match inside the materialization, which on 50,000 narrow matches cost
+about 30 % more than a plain one-scope `ORDER BY ... LIMIT`; that form pays off
+only for wide rows of several kilobytes. The
+[SYQL specification](https://github.com/syncular/syncular/blob/main/docs/SYQL.md#143-ranked-top-n)
+states the identity rules and the measurements.
 
 Unannotated input types are inferred from all SQL and predicate uses. Add a
 type when SQL provides no evidence. Conflicting evidence is a compile error.

@@ -250,15 +250,17 @@ Projection names and types are derived from SQLite and schema metadata.
 SYQL targets a portable SQLite 3.46.0 core profile. Non-core functions and
 collations are rejected. Snapshot-external or nondeterministic constructs such
 as `random()`, current-time keywords, `datetime('now')`, and
-`last_insert_rowid()` are rejected. Nested `LIMIT`/`OFFSET` and window
-expressions are rejected until the compiler can prove a local stable identity
-and total order for those shapes.
+`last_insert_rowid()` are rejected. A nested `OFFSET`, a nested `LIMIT` other
+than the bounded CTE body of §14.3, and window expressions are rejected
+(`SYQL6003_NONDETERMINISTIC_SQL`) until the compiler can prove a local stable
+identity and total order for those shapes.
 
 A CTE declaration MAY carry SQLite's `AS MATERIALIZED` or `AS NOT MATERIALIZED`
 hint. Each body of a top-level CTE whose first token is `SELECT` is a SELECT
 scope of its own for scope proofs (§13), column lineage, and identity (§14). An
-`ORDER BY` in a CTE body neither bounds nor orders the result; only the outer
-`ORDER BY` does. §14.3 uses both rules for a ranked top-N.
+`ORDER BY` in a CTE body never orders the result; only the outer `ORDER BY`
+does. With a body `LIMIT` (§14.3) it selects which rows the CTE keeps. §14.3
+uses these rules for a ranked top-N.
 
 ## 9. Reusable predicates
 
@@ -536,12 +538,12 @@ them.
 ### 14.3 Ranked top-N
 
 A bounded query that ranks many candidate rows and returns a few wide rows
-ranks narrow rows in a materialized CTE and reads the wide row in the outer
-scope:
+ranks narrow rows in a CTE that keeps only the first rows, and reads the wide
+row in the outer scope:
 
 ```syql
 sync query searchCodes(setId, searchQuery, codeQuery: string) by c.set_id {
-  with ranked as materialized (
+  with ranked as (
     select codes_fts._syncular_source_id as fts_source_id, hit.id as code_id,
       case when hit.code = :codeQuery collate nocase then 0 else 1 end
         as code_rank,
@@ -550,6 +552,7 @@ sync query searchCodes(setId, searchQuery, codeQuery: string) by c.set_id {
     join codes hit on hit.id = codes_fts._syncular_source_id
     where codes_fts match :searchQuery and hit.set_id = :setId
     order by code_rank, score, fts_source_id, code_id
+    limit 80
   )
   select ranked.fts_source_id, ranked.code_id as id, c.code, c.title,
     c.description
@@ -567,12 +570,27 @@ The CTE identity is `(fts_source_id, code_id)`. `c` is determined by
 order ends with the two CTE identity terms. Each `codes` instance carries the
 same `set_id` proof in its own scope, so the query has one coverage entry.
 
-The outer `ORDER BY` repeats the CTE order, and `CROSS JOIN` keeps the CTE scan
-as SQLite's outer loop. SQLite 3.51 and later then satisfy the outer order from
-the materialized CTE: the plan is `MATERIALIZE ranked`, `SCAN ranked`, and a
-primary-key `SEARCH` of `c`, with the only sort inside the materialization, so
-SQLite reads the wide row only for rows it returns. SQLite 3.46.0, the floor of
-the portable profile, sorts the joined rows again and returns the same result.
+A top-level CTE body MAY end in `LIMIT <n>`, where `n` is an integer literal of
+at least 1. The body MUST NOT carry `OFFSET`, its identity MUST be proven
+(§14.2), and its `ORDER BY` MUST end with every identity term, each spelled as
+the term's result alias or as its projected column. The order is then total,
+so the CTE keeps the same `n` rows for the same database state. Any other body
+`LIMIT` fails with `SYQL6003_NONDETERMINISTIC_SQL`. The outer scope returns the
+plain form's rows only when it removes none of the kept rows: apply every
+filter inside the CTE and repeat the CTE order in the outer `ORDER BY`.
+SQLite keeps at most `n` rows in the CTE sort and reads the wide row only for
+the rows it returns.
+
+The CTE MAY instead omit its `LIMIT` and carry `AS MATERIALIZED`. SQLite then
+sorts every candidate inside the materialization. `CROSS JOIN` keeps the CTE
+scan as SQLite's outer loop, and SQLite 3.51 and later satisfy the outer order
+from the materialized rows (`MATERIALIZE ranked`, `SCAN ranked`, a primary-key
+`SEARCH` of `c`). The full sort costs more than the plain one-scope
+`ORDER BY ... LIMIT` on narrow rows: on 50,000 hits it measured about 86 ms
+against 65 ms on macOS arm64 and 140 ms against 99.8 ms on a Linux x64 CI
+runner (Bun 1.4.0). It pays off only when the wide row is large; rows of about
+21 KB read about 30 % faster. SQLite 3.46.0, the floor of the portable
+profile, sorts the joined rows of that form again and returns the same result.
 The browser build and the Rust core bundle SQLite 3.53.
 
 ## 15. Lowering and execution
@@ -594,6 +612,20 @@ scopes; their physical source relations remain dependencies. A compiler MUST
 reject a relation whose identity it cannot resolve. Server registration
 requires this metadata and never infers partition isolation from a deduplicated
 table-name list.
+
+**FTS source ids.** Reading an FTS projection's `_syncular_source_id` makes
+FTS5 fetch the content row of every hit. The client keeps a mapping table for
+each projection whose `id` equals the projection rowid (SPEC client-local FTS5
+projections). The compiler lowers every FTS relation that `FROM` or an inner
+`JOIN` introduces: it adds a join to the mapping table on `rowid` after the
+relation's join constraint, and every reference that binds to that relation
+reads the mapping's `source_id`. The added columns carry compiler-private
+`__syql_fts_` names, and a bare projected reference keeps its result name
+through an explicit alias. The authored SQL keeps its types, identity, and
+coverage; SQLite prepares the lowered statement against the schema and MUST
+return the authored result names. A null-extended FTS relation and a reference
+the compiler cannot bind with certainty keep reading the projection. The
+mapping table is not a relation an author can name.
 
 `auto` chooses variants for a small condition count and neutralization
 otherwise. Both backends MUST return the same rows for the same public input.

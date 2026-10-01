@@ -565,7 +565,11 @@ message. The prepared statement then yields the result column names +
 `declaredTypes` (SQLite's `sqlite3_column_decltype`).
 
 For FTS-backed named queries the synthesized type-check database creates the
-same declared columns plus `_syncular_source_id UNINDEXED`. `MATCH :query`
+same declared columns plus `_syncular_source_id UNINDEXED`, and the client's
+source-id mapping table. The emitted SQL reads every `_syncular_source_id`
+reference it can bind through that mapping table on the projection rowid, so
+FTS5 does not fetch a content row per match (SYQL §15); the authored SQL keeps
+its types and identity. `MATCH :query`
 infers a string parameter, and the FTS table reference is folded into its
 owning synced table for dependency and scope-coverage metadata. `bm25`,
 `highlight`, and `snippet` are accepted deterministic FTS5 auxiliary

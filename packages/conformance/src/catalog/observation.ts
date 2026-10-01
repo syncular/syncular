@@ -41,7 +41,108 @@ function requireObservation(client: ClientInstance) {
   };
 }
 
+const FTS_SCHEMA = {
+  ...FIXTURE_SCHEMA,
+  tables: FIXTURE_SCHEMA.tables.map((table) =>
+    table.name === 'tasks'
+      ? {
+          ...table,
+          ftsIndexes: [
+            { name: 'tasks_fts', columns: ['title'], tokenize: 'unicode61' },
+          ],
+        }
+      : table,
+  ),
+};
+
 export const observationScenarios: readonly Scenario[] = [
+  {
+    // SYQL §15: typegen reads `_syncular_source_id` through the mapping table
+    // on the projection rowid. Both cores keep every projection row's mapping
+    // id equal to its rowid and its source_id equal to its source id.
+    name: 'observation/fts-source-id-mapping',
+    specRefs: ['§7.5'],
+    async run(ctx) {
+      await seedTasks(ctx, [
+        task('s1', 'p1', 'needle one'),
+        task('s2', 'p1', 'needle two needle'),
+        task('s3', 'p1', 'haystack'),
+      ]);
+      const handle = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: { project_id: ['p1'] },
+        schema: FTS_SCHEMA,
+      });
+      const observation = requireObservation(handle.api);
+      await handle.api.subscribe({
+        id: 'tasks',
+        table: 'tasks',
+        scopes: { project_id: ['p1'] },
+      });
+      await syncIdle(handle);
+      const authored =
+        "SELECT tasks_fts._syncular_source_id AS id, t.title FROM tasks_fts JOIN tasks t ON t.id = tasks_fts._syncular_source_id WHERE tasks_fts MATCH 'needle' ORDER BY bm25(tasks_fts), tasks_fts._syncular_source_id";
+      const lowered =
+        "SELECT __syql_fts_1.__syql_fts_source_1 AS id, t.title FROM tasks_fts JOIN (SELECT id AS __syql_fts_rowid_1, source_id AS __syql_fts_source_1 FROM _syncular_fts_tasks_fts) AS __syql_fts_1 ON __syql_fts_1.__syql_fts_rowid_1 = tasks_fts.rowid JOIN tasks t ON t.id = __syql_fts_1.__syql_fts_source_1 WHERE tasks_fts MATCH 'needle' ORDER BY bm25(tasks_fts), __syql_fts_1.__syql_fts_source_1";
+      const agree = async (what: string, ids: readonly string[]) => {
+        const expected = await observation.querySnapshot(authored);
+        checkEqual(
+          expected.rows.map((row) => row.id),
+          ids,
+          `${what}: projection hits`,
+        );
+        checkEqual(
+          (await observation.querySnapshot(lowered)).rows,
+          expected.rows,
+          `${what}: the mapping join returns the projection's rows in order`,
+        );
+        const counts = await observation.querySnapshot(
+          'SELECT (SELECT count(*) FROM tasks_fts) AS projection, (SELECT count(*) FROM _syncular_fts_tasks_fts) AS mapping, (SELECT count(*) FROM tasks_fts f JOIN _syncular_fts_tasks_fts m ON m.id = f.rowid AND m.source_id = f._syncular_source_id) AS matched',
+        );
+        const [row] = counts.rows;
+        checkEqual(
+          [row?.mapping, row?.matched],
+          [row?.projection, row?.projection],
+          `${what}: one mapping row per projection row, keyed by its rowid`,
+        );
+      };
+      await agree('bootstrap', ['s2', 's1']);
+      // Column 0 of the projection is `_syncular_source_id`; reading it makes
+      // FTS5 fetch the hit's content row.
+      const sourceIdReads = async (sql: string) => {
+        const program = (await observation.querySnapshot(`EXPLAIN ${sql}`))
+          .rows;
+        const cursors = new Set(
+          program.filter((op) => op.opcode === 'VOpen').map((op) => op.p1),
+        );
+        return program.filter(
+          (op) => op.opcode === 'VColumn' && cursors.has(op.p1) && op.p2 === 0,
+        ).length;
+      };
+      check(
+        (await sourceIdReads(authored)) > 0,
+        'the authored form reads the projection source id per hit',
+      );
+      checkEqual(
+        await sourceIdReads(lowered),
+        0,
+        'the mapping join reads no projection column',
+      );
+      await handle.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('l1', 'p1', 'needle') },
+        { op: 'upsert', table: 'tasks', values: task('s3', 'p1', 'needle') },
+      ]);
+      await handle.api.mutate([{ op: 'delete', table: 'tasks', rowId: 's1' }]);
+      await agree('optimistic writes', ['l1', 's3', 's2']);
+      await syncIdle(handle);
+      await agree('acknowledged writes', ['l1', 's3', 's2']);
+      await handle.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('s2', 'p1', 'hay') },
+      ]);
+      await agree('retitled row', ['l1', 's3']);
+    },
+  },
   {
     name: 'observation/bootstrap-blocks-commit-independent-revisions',
     specRefs: ['§1.4', '§5.2', '§7.5'],

@@ -465,11 +465,11 @@ class Validator {
       logical.declaration,
       location,
     );
-    this.#validateDeterminism(activeSql, logical.declaration.statement.span);
     let relations: SqlRelations;
     try {
       relations = scanRelations(activeSql, this.#ir);
     } catch (error) {
+      this.#validateDeterminism(activeSql, logical.declaration.statement.span);
       // Preserve SQLite's source-spanned diagnostics for invalid relations.
       this.#validateSqlite(activeSql, logical, []);
       this.#fail(
@@ -478,6 +478,12 @@ class Validator {
         error instanceof Error ? error.message : String(error),
       );
     }
+    const boundedCtes = this.#boundedCtes(activeSql, relations, location);
+    this.#validateDeterminism(
+      activeSql,
+      logical.declaration.statement.span,
+      new Set(boundedCtes.values()),
+    );
     const refs = relations.tables;
     this.#validatePortableProfile(
       activeSql,
@@ -584,6 +590,7 @@ class Validator {
       activeSql,
       relations,
       analysis,
+      boundedCtes,
     );
     const identity = identityTerms?.map((term) => term.field);
     this.#validateStableOrder(
@@ -830,7 +837,11 @@ class Validator {
     }
   }
 
-  #validateDeterminism(sql: string, span: SyqlSourceSpan): void {
+  #validateDeterminism(
+    sql: string,
+    span: SyqlSourceSpan,
+    boundedLimits: ReadonlySet<number> = new Set(),
+  ): void {
     const tokens = significant(lexSyqlSqlSource(span.file, sql));
     const functionStack: Array<string | undefined> = [];
     let depth = 0;
@@ -841,7 +852,8 @@ class Validator {
       if (
         depth > 0 &&
         token.kind === 'identifier' &&
-        (lower === 'limit' || lower === 'offset')
+        (lower === 'limit' || lower === 'offset') &&
+        !boundedLimits.has(token.span.start.offset)
       ) {
         this.#fail(
           'SYQL6003_NONDETERMINISTIC_SQL',
@@ -1945,6 +1957,39 @@ class Validator {
   }
 
   /**
+   * SYQL §14.3 bounded narrow stage: a top-level CTE body may end in
+   * `LIMIT <integer>`. Returns the offset of each such LIMIT by CTE name;
+   * {@link #proveIdentity} then requires the body's total order.
+   */
+  #boundedCtes(
+    sql: string,
+    relations: SqlRelations,
+    location: string,
+  ): ReadonlyMap<string, number> {
+    const bounded = new Map<string, number>();
+    for (const cte of relations.cteScopes) {
+      const tokens = significant(
+        lexSyqlSqlSource(location, sql.slice(cte.start, cte.end)),
+      ).filter((token) => token.kind !== 'eof');
+      let depth = 0;
+      for (const [index, token] of tokens.entries()) {
+        if (token.text === ')') depth -= 1;
+        if (token.text === '(') depth += 1;
+        if (depth !== 0 || tokenLower(token) !== 'limit') continue;
+        const size = tokens[index + 1];
+        if (
+          size?.kind === 'number' &&
+          /^[1-9][0-9]*$/.test(size.text) &&
+          index + 2 === tokens.length
+        ) {
+          bounded.set(cte.name, cte.start + token.span.start.offset);
+        }
+      }
+    }
+    return bounded;
+  }
+
+  /**
    * Proves the result identity per SELECT scope. Each physical relation of a
    * scope contributes its primary key and each CTE relation the identity of
    * its body, except that a physical relation joined by a required inner
@@ -1955,7 +2000,14 @@ class Validator {
     sql: string,
     relations: SqlRelations,
     analysis: AnalyzedQuery,
+    boundedCtes: ReadonlyMap<string, number>,
   ): readonly IdentityTerm[] | undefined {
+    const unproven = (): never =>
+      this.#fail(
+        'SYQL6003_NONDETERMINISTIC_SQL',
+        query.statement.span,
+        'a CTE LIMIT requires a proven CTE identity and a body ORDER BY that ends with it',
+      );
     const resultNames = new Set<string>();
     for (const column of analysis.columns) {
       if (!IDENT_RE.test(column.name)) {
@@ -2020,6 +2072,7 @@ class Validator {
       (cleaned.match(/\bSELECT\b/gi)?.length ?? 0) !==
         relations.cteScopes.length + 1
     ) {
+      if (boundedCtes.size > 0) unproven();
       return undefined;
     }
     const cteKeys = new Map<string, readonly string[]>();
@@ -2149,11 +2202,45 @@ class Validator {
       return keys;
     };
     for (const cte of relations.cteScopes) {
-      if (cte.renamed) continue;
+      const bounded = boundedCtes.get(cte.name);
+      if (cte.renamed) {
+        if (bounded !== undefined) unproven();
+        continue;
+      }
       const text = cleaned.slice(cte.start, cte.end);
       const keys = scopeKeys(`cte:${cte.name}`, text);
       const items = splitSelectList(text);
-      if (keys === undefined || items === null) continue;
+      if (keys === undefined || items === null) {
+        if (bounded !== undefined) unproven();
+        continue;
+      }
+      if (bounded !== undefined) {
+        // The body order is total when it ends with the body identity, each
+        // term spelled as the identity's result alias or projected column.
+        const order = /\border\s+by\b/i.exec(text);
+        const limit = bounded - cte.start;
+        if (order === null || order.index > limit) unproven();
+        const terms = this.#splitOrderTerms(
+          text.slice((order?.index ?? 0) + (order?.[0].length ?? 0), limit),
+          query.statement.span,
+        );
+        const suffix = terms.slice(terms.length - keys.length);
+        if (
+          terms.length < keys.length ||
+          keys.some(({ index }, position) => {
+            const item = items[index] as SelectItem;
+            const term = (suffix[position] ?? '')
+              .replace(/\s+(?:asc|desc)$/i, '')
+              .replace(/\s+/g, '')
+              .toLowerCase();
+            return (
+              term !== item.expr.replace(/\s+/g, '').toLowerCase() &&
+              term !== item.alias?.toLowerCase()
+            );
+          })
+        )
+          unproven();
+      }
       cteKeys.set(
         cte.name,
         keys.map(({ index }) => {
