@@ -1558,6 +1558,20 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
              SET schema_version=EXCLUDED.schema_version, layouts=EXCLUDED.layouts`,
           [schema.version, layoutsOf(schema)],
         );
+        // A writer of the previous schema still running against this
+        // database would append payloads in the previous layout. Its push
+        // is refused by the serve gate, but a host's server-side
+        // `begin()`/`appendCommit` reads no gate, so the bump raises the
+        // writer fence of every partition to the new version.
+        await client.query(
+          `INSERT INTO sync_writer_fence(partition, required_writer_version)
+           SELECT partition, $1 FROM sync_partitions
+           ON CONFLICT (partition) DO UPDATE SET
+             required_writer_version=GREATEST(
+               sync_writer_fence.required_writer_version,
+               EXCLUDED.required_writer_version)`,
+          [schema.version],
+        );
         // The host's declared checkpoints install in the schema-bump
         // transaction, so no observer sees the bumped marker without the
         // fence, or the fence without its declaration row.

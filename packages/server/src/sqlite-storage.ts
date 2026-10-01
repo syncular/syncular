@@ -698,6 +698,19 @@ END`);
               'INSERT INTO sync_schema_meta(id, schema_version, layouts) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET schema_version=excluded.schema_version, layouts=excluded.layouts',
             )
             .run(schema.version, layoutsOf(schema));
+          // A writer of the previous schema would append payloads in the
+          // previous layout; the bump fences every partition at the new
+          // version (see PostgresServerStorage.ensureSchema).
+          this.db
+            .query(
+              `INSERT INTO sync_writer_fence(partition, required_writer_version)
+               SELECT partition, ? FROM sync_partitions WHERE true
+               ON CONFLICT(partition) DO UPDATE SET
+                 required_writer_version=max(
+                   sync_writer_fence.required_writer_version,
+                   excluded.required_writer_version)`,
+            )
+            .run(schema.version);
           // The host's declared checkpoints install in the schema-bump
           // transaction, so no observer sees the bumped marker without the
           // fence, or the fence without its declaration row.

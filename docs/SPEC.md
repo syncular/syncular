@@ -859,6 +859,19 @@ when a core table its request path reads or writes is absent; the checkpoint
 and writer-fence tables, which D1 does not use, are not required. These
 refusals are host readiness failures and add no wire error.
 
+#### Schema upgrade writer fence
+
+A SQLite or PostgreSQL storage that opens a database whose stored schema
+version is lower than the running version applies the DDL, rewrites stored
+rows, and writes the new marker in one transaction. In that transaction it
+MUST raise the writer fence of every partition in `sync_partitions` to the
+new schema version, never lowering an existing fence. A process still running
+the previous schema has its pushes refused by the serve gate; the fence also
+rejects its server-side appends through `begin()` and `appendCommit`, which
+read no gate, with `sync.storage.writer_fence_rejected`. Without it such an
+append would store payloads in the previous layout. D1 checks the published
+schema in the batch of every commit instead.
+
 #### D1 schema readiness
 
 A D1 schema upgrade MUST save row-rewrite progress in the same atomic batch as

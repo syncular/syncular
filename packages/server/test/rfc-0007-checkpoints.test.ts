@@ -479,6 +479,49 @@ for (const backend of ['sqlite', 'postgres/pglite'] as const) {
     }
   });
 
+  test(`${backend} a schema bump fences the server-side writer of the previous schema`, async () => {
+    const harness = await harnessFn(key);
+    try {
+      // The bump fences the partitions that exist when it runs.
+      await append(harness.storage, 'tasks', 't1');
+      const upgraded = harness.storageAgain();
+      await upgraded.ensureSchema(SCHEMA_V2);
+      const fence = await harness.query<{ required_writer_version: number }>(
+        'SELECT required_writer_version FROM sync_writer_fence WHERE partition=?',
+        'SELECT required_writer_version FROM sync_writer_fence WHERE partition=$1',
+        [PARTITION],
+      );
+      expect(Number(fence[0]?.required_writer_version)).toBe(SCHEMA_V2.version);
+      // The process still running the previous schema appends through
+      // `begin()` without reading the serve gate, as a host's server-side
+      // command does.
+      const stale = await harness.storage.begin(PARTITION);
+      await expect(
+        stale.appendCommit({
+          clientId: 'c1',
+          clientCommitId: 't2',
+          actorId: 'a1',
+          createdAtMs: NOW,
+          changes: [
+            {
+              table: 'tasks',
+              rowId: 't2',
+              op: 'upsert',
+              rowVersion: 1,
+              scopes: { project_id: 'p1' },
+              payload: new Uint8Array([1]),
+            },
+          ],
+        }),
+      ).rejects.toThrow(/writer_fence_rejected/);
+      await stale.rollback();
+      expect(await upgraded.getMaxCommitSeq(PARTITION)).toBe(1);
+      expect(await append(upgraded, 'tasks', 't3')).toBe(2);
+    } finally {
+      await harness.close();
+    }
+  });
+
   test(`${backend} declaration installs the checkpoint and the fence together`, async () => {
     const harness = await harnessFn(key);
     try {

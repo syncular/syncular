@@ -1,8 +1,25 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.30.3** (`v0.30.3`). All artifacts use Apache-2.0, except
+current release is **0.30.4** (`v0.30.4`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.30.4 release notes
+
+0.30.4 is a patch release for `SqliteServerStorage` and
+`PostgresServerStorage`. SSP2 stays at wire version 3, there are no public API
+changes, and every package and crate ships together.
+
+- **A schema migration fences writers of the previous schema.** The migration
+  transaction now raises the writer fence (RFC 0007) of every partition in
+  `sync_partitions` to the new schema version, never lowering one. A server
+  process still running the previous schema had its pushes refused by the
+  serve gate, but a host's server-side write through `storage.begin()` and
+  `appendCommit` reads no gate and appended payloads in the previous layout
+  between the migration and the replacement of that process. That append now
+  fails with `sync.storage.writer_fence_rejected`. A partition created after
+  the migration has no fence; D1 is unchanged, because it checks the published
+  schema in the batch of every commit.
 
 ## 0.30.3 release notes
 

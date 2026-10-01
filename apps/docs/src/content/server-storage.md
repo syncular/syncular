@@ -35,6 +35,14 @@ schema migration rebuilds Syncular-owned indexes with the partition column.
 Reopening the same schema version does not rebuild old indexes. Operator indexes
 and constraint-owned indexes remain outside the rebuild set.
 
+A schema migration on SQLite or PostgreSQL raises the writer fence of every
+existing partition to the new schema version in the migration transaction. A
+server process still running the previous schema then fails any commit it
+appends, including server-side writes through `storage.begin()`, with
+`sync.storage.writer_fence_rejected` instead of storing payloads in the
+previous layout. Migrate the database, then replace the old processes; their
+requests fail until they are replaced.
+
 Removing a table in a schema migration also deletes its blob references. References
 from retained tables continue to protect their blobs from garbage collection.
 
