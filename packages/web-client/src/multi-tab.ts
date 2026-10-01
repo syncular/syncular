@@ -316,8 +316,10 @@ export class LeaderBridge {
       });
       return;
     }
+    // A call can outlive close(); a closed BroadcastChannel throws on post.
     this.#invoke(method, args).then(
       (value) => {
+        if (this.#closed) return;
         this.#channel.postMessage({
           t: 'res',
           epoch: this.#epoch,
@@ -327,6 +329,7 @@ export class LeaderBridge {
         });
       },
       (error: unknown) => {
+        if (this.#closed) return;
         const shape =
           error instanceof ClientSyncError
             ? {

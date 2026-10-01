@@ -52,7 +52,8 @@ pub const EVENT_NAME: &str = "syncular://event";
 
 /// Plugin configuration. Passed to [`init`]; every field is optional except a
 /// caller almost always wants a `base_url` (for real network sync) and a
-/// `db_path` (for persistence — defaults to an in-memory core if absent).
+/// `database_dir` or `db_path` (for persistence — defaults to an in-memory core
+/// if both are absent).
 #[derive(Debug, Clone)]
 pub struct SyncularConfig {
     /// Server base URL for the native HTTP+WS transport (needs the
@@ -62,9 +63,15 @@ pub struct SyncularConfig {
     pub ws_url: Option<String>,
     /// Extra request headers (auth, actor/project ids) as (name, value).
     pub headers: Vec<(String, String)>,
-    /// On-disk SQLite path. Absent → in-memory (nothing survives a restart).
-    /// Apps usually set this to a file under the app-data dir; see [`init`].
+    /// On-disk SQLite path a `create` opens when it names no database. Absent →
+    /// in-memory (nothing survives a restart). Apps usually set this to a file
+    /// under the app-data dir; see [`init`].
     pub db_path: Option<String>,
+    /// Directory of the named databases. A `create` that carries `database`
+    /// (for example one replica per signed-in actor) opens
+    /// `<database_dir>/<database>.db`; the plugin creates the directory. The
+    /// webview names a database and never supplies a path.
+    pub database_dir: Option<String>,
     /// Run the background host loop (§8.4). Default true.
     pub auto_sync: bool,
 }
@@ -76,6 +83,7 @@ impl Default for SyncularConfig {
             ws_url: None,
             headers: Vec::new(),
             db_path: None,
+            database_dir: None,
             auto_sync: true,
         }
     }
@@ -156,7 +164,12 @@ enum ReadRequest {
 /// in a `Mutex` only to be `Sync` for Tauri state (the `Sender` is `Send`).
 struct SyncularState {
     sender: Mutex<Sender<Request>>,
-    reader: Option<Mutex<Sender<ReadRequest>>>,
+    /// The snapshot reader of the file database the last successful `create`
+    /// opened; `None` before it, after `shutdown`, and for an in-memory client.
+    /// `create` and `shutdown` hold this lock until their reply, so the reader
+    /// always reads the database the owner has open.
+    reader: Mutex<Option<Sender<ReadRequest>>>,
+    config: SyncularConfig,
     security_gate: SecurityGate,
 }
 
@@ -243,17 +256,22 @@ impl SyncularState {
             .map_err(|_| "the syncular core thread has stopped".to_owned())
     }
 
-    fn send_read(&self, request: ReadRequest) -> Result<(), String> {
-        let Some(reader) = &self.reader else {
-            return Err("this syncular client has no file snapshot reader".to_owned());
-        };
-        reader
+    fn reader(&self) -> Result<Option<Sender<ReadRequest>>, String> {
+        Ok(self
+            .reader
             .lock()
             .map_err(|_| "syncular read mailbox poisoned".to_owned())?
-            .send(request)
-            .map_err(|_| "the syncular read thread has stopped".to_owned())?;
-        Ok(())
+            .clone())
     }
+}
+
+fn spawn_reader(path: String, owner_tx: Sender<Request>) -> Result<Sender<ReadRequest>, String> {
+    let (reader_tx, reader_rx) = std::sync::mpsc::channel::<ReadRequest>();
+    std::thread::Builder::new()
+        .name("syncular-read".to_owned())
+        .spawn(move || run_reader_thread(path, reader_rx, owner_tx))
+        .map_err(|e| format!("failed to spawn syncular read thread: {e}"))?;
+    Ok(reader_tx)
 }
 
 fn run_reader_thread(path: String, rx: Receiver<ReadRequest>, owner_tx: Sender<Request>) {
@@ -386,7 +404,6 @@ where
 
         match request {
             Request::Command { command, reply } => {
-                let command = inject_db_path(command, &config);
                 let result = core.command(&command);
                 if result.get("error").is_none() {
                     if let Some(headers) = activation_headers(&command) {
@@ -435,25 +452,55 @@ where
     }
 }
 
-/// Inject the configured `db_path` into a `create` command's params if the JS
-/// side did not already supply one — so persistence is a plugin-config concern,
-/// not something every app must thread through the bridge.
-fn inject_db_path(mut command: Value, config: &SyncularConfig) -> Value {
-    if command.get("method").and_then(Value::as_str) != Some("create") {
-        return command;
+/// The database file a `create` opens: `<database_dir>/<database>.db` for a
+/// named database, otherwise the configured `db_path` (`None` → in-memory; a
+/// configuration with only `database_dir` requires the name). A
+/// database name is one file name of ASCII letters, digits, `-`, `_` and `.`,
+/// starting with a letter or digit, so it cannot leave the directory. The
+/// webview never supplies a path itself.
+fn resolve_database(config: &SyncularConfig, params: &Value) -> Result<Option<String>, Value> {
+    if params.get("dbPath").is_some() {
+        return Err(invalid_request(
+            "sync.invalid_request: create.dbPath is host configuration; name a database with create.database",
+        ));
     }
-    let Some(db_path) = &config.db_path else {
-        return command;
+    let Some(database) = params.get("database") else {
+        if config.db_path.is_none() && config.database_dir.is_some() {
+            return Err(invalid_request(
+                "sync.invalid_request: create.database is required when SyncularConfig sets database_dir without db_path",
+            ));
+        }
+        return Ok(config.db_path.clone());
     };
-    let params = command.get_mut("params").and_then(Value::as_object_mut);
-    if let Some(params) = params {
-        params
-            .entry("dbPath")
-            .or_insert_with(|| Value::from(db_path.clone()));
-    } else if let Some(obj) = command.as_object_mut() {
-        obj.insert("params".to_owned(), json!({ "dbPath": db_path }));
-    }
-    command
+    let Some(name) = database.as_str().filter(|name| {
+        (1..=128).contains(&name.len())
+            && name.starts_with(|c: char| c.is_ascii_alphanumeric())
+            && !name.contains("..")
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    }) else {
+        return Err(invalid_request(
+            "sync.invalid_request: create.database must be 1 to 128 ASCII letters, digits, '-', '_' or '.', start with a letter or digit, and contain no '..'",
+        ));
+    };
+    let Some(dir) = &config.database_dir else {
+        return Err(invalid_request(
+            "sync.invalid_request: create.database needs SyncularConfig.database_dir",
+        ));
+    };
+    std::fs::create_dir_all(dir)
+        .map_err(|error| client_error(format!("cannot create the database directory: {error}")))?;
+    Ok(Some(
+        std::path::Path::new(dir)
+            .join(format!("{name}.db"))
+            .to_string_lossy()
+            .into_owned(),
+    ))
+}
+
+fn invalid_request(message: &str) -> Value {
+    json!({ "error": { "code": "sync.invalid_request", "message": message } })
 }
 
 /// The header set an `activateSecurity` command carries (already validated by
@@ -565,6 +612,38 @@ async fn syncular_command<R: Runtime>(
         // the owner-thread barrier is enqueued.
         state.security_gate.begin_preflight()?;
     }
+    // Taken after the gate drained, so no admitted read still waits for it.
+    let mut reader = if method == "create" || method == "shutdown" {
+        Some(
+            state
+                .reader
+                .lock()
+                .map_err(|_| "syncular read mailbox poisoned".to_owned())?,
+        )
+    } else {
+        None
+    };
+    let mut command = command;
+    let mut database = None;
+    if method == "create" {
+        database =
+            match resolve_database(&state.config, command.get("params").unwrap_or(&Value::Null)) {
+                Ok(path) => path,
+                Err(reply) => return Ok(reply),
+            };
+        if let Some(path) = &database {
+            match command.get_mut("params").and_then(Value::as_object_mut) {
+                Some(params) => {
+                    params.insert("dbPath".to_owned(), Value::from(path.clone()));
+                }
+                None => {
+                    if let Some(object) = command.as_object_mut() {
+                        object.insert("params".to_owned(), json!({ "dbPath": path }));
+                    }
+                }
+            }
+        }
+    }
     let create_preflight = method == "create"
         && command
             .pointer("/params/securityPreflight")
@@ -579,6 +658,23 @@ async fn syncular_command<R: Runtime>(
         .recv()
         .map_err(|_| "the syncular core dropped the reply".to_owned())?;
     let succeeded = reply.get("error").is_none();
+    if let (true, Some(slot)) = (succeeded, reader.as_mut()) {
+        let next = match database.filter(|path| path.as_str() != ":memory:") {
+            Some(path) => Some(spawn_reader(
+                path,
+                state
+                    .sender
+                    .lock()
+                    .map_err(|_| "syncular mailbox poisoned".to_owned())?
+                    .clone(),
+            )?),
+            None => None,
+        };
+        if let Some(previous) = std::mem::replace(&mut **slot, next) {
+            let _ = previous.send(ReadRequest::Shutdown);
+        }
+    }
+    drop(reader);
     if succeeded && method == "create" {
         if !create_preflight {
             state.security_gate.activate()?;
@@ -657,7 +753,7 @@ async fn syncular_query_snapshot<R: Runtime>(
     let params_value = params.unwrap_or_else(|| Value::Array(Vec::new()));
     let coverage_value = coverage.unwrap_or_else(|| Value::Array(Vec::new()));
 
-    if state.reader.is_some() {
+    if let Some(reader) = state.reader()? {
         let bind = match params_value.as_array() {
             Some(values) => values.clone(),
             None => return Ok(client_error("querySnapshot params must be a list")),
@@ -694,13 +790,15 @@ async fn syncular_query_snapshot<R: Runtime>(
             }
         };
         let (reply_tx, reply_rx) = std::sync::mpsc::channel();
-        state.send_read(ReadRequest::QuerySnapshot {
-            sql,
-            params: bind,
-            coverage: parsed_coverage,
-            owner: parsed_owner,
-            reply: reply_tx,
-        })?;
+        reader
+            .send(ReadRequest::QuerySnapshot {
+                sql,
+                params: bind,
+                coverage: parsed_coverage,
+                owner: parsed_owner,
+                reply: reply_tx,
+            })
+            .map_err(|_| "the syncular read thread has stopped".to_owned())?;
         return reply_rx
             .recv()
             .map_err(|_| "the syncular read thread dropped the reply".to_owned());
@@ -741,28 +839,10 @@ pub fn init<R: Runtime>(config: SyncularConfig) -> TauriPlugin<R> {
         ])
         .setup(move |app, _api| {
             let (tx, rx) = std::sync::mpsc::channel::<Request>();
-            let reader = match config
-                .db_path
-                .as_ref()
-                .filter(|path| path.as_str() != ":memory:")
-            {
-                Some(path) => {
-                    let (reader_tx, reader_rx) = std::sync::mpsc::channel::<ReadRequest>();
-                    let path = path.clone();
-                    std::thread::Builder::new()
-                        .name("syncular-read".to_owned())
-                        .spawn({
-                            let owner_tx = tx.clone();
-                            move || run_reader_thread(path, reader_rx, owner_tx)
-                        })
-                        .map_err(|e| format!("failed to spawn syncular read thread: {e}"))?;
-                    Some(Mutex::new(reader_tx))
-                }
-                None => None,
-            };
             app.manage(SyncularState {
                 sender: Mutex::new(tx.clone()),
-                reader,
+                reader: Mutex::new(None),
+                config: config.clone(),
                 // Fail closed until the first successful `create` declares
                 // whether this process starts active or in preflight.
                 security_gate: SecurityGate::new_preflight(),
@@ -783,8 +863,8 @@ pub fn init<R: Runtime>(config: SyncularConfig) -> TauriPlugin<R> {
             if let RunEvent::Exit = event {
                 if let Some(state) = app.try_state::<SyncularState>() {
                     let _ = state.send(Request::Shutdown);
-                    if state.reader.is_some() {
-                        let _ = state.send_read(ReadRequest::Shutdown);
+                    if let Ok(Some(reader)) = state.reader() {
+                        let _ = reader.send(ReadRequest::Shutdown);
                     }
                 }
             }
@@ -981,29 +1061,155 @@ mod tests {
     }
 
     #[test]
-    fn inject_db_path_adds_to_create_only() {
+    fn resolve_database_names_a_file_inside_the_configured_directory() {
+        let dir =
+            std::env::temp_dir().join(format!("syncular-tauri-resolve-{}", std::process::id()));
         let config = SyncularConfig {
-            db_path: Some("/tmp/app.db".to_owned()),
+            db_path: Some("/tmp/default.db".to_owned()),
+            database_dir: Some(dir.to_string_lossy().into_owned()),
             ..Default::default()
         };
-        // create gains the path…
-        let created = inject_db_path(
-            json!({ "method": "create", "params": { "clientId": "c1" } }),
-            &config,
+        // No name → the configured default path.
+        assert_eq!(
+            resolve_database(&config, &json!({ "clientId": "c1" })),
+            Ok(Some("/tmp/default.db".to_owned()))
         );
-        assert_eq!(created["params"]["dbPath"], "/tmp/app.db");
-        // …a create with no params object gets one…
-        let created2 = inject_db_path(json!({ "method": "create" }), &config);
-        assert_eq!(created2["params"]["dbPath"], "/tmp/app.db");
-        // …an explicit dbPath is preserved…
-        let explicit = inject_db_path(
-            json!({ "method": "create", "params": { "dbPath": "/other.db" } }),
-            &config,
+        // A name → `<database_dir>/<name>.db`, directory created.
+        assert_eq!(
+            resolve_database(&config, &json!({ "database": "app-actor-0f.v2" })),
+            Ok(Some(
+                dir.join("app-actor-0f.v2.db")
+                    .to_string_lossy()
+                    .into_owned()
+            ))
         );
-        assert_eq!(explicit["params"]["dbPath"], "/other.db");
-        // …and a non-create command is untouched.
-        let mutate = inject_db_path(json!({ "method": "mutate", "params": {} }), &config);
-        assert!(mutate["params"].get("dbPath").is_none());
+        assert!(dir.is_dir());
+        // A webview-supplied path and every name that could leave the
+        // directory are refused.
+        for params in [
+            json!({ "dbPath": "/etc/other.db" }),
+            json!({ "database": "../escape" }),
+            json!({ "database": "a/b" }),
+            json!({ "database": "a\\b" }),
+            json!({ "database": "/abs" }),
+            json!({ "database": ".hidden" }),
+            json!({ "database": "a..b" }),
+            json!({ "database": "" }),
+            json!({ "database": "x".repeat(129) }),
+            json!({ "database": 7 }),
+        ] {
+            let refused = resolve_database(&config, &params).expect_err("refused");
+            assert_eq!(refused["error"]["code"], "sync.invalid_request", "{params}");
+        }
+        // A configuration with only a directory never opens an unnamed
+        // create in memory.
+        let refused = resolve_database(
+            &SyncularConfig {
+                database_dir: Some(dir.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+            &json!({ "clientId": "c1" }),
+        )
+        .expect_err("name required");
+        assert_eq!(refused["error"]["code"], "sync.invalid_request");
+        // A name without a configured directory is refused, never placed
+        // somewhere else.
+        let refused = resolve_database(&SyncularConfig::default(), &json!({ "database": "actor" }))
+            .expect_err("no directory");
+        assert_eq!(refused["error"]["code"], "sync.invalid_request");
+        std::fs::remove_dir_all(dir).expect("remove temp directory");
+    }
+
+    /// One replica per actor: each `create` opens its named database, keeps
+    /// its own client id, and the snapshot reader follows the open database.
+    #[test]
+    fn named_databases_keep_one_replica_and_client_id_per_actor() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        let dir =
+            std::env::temp_dir().join(format!("syncular-tauri-actors-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let app = mock_builder()
+            .plugin(init(SyncularConfig {
+                database_dir: Some(dir.to_string_lossy().into_owned()),
+                auto_sync: false,
+                ..Default::default()
+            }))
+            .build(mock_context(noop_assets()))
+            .expect("build mock app");
+        let command = |value: Value| {
+            tauri::async_runtime::block_on(syncular_command(app.handle().clone(), value))
+                .expect("command reply")
+        };
+        let snapshot = |sql: &str| {
+            tauri::async_runtime::block_on(syncular_query_snapshot(
+                app.handle().clone(),
+                sql.to_owned(),
+                None,
+                None,
+                None,
+            ))
+            .expect("snapshot reply")
+        };
+        let schema = json!({
+            "version": 1,
+            "tables": [{
+                "name": "todo", "primaryKey": "id",
+                "columns": [
+                    { "name": "id", "type": "string", "nullable": false },
+                    { "name": "title", "type": "string", "nullable": false }
+                ],
+                "scopes": []
+            }]
+        });
+        let create = |database: &str, client_id: &str| {
+            command(json!({ "method": "create", "params": {
+                "database": database, "clientId": client_id, "schema": schema
+            } }))
+        };
+
+        assert_eq!(create("actor-a", "client-a")["result"], json!({}));
+        command(json!({ "method": "mutate", "params": { "mutations": [{
+            "op": "upsert", "table": "todo", "values": { "id": "t1", "title": "a" }
+        }] } }));
+        assert_eq!(
+            snapshot("SELECT title FROM todo")["result"]["rows"][0]["title"],
+            "a"
+        );
+        assert_eq!(
+            command(json!({ "method": "shutdown" }))["result"],
+            json!({})
+        );
+
+        assert_eq!(create("actor-b", "client-b")["result"], json!({}));
+        assert_eq!(
+            snapshot("SELECT title FROM todo")["result"]["rows"],
+            json!([]),
+            "the reader follows the second actor's database"
+        );
+        assert!(dir.join("actor-a.db").is_file());
+        assert!(dir.join("actor-b.db").is_file());
+        assert_eq!(
+            command(json!({ "method": "shutdown" }))["result"],
+            json!({})
+        );
+
+        // Each replica keeps the client id it was created with.
+        assert_eq!(
+            create("actor-a", "client-b")["error"]["code"],
+            "client.identity_mismatch"
+        );
+        assert_eq!(create("actor-a", "client-a")["result"], json!({}));
+        assert_eq!(
+            snapshot("SELECT title FROM todo")["result"]["rows"][0]["title"],
+            "a"
+        );
+        assert_eq!(
+            create("../actor-a", "client-a")["error"]["code"],
+            "sync.invalid_request"
+        );
+        command(json!({ "method": "shutdown" }));
+        std::fs::remove_dir_all(dir).expect("remove temp directory");
     }
 
     #[test]

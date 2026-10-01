@@ -131,6 +131,12 @@ tauri::Builder::default()
     // …
 ```
 
+`db_path` is the database a `create` opens when it names none. For one
+replica per signed-in actor, set `database_dir` as well and pass
+`createTauriSyncClient({ schema, database: 'app-actor-…' })`; the plugin opens
+`<database_dir>/<database>.db` and refuses names that could leave the directory
+and any webview-supplied `dbPath`.
+
 Grant the plugin's default permission in a capability
 (`src-tauri/capabilities/*.json`):
 

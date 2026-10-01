@@ -114,6 +114,13 @@ export interface TauriSyncClientConfig {
    * an existing database fails with `client.identity_mismatch`.
    */
   readonly clientId?: string;
+  /**
+   * Name of the native database to open, for example one replica per
+   * signed-in actor. The plugin opens `<database_dir>/<database>.db` from its
+   * `SyncularConfig`; a name is 1 to 128 ASCII letters, digits, `-`, `_` or
+   * `.` and starts with a letter or digit. Absent ⇒ the plugin's `db_path`.
+   */
+  readonly database?: string;
   /** §4.2 client limits, forwarded to the native `create`. */
   readonly limits?: Record<string, unknown>;
   /**
@@ -1037,13 +1044,14 @@ export async function createTauriSyncClient(
   );
   clientRef.client = client;
 
-  // The native side owns the db path (plugin config); the JS side supplies the
-  // schema, clientId, and limits. `dbPath` is injected by the plugin.
+  // The native side owns every path (plugin config); the JS side names a
+  // database and supplies the schema, clientId, and limits.
   const reply = await tauri.invoke<CommandReply>(`${PLUGIN}syncular_command`, {
     command: {
       method: 'create',
       params: {
         ...(config.clientId !== undefined ? { clientId: config.clientId } : {}),
+        ...(config.database !== undefined ? { database: config.database } : {}),
         schema: config.schema,
         ...(config.limits !== undefined ? { limits: config.limits } : {}),
         ...(config.realtimePolicy !== undefined

@@ -83,8 +83,27 @@ The config fields:
 | `base_url` | Server base URL for the native HTTP+WS transport. Absent → client-local only. |
 | `ws_url` | Optional realtime WebSocket URL; derived from `base_url` when absent. |
 | `headers` | Extra request headers (auth, actor/project ids) as name/value pairs. |
-| `db_path` | On-disk SQLite path. Absent → in-memory, nothing survives a restart. |
+| `db_path` | On-disk SQLite path a `create` opens when it names no database. Absent → in-memory, nothing survives a restart. |
+| `database_dir` | Directory of named databases. A `create` with `database: 'name'` opens `<database_dir>/name.db`; the plugin creates the directory. Without `db_path`, every `create` must name a database. |
 | `auto_sync` | Run the background host loop. Default `true`. |
+
+### One replica per actor
+
+The server binds a client id to the first actor that syncs with it (SPEC §1.5),
+and the client id lives in the replica. An app that signs one person out and
+another in opens a separate database per actor. Set `database_dir` and pass
+`database` to `createTauriSyncClient`:
+
+```ts
+await client.close(); // the previous actor's replica keeps its outbox
+const next = await createTauriSyncClient({ schema, database: `app-actor-${actorDigest}` });
+```
+
+A database name is 1 to 128 ASCII letters, digits, `-`, `_` or `.`, starts
+with a letter or digit, and contains no `..`, so it cannot leave
+`database_dir`. The plugin refuses an invalid name, a name without a configured
+`database_dir`, and a webview-supplied `dbPath` with `sync.invalid_request`.
+The snapshot reader follows the database the last successful `create` opened.
 
 Grant the plugin's permission in a capability file
 (`src-tauri/capabilities/*.json`):
@@ -344,7 +363,7 @@ prefer indexed keyset pagination and bounded windows.
 ## Performance contract
 
 For the isolated native read path, use `@syncular/tauri` and
-`tauri-plugin-syncular` with a file-backed `db_path`:
+`tauri-plugin-syncular` with a file-backed `db_path` or `database_dir`:
 
 - `querySnapshot` reads rows, window coverage, and local revision atomically on
   the independent SQLite owner. `auto_sync`, HTTP rounds, and realtime socket
@@ -352,7 +371,7 @@ For the isolated native read path, use `@syncular/tauri` and
 - The native bridge release gate requires warm snapshot IPC p95 to remain at or
   below 5 ms. The budget covers the local read; React rendering,
   reconciliation, and painting are outside it.
-- An in-memory configuration (`db_path: None`) falls back to the mutable
+- An in-memory client (no `database` and `db_path: None`) falls back to the mutable
   owner: useful for tests, without the independent read-path latency contract
   or persistence across restarts.
 

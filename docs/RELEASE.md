@@ -1,8 +1,32 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.30.4** (`v0.30.4`). All artifacts use Apache-2.0, except
+current release is **0.30.5** (`v0.30.5`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.30.5 release notes
+
+0.30.5 is a patch release for `tauri-plugin-syncular`, `@syncular/tauri` and
+the multi-tab leader of `@syncular/client`.
+SSP2 stays at wire version 3, and every package and crate ships together.
+
+- **The Tauri plugin opens one named database per actor
+  (SYNCULAR-TAURI-ACTOR-REPLICA-001).** The server binds a client id to the
+  first actor that syncs with it, and the plugin opened its one `db_path` for
+  every actor, so a second person signing in on the same installation was
+  refused with `sync.invalid_client_id`. `SyncularConfig.database_dir` and
+  `TauriSyncClientConfig.database` now open `<database_dir>/<database>.db`.
+  A name is 1 to 128 ASCII letters, digits, `-`, `_` or `.`, starts with a
+  letter or digit, and contains no `..`. The snapshot reader is bound to the
+  database of the last successful `create` and stops on `shutdown`.
+- **The webview no longer supplies a database path.** The plugin used to
+  forward a `create.dbPath` from the webview to the native core. It now refuses
+  it with `sync.invalid_request`; paths come only from `SyncularConfig`.
+- **A closed leader tab posts no late answer.** A follower call that the leader
+  tab's worker settled after the tab closed its `LeaderBridge`, for example on
+  sign-out, posted the answer on the closed BroadcastChannel; the browser threw
+  an uncaught `InvalidStateError`. The bridge now drops the answer; the
+  follower already rejects calls in flight when its leader goes away.
 
 ## 0.30.4 release notes
 

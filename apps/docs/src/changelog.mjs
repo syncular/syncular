@@ -16,6 +16,28 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-10-02',
+    title: 'A closed leader tab posts no late answer',
+    body: 'A follower call that the leader tab settled after its `LeaderBridge` closed, for example while the app signed out, posted the answer on the closed BroadcastChannel, and the browser threw an uncaught `InvalidStateError`. The leader now drops answers after close.',
+    links: [
+      {
+        href: '/platform-web/#multi-tab',
+        label: 'Web (browser)',
+      },
+    ],
+  },
+  {
+    date: '2026-10-02',
+    title: 'The Tauri plugin opens one named database per actor',
+    body: '`SyncularConfig.database_dir` and `createTauriSyncClient({ database })` open `<database_dir>/<database>.db`, so an app opens one replica, and one client id, per signed-in actor. The plugin refuses names that could leave the directory and a `dbPath` supplied by the webview with `sync.invalid_request`; the snapshot reader follows the database the last successful `create` opened.',
+    links: [
+      {
+        href: '/platform-tauri/#one-replica-per-actor',
+        label: 'Tauri',
+      },
+    ],
+  },
+  {
     date: '2026-10-01',
     title: 'A schema migration fences writers of the previous schema',
     body: 'A SQLite or PostgreSQL schema migration now raises the writer fence of every existing partition to the new schema version in the migration transaction. A server process still running the previous schema had its pushes refused by the serve gate, but its server-side writes through `storage.begin()` and `appendCommit` read no gate and stored payloads in the previous layout. They now fail with `sync.storage.writer_fence_rejected`.',

@@ -781,6 +781,55 @@ test('a call a live leader runs behind a long sync round waits past the follower
   link.close();
 });
 
+test('a leader closed while a follower call runs posts no answer on its closed channel', async () => {
+  // A browser BroadcastChannel throws InvalidStateError on postMessage after
+  // close(); a call that settles after the leader closed must not post.
+  const { LeaderBridge } = await import('../src/multi-tab');
+  let deliver: ((event: { data: MultiTabMessage }) => void) | undefined;
+  let closed = false;
+  const posted: MultiTabMessage[] = [];
+  let finish: ((value: unknown) => void) | undefined;
+  const bridge = new LeaderBridge({
+    channel: {
+      postMessage: (message) => {
+        if (closed) throw new Error('InvalidStateError: Channel is closed');
+        posted.push(message);
+      },
+      addEventListener: (_type, listener) => {
+        deliver = listener;
+      },
+      removeEventListener: noop,
+      close: () => {
+        closed = true;
+      },
+    },
+    epoch: 1,
+    clientId: 'lead',
+    identity: ID,
+    onNewerTab: noop,
+    invoke: () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  });
+  deliver?.({
+    data: {
+      t: 'req',
+      epoch: 1,
+      fromId: 'f',
+      reqId: 1,
+      method: 'query',
+      args: [],
+      ...ID,
+    },
+  });
+  bridge.close();
+  finish?.('late');
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(posted.filter((message) => message.t === 'res')).toEqual([]);
+});
+
 test('calls in flight reject when the leader stops answering probes', async () => {
   const { FollowerLink } = await import('../src/multi-tab');
   const clock = manualClock();

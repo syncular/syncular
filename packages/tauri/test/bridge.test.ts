@@ -208,6 +208,25 @@ describe('createTauriSyncClient', () => {
     ).toBe('c1');
   });
 
+  test('forwards the database name, never a path, into the native create', async () => {
+    const { tauri, calls } = makeTauri(defaultResponder);
+    await createTauriSyncClient({
+      clientId: 'actor-client',
+      database: 'app-actor-0f',
+      schema: { version: 1, tables: [] },
+      tauri,
+    });
+    const create = calls.find(
+      (c) =>
+        c.cmd === 'plugin:syncular|syncular_command' &&
+        (c.args.command as { method: string }).method === 'create',
+    );
+    const params = (create?.args.command as { params: Record<string, unknown> })
+      .params;
+    expect(params.database).toBe('app-actor-0f');
+    expect(params.dbPath).toBeUndefined();
+  });
+
   test('forwards previousVersionContext into the native create envelope', async () => {
     const { tauri, calls } = makeTauri(defaultResponder);
     await createTauriSyncClient({
