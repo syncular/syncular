@@ -171,7 +171,12 @@ interface ResMessage {
   readonly reqId: number;
   readonly ok: boolean;
   readonly value?: unknown;
-  readonly error?: { code: string; message: string; retryable: boolean };
+  readonly error?: {
+    code: string;
+    message: string;
+    retryable: boolean;
+    details?: Readonly<Record<string, unknown>>;
+  };
 }
 
 interface EventMessage {
@@ -336,6 +341,9 @@ export class LeaderBridge {
                 code: error.code,
                 message: error.message,
                 retryable: error.retryable,
+                ...(error.details !== undefined
+                  ? { details: error.details }
+                  : {}),
               }
             : {
                 code: WORKER_FAILED_CODE,
@@ -682,6 +690,7 @@ export class FollowerLink {
             err?.code ?? WORKER_FAILED_CODE,
             err?.message ?? 'follower request failed',
             err?.retryable ?? false,
+            err?.details,
           ),
         );
       }

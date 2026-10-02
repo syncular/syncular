@@ -117,8 +117,11 @@ still owns OS secure-store deletion and any key buffers it supplied.
 
 Runtime `setHeaders()` is an active-session operation and is rejected during
 preflight at both the JavaScript and native command boundaries. Supply bootstrap
-headers through trusted plugin configuration; rotate them only after successful
-activation.
+headers through trusted plugin configuration or `activateSecurity({ headers })`;
+the latter installs the current bearer before the startup round. Rotate them
+with `setHeaders()` only after successful activation. Closed clients reject data
+and control calls with `client.closed` before testing preflight; listener
+registration and local progress reads throw that code. `close()` is idempotent.
 
 ## Privacy-safe diagnostics
 

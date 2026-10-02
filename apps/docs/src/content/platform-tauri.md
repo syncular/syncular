@@ -402,3 +402,14 @@ The snapshot API revision removes the individual `schemaFloor`, `leaseState`,
 `await client.statusSnapshot()`. Collection and outcome reads remain methods.
 React accepts the bridge directly. See the
 [client migration](https://syncular.dev/platform-web/#snapshot-api-migration).
+
+## Closed client errors
+
+After `await client.close()`, data and control methods reject with
+`client.closed` before checking security preflight. Local listener registration
+and progress reads throw the same code. `close()` remains idempotent. Dispose
+host session listeners with their client so a later sign-in cannot rotate a
+closed replica's headers.
+
+Use `activateSecurity({ encryption, headers })` to install the current bearer
+atomically with activation. Runtime `setHeaders()` requires an active client.

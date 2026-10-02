@@ -27,11 +27,18 @@ export class ClientSyncError extends Error {
   override readonly name: string = 'ClientSyncError';
   readonly code: string;
   readonly retryable: boolean;
+  readonly details: Readonly<Record<string, unknown>> | undefined;
 
-  constructor(code: string, message: string, retryable = false) {
+  constructor(
+    code: string,
+    message: string,
+    retryable = false,
+    details?: Readonly<Record<string, unknown>>,
+  ) {
     super(message);
     this.code = code;
     this.retryable = retryable;
+    this.details = details;
   }
 }
 

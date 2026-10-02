@@ -102,6 +102,99 @@ describe('httpSegmentDownloader', () => {
     // endpoint on failure (§5.4 — descriptor invalidated, re-pull).
     expect(seen).toHaveLength(1);
   });
+  for (const signed of [false, true]) {
+    for (const bodyFailure of [false, true]) {
+      test(`segment failure has a code and structured evidence (signed=${signed}, body=${bodyFailure})`, async () => {
+        let calls = 0;
+        const cause = new TypeError('Load failed');
+        const downloader = httpSegmentDownloader('https://host/segments', {
+          fetch: Object.assign(
+            async () => {
+              calls++;
+              if (!bodyFailure) throw cause;
+              return new Response(
+                new ReadableStream({
+                  start(controller) {
+                    controller.error(cause);
+                  },
+                }),
+              );
+            },
+            { preconnect: fetch.preconnect },
+          ),
+        });
+        const operation = signed
+          ? downloader.fetchUrl!(
+              'https://user:password@cdn.example/image?signature=secret#grant',
+            )
+          : downloader({
+              segmentId: 'sha256:test',
+              table: 'tasks',
+              requestedScopesJson: '{}',
+            });
+        await expect(operation).rejects.toMatchObject({
+          code: 'sync.transport_failed',
+          retryable: true,
+          message: 'segment transfer failed',
+          details: {
+            path: signed ? '/image' : '/segments/sha256%3Atest',
+            causeMessage: 'Load failed',
+            ...(bodyFailure ? { httpStatus: 200 } : {}),
+          },
+        });
+        expect(calls).toBe(1);
+      });
+    }
+    test(`HTTP failure retains status and path (signed=${signed})`, async () => {
+      const { seen, doFetch } = fakeFetch(403);
+      const downloader = httpSegmentDownloader('/segments', { fetch: doFetch });
+      await expect(
+        signed
+          ? downloader.fetchUrl!('https://cdn.example/image?signature=secret')
+          : downloader({
+              segmentId: 'sha256:test',
+              table: 'tasks',
+              requestedScopesJson: '{}',
+            }),
+      ).rejects.toMatchObject({
+        code: 'sync.transport_failed',
+        retryable: signed,
+        details: {
+          path: signed ? '/image' : '/segments/sha256%3Atest',
+          httpStatus: 403,
+        },
+      });
+      expect(seen).toHaveLength(1);
+    });
+  }
+
+  test('direct endpoint retains the server error identity and retry policy', async () => {
+    const downloader = httpSegmentDownloader('/segments', {
+      fetch: Object.assign(
+        async () =>
+          Response.json(
+            {
+              code: 'sync.forbidden',
+              message: 'scope grant refused',
+              retryable: false,
+            },
+            { status: 403 },
+          ),
+        { preconnect: fetch.preconnect },
+      ),
+    });
+    await expect(
+      downloader({
+        segmentId: 'sha256:test',
+        table: 'tasks',
+        requestedScopesJson: '{}',
+      }),
+    ).rejects.toMatchObject({
+      code: 'sync.forbidden',
+      retryable: false,
+      details: { path: '/segments/sha256%3Atest', httpStatus: 403 },
+    });
+  });
 });
 
 describe('WebSocket connectors', () => {

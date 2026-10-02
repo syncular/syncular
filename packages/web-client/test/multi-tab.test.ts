@@ -1460,3 +1460,53 @@ test('a closed follower never promotes itself, and frees the lock for the next t
   expect(successor.isLeader).toBe(true);
   expect(successorWorkerStarts).toBe(1);
 });
+
+test('leader and follower preserve structured segment transport evidence', async () => {
+  const { FollowerLink, LeaderBridge } = await import('../src/multi-tab');
+  const channels = new ChannelPartition();
+  const details = {
+    path: '/segments/test',
+    httpStatus: 200,
+    causeMessage: 'Load failed',
+  };
+  const leader = new LeaderBridge({
+    channel: channels.factory('transport-errors'),
+    epoch: 1,
+    clientId: 'leader',
+    identity: ID,
+    onNewerTab: noop,
+    invoke: async () => {
+      throw new ClientSyncError(
+        'sync.transport_failed',
+        'segment transfer failed',
+        true,
+        details,
+      );
+    },
+  });
+  const follower = new FollowerLink({
+    channel: channels.factory('transport-errors'),
+    fromId: 'follower',
+    identity: ID,
+    onEvent: noop,
+    onLeaderChange: noop,
+  });
+  try {
+    await follower.waitUntilBound();
+    let caught: unknown;
+    try {
+      await follower.call('sync', []);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ClientSyncError);
+    expect(caught).toMatchObject({
+      code: 'sync.transport_failed',
+      retryable: true,
+      details,
+    });
+  } finally {
+    follower.close();
+    leader.close();
+  }
+});

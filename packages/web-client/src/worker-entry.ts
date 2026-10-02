@@ -83,6 +83,7 @@ function toErrorShape(error: unknown): WorkerErrorShape {
       code: error.code,
       message: error.message,
       retryable: error.retryable,
+      ...(error.details !== undefined ? { details: error.details } : {}),
     };
   }
   return {

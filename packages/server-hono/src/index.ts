@@ -22,7 +22,7 @@ import {
   type SyncularErrorRoute,
   type SyncServerConfig,
 } from '@syncular/server';
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 
 export * from './admin';
 
@@ -40,16 +40,21 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
   // A `SyncError` answers with its catalog status. Any other exception goes
   // to `config.onError` and answers 500 `sync.internal_error` (§10.2).
   const errorResponse = (
+    c: Context,
     error: unknown,
     route: SyncularErrorRoute = 'sync',
   ): Response => {
     const sync = adapterSyncError(error, options.config.onError, route);
-    return Response.json(errorBody(sync), { status: sync.httpStatus });
+    const response = Response.json(errorBody(sync), {
+      status: sync.httpStatus,
+    });
+    return c.newResponse(response.body, response);
   };
   // Throws outside a route's own try, such as from `authenticate`.
   app.onError((error, c) => {
     const segment = c.req.path.split('/')[1];
     return errorResponse(
+      c,
       error,
       segment === 'operations' || segment === 'segments' || segment === 'blobs'
         ? segment
@@ -61,16 +66,16 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
     const contentType = c.req.header('content-type')?.split(';')[0]?.trim();
     if (contentType !== SSP2_CONTENT_TYPE) {
       // §1.1: any other content type is rejected with HTTP 415.
-      return Response.json(
+      return c.json(
         errorBody(
           new SyncError('sync.invalid_request', 'unsupported content type'),
         ),
-        { status: 415 },
+        415,
       );
     }
     const auth = await options.authenticate(c.req.raw);
     if (auth === null)
-      return errorResponse(new SyncError('sync.auth_required'));
+      return errorResponse(c, new SyncError('sync.auth_required'));
     try {
       const bytes = new Uint8Array(await c.req.arrayBuffer());
       const out = await handleSyncRequest(bytes, {
@@ -81,24 +86,21 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
         'Content-Type': SSP2_CONTENT_TYPE,
       });
     } catch (error) {
-      return errorResponse(error);
+      return errorResponse(c, error);
     }
   });
 
   app.post('/operations', async (c) => {
     const contentType = c.req.header('content-type')?.split(';')[0]?.trim();
     if (contentType !== 'application/vnd.syncular.operations.v1+json') {
-      return Response.json(
-        errorBody(new SyncError('operation.invalid_request')),
-        { status: 415 },
-      );
+      return c.json(errorBody(new SyncError('operation.invalid_request')), 415);
     }
     if (options.operations === undefined) {
-      return errorResponse(new SyncError('operation.unknown'));
+      return errorResponse(c, new SyncError('operation.unknown'));
     }
     const auth = await options.authenticate(c.req.raw);
     if (auth === null)
-      return errorResponse(new SyncError('sync.auth_required'));
+      return errorResponse(c, new SyncError('sync.auth_required'));
     try {
       const bytes = new Uint8Array(await c.req.arrayBuffer());
       const out = await handleRemoteOperation(
@@ -110,14 +112,14 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
         'Content-Type': 'application/vnd.syncular.operations.v1+json',
       });
     } catch (error) {
-      return errorResponse(error, 'operations');
+      return errorResponse(c, error, 'operations');
     }
   });
 
   app.get('/segments/:segmentId', async (c) => {
     const auth = await options.authenticate(c.req.raw);
     if (auth === null)
-      return errorResponse(new SyncError('sync.auth_required'));
+      return errorResponse(c, new SyncError('sync.auth_required'));
     try {
       const result = await openSegmentDownload(
         { ...options.config, ...auth },
@@ -137,12 +139,12 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
         const encoded = encodeSegmentStream(result.body, acceptEncoding);
         return new Response(encoded.body, {
           status: 200,
-          headers: {
+          headers: c.newResponse(null, 200, {
             ...result.headers,
             ...(encoded.contentEncoding !== undefined
               ? { 'Content-Encoding': encoded.contentEncoding }
               : { 'Content-Length': String(result.byteLength) }),
-          },
+          }).headers,
           ...ALREADY_ENCODED,
         });
       }
@@ -156,16 +158,16 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
       const encoded = encodeSegmentBody(bytes, acceptEncoding);
       return new Response(encoded.bytes.slice().buffer as ArrayBuffer, {
         status: 200,
-        headers: {
+        headers: c.newResponse(null, 200, {
           ...result.headers,
           ...(encoded.contentEncoding !== undefined
             ? { 'Content-Encoding': encoded.contentEncoding }
             : {}),
-        },
+        }).headers,
         ...ALREADY_ENCODED,
       });
     } catch (error) {
-      return errorResponse(error, 'segments');
+      return errorResponse(c, error, 'segments');
     }
   });
 
@@ -173,7 +175,7 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
   app.put('/blobs/:blobId', async (c) => {
     const auth = await options.authenticate(c.req.raw);
     if (auth === null)
-      return errorResponse(new SyncError('sync.auth_required'));
+      return errorResponse(c, new SyncError('sync.auth_required'));
     try {
       const bytes = new Uint8Array(await c.req.arrayBuffer());
       const contentType = c.req.header('content-type')?.split(';')[0]?.trim();
@@ -190,7 +192,7 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
       );
       return c.body(null, 200);
     } catch (error) {
-      return errorResponse(error, 'blobs');
+      return errorResponse(c, error, 'blobs');
     }
   });
 
@@ -198,7 +200,7 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
   app.post('/blobs/:blobId/upload-grant', async (c) => {
     const auth = await options.authenticate(c.req.raw);
     if (auth === null)
-      return errorResponse(new SyncError('sync.auth_required'));
+      return errorResponse(c, new SyncError('sync.auth_required'));
     try {
       const body = (await c.req.json().catch(() => ({}))) as {
         byteLength?: number;
@@ -216,7 +218,7 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
       );
       return c.json(grant, 200);
     } catch (error) {
-      return errorResponse(error, 'blobs');
+      return errorResponse(c, error, 'blobs');
     }
   });
 
@@ -226,7 +228,7 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
   app.get('/blobs/:blobId', async (c) => {
     const auth = await options.authenticate(c.req.raw);
     if (auth === null)
-      return errorResponse(new SyncError('sync.auth_required'));
+      return errorResponse(c, new SyncError('sync.auth_required'));
     try {
       const result = await handleBlobDownload(
         { ...options.config, ...auth },
@@ -246,7 +248,7 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
         ...result.headers,
       });
     } catch (error) {
-      return errorResponse(error, 'blobs');
+      return errorResponse(c, error, 'blobs');
     }
   });
 
@@ -259,6 +261,8 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
  * would decode gzip inside gzip and fail §5.1 verification
  * (SYNCULAR-WORKERS-SEGMENT-ENCODING-001). Other runtimes ignore the member.
  */
+// Build segment headers through the Hono context, then keep this runtime-specific
+// Response init. Hono newResponse/body discard encodeBody from their init.
 const ALREADY_ENCODED: { readonly encodeBody: 'manual' } = {
   encodeBody: 'manual',
 };

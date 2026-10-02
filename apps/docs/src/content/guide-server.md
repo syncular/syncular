@@ -89,6 +89,25 @@ An HTTP-only deployment is conformant: clients that never open the socket
 sync over `POST /sync` with identical semantics. Realtime is a second
 binding onto the same handler.
 
+## Host middleware headers
+
+Mount `createSyncularHono` behind the host's Hono middleware. Headers set with
+`c.header()` before `await next()` carry through successful segment downloads,
+304 replies and adapter errors. This includes CORS headers required by a Tauri
+WebView or a browser served from another origin. The adapter retains
+`encodeBody: 'manual'` for segment bodies it compressed on Cloudflare Workers.
+
+```ts
+import { Hono } from 'hono';
+
+const host = new Hono();
+host.use('*', async (c, next) => {
+  c.header('Access-Control-Allow-Origin', 'https://app.example.com');
+  await next();
+});
+host.route('/api', createSyncularHono({ config, authenticate }));
+```
+
 ## Reporting server errors
 
 A `SyncError` answers with its catalog code and HTTP status. Any other

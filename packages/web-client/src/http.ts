@@ -15,9 +15,12 @@ import type {
   SyncTransport,
 } from './transport';
 
-async function throwHttpError(response: Response): Promise<never> {
+async function throwHttpError(
+  response: Response,
+  details?: Readonly<Record<string, unknown>>,
+): Promise<never> {
   let code = 'sync.transport_failed';
-  let message = `HTTP ${response.status}`;
+  let message = 'HTTP request failed';
   let retryable = response.status >= 500 || response.status === 429;
   try {
     const body = (await response.json()) as {
@@ -31,7 +34,10 @@ async function throwHttpError(response: Response): Promise<never> {
   } catch {
     // non-JSON error body — keep the HTTP-status defaults
   }
-  throw new ClientSyncError(code, message, retryable);
+  throw new ClientSyncError(code, message, retryable, {
+    ...details,
+    httpStatus: response.status,
+  });
 }
 
 export interface HttpTransportOptions {
@@ -192,12 +198,49 @@ export function httpSegmentDownloader(
   options?: HttpTransportOptions,
 ): SegmentDownloader {
   const doFetch = options?.fetch ?? fetch;
-  const direct = async (request: {
+  const download = async (
+    url: string,
+    init?: RequestInit,
+    onProgress?: (bytesReceived: number) => void,
+    signed = false,
+  ) => {
+    // A capability's query/fragment and URL credentials never enter details.
+    const path = URL.canParse(url)
+      ? new URL(url).pathname
+      : url.split(/[?#]/)[0];
+    let response: Response | undefined;
+    try {
+      response = await doFetch(url, init);
+      if (!response.ok) {
+        if (!signed) await throwHttpError(response, { path });
+        throw new ClientSyncError(
+          'sync.transport_failed',
+          'signed segment request failed; invalidate the descriptor and re-pull',
+          true,
+          { path, httpStatus: response.status },
+        );
+      }
+      return await readSegmentBody(response, onProgress);
+    } catch (error) {
+      if (error instanceof ClientSyncError) throw error;
+      throw new ClientSyncError(
+        'sync.transport_failed',
+        'segment transfer failed',
+        true,
+        {
+          path,
+          ...(response !== undefined ? { httpStatus: response.status } : {}),
+          causeMessage: error instanceof Error ? error.message : String(error),
+        },
+      );
+    }
+  };
+  const direct = (request: {
     readonly segmentId: string;
     readonly requestedScopesJson: string;
     readonly onProgress?: (bytesReceived: number) => void;
-  }) => {
-    const response = await doFetch(
+  }) =>
+    download(
       `${segmentsBaseUrl}/${encodeURIComponent(request.segmentId)}`,
       {
         headers: {
@@ -205,25 +248,13 @@ export function httpSegmentDownloader(
           ...hostHeaders(options),
         },
       },
+      request.onProgress,
     );
-    if (!response.ok) await throwHttpError(response);
-    return readSegmentBody(response, request.onProgress);
-  };
-  const fetchUrl = async (
+  // Deliberately headerless: the URL is the bearer grant (§5.4).
+  const fetchUrl = (
     url: string,
     onProgress?: (bytesReceived: number) => void,
-  ) => {
-    // Deliberately headerless: the URL is the bearer grant (§5.4).
-    const response = await doFetch(url);
-    if (!response.ok) {
-      throw new ClientSyncError(
-        'sync.transport_failed',
-        `signed-URL fetch failed with HTTP ${response.status} (§5.4: descriptor invalidated, re-pull to recover)`,
-        true,
-      );
-    }
-    return readSegmentBody(response, onProgress);
-  };
+  ) => download(url, undefined, onProgress, true);
   return Object.assign(direct, { fetchUrl });
 }
 

@@ -8,6 +8,7 @@
 pub struct TransportError {
     pub code: String,
     pub message: String,
+    pub details: Option<serde_json::Value>,
 }
 
 impl TransportError {
@@ -15,6 +16,7 @@ impl TransportError {
         TransportError {
             code: code.into(),
             message: message.into(),
+            details: None,
         }
     }
 }

@@ -285,6 +285,44 @@ describe('createTauriSyncClient', () => {
     });
   });
 
+  for (const securityPreflight of [false, true]) {
+    test(`closed client rejects before all other gates (preflight=${securityPreflight})`, async () => {
+      const { tauri, calls } = makeTauri(defaultResponder);
+      const client = await createTauriSyncClient({
+        schema: { version: 1, tables: [] },
+        securityPreflight,
+        tauri,
+      });
+      await client.close();
+      const before = calls.length;
+      for (const call of [
+        () => client.setHeaders({ authorization: 'Bearer late' }),
+        () => client.query('SELECT 1'),
+        () => client.querySnapshot({ sql: 'SELECT 1' }),
+        () => client.securityLifecycle(),
+        () => client.beginSecurityPreflight(),
+        () => client.activateSecurity(),
+        () => client.statusSnapshot(),
+        () => client.localRevision(),
+        () => client.connectRealtime(),
+        () => client.purgeLocalData({ purgeId: 'late', targets: [] }),
+      ]) {
+        await expect(call()).rejects.toMatchObject({ code: 'client.closed' });
+      }
+      for (const call of [
+        () => client.onInvalidate(() => {}),
+        () => client.onProgress(() => {}),
+        () => client.onChange(() => {}),
+        () => client.onDiagnostics(() => {}),
+        () => client.onPresence(() => {}),
+        () => client.progressSnapshot(),
+      ])
+        expect(call).toThrow('the Tauri sync client is closed');
+      await client.close(); // Disposal remains idempotent.
+      expect(calls.length).toBe(before);
+    });
+  }
+
   test('preflight blocks fast reads, permits purge, and installs keys only on activation', async () => {
     const { tauri, calls } = makeTauri(defaultResponder);
     const client = await createTauriSyncClient({

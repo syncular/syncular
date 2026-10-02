@@ -59,6 +59,7 @@ function scriptedWorker(
   answer: (method: string) => {
     readonly replied: boolean;
     readonly value?: unknown;
+    readonly error?: WorkerErrorShape;
   },
 ): Worker {
   const listeners = new Set<(event: MessageEvent) => void>();
@@ -89,11 +90,15 @@ function scriptedWorker(
       if (message.t !== 'call') return;
       const reply = answer(message.method ?? '');
       queueMicrotask(() =>
-        emit({
-          t: 'result',
-          id: message.id,
-          value: reply.replied ? reply.value : undefined,
-        }),
+        emit(
+          reply.error !== undefined
+            ? { t: 'error', id: message.id, error: reply.error }
+            : {
+                t: 'result',
+                id: message.id,
+                value: reply.replied ? reply.value : undefined,
+              },
+        ),
       );
     },
     terminate: () => {},
@@ -164,6 +169,51 @@ async function makeHandle(
   handles.push(handle);
   return { handle, events };
 }
+
+test('worker RPC retains structured segment transport evidence', async () => {
+  const details = {
+    path: '/segments/test',
+    httpStatus: 200,
+    causeMessage: 'Load failed',
+  };
+  const handle = await createSyncClientHandle({
+    worker: () =>
+      scriptedWorker((method) => ({
+        replied: false,
+        ...(method === 'sync'
+          ? {
+              error: {
+                code: 'sync.transport_failed',
+                message: 'segment transfer failed',
+                retryable: true,
+                details,
+              },
+            }
+          : {}),
+      })),
+    schema: { version: 1, tables: [] },
+    database: { mode: 'custom' },
+    endpoints: { syncUrl: 'https://invalid.test/sync' },
+    autoSync: false,
+    multiTab: false,
+  });
+  try {
+    let caught: unknown;
+    try {
+      await handle.sync();
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ClientSyncError);
+    expect(caught).toMatchObject({
+      code: 'sync.transport_failed',
+      retryable: true,
+      details,
+    });
+  } finally {
+    await handle.close();
+  }
+});
 
 test('boot → subscribe → mutate → sync → query, all over the RPC', async () => {
   const { handle } = await makeHandle({ clientId: 'rpc-a', autoSync: false });

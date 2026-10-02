@@ -27,6 +27,7 @@ import {
   type SyncularServerEvents,
 } from '@syncular/server';
 import { createSyncularHono } from './index';
+import { Hono } from 'hono';
 
 const COLUMNS: readonly RowColumn[] = [
   { name: 'id', type: 'string', nullable: false },
@@ -63,15 +64,25 @@ async function makeApp(
   };
   // Pin the partition log epoch so the fixture can push in one round (§2.1).
   await storage.touchPartition('part-1', 0, TEST_LOG_EPOCH);
-  return createSyncularHono({
-    config,
-    ...(operations !== undefined ? { operations } : {}),
-    authenticate: async (request) => {
-      const token = request.headers.get('authorization');
-      if (token !== 'Bearer good') return null;
-      return { actorId: 'actor-1', partition: 'part-1' };
-    },
+  const host = new Hono();
+  host.use('*', async (c, next) => {
+    c.header('Access-Control-Allow-Origin', 'tauri://localhost');
+    c.header('X-Host-Policy', 'retained');
+    await next();
   });
+  host.route(
+    '/',
+    createSyncularHono({
+      config,
+      ...(operations !== undefined ? { operations } : {}),
+      authenticate: async (request) => {
+        const token = request.headers.get('authorization');
+        if (token !== 'Bearer good') return null;
+        return { actorId: 'actor-1', partition: 'part-1' };
+      },
+    }),
+  );
+  return host;
 }
 
 function requestBytes(title = 'hello'): Uint8Array {
@@ -116,6 +127,36 @@ function requestBytes(title = 'hello'): Uint8Array {
 }
 
 describe('hono adapter', () => {
+  test('authentication exceptions retain host middleware headers', async () => {
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      c.header('Access-Control-Allow-Origin', 'tauri://localhost');
+      await next();
+    });
+    app.route(
+      '/',
+      createSyncularHono({
+        config: {
+          schema: SCHEMA,
+          storage: new SqliteServerStorage(),
+          segments: new MemorySegmentStore(),
+          resolveScopes: () => ({}),
+        },
+        authenticate: async () => {
+          throw new Error('host authentication failed');
+        },
+      }),
+    );
+    const response = await app.request('/segments/unknown');
+    expect(response.status).toBe(500);
+    expect(response.headers.get('access-control-allow-origin')).toBe(
+      'tauri://localhost',
+    );
+    expect(await response.json()).toMatchObject({
+      code: 'sync.internal_error',
+    });
+  });
+
   test('POST /operations runs a registered query', async () => {
     const descriptor = {
       id: 'sha256:test/allTasks',
@@ -192,6 +233,7 @@ describe('hono adapter', () => {
     });
 
     expect(response.status).toBe(415);
+    expect(response.headers.get('x-host-policy')).toBe('retained');
     expect(await response.json()).toMatchObject({
       code: 'operation.invalid_request',
       retryable: false,
@@ -229,6 +271,7 @@ describe('hono adapter', () => {
       body: requestBytes().slice().buffer as ArrayBuffer,
     });
     expect(response.status).toBe(415);
+    expect(response.headers.get('x-host-policy')).toBe('retained');
   });
 
   test('failed authentication is HTTP 401 with the §10.1 error shape', async () => {
@@ -239,6 +282,7 @@ describe('hono adapter', () => {
       body: requestBytes().slice().buffer as ArrayBuffer,
     });
     expect(response.status).toBe(401);
+    expect(response.headers.get('x-host-policy')).toBe('retained');
     const body = (await response.json()) as { code: string; category: string };
     expect(body.code).toBe('sync.auth_required');
     expect(body.category).toBe('auth-required');
@@ -267,6 +311,10 @@ describe('hono adapter', () => {
       headers,
     });
     expect(download.status).toBe(200);
+    expect(download.headers.get('access-control-allow-origin')).toBe(
+      'tauri://localhost',
+    );
+    expect(download.headers.get('x-host-policy')).toBe('retained');
     expect(download.headers.get('etag')).toBe(`"${ref.segmentId}"`);
     const bytes = new Uint8Array(await download.arrayBuffer());
     expect(bytes.length).toBe(ref.byteLength);
@@ -274,6 +322,7 @@ describe('hono adapter', () => {
       headers: { ...headers, 'if-none-match': `"${ref.segmentId}"` },
     });
     expect(cached.status).toBe(304);
+    expect(cached.headers.get('x-host-policy')).toBe('retained');
   });
 
   test('GET /segments/:id negotiates Content-Encoding (§5.8)', async () => {
@@ -315,6 +364,7 @@ describe('hono adapter', () => {
       headers: { ...headers, 'accept-encoding': 'gzip' },
     });
     expect(gzip.headers.get('content-encoding')).toBe('gzip');
+    expect(gzip.headers.get('x-host-policy')).toBe('retained');
     expect(
       Bun.gunzipSync(new Uint8Array(await gzip.arrayBuffer())).length,
     ).toBe(ref.byteLength);
@@ -481,15 +531,23 @@ describe('large segment downloads', () => {
     segments.get = async () => {
       throw new Error('get must not be called for a streamed segment');
     };
-    const app = createSyncularHono({
-      config: {
-        schema: SCHEMA,
-        storage,
-        segments,
-        resolveScopes: () => ({ project_id: ['p1'] }),
-      },
-      authenticate: async () => ({ actorId: 'actor-1', partition: 'part-1' }),
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      c.header('X-Host-Policy', 'retained');
+      await next();
     });
+    app.route(
+      '/',
+      createSyncularHono({
+        config: {
+          schema: SCHEMA,
+          storage,
+          segments,
+          resolveScopes: () => ({ project_id: ['p1'] }),
+        },
+        authenticate: async () => ({ actorId: 'actor-1', partition: 'part-1' }),
+      }),
+    );
     const headers = {
       'x-syncular-scopes': canonicalScopeJson({ project_id: ['p1'] }),
     };
@@ -497,12 +555,14 @@ describe('large segment downloads', () => {
       headers,
     });
     expect(identity.status).toBe(200);
+    expect(identity.headers.get('x-host-policy')).toBe('retained');
     expect(identity.headers.get('content-length')).toBe(String(bytes.length));
     expect(new Uint8Array(await identity.arrayBuffer())).toEqual(bytes);
     const gzip = await app.request(`/segments/${record.segmentId}`, {
       headers: { ...headers, 'accept-encoding': 'gzip' },
     });
     expect(gzip.headers.get('content-encoding')).toBe('gzip');
+    expect(gzip.headers.get('x-host-policy')).toBe('retained');
     expect(Bun.gunzipSync(new Uint8Array(await gzip.arrayBuffer()))).toEqual(
       bytes,
     );

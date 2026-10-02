@@ -233,6 +233,7 @@ export type MainToWorkerMessage =
   | WorkerCallMessage;
 
 export interface WorkerErrorShape {
+  readonly details?: Readonly<Record<string, unknown>>;
   readonly code: string;
   readonly message: string;
   readonly retryable: boolean;

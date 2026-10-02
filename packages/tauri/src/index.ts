@@ -335,12 +335,7 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
     method: string,
     params: Record<string, unknown>,
   ): Promise<unknown> {
-    if (this.#closed) {
-      throw new TauriSyncError(
-        'client.closed',
-        'the Tauri sync client is closed',
-      );
-    }
+    this.#requireOpen();
     if (
       this.#securityLifecycle === 'preflight' &&
       ![
@@ -373,7 +368,17 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
     );
   }
 
+  #requireOpen(): void {
+    if (this.#closed) {
+      throw new TauriSyncError(
+        'client.closed',
+        'the Tauri sync client is closed',
+      );
+    }
+  }
+
   #requireActive(): void {
+    this.#requireOpen();
     if (this.#securityLifecycle === 'preflight') this.#throwSecurityPreflight();
   }
 
@@ -438,7 +443,8 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
 
   // -- SyncClientLike --------------------------------------------------------
 
-  securityLifecycle(): Promise<SecurityLifecycle> {
+  async securityLifecycle(): Promise<SecurityLifecycle> {
+    this.#requireOpen();
     return Promise.resolve(this.#securityLifecycle);
   }
 
@@ -479,6 +485,7 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
       readonly headers?: Readonly<Record<string, string>>;
     } = {},
   ): Promise<void> {
+    this.#requireOpen();
     if (this.#securityLifecycle === 'active') {
       throw new TauriSyncError(
         'sync.invalid_request',
@@ -496,23 +503,28 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
   }
 
   onInvalidate(listener: InvalidationListener): () => void {
+    this.#requireOpen();
     this.#invalidationListeners.add(listener);
     return () => this.#invalidationListeners.delete(listener);
   }
 
   onProgress(listener: SyncProgressListener): () => void {
+    this.#requireOpen();
     return this.#progress.on(listener);
   }
   progressSnapshot(): SyncProgress | undefined {
+    this.#requireOpen();
     return this.#progress.snapshot();
   }
 
   onChange(listener: ClientChangeListener): () => void {
+    this.#requireOpen();
     this.#changeListeners.add(listener);
     return () => this.#changeListeners.delete(listener);
   }
 
   onDiagnostics(listener: ClientDiagnosticsListener): () => void {
+    this.#requireOpen();
     this.#diagnosticsListeners.add(listener);
     this.#enableDiagnosticsPush();
     return () => this.#diagnosticsListeners.delete(listener);
@@ -542,6 +554,7 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
   }
 
   onPresence(listener: (scopeKey: string) => void): () => void {
+    this.#requireOpen();
     this.#presenceListeners.add(listener);
     return () => this.#presenceListeners.delete(listener);
   }

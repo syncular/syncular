@@ -419,3 +419,17 @@ client to `SyncProvider` and use `realtimeSupervisorSnapshot(client)` to inspect
 an attached supervisor. Custom React clients must implement the snapshot
 methods and method-form collection reads. See the [React migration](/platform-react/)
 for the `onEnqueued` callback rename.
+
+## Segment transport failures
+
+`httpSegmentDownloader` reports rejected fetches and interrupted response bodies
+as retryable `sync.transport_failed`. `ClientSyncError.details` contains `path`,
+`causeMessage` and `httpStatus` when a response arrived. The path omits URL
+credentials, query parameters and fragments. Worker and follower RPC preserve
+these details. Treat cause messages as operator evidence; they come from the
+runtime and are outside the redacted diagnostics contract.
+
+A direct endpoint's JSON error retains the server's code and retry policy with
+the request path and HTTP status. A failed signed URL carries
+`sync.transport_failed` and invalidates the descriptor. The client aborts that
+transfer; the next pull obtains a fresh grant.

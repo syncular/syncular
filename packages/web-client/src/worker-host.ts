@@ -843,6 +843,7 @@ async function startWorkerCore(options: {
               message.error.code,
               message.error.message,
               message.error.retryable,
+              message.error.details,
             ),
           );
           break;

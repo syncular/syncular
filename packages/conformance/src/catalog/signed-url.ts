@@ -213,6 +213,13 @@ export const signedUrlScenarios: readonly Scenario[] = [
       a.faults.dropNextUrlFetches = 1;
       const lost = await a.api.sync();
       check(!lost.ok, 'a lost URL fetch fails the round');
+      if (!lost.ok) {
+        checkEqual(
+          lost.errorCode,
+          'transport.lost',
+          'segment loss keeps its transport error identity',
+        );
+      }
       checkEqual(a.directDownloads, [], 'no fall-through on loss (§5.4)');
 
       // Healed path: the re-pull converges through the URL host.

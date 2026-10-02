@@ -460,6 +460,23 @@ mod native {
         TransportError::new("transport.failed", format!("{op}: {e}"))
     }
 
+    fn segment_error(
+        path: Option<&str>,
+        http_status: Option<u16>,
+        cause: impl std::fmt::Display,
+    ) -> TransportError {
+        let mut details = serde_json::json!({ "causeMessage": cause.to_string() });
+        if let Some(path) = path {
+            details["path"] = path.into();
+        }
+        if let Some(status) = http_status {
+            details["httpStatus"] = status.into();
+        }
+        let mut error = TransportError::new("sync.transport_failed", "segment transfer failed");
+        error.details = Some(details);
+        error
+    }
+
     /// Nonblocking I/O needs a readiness notification before it can continue.
     fn is_would_block(e: &tungstenite::Error) -> bool {
         matches!(
@@ -708,6 +725,7 @@ mod native {
             // re-authorizes the download against it (§5.5) and answers
             // `sync.forbidden` when it is missing.
             let url = format!("{}/segments/{}", self.base_url, request.segment_id);
+            let parsed = url::Url::parse(&url).map_err(|error| segment_error(None, None, error))?;
             let mut req = self
                 .agent
                 .get(&url)
@@ -715,8 +733,16 @@ mod native {
             for (k, v) in &self.headers {
                 req = req.header(k.as_str(), v.as_str());
             }
-            let resp = req.call().map_err(|e| http_err("GET segment", e))?;
+            let resp = req.call().map_err(|error| {
+                let status = match &error {
+                    ureq::Error::StatusCode(status) => Some(*status),
+                    _ => None,
+                };
+                segment_error(Some(parsed.path()), status, error)
+            })?;
+            let status = resp.status().as_u16();
             read_body(resp, Some(on_progress))
+                .map_err(|error| segment_error(Some(parsed.path()), Some(status), error.message))
         }
 
         fn supports_url_fetch(&self) -> bool {
@@ -729,13 +755,17 @@ mod native {
             on_progress: &mut dyn FnMut(u64),
         ) -> Result<Vec<u8>, TransportError> {
             // §5.4: the URL is the entire grant — no host credentials attached.
-            read_body(
-                self.agent
-                    .get(url)
-                    .call()
-                    .map_err(|e| http_err("GET segment URL", e))?,
-                Some(on_progress),
-            )
+            let parsed = url::Url::parse(url).map_err(|error| segment_error(None, None, error))?;
+            let resp = self.agent.get(url).call().map_err(|error| {
+                let status = match &error {
+                    ureq::Error::StatusCode(status) => Some(*status),
+                    _ => None,
+                };
+                segment_error(Some(parsed.path()), status, error)
+            })?;
+            let status = resp.status().as_u16();
+            read_body(resp, Some(on_progress))
+                .map_err(|error| segment_error(Some(parsed.path()), Some(status), error.message))
         }
 
         fn blob_upload(
@@ -1029,6 +1059,89 @@ mod native {
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
+
+    #[test]
+    fn segment_http_failures_have_named_codes_and_request_details() {
+        for signed in [false, true] {
+            for body_failure in [false, true] {
+                let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                let base = format!("http://{}", listener.local_addr().unwrap());
+                let server = std::thread::spawn(move || {
+                    let (mut socket, _) = listener.accept().unwrap();
+                    let mut reader = BufReader::new(socket.try_clone().unwrap());
+                    loop {
+                        let mut line = String::new();
+                        reader.read_line(&mut line).unwrap();
+                        if line == "\r\n" {
+                            break;
+                        }
+                        assert!(!line.is_empty());
+                    }
+                    socket.write_all(if body_failure {
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 999\r\nConnection: close\r\n\r\nshort"
+                    } else {
+                        b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    }).unwrap();
+                });
+                let mut transport =
+                    HostTransport::new_from_config(&serde_json::json!({"baseUrl": base})).unwrap();
+                let mut progress = |_| {};
+                let error = if signed {
+                    transport.fetch_url(&format!("{base}/signed?signature=secret"), &mut progress)
+                } else {
+                    transport.download_segment(
+                        &SegmentRequest {
+                            segment_id: "sha256:test".into(),
+                            table: "tasks".into(),
+                            requested_scopes_json: "{}".into(),
+                        },
+                        &mut progress,
+                    )
+                }
+                .unwrap_err();
+                assert_eq!(error.code, "sync.transport_failed");
+                assert_eq!(error.message, "segment transfer failed");
+                let details = error.details.unwrap();
+                assert_eq!(
+                    details["path"],
+                    if signed {
+                        "/signed"
+                    } else {
+                        "/segments/sha256:test"
+                    }
+                );
+                assert_eq!(details["httpStatus"], if body_failure { 200 } else { 403 });
+                server.join().unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn refused_segment_connection_has_a_named_code_without_an_invented_status() {
+        for signed in [false, true] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            drop(listener);
+            let mut transport =
+                HostTransport::new_from_config(&serde_json::json!({"baseUrl": base})).unwrap();
+            let mut progress = |_| {};
+            let error = if signed {
+                transport.fetch_url(&format!("{base}/signed?signature=secret"), &mut progress)
+            } else {
+                transport.download_segment(
+                    &SegmentRequest {
+                        segment_id: "sha256:test".into(),
+                        table: "tasks".into(),
+                        requested_scopes_json: "{}".into(),
+                    },
+                    &mut progress,
+                )
+            }
+            .unwrap_err();
+            assert_eq!(error.code, "sync.transport_failed");
+            assert!(error.details.as_ref().unwrap().get("httpStatus").is_none());
+        }
+    }
 
     #[test]
     fn segment_http_reports_intermediate_bytes_for_direct_and_signed_urls() {

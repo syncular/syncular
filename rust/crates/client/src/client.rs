@@ -9111,7 +9111,7 @@ impl SyncClient {
         // §5.9.7 B4: upload pending blobs before pushing the referencing
         // rows, so the server-side existence check (§6.6) passes.
         if self.get_meta(LOG_EPOCH_KEY).is_some() && self.schema_has_blobs() {
-            if let Err(TransportError { code, message }) = self.flush_blob_uploads(transport) {
+            if let Err(TransportError { code, message, .. }) = self.flush_blob_uploads(transport) {
                 if Self::retryable_failure_code(&code) {
                     self.schedule_background_retry();
                 }
@@ -9164,7 +9164,7 @@ impl SyncClient {
         let realtime_round = self.realtime_state == RealtimeState::Connected;
         let response_bytes = match round {
             Ok(bytes) => bytes,
-            Err(TransportError { code, message }) => {
+            Err(TransportError { code, message, .. }) => {
                 // §8.8: the socket could not carry the round. Record the loss
                 // with the transport's code so a later round refuses under
                 // `required` and reports the explicit state.
