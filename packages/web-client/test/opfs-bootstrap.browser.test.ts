@@ -531,3 +531,66 @@ test('the default worker serves a queued snapshot between committed image chunks
     await browser.close();
   }
 }, 60000);
+
+for (const atCommit of [false, true])
+  test(`OPFS storage-full import preserves the first error at ${atCommit ? 'commit' : 'step'} and resumes on the same worker`, async () => {
+    const browser = await chromium.launch();
+    const page = await browser.newPage();
+    try {
+      await page.goto(server.url.href);
+      await page.evaluate(() => window.opfsTest.open());
+      const failure = await page.evaluate(async (atCommit) => {
+        const client = await window.opfsTest.ready;
+        await client.sync();
+        await client.subscribe({
+          id: 'catalogue',
+          table: 'catalogue',
+          scopes: { project_id: ['p1'] },
+        });
+        await window.opfsTest.limitStorage(atCommit ? 1073741823 : 1, atCommit);
+        try {
+          await client.syncUntilIdle();
+        } catch (error) {
+          if (
+            !(error instanceof Error) ||
+            !('code' in error) ||
+            !('details' in error)
+          )
+            throw error;
+          return {
+            code: error.code,
+            message: error.message,
+            details: error.details,
+            progress: window.opfsTest.progress.at(-1),
+          };
+        }
+        throw new Error('page-limited import unexpectedly succeeded');
+      }, atCommit);
+      expect(failure.code).toBe('client.storage_full');
+      expect(failure.message).not.toContain('rollback');
+      expect(failure.details).toMatchObject({ sqliteCode: 13 });
+      if (atCommit)
+        expect(failure.details).toMatchObject({
+          rollbackFailure: { sqliteCode: 1 },
+        });
+      expect(failure.progress?.errorCode).toBe('client.storage_full');
+      await page.evaluate(async () => {
+        await window.opfsTest.limitStorage(1073741823);
+        await (await window.opfsTest.ready).syncUntilIdle();
+      });
+      const count = await page.evaluate(
+        async () =>
+          (
+            await (
+              await window.opfsTest.ready
+            ).query('SELECT count(*) AS n FROM catalogue')
+          )[0]?.n,
+      );
+      expect(count).toBe(expected.length);
+      expect(
+        (await page.evaluate(() => window.opfsTest.probe())).ftsIntegrity,
+      ).toBe('ok');
+    } finally {
+      await browser.close();
+    }
+  }, 60000);

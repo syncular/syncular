@@ -9,6 +9,9 @@ export const STORAGE_UNAVAILABLE_CODE = 'client.storage_unavailable';
 /** A local read hit SQLITE_CORRUPT or SQLITE_NOTADB (SPEC §7.5). */
 export const STORAGE_CORRUPT_CODE = 'client.storage_corrupt';
 
+/** Local SQLite storage has no space for the write. */
+export const STORAGE_FULL_CODE = 'client.storage_full';
+
 /** A local read hit SQLITE_IOERR (SPEC §7.5). */
 export const STORAGE_IO_CODE = 'client.storage_io';
 
@@ -107,10 +110,45 @@ export function classifySqliteFailure(error: unknown): {
   readonly sqliteCode: number | undefined;
   readonly code:
     | typeof STORAGE_CORRUPT_CODE
+    | typeof STORAGE_FULL_CODE
     | typeof STORAGE_IO_CODE
     | undefined;
   readonly error: unknown;
 } {
+  if (error instanceof ClientSyncError) {
+    const sqliteCode = error.details?.sqliteCode;
+    let retained = error;
+    if (
+      'rollbackError' in error &&
+      error.details?.rollbackFailure === undefined
+    ) {
+      const rollback = error.rollbackError;
+      retained = new ClientSyncError(
+        error.code,
+        error.message,
+        error.retryable,
+        {
+          ...error.details,
+          rollbackFailure: {
+            message:
+              rollback instanceof Error ? rollback.message : String(rollback),
+            sqliteCode: classifySqliteFailure(rollback).sqliteCode,
+          },
+        },
+      );
+      Object.defineProperty(retained, 'cause', { value: error });
+    }
+    return {
+      sqliteCode: typeof sqliteCode === 'number' ? sqliteCode : undefined,
+      code:
+        error.code === STORAGE_FULL_CODE ||
+        error.code === STORAGE_IO_CODE ||
+        error.code === STORAGE_CORRUPT_CODE
+          ? error.code
+          : undefined,
+      error: retained,
+    };
+  }
   const sqliteCode =
     error instanceof Error
       ? error.name === 'SQLiteError' &&
@@ -126,25 +164,41 @@ export function classifySqliteFailure(error: unknown): {
             : undefined
       : undefined;
   const primary = sqliteCode === undefined ? undefined : sqliteCode & 0xff;
-  if (primary === 11 || primary === 26) {
-    return {
+  const code =
+    primary === 13
+      ? STORAGE_FULL_CODE
+      : primary === 10
+        ? STORAGE_IO_CODE
+        : primary === 11 || primary === 26
+          ? STORAGE_CORRUPT_CODE
+          : undefined;
+  if (code === undefined) return { sqliteCode, code, error };
+  const rollback =
+    error instanceof Error && 'rollbackError' in error
+      ? error.rollbackError
+      : undefined;
+  const failure = new ClientSyncError(
+    code,
+    primary === 13
+      ? 'local SQLite storage is full'
+      : primary === 10
+        ? 'local SQLite storage I/O failed'
+        : 'local SQLite storage is corrupt',
+    false,
+    {
       sqliteCode,
-      code: STORAGE_CORRUPT_CODE,
-      error: new ClientSyncError(
-        STORAGE_CORRUPT_CODE,
-        'local SQLite storage is corrupt',
-      ),
-    };
-  }
-  if (primary === 10) {
-    return {
-      sqliteCode,
-      code: STORAGE_IO_CODE,
-      error: new ClientSyncError(
-        STORAGE_IO_CODE,
-        'local SQLite storage I/O failed',
-      ),
-    };
-  }
-  return { sqliteCode, code: undefined, error };
+      sqliteMessage: error instanceof Error ? error.message : String(error),
+      ...(rollback !== undefined
+        ? {
+            rollbackFailure: {
+              message:
+                rollback instanceof Error ? rollback.message : String(rollback),
+              sqliteCode: classifySqliteFailure(rollback).sqliteCode,
+            },
+          }
+        : {}),
+    },
+  );
+  Object.defineProperty(failure, 'cause', { value: error });
+  return { sqliteCode, code, error: failure };
 }

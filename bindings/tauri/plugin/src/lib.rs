@@ -295,6 +295,7 @@ fn run_reader_thread(path: String, rx: Receiver<ReadRequest>, owner_tx: Sender<R
                         "error": {
                             "code": failure.code.unwrap_or("client.failed"),
                             "message": failure.message,
+                            "details": failure.details(),
                         }
                     }),
                 };

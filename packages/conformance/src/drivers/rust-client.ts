@@ -215,6 +215,11 @@ function parseClientSyncResult(value: JsonValue): ClientSyncResult {
       return {
         ok: false,
         errorCode: value.errorCode,
+        ...(typeof value.details === 'object' &&
+        value.details !== null &&
+        !Array.isArray(value.details)
+          ? { details: value.details }
+          : {}),
         message: value.message,
         ...(typeof value.realtimeState === 'string'
           ? { realtimeState: value.realtimeState }

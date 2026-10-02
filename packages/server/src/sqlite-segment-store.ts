@@ -1,3 +1,4 @@
+import { rollbackAfterError } from './storage-errors';
 /**
  * SQLite-backed segment store over the shared synchronous driver.
  */
@@ -238,8 +239,9 @@ export class SqliteSegmentStore implements SegmentStore {
       }
       this.db.exec('COMMIT');
     } catch (error) {
-      this.db.exec('ROLLBACK');
-      throw error;
+      rollbackAfterError(() => {
+        this.db.exec('ROLLBACK');
+      }, error);
     }
     return record;
   }

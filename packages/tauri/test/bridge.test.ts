@@ -840,7 +840,19 @@ describe('createTauriSyncClient', () => {
     const { tauri } = makeTauri((_cmd, args) => {
       const method = (args.command as { method: string } | undefined)?.method;
       if (method === 'create') return OK({});
-      return { error: { code: 'client.failed', message: 'boom' } };
+      return {
+        error: {
+          code: 'client.storage_full',
+          message: 'local SQLite storage is full',
+          details: {
+            sqliteCode: 13,
+            rollbackFailure: {
+              sqliteCode: 1,
+              message: 'no transaction is active',
+            },
+          },
+        },
+      };
     });
     const client = await createTauriSyncClient({
       clientId: 'c1',
@@ -848,8 +860,9 @@ describe('createTauriSyncClient', () => {
       tauri,
     });
     await expect(client.conflicts()).rejects.toMatchObject({
-      code: 'client.failed',
-      message: 'boom',
+      code: 'client.storage_full',
+      message: 'local SQLite storage is full',
+      details: { sqliteCode: 13, rollbackFailure: { sqliteCode: 1 } },
     });
   });
 

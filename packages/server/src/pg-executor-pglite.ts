@@ -1,3 +1,4 @@
+import { retainRollbackFailure } from './storage-errors';
 /**
  * A `PgExecutor` over @electric-sql/pglite (embedded WASM Postgres).
  *
@@ -64,7 +65,11 @@ export function pgliteExecutor(db: PGlite | PgliteLike): PgExecutor {
           await like.exec('COMMIT');
           return result;
         } catch (error) {
-          await like.exec('ROLLBACK');
+          try {
+            await like.exec('ROLLBACK');
+          } catch (rollbackError) {
+            retainRollbackFailure(error, rollbackError);
+          }
           throw error;
         }
       } finally {

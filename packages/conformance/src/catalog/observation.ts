@@ -13,7 +13,7 @@ import {
 import type { ClientInstance } from '../driver';
 import { FIXTURE_SCHEMA, task } from '../fixture';
 import type { Scenario } from '../scenario';
-import { seedTasks, syncFails, syncIdle, syncOk } from './util';
+import { seedRows, seedTasks, syncFails, syncIdle, syncOk } from './util';
 
 const BASE = { table: 'tasks', variable: 'project_id' } as const;
 
@@ -141,6 +141,68 @@ export const observationScenarios: readonly Scenario[] = [
         { op: 'upsert', table: 'tasks', values: task('s2', 'p1', 'hay') },
       ]);
       await agree('retitled row', ['l1', 's3']);
+    },
+  },
+  {
+    name: 'observation/storage-full-import-recovery',
+    specRefs: ['§7.5', '§7.6'],
+    async run(ctx) {
+      const handle = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: { project_id: ['p1'] },
+      });
+      check(
+        handle.api.executeStorageSql !== undefined,
+        'owned storage SQL is available',
+      );
+      if (handle.api.executeStorageSql === undefined)
+        throw new Error('missing owned storage SQL');
+      await syncIdle(handle);
+      await seedRows(ctx, 'tasks', [
+        task('full-row', 'p1', 'full '.repeat(32768)),
+      ]);
+      await handle.api.subscribe({
+        id: 'tasks',
+        table: 'tasks',
+        scopes: { project_id: ['p1'] },
+      });
+      await handle.api.executeStorageSql('PRAGMA max_page_count = 1');
+      const failed = await handle.api.sync();
+      check(!failed.ok, 'page-limited import fails');
+      if (failed.ok) throw new Error('import unexpectedly succeeded');
+      checkEqual(
+        failed.errorCode,
+        'client.storage_full',
+        'local storage identity survives',
+      );
+      checkEqual(
+        failed.details?.sqliteCode,
+        13,
+        'the first SQLite code survives',
+      );
+      check(
+        !failed.message.includes('rollback') &&
+          !failed.message.includes('savepoint'),
+        'cleanup does not replace the first failure',
+      );
+      check(
+        failed.details?.rollbackFailure !== undefined,
+        'cleanup failure remains secondary',
+      );
+      const progress = await handle.api.progressSnapshot?.();
+      checkEqual(
+        progress?.errorCode,
+        'client.storage_full',
+        'failed progress names local storage',
+      );
+      await handle.api.executeStorageSql('PRAGMA max_page_count = 1073741823');
+      await syncIdle(handle);
+      checkEqual(
+        (await handle.api.readRows('tasks')).map((row) => row.rowId),
+        ['full-row'],
+        'the next import succeeds',
+      );
     },
   },
   {

@@ -3391,7 +3391,8 @@ export class SyncClient {
           this.#emitDiagnostics();
           return summary;
         },
-        (error: unknown) => {
+        (caught: unknown) => {
+          const error = classifySqliteFailure(caught).error;
           const completedAtMs = this.#now();
           const code = (error as { code?: unknown }).code;
           this.#progress.update({

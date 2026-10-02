@@ -433,3 +433,13 @@ A direct endpoint's JSON error retains the server's code and retry policy with
 the request path and HTTP status. A failed signed URL carries
 `sync.transport_failed` and invalidates the descriptor. The client aborts that
 transfer; the next pull obtains a fresh grant.
+
+
+## Local storage failures
+
+SQLite exhaustion raises non-retryable `client.storage_full` on browser, Bun,
+Node and native clients. `details.sqliteCode` retains the numeric SQLite code;
+`details.sqliteMessage` retains the first driver message. Cleanup failures
+appear only in `details.rollbackFailure`. The core reconciles the transaction
+before another import. Restore capacity before requesting sync again. The
+client keeps its replica and pending writes.

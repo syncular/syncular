@@ -151,6 +151,7 @@ export interface DiagnosticQueryFailure {
   readonly tables: readonly string[];
   readonly code:
     | 'client.storage_corrupt'
+    | 'client.storage_full'
     | 'client.storage_io'
     | 'client.query_failed';
   /** SQLite extended result code, when the driver exposed one. */

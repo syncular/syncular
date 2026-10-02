@@ -4389,6 +4389,15 @@ observation's query id and dependency tables. A snapshot read that fails with
 SQLite primary result code `SQLITE_CORRUPT` (11) or `SQLITE_NOTADB` (26)
 raises non-retryable `client.storage_corrupt`; primary code `SQLITE_IOERR`
 (10) raises non-retryable `client.storage_io`. Both carry fixed message text.
+Primary code `SQLITE_FULL` (13) raises non-retryable `client.storage_full`.
+Reads and writes, including segment/image imports and transaction commits,
+retain the first storage failure. Its error details carry `sqliteCode` and
+`sqliteMessage`; a failed rollback adds secondary `rollbackFailure` details
+(`sqliteCode`, `message`) and never replaces that failure. The transaction
+owner reconciles its state before another import or transaction. Nested
+scopes whose transaction SQLite automatically ended cannot commit, even when
+an inner caller catches the storage error. Failed-round progress names the
+local storage code. Storage failures never become segment fetch refusals.
 The core classifies by the numeric result code the SQLite driver exposes,
 never by message text, and records the extended result code in the owner's
 diagnostics entry (§7.6). Every other read failure keeps its existing host
@@ -4486,7 +4495,7 @@ The snapshot is one bounded observation containing:
   from a replica which did not open; and
 - `queryFailures`: one entry per owner id (§7.5) whose latest owned snapshot
   read failed, carrying the id, the owner's distinct tables in ascending
-  order, the stable `code` (`client.storage_corrupt`, `client.storage_io`, or
+  order, the stable `code` (`client.storage_corrupt`, `client.storage_io`, `client.storage_full`, or
   `client.query_failed` for any other read failure), the SQLite extended
   result code as `sqliteCode` when the driver exposed one, and `atMs`, the
   time of the first failure since that owner's last successful read. A
@@ -5401,6 +5410,7 @@ retryable, and never on the wire],
 `client.storage_corrupt` [§7.5 — a local snapshot read hit SQLite
 `SQLITE_CORRUPT` or `SQLITE_NOTADB`; non-retryable], `client.storage_io`
 [§7.5 — a local snapshot read hit SQLite `SQLITE_IOERR`; non-retryable],
+`client.storage_full` [§7.5 — local SQLite storage hit `SQLITE_FULL`; non-retryable],
 `client.query_failed` [§7.6 — the diagnostics code for any other failed
 owned snapshot read; never raised as an error],
 `client.worker_restart_required` [a browser worker module

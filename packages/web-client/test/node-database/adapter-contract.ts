@@ -137,6 +137,55 @@ export async function runAdapterContract(
   }
   assert(detached, 'image alias detached after use');
 
+  // A real SQLITE_FULL during image import auto-rolls back SQLite. Cleanup
+  // then reports no active transaction, which must remain secondary.
+  const maxPages = db.query('PRAGMA max_page_count')[0]?.max_page_count;
+  assert(typeof maxPages === 'number', 'max_page_count is available');
+  let full: unknown;
+  try {
+    await withImage.call(db, image, 'img', () => {
+      db.exec('PRAGMA max_page_count = 1');
+      return db.transaction(() => {
+        db.transaction(() =>
+          db.exec(
+            'INSERT INTO dest SELECT id, v || hex(zeroblob(65536)) FROM img.src',
+          ),
+        );
+      });
+    });
+  } catch (error) {
+    full = error;
+  }
+  assert(
+    full instanceof Error &&
+      'code' in full &&
+      full.code === 'client.storage_full',
+    'image import reports the original storage-full code',
+  );
+  assert(
+    'details' in full &&
+      typeof full.details === 'object' &&
+      full.details !== null,
+    'structured storage details survive',
+  );
+  assert(
+    'sqliteCode' in full.details && full.details.sqliteCode === 13,
+    'SQLITE_FULL numeric code survives',
+  );
+  db.exec(`PRAGMA max_page_count = ${maxPages}`);
+  await withImage.call(db, image, 'img', () =>
+    db.transaction(() => {
+      db.exec(
+        'INSERT INTO dest SELECT id, v || hex(zeroblob(65536)) FROM img.src',
+      );
+    }),
+  );
+  eq(
+    db.query('SELECT count(*) AS n FROM dest')[0]?.n,
+    4,
+    'a later image import succeeds after capacity returns',
+  );
+
   db.close();
 
   // File-backed adapters share Rust's WAL mode without weakening fsync.

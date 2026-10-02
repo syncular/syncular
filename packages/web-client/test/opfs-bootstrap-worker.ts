@@ -16,6 +16,7 @@ const scope = globalThis as typeof globalThis & {
 };
 let armed: CrashPoint | undefined;
 let database: ClientDatabase;
+let failCommit = false;
 let importing = false;
 let attachedImage = false;
 const databaseHandles = new WeakSet<object>();
@@ -56,6 +57,11 @@ scope.FileSystemSyncAccessHandle.prototype.write = function (buffer, options) {
 };
 
 scope.addEventListener('message', (event: MessageEvent) => {
+  if (event.data.t === 'page-limit') {
+    database.exec(`PRAGMA max_page_count = ${event.data.limit}`);
+    failCommit = event.data.failCommit === true;
+    scope.postMessage({ t: 'page-limit-set' });
+  }
   if (event.data.t === 'arm') {
     armed = event.data.point;
     scope.postMessage({ t: 'armed' });
@@ -134,6 +140,17 @@ startSyncWorker({
     const exec = database.exec.bind(database);
     let readBarrierUsed = false;
     database.exec = (sql, params) => {
+      if (failCommit && sql === 'COMMIT') {
+        failCommit = false;
+        exec('ROLLBACK');
+        throw Object.assign(
+          new Error('SQLITE_FULL: database or disk is full'),
+          {
+            name: 'SQLite3Error',
+            resultCode: 13,
+          },
+        );
+      }
       const imageInsert =
         sql.startsWith('INSERT INTO "catalogue"') && sql.includes('SELECT');
       if (imageInsert) importing = true;

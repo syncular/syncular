@@ -1,3 +1,4 @@
+import { rollbackAfterError } from './storage-errors';
 /**
  * SQLite-image segment generation (SPEC.md §5.3): a complete SQLite
  * database file carrying one table's whole effective-scope snapshot at
@@ -124,7 +125,8 @@ export async function writeSqliteImage(
 
     db.exec('COMMIT');
   } catch (error) {
-    db.exec('ROLLBACK');
-    throw error;
+    rollbackAfterError(() => {
+      db.exec('ROLLBACK');
+    }, error);
   }
 }

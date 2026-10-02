@@ -5,6 +5,7 @@
  * and outputs stay JSON-able + bytes; row values convert at this edge.
  */
 
+import { ClientSyncError } from '@syncular/client';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -593,7 +594,15 @@ class TsClientInstance implements ClientInstance {
       return first;
     } catch (error) {
       const { code, message } = errorCodeOf(error);
-      return { ok: false, errorCode: code, message, ...realtimeRefusal(error) };
+      return {
+        ok: false,
+        errorCode: code,
+        message,
+        ...(error instanceof ClientSyncError && error.details !== undefined
+          ? { details: error.details }
+          : {}),
+        ...realtimeRefusal(error),
+      };
     }
   }
 
@@ -606,7 +615,15 @@ class TsClientInstance implements ClientInstance {
       return result;
     } catch (error) {
       const { code, message } = errorCodeOf(error);
-      return { ok: false, errorCode: code, message, ...realtimeRefusal(error) };
+      return {
+        ok: false,
+        errorCode: code,
+        message,
+        ...(error instanceof ClientSyncError && error.details !== undefined
+          ? { details: error.details }
+          : {}),
+        ...realtimeRefusal(error),
+      };
     }
   }
 

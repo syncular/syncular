@@ -1022,3 +1022,55 @@ for (const backend of ['sqlite', 'postgres/pglite', 'd1/double']) {
     }
   });
 }
+
+test('SQLite schema import preserves SQLITE_FULL through failed rollback and admits the next write', async () => {
+  const db = new BunSqliteDatabase();
+  const storage = new SqliteServerStorage(db);
+  const originalExec = db.exec.bind(db);
+  const full = Object.assign(new Error('database or disk is full'), {
+    name: 'SQLiteError',
+    errno: 13,
+    code: 'SQLITE_FULL',
+  });
+  let injected = false;
+  db.exec = (sql) => {
+    if (sql === 'COMMIT' && !injected) {
+      injected = true;
+      originalExec('ROLLBACK');
+      throw full;
+    }
+    originalExec(sql);
+  };
+  try {
+    await expect(
+      storage.ensureSchema(compileSchema(CONTRACT_SCHEMA)),
+    ).rejects.toBe(full);
+    expect(full).toHaveProperty('rollbackError');
+    expect(full.errno).toBe(13);
+    await storage.ensureSchema(compileSchema(CONTRACT_SCHEMA));
+    const tx = await storage.begin('after-capacity-return');
+    await tx.commit();
+  } finally {
+    db.close();
+  }
+});
+
+test('PGlite cleanup retains a commit failure and releases the transaction queue', async () => {
+  const full = Object.assign(new Error('disk full'), { code: '53100' });
+  const rollback = new Error('rollback failed');
+  let capacityRestored = false;
+  const executor = pgliteExecutor({
+    async query<Row>() {
+      return { rows: [] as Row[] };
+    },
+    async exec(sql: string) {
+      if (!capacityRestored && sql === 'COMMIT') throw full;
+      if (!capacityRestored && sql === 'ROLLBACK') throw rollback;
+    },
+    async close() {},
+  });
+  await expect(executor.transaction(async () => 'imported')).rejects.toBe(full);
+  expect(full).toHaveProperty('rollbackError', rollback);
+  capacityRestored = true;
+  expect(await executor.transaction(async () => 'imported')).toBe('imported');
+});

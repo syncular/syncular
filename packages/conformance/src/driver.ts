@@ -579,6 +579,7 @@ export type ClientSyncResult =
       readonly ok: false;
       readonly errorCode: string;
       readonly message: string;
+      readonly details?: Readonly<Record<string, unknown>>;
       /** SPEC §8.8: present on a `sync.realtime_unavailable` refusal. */
       readonly realtimeState?: string;
       readonly realtimeReasonCode?: string;
@@ -796,6 +797,7 @@ export interface DriverQueryFailure {
   readonly tables: readonly string[];
   readonly code:
     | 'client.storage_corrupt'
+    | 'client.storage_full'
     | 'client.storage_io'
     | 'client.query_failed';
   readonly sqliteCode?: number;

@@ -1346,6 +1346,7 @@ fn handle(
                     if let syncular_client::SyncOutcome::Failed {
                         error_code,
                         message,
+                        ..
                     } = outcome
                     {
                         return Err((error_code, message));

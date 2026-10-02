@@ -1,8 +1,23 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.30.6** (`v0.30.6`). All artifacts use Apache-2.0, except
+current release is **0.30.7** (`v0.30.7`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.30.7 release notes
+
+SQLite transaction cleanup retains the first storage failure when rollback also
+fails. Browser, Bun and Node clients reconcile nested transaction state; native
+imports preserve numeric SQLite evidence through their internal storage paths.
+`SQLITE_FULL` reports non-retryable `client.storage_full` with
+`details.sqliteCode` and `details.sqliteMessage`. A rollback failure remains in
+`details.rollbackFailure`. Failed-round diagnostics use the local storage code.
+SQLite server and PGlite cleanup also preserve the original exception.
+
+Page-limited image imports and injected commit failures recover on the same
+connection after capacity returns. The shared TS/Rust conformance scenario pins
+storage-full import failure, numeric evidence, progress and recovery. SSP2 stays
+at wire version 3; every package and crate ships together.
 
 ## 0.30.6 release notes
 

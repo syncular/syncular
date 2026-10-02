@@ -150,3 +150,22 @@ export function isD1ConstraintError(error: unknown): boolean {
     )
   );
 }
+
+/** Preserve the operation failure when transaction cleanup also fails. */
+export function retainRollbackFailure(
+  error: unknown,
+  rollbackError: unknown,
+): void {
+  if (error instanceof Error && !('rollbackError' in error)) {
+    Object.defineProperty(error, 'rollbackError', { value: rollbackError });
+  }
+}
+
+export function rollbackAfterError(run: () => void, error: unknown): never {
+  try {
+    run();
+  } catch (rollbackError) {
+    retainRollbackFailure(error, rollbackError);
+  }
+  throw error;
+}

@@ -1,3 +1,4 @@
+import { retainRollbackFailure } from './storage-errors';
 /**
  * Push apply (SPEC.md §6) with §3.4 write-path authorization.
  *
@@ -1661,14 +1662,17 @@ export async function processPushOperationsWithTrace(
         // a no-op when the finalization already committed.
         try {
           await tx.rollback();
-        } catch {
-          // Surface the finalization failure; a rollback failure would
-          // otherwise mask it.
+        } catch (rollbackError) {
+          retainRollbackFailure(finalizationError, rollbackError);
         }
         throw finalizationError;
       }
     }
-    await tx.rollback();
+    try {
+      await tx.rollback();
+    } catch (rollbackError) {
+      retainRollbackFailure(error, rollbackError);
+    }
     throw error;
   }
 }

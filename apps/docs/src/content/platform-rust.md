@@ -169,7 +169,7 @@ Generated snapshots pass the descriptor id and table dependencies as the read
 owner. A failed read appears in `diagnostics_snapshot().query_failures` until
 the same query reads successfully. The entry contains no SQL, parameters, rows,
 or SQLite error prose. SQLite corruption and I/O failures use
-`client.storage_corrupt` and `client.storage_io`; every other read failure uses
+`client.storage_corrupt`, `client.storage_io` and `client.storage_full`; every other read failure uses
 `client.query_failed` in diagnostics.
 
 The generated `select` function exposes the exact compiler-checked SQL and
@@ -316,3 +316,13 @@ The JSON command surface exposes `progressSnapshot`. FFI hosts receive coalesced
 `{ "type": "progress", "progress": { ... } }` events through `poll_event`, including
 while a sync command is running. Tauri forwards the same event directly to its
 webview. Camel-case JSON fields match the JavaScript progress API.
+
+
+## Storage failures during import
+
+A full local database reports `client.storage_full` with SQLite result code 13.
+The failed sync outcome carries `details.sqliteCode` and `details.sqliteMessage`.
+A failed rollback adds `details.rollbackFailure` with its own code and message.
+The core keeps the first storage failure as the reported error and releases its
+transaction state before the next import. After the host restores capacity, an
+explicit sync can import the pending rows on the same connection.

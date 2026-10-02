@@ -1,3 +1,5 @@
+import { classifySqliteFailure } from './errors';
+
 /**
  * Storage abstraction: the client core runs on any SQLite that
  * implements this minimal synchronous surface. Tests use bun:sqlite
@@ -75,29 +77,43 @@ export function assertImageAlias(alias: string): void {
  * `run` executes a parameterless statement.
  */
 export function runTransaction<T>(
-  depthHolder: { depth: number },
+  depthHolder: { depth: number; aborted?: { error: unknown } },
   run: (sql: string) => void,
   fn: () => T,
 ): T {
   const depth = depthHolder.depth;
+  if (depth === 0) delete depthHolder.aborted;
+  else if (depthHolder.aborted) throw depthHolder.aborted.error;
   const savepoint = `syncular_sp_${depth}`;
   if (depth === 0) run('BEGIN');
   else run(`SAVEPOINT ${savepoint}`);
   depthHolder.depth = depth + 1;
   try {
     const result = fn();
+    const aborted = depthHolder.aborted as { error: unknown } | undefined;
+    if (aborted) throw aborted.error;
     depthHolder.depth = depth;
     if (depth === 0) run('COMMIT');
     else run(`RELEASE ${savepoint}`);
     return result;
-  } catch (error) {
+  } catch (caught) {
+    const aborted = depthHolder.aborted as { error: unknown } | undefined;
+    const error = aborted?.error ?? caught;
     depthHolder.depth = depth;
-    if (depth === 0) {
-      run('ROLLBACK');
-    } else {
-      run(`ROLLBACK TO ${savepoint}`);
-      run(`RELEASE ${savepoint}`);
+    try {
+      if (depth === 0) run('ROLLBACK');
+      else {
+        run(`ROLLBACK TO ${savepoint}`);
+        run(`RELEASE ${savepoint}`);
+      }
+    } catch (rollbackError) {
+      // SQLite can end the whole transaction after SQLITE_FULL or SQLITE_IOERR.
+      // Poison remaining nested scopes until the outer owner unwinds.
+      depthHolder.aborted = { error };
+      if (error instanceof Error && !('rollbackError' in error)) {
+        Object.defineProperty(error, 'rollbackError', { value: rollbackError });
+      }
     }
-    throw error;
+    throw classifySqliteFailure(error).error;
   }
 }

@@ -4308,6 +4308,36 @@ mod observation_tests {
     }
 
     #[test]
+    fn sqlite_full_image_import_retains_the_first_code_and_recovers() {
+        let (mut client, image, table) = unique_import_fixture(1);
+        image
+            .execute("UPDATE tasks SET title = ?1", ["full ".repeat(32768)])
+            .unwrap();
+        client
+            .conn
+            .execute_batch("PRAGMA max_page_count = 1")
+            .unwrap();
+        let effective = [("project_id".into(), vec!["p1".into()])];
+        assert!(client
+            .apply_sqlite_image(&image, &table, true, &effective, 1, 7, "digest")
+            .is_err());
+        let failure = client.storage_failure.borrow().clone().unwrap();
+        assert_eq!(failure.code, Some("client.storage_full"));
+        assert_eq!(failure.sqlite_code, Some(13));
+        assert!(!failure.message.contains("rollback"));
+        assert!(client.conn.is_autocommit());
+        client
+            .conn
+            .execute_batch("PRAGMA max_page_count = 1073741823")
+            .unwrap();
+        assert!(matches!(
+            client.apply_sqlite_image(&image, &table, true, &effective, 1, 7, "digest"),
+            Ok(1)
+        ));
+        assert!(client.conn.is_autocommit());
+    }
+
+    #[test]
     fn large_unique_import_copies_no_unrelated_tables() {
         let (mut client, image, table) = unique_import_fixture(10240);
         let pending = client.pending_commit_ids();
@@ -4883,6 +4913,8 @@ pub struct SyncClient {
     /// diverged from the visible overlay since the last rebuild. Lets a
     /// no-op sync round skip the full base→visible copy.
     overlay_dirty: Cell<bool>,
+    // First SQLite failure of the current operation, before savepoint cleanup.
+    storage_failure: RefCell<Option<QueryReadFailure>>,
     /// Test-only structural performance signal: response processing must not
     /// turn a batch of acknowledgements into one full overlay rebuild each.
     #[cfg(test)]
@@ -5277,7 +5309,7 @@ fn snapshot_connection(
     coverage: &[WindowCoverage],
 ) -> Result<QuerySnapshot, QueryReadFailure> {
     conn.execute_batch("SAVEPOINT syncular_snapshot_read")?;
-    let result = (|| {
+    let result: Result<QuerySnapshot, QueryReadFailure> = (|| {
         let revision = conn
             .query_row(
                 "SELECT value FROM _syncular_meta WHERE key = ?1",
@@ -5320,10 +5352,12 @@ fn snapshot_connection(
             conn.execute_batch("RELEASE syncular_snapshot_read")?;
             Ok(snapshot)
         }
-        Err(error) => {
-            let _ = conn.execute_batch(
-                "ROLLBACK TO syncular_snapshot_read; RELEASE syncular_snapshot_read",
-            );
+        Err(mut error) => {
+            if let Err(rollback) = conn
+                .execute_batch("ROLLBACK TO syncular_snapshot_read; RELEASE syncular_snapshot_read")
+            {
+                error.rollback_failure = Some(Box::new(QueryReadFailure::from(rollback)));
+            }
             Err(error)
         }
     }
@@ -5506,6 +5540,7 @@ impl SyncClient {
             previous_version,
             insert_sql: RefCell::new(HashMap::new()),
             overlay_dirty: Cell::new(false),
+            storage_failure: RefCell::new(None),
             #[cfg(test)]
             overlay_rebuild_count: Cell::new(0),
             #[cfg(test)]
@@ -6452,16 +6487,39 @@ impl SyncClient {
         }
     }
 
+    fn sqlite_failure(
+        storage_failure: &RefCell<Option<QueryReadFailure>>,
+        error: rusqlite::Error,
+    ) -> String {
+        let message = error.to_string();
+        let failure = QueryReadFailure::from(error);
+        let code = failure.code;
+        if code.is_some() && storage_failure.borrow().is_none() {
+            *storage_failure.borrow_mut() = Some(failure);
+        }
+        match code {
+            Some(code) => format!("{code}: {message}"),
+            None => message,
+        }
+    }
+
     fn begin_observation(&self, name: &str) -> Result<(), String> {
         self.conn
             .execute_batch(&format!("SAVEPOINT {name}"))
-            .map_err(|error| error.to_string())
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
     }
 
     fn rollback_observation(&self, name: &str) {
-        let _ = self
+        if let Err(error) = self
             .conn
-            .execute_batch(&format!("ROLLBACK TO {name}; RELEASE {name}"));
+            .execute_batch(&format!("ROLLBACK TO {name}; RELEASE {name}"))
+        {
+            if let Some(failure) = self.storage_failure.borrow_mut().as_mut() {
+                if failure.rollback_failure.is_none() {
+                    failure.rollback_failure = Some(Box::new(QueryReadFailure::from(error)));
+                }
+            }
+        }
     }
 
     fn finish_observation(&mut self, name: &str, batch: ChangeAccumulator) -> Result<(), String> {
@@ -6470,7 +6528,7 @@ impl SyncClient {
         if !batch.touched() {
             self.conn
                 .execute_batch(&format!("RELEASE {name}"))
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
             return Ok(());
         }
         let revision = self
@@ -6482,7 +6540,7 @@ impl SyncClient {
                 "INSERT OR REPLACE INTO _syncular_meta(key, value) VALUES (?1, ?2)",
                 rusqlite::params![LOCAL_REVISION_KEY, revision.to_string()],
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         let status = batch.status.then(|| self.status_snapshot());
         let event = ClientChangeBatch {
             revision: revision.to_string(),
@@ -6510,7 +6568,7 @@ impl SyncClient {
         };
         self.conn
             .execute_batch(&format!("RELEASE {name}"))
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         let mut diagnostic_tables = event
             .tables
             .iter()
@@ -6900,10 +6958,10 @@ impl SyncClient {
                 .prepare(
                     "SELECT name FROM sqlite_master WHERE type = 'table' AND sql LIKE 'CREATE VIRTUAL TABLE%'",
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
             let rows = stmt
                 .query_map([], |row| row.get::<_, String>(0))
-                .map_err(|e| e.to_string())?;
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
             rows.filter_map(Result::ok)
                 .filter(|name| is_synced_table_name(name))
                 .collect()
@@ -6914,19 +6972,19 @@ impl SyncClient {
                     "DROP TABLE IF EXISTS {}",
                     quote_ident(&format!("_syncular_fts_{name}"))
                 ))
-                .map_err(|e| e.to_string())?;
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
             self.conn
                 .execute(&format!("DROP TABLE IF EXISTS {}", quote_ident(&name)), [])
-                .map_err(|e| e.to_string())?;
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         }
         let existing: Vec<String> = {
             let mut stmt = self
                 .conn
                 .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
-                .map_err(|e| e.to_string())?;
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
             let rows = stmt
                 .query_map([], |row| row.get::<_, String>(0))
-                .map_err(|e| e.to_string())?;
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
             rows.filter_map(Result::ok)
                 .filter(|name| is_synced_table_name(name))
                 .collect()
@@ -6941,7 +6999,7 @@ impl SyncClient {
         for name in existing {
             self.conn
                 .execute(&format!("DROP TABLE IF EXISTS {}", quote_ident(&name)), [])
-                .map_err(|e| e.to_string())?;
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         }
         // Recreate the synced tables from the NEW schema.
         self.create_synced_tables()?;
@@ -7054,7 +7112,9 @@ impl SyncClient {
                     cols.join(", "),
                     quote_ident(&table.primary_key)
                 );
-                self.conn.execute(&sql, []).map_err(|e| e.to_string())?;
+                self.conn
+                    .execute(&sql, [])
+                    .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
                 // Local secondary indexes (CREATE INDEX subset). Created on
                 // both halves so mirror reads hit an index on either. Runs on
                 // both the initial create and the §7.4.3 reset recreate path.
@@ -7072,7 +7132,7 @@ impl SyncClient {
                     );
                     self.conn
                         .execute(&index_sql, [])
-                        .map_err(|e| e.to_string())?;
+                        .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
                 }
             }
         }
@@ -7094,7 +7154,7 @@ impl SyncClient {
                 rusqlite::params![index.name],
                 |row| row.get(0),
             )
-            .map_err(|e| e.to_string())?;
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         Ok(count > 0)
     }
 
@@ -7108,7 +7168,7 @@ impl SyncClient {
                     ),
                     [],
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         }
         Ok(())
     }
@@ -7154,7 +7214,9 @@ impl SyncClient {
              CREATE TRIGGER {ad} AFTER DELETE ON {source} BEGIN {delete_old}; END;
              CREATE TRIGGER {au} AFTER UPDATE ON {source} BEGIN {delete_old}; {delete_new}; {insert_new}; END;",
         );
-        self.conn.execute_batch(&sql).map_err(|e| e.to_string())
+        self.conn
+            .execute_batch(&sql)
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
     }
 
     fn rebuild_fts_projection(
@@ -7180,7 +7242,9 @@ impl SyncClient {
             columns = indexed_columns.join(", "),
             source = visible_table(&table.name),
         );
-        self.conn.execute_batch(&sql).map_err(|e| e.to_string())
+        self.conn
+            .execute_batch(&sql)
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
     }
 
     fn create_fts_projection(
@@ -7217,8 +7281,8 @@ impl SyncClient {
                     [format!("_syncular_fts_{}", index.name)],
                     |row| row.get(0),
                 )
-                .map_err(|e| e.to_string())?;
-            self.conn.execute_batch(&format!("CREATE TABLE IF NOT EXISTS {mapping}(id INTEGER PRIMARY KEY, source_id TEXT NOT NULL UNIQUE)")).map_err(|e| e.to_string())?;
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+            self.conn.execute_batch(&format!("CREATE TABLE IF NOT EXISTS {mapping}(id INTEGER PRIMARY KEY, source_id TEXT NOT NULL UNIQUE)")).map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
             if !mapped && existed {
                 self.conn
                     .execute_batch(&format!(
@@ -7226,7 +7290,7 @@ impl SyncClient {
                         quote_ident(FTS_SOURCE_ID_COLUMN),
                         quote_ident(&index.name)
                     ))
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
             }
             self.create_fts_triggers(table, index)?;
             if !existed {
@@ -7261,7 +7325,7 @@ impl SyncClient {
         self.conn.execute(
             "INSERT OR REPLACE INTO _syncular_subscriptions (id, tbl, state_json) VALUES (?1, ?2, ?3)",
             rusqlite::params![sub.id, sub.table, state.to_string()],
-        ).map(|_| ()).map_err(|error| error.to_string())
+        ).map(|_| ()).map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
     }
 
     fn persist_outbox_insert(&self, commit: &OutboxCommit) -> Result<(), String> {
@@ -7283,7 +7347,7 @@ impl SyncClient {
                 "INSERT OR REPLACE INTO _syncular_outbox (commit_id, ops_json) VALUES (?1, ?2)",
                 rusqlite::params![commit.client_commit_id, Value::Array(ops).to_string()],
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         for operation in &commit.ops {
             let Some(values) = &operation.values else {
                 continue;
@@ -7311,7 +7375,7 @@ impl SyncClient {
                          SELECT ?1, ?2 WHERE EXISTS (SELECT 1 FROM _syncular_blobs WHERE blob_id = ?2)",
                         rusqlite::params![commit.client_commit_id, blob_id],
                     )
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
             }
         }
         Ok(())
@@ -7323,14 +7387,14 @@ impl SyncClient {
                 "DELETE FROM _syncular_blob_commit_refs WHERE commit_id = ?1",
                 rusqlite::params![client_commit_id],
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         self.conn
             .execute(
                 "DELETE FROM _syncular_outbox WHERE commit_id = ?1",
                 rusqlite::params![client_commit_id],
             )
             .map(|_| ())
-            .map_err(|error| error.to_string())
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
     }
 
     fn outcome_status_name(status: CommitOutcomeStatus) -> &'static str {
@@ -7402,7 +7466,7 @@ impl SyncClient {
                 ],
             )
             .map(|_| ())
-            .map_err(|error| error.to_string())
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
     }
 
     fn outcome_from_row(row: StoredCommitOutcomeRow) -> Result<CommitOutcome, String> {
@@ -7460,7 +7524,7 @@ impl SyncClient {
                 },
             )
             .optional()
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         row.map(Self::outcome_from_row).transpose()
     }
 
@@ -7480,7 +7544,10 @@ impl SyncClient {
         if let Some(limit) = query.limit {
             sql.push_str(&format!(" LIMIT {limit}"));
         }
-        let mut stmt = self.conn.prepare(&sql).map_err(|error| error.to_string())?;
+        let mut stmt = self
+            .conn
+            .prepare(&sql)
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         let rows = stmt
             .query_map([], |row| {
                 Ok(StoredCommitOutcomeRow {
@@ -7495,12 +7562,12 @@ impl SyncClient {
                     replacement_client_commit_id: row.get(8)?,
                 })
             })
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         let mut outcomes = Vec::new();
         for row in rows {
-            outcomes.push(Self::outcome_from_row(
-                row.map_err(|error| error.to_string())?,
-            )?);
+            outcomes.push(Self::outcome_from_row(row.map_err(|error| {
+                Self::sqlite_failure(&self.storage_failure, error)
+            })?)?);
         }
         Ok(outcomes)
     }
@@ -7517,7 +7584,8 @@ impl SyncClient {
                 [],
                 |row| row.get::<_, i64>(0),
             )
-            .map_err(|error| error.to_string())? as usize;
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?
+            as usize;
         let excess = count.saturating_sub(max_entries);
         if excess == 0 {
             return Ok(());
@@ -7529,13 +7597,13 @@ impl SyncClient {
                   WHERE status IN ('applied', 'cached') OR resolution != 'active'
                   ORDER BY seq ASC LIMIT ?1",
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         let rows = stmt
             .query_map(rusqlite::params![excess as i64], |row| row.get::<_, i64>(0))
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         let sequences = rows
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         drop(stmt);
         for sequence in sequences {
             self.conn
@@ -7543,7 +7611,7 @@ impl SyncClient {
                     "DELETE FROM _syncular_commit_outcomes WHERE seq = ?1",
                     rusqlite::params![sequence],
                 )
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         }
         Ok(())
     }
@@ -7775,7 +7843,7 @@ impl SyncClient {
                 rusqlite::params![base_key, unit, sub_id],
             )
             .map(|_| ())
-            .map_err(|error| error.to_string())
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
     }
 
     fn delete_window_unit(&self, base_key: &str, unit: &str) -> Result<(), String> {
@@ -7785,7 +7853,7 @@ impl SyncClient {
                 rusqlite::params![base_key, unit],
             )
             .map(|_| ())
-            .map_err(|error| error.to_string())
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
     }
 
     /// §4.8 E1–E4: evict one departing unit, fused with unsubscription.
@@ -7815,7 +7883,7 @@ impl SyncClient {
                 "DELETE FROM _syncular_subscriptions WHERE id = ?1",
                 [sub_id],
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         self.subs.retain(|sub| sub.id != sub_id);
         if deferred {
             self.save_pending_evict(sub_id, &base.table, &effective)?;
@@ -7879,12 +7947,12 @@ impl SyncClient {
                 .prepare_cached(&format!(
                     "SELECT {pk} FROM {source} WHERE {predicate} LIMIT 1024"
                 ))
-                .map_err(|e| e.to_string())?;
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
             ids = stmt
                 .query_map(rusqlite::params_from_iter(&params), |row| row.get(0))
-                .map_err(|e| e.to_string())?
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?
                 .collect::<Result<_, _>>()
-                .map_err(|e| e.to_string())?;
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
             if !ids.is_empty() {
                 break;
             }
@@ -7897,7 +7965,7 @@ impl SyncClient {
                         &format!("DELETE FROM {source} WHERE {pk} IN ({holes})"),
                         rusqlite::params_from_iter(&ids),
                     )
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
             }
         }
         let mut remaining = false;
@@ -7910,7 +7978,7 @@ impl SyncClient {
                     rusqlite::params_from_iter(&params),
                     |row| row.get::<_, bool>(0),
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
             deferred |= self
                 .conn
                 .query_row(
@@ -7918,7 +7986,7 @@ impl SyncClient {
                     rusqlite::params_from_iter(&params[..scope_params]),
                     |row| row.get::<_, bool>(0),
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         }
         Ok((remaining, deferred))
     }
@@ -7990,7 +8058,7 @@ impl SyncClient {
         self.conn.execute(
             "INSERT OR REPLACE INTO _syncular_window_pending_evict(sub_id, tbl, effective_scopes) VALUES (?1, ?2, ?3)",
             rusqlite::params![sub_id, table, scope_map_to_json(effective).to_string()],
-        ).map(|_| ()).map_err(|error| error.to_string())
+        ).map(|_| ()).map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
     }
 
     fn delete_pending_evict(&self, sub_id: &str) -> Result<(), String> {
@@ -8000,14 +8068,14 @@ impl SyncClient {
                 rusqlite::params![sub_id],
             )
             .map(|_| ())
-            .map_err(|error| error.to_string())
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
     }
 
     fn load_pending_evictions(&self) -> Result<Vec<PendingEvict>, String> {
         let mut stmt = self
             .conn
             .prepare("SELECT sub_id, tbl, effective_scopes FROM _syncular_window_pending_evict")
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         let rows = stmt
             .query_map([], |row| {
                 Ok((
@@ -8016,9 +8084,10 @@ impl SyncClient {
                     row.get::<_, String>(2)?,
                 ))
             })
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         rows.map(|row| {
-            let (sub_id, table, json) = row.map_err(|error| error.to_string())?;
+            let (sub_id, table, json) =
+                row.map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
             let value: Value = serde_json::from_str(&json)
                 .map_err(|_| "sync.local_corrupt: invalid pending eviction scopes".to_owned())?;
             let effective = json_to_scope_map(&value)
@@ -8474,7 +8543,7 @@ impl SyncClient {
                         input.client_commit_id
                     ],
                 )
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
             let resolved = self
                 .commit_outcome(&current.client_commit_id)?
                 .ok_or_else(|| "sync.outcome_not_found: outcome disappeared".to_owned())?;
@@ -8624,18 +8693,28 @@ impl SyncClient {
             visible_table(table),
             quote_ident(&schema_table.primary_key)
         );
-        let mut stmt = self.conn.prepare(&sql).map_err(|e| e.to_string())?;
-        let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+        let mut stmt = self
+            .conn
+            .prepare(&sql)
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+        let mut rows = stmt
+            .query([])
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         let mut out = Vec::new();
-        while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+        while let Some(row) = rows
+            .next()
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?
+        {
             let mut values = Map::new();
             for (i, column) in schema_table.columns.iter().enumerate() {
-                let value = row.get_ref(i).map_err(|e| e.to_string())?;
+                let value = row
+                    .get_ref(i)
+                    .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
                 values.insert(column.name.clone(), sql_ref_to_json(column, value));
             }
             let version: i64 = row
                 .get(schema_table.columns.len())
-                .map_err(|e| e.to_string())?;
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
             let row_id = match values.get(&schema_table.primary_key) {
                 Some(Value::String(s)) => s.clone(),
                 Some(Value::Number(n)) => n.to_string(),
@@ -8694,7 +8773,7 @@ impl SyncClient {
         let bytes: Option<Vec<u8>> = self
             .conn
             .prepare_cached(&sql)
-            .map_err(|error| error.to_string())?
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?
             .query_row(rusqlite::params![row_id], |row| {
                 row.get::<_, Option<Vec<u8>>>(0)
             })
@@ -9029,10 +9108,32 @@ impl SyncClient {
     }
 
     pub fn sync(&mut self, transport: &mut dyn Transport) -> SyncOutcome {
+        self.storage_failure.borrow_mut().take();
         self.progress.start();
         self.round_retry_delay_ms = None;
         let started_at_ms = self.clock_now_ms();
-        let outcome = self.sync_inner(transport);
+        let mut outcome = self.sync_inner(transport);
+        if let SyncOutcome::Failed {
+            error_code,
+            message,
+            details,
+        } = &mut outcome
+        {
+            if let Some(failure) = self.storage_failure.borrow().as_ref() {
+                let code = failure
+                    .code
+                    .expect("retained storage failures are classified");
+                *error_code = code.to_owned();
+                *message = match code {
+                    "client.storage_full" => "local SQLite storage is full",
+                    "client.storage_io" => "local SQLite storage I/O failed",
+                    "client.storage_corrupt" => "local SQLite storage is corrupt",
+                    _ => unreachable!("unrecognized classified storage failure"),
+                }
+                .to_owned();
+                *details = failure.details();
+            }
+        }
         let retry_delay_ms = self.round_retry_delay_ms;
         self.progress.update(|p| match &outcome {
             SyncOutcome::Ok(report) if report.failed.is_empty() => {
@@ -9116,6 +9217,7 @@ impl SyncClient {
                     self.schedule_background_retry();
                 }
                 return SyncOutcome::Failed {
+                    details: None,
                     error_code: code,
                     message,
                 };
@@ -9123,6 +9225,7 @@ impl SyncClient {
         }
         if let Err(message) = self.drain_pending_evictions() {
             return SyncOutcome::Failed {
+                details: None,
                 error_code: "storage.failed".into(),
                 message,
             };
@@ -9132,6 +9235,7 @@ impl SyncClient {
         // commits before the request is built.
         if let Err(message) = self.drop_unencodable_outbox() {
             return SyncOutcome::Failed {
+                details: None,
                 error_code: "storage.failed".into(),
                 message,
             };
@@ -9181,6 +9285,7 @@ impl SyncClient {
                     }
                 }
                 return SyncOutcome::Failed {
+                    details: None,
                     error_code: code,
                     message,
                 };
@@ -9194,6 +9299,7 @@ impl SyncClient {
                 // §1.2 rule 1 / §1.4 rule 5: truncated or malformed
                 // responses abort without persisting anything.
                 return SyncOutcome::Failed {
+                    details: None,
                     error_code: error.code.as_str().to_owned(),
                     message: error.detail,
                 };
@@ -9203,6 +9309,7 @@ impl SyncClient {
         drop(decode_phase);
         if response.msg_kind != MsgKind::Response {
             return SyncOutcome::Failed {
+                details: None,
                 error_code: "sync.invalid_request".to_owned(),
                 message: "expected a response message".to_owned(),
             };
@@ -9250,8 +9357,10 @@ impl SyncClient {
                 SyncOutcome::Failed {
                     error_code,
                     message,
+                    details,
                 } => {
                     return SyncOutcome::Failed {
+                        details,
                         error_code,
                         message,
                     };
@@ -9302,6 +9411,7 @@ impl SyncClient {
             }
         }
         SyncOutcome::Failed {
+            details: None,
             error_code: "sync.invalid_request".into(),
             message: "sync did not reach idle within the round budget".into(),
         }
@@ -9341,6 +9451,7 @@ impl SyncClient {
                             Ok(value) => value,
                             Err(message) => {
                                 return SyncOutcome::Failed {
+                                    details: None,
                                     error_code: "sync.invalid_request".to_owned(),
                                     message,
                                 };
@@ -9365,6 +9476,7 @@ impl SyncClient {
         let mut frames = response.frames.into_iter().peekable();
         if response.wire_version < 2 {
             return SyncOutcome::Failed {
+                details: None,
                 error_code: "client.invalid_host_response".to_owned(),
                 message: "server response does not carry wire version 2 log-epoch state".to_owned(),
             };
@@ -9378,12 +9490,14 @@ impl SyncClient {
             }) => {
                 let Some(log_epoch) = log_epoch else {
                     return SyncOutcome::Failed {
+                        details: None,
                         error_code: "client.invalid_host_response".to_owned(),
                         message: "response header omits logEpoch".to_owned(),
                     };
                 };
                 let Some(reset_required) = reset_required else {
                     return SyncOutcome::Failed {
+                        details: None,
                         error_code: "client.invalid_host_response".to_owned(),
                         message: "response header omits resetRequired".to_owned(),
                     };
@@ -9402,6 +9516,7 @@ impl SyncClient {
                 if reset_required {
                     if frames.next().is_some() {
                         return SyncOutcome::Failed {
+                            details: None,
                             error_code: "client.invalid_host_response".to_owned(),
                             message: "log-epoch reset response contains body frames".to_owned(),
                         };
@@ -9413,6 +9528,7 @@ impl SyncClient {
                         }
                         Err(message) => {
                             return SyncOutcome::Failed {
+                                details: None,
                                 error_code: "sync.local_corrupt".to_owned(),
                                 message,
                             };
@@ -9421,6 +9537,7 @@ impl SyncClient {
                 }
                 if self.get_meta(LOG_EPOCH_KEY).as_deref() != Some(log_epoch.as_str()) {
                     return SyncOutcome::Failed {
+                        details: None,
                         error_code: "client.invalid_host_response".to_owned(),
                         message: "server changed logEpoch without requiring a reset".to_owned(),
                     };
@@ -9428,6 +9545,7 @@ impl SyncClient {
             }
             _ => {
                 return SyncOutcome::Failed {
+                    details: None,
                     error_code: "sync.invalid_request".to_owned(),
                     message: "response does not start with RESP_HEADER".to_owned(),
                 };
@@ -9552,6 +9670,7 @@ impl SyncClient {
         }
         if let Some((error_code, message)) = failure {
             return SyncOutcome::Failed {
+                details: None,
                 error_code,
                 message,
             };
@@ -9560,6 +9679,7 @@ impl SyncClient {
         // a shrunk window unit — retry any deferred evictions now.
         if let Err(message) = self.drain_pending_evictions() {
             return SyncOutcome::Failed {
+                details: None,
                 error_code: "storage.failed".into(),
                 message,
             };
@@ -10678,8 +10798,14 @@ impl SyncClient {
                 .next()
                 .map_err(|_| invalid("image data table unreadable".to_owned()))?
             {
-                if row.get::<_, i64>(5).map_err(|e| invalid(e.to_string()))? > 0 {
-                    primary_keys.push(row.get(1).map_err(|e| invalid(e.to_string()))?);
+                if row
+                    .get::<_, i64>(5)
+                    .map_err(|error| invalid(Self::sqlite_failure(&self.storage_failure, error)))?
+                    > 0
+                {
+                    primary_keys.push(row.get(1).map_err(|error| {
+                        invalid(Self::sqlite_failure(&self.storage_failure, error))
+                    })?);
                 }
                 names.push(
                     row.get::<_, String>(1)
@@ -10707,7 +10833,7 @@ impl SyncClient {
                 [],
                 |row| row.get(0),
             )
-            .map_err(|e| invalid(e.to_string()))?;
+            .map_err(|error| invalid(Self::sqlite_failure(&self.storage_failure, error)))?;
         if actual_count != row_count {
             return Err(invalid("image row count does not match descriptor".into()));
         }
@@ -10724,8 +10850,10 @@ impl SyncClient {
                 quote_ident(&table.name),
                 quote_ident(&table.primary_key)
             ))
-            .map_err(|e| invalid(e.to_string()))?;
-        let mut rows = stmt.query([]).map_err(|e| invalid(e.to_string()))?;
+            .map_err(|error| invalid(Self::sqlite_failure(&self.storage_failure, error)))?;
+        let mut rows = stmt
+            .query([])
+            .map_err(|error| invalid(Self::sqlite_failure(&self.storage_failure, error)))?;
         let mut applied = 0u32;
         loop {
             let clear = applied == 0 && first_fresh_page;
@@ -10752,54 +10880,65 @@ impl SyncClient {
                 }
                 let mut processed = 0u32;
                 {
-                    let mut ins = self
-                        .conn
-                        .prepare_cached(&insert)
-                        .map_err(|e| invalid(e.to_string()))?;
+                    let mut ins = self.conn.prepare_cached(&insert).map_err(|error| {
+                        invalid(Self::sqlite_failure(&self.storage_failure, error))
+                    })?;
                     let mut mirror = if mirror_visible {
-                        Some(
-                            self.conn
-                                .prepare_cached(&visible_insert)
-                                .map_err(|e| invalid(e.to_string()))?,
-                        )
+                        Some(self.conn.prepare_cached(&visible_insert).map_err(|error| {
+                            invalid(Self::sqlite_failure(&self.storage_failure, error))
+                        })?)
                     } else {
                         None
                     };
                     for _ in 0..1024 {
-                        let Some(row) = rows.next().map_err(|e| invalid(e.to_string()))? else {
+                        let Some(row) = rows.next().map_err(|error| {
+                            invalid(Self::sqlite_failure(&self.storage_failure, error))
+                        })?
+                        else {
                             break;
                         };
                         for (i, column) in table.columns.iter().enumerate() {
-                            let cell = row.get_ref(i).map_err(|e| invalid(e.to_string()))?;
+                            let cell = row.get_ref(i).map_err(|error| {
+                                invalid(Self::sqlite_failure(&self.storage_failure, error))
+                            })?;
                             let param = image_cell_param(column, cell).map_err(invalid)?;
-                            ins.raw_bind_parameter(i + 1, &param)
-                                .map_err(|e| invalid(e.to_string()))?;
+                            ins.raw_bind_parameter(i + 1, &param).map_err(|error| {
+                                invalid(Self::sqlite_failure(&self.storage_failure, error))
+                            })?;
                             if let Some(mirror) = &mut mirror {
-                                mirror
-                                    .raw_bind_parameter(i + 1, &param)
-                                    .map_err(|e| invalid(e.to_string()))?;
+                                mirror.raw_bind_parameter(i + 1, &param).map_err(|error| {
+                                    invalid(Self::sqlite_failure(&self.storage_failure, error))
+                                })?;
                             }
                         }
                         let version_index = table.columns.len();
-                        let version: i64 =
-                            row.get(version_index).map_err(|e| invalid(e.to_string()))?;
+                        let version: i64 = row.get(version_index).map_err(|error| {
+                            invalid(Self::sqlite_failure(&self.storage_failure, error))
+                        })?;
                         if version < 1 {
                             return Err(invalid("image row version must be positive".into()));
                         }
                         ins.raw_bind_parameter(version_index + 1, version)
-                            .map_err(|e| invalid(e.to_string()))?;
-                        ins.raw_execute().map_err(|e| invalid(e.to_string()))?;
+                            .map_err(|error| {
+                                invalid(Self::sqlite_failure(&self.storage_failure, error))
+                            })?;
+                        ins.raw_execute().map_err(|error| {
+                            invalid(Self::sqlite_failure(&self.storage_failure, error))
+                        })?;
                         if let Some(mirror) = &mut mirror {
                             mirror
                                 .raw_bind_parameter(version_index + 1, version)
-                                .map_err(|e| invalid(e.to_string()))?;
-                            mirror.raw_execute().map_err(|e| invalid(e.to_string()))?;
+                                .map_err(|error| {
+                                    invalid(Self::sqlite_failure(&self.storage_failure, error))
+                                })?;
+                            mirror.raw_execute().map_err(|error| {
+                                invalid(Self::sqlite_failure(&self.storage_failure, error))
+                            })?;
                         }
                         if reconcile_pending {
-                            changed_keys.push(
-                                row.get::<_, SqlValue>(table.pk_index)
-                                    .map_err(|error| invalid(error.to_string()))?,
-                            );
+                            changed_keys.push(row.get::<_, SqlValue>(table.pk_index).map_err(
+                                |error| invalid(Self::sqlite_failure(&self.storage_failure, error)),
+                            )?);
                         }
                         processed += 1;
                     }
@@ -10856,7 +10995,7 @@ impl SyncClient {
         let predicate = row_id_predicate(table);
         let mut lookup = self.conn.prepare_cached(&format!(
             "SELECT {pk} FROM {base} WHERE {predicate} UNION SELECT {pk} FROM {visible} WHERE {predicate}"
-        )).map_err(|error| error.to_string())?;
+        )).map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         let mut deleted = HashSet::new();
         for op in self
             .outbox
@@ -10876,9 +11015,9 @@ impl SyncClient {
                 keys.extend(
                     lookup
                         .query_map([&op.row_id], |row| row.get::<_, SqlValue>(0))
-                        .map_err(|error| error.to_string())?
+                        .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?
                         .collect::<Result<Vec<_>, _>>()
-                        .map_err(|error| error.to_string())?,
+                        .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?,
                 );
             }
         }
@@ -10889,7 +11028,7 @@ impl SyncClient {
             self.conn
                 .prepare_cached(&format!("DELETE FROM {visible} WHERE {pk} IN ({holes})"))
                 .and_then(|mut statement| statement.execute(rusqlite::params_from_iter(chunk)))
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         }
         let updates = table
             .columns
@@ -10907,7 +11046,7 @@ impl SyncClient {
             let holes = vec!["?"; chunk.len()].join(",");
             self.conn.prepare_cached(&format!("INSERT INTO {visible} SELECT * FROM {base} WHERE {pk} IN ({holes}) ON CONFLICT ({pk}) DO UPDATE SET {updates}"))
                 .and_then(|mut statement| statement.execute(rusqlite::params_from_iter(chunk)))
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         }
         Ok(())
     }
@@ -11050,15 +11189,20 @@ impl SyncClient {
                 base_table(&target.table),
                 clauses.join(" AND ")
             );
-            let mut statement = self.conn.prepare(&sql).map_err(|error| error.to_string())?;
+            let mut statement = self
+                .conn
+                .prepare(&sql)
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
             let rows = statement
                 .query_map(rusqlite::params_from_iter(params), |row| {
                     row.get::<_, String>(0)
                 })
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
             let ids = by_table.entry(target.table.clone()).or_default();
             for row in rows {
-                ids.insert(row.map_err(|error| error.to_string())?);
+                ids.insert(
+                    row.map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?,
+                );
             }
         }
         Ok(by_table)
@@ -11093,7 +11237,7 @@ impl SyncClient {
                 |row| row.get::<_, String>(0),
             )
             .optional()
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         if let Some(applied_plan) = applied_plan {
             if applied_plan != canonical_plan {
                 return Err(format!(
@@ -11211,7 +11355,7 @@ impl SyncClient {
                     "INSERT INTO _syncular_meta(key, value) VALUES (?1, ?2)",
                     rusqlite::params![meta_key, canonical_plan],
                 )
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
             Ok((
                 batch,
                 LocalDataPurgeResult {
@@ -11296,7 +11440,7 @@ impl SyncClient {
                     "INSERT INTO _syncular_meta(key, value) VALUES (?1, ?2)",
                     rusqlite::params![meta_key, receipt],
                 )
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
             self.sync_needed = true;
             self.sync_intent_queue.push_back(SyncIntent::Interactive);
             batch.status = true;
@@ -11482,19 +11626,23 @@ impl SyncClient {
     ) -> Result<Value, String> {
         let blob_id = blob_id_for(bytes);
         let now = self.clock_now_ms();
-        let tx = self.conn.transaction().map_err(|e| e.to_string())?;
+        let tx = self
+            .conn
+            .transaction()
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         tx.execute(
             "INSERT INTO _syncular_blobs(blob_id, bytes, byte_length, media_type, created_at_ms) VALUES (?,?,?,?,?)
              ON CONFLICT(blob_id) DO NOTHING",
             rusqlite::params![blob_id, bytes, bytes.len() as i64, media_type, now],
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         tx.execute(
             "INSERT OR IGNORE INTO _syncular_blob_uploads(blob_id, media_type, created_at_ms) VALUES (?,?,?)",
             rusqlite::params![blob_id, media_type, now],
         )
-        .map_err(|e| e.to_string())?;
-        tx.commit().map_err(|e| e.to_string())?;
+        .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+        tx.commit()
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         self.enforce_blob_cache_cap();
         let mut obj = Map::new();
         obj.insert("blobId".to_owned(), Value::from(blob_id));
@@ -11599,14 +11747,23 @@ impl SyncClient {
         let mut stmt = self
             .conn
             .prepare("SELECT bytes, byte_length, media_type FROM _syncular_blobs WHERE blob_id = ?")
-            .map_err(|e| e.to_string())?;
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         let mut rows = stmt
             .query(rusqlite::params![blob_id])
-            .map_err(|e| e.to_string())?;
-        if let Some(row) = rows.next().map_err(|e| e.to_string())? {
-            let bytes: Vec<u8> = row.get(0).map_err(|e| e.to_string())?;
-            let byte_length: i64 = row.get(1).map_err(|e| e.to_string())?;
-            let media_type: Option<String> = row.get(2).map_err(|e| e.to_string())?;
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+        if let Some(row) = rows
+            .next()
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?
+        {
+            let bytes: Vec<u8> = row
+                .get(0)
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+            let byte_length: i64 = row
+                .get(1)
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+            let media_type: Option<String> = row
+                .get(2)
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
             return Ok(Some(FetchedBlob {
                 blob_id: blob_id.to_owned(),
                 byte_length,
@@ -11851,13 +12008,16 @@ impl SyncClient {
             .table(table_name)
             .ok_or_else(|| format!("unknown table {table_name:?}"))?;
         let sql = self.insert_row_sql(full_table, table);
-        let mut stmt = self.conn.prepare_cached(&sql).map_err(|e| e.to_string())?;
+        let mut stmt = self
+            .conn
+            .prepare_cached(&sql)
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         let params = row
             .iter()
             .map(RowParam::Cell)
             .chain(std::iter::once(RowParam::Version(version)));
         stmt.execute(rusqlite::params_from_iter(params))
-            .map_err(|e| e.to_string())?;
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         Ok(())
     }
 
@@ -11872,9 +12032,12 @@ impl SyncClient {
             base_table(table_name),
             row_id_predicate(table)
         );
-        let mut stmt = self.conn.prepare_cached(&sql).map_err(|e| e.to_string())?;
+        let mut stmt = self
+            .conn
+            .prepare_cached(&sql)
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         stmt.execute(rusqlite::params![row_id])
-            .map_err(|e| e.to_string())?;
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         Ok(())
     }
 
@@ -11944,7 +12107,7 @@ impl SyncClient {
             self.conn
                 .prepare_cached(&sql)
                 .and_then(|mut statement| statement.execute(rusqlite::params![op.row_id]))
-                .map_err(|e| e.to_string())?;
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
             return Ok(());
         }
         let Some(values) = op.values.as_ref() else {

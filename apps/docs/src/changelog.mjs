@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-10-02',
+    title: 'SQLite imports preserve the first storage failure',
+    body: 'A full local database reports client.storage_full with its numeric SQLite code. A failed rollback stays secondary. Browser, Bun, Node and native clients accept another import after capacity returns. Server cleanup also retains its original exception.',
+    links: [
+      {
+        href: '/platform-web/#local-storage-failures',
+        label: 'Local storage failures',
+      },
+    ],
+  },
+  {
+    date: '2026-10-02',
     title: 'Host headers and named transport errors survive segment downloads',
     body: 'Web and Tauri forward host headers when fetching segments. The HTTP transport reports segment failures with their status and static code. The Hono host authorizes requested CORS headers. Closed worker and native clients reject calls with client.closed.',
     links: [

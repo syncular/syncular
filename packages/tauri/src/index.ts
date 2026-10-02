@@ -81,7 +81,11 @@ import {
 /** A driver-protocol reply: `{result}` on success or `{error}` on failure. */
 interface CommandReply {
   readonly result?: unknown;
-  readonly error?: { readonly code: string; readonly message: string };
+  readonly error?: {
+    readonly code: string;
+    readonly message: string;
+    readonly details?: Readonly<Record<string, unknown>> | null;
+  };
 }
 
 /** One event pushed on `syncular://event` (the derived client-observable set). */
@@ -356,7 +360,11 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
       { command: { method, params } },
     );
     if (reply.error !== undefined) {
-      throw new TauriSyncError(reply.error.code, reply.error.message);
+      throw new TauriSyncError(
+        reply.error.code,
+        reply.error.message,
+        reply.error.details ?? undefined,
+      );
     }
     return reply.result;
   }
@@ -566,7 +574,11 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
       { sql, params: (params ?? []).map(encodeParam) },
     );
     if (reply.error !== undefined) {
-      throw new TauriSyncError(reply.error.code, reply.error.message);
+      throw new TauriSyncError(
+        reply.error.code,
+        reply.error.message,
+        reply.error.details ?? undefined,
+      );
     }
     const rows = (reply.result as { rows?: unknown[] }).rows ?? [];
     return rows.map((r) => decodeRow(r as Record<string, unknown>));
@@ -586,7 +598,11 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
       },
     );
     if (reply.error !== undefined) {
-      throw new TauriSyncError(reply.error.code, reply.error.message);
+      throw new TauriSyncError(
+        reply.error.code,
+        reply.error.message,
+        reply.error.details ?? undefined,
+      );
     }
     const result = reply.result as {
       revision: string;
@@ -702,7 +718,11 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
       { headers },
     );
     if (reply.error !== undefined) {
-      throw new TauriSyncError(reply.error.code, reply.error.message);
+      throw new TauriSyncError(
+        reply.error.code,
+        reply.error.message,
+        reply.error.details ?? undefined,
+      );
     }
   }
 
@@ -930,10 +950,16 @@ function decodeDiagnosticsSnapshot(
 /** The error a `{error}` reply surfaces (mirrors the web-client `ClientSyncError`). */
 export class TauriSyncError extends Error {
   readonly code: string;
-  constructor(code: string, message: string) {
+  readonly details: Readonly<Record<string, unknown>> | undefined;
+  constructor(
+    code: string,
+    message: string,
+    details?: Readonly<Record<string, unknown>>,
+  ) {
     super(message);
     this.name = 'TauriSyncError';
     this.code = code;
+    this.details = details;
   }
 }
 
@@ -1084,7 +1110,11 @@ export async function createTauriSyncClient(
   });
   if (reply.error !== undefined) {
     unlisten();
-    throw new TauriSyncError(reply.error.code, reply.error.message);
+    throw new TauriSyncError(
+      reply.error.code,
+      reply.error.message,
+      reply.error.details ?? undefined,
+    );
   }
 
   return client;

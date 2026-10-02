@@ -20,7 +20,11 @@ import {
   withClientDiagnosticsHost,
 } from './diagnostics';
 import { encryptionConfigFromKeyring } from './encryption';
-import { ClientSyncError, STORAGE_BUSY_CODE } from './errors';
+import {
+  classifySqliteFailure,
+  ClientSyncError,
+  STORAGE_BUSY_CODE,
+} from './errors';
 import {
   httpBlobTransport,
   httpSegmentDownloader,
@@ -77,7 +81,8 @@ interface WorkerScope {
   ): void;
 }
 
-function toErrorShape(error: unknown): WorkerErrorShape {
+function toErrorShape(caught: unknown): WorkerErrorShape {
+  const error = classifySqliteFailure(caught).error;
   if (error instanceof ClientSyncError) {
     return {
       code: error.code,

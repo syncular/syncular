@@ -22,6 +22,7 @@ declare global {
       crash: Promise<CrashReceipt>;
       arm(point: CrashPoint): Promise<void>;
       probe(): Promise<OpfsProbe>;
+      limitStorage(limit: number, failCommit?: boolean): Promise<void>;
     };
   }
 }
@@ -71,6 +72,16 @@ window.opfsTest = {
       window.opfsTest.progress.push(progress),
     );
   },
+  limitStorage: (limit, failCommit = false) =>
+    new Promise((resolve) => {
+      const listener = (event: MessageEvent) => {
+        if (event.data.t !== 'page-limit-set') return;
+        worker.removeEventListener('message', listener);
+        resolve();
+      };
+      worker.addEventListener('message', listener);
+      worker.postMessage({ t: 'page-limit', limit, failCommit });
+    }),
   arm: (point) =>
     new Promise((resolve) => {
       const listener = (event: MessageEvent) => {

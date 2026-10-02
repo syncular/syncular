@@ -1,3 +1,4 @@
+import { retainRollbackFailure, rollbackAfterError } from './storage-errors';
 import { validateCommitPruneQuery } from './prune';
 import { StorageQueryError } from './storage-errors';
 import type { CommitPruneQuery, CommitPruneResult } from './storage';
@@ -469,9 +470,8 @@ class SqliteTransaction implements StorageTransaction {
       // connection.
       try {
         this.#storage.db.exec('ROLLBACK');
-      } catch {
-        // Surface the COMMIT failure; a rollback failure would otherwise
-        // mask it.
+      } catch (rollbackError) {
+        retainRollbackFailure(error, rollbackError);
       }
       throw error;
     } finally {
@@ -725,8 +725,9 @@ END`);
           }
           this.db.exec('COMMIT');
         } catch (error) {
-          this.db.exec('ROLLBACK');
-          throw error;
+          rollbackAfterError(() => {
+            this.db.exec('ROLLBACK');
+          }, error);
         }
       });
     }
@@ -799,8 +800,9 @@ END`);
           .run(partition);
         this.db.exec('COMMIT');
       } catch (error) {
-        this.db.exec('ROLLBACK');
-        throw error;
+        rollbackAfterError(() => {
+          this.db.exec('ROLLBACK');
+        }, error);
       }
       return {
         partition,
@@ -1002,8 +1004,9 @@ END`);
       open = false;
       return result;
     } catch (error) {
-      if (open) this.db.exec('ROLLBACK');
-      throw error;
+      rollbackAfterError(() => {
+        if (open) this.db.exec('ROLLBACK');
+      }, error);
     } finally {
       release();
     }
@@ -1085,8 +1088,9 @@ END`);
           removedCommits: Number(removed.changes),
         };
       } catch (error) {
-        this.db.exec('ROLLBACK');
-        throw error;
+        rollbackAfterError(() => {
+          this.db.exec('ROLLBACK');
+        }, error);
       }
     });
   }
@@ -1202,8 +1206,9 @@ END`);
         this.db.exec('COMMIT');
         return toStoredCheckpoint(row);
       } catch (error) {
-        this.db.exec('ROLLBACK');
-        throw error;
+        rollbackAfterError(() => {
+          this.db.exec('ROLLBACK');
+        }, error);
       }
     });
   }
@@ -1260,8 +1265,9 @@ END`);
         this.db.exec('COMMIT');
         return Number(updated.changes) === 1 ? 'activated' : 'stale';
       } catch (error) {
-        this.db.exec('ROLLBACK');
-        throw error;
+        rollbackAfterError(() => {
+          this.db.exec('ROLLBACK');
+        }, error);
       }
     });
   }

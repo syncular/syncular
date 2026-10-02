@@ -486,6 +486,8 @@ pub struct QueryOwner<'a> {
 pub struct QueryReadFailure {
     pub code: Option<&'static str>,
     pub sqlite_code: Option<i32>,
+    pub sqlite_message: Option<String>,
+    pub rollback_failure: Option<Box<QueryReadFailure>>,
     pub message: String,
 }
 
@@ -503,6 +505,8 @@ impl From<String> for QueryReadFailure {
         Self {
             code: None,
             sqlite_code: None,
+            sqlite_message: None,
+            rollback_failure: None,
             message,
         }
     }
@@ -519,19 +523,47 @@ impl From<rusqlite::Error> for QueryReadFailure {
             Some(11 | 26) => Self {
                 code: Some("client.storage_corrupt"),
                 sqlite_code,
+                sqlite_message: Some(error.to_string()),
+                rollback_failure: None,
                 message: "local SQLite storage is corrupt".to_owned(),
+            },
+            Some(13) => Self {
+                code: Some("client.storage_full"),
+                sqlite_code,
+                sqlite_message: Some(error.to_string()),
+                rollback_failure: None,
+                message: "local SQLite storage is full".to_owned(),
             },
             Some(10) => Self {
                 code: Some("client.storage_io"),
                 sqlite_code,
+                sqlite_message: Some(error.to_string()),
+                rollback_failure: None,
                 message: "local SQLite storage I/O failed".to_owned(),
             },
             _ => Self {
                 code: None,
                 sqlite_code,
+                sqlite_message: Some(error.to_string()),
+                rollback_failure: None,
                 message: error.to_string(),
             },
         }
+    }
+}
+
+impl QueryReadFailure {
+    pub fn details(&self) -> Option<Value> {
+        self.sqlite_code.map(|code| {
+            let mut details =
+                serde_json::json!({ "sqliteCode": code, "sqliteMessage": self.sqlite_message });
+            if let Some(rollback) = &self.rollback_failure {
+                details["rollbackFailure"] = serde_json::json!({
+                    "sqliteCode": rollback.sqlite_code, "message": rollback.sqlite_message
+                });
+            }
+            details
+        })
     }
 }
 
@@ -625,6 +657,7 @@ pub enum SyncOutcome {
     Failed {
         error_code: String,
         message: String,
+        details: Option<Value>,
     },
     /// §8.8: the `required` policy refused a round because the socket is not
     /// connected. `reason_code` is present for `lost` and `refused` states,
@@ -652,11 +685,15 @@ impl SyncOutcome {
             SyncOutcome::Failed {
                 error_code,
                 message,
+                details,
             } => {
                 let mut map = Map::new();
                 map.insert("ok".to_owned(), Value::Bool(false));
                 map.insert("errorCode".to_owned(), Value::from(error_code.clone()));
                 map.insert("message".to_owned(), Value::from(message.clone()));
+                if let Some(details) = details {
+                    map.insert("details".to_owned(), details.clone());
+                }
                 Value::Object(map)
             }
             SyncOutcome::RealtimeUnavailable {
