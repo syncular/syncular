@@ -9,6 +9,7 @@
 import type { SyncServerConfig } from './context';
 import { type SyncError, syncError } from './errors';
 import { type CompiledSchema, compileSchema } from './schema';
+import { schemaWindowOf } from './schema-window';
 import type { ServeGateRefusal } from './storage';
 
 export const SYNC_SERVER_READINESS_ERROR_CODE =
@@ -47,11 +48,15 @@ export class SyncServerReadinessError extends Error {
  * `cause` locally for the table/column or storage diagnostic.
  */
 export async function ensureSyncServerReady(
-  config: Pick<SyncServerConfig, 'schema' | 'storage' | 'checkpoints'>,
+  config: Pick<
+    SyncServerConfig,
+    'schema' | 'schemaWindow' | 'storage' | 'checkpoints'
+  >,
 ): Promise<void> {
   let compiled: CompiledSchema;
   try {
     compiled = compileSchema(config.schema);
+    schemaWindowOf(config.schema, config.schemaWindow);
   } catch (cause) {
     throw new SyncServerReadinessError({
       phase: 'schema_compile',

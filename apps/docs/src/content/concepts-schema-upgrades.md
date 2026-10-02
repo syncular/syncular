@@ -28,8 +28,8 @@ Two triggers converge on the same wipe-re-bootstrap-replay:
    boot-time trigger fires and the two paths converge.
 
 The server keeps N-version codec support for transition windows if it chooses;
-the reference server serves one version and answers the floor for any other,
-which is enough for both triggers.
+the reference server serves its configured window and answers the floor for
+versions outside it. Without a window it serves only its current version.
 
 ## What the reset touches
 
@@ -96,3 +96,25 @@ after a release deploy shares one build.
 
 For cellular-sensitive apps, size the window to the user's working set; the
 re-download stays proportional to it, and offline writes survive the bump.
+
+## Serving a compatibility window
+
+A reference server accepts `schemaWindow` on `SyncServerConfig`. Pass compiled
+schemas newest first, with `compileSchema(config.schema)` as the first entry.
+Storage, authorization, validators and the writer fence use the current schema.
+Old clients push with their own codec. Their pulls, conflict rows, segments and
+realtime deltas contain only columns their codec knows. New nullable columns are
+null on old inserts and stay unchanged on old patches.
+
+The window permits added tables and appended nullable columns. It rejects removed
+or renamed columns, changed codecs, primary keys, references and scope patterns
+before serving. The host must also exclude older clients across semantic changes
+that these structural checks cannot detect. A client outside the window receives
+a floor naming its oldest version and the latest server version.
+
+A schema floor pauses network transfer while local queries keep reading the
+retained replica, including newly opened queries. Reactive availability reports
+the schema stop alongside the query's local completeness. Applications can show
+a notice with the distribution host's update action and pause edits because an
+incompatible outbox commit can be rejected during replay. Leadership and security
+gates still refuse local access when the owner or authorization is unavailable.

@@ -4,7 +4,6 @@
  */
 import {
   type CommitChange,
-  decodeRow,
   encodeRowsSegment,
   type PullHeaderFrame,
   type ResponseFrame,
@@ -26,6 +25,7 @@ import type { SegmentRecord, SegmentStore } from './segment-store';
 import { issueSegmentUrl } from './signed-url';
 import type { SqliteImageBuilder } from './sqlite-image';
 import type { ServerStorage, StoredCommit, StoredRow } from './storage';
+import { projectRowPayload, projectRowValues } from './schema-window';
 
 // One artifact build per owning storage pair and complete immutable identity.
 const imageBuilds = new WeakMap<
@@ -136,7 +136,12 @@ function parseBootstrapToken(
   }
 }
 
-function commitFrame(table: string, commit: StoredCommit): ResponseFrame {
+function commitFrame(
+  table: string,
+  commit: StoredCommit,
+  current: CompiledTable,
+  target: CompiledTable,
+): ResponseFrame {
   const changes: CommitChange[] = commit.changes.map((change) => ({
     tableIndex: 0,
     rowId: change.rowId,
@@ -145,7 +150,9 @@ function commitFrame(table: string, commit: StoredCommit): ResponseFrame {
       ? { rowVersion: change.rowVersion }
       : {}),
     scopes: change.scopes,
-    ...(change.payload !== undefined ? { row: change.payload } : {}),
+    ...(change.payload !== undefined
+      ? { row: projectRowPayload(current, target, change.payload) }
+      : {}),
   }));
   return {
     type: 'COMMIT',
@@ -318,7 +325,14 @@ async function* sqliteImageSegment(
         scopeDigest: digest,
         rowBatches: (async function* () {
           rowCount += probe.length;
-          yield probe;
+          yield probe.map((row) => ({
+            ...row,
+            payload: projectRowPayload(
+              compileSchema(ctx.schema).tables.get(plan.table.name)!,
+              plan.table,
+              row.payload,
+            ),
+          }));
           let afterRowId = probe[probe.length - 1]!.rowId;
           for (;;) {
             const rows = await storage.scanRows(partition, {
@@ -328,7 +342,14 @@ async function* sqliteImageSegment(
               limit: 5_000,
             });
             rowCount += rows.length;
-            yield rows;
+            yield rows.map((row) => ({
+              ...row,
+              payload: projectRowPayload(
+                compileSchema(ctx.schema).tables.get(plan.table.name)!,
+                plan.table,
+                row.payload,
+              ),
+            }));
             const last = rows[rows.length - 1];
             if (rows.length < 5_000 || last === undefined) break;
             afterRowId = last.rowId;
@@ -420,7 +441,11 @@ async function* bootstrapSegments(
     // §5.2: every row record carries the row's current server_version.
     const decoded = pageRows.map((row: StoredRow) => ({
       serverVersion: row.serverVersion,
-      values: decodeRow(plan.table.columns, row.payload),
+      values: projectRowValues(
+        compileSchema(ctx.schema).tables.get(plan.table.name)!,
+        plan.table,
+        row.payload,
+      ),
     }));
     const bytes = encodeRowsSegment({
       table: plan.table.name,
@@ -772,7 +797,12 @@ export async function* preparedSection(
     ) {
       break;
     }
-    yield commitFrame(sub.table, commit);
+    yield commitFrame(
+      sub.table,
+      commit,
+      compileSchema(ctx.schema).tables.get(sub.table)!,
+      plan.table,
+    );
     delivered += commit.changes.length;
     deliveredCommits += 1;
     lastDeliveredSeq = commit.commitSeq;

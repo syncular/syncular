@@ -371,6 +371,16 @@ class ObservationCache {
 const EMPTY_ROWS: readonly never[] = Object.freeze([]);
 const unreadQuerySnapshots = new Map<string, LiveQueryResult<never>>();
 
+/** Schema floors stop network transfer; the retained local replica remains readable.
+ * Leadership stops still refuse local access through the unavailable owner. */
+function localReadsBlocked(availability: SyncAvailability): boolean {
+  return (
+    availability.state === 'blocked' &&
+    (availability.reason === 'leader-unreachable' ||
+      availability.reason === 'leader-incompatible')
+  );
+}
+
 /** One frozen snapshot per phase and availability for entries that have no
  * successful read, so switching between unread entries keeps the snapshot and
  * `rows` identity. */
@@ -598,7 +608,7 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
 
   #onAvailabilityChange(): void {
     const availability = this.store.availabilitySnapshot();
-    if (availability.state === 'blocked') {
+    if (localReadsBlocked(availability)) {
       this.#publish({
         ...this.#state,
         phase: 'blocked',
@@ -654,7 +664,7 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
     try {
       do {
         this.#requested = false;
-        if (this.store.availabilitySnapshot().state === 'blocked') break;
+        if (localReadsBlocked(this.store.availabilitySnapshot())) break;
 
         if (generation !== this.#generation || this.#listeners.size === 0)
           return;
@@ -681,7 +691,7 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
           return;
         if (this.#claimError !== undefined) throw this.#claimError;
         const availability = this.store.availabilitySnapshot();
-        if (availability.state === 'blocked') {
+        if (localReadsBlocked(availability)) {
           this.#publish({
             ...this.#state,
             phase: 'blocked',

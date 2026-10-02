@@ -18,6 +18,7 @@ import {
 import { SyncError, syncError } from './errors';
 import { emitEvent } from './events';
 import { compileSchema } from './schema';
+import { schemaWindowOf } from './schema-window';
 import { computeEffective, type ResolvedScopes, scopeDigest } from './scopes';
 import {
   bytesStream,
@@ -291,7 +292,10 @@ async function authorizePublication(
   // earlier valid publication of the same bytes exists.
   const schema = compileSchema(ctx.schema);
   const candidates = live.filter((publication) => {
-    const table = schema.tables.get(publication.table);
+    const served = schemaWindowOf(ctx.schema, ctx.schemaWindow).find(
+      (candidate) => candidate.version === publication.schemaVersion,
+    );
+    const table = served?.tables.get(publication.table);
     return (
       table !== undefined &&
       Object.entries(requested).every(

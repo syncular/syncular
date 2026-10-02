@@ -55,6 +55,7 @@ import { type ProcessedPushCommit, processPushCommitWithTrace } from './push';
 import { serveNotReadyError } from './readiness';
 import type { CompiledSchema } from './schema';
 import { compileSchema } from './schema';
+import { schemaWindowOf, projectRowPayload } from './schema-window';
 import { computeEffective, type ResolvedScopes } from './scopes';
 import { StorageQueryError } from './storage-errors';
 import {
@@ -343,7 +344,7 @@ async function planRequest(
   const { resolved, leaseToEmit } = await resolveOnce(
     ctx,
     header.clientId,
-    schema,
+    compileSchema(ctx.schema),
   );
 
   const subscriptions: SubscriptionPlan[] = validated.map(({ frame }) => {
@@ -466,8 +467,10 @@ async function* streamResponse(
     yield encodeResponseFrame(
       {
         type: 'RESP_HEADER',
-        requiredSchemaVersion: schema.version,
-        latestSchemaVersion: schema.version,
+        requiredSchemaVersion: schemaWindowOf(ctx.schema, ctx.schemaWindow).at(
+          -1,
+        )!.version,
+        latestSchemaVersion: ctx.schema.version,
         ...(plan.wireVersion >= 2
           ? { logEpoch: plan.logEpoch, resetRequired: plan.epochReset }
           : {}),
@@ -480,7 +483,7 @@ async function* streamResponse(
   yield encodeResponseFrame(
     {
       type: 'RESP_HEADER',
-      latestSchemaVersion: schema.version,
+      latestSchemaVersion: ctx.schema.version,
       ...(plan.wireVersion >= 2
         ? { logEpoch: plan.logEpoch, resetRequired: plan.epochReset }
         : {}),
@@ -519,12 +522,35 @@ async function* streamResponse(
     for (const push of plan.pushes) {
       const processed = await processPushCommitWithTrace(
         ctx,
-        schema,
+        compileSchema(ctx.schema),
         plan.resolved,
         plan.header.clientId,
         push,
+        schema,
       );
-      const { frame } = processed;
+      const frame = {
+        ...processed.frame,
+        results: processed.frame.results.map((result) => {
+          if (result.status !== 'conflict') return result;
+          const operation = push.operations[result.opIndex]!;
+          const target = schema.tables.get(operation.table)!;
+          const current = compileSchema(ctx.schema).tables.get(
+            operation.table,
+          )!;
+          return {
+            ...result,
+            serverRow: projectRowPayload(current, target, result.serverRow),
+            conflictColumns: result.conflictColumns
+              .slice(0, Math.ceil(target.columns.length / 8))
+              .map((byte, i) =>
+                i === Math.ceil(target.columns.length / 8) - 1 &&
+                target.columns.length % 8 !== 0
+                  ? byte & ((1 << (target.columns.length % 8)) - 1)
+                  : byte,
+              ),
+          };
+        }),
+      };
       if (events !== undefined) {
         emitPushEvent(events, ctx, plan.header.clientId, push, processed);
       }
@@ -630,6 +656,7 @@ async function* streamResponse(
             id: s.frame.id,
             table: s.frame.table,
             scopes: s.frame.scopes,
+            schemaVersion: schema.version,
           }))
         : [...(previous?.subscriptions ?? [])];
     const cursor =
@@ -754,7 +781,15 @@ async function createStreamCore(
   const gate = await ctx.storage.readServeGate(ctx.partition, schema.version);
   const refusal = serveGateRefusal(gate, schema.version, ctx.checkpoints);
   if (refusal !== undefined) throw serveNotReadyError(refusal);
-  const plan = await planRequest(request, ctx, schema, registry);
+  const window = schemaWindowOf(ctx.schema, ctx.schemaWindow);
+  const header = request.frames[0];
+  const selected = window.find(
+    (candidate) =>
+      header?.type === 'REQ_HEADER' &&
+      candidate.version === header.schemaVersion,
+  );
+  const served = selected ?? schema;
+  const plan = await planRequest(request, ctx, served, registry);
   const report: RequestReport = { outcome: 'ok' };
   // RFC 0007 read-verify-refuse for the streamed read path: the generator
   // builds the whole response (its data reads) before yielding the first
@@ -766,7 +801,7 @@ async function createStreamCore(
   // key, so refusing the request is safe (proved in the serve-gate lane).
   const verified = async function* (): AsyncGenerator<Uint8Array> {
     const buffered: Uint8Array[] = [];
-    for await (const chunk of streamResponse(plan, ctx, schema, report)) {
+    for await (const chunk of streamResponse(plan, ctx, served, report)) {
       buffered.push(chunk);
     }
     const after = await ctx.storage.readServeGate(

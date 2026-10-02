@@ -293,6 +293,7 @@ async function mergeCrdtColumns(
 async function applyOperation(
   tx: StorageTransaction,
   schema: CompiledSchema,
+  wireSchema: CompiledSchema,
   resolved: ResolvedScopes,
   op: PushOperation,
   opIndex: number,
@@ -303,7 +304,8 @@ async function applyOperation(
   actorId: string,
 ): Promise<OperationOutcome> {
   const table = schema.tables.get(op.table);
-  if (table === undefined) {
+  const wireTable = wireSchema.tables.get(op.table);
+  if (table === undefined || wireTable === undefined) {
     return errorRecord(
       opIndex,
       'sync.unknown_table',
@@ -409,7 +411,13 @@ async function applyOperation(
   }
   let sparse: SparseRowValue[];
   try {
-    sparse = decodeSparseRow(table.columns, table.primaryKeyIndex, payload);
+    sparse = decodeSparseRow(
+      wireTable.columns,
+      wireTable.primaryKeyIndex,
+      payload,
+    );
+    while (sparse.length < table.columns.length)
+      sparse.push(stored === undefined ? null : undefined);
   } catch (error) {
     return errorRecord(
       opIndex,
@@ -1300,6 +1308,7 @@ export async function processPushCommitWithTrace(
   resolved: ResolvedScopes,
   clientId: string,
   frame: PushCommitFrame,
+  wireSchema: CompiledSchema = schema,
 ): Promise<ProcessedPushCommit> {
   return processPushOperationsWithTrace(
     ctx,
@@ -1308,6 +1317,7 @@ export async function processPushCommitWithTrace(
     clientId,
     frame.clientCommitId,
     async () => frame.operations,
+    wireSchema,
   );
 }
 
@@ -1325,6 +1335,7 @@ export async function processPushOperationsWithTrace(
   buildOperations: (
     tx: StorageTransaction,
   ) => Promise<readonly PushOperation[]>,
+  wireSchema: CompiledSchema = schema,
 ): Promise<ProcessedPushCommit> {
   const { storage, partition } = ctx;
   let persisted: StoredPushResult | undefined;
@@ -1437,6 +1448,7 @@ export async function processPushOperationsWithTrace(
       const outcome = await applyOperation(
         tx,
         schema,
+        wireSchema,
         resolved,
         op,
         opIndex,

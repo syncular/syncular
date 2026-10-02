@@ -74,6 +74,7 @@ export class EndpointError extends Error {
 
 export interface ScenarioServerOptions {
   readonly schema?: DriverSchema;
+  readonly schemaWindow?: readonly DriverSchema[];
   readonly limits?: ServerLimitsOptions;
   readonly nowMs?: number;
   /** §5.4 native-scheme signed-URL issuance for this scenario's server. */
@@ -729,6 +730,9 @@ export async function createScenarioContext(
   const schema = scenario.server?.schema ?? FIXTURE_SCHEMA;
   const server = await pairing.server.create({
     schema,
+    ...(scenario.server?.schemaWindow !== undefined
+      ? { schemaWindow: scenario.server.schemaWindow }
+      : {}),
     partition: PARTITION,
     nowMs: scenario.server?.nowMs ?? DEFAULT_NOW_MS,
     ...(scenario.server?.limits !== undefined

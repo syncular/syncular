@@ -174,6 +174,7 @@ export interface ServerLeaseOptions {
 
 export interface ServerCreateOptions {
   readonly schema: DriverSchema;
+  readonly schemaWindow?: readonly DriverSchema[];
   readonly partition: string;
   /** Virtual clock start, epoch ms. The clock only moves via advanceClock. */
   readonly nowMs: number;

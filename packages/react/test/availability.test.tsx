@@ -214,7 +214,7 @@ describe('SyncProvider availability boundary', () => {
 });
 
 describe('query availability', () => {
-  test('a terminal floor is blocked rather than loading with no rows', async () => {
+  test('a terminal floor reads the empty local replica', async () => {
     const client = new FakeClient();
     client.setSchemaFloor({ requiredSchemaVersion: 2 });
     const view = render(
@@ -224,12 +224,12 @@ describe('query availability', () => {
     );
     await waitFor(() =>
       expect(
-        view.getByText('blocked:false:client-upgrade-required:0'),
+        view.getByText('ready:false:client-upgrade-required:0'),
       ).toBeDefined(),
     );
   });
 
-  test('keeps prior rows while blocked and refreshes after recovery', async () => {
+  test('keeps prior rows readable while sync pauses and refreshes after recovery', async () => {
     const client = new FakeClient();
     client.setRows('tasks', [{ id: 't1' }]);
     const view = render(
@@ -245,7 +245,7 @@ describe('query availability', () => {
     act(() => client.emitStatus());
     await waitFor(() =>
       expect(
-        view.getByText('blocked:false:client-upgrade-required:1'),
+        view.getByText('ready:false:client-upgrade-required:1'),
       ).toBeDefined(),
     );
 

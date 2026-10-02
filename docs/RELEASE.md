@@ -1,8 +1,25 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.30.5** (`v0.30.5`). All artifacts use Apache-2.0, except
+current release is **0.30.6** (`v0.30.6`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.30.6 release notes
+
+0.30.6 adds an optional `schemaWindow` to the reference server. Hosts pass current
+and reviewed prior compiled schemas newest first. Storage and validation use the
+current schema; old clients use their own row codec for pushes, pulls, conflicts,
+rows segments, SQLite images and realtime. Structural incompatibilities refuse
+the window. Hosts shorten it across semantic or authorization changes.
+
+Schema-floor stops preserve reactive local reads, including newly mounted
+queries. Leadership and security gates retain their read restrictions. SSP2
+stays at wire version 3; every package and crate ships together.
+
+Host transport headers reach segment downloads on web and Tauri. Segment HTTP
+failures retain their status and static codes, CORS preflight authorizes host
+headers, and calls against closed worker/native clients report `client.closed`.
+Injected transport fault identities remain intact across both core pairings.
 
 ## 0.30.5 release notes
 

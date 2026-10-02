@@ -17,6 +17,26 @@
 export const changelog = [
   {
     date: '2026-10-02',
+    title: 'Host headers and named transport errors survive segment downloads',
+    body: 'Web and Tauri forward host headers when fetching segments. The HTTP transport reports segment failures with their status and static code. The Hono host authorizes requested CORS headers. Closed worker and native clients reject calls with client.closed.',
+    links: [
+      { href: '/guide-server/', label: 'Server transport' },
+      { href: '/platform-tauri/', label: 'Tauri' },
+    ],
+  },
+  {
+    date: '2026-10-02',
+    title: 'Older clients sync through a reviewed schema window',
+    body: 'The host supplies current and prior compiled schemas. Old pushes decode with their codec and pass current server rules; pulls, segments, conflicts and realtime omit new columns. Unsafe structural changes refuse the window. A schema floor keeps local reactive reads available, including newly opened queries.',
+    links: [
+      {
+        href: '/concepts-schema-upgrades/#serving-a-compatibility-window',
+        label: 'Schema upgrades',
+      },
+    ],
+  },
+  {
+    date: '2026-10-02',
     title: 'A closed leader tab posts no late answer',
     body: 'A follower call that the leader tab settled after its `LeaderBridge` closed, for example while the app signed out, posted the answer on the closed BroadcastChannel, and the browser threw an uncaught `InvalidStateError`. The leader now drops answers after close.',
     links: [

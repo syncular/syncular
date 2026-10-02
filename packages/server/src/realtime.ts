@@ -48,7 +48,12 @@ import {
 } from './errors';
 import { emitEvent, type SyncularServerEvents } from './events';
 import { createSyncResponseStream } from './handler';
-import { type CompiledSchema, compileSchema } from './schema';
+import {
+  type CompiledSchema,
+  type CompiledTable,
+  compileSchema,
+} from './schema';
+import { schemaWindowOf, projectRowPayload } from './schema-window';
 import {
   computeEffective,
   matchesEffective,
@@ -99,6 +104,7 @@ export interface RealtimeConnectOptions {
 }
 
 interface Registration {
+  readonly codec: CompiledTable;
   readonly id: string;
   readonly table: string;
   readonly effective: ScopeMap;
@@ -794,7 +800,9 @@ export class RealtimeSession {
               ? { rowVersion: change.rowVersion }
               : {}),
             scopes: change.scopes,
-            ...(change.payload !== undefined ? { row: change.payload } : {}),
+            ...(change.payload !== undefined
+              ? { row: this.#hub.projectPayload(registration, change.payload) }
+              : {}),
           }),
         );
       if (changes.length > 0) sections.push({ registration, changes });
@@ -894,6 +902,15 @@ export class RealtimeHub {
   constructor(config: RealtimeHubConfig) {
     this.#config = config;
     this.#schema = compileSchema(config.schema);
+    schemaWindowOf(config.schema, config.schemaWindow);
+  }
+
+  projectPayload(registration: Registration, payload: Uint8Array): Uint8Array {
+    return projectRowPayload(
+      this.#schema.tables.get(registration.table)!,
+      registration.codec,
+      payload,
+    );
   }
 
   get sessionCount(): number {
@@ -983,7 +1000,18 @@ export class RealtimeHub {
     }
     const registrations: Registration[] = [];
     for (const subscription of record?.subscriptions ?? []) {
-      const table = this.#schema.tables.get(subscription.table);
+      const window = schemaWindowOf(
+        this.#config.schema,
+        this.#config.schemaWindow,
+      );
+      const selected =
+        subscription.schemaVersion === undefined &&
+        this.#config.schemaWindow === undefined
+          ? this.#schema
+          : window.find(
+              (schema) => schema.version === subscription.schemaVersion,
+            );
+      const table = selected?.tables.get(subscription.table);
       if (table === undefined) continue;
       const keysValid = Object.keys(subscription.scopes).every((key) =>
         table.declaredVariables.has(key),
@@ -993,6 +1021,7 @@ export class RealtimeHub {
       if (outcome.status !== 'active') continue;
       registrations.push({
         id: subscription.id,
+        codec: table,
         table: subscription.table,
         effective: outcome.effective,
       });
@@ -1022,6 +1051,9 @@ export class RealtimeHub {
       partition: identity.partition,
       actorId: identity.actorId,
       schema: this.#config.schema,
+      ...(this.#config.schemaWindow !== undefined
+        ? { schemaWindow: this.#config.schemaWindow }
+        : {}),
       storage: this.#config.storage,
       segments,
       resolveScopes: this.#config.resolveScopes,
@@ -1139,7 +1171,19 @@ export class RealtimeHub {
           clientId: options.clientId,
           cursor,
           latestCursor: latestSeq,
-          requiresSync: record === undefined || cursor < latestSeq,
+          requiresSync:
+            record === undefined ||
+            cursor < latestSeq ||
+            (this.#config.schemaWindow !== undefined &&
+              record.subscriptions.some(
+                (subscription) =>
+                  !schemaWindowOf(
+                    this.#config.schema,
+                    this.#config.schemaWindow,
+                  ).some(
+                    (schema) => schema.version === subscription.schemaVersion,
+                  ),
+              )),
           timestamp: clock(),
         },
       }),

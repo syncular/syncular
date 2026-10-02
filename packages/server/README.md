@@ -1232,3 +1232,13 @@ maxima, preserve registration fields, and require a matching actor and current
 partition log epoch. Leave missing records unchanged. SQLite, Postgres, and D1
 perform one update without reading or serializing the subscription list. HTTP
 registration keeps its existing cursor and subscription replacement rules.
+
+## Reviewed schema windows
+
+Pass `schemaWindow: [compileSchema(schema), compileSchema(previousSchema)]` to
+serve the prior codec through the current storage and validation rules. Entries
+are newest first, with the compiled current schema first. Added tables and
+appended nullable columns are supported. Removed/renamed columns, changed codecs,
+primary keys, references or scopes reject the window before serving. Hosts must
+exclude semantically incompatible prior versions. The [schema upgrade guide](https://syncular.dev/concepts-schema-upgrades/#serving-a-compatibility-window)
+owns the pull, segment, push and realtime contract.

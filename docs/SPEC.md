@@ -3945,7 +3945,7 @@ especially, §5.3) makes a fresh bootstrap cheap enough that carrying a
 migration subsystem — a rarely-exercised second apply path — is not
 worth its cost, and every upgrade drills the bootstrap path instead.
 The server keeps N-version codec support for transition windows if it
-chooses (§9); the reference server serves exactly one version and
+chooses (§9); the reference server serves its configured window and
 answers the floor (§1.6) for any other, which is sufficient for both
 triggers below.
 
@@ -4009,6 +4009,12 @@ converge on the identical wipe-re-bootstrap-replay:
 Both triggers are local decisions keyed on versions the client already
 holds; neither adds a wire field. `requiredSchemaVersion` /
 `latestSchemaVersion` (§1.6) are unchanged.
+
+Local query snapshots and reactive reads MUST remain available in a schema-floor
+stop, including queries opened after the stop. Their availability still reports
+the schema stop; their completeness describes the retained local coverage.
+Leadership and security gates continue to refuse unauthorized or unavailable
+local reads. Applications may pause edits to avoid incompatible outbox replay.
 
 #### 7.4.3 The reset — scope and order
 
@@ -5243,6 +5249,26 @@ deliberate disconnect clears it.
   and row codecs are minted per schema version; a server MAY serve older
   schema versions it still has codecs for, and signals the floor when it
   no longer can.
+  The reference host MAY pass `schemaWindow`, compiled schemas ordered from the
+  current version to the oldest served version. Its first entry MUST be the
+  current compiled schema. Versions MUST decrease strictly. Existing tables,
+  columns, codecs, primary keys, references and scope patterns MUST remain
+  identical in the current schema; appended columns MUST be nullable. The host
+  MUST shorten the window when a semantic or authorization change invalidates
+  older clients, even when the row codec is unchanged. Invalid windows fail
+  before storage or serving starts.
+
+  Storage, write fences, authorization and validators always use the current
+  schema. Pull rows, incremental changes, conflict rows, rows segments and SQLite
+  images use the requesting version's codec and version stamp. Realtime records
+  the last accepted codec with each subscription and projects each delta through
+  that codec. Unversioned legacy registrations on a window host register nothing
+  until a new pull records their version. Tables absent from the client schema
+  receive no changes. Old pushes decode with the client codec; new nullable
+  columns are null on insert and absent on update. Current validators inspect
+  the resulting canonical row. A floor response names the window's oldest
+  served version as required and the current version as latest.
+
 - **Breaking change definition**: anything that changes the bytes of an
   existing golden vector, removes an error code, or changes normative
   MUST behavior. Non-breaking: new frame types, new error codes, new

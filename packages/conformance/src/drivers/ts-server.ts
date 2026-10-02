@@ -19,6 +19,7 @@ import {
   CommitValidationRejection,
   type CommitValidator,
   compileSchema,
+  type CompiledSchema,
   createRealtimeHub,
   handleBlobDownload,
   handleBlobUpload,
@@ -242,6 +243,8 @@ function parseBlobUrl(
 
 class TsServerInstance implements ServerInstance {
   readonly #schema: DriverSchema;
+  readonly #serverSchema: ServerSchema;
+  readonly #schemaWindow: readonly CompiledSchema[] | undefined;
   readonly #partition: string;
   #storage: SqliteServerStorage;
   readonly #wrapped: ServerStorage;
@@ -282,6 +285,10 @@ class TsServerInstance implements ServerInstance {
   #backup: Uint8Array | undefined;
 
   constructor(options: ServerCreateOptions) {
+    this.#serverSchema = toServerSchema(options.schema);
+    this.#schemaWindow = options.schemaWindow?.map((schema, index) =>
+      compileSchema(index === 0 ? this.#serverSchema : toServerSchema(schema)),
+    );
     this.#schema = options.schema;
     this.#partition = options.partition;
     this.#storage = new SqliteServerStorage();
@@ -344,7 +351,10 @@ class TsServerInstance implements ServerInstance {
     };
     this.#wrapped = this.#wrapStorage();
     this.#hub = createRealtimeHub({
-      schema: toServerSchema(options.schema),
+      schema: this.#serverSchema,
+      ...(this.#schemaWindow !== undefined
+        ? { schemaWindow: this.#schemaWindow }
+        : {}),
       storage: this.#wrapped,
       resolveScopes: (args) => this.#resolveScopes(args.actorId),
       clock: () => this.#now.ms,
@@ -467,7 +477,10 @@ class TsServerInstance implements ServerInstance {
       onError: (error) => this.#report(error),
       partition: this.#partition,
       actorId,
-      schema: toServerSchema(this.#schema),
+      schema: this.#serverSchema,
+      ...(this.#schemaWindow !== undefined
+        ? { schemaWindow: this.#schemaWindow }
+        : {}),
       storage: this.#wrapped,
       segments: this.#segments,
       blobs: this.#blobs,

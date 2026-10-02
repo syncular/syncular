@@ -798,7 +798,7 @@ describe('local snapshots during window registration', () => {
     store.dispose();
   });
 
-  test('a blocked transition defeats a late snapshot and claim completion', async () => {
+  test('a schema stop retains a late local snapshot and permits a newly mounted query', async () => {
     const client = new FakeReactiveClient();
     const claim = deferred<void>();
     const read = deferred<QuerySnapshot<Row>>();
@@ -817,13 +817,31 @@ describe('local snapshots during window registration', () => {
     );
     claim.resolve();
     read.resolve({
-      revision: 1n,
+      revision: 2n,
       rows: [{ id: 'secret', title: 'protected' }],
       coverage: COMPLETE,
     });
     await drainMicrotasks();
-    expect(entry.getSnapshot().phase).toBe('blocked');
-    expect(entry.getSnapshot().rows).toEqual([]);
+    expect(entry.getSnapshot().phase).toBe('ready');
+    expect(entry.getSnapshot().rows).toEqual([
+      { id: 'secret', title: 'protected' },
+    ]);
+    const next = store.query<Row>(querySpec({ id: 'new-local-query' }));
+    client.snapshots.push({
+      revision: 2n,
+      rows: [{ id: 'retained', title: 'local' }],
+      coverage: COMPLETE,
+    });
+    const stop = next.subscribe(() => {});
+    await drainMicrotasks();
+    expect(next.getSnapshot().rows).toEqual([
+      { id: 'retained', title: 'local' },
+    ]);
+    expect(next.getSnapshot().availability).toMatchObject({
+      state: 'blocked',
+      reason: 'client-upgrade-required',
+    });
+    stop();
     off();
     store.dispose();
   });

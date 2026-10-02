@@ -288,6 +288,8 @@ export interface StoredPushResult {
 }
 
 export interface ClientSubscription {
+  /** Codec accepted by the last pull; absent on records written before schema windows. */
+  readonly schemaVersion?: number;
   readonly id: string;
   readonly table: string;
   /** Requested scopes of the client's most recent pull (§8.1). */

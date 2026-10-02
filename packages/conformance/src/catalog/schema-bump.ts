@@ -27,6 +27,44 @@ const WITH_SQLITE = 0b0111;
 
 export const schemaBumpScenarios: readonly Scenario[] = [
   {
+    name: 'schema-window/previous-client-push-pull',
+    specRefs: ['§9', '§7.4.2', '§6.7'],
+    server: {
+      schema: FIXTURE_SCHEMA_V2,
+      schemaWindow: [FIXTURE_SCHEMA_V2, FIXTURE_SCHEMA],
+    },
+    async run(ctx) {
+      await seedTasks(ctx, [task('t1', 'p1', 'retained')]);
+      const old = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-old',
+        schema: FIXTURE_SCHEMA,
+        allowed: P1,
+      });
+      await old.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await syncIdle(old);
+      checkEqual(
+        await old.api.schemaFloor(),
+        undefined,
+        'the previous client is served',
+      );
+      checkEqual(
+        (await old.api.readRows('tasks'))[0]?.values.title,
+        'retained',
+        'the previous codec decodes bootstrap rows',
+      );
+      await old.api.mutate([
+        { table: 'tasks', op: 'upsert', values: task('t2', 'p1', 'from-old') },
+      ]);
+      await syncIdle(old);
+      checkEqual(
+        (await ctx.server.readRows('tasks')).length,
+        2,
+        'old pushes apply through current rules',
+      );
+    },
+  },
+  {
     // §7.4.2 trigger 1 + §7.4.3/§7.4.4: a client with vN data AND a pending
     // offline outbox commit boots with the vN+1 generated schema, wipes,
     // re-bootstraps, and replays the outbox on top — converging with the

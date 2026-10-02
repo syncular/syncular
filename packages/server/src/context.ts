@@ -11,7 +11,7 @@ import type { SyncularErrorHandler } from './errors';
 import type { SyncularServerEvents } from './events';
 import type { LeaseStore } from './lease-store';
 import type { AnyReactionPlanner } from './reactions';
-import type { ServerSchema } from './schema';
+import type { ServerSchema, CompiledSchema } from './schema';
 import type { SegmentStore } from './segment-store';
 import type {
   BlobPresignConfig,
@@ -97,6 +97,8 @@ export interface RealtimeNotifier {
 
 export interface SyncServerConfig {
   readonly schema: ServerSchema;
+  /** Current compiled schema followed by the supported previous versions, newest first. */
+  readonly schemaWindow?: readonly CompiledSchema[];
   readonly storage: ServerStorage;
   /**
    * RFC 0007: the backfill checkpoints this host installs. Every readiness

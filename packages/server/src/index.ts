@@ -93,3 +93,5 @@ export {
   type StorageQueryErrorCode,
 } from './storage-errors';
 export * from './validate';
+
+export { schemaWindowOf } from './schema-window';
