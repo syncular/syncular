@@ -1,10 +1,10 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.30.8** (`v0.30.8`). All artifacts use Apache-2.0, except
+current release is **0.30.9** (`v0.30.9`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
 
-## 0.30.8 release notes
+## 0.30.9 release notes
 
 Mutation batches accept sparse patches alongside full upserts and deletes.
 Both client cores apply and queue the whole aggregate atomically. Omitted
@@ -19,6 +19,11 @@ existing rollback behavior.
 
 Bun, worker RPC, Chromium OPFS, Rust and Tauri bridge checks cover the new
 surface. SSP2 remains at wire version 3.
+
+## 0.30.8 unpublished tag
+
+v0.30.8 tagged, not published; superseded by 0.30.9. The cancelled release
+published no npm packages or Rust crates. The remote tag remains unchanged.
 
 ## 0.30.7 release notes
 

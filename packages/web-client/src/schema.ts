@@ -7,7 +7,7 @@ import { ensureFailedOverlaySchema } from './failed-overlay';
  */
 import type { RowColumn, RowValue } from '@syncular/core';
 import type { ClientDatabase, SqlRow, SqlValue } from './database';
-import { ClientSyncError } from './errors';
+import { invalidRequest } from './errors';
 import { snakeToCamel } from './naming';
 
 /** `'prefix:{variable}'` shorthand (column name = variable) or explicit. */
@@ -709,20 +709,17 @@ export function normalizeRecordKeys(
       table.columnIndex.get(key) ?? table.columnIndexByCamel.get(key);
     if (index === undefined) {
       if (key.startsWith('_sync_')) {
-        throw new ClientSyncError(
-          'sync.invalid_request',
+        throw invalidRequest(
           `table ${table.name}: ${JSON.stringify(key)} is an internal sync column and cannot appear in mutation values — did you build this record from a raw SELECT * row? (client.query() strips _sync_* columns; rows read via client.database keep them)`,
         );
       }
-      throw new ClientSyncError(
-        'sync.invalid_request',
+      throw invalidRequest(
         `table ${table.name}: unknown column ${JSON.stringify(key)} in mutation values (snake_case and camelCase keys are accepted)`,
       );
     }
     const sqlName = (table.columns[index] as RowColumn).name;
     if (normalized.has(sqlName)) {
-      throw new ClientSyncError(
-        'sync.invalid_request',
+      throw invalidRequest(
         `table ${table.name}: column ${JSON.stringify(sqlName)} appears twice in mutation values (as both snake_case and camelCase) — pass it once`,
       );
     }
@@ -767,8 +764,7 @@ export function recordToRowValues(
     const value = normalized.get(column.name);
     if (value === undefined || value === null) {
       if (!column.nullable) {
-        throw new ClientSyncError(
-          'sync.invalid_request',
+        throw invalidRequest(
           `table ${table.name}: column ${JSON.stringify(column.name)} is not nullable (§6.1 full-row payloads)`,
         );
       }

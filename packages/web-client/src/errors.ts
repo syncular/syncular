@@ -45,6 +45,14 @@ export class ClientSyncError extends Error {
   }
 }
 
+/** Shared invalid-request construction for client validators and transport guards. */
+export function invalidRequest(
+  message: string,
+  retryable = false,
+): ClientSyncError {
+  return new ClientSyncError('sync.invalid_request', message, retryable);
+}
+
 /**
  * SPEC §7.5: the latest sync attempt failed while a live query still waited
  * for its required coverage. `code` is the attempt's static progress error

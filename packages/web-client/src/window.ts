@@ -14,7 +14,7 @@
  */
 import { canonicalScopeJson, type ScopeMap } from '@syncular/core';
 import type { ClientDatabase } from './database';
-import { ClientSyncError } from './errors';
+import { invalidRequest } from './errors';
 
 export type TimeBucketUnit = 'month';
 
@@ -35,8 +35,7 @@ export function creationTimeBucket(
     createdAtMs < 0 ||
     createdAtMs > MAX_TIME_BUCKET_MS
   ) {
-    throw new ClientSyncError(
-      'sync.invalid_request',
+    throw invalidRequest(
       'creationTimeBucket requires a supported unit and a UTC timestamp from 1970 through 9999',
     );
   }
@@ -59,16 +58,14 @@ export function last(
     nowMs < 0 ||
     nowMs > MAX_TIME_BUCKET_MS
   ) {
-    throw new ClientSyncError(
-      'sync.invalid_request',
+    throw invalidRequest(
       'last requires a supported unit, a count from 1 through 1200, and a UTC timestamp from 1970 through 9999',
     );
   }
   const date = new Date(nowMs);
   const current = date.getUTCFullYear() * 12 + date.getUTCMonth();
   if (current - (count - 1) < 1970 * 12) {
-    throw new ClientSyncError(
-      'sync.invalid_request',
+    throw invalidRequest(
       'last requires every returned UTC month to fall from 1970 through 9999',
     );
   }

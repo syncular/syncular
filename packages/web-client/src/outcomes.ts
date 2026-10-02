@@ -171,7 +171,7 @@ function parseOutcome(
 ): CommitOutcome {
   const retainedRows: RetainedCommitRow[] = db
     .query(
-      'SELECT table_name, row_id, initial_json, base_json, base_version FROM _syncular_failed_rows WHERE client_commit_id = ? ORDER BY op_index',
+      'SELECT tbl, id, intent, base, version FROM _syncular_failed_rows WHERE commit_id = ? ORDER BY idx',
       [String(row.client_commit_id)],
     )
     .map((retained) => {
@@ -184,12 +184,12 @@ function parseOutcome(
               ).map(([key, value]) => [key, jsonToRowValue(value)]),
             );
       return {
-        table: String(retained.table_name),
-        rowId: String(retained.row_id),
-        localRow: decode(retained.initial_json),
-        serverRow: decode(retained.base_json),
+        table: String(retained.tbl),
+        rowId: String(retained.id),
+        localRow: decode(retained.intent),
+        serverRow: decode(retained.base),
         serverVersion:
-          retained.base_version === null ? null : Number(retained.base_version),
+          retained.version === null ? null : Number(retained.version),
       };
     });
   return {

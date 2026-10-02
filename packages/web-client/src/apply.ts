@@ -14,7 +14,7 @@ import {
 } from '@syncular/core';
 import type { ClientDatabase, SqlValue } from './database';
 import type { EncryptionConfig } from './encryption';
-import { ClientSyncError } from './errors';
+import { ClientSyncError, invalidRequest } from './errors';
 import {
   type CompiledClientSchema,
   type CompiledClientTable,
@@ -108,8 +108,7 @@ export async function applyCommitFrame(
   for (const change of frame.changes) {
     const tableName = frame.tables[change.tableIndex];
     if (tableName === undefined) {
-      throw new ClientSyncError(
-        'sync.invalid_request',
+      throw invalidRequest(
         `COMMIT change tableIndex ${change.tableIndex} out of range`,
       );
     }
@@ -125,10 +124,7 @@ export async function applyCommitFrame(
       continue;
     }
     if (change.row === undefined || change.rowVersion === undefined) {
-      throw new ClientSyncError(
-        'sync.invalid_request',
-        'upsert change without row payload',
-      );
+      throw invalidRequest('upsert change without row payload');
     }
     let values = decodeRow(table.columns, change.row);
     if (encryption !== undefined && table.hasEncryptedColumns) {
@@ -307,10 +303,7 @@ export interface SqliteSegmentDescriptor {
 const IMAGE_ALIAS = 'syncular_image';
 
 function imageInvalid(detail: string): never {
-  throw new ClientSyncError(
-    'sync.invalid_request',
-    `sqlite segment rejected: ${detail} (§5.3)`,
-  );
+  throw invalidRequest(`sqlite segment rejected: ${detail} (§5.3)`);
 }
 
 /**
@@ -337,8 +330,7 @@ export async function applySqliteSegment(
 ): Promise<number> {
   const withImage = db.withSqliteImage?.bind(db);
   if (withImage === undefined) {
-    throw new ClientSyncError(
-      'sync.invalid_request',
+    throw invalidRequest(
       'received a sqlite segment but the database backend cannot import images (§4.2: do not advertise accept bit 2)',
     );
   }

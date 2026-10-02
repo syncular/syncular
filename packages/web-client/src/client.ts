@@ -2,7 +2,6 @@ import {
   dropFailedRows,
   failedOverlayCommits,
   retainFailedRows,
-  restoreAbsentFailedRows,
   restoreFailedBases,
 } from './failed-overlay';
 import {
@@ -95,6 +94,7 @@ import {
 import type { EncryptionConfig } from './encryption';
 import {
   ClientSyncError,
+  invalidRequest,
   classifySqliteFailure,
   REALTIME_LOST_CODE,
   RealtimeUnavailableError,
@@ -628,8 +628,7 @@ function boundedBudget(
 ): number {
   if (value === undefined) return fallback;
   if (!Number.isSafeInteger(value) || value < 1) {
-    throw new ClientSyncError(
-      'sync.invalid_request',
+    throw invalidRequest(
       `previousVersionContext.${name} must be a positive safe integer`,
     );
   }
@@ -678,8 +677,7 @@ function previousVersionMaxAgeMs(
 function resolvePreviousVersionLimit(limit: number | undefined): number {
   if (limit === undefined) return 50;
   if (!Number.isFinite(limit) || limit < 1) {
-    throw new ClientSyncError(
-      'sync.invalid_request',
+    throw invalidRequest(
       'previousVersionSnapshot limit must be a positive number',
     );
   }
@@ -836,8 +834,7 @@ export class SyncClient {
 
   constructor(config: SyncClientConfig) {
     if (config.securityPreflight === true && config.encryption !== undefined) {
-      throw new ClientSyncError(
-        'sync.invalid_request',
+      throw invalidRequest(
         'securityPreflight and encryption are mutually exclusive; install keys with activateSecurity after preflight',
       );
     }
@@ -850,14 +847,12 @@ export class SyncClient {
       realtimePolicy !== 'optional' &&
       realtimePolicy !== 'off'
     ) {
-      throw new ClientSyncError(
-        'sync.invalid_request',
+      throw invalidRequest(
         "realtimePolicy must be 'required', 'optional', or 'off'",
       );
     }
     if (realtimePolicy === 'required' && config.realtime === undefined) {
-      throw new ClientSyncError(
-        'sync.invalid_request',
+      throw invalidRequest(
         "realtimePolicy 'required' needs a realtime connector",
       );
     }
@@ -879,8 +874,7 @@ export class SyncClient {
       !Number.isSafeInteger(outcomeRetentionMaxEntries) ||
       outcomeRetentionMaxEntries < 1
     ) {
-      throw new ClientSyncError(
-        'sync.invalid_request',
+      throw invalidRequest(
         'outcomeRetentionMaxEntries must be a positive safe integer',
       );
     }
@@ -1284,8 +1278,7 @@ export class SyncClient {
   async activateSecurity(options: SecurityActivation = {}): Promise<void> {
     this.#requireStarted();
     if (this.#securityLifecycle === 'active') {
-      throw new ClientSyncError(
-        'sync.invalid_request',
+      throw invalidRequest(
         'activateSecurity requires the client to be in security preflight',
       );
     }
@@ -1483,8 +1476,7 @@ export class SyncClient {
     }
     const table = record.tables.find((entry) => entry.name === spec.table);
     if (table === undefined) {
-      throw new ClientSyncError(
-        'sync.invalid_request',
+      throw invalidRequest(
         `previousVersionSnapshot names unknown previous table ${JSON.stringify(spec.table)}`,
       );
     }
@@ -1719,8 +1711,7 @@ export class SyncClient {
     this.#requireActive();
     const expected = request.expectedSubscriptions ?? [];
     if (expected.length > MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS) {
-      throw new ClientSyncError(
-        'sync.invalid_request',
+      throw invalidRequest(
         `diagnosticsSnapshot accepts at most ${MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS} expected subscriptions`,
       );
     }
@@ -1759,8 +1750,7 @@ export class SyncClient {
         typeof item.table !== 'string' ||
         item.table.length === 0
       ) {
-        throw new ClientSyncError(
-          'sync.invalid_request',
+        throw invalidRequest(
           'diagnosticsSnapshot expected subscriptions require non-empty id and table strings',
         );
       }
@@ -1987,8 +1977,8 @@ export class SyncClient {
           result = fn(batch);
           if (
             this.#db
-              .query('SELECT DISTINCT table_name FROM _syncular_failed_rows')
-              .some((row) => batch.hasTable(String(row.table_name)))
+              .query('SELECT DISTINCT tbl FROM _syncular_failed_rows')
+              .some((row) => batch.hasTable(String(row.tbl)))
           )
             batch.outcomes();
           if (batch.touched) {
@@ -2083,8 +2073,7 @@ export class SyncClient {
     options?: { readonly mediaType?: string; readonly name?: string },
   ): Promise<BlobRef> {
     if (this.#config.blobs === undefined) {
-      throw new ClientSyncError(
-        'sync.invalid_request',
+      throw invalidRequest(
         'uploadBlob requires a blob transport (SyncClientConfig.blobs, §5.9)',
       );
     }
@@ -2128,8 +2117,7 @@ export class SyncClient {
     if (cached !== undefined) return cached;
     const transport = this.#config.blobs;
     if (transport === undefined) {
-      throw new ClientSyncError(
-        'sync.invalid_request',
+      throw invalidRequest(
         'fetchBlob requires a blob transport (SyncClientConfig.blobs, §5.9)',
       );
     }
@@ -2141,8 +2129,7 @@ export class SyncClient {
     let bytes: Uint8Array;
     if (response.kind === 'url') {
       if (transport.fetchUrl === undefined) {
-        throw new ClientSyncError(
-          'sync.invalid_request',
+        throw invalidRequest(
           'blob download returned a url but the transport cannot fetch urls (§5.9.5)',
         );
       }
@@ -2166,8 +2153,7 @@ export class SyncClient {
       // §5.9.5 inherits §5.1: verify the content address, reject on mismatch.
       // On the url path this invalidates the fetch (no fall-through) — the
       // next fetchBlob re-requests the authorized endpoint (§5.9.5 recovery).
-      throw new ClientSyncError(
-        'sync.invalid_request',
+      throw invalidRequest(
         `blob content address mismatch for ${blobId} (§5.9.5)`,
       );
     }
@@ -2176,10 +2162,7 @@ export class SyncClient {
     this.#enforceBlobCacheCap();
     const stored = getCachedBlob(this.#db, blobId);
     if (stored === undefined) {
-      throw new ClientSyncError(
-        'sync.invalid_request',
-        'blob cache write failed',
-      );
+      throw invalidRequest('blob cache write failed');
     }
     return stored;
   }
@@ -2311,14 +2294,12 @@ export class SyncClient {
         replacement.length === 0 ||
         replacement === input.clientCommitId
       ) {
-        throw new ClientSyncError(
-          'sync.invalid_request',
+        throw invalidRequest(
           'superseded outcomes require a distinct replacementClientCommitId',
         );
       }
     } else if (replacement !== undefined) {
-      throw new ClientSyncError(
-        'sync.invalid_request',
+      throw invalidRequest(
         'replacementClientCommitId is valid only for superseded outcomes',
       );
     }
@@ -2332,8 +2313,7 @@ export class SyncClient {
       ((current.status === 'applied' || current.status === 'cached') &&
         input.resolution === 'dismissed');
     if (!allowed) {
-      throw new ClientSyncError(
-        'sync.invalid_request',
+      throw invalidRequest(
         `resolution ${input.resolution} is invalid for ${current.status} outcome`,
       );
     }
@@ -2343,10 +2323,9 @@ export class SyncClient {
     return this.#applyBatch(
       (batch) => {
         restoreFailedBases(this.#db, this.#schema);
-        this.#db.exec(
-          'DELETE FROM _syncular_failed_rows WHERE client_commit_id = ?',
-          [input.clientCommitId],
-        );
+        this.#db.exec('DELETE FROM _syncular_failed_rows WHERE commit_id = ?', [
+          input.clientCommitId,
+        ]);
         const resolved = persistCommitOutcomeResolution(
           this.#db,
           input,
@@ -2435,8 +2414,7 @@ export class SyncClient {
     this.#requireActive();
     const socket = this.#socket;
     if (socket === undefined) {
-      throw new ClientSyncError(
-        'sync.invalid_request',
+      throw invalidRequest(
         'setPresence requires a connected realtime socket (§8.6)',
       );
     }
@@ -2547,8 +2525,7 @@ export class SyncClient {
     this.#requireActive();
     const table = this.#table(base.table);
     if (!table.scopeColumnByVariable.has(base.variable)) {
-      throw new ClientSyncError(
-        'sync.invalid_request',
+      throw invalidRequest(
         `setWindow: table ${JSON.stringify(base.table)} has no scope variable ${JSON.stringify(base.variable)} (§4.8)`,
       );
     }
@@ -2764,6 +2741,7 @@ export class SyncClient {
             : {}),
         };
       }
+      const json: Record<string, JsonRowValue> = {};
       if (mutation.op === 'patch') {
         // §6.7 patch: the values map IS the presence set — the primary key
         // plus the supplied non-scope columns. Absent columns keep their
@@ -2772,7 +2750,6 @@ export class SyncClient {
         const normalized = normalizeRecordKeys(table, mutation.values);
         const scopeColumns = new Set(table.scopeColumnByVariable.values());
         const pkColumn = table.columns[table.primaryKeyIndex] as RowColumn;
-        const json: Record<string, JsonRowValue> = {};
         for (const column of table.columns) {
           if (!normalized.has(column.name)) continue;
           // §3.4 rule 5 / §6.2: scope columns are immutable on update. The
@@ -2808,8 +2785,7 @@ export class SyncClient {
                 ),
               )
             ) {
-              throw new ClientSyncError(
-                'sync.invalid_request',
+              throw invalidRequest(
                 `table ${table.name}: patch cannot write scope column ${JSON.stringify(column.name)} (§3.4)`,
               );
             }
@@ -2818,8 +2794,7 @@ export class SyncClient {
           const value = normalized.get(column.name);
           if (value === undefined || value === null) {
             if (!column.nullable) {
-              throw new ClientSyncError(
-                'sync.invalid_request',
+              throw invalidRequest(
                 `table ${table.name}: column ${JSON.stringify(column.name)} is not nullable (§6.1)`,
               );
             }
@@ -2830,35 +2805,18 @@ export class SyncClient {
             coerceSqlRepresentation(column, value) as RowValue,
           );
         }
-        const pkValue = json[pkColumn.name];
-        if (typeof pkValue !== 'string' || pkValue.length === 0) {
-          throw new ClientSyncError(
-            'sync.invalid_request',
-            `table ${table.name}: upsert requires a non-empty string primary key`,
-          );
-        }
-        return {
-          table: mutation.table,
-          rowId: pkValue,
-          op: 'upsert',
-          ...(mutation.baseVersion !== undefined
-            ? { baseVersion: mutation.baseVersion }
-            : {}),
-          values: json,
-        };
+      } else {
+        const values = recordToRowValues(table, mutation.values);
+        table.columns.forEach((column, index) => {
+          json[column.name] = rowValueToJson(values[index] ?? null);
+        });
       }
-      const values = recordToRowValues(table, mutation.values);
-      const pkValue = values[table.primaryKeyIndex];
+      const pkValue = json[table.primaryKey];
       if (typeof pkValue !== 'string' || pkValue.length === 0) {
-        throw new ClientSyncError(
-          'sync.invalid_request',
+        throw invalidRequest(
           `table ${table.name}: upsert requires a non-empty string primary key`,
         );
       }
-      const json: Record<string, ReturnType<typeof rowValueToJson>> = {};
-      table.columns.forEach((column, index) => {
-        json[column.name] = rowValueToJson(values[index] ?? null);
-      });
       return {
         table: mutation.table,
         rowId: pkValue,
@@ -2955,8 +2913,7 @@ export class SyncClient {
     const normalized = normalizeRecordKeys(compiled, partial);
     const pkOverride = normalized.get(pkColumn.name);
     if (pkOverride !== undefined && pkOverride !== rowId) {
-      throw new ClientSyncError(
-        'sync.invalid_request',
+      throw invalidRequest(
         `table ${compiled.name}: patch cannot change the primary key`,
       );
     }
@@ -2992,8 +2949,7 @@ export class SyncClient {
     const appliedPlan = getMeta(this.#db, metaKey);
     if (appliedPlan !== undefined) {
       if (appliedPlan !== purge.canonicalPlan) {
-        throw new ClientSyncError(
-          'sync.invalid_request',
+        throw invalidRequest(
           `local purge id ${JSON.stringify(purge.purgeId)} was already used with a different plan`,
         );
       }
@@ -3165,8 +3121,7 @@ export class SyncClient {
       };
     }
     if (this.#schemaFloor !== undefined) {
-      throw new ClientSyncError(
-        'sync.invalid_request',
+      throw invalidRequest(
         'local rebootstrap cannot bypass an active schema-floor stop; update the application first',
       );
     }
@@ -3379,7 +3334,6 @@ export class SyncClient {
       if (this.#retainFailedCommits && code === 'client.encrypt_failed')
         retainFailedRows(
           this.#db,
-          this.#schema,
           commit,
           listOutboxBeforeImages(this.#db, commit.clientCommitId),
         );
@@ -3425,8 +3379,7 @@ export class SyncClient {
     this.#requireActive();
     if (this.#syncOutstanding) {
       return Promise.reject(
-        new ClientSyncError(
-          'sync.invalid_request',
+        invalidRequest(
           'sync() is already running — the core owns one loop (coalesce wake-ups)',
         ),
       );
@@ -3602,10 +3555,7 @@ export class SyncClient {
       const responseBytes = await this.#roundTrip(requestBytes);
       const message = decodeMessage(responseBytes);
       if (message.msgKind !== 'response') {
-        throw new ClientSyncError(
-          'sync.invalid_request',
-          'transport returned a non-response message',
-        );
+        throw invalidRequest('transport returned a non-response message');
       }
       const summary = await this.#processResponse(
         message,
@@ -3710,10 +3660,7 @@ export class SyncClient {
         return last;
       }
     }
-    throw new ClientSyncError(
-      'sync.invalid_request',
-      'sync did not reach idle within the round budget',
-    );
+    throw invalidRequest('sync did not reach idle within the round budget');
   }
 
   /**
@@ -3819,10 +3766,7 @@ export class SyncClient {
     this.#requireActive();
     if (this.#realtimePolicy === 'off') {
       return Promise.reject(
-        new ClientSyncError(
-          'sync.invalid_request',
-          "realtimePolicy is 'off'; realtime connect is refused",
-        ),
+        invalidRequest("realtimePolicy is 'off'; realtime connect is refused"),
       );
     }
     if (this.#socket !== undefined) return Promise.resolve();
@@ -3854,10 +3798,7 @@ export class SyncClient {
   async #connectRealtime(generation: number): Promise<void> {
     const connector = this.#config.realtime;
     if (connector === undefined) {
-      throw new ClientSyncError(
-        'sync.invalid_request',
-        'no realtime connector configured',
-      );
+      throw invalidRequest('no realtime connector configured');
     }
     let openedSocket: RealtimeSocket | undefined;
     try {
@@ -3943,8 +3884,7 @@ export class SyncClient {
       } catch (error) {
         this.#pendingRound = undefined;
         round.reject(
-          new ClientSyncError(
-            'sync.invalid_request',
+          invalidRequest(
             `malformed round response stream (§8.7): ${error instanceof Error ? error.message : String(error)}`,
           ),
         );
@@ -3954,10 +3894,7 @@ export class SyncClient {
       this.#pendingRound = undefined;
       if (done.excess > 0) {
         round.reject(
-          new ClientSyncError(
-            'sync.invalid_request',
-            'response bytes past END of the round stream (§8.7)',
-          ),
+          invalidRequest('response bytes past END of the round stream (§8.7)'),
         );
         return;
       }
@@ -4121,7 +4058,7 @@ export class SyncClient {
 
     const header = message.frames[0];
     if (header?.type !== 'RESP_HEADER') {
-      throw new ClientSyncError('sync.invalid_request', 'missing RESP_HEADER');
+      throw invalidRequest('missing RESP_HEADER');
     }
     if (
       message.wireVersion < 2 ||
@@ -4348,8 +4285,7 @@ export class SyncClient {
               frame.mediaType === 'sqlite' &&
               (this.#acceptMask() & ACCEPT_SQLITE) === 0
             ) {
-              throw new ClientSyncError(
-                'sync.invalid_request',
+              throw invalidRequest(
                 'SEGMENT_REF mediaType sqlite was not advertised in accept (§4.2)',
               );
             }
@@ -4362,8 +4298,7 @@ export class SyncClient {
                 frame.rowCursor !== undefined ||
                 frame.nextRowCursor !== undefined
               ) {
-                throw new ClientSyncError(
-                  'sync.invalid_request',
+                throw invalidRequest(
                   'sqlite segments are whole-table: rowCursor/nextRowCursor must be absent (§5.3)',
                 );
               }
@@ -4630,7 +4565,6 @@ export class SyncClient {
       if (this.#retainFailedCommits)
         retainFailedRows(
           this.#db,
-          this.#schema,
           commit,
           listOutboxBeforeImages(this.#db, commit.clientCommitId),
         );
@@ -4833,8 +4767,7 @@ export class SyncClient {
   ): Promise<Uint8Array> {
     const downloader = this.#config.segments;
     if (downloader === undefined) {
-      throw new ClientSyncError(
-        'sync.invalid_request',
+      throw invalidRequest(
         'received SEGMENT_REF but no segment downloader is configured',
       );
     }
@@ -4862,8 +4795,7 @@ export class SyncClient {
         fetchUrl === undefined ||
         (this.#acceptMask() & ACCEPT_SIGNED_URLS) === 0
       ) {
-        throw new ClientSyncError(
-          'sync.invalid_request',
+        throw invalidRequest(
           'SEGMENT_REF carries a url but accept bit 3 was not advertised (§5.4)',
         );
       }
@@ -4893,8 +4825,7 @@ export class SyncClient {
     onProgress(bytes.byteLength);
     const hash = await sha256Hex(bytes);
     if (`sha256:${hash}` !== frame.segmentId) {
-      throw new ClientSyncError(
-        'sync.invalid_request',
+      throw invalidRequest(
         `segment ${frame.segmentId} failed content-address verification (§5.1)`,
         true,
       );
@@ -5267,7 +5198,7 @@ export class SyncClient {
     this.#applyBatch((batch) => {
       this.#db.transaction(() => {
         restoreFailedBases(this.#db, this.#schema);
-        restoreAbsentFailedRows(this.#db, this.#schema);
+        restoreFailedBases(this.#db, this.#schema, true);
         for (const commit of pending)
           this.#applyOperationsLocally(commit.operations, batch);
       });
@@ -5294,10 +5225,7 @@ export class SyncClient {
 
   #requireStarted(): void {
     if (!this.#started) {
-      throw new ClientSyncError(
-        'sync.invalid_request',
-        'SyncClient.start() has not completed',
-      );
+      throw invalidRequest('SyncClient.start() has not completed');
     }
   }
 

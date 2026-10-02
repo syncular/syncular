@@ -18,7 +18,7 @@ export const changelog = [
   {
     date: '2026-10-02',
     title: 'Atomic sparse aggregates and retained local conflicts',
-    body: 'A mutation batch mixes sparse patches, full rows and deletes in one atomic commit. Plain-column patches leave encrypted ciphertext untouched without keys. Clients can retain rejected aggregate intent across pulls and restart, expose current server rows, and resolve it explicitly. Scope revocation and security purge remove retained intent.',
+    body: 'Released in 0.30.9. v0.30.8 tagged, not published; superseded by 0.30.9. A mutation batch mixes sparse patches, full rows and deletes in one atomic commit. Plain-column patches leave encrypted ciphertext untouched without keys. Clients can retain rejected aggregate intent across pulls and restart, expose current server rows, and resolve it explicitly. Scope revocation and security purge remove retained intent.',
     links: [
       {
         href: '/concepts-conflicts/',

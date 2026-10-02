@@ -33,6 +33,7 @@ import {
 } from './database';
 import {
   ClientSyncError,
+  invalidRequest,
   STORAGE_BUSY_CODE,
   STORAGE_UNAVAILABLE_CODE,
 } from './errors';
@@ -205,8 +206,7 @@ class WasmClientDatabase implements ClientDatabase {
     assertImageAlias(alias);
     const pointer = this.#db.pointer;
     if (pointer === undefined) {
-      throw new ClientSyncError(
-        'sync.invalid_request',
+      throw invalidRequest(
         'sqlite-wasm database exposes no native handle for image import',
       );
     }
@@ -225,8 +225,7 @@ class WasmClientDatabase implements ClientDatabase {
         capi.SQLITE_DESERIALIZE_FREEONCLOSE | capi.SQLITE_DESERIALIZE_READONLY,
       );
       if (rc !== 0) {
-        throw new ClientSyncError(
-          'sync.invalid_request',
+        throw invalidRequest(
           `sqlite3_deserialize failed with code ${rc} (§5.3)`,
         );
       }
@@ -398,14 +397,12 @@ export async function openPersistentWasmDatabase(
   options?: PersistentWasmDatabaseOptions,
 ): Promise<ClientDatabase> {
   if (!/^[A-Za-z0-9._-]+$/.test(name)) {
-    throw new ClientSyncError(
-      'sync.invalid_request',
+    throw invalidRequest(
       `invalid persistent database name ${JSON.stringify(name)}`,
     );
   }
   if (!inWorkerContext()) {
-    throw new ClientSyncError(
-      'sync.invalid_request',
+    throw invalidRequest(
       'openPersistentWasmDatabase() must run inside a Web Worker: the ' +
         'persistent mode is whole-core-in-a-worker by design (Direction ' +
         'decision 2, 2026-07-03). Use the worker handle from the main ' +
