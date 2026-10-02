@@ -29,6 +29,7 @@ import {
   REALTIME_TAG_ROUND,
 } from '@syncular/core';
 import type {
+  ClientCommitOutcome,
   ClientConflict,
   ClientCreateOptions,
   ClientDriver,
@@ -917,9 +918,9 @@ class RustClientInstance implements ClientInstance {
 
   async mutate(mutations: readonly ClientMutation[]): Promise<string> {
     const wire = mutations.map((mutation) =>
-      mutation.op === 'upsert'
+      mutation.op !== 'delete'
         ? {
-            op: 'upsert',
+            op: mutation.op,
             table: mutation.table,
             values: mutation.values,
             ...(mutation.baseVersion !== undefined
@@ -1092,6 +1093,58 @@ class RustClientInstance implements ClientInstance {
       'readRows',
     );
     return (result.rows ?? []) as unknown as ClientRowState[];
+  }
+
+  async commitOutcomes(): Promise<ClientCommitOutcome[]> {
+    const result = asObject(
+      await this.#shim.call('commitOutcomes', {}),
+      'commitOutcomes',
+    );
+    if (!Array.isArray(result.outcomes))
+      throw new Error('sync.invalid_response');
+    return result.outcomes.map((raw) => {
+      const outcome = asObject(raw, 'commit outcome');
+      return {
+        clientCommitId: String(outcome.clientCommitId),
+        status: String(outcome.status),
+        resolution: String(outcome.resolution),
+        ...(Array.isArray(outcome.retainedRows)
+          ? {
+              retainedRows: outcome.retainedRows.map((raw) => {
+                const row = asObject(raw, 'retained row');
+                return {
+                  table: String(row.table),
+                  rowId: String(row.rowId),
+                  localRow:
+                    row.localRow === null ? null : driverRowOf(row.localRow),
+                  serverRow:
+                    row.serverRow === null ? null : driverRowOf(row.serverRow),
+                  serverVersion:
+                    row.serverVersion === null
+                      ? null
+                      : Number(row.serverVersion),
+                };
+              }),
+            }
+          : {}),
+      };
+    });
+  }
+
+  async resolveCommitOutcome(
+    clientCommitId: string,
+    resolution: 'resolved_keep_server' | 'superseded',
+    replacementClientCommitId?: string,
+  ): Promise<void> {
+    await this.#shim.call('resolveCommitOutcome', {
+      input: {
+        clientCommitId,
+        resolution,
+        ...(replacementClientCommitId === undefined
+          ? {}
+          : { replacementClientCommitId }),
+      },
+    });
   }
 
   async conflicts(): Promise<ClientConflict[]> {
@@ -1484,6 +1537,9 @@ export const rustClientDriver: ClientDriver = {
             previousVersionContext:
               options.previousVersionContext as unknown as JsonValue,
           }
+        : {}),
+      ...(options.retainFailedCommits !== undefined
+        ? { retainFailedCommits: options.retainFailedCommits }
         : {}),
       ...(options.realtimePolicy !== undefined
         ? { realtimePolicy: options.realtimePolicy }

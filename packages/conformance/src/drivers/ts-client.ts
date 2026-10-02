@@ -29,6 +29,7 @@ import { BunClientDatabase } from '@syncular/client/bun';
 import type { RowValue, ScopeMap } from '@syncular/core';
 import { YjsColumn } from '@syncular/crdt-yjs';
 import type {
+  ClientCommitOutcome,
   ClientConflict,
   ClientCreateOptions,
   ClientDriver,
@@ -246,6 +247,9 @@ async function constructClient(
     database: db,
     schema: toClientSchema(schema),
     clientId: options.clientId,
+    ...(options.retainFailedCommits !== undefined
+      ? { retainFailedCommits: options.retainFailedCommits }
+      : {}),
     ...(options.realtimePolicy !== undefined
       ? { realtimePolicy: options.realtimePolicy }
       : {}),
@@ -419,7 +423,7 @@ class TsClientInstance implements ClientInstance {
       }
       return {
         table: mutation.table,
-        op: 'upsert',
+        op: mutation.op,
         values,
         ...(mutation.baseVersion !== undefined
           ? { baseVersion: mutation.baseVersion }
@@ -647,6 +651,53 @@ class TsClientInstance implements ClientInstance {
         version: Number(row[SYNC_VERSION_COLUMN] ?? 0),
         values: values as DriverRow,
       };
+    });
+  }
+
+  async commitOutcomes(): Promise<ClientCommitOutcome[]> {
+    return this.#client.commitOutcomes().map((outcome) => ({
+      clientCommitId: outcome.clientCommitId,
+      status: outcome.status,
+      resolution: outcome.resolution,
+      ...(outcome.retainedRows
+        ? {
+            retainedRows: outcome.retainedRows.map((row) => ({
+              ...row,
+              localRow:
+                row.localRow === null
+                  ? null
+                  : Object.fromEntries(
+                      Object.entries(row.localRow).map(([key, value]) => [
+                        key,
+                        toDriverValue(value),
+                      ]),
+                    ),
+              serverRow:
+                row.serverRow === null
+                  ? null
+                  : Object.fromEntries(
+                      Object.entries(row.serverRow).map(([key, value]) => [
+                        key,
+                        toDriverValue(value),
+                      ]),
+                    ),
+            })),
+          }
+        : {}),
+    }));
+  }
+
+  async resolveCommitOutcome(
+    clientCommitId: string,
+    resolution: 'resolved_keep_server' | 'superseded',
+    replacementClientCommitId?: string,
+  ): Promise<void> {
+    this.#client.resolveCommitOutcome({
+      clientCommitId,
+      resolution,
+      ...(replacementClientCommitId === undefined
+        ? {}
+        : { replacementClientCommitId }),
     });
   }
 

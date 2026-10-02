@@ -322,6 +322,7 @@ export interface ClientHandle {
 }
 
 export interface NewClientOptions {
+  readonly retainFailedCommits?: boolean;
   readonly actorId: string;
   readonly clientId: string;
   readonly schema?: DriverSchema;
@@ -535,6 +536,9 @@ export class ScenarioContext {
         : {}),
       ...(options.previousVersionContext !== undefined
         ? { previousVersionContext: options.previousVersionContext }
+        : {}),
+      ...(options.retainFailedCommits !== undefined
+        ? { retainFailedCommits: options.retainFailedCommits }
         : {}),
       ...(options.realtimePolicy !== undefined
         ? { realtimePolicy: options.realtimePolicy }

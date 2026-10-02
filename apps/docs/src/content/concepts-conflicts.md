@@ -48,6 +48,45 @@ re-encodes it with the current codec, so the server only ever sees current
 encodings
 ([SPEC §2.4](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#24-schema-ir-and-the-generated-row-codec)).
 
+## Atomic sparse aggregates
+
+A `mutate` call accepts `op: 'patch'` alongside full `upsert` and `delete`
+operations. Include each patch's primary key in `values`. The client queues
+one atomic commit and updates all available local rows in one transaction.
+Omitted columns retain their values. A patch that writes only plaintext columns
+needs no encryption key for omitted encrypted columns. Their stored ciphertext
+remains unchanged.
+
+```ts
+client.mutate([
+  { table: 'todos', op: 'patch', values: { id: 't1', position: 2 }, baseVersion: 3 },
+  { table: 'todos', op: 'patch', values: { id: 't2', position: 1 }, baseVersion: 4 },
+  { table: 'events', op: 'upsert', values: auditEvent, baseVersion: 0 },
+]);
+```
+
+## Retain failed local intent
+
+Set `retainFailedCommits: true` when constructing the browser, worker or Tauri
+client. The Rust core exposes `set_retain_failed_commits(true)`. The default
+removes rejected optimistic overlays; the enabled policy preserves the complete
+failed aggregate as durable local intent. A failed commit leaves the outbox and
+is never retried implicitly. Incoming server rows continue to advance a separate
+base while local reads retain the intended changes. Restart preserves that state.
+
+`commitOutcome(id)` and `commitOutcomes()` expose `retainedRows`. Each row carries
+its table, primary key, complete intended `localRow`, latest authorized
+`serverRow` and `serverVersion`. A deletion or absent server row is `null`.
+The outcome's results carry the conflict or rejection reason. Display that
+reason on the affected item and offer an explicit resolution.
+
+Use `resolveCommitOutcome({ clientCommitId, resolution: 'resolved_keep_server' })`
+to restore the latest server base. Keep-local and edit create a new validated
+aggregate with current base versions, then resolve the failed outcome as
+`superseded` with the new `replacementClientCommitId`. The replacement retains
+its own sync outcome. Security purge and scope revocation remove whole retained
+aggregates; retained intent never grants access.
+
 ## Conflict detection
 
 Pass a `baseVersion` on a mutation to assert "I edited version K." The

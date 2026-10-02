@@ -160,6 +160,91 @@ function utf8Hex(text: string): string {
 
 export const encryptionScenarios: readonly Scenario[] = [
   {
+    name: 'encryption/atomic-plain-patches-without-keys',
+    specRefs: ['§5.11', '§6.1', '§7.1'],
+    server: {
+      schema: {
+        ...E2EE_SCHEMA,
+        tables: E2EE_SCHEMA.tables.map((table) => ({
+          ...table,
+          columns: [
+            ...table.columns,
+            { name: 'starts', type: 'integer' as const, nullable: false },
+          ],
+        })),
+      },
+    },
+    async run(ctx) {
+      const schema: DriverSchema = {
+        ...E2EE_SCHEMA,
+        tables: E2EE_SCHEMA.tables.map((table) => ({
+          ...table,
+          columns: [
+            ...table.columns,
+            { name: 'starts', type: 'integer', nullable: false },
+          ],
+        })),
+      };
+      const writer = await ctx.newClient({
+        actorId: 'writer',
+        clientId: 'writer',
+        schema,
+        allowed: P1,
+        encryption: goodKeys,
+      });
+      await writer.api.mutate(
+        ['s1', 's2'].map((id) => ({
+          op: 'upsert' as const,
+          table: 'secrets',
+          values: {
+            id,
+            project_id: 'p1',
+            note: 'private',
+            amount: 7,
+            starts: 10,
+          },
+        })),
+      );
+      await syncIdle(writer);
+      const before = await ctx.server.readRows('secrets');
+      // No protected pull is requested by the locked actor; encrypting omitted
+      // columns must never be attempted at its push boundary.
+      const locked = await ctx.newClient({
+        actorId: 'locked',
+        clientId: 'locked',
+        schema,
+        allowed: P1,
+        encryption: { keys: {} },
+      });
+      await locked.api.mutate(
+        ['s1', 's2'].map((id, index) => ({
+          op: 'patch' as const,
+          table: 'secrets',
+          values: { id, starts: 20 + index },
+          baseVersion: 1,
+        })),
+      );
+      await syncIdle(locked);
+      const after = await ctx.server.readRows('secrets');
+      checkEqual(
+        after.map((row) => row.values.starts),
+        [20, 21],
+        'all plain columns commit without keys',
+      );
+      checkEqual(
+        after.map((row) => [row.values.note, row.values.amount]),
+        before.map((row) => [row.values.note, row.values.amount]),
+        'omitted ciphertext remains byte-identical',
+      );
+      checkEqual(
+        await locked.api.rejections(),
+        [],
+        'plain batch has no key refusal',
+      );
+    },
+  },
+
+  {
     // A writes an encrypted row; B (a scope-mate with the same key) decrypts
     // it on pull back to plaintext; the server row holds ciphertext.
     name: 'encryption/round-trip',

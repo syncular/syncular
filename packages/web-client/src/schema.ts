@@ -1,3 +1,4 @@
+import { ensureFailedOverlaySchema } from './failed-overlay';
 /**
  * Client schema IR (SPEC.md §2.4, §3.1) — the same shape the server
  * compiles and is emitted by codegen. Drives local table
@@ -532,6 +533,7 @@ export function ensureLocalSyncedSchema(
  */
 export function ensureLocalBookkeepingSchema(db: ClientDatabase): void {
   db.transaction(() => {
+    ensureFailedOverlaySchema(db);
     db.exec(`CREATE TABLE IF NOT EXISTS _syncular_meta(
       key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
     db.exec(`CREATE TABLE IF NOT EXISTS _syncular_blob_commit_refs(

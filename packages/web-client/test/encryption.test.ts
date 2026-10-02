@@ -458,3 +458,68 @@ describe('sparse patch key-id fallback (SYNCULAR-SPARSE-PATCH-KEYID-001)', () =>
     expect(handle.client.commitOutcome(goodId)?.status).toBe('applied');
   });
 });
+
+test('atomic plain-column patches apply locally with locked keys and omit encrypted payloads', async () => {
+  const table = {
+    ...SECRETS_TABLE,
+    columns: [
+      ...SECRETS_COLUMNS,
+      { name: 'starts', type: 'integer' as const, nullable: false },
+    ],
+  };
+  const schema: ClientSchema = { version: 1, tables: [table] };
+  const server = makeServer(schema);
+  server.allowed['actor-1'] = { project_id: ['p1'] };
+  let locked = false;
+  const a = await makeClient(server, {
+    clientId: 'locked-batch',
+    schema,
+    encryption: {
+      keyProvider: (id) => (locked ? undefined : goodProvider(id)),
+    },
+  });
+  try {
+    a.client.subscribe({
+      id: 'secrets',
+      table: 'secrets',
+      scopes: { project_id: ['p1'] },
+    });
+    a.client.mutate(
+      ['s1', 's2'].map((id) => ({
+        op: 'upsert' as const,
+        table: 'secrets',
+        values: {
+          id,
+          project_id: 'p1',
+          note: 'private',
+          amount: 42,
+          starts: 10,
+        },
+      })),
+    );
+    await a.client.syncUntilIdle();
+    a.client.unsubscribe('secrets');
+    locked = true;
+    const id = a.client.mutate(
+      ['s1', 's2'].map((id, index) => ({
+        op: 'patch' as const,
+        table: 'secrets',
+        values: { id, starts: 20 + index },
+        baseVersion: 1,
+      })),
+    );
+    expect(
+      tableRows(a.db, 'secrets').map((row) => [row.starts, row.note]),
+    ).toEqual([
+      [20, 'private'],
+      [21, 'private'],
+    ]);
+    expect(a.client.pendingCommits()).toHaveLength(1);
+    await a.client.syncUntilIdle();
+    expect(a.client.commitOutcome(id)?.status).toBe('applied');
+    expect(a.client.rejections()).toHaveLength(0);
+  } finally {
+    await a.client.close();
+    a.db.close();
+  }
+});

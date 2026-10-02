@@ -1086,3 +1086,68 @@ for (const [name, attempts, delays, errorCode] of [
     expect(held).toBe(false);
   });
 }
+
+test('worker atomic sparse conflict keeps its local aggregate and explicit resolution', async () => {
+  server.allowed['actor-1'] = { project_id: ['retained-worker'] };
+  const a = (
+    await makeHandle({ clientId: 'retained-worker-a', autoSync: false })
+  ).handle;
+  const b = (
+    await makeHandle({
+      clientId: 'retained-worker-b',
+      autoSync: false,
+      retainFailedCommits: true,
+    })
+  ).handle;
+  for (const handle of [a, b])
+    await handle.subscribe({
+      id: 'tasks',
+      table: 'tasks',
+      scopes: { project_id: ['retained-worker'] },
+    });
+  await a.mutate(
+    ['w1', 'w2'].map((id) => ({
+      table: 'tasks',
+      op: 'upsert' as const,
+      values: taskValues(id, 'retained-worker', 'original'),
+    })),
+  );
+  await a.syncUntilIdle();
+  await b.syncUntilIdle();
+  await a.patch('tasks', 'w1', { title: 'winner' }, { baseVersion: 1 });
+  await a.syncUntilIdle();
+  const id = await b.mutate([
+    {
+      table: 'tasks',
+      op: 'patch',
+      values: { id: 'w1', title: 'mine' },
+      baseVersion: 1,
+    },
+    {
+      table: 'tasks',
+      op: 'patch',
+      values: { id: 'w2', done: true },
+      baseVersion: 1,
+    },
+  ]);
+  await b.syncUntilIdle();
+  expect(await b.query("SELECT title FROM tasks WHERE id = 'w1'")).toEqual([
+    { title: 'mine' },
+  ]);
+  expect(await b.commitOutcome(id)).toMatchObject({
+    status: 'conflict',
+    retainedRows: [
+      { localRow: { title: 'mine' }, serverRow: { title: 'winner' } },
+      { localRow: { done: true } },
+    ],
+  });
+  await b.resolveCommitOutcome({
+    clientCommitId: id,
+    resolution: 'resolved_keep_server',
+  });
+  expect(await b.query("SELECT title FROM tasks WHERE id = 'w1'")).toEqual([
+    { title: 'winner' },
+  ]);
+  await a.close();
+  await b.close();
+});

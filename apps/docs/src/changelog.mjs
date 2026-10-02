@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-10-02',
+    title: 'Atomic sparse aggregates and retained local conflicts',
+    body: 'A mutation batch mixes sparse patches, full rows and deletes in one atomic commit. Plain-column patches leave encrypted ciphertext untouched without keys. Clients can retain rejected aggregate intent across pulls and restart, expose current server rows, and resolve it explicitly. Scope revocation and security purge remove retained intent.',
+    links: [
+      {
+        href: '/concepts-conflicts/',
+        label: 'Atomic writes and conflict resolution',
+      },
+    ],
+  },
+  {
+    date: '2026-10-02',
     title: 'SQLite imports preserve the first storage failure',
     body: 'A full local database reports client.storage_full with its numeric SQLite code. A failed rollback stays secondary. Browser, Bun, Node and native clients accept another import after capacity returns. Server cleanup also retains its original exception.',
     links: [

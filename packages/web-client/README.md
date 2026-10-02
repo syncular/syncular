@@ -361,7 +361,7 @@ that rolled back with the terminating operation. It stays in the protected
 client database and is never added to the wire protocol, preferences, or
 telemetry; successful and historical outcomes may omit it.
 
-Rejected optimistic state is removed immediately, even when a validator emits
+By default, rejected optimistic state is removed immediately, even when a validator emits
 no server row in the pull half. The TypeScript client stores protected,
 restart-safe before-images beside each pending outbox commit, restores the last
 confirmed rows (including rejected deletes and atomic siblings), and then
@@ -373,7 +373,17 @@ Use `patch(table, rowId, partial, { baseVersion? })` for editor-style partial
 updates. The wire carries a sparse operation: the primary key plus the supplied
 columns are present, and the durable local operation keeps the same presence
 set so conflict and rejection UI knows which columns the user touched. A
-full-row `mutate` marks every column present.
+full-row `mutate` upsert marks every column present. `mutate` also accepts
+`op: 'patch'` with the primary key and supplied columns. A batch can mix sparse
+patches, upserts and deletes atomically. Omitted encrypted columns require no
+key and retain their ciphertext.
+
+Set `retainFailedCommits: true` to keep the complete failed aggregate visible
+and durable after its outbox drains. Incoming server state advances a separate
+base. `outcome.retainedRows` exposes complete intended rows and the latest
+server rows and versions. Resolve explicitly with `resolved_keep_server`, or
+create a reviewed replacement and link it through `superseded`. Security purge
+and scope revocation remove whole retained aggregates.
 
 ## Application-authorized local security purge
 

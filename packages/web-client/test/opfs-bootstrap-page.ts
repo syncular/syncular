@@ -63,6 +63,7 @@ window.opfsTest = {
       ...(contend ? { leaderLock: singleOwnerLock(), multiTab: false } : {}),
       schema: OPFS_SCHEMA,
       autoSync: false,
+      retainFailedCommits: true,
       endpoints: {
         syncUrl: `${location.origin}/${location.search === '?signed' ? 'sync-signed' : 'sync'}`,
         segmentsUrl: `${location.origin}/segments`,

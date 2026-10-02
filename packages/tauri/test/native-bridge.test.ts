@@ -188,6 +188,51 @@ if (!available) {
   });
 } else {
   describe('native Tauri bridge', () => {
+    test('real native command applies a mixed sparse aggregate in one revision', async () => {
+      const host = nativeTauri();
+      try {
+        const client = await createTauriSyncClient({
+          schema,
+          retainFailedCommits: true,
+          tauri: host.api,
+        });
+        await client.mutate(
+          ['t1', 't2'].map((id) => ({
+            op: 'upsert' as const,
+            table: 'todos',
+            values: { id, list_id: 'one', title: 'original' },
+          })),
+        );
+        const batches: unknown[] = [];
+        client.onChange((batch) => batches.push(batch));
+        await client.mutate([
+          { op: 'patch', table: 'todos', values: { id: 't1', title: 'first' } },
+          {
+            op: 'patch',
+            table: 'todos',
+            values: { id: 't2', title: 'second' },
+          },
+          {
+            op: 'upsert',
+            table: 'todos',
+            values: { id: 'event', list_id: 'one', title: 'audit' },
+            baseVersion: 0,
+          },
+        ]);
+        expect(
+          await client.query('SELECT id, title FROM todos ORDER BY id'),
+        ).toEqual([
+          { id: 'event', title: 'audit' },
+          { id: 't1', title: 'first' },
+          { id: 't2', title: 'second' },
+        ]);
+        expect(batches).toHaveLength(1);
+        expect((await client.statusSnapshot()).outbox).toBe(2);
+        await client.close();
+      } finally {
+        await host.close();
+      }
+    });
     test('real Rust events drive the shared query store atomically', async () => {
       const host = nativeTauri();
       try {

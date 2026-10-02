@@ -1,4 +1,11 @@
 import {
+  dropFailedRows,
+  failedOverlayCommits,
+  retainFailedRows,
+  restoreAbsentFailedRows,
+  restoreFailedBases,
+} from './failed-overlay';
+import {
   ProgressEmitter,
   type SyncProgress,
   type SyncProgressListener,
@@ -244,8 +251,8 @@ import {
 export type MutationInput =
   | {
       readonly table: string;
-      readonly op: 'upsert';
-      /** Full-row values keyed by column name (§6.1: full row payloads). */
+      readonly op: 'upsert' | 'patch';
+      /** Column-keyed full row for upsert, or primary key plus present columns for patch. */
       readonly values: Readonly<Record<string, unknown>>;
       readonly baseVersion?: number;
     }
@@ -260,6 +267,7 @@ export type {
   CommitOperationOutcome,
   CommitOutcome,
   CommitOutcomeQuery,
+  RetainedCommitRow,
   ConflictRecord,
   RejectionRecord,
   ResolveCommitOutcomeInput,
@@ -336,6 +344,8 @@ export interface SyncClientLimits {
 }
 
 export interface SyncClientConfig {
+  /** Keep rejected/conflicting local intent visible until explicit resolution. */
+  readonly retainFailedCommits?: boolean;
   readonly database: ClientDatabase;
   readonly schema: ClientSchema;
   readonly transport: SyncTransport;
@@ -736,6 +746,7 @@ export class SyncClient {
   #securityLifecycle: SecurityLifecycle;
   readonly #now: () => number;
   readonly #outcomeRetentionMaxEntries: number;
+  readonly #retainFailedCommits: boolean;
   #started = false;
   #lease: LeaderLease | undefined;
   #clientId = '';
@@ -830,6 +841,7 @@ export class SyncClient {
         'securityPreflight and encryption are mutually exclusive; install keys with activateSecurity after preflight',
       );
     }
+    this.#retainFailedCommits = config.retainFailedCommits === true;
     this.#db = config.database;
     this.#schema = compileClientSchema(config.schema);
     const realtimePolicy = config.realtimePolicy ?? 'optional';
@@ -1973,6 +1985,12 @@ export class SyncClient {
         this.#batch = batch;
         try {
           result = fn(batch);
+          if (
+            this.#db
+              .query('SELECT DISTINCT table_name FROM _syncular_failed_rows')
+              .some((row) => batch.hasTable(String(row.table_name)))
+          )
+            batch.outcomes();
           if (batch.touched) {
             revision = bumpLocalRevision(this.#db);
             if (batch.statusChanged) {
@@ -2273,7 +2291,7 @@ export class SyncClient {
   /**
    * Mark a durable failure handled without deleting its evidence. Conflicts
    * may keep the server row or link to a replacement commit; rejections may
-   * only be superseded by a named replacement. Applied/cached history may be
+   * also keep the server row or link to a named replacement. Applied/cached history may be
    * dismissed. The transition is one-way and survives restart.
    */
   resolveCommitOutcome(input: ResolveCommitOutcomeInput): CommitOutcome {
@@ -2308,7 +2326,9 @@ export class SyncClient {
       (current.status === 'conflict' &&
         (input.resolution === 'resolved_keep_server' ||
           input.resolution === 'superseded')) ||
-      (current.status === 'rejected' && input.resolution === 'superseded') ||
+      (current.status === 'rejected' &&
+        (input.resolution === 'superseded' ||
+          input.resolution === 'resolved_keep_server')) ||
       ((current.status === 'applied' || current.status === 'cached') &&
         input.resolution === 'dismissed');
     if (!allowed) {
@@ -2318,30 +2338,48 @@ export class SyncClient {
       );
     }
 
-    return this.#applyBatch((batch) => {
-      const resolved = persistCommitOutcomeResolution(
-        this.#db,
-        input,
-        this.#now(),
-      );
-      if (resolved === undefined) {
-        throw new ClientSyncError(
-          'sync.outcome_not_found',
-          `no durable outcome exists for ${JSON.stringify(input.clientCommitId)}`,
+    const priorConflicts = this.#conflicts;
+    const priorRejections = this.#rejections;
+    return this.#applyBatch(
+      (batch) => {
+        restoreFailedBases(this.#db, this.#schema);
+        this.#db.exec(
+          'DELETE FROM _syncular_failed_rows WHERE client_commit_id = ?',
+          [input.clientCommitId],
         );
-      }
-      this.#conflicts = this.#conflicts.filter(
-        (record) => record.clientCommitId !== input.clientCommitId,
-      );
-      this.#rejections = this.#rejections.filter(
-        (record) => record.clientCommitId !== input.clientCommitId,
-      );
-      pruneCommitOutcomes(this.#db, this.#outcomeRetentionMaxEntries);
-      batch.outcomes();
-      if (current.status === 'conflict') batch.conflicts();
-      if (current.status === 'rejected') batch.rejections();
-      return resolved;
-    });
+        const resolved = persistCommitOutcomeResolution(
+          this.#db,
+          input,
+          this.#now(),
+        );
+        if (resolved === undefined) {
+          throw new ClientSyncError(
+            'sync.outcome_not_found',
+            `no durable outcome exists for ${JSON.stringify(input.clientCommitId)}`,
+          );
+        }
+        this.#conflicts = this.#conflicts.filter(
+          (record) => record.clientCommitId !== input.clientCommitId,
+        );
+        this.#rejections = this.#rejections.filter(
+          (record) => record.clientCommitId !== input.clientCommitId,
+        );
+        pruneCommitOutcomes(this.#db, this.#outcomeRetentionMaxEntries);
+        this.#replayOutbox();
+        for (const operation of current.operations ?? [])
+          batch.table(operation.table);
+        batch.outcomes();
+        if (current.status === 'conflict') batch.conflicts();
+        if (current.status === 'rejected') batch.rejections();
+        return resolved;
+      },
+      undefined,
+      (error) => {
+        this.#conflicts = priorConflicts;
+        this.#rejections = priorRejections;
+        throw error;
+      },
+    );
   }
 
   /** §7.3.5: remaining lease validity in ms (`expiresAtMs − now`), or
@@ -2689,7 +2727,10 @@ export class SyncClient {
    */
   #pinnedRowIds(table: string): Set<string> {
     const pinned = new Set<string>();
-    for (const commit of listOutbox(this.#db)) {
+    for (const commit of [
+      ...failedOverlayCommits(this.#db),
+      ...listOutbox(this.#db),
+    ]) {
       for (const op of commit.operations) {
         if (op.table === table) pinned.add(op.rowId);
       }
@@ -2708,10 +2749,7 @@ export class SyncClient {
     return this.#recordMutations(mutations);
   }
 
-  #recordMutations(
-    mutations: readonly MutationInput[],
-    partial = false,
-  ): string {
+  #recordMutations(mutations: readonly MutationInput[]): string {
     this.#requireActive();
     const clientCommitId = crypto.randomUUID();
     const operations: OutboxOperation[] = mutations.map((mutation) => {
@@ -2726,7 +2764,7 @@ export class SyncClient {
             : {}),
         };
       }
-      if (partial) {
+      if (mutation.op === 'patch') {
         // §6.7 patch: the values map IS the presence set — the primary key
         // plus the supplied non-scope columns. Absent columns keep their
         // stored value; the overlay and the server both apply only the
@@ -2922,22 +2960,19 @@ export class SyncClient {
         `table ${compiled.name}: patch cannot change the primary key`,
       );
     }
-    return this.#recordMutations(
-      [
-        {
-          table,
-          op: 'upsert',
-          values: {
-            ...Object.fromEntries(normalized),
-            [pkColumn.name]: rowId,
-          },
-          ...(options?.baseVersion !== undefined
-            ? { baseVersion: options.baseVersion }
-            : {}),
+    return this.#recordMutations([
+      {
+        table,
+        op: 'patch',
+        values: {
+          ...Object.fromEntries(normalized),
+          [pkColumn.name]: rowId,
         },
-      ],
-      true,
-    );
+        ...(options?.baseVersion !== undefined
+          ? { baseVersion: options.baseVersion }
+          : {}),
+      },
+    ]);
   }
 
   /**
@@ -2973,6 +3008,19 @@ export class SyncClient {
     try {
       return this.#applyBatch((batch) => {
         const targetsByTable = this.#localPurgeTargetsByTable(purge);
+        restoreFailedBases(this.#db, this.#schema);
+        const droppedRetained = dropFailedRows(this.#db, (table, values) =>
+          (targetsByTable.get(table) ?? []).some((target) =>
+            target.selectors.every((selector) =>
+              selector.values.includes(String(values[selector.column])),
+            ),
+          ),
+        );
+        for (const commit of droppedRetained) {
+          for (const operation of commit.operations)
+            batch.table(operation.table);
+          batch.outcomes();
+        }
         // Doomed detection runs to fixpoint, matching the Rust core's rule:
         // a commit is doomed when any of its ops touches a base-matching
         // row. Base values only become visible here as rollbacks restore
@@ -3074,6 +3122,7 @@ export class SyncClient {
           batch.rejections();
           batch.outcomes();
         }
+        this.#replayOutbox();
         this.#deleteUnreferencedBlobs();
         setMeta(this.#db, metaKey, purge.canonicalPlan);
         return {
@@ -3327,7 +3376,15 @@ export class SyncClient {
     code: string = OUTBOX_INCOMPATIBLE_CODE,
   ): void {
     this.#applyBatch((batch) => {
+      if (this.#retainFailedCommits && code === 'client.encrypt_failed')
+        retainFailedRows(
+          this.#db,
+          this.#schema,
+          commit,
+          listOutboxBeforeImages(this.#db, commit.clientCommitId),
+        );
       this.#rollbackFailedCommit(commit, batch);
+      this.#replayOutbox();
       const rejection: RejectionRecord = {
         clientCommitId: commit.clientCommitId,
         opIndex: 0,
@@ -4570,6 +4627,13 @@ export class SyncClient {
     // validator-rejected updates even when the server emitted no new COMMIT;
     // later pending overlays are then replayed with rebased before-images.
     this.#db.transaction(() => {
+      if (this.#retainFailedCommits)
+        retainFailedRows(
+          this.#db,
+          this.#schema,
+          commit,
+          listOutboxBeforeImages(this.#db, commit.clientCommitId),
+        );
       this.#rollbackFailedCommit(commit, batch);
     });
     batch.status();
@@ -4912,6 +4976,22 @@ export class SyncClient {
         Object.keys(lastEffective).length > 0
       ) {
         try {
+          restoreFailedBases(this.#db, this.#schema);
+          const droppedRetained = dropFailedRows(
+            this.#db,
+            (name, values) =>
+              name === table.name &&
+              Object.entries(lastEffective).every(([variable, allowed]) =>
+                allowed.includes(
+                  String(values[table.scopeColumnByVariable.get(variable)!]),
+                ),
+              ),
+          );
+          for (const commit of droppedRetained) {
+            for (const operation of commit.operations)
+              batch.table(operation.table);
+            batch.outcomes();
+          }
           deleteScopedRows(this.#db, table, lastEffective);
           batch.scopeMap(table, lastEffective);
           const pendingById = new Map(
@@ -5055,7 +5135,7 @@ export class SyncClient {
     const values = table.columns.map((column) =>
       jsonToRowValue(image.values?.[column.name] ?? null),
     );
-    upsertLocalRow(this.#db, table, values, image.syncVersion);
+    upsertLocalRow(this.#db, table, values, image.syncVersion, false);
   }
 
   #legacyUndoOptimisticRows(
@@ -5132,7 +5212,7 @@ export class SyncClient {
           : this.#recordStoredRowScopes(batch, table, op.rowId);
       if (op.op === 'delete') {
         if (batch !== undefined && !precise) batch.table(op.table);
-        deleteLocalRow(this.#db, table, op.rowId);
+        deleteLocalRow(this.#db, table, op.rowId, false);
         continue;
       }
       // §7.1 overlay: apply the operation's PRESENT columns over the current
@@ -5173,19 +5253,23 @@ export class SyncClient {
         local === undefined
           ? OPTIMISTIC_VERSION
           : (local[SYNC_VERSION_COLUMN] as number);
-      upsertLocalRow(this.#db, table, values, version);
+      upsertLocalRow(this.#db, table, values, version, false);
     }
   }
 
   /** Re-apply every pending outbox commit on top of server state (§7.1). */
   #replayOutbox(): void {
-    const pending = listOutbox(this.#db);
+    const pending = [
+      ...failedOverlayCommits(this.#db),
+      ...listOutbox(this.#db),
+    ].sort((a, b) => a.createdAtMs - b.createdAtMs || a.seq - b.seq);
     if (pending.length === 0) return;
     this.#applyBatch((batch) => {
       this.#db.transaction(() => {
-        for (const commit of pending) {
+        restoreFailedBases(this.#db, this.#schema);
+        restoreAbsentFailedRows(this.#db, this.#schema);
+        for (const commit of pending)
           this.#applyOperationsLocally(commit.operations, batch);
-        }
       });
     });
   }

@@ -586,6 +586,11 @@ impl WindowState {
 /// One local mutation (§6.1 shapes, schema-agnostic local form per §0).
 #[derive(Debug, Clone)]
 pub enum Mutation {
+    Patch {
+        table: String,
+        values: Map<String, Value>,
+        base_version: Option<i64>,
+    },
     Upsert {
         table: String,
         values: Map<String, Value>,
@@ -913,6 +918,16 @@ pub enum CommitOperationOutcome {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct RetainedCommitRow {
+    pub table: String,
+    pub row_id: String,
+    pub local_row: Option<Map<String, Value>>,
+    pub server_row: Option<Map<String, Value>>,
+    pub server_version: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct CommitOutcome {
     pub sequence: i64,
     pub client_commit_id: String,
@@ -923,6 +938,8 @@ pub struct CommitOutcome {
     /// Absent for successful and historical outcomes; never sent over wire.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub operations: Option<Vec<CommitOperation>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retained_rows: Option<Vec<RetainedCommitRow>>,
     pub resolution: CommitOutcomeResolution,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolved_at_ms: Option<i64>,

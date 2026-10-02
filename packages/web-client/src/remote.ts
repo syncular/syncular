@@ -15,6 +15,7 @@ import {
   type PushOperationResult,
   type PushResultDetailsFrame,
   type PushResultFrame,
+  type RowValue,
   type RemoteOperationResponse,
 } from '@syncular/core';
 import type { MutationInput } from './client';
@@ -25,6 +26,8 @@ import {
   compileClientSchema,
   type ClientSchema,
   recordToRowValues,
+  normalizeRecordKeys,
+  coerceSqlRepresentation,
 } from './schema';
 import type { SyncTransport } from './transport';
 import type {
@@ -311,7 +314,18 @@ export class SyncRemoteClient {
         });
         continue;
       }
-      let values = recordToRowValues(table, mutation.values);
+      const normalized = normalizeRecordKeys(table, mutation.values);
+      let values =
+        mutation.op === 'patch'
+          ? table.columns.map((column) =>
+              normalized.has(column.name)
+                ? (coerceSqlRepresentation(
+                    column,
+                    normalized.get(column.name),
+                  ) as RowValue)
+                : undefined,
+            )
+          : recordToRowValues(table, mutation.values);
       const rowId = values[table.primaryKeyIndex];
       if (typeof rowId !== 'string' || rowId.length === 0) {
         throw invalid('remote upsert requires a non-empty string primary key');

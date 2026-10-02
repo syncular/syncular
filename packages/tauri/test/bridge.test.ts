@@ -194,6 +194,69 @@ async function build() {
 }
 
 describe('createTauriSyncClient', () => {
+  test('forwards retained failure policy and mixed sparse aggregate unchanged', async () => {
+    const { tauri, calls } = makeTauri(defaultResponder);
+    const client = await createTauriSyncClient({
+      clientId: 'sparse-native',
+      schema: { version: 1, tables: [] },
+      retainFailedCommits: true,
+      tauri,
+    });
+    await client.mutate([
+      {
+        op: 'patch',
+        table: 'todo',
+        values: { id: 't1', title: 'moved' },
+        baseVersion: 1,
+      },
+      {
+        op: 'patch',
+        table: 'todo',
+        values: { id: 't2', done: true },
+        baseVersion: 2,
+      },
+      {
+        op: 'upsert',
+        table: 'event',
+        values: { id: 'event-1', body: 'audit' },
+        baseVersion: 0,
+      },
+    ]);
+    const commands = calls.map(
+      (call) =>
+        call.args.command as {
+          method: string;
+          params: Record<string, unknown>;
+        },
+    );
+    expect(
+      commands.find((command) => command.method === 'create')?.params
+        .retainFailedCommits,
+    ).toBe(true);
+    expect(
+      commands.find((command) => command.method === 'mutate')?.params.mutations,
+    ).toEqual([
+      {
+        op: 'patch',
+        table: 'todo',
+        values: { id: 't1', title: 'moved' },
+        baseVersion: 1,
+      },
+      {
+        op: 'patch',
+        table: 'todo',
+        values: { id: 't2', done: true },
+        baseVersion: 2,
+      },
+      {
+        op: 'upsert',
+        table: 'event',
+        values: { id: 'event-1', body: 'audit' },
+        baseVersion: 0,
+      },
+    ]);
+  });
+
   test('issues create through syncular_command on construction', async () => {
     const { calls } = await build();
     const create = calls.find(

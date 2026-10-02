@@ -200,18 +200,15 @@ Known environmental requirements already encoded (don't regress them):
 
 ## Releases
 
-Trusted publishing, no local tokens: **bump every version in lockstep**
-(14 `packages/*/package.json` + 5 `rust/crates/*/Cargo.toml` + the plugin,
-including the path-dep `version =` constraints), refresh lockfiles
-(`bun install`, `cargo check` in `rust/` AND `bindings/tauri/`), `bun run
-check`, commit, tag `v<version>`, push the tag → `release.yml` publishes npm
-(OIDC + provenance) and crates.io (dependency order: ssp2 → client → command
-→ ffi → syncular → tauri-plugin-syncular). Both publish jobs **skip
-already-published versions**, so a partial-failure re-run (or a validation
-`workflow_dispatch`) publishes exactly what's missing. The crates job
-installs Tauri's GTK/WebKit apt deps for the plugin's verify build. Runbook:
-`docs/RELEASE.md`. The docs banner reads the released version off
-`packages/core` at build time.
+Trusted publishing, no local tokens: the root `package.json` is the only
+release-version source. Managed child manifests, internal constraints and
+lockfile workspace stamps stay at `0.0.0` in source. The release workflow
+materializes them in its disposable checkout. Bump the root version and release
+notes, run `bun run version:check`, the release gates, then commit, tag
+`v<version>` and push the tag. `release.yml` publishes npm and crates.io in
+dependency order using OIDC. Both jobs skip already-published versions, so a
+partial-failure rerun publishes the missing artifacts. Runbook:
+`docs/RELEASE.md`. The docs banner reads the root release version at build time.
 
 ## Contributions
 

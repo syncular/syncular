@@ -69,6 +69,16 @@ export type CommitOperationOutcome =
       readonly rejection: RejectionRecord;
     };
 
+export interface RetainedCommitRow {
+  readonly table: string;
+  readonly rowId: string;
+  /** Complete intended row, or null for a local deletion. */
+  readonly localRow: Readonly<Record<string, RowValue>> | null;
+  /** Latest authorized server base, or null for an absent server row. */
+  readonly serverRow: Readonly<Record<string, RowValue>> | null;
+  readonly serverVersion: number | null;
+}
+
 export interface CommitOutcome {
   /** Monotonic local journal order; not a server sequence. */
   readonly sequence: number;
@@ -82,6 +92,7 @@ export interface CommitOutcome {
    * for successful and historical outcomes. Never sent over the wire.
    */
   readonly operations?: readonly OutboxOperation[];
+  readonly retainedRows?: readonly RetainedCommitRow[];
   readonly resolution: CommitOutcomeResolution;
   readonly resolvedAtMs?: number;
   readonly replacementClientCommitId?: string;
@@ -154,7 +165,33 @@ function decodeResults(raw: string): CommitOperationOutcome[] {
   });
 }
 
-function parseOutcome(row: Readonly<Record<string, unknown>>): CommitOutcome {
+function parseOutcome(
+  db: ClientDatabase,
+  row: Readonly<Record<string, unknown>>,
+): CommitOutcome {
+  const retainedRows: RetainedCommitRow[] = db
+    .query(
+      'SELECT table_name, row_id, initial_json, base_json, base_version FROM _syncular_failed_rows WHERE client_commit_id = ? ORDER BY op_index',
+      [String(row.client_commit_id)],
+    )
+    .map((retained) => {
+      const decode = (value: unknown): Record<string, RowValue> | null =>
+        value === null
+          ? null
+          : Object.fromEntries(
+              Object.entries(
+                JSON.parse(String(value)) as Record<string, JsonRowValue>,
+              ).map(([key, value]) => [key, jsonToRowValue(value)]),
+            );
+      return {
+        table: String(retained.table_name),
+        rowId: String(retained.row_id),
+        localRow: decode(retained.initial_json),
+        serverRow: decode(retained.base_json),
+        serverVersion:
+          retained.base_version === null ? null : Number(retained.base_version),
+      };
+    });
   return {
     sequence: row.seq as number,
     clientCommitId: row.client_commit_id as string,
@@ -164,6 +201,7 @@ function parseOutcome(row: Readonly<Record<string, unknown>>): CommitOutcome {
     ...(typeof row.operations === 'string'
       ? { operations: JSON.parse(row.operations) as OutboxOperation[] }
       : {}),
+    ...(retainedRows.length > 0 ? { retainedRows } : {}),
     resolution: row.resolution as CommitOutcomeResolution,
     ...(typeof row.resolved_at_ms === 'number'
       ? { resolvedAtMs: row.resolved_at_ms }
@@ -205,7 +243,7 @@ export function commitOutcome(
        FROM _syncular_commit_outcomes WHERE client_commit_id = ?`,
     [clientCommitId],
   )[0];
-  return row === undefined ? undefined : parseOutcome(row);
+  return row === undefined ? undefined : parseOutcome(db, row);
 }
 
 export function listCommitOutcomes(
@@ -229,7 +267,7 @@ export function listCommitOutcomes(
       ORDER BY seq DESC${limit === undefined ? '' : ' LIMIT ?'}`,
     limit === undefined ? [] : [limit],
   );
-  return rows.map(parseOutcome);
+  return rows.map((row) => parseOutcome(db, row));
 }
 
 export function persistCommitOutcomeResolution(

@@ -82,6 +82,289 @@ async function serverRow(ctx: ScenarioContext, rowId: string) {
 
 export const sparseRowScenarios: readonly Scenario[] = [
   {
+    name: 'sparse-rows/retained-atomic-conflict',
+    specRefs: ['§7.1', '§7.2', '§7.2.1', '§3.3'],
+    async run(ctx) {
+      const a = await bootstrapped(ctx, 'actor-a', 'client-a');
+      const b = await ctx.newClient({
+        actorId: 'actor-b',
+        clientId: 'client-b',
+        allowed: P1,
+        retainFailedCommits: true,
+      });
+      await b.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await a.api.mutate(
+        ['t1', 't2'].map((id) => ({
+          op: 'upsert' as const,
+          table: 'tasks',
+          values: task(id, 'p1', 'original'),
+        })),
+      );
+      await syncIdle(a);
+      await syncIdle(b);
+      await a.api.patch('tasks', 't1', { title: 'winner' }, 1);
+      await syncIdle(a);
+      const losing = await b.api.mutate([
+        {
+          op: 'patch',
+          table: 'tasks',
+          values: { id: 't1', title: 'mine' },
+          baseVersion: 1,
+        },
+        {
+          op: 'patch',
+          table: 'tasks',
+          values: { id: 't2', done: true },
+          baseVersion: 1,
+        },
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: task('event', 'p1', 'audit'),
+          baseVersion: 0,
+        },
+      ]);
+      await syncIdle(b);
+      checkEqual(
+        (await b.api.readRows('tasks')).map((row) => row.values.title),
+        ['audit', 'mine', 'original'],
+        'entire losing aggregate remains visible',
+      );
+      checkEqual(
+        (await b.api.readRows('tasks')).find((row) => row.rowId === 't2')
+          ?.values.done,
+        true,
+        'losing sibling stays local',
+      );
+      checkEqual(
+        await b.api.pendingCommitIds(),
+        [],
+        'failed intent is not retried implicitly',
+      );
+      await ctx.recreateClient(b, FIXTURE_SCHEMA);
+      checkEqual(
+        (await b.api.readRows('tasks')).find((row) => row.rowId === 't1')
+          ?.values.title,
+        'mine',
+        'restart retains intended row',
+      );
+      check(
+        b.api.drainChangeBatches !== undefined,
+        'outcome changes are observable',
+      );
+      await b.api.drainChangeBatches();
+      await a.api.patch('tasks', 't1', { title: 'latest' });
+      await syncIdle(a);
+      await syncIdle(b);
+      check(
+        (await b.api.drainChangeBatches()).some(
+          (batch) => batch.outcomesChanged,
+        ),
+        'server base changes invalidate outcome readers',
+      );
+      const outcome = (await b.api.commitOutcomes()).find(
+        (outcome) => outcome.clientCommitId === losing,
+      );
+      checkEqual(outcome?.status, 'conflict', 'explicit conflict record');
+      checkEqual(
+        outcome?.retainedRows?.find((row) => row.rowId === 't1')?.localRow
+          ?.title,
+        'mine',
+        'intended snapshot is readable',
+      );
+      checkEqual(
+        outcome?.retainedRows?.find((row) => row.rowId === 't1')?.serverRow
+          ?.title,
+        'latest',
+        'current server base is readable',
+      );
+      await b.api.resolveCommitOutcome(losing, 'resolved_keep_server');
+      checkEqual(
+        (await b.api.readRows('tasks')).find((row) => row.rowId === 't1')
+          ?.values.title,
+        'latest',
+        'take server restores latest base',
+      );
+      check(
+        !(await b.api.readRows('tasks')).some((row) => row.rowId === 'event'),
+        'take server removes failed aggregate creation',
+      );
+      checkEqual(
+        (await b.api.readRows('tasks')).find((row) => row.rowId === 't2')
+          ?.values.done,
+        false,
+        'take server restores sibling',
+      );
+      const correctionFailure = await b.api.patch(
+        'tasks',
+        't1',
+        { title: 'old intent' },
+        1,
+      );
+      await syncIdle(b);
+      const correction = await b.api.patch(
+        'tasks',
+        't1',
+        { title: 'reviewed edit' },
+        3,
+      );
+      await b.api.resolveCommitOutcome(
+        correctionFailure,
+        'superseded',
+        correction,
+      );
+      checkEqual(
+        (await b.api.readRows('tasks')).find((row) => row.rowId === 't1')
+          ?.values.title,
+        'reviewed edit',
+        'superseding correction keeps the new local state',
+      );
+      await syncIdle(b);
+      await syncIdle(a);
+      checkEqual(
+        (await ctx.server.readRows('tasks')).find((row) => row.rowId === 't1')
+          ?.values.title,
+        'reviewed edit',
+        'reviewed replacement syncs',
+      );
+      checkEqual(
+        (await b.api.commitOutcomes()).find(
+          (outcome) => outcome.clientCommitId === correctionFailure,
+        )?.resolution,
+        'superseded',
+        'failure remains linked and resolved',
+      );
+
+      // A second retained conflict cannot survive scope revocation.
+      const stale = await b.api.patch(
+        'tasks',
+        't1',
+        { title: 'unauthorized' },
+        1,
+      );
+      await syncIdle(b);
+      await a.api.mutate([{ op: 'delete', table: 'tasks', rowId: 't1' }]);
+      await syncIdle(a);
+      await syncIdle(b);
+      checkEqual(
+        (await b.api.readRows('tasks')).find((row) => row.rowId === 't1')
+          ?.values.title,
+        'unauthorized',
+        'server deletion preserves retained intent',
+      );
+      checkEqual(
+        (await b.api.commitOutcomes()).find(
+          (outcome) => outcome.clientCommitId === stale,
+        )?.retainedRows?.[0]?.serverRow,
+        null,
+        'server deletion advances the retained base',
+      );
+      await ctx.server.setAllowedScopes('actor-b', { project_id: [] });
+      await syncIdle(b);
+      checkEqual(
+        await b.api.readRows('tasks'),
+        [],
+        'revocation purges retained intent',
+      );
+      checkEqual(
+        (await b.api.commitOutcomes()).find(
+          (outcome) => outcome.clientCommitId === stale,
+        )?.retainedRows,
+        undefined,
+        'purged failure exposes no retained rows',
+      );
+    },
+  },
+
+  {
+    name: 'sparse-rows/atomic-mixed-batch',
+    specRefs: ['§6.1', '§6.4', '§7.1'],
+    async run(ctx) {
+      const a = await bootstrapped(ctx, 'actor-a', 'client-a');
+      const b = await bootstrapped(ctx, 'actor-b', 'client-b');
+      await a.api.mutate(
+        ['t1', 't2'].map((id) => ({
+          op: 'upsert' as const,
+          table: 'tasks',
+          values: task(id, 'p1', 'original'),
+        })),
+      );
+      await syncIdle(a);
+      await syncIdle(b);
+      const moved = await a.api.mutate([
+        {
+          op: 'patch',
+          table: 'tasks',
+          values: { id: 't1', title: 'moved' },
+          baseVersion: 1,
+        },
+        {
+          op: 'patch',
+          table: 'tasks',
+          values: { id: 't2', priority: 2 },
+          baseVersion: 1,
+        },
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: task('event', 'p1', 'audit'),
+          baseVersion: 0,
+        },
+      ]);
+      checkEqual(
+        (await a.api.readRows('tasks')).map((row) => row.values.title),
+        ['audit', 'moved', 'original'],
+        'all batch rows apply locally',
+      );
+      checkEqual(
+        (await syncOk(a)).applied,
+        [moved],
+        'one atomic batch applies',
+      );
+      const stale = await b.api.mutate([
+        {
+          op: 'patch',
+          table: 'tasks',
+          values: { id: 't2', done: true },
+          baseVersion: 1,
+        },
+        {
+          op: 'patch',
+          table: 'tasks',
+          values: { id: 't1', title: 'stale' },
+          baseVersion: 1,
+        },
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: task('failed-event', 'p1', 'audit'),
+          baseVersion: 0,
+        },
+      ]);
+      checkEqual(
+        (await syncOk(b)).rejected,
+        [stale],
+        'one stale sibling rejects the entire batch',
+      );
+      const rows = await ctx.server.readRows('tasks');
+      checkEqual(
+        rows.find((row) => row.rowId === 't2')?.values.done,
+        false,
+        'earlier sibling rolled back',
+      );
+      check(
+        !rows.some((row) => row.rowId === 'failed-event'),
+        'no audit orphan committed',
+      );
+      checkEqual(
+        rows.find((row) => row.rowId === 't1')?.values.title,
+        'moved',
+        'accepted row unchanged',
+      );
+    },
+  },
+
+  {
     // B.21(a): disjoint unversioned patches to different columns both land.
     name: 'sparse-rows/disjoint-unversioned-patches-both-land',
     specRefs: ['§6.1', '§6.2', 'B.21'],

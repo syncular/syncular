@@ -196,6 +196,7 @@ export interface SyncClientHandleConfig {
   readonly securityPreflight?: boolean;
   readonly clientId?: string;
   readonly limits?: SyncClientLimits;
+  readonly retainFailedCommits?: boolean;
   /**
    * SPEC §8.8 realtime policy for the worker-owned core, forwarded into
    * `WorkerInitConfig`. Absent ⇒ `optional`.
@@ -929,6 +930,9 @@ function buildInitConfig(
       : {}),
     ...(config.clientId !== undefined ? { clientId: config.clientId } : {}),
     ...(config.limits !== undefined ? { limits: config.limits } : {}),
+    ...(config.retainFailedCommits !== undefined
+      ? { retainFailedCommits: config.retainFailedCommits }
+      : {}),
     ...(config.realtimePolicy !== undefined
       ? { realtimePolicy: config.realtimePolicy }
       : {}),

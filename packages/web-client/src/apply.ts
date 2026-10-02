@@ -1,3 +1,4 @@
+import { retainedBaseWrite } from './failed-overlay';
 /**
  * Local application of server data: `COMMIT` frames (§4.5), rows segments
  * (§5.2, §5.6), and the scope-matched delete shared by the §3.3 purge
@@ -20,6 +21,7 @@ import {
   quoteIdent,
   SYNC_VERSION_COLUMN,
   toSqlValue,
+  rowValueToJson,
 } from './schema';
 
 /** Lets the client wrap the physical write in its revision transaction. */
@@ -44,7 +46,21 @@ export function upsertLocalRow(
   table: CompiledClientTable,
   values: readonly RowValue[],
   syncVersion: number,
+  serverWrite = true,
 ): void {
+  if (serverWrite)
+    retainedBaseWrite(
+      db,
+      table.name,
+      String(values[table.primaryKeyIndex]),
+      Object.fromEntries(
+        table.columns.map((column, index) => [
+          column.name,
+          rowValueToJson(values[index] ?? null),
+        ]),
+      ),
+      syncVersion,
+    );
   db.exec(upsertSql(table), [...values.map(toSqlValue), syncVersion]);
 }
 
@@ -52,7 +68,9 @@ export function deleteLocalRow(
   db: ClientDatabase,
   table: CompiledClientTable,
   rowId: string,
+  serverWrite = true,
 ): void {
+  if (serverWrite) retainedBaseWrite(db, table.name, rowId);
   db.exec(
     `DELETE FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)} = ?`,
     [rowId],
@@ -203,6 +221,12 @@ export function deleteScopedRows(
       `${quoteIdent(column)} IN (${values.map(() => '?').join(', ')})`,
     );
     params.push(...values);
+  }
+  for (const row of db.query(
+    `SELECT ${quoteIdent(table.primaryKey)} AS id FROM ${quoteIdent(table.name)} WHERE ${clauses.join(' AND ')}`,
+    params,
+  )) {
+    retainedBaseWrite(db, table.name, String(row.id));
   }
   db.exec(
     `DELETE FROM ${quoteIdent(table.name)} WHERE ${clauses.join(' AND ')}`,
@@ -422,6 +446,23 @@ export async function applySqliteSegment(
           params,
         );
         applied += Number(db.query('SELECT changes() AS n')[0]?.n ?? 0);
+        for (const row of db.query(
+          `SELECT * FROM ${source} WHERE ${predicates.join(' AND ') || 'true'}`,
+          params,
+        )) {
+          retainedBaseWrite(
+            db,
+            table.name,
+            String(row[table.primaryKey]),
+            Object.fromEntries(
+              table.columns.map((column) => [
+                column.name,
+                rowValueToJson(row[column.name] as RowValue),
+              ]),
+            ),
+            Number(row._syncular_version),
+          );
+        }
       });
       options.onProgress?.(applied);
       await yieldToHost();

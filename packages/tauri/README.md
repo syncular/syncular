@@ -173,3 +173,16 @@ The snapshot API revision removes the individual `schemaFloor`, `leaseState`,
 `await client.statusSnapshot()`. Collection and outcome reads remain methods.
 React accepts the bridge directly. See the
 [client migration](https://syncular.dev/platform-web/#snapshot-api-migration).
+
+
+## Atomic sparse writes and retained conflicts
+
+The native client accepts mixed `patch`, `upsert` and `delete` operations in one
+`mutate` call. Sparse patches include the primary key and supplied columns.
+Omitted encrypted columns require no key and retain their ciphertext.
+
+Set `retainFailedCommits: true` to preserve rejected aggregate intent across
+pulls and restart. `commitOutcome(id).retainedRows` exposes intended rows and the
+latest authorized server base. Resolve with `resolved_keep_server`, or create a
+reviewed replacement and link it with `superseded`. Scope revocation and local
+security purge remove whole retained aggregates.

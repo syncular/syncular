@@ -35,9 +35,9 @@ use crate::api::{
     FetchedBlob, LeaseState, LocalDataPurgeInput, LocalDataPurgeResult, LocalDataPurgeTarget,
     LocalDataRebootstrapInput, LocalDataRebootstrapResult, Mutation, PresencePeer,
     PreviousVersionStatus, QueryOwner, QueryReadFailure, QueryRow, QuerySnapshot, QueryValue,
-    RejectionDetails, RejectionRecord, ResolveCommitOutcomeInput, RowState, SchemaFloor,
-    SubscriptionStateView, SyncIntent, SyncOutcome, SyncReport, SyncStatusSnapshot, TableChange,
-    WindowBase, WindowChange, WindowCoverage, WindowState, WindowUnitRef,
+    RejectionDetails, RejectionRecord, ResolveCommitOutcomeInput, RetainedCommitRow, RowState,
+    SchemaFloor, SubscriptionStateView, SyncIntent, SyncOutcome, SyncReport, SyncStatusSnapshot,
+    TableChange, WindowBase, WindowChange, WindowCoverage, WindowState, WindowUnitRef,
     CLIENT_DIAGNOSTICS_VERSION, MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
     MAX_DIAGNOSTIC_QUERY_FAILURES,
 };
@@ -3498,6 +3498,104 @@ mod observation_tests {
     }
 
     #[test]
+    fn retained_rejection_survives_file_reopen_and_security_purge() {
+        let path =
+            std::env::temp_dir().join(format!("syncular-retained-{}.db", uuid::Uuid::new_v4()));
+        let schema = json!({ "version": 1, "tables": [{ "name": "tasks", "primaryKey": "id", "columns": [
+            { "name": "id", "type": "string", "nullable": false },
+            { "name": "project_id", "type": "string", "nullable": false },
+            { "name": "title", "type": "string", "nullable": false }
+        ], "scopes": [{ "pattern": "project:{project_id}" }] }] });
+        {
+            let mut first = SyncClient::open_path(
+                "retained-native".to_owned(),
+                &schema,
+                ClientLimits::default(),
+                path.to_str().unwrap(),
+            )
+            .unwrap();
+            first
+                .write_base_row(
+                    "tasks",
+                    &vec![
+                        Some(ColumnValue::String("t1".into())),
+                        Some(ColumnValue::String("p1".into())),
+                        Some(ColumnValue::String("server".into())),
+                    ],
+                    1,
+                )
+                .unwrap();
+            first.rebuild_overlay();
+            let operation = OutboxOp {
+                table: "tasks".into(),
+                row_id: "t1".into(),
+                upsert: true,
+                base_version: Some(1),
+                values: Some(Map::from_iter([
+                    ("id".into(), json!("t1")),
+                    ("title".into(), json!("mine")),
+                ])),
+            };
+            first
+                .retain_failed_commit("retained", std::slice::from_ref(&operation))
+                .unwrap();
+            first
+                .persist_commit_outcome(
+                    "retained",
+                    CommitOutcomeStatus::Rejected,
+                    &[],
+                    Some(&[operation]),
+                )
+                .unwrap();
+            first.rebuild_overlay();
+        }
+        {
+            let mut reopened = SyncClient::open_path(
+                "retained-native".to_owned(),
+                &schema,
+                ClientLimits::default(),
+                path.to_str().unwrap(),
+            )
+            .unwrap();
+            let row = reopened
+                .visible_row(reopened.schema.table("tasks").unwrap(), "t1")
+                .unwrap();
+            assert_eq!(row.0[2], Some(ColumnValue::String("mine".into())));
+            assert_eq!(
+                reopened
+                    .commit_outcome("retained")
+                    .unwrap()
+                    .unwrap()
+                    .retained_rows
+                    .unwrap()[0]
+                    .server_row
+                    .as_ref()
+                    .unwrap()["title"],
+                json!("server")
+            );
+            reopened
+                .purge_local_data(&LocalDataPurgeInput {
+                    purge_id: "protected-purge".into(),
+                    targets: vec![LocalDataPurgeTarget {
+                        table: "tasks".into(),
+                        selectors: BTreeMap::from_iter([("project_id".into(), vec!["p1".into()])]),
+                    }],
+                })
+                .unwrap();
+            assert!(reopened
+                .visible_row(reopened.schema.table("tasks").unwrap(), "t1")
+                .is_none());
+            assert!(reopened
+                .commit_outcome("retained")
+                .unwrap()
+                .unwrap()
+                .retained_rows
+                .is_none());
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn durable_conflict_outcome_and_resolution_survive_reopen() {
         let path = std::env::temp_dir().join(format!(
             "syncular-durable-outcome-{}.db",
@@ -4766,6 +4864,8 @@ fn commit_audit_operations(commit: &OutboxCommit) -> Vec<(&str, Vec<&str>)> {
         .collect()
 }
 
+type FailedCommit = (OutboxCommit, Map<String, Value>);
+
 #[derive(Debug, Clone)]
 struct CompiledLocalDataPurgeTarget {
     table: String,
@@ -4870,6 +4970,8 @@ pub struct SyncClient {
     limits: ClientLimits,
     subs: Vec<Subscription>,
     outbox: Vec<OutboxCommit>,
+    failed_commits: Vec<FailedCommit>,
+    retain_failed_commits: bool,
     conflicts: Vec<ConflictRecord>,
     rejections: Vec<RejectionRecord>,
     schema_floor: Option<SchemaFloor>,
@@ -5522,6 +5624,8 @@ impl SyncClient {
             limits,
             subs: Vec::new(),
             outbox: Vec::new(),
+            failed_commits: Vec::new(),
+            retain_failed_commits: false,
             conflicts: Vec::new(),
             rejections: Vec::new(),
             schema_floor: None,
@@ -5575,6 +5679,7 @@ impl SyncClient {
             _ => {}
         }
         client.restore_persisted_state()?;
+        client.failed_commits = client.load_failed_commits()?;
         let marker = client
             .get_meta(LOCAL_SCHEMA_VERSION_KEY)
             .and_then(|value| value.parse::<i32>().ok());
@@ -5602,7 +5707,9 @@ impl SyncClient {
         client.reconcile_previous_version_at_boot()?;
         client.clear_satisfied_persisted_schema_floor();
         client.prune_unknown_subscriptions()?;
-        if marker == Some(client.schema.version) && !client.outbox.is_empty() {
+        if marker == Some(client.schema.version)
+            && (!client.outbox.is_empty() || !client.failed_commits.is_empty())
+        {
             // Reconstruct the visible optimistic overlay from the durable base
             // plus outbox instead of trusting a process-interrupted mirror.
             client.overlay_dirty.set(true);
@@ -5705,6 +5812,9 @@ impl SyncClient {
                 "CREATE TABLE IF NOT EXISTS _syncular_outbox (
                    seq INTEGER PRIMARY KEY AUTOINCREMENT,
                    commit_id TEXT NOT NULL UNIQUE, ops_json TEXT NOT NULL);
+                 CREATE TABLE IF NOT EXISTS _syncular_failed_commits (
+                   seq INTEGER PRIMARY KEY AUTOINCREMENT, client_commit_id TEXT NOT NULL UNIQUE,
+                   operations_json TEXT NOT NULL, initial_json TEXT NOT NULL);
                  CREATE TABLE IF NOT EXISTS _syncular_commit_outcomes (
                    seq INTEGER PRIMARY KEY AUTOINCREMENT,
                    client_commit_id TEXT NOT NULL UNIQUE,
@@ -6522,9 +6632,21 @@ impl SyncClient {
         }
     }
 
-    fn finish_observation(&mut self, name: &str, batch: ChangeAccumulator) -> Result<(), String> {
+    fn finish_observation(
+        &mut self,
+        name: &str,
+        mut batch: ChangeAccumulator,
+    ) -> Result<(), String> {
         #[cfg(feature = "bench-internals")]
         let _phase = self.benchmark_phases.start(Phase::ObservationCommit);
+        if self.failed_commits.iter().any(|(commit, _)| {
+            commit
+                .ops
+                .iter()
+                .any(|operation| batch.tables.contains_key(&operation.table))
+        }) {
+            batch.outcomes = true;
+        }
         if !batch.touched() {
             self.conn
                 .execute_batch(&format!("RELEASE {name}"))
@@ -7495,10 +7617,57 @@ impl SyncClient {
                     })
                 })
                 .transpose()?,
+            retained_rows: None,
             resolution: Self::parse_outcome_resolution(&resolution)?,
             resolved_at_ms,
             replacement_client_commit_id,
         })
+    }
+
+    fn attach_retained_rows(&self, mut outcome: CommitOutcome) -> Result<CommitOutcome, String> {
+        if let Some((commit, initial)) = self
+            .failed_commits
+            .iter()
+            .find(|(commit, _)| commit.client_commit_id == outcome.client_commit_id)
+        {
+            let mut rows = Vec::new();
+            for operation in &commit.ops {
+                let table = self
+                    .schema
+                    .table(&operation.table)
+                    .ok_or_else(|| "sync.unknown_table".to_owned())?;
+                let key =
+                    serde_json::to_string(&(operation.table.clone(), operation.row_id.clone()))
+                        .map_err(|_| "sync.local_corrupt".to_owned())?;
+                let base = self.stored_row(table, &operation.row_id, true);
+                rows.push(RetainedCommitRow {
+                    table: operation.table.clone(),
+                    row_id: operation.row_id.clone(),
+                    local_row: if operation.upsert {
+                        initial
+                            .get(&key)
+                            .and_then(Value::as_object)
+                            .cloned()
+                            .or_else(|| operation.values.clone())
+                    } else {
+                        None
+                    },
+                    server_row: base.as_ref().map(|(values, _)| {
+                        table
+                            .columns
+                            .iter()
+                            .zip(values)
+                            .map(|(column, value)| {
+                                (column.name.clone(), column_value_to_json(value))
+                            })
+                            .collect()
+                    }),
+                    server_version: base.map(|(_, version)| version),
+                });
+            }
+            outcome.retained_rows = Some(rows);
+        }
+        Ok(outcome)
     }
 
     pub fn commit_outcome(&self, client_commit_id: &str) -> Result<Option<CommitOutcome>, String> {
@@ -7525,7 +7694,8 @@ impl SyncClient {
             )
             .optional()
             .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
-        row.map(Self::outcome_from_row).transpose()
+        row.map(|row| self.attach_retained_rows(Self::outcome_from_row(row)?))
+            .transpose()
     }
 
     pub fn commit_outcomes(&self, query: CommitOutcomeQuery) -> Result<Vec<CommitOutcome>, String> {
@@ -7565,9 +7735,9 @@ impl SyncClient {
             .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         let mut outcomes = Vec::new();
         for row in rows {
-            outcomes.push(Self::outcome_from_row(row.map_err(|error| {
-                Self::sqlite_failure(&self.storage_failure, error)
-            })?)?);
+            outcomes.push(self.attach_retained_rows(Self::outcome_from_row(
+                row.map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?,
+            )?)?);
         }
         Ok(outcomes)
     }
@@ -8039,7 +8209,11 @@ impl SyncClient {
     /// commit — rows that MUST NOT be evicted until the commit drains.
     fn pinned_row_ids(&self, table: &str) -> std::collections::HashSet<String> {
         let mut pinned = std::collections::HashSet::new();
-        for commit in &self.outbox {
+        for commit in self
+            .outbox
+            .iter()
+            .chain(self.failed_commits.iter().map(|(commit, _)| commit))
+        {
             for op in &commit.ops {
                 if op.table == table {
                     pinned.insert(op.row_id.clone());
@@ -8097,7 +8271,133 @@ impl SyncClient {
         .collect()
     }
 
-    /// Record one atomic local commit (§7.1) and apply it optimistically.
+    /// Select failed-intent retention; reload durable retained aggregates.
+    pub fn set_retain_failed_commits(&mut self, enabled: bool) -> Result<(), String> {
+        self.retain_failed_commits = enabled;
+        self.failed_commits = self.load_failed_commits()?;
+        self.overlay_dirty.set(true);
+        Ok(())
+    }
+
+    fn load_failed_commits(&self) -> Result<Vec<FailedCommit>, String> {
+        let mut statement = self.conn.prepare("SELECT client_commit_id, operations_json, initial_json FROM _syncular_failed_commits ORDER BY seq")
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+        rows.map(|row| {
+            let (id, operations, initial) =
+                row.map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+            let operations: Vec<CommitOperation> =
+                serde_json::from_str(&operations).map_err(|_| "sync.local_corrupt".to_owned())?;
+            let initial =
+                serde_json::from_str(&initial).map_err(|_| "sync.local_corrupt".to_owned())?;
+            Ok((
+                OutboxCommit {
+                    client_commit_id: id,
+                    ops: operations
+                        .into_iter()
+                        .map(|op| OutboxOp {
+                            upsert: op.op == "upsert",
+                            table: op.table,
+                            row_id: op.row_id,
+                            base_version: op.base_version,
+                            values: op.values,
+                        })
+                        .collect(),
+                },
+                initial,
+            ))
+        })
+        .collect()
+    }
+
+    fn retain_failed_commit(&mut self, id: &str, operations: &[OutboxOp]) -> Result<(), String> {
+        let mut initial = Map::new();
+        for operation in operations {
+            let table = self
+                .schema
+                .table(&operation.table)
+                .ok_or_else(|| "sync.unknown_table".to_owned())?;
+            if let Some((values, _)) = self
+                .stored_row(table, &operation.row_id, true)
+                .or_else(|| self.visible_row(table, &operation.row_id))
+            {
+                let mut intended: Map<String, Value> = table
+                    .columns
+                    .iter()
+                    .zip(values.iter())
+                    .map(|(column, value)| (column.name.clone(), column_value_to_json(value)))
+                    .collect();
+                if let Some(patch) = &operation.values {
+                    intended.extend(patch.clone());
+                }
+                initial.insert(
+                    serde_json::to_string(&(operation.table.clone(), operation.row_id.clone()))
+                        .map_err(|_| "sync.local_corrupt".to_owned())?,
+                    Value::Object(intended),
+                );
+            }
+        }
+        self.conn.execute("INSERT INTO _syncular_failed_commits(client_commit_id, operations_json, initial_json) VALUES (?1, ?2, ?3)", rusqlite::params![id,
+            serde_json::to_string(&operations.iter().map(CommitOperation::from).collect::<Vec<_>>()).map_err(|_| "sync.local_corrupt".to_owned())?,
+            serde_json::to_string(&initial).map_err(|_| "sync.local_corrupt".to_owned())?])
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+        self.failed_commits.push((
+            OutboxCommit {
+                client_commit_id: id.to_owned(),
+                ops: operations.to_vec(),
+            },
+            initial,
+        ));
+        Ok(())
+    }
+
+    fn drop_failed_commits(
+        &mut self,
+        matches: impl Fn(&str, &Map<String, Value>) -> bool,
+    ) -> Result<Vec<OutboxCommit>, String> {
+        let mut doomed = Vec::new();
+        for (commit, initial) in &self.failed_commits {
+            for operation in &commit.ops {
+                let key =
+                    serde_json::to_string(&(operation.table.clone(), operation.row_id.clone()))
+                        .map_err(|_| "sync.local_corrupt".to_owned())?;
+                if initial
+                    .get(&key)
+                    .and_then(Value::as_object)
+                    .is_some_and(|values| matches(&operation.table, values))
+                {
+                    doomed.push(commit.clone());
+                    break;
+                }
+            }
+        }
+        for commit in &doomed {
+            self.conn
+                .execute(
+                    "DELETE FROM _syncular_failed_commits WHERE client_commit_id = ?1",
+                    rusqlite::params![commit.client_commit_id],
+                )
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+        }
+        self.failed_commits.retain(|(commit, _)| {
+            !doomed
+                .iter()
+                .any(|dropped| dropped.client_commit_id == commit.client_commit_id)
+        });
+        if !doomed.is_empty() {
+            self.overlay_dirty.set(true);
+        }
+        Ok(doomed)
+    }
+
     pub fn mutate(&mut self, mutations: Vec<Mutation>) -> Result<String, String> {
         if mutations.is_empty() {
             return Err("a commit must contain at least one operation (§6.1)".to_owned());
@@ -8105,6 +8405,19 @@ impl SyncClient {
         let mut ops = Vec::with_capacity(mutations.len());
         for mutation in mutations {
             match mutation {
+                Mutation::Patch {
+                    table,
+                    values,
+                    base_version,
+                } => {
+                    let schema_table = self
+                        .schema
+                        .table(&table)
+                        .ok_or_else(|| "sync.unknown_table".to_owned())?;
+                    let values = normalize_values_casing(schema_table, values)?;
+                    let row_id = render_row_id_json(values.get(&schema_table.primary_key))?;
+                    ops.push(self.prepare_patch(&table, &row_id, values, base_version)?);
+                }
                 Mutation::Upsert {
                     table,
                     values,
@@ -8225,6 +8538,17 @@ impl SyncClient {
         partial: Map<String, Value>,
         base_version: Option<i64>,
     ) -> Result<String, String> {
+        let operation = self.prepare_patch(table, row_id, partial, base_version)?;
+        self.record_outbox_commit(vec![operation])
+    }
+
+    fn prepare_patch(
+        &self,
+        table: &str,
+        row_id: &str,
+        partial: Map<String, Value>,
+        base_version: Option<i64>,
+    ) -> Result<OutboxOp, String> {
         let schema_table = self
             .schema
             .table(table)
@@ -8306,13 +8630,13 @@ impl SyncClient {
         // `client.encrypt_failed` rejection there (§10.3), never an
         // author-time error.
         self.validate_author_encode(schema_table, row_id, &values)?;
-        self.record_outbox_commit(vec![OutboxOp {
+        Ok(OutboxOp {
             upsert: true,
             table: table.to_owned(),
             row_id: row_id.to_owned(),
             base_version,
             values: Some(values),
-        }])
+        })
     }
 
     /// §5.11 key-id fallback: the stored local row's selector value as a
@@ -8400,6 +8724,9 @@ impl SyncClient {
             return Ok(false);
         }
         for (commit, message) in failures {
+            if self.retain_failed_commits {
+                self.retain_failed_commit(&commit.client_commit_id, &commit.ops)?;
+            }
             let rejection = RejectionRecord {
                 client_commit_id: commit.client_commit_id.clone(),
                 op_index: 0,
@@ -8515,7 +8842,11 @@ impl SyncClient {
                 CommitOutcomeResolution::ResolvedKeepServer | CommitOutcomeResolution::Superseded
             ),
             CommitOutcomeStatus::Rejected => {
-                input.resolution == CommitOutcomeResolution::Superseded
+                matches!(
+                    input.resolution,
+                    CommitOutcomeResolution::Superseded
+                        | CommitOutcomeResolution::ResolvedKeepServer
+                )
             }
             CommitOutcomeStatus::Applied | CommitOutcomeStatus::Cached => {
                 input.resolution == CommitOutcomeResolution::Dismissed
@@ -8529,6 +8860,9 @@ impl SyncClient {
         }
 
         self.begin_observation("syncular_outcome_resolution")?;
+        let previous_failed = self.failed_commits.clone();
+        let previous_conflicts = self.conflicts.clone();
+        let previous_rejections = self.rejections.clone();
         let result = (|| {
             self.conn
                 .execute(
@@ -8547,6 +8881,15 @@ impl SyncClient {
             let resolved = self
                 .commit_outcome(&current.client_commit_id)?
                 .ok_or_else(|| "sync.outcome_not_found: outcome disappeared".to_owned())?;
+            self.conn
+                .execute(
+                    "DELETE FROM _syncular_failed_commits WHERE client_commit_id = ?1",
+                    rusqlite::params![input.client_commit_id],
+                )
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+            self.failed_commits
+                .retain(|(commit, _)| commit.client_commit_id != input.client_commit_id);
+            self.overlay_dirty.set(true);
             self.prune_commit_outcomes()?;
             Ok(resolved)
         })();
@@ -8554,6 +8897,9 @@ impl SyncClient {
             Ok(outcome) => outcome,
             Err(error) => {
                 self.rollback_observation("syncular_outcome_resolution");
+                self.failed_commits = previous_failed;
+                self.conflicts = previous_conflicts;
+                self.rejections = previous_rejections;
                 return Err(error);
             }
         };
@@ -8561,14 +8907,23 @@ impl SyncClient {
             .retain(|record| record.client_commit_id != current.client_commit_id);
         self.rejections
             .retain(|record| record.client_commit_id != current.client_commit_id);
-        let batch = ChangeAccumulator {
+        let mut batch = ChangeAccumulator {
             conflicts: current.status == CommitOutcomeStatus::Conflict,
             rejections: current.status == CommitOutcomeStatus::Rejected,
             outcomes: true,
             ..ChangeAccumulator::default()
         };
+        if let Some(operations) = &current.operations {
+            for operation in operations {
+                batch.table(&operation.table);
+            }
+        }
+        self.rebuild_overlay_if_dirty();
         if let Err(error) = self.finish_observation("syncular_outcome_resolution", batch) {
             self.rollback_observation("syncular_outcome_resolution");
+            self.failed_commits = previous_failed;
+            self.conflicts = previous_conflicts;
+            self.rejections = previous_rejections;
             return Err(error);
         }
         Ok(resolved)
@@ -9704,6 +10059,7 @@ impl SyncClient {
         last_final_push_result_id: Option<&str>,
     ) -> Result<(), String> {
         self.begin_observation("syncular_push_results")?;
+        let previous_failed = self.failed_commits.clone();
         let conflict_count = self.conflicts.len();
         let rejection_count = self.rejections.len();
         let applied_count = report.applied.len();
@@ -9895,6 +10251,9 @@ impl SyncClient {
                                 }
                             }
                         }
+                        if self.retain_failed_commits {
+                            self.retain_failed_commit(client_commit_id, &operations)?;
+                        }
                         let outcome_status = if conflicts.is_empty() {
                             CommitOutcomeStatus::Rejected
                         } else {
@@ -9945,6 +10304,7 @@ impl SyncClient {
         })();
         if let Err(error) = persisted {
             self.rollback_observation("syncular_push_results");
+            self.failed_commits = previous_failed;
             for (index, commit) in removed.into_iter().rev() {
                 self.outbox.insert(index, commit);
             }
@@ -10005,6 +10365,7 @@ impl SyncClient {
                 let previous = self.subs[sub_index].clone();
                 let was_dirty = self.overlay_dirty.get();
                 let previous_outbox = self.outbox.clone();
+                let previous_failed = self.failed_commits.clone();
                 let rejection_count = self.rejections.len();
                 let revoked_count = report.revoked.len();
                 let failed_count = report.failed.len();
@@ -10017,6 +10378,35 @@ impl SyncClient {
                             let sub = &self.subs[sub_index];
                             (sub.table.clone(), sub.effective.clone().unwrap_or_default())
                         };
+                        let scoped_table = self.schema.table(&table).cloned().ok_or_else(|| {
+                            SectionError::Abort(
+                                "sync.unknown_table".to_owned(),
+                                "revoked scope references an unknown table".to_owned(),
+                            )
+                        })?;
+                        let dropped = self
+                            .drop_failed_commits(|name, values| {
+                                name == table
+                                    && !effective.is_empty()
+                                    && effective.iter().all(|(variable, allowed)| {
+                                        scoped_table
+                                            .scope_column(variable)
+                                            .and_then(|column| values.get(column))
+                                            .and_then(Value::as_str)
+                                            .is_some_and(|value| {
+                                                allowed.iter().any(|allowed| allowed == value)
+                                            })
+                                    })
+                            })
+                            .map_err(|message| {
+                                SectionError::Abort("storage.failed".to_owned(), message)
+                            })?;
+                        for commit in dropped {
+                            batch.outcomes = true;
+                            for operation in commit.ops {
+                                batch.table(&operation.table);
+                            }
+                        }
                         let purged = self.purge_scope_rows(&table, &effective);
                         match purged {
                             Ok(()) => {
@@ -10075,6 +10465,7 @@ impl SyncClient {
                     self.subs[sub_index] = previous;
                     self.overlay_dirty.set(was_dirty);
                     self.outbox = previous_outbox;
+                    self.failed_commits = previous_failed;
                     self.rejections.truncate(rejection_count);
                     report.revoked.truncate(revoked_count);
                     report.failed.truncate(failed_count);
@@ -10431,6 +10822,7 @@ impl SyncClient {
         // constraint can change whether another row's pending write succeeds,
         // so those frames still require the complete FIFO replay below.
         let mirror_visible = !self.overlay_dirty.get()
+            && self.failed_commits.is_empty()
             && (self.outbox.is_empty()
                 || changes.iter().all(|change| {
                     tables
@@ -10578,7 +10970,7 @@ impl SyncClient {
                     .iter()
                     .flat_map(|commit| &commit.ops)
                     .any(|op| op.table == table.name);
-            let mirror_visible = !reconcile_pending;
+            let mirror_visible = !reconcile_pending && self.failed_commits.is_empty();
             self.begin_observation("syncular_segment_block")
                 .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
             let outcome = (|| {
@@ -10634,13 +11026,17 @@ impl SyncClient {
                     self.reconcile_imported_rows(&table, &mut changed_keys)
                         .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
                 }
-                self.apply_outbox_ops(
-                    self.outbox
-                        .iter()
-                        .flat_map(|commit| &commit.ops)
-                        .filter(|op| op.table == table.name),
-                );
-                self.overlay_dirty.set(false);
+                if self.failed_commits.is_empty() {
+                    self.apply_outbox_ops(
+                        self.outbox
+                            .iter()
+                            .flat_map(|commit| &commit.ops)
+                            .filter(|op| op.table == table.name),
+                    );
+                    self.overlay_dirty.set(false);
+                } else {
+                    self.rebuild_overlay();
+                }
                 self.finish_observation("syncular_segment_block", batch)
                     .map_err(|message| SectionError::Abort("storage.failed".into(), message))
             })();
@@ -10864,7 +11260,7 @@ impl SyncClient {
                     .iter()
                     .flat_map(|commit| &commit.ops)
                     .any(|op| op.table == table.name);
-            let mirror_visible = !reconcile_pending;
+            let mirror_visible = !reconcile_pending && self.failed_commits.is_empty();
             self.begin_observation("syncular_image_chunk")
                 .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
             let result = (|| {
@@ -10951,13 +11347,17 @@ impl SyncClient {
                     self.reconcile_imported_rows(table, &mut changed_keys)
                         .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
                 }
-                self.apply_outbox_ops(
-                    self.outbox
-                        .iter()
-                        .flat_map(|commit| &commit.ops)
-                        .filter(|op| op.table == table.name),
-                );
-                self.overlay_dirty.set(false);
+                if self.failed_commits.is_empty() {
+                    self.apply_outbox_ops(
+                        self.outbox
+                            .iter()
+                            .flat_map(|commit| &commit.ops)
+                            .filter(|op| op.table == table.name),
+                    );
+                    self.overlay_dirty.set(false);
+                } else {
+                    self.rebuild_overlay();
+                }
                 self.finish_observation("syncular_image_chunk", batch)
                     .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
                 Ok(processed)
@@ -11258,11 +11658,17 @@ impl SyncClient {
         let _ = self.drop_previous_version();
 
         let prior_outbox = self.outbox.clone();
+        let prior_failed = self.failed_commits.clone();
         let prior_rejection_count = self.rejections.len();
         let prior_overlay_dirty = self.overlay_dirty.get();
         self.begin_observation("syncular_local_purge")?;
         let applied = (|| -> Result<(ChangeAccumulator, LocalDataPurgeResult), String> {
             let row_ids = self.local_purge_base_row_ids(&targets)?;
+            let retained_dropped = self.drop_failed_commits(|table, values| {
+                targets.iter().any(|target| {
+                    target.table == table && Self::local_purge_values_match(target, values)
+                })
+            })?;
             let doomed = self
                 .outbox
                 .iter()
@@ -11295,6 +11701,12 @@ impl SyncClient {
                 .map(|commit| commit.client_commit_id.clone())
                 .collect::<BTreeSet<_>>();
             let mut batch = ChangeAccumulator::default();
+            for commit in &retained_dropped {
+                batch.outcomes = true;
+                for operation in &commit.ops {
+                    batch.table(&operation.table);
+                }
+            }
             let mut rejections = Vec::new();
             for commit in &doomed {
                 for operation in &commit.ops {
@@ -11370,6 +11782,7 @@ impl SyncClient {
             Err(error) => {
                 self.rollback_observation("syncular_local_purge");
                 self.outbox = prior_outbox;
+                self.failed_commits = prior_failed;
                 self.rejections.truncate(prior_rejection_count);
                 self.overlay_dirty.set(prior_overlay_dirty);
                 return Err(error);
@@ -11378,6 +11791,7 @@ impl SyncClient {
         if let Err(error) = self.finish_observation("syncular_local_purge", batch) {
             self.rollback_observation("syncular_local_purge");
             self.outbox = prior_outbox;
+            self.failed_commits = prior_failed;
             self.rejections.truncate(prior_rejection_count);
             self.overlay_dirty.set(prior_overlay_dirty);
             return Err(error);
@@ -12068,6 +12482,29 @@ impl SyncClient {
             self.exec(&format!("DELETE FROM {visible}"));
             self.exec(&format!("INSERT INTO {visible} SELECT * FROM {base}"));
         }
+        for (commit, initial) in &self.failed_commits {
+            for operation in &commit.ops {
+                if !operation.upsert {
+                    continue;
+                }
+                if let Some(table) = self.schema.table(&operation.table) {
+                    if self.visible_row(table, &operation.row_id).is_none() {
+                        let key = serde_json::to_string(&(
+                            operation.table.clone(),
+                            operation.row_id.clone(),
+                        ))
+                        .expect("row key serialization");
+                        if let Some(Value::Object(values)) = initial.get(&key) {
+                            self.apply_outbox_ops(&[OutboxOp {
+                                values: Some(values.clone()),
+                                ..operation.clone()
+                            }]);
+                        }
+                    }
+                }
+            }
+            self.apply_outbox_ops(&commit.ops);
+        }
         for commit in &self.outbox {
             self.apply_outbox_ops(&commit.ops);
         }
@@ -12153,9 +12590,17 @@ impl SyncClient {
     /// The visible (optimistic) row's values plus version, or `None` when the
     /// row is absent from the overlay.
     fn visible_row(&self, table: &TableSchema, row_id: &str) -> Option<(Row, i64)> {
+        self.stored_row(table, row_id, false)
+    }
+
+    fn stored_row(&self, table: &TableSchema, row_id: &str, base: bool) -> Option<(Row, i64)> {
         let sql = format!(
             "SELECT * FROM {} WHERE {}",
-            visible_table(&table.name),
+            if base {
+                base_table(&table.name)
+            } else {
+                visible_table(&table.name)
+            },
             row_id_predicate(table)
         );
         let mut stmt = self.conn.prepare_cached(&sql).ok()?;

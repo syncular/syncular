@@ -542,7 +542,7 @@ export interface ClientEndpoints {
 
 export type ClientMutation =
   | {
-      readonly op: 'upsert';
+      readonly op: 'upsert' | 'patch';
       readonly table: string;
       /** Full-row values keyed by column name (§6.1). */
       readonly values: DriverRow;
@@ -733,7 +733,21 @@ export interface DriverPreviousVersionAudit {
   readonly incompatible: readonly DriverPreviousVersionAuditEntry[];
 }
 
+export interface ClientCommitOutcome {
+  readonly clientCommitId: string;
+  readonly status: string;
+  readonly resolution: string;
+  readonly retainedRows?: readonly {
+    readonly table: string;
+    readonly rowId: string;
+    readonly localRow: DriverRow | null;
+    readonly serverRow: DriverRow | null;
+    readonly serverVersion: number | null;
+  }[];
+}
+
 export interface ClientCreateOptions {
+  readonly retainFailedCommits?: boolean;
   readonly clientId: string;
   readonly schema: DriverSchema;
   readonly endpoints: ClientEndpoints;
@@ -903,6 +917,12 @@ export interface ClientInstance {
 
   /** All local rows of a table, ordered by rowId. */
   readRows(table: string): Promise<ClientRowState[]>;
+  commitOutcomes(): Promise<ClientCommitOutcome[]>;
+  resolveCommitOutcome(
+    clientCommitId: string,
+    resolution: 'resolved_keep_server' | 'superseded',
+    replacementClientCommitId?: string,
+  ): Promise<void>;
   conflicts(): Promise<ClientConflict[]>;
   rejections(): Promise<ClientRejection[]>;
   /** Outbox commit ids still pending, FIFO order (§7.1). */

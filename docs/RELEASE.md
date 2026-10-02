@@ -1,8 +1,24 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.30.7** (`v0.30.7`). All artifacts use Apache-2.0, except
+current release is **0.30.8** (`v0.30.8`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.30.8 release notes
+
+Mutation batches accept sparse patches alongside full upserts and deletes.
+Both client cores apply and queue the whole aggregate atomically. Omitted
+encrypted columns remain byte-identical and require no encryption keys.
+
+The explicit `retainFailedCommits` policy preserves rejected or conflicting
+local aggregates across incoming server changes and process restart. Outcomes
+expose intended rows and the latest server base. Take-server restores that base;
+keep-local and edit link a replacement commit. Scope revocation and local
+security purge remove retained aggregates. The default policy retains the
+existing rollback behavior.
+
+Bun, worker RPC, Chromium OPFS, Rust and Tauri bridge checks cover the new
+surface. SSP2 remains at wire version 3.
 
 ## 0.30.7 release notes
 

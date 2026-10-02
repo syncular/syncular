@@ -594,3 +594,149 @@ for (const atCommit of [false, true])
       await browser.close();
     }
   }, 60000);
+
+test('OPFS offline atomic patch survives reload and retains second-actor conflict', async () => {
+  const profile = await mkdtemp(join(tmpdir(), 'syncular-opfs-conflict-'));
+  const context = await chromium.launchPersistentContext(profile);
+  const page = await context.newPage();
+  const winner = await makeClient(source, {
+    clientId: 'opfs-conflict-winner',
+    schema: OPFS_SCHEMA,
+  });
+  try {
+    await page.goto(server.url.href);
+    await page.evaluate(() => window.opfsTest.open());
+    await page.evaluate(async () => {
+      const client = await window.opfsTest.ready;
+      await client.subscribe({
+        id: 'catalogue',
+        table: 'catalogue',
+        scopes: { project_id: ['p1'] },
+      });
+      await client.syncUntilIdle();
+    });
+    await context.setOffline(true);
+    const commitId = await page.evaluate(async () => {
+      const client = await window.opfsTest.ready;
+      return client.mutate([
+        {
+          table: 'catalogue',
+          op: 'patch',
+          values: { id: 'code-00000', title: 'offline mine' },
+          baseVersion: 1,
+        },
+        {
+          table: 'catalogue',
+          op: 'patch',
+          values: { id: 'code-00001', title: 'offline sibling' },
+          baseVersion: 1,
+        },
+        {
+          table: 'catalogue',
+          op: 'upsert',
+          values: {
+            id: 'offline-event',
+            project_id: 'p1',
+            title: 'immutable event',
+          },
+          baseVersion: 0,
+        },
+      ]);
+    });
+    expect(
+      await page.evaluate(async () =>
+        (await window.opfsTest.ready).query(
+          "SELECT title FROM catalogue WHERE id = 'code-00000'",
+        ),
+      ),
+    ).toEqual([{ title: 'offline mine' }]);
+    // The document comes from the test server while all sync endpoints remain
+    // disconnected: reload the worker from a captured browser route.
+    await context.setOffline(false);
+    await page.route('**/sync', (route) => route.abort());
+    await page.reload();
+    await page.evaluate(() => window.opfsTest.open());
+    expect(
+      await page.evaluate(async () =>
+        (await window.opfsTest.ready).query(
+          "SELECT title FROM catalogue WHERE id = 'code-00001'",
+        ),
+      ),
+    ).toEqual([{ title: 'offline sibling' }]);
+    winner.client.patch(
+      'catalogue',
+      'code-00000',
+      { title: 'server winner' },
+      { baseVersion: 1 },
+    );
+    await winner.client.syncUntilIdle();
+    await page.unroute('**/sync');
+    await page.evaluate(async () =>
+      (await window.opfsTest.ready).syncUntilIdle(),
+    );
+    expect(
+      await page.evaluate(async (id) => {
+        const outcome = await (await window.opfsTest.ready).commitOutcome(id);
+        return {
+          status: outcome?.status,
+          row: outcome?.retainedRows?.find((row) => row.rowId === 'code-00000'),
+        };
+      }, commitId),
+    ).toMatchObject({
+      status: 'conflict',
+      row: {
+        localRow: { title: 'offline mine' },
+        serverRow: { title: 'server winner' },
+      },
+    });
+    await page.reload();
+    await page.evaluate(() => window.opfsTest.open());
+    expect(
+      await page.evaluate(async () =>
+        (await window.opfsTest.ready).query(
+          "SELECT title FROM catalogue WHERE id = 'code-00000'",
+        ),
+      ),
+    ).toEqual([{ title: 'offline mine' }]);
+    await page.evaluate(async () => {
+      const client = await window.opfsTest.ready;
+      await client.rebootstrapLocalData({ rebootstrapId: 'retained-image' });
+      await client.syncUntilIdle();
+    });
+    expect(
+      await page.evaluate(async () =>
+        (await window.opfsTest.ready).query(
+          "SELECT title FROM catalogue WHERE id = 'code-00000'",
+        ),
+      ),
+    ).toEqual([{ title: 'offline mine' }]);
+    await page.evaluate(
+      async (id) =>
+        (await window.opfsTest.ready).resolveCommitOutcome({
+          clientCommitId: id,
+          resolution: 'resolved_keep_server',
+        }),
+      commitId,
+    );
+    expect(
+      await page.evaluate(async () =>
+        (await window.opfsTest.ready).query(
+          "SELECT title FROM catalogue WHERE id = 'code-00000'",
+        ),
+      ),
+    ).toEqual([{ title: 'server winner' }]);
+    expect(
+      await page.evaluate(async () =>
+        (await window.opfsTest.ready).query(
+          "SELECT id FROM catalogue WHERE id = 'offline-event'",
+        ),
+      ),
+    ).toEqual([]);
+    await page.evaluate(async () => (await window.opfsTest.ready).close());
+  } finally {
+    await winner.client.close();
+    winner.db.close();
+    await context.close();
+    await rm(profile, { recursive: true, force: true });
+  }
+}, 60000);

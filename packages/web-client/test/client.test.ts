@@ -1565,3 +1565,119 @@ describe('bounded outbox encoding', () => {
     }, 60_000);
   }
 });
+
+test('retained failed intent survives pulls and explicit take-server restores the latest base', async () => {
+  const server = makeServer();
+  server.allowed['actor-1'] = { project_id: ['p1'] };
+  const a = await makeClient(server, { clientId: 'retain-a' });
+  const b = await makeClient(server, {
+    clientId: 'retain-b',
+    retainFailedCommits: true,
+  });
+  for (const client of [a.client, b.client])
+    client.subscribe({
+      id: 'tasks',
+      table: 'tasks',
+      scopes: { project_id: ['p1'] },
+    });
+  a.client.mutate([
+    {
+      table: 'tasks',
+      op: 'upsert',
+      values: taskValues('retained', 'p1', 'original'),
+    },
+  ]);
+  await a.client.syncUntilIdle();
+  await b.client.syncUntilIdle();
+  a.client.patch('tasks', 'retained', { title: 'server' }, { baseVersion: 1 });
+  await a.client.syncUntilIdle();
+  const losing = b.client.mutate([
+    {
+      table: 'tasks',
+      op: 'patch',
+      values: { id: 'retained', title: 'local' },
+      baseVersion: 1,
+    },
+  ]);
+  await b.client.syncUntilIdle();
+  expect(b.client.commitOutcome(losing)?.status).toBe('conflict');
+  expect(tableRows(b.db, 'tasks')[0]?.title).toBe('local');
+  expect(b.client.pendingCommits()).toHaveLength(0);
+  a.client.patch('tasks', 'retained', { title: 'latest-server' });
+  await a.client.syncUntilIdle();
+  await b.client.syncUntilIdle();
+  expect(tableRows(b.db, 'tasks')[0]?.title).toBe('local');
+  b.client.resolveCommitOutcome({
+    clientCommitId: losing,
+    resolution: 'resolved_keep_server',
+  });
+  expect(tableRows(b.db, 'tasks')[0]?.title).toBe('latest-server');
+  await a.client.close();
+  await b.client.close();
+});
+
+test('retained validator rejection survives a real reopen and can take server', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'syncular-retained-rejection-'));
+  const databasePath = join(directory, 'client.db');
+  const server = makeServer(CLIENT_SCHEMA, {
+    validators: {
+      tasks: (operation) => {
+        if (operation.row?.title === 'invalid')
+          throw new ValidationRejection('app.invalid_title', 'invalid title');
+      },
+    },
+  });
+  server.allowed['actor-1'] = { project_id: ['p1'] };
+  const first = await makeClient(server, {
+    clientId: 'retained-rejection',
+    databasePath,
+    retainFailedCommits: true,
+  });
+  try {
+    first.client.subscribe({
+      id: 'tasks',
+      table: 'tasks',
+      scopes: { project_id: ['p1'] },
+    });
+    first.client.mutate([
+      {
+        table: 'tasks',
+        op: 'upsert',
+        values: taskValues('rejected', 'p1', 'original'),
+      },
+    ]);
+    await first.client.syncUntilIdle();
+    const id = first.client.patch(
+      'tasks',
+      'rejected',
+      { title: 'invalid' },
+      { baseVersion: 1 },
+    );
+    await first.client.syncUntilIdle();
+    expect(
+      first.client.commitOutcome(id)?.retainedRows?.[0]?.localRow?.title,
+    ).toBe('invalid');
+    await first.client.close();
+    first.db.close();
+    const reopened = await makeClient(server, {
+      clientId: 'retained-rejection',
+      databasePath,
+      retainFailedCommits: true,
+    });
+    try {
+      expect(tableRows(reopened.db, 'tasks')[0]?.title).toBe('invalid');
+      expect(reopened.client.commitOutcome(id)?.status).toBe('rejected');
+      reopened.client.resolveCommitOutcome({
+        clientCommitId: id,
+        resolution: 'resolved_keep_server',
+      });
+      expect(tableRows(reopened.db, 'tasks')[0]?.title).toBe('original');
+    } finally {
+      await reopened.client.close();
+      reopened.db.close();
+    }
+  } finally {
+    await first.client.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

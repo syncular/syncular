@@ -3577,6 +3577,11 @@ stays static.
 
 ### 7.1 The outbox
 
+`mutate` accepts mixed full-row upserts, sparse `patch` operations and deletes in
+one atomic local commit. Each patch carries its primary key in `values`; only
+present columns are written. Omitted encrypted columns require no key and remain
+byte-identical on the server. Single-row `patch` uses the same batch path.
+
 - Local writes are recorded as commits in a durable **outbox** with
   client-generated `clientCommitId`s (unique forever per client; UUIDs
   recommended). The outbox is schema-agnostic (§0): it survives a schema
@@ -3638,6 +3643,16 @@ therefore drain after startup without requiring a subscription to trigger a
 second request.
 
 ### 7.2 Replay and idempotent retry
+
+A client configured with `retainFailedCommits: true` keeps failed local rows
+visible, bound to their active outcome. These rows leave the send queue and are
+never retried implicitly. Incoming server state advances a separate base; reads
+continue to show the retained present-column intent until explicit resolution.
+`resolved_keep_server` discards retained intent for a conflict or rejection.
+`superseded` links a reviewed replacement commit (keep mine or edit). Retention
+survives restart and fresh bootstrap. Scope revocation and security purge remove
+the affected retained aggregate; retained state grants no read authority.
+The default policy remains rollback for existing server-authoritative consumers.
 
 - After reconnect, the client replays the outbox from the oldest
   unacknowledged commit. Lost acks are safe: replaying an already-applied
@@ -3742,9 +3757,14 @@ known or authorize an automatic merge.
 The retained schema-agnostic operation envelope carries the sparse operation
 itself: the columns a `patch` wrote are exactly the keys of its persisted
 `values` map, so recovery UI derives edit intent from the presence set — no
-parallel intent metadata exists or may be reconstructed. `mutate` marks every
+parallel intent metadata exists or may be reconstructed. full-row `mutate` upserts mark every
 column present; clients MUST NOT narrow intent by diffing against a mutable
 local base.
+
+With retained intent enabled, outcomes also expose protected `retainedRows`:
+complete intended `localRow`, latest authorized `serverRow` and `serverVersion`
+per affected row (null for deletion or an absent server base). Changes to those
+server bases publish `outcomesChanged` with the row transaction.
 
 The client exposes `commitOutcome(clientCommitId)` and
 `commitOutcomes({ limit?, activeOnly? })`. Active conflict/rejection entries
@@ -3752,7 +3772,7 @@ are restored into the conflict surfaces on restart. Resolution is explicit,
 durable, and one-way:
 
 - a conflict becomes `resolved_keep_server` or `superseded`;
-- a rejection becomes `superseded`;
+- a rejection becomes `resolved_keep_server` or `superseded`;
 - an applied/cached history entry may become `dismissed`;
 - `superseded` requires a distinct `replacementClientCommitId`.
 

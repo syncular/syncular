@@ -164,6 +164,10 @@ export class ChangeAccumulator {
     }
   }
 
+  hasTable(name: string): boolean {
+    return this.#tables.has(name);
+  }
+
   get touched(): boolean {
     return (
       this.#tables.size > 0 ||

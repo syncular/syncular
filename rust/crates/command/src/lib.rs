@@ -307,17 +307,25 @@ pub fn parse_mutations(value: Option<&Value>) -> Result<Vec<Mutation>, String> {
             .to_owned();
         let base_version = entry.get("baseVersion").and_then(Value::as_i64);
         match op {
-            "upsert" => {
+            "upsert" | "patch" => {
                 let mut values = entry
                     .get("values")
                     .and_then(Value::as_object)
                     .cloned()
                     .ok_or_else(|| "upsert missing values".to_owned())?;
                 decode_bigint_members(&mut values)?;
-                out.push(Mutation::Upsert {
-                    table,
-                    values,
-                    base_version,
+                out.push(if op == "patch" {
+                    Mutation::Patch {
+                        table,
+                        values,
+                        base_version,
+                    }
+                } else {
+                    Mutation::Upsert {
+                        table,
+                        values,
+                        base_version,
+                    }
                 });
             }
             "delete" => {
@@ -502,6 +510,14 @@ pub fn dispatch<T: Transport>(
                     SyncClient::new_with_identity(client_id, schema, limits).map_err(client_err)?
                 }
             };
+            instance
+                .set_retain_failed_commits(
+                    params
+                        .get("retainFailedCommits")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                )
+                .map_err(client_err)?;
             // §8.8: the realtime policy rides the create params; absent ⇒
             // `optional` (today's socket-or-HTTP behavior).
             let realtime_policy = parse_realtime_policy(params.get("realtimePolicy"))?;

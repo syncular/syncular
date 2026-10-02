@@ -114,6 +114,7 @@ export interface WorkerInitConfig {
   readonly securityPreflight?: boolean;
   readonly clientId?: string;
   readonly limits?: SyncClientLimits;
+  readonly retainFailedCommits?: boolean;
   /**
    * SPEC §8.8 realtime policy for the worker-owned core; forwarded verbatim.
    * Absent ⇒ `optional` (a connected socket, otherwise `POST /sync`).

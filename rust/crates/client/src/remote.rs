@@ -179,8 +179,14 @@ impl SyncRemoteClient {
         })?;
         let mut operations = Vec::with_capacity(input.mutations.len());
         for mutation in input.mutations {
+            let partial = matches!(&mutation, Mutation::Patch { .. });
             match mutation {
-                Mutation::Upsert {
+                Mutation::Patch {
+                    table,
+                    values,
+                    base_version,
+                }
+                | Mutation::Upsert {
                     table,
                     values,
                     base_version,
@@ -195,8 +201,11 @@ impl SyncRemoteClient {
                         .map_err(RemoteClientError::invalid)?;
                     // §6.7: a mutation is a full-row upsert — every column
                     // present in the sparse payload.
-                    let values = full_row_values(schema_table, values)
-                        .map_err(RemoteClientError::invalid)?;
+                    let values = if partial {
+                        values
+                    } else {
+                        full_row_values(schema_table, values).map_err(RemoteClientError::invalid)?
+                    };
                     let payload = encode_sparse_row_json(
                         schema_table,
                         &row_id,

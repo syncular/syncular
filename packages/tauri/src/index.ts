@@ -133,6 +133,7 @@ export interface TauriSyncClientConfig {
    * connected instead of falling back to HTTP.
    */
   readonly realtimePolicy?: SyncClientConfig['realtimePolicy'];
+  readonly retainFailedCommits?: boolean;
   /**
    * Portable E2EE keys and declarative per-row key-id columns. Raw keys are
    * encoded into the native command envelope and never sent to the server.
@@ -1093,6 +1094,9 @@ export async function createTauriSyncClient(
         ...(config.database !== undefined ? { database: config.database } : {}),
         schema: config.schema,
         ...(config.limits !== undefined ? { limits: config.limits } : {}),
+        ...(config.retainFailedCommits !== undefined
+          ? { retainFailedCommits: config.retainFailedCommits }
+          : {}),
         ...(config.realtimePolicy !== undefined
           ? { realtimePolicy: config.realtimePolicy }
           : {}),
