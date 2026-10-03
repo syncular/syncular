@@ -18,43 +18,47 @@ let proc: ReturnType<typeof Bun.spawn> | undefined;
 let baseUrl = '';
 
 beforeAll(async () => {
-  const port = 8000 + Math.floor(Math.random() * 1000);
-  baseUrl = `http://localhost:${port}`;
-  proc = Bun.spawn(['bun', 'run', join(import.meta.dir, 'server.ts')], {
-    env: { ...process.env, PORT: String(port) },
+  const child = Bun.spawn(['bun', 'run', join(import.meta.dir, 'server.ts')], {
+    env: { ...process.env, PORT: '0' },
     stdout: 'pipe',
     stderr: 'pipe',
   });
-  // Wait for the boot line (the build + server.listen both completed).
-  const started = await waitForListening(baseUrl, 20_000);
-  if (!started) {
-    const stderr = proc.stderr;
-    const err =
-      stderr instanceof ReadableStream ? await new Response(stderr).text() : '';
-    throw new Error(`server did not boot in time:\n${err}`);
-  }
-});
-
-afterAll(() => {
-  proc?.kill();
-});
-
-async function waitForListening(
-  url: string,
-  timeoutMs: number,
-): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+  proc = child;
+  const errors = new Response(child.stderr).text();
+  const ready = (async () => {
+    const reader = child.stdout.getReader();
+    const decoder = new TextDecoder();
+    let output = '';
     try {
-      const res = await fetch(`${url}/`);
-      if (res.ok) return true;
-    } catch {
-      // not up yet
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done)
+          throw new Error('server closed stdout before readiness');
+        output += decoder.decode(chunk.value, { stream: true });
+        const listening =
+          /syncular v2 demo-react: (http:\/\/localhost:\d+)/.exec(output);
+        if (listening) return listening[1]!;
+      }
+    } finally {
+      reader.releaseLock();
     }
-    await new Promise((r) => setTimeout(r, 100));
+  })();
+  baseUrl = await Promise.race([
+    ready,
+    child.exited.then(async (code) => {
+      throw new Error(
+        `server exited before readiness (${code}): ${await errors}`,
+      );
+    }),
+  ]);
+}, 20_000);
+
+afterAll(async () => {
+  if (proc) {
+    proc.kill();
+    await proc.exited;
   }
-  return false;
-}
+});
 
 test('server boots and serves the index page', async () => {
   const res = await fetch(`${baseUrl}/`);
