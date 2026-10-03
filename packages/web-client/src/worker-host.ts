@@ -194,6 +194,7 @@ export interface SyncClientHandleConfig {
   readonly encryption?: EncryptionKeyringConfig;
   /** Open the worker-owned replica behind the fail-closed security gate. */
   readonly securityPreflight?: boolean;
+  readonly transportEnabled?: boolean;
   readonly clientId?: string;
   readonly limits?: SyncClientLimits;
   readonly retainFailedCommits?: boolean;
@@ -946,6 +947,9 @@ function buildInitConfig(
     ...(headers !== undefined ? { headers } : {}),
     ...(config.encryption !== undefined
       ? { encryption: config.encryption }
+      : {}),
+    ...(config.transportEnabled !== undefined
+      ? { transportEnabled: config.transportEnabled }
       : {}),
     ...(config.securityPreflight !== undefined
       ? { securityPreflight: config.securityPreflight }

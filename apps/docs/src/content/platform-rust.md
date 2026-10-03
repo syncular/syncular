@@ -84,6 +84,24 @@ Three constructors cover the storage choices: `SyncClient::new` (in-memory),
 re-opening reuses persisted rows), and `SyncClient::with_connection` (a
 caller-supplied fresh rusqlite `Connection`).
 
+## Transport gate
+
+Call `client.set_transport_enabled(&mut transport, false)` before releasing
+startup intents when the app has local authorization but no fresh bearer.
+`transport_enabled()` reads this host-owned state. Local queries, mutations and
+staged blobs continue; new sync rounds, realtime connects, presence sends and
+uncached blob downloads refuse with `sync.offline` before invoking transport.
+Reopening emits one interactive sync intent. Update the transport's headers
+before reopening and let the existing host scheduler drain the queued commits.
+
+The gate defaults open on each newly created core and is never persisted.
+Security activation, header changes and schema resets retain its current value.
+An already-prepared round retains its atomic apply and revocation checks.
+A split-round host continues the captured exchange, applies it, then calls
+`set_transport_enabled(&mut transport, false)` again if the gate is still closed
+to release the socket. It sends no returned control frames and starts no
+follow-up round while paused. Tauri implements this owner policy directly.
+
 ## Subscribe, mutate, read
 
 ```rust

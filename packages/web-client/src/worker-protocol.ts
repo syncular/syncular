@@ -112,6 +112,7 @@ export interface WorkerInitConfig {
   readonly encryption?: EncryptionKeyringConfig;
   /** Open the worker-owned replica behind the fail-closed security gate. */
   readonly securityPreflight?: boolean;
+  readonly transportEnabled?: boolean;
   readonly clientId?: string;
   readonly limits?: SyncClientLimits;
   readonly retainFailedCommits?: boolean;

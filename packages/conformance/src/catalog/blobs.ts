@@ -79,6 +79,55 @@ async function requireBlobs(client: ClientHandle): Promise<void> {
 
 export const blobScenarios: readonly Scenario[] = [
   {
+    name: 'blobs/closed-transport-stages-and-reads-cache-without-network',
+    requires: ['blobs'],
+    specRefs: ['§8.8', '§5.9.7'],
+    server: BLOB_SERVER,
+    async run(ctx) {
+      const owner = await ctx.newClient({
+        actorId: 'owner',
+        clientId: 'blob-gate',
+        schema: BLOB_SCHEMA,
+        allowed: P1,
+        transportEnabled: false,
+      });
+      await requireBlobs(owner);
+      const ref = await owner.api.uploadBlob!(bytesOf('local staged bytes'));
+      check(
+        (await owner.api.fetchBlob!(ref)).$bytes.length > 0,
+        'cached body reads while paused',
+      );
+      let code = '';
+      try {
+        await owner.api.fetchBlob!(`sha256:${'0'.repeat(64)}`);
+      } catch (error) {
+        code = (error as { code?: string }).code ?? '';
+      }
+      checkEqual(code, 'sync.offline', 'uncached download is gated');
+      checkEqual(owner.blobUploads, [], 'staging invoked no upload endpoint');
+      checkEqual(
+        owner.blobDownloads,
+        [],
+        'cache and uncached refusal invoked no download endpoint',
+      );
+      await owner.api.subscribe({
+        id: 'attachments',
+        table: 'attachments',
+        scopes: P1,
+      });
+      await owner.api.mutate([
+        {
+          op: 'upsert',
+          table: 'attachments',
+          values: { id: 'a', project_id: 'p1', title: 'local', file: ref },
+        },
+      ]);
+      await owner.api.setTransportEnabled(true);
+      await syncIdle(owner);
+      check(owner.blobUploads.length > 0, 'resume flushed the staged body');
+    },
+  },
+  {
     name: 'blobs/upload-owns-nonzero-offset-input-at-call-time',
     requires: ['blobs'],
     specRefs: ['§5.9.1', '§5.9.7'],

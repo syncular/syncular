@@ -141,6 +141,8 @@ export interface TauriSyncClientConfig {
   readonly encryption?: EncryptionKeyringConfig;
   /** Open the native replica behind the fail-closed security gate. */
   readonly securityPreflight?: boolean;
+  /** Open local storage with network transport closed until explicitly resumed. */
+  readonly transportEnabled?: boolean;
   /**
    * RFC 0005 previous-version context, forwarded to the native `create`. The
    * Rust create handler must read this key to enable capture; while it does
@@ -347,6 +349,7 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
         'securityLifecycle',
         'beginSecurityPreflight',
         'activateSecurity',
+        'setTransportEnabled',
         'purgeLocalData',
         'previousVersionDiscard',
         'localRevision',
@@ -704,6 +707,16 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
     return decodePreviousVersionDiscardResult(
       await this.#command('previousVersionDiscard', {}),
     );
+  }
+
+  /** Suspend new network work while retaining local access and queued commits. */
+  async setTransportEnabled(enabled: boolean): Promise<void> {
+    await this.#command('setTransportEnabled', { enabled });
+  }
+
+  /** Browser offline-control parity; local reads and commits remain available. */
+  async setOffline(offline: boolean): Promise<void> {
+    await this.setTransportEnabled(!offline);
   }
 
   /**
@@ -1102,6 +1115,9 @@ export async function createTauriSyncClient(
           : {}),
         ...(config.encryption !== undefined
           ? { encryption: encodeEncryption(config.encryption) }
+          : {}),
+        ...(config.transportEnabled !== undefined
+          ? { transportEnabled: config.transportEnabled }
           : {}),
         ...(config.securityPreflight !== undefined
           ? { securityPreflight: config.securityPreflight }

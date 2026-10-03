@@ -1391,6 +1391,101 @@ mod observation_tests {
     }
 
     #[test]
+    fn closed_transport_never_invokes_network_and_reopen_is_host_owned() {
+        let mut transport = CountingRealtimeTransport::default();
+        let path = std::env::temp_dir().join(format!(
+            "syncular-transport-gate-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let schema = json!({"version":1,"tables":[{"name":"tasks","primaryKey":"id","columns":[
+            {"name":"id","type":"string","nullable":false},
+            {"name":"project_id","type":"string","nullable":false}],"scopes":[{"pattern":"project:{project_id}"}]}]});
+        let mut client = SyncClient::open_path(
+            "gate".into(),
+            &schema,
+            ClientLimits::default(),
+            path.to_str().unwrap(),
+        )
+        .unwrap();
+        client.connect_realtime(&mut transport).unwrap();
+        client.set_transport_enabled(&mut transport, false);
+        assert_eq!(transport.closes, 1);
+        client.begin_security_preflight();
+        client.activate_security(Default::default()).unwrap();
+        client
+            .subscribe(
+                "tasks".into(),
+                "tasks".into(),
+                vec![("project_id".into(), vec!["p1".into()])],
+                None,
+            )
+            .unwrap();
+        for id in ["one", "two"] {
+            client
+                .mutate(vec![Mutation::Upsert {
+                    table: "tasks".into(),
+                    values: Map::from_iter([
+                        ("id".into(), json!(id)),
+                        ("project_id".into(), json!("p1")),
+                    ]),
+                    base_version: None,
+                }])
+                .unwrap();
+        }
+        assert_eq!(
+            client
+                .query("SELECT id FROM tasks ORDER BY id", &[])
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(
+            matches!(client.sync(&mut transport), SyncOutcome::Failed { ref error_code, .. } if error_code == "sync.offline")
+        );
+        assert!(client
+            .connect_realtime(&mut transport)
+            .unwrap_err()
+            .starts_with("sync.offline:"));
+        assert!(client
+            .set_presence(&mut transport, "project:p1", None)
+            .unwrap_err()
+            .starts_with("sync.offline:"));
+        assert_eq!(transport.sync_calls, 0);
+        assert_eq!(transport.realtime_sync_calls, 0);
+        assert_eq!(transport.connects, 1);
+        assert!(transport.messages.is_empty());
+        assert!(matches!(
+            client.drain_sync_intents().as_slice(),
+            [SyncIntent::None]
+        ));
+        let pending = client.pending_commit_ids();
+        drop(client);
+        let mut reopened = SyncClient::open_path(
+            "gate".into(),
+            &schema,
+            ClientLimits::default(),
+            path.to_str().unwrap(),
+        )
+        .unwrap();
+        assert!(reopened.transport_enabled());
+        reopened.set_transport_enabled(&mut transport, false);
+        assert_eq!(reopened.pending_commit_ids(), pending);
+        assert_eq!(
+            reopened.query("SELECT id FROM tasks", &[]).unwrap().len(),
+            2
+        );
+        reopened.set_transport_enabled(&mut transport, true);
+        assert!(matches!(
+            reopened.drain_sync_intents().as_slice(),
+            [SyncIntent::Interactive]
+        ));
+        reopened.set_transport_enabled(&mut transport, true);
+        assert!(reopened.drain_sync_intents().is_empty());
+        drop(reopened);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn realtime_connection_ownership_is_idempotent() {
         let mut client = client();
         let mut transport = CountingRealtimeTransport {
@@ -2621,6 +2716,7 @@ mod observation_tests {
                 }])
                 .unwrap();
             let prepared = client.prepare_sync_round(false).unwrap();
+            client.set_transport_enabled(&mut CountingRealtimeTransport::default(), false);
             let payload = encode_row_json(
                 &client.schema.tables[0],
                 "server",
@@ -5398,6 +5494,7 @@ pub struct SyncClient {
     /// Fail-closed host bootstrap gate. While set, command hosts permit only
     /// status/lifecycle inspection and an exact authorized local purge.
     security_preflight: bool,
+    transport_enabled: bool,
     /// RFC 0005 D2/D8: the previous-version capture config. `None` (default)
     /// means the feature is off; the descriptor write and the container orphan
     /// sweep still happen.
@@ -6038,6 +6135,7 @@ impl SyncClient {
             now_ms: None,
             encryption: crate::values::EncryptionConfig::default(),
             security_preflight: false,
+            transport_enabled: true,
             previous_version,
             insert_sql: RefCell::new(HashMap::new()),
             overlay_dirty: OverlayDirty::clean(),
@@ -6151,6 +6249,28 @@ impl SyncClient {
     #[must_use]
     pub fn security_preflight(&self) -> bool {
         self.security_preflight
+    }
+
+    /// Host-owned, non-persisted network gate. Local operations remain available.
+    pub fn set_transport_enabled(&mut self, transport: &mut dyn Transport, enabled: bool) {
+        if self.transport_enabled != enabled {
+            self.transport_enabled = enabled;
+            self.sync_intent_queue.clear();
+            self.sync_intent_queue
+                .push_back(if enabled && !self.security_preflight {
+                    SyncIntent::Interactive
+                } else {
+                    SyncIntent::None
+                });
+        }
+        // A captured reply keeps its normal apply/revocation semantics.
+        if !enabled && self.active_round.is_none() {
+            self.disconnect_realtime(transport);
+        }
+    }
+
+    pub fn transport_enabled(&self) -> bool {
+        self.transport_enabled
     }
 
     /// Quarantine this replica: enter the fail-closed gate, release all
@@ -6888,6 +7008,7 @@ impl SyncClient {
             }
         };
         let connectivity = match self.last_round.as_ref() {
+            _ if !self.transport_enabled && self.active_round.is_none() => "offline",
             Some(round) if round.status == "succeeded" => "online",
             Some(round)
                 if round.status == "failed"
@@ -6993,7 +7114,12 @@ impl SyncClient {
     }
 
     pub fn drain_sync_intents(&mut self) -> Vec<SyncIntent> {
-        self.sync_intent_queue.drain(..).collect()
+        let intents = self.sync_intent_queue.drain(..).collect();
+        if self.transport_enabled {
+            intents
+        } else {
+            vec![SyncIntent::None]
+        }
     }
 
     fn schedule_background_retry(&mut self) -> u64 {
@@ -10128,8 +10254,12 @@ impl SyncClient {
                 crate::AppliedSyncRound::Complete {
                     outcome, controls, ..
                 } => {
-                    for text in controls {
-                        let _ = transport.realtime_send(&text);
+                    if self.transport_enabled {
+                        for text in controls {
+                            let _ = transport.realtime_send(&text);
+                        }
+                    } else {
+                        self.disconnect_realtime(transport);
                     }
                     return outcome;
                 }
@@ -10228,6 +10358,13 @@ impl SyncClient {
         &mut self,
         url_capable: bool,
     ) -> Result<crate::PreparedSyncRound, Box<SyncOutcome>> {
+        if !self.transport_enabled {
+            return Err(Box::new(SyncOutcome::Failed {
+                error_code: "sync.offline".into(),
+                message: "transport gate is closed".into(),
+                details: None,
+            }));
+        }
         if self.active_round.is_some() {
             return Err(Box::new(SyncOutcome::Failed {
                 error_code: "client.round_in_progress".into(),
@@ -10437,7 +10574,8 @@ impl SyncClient {
             self.previous_version_lifetime_check();
             outcome
         })();
-        let more = matches!(&outcome, SyncOutcome::Ok(report) if !report.bootstrapping.is_empty() || report.commits_applied > 0 || report.segment_rows_applied > 0 || !report.resets.is_empty() || self.sync_needed);
+        let more = self.transport_enabled
+            && matches!(&outcome, SyncOutcome::Ok(report) if !report.bootstrapping.is_empty() || report.commits_applied > 0 || report.segment_rows_applied > 0 || !report.resets.is_empty() || self.sync_needed);
         let bootstrap_advanced = matches!(&outcome, SyncOutcome::Ok(report) if report.segment_rows_applied > 0 && !report.bootstrapping.is_empty())
             && before
                 != self
@@ -10447,7 +10585,11 @@ impl SyncClient {
                     .collect::<Vec<_>>();
         crate::AppliedSyncRound::Complete {
             outcome: self.finish_sync_round(prepared.started_at_ms, outcome),
-            controls: downloads.controls,
+            controls: if self.transport_enabled {
+                downloads.controls
+            } else {
+                Vec::new()
+            },
             more,
             bootstrap_advanced,
         }
@@ -12997,6 +13139,9 @@ impl SyncClient {
         if let Some(cached) = self.get_cached_blob_bytes(&blob_id).map_err(simple)? {
             return Ok(cached);
         }
+        if !self.transport_enabled {
+            return Err(("sync.offline".into(), "transport gate is closed".into()));
+        }
         // §5.9.5: propagate the server's blob.* code (blob.forbidden /
         // blob.not_found) verbatim so the harness can assert on it. The
         // authorized endpoint serves bytes inline OR (always-issue, presign
@@ -13789,6 +13934,9 @@ impl SyncClient {
     }
 
     pub fn connect_realtime(&mut self, transport: &mut dyn Transport) -> Result<(), String> {
+        if !self.transport_enabled {
+            return Err("sync.offline: transport gate is closed".into());
+        }
         if self.realtime_policy == RealtimePolicy::Off {
             return Err(
                 "sync.invalid_request: realtime is off; realtime connect is refused".to_owned(),
@@ -13842,6 +13990,9 @@ impl SyncClient {
         scope_key: &str,
         doc: Option<&Value>,
     ) -> Result<(), String> {
+        if !self.transport_enabled {
+            return Err("sync.offline: transport gate is closed".into());
+        }
         if !self.realtime_connected() {
             return Err("setPresence requires a connected realtime socket (§8.6)".to_string());
         }
@@ -13942,7 +14093,7 @@ impl SyncClient {
     }
 
     pub fn on_realtime_binary(&mut self, transport: &mut dyn Transport, bytes: &[u8]) {
-        if self.stopped {
+        if self.stopped || !self.transport_enabled {
             return;
         }
         #[cfg(feature = "bench-internals")]

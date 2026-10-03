@@ -122,6 +122,13 @@ impl SyncularCore {
             method,
             &params,
         );
+        if result.is_ok() && matches!(method, "activateSecurity" | "setHeaders") {
+            if let Some(headers) = params.get("headers") {
+                self.set_headers(
+                    syncular_command::parse_headers(headers).expect("router validated headers"),
+                );
+            }
+        }
         if method == "create" && result.is_ok() {
             self.progress_subscription = self.client.as_ref().and_then(|client| {
                 self.progress_listener.clone().map(|listener| {
@@ -185,6 +192,9 @@ impl SyncularCore {
     /// Consume the next coalesced host schedule. Interactive work preempts a
     /// pending retry; background work keeps the earliest real deadline.
     pub fn take_sync_intent(&mut self) -> SyncIntent {
+        if !self.transport_enabled() {
+            return SyncIntent::None;
+        }
         if std::mem::take(&mut self.interactive_sync) {
             self.background_sync_ms = None;
             SyncIntent::Interactive
@@ -193,6 +203,12 @@ impl SyncularCore {
         } else {
             SyncIntent::None
         }
+    }
+
+    pub fn transport_enabled(&self) -> bool {
+        self.client
+            .as_ref()
+            .is_some_and(SyncClient::transport_enabled)
     }
 
     /// Run one `syncUntilIdle` round for the background host loop, deriving
@@ -246,6 +262,11 @@ impl SyncularCore {
             },
         };
         self.round_pending = matches!(applied, syncular_client::AppliedSyncRound::Continue(_));
+        if !self.round_pending && !self.transport_enabled() {
+            if let Some(client) = self.client.as_mut() {
+                client.set_transport_enabled(&mut self.transport, false);
+            }
+        }
         if let syncular_client::AppliedSyncRound::Complete { controls, .. } = &mut applied {
             self.controls.append(controls);
         }
@@ -258,6 +279,10 @@ impl SyncularCore {
     }
 
     pub fn take_controls(&mut self) -> Option<(Vec<String>, HostTransport)> {
+        if !self.transport_enabled() {
+            self.controls.clear();
+            return None;
+        }
         if self.controls.is_empty() {
             return None;
         }
@@ -331,7 +356,7 @@ impl SyncularCore {
     /// Feed buffered inbound WS frames to the client (which may ack back through
     /// the same transport). A no-op without a native socket.
     fn drain_realtime(&mut self) {
-        if self.round_pending || self.client.is_none() {
+        if self.round_pending || !self.transport_enabled() {
             return;
         }
         let frames = self.transport.take_inbound();
@@ -454,6 +479,45 @@ mod tests {
             "params": { "clientId": "c1", "schema": simple_schema() }
         }));
         assert_eq!(reply["result"], json!({}), "create ok: {reply}");
+    }
+
+    #[test]
+    fn transport_gate_survives_security_activation_and_owner_rounds() {
+        let mut core = SyncularCore::new(&json!({})).unwrap();
+        let result = core.command(&json!({ "method": "create", "params": {
+            "schema": simple_schema(), "transportEnabled": false, "securityPreflight": true
+        } }));
+        assert!(result.get("error").is_none());
+        assert!(core
+            .command(&json!({ "method": "activateSecurity", "params": {} }))
+            .get("error")
+            .is_none());
+        for title in ["first", "second"] {
+            assert!(core.command(&json!({ "method": "mutate", "params": { "mutations": [{
+                "op": "upsert", "table": "todo", "values": { "id": "one", "title": title, "done": false }
+            }] } })).get("error").is_none());
+            assert!(matches!(core.take_sync_intent(), SyncIntent::None));
+            assert!(
+                matches!(*core.prepare_round().err().expect("closed transport"), syncular_client::SyncOutcome::Failed { ref error_code, .. } if error_code == "sync.offline")
+            );
+        }
+        assert_eq!(
+            core.query("SELECT title FROM todo", Value::Null)["result"]["rows"][0]["title"],
+            "second"
+        );
+        assert!(!core.transport_enabled());
+        core.command(&json!({ "method": "setTransportEnabled", "params": { "enabled": true } }));
+        assert!(matches!(core.take_sync_intent(), SyncIntent::Interactive));
+        core.command(&json!({ "method": "setTransportEnabled", "params": { "enabled": true } }));
+        assert!(matches!(core.take_sync_intent(), SyncIntent::None));
+        core.command(&json!({ "method": "setTransportEnabled", "params": { "enabled": false } }));
+        core.command(&json!({ "method": "beginSecurityPreflight" }));
+        assert_eq!(
+            core.query("SELECT title FROM todo", Value::Null)["error"]["code"],
+            "client.security_preflight_required"
+        );
+        core.command(&json!({ "method": "activateSecurity", "params": {} }));
+        assert!(!core.transport_enabled());
     }
 
     #[test]

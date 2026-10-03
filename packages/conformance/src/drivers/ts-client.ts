@@ -26,7 +26,11 @@ import {
   last,
 } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
-import type { RowValue, ScopeMap } from '@syncular/core';
+import {
+  MessageStreamScanner,
+  type RowValue,
+  type ScopeMap,
+} from '@syncular/core';
 import { YjsColumn } from '@syncular/crdt-yjs';
 import type {
   ClientCommitOutcome,
@@ -253,6 +257,7 @@ async function constructClient(
   let held:
     | {
         entered: ReturnType<typeof Promise.withResolvers<void>>;
+        scanner: MessageStreamScanner;
         release: ReturnType<typeof Promise.withResolvers<void>>;
       }
     | undefined;
@@ -261,6 +266,9 @@ async function constructClient(
     database: db,
     schema: toClientSchema(schema),
     clientId: options.clientId,
+    ...(options.transportEnabled !== undefined
+      ? { transportEnabled: options.transportEnabled }
+      : {}),
     ...(options.retainFailedCommits !== undefined
       ? { retainFailedCommits: options.retainFailedCommits }
       : {}),
@@ -287,7 +295,15 @@ async function constructClient(
     realtime: async (handlers) => {
       const connection = await endpoints.connectRealtime({
         onText: (text) => handlers.onText(text),
-        onBinary: (bytes) => handlers.onBinary(bytes),
+        onBinary: (bytes) => {
+          const barrier = held;
+          if (barrier !== undefined && bytes[0] === 1) {
+            const owned = bytes.slice();
+            if (barrier.scanner.push(owned.subarray(1)) !== undefined)
+              barrier.entered.resolve();
+            void barrier.release.promise.then(() => handlers.onBinary(owned));
+          } else handlers.onBinary(bytes);
+        },
         onClose: () => handlers.onClose?.(),
       });
       // SPEC §8.8 loss injection: the socket dies without the client's
@@ -310,6 +326,7 @@ async function constructClient(
     async prepare(): Promise<void> {
       if (pending !== undefined) throw new Error('round already captured');
       const barrier = {
+        scanner: new MessageStreamScanner(),
         entered: Promise.withResolvers<void>(),
         release: Promise.withResolvers<void>(),
       };
@@ -328,6 +345,7 @@ async function constructClient(
     async complete(): Promise<ClientSyncResult> {
       if (pending === undefined || release === undefined)
         throw new Error('no captured round');
+      held = undefined;
       release();
       const result = await pending;
       pending = undefined;
@@ -952,6 +970,17 @@ class TsClientInstance implements ClientInstance {
     }
     this.#schema = schema;
     return this;
+  }
+
+  async setTransportEnabled(enabled: boolean): Promise<void> {
+    const unlisten = this.#client.onSyncIntent((intent) =>
+      this.#intents.push(intent),
+    );
+    try {
+      this.#client.setTransportEnabled(enabled);
+    } finally {
+      unlisten();
+    }
   }
 
   async connectRealtime(): Promise<void> {

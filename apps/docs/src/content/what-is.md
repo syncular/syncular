@@ -36,7 +36,7 @@ with two independent, conformance-locked implementations:
 - A **Rust core** for everything else: rusqlite on the device filesystem,
   shipped through a five-function C FFI.
 
-Both pass the same golden byte-level vectors and the same 205-scenario
+Both pass the same golden byte-level vectors and the same 208-scenario
 conformance catalog, run against both cores in CI. The platform bindings are
 thin marshaling over the shared Rust core, so protocol behavior is identical
 everywhere:

@@ -109,16 +109,24 @@ function nativeTauri(baseUrl?: string): {
       const actual = args ?? {};
       calls.push({ cmd, args: actual });
       const response = await request(
-        cmd.endsWith('syncular_query_snapshot')
+        cmd.endsWith('syncular_set_headers')
           ? {
-              kind: 'snapshot',
-              sql: actual.sql,
-              params: actual.params,
-              coverage: actual.coverage,
+              kind: 'command',
+              command: {
+                method: 'setHeaders',
+                params: { headers: actual.headers },
+              },
             }
-          : cmd.endsWith('syncular_query')
-            ? { kind: 'query', sql: actual.sql, params: actual.params }
-            : { kind: 'command', command: actual.command },
+          : cmd.endsWith('syncular_query_snapshot')
+            ? {
+                kind: 'snapshot',
+                sql: actual.sql,
+                params: actual.params,
+                coverage: actual.coverage,
+              }
+            : cmd.endsWith('syncular_query')
+              ? { kind: 'query', sql: actual.sql, params: actual.params }
+              : { kind: 'command', command: actual.command },
       );
       for (const payload of response.events) {
         for (const listener of listeners) listener({ payload });
@@ -191,6 +199,95 @@ if (!available) {
   });
 } else {
   describe('native Tauri bridge', () => {
+    test('closed native transport allows security activation and consecutive local writes before fresh bearer resume', async () => {
+      const source = makeServer(schema);
+      source.allowed['actor-1'] = { list_id: ['one'] };
+      const calls: string[] = [];
+      const server = Bun.serve({
+        hostname: '127.0.0.1',
+        port: 0,
+        async fetch(request) {
+          calls.push(new URL(request.url).pathname);
+          expect(request.headers.get('authorization')).toBe('Bearer fresh');
+          const context = source.ctxFor('actor-1');
+          if (new URL(request.url).pathname === '/sync')
+            return new Response(
+              (
+                await handleSyncRequest(
+                  new Uint8Array(await request.arrayBuffer()),
+                  context,
+                )
+              ).slice().buffer,
+            );
+          return new Response(
+            (
+              await handleSegmentDownload(context, {
+                segmentId: decodeURIComponent(
+                  new URL(request.url).pathname.slice('/segments/'.length),
+                ),
+                scopesHeader: request.headers.get('X-Syncular-Scopes') ?? '{}',
+              })
+            ).bytes.slice().buffer,
+          );
+        },
+      });
+      const host = nativeTauri(`http://127.0.0.1:${server.port}`);
+      const client = await createTauriSyncClient({
+        schema,
+        securityPreflight: true,
+        transportEnabled: false,
+        tauri: host.api,
+      });
+      try {
+        await client.activateSecurity();
+        await client.subscribe({
+          id: 'todos',
+          table: 'todos',
+          scopes: { list_id: ['one'] },
+        });
+        const first = await client.mutate([
+          {
+            op: 'upsert',
+            table: 'todos',
+            values: { id: 'one', list_id: 'one', title: 'first' },
+          },
+        ]);
+        const second = await client.mutate([
+          {
+            op: 'patch',
+            table: 'todos',
+            values: { id: 'one', title: 'second' },
+          },
+        ]);
+        expect((await client.query('SELECT title FROM todos'))[0]?.title).toBe(
+          'second',
+        );
+        expect(await client.pendingCommits()).toEqual([first, second]);
+        expect(await client.sync()).toMatchObject({
+          errorCode: 'sync.offline',
+        });
+        await expect(client.connectRealtime()).rejects.toMatchObject({
+          code: 'sync.offline',
+        });
+        expect(calls).toEqual([]);
+        await client.setHeaders({ authorization: 'Bearer fresh' });
+        await client.setOffline(false);
+        await client.syncUntilIdle();
+        expect(await client.pendingCommits()).toEqual([]);
+        expect((await client.query('SELECT title FROM todos'))[0]?.title).toBe(
+          'second',
+        );
+        expect(
+          (await client.commitOutcomes()).map((o) => o.clientCommitId).sort(),
+        ).toEqual([first, second].sort());
+        expect(calls.length).toBeGreaterThan(0);
+      } finally {
+        await client.close();
+        await host.close();
+        server.stop(true);
+        source.storage.db.close();
+      }
+    });
     test('native ACK-only edits survive reopen and pull their own commit next round', async () => {
       const source = makeServer(schema);
       source.allowed['actor-1'] = { list_id: ['one'] };

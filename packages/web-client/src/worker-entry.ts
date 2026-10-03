@@ -165,6 +165,7 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
     if (
       closed ||
       client === undefined ||
+      offline ||
       client.securityLifecycle() === 'preflight'
     ) {
       return;
@@ -189,6 +190,7 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
       !autoSync ||
       closed ||
       client === undefined ||
+      offline ||
       client.securityLifecycle() === 'preflight' ||
       intent.kind === 'none'
     ) {
@@ -235,41 +237,6 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
     return client;
   }
 
-  function assertOnline(): void {
-    if (offline) {
-      throw new ClientSyncError(
-        'sync.transport_failed',
-        'the worker transport is offline (setOffline(true))',
-        true,
-      );
-    }
-  }
-
-  function gateOffline<T>(inner: (request: T) => Promise<Uint8Array>) {
-    return (request: T): Promise<Uint8Array> => {
-      assertOnline();
-      return inner(request);
-    };
-  }
-
-  /** Offline gate that preserves the §5.4 `fetchUrl` capability marker. */
-  function gateSegmentsOffline(inner: SegmentDownloader): SegmentDownloader {
-    const fetchUrl = inner.fetchUrl;
-    return Object.assign(gateOffline(inner), {
-      ...(fetchUrl !== undefined
-        ? {
-            fetchUrl: (
-              url: string,
-              onProgress?: (bytesReceived: number) => void,
-            ) => {
-              assertOnline();
-              return fetchUrl(url, onProgress);
-            },
-          }
-        : {}),
-    });
-  }
-
   async function init(config: WorkerInitConfig): Promise<WorkerInitResult> {
     if (client !== undefined) {
       throw new ClientSyncError(
@@ -308,11 +275,10 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
         }
       }
     }
-    const transport = gateOffline(
+    const transport =
       overrides.createTransport !== undefined
         ? overrides.createTransport(config)
-        : httpSyncTransport(config.endpoints.syncUrl, http),
-    );
+        : httpSyncTransport(config.endpoints.syncUrl, http);
     const segments =
       overrides.createSegments !== undefined
         ? overrides.createSegments(config)
@@ -329,22 +295,15 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
     // `{clientId}` URL placeholder — start the client first, then attach
     // the connector through a mutable slot read at connect time.
     let realtimeConnector: RealtimeConnector | undefined;
+    offline = config.transportEnabled === false;
     const started = new SyncClient({
+      transportEnabled: !offline,
       database,
       schema: config.schema,
       transport,
-      ...(segments !== undefined
-        ? { segments: gateSegmentsOffline(segments) }
-        : {}),
+      ...(segments !== undefined ? { segments } : {}),
       ...(blobs !== undefined ? { blobs } : {}),
       realtime: (handlers) => {
-        if (offline) {
-          throw new ClientSyncError(
-            'sync.transport_failed',
-            'the worker realtime channel is offline (setOffline(true))',
-            true,
-          );
-        }
         if (realtimeConnector === undefined) {
           throw new ClientSyncError(
             'sync.invalid_request',
@@ -515,8 +474,12 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
     },
     setOffline: (value) => {
       offline = value;
-      if (offline) client?.disconnectRealtime();
-      else if (client !== undefined) {
+      requireClient().setTransportEnabled(!value);
+      if (offline) {
+        if (backgroundTimer !== undefined) clearTimeout(backgroundTimer);
+        backgroundTimer = undefined;
+        backgroundDue = Number.POSITIVE_INFINITY;
+      } else if (client !== undefined) {
         const snapshot = client.diagnosticsSnapshot();
         post({
           t: 'event',

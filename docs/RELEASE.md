@@ -1,8 +1,30 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.30.12** (`v0.30.12`). All artifacts use Apache-2.0, except
+current release is **0.30.13** (`v0.30.13`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.30.13 release notes
+
+Both cores expose a non-persisted transport gate. Tauri accepts
+`transportEnabled: false` atomically at create and exposes
+`setTransportEnabled(enabled)` plus the browser-parity `setOffline(offline)`.
+Security activation opens authorized local reads and commits while the gate stays
+closed. New sync, realtime, presence and uncached blob network work returns
+`sync.offline`; cached blobs and staged uploads remain available locally.
+Automatic scheduling consumes no network intent until resume emits one wake.
+
+A captured round retains its ordinary atomic apply and revocation checks after
+closure. The owner releases realtime after it settles, drops unsent controls and
+starts no follow-up. Delayed transport leaves local commands available. Fresh
+headers precede resume; queued commits flush FIFO and pull their own images.
+Each new client starts with an open gate unless the app explicitly closes it at
+create. Header replacement, security activation and owner rounds do not reopen it.
+
+Upgrade all 12 npm packages and 6 native crates together and rebuild the native
+application. Pass `transportEnabled: false` on every secure offline cold start;
+keep `auto_sync: true`. No schema bump or generated-schema change is required.
+SSP2 stays at wire version 3. The browser own-code budget remains 148 KiB.
 
 ## 0.30.12 release notes
 

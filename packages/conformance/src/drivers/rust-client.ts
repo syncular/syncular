@@ -1296,6 +1296,10 @@ class RustClientInstance implements ClientInstance {
     };
   }
 
+  async setTransportEnabled(enabled: boolean): Promise<void> {
+    await this.#shim.call('setTransportEnabled', { enabled });
+  }
+
   async connectRealtime(): Promise<void> {
     await this.#shim.call('connectRealtime', {});
   }
@@ -1542,6 +1546,9 @@ export const rustClientDriver: ClientDriver = {
     }
     await shim.call('create', {
       clientId: options.clientId,
+      ...(options.transportEnabled !== undefined
+        ? { transportEnabled: options.transportEnabled }
+        : {}),
       schema: options.schema as unknown as JsonValue,
       ...(options.limits !== undefined
         ? { limits: options.limits as unknown as JsonValue }

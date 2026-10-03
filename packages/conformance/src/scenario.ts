@@ -324,6 +324,7 @@ export interface ClientHandle {
 }
 
 export interface NewClientOptions {
+  readonly transportEnabled?: boolean;
   readonly retainFailedCommits?: boolean;
   readonly actorId: string;
   readonly clientId: string;
@@ -538,6 +539,9 @@ export class ScenarioContext {
         : {}),
       ...(options.previousVersionContext !== undefined
         ? { previousVersionContext: options.previousVersionContext }
+        : {}),
+      ...(options.transportEnabled !== undefined
+        ? { transportEnabled: options.transportEnabled }
         : {}),
       ...(options.retainFailedCommits !== undefined
         ? { retainFailedCommits: options.retainFailedCommits }

@@ -426,8 +426,12 @@ fn main() {
                                         controls,
                                         ..
                                     } => {
-                                        for text in controls {
-                                            let _ = io.realtime_send(&text);
+                                        if instance.transport_enabled() {
+                                            for text in controls {
+                                                let _ = io.realtime_send(&text);
+                                            }
+                                        } else {
+                                            instance.set_transport_enabled(&mut io, false);
                                         }
                                         break Ok(outcome.to_json());
                                     }

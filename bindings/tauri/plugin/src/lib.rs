@@ -394,6 +394,9 @@ where
     let mut queued = std::collections::VecDeque::new();
     let mut background_deadline: Option<Instant> = None;
     loop {
+        if !core.transport_enabled() {
+            background_deadline = None;
+        }
         if let Some((controls, transport)) = core.take_controls() {
             if network_tx
                 .send(NetworkWork::Controls(controls, transport))
@@ -514,7 +517,7 @@ where
                         if bootstrap_advanced && run.max_rounds.is_none() {
                             run.spent = 0;
                         }
-                        keep_running = more;
+                        keep_running = more && core.transport_enabled();
                         if keep_running && run.spent >= run.max_rounds.unwrap_or(20).max(1) {
                             keep_running = false;
                             outcome = syncular_client::SyncOutcome::Failed {
@@ -536,7 +539,7 @@ where
             }
             Request::Command { command, reply } => {
                 let method = command.get("method").and_then(Value::as_str);
-                if matches!(method, Some("sync" | "syncUntilIdle")) {
+                if matches!(method, Some("sync" | "syncUntilIdle")) && core.transport_enabled() {
                     queued.push_back(RoundRun {
                         reply: Some(reply),
                         until_idle: method == Some("syncUntilIdle"),
@@ -550,11 +553,6 @@ where
                     continue;
                 }
                 let result = core.command(&command);
-                if result.get("error").is_none() {
-                    if let Some(headers) = activation_headers(&command) {
-                        core.set_headers(headers);
-                    }
-                }
                 let _ = reply.send(result);
                 pump_events(&mut core, &*emit);
             }
@@ -647,17 +645,6 @@ fn resolve_database(config: &SyncularConfig, params: &Value) -> Result<Option<St
 
 fn invalid_request(message: &str) -> Value {
     json!({ "error": { "code": "sync.invalid_request", "message": message } })
-}
-
-/// The header set an `activateSecurity` command carries (already validated by
-/// the shared command router; a shape failure surfaces as its error reply, so
-/// this extraction only sees well-formed sets on the success path).
-fn activation_headers(command: &Value) -> Option<Vec<(String, String)>> {
-    if command.get("method").and_then(Value::as_str) != Some("activateSecurity") {
-        return None;
-    }
-    let headers = command.pointer("/params/headers")?;
-    syncular_command::parse_headers(headers).ok()
 }
 
 fn client_error(message: impl Into<String>) -> Value {
@@ -1100,39 +1087,6 @@ mod tests {
     }
 
     #[test]
-    fn activation_headers_extracts_only_the_activation_set() {
-        assert_eq!(
-            activation_headers(&json!({
-                "method": "activateSecurity",
-                "params": { "headers": { "authorization": "Bearer fresh" } }
-            })),
-            Some(vec![(
-                "authorization".to_owned(),
-                "Bearer fresh".to_owned()
-            )])
-        );
-        // Absent headers, other methods, and invalid shapes all yield nothing.
-        assert_eq!(
-            activation_headers(&json!({ "method": "activateSecurity", "params": {} })),
-            None
-        );
-        assert_eq!(
-            activation_headers(&json!({
-                "method": "setWindow",
-                "params": { "headers": { "authorization": "Bearer fresh" } }
-            })),
-            None
-        );
-        assert_eq!(
-            activation_headers(&json!({
-                "method": "activateSecurity",
-                "params": { "headers": { "authorization": 7 } }
-            })),
-            None
-        );
-    }
-
-    #[test]
     fn preflight_refuses_plain_replacement_creates_through_the_plugin() {
         use tauri::test::{mock_builder, mock_context, noop_assets};
 
@@ -1477,7 +1431,7 @@ mod tests {
         use ssp2::segment::{encode_row, Column, ColumnType, ColumnValue};
         use std::io::{Read, Write};
         use std::net::TcpListener;
-        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         use std::sync::mpsc::channel;
         use std::sync::Arc;
 
@@ -1486,12 +1440,16 @@ mod tests {
         let (entered_tx, entered_rx) = channel();
         let (release_tx, release_rx) = channel();
         let (delivered_tx, delivered_rx) = channel();
+        let (ack_tx, ack_rx) = channel();
         let image_sent = Arc::new(AtomicBool::new(false));
         let server_image_sent = image_sent.clone();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let server_requests = requests.clone();
         let server = std::thread::spawn(move || {
             let mut pushed = Vec::new();
             loop {
                 let (mut socket, _) = listener.accept().unwrap();
+                server_requests.fetch_add(1, Ordering::SeqCst);
                 let mut header = Vec::new();
                 while !header.ends_with(b"\r\n\r\n") {
                     let mut byte = [0];
@@ -1499,6 +1457,9 @@ mod tests {
                     header.push(byte[0]);
                 }
                 let header = String::from_utf8(header).unwrap();
+                assert!(header
+                    .to_ascii_lowercase()
+                    .contains("authorization: bearer fresh"));
                 let length: usize = header
                     .lines()
                     .find_map(|line| {
@@ -1517,7 +1478,7 @@ mod tests {
                         ..
                     }
                 );
-                let deliver = !reset && pushed.len() == 2;
+                let deliver = !reset && pushed.len() == 3;
                 let mut frames = vec![Frame::RespHeader {
                     required_schema_version: None,
                     latest_schema_version: None,
@@ -1593,7 +1554,7 @@ mod tests {
                             ],
                         );
                         frames.push(Frame::Commit {
-                            commit_seq: 2,
+                            commit_seq: 3,
                             created_at_ms: 0,
                             actor_id: "actor".into(),
                             tables: vec!["todo".into()],
@@ -1601,7 +1562,7 @@ mod tests {
                                 table_index: 0,
                                 row_id: "one".into(),
                                 op: Op::Upsert,
-                                row_version: Some(2),
+                                row_version: Some(3),
                                 scopes: vec![("id".into(), "one".into())],
                                 row: Some(row.into_bytes()),
                             }],
@@ -1609,7 +1570,7 @@ mod tests {
                         server_image_sent.store(true, Ordering::SeqCst);
                     }
                     frames.push(Frame::SubEnd {
-                        next_cursor: if deliver { 2 } else { 0 },
+                        next_cursor: if deliver { 3 } else { 0 },
                         bootstrap_state: None,
                     });
                 }
@@ -1643,6 +1604,9 @@ mod tests {
                 owner_tx,
                 rx,
                 move |event| {
+                    if event["type"] == "change" && event["batch"]["outcomesChanged"] == true {
+                        let _ = ack_tx.send(());
+                    }
                     if image_sent.load(Ordering::SeqCst) && event["type"] == "change" {
                         let _ = delivered_tx.send(());
                     }
@@ -1655,7 +1619,7 @@ mod tests {
             result
         };
         let created = call(json!({ "method": "create", "params": {
-            "clientId": "pending-round", "schema": { "version": 1, "tables": [{
+            "clientId": "pending-round", "transportEnabled": false, "securityPreflight": true, "schema": { "version": 1, "tables": [{
                 "name": "todo", "primaryKey": "id", "columns": [
                     { "name": "id", "type": "string", "nullable": false },
                     { "name": "title", "type": "string", "nullable": false }
@@ -1663,13 +1627,53 @@ mod tests {
             }] }
         } }));
         assert!(created.recv().unwrap().get("error").is_none());
+        assert!(call(json!({ "method": "activateSecurity", "params": {} }))
+            .recv()
+            .unwrap()
+            .get("error")
+            .is_none());
         assert!(call(json!({ "method": "subscribe", "params": { "id": "own", "table": "todo", "scopes": { "id": ["one"] } } })).recv().unwrap().get("error").is_none());
         let first = call(json!({ "method": "mutate", "params": { "mutations": [{
             "op": "upsert", "table": "todo", "values": { "id": "one", "title": "100/v1" }
         }] } }))
         .recv()
         .unwrap();
+        let queued_second = call(json!({ "method": "mutate", "params": { "mutations": [{
+            "op": "patch", "table": "todo", "values": { "id": "one", "title": "200/v2" }
+        }] } }))
+        .recv()
+        .unwrap();
+        assert_eq!(
+            call(json!({ "method": "sync" })).recv().unwrap()["result"]["errorCode"],
+            "sync.offline"
+        );
+        assert_eq!(
+            call(json!({ "method": "connectRealtime" })).recv().unwrap()["error"]["code"],
+            "sync.offline"
+        );
+        assert_eq!(requests.load(Ordering::SeqCst), 0);
+        let (reply, result) = channel();
+        tx.send(Request::SetHeaders {
+            headers: vec![("authorization".into(), "Bearer fresh".into())],
+            reply,
+        })
+        .unwrap();
+        assert_eq!(result.recv().unwrap()["result"], Value::Null);
+        assert!(
+            call(json!({ "method": "setTransportEnabled", "params": { "enabled": true } }))
+                .recv()
+                .unwrap()
+                .get("error")
+                .is_none()
+        );
         entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(
+            call(json!({ "method": "setTransportEnabled", "params": { "enabled": false } }))
+                .recv()
+                .unwrap()
+                .get("error")
+                .is_none()
+        );
         let started = Instant::now();
         let second = call(json!({ "method": "mutate", "params": { "mutations": [{
             "op": "patch", "table": "todo", "values": { "id": "one", "title": "300/v3" }
@@ -1693,6 +1697,34 @@ mod tests {
         let rows = local_rows
             .clone()
             .unwrap_or_else(|_| query_rx.recv().unwrap());
+        // Local mutation emits an outcome batch too; wait for both captured commits' applied outcomes.
+        loop {
+            ack_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            let outcomes = call(json!({ "method": "commitOutcomes" })).recv().unwrap();
+            if outcomes["result"]["outcomes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|o| o["status"] == "applied")
+                .count()
+                == 2
+            {
+                break;
+            }
+        }
+        let paused_count = requests.load(Ordering::SeqCst);
+        assert_eq!(
+            call(json!({ "method": "sync" })).recv().unwrap()["result"]["errorCode"],
+            "sync.offline"
+        );
+        assert_eq!(requests.load(Ordering::SeqCst), paused_count);
+        assert!(
+            call(json!({ "method": "setTransportEnabled", "params": { "enabled": true } }))
+                .recv()
+                .unwrap()
+                .get("error")
+                .is_none()
+        );
         delivered_rx
             .recv_timeout(Duration::from_secs(10))
             .expect("ACK schedules the own-image pull without realtime or a manual round");
@@ -1705,7 +1737,7 @@ mod tests {
         .unwrap();
         let delivered = query_rx.recv().unwrap();
         assert_eq!(delivered["result"]["rows"][0]["title"], "300/v3");
-        assert_eq!(delivered["result"]["rows"][0]["version"], 2);
+        assert_eq!(delivered["result"]["rows"][0]["version"], 3);
         let pushed = server.join().unwrap();
         tx.send(Request::Shutdown).unwrap();
         owner.join().unwrap();
@@ -1720,6 +1752,7 @@ mod tests {
             pushed,
             vec![
                 first["result"]["clientCommitId"].as_str().unwrap(),
+                queued_second["result"]["clientCommitId"].as_str().unwrap(),
                 second_reply["result"]["clientCommitId"].as_str().unwrap()
             ]
         );

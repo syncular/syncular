@@ -49,6 +49,130 @@ async function bootstrapped(
 
 export const offlineScenarios: readonly Scenario[] = [
   {
+    name: 'offline/explicit-transport-gate-local-writes-and-resume',
+    specRefs: ['§8.8', '§7.1'],
+    async run(ctx) {
+      const a = await ctx.newClient({
+        actorId: 'a',
+        clientId: 'gate',
+        allowed: P1,
+        transportEnabled: false,
+      });
+      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      const first = await a.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('t1', 'p1', 'first') },
+      ]);
+      const second = await a.api.mutate([
+        { op: 'patch', table: 'tasks', values: { id: 't1', title: 'second' } },
+      ]);
+      await syncFails(a, 'sync.offline', 'closed gate');
+      let code = '';
+      try {
+        await a.api.connectRealtime();
+      } catch (error) {
+        code = (error as { code?: string }).code ?? '';
+      }
+      checkEqual(code, 'sync.offline', 'realtime is gated');
+      checkEqual(a.sentRequests.length, 0, 'no sync transport invoked');
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [first, second],
+        'two commits queue FIFO',
+      );
+      checkEqual(
+        (await a.api.readRows('tasks'))[0]?.values.title,
+        'second',
+        'local reads see latest intent',
+      );
+      check(
+        !(await a.api.drainSyncIntents!()).some((i) => i.kind !== 'none'),
+        'closed gate emits no scheduler wake',
+      );
+      await a.api.setTransportEnabled(true);
+      checkEqual(
+        await a.api.drainSyncIntents!(),
+        [{ kind: 'interactive' }],
+        'resume has one wake',
+      );
+      await a.api.setTransportEnabled(true);
+      checkEqual(await a.api.drainSyncIntents!(), [], 'resume is idempotent');
+      const result = await syncOk(a);
+      checkEqual(result.applied, [first, second], 'resume sends FIFO');
+      await syncIdle(a);
+      await expectConverged(ctx, 'tasks', [a], {
+        variable: 'project_id',
+        values: ['p1'],
+      });
+    },
+  },
+  {
+    name: 'offline/transport-close-preserves-captured-reply-and-revocation',
+    specRefs: ['§8.8', '§7.3.4'],
+    async run(ctx) {
+      for (const realtime of [false, true]) {
+        for (const revoke of [false, true]) {
+          const a = await bootstrapped(
+            ctx,
+            `actor-${revoke}-${realtime}`,
+            `client-${revoke}-${realtime}`,
+          );
+          if (realtime) {
+            await a.api.connectRealtime();
+            await syncIdle(a);
+          }
+          check(
+            a.api.prepareRound !== undefined &&
+              a.api.completeRound !== undefined,
+            'driver has deterministic round barrier',
+          );
+          const commit = await a.api.mutate([
+            {
+              op: 'upsert',
+              table: 'tasks',
+              values: task(`t-${revoke}`, 'p1', 'accepted'),
+            },
+          ]);
+          if (revoke) await ctx.server.setAllowedScopes(a.actorId, {});
+          await a.api.prepareRound!();
+          await a.api.setTransportEnabled(false);
+          const result = await a.api.completeRound!();
+          check(
+            result.ok,
+            `captured reply still applies (realtime=${realtime}, revoke=${revoke}): ${JSON.stringify(result)}`,
+          );
+          if (revoke) {
+            checkEqual(
+              await a.api.readRows('tasks'),
+              [],
+              'in-flight revocation purges local data',
+            );
+          } else {
+            checkEqual(
+              await a.api.pendingCommitIds(),
+              [],
+              'in-flight ack drains accepted commit',
+            );
+            check(
+              (await a.api.commitOutcomes()).some(
+                (o) => o.clientCommitId === commit,
+              ),
+              'outcome remains available',
+            );
+          }
+          const count = a.sentRequests.length;
+          await syncFails(a, 'sync.offline', 'no follow-up round');
+          checkEqual(
+            a.sentRequests.length,
+            count,
+            'paused follow-up never invokes transport',
+          );
+          await a.api.setTransportEnabled(true);
+          await syncIdle(a);
+        }
+      }
+    },
+  },
+  {
     name: 'offline/local-unique-violation-is-atomic',
     specRefs: ['§7.1'],
     server: { schema: UNIQUE_SCHEMA },

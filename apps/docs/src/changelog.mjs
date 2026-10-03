@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-10-03',
+    title: 'Native local activation with transport closed',
+    body: 'Released in 0.30.13. Both cores have an explicit transport gate. Tauri can activate security, read its replica and queue local commits before a fresh bearer is available. Pausing suppresses new HTTP, realtime and retry work; captured replies retain atomic apply and revocation checks. Resume wakes the existing scheduler and flushes queued commits in order.',
+    links: [
+      {
+        href: '/platform-tauri/#local-activation-with-transport-closed',
+        label: 'Offline activation and resume',
+      },
+    ],
+  },
+  {
+    date: '2026-10-03',
     title: 'Acknowledged writes remain visible until row delivery',
     body: 'Released in 0.30.12. Both cores preserve accepted local intent through empty pulls and restart, stack later edits above it, and request an immediate following pull. Matching server delivery retires the intent atomically. Revocation and purge remove it. Servers detect a pull maximum behind their accepted push; sync storage and authorization require uncached reads.',
     links: [

@@ -349,6 +349,7 @@ export interface SyncClientLimits {
 }
 
 export interface SyncClientConfig {
+  readonly transportEnabled?: boolean;
   /** Keep rejected/conflicting local intent visible until explicit resolution. */
   readonly retainFailedCommits?: boolean;
   readonly database: ClientDatabase;
@@ -747,6 +748,7 @@ export class SyncClient {
   /** RFC 0005 resolved capture budgets; undefined ⇒ feature off. */
   readonly #previousVersion: PreviousVersionCaptureConfig | undefined;
   #securityLifecycle: SecurityLifecycle;
+  #transportEnabled: boolean;
   readonly #now: () => number;
   readonly #outcomeRetentionMaxEntries: number;
   readonly #retainFailedCommits: boolean;
@@ -838,6 +840,13 @@ export class SyncClient {
   #preflightBarrier: Promise<void> | undefined;
 
   constructor(config: SyncClientConfig) {
+    if (
+      config.transportEnabled !== undefined &&
+      typeof config.transportEnabled !== 'boolean'
+    ) {
+      throw invalidRequest('transportEnabled must be a boolean');
+    }
+    this.#transportEnabled = config.transportEnabled !== false;
     if (config.securityPreflight === true && config.encryption !== undefined) {
       throw invalidRequest(
         'securityPreflight and encryption are mutually exclusive; activateSecurity installs keys',
@@ -1225,6 +1234,7 @@ export class SyncClient {
   }
 
   #emitSyncNeeded(reason: 'startup' | 'hello' | WakeReason): void {
+    if (!this.#transportEnabled) return;
     try {
       this.#config.onSyncNeeded?.(reason);
     } catch {
@@ -1240,6 +1250,7 @@ export class SyncClient {
   }
 
   #emitSyncIntent(intent: SyncIntent): void {
+    if (!this.#transportEnabled && intent.kind !== 'none') return;
     try {
       this.#config.onSyncIntent?.(intent);
     } catch {
@@ -1252,6 +1263,27 @@ export class SyncClient {
         // An observer cannot alter sync correctness.
       }
     }
+  }
+
+  /** Host-owned transport policy; the local replica remains available. */
+  setTransportEnabled(enabled: boolean): void {
+    this.#requireStarted();
+    if (typeof enabled !== 'boolean')
+      throw invalidRequest('transportEnabled must be a boolean');
+    if (this.#transportEnabled === enabled) return;
+    this.#transportEnabled = enabled;
+    if (!enabled && !this.#syncOutstanding) this.disconnectRealtime();
+    this.#emitSyncIntent(
+      enabled && this.#securityLifecycle === 'active'
+        ? { kind: 'interactive' }
+        : { kind: 'none' },
+    );
+    this.#emitDiagnostics();
+  }
+
+  #requireTransport(): void {
+    if (!this.#transportEnabled)
+      throw new ClientSyncError('sync.offline', 'transport gate is closed');
   }
 
   /** Current fail-closed local-replica security state. */
@@ -1799,8 +1831,9 @@ export class SyncClient {
     }
     const capturedAtMs = this.#now();
     const leaseState = this.#diagnosticLease(capturedAtMs);
-    const connectivity =
-      this.#lastRound?.status === 'succeeded'
+    const connectivity = !this.#transportEnabled
+      ? 'offline'
+      : this.#lastRound?.status === 'succeeded'
         ? 'online'
         : this.#lastRound?.status === 'failed' &&
             this.#transportFailureCode(this.#lastRound.errorCode)
@@ -1833,16 +1866,12 @@ export class SyncClient {
         realtimeRetryDelayMs: this.#realtimeRetryDelayMs,
       }),
       securityLifecycle: this.#securityLifecycle,
-      schema: {
+      schema: definedObject({
         currentVersion: this.#config.schema.version,
         upgrading: this.#upgrading,
-        ...(this.#schemaFloor?.requiredSchemaVersion !== undefined
-          ? { requiredVersion: this.#schemaFloor.requiredSchemaVersion }
-          : {}),
-        ...(this.#schemaFloor?.latestSchemaVersion !== undefined
-          ? { latestVersion: this.#schemaFloor.latestSchemaVersion }
-          : {}),
-      },
+        requiredVersion: this.#schemaFloor?.requiredSchemaVersion,
+        latestVersion: this.#schemaFloor?.latestSchemaVersion,
+      }),
       replica: {
         localRevision: getLocalRevision(this.#db).toString(),
         syncNeeded: this.#needsPull,
@@ -2058,10 +2087,11 @@ export class SyncClient {
     this.#requireActive();
     const task = Promise.resolve().then(fn);
     this.#protectedAsync.add(task);
-    void task.then(
-      () => this.#protectedAsync.delete(task),
-      () => this.#protectedAsync.delete(task),
-    );
+    const settled = () => {
+      if (this.#realtimeConnectPromise === task)
+        this.#realtimeConnectPromise = undefined;
+    };
+    void task.then(settled, settled);
     return task;
   }
 
@@ -2098,14 +2128,12 @@ export class SyncClient {
       recordPendingUpload(this.#db, blobId, nowMs, options?.mediaType);
     });
     this.#enforceBlobCacheCap();
-    return {
+    return definedObject({
       blobId,
       byteLength: bytes.length,
-      ...(options?.mediaType !== undefined
-        ? { mediaType: options.mediaType }
-        : {}),
-      ...(options?.name !== undefined ? { name: options.name } : {}),
-    };
+      mediaType: options?.mediaType,
+      name: options?.name,
+    });
   }
 
   /** Serialize a BlobRef to the canonical string a `blob_ref` column holds. */
@@ -2139,6 +2167,7 @@ export class SyncClient {
     // presign configured) a signed url the client fetches directly. On a url
     // arm the client MUST NOT attach host auth and MUST NOT fall through:
     // failure => re-request, the caller's next fetchBlob mints a fresh url.
+    this.#requireTransport();
     const response = await transport.download(blobId);
     let bytes: Uint8Array;
     if (response.kind === 'url') {
@@ -2190,6 +2219,7 @@ export class SyncClient {
 
   /** Flush any queued blob uploads (§5.9.7 B4); safe to call standalone. */
   flushBlobUploads(): Promise<void> {
+    this.#requireTransport();
     return this.#runProtectedAsync(() => this.#flushBlobUploads());
   }
 
@@ -2318,12 +2348,9 @@ export class SyncClient {
       );
     }
     const allowed =
-      (current.status === 'conflict' &&
+      ((current.status === 'conflict' || current.status === 'rejected') &&
         (input.resolution === 'resolved_keep_server' ||
           input.resolution === 'superseded')) ||
-      (current.status === 'rejected' &&
-        (input.resolution === 'superseded' ||
-          input.resolution === 'resolved_keep_server')) ||
       ((current.status === 'applied' || current.status === 'cached') &&
         input.resolution === 'dismissed');
     if (!allowed) {
@@ -2426,6 +2453,7 @@ export class SyncClient {
    */
   setPresence(scopeKey: string, doc: Record<string, unknown> | null): void {
     this.#requireActive();
+    this.#requireTransport();
     const socket = this.#socket;
     if (socket === undefined) {
       throw invalidRequest(
@@ -2594,7 +2622,10 @@ export class SyncClient {
       }
     });
     const effects: CommandEffects = {
-      sync: changed || widened ? { kind: 'interactive' } : { kind: 'none' },
+      sync:
+        this.#transportEnabled && (changed || widened)
+          ? { kind: 'interactive' }
+          : { kind: 'none' },
     };
     if (effects.sync.kind === 'interactive') {
       this.#emitSyncIntent(effects.sync);
@@ -2898,7 +2929,9 @@ export class SyncClient {
   mutateCommand(mutations: readonly MutationInput[]): CommandResult<string> {
     return {
       value: this.mutate(mutations),
-      effects: { sync: { kind: 'interactive' } },
+      effects: {
+        sync: { kind: this.#transportEnabled ? 'interactive' : 'none' },
+      },
     };
   }
 
@@ -2927,17 +2960,15 @@ export class SyncClient {
       );
     }
     return this.#recordMutations([
-      {
+      definedObject({
         table,
         op: 'patch',
         values: {
           ...Object.fromEntries(normalized),
           [pkColumn.name]: rowId,
         },
-        ...(options?.baseVersion !== undefined
-          ? { baseVersion: options.baseVersion }
-          : {}),
-      },
+        baseVersion: options?.baseVersion,
+      }),
     ]);
   }
 
@@ -3222,7 +3253,9 @@ export class SyncClient {
   ): CommandResult<string> {
     return {
       value: this.patch(table, rowId, partial, options),
-      effects: { sync: { kind: 'interactive' } },
+      effects: {
+        sync: { kind: this.#transportEnabled ? 'interactive' : 'none' },
+      },
     };
   }
 
@@ -3346,16 +3379,14 @@ export class SyncClient {
         );
       this.#rollbackFailedCommit(commit, batch);
       this.#replayOutbox();
-      const rejection: RejectionRecord = {
+      const rejection: RejectionRecord = definedObject({
         clientCommitId: commit.clientCommitId,
         opIndex: 0,
         code,
         message,
         retryable: false,
-        ...(commit.operations[0] !== undefined
-          ? { operation: commit.operations[0] }
-          : {}),
-      };
+        operation: commit.operations[0],
+      });
       this.#rejections.push(rejection);
       recordCommitOutcome(this.#db, {
         clientCommitId: commit.clientCommitId,
@@ -3386,9 +3417,7 @@ export class SyncClient {
     this.#requireActive();
     if (this.#syncOutstanding) {
       return Promise.reject(
-        invalidRequest(
-          'sync() is already running — the core owns one loop (coalesce wake-ups)',
-        ),
+        invalidRequest('sync() is already running; coalesce wake-ups'),
       );
     }
     this.#syncOutstanding = true;
@@ -3438,6 +3467,7 @@ export class SyncClient {
       )
       .finally(() => {
         this.#syncOutstanding = false;
+        if (!this.#transportEnabled) this.disconnectRealtime();
         this.#endDiagnosticsDeferral();
       });
   }
@@ -3476,6 +3506,7 @@ export class SyncClient {
   }
 
   async #runSync(): Promise<SyncSummary> {
+    this.#requireTransport();
     this.#roundRetryDelayMs = undefined;
     this.#progress.emit({
       attempt: ++this.#progressAttempt,
@@ -3507,7 +3538,7 @@ export class SyncClient {
         this.#hasBlobs &&
         this.#config.blobs !== undefined
       ) {
-        await this.flushBlobUploads();
+        await this.#flushBlobUploads();
       }
       // §7.4.4: encode the outbox with the CURRENT codec; a commit that
       // cannot express itself under the new schema (a dropped column/table)
@@ -3641,6 +3672,8 @@ export class SyncClient {
         loadSubscriptions(this.#db).map((sub) => [sub.id, sub.bootstrapState]),
       );
       last = await this.sync();
+      if (!this.#transportEnabled || last.schemaFloor !== undefined)
+        return last;
       if (
         maxRounds === undefined &&
         last.segmentRowsApplied > 0 &&
@@ -3654,7 +3687,6 @@ export class SyncClient {
           )
       )
         round = -1;
-      if (last.schemaFloor !== undefined) return last;
       if (
         last.commitsApplied === 0 &&
         last.segmentRowsApplied === 0 &&
@@ -3770,6 +3802,7 @@ export class SyncClient {
 
   connectRealtime(): Promise<void> {
     this.#requireActive();
+    this.#requireTransport();
     if (this.#realtimePolicy === 'off') {
       return Promise.reject(
         invalidRequest("realtimePolicy is 'off'; realtime connect is refused"),
@@ -3830,12 +3863,13 @@ export class SyncClient {
         },
       });
       openedSocket = socket;
+      if (!this.#transportEnabled) {
+        socket.close();
+        this.#requireTransport();
+      }
       if (this.#securityLifecycle === 'preflight') {
         socket.close();
-        throw new ClientSyncError(
-          SECURITY_PREFLIGHT_REQUIRED_CODE,
-          'realtime connected after the client entered security preflight',
-        );
+        this.#requireActive();
       }
       if (generation !== this.#realtimeGeneration || !this.#started) {
         socket.close();
@@ -3983,6 +4017,7 @@ export class SyncClient {
   }
 
   async #handleRealtimeBinary(bytes: Uint8Array): Promise<void> {
+    if (!this.#transportEnabled) return;
     if (this.#syncing) {
       // Fast path: a pull is mid-flight; let it win and recover the gap
       // itself — re-pulling is idempotent, interleaved application is not
@@ -4010,7 +4045,8 @@ export class SyncClient {
   }
 
   #sendAck(cursor: number): void {
-    this.#socket?.send(JSON.stringify({ type: 'ack', cursor }));
+    if (this.#transportEnabled)
+      this.#socket?.send(JSON.stringify({ type: 'ack', cursor }));
   }
 
   /** Ack the highest cursor that is contiguously applied for every sub. */
@@ -4220,74 +4256,16 @@ export class SyncClient {
               await this.#applyCommit(frame, summary);
             }
             break;
-          case 'SEGMENT_INLINE': {
-            if (
-              section === undefined ||
-              section.skip ||
-              section.sub === undefined
-            ) {
-              break;
-            }
-            const segment = decodeRowsSegment(frame.payload);
-            this.#progress.update({
-              phase: 'import',
-              subscriptionId: section.sub.id,
-              table: section.sub.table,
-              segmentId: undefined,
-              bytesReceived: frame.payload.byteLength,
-              bytesTotal: frame.payload.byteLength,
-              rowsProcessed: 0,
-              rowsTotal: segment.blocks.reduce(
-                (n, block) => n + block.length,
-                0,
-              ),
-            });
-            await this.#applySegmentOrFail(
-              section,
-              summary,
-              (table, clearFirst, effective) =>
-                applyRowsSegment(
-                  this.#db,
-                  this.#schema,
-                  table,
-                  segment,
-                  {
-                    clearFirst,
-                    isCurrent: () => this.#localResetEpoch === resetEpoch,
-                    onProgress: (rowsProcessed) =>
-                      this.#progress.update({ rowsProcessed }),
-                    effective,
-                    transaction: (fn) =>
-                      this.#applyBatch((batch) => {
-                        if (
-                          segment.blocks.some((block) => block.length > 0) ||
-                          (clearFirst &&
-                            this.#scopedRowsExist(table, effective))
-                        ) {
-                          batch.table(table.name);
-                        }
-                        const result = fn();
-                        this.#replayOutbox();
-                        return result;
-                      }),
-                  },
-                  this.#encryption,
-                ),
-              section.fresh && !section.cleared,
-            );
-            break;
-          }
+          case 'SEGMENT_INLINE':
           case 'SEGMENT_REF': {
             if (
               section === undefined ||
               section.skip ||
               section.sub === undefined
-            ) {
+            )
               break;
-            }
-            // §4.2: a descriptor whose mediaType was not advertised is a
-            // broken server — fail loud, never skip or guess.
             if (
+              frame.type === 'SEGMENT_REF' &&
               frame.mediaType === 'sqlite' &&
               (this.#acceptMask() & ACCEPT_SQLITE) === 0
             ) {
@@ -4295,11 +4273,14 @@ export class SyncClient {
                 'SEGMENT_REF mediaType sqlite was not advertised in accept (§4.2)',
               );
             }
-            const bytes = await this.#downloadSegment(frame, section.sub);
-            this.#progress.update({ phase: 'import' });
-            if (frame.mediaType === 'sqlite') {
-              // §5.3: images are whole-table — a paged descriptor is
-              // invalid, and the image is always its table's first page.
+            const bytes =
+              frame.type === 'SEGMENT_REF'
+                ? await this.#downloadSegment(frame, section.sub)
+                : frame.payload;
+            if (frame.type === 'SEGMENT_REF')
+              this.#progress.update({ phase: 'import' });
+            if (frame.type === 'SEGMENT_REF' && frame.mediaType === 'sqlite') {
+              // Images are whole-table; paged image descriptors are invalid.
               if (
                 frame.rowCursor !== undefined ||
                 frame.nextRowCursor !== undefined
@@ -4323,31 +4304,33 @@ export class SyncClient {
                       asOfCommitSeq: frame.asOfCommitSeq,
                       scopeDigest: frame.scopeDigest,
                     },
-                    {
+                    this.#segmentApplyOptions(
+                      table,
                       clearFirst,
-                      isCurrent: () => this.#localResetEpoch === resetEpoch,
-                      onProgress: (rowsProcessed) =>
-                        this.#progress.update({ rowsProcessed }),
                       effective,
-                      transaction: (fn) =>
-                        this.#applyBatch((batch) => {
-                          if (
-                            frame.rowCount > 0 ||
-                            (clearFirst &&
-                              this.#scopedRowsExist(table, effective))
-                          ) {
-                            batch.table(table.name);
-                          }
-                          const result = fn();
-                          this.#replayOutbox();
-                          return result;
-                        }),
-                    },
+                      frame.rowCount > 0,
+                      resetEpoch,
+                    ),
                   ),
                 section.fresh && !section.cleared,
               );
             } else {
               const segment = decodeRowsSegment(bytes);
+              if (frame.type === 'SEGMENT_INLINE') {
+                this.#progress.update({
+                  phase: 'import',
+                  subscriptionId: section.sub.id,
+                  table: section.sub.table,
+                  segmentId: undefined,
+                  bytesReceived: bytes.byteLength,
+                  bytesTotal: bytes.byteLength,
+                  rowsProcessed: 0,
+                  rowsTotal: segment.blocks.reduce(
+                    (n, block) => n + block.length,
+                    0,
+                  ),
+                });
+              }
               await this.#applySegmentOrFail(
                 section,
                 summary,
@@ -4357,31 +4340,19 @@ export class SyncClient {
                     this.#schema,
                     table,
                     segment,
-                    {
+                    this.#segmentApplyOptions(
+                      table,
                       clearFirst,
-                      isCurrent: () => this.#localResetEpoch === resetEpoch,
-                      onProgress: (rowsProcessed) =>
-                        this.#progress.update({ rowsProcessed }),
                       effective,
-                      transaction: (fn) =>
-                        this.#applyBatch((batch) => {
-                          if (
-                            segment.blocks.some((block) => block.length > 0) ||
-                            (clearFirst &&
-                              this.#scopedRowsExist(table, effective))
-                          ) {
-                            batch.table(table.name);
-                          }
-                          const result = fn();
-                          this.#replayOutbox();
-                          return result;
-                        }),
-                    },
+                      segment.blocks.some((block) => block.length > 0),
+                      resetEpoch,
+                    ),
                     this.#encryption,
                   ),
                 section.fresh &&
                   !section.cleared &&
-                  frame.rowCursor === undefined,
+                  (frame.type === 'SEGMENT_INLINE' ||
+                    frame.rowCursor === undefined),
               );
             }
             break;
@@ -4710,6 +4681,33 @@ export class SyncClient {
         scope.params,
       ).length > 0
     );
+  }
+
+  /** Shared transaction, reset fence and progress for both segment formats. */
+  #segmentApplyOptions(
+    table: CompiledClientTable,
+    clearFirst: boolean,
+    effective: ScopeMap,
+    hasRows: boolean,
+    resetEpoch: number,
+  ): Parameters<typeof applyRowsSegment>[4] {
+    return {
+      clearFirst,
+      effective,
+      isCurrent: () => this.#localResetEpoch === resetEpoch,
+      onProgress: (rowsProcessed) => this.#progress.update({ rowsProcessed }),
+      transaction: (fn) =>
+        this.#applyBatch((batch) => {
+          if (
+            hasRows ||
+            (clearFirst && this.#scopedRowsExist(table, effective))
+          )
+            batch.table(table.name);
+          const result = fn();
+          this.#replayOutbox();
+          return result;
+        }),
+    };
   }
 
   /**

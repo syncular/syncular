@@ -871,6 +871,37 @@ describe('createTauriSyncClient', () => {
     expect(rows).toEqual([{ id: 't1', title: 'hello' }]);
   });
 
+  test('transport gate is atomic at create, available during preflight and maps offline parity', async () => {
+    const { tauri, calls } = makeTauri(defaultResponder);
+    const client = await createTauriSyncClient({
+      schema: { version: 1, tables: [] },
+      securityPreflight: true,
+      transportEnabled: false,
+      tauri,
+    });
+    const created = calls[0]?.args.command as {
+      params: { transportEnabled: boolean };
+    };
+    expect(created.params.transportEnabled).toBe(false);
+    await client.setTransportEnabled(false);
+    await client.setOffline(true);
+    await client.activateSecurity();
+    await client.setHeaders({ authorization: 'Bearer fresh' });
+    await client.setTransportEnabled(true);
+    const gate = calls.filter(
+      (c) =>
+        (c.args.command as { method?: string } | undefined)?.method ===
+        'setTransportEnabled',
+    );
+    expect(
+      gate.map((c) => (c.args.command as { params: unknown }).params),
+    ).toEqual([{ enabled: false }, { enabled: false }, { enabled: true }]);
+    await client.close();
+    await expect(client.setTransportEnabled(true)).rejects.toMatchObject({
+      code: 'client.closed',
+    });
+  });
+
   test('setHeaders posts the full set to syncular_set_headers', async () => {
     const { client, calls } = await build();
     await client.setHeaders({ authorization: 'Bearer fresh' });

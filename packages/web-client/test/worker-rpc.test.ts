@@ -990,7 +990,7 @@ test('offline gate queues, reconnect drains through the worker', async () => {
     { table: 'tasks', op: 'upsert', values: taskValues('t5', 'p5', 'queued') },
   ]);
   expect((await handle.pendingCommits()).length).toBe(1);
-  await expectRejectsWithCode(handle.sync(), 'sync.transport_failed');
+  await expectRejectsWithCode(handle.sync(), 'sync.offline');
 
   await handle.setOffline(false);
   await handle.syncUntilIdle();

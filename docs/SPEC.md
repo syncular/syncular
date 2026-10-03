@@ -2744,7 +2744,8 @@ Construction with `securityPreflight: true` MUST NOT accept an `encryption`
 keyring in the same call. During preflight the host MAY inspect
 `securityLifecycle`, `statusSnapshot`, and `localRevision`; it MAY execute the
 bounded, application-authorized `purgeLocalData` primitive (§7.3.4); and it MAY
-close/shut down the client. No other application-data operation is permitted.
+close/shut down the client or set the transport gate (§8.8). No other
+application-data operation is permitted.
 In particular, runtime transport-header replacement is an active-session
 operation; native bridges MUST gate it independently rather than relying only
 on a JavaScript wrapper.
@@ -5274,6 +5275,31 @@ re-registers. This differs from the round-end rule above, which keeps the
 previous registrations when a round fails.
 
 ### 8.8 Realtime policy and connectivity state
+
+**Transport gate.** Both client cores expose `setTransportEnabled(enabled)`
+(native Rust: `set_transport_enabled`) independently of security preflight.
+Construction accepts `transportEnabled: false` before startup can schedule work.
+The gate defaults open on each new client instance and is never persisted.
+Security activation, header replacement, owner-loop rounds and schema resets MUST
+NOT reopen it. A closed gate keeps authorized local reads, keys, subscriptions,
+mutations and staged blob uploads available. Commits remain durable and ordered.
+New sync rounds, realtime connects, presence sends and uncached blob downloads
+fail with client-local `sync.offline` before invoking transport; automatic hosts
+consume no sync/retry intent while closed. Cached blob reads remain local.
+
+A round whose network exchange already started MAY finish its captured request,
+segment downloads and atomic response application after closure. Its ordinary
+acknowledgement, version, revocation and security-context checks still apply.
+Closure MUST NOT cancel that reply or start a follow-up round. The host releases
+the socket when that round settles and sends no queued realtime controls while
+closed. Security preflight still invalidates an in-flight authorization context.
+
+Reopening emits one interactive wake after the host installs fresh headers;
+the existing automatic scheduler drains queued work and performs its own pull.
+Realtime reconnect uses the host's existing lifecycle policy. Repeating either
+state is idempotent. The browser worker's `setOffline(value)` sets the same gate
+with `enabled = !value`; it retains its public offline control.
+
 
 A client configures how a sync round treats the realtime binding with one
 `realtimePolicy` value:

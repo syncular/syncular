@@ -8,6 +8,18 @@ The client core (`@syncular/client`) is plain library code: storage behind a
 `ClientDatabase`, network behind transport seams, multi-tab ownership behind a
 leader lock. Local SQL is the query API: you read your own tables directly.
 
+## Transport gate
+
+Direct clients accept `transportEnabled: false` at construction and expose
+`setTransportEnabled(enabled)`. Worker clients accept the same initial option
+and retain `setOffline(offline)`, which controls the core gate. Closed transport
+keeps authorized SQLite reads and queued local commits available, refuses new
+network work with `sync.offline`, and suspends automatic retry scheduling.
+Resume emits one interactive wake. An already-started round finishes its atomic
+apply; the client closes realtime afterwards and sends no follow-up while paused.
+The gate is independent of security preflight and defaults open on each new
+client instance. Install fresh transport headers before resuming.
+
 ## Install
 
 ```sh

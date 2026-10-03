@@ -754,6 +754,7 @@ export interface ClientCommitOutcome {
 }
 
 export interface ClientCreateOptions {
+  readonly transportEnabled?: boolean;
   readonly retainFailedCommits?: boolean;
   readonly clientId: string;
   readonly schema: DriverSchema;
@@ -1008,6 +1009,7 @@ export interface ClientInstance {
   prepareRound?(): Promise<void>;
   completeRound?(): Promise<ClientSyncResult>;
 
+  setTransportEnabled(enabled: boolean): Promise<void>;
   connectRealtime(): Promise<void>;
   disconnectRealtime(): Promise<void>;
   /**

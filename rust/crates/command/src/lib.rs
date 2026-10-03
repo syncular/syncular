@@ -466,6 +466,7 @@ pub fn dispatch<T: Transport>(
             "securityLifecycle"
                 | "beginSecurityPreflight"
                 | "activateSecurity"
+                | "setTransportEnabled"
                 | "purgeLocalData"
                 | "previousVersionDiscard"
                 | "localRevision"
@@ -483,7 +484,7 @@ pub fn dispatch<T: Transport>(
             ));
         }
     }
-    match method {
+    let mut result = match method {
         "create" => {
             let client_id = params
                 .get("clientId")
@@ -567,6 +568,12 @@ pub fn dispatch<T: Transport>(
             if security_preflight {
                 instance.begin_security_preflight();
             }
+            if let Some(enabled) = params.get("transportEnabled") {
+                let enabled = enabled.as_bool().ok_or_else(|| {
+                    client_err("sync.invalid_request: transportEnabled must be a boolean".into())
+                })?;
+                instance.set_transport_enabled(transport, enabled);
+            }
             effects.security_preflight_pending = security_preflight;
             *client = Some(instance);
             Ok(json!({}))
@@ -598,6 +605,19 @@ pub fn dispatch<T: Transport>(
                 .activate_security(encryption)
                 .map_err(client_err)?;
             effects.security_preflight_pending = false;
+            Ok(json!({}))
+        }
+        "setTransportEnabled" => {
+            let enabled = params
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| {
+                    client_err(
+                        "sync.invalid_request: setTransportEnabled.enabled must be a boolean"
+                            .into(),
+                    )
+                })?;
+            need_client(client)?.set_transport_enabled(transport, enabled);
             Ok(json!({}))
         }
         "setHeaders" => {
@@ -1195,7 +1215,18 @@ pub fn dispatch<T: Transport>(
         }
 
         other => Err(client_err(format!("unknown method {other:?}"))),
+    };
+    if client
+        .as_ref()
+        .is_some_and(|running| !running.transport_enabled())
+    {
+        if let Ok(value) = &mut result {
+            if let Some(effects) = value.get_mut("effects").and_then(Value::as_object_mut) {
+                effects.remove("sync");
+            }
+        }
     }
+    result
 }
 
 #[cfg(test)]
