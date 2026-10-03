@@ -110,7 +110,7 @@ export function retainFailedRows(
     if (!image)
       throw new ClientSyncError(
         'sync.local_corrupt',
-        'retained intent has no before-image',
+        'missing intent before-image',
       );
     db.exec(
       `INSERT INTO ${RETAINED_ROWS}(commit_id,idx,tbl,id,at,op,intent,base,version,commit_seq)VALUES(?,?,?,?,?,?,?,?,?,?)`,
@@ -176,7 +176,7 @@ export function restoreFailedBases(
   schema: CompiledClientSchema,
   absentIntent = false,
   rowKeys?: readonly string[],
-): void {
+): boolean {
   const seen = new Set<string>();
   for (const row of retainedRows(db, rowKeys)) {
     const key = JSON.stringify([row.tbl, row.id]);
@@ -186,7 +186,7 @@ export function restoreFailedBases(
     if (!table)
       throw new ClientSyncError(
         'sync.unknown_table',
-        'retained intent references an unknown table',
+        'retained table is unknown',
       );
     const json = absentIntent ? row.intent : row.base;
     if (absentIntent && row.intent !== null) {
@@ -259,6 +259,7 @@ export function restoreFailedBases(
       );
     }
   }
+  return seen.size > 0;
 }
 
 export function failedOverlayCommits(

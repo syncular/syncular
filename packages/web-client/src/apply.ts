@@ -537,12 +537,12 @@ export async function applyRowsSegment(
     first = false;
     if (!clearThisBlock && rows.length === 0) continue;
     (options.transaction ?? ((fn) => db.transaction(fn)))(() => {
-      restoreFailedBases(db, schema);
+      const protectedRows = restoreFailedBases(db, schema);
       if (clearThisBlock) {
         deleteScopedRows(db, table, options.effective);
       }
       for (const row of rows) {
-        upsertLocalRow(db, table, row.values, row.serverVersion);
+        upsertLocalRow(db, table, row.values, row.serverVersion, protectedRows);
         applied += 1;
         if (applied % 1024 === 0) options.onProgress?.(applied);
       }
