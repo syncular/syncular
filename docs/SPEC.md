@@ -3581,6 +3581,9 @@ stays static.
 one atomic local commit. Each patch carries its primary key in `values`; only
 present columns are written. Omitted encrypted columns require no key and remain
 byte-identical on the server. Single-row `patch` uses the same batch path.
+Every patch requires its base row in the local replica at call time. An absent
+base raises `sync.row_missing` before the batch changes local rows or appends
+an outbox commit. This includes a patch following an insert in the same batch.
 
 - Local writes are recorded as commits in a durable **outbox** with
   client-generated `clientCommitId`s (unique forever per client; UUIDs
@@ -3653,6 +3656,9 @@ continue to show the retained present-column intent until explicit resolution.
 survives restart and fresh bootstrap. Scope revocation and security purge remove
 the affected retained aggregate; retained state grants no read authority.
 The default policy remains rollback for existing server-authoritative consumers.
+A retained sparse operation with an absent current base remains conflict
+evidence without materializing a local row. A sparse intent never supplies
+missing columns for an insert. Revocation still removes the affected aggregate.
 
 - After reconnect, the client replays the outbox from the oldest
   unacknowledged commit. Lost acks are safe: replaying an already-applied

@@ -101,6 +101,15 @@ export function restoreFailedBases(
     if (json === null) deleteLocalRow(db, table, String(row.id), false);
     else {
       const values: Record<string, JsonRowValue> = JSON.parse(String(json));
+      if (absentIntent) {
+        const operation: OutboxOperation = JSON.parse(String(row.op));
+        if (
+          !table.columns.every((column) =>
+            Object.hasOwn(operation.values ?? {}, column.name),
+          )
+        )
+          continue;
+      }
       upsertLocalRow(
         db,
         table,

@@ -216,6 +216,36 @@ export const encryptionScenarios: readonly Scenario[] = [
         allowed: P1,
         encryption: { keys: {} },
       });
+      check(
+        locked.api.executeStorageSql !== undefined,
+        'the driver exposes the stored replica fixture',
+      );
+      // A locked replica already contains the exact ciphertext it read before
+      // keys were locked. Seed those server bytes without requesting a new
+      // protected pull or inventing any column values.
+      const clientCore = ctx.pairing.client.name;
+      check(
+        clientCore === 'rust-client(rusqlite)' ||
+          clientCore === 'ts-web-client(bun:sqlite)',
+        'the stored-row fixture supports both reference cores',
+      );
+      // Rust stores the version beside the row; TS stores it separately.
+      const nativeVersion = clientCore === 'rust-client(rusqlite)';
+      for (const row of before) {
+        const note = row.values.note;
+        const amount = row.values.amount;
+        check(
+          typeof note === 'object' && note !== null && '$bytes' in note,
+          'stored note is ciphertext',
+        );
+        check(
+          typeof amount === 'object' && amount !== null && '$bytes' in amount,
+          'stored amount is ciphertext',
+        );
+        await locked.api.executeStorageSql(
+          `INSERT INTO secrets (id, project_id, note, amount, starts${nativeVersion ? ', _syncular_version' : ''}) VALUES ('${row.rowId}', 'p1', X'${note.$bytes}', X'${amount.$bytes}', 10${nativeVersion ? `, ${row.version}` : ''})`,
+        );
+      }
       await locked.api.mutate(
         ['s1', 's2'].map((id, index) => ({
           op: 'patch' as const,
@@ -479,8 +509,21 @@ export const encryptionScenarios: readonly Scenario[] = [
         'the server stored the selector instead of rejecting the patch',
       );
 
-      // A patch on a locally absent row presents an encrypted column with no
-      // stored selector: durable rejection, dropped commit, no sync() abort.
+      // An existing row with no selector authors an encrypted patch locally;
+      // key selection rejects at the push seam without aborting sync.
+      await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'secrets',
+          values: {
+            id: 'ghost',
+            project_id: 'p1',
+            encryption_key_id: null,
+            note: null,
+          },
+        },
+      ]);
+      await syncIdle(a);
       const ghost = await a.api.patch('secrets', 'ghost', { note: 'x' });
       const report = await syncIdle(a);
       check(

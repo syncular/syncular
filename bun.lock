@@ -269,6 +269,7 @@
         "@syncular/core": "workspace:*",
       },
       "devDependencies": {
+        "@electric-sql/pglite": "^0.5.4",
         "@syncular/server": "workspace:*",
         "playwright": "1.63.0",
       },

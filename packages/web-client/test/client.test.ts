@@ -1425,16 +1425,37 @@ describe('the SELECT * → mutate round trip', () => {
     expect(remote?.title).toBe('keep-me');
   });
 
-  test('patch() of an absent row stays absent locally and rejects row_missing (§5.2)', async () => {
+  test('an absent sparse base rejects the entire batch at author time', async () => {
     const server = makeServer();
-    const a = await makeClient(server, { clientId: 'client-a' });
-    const commitId = a.client.patch('tasks', 'missing', { done: true });
-    // The overlay applies present columns only; a partial operation over an
-    // absent row leaves it absent (§7.1).
+    const a = await makeClient(server, {
+      clientId: 'client-a',
+      retainFailedCommits: true,
+    });
+    let missing: unknown;
+    try {
+      a.client.patch('tasks', 'missing', { done: true });
+    } catch (error) {
+      missing = error;
+    }
+    expect(missing).toBeInstanceOf(ClientSyncError);
+    expect(missing).toMatchObject({
+      code: 'sync.row_missing',
+      retryable: false,
+    });
+    expect(() =>
+      a.client.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: taskValues('audit', 'p1', 'sibling'),
+        },
+        { op: 'patch', table: 'tasks', values: { id: 'missing', done: true } },
+      ]),
+    ).toThrow('a sparse patch requires a local row');
+    expect(a.client.pendingCommits()).toEqual([]);
+    expect(a.client.commitOutcomes()).toEqual([]);
     expect(a.client.query('SELECT * FROM tasks')).toEqual([]);
     await a.client.syncUntilIdle();
-    expect(a.client.commitOutcome(commitId)?.status).toBe('rejected');
-    expect(a.client.rejections()[0]?.code).toBe('sync.row_missing');
     expect(a.client.query('SELECT * FROM tasks')).toEqual([]);
   });
 });

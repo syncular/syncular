@@ -256,7 +256,7 @@ describe('encode-at-send (§6.1)', () => {
     // client fails closed instead of guessing the server's stored value.
     expect(() =>
       a.client.patch('tasks', 'ghost', { project_id: 'p1' }),
-    ).toThrow('scope column');
+    ).toThrow('a sparse patch requires a local row');
   });
 });
 

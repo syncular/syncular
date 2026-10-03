@@ -249,8 +249,8 @@ export const sparseRowScenarios: readonly Scenario[] = [
       checkEqual(
         (await b.api.readRows('tasks')).find((row) => row.rowId === 't1')
           ?.values.title,
-        'unauthorized',
-        'server deletion preserves retained intent',
+        undefined,
+        'server deletion leaves a sparse conflict without a local row',
       );
       checkEqual(
         (await b.api.commitOutcomes()).find(
@@ -272,6 +272,68 @@ export const sparseRowScenarios: readonly Scenario[] = [
         )?.retainedRows,
         undefined,
         'purged failure exposes no retained rows',
+      );
+    },
+  },
+
+  {
+    name: 'sparse-rows/retained-intent-with-deleted-base',
+    specRefs: ['§7.1', '§7.2', '§7.2.1'],
+    async run(ctx) {
+      const a = await bootstrapped(ctx, 'actor-a', 'client-a');
+      const b = await ctx.newClient({
+        actorId: 'actor-b',
+        clientId: 'client-b',
+        allowed: P1,
+        retainFailedCommits: true,
+      });
+      await b.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await a.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('t1', 'p1', 'original') },
+      ]);
+      await syncIdle(a);
+      await syncIdle(b);
+      const intended = await b.api.patch('tasks', 't1', { title: 'mine' }, 1);
+      await a.api.mutate([
+        { op: 'delete', table: 'tasks', rowId: 't1', baseVersion: 1 },
+      ]);
+      await syncIdle(a);
+      await syncIdle(b);
+      checkEqual(
+        await b.api.readRows('tasks'),
+        [],
+        'sparse intent does not recreate a deleted base',
+      );
+      const outcome = (await b.api.commitOutcomes()).find(
+        (row) => row.clientCommitId === intended,
+      );
+      check(
+        outcome?.retainedRows?.length === 1,
+        'failed intent remains explicitly readable',
+      );
+      checkEqual(
+        outcome?.retainedRows?.[0]?.serverRow,
+        null,
+        'the current base is explicitly absent',
+      );
+      await ctx.recreateClient(b, FIXTURE_SCHEMA);
+      checkEqual(
+        await b.api.readRows('tasks'),
+        [],
+        'restart also keeps the deleted row absent',
+      );
+      check(
+        (await b.api.commitOutcomes()).some(
+          (row) =>
+            row.clientCommitId === intended && row.retainedRows?.length === 1,
+        ),
+        'restart retains conflict evidence',
+      );
+      await b.api.resolveCommitOutcome(intended, 'resolved_keep_server');
+      checkEqual(
+        await b.api.readRows('tasks'),
+        [],
+        'explicit resolution keeps the server deletion',
       );
     },
   },
@@ -548,24 +610,55 @@ export const sparseRowScenarios: readonly Scenario[] = [
   },
 
   {
-    // B.21(e): a partial payload on an absent row (no tombstone) rejects
-    // row_missing — an insert requires every column present (§6.3).
-    name: 'sparse-rows/partial-on-absent-row-rejects-row-missing',
-    specRefs: ['§5.2', '§6.3', 'B.21'],
+    // Local authoring requires a base before any operation in the batch runs.
+    name: 'sparse-rows/absent-base-rejects-at-author-time',
+    specRefs: ['§7.1', '§6.4', 'B.21'],
     async run(ctx) {
       const a = await bootstrapped(ctx, 'actor-a', 'client-a');
-      const rejected = await a.api.patch('tasks', 'ghost', { title: 'x' });
-      const report = await syncOk(a);
-      checkEqual(report.rejected, [rejected], 'the partial insert is rejected');
+      let code: string | undefined;
+      try {
+        await a.api.patch('tasks', 'ghost', { title: 'x' });
+      } catch (error) {
+        code = (error as { code?: string }).code;
+      }
       checkEqual(
-        (await a.api.rejections())[0]?.code,
+        code,
         'sync.row_missing',
-        'a partial payload on an absent row rejects row_missing (§6.3)',
+        'absent base has a typed author-time error',
       );
+      code = undefined;
+      try {
+        await a.api.mutate([
+          {
+            op: 'upsert',
+            table: 'tasks',
+            values: task('event', 'p1', 'audit'),
+          },
+          {
+            op: 'patch',
+            table: 'tasks',
+            values: { id: 'ghost', title: 'mine' },
+          },
+        ]);
+      } catch (error) {
+        code = (error as { code?: string }).code;
+      }
       checkEqual(
-        (await ctx.server.readRows('tasks')).length,
-        0,
-        'nothing was written',
+        code,
+        'sync.row_missing',
+        'the mixed batch rejects before writing',
+      );
+      checkEqual(await a.api.pendingCommitIds(), [], 'nothing enqueued');
+      checkEqual(
+        await a.api.readRows('tasks'),
+        [],
+        'no sibling inserted locally',
+      );
+      await syncIdle(a);
+      checkEqual(
+        await ctx.server.readRows('tasks'),
+        [],
+        'nothing sent to the server',
       );
     },
   },
@@ -751,18 +844,25 @@ export const sparseRowScenarios: readonly Scenario[] = [
       }
       checkEqual(
         absent,
-        'sync.invalid_request',
+        'sync.row_missing',
         'an absent local row rejects locally',
       );
 
-      // A primary key that is also a scope column: the sparse payload's key
-      // is by construction the row id being patched, so the value is proven
-      // equal without a stored-row read, even with no local row at all.
-      checkEqual(
-        await a.api.readRows('tenants'),
-        [],
-        'the tenant row is absent locally',
-      );
+      // A primary-key scope column also needs a local base.
+      await a.api.subscribe({
+        id: 'tenants',
+        table: 'tenants',
+        scopes: { tenant_id: ['t1'] },
+      });
+      await syncIdle(a);
+      await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tenants',
+          values: { tenant_id: 't1', body: 'seed' },
+        },
+      ]);
+      await syncIdle(a);
       const created = await a.api.patch('tenants', 't1', {
         tenant_id: 't1',
         body: 'created',

@@ -93,6 +93,7 @@
   },
   "devDependencies": {
     "@syncular/server": "workspace:*",
-    "playwright": "1.63.0"
+    "playwright": "1.63.0",
+    "@electric-sql/pglite": "^0.5.4"
   }
 }

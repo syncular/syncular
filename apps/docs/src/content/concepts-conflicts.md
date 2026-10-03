@@ -51,8 +51,10 @@ encodings
 ## Atomic sparse aggregates
 
 A `mutate` call accepts `op: 'patch'` alongside full `upsert` and `delete`
-operations. Include each patch's primary key in `values`. The client queues
-one atomic commit and updates all available local rows in one transaction.
+operations. Include each patch's primary key in `values`. Every sparse patch
+requires a row in the local replica at call time. An absent row rejects the
+whole batch with `sync.row_missing` before any local write or outbox insert.
+The client queues one atomic commit and updates all available local rows in one transaction.
 Omitted columns retain their values. A patch that writes only plaintext columns
 needs no encryption key for omitted encrypted columns. Their stored ciphertext
 remains unchanged.
@@ -86,6 +88,11 @@ aggregate with current base versions, then resolve the failed outcome as
 `superseded` with the new `replacementClientCommitId`. The replacement retains
 its own sync outcome. Security purge and scope revocation remove whole retained
 aggregates; retained intent never grants access.
+
+When a sparse conflict loses its server base, its operation and conflict
+evidence remain readable. The client leaves the local row absent; it does not
+materialize a complete row from the saved before-image. An application must
+restore an authorized base or write a complete row before retrying that intent.
 
 ## Conflict detection
 

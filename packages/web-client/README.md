@@ -375,7 +375,9 @@ columns are present, and the durable local operation keeps the same presence
 set so conflict and rejection UI knows which columns the user touched. A
 full-row `mutate` upsert marks every column present. `mutate` also accepts
 `op: 'patch'` with the primary key and supplied columns. A batch can mix sparse
-patches, upserts and deletes atomically. Omitted encrypted columns require no
+patches, upserts and deletes atomically. Every sparse patch requires a row in
+the local replica at call time. An absent row rejects the entire batch with
+`sync.row_missing` before any local write or outbox insert. Omitted encrypted columns require no
 key and retain their ciphertext.
 
 Set `retainFailedCommits: true` to keep the complete failed aggregate visible
@@ -383,7 +385,9 @@ and durable after its outbox drains. Incoming server state advances a separate
 base. `outcome.retainedRows` exposes complete intended rows and the latest
 server rows and versions. Resolve explicitly with `resolved_keep_server`, or
 create a reviewed replacement and link it through `superseded`. Security purge
-and scope revocation remove whole retained aggregates.
+and scope revocation remove whole retained aggregates. If a sparse conflict
+loses its server base, the client keeps the sparse operation and conflict
+evidence without materializing a local row from the saved before-image.
 
 ## Application-authorized local security purge
 

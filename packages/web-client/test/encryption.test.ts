@@ -440,8 +440,22 @@ describe('sparse patch key-id fallback (SYNCULAR-SPARSE-PATCH-KEYID-001)', () =>
       },
     ]);
     await handle.client.syncUntilIdle();
-    // A patch on a locally absent row presents an encrypted column with no
-    // stored key id to fall back to.
+    // A local row with no selector can author an encrypted edit, which the
+    // push seam rejects precisely when it cannot select a key.
+    handle.client.mutate([
+      {
+        table: 'secrets',
+        op: 'upsert',
+        values: {
+          id: 'ghost',
+          project_id: 'p1',
+          encryption_key_id: null,
+          memo: null,
+          note: null,
+        },
+      },
+    ]);
+    await handle.client.syncUntilIdle();
     const badId = handle.client.patch('secrets', 'ghost', { note: 'x' });
     const goodId = handle.client.patch('secrets', 'r3', { memo: 'y' });
     await handle.client.sync();

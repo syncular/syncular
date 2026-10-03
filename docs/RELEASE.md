@@ -1,8 +1,22 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.30.9** (`v0.30.9`). All artifacts use Apache-2.0, except
+current release is **0.30.10** (`v0.30.10`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.30.10 release notes
+
+Both client cores reject a sparse patch without an existing local row at author
+time with `sync.row_missing`. A mixed batch enqueues and applies no operation
+when any sparse patch lacks its base.
+
+A retained sparse conflict whose server base disappears keeps its operation and
+conflict evidence without creating a local row from the saved before-image.
+Full-row retained creations still remain visible. Scope revocation and security
+purge remove retained aggregates.
+
+SQLite, PGlite, Chromium worker, Rust and Tauri checks cover the missing-base
+contract. SSP2 remains at wire version 3.
 
 ## 0.30.9 release notes
 

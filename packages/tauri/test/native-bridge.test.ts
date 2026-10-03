@@ -228,6 +228,27 @@ if (!available) {
         ]);
         expect(batches).toHaveLength(1);
         expect((await client.statusSnapshot()).outbox).toBe(2);
+        await expect(
+          client.mutate([
+            {
+              op: 'upsert',
+              table: 'todos',
+              values: { id: 'unwritten', list_id: 'one', title: 'audit' },
+            },
+            {
+              op: 'patch',
+              table: 'todos',
+              values: { id: 'missing', title: 'mine' },
+            },
+          ]),
+        ).rejects.toMatchObject({ code: 'sync.row_missing' });
+        expect(
+          await client.query(
+            "SELECT id FROM todos WHERE id IN ('missing', 'unwritten')",
+          ),
+        ).toEqual([]);
+        expect((await client.statusSnapshot()).outbox).toBe(2);
+        expect(batches).toHaveLength(1);
         await client.close();
       } finally {
         await host.close();

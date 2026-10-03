@@ -616,6 +616,38 @@ test('OPFS offline atomic patch survives reload and retains second-actor conflic
       await client.syncUntilIdle();
     });
     await context.setOffline(true);
+    const missing = await page.evaluate(async () => {
+      const client = await window.opfsTest.ready;
+      let code: string | undefined;
+      try {
+        await client.mutate([
+          {
+            op: 'upsert',
+            table: 'catalogue',
+            values: { id: 'unwritten', project_id: 'p1', title: 'audit' },
+          },
+          {
+            op: 'patch',
+            table: 'catalogue',
+            values: { id: 'absent-base', title: 'mine' },
+          },
+        ]);
+      } catch (error) {
+        code = (error as { code?: string }).code;
+      }
+      return {
+        code,
+        pending: await client.pendingCommits(),
+        rows: await client.query(
+          "SELECT id FROM catalogue WHERE id IN ('unwritten', 'absent-base')",
+        ),
+      };
+    });
+    expect(missing).toEqual({
+      code: 'sync.row_missing',
+      pending: [],
+      rows: [],
+    });
     const commitId = await page.evaluate(async () => {
       const client = await window.opfsTest.ready;
       return client.mutate([
@@ -663,6 +695,12 @@ test('OPFS offline atomic patch survives reload and retains second-actor conflic
         ),
       ),
     ).toEqual([{ title: 'offline sibling' }]);
+    winner.client.subscribe({
+      id: 'catalogue',
+      table: 'catalogue',
+      scopes: { project_id: ['p1'] },
+    });
+    await winner.client.syncUntilIdle();
     winner.client.patch(
       'catalogue',
       'code-00000',
@@ -710,6 +748,35 @@ test('OPFS offline atomic patch survives reload and retains second-actor conflic
         ),
       ),
     ).toEqual([{ title: 'offline mine' }]);
+    winner.client.mutate([
+      { op: 'delete', table: 'catalogue', rowId: 'code-00000' },
+    ]);
+    await winner.client.syncUntilIdle();
+    await page.evaluate(async () =>
+      (await window.opfsTest.ready).syncUntilIdle(),
+    );
+    await page.reload();
+    await page.evaluate(() => window.opfsTest.open());
+    expect(
+      await page.evaluate(async (id) => {
+        const client = await window.opfsTest.ready;
+        return {
+          rows: await client.query(
+            "SELECT id FROM catalogue WHERE id = 'code-00000'",
+          ),
+          base: (await client.commitOutcome(id))?.retainedRows?.find(
+            (row) => row.rowId === 'code-00000',
+          )?.serverRow,
+          operation: (await client.commitOutcome(id))?.operations?.find(
+            (operation) => operation.rowId === 'code-00000',
+          )?.values,
+        };
+      }, commitId),
+    ).toEqual({
+      rows: [],
+      base: null,
+      operation: { id: 'code-00000', title: 'offline mine' },
+    });
     await page.evaluate(
       async (id) =>
         (await window.opfsTest.ready).resolveCommitOutcome({
@@ -724,7 +791,7 @@ test('OPFS offline atomic patch survives reload and retains second-actor conflic
           "SELECT title FROM catalogue WHERE id = 'code-00000'",
         ),
       ),
-    ).toEqual([{ title: 'server winner' }]);
+    ).toEqual([]);
     expect(
       await page.evaluate(async () =>
         (await window.opfsTest.ready).query(

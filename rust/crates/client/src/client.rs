@@ -200,8 +200,16 @@ mod observation_tests {
             .key_id_columns
             .insert("secrets".to_owned(), "encryption_key_id".to_owned());
         client.set_encryption(config);
-        // A patch on a locally absent row presents an encrypted column with no
-        // stored key id to fall back to. Authoring succeeds...
+        // The row exists, but its key selector is absent. The encrypted edit
+        // authors locally and fails at the push seam.
+        client
+            .write_base_row(
+                "secrets",
+                &vec![Some(ColumnValue::String("ghost".into())), None, None],
+                1,
+            )
+            .unwrap();
+        client.rebuild_overlay();
         let commit_id = client
             .patch(
                 "secrets",
@@ -280,7 +288,7 @@ mod observation_tests {
         );
         assert!(absent
             .expect_err("an absent local row is rejected")
-            .contains("patch cannot write scope column"));
+            .starts_with("sync.row_missing:"));
         assert_eq!(client.pending_commit_ids().len(), 1);
     }
 
@@ -314,9 +322,14 @@ mod observation_tests {
             .expect("test client");
         client.create_synced_tables().unwrap();
 
-        // A primary key that is also a scope column with no local row: the
-        // sparse payload's key is the row id being patched, so its value is
-        // proven equal without a stored-row read.
+        // A primary key that is also a scope column still needs a local base.
+        client
+            .conn
+            .execute(
+                "INSERT INTO tenants (tenant_id, body, _syncular_version) VALUES ('t1', 'seed', 1)",
+                [],
+            )
+            .unwrap();
         client
             .patch(
                 "tenants",
@@ -3572,6 +3585,20 @@ mod observation_tests {
                     .as_ref()
                     .unwrap()["title"],
                 json!("server")
+            );
+            reopened
+                .conn
+                .execute("DELETE FROM _syncular_base_tasks WHERE id = 't1'", [])
+                .unwrap();
+            reopened.rebuild_overlay();
+            assert!(reopened
+                .visible_row(reopened.schema.table("tasks").unwrap(), "t1")
+                .is_none());
+            let retained = reopened.commit_outcome("retained").unwrap().unwrap();
+            assert!(retained.retained_rows.is_some());
+            assert_eq!(
+                retained.operations.unwrap()[0].values.as_ref().unwrap()["title"],
+                json!("mine")
             );
             reopened
                 .purge_local_data(&LocalDataPurgeInput {
@@ -8528,9 +8555,8 @@ impl SyncClient {
 
     /// Record one §6.1 sparse upsert: the primary key plus the supplied
     /// non-scope columns are present; every other column is absent and stays
-    /// untouched on the server and in the local overlay. The row need not be
-    /// locally present — an absent local row leaves the overlay absent (§7.1)
-    /// and the server answers per §5.2.
+    /// untouched on the server and in the local overlay. An absent local base
+    /// refuses the whole batch with sync.row_missing before enqueueing (§7.1).
     pub fn patch(
         &mut self,
         table: &str,
@@ -8560,6 +8586,23 @@ impl SyncClient {
                     "sync.invalid_request: table {table:?}: patch cannot change the primary key"
                 ));
             }
+        }
+        // Existence reads only the key. Locked encrypted values stay opaque;
+        // decoding the complete row here would reject a valid plain patch.
+        let exists: bool = self
+            .conn
+            .query_row(
+                &format!(
+                    "SELECT EXISTS(SELECT 1 FROM {} WHERE {})",
+                    visible_table(table),
+                    row_id_predicate(schema_table)
+                ),
+                rusqlite::params![row_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+        if !exists {
+            return Err("sync.row_missing: a sparse patch requires a local row".to_owned());
         }
         // §3.4 rule 5 / §6.2: scope columns are immutable on update. The
         // server accepts a present scope column whose value equals the
@@ -12488,7 +12531,14 @@ impl SyncClient {
                     continue;
                 }
                 if let Some(table) = self.schema.table(&operation.table) {
-                    if self.visible_row(table, &operation.row_id).is_none() {
+                    if self.visible_row(table, &operation.row_id).is_none()
+                        && operation.values.as_ref().is_some_and(|values| {
+                            table
+                                .columns
+                                .iter()
+                                .all(|column| values.contains_key(&column.name))
+                        })
+                    {
                         let key = serde_json::to_string(&(
                             operation.table.clone(),
                             operation.row_id.clone(),

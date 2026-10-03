@@ -16,6 +16,17 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-10-03',
+    title: 'Sparse writes require a local base',
+    body: 'Released in 0.30.10. Both client cores reject a sparse patch with sync.row_missing before enqueueing when its local row is absent. Mixed batches remain atomic. A retained sparse conflict keeps its evidence after the base disappears without creating an incomplete local row.',
+    links: [
+      {
+        href: '/concepts-conflicts/',
+        label: 'Sparse writes and retained conflicts',
+      },
+    ],
+  },
+  {
     date: '2026-10-02',
     title: 'Atomic sparse aggregates and retained local conflicts',
     body: 'Released in 0.30.9. v0.30.8 tagged, not published; superseded by 0.30.9. A mutation batch mixes sparse patches, full rows and deletes in one atomic commit. Plain-column patches leave encrypted ciphertext untouched without keys. Clients can retain rejected aggregate intent across pulls and restart, expose current server rows, and resolve it explicitly. Scope revocation and security purge remove retained intent.',

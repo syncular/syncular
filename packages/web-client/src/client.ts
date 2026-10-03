@@ -2750,6 +2750,16 @@ export class SyncClient {
         const normalized = normalizeRecordKeys(table, mutation.values);
         const scopeColumns = new Set(table.scopeColumnByVariable.values());
         const pkColumn = table.columns[table.primaryKeyIndex] as RowColumn;
+        const pkValue = requireRowId(normalized.get(pkColumn.name));
+        const local = this.#db.query(
+          `SELECT * FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)} = ?`,
+          [pkValue],
+        )[0];
+        if (!local)
+          throw new ClientSyncError(
+            'sync.row_missing',
+            'a sparse patch requires a local row',
+          );
         for (const column of table.columns) {
           if (!normalized.has(column.name)) continue;
           // §3.4 rule 5 / §6.2: scope columns are immutable on update. The
@@ -2763,16 +2773,7 @@ export class SyncClient {
           // by construction the row id being patched (§6.1), so its value is
           // proven equal already.
           if (scopeColumns.has(column.name) && column.name !== pkColumn.name) {
-            const pkValue = normalized.get(pkColumn.name);
-            const local =
-              typeof pkValue === 'string' && pkValue.length > 0
-                ? this.#db.query(
-                    `SELECT * FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)} = ?`,
-                    [pkValue],
-                  )[0]
-                : undefined;
             if (
-              local === undefined ||
               !Object.is(
                 rowValueToJson(
                   fromSqlValue(column, local[column.name] ?? null),
@@ -2811,12 +2812,7 @@ export class SyncClient {
           json[column.name] = rowValueToJson(values[index] ?? null);
         });
       }
-      const pkValue = json[table.primaryKey];
-      if (typeof pkValue !== 'string' || pkValue.length === 0) {
-        throw invalidRequest(
-          `table ${table.name}: upsert requires a non-empty string primary key`,
-        );
-      }
+      const pkValue = requireRowId(json[table.primaryKey]);
       return {
         table: mutation.table,
         rowId: pkValue,
@@ -5238,4 +5234,10 @@ export class SyncClient {
       );
     }
   }
+}
+
+function requireRowId(value: unknown): string {
+  if (typeof value !== 'string' || !value.length)
+    throw invalidRequest('a mutation requires a non-empty string primary key');
+  return value;
 }

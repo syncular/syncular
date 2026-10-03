@@ -115,19 +115,20 @@ export const deletePrecedenceScenarios: readonly Scenario[] = [
         { op: 'upsert', table: 'tasks', values: task('t1', 'p1', 'seed') },
       ]);
       await syncIdle(a);
+      const b = await bootstrapped(ctx, 'actor-b', 'client-b');
       await a.api.mutate([{ op: 'delete', table: 'tasks', rowId: 't1' }]);
       await syncIdle(a);
 
       // An unversioned partial upsert against the fresh tombstone rejects.
-      const blocked = await a.api.patch('tasks', 't1', { title: 'blocked' });
-      const blockedReport = await syncOk(a);
+      const blocked = await b.api.patch('tasks', 't1', { title: 'blocked' });
+      const blockedReport = await syncOk(b);
       checkEqual(
         blockedReport.rejected,
         [blocked],
         'the tombstone rejects the unversioned patch',
       );
       checkEqual(
-        (await a.api.rejections())[0]?.code,
+        (await b.api.rejections())[0]?.code,
         'sync.row_deleted',
         'delete precedence inside the horizon',
       );
