@@ -33,6 +33,7 @@ let downloads = 0;
 let images = 0;
 let pin = 0;
 let signedDownloads = 0;
+let releaseSignedDownload: (() => void) | undefined;
 let readBarrierReached: (() => void) | undefined;
 let releaseReadBarrier: (() => void) | undefined;
 
@@ -201,7 +202,23 @@ beforeAll(async () => {
         expect(request.headers.get('Authorization')).toBeNull();
         expect(request.headers.get('X-Syncular-Scopes')).toBeNull();
         signedDownloads++;
-        return new Response(segment.bytes.slice().buffer);
+        // Hold the second half until the browser observes the first. A complete
+        // response can arrive in one read, which proves no intermediate update.
+        const remainder = new Promise<void>((resolve) => {
+          releaseSignedDownload = resolve;
+        });
+        const split = Math.floor(segment.bytes.length / 2);
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            async start(controller) {
+              controller.enqueue(segment.bytes.slice(0, split));
+              await remainder;
+              controller.enqueue(segment.bytes.slice(split));
+              controller.close();
+            },
+          }),
+          { headers: { 'Content-Length': String(segment.bytes.length) } },
+        );
       }
       if (pathname.startsWith('/segments/')) {
         const segment = await handleSegmentDownload(source.ctxFor('actor-1'), {
@@ -473,7 +490,7 @@ test('OPFS worker forwards intermediate signed-URL download progress', async () 
     const page = await browser.newPage();
     const before = signedDownloads;
     await page.goto(`${server.url.href}?signed`);
-    await page.evaluate(async () => {
+    const syncing = page.evaluate(async () => {
       await window.opfsTest.open();
       const client = await window.opfsTest.ready;
       await client.subscribe({
@@ -483,6 +500,16 @@ test('OPFS worker forwards intermediate signed-URL download progress', async () 
       });
       await client.syncUntilIdle();
     });
+    await page.waitForFunction(() =>
+      window.opfsTest.progress.some(
+        (p) =>
+          p.phase === 'download' &&
+          p.bytesReceived > 0 &&
+          p.bytesReceived < (p.bytesTotal ?? 0),
+      ),
+    );
+    releaseSignedDownload!();
+    await syncing;
     const updates = await page.evaluate(() => window.opfsTest.progress);
     expect(signedDownloads - before).toBe(1);
     expect(
@@ -503,6 +530,8 @@ test('OPFS worker forwards intermediate signed-URL download progress', async () 
     ).toEqual([{ n: expected.length }]);
     await page.evaluate(async () => (await window.opfsTest.ready).close());
   } finally {
+    releaseSignedDownload?.();
+    releaseSignedDownload = undefined;
     await browser.close();
   }
 }, 60000);
