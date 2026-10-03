@@ -24,8 +24,8 @@
   },
   "scripts": {
     "postinstall": "git config core.hooksPath .githooks 2>/dev/null || true; test -e CLAUDE.md || ln -s AGENTS.md CLAUDE.md || true",
-    "//audit-ignore": "image-size GHSA-w3rx-r6r6-pgpr and GHSA-5p2g-fcmc-qvqq are ignored, not unfixed: the fix published as image-size 2.0.4, and Metro pins ^1.0.2, so taking it means forcing a major version on the React Native development toolchain. Syncular never passes ICNS, JXL, or HEIF input to image-size, which is the only code the advisories cover. Drop the ignore when Metro accepts image-size 2. The svgo/postcss/sharp advisories are fixed for real, via the root overrides above.",
-    "audit": "bun audit --ignore GHSA-w3rx-r6r6-pgpr --ignore GHSA-5p2g-fcmc-qvqq",
+    "//audit-ignore": "image-size GHSA-w3rx-r6r6-pgpr and GHSA-5p2g-fcmc-qvqq are ignored, not unfixed: the fix published as image-size 2.0.4, and Metro pins ^1.0.2, so taking it means forcing a major version on the React Native development toolchain. Syncular never passes ICNS, JXL, or HEIF input to image-size, which is the only code the advisories cover. Drop the ignore when Metro accepts image-size 2. The svgo/postcss/sharp advisories are fixed for real, via the root overrides above. GHSA-vfj7-8cjw-p6xm (braces <=3.0.3) and GHSA-ch52-4w7c-c8xp (http-cache-semantics <=4.2.0) have no published patches as of 2026-10-03. Their only installed paths are the private React Native harness Metro glob compiler and Astro remote-image build cache. Metro compiles repository configuration, and the docs ship static files without a shared authenticated response cache. Neither dependency is in a published Syncular runtime package. Remove these two exclusions when patched versions publish or either dependency enters a shipped runtime.",
+    "audit": "bun audit --ignore GHSA-w3rx-r6r6-pgpr --ignore GHSA-5p2g-fcmc-qvqq --ignore GHSA-vfj7-8cjw-p6xm --ignore GHSA-ch52-4w7c-c8xp",
     "check": "bun run version:check && bun run check:code",
     "check:code": "bun run rust:clean && bun run typecheck && bun run lint && bun run knip && bun run test && bun run verify:runtimes",
     "version:print": "bun scripts/version.ts print",
