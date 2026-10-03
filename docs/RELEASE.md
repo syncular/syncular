@@ -1,8 +1,30 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.30.11** (`v0.30.11`). All artifacts use Apache-2.0, except
+current release is **0.30.12** (`v0.30.12`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.30.12 release notes
+
+Applied and cached push acknowledgements now drain the send queue while retaining
+protected local intent until the same row's server image arrives at the acknowledged
+commit sequence or later. Empty pulls and restart preserve this intent. Later
+edits stack above it. Both client cores retire the intent atomically with row delivery
+or a completed covering bootstrap. Revocation and security purge remove affected
+aggregates; window eviction removes the evicted row's intent.
+
+An acknowledgement requests an immediate follow-up pull without depending on
+realtime notification of the originating client. A server whose pull maximum falls
+behind its own accepted push returns `sync.storage_stale_read`. The accepted push
+remains durable and an identical retry receives its cached outcome after the host
+restores read freshness. Sync storage and authorization require uncached reads;
+Cloudflare Hyperdrive bindings must disable query caching.
+
+Upgrade all npm packages and native crates together and rebuild the native application.
+No application schema bump or generated-schema change is required. Existing replicas
+add protected bookkeeping on open. SSP2 remains at wire version 3. Applied outcomes
+confirm server acceptance; they do not prove that every subscription has received its
+row image. The browser own-code bundle budget remains 148 KiB.
 
 ## 0.30.11 release notes
 

@@ -378,7 +378,7 @@ describe('CREATE INDEX subset — client local DDL', () => {
         ],
       };
       expect(() => compileClientSchema(bad)).toThrow(
-        /primary key "id" has an ineligible column type/,
+        /primary key "id" has an ineligible type/,
       );
     }
   });

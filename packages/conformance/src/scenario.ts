@@ -11,6 +11,8 @@
  */
 
 import {
+  decodeMessage,
+  encodeMessage,
   MessageStreamScanner,
   REALTIME_TAG_DELTA,
   REALTIME_TAG_ROUND,
@@ -570,6 +572,22 @@ export class ScenarioContext {
           if (faults.truncateNextResponse) {
             faults.truncateNextResponse = false;
             return faults.truncate(result.bytes);
+          }
+          if (faults.deferNextPulls > 0) {
+            faults.deferNextPulls -= 1;
+            const message = decodeMessage(result.bytes);
+            if (message.msgKind !== 'response')
+              throw new Error('expected response');
+            return encodeMessage({
+              ...message,
+              frames: message.frames.filter(
+                (frame) =>
+                  frame.type === 'RESP_HEADER' ||
+                  frame.type === 'LEASE' ||
+                  frame.type === 'PUSH_RESULT' ||
+                  frame.type === 'PUSH_RESULT_DETAILS',
+              ),
+            });
           }
           return result.bytes;
         },

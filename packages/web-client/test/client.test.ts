@@ -1534,6 +1534,12 @@ describe('bounded outbox encoding', () => {
               'INSERT INTO _syncular_outbox(client_commit_id, created_at_ms, operations) VALUES (?, ?, ?)',
               [`commit-${index}`, index, JSON.stringify(operations)],
             );
+            operations.forEach((_, opIndex) =>
+              db.exec(
+                'INSERT INTO _syncular_outbox_before_images(client_commit_id,op_index,existed)VALUES(?,?,0)',
+                [`commit-${index}`, opIndex],
+              ),
+            );
           }
         });
         db.resetCounts();

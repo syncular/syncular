@@ -20,6 +20,7 @@ import {
   type CompiledClientTable,
   type JsonRowValue,
   jsonToRowValue,
+  matchesLocalScopes,
 } from './schema';
 
 export interface OutboxOperation {
@@ -48,6 +49,7 @@ export interface OutboxCommit {
 export interface OutboxBeforeImage {
   readonly opIndex: number;
   readonly existed: boolean;
+  readonly deliverySeq?: number;
   readonly syncVersion?: number;
   readonly values?: Readonly<Record<string, JsonRowValue>>;
 }
@@ -69,25 +71,20 @@ export function appendOutboxCommit(
     'INSERT INTO _syncular_outbox(client_commit_id,created_at_ms,operations)VALUES(?,?,?)',
     [clientCommitId, nowMs, JSON.stringify(operations)],
   );
-  for (const image of beforeImages) {
-    db.exec(
-      'INSERT INTO _syncular_outbox_before_images(client_commit_id,op_index,existed,sync_version,values_json)VALUES(?,?,?,?,?)',
-      [
-        clientCommitId,
-        image.opIndex,
-        image.existed ? 1 : 0,
-        image.syncVersion ?? null,
-        image.values === undefined ? null : JSON.stringify(image.values),
-      ],
-    );
-  }
+  replaceOutboxBeforeImages(db, clientCommitId, beforeImages);
 }
 
 /** Pending commits in FIFO creation order (§7.1). Full reads serve replay and the public listing. */
-export function listOutbox(db: ClientDatabase): OutboxCommit[] {
+export function listOutbox(
+  db: ClientDatabase,
+  rowKeys?: readonly string[],
+): OutboxCommit[] {
   return db
     .query(
-      'SELECT seq, client_commit_id, created_at_ms, operations FROM _syncular_outbox ORDER BY seq ASC',
+      rowKeys === undefined
+        ? 'SELECT seq, client_commit_id, created_at_ms, operations FROM _syncular_outbox ORDER BY seq ASC'
+        : "SELECT * FROM _syncular_outbox WHERE EXISTS(SELECT 1 FROM json_each(operations) WHERE json_array(json_extract(value,'$.table'),json_extract(value,'$.rowId')) IN(SELECT value FROM json_each(?))) ORDER BY seq",
+      rowKeys && [JSON.stringify(rowKeys)],
     )
     .map(decodeOutboxRow);
 }
@@ -149,12 +146,15 @@ export function listOutboxBeforeImages(
 ): OutboxBeforeImage[] {
   return db
     .query(
-      'SELECT op_index,existed,sync_version,values_json FROM _syncular_outbox_before_images WHERE client_commit_id=? ORDER BY op_index',
+      'SELECT op_index,existed,sync_version,values_json,delivery_seq FROM _syncular_outbox_before_images WHERE client_commit_id=? ORDER BY op_index',
       [clientCommitId],
     )
     .map((row) => ({
       opIndex: row.op_index as number,
       existed: row.existed === 1,
+      ...(typeof row.delivery_seq === 'number'
+        ? { deliverySeq: row.delivery_seq }
+        : {}),
       ...(typeof row.sync_version === 'number'
         ? { syncVersion: row.sync_version }
         : {}),
@@ -175,11 +175,7 @@ export function replaceOutboxBeforeImages(
 ): void {
   for (const image of replacements) {
     db.exec(
-      'DELETE FROM _syncular_outbox_before_images WHERE client_commit_id=? AND op_index=?',
-      [clientCommitId, image.opIndex],
-    );
-    db.exec(
-      'INSERT INTO _syncular_outbox_before_images(client_commit_id,op_index,existed,sync_version,values_json)VALUES(?,?,?,?,?)',
+      'INSERT INTO _syncular_outbox_before_images(client_commit_id,op_index,existed,sync_version,values_json)VALUES(?,?,?,?,?) ON CONFLICT(client_commit_id,op_index)DO UPDATE SET existed=excluded.existed,sync_version=excluded.sync_version,values_json=excluded.values_json',
       [
         clientCommitId,
         image.opIndex,
@@ -212,7 +208,7 @@ function sparseValues(
   for (const key of Object.keys(values)) {
     if (!table.columnIndex.has(key)) {
       throw new OutboxEncodeError(
-        `outbox commit references column ${JSON.stringify(key)} on ${JSON.stringify(table.name)}, which the current schema no longer has (§7.4.4)`,
+        `outbox column ${JSON.stringify(key)} is absent from table ${JSON.stringify(table.name)} (§7.4.4)`,
       );
     }
   }
@@ -256,7 +252,7 @@ export async function encodeOutboxCommit(
     if (table === undefined) {
       // §7.4.4: the bump removed this table — the commit cannot be encoded.
       throw new OutboxEncodeError(
-        `outbox commit ${commit.clientCommitId} targets table ${JSON.stringify(op.table)}, which the current schema no longer has (§7.4.4)`,
+        `outbox table ${JSON.stringify(op.table)} is absent from the current schema (§7.4.4)`,
       );
     }
     if (op.values === undefined) {
@@ -310,12 +306,7 @@ export function dropOutboxCommitsInScope(
   for (const commit of listOutbox(db)) {
     const inScope = commit.operations.some((op) => {
       if (op.table !== table.name || op.values === undefined) return false;
-      return entries.every(([variable, values]) => {
-        const column = table.scopeColumnByVariable.get(variable);
-        if (column === undefined) return false;
-        const value = op.values?.[column];
-        return typeof value === 'string' && values.includes(value);
-      });
+      return matchesLocalScopes(table, effective, op.values);
     });
     if (inScope) {
       deleteOutboxCommit(db, commit.clientCommitId);

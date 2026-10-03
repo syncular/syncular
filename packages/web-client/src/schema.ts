@@ -92,6 +92,10 @@ const ALLOWED_FTS_TOKENIZERS = new Set([
   'trigram',
 ]);
 
+function invalidSchema(message: string): never {
+  throw new Error(message);
+}
+
 export function compileClientSchema(
   schema: ClientSchema,
 ): CompiledClientSchema {
@@ -100,10 +104,10 @@ export function compileClientSchema(
   for (const table of schema.tables) {
     const tableLabel = `table ${table.name}`;
     if (tables.has(table.name)) {
-      throw new Error(`duplicate table ${JSON.stringify(table.name)}`);
+      invalidSchema(`duplicate table ${JSON.stringify(table.name)}`);
     }
     if (schemaObjectNames.has(table.name)) {
-      throw new Error(
+      invalidSchema(
         `table ${JSON.stringify(table.name)} conflicts with an index or FTS projection`,
       );
     }
@@ -111,7 +115,7 @@ export function compileClientSchema(
     const columnIndex = new Map<string, number>();
     table.columns.forEach((column, index) => {
       if (columnIndex.has(column.name)) {
-        throw new Error(
+        invalidSchema(
           `${tableLabel}: duplicate column ${JSON.stringify(column.name)}`,
         );
       }
@@ -119,27 +123,23 @@ export function compileClientSchema(
     });
     const primaryKeyIndex = columnIndex.get(table.primaryKey);
     if (primaryKeyIndex === undefined) {
-      throw new Error(
+      invalidSchema(
         `${tableLabel}: primary key ${JSON.stringify(table.primaryKey)} is not a column`,
       );
     }
     // §2.4 primary-key eligibility: a primary key MUST render to a `rowId`
     // string every implementation produces identically and local storage
     // resolves without deferring to a SQLite build.
-    const primaryKeyColumn = table.columns[primaryKeyIndex];
+    const primaryKeyColumn = table.columns[primaryKeyIndex] as RowColumn;
     if (
-      primaryKeyColumn !== undefined &&
-      primaryKeyColumn.type !== 'string' &&
-      primaryKeyColumn.type !== 'integer' &&
-      primaryKeyColumn.type !== 'boolean' &&
-      primaryKeyColumn.type !== 'json'
+      !['string', 'integer', 'boolean', 'json'].includes(primaryKeyColumn.type)
     ) {
-      throw new Error(
-        `${tableLabel}: primary key ${JSON.stringify(table.primaryKey)} has an ineligible column type (§2.4); a primary key must be string, integer, boolean, or json`,
+      invalidSchema(
+        `${tableLabel}: primary key ${JSON.stringify(table.primaryKey)} has an ineligible type (§2.4)`,
       );
     }
     if (table.scopes.length === 0) {
-      throw new Error(
+      invalidSchema(
         `${tableLabel}: every synced table declares at least one scope pattern (§3.1)`,
       );
     }
@@ -149,7 +149,7 @@ export function compileClientSchema(
       const pattern = typeof spec === 'string' ? spec : spec.pattern;
       const match = PATTERN_RE.exec(pattern);
       if (match === null || match[1] === undefined || match[2] === undefined) {
-        throw new Error(
+        invalidSchema(
           `${tableLabel}: scope pattern ${JSON.stringify(pattern)} must be 'prefix:{variable}'`,
         );
       }
@@ -157,13 +157,13 @@ export function compileClientSchema(
       const variable = match[2];
       const column = typeof spec === 'string' ? variable : spec.column;
       if (!columnIndex.has(column)) {
-        throw new Error(
+        invalidSchema(
           `${tableLabel}: scope pattern ${JSON.stringify(pattern)} names unknown column ${JSON.stringify(column)}`,
         );
       }
       const existing = scopeColumnByVariable.get(variable);
       if (existing !== undefined && existing !== column) {
-        throw new Error(
+        invalidSchema(
           `${tableLabel}: variable ${JSON.stringify(variable)} maps to two different columns (§3.1)`,
         );
       }
@@ -184,60 +184,34 @@ export function compileClientSchema(
     });
     for (const alias of ambiguous) columnIndexByCamel.delete(alias);
     const indexes = table.indexes ?? [];
-    for (const index of indexes) {
-      if (schemaObjectNames.has(index.name)) {
-        throw new Error(
-          `${tableLabel}: index ${JSON.stringify(index.name)} conflicts with another schema object`,
-        );
-      }
-      schemaObjectNames.add(index.name);
-      for (const column of index.columns) {
-        if (!columnIndex.has(column)) {
-          throw new Error(
-            `${tableLabel}: index ${JSON.stringify(index.name)} names unknown column ${JSON.stringify(column)}`,
-          );
-        }
-      }
-    }
     const ftsIndexes = table.ftsIndexes ?? [];
-    for (const index of ftsIndexes) {
-      const projectionLabel = `${tableLabel}: FTS projection ${JSON.stringify(index.name)}`;
-      if (schemaObjectNames.has(index.name)) {
-        throw new Error(
-          `${projectionLabel} conflicts with another schema object`,
-        );
-      }
+    for (const index of [...indexes, ...ftsIndexes]) {
+      const fts = 'tokenize' in index;
+      const label = `${tableLabel}: ${fts ? 'FTS projection' : 'index'} ${JSON.stringify(index.name)}`;
+      if (schemaObjectNames.has(index.name))
+        invalidSchema(`${label} conflicts with another schema object`);
       schemaObjectNames.add(index.name);
-      if (index.columns.length === 0 || index.columns.length > 32) {
-        throw new Error(`${projectionLabel} needs between 1 and 32 columns`);
-      }
-      const seenColumns = new Set<string>();
-      for (const columnName of index.columns) {
-        if (seenColumns.has(columnName)) {
-          throw new Error(
-            `${projectionLabel} repeats column ${JSON.stringify(columnName)}`,
+      if (fts && (!index.columns.length || index.columns.length > 32))
+        invalidSchema(`${label} needs between 1 and 32 columns`);
+      const seen = new Set<string>();
+      for (const name of index.columns) {
+        if (fts && seen.has(name))
+          invalidSchema(`${label} repeats column ${JSON.stringify(name)}`);
+        seen.add(name);
+        const column = table.columns[columnIndex.get(name) ?? -1];
+        if (!column)
+          invalidSchema(
+            `${label} names unknown column ${JSON.stringify(name)}`,
           );
-        }
-        seenColumns.add(columnName);
-        const column = table.columns.find(
-          (candidate) => candidate.name === columnName,
+        if (fts && localColumnType(column) !== 'string')
+          invalidSchema(
+            `${label} column ${JSON.stringify(name)} must have string type`,
+          );
+      }
+      if (fts && !ALLOWED_FTS_TOKENIZERS.has(index.tokenize))
+        invalidSchema(
+          `${label} tokenizer ${JSON.stringify(index.tokenize)} is not allowlisted`,
         );
-        if (column === undefined) {
-          throw new Error(
-            `${projectionLabel} names unknown column ${JSON.stringify(columnName)}`,
-          );
-        }
-        if (localColumnType(column) !== 'string') {
-          throw new Error(
-            `${projectionLabel} column ${JSON.stringify(columnName)} must have string type`,
-          );
-        }
-      }
-      if (!ALLOWED_FTS_TOKENIZERS.has(index.tokenize)) {
-        throw new Error(
-          `${projectionLabel} tokenizer ${JSON.stringify(index.tokenize)} is not allowlisted`,
-        );
-      }
     }
     tables.set(table.name, {
       name: table.name,
@@ -289,6 +263,21 @@ export function stripSyncColumns(rows: SqlRow[]): SqlRow[] {
     for (const key of reserved) delete copy[key];
     return copy;
   });
+}
+
+export function matchesLocalScopes(
+  table: CompiledClientTable,
+  scopes: Readonly<Record<string, readonly string[]>>,
+  values: Readonly<Record<string, JsonRowValue>>,
+): boolean {
+  const entries = Object.entries(scopes);
+  return (
+    entries.length > 0 &&
+    entries.every(([variable, allowed]) => {
+      const column = table.scopeColumnByVariable.get(variable);
+      return column !== undefined && allowed.includes(String(values[column]));
+    })
+  );
 }
 
 export function quoteIdent(name: string): string {
@@ -382,6 +371,9 @@ function createFtsProjection(
   table: CompiledClientTable,
   index: ClientFtsIndexSpec,
 ): void {
+  const projection = quoteIdent(index.name);
+  const sourceTable = quoteIdent(table.name);
+  const primaryKey = quoteIdent(table.primaryKey);
   const existed =
     db.query(
       "SELECT 1 AS present FROM sqlite_master WHERE type='table' AND name=?",
@@ -390,7 +382,7 @@ function createFtsProjection(
   const indexedColumns = index.columns.map(quoteIdent);
   const tokenizer = index.tokenize.replaceAll("'", "''");
   db.exec(
-    `CREATE VIRTUAL TABLE IF NOT EXISTS ${quoteIdent(index.name)} USING fts5(${quoteIdent(FTS_SOURCE_ID_COLUMN)} UNINDEXED,${indexedColumns.join(', ')},tokenize='${tokenizer}')`,
+    `CREATE VIRTUAL TABLE IF NOT EXISTS ${projection} USING fts5(${quoteIdent(FTS_SOURCE_ID_COLUMN)} UNINDEXED,${indexedColumns.join(', ')},tokenize='${tokenizer}')`,
   );
 
   const mapping = quoteIdent(`_syncular_fts_${index.name}`);
@@ -401,9 +393,9 @@ function createFtsProjection(
   db.exec(
     `CREATE TABLE IF NOT EXISTS ${mapping}(id INTEGER PRIMARY KEY,source_id TEXT NOT NULL UNIQUE)`,
   );
-  const sourceId = `CAST(${quoteIdent(table.primaryKey)} AS TEXT)`;
-  const newSourceId = `CAST(new.${quoteIdent(table.primaryKey)} AS TEXT)`;
-  const oldSourceId = `CAST(old.${quoteIdent(table.primaryKey)} AS TEXT)`;
+  const sourceId = `CAST(${primaryKey} AS TEXT)`;
+  const newSourceId = `CAST(new.${primaryKey} AS TEXT)`;
+  const oldSourceId = `CAST(old.${primaryKey} AS TEXT)`;
   const projectionColumns = [
     quoteIdent(FTS_SOURCE_ID_COLUMN),
     ...indexedColumns,
@@ -413,10 +405,10 @@ function createFtsProjection(
     ...index.columns.map((column) => `new.${quoteIdent(column)}`),
   ].join(', ');
   const deleteFor = (value: string) =>
-    `DELETE FROM ${quoteIdent(index.name)} WHERE rowid=(SELECT id FROM ${mapping} WHERE source_id=${value});DELETE FROM ${mapping} WHERE source_id=${value}`;
+    `DELETE FROM ${projection} WHERE rowid=(SELECT id FROM ${mapping} WHERE source_id=${value});DELETE FROM ${mapping} WHERE source_id=${value}`;
   const deleteDisplaced = (select: string) =>
-    `DELETE FROM ${quoteIdent(index.name)} WHERE rowid IN (SELECT id FROM ${mapping} WHERE source_id IN (${select}));DELETE FROM ${mapping} WHERE source_id IN (${select})`;
-  const insertNew = `INSERT INTO ${mapping}(source_id)VALUES(${newSourceId});INSERT INTO ${quoteIdent(index.name)}(rowid,${projectionColumns})VALUES((SELECT id FROM ${mapping} WHERE source_id=${newSourceId}),${newValues})`;
+    `DELETE FROM ${projection} WHERE rowid IN (SELECT id FROM ${mapping} WHERE source_id IN (${select}));DELETE FROM ${mapping} WHERE source_id IN (${select})`;
+  const insertNew = `INSERT INTO ${mapping}(source_id)VALUES(${newSourceId});INSERT INTO ${projection}(rowid,${projectionColumns})VALUES((SELECT id FROM ${mapping} WHERE source_id=${newSourceId}),${newValues})`;
 
   // A clean insert cannot already have a projection row because the source
   // primary key is unique. Keep clean inserts linear by moving replacement
@@ -445,7 +437,7 @@ function createFtsProjection(
   for (const suffix of ['bi', 'ai', 'ad', 'au', 'bu']) {
     db.exec(`DROP TRIGGER IF EXISTS ${quoteIdent(`${index.name}_${suffix}`)}`);
   }
-  const replacementExists = `EXISTS (SELECT 1 FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)} = new.${quoteIdent(table.primaryKey)})`;
+  const replacementExists = `EXISTS (SELECT 1 FROM ${sourceTable} WHERE ${primaryKey} = new.${primaryKey})`;
   // Per secondary UNIQUE index: the different-PK rows about to be displaced
   // via that unique key. `=` makes NULL unique values match nothing, which is
   // exactly SQLite's unique-index semantics (NULLs never conflict).
@@ -454,7 +446,7 @@ function createFtsProjection(
     const match = spec.columns
       .map((column) => `${quoteIdent(column)} = new.${quoteIdent(column)}`)
       .join(' AND ');
-    return `SELECT ${sourceId} FROM ${quoteIdent(table.name)} WHERE ${match} AND ${quoteIdent(table.primaryKey)} !=new.${quoteIdent(table.primaryKey)}`;
+    return `SELECT ${sourceId} FROM ${sourceTable} WHERE ${match} AND ${primaryKey} !=new.${primaryKey}`;
   });
   const insertGuardCondition = [
     replacementExists,
@@ -472,7 +464,7 @@ function createFtsProjection(
     when = '',
   ) =>
     db.exec(
-      `CREATE TRIGGER ${quoteIdent(`${index.name}_${suffix}`)} ${timing} ON ${quoteIdent(table.name)}${when ? ` WHEN ${when}` : ''} BEGIN ${body};END`,
+      `CREATE TRIGGER ${quoteIdent(`${index.name}_${suffix}`)} ${timing} ON ${sourceTable}${when ? ` WHEN ${when}` : ''} BEGIN ${body};END`,
     );
   createTrigger('bi', 'BEFORE INSERT', insertGuardBody, insertGuardCondition);
   createTrigger('ai', 'AFTER INSERT', insertNew);
@@ -496,13 +488,13 @@ function createFtsProjection(
 
   if (!existed) {
     db.exec(
-      `INSERT INTO ${quoteIdent(index.name)}(${projectionColumns})SELECT ${sourceId},${indexedColumns.join(', ')} FROM ${quoteIdent(table.name)}`,
+      `INSERT INTO ${projection}(${projectionColumns})SELECT ${sourceId},${indexedColumns.join(', ')} FROM ${sourceTable}`,
     );
   }
   if (!mapped || !existed) {
     db.exec(`DELETE FROM ${mapping}`);
     db.exec(
-      `INSERT INTO ${mapping}(id,source_id)SELECT rowid,${quoteIdent(FTS_SOURCE_ID_COLUMN)} FROM ${quoteIdent(index.name)}`,
+      `INSERT INTO ${mapping}(id,source_id)SELECT rowid,${quoteIdent(FTS_SOURCE_ID_COLUMN)} FROM ${projection}`,
     );
   }
 }
@@ -558,6 +550,14 @@ export function ensureLocalBookkeepingSchema(db: ClientDatabase): void {
       '_syncular_outbox_before_images',
       'client_commit_id TEXT NOT NULL,op_index INTEGER NOT NULL,existed INTEGER NOT NULL CHECK(existed IN (0,1)),sync_version INTEGER,values_json TEXT,PRIMARY KEY(client_commit_id,op_index)',
     );
+    if (
+      !db
+        .query('PRAGMA table_info(_syncular_outbox_before_images)')
+        .some((row) => row.name === 'delivery_seq')
+    )
+      db.exec(
+        'ALTER TABLE _syncular_outbox_before_images ADD COLUMN delivery_seq INTEGER',
+      );
     createTable(
       '_syncular_commit_outcomes',
       "seq INTEGER PRIMARY KEY AUTOINCREMENT,client_commit_id TEXT NOT NULL UNIQUE,status TEXT NOT NULL CHECK(status IN ('applied','cached','conflict','rejected')),recorded_at_ms INTEGER NOT NULL,results TEXT NOT NULL,operations TEXT,resolution TEXT NOT NULL DEFAULT 'active' CHECK(resolution IN ('active','resolved_keep_server','superseded','dismissed')),resolved_at_ms INTEGER,replacement_client_commit_id TEXT",
@@ -665,15 +665,8 @@ export function fromSqlValue(column: RowColumn, value: SqlValue): RowValue {
       return value !== 0 && value !== false;
     case 'integer':
       return typeof value === 'bigint' ? Number(value) : (value as number);
-    case 'float':
-      return value as number;
-    case 'bytes':
-    case 'crdt':
-      return value as Uint8Array;
-    case 'string':
-    case 'json':
-    case 'blob_ref':
-      return value as string;
+    default:
+      return value as RowValue;
   }
 }
 
@@ -695,17 +688,17 @@ export function normalizeRecordKeys(
     if (index === undefined) {
       if (key.startsWith('_sync_')) {
         throw invalidRequest(
-          `table ${table.name}: ${JSON.stringify(key)} is an internal sync column and cannot appear in mutation values — did you build this record from a raw SELECT * row? (client.query() strips _sync_* columns; rows read via client.database keep them)`,
+          `table ${table.name}: ${JSON.stringify(key)} is an internal sync column; omit it from mutation values`,
         );
       }
       throw invalidRequest(
-        `table ${table.name}: unknown column ${JSON.stringify(key)} in mutation values (snake_case and camelCase keys are accepted)`,
+        `table ${table.name}: unknown column ${JSON.stringify(key)} in mutation values`,
       );
     }
     const sqlName = (table.columns[index] as RowColumn).name;
     if (normalized.has(sqlName)) {
       throw invalidRequest(
-        `table ${table.name}: column ${JSON.stringify(sqlName)} appears twice in mutation values (as both snake_case and camelCase) — pass it once`,
+        `table ${table.name}: column ${JSON.stringify(sqlName)} appears twice in mutation values`,
       );
     }
     normalized.set(sqlName, value);

@@ -17,6 +17,18 @@
 export const changelog = [
   {
     date: '2026-10-03',
+    title: 'Acknowledged writes remain visible until row delivery',
+    body: 'Released in 0.30.12. Both cores preserve accepted local intent through empty pulls and restart, stack later edits above it, and request an immediate following pull. Matching server delivery retires the intent atomically. Revocation and purge remove it. Servers detect a pull maximum behind their accepted push; sync storage and authorization require uncached reads.',
+    links: [
+      {
+        href: '/concepts-conflicts/#the-optimistic-outbox',
+        label: 'Acknowledgements and local reads',
+      },
+      { href: '/server-storage/#read-freshness', label: 'Storage freshness' },
+    ],
+  },
+  {
+    date: '2026-10-03',
     title: 'Native sync keeps local writes responsive',
     body: 'Released in 0.30.11. Tauri runs sync network I/O outside the mutable owner. New mutations and queries finish while replies are pending; their commits enter the next round. The Rust overlay rebuilds only changed tables and FTS indexes, leaving unrelated catalogues untouched.',
     links: [

@@ -54,6 +54,8 @@ export class TransportFaults {
   dropNextRequests = 0;
   /** Deliver the next N sync requests, then lose their responses. */
   dropNextResponses = 0;
+  /** Return ACKs while withholding pull sections without advancing their cursors. */
+  deferNextPulls = 0;
   /** Deliver the next sync request twice; return the second response. */
   duplicateNextRequest = false;
   /** Truncate the next sync response at a seeded offset. */

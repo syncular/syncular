@@ -24,6 +24,35 @@ function commitsOf(body: { type: string }[]): CommitFrame[] {
 }
 
 describe('incremental pull (§4.5)', () => {
+  test('cached pre-push maximum fails loudly; the accepted push remains idempotent', async () => {
+    const t = makeContext();
+    const actual = t.storage.getMaxCommitSeq.bind(t.storage);
+    t.storage.getMaxCommitSeq = async () => 0;
+    const frames = [
+      pushCommit('own-accepted', [
+        upsert('tasks', 't1', taskRow('t1', 'p1', '200/v2')),
+      ]),
+      pullHeader(),
+      subFrame('s1', 'tasks', { project_id: ['p1'] }, 0),
+    ];
+    const stale = await sync(t, frames);
+    expect(stale.frames.find((frame) => frame.type === 'ERROR')).toMatchObject({
+      code: 'sync.storage_stale_read',
+      retryable: false,
+    });
+    expect(await actual(t.ctx.partition)).toBe(1);
+    t.storage.getMaxCommitSeq = actual;
+    const message = await sync(t, frames);
+    expect(
+      message.frames.find((frame) => frame.type === 'PUSH_RESULT'),
+    ).toMatchObject({ status: 'cached', commitSeq: 1 });
+    const own = commitsOf(section(message, 's1').body);
+    expect(own).toHaveLength(1);
+    expect(own[0]?.commitSeq).toBe(1);
+    expect(decodeRow(TASK_COLUMNS, own[0]!.changes[0]!.row!)[2]).toBe('200/v2');
+    expect(await actual(t.ctx.partition)).toBe(1);
+  });
+
   test('quiet subscription: cursor advances with zero commits', async () => {
     const t = makeContext();
     t.scopes.value = { project_id: ['p1', 'p2'] };

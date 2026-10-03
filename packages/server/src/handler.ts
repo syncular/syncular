@@ -519,6 +519,7 @@ async function* streamResponse(
   }
   try {
     // Push half (§6): one PUSH_RESULT per PUSH_COMMIT, in request order.
+    let acceptedThrough = 0;
     for (const push of plan.pushes) {
       const processed = await processPushCommitWithTrace(
         ctx,
@@ -527,6 +528,10 @@ async function* streamResponse(
         plan.header.clientId,
         push,
         schema,
+      );
+      acceptedThrough = Math.max(
+        acceptedThrough,
+        processed.frame.commitSeq ?? 0,
       );
       const frame = {
         ...processed.frame,
@@ -568,6 +573,12 @@ async function* streamResponse(
         events !== undefined ? [] : undefined;
       const limits = clampPullLimits(plan.pull);
       const maxSeq = await ctx.storage.getMaxCommitSeq(ctx.partition);
+      if (maxSeq < acceptedThrough)
+        throw syncError(
+          'sync.storage_stale_read',
+          'storage returned a commit sequence older than the accepted push; disable query caching for sync storage',
+          JSON.stringify({ acceptedThrough, storageMaxCommitSeq: maxSeq }),
+        );
       const horizonSeq = await ctx.storage.getHorizonSeq(ctx.partition);
       const prepared = await prepareSections(
         ctx,
@@ -597,6 +608,9 @@ async function* streamResponse(
         let bootstrap = false;
         let commits = 0;
         let changes = 0;
+        let effectiveScopes: ScopeMap = {};
+        let firstCommitSeq: number | undefined;
+        let lastCommitSeq: number | undefined;
         let step = await section.next();
         while (!step.done) {
           const frame = step.value as ResponseFrame;
@@ -604,9 +618,12 @@ async function* streamResponse(
             if (frame.type === 'SUB_START') {
               status = frame.status;
               bootstrap = frame.bootstrap;
+              effectiveScopes = frame.effectiveScopes;
             } else if (frame.type === 'COMMIT') {
               commits += 1;
               changes += frame.changes.length;
+              firstCommitSeq ??= frame.commitSeq;
+              lastCommitSeq = frame.commitSeq;
             }
           }
           yield encodeResponseFrame(frame, plan.wireVersion);
@@ -624,6 +641,11 @@ async function* streamResponse(
                 : bootstrap
                   ? 'bootstrap'
                   : 'incremental',
+            requestedScopes: subscription.frame.scopes,
+            effectiveScopes,
+            ...(firstCommitSeq !== undefined && lastCommitSeq !== undefined
+              ? { firstCommitSeq, lastCommitSeq }
+              : {}),
             fromCursor: subscription.frame.cursor,
             nextCursor: step.value.nextCursor,
             commits,
@@ -639,6 +661,8 @@ async function* streamResponse(
           partition: ctx.partition,
           actorId: ctx.actorId,
           clientId: plan.header.clientId,
+          acceptedThrough,
+          storageMaxCommitSeq: maxSeq,
           subscriptions: summaries,
         });
       }

@@ -17,7 +17,11 @@ declare global {
     opfsTest: {
       ready: Promise<SyncClientHandle>;
       progress: SyncProgress[];
-      open(contend?: boolean, schema?: ClientSchema): Promise<void>;
+      open(
+        contend?: boolean,
+        schema?: ClientSchema,
+        autoSync?: boolean,
+      ): Promise<void>;
       storageBusy: Promise<void>;
       terminate(): boolean;
       crash: Promise<CrashReceipt>;
@@ -45,7 +49,7 @@ window.opfsTest = {
     announceCrash = resolve;
   }),
   ready: new Promise(() => {}),
-  open: async (contend = false, schema = OPFS_SCHEMA) => {
+  open: async (contend = false, schema = OPFS_SCHEMA, autoSync = false) => {
     window.opfsTest.ready = createSyncClientHandle({
       worker: () => {
         worker = new Worker(
@@ -63,7 +67,7 @@ window.opfsTest = {
       replica: { mode: 'isolated', id: 'reload-replica' },
       ...(contend ? { leaderLock: singleOwnerLock(), multiTab: false } : {}),
       schema,
-      autoSync: false,
+      autoSync,
       retainFailedCommits: true,
       endpoints: {
         syncUrl: `${location.origin}/${schema.version >= 89 ? 'sync-scope' : location.search === '?signed' ? 'sync-signed' : 'sync'}`,

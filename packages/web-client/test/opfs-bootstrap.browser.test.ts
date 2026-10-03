@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { chromium } from 'playwright';
-import { decodeMessage } from '@syncular/core';
+import { decodeMessage, encodeMessage } from '@syncular/core';
 import {
   handleSegmentDownload,
   compileSchema,
@@ -1215,6 +1215,241 @@ test('OPFS pagehide closes handles during bootstrap and survives a double reload
       probe: { ftsIntegrity: 'ok', integrity: [{ integrity_check: 'ok' }] },
     });
     expect(errors).toEqual([]);
+    await page.evaluate(async () => (await window.opfsTest.ready).close());
+  } finally {
+    await browser.close();
+  }
+}, 60000);
+
+test('OPFS ACK-only sparse moves survive reload and fetch their own images next round', async () => {
+  const browser = await chromium.launch();
+  let release: (() => void) | undefined;
+  try {
+    const page = await browser.newPage();
+    await page.goto(server.url.href);
+    await page.evaluate(async () => {
+      await window.opfsTest.open();
+      const client = await window.opfsTest.ready;
+      await client.subscribe({
+        id: 'catalogue',
+        table: 'catalogue',
+        scopes: { project_id: ['p1'] },
+      });
+      await client.syncUntilIdle();
+      await client.mutate([
+        {
+          op: 'upsert',
+          table: 'catalogue',
+          values: { id: 'ack-gap-row', project_id: 'p1', title: '100/v1' },
+        },
+      ]);
+      await client.syncUntilIdle();
+    });
+    let remaining = 4;
+    let entered!: () => void;
+    const captured = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let first = true;
+    await page.route('**/sync', async (route) => {
+      const response = await route.fetch();
+      if (remaining-- > 0) {
+        const message = decodeMessage(new Uint8Array(await response.body()));
+        if (message.msgKind !== 'response')
+          throw new Error('expected response');
+        if (first) {
+          first = false;
+          entered();
+          await barrier;
+        }
+        await route.fulfill({
+          response,
+          body: Buffer.from(
+            encodeMessage({
+              ...message,
+              frames: message.frames.filter((frame) =>
+                [
+                  'RESP_HEADER',
+                  'LEASE',
+                  'PUSH_RESULT',
+                  'PUSH_RESULT_DETAILS',
+                ].includes(frame.type),
+              ),
+            }),
+          ),
+        });
+      } else await route.fulfill({ response });
+    });
+    const round = page.evaluate(async () => {
+      const client = await window.opfsTest.ready;
+      await client.patch('catalogue', 'ack-gap-row', { title: '200/v2' });
+      return client.sync();
+    });
+    await captured;
+    await page.evaluate(async () =>
+      (await window.opfsTest.ready).patch('catalogue', 'ack-gap-row', {
+        title: '300/v3',
+      }),
+    );
+    release!();
+    expect((await round).applied).toHaveLength(1);
+    const second = await page.evaluate(async () => {
+      const client = await window.opfsTest.ready;
+      const report = await client.sync();
+      return {
+        report,
+        rows: await client.query('SELECT title FROM catalogue WHERE id=?', [
+          'ack-gap-row',
+        ]),
+        pending: await client.pendingCommits(),
+      };
+    });
+    expect(second.report.applied).toHaveLength(1);
+    expect(second.pending).toEqual([]);
+    expect(second.rows).toEqual([{ title: '300/v3' }]);
+    await page.evaluate(async () => (await window.opfsTest.ready).sync());
+    await page.evaluate(async () => (await window.opfsTest.ready).close());
+    await page.reload({ waitUntil: 'load' });
+    await page.evaluate(() => window.opfsTest.open());
+    const reopened = await page.evaluate(async () => {
+      const client = await window.opfsTest.ready;
+      const before = await client.query(
+        'SELECT title FROM catalogue WHERE id=?',
+        ['ack-gap-row'],
+      );
+      const status = await client.statusSnapshot();
+      await client.sync();
+      return {
+        before,
+        after: await client.query('SELECT title FROM catalogue WHERE id=?', [
+          'ack-gap-row',
+        ]),
+        status,
+      };
+    });
+    expect(reopened.before).toEqual([{ title: '300/v3' }]);
+    expect(reopened.after).toEqual(reopened.before);
+    expect(reopened.status.syncNeeded).toBe(true);
+    const next = await page.evaluate(async () => {
+      const client = await window.opfsTest.ready;
+      const report = await client.sync();
+      return {
+        report,
+        rows: await client.query(
+          'SELECT title,_sync_version AS version FROM catalogue WHERE id=?',
+          ['ack-gap-row'],
+        ),
+      };
+    });
+    expect(next.report.commitsApplied).toBe(2);
+    expect(next.rows[0]?.title).toBe('300/v3');
+    expect(Number(next.rows[0]?.version)).toBeGreaterThan(0);
+    await page.evaluate(async () => (await window.opfsTest.ready).close());
+  } finally {
+    release?.();
+    await browser.close();
+  }
+}, 60000);
+
+test('OPFS ACK automatically pulls its own image without a realtime wake', async () => {
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    await page.goto(server.url.href);
+    const seedVersion = await page.evaluate(async () => {
+      await window.opfsTest.open(false, undefined, true);
+      const client = await window.opfsTest.ready;
+      await client.subscribe({
+        id: 'catalogue',
+        table: 'catalogue',
+        scopes: { project_id: ['p1'] },
+      });
+      await client.syncUntilIdle();
+      await client.mutate([
+        {
+          op: 'upsert',
+          table: 'catalogue',
+          values: {
+            id: 'auto-ack-row',
+            project_id: 'p1',
+            title: 'auto 100/v1',
+          },
+        },
+      ]);
+      await client.syncUntilIdle();
+      return Number(
+        (
+          await client.query(
+            'SELECT _sync_version AS version FROM catalogue WHERE id=?',
+            ['auto-ack-row'],
+          )
+        )[0]?.version,
+      );
+    });
+    let rounds = 0;
+    await page.route('**/sync', async (route) => {
+      const response = await route.fetch();
+      const message = decodeMessage(new Uint8Array(await response.body()));
+      if (message.msgKind !== 'response') throw new Error('expected response');
+      if (++rounds === 1) {
+        expect(
+          message.frames.some((frame) => frame.type === 'PUSH_RESULT'),
+        ).toBe(true);
+        await route.fulfill({
+          response,
+          body: Buffer.from(
+            encodeMessage({
+              ...message,
+              frames: message.frames.filter((frame) =>
+                [
+                  'RESP_HEADER',
+                  'LEASE',
+                  'PUSH_RESULT',
+                  'PUSH_RESULT_DETAILS',
+                ].includes(frame.type),
+              ),
+            }),
+          ),
+        });
+      } else {
+        if (rounds === 2)
+          expect(message.frames.some((frame) => frame.type === 'COMMIT')).toBe(
+            true,
+          );
+        await route.fulfill({ response });
+      }
+    });
+    const row = await page.evaluate(async (seedVersion) => {
+      const client = await window.opfsTest.ready;
+      return new Promise<Record<string, unknown>>((resolve, reject) => {
+        const stop = client.onChange(() => {
+          void client
+            .query(
+              'SELECT title,_sync_version AS version FROM catalogue WHERE id=?',
+              ['auto-ack-row'],
+            )
+            .then((rows) => {
+              const row = rows[0];
+              if (
+                row?.title === 'auto 300/v3' &&
+                Number(row.version) > seedVersion
+              ) {
+                stop();
+                resolve(row);
+              }
+            }, reject);
+        });
+        void client
+          .patch('catalogue', 'auto-ack-row', { title: 'auto 300/v3' })
+          .catch(reject);
+      });
+    }, seedVersion);
+    expect(row.title).toBe('auto 300/v3');
+    expect(Number(row.version)).toBeGreaterThan(seedVersion);
+    expect(rounds).toBeGreaterThanOrEqual(2);
     await page.evaluate(async () => (await window.opfsTest.ready).close());
   } finally {
     await browser.close();

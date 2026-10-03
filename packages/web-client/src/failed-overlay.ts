@@ -1,3 +1,4 @@
+export const RETAINED_ROWS = '_syncular_failed_rows';
 import { ClientSyncError } from './errors';
 import type { ClientDatabase } from './database';
 import type {
@@ -26,16 +27,12 @@ import { deleteLocalRow, upsertLocalRow } from './apply';
 /** Protected failure state. The server base advances independently of intent. */
 export function ensureFailedOverlaySchema(db: ClientDatabase): void {
   db.exec(
-    'CREATE TABLE IF NOT EXISTS _syncular_failed_rows(commit_id TEXT NOT NULL,idx INTEGER NOT NULL,tbl TEXT NOT NULL,id TEXT NOT NULL,at INTEGER NOT NULL,op TEXT NOT NULL,intent TEXT,base TEXT,version INTEGER,unique_conflicts TEXT,PRIMARY KEY(commit_id,idx))',
+    `CREATE TABLE IF NOT EXISTS ${RETAINED_ROWS}(commit_id TEXT NOT NULL,idx INTEGER NOT NULL,tbl TEXT NOT NULL,id TEXT NOT NULL,at INTEGER NOT NULL,op TEXT NOT NULL,intent TEXT,base TEXT,version INTEGER,unique_conflicts TEXT,commit_seq INTEGER,PRIMARY KEY(commit_id,idx))`,
   );
-  if (
-    !db
-      .query('PRAGMA table_info(_syncular_failed_rows)')
-      .some((row) => row.name === 'unique_conflicts')
-  )
-    db.exec(
-      'ALTER TABLE _syncular_failed_rows ADD COLUMN unique_conflicts TEXT',
-    );
+  const columns = db.query(`PRAGMA table_info(${RETAINED_ROWS})`);
+  for (const column of ['unique_conflicts TEXT', 'commit_seq INTEGER'])
+    if (!columns.some((row) => row.name === column.split(' ')[0]))
+      db.exec(`ALTER TABLE ${RETAINED_ROWS} ADD COLUMN ${column}`);
 }
 
 export function retainedBaseWrite(
@@ -45,18 +42,15 @@ export function retainedBaseWrite(
   values?: Readonly<Record<string, JsonRowValue>>,
   version?: number,
 ): void {
-  db.exec(
-    'UPDATE _syncular_failed_rows SET base=?,version=? WHERE tbl=? AND id=?',
-    [
-      values === undefined ? null : JSON.stringify(values),
-      version ?? null,
-      table.name,
-      rowId,
-    ],
-  );
+  db.exec(`UPDATE ${RETAINED_ROWS} SET base=?,version=? WHERE tbl=? AND id=?`, [
+    values === undefined ? null : JSON.stringify(values),
+    version ?? null,
+    table.name,
+    rowId,
+  ]);
   if (!table.indexes.some((index) => index.unique)) return;
   for (const retained of db.query(
-    'SELECT commit_id,idx,intent,unique_conflicts FROM _syncular_failed_rows WHERE tbl=?',
+    `SELECT commit_id,idx,intent,unique_conflicts FROM ${RETAINED_ROWS} WHERE tbl=? AND commit_seq IS NULL`,
     [table.name],
   )) {
     const prior: readonly (Omit<
@@ -65,11 +59,11 @@ export function retainedBaseWrite(
     > & { serverRow: Readonly<Record<string, JsonRowValue>> })[] =
       retained.unique_conflicts === null
         ? []
-        : JSON.parse(String(retained.unique_conflicts));
+        : JSON.parse(retained.unique_conflicts as string);
     const conflicts = prior.filter((conflict) => conflict.rowId !== rowId);
     if (values !== undefined && retained.intent !== null) {
       const intent: Record<string, JsonRowValue> = JSON.parse(
-        String(retained.intent),
+        retained.intent as string,
       );
       conflicts.push(
         ...uniqueConflicts(db, table, mapRowValues(intent, jsonToRowValue))
@@ -81,7 +75,7 @@ export function retainedBaseWrite(
       );
     }
     db.exec(
-      'UPDATE _syncular_failed_rows SET unique_conflicts=? WHERE commit_id=? AND idx=?',
+      `UPDATE ${RETAINED_ROWS} SET unique_conflicts=? WHERE commit_id=? AND idx=?`,
       [
         conflicts.length
           ? JSON.stringify(
@@ -92,7 +86,7 @@ export function retainedBaseWrite(
               ),
             )
           : null,
-        String(retained.commit_id),
+        retained.commit_id as string,
         Number(retained.idx),
       ],
     );
@@ -103,9 +97,12 @@ export function retainFailedRows(
   db: ClientDatabase,
   commit: OutboxCommit,
   images: readonly OutboxBeforeImage[],
+  commitSeq?: number,
 ): void {
   for (const [index, operation] of commit.operations.entries()) {
     const image = images.find((image) => image.opIndex === index);
+    if (commitSeq !== undefined && (image?.deliverySeq ?? -1) >= commitSeq)
+      continue;
     const initial =
       operation.op === 'upsert'
         ? { ...image?.values, ...operation.values }
@@ -116,7 +113,7 @@ export function retainFailedRows(
         'retained intent has no before-image',
       );
     db.exec(
-      'INSERT INTO _syncular_failed_rows(commit_id,idx,tbl,id,at,op,intent,base,version)VALUES(?,?,?,?,?,?,?,?,?)',
+      `INSERT INTO ${RETAINED_ROWS}(commit_id,idx,tbl,id,at,op,intent,base,version,commit_seq)VALUES(?,?,?,?,?,?,?,?,?,?)`,
       [
         commit.clientCommitId,
         index,
@@ -127,6 +124,7 @@ export function retainFailedRows(
         initial ? JSON.stringify(initial) : null,
         image.values ? JSON.stringify(image.values) : null,
         image.syncVersion ?? null,
+        commitSeq ?? null,
       ],
     );
   }
@@ -166,19 +164,25 @@ export function uniqueConflicts(
     );
 }
 
+function retainedRows(db: ClientDatabase, rowKeys?: readonly string[]) {
+  return db.query(
+    `SELECT * FROM ${RETAINED_ROWS} WHERE ?1 IS NULL OR json_array(tbl,id) IN(SELECT value FROM json_each(?1)) ORDER BY commit_seq,at,commit_id,idx`,
+    [rowKeys ? JSON.stringify(rowKeys) : null],
+  );
+}
+
 export function restoreFailedBases(
   db: ClientDatabase,
   schema: CompiledClientSchema,
   absentIntent = false,
+  rowKeys?: readonly string[],
 ): void {
   const seen = new Set<string>();
-  for (const row of db.query(
-    'SELECT * FROM _syncular_failed_rows ORDER BY at,commit_id,idx',
-  )) {
+  for (const row of retainedRows(db, rowKeys)) {
     const key = JSON.stringify([row.tbl, row.id]);
     if (!absentIntent && seen.has(key)) continue;
     seen.add(key);
-    const table = schema.tables.get(String(row.tbl));
+    const table = schema.tables.get(row.tbl as string);
     if (!table)
       throw new ClientSyncError(
         'sync.unknown_table',
@@ -187,7 +191,7 @@ export function restoreFailedBases(
     const json = absentIntent ? row.intent : row.base;
     if (absentIntent && row.intent !== null) {
       const values: Record<string, JsonRowValue> = JSON.parse(
-        String(row.intent),
+        row.intent as string,
       );
       const conflicts = uniqueConflicts(
         db,
@@ -196,18 +200,18 @@ export function restoreFailedBases(
       );
       // Hydrate a pre-0.30.11 failure after its winner was already imported.
       // Pending and retained overlays cannot supply authoritative row evidence.
-      if (row.unique_conflicts === null) {
+      if (row.commit_seq === null && row.unique_conflicts === null) {
         const authorized = conflicts.filter(
           (conflict) =>
             conflict.serverVersion >= 0 &&
             !db.query(
-              "SELECT 1 FROM _syncular_failed_rows WHERE tbl=? AND id=? UNION ALL SELECT 1 FROM _syncular_outbox,json_each(operations)WHERE json_extract(json_each.value,'$.table')=? AND json_extract(json_each.value,'$.rowId')=? LIMIT 1",
+              `SELECT 1 FROM ${RETAINED_ROWS} WHERE tbl=? AND id=? UNION ALL SELECT 1 FROM _syncular_outbox,json_each(operations)WHERE json_extract(json_each.value,'$.table')=? AND json_extract(json_each.value,'$.rowId')=? LIMIT 1`,
               [table.name, conflict.rowId, table.name, conflict.rowId],
             ).length,
         );
         if (authorized.length)
           db.exec(
-            'UPDATE _syncular_failed_rows SET unique_conflicts=? WHERE commit_id=? AND idx=?',
+            `UPDATE ${RETAINED_ROWS} SET unique_conflicts=? WHERE commit_id=? AND idx=?`,
             [
               JSON.stringify(
                 authorized.map((conflict) => ({
@@ -215,8 +219,8 @@ export function restoreFailedBases(
                   serverRow: mapRowValues(conflict.serverRow, rowValueToJson),
                 })),
               ),
-              String(row.commit_id),
-              Number(row.idx),
+              row.commit_id as string,
+              row.idx as number,
             ],
           );
       }
@@ -227,16 +231,17 @@ export function restoreFailedBases(
       (json === null ||
         db.query(
           `SELECT 1 FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)}=?`,
-          [String(row.id)],
+          [row.id as string],
         ).length)
     )
       continue;
-    if (json === null) deleteLocalRow(db, table, String(row.id), false);
+    if (json === null) deleteLocalRow(db, table, row.id as string, false);
     else {
       const values: Record<string, JsonRowValue> = JSON.parse(String(json));
       if (absentIntent) {
-        const operation: OutboxOperation = JSON.parse(String(row.op));
+        const operation: OutboxOperation = JSON.parse(row.op as string);
         if (
+          row.commit_seq === null &&
           !table.columns.every((column) =>
             Object.hasOwn(operation.values ?? {}, column.name),
           )
@@ -249,14 +254,18 @@ export function restoreFailedBases(
         table.columns.map((column) =>
           jsonToRowValue(values[column.name] ?? null),
         ),
-        Number(row.version ?? -1),
+        (row.version ?? -1) as number,
         false,
       );
     }
   }
 }
 
-export function failedOverlayCommits(db: ClientDatabase): OutboxCommit[] {
+export function failedOverlayCommits(
+  db: ClientDatabase,
+  acknowledged = false,
+  rowKeys?: readonly string[],
+): OutboxCommit[] {
   const commits = new Map<
     string,
     {
@@ -266,18 +275,17 @@ export function failedOverlayCommits(db: ClientDatabase): OutboxCommit[] {
       operations: OutboxOperation[];
     }
   >();
-  for (const row of db.query(
-    'SELECT * FROM _syncular_failed_rows ORDER BY at,commit_id,idx',
-  )) {
-    const id = String(row.commit_id);
-    const operation: OutboxOperation = JSON.parse(String(row.op));
+  for (const row of retainedRows(db, rowKeys)) {
+    if ((row.commit_seq !== null) !== acknowledged) continue;
+    const id = row.commit_id as string;
+    const operation: OutboxOperation = JSON.parse(row.op as string);
     const prior = commits.get(id);
     if (prior) prior.operations.push(operation);
     else
       commits.set(id, {
         seq: 0,
         clientCommitId: id,
-        createdAtMs: Number(row.at),
+        createdAtMs: row.at as number,
         operations: [operation],
       });
   }
@@ -292,17 +300,19 @@ export function dropFailedRows(
   ) => boolean,
 ): OutboxCommit[] {
   const ids = new Set<string>();
-  for (const row of db.query('SELECT * FROM _syncular_failed_rows')) {
-    const json = row.intent ?? row.base;
-    if (json === null) continue;
-    const values: Record<string, JsonRowValue> = JSON.parse(String(json));
-    if (matches(String(row.tbl), values)) ids.add(String(row.commit_id));
+  for (const row of retainedRows(db)) {
+    for (const json of [row.intent, row.base]) {
+      if (json === null) continue;
+      const values: Record<string, JsonRowValue> = JSON.parse(String(json));
+      if (matches(row.tbl as string, values)) ids.add(row.commit_id as string);
+    }
   }
-  const dropped = failedOverlayCommits(db).filter((commit) =>
-    ids.has(commit.clientCommitId),
-  );
+  const dropped = [
+    ...failedOverlayCommits(db),
+    ...failedOverlayCommits(db, true),
+  ].filter((commit) => ids.has(commit.clientCommitId));
   for (const id of ids) {
-    db.exec('DELETE FROM _syncular_failed_rows WHERE commit_id=?', [id]);
+    db.exec(`DELETE FROM ${RETAINED_ROWS} WHERE commit_id=?`, [id]);
     db.exec(
       "UPDATE _syncular_commit_outcomes SET operations=NULL,results='[]' WHERE client_commit_id=?",
       [id],

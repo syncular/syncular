@@ -1,3 +1,4 @@
+import { RETAINED_ROWS } from './failed-overlay';
 import {
   dropFailedRows,
   failedOverlayCommits,
@@ -51,6 +52,7 @@ import {
   applySqliteSegment,
   deleteLocalRow,
   deleteScopedRows,
+  localScopePredicate,
   evictScopedRows,
   yieldToHost,
   upsertLocalRow,
@@ -196,6 +198,7 @@ import {
   type CompiledClientSchema,
   type CompiledClientTable,
   compileClientSchema,
+  matchesLocalScopes,
   dropAndRecreateSyncedTables,
   ensureLocalBookkeepingSchema,
   ensureLocalSyncedSchema,
@@ -837,7 +840,7 @@ export class SyncClient {
   constructor(config: SyncClientConfig) {
     if (config.securityPreflight === true && config.encryption !== undefined) {
       throw invalidRequest(
-        'securityPreflight and encryption are mutually exclusive; install keys with activateSecurity after preflight',
+        'securityPreflight and encryption are mutually exclusive; activateSecurity installs keys',
       );
     }
     this.#retainFailedCommits = config.retainFailedCommits === true;
@@ -923,7 +926,7 @@ export class SyncClient {
       this.#lease = undefined;
       throw new ClientSyncError(
         'client.identity_mismatch',
-        `this client database belongs to ${JSON.stringify(persisted)}; refusing to rebind it to ${JSON.stringify(this.#config.clientId)}`,
+        `database clientId ${JSON.stringify(persisted)} differs from ${JSON.stringify(this.#config.clientId)}`,
       );
     }
     this.#clientId = persisted ?? this.#config.clientId ?? crypto.randomUUID();
@@ -961,6 +964,9 @@ export class SyncClient {
     const startupWork =
       this.#schemaFloor === undefined &&
       (countOutbox(this.#db) > 0 ||
+        this.#db.query(
+          `SELECT 1 FROM ${RETAINED_ROWS} WHERE commit_seq IS NOT NULL LIMIT 1`,
+        ).length > 0 ||
         loadPendingEvictions(this.#db).length > 0 ||
         subscriptions.some((sub) => sub.status === 'active'));
     if (startupWork && this.#securityLifecycle === 'active') {
@@ -1060,6 +1066,7 @@ export class SyncClient {
           this.#schema,
           true,
         );
+        this.#discardAcknowledgedRows();
         dropAndRecreateSyncedTables(this.#db, this.#schema);
         resetSubscriptionsForBump(this.#db);
         setMeta(
@@ -1160,6 +1167,7 @@ export class SyncClient {
     this.#sweepPreviousVersionContainer();
     this.#applyBatch((batch) => {
       this.#db.transaction(() => {
+        this.#discardAcknowledgedRows();
         dropAndRecreateSyncedTables(this.#db, this.#schema);
         resetSubscriptionsForBump(this.#db);
         setMeta(this.#db, LOG_EPOCH_META_KEY, logEpoch);
@@ -1981,7 +1989,9 @@ export class SyncClient {
           result = fn(batch);
           if (
             this.#db
-              .query('SELECT DISTINCT tbl FROM _syncular_failed_rows')
+              .query(
+                `SELECT DISTINCT tbl FROM ${RETAINED_ROWS} WHERE commit_seq IS NULL`,
+              )
               .some((row) => batch.hasTable(String(row.tbl)))
           )
             batch.outcomes();
@@ -2327,7 +2337,7 @@ export class SyncClient {
     return this.#applyBatch(
       (batch) => {
         restoreFailedBases(this.#db, this.#schema);
-        this.#db.exec('DELETE FROM _syncular_failed_rows WHERE commit_id=?', [
+        this.#db.exec(`DELETE FROM ${RETAINED_ROWS} WHERE commit_id=?`, [
           input.clientCommitId,
         ]);
         const resolved = persistCommitOutcomeResolution(
@@ -2475,7 +2485,7 @@ export class SyncClient {
       if (!sameIntent) {
         throw new ClientSyncError(
           'client.subscription_intent_mismatch',
-          'subscribe: the subscription id is already registered for a different table, scopes, or params',
+          'subscription id already names different table, scopes, or params',
         );
       }
       return;
@@ -2533,7 +2543,7 @@ export class SyncClient {
     const table = this.#table(base.table);
     if (!table.scopeColumnByVariable.has(base.variable)) {
       throw invalidRequest(
-        `setWindow: table ${JSON.stringify(base.table)} has no scope variable ${JSON.stringify(base.variable)} (§4.8)`,
+        `${base.table}: unknown scope variable ${base.variable} (§4.8)`,
       );
     }
     // Serialize the whole window edit: it spans an `await deriveSubId` between
@@ -2965,26 +2975,13 @@ export class SyncClient {
       return this.#applyBatch((batch) => {
         const targetsByTable = this.#localPurgeTargetsByTable(purge);
         restoreFailedBases(this.#db, this.#schema);
-        const droppedRetained = dropFailedRows(this.#db, (table, values) =>
+        this.#dropRetainedRows(batch, (table, values) =>
           (targetsByTable.get(table) ?? []).some((target) =>
             target.selectors.every((selector) =>
               selector.values.includes(String(values[selector.column])),
             ),
           ),
         );
-        for (const commit of droppedRetained) {
-          batch.conflicts();
-          batch.rejections();
-          this.#conflicts = this.#conflicts.filter(
-            (record) => record.clientCommitId !== commit.clientCommitId,
-          );
-          this.#rejections = this.#rejections.filter(
-            (record) => record.clientCommitId !== commit.clientCommitId,
-          );
-          for (const operation of commit.operations)
-            batch.table(operation.table);
-          batch.outcomes();
-        }
         // Doomed detection runs to fixpoint, matching the Rust core's rule:
         // a commit is doomed when any of its ops touches a base-matching
         // row. Base values only become visible here as rollbacks restore
@@ -3144,6 +3141,7 @@ export class SyncClient {
         this.#upgrading = true;
         this.#needsPull = true;
         batch.status();
+        this.#discardAcknowledgedRows();
         dropAndRecreateSyncedTables(this.#db, this.#schema);
         resetSubscriptionsForBump(this.#db);
         for (const table of this.#schema.tables.values()) {
@@ -4151,6 +4149,7 @@ export class SyncClient {
                 index += 1;
               }
             }
+            const previousNeedsPull = this.#needsPull;
             const conflictCount = this.#conflicts.length;
             const rejectionCount = this.#rejections.length;
             let outboxCount = countOutbox(this.#db);
@@ -4183,11 +4182,12 @@ export class SyncClient {
               },
               () => this.#statusSnapshot(outboxCount),
               (cause) => {
+                this.#needsPull = previousNeedsPull;
                 this.#conflicts.length = conflictCount;
                 this.#rejections.length = rejectionCount;
                 const error = new ClientSyncError(
                   'client.outcome_persistence_failed',
-                  'local commit outcome could not be persisted',
+                  'outcome persistence failed',
                 );
                 error.cause = cause;
                 throw error;
@@ -4485,6 +4485,18 @@ export class SyncClient {
     if (frame.status === 'applied' || frame.status === 'cached') {
       // §6.3: applied and cached both drain the outbox — cached means
       // "already applied, you may have missed the ack".
+      if (frame.commitSeq === undefined)
+        throw new ClientSyncError(
+          'client.invalid_host_response',
+          'ACK lacks a commit sequence',
+        );
+      retainFailedRows(
+        this.#db,
+        commit,
+        listOutboxBeforeImages(this.#db, commit.clientCommitId),
+        frame.commitSeq,
+      );
+      this.#setSyncNeeded(true);
       recordCommitOutcome(this.#db, {
         clientCommitId: frame.clientCommitId,
         status: frame.status,
@@ -4638,12 +4650,7 @@ export class SyncClient {
         this.#applyBatch((batch) => {
           this.#recordCommitChanges(batch, frame);
           const result = fn();
-          if (
-            this.#retainFailedCommits &&
-            this.#db.query('SELECT 1 FROM _syncular_failed_rows LIMIT 1')
-              .length > 0
-          )
-            this.#replayOutbox();
+          this.#replayOutbox(result);
           return result;
         }),
     );
@@ -4695,22 +4702,12 @@ export class SyncClient {
 
   /** Whether a fresh-bootstrap clear would remove at least one local row. */
   #scopedRowsExist(table: CompiledClientTable, effective: ScopeMap): boolean {
-    const entries = Object.entries(effective);
-    if (entries.length === 0) return false;
-    const clauses: string[] = [];
-    const params: string[] = [];
-    for (const [variable, values] of entries) {
-      const column = table.scopeColumnByVariable.get(variable);
-      if (column === undefined || values.length === 0) return false;
-      clauses.push(
-        `${quoteIdent(column)} IN (${values.map(() => '?').join(', ')})`,
-      );
-      params.push(...values);
-    }
+    const scope = localScopePredicate(table, effective);
     return (
+      scope !== undefined &&
       this.#db.query(
-        `SELECT 1 FROM ${quoteIdent(table.name)} WHERE ${clauses.join(' AND ')} LIMIT 1`,
-        params,
+        `SELECT 1 FROM ${quoteIdent(table.name)} WHERE ${scope.sql} LIMIT 1`,
+        scope.params,
       ).length > 0
     );
   }
@@ -4817,7 +4814,7 @@ export class SyncClient {
         // §5.4: MUST NOT start a fetch at/past expiry.
         throw new ClientSyncError(
           'sync.segment_expired',
-          `signed URL for segment ${frame.segmentId} expired before fetch — re-pull mints fresh descriptors (§5.4)`,
+          `segment download grant expired; pull again (§5.4)`,
           true,
         );
       }
@@ -4875,6 +4872,34 @@ export class SyncClient {
             status: 'active',
           }),
         );
+        if (completed) {
+          const table = this.#table(sub.table);
+          const effective = start.effectiveScopes;
+          const covered = this.#db
+            .query(
+              `SELECT id,intent,base FROM ${RETAINED_ROWS} WHERE tbl=? AND commit_seq<=?`,
+              [sub.table, nextCursor],
+            )
+            .filter((row) =>
+              [row.intent, row.base].some((json) => {
+                if (json === null) return false;
+                const values: Record<string, JsonRowValue> = JSON.parse(
+                  String(json),
+                );
+                return matchesLocalScopes(table, effective, values);
+              }),
+            );
+          if (covered.length) {
+            restoreFailedBases(this.#db, this.#schema);
+            for (const row of covered)
+              this.#db.exec(
+                `DELETE FROM ${RETAINED_ROWS} WHERE tbl=? AND id=? AND commit_seq<=?`,
+                [sub.table, String(row.id), nextCursor],
+              );
+            batch.table(sub.table);
+            this.#replayOutbox();
+          }
+        }
         if (completed && registered !== undefined) {
           // A zero-row bootstrap is a window-domain transition, not a fake
           // row/table change (SPEC §4.8 / §7.5).
@@ -4923,29 +4948,12 @@ export class SyncClient {
       ) {
         try {
           restoreFailedBases(this.#db, this.#schema);
-          const droppedRetained = dropFailedRows(
-            this.#db,
+          this.#dropRetainedRows(
+            batch,
             (name, values) =>
               name === table.name &&
-              Object.entries(lastEffective).every(([variable, allowed]) =>
-                allowed.includes(
-                  String(values[table.scopeColumnByVariable.get(variable)!]),
-                ),
-              ),
+              matchesLocalScopes(table, lastEffective, values),
           );
-          for (const commit of droppedRetained) {
-            batch.conflicts();
-            batch.rejections();
-            this.#conflicts = this.#conflicts.filter(
-              (record) => record.clientCommitId !== commit.clientCommitId,
-            );
-            this.#rejections = this.#rejections.filter(
-              (record) => record.clientCommitId !== commit.clientCommitId,
-            );
-            for (const operation of commit.operations)
-              batch.table(operation.table);
-            batch.outcomes();
-          }
           deleteScopedRows(this.#db, table, lastEffective);
           batch.scopeMap(table, lastEffective);
           const pendingById = new Map(
@@ -5229,18 +5237,52 @@ export class SyncClient {
   }
 
   /** Re-apply every pending outbox commit on top of server state (§7.1). */
-  #replayOutbox(): void {
+  #discardAcknowledgedRows(): void {
+    this.#db.exec(`DELETE FROM ${RETAINED_ROWS} WHERE commit_seq IS NOT NULL`);
+  }
+
+  #dropRetainedRows(
+    batch: ChangeAccumulator,
+    matches: (
+      table: string,
+      values: Readonly<Record<string, JsonRowValue>>,
+    ) => boolean,
+  ): void {
+    for (const commit of dropFailedRows(this.#db, matches)) {
+      batch.conflicts();
+      batch.rejections();
+      batch.outcomes();
+      this.#conflicts = this.#conflicts.filter(
+        (record) => record.clientCommitId !== commit.clientCommitId,
+      );
+      this.#rejections = this.#rejections.filter(
+        (record) => record.clientCommitId !== commit.clientCommitId,
+      );
+      for (const op of commit.operations) batch.table(op.table);
+    }
+  }
+
+  #replayOutbox(rowKeys?: readonly string[]): void {
+    const acknowledged = failedOverlayCommits(this.#db, true, rowKeys);
     const pending = [
-      ...failedOverlayCommits(this.#db),
-      ...listOutbox(this.#db),
+      ...failedOverlayCommits(this.#db, false, rowKeys),
+      ...listOutbox(this.#db, rowKeys),
     ].sort((a, b) => a.createdAtMs - b.createdAtMs || a.seq - b.seq);
-    if (pending.length === 0) return;
+    if (pending.length === 0 && acknowledged.length === 0) return;
     this.#applyBatch((batch) => {
       this.#db.transaction(() => {
-        restoreFailedBases(this.#db, this.#schema);
-        restoreFailedBases(this.#db, this.#schema, true);
-        for (const commit of pending)
-          this.#applyOperationsLocally(commit.operations, batch, true);
+        restoreFailedBases(this.#db, this.#schema, false, rowKeys);
+        restoreFailedBases(this.#db, this.#schema, true, rowKeys);
+        for (const commit of [...acknowledged, ...pending])
+          this.#applyOperationsLocally(
+            rowKeys === undefined
+              ? commit.operations
+              : commit.operations.filter((op) =>
+                  rowKeys.includes(JSON.stringify([op.table, op.rowId])),
+                ),
+            batch,
+            true,
+          );
       });
     });
   }
@@ -5255,17 +5297,14 @@ export class SyncClient {
   #table(name: string): CompiledClientTable {
     const table = this.#schema.tables.get(name);
     if (table === undefined) {
-      throw new ClientSyncError(
-        'sync.unknown_table',
-        `unknown local table ${JSON.stringify(name)}`,
-      );
+      throw new ClientSyncError('sync.unknown_table', `unknown table ${name}`);
     }
     return table;
   }
 
   #requireStarted(): void {
     if (!this.#started) {
-      throw invalidRequest('SyncClient.start() has not completed');
+      throw invalidRequest('call SyncClient.start() first');
     }
   }
 
@@ -5274,7 +5313,7 @@ export class SyncClient {
     if (this.#securityLifecycle === 'preflight') {
       throw new ClientSyncError(
         SECURITY_PREFLIGHT_REQUIRED_CODE,
-        'the local replica is in security preflight; complete quarantine checks and call activateSecurity before accessing protected data',
+        'security preflight must complete before accessing protected data; call activateSecurity',
       );
     }
   }

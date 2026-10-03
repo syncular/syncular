@@ -18,6 +18,13 @@ Ordinary commits use wire version 1 until the caller supplies an acquired
 partition `logEpoch`. Set `logEpoch` after a restore rotation requires epoch
 validation.
 
+Applied and cached acknowledgements drain the send queue while protected local
+intent stays visible until the same row's server image arrives at that commit
+sequence or later. Empty pulls and restart preserve it; later edits stack above
+it. This behavior is automatic, independent of `retainFailedCommits`. The core
+requests a following pull without relying on an origin realtime notification.
+See [optimistic writes](https://syncular.dev/concepts-conflicts/#the-optimistic-outbox).
+
 ## Client-local FTS5 projections
 
 Generated schemas may attach `ftsIndexes` to a synced table. The

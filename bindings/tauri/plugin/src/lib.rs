@@ -1473,18 +1473,24 @@ mod tests {
     #[cfg(feature = "native-transport")]
     #[test]
     fn pending_network_round_keeps_local_mutations_and_queries_responsive() {
-        use ssp2::model::{Frame, Message, MsgKind, OpResult, PushStatus};
+        use ssp2::model::{Change, Frame, Message, MsgKind, Op, OpResult, PushStatus, SubStatus};
+        use ssp2::segment::{encode_row, Column, ColumnType, ColumnValue};
         use std::io::{Read, Write};
         use std::net::TcpListener;
+        use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::mpsc::channel;
+        use std::sync::Arc;
 
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let (entered_tx, entered_rx) = channel();
         let (release_tx, release_rx) = channel();
+        let (delivered_tx, delivered_rx) = channel();
+        let image_sent = Arc::new(AtomicBool::new(false));
+        let server_image_sent = image_sent.clone();
         let server = std::thread::spawn(move || {
             let mut pushed = Vec::new();
-            while pushed.len() < 2 {
+            loop {
                 let (mut socket, _) = listener.accept().unwrap();
                 let mut header = Vec::new();
                 while !header.ends_with(b"\r\n\r\n") {
@@ -1511,6 +1517,7 @@ mod tests {
                         ..
                     }
                 );
+                let deliver = !reset && pushed.len() == 2;
                 let mut frames = vec![Frame::RespHeader {
                     required_schema_version: None,
                     latest_schema_version: None,
@@ -1549,6 +1556,63 @@ mod tests {
                         });
                     }
                 }
+                if !reset
+                    && request
+                        .frames
+                        .iter()
+                        .any(|frame| matches!(frame, Frame::Subscription { id, .. } if id == "own"))
+                {
+                    frames.push(Frame::SubStart {
+                        id: "own".into(),
+                        status: SubStatus::Active,
+                        reason_code: String::new(),
+                        effective_scopes: vec![("id".into(), vec!["one".into()])],
+                        bootstrap: false,
+                    });
+                    if deliver {
+                        assert!(request
+                            .frames
+                            .iter()
+                            .any(|frame| matches!(frame, Frame::PullHeader { .. })));
+                        assert!(!request
+                            .frames
+                            .iter()
+                            .any(|frame| matches!(frame, Frame::PushCommit { .. })));
+                        let columns = ["id", "title"].map(|name| Column {
+                            name: name.into(),
+                            ty: ColumnType::String,
+                            nullable: false,
+                        });
+                        let mut row = ssp2::primitives::Writer::new();
+                        encode_row(
+                            &mut row,
+                            &columns,
+                            &vec![
+                                Some(ColumnValue::String("one".into())),
+                                Some(ColumnValue::String("300/v3".into())),
+                            ],
+                        );
+                        frames.push(Frame::Commit {
+                            commit_seq: 2,
+                            created_at_ms: 0,
+                            actor_id: "actor".into(),
+                            tables: vec!["todo".into()],
+                            changes: vec![Change {
+                                table_index: 0,
+                                row_id: "one".into(),
+                                op: Op::Upsert,
+                                row_version: Some(2),
+                                scopes: vec![("id".into(), "one".into())],
+                                row: Some(row.into_bytes()),
+                            }],
+                        });
+                        server_image_sent.store(true, Ordering::SeqCst);
+                    }
+                    frames.push(Frame::SubEnd {
+                        next_cursor: if deliver { 2 } else { 0 },
+                        bootstrap_state: None,
+                    });
+                }
                 let response = ssp2::encode_message(&Message {
                     wire_version: ssp2::decode::WIRE_VERSION,
                     msg_kind: MsgKind::Response,
@@ -1561,6 +1625,9 @@ mod tests {
                 )
                 .unwrap();
                 socket.write_all(&response).unwrap();
+                if deliver {
+                    break;
+                }
             }
             pushed
         });
@@ -1575,7 +1642,11 @@ mod tests {
                 },
                 owner_tx,
                 rx,
-                |_| {},
+                move |event| {
+                    if image_sent.load(Ordering::SeqCst) && event["type"] == "change" {
+                        let _ = delivered_tx.send(());
+                    }
+                },
             )
         });
         let call = |command: Value| {
@@ -1588,19 +1659,20 @@ mod tests {
                 "name": "todo", "primaryKey": "id", "columns": [
                     { "name": "id", "type": "string", "nullable": false },
                     { "name": "title", "type": "string", "nullable": false }
-                ], "scopes": []
+                ], "scopes": [{ "pattern": "todo:{id}" }]
             }] }
         } }));
         assert!(created.recv().unwrap().get("error").is_none());
+        assert!(call(json!({ "method": "subscribe", "params": { "id": "own", "table": "todo", "scopes": { "id": ["one"] } } })).recv().unwrap().get("error").is_none());
         let first = call(json!({ "method": "mutate", "params": { "mutations": [{
-            "op": "upsert", "table": "todo", "values": { "id": "one", "title": "first" }
+            "op": "upsert", "table": "todo", "values": { "id": "one", "title": "100/v1" }
         }] } }))
         .recv()
         .unwrap();
         entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
         let started = Instant::now();
         let second = call(json!({ "method": "mutate", "params": { "mutations": [{
-            "op": "upsert", "table": "todo", "values": { "id": "two", "title": "second" }
+            "op": "patch", "table": "todo", "values": { "id": "one", "title": "300/v3" }
         }] } }));
         let local_reply = second.recv_timeout(Duration::from_millis(100));
         let elapsed = started.elapsed();
@@ -1621,6 +1693,19 @@ mod tests {
         let rows = local_rows
             .clone()
             .unwrap_or_else(|_| query_rx.recv().unwrap());
+        delivered_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("ACK schedules the own-image pull without realtime or a manual round");
+        let (query_tx, query_rx) = channel();
+        tx.send(Request::Query {
+            sql: "SELECT title,_sync_version AS version FROM todo WHERE id='one'".into(),
+            params: Value::Null,
+            reply: query_tx,
+        })
+        .unwrap();
+        let delivered = query_rx.recv().unwrap();
+        assert_eq!(delivered["result"]["rows"][0]["title"], "300/v3");
+        assert_eq!(delivered["result"]["rows"][0]["version"], 2);
         let pushed = server.join().unwrap();
         tx.send(Request::Shutdown).unwrap();
         owner.join().unwrap();
@@ -1630,7 +1715,7 @@ mod tests {
         );
         assert!(local_rows.is_ok(), "local query waited for network reply");
         eprintln!("second local mutation while network pending: {elapsed:?}");
-        assert_eq!(rows["result"]["rows"].as_array().unwrap().len(), 2);
+        assert_eq!(rows["result"]["rows"].as_array().unwrap().len(), 1);
         assert_eq!(
             pushed,
             vec![

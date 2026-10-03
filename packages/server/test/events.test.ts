@@ -183,6 +183,34 @@ describe('push events', () => {
 });
 
 describe('pull events', () => {
+  test('combined ACK and own pull expose scope intersection and sequence window', async () => {
+    const t = eventsContext();
+    const first = await seedTask(t, 'seed', 't1', 'p1');
+    await sync(t, [
+      pushCommit('own', [upsert('tasks', 't2', taskRow('t2', 'p1'))]),
+      pullHeader(),
+      subFrame('own-sub', 'tasks', { project_id: ['p1', 'p2'] }, first),
+    ]);
+    const served = ofType(t.events, 'pull.served')[0];
+    expect(served).toMatchObject({
+      acceptedThrough: 2,
+      storageMaxCommitSeq: 2,
+    });
+    expect(served?.subscriptions[0]).toMatchObject({
+      id: 'own-sub',
+      table: 'tasks',
+      requestedScopes: { project_id: ['p1', 'p2'] },
+      effectiveScopes: { project_id: ['p1'] },
+      firstCommitSeq: 2,
+      lastCommitSeq: 2,
+      fromCursor: 1,
+      nextCursor: 2,
+      commits: 1,
+      changes: 1,
+    });
+    expect(ofType(t.events, 'push.applied').at(-1)?.commitSeq).toBe(2);
+  });
+
   test('inline bootstrap emits pull.served with segment summaries', async () => {
     const t = eventsContext();
     await seedTask(t, 'c1', 't1', 'p1');

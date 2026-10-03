@@ -50,6 +50,22 @@ D1 upgrades save progress between Worker invocations. Run
 `D1ServerStorage.migrateSchema` until it returns `complete: true` before admitting
 traffic. See [D1 schema migration](/server-workers/#schema-migration).
 
+## Read freshness
+
+Sync storage must read committed writes immediately. Commit maxima, scope indexes,
+commit windows and row reads cannot use a stale query cache or a lagging replica.
+Authorization reads require the same freshness. If a push accepts sequence N but
+the pull maximum is below N, the server returns `sync.storage_stale_read`.
+The push remains committed; repair the storage configuration before retrying its
+original idempotency key.
+
+With Cloudflare Hyperdrive, pass a cache-disabled binding to `PostgresServerStorage`
+and to authentication and scope resolution. Hyperdrive enables query caching by
+default and writes do not invalidate cached SELECT results. Its default cache
+can serve an older result for 60 seconds plus a 15-second revalidation window.
+See [Hyperdrive query caching](https://developers.cloudflare.com/hyperdrive/concepts/query-caching/).
+Durable Object serialization does not change that cache contract.
+
 ## Choosing a database
 
 | Backend | Adapter | Realtime fanout | When to use |

@@ -1,3 +1,4 @@
+import { RETAINED_ROWS } from './failed-overlay';
 import { retainedBaseWrite, restoreFailedBases } from './failed-overlay';
 /**
  * Local application of server data: `COMMIT` frames (§4.5), rows segments
@@ -19,6 +20,8 @@ import {
   type CompiledClientSchema,
   type CompiledClientTable,
   quoteIdent,
+  matchesLocalScopes,
+  type JsonRowValue,
   SYNC_VERSION_COLUMN,
   toSqlValue,
   rowValueToJson,
@@ -93,7 +96,8 @@ export async function applyCommitFrame(
   schema: CompiledClientSchema,
   frame: CommitFrame,
   encryption?: EncryptionConfig,
-  transaction: ApplyTransaction = (fn) => db.transaction(fn),
+  transaction: (fn: () => readonly string[] | undefined) => unknown = (fn) =>
+    db.transaction(fn),
 ): Promise<void> {
   type Resolved =
     | { op: 'delete'; table: CompiledClientTable; rowId: string }
@@ -138,14 +142,31 @@ export async function applyCommitFrame(
     });
   }
   transaction(() => {
-    restoreFailedBases(db, schema);
-    for (const change of resolved) {
+    const rowKeys = frame.tables.some((name) =>
+      schema.tables.get(name)?.indexes.some((index) => index.unique),
+    )
+      ? undefined
+      : frame.changes.map((change) =>
+          JSON.stringify([frame.tables[change.tableIndex], change.rowId]),
+        );
+    restoreFailedBases(db, schema, false, rowKeys);
+    for (const [index, change] of resolved.entries()) {
+      const rowId = frame.changes[index]!.rowId;
+      db.exec(
+        "UPDATE _syncular_outbox_before_images SET delivery_seq=MAX(COALESCE(delivery_seq,0),?) WHERE (client_commit_id,op_index) IN(SELECT client_commit_id,json_each.key FROM _syncular_outbox,json_each(operations) WHERE json_extract(value,'$.table')=? AND json_extract(value,'$.rowId')=?)",
+        [frame.commitSeq, change.table.name, rowId],
+      );
+      db.exec(
+        `DELETE FROM ${RETAINED_ROWS} WHERE tbl=? AND id=? AND commit_seq<=?`,
+        [change.table.name, rowId, frame.commitSeq],
+      );
       if (change.op === 'delete') {
         deleteLocalRow(db, change.table, change.rowId);
       } else {
         upsertLocalRow(db, change.table, change.values, change.rowVersion);
       }
     }
+    return rowKeys;
   });
 }
 
@@ -195,39 +216,43 @@ export function validateSegmentColumns(
  * (`sync.scope_revoked`) when the table has no local mapping for a key:
  * precision or nothing, never clear-the-table.
  */
+export function localScopePredicate(
+  table: CompiledClientTable,
+  effective: ScopeMap,
+): { sql: string; params: string[] } | undefined {
+  const entries = Object.entries(effective);
+  if (!entries.length || entries.some(([, values]) => !values.length)) return;
+  const params: string[] = [];
+  const sql = entries
+    .map(([variable, values]) => {
+      const column = table.scopeColumnByVariable.get(variable);
+      if (column === undefined)
+        throw new ClientSyncError(
+          'sync.scope_revoked',
+          'table has no local scope-column mapping',
+        );
+      params.push(...values);
+      return `${quoteIdent(column)} IN (${values.map(() => '?').join(', ')})`;
+    })
+    .join(' AND ');
+  return { sql, params };
+}
+
 export function deleteScopedRows(
   db: ClientDatabase,
   table: CompiledClientTable,
   effective: ScopeMap,
 ): void {
-  const entries = Object.entries(effective);
-  if (entries.length === 0) return;
-  const clauses: string[] = [];
-  const params: string[] = [];
-  for (const [variable, values] of entries) {
-    const column = table.scopeColumnByVariable.get(variable);
-    if (column === undefined) {
-      throw new ClientSyncError(
-        'sync.scope_revoked',
-        `table ${JSON.stringify(table.name)} has no local scope-column mapping for ${JSON.stringify(variable)} (§3.3 fail-closed)`,
-      );
-    }
-    if (values.length === 0) return;
-    clauses.push(
-      `${quoteIdent(column)} IN (${values.map(() => '?').join(', ')})`,
-    );
-    params.push(...values);
-  }
+  const scope = localScopePredicate(table, effective);
+  if (!scope) return;
+  const { sql, params } = scope;
   for (const row of db.query(
-    `SELECT ${quoteIdent(table.primaryKey)} AS id FROM ${quoteIdent(table.name)} WHERE ${clauses.join(' AND ')}`,
+    `SELECT ${quoteIdent(table.primaryKey)} AS id FROM ${quoteIdent(table.name)} WHERE ${sql}`,
     params,
   )) {
     retainedBaseWrite(db, table, String(row.id));
   }
-  db.exec(
-    `DELETE FROM ${quoteIdent(table.name)} WHERE ${clauses.join(' AND ')}`,
-    params,
-  );
+  db.exec(`DELETE FROM ${quoteIdent(table.name)} WHERE ${sql}`, params);
 }
 
 /**
@@ -246,24 +271,9 @@ export function evictScopedRows(
   effective: ScopeMap,
   pinnedRowIds: ReadonlySet<string>,
 ): { remaining: boolean; deferred: boolean } {
-  const entries = Object.entries(effective);
-  if (entries.length === 0) return { remaining: false, deferred: false };
-  const clauses: string[] = [];
-  const params: string[] = [];
-  for (const [variable, values] of entries) {
-    const column = table.scopeColumnByVariable.get(variable);
-    if (column === undefined) {
-      throw new ClientSyncError(
-        'sync.scope_revoked',
-        `table ${JSON.stringify(table.name)} has no local scope-column mapping for ${JSON.stringify(variable)} (§4.8/§3.3 fail-closed)`,
-      );
-    }
-    if (values.length === 0) return { remaining: false, deferred: false };
-    clauses.push(
-      `${quoteIdent(column)} IN (${values.map(() => '?').join(', ')})`,
-    );
-    params.push(...values);
-  }
+  const scope = localScopePredicate(table, effective);
+  if (!scope) return { remaining: false, deferred: false };
+  const { sql, params } = scope;
   const pk = quoteIdent(table.primaryKey);
   let pinnedClause = '';
   if (pinnedRowIds.size > 0) {
@@ -272,19 +282,40 @@ export function evictScopedRows(
     params.push(...ids);
   }
   const target = quoteIdent(table.name);
+  for (const row of db.query(
+    `SELECT id,intent,base FROM ${RETAINED_ROWS} WHERE commit_seq IS NOT NULL AND tbl=?`,
+    [table.name],
+  )) {
+    if (
+      !pinnedRowIds.has(row.id as string) &&
+      [row.intent, row.base].some(
+        (json) =>
+          json !== null &&
+          matchesLocalScopes(
+            table,
+            effective,
+            JSON.parse(json as string) as Record<string, JsonRowValue>,
+          ),
+      )
+    )
+      db.exec(
+        `DELETE FROM ${RETAINED_ROWS} WHERE tbl=? AND id=? AND commit_seq IS NOT NULL`,
+        [table.name, row.id as string],
+      );
+  }
   db.exec(
-    `DELETE FROM ${target} WHERE ${pk} IN(SELECT ${pk} FROM ${target} WHERE ${clauses.join(' AND ')}${pinnedClause} LIMIT 1024)`,
+    `DELETE FROM ${target} WHERE ${pk} IN(SELECT ${pk} FROM ${target} WHERE ${sql}${pinnedClause} LIMIT 1024)`,
     params,
   );
   const remaining =
     db.query(
-      `SELECT 1 FROM ${target} WHERE ${clauses.join(' AND ')}${pinnedClause} LIMIT 1`,
+      `SELECT 1 FROM ${target} WHERE ${sql}${pinnedClause} LIMIT 1`,
       params,
     ).length > 0;
   const deferred =
     remaining ||
     db.query(
-      `SELECT 1 FROM ${target} WHERE ${clauses.join(' AND ')} LIMIT 1`,
+      `SELECT 1 FROM ${target} WHERE ${sql} LIMIT 1`,
       params.slice(0, params.length - pinnedRowIds.size),
     ).length > 0;
   return { remaining, deferred };
@@ -329,7 +360,7 @@ export async function applySqliteSegment(
   const withImage = db.withSqliteImage?.bind(db);
   if (withImage === undefined) {
     throw invalidRequest(
-      'received a sqlite segment but the database backend cannot import images (§4.2: do not advertise accept bit 2)',
+      'database cannot import images; disable accept bit 2 (§4.2)',
     );
   }
   if (descriptor.table !== table.name) {

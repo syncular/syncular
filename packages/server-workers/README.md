@@ -11,6 +11,11 @@ runs unmodified on `workerd`, and speaks only Web `Request`/`Response`/
 `fetch`/Web-Crypto). So the Workers lane is not a second adapter — it is the
 same HTTP handler wired to `env` bindings.
 
+PostgreSQL hosts using Hyperdrive must disable query caching on the binding used
+for sync storage, authentication and scope resolution. Durable Object serialization
+cannot invalidate cached SELECT results. See the
+[storage freshness contract](https://syncular.dev/server-storage/#read-freshness).
+
 ## What it mounts
 
 The HTTP binding (SPEC §1.1):

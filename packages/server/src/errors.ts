@@ -179,6 +179,12 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorCatalogEntry>> = {
     recommendedAction: 'retryLater',
     httpStatus: 500,
   },
+  'sync.storage_stale_read': {
+    category: 'internal',
+    retryable: false,
+    recommendedAction: 'inspectServer',
+    httpStatus: 503,
+  },
   'sync.schema_not_ready': {
     category: 'internal',
     retryable: true,

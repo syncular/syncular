@@ -17,6 +17,18 @@ and restart flow, use [Concurrency and conflict correction](/guide-concurrency-c
 mirror. The row shows up in your queries at once. The next `sync()` round
 pushes the outbox and drains the results.
 
+An `applied` or `cached` acknowledgement confirms server acceptance and removes
+the commit from the send queue. The client keeps its local intent in protected
+storage until an authoritative change for the same row arrives at that commit
+sequence or later. A completed covering bootstrap also retires it. Empty pulls,
+restart and later edits preserve acknowledged intent. This is automatic in Bun,
+the web worker and native clients, independent of `retainFailedCommits`.
+
+The acknowledgement schedules a following pull even when realtime sends no
+notification to the originating client. Row delivery and overlay reconciliation
+share one local transaction. Revocation and security purge remove affected
+aggregates. Window eviction removes the evicted row's intent.
+
 Each request sends a contiguous prefix of pending commits in creation order.
 When the next whole commit exceeds the remaining operation budget, the client
 defers that commit and every later commit to the next round. Retries retain

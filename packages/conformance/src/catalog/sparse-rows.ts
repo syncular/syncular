@@ -82,6 +82,193 @@ async function serverRow(ctx: ScenarioContext, rowId: string) {
 
 export const sparseRowScenarios: readonly Scenario[] = [
   {
+    name: 'sparse-rows/acknowledged-intent-awaits-row-delivery',
+    specRefs: ['§7.1', '§7.2', '§3.3'],
+    async run(ctx) {
+      const a = await bootstrapped(ctx, 'actor-a', 'client-a');
+      await a.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('t1', 'p1', '100/v1') },
+      ]);
+      await syncIdle(a);
+      check(
+        a.api.prepareRound !== undefined && a.api.completeRound !== undefined,
+        'client supplies an in-flight request barrier',
+      );
+      const first = await a.api.patch('tasks', 't1', { title: '200/v2' });
+      a.faults.deferNextPulls = 4;
+      await a.api.prepareRound();
+      const second = await a.api.patch('tasks', 't1', { title: '300/v3' });
+      const report = await a.api.completeRound();
+      check(report.ok, 'captured request completes');
+      checkEqual(
+        report.report.applied,
+        [first],
+        'first captured request ACKs only the first edit',
+      );
+      checkEqual(
+        (await a.api.readRows('tasks'))[0]?.values.title,
+        '300/v3',
+        'later edit stays above acknowledged intent',
+      );
+      await syncOk(a);
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [],
+        'both ACKs drain the send queue',
+      );
+      checkEqual(
+        (await a.api.readRows('tasks'))[0]?.values.title,
+        '300/v3',
+        'second ACK never exposes old base',
+      );
+      checkEqual(
+        (await a.api.commitOutcomes()).find(
+          (outcome) => outcome.clientCommitId === second,
+        )?.status,
+        'applied',
+        'acknowledged history is separate from retained failures',
+      );
+      await syncOk(a);
+      await ctx.recreateClient(a, FIXTURE_SCHEMA);
+      checkEqual(
+        (await a.api.readRows('tasks'))[0]?.values.title,
+        '300/v3',
+        'restart keeps acknowledged intent',
+      );
+      await syncOk(a);
+      checkEqual(
+        (await a.api.readRows('tasks'))[0]?.values.title,
+        '300/v3',
+        'empty pull after restart preserves intent',
+      );
+      const third = await a.api.patch('tasks', 't1', { title: '400/v4' });
+      checkEqual(
+        (await a.api.readRows('tasks'))[0]?.values.title,
+        '400/v4',
+        'later edits stack on acknowledged state',
+      );
+      await syncIdle(a);
+      checkEqual(await a.api.pendingCommitIds(), [], 'later edit applies');
+      checkEqual(
+        (await a.api.commitOutcomes()).find(
+          (outcome) => outcome.clientCommitId === third,
+        )?.status,
+        'applied',
+        'later edit gets its own outcome',
+      );
+      checkEqual(
+        (await a.api.readRows('tasks'))[0]?.values.title,
+        '400/v4',
+        'matching pull reconciles atomically',
+      );
+      const b = await bootstrapped(ctx, 'actor-b', 'client-b');
+      await b.api.patch('tasks', 't1', { title: '500/v5' });
+      await syncIdle(b);
+      await syncIdle(a);
+      await ctx.recreateClient(a, FIXTURE_SCHEMA);
+      checkEqual(
+        (await a.api.readRows('tasks'))[0]?.values.title,
+        '500/v5',
+        'settled intent never overrides a newer row after restart',
+      );
+    },
+  },
+
+  {
+    name: 'sparse-rows/acknowledged-intent-wakes-own-pull',
+    specRefs: ['§7.1', '§7.2'],
+    async run(ctx) {
+      const a = await bootstrapped(ctx, 'actor-a', 'client-a');
+      await a.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('own', 'p1', '100/v1') },
+      ]);
+      await syncIdle(a);
+      a.faults.deferNextPulls = 1;
+      await a.api.patch('tasks', 'own', { title: '300/v3' });
+      const pushed = await syncOk(a);
+      checkEqual(pushed.commitsApplied, 0, 'push ACK has no image');
+      check(
+        await a.api.syncNeeded(),
+        'ACK requests immediate pull without realtime',
+      );
+      const next = await syncOk(a);
+      checkEqual(
+        next.commitsApplied,
+        1,
+        'immediately following round pulls own commit',
+      );
+      await expectConverged(ctx, 'tasks', [a]);
+      await ctx.recreateClient(a, FIXTURE_SCHEMA);
+      await expectConverged(ctx, 'tasks', [a]);
+    },
+  },
+  {
+    name: 'sparse-rows/acknowledged-intent-revocation',
+    specRefs: ['§7.1', '§3.3'],
+    async run(ctx) {
+      const a = await bootstrapped(ctx, 'actor-a', 'client-a');
+      await a.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('own', 'p1', '100/v1') },
+      ]);
+      await syncIdle(a);
+      a.faults.deferNextPulls = 1;
+      await a.api.patch('tasks', 'own', { title: '300/v3' });
+      await syncOk(a);
+      await ctx.server.setAllowedScopes('actor-a', { project_id: [] });
+      await syncOk(a);
+      checkEqual(
+        await a.api.readRows('tasks'),
+        [],
+        'revocation purges acknowledged intent',
+      );
+      await ctx.recreateClient(a, FIXTURE_SCHEMA);
+      checkEqual(
+        await a.api.readRows('tasks'),
+        [],
+        'restart cannot resurrect revoked intent',
+      );
+
+      const moved = await ctx.newClient({
+        actorId: 'actor-b',
+        clientId: 'client-b',
+        allowed: { project_id: ['p1', 'p2'] },
+      });
+      await moved.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await syncIdle(moved);
+      await moved.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: task('moved', 'p1', 'before move'),
+        },
+      ]);
+      await syncIdle(moved);
+      moved.faults.deferNextPulls = 1;
+      await moved.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: task('moved', 'p2', 'after move'),
+        },
+      ]);
+      await syncOk(moved);
+      await ctx.server.setAllowedScopes('actor-b', { project_id: ['p2'] });
+      await syncOk(moved);
+      checkEqual(
+        await moved.api.readRows('tasks'),
+        [],
+        'revoking the old base scope also purges acknowledged moves',
+      );
+      await ctx.recreateClient(moved, FIXTURE_SCHEMA);
+      checkEqual(
+        await moved.api.readRows('tasks'),
+        [],
+        'restart cannot resurrect an acknowledged move from revoked scope',
+      );
+    },
+  },
+
+  {
     name: 'sparse-rows/retained-atomic-conflict',
     specRefs: ['§7.1', '§7.2', '§7.2.1', '§3.3'],
     async run(ctx) {

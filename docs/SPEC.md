@@ -3579,6 +3579,13 @@ stays static.
 
 ## 7. Offline writes and replay
 
+Sync storage MUST provide read-after-write consistency for commit sequences,
+commit windows, current rows and authorization. A query cache that survives
+writes is incompatible with this contract. A combined push/pull whose storage
+maximum precedes a successful push's sequence MUST fail with
+`sync.storage_stale_read` before the buffered response escapes. Its push remains
+durable under the original idempotency key; the host must repair storage freshness.
+
 ### 7.1 The outbox
 
 `mutate` accepts mixed full-row upserts, sparse `patch` operations and deletes in
@@ -3611,10 +3618,22 @@ an outbox commit. This includes a patch following an insert in the same batch.
   is **outbox replay on top**: whenever server data has been applied (a
   pull response or a realtime delta, §8.2 — including one that aborted
   mid-way, §1.4 rule 5), the client re-applies every still-pending
-  outbox commit over the fresh server state. Server rows thus replace
-  optimistic state exactly when the commit that produced it has drained
-  (`applied`/`cached`) or been dropped; pending writes stay visible
-  throughout.
+  outbox commit over the fresh server state. An `applied`/`cached` acknowledgement drains the send queue atomically
+  with recording protected acknowledged intent. The client MUST retain and
+  replay that intent until an authoritative change for the same row has a
+  `commitSeq` at least equal to the acknowledgement's `commitSeq`, or a
+  completed bootstrap covers that row's scope at that sequence or later.
+  Empty incremental sections and their cursors do not prove row delivery.
+  Whole-replica schema, log-epoch and authorized rebootstrap resets discard
+  acknowledged intent with the replicated data; only pending outbox intent
+  survives those resets (§7.4).
+  Acknowledged intent survives restart, stays beneath later pending writes,
+  and never enters the send queue again. Revocation and security purge remove
+  the affected aggregate, including acknowledged intent. Explicit window
+  eviction discards acknowledged intent for the evicted row (§4.8). Acknowledgements
+  without `commitSeq` are invalid host responses. The client MUST schedule
+  an immediate following pull when acknowledged intent remains uncovered;
+  this obligation does not depend on an origin realtime notification.
 - Reconciliation MUST rebuild only tables whose server base or pending/retained
   operations changed. Unchanged visible tables and their FTS projections MUST
   remain untouched. A schema reset or restart recovering an interrupted overlay
@@ -5433,6 +5452,7 @@ Recommended actions: `refreshAuth`, `checkPermissions`, `fixRequest`,
 | `sync.crdt_merge_failed` | internal | no | inspectServer | A `crdt` column (§2.4 tag 8) was pushed but no merger is registered for its `crdtType`, or the merger threw (§5.10.2) — *new in SSP2*; a push operation-result `error` record only |
 | `sync.idempotency_cache_miss` | internal | yes | retryLater | Cached push result unreadable on replay (§6.3) |
 | `sync.internal_error` | internal | yes | retryLater | An exception outside this catalog (host code, storage, network) ended the request or socket round (HTTP 500 or an in-band `ERROR` before the first response byte). The message never carries the exception text; the host receives the original through its error hook |
+| `sync.storage_stale_read` | internal | no | inspectServer | Storage maximum precedes a push accepted in the same request; disable query caching for sync storage |
 | `sync.schema_not_ready` | internal | yes | retryLater | The server refuses a request while a declared backfill checkpoint for the running schema version is not activated, or the stored schema version is newer than the running build (§2.4) — *new in SSP2*; request-level. Structure in `details` names the projection; the message never interpolates it |
 | `sync.too_many_operations` | invalid-request | no | splitBatch | Push exceeds the operation cap (§6.1) |
 | `sync.not_found` | not-found | no | forceResync | Unknown segment id (§5.5) or sync resource |

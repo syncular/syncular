@@ -10,6 +10,7 @@ import {
   SECURITY_PREFLIGHT_REQUIRED_CODE,
 } from '@syncular/client';
 import { makeClient, makeServer } from '../../web-client/test/helpers';
+import { decodeMessage, encodeMessage } from '../../core/src/index';
 import { handleSyncRequest, handleSegmentDownload } from '@syncular/server';
 import { createTauriSyncClient, type TauriApi } from '../src/index';
 
@@ -190,6 +191,127 @@ if (!available) {
   });
 } else {
   describe('native Tauri bridge', () => {
+    test('native ACK-only edits survive reopen and pull their own commit next round', async () => {
+      const source = makeServer(schema);
+      source.allowed['actor-1'] = { list_id: ['one'] };
+      let defer = 0;
+      const server = Bun.serve({
+        hostname: '127.0.0.1',
+        port: 0,
+        async fetch(request) {
+          const path = new URL(request.url).pathname;
+          const context = source.ctxFor('actor-1');
+          if (path === '/sync') {
+            const bytes = await handleSyncRequest(
+              new Uint8Array(await request.arrayBuffer()),
+              context,
+            );
+            if (defer-- > 0) {
+              const message = decodeMessage(bytes);
+              if (message.msgKind !== 'response')
+                throw new Error('expected response');
+              return new Response(
+                encodeMessage({
+                  ...message,
+                  frames: message.frames.filter((frame) =>
+                    [
+                      'RESP_HEADER',
+                      'LEASE',
+                      'PUSH_RESULT',
+                      'PUSH_RESULT_DETAILS',
+                    ].includes(frame.type),
+                  ),
+                }).slice().buffer,
+              );
+            }
+            return new Response(bytes.slice().buffer);
+          }
+          if (path.startsWith('/segments/'))
+            return new Response(
+              (
+                await handleSegmentDownload(context, {
+                  segmentId: decodeURIComponent(
+                    path.slice('/segments/'.length),
+                  ),
+                  scopesHeader:
+                    request.headers.get('X-Syncular-Scopes') ?? '{}',
+                })
+              ).bytes.slice().buffer,
+            );
+          return new Response('unknown route', { status: 404 });
+        },
+      });
+      const host = nativeTauri(`http://127.0.0.1:${server.port}`);
+      try {
+        let client = await createTauriSyncClient({
+          schema,
+          clientId: 'native-own-ack',
+          tauri: host.api,
+        });
+        await client.subscribe({
+          id: 'todos',
+          table: 'todos',
+          scopes: { list_id: ['one'] },
+        });
+        await client.mutate([
+          {
+            op: 'upsert',
+            table: 'todos',
+            values: { id: 'own', list_id: 'one', title: '100/v1' },
+          },
+        ]);
+        await client.syncUntilIdle();
+        defer = 4;
+        for (const title of ['200/v2', '300/v3']) {
+          await client.patch('todos', 'own', { title });
+          const result = (await client.sync()) as {
+            ok: boolean;
+            report: { applied: string[]; commitsApplied: number };
+          };
+          expect(result.ok).toBe(true);
+          const report = result.report;
+          expect(report.applied).toHaveLength(1);
+          expect(report.commitsApplied).toBe(0);
+          expect(
+            await client.query('SELECT title FROM todos WHERE id=?', ['own']),
+          ).toEqual([{ title }]);
+          expect((await client.statusSnapshot()).syncNeeded).toBe(true);
+        }
+        expect(await client.pendingCommits()).toEqual([]);
+        await client.sync();
+        await client.close();
+        client = await createTauriSyncClient({
+          schema,
+          clientId: 'native-own-ack',
+          tauri: host.api,
+        });
+        expect(
+          await client.query('SELECT title FROM todos WHERE id=?', ['own']),
+        ).toEqual([{ title: '300/v3' }]);
+        await client.sync();
+        expect(
+          await client.query('SELECT title FROM todos WHERE id=?', ['own']),
+        ).toEqual([{ title: '300/v3' }]);
+        const next = (await client.sync()) as {
+          ok: boolean;
+          report: { commitsApplied: number };
+        };
+        expect(next.ok).toBe(true);
+        expect(next.report.commitsApplied).toBe(2);
+        expect(
+          await client.query(
+            'SELECT title,_sync_version AS version FROM todos WHERE id=?',
+            ['own'],
+          ),
+        ).toEqual([{ title: '300/v3', version: 3 }]);
+        await client.close();
+      } finally {
+        await host.close();
+        await server.stop(true);
+        source.storage.db.close();
+      }
+    });
+
     test('native persisted scope registrations migrate 89→90 and survive compatible 91', async () => {
       const host = nativeTauri();
       const state = (id: string) =>

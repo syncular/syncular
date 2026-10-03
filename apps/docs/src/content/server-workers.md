@@ -9,6 +9,11 @@ TypeScript (Web `Request`/`Response`/`fetch`/Web-Crypto only, enforced by a
 static import-graph test), so the Workers lane runs the same HTTP handler,
 wired to `env` bindings.
 
+When using PostgreSQL through Hyperdrive, disable query caching on the binding
+used by sync storage, authentication and scope resolution. A serialized coordinator
+cannot make a cached SELECT fresh. The [storage freshness contract](/server-storage/#read-freshness)
+owns the requirement and the `sync.storage_stale_read` refusal.
+
 ## The fetch handler
 
 `createWorkersFetchHandler(factory)` builds the Hono app per request from

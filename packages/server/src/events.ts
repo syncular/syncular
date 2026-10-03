@@ -13,7 +13,7 @@
  * - Timestamps and durations come from the ctx clock where one exists, so
  *   the conformance virtual-clock discipline stays intact.
  */
-import type { WakeReason } from '@syncular/core';
+import type { ScopeMap, WakeReason } from '@syncular/core';
 
 /** One `POST /sync` request, emitted once per request after the response
  * bytes are fully produced (or the request was rejected up front). */
@@ -155,6 +155,10 @@ export interface PullSubscriptionSummary {
   readonly status: 'active' | 'revoked' | 'reset';
   /** `none` for revoked/reset sections (no data half was produced). */
   readonly mode: 'bootstrap' | 'incremental' | 'none';
+  readonly requestedScopes: ScopeMap;
+  readonly effectiveScopes: ScopeMap;
+  readonly firstCommitSeq?: number;
+  readonly lastCommitSeq?: number;
   readonly fromCursor: number;
   readonly nextCursor: number;
   readonly commits: number;
@@ -169,6 +173,8 @@ export interface PullServedEvent {
   readonly partition: string;
   readonly actorId: string;
   readonly clientId: string;
+  readonly acceptedThrough: number;
+  readonly storageMaxCommitSeq: number;
   readonly subscriptions: readonly PullSubscriptionSummary[];
 }
 

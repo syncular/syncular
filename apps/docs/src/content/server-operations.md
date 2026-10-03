@@ -47,6 +47,13 @@ adapter is a ~20-line `emit` implementation. The full event catalog
 Reaction lifecycle meanings and the durable state machine are covered in
 [Durable server reactions](/server-reactions/#observe-and-inspect-reactions).
 
+`pull.served` includes the request's accepted push sequence and storage maximum.
+Each subscription includes requested and effective scopes, cursors before and after,
+and the first and last delivered commit sequence. Compare these fields with
+`push.applied.commitSeq` to distinguish a missing wake, scope exclusion and stale
+storage reads. Hash subscription IDs and scope values in the host event sink before
+sending diagnostic evidence outside the application.
+
 ## The admin console
 
 `SyncularAdmin` is a read-only, partition-scoped query surface over server

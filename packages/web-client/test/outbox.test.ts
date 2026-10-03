@@ -59,6 +59,7 @@ describe('schema-agnostic persistence (§0 outbox rule)', () => {
       'existed',
       'sync_version',
       'values_json',
+      'delivery_seq',
     ]);
     db.close();
   });
@@ -293,7 +294,7 @@ describe('mutation validation', () => {
     ).toThrow('not nullable');
     expect(() =>
       a.client.mutate([{ table: 'nope', op: 'delete', rowId: 'x' }]),
-    ).toThrow('unknown local table');
+    ).toThrow('unknown table');
     // Failed mutations leave no partial state behind.
     expect(a.client.pendingCommits()).toHaveLength(0);
   });

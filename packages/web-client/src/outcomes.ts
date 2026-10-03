@@ -1,3 +1,4 @@
+import { RETAINED_ROWS } from './failed-overlay';
 /**
  * Durable per-client commit outcomes.
  *
@@ -174,8 +175,8 @@ function parseOutcome(
 ): CommitOutcome {
   const retainedRows: RetainedCommitRow[] = db
     .query(
-      'SELECT tbl,id,intent,base,version,unique_conflicts FROM _syncular_failed_rows WHERE commit_id=? ORDER BY idx',
-      [String(row.client_commit_id)],
+      `SELECT tbl,id,intent,base,version,unique_conflicts FROM ${RETAINED_ROWS} WHERE commit_seq IS NULL AND commit_id=? ORDER BY idx`,
+      [row.client_commit_id as string],
     )
     .map((retained) => {
       const decode = (value: unknown): Record<string, RowValue> | null =>
@@ -187,14 +188,14 @@ function parseOutcome(
               ).map(([key, value]) => [key, jsonToRowValue(value)]),
             );
       return {
-        table: String(retained.tbl),
-        rowId: String(retained.id),
+        table: retained.tbl as string,
+        rowId: retained.id as string,
         localRow: decode(retained.intent),
         ...(retained.unique_conflicts === null
           ? {}
           : {
               uniqueConflicts: (
-                JSON.parse(String(retained.unique_conflicts)) as NonNullable<
+                JSON.parse(retained.unique_conflicts as string) as NonNullable<
                   RetainedCommitRow['uniqueConflicts']
                 >
               ).map((conflict) => ({
@@ -204,7 +205,7 @@ function parseOutcome(
             }),
         serverRow: decode(retained.base),
         serverVersion:
-          retained.version === null ? null : Number(retained.version),
+          retained.version === null ? null : (retained.version as number),
       };
     });
   return {
