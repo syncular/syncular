@@ -17,6 +17,50 @@
 export const changelog = [
   {
     date: '2026-10-03',
+    title: 'Native sync keeps local writes responsive',
+    body: 'Released in 0.30.11. Tauri runs sync network I/O outside the mutable owner. New mutations and queries finish while replies are pending; their commits enter the next round. The Rust overlay rebuilds only changed tables and FTS indexes, leaving unrelated catalogues untouched.',
+    links: [
+      {
+        href: '/platform-tauri/#local-commands-during-sync',
+        label: 'Native local-first commands',
+      },
+    ],
+  },
+  {
+    date: '2026-10-03',
+    title: 'Schema bumps remove incompatible scope registrations',
+    body: 'Released in 0.30.11. Both cores prune subscriptions and windows when a scope variable, pattern prefix or mapped column changes. Compatible registrations re-bootstrap, and same-version opens preserve cursors. Applications register their current subscriptions after opening the replica.',
+    links: [
+      {
+        href: '/concepts-schema-upgrades/#what-the-reset-touches',
+        label: 'Subscription migration',
+      },
+    ],
+  },
+  {
+    date: '2026-10-03',
+    title: 'OPFS workers release handles across reloads',
+    body: 'Released in 0.30.11. Closing a persistent database pauses its access-handle pool before releasing its Web Lock. Page teardown terminates the worker, and the next opener waits for the physical holder. Live second tabs retain leader/follower behavior.',
+    links: [
+      {
+        href: '/platform-web/#persistent-worker-lifecycle',
+        label: 'Persistent worker lifecycle',
+      },
+    ],
+  },
+  {
+    date: '2026-10-03',
+    title: 'Retained unique-key insert conflicts preserve the server winner',
+    body: 'Released in 0.30.11. Both client cores retain a rejected distinct-ID insert as protected journal intent when another server row owns its unique key. Recovery exposes the matching index and competing row with its current version. Restart and explicit resolution preserve replica consistency; revocation removes protected conflict payloads.',
+    links: [
+      {
+        href: '/concepts-conflicts/#retain-failed-local-intent',
+        label: 'Unique-key conflict recovery',
+      },
+    ],
+  },
+  {
+    date: '2026-10-03',
     title: 'Sparse writes require a local base',
     body: 'Released in 0.30.10. Both client cores reject a sparse patch with sync.row_missing before enqueueing when its local row is absent. Mixed batches remain atomic. A retained sparse conflict keeps its evidence after the base disappears without creating an incomplete local row.',
     links: [

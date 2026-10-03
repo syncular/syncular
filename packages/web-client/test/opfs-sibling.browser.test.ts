@@ -127,6 +127,8 @@ test('OPFS SAH pool drives the RFC 0005 sibling container', async () => {
     // The adapter's own pool, observed through the real pool util. Default
     // capacity is sqlite-wasm's 6; the replica is the only associated file.
     expect(evidence.capacity).toBe(6);
+    expect(evidence.pausedAfterClose).toBe(true);
+    expect(evidence.reopenedRoot).toEqual([{ id: 1, note: 'replica' }]);
     expect(evidence.filesAfterReplicaOpen).toEqual([replicaFile]);
     expect(evidence.fileCountAfterReplicaOpen).toBe(1);
     expect(evidence.replicaTables).toEqual(['replica_only']);

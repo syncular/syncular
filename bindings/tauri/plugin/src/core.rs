@@ -60,6 +60,8 @@ pub struct SyncularCore {
     diagnostics_observed: bool,
     interactive_sync: bool,
     background_sync_ms: Option<u64>,
+    round_pending: bool,
+    controls: Vec<String>,
 }
 
 impl SyncularCore {
@@ -86,6 +88,8 @@ impl SyncularCore {
             diagnostics_observed: false,
             interactive_sync: false,
             background_sync_ms: None,
+            round_pending: false,
+            controls: Vec::new(),
         })
     }
 
@@ -200,6 +204,69 @@ impl SyncularCore {
         self.command(&json!({ "method": "syncUntilIdle", "params": {} }))
     }
 
+    /// Prepare on the owner; the returned transport view belongs to the I/O
+    /// executor. Local commands continue using the owned client connection.
+    pub fn prepare_round(
+        &mut self,
+    ) -> Result<
+        (syncular_client::PreparedSyncRound, HostTransport),
+        Box<syncular_client::SyncOutcome>,
+    > {
+        let Some(client) = self.client.as_mut() else {
+            return Err(Box::new(syncular_client::SyncOutcome::Failed {
+                error_code: "client.not_created".into(),
+                message: "create a client before syncing".into(),
+                details: None,
+            }));
+        };
+        use syncular_client::Transport;
+        let result = client.prepare_sync_round(self.transport.supports_url_fetch());
+        self.round_pending = result.is_ok();
+        self.drain_core_outputs();
+        self.emit_diagnostics_if_changed();
+        result.map(|prepared| (prepared, self.transport.fork_round()))
+    }
+
+    pub fn apply_round(
+        &mut self,
+        completed: syncular_client::CompletedSyncRound,
+    ) -> syncular_client::AppliedSyncRound {
+        self.round_pending = false;
+        let mut applied = match self.client.as_mut() {
+            Some(client) => client.apply_sync_round(completed),
+            None => syncular_client::AppliedSyncRound::Complete {
+                outcome: syncular_client::SyncOutcome::Failed {
+                    error_code: "client.round_cancelled".into(),
+                    message: "sync round belongs to a released client context".into(),
+                    details: None,
+                },
+                controls: Vec::new(),
+                more: false,
+                bootstrap_advanced: false,
+            },
+        };
+        self.round_pending = matches!(applied, syncular_client::AppliedSyncRound::Continue(_));
+        if let syncular_client::AppliedSyncRound::Complete { controls, .. } = &mut applied {
+            self.controls.append(controls);
+        }
+        // Buffered socket deltas follow the captured response, preventing a
+        // delayed reply from overwriting a newer unsolicited delta.
+        self.drain_realtime();
+        self.drain_core_outputs();
+        self.emit_diagnostics_if_changed();
+        applied
+    }
+
+    pub fn take_controls(&mut self) -> Option<(Vec<String>, HostTransport)> {
+        if self.controls.is_empty() {
+            return None;
+        }
+        Some((
+            std::mem::take(&mut self.controls),
+            self.transport.fork_round(),
+        ))
+    }
+
     /// §7.6: record an owned snapshot read the read sidecar ran.
     pub fn record_query_read(
         &mut self,
@@ -264,7 +331,7 @@ impl SyncularCore {
     /// Feed buffered inbound WS frames to the client (which may ack back through
     /// the same transport). A no-op without a native socket.
     fn drain_realtime(&mut self) {
-        if self.client.is_none() {
+        if self.round_pending || self.client.is_none() {
             return;
         }
         let frames = self.transport.take_inbound();
@@ -280,7 +347,10 @@ impl SyncularCore {
                 }
                 transport::Inbound::Binary(bytes) => {
                     if let Some(client) = self.client.as_mut() {
-                        client.on_realtime_binary(&mut self.transport, &bytes);
+                        if !client.security_preflight() {
+                            self.controls
+                                .extend(client.on_realtime_binary_queued(&bytes));
+                        }
                     }
                 }
             }

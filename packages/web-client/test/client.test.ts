@@ -1702,3 +1702,108 @@ test('retained validator rejection survives a real reopen and can take server', 
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('persisted scope registrations migrate 89→90 and survive compatible 91', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'syncular-scopes-'));
+  const schemas = [89, 90, 91].map((version) => ({
+    ...CLIENT_SCHEMA,
+    version,
+    tables: CLIENT_SCHEMA.tables.map((table) =>
+      table.name === 'tasks'
+        ? {
+            ...table,
+            scopes: [
+              {
+                pattern:
+                  version === 89
+                    ? 'theatre:{theatre_calendar_id}'
+                    : 'theatre:{calendar_theatre_id}',
+                column: 'project_id',
+              },
+            ],
+          }
+        : table,
+    ),
+  }));
+  const source = makeServer();
+  const path = join(dir, 'replica.db');
+  let entry = await makeClient(source, {
+    clientId: 'scope-file',
+    databasePath: path,
+    schema: schemas[0]!,
+  });
+  try {
+    entry.client.subscribe({
+      id: 'old',
+      table: 'tasks',
+      scopes: { theatre_calendar_id: ['p1'] },
+    });
+    await entry.client.setWindow(
+      { table: 'tasks', variable: 'theatre_calendar_id' },
+      ['p1'],
+    );
+    const pending = entry.client.mutate([
+      {
+        table: 'tasks',
+        op: 'upsert',
+        values: {
+          id: 'pending',
+          project_id: 'p1',
+          title: 'offline',
+          done: false,
+          priority: null,
+          meta: null,
+        },
+      },
+    ]);
+    await entry.client.close();
+    entry.db.close();
+    entry = await makeClient(source, {
+      clientId: 'scope-file',
+      databasePath: path,
+      schema: schemas[1]!,
+    });
+    expect(entry.client.subscription('old')).toBeUndefined();
+    expect(
+      entry.client.windowState({
+        table: 'tasks',
+        variable: 'theatre_calendar_id',
+      }),
+    ).toEqual({ units: [], pending: [] });
+    expect(
+      entry.client.pendingCommits().map((commit) => commit.clientCommitId),
+    ).toEqual([pending]);
+    entry.client.subscribe({
+      id: 'current',
+      table: 'tasks',
+      scopes: { calendar_theatre_id: ['p1'] },
+    });
+    entry.db.exec(
+      "UPDATE _syncular_subscriptions SET cursor=123 WHERE id='current'",
+    );
+    await entry.client.close();
+    entry.db.close();
+    entry = await makeClient(source, {
+      clientId: 'scope-file',
+      databasePath: path,
+      schema: schemas[1]!,
+    });
+    expect(entry.client.subscription('current')?.cursor).toBe(123);
+    await entry.client.close();
+    entry.db.close();
+    entry = await makeClient(source, {
+      clientId: 'scope-file',
+      databasePath: path,
+      schema: schemas[2]!,
+    });
+    expect(entry.client.subscription('current')?.cursor).toBe(-1);
+    expect(
+      entry.client.pendingCommits().map((commit) => commit.clientCommitId),
+    ).toEqual([pending]);
+  } finally {
+    await entry.client.close();
+    entry.db.close();
+    source.storage.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

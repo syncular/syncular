@@ -1,3 +1,4 @@
+import type { ClientSchema } from '../src/schema';
 import { singleOwnerLock } from '../src/leader-lock';
 import type { SyncProgress } from '../src/progress';
 import {
@@ -16,7 +17,7 @@ declare global {
     opfsTest: {
       ready: Promise<SyncClientHandle>;
       progress: SyncProgress[];
-      open(contend?: boolean): Promise<void>;
+      open(contend?: boolean, schema?: ClientSchema): Promise<void>;
       storageBusy: Promise<void>;
       terminate(): boolean;
       crash: Promise<CrashReceipt>;
@@ -44,7 +45,7 @@ window.opfsTest = {
     announceCrash = resolve;
   }),
   ready: new Promise(() => {}),
-  open: async (contend = false) => {
+  open: async (contend = false, schema = OPFS_SCHEMA) => {
     window.opfsTest.ready = createSyncClientHandle({
       worker: () => {
         worker = new Worker(
@@ -61,12 +62,12 @@ window.opfsTest = {
       database: { mode: 'persistent', name: 'opfs-bootstrap-test' },
       replica: { mode: 'isolated', id: 'reload-replica' },
       ...(contend ? { leaderLock: singleOwnerLock(), multiTab: false } : {}),
-      schema: OPFS_SCHEMA,
+      schema,
       autoSync: false,
       retainFailedCommits: true,
       endpoints: {
-        syncUrl: `${location.origin}/${location.search === '?signed' ? 'sync-signed' : 'sync'}`,
-        segmentsUrl: `${location.origin}/segments`,
+        syncUrl: `${location.origin}/${schema.version >= 89 ? 'sync-scope' : location.search === '?signed' ? 'sync-signed' : 'sync'}`,
+        segmentsUrl: `${location.origin}/${schema.version >= 89 ? 'scope-segments' : 'segments'}`,
       },
     });
     (await window.opfsTest.ready).onProgress((progress) =>

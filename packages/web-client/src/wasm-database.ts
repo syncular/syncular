@@ -22,6 +22,7 @@
  * `ClientDatabase`. Browser-only — exercised by the demo, never imported
  * by bun tests (subpath export `@syncular/client/wasm`).
  */
+import { webLocksLeaderLock, type LeaderLease } from './leader-lock';
 import sqlite3InitModule from '@sqlite.org/sqlite-wasm';
 import {
   assertImageAlias,
@@ -56,6 +57,8 @@ interface SahPoolUtil {
   /** RFC 0005: the runtime exposes naming and removal on the pool util. */
   getFileNames(): string[];
   unlink(filename: string): boolean;
+  pauseVfs(): unknown;
+  unpauseVfs(): Promise<unknown>;
 }
 
 interface SqliteIoMethods {
@@ -122,13 +125,16 @@ class WasmClientDatabase implements ClientDatabase {
   readonly #db: Oo1Database;
   readonly #sqlite3: Sqlite3Static;
   /** RFC 0005: present only for a persistent OPFS database. */
-  readonly #sah: { readonly util: SahPoolUtil } | undefined;
+  readonly #sah:
+    | { readonly util: SahPoolUtil; readonly lease: LeaderLease }
+    | undefined;
+  #closed = false;
   #tx = { depth: 0 };
 
   constructor(
     db: Oo1Database,
     sqlite3: Sqlite3Static,
-    sah?: { readonly util: SahPoolUtil },
+    sah?: { readonly util: SahPoolUtil; readonly lease: LeaderLease },
   ) {
     this.#db = db;
     this.#sqlite3 = sqlite3;
@@ -236,7 +242,13 @@ class WasmClientDatabase implements ClientDatabase {
   }
 
   close(): void {
+    if (this.#closed) return;
     this.#db.close();
+    // DB.close() leaves the SAH pool live. Close siblings first, then pause the
+    // VFS without deleting files, before releasing this worker's physical lock.
+    this.#sah?.util.pauseVfs();
+    this.#closed = true;
+    void this.#sah?.lease.release();
   }
 }
 
@@ -420,37 +432,52 @@ export async function openPersistentWasmDatabase(
         'in-memory fallback for persistent mode.',
     );
   }
-  const sqlite3 = await initSqlite3();
-  const directory = options?.directory ?? `.syncular/${name}`;
-  let pool = sahPools.get(directory);
-  if (pool === undefined) {
-    pool = sqlite3
-      .installOpfsSAHPoolVfs({
-        // VFS registration names must be unique per directory.
-        name: `syncular-sahpool-${directory.replace(/[^A-Za-z0-9]+/g, '-')}`,
-        directory,
-        // sqlite-wasm caches a rejected initialization promise by VFS name.
-        // Syncular removes its own rejected entry below, so allow a later
-        // open in the same worker to make a real attempt as well.
-        forceReinitIfPreviouslyFailed: true,
-        initialCapacity: Math.max(
-          options?.initialCapacity ?? SAH_POOL_DEFAULT_CAPACITY,
-          SAH_POOL_MIN_CAPACITY,
-        ),
-      })
-      .catch((error: unknown) => {
-        sahPools.delete(directory);
-        throw opfsSahPoolError(error, directory);
-      });
-    sahPools.set(directory, pool);
+  if (!navigator.locks) {
+    throw new ClientSyncError(
+      STORAGE_UNAVAILABLE_CODE,
+      'Persistent OPFS storage requires Web Locks',
+    );
   }
-  const util = await pool;
-  const db = new util.OpfsSAHPoolDb(`/${name}.db`);
+  const directory = (options?.directory ?? `.syncular/${name}`).replace(
+    /^\/+|\/+$/g,
+    '',
+  );
+  // The document's leader lease can end before its worker's SAHs close. This
+  // worker-owned lock has exactly the same lifetime as the physical pool.
+  const lease = await webLocksLeaderLock().acquire(
+    `syncular-opfs/${directory}`,
+  );
+  let util: SahPoolUtil | undefined;
+  let db: Oo1Database | undefined;
   try {
+    const sqlite3 = await initSqlite3();
+    let pool = sahPools.get(directory);
+    if (pool === undefined) {
+      pool = sqlite3
+        .installOpfsSAHPoolVfs({
+          name: `syncular-sahpool-${directory.replace(/[^A-Za-z0-9]+/g, '-')}`,
+          directory,
+          forceReinitIfPreviouslyFailed: true,
+          initialCapacity: Math.max(
+            options?.initialCapacity ?? SAH_POOL_DEFAULT_CAPACITY,
+            SAH_POOL_MIN_CAPACITY,
+          ),
+        })
+        .catch((error: unknown) => {
+          sahPools.delete(directory);
+          throw opfsSahPoolError(error, directory);
+        });
+      sahPools.set(directory, pool);
+    }
+    util = await pool;
+    await util.unpauseVfs();
+    db = new util.OpfsSAHPoolDb(`/${name}.db`);
     configureSahCrashRecovery(db, sqlite3);
-    return new WasmClientDatabase(db, sqlite3, { util });
+    return new WasmClientDatabase(db, sqlite3, { util, lease });
   } catch (error) {
-    db.close();
+    db?.close();
+    util?.pauseVfs();
+    await lease.release();
     throw error;
   }
 }

@@ -9,6 +9,8 @@ import {
   ReactiveClientStore,
   SECURITY_PREFLIGHT_REQUIRED_CODE,
 } from '@syncular/client';
+import { makeClient, makeServer } from '../../web-client/test/helpers';
+import { handleSyncRequest, handleSegmentDownload } from '@syncular/server';
 import { createTauriSyncClient, type TauriApi } from '../src/index';
 
 const ROOT = join(import.meta.dir, '..', '..', '..');
@@ -42,7 +44,7 @@ interface HarnessResponse {
   readonly events: readonly unknown[];
 }
 
-function nativeTauri(): {
+function nativeTauri(baseUrl?: string): {
   readonly api: TauriApi;
   readonly calls: Array<{
     readonly cmd: string;
@@ -51,7 +53,7 @@ function nativeTauri(): {
   exec(sql: string): Promise<void>;
   close(): Promise<void>;
 } {
-  const process = Bun.spawn([binary], {
+  const process = Bun.spawn(baseUrl ? [binary, baseUrl] : [binary], {
     stdin: 'pipe',
     stdout: 'pipe',
     stderr: 'inherit',
@@ -188,6 +190,283 @@ if (!available) {
   });
 } else {
   describe('native Tauri bridge', () => {
+    test('native persisted scope registrations migrate 89→90 and survive compatible 91', async () => {
+      const host = nativeTauri();
+      const state = (id: string) =>
+        host.api.invoke<{ result: { state: { cursor: number } | null } }>(
+          'syncular_command',
+          { command: { method: 'subscriptionState', params: { id } } },
+        );
+      const pendingIds = () =>
+        host.api.invoke<{ result: { ids: string[] } }>('syncular_command', {
+          command: { method: 'pendingCommitIds', params: {} },
+        });
+      const schemas = [89, 90, 91].map((version) => ({
+        ...schema,
+        version,
+        tables: schema.tables.map((table) => ({
+          ...table,
+          scopes: [
+            {
+              pattern:
+                version === 89
+                  ? 'theatre:{theatre_calendar_id}'
+                  : 'theatre:{calendar_theatre_id}',
+              column: 'list_id',
+            },
+          ],
+        })),
+      }));
+      try {
+        let client = await createTauriSyncClient({
+          schema: schemas[0]!,
+          clientId: 'native-scope',
+          tauri: host.api,
+        });
+        await client.subscribe({
+          id: 'old',
+          table: 'todos',
+          scopes: { theatre_calendar_id: ['one'] },
+        });
+        await client.setWindow(
+          { table: 'todos', variable: 'theatre_calendar_id' },
+          ['one'],
+        );
+        const pending = await client.mutate([
+          {
+            table: 'todos',
+            op: 'upsert',
+            values: { id: 'pending', list_id: 'one', title: 'offline' },
+          },
+        ]);
+        await client.close();
+        client = await createTauriSyncClient({
+          schema: schemas[1]!,
+          clientId: 'native-scope',
+          tauri: host.api,
+        });
+        expect((await state('old')).result.state).toBeNull();
+        expect(
+          await client.windowState({
+            table: 'todos',
+            variable: 'theatre_calendar_id',
+          }),
+        ).toEqual({ units: [], pending: [] });
+        expect((await pendingIds()).result.ids).toEqual([pending]);
+        await client.subscribe({
+          id: 'current',
+          table: 'todos',
+          scopes: { calendar_theatre_id: ['one'] },
+        });
+        await host.exec(
+          `UPDATE _syncular_subscriptions SET state_json=json_set(state_json,'$.cursor',123)`,
+        );
+        await client.close();
+        client = await createTauriSyncClient({
+          schema: schemas[1]!,
+          clientId: 'native-scope',
+          tauri: host.api,
+        });
+        expect((await state('current')).result.state?.cursor).toBe(123);
+        await client.close();
+        client = await createTauriSyncClient({
+          schema: schemas[2]!,
+          clientId: 'native-scope',
+          tauri: host.api,
+        });
+        expect((await state('current')).result.state?.cursor).toBe(-1);
+        expect((await pendingIds()).result.ids).toEqual([pending]);
+        await client.close();
+      } finally {
+        await host.close();
+      }
+    });
+
+    test('real Tauri transport retains a distinct-ID UNIQUE insert across reopen and resolution', async () => {
+      const uniqueSchema = {
+        ...schema,
+        tables: schema.tables.map((table) => ({
+          ...table,
+          indexes: [
+            {
+              name: 'todos_unique_title',
+              columns: ['list_id', 'title'],
+              unique: true,
+            },
+          ],
+        })),
+      };
+      const source = makeServer(uniqueSchema);
+      source.allowed['actor-1'] = { list_id: ['one'] };
+      let allowed = ['one'];
+      const server = Bun.serve({
+        hostname: '127.0.0.1',
+        port: 0,
+        async fetch(request) {
+          const pathname = new URL(request.url).pathname;
+          const context = {
+            ...source.ctxFor('native-loser'),
+            resolveScopes: () => ({ list_id: allowed }),
+          };
+          if (pathname === '/sync')
+            return new Response(
+              (
+                await handleSyncRequest(
+                  new Uint8Array(await request.arrayBuffer()),
+                  context,
+                )
+              ).slice().buffer,
+            );
+          if (pathname.startsWith('/segments/'))
+            return new Response(
+              (
+                await handleSegmentDownload(context, {
+                  segmentId: decodeURIComponent(
+                    pathname.slice('/segments/'.length),
+                  ),
+                  scopesHeader:
+                    request.headers.get('X-Syncular-Scopes') ?? '{}',
+                })
+              ).bytes.slice().buffer,
+            );
+          return new Response('unknown route', { status: 404 });
+        },
+      });
+      const host = nativeTauri(`http://127.0.0.1:${server.port}`);
+      const winner = await makeClient(source, {
+        clientId: 'native-winner',
+        schema: uniqueSchema,
+      });
+      try {
+        let client = await createTauriSyncClient({
+          schema: uniqueSchema,
+          clientId: 'native-loser',
+          retainFailedCommits: true,
+          tauri: host.api,
+        });
+        await client.subscribe({
+          id: 'todos',
+          table: 'todos',
+          scopes: { list_id: ['one'] },
+        });
+        await client.syncUntilIdle();
+        for (const resolution of [
+          'server',
+          'mine',
+          'edit',
+          'revoke',
+        ] as const) {
+          const title = `native-${resolution}`;
+          const winnerId = `winner-${resolution}`;
+          const loserId = `loser-${resolution}`;
+          winner.client.mutate([
+            {
+              table: 'todos',
+              op: 'upsert',
+              values: { id: winnerId, list_id: 'one', title },
+            },
+          ]);
+          const losing = await client.mutate([
+            {
+              table: 'todos',
+              op: 'upsert',
+              values: { id: loserId, list_id: 'one', title },
+            },
+          ]);
+          await winner.client.syncUntilIdle();
+          await client.syncUntilIdle();
+          const expected = {
+            retainedRows: [
+              {
+                rowId: loserId,
+                localRow: { id: loserId },
+                serverRow: null,
+                uniqueConflicts: [
+                  {
+                    index: 'todos_unique_title',
+                    columns: ['list_id', 'title'],
+                    rowId: winnerId,
+                    serverRow: { id: winnerId, title },
+                    serverVersion: 1,
+                  },
+                ],
+              },
+            ],
+          };
+          expect(await client.commitOutcome(losing)).toMatchObject(expected);
+          expect(
+            await client.query('SELECT id FROM todos WHERE id = ?', [loserId]),
+          ).toEqual([]);
+          await client.close();
+          client = await createTauriSyncClient({
+            schema: uniqueSchema,
+            clientId: 'native-loser',
+            retainFailedCommits: true,
+            tauri: host.api,
+          });
+          expect(await client.commitOutcome(losing)).toMatchObject(expected);
+          if (resolution === 'revoke') {
+            allowed = [];
+            await client.syncUntilIdle();
+            expect(await client.query('SELECT id FROM todos')).toEqual([]);
+            expect(
+              (await client.commitOutcome(losing))?.retainedRows,
+            ).toBeUndefined();
+            expect(
+              (await client.commitOutcome(losing))?.operations,
+            ).toBeUndefined();
+          } else {
+            const replacement =
+              resolution === 'mine'
+                ? await client.patch(
+                    'todos',
+                    winnerId,
+                    { title: `${title}-mine` },
+                    { baseVersion: 1 },
+                  )
+                : resolution === 'edit'
+                  ? await client.mutate([
+                      {
+                        table: 'todos',
+                        op: 'upsert',
+                        values: {
+                          id: loserId,
+                          list_id: 'one',
+                          title: `${title}-edited`,
+                        },
+                      },
+                    ])
+                  : undefined;
+            await client.resolveCommitOutcome({
+              clientCommitId: losing,
+              resolution: replacement ? 'superseded' : 'resolved_keep_server',
+              ...(replacement
+                ? { replacementClientCommitId: replacement }
+                : {}),
+            });
+            await client.syncUntilIdle();
+            expect(
+              (await client.commitOutcome(losing))?.retainedRows,
+            ).toBeUndefined();
+            expect(
+              await client.query('SELECT id FROM todos WHERE id = ?', [
+                loserId,
+              ]),
+            ).toEqual(resolution === 'edit' ? [{ id: loserId }] : []);
+          }
+        }
+        expect(await client.query('PRAGMA integrity_check')).toEqual([
+          { integrity_check: 'ok' },
+        ]);
+        await client.close();
+      } finally {
+        await winner.client.close();
+        winner.db.close();
+        await host.close();
+        server.stop(true);
+        source.storage.db.close();
+      }
+    }, 30000);
     test('real native command applies a mixed sparse aggregate in one revision', async () => {
       const host = nativeTauri();
       try {

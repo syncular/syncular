@@ -71,7 +71,7 @@ struct State {
     measurements: BTreeMap<&'static str, Measurement>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Recorder(Arc<Mutex<State>>);
 
 impl Recorder {
@@ -94,7 +94,7 @@ impl Recorder {
         let state = self.0.lock().expect("benchmark phase lock poisoned");
         state.enabled.then(|| json!({
             "version": 1,
-            "scope": "Per-client inclusive phases since enable/reset; nested phases overlap. CPU covers the calling thread, excluding transport I/O threads. Counts include failed calls. Units count attempted pending operations only.",
+            "scope": "Per-client inclusive phases since enable/reset; nested phases overlap. CPU covers the thread executing each phase, excluding socket reader threads. Counts include failed calls. Units count attempted pending operations only.",
             "measurements": state.measurements,
         }))
     }

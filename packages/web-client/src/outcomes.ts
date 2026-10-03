@@ -10,7 +10,12 @@ import type { RejectionDetails, RowValue } from '@syncular/core';
 import type { ClientDatabase } from './database';
 import { ClientSyncError } from './errors';
 import type { OutboxOperation } from './outbox';
-import { type JsonRowValue, jsonToRowValue, rowValueToJson } from './schema';
+import {
+  mapRowValues,
+  type JsonRowValue,
+  jsonToRowValue,
+  rowValueToJson,
+} from './schema';
 
 export interface ConflictRecord {
   readonly clientCommitId: string;
@@ -70,6 +75,14 @@ export type CommitOperationOutcome =
     };
 
 export interface RetainedCommitRow {
+  /** Authorized different-primary-key server rows matching intended unique keys. */
+  readonly uniqueConflicts?: readonly {
+    readonly index: string;
+    readonly columns: readonly string[];
+    readonly rowId: string;
+    readonly serverRow: Readonly<Record<string, RowValue>>;
+    readonly serverVersion: number;
+  }[];
   readonly table: string;
   readonly rowId: string;
   /** Complete intended row, or null for a local deletion. */
@@ -132,12 +145,7 @@ function encodeResults(results: readonly CommitOperationOutcome[]): string {
       status: 'conflict',
       conflict: {
         ...result.conflict,
-        serverRow: Object.fromEntries(
-          Object.entries(result.conflict.serverRow).map(([key, value]) => [
-            key,
-            rowValueToJson(value),
-          ]),
-        ),
+        serverRow: mapRowValues(result.conflict.serverRow, rowValueToJson),
       },
     };
   });
@@ -154,12 +162,7 @@ function decodeResults(raw: string): CommitOperationOutcome[] {
         ...result.conflict,
         // Pre-column-version journal entries carry no conflictColumns.
         conflictColumns: result.conflict.conflictColumns ?? [],
-        serverRow: Object.fromEntries(
-          Object.entries(result.conflict.serverRow).map(([key, value]) => [
-            key,
-            jsonToRowValue(value),
-          ]),
-        ),
+        serverRow: mapRowValues(result.conflict.serverRow, jsonToRowValue),
       },
     };
   });
@@ -171,7 +174,7 @@ function parseOutcome(
 ): CommitOutcome {
   const retainedRows: RetainedCommitRow[] = db
     .query(
-      'SELECT tbl, id, intent, base, version FROM _syncular_failed_rows WHERE commit_id = ? ORDER BY idx',
+      'SELECT tbl,id,intent,base,version,unique_conflicts FROM _syncular_failed_rows WHERE commit_id=? ORDER BY idx',
       [String(row.client_commit_id)],
     )
     .map((retained) => {
@@ -187,6 +190,18 @@ function parseOutcome(
         table: String(retained.tbl),
         rowId: String(retained.id),
         localRow: decode(retained.intent),
+        ...(retained.unique_conflicts === null
+          ? {}
+          : {
+              uniqueConflicts: (
+                JSON.parse(String(retained.unique_conflicts)) as NonNullable<
+                  RetainedCommitRow['uniqueConflicts']
+                >
+              ).map((conflict) => ({
+                ...conflict,
+                serverRow: decode(JSON.stringify(conflict.serverRow))!,
+              })),
+            }),
         serverRow: decode(retained.base),
         serverVersion:
           retained.version === null ? null : Number(retained.version),
@@ -217,9 +232,7 @@ export function recordCommitOutcome(
   outcome: Omit<CommitOutcome, 'sequence' | 'resolution'>,
 ): CommitOutcome {
   db.exec(
-    `INSERT INTO _syncular_commit_outcomes(
-       client_commit_id, status, recorded_at_ms, results, operations, resolution
-     ) VALUES (?, ?, ?, ?, ?, 'active')`,
+    "INSERT INTO _syncular_commit_outcomes(client_commit_id,status,recorded_at_ms,results,operations,resolution)VALUES(?,?,?,?,?,'active')",
     [
       outcome.clientCommitId,
       outcome.status,
@@ -238,9 +251,7 @@ export function commitOutcome(
   clientCommitId: string,
 ): CommitOutcome | undefined {
   const row = db.query(
-    `SELECT seq, client_commit_id, status, recorded_at_ms, results, operations,
-            resolution, resolved_at_ms, replacement_client_commit_id
-       FROM _syncular_commit_outcomes WHERE client_commit_id = ?`,
+    'SELECT seq,client_commit_id,status,recorded_at_ms,results,operations,resolution,resolved_at_ms,replacement_client_commit_id FROM _syncular_commit_outcomes WHERE client_commit_id=?',
     [clientCommitId],
   )[0];
   return row === undefined ? undefined : parseOutcome(db, row);
@@ -261,10 +272,7 @@ export function listCommitOutcomes(
     ? "WHERE resolution = 'active' AND status IN ('conflict', 'rejected')"
     : '';
   const rows = db.query(
-    `SELECT seq, client_commit_id, status, recorded_at_ms, results, operations,
-            resolution, resolved_at_ms, replacement_client_commit_id
-       FROM _syncular_commit_outcomes ${where}
-      ORDER BY seq DESC${limit === undefined ? '' : ' LIMIT ?'}`,
+    `SELECT seq,client_commit_id,status,recorded_at_ms,results,operations,resolution,resolved_at_ms,replacement_client_commit_id FROM _syncular_commit_outcomes ${where} ORDER BY seq DESC${limit === undefined ? '' : ' LIMIT ?'}`,
     limit === undefined ? [] : [limit],
   );
   return rows.map((row) => parseOutcome(db, row));
@@ -276,9 +284,7 @@ export function persistCommitOutcomeResolution(
   nowMs: number,
 ): CommitOutcome | undefined {
   db.exec(
-    `UPDATE _syncular_commit_outcomes
-        SET resolution = ?, resolved_at_ms = ?, replacement_client_commit_id = ?
-      WHERE client_commit_id = ? AND resolution = 'active'`,
+    "UPDATE _syncular_commit_outcomes SET resolution=?,resolved_at_ms=?,replacement_client_commit_id=? WHERE client_commit_id=? AND resolution='active'",
     [
       input.resolution,
       nowMs,
@@ -309,13 +315,11 @@ export function pruneCommitOutcomes(
   const excess = Math.max(0, (count ?? 0) - maxEntries);
   if (excess === 0) return 0;
   const candidates = db.query(
-    `SELECT seq FROM _syncular_commit_outcomes
-      WHERE status IN ('applied', 'cached') OR resolution != 'active'
-      ORDER BY seq ASC LIMIT ?`,
+    "SELECT seq FROM _syncular_commit_outcomes WHERE status IN('applied','cached')OR resolution !='active' ORDER BY seq ASC LIMIT ?",
     [excess],
   );
   for (const candidate of candidates) {
-    db.exec('DELETE FROM _syncular_commit_outcomes WHERE seq = ?', [
+    db.exec('DELETE FROM _syncular_commit_outcomes WHERE seq=?', [
       candidate.seq as number,
     ]);
   }

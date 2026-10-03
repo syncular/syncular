@@ -118,6 +118,22 @@ impl HostTransport {
         })
     }
 
+    /// Network view for one I/O executor. The mutable owner keeps the reader
+    /// and inbound queue; no SQLite state or new socket is created.
+    pub fn fork_round(&self) -> Self {
+        match self {
+            Self::Null {
+                signed_urls,
+                inbound,
+            } => Self::Null {
+                signed_urls: *signed_urls,
+                inbound: inbound.clone(),
+            },
+            #[cfg(feature = "native-transport")]
+            Self::Native(t) => Self::Native(t.fork_round()),
+        }
+    }
+
     pub fn set_signed_urls(&mut self, value: bool) {
         match self {
             HostTransport::Null { signed_urls, .. } => *signed_urls = value,
@@ -359,6 +375,7 @@ mod native {
         }
     }
 
+    #[derive(Clone)]
     struct SocketSender {
         queue: mpsc::SyncSender<Outgoing>,
         poller: Arc<Poller>,
@@ -520,6 +537,22 @@ mod native {
     }
 
     impl NativeTransport {
+        pub fn fork_round(&self) -> Self {
+            Self {
+                base_url: self.base_url.clone(),
+                ws_url: self.ws_url.clone(),
+                headers: self.headers.clone(),
+                agent: self.agent.clone(),
+                signed_urls: self.signed_urls,
+                inbound: self.inbound.clone(),
+                outgoing: self.outgoing.clone(),
+                reader: None,
+                reader_stop: self.reader_stop.clone(),
+                round: self.round.clone(),
+                realtime_client_id: self.realtime_client_id.clone(),
+            }
+        }
+
         pub fn new(
             base_url: &str,
             config: &serde_json::Value,
@@ -886,7 +919,16 @@ mod native {
 
         fn realtime_connect(&mut self) -> Result<(), TransportError> {
             if self.outgoing.is_some() {
-                return Ok(());
+                if self.reader_stop.load(Ordering::SeqCst)
+                    || self
+                        .reader
+                        .as_ref()
+                        .is_some_and(|reader| reader.is_finished())
+                {
+                    self.shutdown();
+                } else {
+                    return Ok(());
+                }
             }
             // Build the client request VIA `IntoClientRequest` so tungstenite
             // fills the mandatory handshake headers (Host / Connection /
@@ -951,7 +993,8 @@ mod native {
                 queue: outgoing,
                 poller,
             }));
-            self.reader_stop.store(false, Ordering::SeqCst);
+            self.reader_stop = Arc::new(AtomicBool::new(false));
+            self.round = Arc::new(RoundChannel::default());
             let inbound = Arc::clone(&self.inbound);
             let stop = Arc::clone(&self.reader_stop);
             let round = Arc::clone(&self.round);
@@ -1059,6 +1102,89 @@ mod native {
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
+
+    #[test]
+    fn detached_round_uses_the_owned_socket_and_shutdown_releases_it() {
+        use ssp2::model::{Frame, Message, MsgKind};
+        use std::sync::mpsc::channel;
+        for cancelled in [false, true] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let (entered_tx, entered_rx) = channel();
+            let (release_tx, release_rx) = channel();
+            let server = std::thread::spawn(move || {
+                let (socket, _) = listener.accept().unwrap();
+                let mut socket = tungstenite::accept(socket).unwrap();
+                let request = socket.read().unwrap().into_data();
+                assert_eq!(request[0], crate::REALTIME_TAG_ROUND);
+                assert_eq!(
+                    ssp2::decode_message(&request[1..]).unwrap().msg_kind,
+                    MsgKind::Request
+                );
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                if !cancelled {
+                    let response = ssp2::encode_message(&Message {
+                        wire_version: ssp2::decode::WIRE_VERSION,
+                        msg_kind: MsgKind::Response,
+                        frames: vec![Frame::RespHeader {
+                            required_schema_version: None,
+                            latest_schema_version: None,
+                            log_epoch: Some("epoch".into()),
+                            reset_required: Some(true),
+                        }],
+                    });
+                    let mut chunk = vec![crate::REALTIME_TAG_ROUND];
+                    chunk.extend(response);
+                    socket
+                        .send(tungstenite::Message::Binary(chunk.into()))
+                        .unwrap();
+                }
+            });
+            let mut owner =
+                HostTransport::new_from_config(&serde_json::json!({"baseUrl":base})).unwrap();
+            owner.realtime_connect_for_client("detached-round").unwrap();
+            let mut detached = owner.fork_round();
+            let network = std::thread::spawn(move || {
+                let request = ssp2::encode_message(&Message {
+                    wire_version: ssp2::decode::WIRE_VERSION,
+                    msg_kind: MsgKind::Request,
+                    frames: vec![
+                        Frame::ReqHeader {
+                            client_id: "detached-round".into(),
+                            schema_version: 1,
+                            log_epoch: None,
+                        },
+                        Frame::PullHeader {
+                            limit_commits: 0,
+                            limit_snapshot_rows: 0,
+                            max_snapshot_pages: 0,
+                            accept: 3,
+                        },
+                    ],
+                });
+                detached.realtime_sync(&request)
+            });
+            entered_rx.recv().unwrap();
+            owner.set_headers(vec![("authorization".into(), "Bearer rotated".into())]);
+            assert!(owner.take_inbound().is_empty());
+            if cancelled {
+                owner.shutdown();
+            }
+            release_tx.send(()).unwrap();
+            let response = network.join().unwrap();
+            if cancelled {
+                assert!(response.is_err());
+            } else {
+                assert_eq!(
+                    ssp2::decode_message(&response.unwrap()).unwrap().msg_kind,
+                    MsgKind::Response
+                );
+                owner.shutdown();
+            }
+            server.join().unwrap();
+        }
+    }
 
     #[test]
     fn segment_http_failures_have_named_codes_and_request_details() {

@@ -1,4 +1,4 @@
-import { retainedBaseWrite } from './failed-overlay';
+import { retainedBaseWrite, restoreFailedBases } from './failed-overlay';
 /**
  * Local application of server data: `COMMIT` frames (§4.5), rows segments
  * (§5.2, §5.6), and the scope-matched delete shared by the §3.3 purge
@@ -37,8 +37,7 @@ function upsertSql(table: CompiledClientTable): string {
     .filter((name) => name !== quoteIdent(table.primaryKey))
     .map((name) => `${name}=excluded.${name}`)
     .join(', ');
-  return `INSERT INTO ${quoteIdent(table.name)} (${names.join(', ')}) VALUES (${placeholders})
-    ON CONFLICT (${quoteIdent(table.primaryKey)}) DO UPDATE SET ${updates}`;
+  return `INSERT INTO ${quoteIdent(table.name)}(${names.join(', ')})VALUES(${placeholders})ON CONFLICT(${quoteIdent(table.primaryKey)})DO UPDATE SET ${updates}`;
 }
 
 export function upsertLocalRow(
@@ -48,10 +47,11 @@ export function upsertLocalRow(
   syncVersion: number,
   serverWrite = true,
 ): void {
+  db.exec(upsertSql(table), [...values.map(toSqlValue), syncVersion]);
   if (serverWrite)
     retainedBaseWrite(
       db,
-      table.name,
+      table,
       String(values[table.primaryKeyIndex]),
       Object.fromEntries(
         table.columns.map((column, index) => [
@@ -61,7 +61,6 @@ export function upsertLocalRow(
       ),
       syncVersion,
     );
-  db.exec(upsertSql(table), [...values.map(toSqlValue), syncVersion]);
 }
 
 export function deleteLocalRow(
@@ -70,9 +69,9 @@ export function deleteLocalRow(
   rowId: string,
   serverWrite = true,
 ): void {
-  if (serverWrite) retainedBaseWrite(db, table.name, rowId);
+  if (serverWrite) retainedBaseWrite(db, table, rowId);
   db.exec(
-    `DELETE FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)} = ?`,
+    `DELETE FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)}=?`,
     [rowId],
   );
 }
@@ -139,6 +138,7 @@ export async function applyCommitFrame(
     });
   }
   transaction(() => {
+    restoreFailedBases(db, schema);
     for (const change of resolved) {
       if (change.op === 'delete') {
         deleteLocalRow(db, change.table, change.rowId);
@@ -222,7 +222,7 @@ export function deleteScopedRows(
     `SELECT ${quoteIdent(table.primaryKey)} AS id FROM ${quoteIdent(table.name)} WHERE ${clauses.join(' AND ')}`,
     params,
   )) {
-    retainedBaseWrite(db, table.name, String(row.id));
+    retainedBaseWrite(db, table, String(row.id));
   }
   db.exec(
     `DELETE FROM ${quoteIdent(table.name)} WHERE ${clauses.join(' AND ')}`,
@@ -273,9 +273,7 @@ export function evictScopedRows(
   }
   const target = quoteIdent(table.name);
   db.exec(
-    `DELETE FROM ${target} WHERE ${pk} IN (
-      SELECT ${pk} FROM ${target} WHERE ${clauses.join(' AND ')}${pinnedClause} LIMIT 1024
-    )`,
+    `DELETE FROM ${target} WHERE ${pk} IN(SELECT ${pk} FROM ${target} WHERE ${clauses.join(' AND ')}${pinnedClause} LIMIT 1024)`,
     params,
   );
   const remaining =
@@ -343,10 +341,7 @@ export async function applySqliteSegment(
     let meta: ReturnType<ClientDatabase['query']>;
     try {
       meta = db.query(
-        `SELECT format, "table" AS tbl, "schemaVersion" AS sv,
-                "asOfCommitSeq" AS pin, "scopeDigest" AS sd,
-                "rowCount" AS rc
-         FROM ${IMAGE_ALIAS}."_syncular_segment"`,
+        `SELECT format,"table" AS tbl,"schemaVersion" AS sv,"asOfCommitSeq" AS pin,"scopeDigest" AS sd,"rowCount" AS rc FROM ${IMAGE_ALIAS}."_syncular_segment"`,
       );
     } catch {
       imageInvalid('bytes are not a SQLite image with _syncular_segment');
@@ -396,7 +391,7 @@ export async function applySqliteSegment(
     if (primaryKeys.length !== 1 || primaryKeys[0]?.name !== table.primaryKey)
       imageInvalid('image primary key does not match generated schema');
     const source = `${IMAGE_ALIAS}.${quoteIdent(table.name)}`;
-    const count = Number(db.query(`SELECT count(*) AS n FROM ${source}`)[0]?.n);
+    const count = Number(db.query(`SELECT count(*)AS n FROM ${source}`)[0]?.n);
     if (count !== descriptor.rowCount)
       imageInvalid('image row count does not match descriptor');
     const names = table.columns.map((column) => quoteIdent(column.name));
@@ -411,9 +406,7 @@ export async function applySqliteSegment(
     for (;;) {
       if (options.isCurrent?.() === false) return applied;
       const boundary = db.query(
-        `SELECT ${primaryKey} AS boundary FROM ${source}
-         ${after === undefined ? '' : `WHERE ${primaryKey} > ?`}
-         ORDER BY ${primaryKey} LIMIT 1 OFFSET 1023`,
+        `SELECT ${primaryKey} AS boundary FROM ${source} ${after === undefined ? '' : `WHERE ${primaryKey} > ?`} ORDER BY ${primaryKey} LIMIT 1 OFFSET 1023`,
         after === undefined ? [] : [after],
       )[0]?.boundary;
       if (boundary === null) imageInvalid('image primary key must not be null');
@@ -428,23 +421,21 @@ export async function applySqliteSegment(
         params.push(boundary);
       }
       (options.transaction ?? ((fn) => db.transaction(fn)))(() => {
+        restoreFailedBases(db, schema);
         if (after === undefined && options.clearFirst)
           deleteScopedRows(db, table, options.effective);
         db.exec(
-          `INSERT INTO ${quoteIdent(table.name)} (${insertNames.join(', ')})
-           SELECT ${[...names, quoteIdent('_syncular_version')].join(', ')}
-           FROM ${source} WHERE ${predicates.join(' AND ') || 'true'}
-           ON CONFLICT (${primaryKey}) DO UPDATE SET ${updates}`,
+          `INSERT INTO ${quoteIdent(table.name)}(${insertNames.join(', ')})SELECT ${[...names, quoteIdent('_syncular_version')].join(', ')} FROM ${source} WHERE ${predicates.join(' AND ') || 'true'} ON CONFLICT(${primaryKey})DO UPDATE SET ${updates}`,
           params,
         );
-        applied += Number(db.query('SELECT changes() AS n')[0]?.n ?? 0);
+        applied += Number(db.query('SELECT changes()AS n')[0]?.n ?? 0);
         for (const row of db.query(
           `SELECT * FROM ${source} WHERE ${predicates.join(' AND ') || 'true'}`,
           params,
         )) {
           retainedBaseWrite(
             db,
-            table.name,
+            table,
             String(row[table.primaryKey]),
             Object.fromEntries(
               table.columns.map((column) => [
@@ -515,6 +506,7 @@ export async function applyRowsSegment(
     first = false;
     if (!clearThisBlock && rows.length === 0) continue;
     (options.transaction ?? ((fn) => db.transaction(fn)))(() => {
+      restoreFailedBases(db, schema);
       if (clearThisBlock) {
         deleteScopedRows(db, table, options.effective);
       }

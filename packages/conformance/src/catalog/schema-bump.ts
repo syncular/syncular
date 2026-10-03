@@ -17,6 +17,7 @@ import {
   task,
 } from '../fixture';
 import { rawPullHeader, rawSubscription, responseSection } from '../raw';
+import type { DriverSchema } from '../driver';
 import type { Scenario } from '../scenario';
 import { expectConverged, seedTasks, syncIdle, syncOk } from './util';
 
@@ -26,6 +27,128 @@ const P1 = { project_id: ['p1'] } as const;
 const WITH_SQLITE = 0b0111;
 
 export const schemaBumpScenarios: readonly Scenario[] = [
+  ...(['variable', 'prefix', 'column', 'compatible'] as const).map(
+    (change): Scenario => {
+      const oldSchema: DriverSchema = {
+        ...FIXTURE_SCHEMA,
+        version: 89,
+        tables: [
+          {
+            ...FIXTURE_SCHEMA.tables[0]!,
+            scopes: [
+              {
+                pattern: 'theatre:{theatre_calendar_id}',
+                column: 'project_id',
+              },
+            ],
+          },
+          FIXTURE_SCHEMA.tables[1]!,
+        ],
+      };
+      const schema: DriverSchema = {
+        ...oldSchema,
+        version: 90,
+        tables: [
+          {
+            ...oldSchema.tables[0]!,
+            scopes: [
+              {
+                pattern:
+                  change === 'variable'
+                    ? 'theatre:{calendar_theatre_id}'
+                    : change === 'prefix'
+                      ? 'calendar:{theatre_calendar_id}'
+                      : 'theatre:{theatre_calendar_id}',
+                column: change === 'column' ? 'title' : 'project_id',
+              },
+            ],
+          },
+          oldSchema.tables[1]!,
+        ],
+      };
+      return {
+        name: `schema-bump/subscription-scope-${change}`,
+        specRefs: ['§7.4.3', '§3.1', '§4.8'],
+        server: { schema },
+        async run(ctx) {
+          const allowed = {
+            [change === 'variable'
+              ? 'calendar_theatre_id'
+              : 'theatre_calendar_id']: ['p1'],
+            org_id: ['o1'],
+            projectId: ['p1'],
+          };
+          const a = await ctx.newClient({
+            actorId: 'actor-a',
+            clientId: 'scope-client',
+            schema: oldSchema,
+            allowed,
+          });
+          const base = { table: 'tasks', variable: 'theatre_calendar_id' };
+          await a.api.subscribe({
+            id: 'old',
+            table: 'tasks',
+            scopes: { theatre_calendar_id: ['p1'] },
+          });
+          await a.api.subscribe({
+            id: 'compatible',
+            table: 'docs',
+            scopes: { org_id: ['o1'], projectId: ['p1'] },
+          });
+          await a.api.setWindow?.(base, ['p1']);
+          await a.api.executeStorageSql?.(
+            `INSERT INTO _syncular_window_pending_evict(sub_id,tbl,effective_scopes) VALUES ('removed-unit','tasks','{"theatre_calendar_id":["p1"]}')`,
+          );
+          await ctx.recreateClient(a, schema);
+          if (a.api.querySnapshot)
+            checkEqual(
+              (
+                await a.api.querySnapshot(
+                  "SELECT count(*) AS n FROM _syncular_window_pending_evict WHERE sub_id='removed-unit'",
+                )
+              ).rows,
+              [{ n: change === 'compatible' ? 1 : 0 }],
+              'orphaned pending window evictions obey the same compatibility fence',
+            );
+          checkEqual(
+            (await a.api.subscriptionState('compatible'))?.cursor,
+            -1,
+            'compatible registration must rebootstrap wiped rows',
+          );
+          checkEqual(
+            (await a.api.subscriptionState('old')) !== undefined,
+            change === 'compatible',
+            'only compatible scope declarations survive',
+          );
+          if (a.api.windowState)
+            checkEqual(
+              (await a.api.windowState(base)).units,
+              change === 'compatible' ? ['p1'] : [],
+              'incompatible window bookkeeping is removed',
+            );
+          await a.api.subscribe({
+            id: 'current',
+            table: 'tasks',
+            scopes: {
+              [change === 'variable'
+                ? 'calendar_theatre_id'
+                : 'theatre_calendar_id']: ['p1'],
+            },
+          });
+          await syncIdle(a);
+          const cursor = (await a.api.subscriptionState('current'))?.cursor;
+          await ctx.recreateClient(a, schema);
+          checkEqual(
+            (await a.api.subscriptionState('current'))?.cursor,
+            cursor,
+            'same-version reopen keeps the cursor',
+          );
+          await syncIdle(a);
+        },
+      };
+    },
+  ),
+
   {
     name: 'schema-window/previous-client-push-pull',
     specRefs: ['§9', '§7.4.2', '§6.7'],

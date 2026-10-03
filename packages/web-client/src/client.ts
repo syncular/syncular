@@ -3,6 +3,7 @@ import {
   failedOverlayCommits,
   retainFailedRows,
   restoreFailedBases,
+  uniqueConflicts,
 } from './failed-overlay';
 import {
   ProgressEmitter,
@@ -219,6 +220,7 @@ import {
   getSubscription,
   loadSubscriptions,
   pruneUnknownSubscriptions,
+  saveSubscriptionScopeSchema,
   resetSubscriptionsForBump,
   type SubscriptionRecord,
   saveSubscription,
@@ -947,7 +949,7 @@ export class SyncClient {
     const subscriptions = pruneUnknownSubscriptions(
       this.#db,
       loadSubscriptions(this.#db),
-      new Set(this.#schema.tables.keys()),
+      this.#schema,
     );
     this.#started = true;
     // A persisted active subscription needs one catch-up round on every open:
@@ -1000,6 +1002,7 @@ export class SyncClient {
           String(this.#schema.version),
         );
         setLocalSchemaDescriptor(this.#db, this.#schema);
+        saveSubscriptionScopeSchema(this.#db, this.#schema);
       });
       return;
     }
@@ -1011,6 +1014,7 @@ export class SyncClient {
       this.#db.transaction(() => {
         ensureLocalSyncedSchema(this.#db, this.#schema);
         setLocalSchemaDescriptor(this.#db, this.#schema);
+        saveSubscriptionScopeSchema(this.#db, this.#schema);
       });
       return;
     }
@@ -1050,6 +1054,12 @@ export class SyncClient {
             ),
           );
         }
+        pruneUnknownSubscriptions(
+          this.#db,
+          loadSubscriptions(this.#db),
+          this.#schema,
+          true,
+        );
         dropAndRecreateSyncedTables(this.#db, this.#schema);
         resetSubscriptionsForBump(this.#db);
         setMeta(
@@ -1058,6 +1068,7 @@ export class SyncClient {
           String(this.#schema.version),
         );
         setLocalSchemaDescriptor(this.#db, this.#schema);
+        saveSubscriptionScopeSchema(this.#db, this.#schema);
       });
       // Whole-DB reset: every synced table's rows changed (I1 eviction-shaped).
       for (const table of this.#schema.tables.values()) batch.table(table.name);
@@ -1403,13 +1414,16 @@ export class SyncClient {
           previous.tables.join('\0') !== tables.join('\0')
         ) {
           this.#queryFailures.delete(owner.id);
-          this.#queryFailures.set(owner.id, {
-            id: owner.id,
-            tables,
-            code,
-            ...(sqliteCode !== undefined ? { sqliteCode } : {}),
-            atMs: this.#now(),
-          });
+          this.#queryFailures.set(
+            owner.id,
+            definedObject({
+              id: owner.id,
+              tables,
+              code,
+              sqliteCode: sqliteCode,
+              atMs: this.#now(),
+            }),
+          );
           for (const id of this.#queryFailures.keys()) {
             if (this.#queryFailures.size <= MAX_DIAGNOSTIC_QUERY_FAILURES)
               break;
@@ -1798,22 +1812,18 @@ export class SyncClient {
       }
       return a.id.localeCompare(b.id);
     });
-    return {
+    return definedObject({
       version: CLIENT_DIAGNOSTICS_VERSION,
       capturedAtMs,
-      host: {
+      host: definedObject({
         kind: 'direct',
         role: 'single',
         connectivity,
         realtime: this.#realtimeState,
         realtimePolicy: this.#realtimePolicy,
-        ...(this.#realtimeReasonCode !== undefined
-          ? { realtimeReasonCode: this.#realtimeReasonCode }
-          : {}),
-        ...(this.#realtimeRetryDelayMs !== undefined
-          ? { realtimeRetryDelayMs: this.#realtimeRetryDelayMs }
-          : {}),
-      },
+        realtimeReasonCode: this.#realtimeReasonCode,
+        realtimeRetryDelayMs: this.#realtimeRetryDelayMs,
+      }),
       securityLifecycle: this.#securityLifecycle,
       schema: {
         currentVersion: this.#config.schema.version,
@@ -1837,25 +1847,21 @@ export class SyncClient {
       ),
       subscriptionsTruncated:
         allSubscriptions.length > MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
-      ...(this.#lastRound !== undefined ? { lastRound: this.#lastRound } : {}),
-      ...(this.#lastChange !== undefined
-        ? { lastChange: this.#lastChange }
-        : {}),
+      lastRound: this.#lastRound,
+      lastChange: this.#lastChange,
       storage: this.#diagnosticStorage(),
       queryFailures: [...this.#queryFailures.values()],
-    };
+    });
   }
 
   #diagnosticLease(nowMs: number): ClientDiagnosticsSnapshot['lease'] {
     const lease = this.#leaseState;
     if (lease?.errorCode !== undefined) {
-      return {
+      return definedObject({
         state: 'stopped',
         errorCode: this.#diagnosticCode(lease.errorCode),
-        ...(lease.expiresAtMs !== undefined
-          ? { expiresAtMs: lease.expiresAtMs }
-          : {}),
-      };
+        expiresAtMs: lease.expiresAtMs,
+      });
     }
     if (lease?.expiresAtMs === undefined) return { state: 'none' };
     return {
@@ -1874,18 +1880,16 @@ export class SyncClient {
       );
       const outboxBytes = Number(
         this.#db.query(
-          'SELECT COALESCE(SUM(LENGTH(operations)), 0) AS bytes FROM _syncular_outbox',
+          'SELECT COALESCE(SUM(LENGTH(operations)),0)AS bytes FROM _syncular_outbox',
         )[0]?.bytes ?? 0,
       );
       const outcome = this.#db.query(
-        `SELECT COUNT(*) AS entries,
-                COALESCE(SUM(LENGTH(results) + COALESCE(LENGTH(operations), 0)), 0) AS bytes
-           FROM _syncular_commit_outcomes`,
+        'SELECT COUNT(*)AS entries,COALESCE(SUM(LENGTH(results)+ COALESCE(LENGTH(operations),0)),0)AS bytes FROM _syncular_commit_outcomes',
       )[0];
       const blobBytes = this.#hasBlobs
         ? Number(
             this.#db.query(
-              'SELECT COALESCE(SUM(byte_length), 0) AS bytes FROM _syncular_blobs',
+              'SELECT COALESCE(SUM(byte_length),0)AS bytes FROM _syncular_blobs',
             )[0]?.bytes ?? 0,
           )
         : 0;
@@ -2323,7 +2327,7 @@ export class SyncClient {
     return this.#applyBatch(
       (batch) => {
         restoreFailedBases(this.#db, this.#schema);
-        this.#db.exec('DELETE FROM _syncular_failed_rows WHERE commit_id = ?', [
+        this.#db.exec('DELETE FROM _syncular_failed_rows WHERE commit_id=?', [
           input.clientCommitId,
         ]);
         const resolved = persistCommitOutcomeResolution(
@@ -2476,14 +2480,17 @@ export class SyncClient {
       }
       return;
     }
-    saveSubscription(this.#db, {
-      id: input.id,
-      table: input.table,
-      scopes: input.scopes,
-      ...(input.params !== undefined ? { params: input.params } : {}),
-      cursor: -1,
-      status: 'active',
-    });
+    saveSubscription(
+      this.#db,
+      definedObject({
+        id: input.id,
+        table: input.table,
+        scopes: input.scopes,
+        params: input.params,
+        cursor: -1,
+        status: 'active',
+      }),
+    );
     this.#setSyncNeeded(true);
     this.#emitSyncIntent({ kind: 'interactive' });
     this.#emitDiagnostics();
@@ -2549,14 +2556,17 @@ export class SyncClient {
             // Re-entry cancels any deferred eviction for this sub id.
             deletePendingEviction(this.#db, subId);
             insertWindowUnit(this.#db, baseKey, unit, subId);
-            saveSubscription(this.#db, {
-              id: subId,
-              table: base.table,
-              scopes: unitScopes(base, unit),
-              ...(base.params !== undefined ? { params: base.params } : {}),
-              cursor: -1,
-              status: 'active',
-            });
+            saveSubscription(
+              this.#db,
+              definedObject({
+                id: subId,
+                table: base.table,
+                scopes: unitScopes(base, unit),
+                params: base.params,
+                cursor: -1,
+                status: 'active',
+              }),
+            );
           });
           this.#needsPull = true;
           batch.window(baseKey, base.table, unit);
@@ -2732,14 +2742,12 @@ export class SyncClient {
     const operations: OutboxOperation[] = mutations.map((mutation) => {
       const table = this.#table(mutation.table);
       if (mutation.op === 'delete') {
-        return {
+        return definedObject({
           table: mutation.table,
           rowId: mutation.rowId,
           op: 'delete',
-          ...(mutation.baseVersion !== undefined
-            ? { baseVersion: mutation.baseVersion }
-            : {}),
-        };
+          baseVersion: mutation.baseVersion,
+        });
       }
       const json: Record<string, JsonRowValue> = {};
       if (mutation.op === 'patch') {
@@ -2752,7 +2760,7 @@ export class SyncClient {
         const pkColumn = table.columns[table.primaryKeyIndex] as RowColumn;
         const pkValue = requireRowId(normalized.get(pkColumn.name));
         const local = this.#db.query(
-          `SELECT * FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)} = ?`,
+          `SELECT * FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)}=?`,
           [pkValue],
         )[0];
         if (!local)
@@ -2813,15 +2821,13 @@ export class SyncClient {
         });
       }
       const pkValue = requireRowId(json[table.primaryKey]);
-      return {
+      return definedObject({
         table: mutation.table,
         rowId: pkValue,
         op: 'upsert',
-        ...(mutation.baseVersion !== undefined
-          ? { baseVersion: mutation.baseVersion }
-          : {}),
+        baseVersion: mutation.baseVersion,
         values: json,
-      };
+      });
     });
     this.#applyBatch((batch) => {
       this.#db.transaction(() => {
@@ -2847,10 +2853,7 @@ export class SyncClient {
               continue;
             }
             this.#db.exec(
-              `INSERT OR IGNORE INTO _syncular_blob_commit_refs(commit_id, blob_id)
-               SELECT ?, ? WHERE EXISTS (
-                 SELECT 1 FROM _syncular_blobs WHERE blob_id = ?
-               )`,
+              'INSERT OR IGNORE INTO _syncular_blob_commit_refs(commit_id,blob_id)SELECT ?,? WHERE EXISTS(SELECT 1 FROM _syncular_blobs WHERE blob_id=?)',
               [clientCommitId, blobId, blobId],
             );
           }
@@ -2956,7 +2959,8 @@ export class SyncClient {
     // mirror row is touched and unconditionally.
     this.#dropPreviousVersion();
 
-    const rejectionCount = this.#rejections.length;
+    const priorRejections = [...this.#rejections];
+    const priorConflicts = [...this.#conflicts];
     try {
       return this.#applyBatch((batch) => {
         const targetsByTable = this.#localPurgeTargetsByTable(purge);
@@ -2969,6 +2973,14 @@ export class SyncClient {
           ),
         );
         for (const commit of droppedRetained) {
+          batch.conflicts();
+          batch.rejections();
+          this.#conflicts = this.#conflicts.filter(
+            (record) => record.clientCommitId !== commit.clientCommitId,
+          );
+          this.#rejections = this.#rejections.filter(
+            (record) => record.clientCommitId !== commit.clientCommitId,
+          );
           for (const operation of commit.operations)
             batch.table(operation.table);
           batch.outcomes();
@@ -3038,7 +3050,7 @@ export class SyncClient {
           for (let offset = 0; offset < values.length; offset += 400) {
             const chunk = values.slice(offset, offset + 400);
             this.#db.exec(
-              `DELETE FROM ${quoteIdent(tableName)} WHERE ${quoteIdent(table.primaryKey)} IN (${chunk.map(() => '?').join(', ')})`,
+              `DELETE FROM ${quoteIdent(tableName)} WHERE ${quoteIdent(table.primaryKey)} IN(${chunk.map(() => '?').join(', ')})`,
               chunk,
             );
           }
@@ -3086,7 +3098,8 @@ export class SyncClient {
     } catch (error) {
       // SQLite rolls back through #applyBatch; mirror that rollback for the
       // in-memory rejection cache before surfacing the storage failure.
-      this.#rejections.length = rejectionCount;
+      this.#rejections = priorRejections;
+      this.#conflicts = priorConflicts;
       throw error;
     }
   }
@@ -3192,7 +3205,7 @@ export class SyncClient {
         params.push(...selector.values);
       }
       for (const row of this.#db.query(
-        `SELECT CAST(${quoteIdent(target.table.primaryKey)} AS TEXT) AS id FROM ${quoteIdent(target.table.name)} WHERE ${clauses.join(' AND ')}`,
+        `SELECT CAST(${quoteIdent(target.table.primaryKey)} AS TEXT)AS id FROM ${quoteIdent(target.table.name)} WHERE ${clauses.join(' AND ')}`,
         params,
       )) {
         if (typeof row.id === 'string') ids.add(row.id);
@@ -3251,7 +3264,7 @@ export class SyncClient {
     // Pin before the first encryption await: mutations can append while a
     // round is encoding, and belong to the next request.
     const bounds = this.#db.query(
-      'SELECT COUNT(*) AS count, MAX(seq) AS last_seq FROM _syncular_outbox',
+      'SELECT COUNT(*)AS count,MAX(seq)AS last_seq FROM _syncular_outbox',
     )[0]!;
     const pendingCount = bounds.count as number;
     const throughSeq = (bounds.last_seq as number | null) ?? 0;
@@ -3288,7 +3301,7 @@ export class SyncClient {
               const selector = this.#encryption?.keyIdColumns?.[table.name];
               if (selector === undefined) return undefined;
               const row = this.#db.query(
-                `SELECT ${quoteIdent(selector)} AS value FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)} = ?`,
+                `SELECT ${quoteIdent(selector)} AS value FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)}=?`,
                 [rowId],
               )[0];
               const value = row?.value;
@@ -3401,16 +3414,16 @@ export class SyncClient {
           const error = classifySqliteFailure(caught).error;
           const completedAtMs = this.#now();
           const code = (error as { code?: unknown }).code;
-          this.#progress.update({
-            state: 'failed',
-            errorCode:
-              typeof code === 'string'
-                ? this.#diagnosticCode(code)
-                : 'client.unknown_failure',
-            ...(this.#roundRetryDelayMs !== undefined
-              ? { retryDelayMs: this.#roundRetryDelayMs }
-              : {}),
-          });
+          this.#progress.update(
+            definedObject({
+              state: 'failed',
+              errorCode:
+                typeof code === 'string'
+                  ? this.#diagnosticCode(code)
+                  : 'client.unknown_failure',
+              retryDelayMs: this.#roundRetryDelayMs,
+            }),
+          );
           this.#lastRound = {
             status: 'failed',
             startedAtMs,
@@ -3515,12 +3528,12 @@ export class SyncClient {
       );
       const limits = this.#config.limits;
       const frames: RequestFrame[] = [
-        {
+        definedObject({
           type: 'REQ_HEADER',
           clientId: this.#clientId,
           schemaVersion: this.#schema.version,
-          ...(logEpoch !== undefined ? { logEpoch } : {}),
-        },
+          logEpoch: logEpoch,
+        }),
         ...pushFrames,
         {
           type: 'PULL_HEADER',
@@ -3530,17 +3543,16 @@ export class SyncClient {
           accept: this.#acceptMask(),
         },
         ...subs.map(
-          (sub): RequestFrame => ({
-            type: 'SUBSCRIPTION',
-            id: sub.id,
-            table: sub.table,
-            scopes: sub.scopes,
-            ...(sub.params !== undefined ? { params: sub.params } : {}),
-            cursor: sub.cursor,
-            ...(sub.bootstrapState !== undefined
-              ? { bootstrapState: sub.bootstrapState }
-              : {}),
-          }),
+          (sub): RequestFrame =>
+            definedObject({
+              type: 'SUBSCRIPTION',
+              id: sub.id,
+              table: sub.table,
+              scopes: sub.scopes,
+              params: sub.params,
+              cursor: sub.cursor,
+              bootstrapState: sub.bootstrapState,
+            }),
         ),
       ];
       const requestBytes = encodeMessage({
@@ -4074,12 +4086,10 @@ export class SyncClient {
       // version this client sends. The §7.4.2 trigger-2 convergence runs
       // when the APP updates (recreating the client with a new generated
       // schema), which fires the boot-time §7.4.1 marker check instead.
-      const schemaFloor: SchemaFloor = {
+      const schemaFloor: SchemaFloor = definedObject({
         requiredSchemaVersion: header.requiredSchemaVersion,
-        ...(header.latestSchemaVersion !== undefined
-          ? { latestSchemaVersion: header.latestSchemaVersion }
-          : {}),
-      };
+        latestSchemaVersion: header.latestSchemaVersion,
+      });
       this.#setSchemaFloor(schemaFloor);
       return {
         ...summary,
@@ -4507,7 +4517,7 @@ export class SyncClient {
     for (const result of frame.results) {
       const operation = commit.operations[result.opIndex];
       if (result.status === 'conflict') {
-        const conflict: ConflictRecord = {
+        const conflict: ConflictRecord = definedObject({
           clientCommitId: frame.clientCommitId,
           opIndex: result.opIndex,
           table: operation?.table ?? '',
@@ -4520,23 +4530,23 @@ export class SyncClient {
             operation?.table,
             result.conflictColumns,
           ),
-          ...(operation !== undefined ? { operation } : {}),
-        };
+          operation: operation,
+        });
         this.#conflicts.push(conflict);
         outcomeResults.push({ status: 'conflict', conflict });
         batch.conflicts();
         summary.conflicts.push(conflict);
       } else if (result.status === 'error') {
         const details = rejectionDetails?.get(result.opIndex);
-        const rejection: RejectionRecord = {
+        const rejection: RejectionRecord = definedObject({
           clientCommitId: frame.clientCommitId,
           opIndex: result.opIndex,
           code: result.code,
           message: result.message,
           retryable: result.retryable,
-          ...(details !== undefined ? { details } : {}),
-          ...(operation !== undefined ? { operation } : {}),
-        };
+          details: details,
+          operation: operation,
+        });
         this.#rejections.push(rejection);
         outcomeResults.push({ status: 'error', rejection });
         batch.rejections();
@@ -4574,7 +4584,7 @@ export class SyncClient {
   #outboxCommitExists(clientCommitId: string): boolean {
     return (
       this.#db.query(
-        'SELECT 1 FROM _syncular_outbox WHERE client_commit_id = ? LIMIT 1',
+        'SELECT 1 FROM _syncular_outbox WHERE client_commit_id=? LIMIT 1',
         [clientCommitId],
       ).length > 0
     );
@@ -4627,7 +4637,14 @@ export class SyncClient {
       (fn) =>
         this.#applyBatch((batch) => {
           this.#recordCommitChanges(batch, frame);
-          return fn();
+          const result = fn();
+          if (
+            this.#retainFailedCommits &&
+            this.#db.query('SELECT 1 FROM _syncular_failed_rows LIMIT 1')
+              .length > 0
+          )
+            this.#replayOutbox();
+          return result;
         }),
     );
     summary.commitsApplied += 1;
@@ -4660,9 +4677,7 @@ export class SyncClient {
     );
     if (mappings.length === 0) return false;
     const row = this.#db.query(
-      `SELECT ${mappings.map(([, column]) => quoteIdent(column)).join(', ')}
-         FROM ${quoteIdent(table.name)}
-        WHERE ${quoteIdent(table.primaryKey)} = ?`,
+      `SELECT ${mappings.map(([, column]) => quoteIdent(column)).join(', ')} FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)}=?`,
       [rowId],
     )[0];
     if (row === undefined) return false;
@@ -4694,8 +4709,7 @@ export class SyncClient {
     }
     return (
       this.#db.query(
-        `SELECT 1 FROM ${quoteIdent(table.name)}
-          WHERE ${clauses.join(' AND ')} LIMIT 1`,
+        `SELECT 1 FROM ${quoteIdent(table.name)} WHERE ${clauses.join(' AND ')} LIMIT 1`,
         params,
       ).length > 0
     );
@@ -4733,18 +4747,19 @@ export class SyncClient {
       ) {
         const registered = getWindowUnitBySubId(this.#db, sub.id);
         this.#applyBatch((batch) => {
-          saveSubscription(this.#db, {
-            id: sub.id,
-            table: sub.table,
-            scopes: sub.scopes,
-            ...(sub.params !== undefined ? { params: sub.params } : {}),
-            cursor: sub.cursor,
-            ...(sub.effectiveScopes !== undefined
-              ? { effectiveScopes: sub.effectiveScopes }
-              : {}),
-            status: 'failed',
-            reasonCode: 'sync.scope_revoked',
-          });
+          saveSubscription(
+            this.#db,
+            definedObject({
+              id: sub.id,
+              table: sub.table,
+              scopes: sub.scopes,
+              params: sub.params,
+              cursor: sub.cursor,
+              effectiveScopes: sub.effectiveScopes,
+              status: 'failed',
+              reasonCode: 'sync.scope_revoked',
+            }),
+          );
           if (registered !== undefined) {
             batch.window(registered.baseKey, sub.table, registered.unit);
           }
@@ -4847,16 +4862,19 @@ export class SyncClient {
         wasPending && nextCursor >= 0 && bootstrapState === undefined;
       const registered = getWindowUnitBySubId(this.#db, sub.id);
       this.#applyBatch((batch) => {
-        saveSubscription(this.#db, {
-          id: sub.id,
-          table: sub.table,
-          scopes: sub.scopes,
-          ...(sub.params !== undefined ? { params: sub.params } : {}),
-          cursor: nextCursor,
-          ...(bootstrapState !== undefined ? { bootstrapState } : {}),
-          effectiveScopes: start.effectiveScopes,
-          status: 'active',
-        });
+        saveSubscription(
+          this.#db,
+          definedObject({
+            id: sub.id,
+            table: sub.table,
+            scopes: sub.scopes,
+            params: sub.params,
+            cursor: nextCursor,
+            bootstrapState: bootstrapState,
+            effectiveScopes: start.effectiveScopes,
+            status: 'active',
+          }),
+        );
         if (completed && registered !== undefined) {
           // A zero-row bootstrap is a window-domain transition, not a fake
           // row/table change (SPEC §4.8 / §7.5).
@@ -4871,18 +4889,19 @@ export class SyncClient {
       // with cursor = -1 on the next pull. Staleness, not a purge.
       const registered = getWindowUnitBySubId(this.#db, sub.id);
       this.#applyBatch((batch) => {
-        saveSubscription(this.#db, {
-          id: sub.id,
-          table: sub.table,
-          scopes: sub.scopes,
-          ...(sub.params !== undefined ? { params: sub.params } : {}),
-          cursor: -1,
-          ...(sub.effectiveScopes !== undefined
-            ? { effectiveScopes: sub.effectiveScopes }
-            : {}),
-          status: 'active',
-          reasonCode: start.reasonCode,
-        });
+        saveSubscription(
+          this.#db,
+          definedObject({
+            id: sub.id,
+            table: sub.table,
+            scopes: sub.scopes,
+            params: sub.params,
+            cursor: -1,
+            effectiveScopes: sub.effectiveScopes,
+            status: 'active',
+            reasonCode: start.reasonCode,
+          }),
+        );
         if (registered !== undefined) {
           batch.window(registered.baseKey, sub.table, registered.unit);
         }
@@ -4915,6 +4934,14 @@ export class SyncClient {
               ),
           );
           for (const commit of droppedRetained) {
+            batch.conflicts();
+            batch.rejections();
+            this.#conflicts = this.#conflicts.filter(
+              (record) => record.clientCommitId !== commit.clientCommitId,
+            );
+            this.#rejections = this.#rejections.filter(
+              (record) => record.clientCommitId !== commit.clientCommitId,
+            );
             for (const operation of commit.operations)
               batch.table(operation.table);
             batch.outcomes();
@@ -4976,18 +5003,19 @@ export class SyncClient {
           }
         }
       }
-      saveSubscription(this.#db, {
-        id: sub.id,
-        table: sub.table,
-        scopes: sub.scopes,
-        ...(sub.params !== undefined ? { params: sub.params } : {}),
-        cursor: nextCursor,
-        ...(lastEffective !== undefined
-          ? { effectiveScopes: lastEffective }
-          : {}),
-        status: failed ? 'failed' : 'revoked',
-        reasonCode: start.reasonCode,
-      });
+      saveSubscription(
+        this.#db,
+        definedObject({
+          id: sub.id,
+          table: sub.table,
+          scopes: sub.scopes,
+          params: sub.params,
+          cursor: nextCursor,
+          effectiveScopes: lastEffective,
+          status: failed ? 'failed' : 'revoked',
+          reasonCode: start.reasonCode,
+        }),
+      );
       if (registered !== undefined) {
         batch.window(registered.baseKey, sub.table, registered.unit);
       }
@@ -5010,7 +5038,7 @@ export class SyncClient {
       quoteIdent(SYNC_VERSION_COLUMN),
     ];
     const row = this.#db.query(
-      `SELECT ${columns.join(', ')} FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)} = ?`,
+      `SELECT ${columns.join(', ')} FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)}=?`,
       [operation.rowId],
     )[0];
     if (row === undefined) return { opIndex, existed: false };
@@ -5074,7 +5102,7 @@ export class SyncClient {
       const table = this.#schema.tables.get(operation.table);
       if (table === undefined) continue;
       const row = this.#db.query(
-        `SELECT ${quoteIdent(SYNC_VERSION_COLUMN)} AS v FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)} = ?`,
+        `SELECT ${quoteIdent(SYNC_VERSION_COLUMN)} AS v FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)}=?`,
         [operation.rowId],
       )[0];
       if (row !== undefined && row.v === OPTIMISTIC_VERSION) {
@@ -5130,6 +5158,7 @@ export class SyncClient {
   #applyOperationsLocally(
     operations: readonly OutboxOperation[],
     batch?: ChangeAccumulator,
+    replay = false,
   ): void {
     for (const op of operations) {
       const table = this.#table(op.table);
@@ -5149,7 +5178,7 @@ export class SyncClient {
       const opValues = op.values ?? {};
       const full = table.columns.every((column) => column.name in opValues);
       const local = this.#db.query(
-        `SELECT * FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)} = ?`,
+        `SELECT * FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)}=?`,
         [op.rowId],
       )[0];
       if (local === undefined && !full) {
@@ -5180,6 +5209,21 @@ export class SyncClient {
         local === undefined
           ? OPTIMISTIC_VERSION
           : (local[SYNC_VERSION_COLUMN] as number);
+      if (
+        replay &&
+        table.indexes.some((index) => index.unique) &&
+        uniqueConflicts(
+          this.#db,
+          table,
+          Object.fromEntries(
+            table.columns.map((column, index) => [
+              column.name,
+              values[index] ?? null,
+            ]),
+          ),
+        ).length
+      )
+        continue;
       upsertLocalRow(this.#db, table, values, version, false);
     }
   }
@@ -5196,7 +5240,7 @@ export class SyncClient {
         restoreFailedBases(this.#db, this.#schema);
         restoreFailedBases(this.#db, this.#schema, true);
         for (const commit of pending)
-          this.#applyOperationsLocally(commit.operations, batch);
+          this.#applyOperationsLocally(commit.operations, batch, true);
       });
     });
   }
@@ -5234,6 +5278,21 @@ export class SyncClient {
       );
     }
   }
+}
+
+type DefinedObject<T> = {
+  [K in keyof T as undefined extends T[K] ? never : K]: T[K];
+} & {
+  [K in keyof T as undefined extends T[K] ? K : never]?: Exclude<
+    T[K],
+    undefined
+  >;
+};
+function definedObject<const T extends object>(record: T): DefinedObject<T> {
+  for (const key of Object.keys(record) as (keyof T)[]) {
+    if (record[key] === undefined) delete record[key];
+  }
+  return record as DefinedObject<T>;
 }
 
 function requireRowId(value: unknown): string {

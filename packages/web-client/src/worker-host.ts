@@ -804,11 +804,33 @@ async function startWorkerCore(options: {
   const worker = config.worker();
   const pending = new Map<number, Pending>();
   const nextId = { value: 1 };
+  let terminated = false;
+  let rejectReady: ((error: Error) => void) | undefined;
+  const closedError = new ClientSyncError(
+    WORKER_FAILED_CODE,
+    'the handle was closed',
+  );
+  const terminate = () => {
+    if (terminated) return;
+    terminated = true;
+    globalThis.removeEventListener?.('pagehide', terminate);
+    bridge?.close();
+    worker.terminate();
+    rejectReady?.(closedError);
+    for (const entry of pending.values()) entry.reject(closedError);
+    pending.clear();
+    void lease.release();
+  };
+  // Installed before bootstrap starts: pagehide must also terminate a worker
+  // whose first open/import is still pending. Termination closes its SAHs and
+  // releases its physical Web Lock; the next document waits for that lock.
+  globalThis.addEventListener?.('pagehide', terminate);
 
   const invoke = (
     method: string,
     args: readonly unknown[],
   ): Promise<unknown> => {
+    if (terminated) return Promise.reject(closedError);
     const id = nextId.value++;
     return new Promise<unknown>((resolve, reject) => {
       pending.set(id, { resolve, reject });
@@ -824,6 +846,7 @@ async function startWorkerCore(options: {
   let bridge: LeaderBridge | undefined;
 
   const ready = new Promise<void>((resolve, reject) => {
+    rejectReady = reject;
     const onMessage = (event: MessageEvent) => {
       const message = event.data as WorkerToMainMessage;
       switch (message.t) {
@@ -889,26 +912,25 @@ async function startWorkerCore(options: {
       invoke,
       bridge,
       lease,
-      close: async (terminate) => {
+      close: async (terminateWorker) => {
+        if (terminated) return;
         bridge?.close();
         try {
           await invoke('close', []);
         } catch {
-          // Closing a wedged worker still terminates it below.
+          // A terminated or failed worker has no further close RPC to service.
         }
-        if (terminate) worker.terminate();
-        const closedError = new ClientSyncError(
-          WORKER_FAILED_CODE,
-          'the handle was closed',
-        );
-        for (const entry of pending.values()) entry.reject(closedError);
-        pending.clear();
-        await lease.release();
+        if (terminateWorker) terminate();
+        else {
+          globalThis.removeEventListener?.('pagehide', terminate);
+          for (const entry of pending.values()) entry.reject(closedError);
+          pending.clear();
+          await lease.release();
+        }
       },
     };
   } catch (error) {
-    worker.terminate();
-    await lease.release();
+    terminate();
     throw error;
   }
 }

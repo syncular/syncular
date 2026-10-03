@@ -21,7 +21,11 @@ fn inject_db_path(mut command: Value, path: &str) -> Value {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut core = SyncularCore::new(&json!({}))?;
+    let config = match std::env::args().nth(1) {
+        Some(base_url) => json!({ "baseUrl": base_url }),
+        None => json!({}),
+    };
+    let mut core = SyncularCore::new(&config)?;
     let db_path = std::env::temp_dir().join(format!(
         "syncular-tauri-bridge-harness-{}.db",
         std::process::id()

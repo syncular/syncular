@@ -6,16 +6,23 @@ import { chromium } from 'playwright';
 import { decodeMessage } from '@syncular/core';
 import {
   handleSegmentDownload,
+  compileSchema,
   handleSyncRequest,
   verifySegmentToken,
 } from '@syncular/server';
 import { makeClient, makeServer, PARTITION } from './helpers';
-import { OPFS_SCHEMA, type CrashPoint } from './opfs-bootstrap-fixture';
+import {
+  OPFS_SCHEMA,
+  OPFS_SCOPE_SCHEMAS,
+  type CrashPoint,
+} from './opfs-bootstrap-fixture';
 import type {} from './opfs-bootstrap-page';
 
 const source = makeServer(OPFS_SCHEMA);
 source.allowed['actor-1'] = { project_id: ['p1'] };
 source.limits.inlineSegmentMaxBytes = 0;
+const scopeSource = makeServer(OPFS_SCOPE_SCHEMAS[2]!);
+scopeSource.allowed['actor-1'] = { calendar_theatre_id: ['p1'] };
 const expected = Array.from({ length: 4000 }, (_, i) => ({
   id: `code-${String(i).padStart(5, '0')}`,
   project_id: 'p1',
@@ -146,6 +153,35 @@ beforeAll(async () => {
           ).length;
         return new Response(response.slice().buffer, { headers });
       }
+      if (pathname === '/sync-scope') {
+        const response = await handleSyncRequest(
+          new Uint8Array(await request.arrayBuffer()),
+          {
+            ...scopeSource.ctxFor('actor-1'),
+            schemaWindow: OPFS_SCOPE_SCHEMAS.slice(1)
+              .reverse()
+              .map(compileSchema),
+          },
+        );
+        return new Response(response.slice().buffer);
+      }
+      if (pathname.startsWith('/scope-segments/')) {
+        const result = await handleSegmentDownload(
+          {
+            ...scopeSource.ctxFor('actor-1'),
+            schemaWindow: OPFS_SCOPE_SCHEMAS.slice(1)
+              .reverse()
+              .map(compileSchema),
+          },
+          {
+            segmentId: decodeURIComponent(
+              pathname.slice('/scope-segments/'.length),
+            ),
+            scopesHeader: request.headers.get('X-Syncular-Scopes') ?? '',
+          },
+        );
+        return new Response(result.bytes.slice().buffer);
+      }
       if (pathname.startsWith('/signed-segments/')) {
         const segmentId = decodeURIComponent(
           pathname.slice('/signed-segments/'.length),
@@ -183,6 +219,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await server?.stop(true);
   source.storage.db.close();
+  scopeSource.storage.db.close();
 });
 
 for (const point of [
@@ -362,7 +399,7 @@ for (const point of [
 }
 
 for (const releaseOwner of [true, false]) {
-  test(`OPFS startup contention: owner ${releaseOwner ? 'releases during retry' : 'remains live'}`, async () => {
+  test(`OPFS startup contention: owner ${releaseOwner ? 'document closes' : 'explicitly hands over'}`, async () => {
     const browser = await chromium.launch();
     const context = await browser.newContext();
     try {
@@ -394,23 +431,23 @@ for (const releaseOwner of [true, false]) {
           throw error;
         }
       });
-      await contender.evaluate(() => window.opfsTest.storageBusy);
+      await contender.waitForFunction(async () => {
+        const locks = await navigator.locks.query();
+        return locks.pending?.some((lock) =>
+          lock.name?.startsWith('syncular-opfs/'),
+        );
+      });
       if (releaseOwner) {
         await owner.close();
-        expect(await opening).toEqual({ status: 'ready' });
       } else {
-        expect(await opening).toEqual({
-          code: 'client.storage_busy',
-          retryable: true,
-        });
         expect(
           await owner.evaluate(async () =>
             (await window.opfsTest.ready).query('SELECT id FROM catalogue'),
           ),
         ).toEqual([{ id: 'pending-owner' }]);
-        await owner.close();
-        await contender.evaluate(() => window.opfsTest.open(true));
+        await owner.evaluate(async () => (await window.opfsTest.ready).close());
       }
+      expect(await opening).toEqual({ status: 'ready' });
       expect(
         await contender.evaluate(async () => {
           const client = await window.opfsTest.ready;
@@ -805,5 +842,352 @@ test('OPFS offline atomic patch survives reload and retains second-actor conflic
     winner.db.close();
     await context.close();
     await rm(profile, { recursive: true, force: true });
+  }
+}, 60000);
+
+test('OPFS retains a distinct-ID unique insert without displacing the server winner', async () => {
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
+  const winner = await makeClient(source, {
+    clientId: 'unique-winner',
+    schema: OPFS_SCHEMA,
+  });
+  try {
+    await page.goto(`http://127.0.0.1:${server.port}/`);
+    await page.evaluate(async () => {
+      await window.opfsTest.open();
+      const client = await window.opfsTest.ready;
+      await client.subscribe({
+        id: 'catalogue',
+        table: 'catalogue',
+        scopes: { project_id: ['p1'] },
+      });
+      await client.syncUntilIdle();
+    });
+    const losing = await page.evaluate(async () =>
+      (await window.opfsTest.ready).mutate([
+        {
+          table: 'catalogue',
+          op: 'upsert',
+          values: {
+            id: 'unique-loser',
+            project_id: 'p1',
+            title: 'unique-publication',
+          },
+        },
+      ]),
+    );
+    winner.client.mutate([
+      {
+        table: 'catalogue',
+        op: 'upsert',
+        values: {
+          id: 'unique-winner',
+          project_id: 'p1',
+          title: 'unique-publication',
+        },
+      },
+    ]);
+    await winner.client.syncUntilIdle();
+    await page.evaluate(async () => {
+      await (await window.opfsTest.ready).syncUntilIdle();
+    });
+    const expected = {
+      rowId: 'unique-loser',
+      localRow: { id: 'unique-loser' },
+      serverRow: null,
+      uniqueConflicts: [
+        {
+          index: 'catalogue_unique_title',
+          columns: ['project_id', 'title'],
+          rowId: 'unique-winner',
+          serverVersion: 1,
+          serverRow: { id: 'unique-winner', title: 'unique-publication' },
+        },
+      ],
+    };
+    expect(
+      await page.evaluate(
+        async (id) => (await window.opfsTest.ready).commitOutcome(id),
+        losing,
+      ),
+    ).toMatchObject({ retainedRows: [expected] });
+    await page.evaluate(async () => {
+      await (await window.opfsTest.ready).close();
+    });
+    await page.reload();
+    await page.evaluate(async () => {
+      await window.opfsTest.open();
+      await (await window.opfsTest.ready).syncUntilIdle();
+    });
+    expect(
+      await page.evaluate(
+        async (id) => (await window.opfsTest.ready).commitOutcome(id),
+        losing,
+      ),
+    ).toMatchObject({ retainedRows: [expected] });
+    await page.evaluate(async (id) => {
+      const client = await window.opfsTest.ready;
+      const replacement = await client.patch(
+        'catalogue',
+        'unique-winner',
+        { title: 'reviewed-mine' },
+        { baseVersion: 1 },
+      );
+      await client.resolveCommitOutcome({
+        clientCommitId: id,
+        resolution: 'superseded',
+        replacementClientCommitId: replacement,
+      });
+      await client.syncUntilIdle();
+    }, losing);
+    expect(
+      await page.evaluate(async () =>
+        (await window.opfsTest.ready).query(
+          "SELECT id, title FROM catalogue WHERE id IN ('unique-winner', 'unique-loser')",
+        ),
+      ),
+    ).toEqual([{ id: 'unique-winner', title: 'reviewed-mine' }]);
+    await page.evaluate(async () => {
+      await (await window.opfsTest.ready).close();
+    });
+  } finally {
+    await winner.client.close();
+    winner.db.close();
+    await browser.close();
+  }
+}, 30000);
+
+test('OPFS 89→90 drops old scopes/windows and reloads after a compatible 91 bump', async () => {
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    const errors: string[] = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    page.on('console', (message) => {
+      if (message.type() === 'error') errors.push(message.text());
+    });
+    await page.goto(server.url.href);
+    await page.evaluate(
+      (schema) => window.opfsTest.open(false, schema),
+      OPFS_SCOPE_SCHEMAS[0]!,
+    );
+    const id = await page.evaluate(async () => {
+      const client = await window.opfsTest.ready;
+      await client.subscribe({
+        id: 'old',
+        table: 'catalogue',
+        scopes: { theatre_calendar_id: ['p1'] },
+      });
+      await client.setWindow(
+        { table: 'catalogue', variable: 'theatre_calendar_id' },
+        ['p1'],
+      );
+      await client.mutate([
+        {
+          table: 'catalogue',
+          op: 'upsert',
+          values: { id: 'scope-offline', project_id: 'p1', title: 'offline' },
+        },
+      ]);
+      return client.clientId;
+    });
+    await page.reload({ waitUntil: 'load' });
+    await page.evaluate(
+      (schema) => window.opfsTest.open(false, schema),
+      OPFS_SCOPE_SCHEMAS[1]!,
+    );
+    expect(
+      await page.evaluate(async () => {
+        const client = await window.opfsTest.ready;
+        return {
+          id: client.clientId,
+          old: await client.subscription('old'),
+          window: await client.windowState({
+            table: 'catalogue',
+            variable: 'theatre_calendar_id',
+          }),
+          pending: (await client.pendingCommits()).length,
+        };
+      }),
+    ).toEqual({
+      id,
+      old: undefined,
+      window: { units: [], pending: [] },
+      pending: 1,
+    });
+    await page.evaluate(async () => {
+      const client = await window.opfsTest.ready;
+      await client.subscribe({
+        id: 'current',
+        table: 'catalogue',
+        scopes: { calendar_theatre_id: ['p1'] },
+      });
+      await client.syncUntilIdle();
+    });
+    const cursor = await page.evaluate(
+      async () =>
+        (await (await window.opfsTest.ready).subscription('current'))?.cursor,
+    );
+    await page.reload({ waitUntil: 'load' });
+    await page.evaluate(
+      (schema) => window.opfsTest.open(false, schema),
+      OPFS_SCOPE_SCHEMAS[1]!,
+    );
+    expect(
+      await page.evaluate(
+        async () =>
+          (await (await window.opfsTest.ready).subscription('current'))?.cursor,
+      ),
+    ).toBe(cursor);
+    await page.reload({ waitUntil: 'load' });
+    await page.evaluate(
+      (schema) => window.opfsTest.open(false, schema),
+      OPFS_SCOPE_SCHEMAS[2]!,
+    );
+    expect(
+      await page.evaluate(
+        async () =>
+          (await (await window.opfsTest.ready).subscription('current'))?.cursor,
+      ),
+    ).toBe(-1);
+    // A reload immediately after the schema reset, followed by a second reload.
+    for (let i = 0; i < 2; i++) {
+      await page.reload({ waitUntil: 'load' });
+      await page.evaluate(
+        (schema) => window.opfsTest.open(false, schema),
+        OPFS_SCOPE_SCHEMAS[2]!,
+      );
+    }
+    expect(
+      await page.evaluate(async () => {
+        const client = await window.opfsTest.ready;
+        await client.syncUntilIdle();
+        return {
+          rows: await client.query('SELECT id, title FROM catalogue'),
+          pending: (await client.pendingCommits()).length,
+          probe: await window.opfsTest.probe(),
+        };
+      }),
+    ).toMatchObject({
+      rows: [{ id: 'scope-offline', title: 'offline' }],
+      pending: 0,
+      probe: { ftsIntegrity: 'ok', integrity: [{ integrity_check: 'ok' }] },
+    });
+    expect(errors).toEqual([]);
+    await page.evaluate(async () => (await window.opfsTest.ready).close());
+  } finally {
+    await browser.close();
+  }
+}, 60000);
+
+test('OPFS live second tab follows the leader and promotes after reload', async () => {
+  const browser = await chromium.launch();
+  const context = await browser.newContext();
+  try {
+    const owner = await context.newPage();
+    await owner.goto(server.url.href);
+    await owner.evaluate(() => window.opfsTest.open());
+    const follower = await context.newPage();
+    await follower.goto(server.url.href);
+    await follower.evaluate(() => window.opfsTest.open());
+    expect(
+      await follower.evaluate(async () => (await window.opfsTest.ready).role),
+    ).toBe('follower');
+    expect(follower.workers()).toHaveLength(0);
+    await follower.evaluate(async () =>
+      (await window.opfsTest.ready).mutate([
+        {
+          table: 'catalogue',
+          op: 'upsert',
+          values: {
+            id: 'through-follower',
+            project_id: 'p1',
+            title: 'follower',
+          },
+        },
+      ]),
+    );
+    await owner.reload({ waitUntil: 'load' });
+    await follower.waitForFunction(
+      async () => (await window.opfsTest.ready).role === 'leader',
+    );
+    await owner.evaluate(() => window.opfsTest.open());
+    expect(
+      await owner.evaluate(async () => (await window.opfsTest.ready).role),
+    ).toBe('follower');
+    expect(
+      await owner.evaluate(async () =>
+        (await window.opfsTest.ready).query('SELECT id FROM catalogue'),
+      ),
+    ).toEqual([{ id: 'through-follower' }]);
+    await owner.evaluate(async () => (await window.opfsTest.ready).close());
+    await follower.evaluate(async () => (await window.opfsTest.ready).close());
+  } finally {
+    await browser.close();
+  }
+}, 60000);
+
+test('OPFS pagehide closes handles during bootstrap and survives a double reload', async () => {
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    const errors: string[] = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    await page.goto(server.url.href);
+    await page.evaluate(() => window.opfsTest.open());
+    const id = await page.evaluate(async () => {
+      const client = await window.opfsTest.ready;
+      await client.sync();
+      await client.subscribe({
+        id: 'catalogue',
+        table: 'catalogue',
+        scopes: { project_id: ['p1'] },
+      });
+      await window.opfsTest.arm('after-chunk');
+      void client.syncUntilIdle().catch(() => {});
+      await window.opfsTest.crash;
+      return client.clientId;
+    });
+    // No close RPC or explicit worker termination: production pagehide owns it.
+    await page.reload({ waitUntil: 'load' });
+    await page.evaluate(() => window.opfsTest.open());
+    expect(
+      await page.evaluate(async () => {
+        const client = await window.opfsTest.ready;
+        return {
+          id: client.clientId,
+          count: (await client.query('SELECT count(*) AS n FROM catalogue'))[0]
+            ?.n,
+          probe: await window.opfsTest.probe(),
+        };
+      }),
+    ).toMatchObject({
+      id,
+      count: 1024,
+      probe: { ftsIntegrity: 'ok', integrity: [{ integrity_check: 'ok' }] },
+    });
+    await page.reload({ waitUntil: 'load' });
+    await page.evaluate(() => window.opfsTest.open());
+    expect(
+      await page.evaluate(async () => {
+        const client = await window.opfsTest.ready;
+        await client.syncUntilIdle();
+        return {
+          id: client.clientId,
+          count: (await client.query('SELECT count(*) AS n FROM catalogue'))[0]
+            ?.n,
+          probe: await window.opfsTest.probe(),
+        };
+      }),
+    ).toMatchObject({
+      id,
+      count: 4000,
+      probe: { ftsIntegrity: 'ok', integrity: [{ integrity_check: 'ok' }] },
+    });
+    expect(errors).toEqual([]);
+    await page.evaluate(async () => (await window.opfsTest.ready).close());
+  } finally {
+    await browser.close();
   }
 }, 60000);

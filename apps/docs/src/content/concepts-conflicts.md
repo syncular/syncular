@@ -94,6 +94,21 @@ evidence remain readable. The client leaves the local row absent; it does not
 materialize a complete row from the saved before-image. An application must
 restore an authorized base or write a complete row before retrying that intent.
 
+A failed insert can collide with a different server primary key through a
+secondary unique index. The intended row stays in the journal while physical
+reads show the server winner. `retainedRows[].uniqueConflicts` lists the matching
+`index`, `columns`, competing `rowId`, authorized `serverRow` and `serverVersion`.
+The same-ID `serverRow` remains null when that primary key has no server base.
+NULL values follow SQLite's unique-index semantics and do not collide.
+
+For keep-mine, patch the competing `rowId` using its `serverVersion`, then link
+the replacement through `superseded`. An edit can insert the intended ID with a
+free unique key. Take-server discards the intent through `resolved_keep_server`.
+Revocation and security purge erase retained rows, the aggregate operation
+envelope and row-bearing journal results. Static outcome history remains.
+Update the npm packages and native crates together to 0.30.11. Existing browser
+replicas migrate their bookkeeping on open; the application schema does not change.
+
 ## Conflict detection
 
 Pass a `baseVersion` on a mutation to assert "I edited version K." The

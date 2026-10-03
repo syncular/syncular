@@ -221,6 +221,7 @@
       },
       "devDependencies": {
         "@syncular/react": "workspace:*",
+        "@syncular/server": "workspace:*",
       },
       "peerDependencies": {
         "@tauri-apps/api": ">=2.0.0",

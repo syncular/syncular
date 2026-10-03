@@ -66,15 +66,12 @@ export function appendOutboxCommit(
     );
   }
   db.exec(
-    `INSERT INTO _syncular_outbox(client_commit_id, created_at_ms, operations)
-     VALUES (?, ?, ?)`,
+    'INSERT INTO _syncular_outbox(client_commit_id,created_at_ms,operations)VALUES(?,?,?)',
     [clientCommitId, nowMs, JSON.stringify(operations)],
   );
   for (const image of beforeImages) {
     db.exec(
-      `INSERT INTO _syncular_outbox_before_images(
-         client_commit_id, op_index, existed, sync_version, values_json
-       ) VALUES (?, ?, ?, ?, ?)`,
+      'INSERT INTO _syncular_outbox_before_images(client_commit_id,op_index,existed,sync_version,values_json)VALUES(?,?,?,?,?)',
       [
         clientCommitId,
         image.opIndex,
@@ -90,8 +87,7 @@ export function appendOutboxCommit(
 export function listOutbox(db: ClientDatabase): OutboxCommit[] {
   return db
     .query(
-      `SELECT seq, client_commit_id, created_at_ms, operations
-       FROM _syncular_outbox ORDER BY seq ASC`,
+      'SELECT seq, client_commit_id, created_at_ms, operations FROM _syncular_outbox ORDER BY seq ASC',
     )
     .map(decodeOutboxRow);
 }
@@ -113,8 +109,7 @@ export function* iterateOutbox(
   let afterSeq = 0;
   while (afterSeq < throughSeq) {
     const rows = db.query(
-      `SELECT seq, client_commit_id, created_at_ms, operations FROM _syncular_outbox
-       WHERE seq > ? AND seq <= ? ORDER BY seq ASC LIMIT 32`,
+      'SELECT seq, client_commit_id, created_at_ms, operations FROM _syncular_outbox WHERE seq > ? AND seq <= ? ORDER BY seq ASC LIMIT 32',
       [afterSeq, throughSeq],
     );
     if (rows.length === 0) return;
@@ -128,7 +123,7 @@ export function* iterateOutbox(
 
 /** Routine status reads never load operation bodies. */
 export function countOutbox(db: ClientDatabase): number {
-  return db.query('SELECT COUNT(*) AS count FROM _syncular_outbox')[0]!
+  return db.query('SELECT COUNT(*)AS count FROM _syncular_outbox')[0]!
     .count as number;
 }
 
@@ -136,14 +131,14 @@ export function deleteOutboxCommit(
   db: ClientDatabase,
   clientCommitId: string,
 ): void {
-  db.exec('DELETE FROM _syncular_blob_commit_refs WHERE commit_id = ?', [
+  db.exec('DELETE FROM _syncular_blob_commit_refs WHERE commit_id=?', [
     clientCommitId,
   ]);
   db.exec(
-    'DELETE FROM _syncular_outbox_before_images WHERE client_commit_id = ?',
+    'DELETE FROM _syncular_outbox_before_images WHERE client_commit_id=?',
     [clientCommitId],
   );
-  db.exec('DELETE FROM _syncular_outbox WHERE client_commit_id = ?', [
+  db.exec('DELETE FROM _syncular_outbox WHERE client_commit_id=?', [
     clientCommitId,
   ]);
 }
@@ -154,9 +149,7 @@ export function listOutboxBeforeImages(
 ): OutboxBeforeImage[] {
   return db
     .query(
-      `SELECT op_index, existed, sync_version, values_json
-         FROM _syncular_outbox_before_images
-        WHERE client_commit_id = ? ORDER BY op_index`,
+      'SELECT op_index,existed,sync_version,values_json FROM _syncular_outbox_before_images WHERE client_commit_id=? ORDER BY op_index',
       [clientCommitId],
     )
     .map((row) => ({
@@ -182,14 +175,11 @@ export function replaceOutboxBeforeImages(
 ): void {
   for (const image of replacements) {
     db.exec(
-      `DELETE FROM _syncular_outbox_before_images
-        WHERE client_commit_id = ? AND op_index = ?`,
+      'DELETE FROM _syncular_outbox_before_images WHERE client_commit_id=? AND op_index=?',
       [clientCommitId, image.opIndex],
     );
     db.exec(
-      `INSERT INTO _syncular_outbox_before_images(
-         client_commit_id, op_index, existed, sync_version, values_json
-       ) VALUES (?, ?, ?, ?, ?)`,
+      'INSERT INTO _syncular_outbox_before_images(client_commit_id,op_index,existed,sync_version,values_json)VALUES(?,?,?,?,?)',
       [
         clientCommitId,
         image.opIndex,

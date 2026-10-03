@@ -105,7 +105,7 @@ export async function computeBlobId(bytes: Uint8Array): Promise<string> {
 
 export function ensureBlobSchema(db: ClientDatabase): void {
   const existing = db.query(
-    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_syncular_blobs'",
+    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='_syncular_blobs'",
   );
   if (existing.length > 0) {
     const columns = db
@@ -129,15 +129,13 @@ export function ensureBlobSchema(db: ClientDatabase): void {
       );
     }
   } else {
-    db.exec(`CREATE TABLE _syncular_blobs(
-      blob_id TEXT PRIMARY KEY,
-      bytes BLOB NOT NULL,
-      byte_length INTEGER NOT NULL,
-      media_type TEXT,
-      created_at_ms INTEGER NOT NULL)`);
+    db.exec(
+      'CREATE TABLE _syncular_blobs(blob_id TEXT PRIMARY KEY,bytes BLOB NOT NULL,byte_length INTEGER NOT NULL,media_type TEXT,created_at_ms INTEGER NOT NULL)',
+    );
   }
-  db.exec(`CREATE TABLE IF NOT EXISTS _syncular_blob_uploads(
-    blob_id TEXT PRIMARY KEY, media_type TEXT, created_at_ms INTEGER NOT NULL)`);
+  db.exec(
+    'CREATE TABLE IF NOT EXISTS _syncular_blob_uploads(blob_id TEXT PRIMARY KEY,media_type TEXT,created_at_ms INTEGER NOT NULL)',
+  );
 }
 
 /** Put bytes into the content-addressed cache without rewriting an existing body. */
@@ -149,9 +147,7 @@ export function putCachedBlob(
   mediaType?: string,
 ): void {
   db.exec(
-    `INSERT INTO _syncular_blobs(
-       blob_id, bytes, byte_length, media_type, created_at_ms)
-     VALUES (?,?,?,?,?) ON CONFLICT(blob_id) DO NOTHING`,
+    'INSERT INTO _syncular_blobs(blob_id,bytes,byte_length,media_type,created_at_ms)VALUES(?,?,?,?,?)ON CONFLICT(blob_id)DO NOTHING',
     [blobId, bytes, bytes.length, mediaType ?? null, nowMs],
   );
 }
@@ -161,7 +157,7 @@ export function getCachedBlob(
   blobId: string,
 ): CachedBlob | undefined {
   const rows = db.query(
-    'SELECT bytes, byte_length, media_type FROM _syncular_blobs WHERE blob_id = ?',
+    'SELECT bytes,byte_length,media_type FROM _syncular_blobs WHERE blob_id=?',
     [blobId],
   );
   const row = rows[0];
@@ -185,24 +181,20 @@ export function enforceBlobCacheCap(
   maxBytes: number,
 ): string[] {
   const totalRow = db.query(
-    'SELECT COALESCE(SUM(byte_length), 0) AS total FROM _syncular_blobs',
+    'SELECT COALESCE(SUM(byte_length),0)AS total FROM _syncular_blobs',
   )[0];
   let total = Number(totalRow?.total ?? 0);
   if (total <= maxBytes) return [];
   // Oldest eligible body first, with blob ID as a stable tie.
   const candidates = db.query(
-    `SELECT blob_id, byte_length FROM _syncular_blobs
-     WHERE blob_id NOT IN (SELECT blob_id FROM _syncular_blob_uploads)
-       AND blob_id NOT IN (SELECT blob_id FROM _syncular_blob_commit_refs)
-       AND blob_id NOT IN (${visibleBlobIdsSql(schema)})
-     ORDER BY created_at_ms ASC, blob_id ASC`,
+    `SELECT blob_id,byte_length FROM _syncular_blobs WHERE blob_id NOT IN(SELECT blob_id FROM _syncular_blob_uploads)AND blob_id NOT IN(SELECT blob_id FROM _syncular_blob_commit_refs)AND blob_id NOT IN(${visibleBlobIdsSql(schema)})ORDER BY created_at_ms ASC,blob_id ASC`,
   );
   const evicted: string[] = [];
   db.transaction(() => {
     for (const row of candidates) {
       if (total <= maxBytes) break;
       const blobId = row.blob_id as string;
-      db.exec('DELETE FROM _syncular_blobs WHERE blob_id = ?', [blobId]);
+      db.exec('DELETE FROM _syncular_blobs WHERE blob_id=?', [blobId]);
       total -= Number(row.byte_length);
       evicted.push(blobId);
     }
@@ -215,13 +207,7 @@ export function listPendingUploads(
 ): { blobId: string; mediaType?: string }[] {
   return db
     .query(
-      `SELECT blob_id, media_type FROM (
-        SELECT blob_id, media_type, created_at_ms FROM _syncular_blob_uploads
-        UNION ALL
-        SELECT DISTINCT r.blob_id, b.media_type, 9223372036854775807 AS created_at_ms
-        FROM _syncular_blob_commit_refs r LEFT JOIN _syncular_blobs b ON b.blob_id = r.blob_id
-        WHERE NOT EXISTS (SELECT 1 FROM _syncular_blob_uploads u WHERE u.blob_id = r.blob_id)
-      ) ORDER BY created_at_ms, blob_id`,
+      'SELECT blob_id,media_type FROM(SELECT blob_id,media_type,created_at_ms FROM _syncular_blob_uploads UNION ALL SELECT DISTINCT r.blob_id,b.media_type,9223372036854775807 AS created_at_ms FROM _syncular_blob_commit_refs r LEFT JOIN _syncular_blobs b ON b.blob_id=r.blob_id WHERE NOT EXISTS(SELECT 1 FROM _syncular_blob_uploads u WHERE u.blob_id=r.blob_id))ORDER BY created_at_ms,blob_id',
     )
     .map((row) => {
       if (
@@ -247,14 +233,13 @@ export function recordPendingUpload(
   mediaType?: string,
 ): void {
   db.exec(
-    `INSERT OR IGNORE INTO _syncular_blob_uploads(blob_id, media_type, created_at_ms)
-     VALUES (?,?,?)`,
+    'INSERT OR IGNORE INTO _syncular_blob_uploads(blob_id,media_type,created_at_ms)VALUES(?,?,?)',
     [blobId, mediaType ?? null, nowMs],
   );
 }
 
 export function clearPendingUpload(db: ClientDatabase, blobId: string): void {
-  db.exec('DELETE FROM _syncular_blob_uploads WHERE blob_id = ?', [blobId]);
+  db.exec('DELETE FROM _syncular_blob_uploads WHERE blob_id=?', [blobId]);
 }
 
 /**
@@ -286,11 +271,7 @@ function visibleBlobIdsSql(schema: CompiledClientSchema): string {
     for (const column of columns) {
       const identifier = quoteIdent(column);
       selects.push(
-        `SELECT json_extract(${identifier}, '$.blobId') AS blob_id
-         FROM ${quoteIdent(tableName)}
-         WHERE typeof(${identifier}) = 'text'
-           AND json_valid(${identifier})
-           AND json_type(${identifier}, '$.blobId') = 'text'`,
+        `SELECT json_extract(${identifier},'$.blobId')AS blob_id FROM ${quoteIdent(tableName)} WHERE typeof(${identifier})='text' AND json_valid(${identifier})AND json_type(${identifier},'$.blobId')='text'`,
       );
     }
   }
@@ -304,10 +285,7 @@ export function deleteUnreferencedCachedBlobs(
   schema: CompiledClientSchema,
 ): void {
   db.exec(
-    `DELETE FROM _syncular_blobs
-     WHERE blob_id NOT IN (SELECT blob_id FROM _syncular_blob_uploads)
-       AND blob_id NOT IN (SELECT blob_id FROM _syncular_blob_commit_refs)
-       AND blob_id NOT IN (${visibleBlobIdsSql(schema)})`,
+    `DELETE FROM _syncular_blobs WHERE blob_id NOT IN(SELECT blob_id FROM _syncular_blob_uploads)AND blob_id NOT IN(SELECT blob_id FROM _syncular_blob_commit_refs)AND blob_id NOT IN(${visibleBlobIdsSql(schema)})`,
   );
 }
 

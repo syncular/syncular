@@ -104,6 +104,11 @@ pub trait Transport {
             "this transport has no direct URL fetch (§5.4)",
         ))
     }
+    /// The I/O executor records when a signed segment fetch began. Apply
+    /// checks expiry against that instant, preserving the fetch-start rule.
+    fn segment_fetch_started_at(&self, _url: &str) -> Option<i64> {
+        None
+    }
     /// §5.9.3 blob upload: host-authenticated `PUT <mount>/blobs/{blobId}`.
     /// The server verifies the content address. Default: unsupported.
     fn blob_upload(

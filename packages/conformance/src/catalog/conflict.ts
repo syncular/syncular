@@ -4,9 +4,9 @@
  * app policy, exercised here through the driver surface.
  */
 import { check, checkEqual } from '../checks';
-import { task } from '../fixture';
+import { FIXTURE_SCHEMA, doc, task } from '../fixture';
 import type { Scenario, ScenarioContext } from '../scenario';
-import { expectConverged, syncIdle, syncOk } from './util';
+import { expectConverged, seedRows, syncIdle, syncOk } from './util';
 
 const P1 = { project_id: ['p1'] } as const;
 
@@ -21,7 +21,183 @@ async function bootstrapped(
   return handle;
 }
 
+const UNIQUE_SCHEMA = {
+  ...FIXTURE_SCHEMA,
+  tables: FIXTURE_SCHEMA.tables.map((table) =>
+    table.name === 'tasks'
+      ? {
+          ...table,
+          indexes: [
+            {
+              name: 'tasks_unique_title',
+              columns: ['project_id', 'title'],
+              unique: true,
+            },
+            {
+              name: 'tasks_unique_priority',
+              columns: ['project_id', 'priority'],
+              unique: true,
+            },
+          ],
+        }
+      : table,
+  ),
+};
+
 export const conflictScenarios: readonly Scenario[] = [
+  {
+    name: 'conflict/reconcile-only-changed-tables',
+    specRefs: ['§7.1', '§7.2'],
+    async run(ctx) {
+      await seedRows(ctx, 'docs', [doc('d1', 'o1', 'p1', 'unchanged')]);
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'table-rebuild',
+        allowed: { ...P1, org_id: ['o1'], projectId: ['p1'] },
+        retainFailedCommits: true,
+      });
+      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await a.api.subscribe({
+        id: 'docs',
+        table: 'docs',
+        scopes: { org_id: ['o1'], projectId: ['p1'] },
+      });
+      await syncIdle(a);
+      const unchanged = await a.api.readRows('docs');
+      await a.api.executeStorageSql?.(
+        "CREATE TRIGGER untouched_docs BEFORE DELETE ON docs BEGIN SELECT RAISE(ABORT, 'unchanged table copied'); END",
+      );
+      await a.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('t1', 'p1', 'new') },
+      ]);
+      await syncIdle(a);
+      checkEqual(
+        await a.api.readRows('docs'),
+        unchanged,
+        'acknowledgement and pull leave unrelated data untouched',
+      );
+      await expectConverged(ctx, 'tasks', [a]);
+    },
+  },
+
+  {
+    name: 'conflict/retained-distinct-id-unique-insert',
+    specRefs: ['§7.2', '§7.2.1', '§3.3'],
+    server: { schema: UNIQUE_SCHEMA },
+    async run(ctx) {
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'unique-a',
+        schema: UNIQUE_SCHEMA,
+        allowed: P1,
+      });
+      const b = await ctx.newClient({
+        actorId: 'actor-b',
+        clientId: 'unique-b',
+        schema: UNIQUE_SCHEMA,
+        allowed: P1,
+        retainFailedCommits: true,
+      });
+      for (const handle of [a, b]) {
+        await handle.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+        await syncIdle(handle);
+      }
+      for (const resolution of ['server', 'mine', 'edit', 'revoke'] as const) {
+        const title = `unique-${resolution}`;
+        const winner = `winner-${resolution}`;
+        const loser = `loser-${resolution}`;
+        await a.api.mutate([
+          { table: 'tasks', op: 'upsert', values: task(winner, 'p1', title) },
+        ]);
+        const losing = await b.api.mutate([
+          { table: 'tasks', op: 'upsert', values: task(loser, 'p1', title) },
+        ]);
+        await syncIdle(a);
+        await syncIdle(b);
+        await syncIdle(b);
+        checkEqual(
+          (await b.api.readRows('tasks')).some((row) => row.rowId === loser),
+          false,
+          'colliding intent stays outside physical rows',
+        );
+        let outcome = (await b.api.commitOutcomes()).find(
+          (row) => row.clientCommitId === losing,
+        );
+        checkEqual(
+          outcome?.retainedRows?.[0],
+          {
+            table: 'tasks',
+            rowId: loser,
+            localRow: task(loser, 'p1', title),
+            serverRow: null,
+            serverVersion: null,
+            uniqueConflicts: [
+              {
+                index: 'tasks_unique_title',
+                columns: ['project_id', 'title'],
+                rowId: winner,
+                serverRow: task(winner, 'p1', title),
+                serverVersion: 1,
+              },
+            ],
+          },
+          'durable unique conflict identifies the authorized winner and unique key',
+        );
+        check(b.api.recreateWithSchema !== undefined, 'restart supported');
+        await ctx.recreateClient(b, UNIQUE_SCHEMA);
+        await syncIdle(b);
+        outcome = (await b.api.commitOutcomes()).find(
+          (row) => row.clientCommitId === losing,
+        );
+        checkEqual(
+          outcome?.resolution,
+          'active',
+          'restart preserves active conflict',
+        );
+        if (resolution === 'revoke') {
+          await ctx.server.setAllowedScopes('actor-b', { project_id: [] });
+          await syncIdle(b);
+          checkEqual(
+            await b.api.readRows('tasks'),
+            [],
+            'revocation purges physical rows',
+          );
+          checkEqual(
+            (await b.api.commitOutcomes()).find(
+              (row) => row.clientCommitId === losing,
+            )?.retainedRows,
+            undefined,
+            'revocation purges unique conflict evidence',
+          );
+        } else {
+          const replacement =
+            resolution === 'mine'
+              ? await b.api.patch('tasks', winner, { done: true }, 1)
+              : resolution === 'edit'
+                ? await b.api.mutate([
+                    {
+                      table: 'tasks',
+                      op: 'upsert',
+                      values: task(loser, 'p1', `${title}-edited`),
+                    },
+                  ])
+                : undefined;
+          await b.api.resolveCommitOutcome(
+            losing,
+            replacement ? 'superseded' : 'resolved_keep_server',
+            replacement,
+          );
+          await syncIdle(b);
+          await syncIdle(a);
+          await expectConverged(ctx, 'tasks', [a, b], {
+            variable: 'project_id',
+            values: ['p1'],
+          });
+        }
+      }
+    },
+  },
+
   {
     name: 'conflict/version-conflict-resolution-paths',
     specRefs: ['§6.2', '§6.3', '§6.5', 'B.6'],

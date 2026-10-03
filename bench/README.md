@@ -8,6 +8,20 @@ Run the suite from the repository root after `bun install`. The default
 `bun run bench` command regenerates the curated `bench/RESULTS.md` record.
 `bun run bench:ci` runs the existing reduced checks without changing that file.
 
+## Table-scoped native overlay
+
+Run this measurement alone with the shared heavy-check lock:
+
+```sh
+cargo test --manifest-path rust/Cargo.toml -p syncular-client --lib benchmark_scoped_overlay -- --ignored --nocapture
+```
+
+The debug-build probe seeds an unchanged catalogue and its FTS index before the
+clock. It measures 30 single-task base/ACK/rebuild rounds at 0, 100,000 and
+200,000 catalogue rows. A DELETE trigger proves the catalogue is untouched;
+FTS counts and the task's final server version are checked after every size.
+JSON output records median/min/max nanoseconds and zero unchanged deletes.
+
 ## Diagnostic workloads
 
 Select a workload to write a separate JSON artifact. Diagnostic runs leave

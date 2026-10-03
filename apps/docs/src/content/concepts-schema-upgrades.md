@@ -39,12 +39,21 @@ The reset touches the whole local database except three things:
 | --- | --- |
 | the outbox (schema-agnostic by design, §0/§7.1) | every synced table, secondary index, and FTS projection |
 | the client identity (`clientId`) | subscription cursors, resume tokens, effective-scope state |
-| the auth lease (`leaseState`) | retired-table registrations and their window bookkeeping |
+| the auth lease (`leaseState`) | incompatible registrations and their window bookkeeping |
 
-Subscription registrations for tables that still exist are kept and
-re-bootstrapped. Registrations for a retired table are pruned on open, together
-with their window bookkeeping; retaining one would make every later pull fail
-with `sync.unknown_table`.
+Subscription registrations survive a bump when their table and requested scope
+variables still exist and each variable keeps its pattern prefix and mapped
+column. The client drops incompatible registrations and their window and eviction
+bookkeeping before its first sync. The app registers its current subscriptions
+again; the client never translates stored scope values. For example, changing
+`calendar:{theatre_calendar_id}` to `calendar:{calendar_theatre_id}` removes
+registrations using the old variable.
+
+A compatible registration resets its cursor to `-1` because the bump wipes the
+local rows and requires a fresh bootstrap. Reopening the same schema version
+preserves its cursor. Replicas opened by versions before 0.30.11 have no stored
+scope declaration evidence; their next bump requires re-registration even when
+variable names match.
 
 The outbox replays on top of the fresh bootstrap. Outbox entries are stored
 in schema-agnostic form and encoded at send time with the current codec
@@ -79,7 +88,7 @@ dropped-column rejection, and image-lane re-bootstrap).
 ## What a bump costs
 
 **Re-download volume.** Exactly the data the app still declares. The
-reset keeps every subscription *registration* (including the per-unit
+reset keeps each compatible subscription *registration* (including the per-unit
 subscriptions a [window](/concepts-windowing/) maintains) and clears only
 their sync state, so the re-bootstrap covers the subscriptions and the
 currently windowed-in units, nothing more. A phone holding a 3-list

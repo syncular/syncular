@@ -273,6 +273,10 @@ status. Errors detected *after* streaming has begun are delivered in-band
 via the `ERROR` frame (§1.2). Error responses
 are JSON and human-readable; only success responses are binary.
 
+The TypeScript encoder shares frame finalization and error construction, and
+scope-map decoders share canonical-key validation. These size reductions retain
+identical bytes, absent optional fields, validation order and error messages.
+
 ### 1.2 The SSP2 envelope
 
 Every SSP2 message is:
@@ -3611,6 +3615,11 @@ an outbox commit. This includes a patch following an insert in the same batch.
   optimistic state exactly when the commit that produced it has drained
   (`applied`/`cached`) or been dropped; pending writes stay visible
   throughout.
+- Reconciliation MUST rebuild only tables whose server base or pending/retained
+  operations changed. Unchanged visible tables and their FTS projections MUST
+  remain untouched. A schema reset or restart recovering an interrupted overlay
+  can rebuild the whole replica. A commit spanning tables dirties every table
+  in that commit, including when rejection, resolution or revocation removes it.
 - A local commit that violates a declared secondary unique index against the
   current optimistic overlay MUST fail atomically with
   `sync.constraint_violation`. The client MUST leave no operation from that
@@ -3630,7 +3639,16 @@ when pending outbox commits exist. A denied request leaves the database usable
 with best-effort durability. A second origin-local outbox store does not cover
 origin eviction and MUST NOT be presented as an eviction backup.
 
-**Browser worker startup ownership.** A persistent worker MUST retry database
+**Browser worker startup ownership.** A persistent worker MUST acquire an
+exclusive Web Lock keyed by its physical OPFS pool directory before opening
+SAHs. This lock belongs to the worker, so a replacement document waits until
+its predecessor's handles are released even after the document's leader lock
+ends. Close and leader handover close SQLite/sibling files, pause the VFS
+without removing files, then release the physical lock. Window `pagehide`
+terminates the worker even during bootstrap. Live competing tabs use the
+leader/follower state and do not open a competing VFS.
+
+A persistent worker MUST retry database
 opening only for retryable `client.storage_busy`. It retains its leader lease
 and retries the same directory after 50, 100, 200, 400, 800, and 1000 ms
 (seven attempts, 2550 ms of scheduled delay). Browser scheduling and storage
@@ -3659,6 +3677,21 @@ The default policy remains rollback for existing server-authoritative consumers.
 A retained sparse operation with an absent current base remains conflict
 evidence without materializing a local row. A sparse intent never supplies
 missing columns for an insert. Revocation still removes the affected aggregate.
+A retained upsert whose intended secondary unique key belongs to a different
+server primary key MUST remain protected journal intent without materializing
+a colliding row or displacing the server winner. Each retained row exposes
+`uniqueConflicts`, one entry per matching declared unique index: `index`,
+`columns`, competing `rowId`, authorized `serverRow`, and `serverVersion`.
+Equality follows the local unique index, including SQLite affinity and NULL
+semantics. Only authorized server bases supply this evidence; optimistic rows
+are never reported as server winners. Evidence advances with server imports,
+survives restart, and is removed with retained intent on revocation or purge.
+Revocation and security purge also erase the retained aggregate’s operation
+envelope and row-bearing results from the journal and recovery collections.
+Static outcome identity and status remain. Take-server discards the intent. Keep-mine targets the competing primary key
+and current version in an explicit replacement commit; edit can choose a free
+unique key. Both replacements link the original outcome through `superseded`.
+
 
 - After reconnect, the client replays the outbox from the oldest
   unacknowledged commit. Lost acks are safe: replaying an already-applied
@@ -4052,10 +4085,18 @@ lease** (`leaseState`). Everything else is destroyed and rebuilt:
   subscription-derived state — cursors, bootstrap resume tokens
   (`bootstrapState`), the persisted effective-scope map (§3.3), and the
   `active`/`revoked`/`failed` status. The subscription *registrations*
-  themselves (id, table, requested scopes, params) are **kept** — they
+  themselves (id, table, requested scopes, params) are **kept only when compatible** — they
   are the app's declared intent, not synced data — but each is reset to
   `cursor = -1`, no resume token, `status = active`, so the next round
   is a fresh bootstrap of exactly the subscriptions the app still wants.
+  Compatibility requires the table and every requested scope variable to exist
+  with the same declared prefix and column mapping. For an empty scope request,
+  the whole table's scope declaration must match. Incompatible registrations,
+  their windows and pending evictions are deleted atomically; values MUST NOT
+  be translated. The app registers subscriptions for its current schema.
+  Clients persist declaration evidence alongside the schema marker. A replica
+  written by a binary without that evidence requires re-registration on its
+  next version bump. Same-version opens retain compatible cursors unchanged.
   Blob bodies and pending commit dependencies (§5.9.7) remain durable;
   retention reads references directly from the re-bootstrapped rows.
 - **Preserved:** the outbox (schema-agnostic by construction, §0 /
@@ -4848,6 +4889,18 @@ pinned, never interpreted.
   13 ms server fanout, ~2 s client-side wake-contention tail at
   250+ clients).
 - Multiple wake-ups and local triggers MUST coalesce into one pull.
+- A mailbox-driven client host MUST keep serving local mutations and reads
+  while a sync response or segment download is pending. The mutable owner
+  captures the request, an I/O executor performs uploads, the round exchange
+  and downloads, and the owner applies the completed response with the normal
+  version, cursor, schema and content-address checks. Only commits captured in
+  that request can be acknowledged by that round. Later local commits remain
+  in the outbox for the next round. Apply replays them over the server base.
+  Teardown, security preflight, purge and released subscription contexts
+  invalidate their in-flight result. Socket deltas buffered during a round
+  follow its response. Hosts MUST use completion notifications and existing
+  sync intents, without introducing a polling loop. Synchronous core APIs
+  drive the same lifecycle on their calling thread.
 - **Scheduling is host policy.** Timers — reconnect backoff, wake
   jitter, when the coalesced pull actually runs — live in the app
   shell, not the protocol core. The core exposes one coalesced
@@ -5611,6 +5664,12 @@ byte-identical output):
 
 ## Appendix B. Conformance scenarios
 
+`conflict/retained-distinct-id-unique-insert` pins §7.2 and §7.2.1 across
+TypeScript and Rust: a distinct-primary-key race on a composite unique key,
+NULL-key non-collision, authorized winner evidence, restart, take-server,
+keep-mine against the winner, edit to a free key and scope revocation.
+
+
 Implementation-agnostic scenario definitions executed by
 `packages/conformance` against any (client, server) pairing over the
 loopback transport, with fault injection at the transport interface.
@@ -5925,3 +5984,10 @@ Each is a driver-interface script, not a prose test.
     sparse patch (§7.1). (h) The Rust and TS clients emit byte-identical
     sparse payloads for the same patch, pinned against the reference
     encoding. Both pairings (TS×TS, Rust×TS).
+
+22. **Local mutation during a captured round (§7.1, §8.4).** Prepare a request
+   containing one commit, author a second commit while its reply is pending,
+   and read both optimistic rows. Applying the captured response acknowledges
+   only the first commit and preserves the later intent. The next round drains
+   it. The Tauri owner and web worker additionally verify mailbox responses
+   before releasing a delayed network barrier.

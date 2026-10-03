@@ -98,6 +98,7 @@ export function compileClientSchema(
   const tables = new Map<string, CompiledClientTable>();
   const schemaObjectNames = new Set<string>();
   for (const table of schema.tables) {
+    const tableLabel = `table ${table.name}`;
     if (tables.has(table.name)) {
       throw new Error(`duplicate table ${JSON.stringify(table.name)}`);
     }
@@ -111,7 +112,7 @@ export function compileClientSchema(
     table.columns.forEach((column, index) => {
       if (columnIndex.has(column.name)) {
         throw new Error(
-          `table ${table.name}: duplicate column ${JSON.stringify(column.name)}`,
+          `${tableLabel}: duplicate column ${JSON.stringify(column.name)}`,
         );
       }
       columnIndex.set(column.name, index);
@@ -119,7 +120,7 @@ export function compileClientSchema(
     const primaryKeyIndex = columnIndex.get(table.primaryKey);
     if (primaryKeyIndex === undefined) {
       throw new Error(
-        `table ${table.name}: primary key ${JSON.stringify(table.primaryKey)} is not a column`,
+        `${tableLabel}: primary key ${JSON.stringify(table.primaryKey)} is not a column`,
       );
     }
     // §2.4 primary-key eligibility: a primary key MUST render to a `rowId`
@@ -134,12 +135,12 @@ export function compileClientSchema(
       primaryKeyColumn.type !== 'json'
     ) {
       throw new Error(
-        `table ${table.name}: primary key ${JSON.stringify(table.primaryKey)} has an ineligible column type (§2.4); a primary key must be string, integer, boolean, or json`,
+        `${tableLabel}: primary key ${JSON.stringify(table.primaryKey)} has an ineligible column type (§2.4); a primary key must be string, integer, boolean, or json`,
       );
     }
     if (table.scopes.length === 0) {
       throw new Error(
-        `table ${table.name}: every synced table declares at least one scope pattern (§3.1)`,
+        `${tableLabel}: every synced table declares at least one scope pattern (§3.1)`,
       );
     }
     const scopeColumnByVariable = new Map<string, string>();
@@ -149,7 +150,7 @@ export function compileClientSchema(
       const match = PATTERN_RE.exec(pattern);
       if (match === null || match[1] === undefined || match[2] === undefined) {
         throw new Error(
-          `table ${table.name}: scope pattern ${JSON.stringify(pattern)} must be 'prefix:{variable}'`,
+          `${tableLabel}: scope pattern ${JSON.stringify(pattern)} must be 'prefix:{variable}'`,
         );
       }
       const prefix = match[1];
@@ -157,13 +158,13 @@ export function compileClientSchema(
       const column = typeof spec === 'string' ? variable : spec.column;
       if (!columnIndex.has(column)) {
         throw new Error(
-          `table ${table.name}: scope pattern ${JSON.stringify(pattern)} names unknown column ${JSON.stringify(column)}`,
+          `${tableLabel}: scope pattern ${JSON.stringify(pattern)} names unknown column ${JSON.stringify(column)}`,
         );
       }
       const existing = scopeColumnByVariable.get(variable);
       if (existing !== undefined && existing !== column) {
         throw new Error(
-          `table ${table.name}: variable ${JSON.stringify(variable)} maps to two different columns (§3.1)`,
+          `${tableLabel}: variable ${JSON.stringify(variable)} maps to two different columns (§3.1)`,
         );
       }
       scopeColumnByVariable.set(variable, column);
@@ -186,36 +187,35 @@ export function compileClientSchema(
     for (const index of indexes) {
       if (schemaObjectNames.has(index.name)) {
         throw new Error(
-          `table ${table.name}: index ${JSON.stringify(index.name)} conflicts with another schema object`,
+          `${tableLabel}: index ${JSON.stringify(index.name)} conflicts with another schema object`,
         );
       }
       schemaObjectNames.add(index.name);
       for (const column of index.columns) {
         if (!columnIndex.has(column)) {
           throw new Error(
-            `table ${table.name}: index ${JSON.stringify(index.name)} names unknown column ${JSON.stringify(column)}`,
+            `${tableLabel}: index ${JSON.stringify(index.name)} names unknown column ${JSON.stringify(column)}`,
           );
         }
       }
     }
     const ftsIndexes = table.ftsIndexes ?? [];
     for (const index of ftsIndexes) {
+      const projectionLabel = `${tableLabel}: FTS projection ${JSON.stringify(index.name)}`;
       if (schemaObjectNames.has(index.name)) {
         throw new Error(
-          `table ${table.name}: FTS projection ${JSON.stringify(index.name)} conflicts with another schema object`,
+          `${projectionLabel} conflicts with another schema object`,
         );
       }
       schemaObjectNames.add(index.name);
       if (index.columns.length === 0 || index.columns.length > 32) {
-        throw new Error(
-          `table ${table.name}: FTS projection ${JSON.stringify(index.name)} needs between 1 and 32 columns`,
-        );
+        throw new Error(`${projectionLabel} needs between 1 and 32 columns`);
       }
       const seenColumns = new Set<string>();
       for (const columnName of index.columns) {
         if (seenColumns.has(columnName)) {
           throw new Error(
-            `table ${table.name}: FTS projection ${JSON.stringify(index.name)} repeats column ${JSON.stringify(columnName)}`,
+            `${projectionLabel} repeats column ${JSON.stringify(columnName)}`,
           );
         }
         seenColumns.add(columnName);
@@ -224,18 +224,18 @@ export function compileClientSchema(
         );
         if (column === undefined) {
           throw new Error(
-            `table ${table.name}: FTS projection ${JSON.stringify(index.name)} names unknown column ${JSON.stringify(columnName)}`,
+            `${projectionLabel} names unknown column ${JSON.stringify(columnName)}`,
           );
         }
         if (localColumnType(column) !== 'string') {
           throw new Error(
-            `table ${table.name}: FTS projection ${JSON.stringify(index.name)} column ${JSON.stringify(columnName)} must have string type`,
+            `${projectionLabel} column ${JSON.stringify(columnName)} must have string type`,
           );
         }
       }
       if (!ALLOWED_FTS_TOKENIZERS.has(index.tokenize)) {
         throw new Error(
-          `table ${table.name}: FTS projection ${JSON.stringify(index.name)} tokenizer ${JSON.stringify(index.tokenize)} is not allowlisted`,
+          `${projectionLabel} tokenizer ${JSON.stringify(index.tokenize)} is not allowlisted`,
         );
       }
     }
@@ -344,7 +344,7 @@ function createSyncedTable(
   });
   columns.push(`${quoteIdent(SYNC_VERSION_COLUMN)} INTEGER NOT NULL DEFAULT 0`);
   db.exec(
-    `CREATE TABLE IF NOT EXISTS ${quoteIdent(table.name)} (${columns.join(', ')})`,
+    `CREATE TABLE IF NOT EXISTS ${quoteIdent(table.name)}(${columns.join(', ')})`,
   );
   // Local secondary indexes (CREATE INDEX subset). Created here so both the
   // initial ensureLocalSchema and the §7.4.3 drop-and-recreate reset path
@@ -354,7 +354,7 @@ function createSyncedTable(
     const unique = index.unique ? 'UNIQUE ' : '';
     const cols = index.columns.map((c) => quoteIdent(c)).join(', ');
     db.exec(
-      `CREATE ${unique}INDEX IF NOT EXISTS ${quoteIdent(index.name)} ON ${quoteIdent(table.name)} (${cols})`,
+      `CREATE ${unique}INDEX IF NOT EXISTS ${quoteIdent(index.name)} ON ${quoteIdent(table.name)}(${cols})`,
     );
   }
 }
@@ -390,7 +390,7 @@ function createFtsProjection(
   const indexedColumns = index.columns.map(quoteIdent);
   const tokenizer = index.tokenize.replaceAll("'", "''");
   db.exec(
-    `CREATE VIRTUAL TABLE IF NOT EXISTS ${quoteIdent(index.name)} USING fts5(${quoteIdent(FTS_SOURCE_ID_COLUMN)} UNINDEXED, ${indexedColumns.join(', ')}, tokenize='${tokenizer}')`,
+    `CREATE VIRTUAL TABLE IF NOT EXISTS ${quoteIdent(index.name)} USING fts5(${quoteIdent(FTS_SOURCE_ID_COLUMN)} UNINDEXED,${indexedColumns.join(', ')},tokenize='${tokenizer}')`,
   );
 
   const mapping = quoteIdent(`_syncular_fts_${index.name}`);
@@ -399,7 +399,7 @@ function createFtsProjection(
       `_syncular_fts_${index.name}`,
     ]).length > 0;
   db.exec(
-    `CREATE TABLE IF NOT EXISTS ${mapping} (id INTEGER PRIMARY KEY, source_id TEXT NOT NULL UNIQUE)`,
+    `CREATE TABLE IF NOT EXISTS ${mapping}(id INTEGER PRIMARY KEY,source_id TEXT NOT NULL UNIQUE)`,
   );
   const sourceId = `CAST(${quoteIdent(table.primaryKey)} AS TEXT)`;
   const newSourceId = `CAST(new.${quoteIdent(table.primaryKey)} AS TEXT)`;
@@ -413,10 +413,10 @@ function createFtsProjection(
     ...index.columns.map((column) => `new.${quoteIdent(column)}`),
   ].join(', ');
   const deleteFor = (value: string) =>
-    `DELETE FROM ${quoteIdent(index.name)} WHERE rowid = (SELECT id FROM ${mapping} WHERE source_id = ${value}); DELETE FROM ${mapping} WHERE source_id = ${value}`;
+    `DELETE FROM ${quoteIdent(index.name)} WHERE rowid=(SELECT id FROM ${mapping} WHERE source_id=${value});DELETE FROM ${mapping} WHERE source_id=${value}`;
   const deleteDisplaced = (select: string) =>
-    `DELETE FROM ${quoteIdent(index.name)} WHERE rowid IN (SELECT id FROM ${mapping} WHERE source_id IN (${select})); DELETE FROM ${mapping} WHERE source_id IN (${select})`;
-  const insertNew = `INSERT INTO ${mapping}(source_id) VALUES (${newSourceId}); INSERT INTO ${quoteIdent(index.name)} (rowid, ${projectionColumns}) VALUES ((SELECT id FROM ${mapping} WHERE source_id = ${newSourceId}), ${newValues})`;
+    `DELETE FROM ${quoteIdent(index.name)} WHERE rowid IN (SELECT id FROM ${mapping} WHERE source_id IN (${select}));DELETE FROM ${mapping} WHERE source_id IN (${select})`;
+  const insertNew = `INSERT INTO ${mapping}(source_id)VALUES(${newSourceId});INSERT INTO ${quoteIdent(index.name)}(rowid,${projectionColumns})VALUES((SELECT id FROM ${mapping} WHERE source_id=${newSourceId}),${newValues})`;
 
   // A clean insert cannot already have a projection row because the source
   // primary key is unique. Keep clean inserts linear by moving replacement
@@ -454,7 +454,7 @@ function createFtsProjection(
     const match = spec.columns
       .map((column) => `${quoteIdent(column)} = new.${quoteIdent(column)}`)
       .join(' AND ');
-    return `SELECT ${sourceId} FROM ${quoteIdent(table.name)} WHERE ${match} AND ${quoteIdent(table.primaryKey)} != new.${quoteIdent(table.primaryKey)}`;
+    return `SELECT ${sourceId} FROM ${quoteIdent(table.name)} WHERE ${match} AND ${quoteIdent(table.primaryKey)} !=new.${quoteIdent(table.primaryKey)}`;
   });
   const insertGuardCondition = [
     replacementExists,
@@ -465,17 +465,22 @@ function createFtsProjection(
     ...displacedByUnique.map(deleteDisplaced),
   ].join('; ');
 
-  db.exec(
-    `CREATE TRIGGER ${quoteIdent(`${index.name}_bi`)} BEFORE INSERT ON ${quoteIdent(table.name)} WHEN ${insertGuardCondition} BEGIN ${insertGuardBody}; END`,
-  );
-  db.exec(
-    `CREATE TRIGGER ${quoteIdent(`${index.name}_ai`)} AFTER INSERT ON ${quoteIdent(table.name)} BEGIN ${insertNew}; END`,
-  );
-  db.exec(
-    `CREATE TRIGGER ${quoteIdent(`${index.name}_ad`)} AFTER DELETE ON ${quoteIdent(table.name)} BEGIN ${deleteFor(oldSourceId)}; END`,
-  );
-  db.exec(
-    `CREATE TRIGGER ${quoteIdent(`${index.name}_au`)} AFTER UPDATE ON ${quoteIdent(table.name)} BEGIN ${deleteFor(oldSourceId)}; ${deleteFor(newSourceId)}; ${insertNew}; END`,
+  const createTrigger = (
+    suffix: string,
+    timing: string,
+    body: string,
+    when = '',
+  ) =>
+    db.exec(
+      `CREATE TRIGGER ${quoteIdent(`${index.name}_${suffix}`)} ${timing} ON ${quoteIdent(table.name)}${when ? ` WHEN ${when}` : ''} BEGIN ${body};END`,
+    );
+  createTrigger('bi', 'BEFORE INSERT', insertGuardBody, insertGuardCondition);
+  createTrigger('ai', 'AFTER INSERT', insertNew);
+  createTrigger('ad', 'AFTER DELETE', deleteFor(oldSourceId));
+  createTrigger(
+    'au',
+    'AFTER UPDATE',
+    `${deleteFor(oldSourceId)}; ${deleteFor(newSourceId)}; ${insertNew}`,
   );
   // BEFORE UPDATE guard for `UPDATE OR REPLACE`: clear the projection of any
   // different-PK row about to be displaced through a secondary unique index by
@@ -486,20 +491,18 @@ function createFtsProjection(
       .map((select) => `EXISTS (${select})`)
       .join(' OR ');
     const updateGuardBody = displacedByUnique.map(deleteDisplaced).join('; ');
-    db.exec(
-      `CREATE TRIGGER ${quoteIdent(`${index.name}_bu`)} BEFORE UPDATE ON ${quoteIdent(table.name)} WHEN ${updateGuardCondition} BEGIN ${updateGuardBody}; END`,
-    );
+    createTrigger('bu', 'BEFORE UPDATE', updateGuardBody, updateGuardCondition);
   }
 
   if (!existed) {
     db.exec(
-      `INSERT INTO ${quoteIdent(index.name)} (${projectionColumns}) SELECT ${sourceId}, ${indexedColumns.join(', ')} FROM ${quoteIdent(table.name)}`,
+      `INSERT INTO ${quoteIdent(index.name)}(${projectionColumns})SELECT ${sourceId},${indexedColumns.join(', ')} FROM ${quoteIdent(table.name)}`,
     );
   }
   if (!mapped || !existed) {
     db.exec(`DELETE FROM ${mapping}`);
     db.exec(
-      `INSERT INTO ${mapping}(id, source_id) SELECT rowid, ${quoteIdent(FTS_SOURCE_ID_COLUMN)} FROM ${quoteIdent(index.name)}`,
+      `INSERT INTO ${mapping}(id,source_id)SELECT rowid,${quoteIdent(FTS_SOURCE_ID_COLUMN)} FROM ${quoteIdent(index.name)}`,
     );
   }
 }
@@ -534,39 +537,31 @@ export function ensureLocalSyncedSchema(
 export function ensureLocalBookkeepingSchema(db: ClientDatabase): void {
   db.transaction(() => {
     ensureFailedOverlaySchema(db);
-    db.exec(`CREATE TABLE IF NOT EXISTS _syncular_meta(
-      key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
-    db.exec(`CREATE TABLE IF NOT EXISTS _syncular_blob_commit_refs(
-      commit_id TEXT NOT NULL, blob_id TEXT NOT NULL, PRIMARY KEY(commit_id, blob_id))`);
+    const createTable = (name: string, columns: string) =>
+      db.exec(`CREATE TABLE IF NOT EXISTS ${name}(${columns})`);
+    createTable('_syncular_meta', 'key TEXT PRIMARY KEY,value TEXT NOT NULL');
+    createTable(
+      '_syncular_blob_commit_refs',
+      'commit_id TEXT NOT NULL,blob_id TEXT NOT NULL,PRIMARY KEY(commit_id,blob_id)',
+    );
     db.exec(
       'CREATE INDEX IF NOT EXISTS _syncular_blob_commit_refs_body ON _syncular_blob_commit_refs(blob_id)',
     );
     db.exec(
-      `INSERT OR IGNORE INTO _syncular_meta(key, value) VALUES ('localRevision', '0')`,
+      "INSERT OR IGNORE INTO _syncular_meta(key,value)VALUES('localRevision','0')",
     );
-    db.exec(`CREATE TABLE IF NOT EXISTS _syncular_outbox(
-      seq INTEGER PRIMARY KEY AUTOINCREMENT,
-      client_commit_id TEXT NOT NULL UNIQUE,
-      created_at_ms INTEGER NOT NULL,
-      operations TEXT NOT NULL)`);
-    db.exec(`CREATE TABLE IF NOT EXISTS _syncular_outbox_before_images(
-      client_commit_id TEXT NOT NULL,
-      op_index INTEGER NOT NULL,
-      existed INTEGER NOT NULL CHECK(existed IN (0, 1)),
-      sync_version INTEGER,
-      values_json TEXT,
-      PRIMARY KEY(client_commit_id, op_index))`);
-    db.exec(`CREATE TABLE IF NOT EXISTS _syncular_commit_outcomes(
-      seq INTEGER PRIMARY KEY AUTOINCREMENT,
-      client_commit_id TEXT NOT NULL UNIQUE,
-      status TEXT NOT NULL CHECK(status IN ('applied', 'cached', 'conflict', 'rejected')),
-      recorded_at_ms INTEGER NOT NULL,
-      results TEXT NOT NULL,
-      operations TEXT,
-      resolution TEXT NOT NULL DEFAULT 'active'
-        CHECK(resolution IN ('active', 'resolved_keep_server', 'superseded', 'dismissed')),
-      resolved_at_ms INTEGER,
-      replacement_client_commit_id TEXT)`);
+    createTable(
+      '_syncular_outbox',
+      'seq INTEGER PRIMARY KEY AUTOINCREMENT,client_commit_id TEXT NOT NULL UNIQUE,created_at_ms INTEGER NOT NULL,operations TEXT NOT NULL',
+    );
+    createTable(
+      '_syncular_outbox_before_images',
+      'client_commit_id TEXT NOT NULL,op_index INTEGER NOT NULL,existed INTEGER NOT NULL CHECK(existed IN (0,1)),sync_version INTEGER,values_json TEXT,PRIMARY KEY(client_commit_id,op_index)',
+    );
+    createTable(
+      '_syncular_commit_outcomes',
+      "seq INTEGER PRIMARY KEY AUTOINCREMENT,client_commit_id TEXT NOT NULL UNIQUE,status TEXT NOT NULL CHECK(status IN ('applied','cached','conflict','rejected')),recorded_at_ms INTEGER NOT NULL,results TEXT NOT NULL,operations TEXT,resolution TEXT NOT NULL DEFAULT 'active' CHECK(resolution IN ('active','resolved_keep_server','superseded','dismissed')),resolved_at_ms INTEGER,replacement_client_commit_id TEXT",
+    );
     // Outcomes created before durable aggregate recovery retain no commit
     // envelope. New failed outcomes store it in the protected client DB.
     try {
@@ -576,32 +571,26 @@ export function ensureLocalBookkeepingSchema(db: ClientDatabase): void {
     } catch {
       // column already exists — the CREATE above included it
     }
-    db.exec(`CREATE INDEX IF NOT EXISTS _syncular_commit_outcomes_resolution_seq
-      ON _syncular_commit_outcomes(resolution, seq)`);
-    db.exec(`CREATE TABLE IF NOT EXISTS _syncular_subscriptions(
-      id TEXT PRIMARY KEY,
-      tbl TEXT NOT NULL,
-      requested_scopes TEXT NOT NULL,
-      params TEXT,
-      cursor INTEGER NOT NULL DEFAULT -1,
-      bootstrap_state TEXT,
-      effective_scopes TEXT,
-      status TEXT NOT NULL DEFAULT 'active',
-      reason_code TEXT)`);
+    db.exec(
+      'CREATE INDEX IF NOT EXISTS _syncular_commit_outcomes_resolution_seq ON _syncular_commit_outcomes(resolution,seq)',
+    );
+    createTable(
+      '_syncular_subscriptions',
+      "id TEXT PRIMARY KEY,tbl TEXT NOT NULL,requested_scopes TEXT NOT NULL,params TEXT,cursor INTEGER NOT NULL DEFAULT -1,bootstrap_state TEXT,effective_scopes TEXT,status TEXT NOT NULL DEFAULT 'active',reason_code TEXT",
+    );
     // §4.8 window registry: which units (scope values) of a window base are
     // live locally — the completeness oracle (I3) and the shrink driver
     // (a unit's omission from the next pull unregisters it, §4.1).
-    db.exec(`CREATE TABLE IF NOT EXISTS _syncular_windows(
-      base TEXT NOT NULL,
-      unit TEXT NOT NULL,
-      sub_id TEXT NOT NULL,
-      PRIMARY KEY (base, unit))`);
+    createTable(
+      '_syncular_windows',
+      'base TEXT NOT NULL,unit TEXT NOT NULL,sub_id TEXT NOT NULL,PRIMARY KEY(base,unit)',
+    );
     // §4.8 E1: units that left the window but still had outbox-pinned rows.
     // Retried when the outbox drains; cancelled if the unit re-enters.
-    db.exec(`CREATE TABLE IF NOT EXISTS _syncular_window_pending_evict(
-      sub_id TEXT PRIMARY KEY,
-      tbl TEXT NOT NULL,
-      effective_scopes TEXT NOT NULL)`);
+    createTable(
+      '_syncular_window_pending_evict',
+      'sub_id TEXT PRIMARY KEY,tbl TEXT NOT NULL,effective_scopes TEXT NOT NULL',
+    );
   });
 }
 
@@ -634,9 +623,7 @@ export function dropAndRecreateSyncedTables(
   // Drop virtual tables first. SQLite then removes their shadow tables as one
   // unit, so the generic discovery below never tears an FTS5 projection apart.
   const virtualTables = db.query(
-    `SELECT name FROM sqlite_master WHERE type = 'table'
-       AND sql LIKE 'CREATE VIRTUAL TABLE%'
-       AND name NOT LIKE '${RESERVED_TABLE_PREFIX}%'`,
+    `SELECT name FROM sqlite_master WHERE type='table' AND sql LIKE 'CREATE VIRTUAL TABLE%' AND name NOT LIKE '${RESERVED_TABLE_PREFIX}%'`,
   );
   for (const row of virtualTables) {
     db.exec(
@@ -645,9 +632,7 @@ export function dropAndRecreateSyncedTables(
     db.exec(`DROP TABLE IF EXISTS ${quoteIdent(String(row.name))}`);
   }
   const existing = db.query(
-    `SELECT name FROM sqlite_master WHERE type = 'table'
-       AND name NOT LIKE '${RESERVED_TABLE_PREFIX}%'
-       AND name NOT LIKE 'sqlite_%'`,
+    `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '${RESERVED_TABLE_PREFIX}%' AND name NOT LIKE 'sqlite_%'`,
   );
   for (const row of existing) {
     db.exec(`DROP TABLE IF EXISTS ${quoteIdent(String(row.name))}`);
@@ -809,4 +794,14 @@ export function jsonToRowValue(value: JsonRowValue): RowValue {
     return hexToBytes(value.$bytes);
   }
   return value;
+}
+
+/** Convert each column value without changing the row's presence set. */
+export function mapRowValues<T, U>(
+  values: Readonly<Record<string, T>>,
+  convert: (value: T) => U,
+): Record<string, U> {
+  return Object.fromEntries(
+    Object.entries(values).map(([key, value]) => [key, convert(value)]),
+  );
 }

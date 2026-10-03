@@ -245,11 +245,12 @@ export function writeStringListMap(
   }
 }
 
-export function readStringListMap(
+function readCanonicalMap<T>(
   reader: ByteReader,
-): Record<string, string[]> {
+  read: () => T,
+): Record<string, T> {
   const count = reader.u32();
-  const entries: Array<[string, string[]]> = [];
+  const entries: Array<[string, T]> = [];
   let previousKey: string | undefined;
   for (let i = 0; i < count; i++) {
     const key = reader.str();
@@ -260,12 +261,20 @@ export function readStringListMap(
       );
     }
     previousKey = key;
-    const valueCount = reader.u32();
-    const values: string[] = [];
-    for (let j = 0; j < valueCount; j++) values.push(reader.str());
-    entries.push([key, values]);
+    entries.push([key, read()]);
   }
   return Object.fromEntries(entries);
+}
+
+export function readStringListMap(
+  reader: ByteReader,
+): Record<string, string[]> {
+  return readCanonicalMap(reader, () => {
+    const count = reader.u32();
+    const values: string[] = [];
+    for (let i = 0; i < count; i++) values.push(reader.str());
+    return values;
+  });
 }
 
 /** `map` of `str` → `str` (stored scopes on change records, SPEC.md §4.5). */
@@ -283,19 +292,5 @@ export function writeStringMap(
 }
 
 export function readStringMap(reader: ByteReader): Record<string, string> {
-  const count = reader.u32();
-  const entries: Array<[string, string]> = [];
-  let previousKey: string | undefined;
-  for (let i = 0; i < count; i++) {
-    const key = reader.str();
-    if (previousKey !== undefined && key <= previousKey) {
-      throw new DecodeError(
-        'sync.invalid_request',
-        `map keys must be unique and in ascending code-unit order (saw ${JSON.stringify(key)} after ${JSON.stringify(previousKey)})`,
-      );
-    }
-    previousKey = key;
-    entries.push([key, reader.str()]);
-  }
-  return Object.fromEntries(entries);
+  return readCanonicalMap(reader, () => reader.str());
 }

@@ -127,6 +127,56 @@ export const offlineScenarios: readonly Scenario[] = [
       );
     },
   },
+  {
+    name: 'offline/local-mutation-during-captured-round',
+    specRefs: ['§7.1', '§8.4'],
+    async run(ctx) {
+      const a = await bootstrapped(ctx, 'actor-a', 'inflight');
+      check(
+        a.api.prepareRound !== undefined && a.api.completeRound !== undefined,
+        'driver exposes captured-round barrier',
+      );
+      const first = await a.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('one', 'p1', 'first') },
+      ]);
+      await a.api.prepareRound!();
+      const second = await a.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('one', 'p1', 'newer') },
+        { op: 'upsert', table: 'tasks', values: task('two', 'p1', 'second') },
+      ]);
+      checkEqual(
+        (await a.api.readRows('tasks')).map((row) => row.rowId),
+        ['one', 'two'],
+        'both local writes remain readable while reply is pending',
+      );
+      const report = await a.api.completeRound!();
+      check(report.ok, 'captured round applies');
+      if (report.ok)
+        checkEqual(
+          report.report.applied,
+          [first],
+          'captured request acknowledges only its original commit',
+        );
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [second],
+        'mid-round local commit remains queued',
+      );
+      checkEqual(
+        (await a.api.readRows('tasks')).find((row) => row.rowId === 'one')
+          ?.values.title,
+        'newer',
+        'apply replays the newer local write over the acknowledged base',
+      );
+      await syncIdle(a);
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [],
+        'next round drains the new commit',
+      );
+      await expectConverged(ctx, 'tasks', [a]);
+    },
+  },
   ...[499, 500, 501].map(
     (operationCount): Scenario => ({
       name: `offline/outbox-budget-${operationCount}`,

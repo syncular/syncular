@@ -1115,6 +1115,22 @@ class RustClientInstance implements ClientInstance {
                 return {
                   table: String(row.table),
                   rowId: String(row.rowId),
+                  ...(Array.isArray(row.uniqueConflicts)
+                    ? {
+                        uniqueConflicts: row.uniqueConflicts.map((raw) => {
+                          const conflict = asObject(raw, 'unique conflict');
+                          if (!Array.isArray(conflict.columns))
+                            throw new Error('sync.invalid_response');
+                          return {
+                            index: String(conflict.index),
+                            columns: conflict.columns.map(String),
+                            rowId: String(conflict.rowId),
+                            serverRow: driverRowOf(conflict.serverRow),
+                            serverVersion: Number(conflict.serverVersion),
+                          };
+                        }),
+                      }
+                    : {}),
                   localRow:
                     row.localRow === null ? null : driverRowOf(row.localRow),
                   serverRow:
@@ -1369,6 +1385,13 @@ class RustClientInstance implements ClientInstance {
       schema: schema as unknown as JsonValue,
     });
     return this;
+  }
+
+  async prepareRound(): Promise<void> {
+    await this.#shim.call('prepareRound', {});
+  }
+  async completeRound(): Promise<ClientSyncResult> {
+    return parseClientSyncResult(await this.#shim.call('completeRound', {}));
   }
 
   async executeStorageSql(sql: string): Promise<void> {

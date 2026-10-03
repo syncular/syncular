@@ -257,6 +257,21 @@ export interface ResponseMessage {
 
 export type SyncMessage = RequestMessage | ResponseMessage;
 
+type DefinedObject<T> = {
+  [K in keyof T as undefined extends T[K] ? never : K]: T[K];
+} & {
+  [K in keyof T as undefined extends T[K] ? K : never]?: Exclude<
+    T[K],
+    undefined
+  >;
+};
+function definedObject<const T extends object>(record: T): DefinedObject<T> {
+  for (const key of Object.keys(record) as (keyof T)[]) {
+    if (record[key] === undefined) delete record[key];
+  }
+  return record as DefinedObject<T>;
+}
+
 function invalid(message: string): never {
   throw new DecodeError('sync.invalid_request', message);
 }
@@ -288,12 +303,12 @@ function decodeReqHeader(r: ByteReader, wireVersion: number): ReqHeaderFrame {
           return value;
         })
       : undefined;
-  return {
+  return definedObject({
     type: 'REQ_HEADER',
     clientId,
     schemaVersion,
-    ...(logEpoch !== undefined ? { logEpoch } : {}),
-  };
+    logEpoch: logEpoch,
+  });
 }
 
 function decodePushCommit(r: ByteReader): PushCommitFrame {
@@ -325,13 +340,15 @@ function decodePushCommit(r: ByteReader): PushCommitFrame {
     if (op === 'delete' && payload !== undefined) {
       invalid('delete operation must not carry a payload');
     }
-    operations.push({
-      table,
-      rowId,
-      op,
-      ...(baseVersion !== undefined ? { baseVersion } : {}),
-      ...(payload !== undefined ? { payload } : {}),
-    });
+    operations.push(
+      definedObject({
+        table,
+        rowId,
+        op,
+        baseVersion: baseVersion,
+        payload: payload,
+      }),
+    );
   }
   return { type: 'PUSH_COMMIT', clientCommitId, operations };
 }
@@ -364,15 +381,15 @@ function decodeSubscription(r: ByteReader): SubscriptionFrame {
   const bootstrapState = r.opt(() =>
     requireJsonDocument(r.str(), 'SUBSCRIPTION.bootstrapState'),
   );
-  return {
+  return definedObject({
     type: 'SUBSCRIPTION',
     id,
     table,
     scopes,
-    ...(params !== undefined ? { params } : {}),
+    params: params,
     cursor,
-    ...(bootstrapState !== undefined ? { bootstrapState } : {}),
-  };
+    bootstrapState: bootstrapState,
+  });
 }
 
 function decodeRespHeader(r: ByteReader, wireVersion: number): RespHeaderFrame {
@@ -383,13 +400,13 @@ function decodeRespHeader(r: ByteReader, wireVersion: number): RespHeaderFrame {
     invalid('RESP_HEADER.logEpoch must be non-empty');
   }
   const resetRequired = wireVersion >= 2 ? r.bool() : undefined;
-  return {
+  return definedObject({
     type: 'RESP_HEADER',
-    ...(requiredSchemaVersion !== undefined ? { requiredSchemaVersion } : {}),
-    ...(latestSchemaVersion !== undefined ? { latestSchemaVersion } : {}),
-    ...(logEpoch !== undefined ? { logEpoch } : {}),
-    ...(resetRequired !== undefined ? { resetRequired } : {}),
-  };
+    requiredSchemaVersion: requiredSchemaVersion,
+    latestSchemaVersion: latestSchemaVersion,
+    logEpoch: logEpoch,
+    resetRequired: resetRequired,
+  });
 }
 
 function decodeLease(r: ByteReader): LeaseFrame {
@@ -443,13 +460,13 @@ function decodePushResult(r: ByteReader): PushResultFrame {
       invalid(`invalid push result record status byte ${recordStatus}`);
     }
   }
-  return {
+  return definedObject({
     type: 'PUSH_RESULT',
     clientCommitId,
     status,
-    ...(commitSeq !== undefined ? { commitSeq } : {}),
+    commitSeq: commitSeq,
     results,
-  };
+  });
 }
 
 function decodePushResultDetails(r: ByteReader): PushResultDetailsFrame {
@@ -534,14 +551,16 @@ function decodeCommit(r: ByteReader): CommitFrame {
     if (op === 'delete' && (rowVersion !== undefined || row !== undefined)) {
       invalid('delete change must not carry rowVersion or row');
     }
-    changes.push({
-      tableIndex,
-      rowId,
-      op,
-      ...(rowVersion !== undefined ? { rowVersion } : {}),
-      scopes,
-      ...(row !== undefined ? { row } : {}),
-    });
+    changes.push(
+      definedObject({
+        tableIndex,
+        rowId,
+        op,
+        rowVersion: rowVersion,
+        scopes,
+        row: row,
+      }),
+    );
   }
   return { type: 'COMMIT', commitSeq, createdAtMs, actorId, tables, changes };
 }
@@ -565,7 +584,7 @@ function decodeSegmentRef(r: ByteReader): SegmentRefFrame {
   if ((url === undefined) !== (urlExpiresAtMs === undefined)) {
     invalid('SEGMENT_REF.urlExpiresAtMs must be present iff url is');
   }
-  return {
+  return definedObject({
     type: 'SEGMENT_REF',
     segmentId,
     mediaType,
@@ -574,11 +593,11 @@ function decodeSegmentRef(r: ByteReader): SegmentRefFrame {
     rowCount,
     asOfCommitSeq,
     scopeDigest,
-    ...(rowCursor !== undefined ? { rowCursor } : {}),
-    ...(nextRowCursor !== undefined ? { nextRowCursor } : {}),
-    ...(url !== undefined ? { url } : {}),
-    ...(urlExpiresAtMs !== undefined ? { urlExpiresAtMs } : {}),
-  };
+    rowCursor: rowCursor,
+    nextRowCursor: nextRowCursor,
+    url: url,
+    urlExpiresAtMs: urlExpiresAtMs,
+  });
 }
 
 function decodeSegmentInline(r: ByteReader): SegmentInlineFrame {
@@ -594,11 +613,11 @@ function decodeSubEnd(r: ByteReader): SubEndFrame {
   const bootstrapState = r.opt(() =>
     requireJsonDocument(r.str(), 'SUB_END.bootstrapState'),
   );
-  return {
+  return definedObject({
     type: 'SUB_END',
     nextCursor,
-    ...(bootstrapState !== undefined ? { bootstrapState } : {}),
-  };
+    bootstrapState: bootstrapState,
+  });
 }
 
 function decodeErrorFrame(r: ByteReader): ErrorFrame {
@@ -608,15 +627,15 @@ function decodeErrorFrame(r: ByteReader): ErrorFrame {
   const retryable = r.bool();
   const recommendedAction = r.str();
   const details = r.opt(() => requireJsonDocument(r.str(), 'ERROR.details'));
-  return {
+  return definedObject({
     type: 'ERROR',
     code,
     message,
     category,
     retryable,
     recommendedAction,
-    ...(details !== undefined ? { details } : {}),
-  };
+    details: details,
+  });
 }
 
 function decodeRequestFrame(
@@ -859,6 +878,10 @@ const PUSH_STATUS_BYTES = { applied: 1, cached: 2, rejected: 3 } as const;
 const SUB_STATUS_BYTES = { active: 1, revoked: 2, reset: 3 } as const;
 const MEDIA_TYPE_BYTES = { rows: 1, sqlite: 2 } as const;
 
+function encodeInvalid(message: string): never {
+  throw new Error(message);
+}
+
 function encodeFrame(
   frame: RequestFrame | ResponseFrame,
   wireVersion: number,
@@ -870,38 +893,38 @@ function encodeFrame(
   switch (frame.type) {
     case 'REQ_HEADER': {
       if (frame.clientId.length === 0) {
-        throw new Error('REQ_HEADER.clientId must be non-empty');
+        encodeInvalid('REQ_HEADER.clientId must be non-empty');
       }
       if (frame.schemaVersion < 1) {
-        throw new Error('REQ_HEADER.schemaVersion must be >= 1');
+        encodeInvalid('REQ_HEADER.schemaVersion must be >= 1');
       }
       w.str(frame.clientId);
       w.i32(frame.schemaVersion);
       if (wireVersion >= 2) {
         if (frame.logEpoch === '') {
-          throw new Error('REQ_HEADER.logEpoch must be non-empty');
+          encodeInvalid('REQ_HEADER.logEpoch must be non-empty');
         }
         w.opt(frame.logEpoch, (v) => w.str(v));
       } else if (frame.logEpoch !== undefined) {
-        throw new Error('REQ_HEADER.logEpoch requires wireVersion 2');
+        encodeInvalid('REQ_HEADER.logEpoch requires wireVersion 2');
       }
-      return { frameType: FrameType.REQ_HEADER, payload: w.finish() };
+      break;
     }
     case 'PUSH_COMMIT': {
       if (frame.clientCommitId.length === 0) {
-        throw new Error('PUSH_COMMIT.clientCommitId must be non-empty');
+        encodeInvalid('PUSH_COMMIT.clientCommitId must be non-empty');
       }
       if (frame.operations.length === 0) {
-        throw new Error('PUSH_COMMIT must carry at least one operation');
+        encodeInvalid('PUSH_COMMIT must carry at least one operation');
       }
       w.str(frame.clientCommitId);
       w.u32(frame.operations.length);
       for (const operation of frame.operations) {
         if (operation.op === 'upsert' && operation.payload === undefined) {
-          throw new Error('upsert operation requires a payload');
+          encodeInvalid('upsert operation requires a payload');
         }
         if (operation.op === 'delete' && operation.payload !== undefined) {
-          throw new Error('delete operation must not carry a payload');
+          encodeInvalid('delete operation must not carry a payload');
         }
         w.str(operation.table);
         w.str(operation.rowId);
@@ -909,17 +932,17 @@ function encodeFrame(
         w.opt(operation.baseVersion, (v) => w.i64(v));
         w.opt(operation.payload, (v) => w.bytes(v));
       }
-      return { frameType: FrameType.PUSH_COMMIT, payload: w.finish() };
+      break;
     }
     case 'PULL_HEADER': {
       if ((frame.accept & 0xf0) !== 0) {
-        throw new Error('PULL_HEADER.accept bits 4-7 must be zero');
+        encodeInvalid('PULL_HEADER.accept bits 4-7 must be zero');
       }
       w.i32(frame.limitCommits);
       w.i32(frame.limitSnapshotRows);
       w.i32(frame.maxSnapshotPages);
       w.u8(frame.accept);
-      return { frameType: FrameType.PULL_HEADER, payload: w.finish() };
+      break;
     }
     case 'SUBSCRIPTION': {
       w.str(frame.id);
@@ -928,17 +951,17 @@ function encodeFrame(
       w.opt(frame.params, (v) => w.str(v));
       w.i64(frame.cursor);
       w.opt(frame.bootstrapState, (v) => w.str(v));
-      return { frameType: FrameType.SUBSCRIPTION, payload: w.finish() };
+      break;
     }
     case 'RESP_HEADER': {
       w.opt(frame.requiredSchemaVersion, (v) => w.i32(v));
       w.opt(frame.latestSchemaVersion, (v) => w.i32(v));
       if (wireVersion >= 2) {
         if (frame.logEpoch === undefined || frame.logEpoch.length === 0) {
-          throw new Error('RESP_HEADER.logEpoch is required and non-empty');
+          encodeInvalid('RESP_HEADER.logEpoch is required and non-empty');
         }
         if (frame.resetRequired === undefined) {
-          throw new Error('RESP_HEADER.resetRequired is required');
+          encodeInvalid('RESP_HEADER.resetRequired is required');
         }
         w.str(frame.logEpoch);
         w.bool(frame.resetRequired);
@@ -946,24 +969,24 @@ function encodeFrame(
         frame.logEpoch !== undefined ||
         frame.resetRequired !== undefined
       ) {
-        throw new Error('RESP_HEADER epoch fields require wireVersion 2');
+        encodeInvalid('RESP_HEADER epoch fields require wireVersion 2');
       }
-      return { frameType: FrameType.RESP_HEADER, payload: w.finish() };
+      break;
     }
     case 'LEASE': {
       if (frame.leaseId.length === 0) {
-        throw new Error('LEASE.leaseId must be non-empty');
+        encodeInvalid('LEASE.leaseId must be non-empty');
       }
       w.str(frame.leaseId);
       w.i64(frame.expiresAtMs);
-      return { frameType: FrameType.LEASE, payload: w.finish() };
+      break;
     }
     case 'PUSH_RESULT': {
       if (frame.status === 'rejected' && frame.commitSeq !== undefined) {
-        throw new Error('rejected PUSH_RESULT must not carry a commitSeq');
+        encodeInvalid('rejected PUSH_RESULT must not carry a commitSeq');
       }
       if (frame.status !== 'rejected' && frame.commitSeq === undefined) {
-        throw new Error(`${frame.status} PUSH_RESULT requires a commitSeq`);
+        encodeInvalid(`${frame.status} PUSH_RESULT requires a commitSeq`);
       }
       w.str(frame.clientCommitId);
       w.u8(PUSH_STATUS_BYTES[frame.status]);
@@ -987,33 +1010,30 @@ function encodeFrame(
           w.bool(result.retryable);
         }
       }
-      return { frameType: FrameType.PUSH_RESULT, payload: w.finish() };
+      break;
     }
     case 'PUSH_RESULT_DETAILS': {
       if (frame.clientCommitId.length === 0) {
-        throw new Error('PUSH_RESULT_DETAILS.clientCommitId must be non-empty');
+        encodeInvalid('PUSH_RESULT_DETAILS.clientCommitId must be non-empty');
       }
       if (frame.entries.length === 0) {
-        throw new Error('PUSH_RESULT_DETAILS must carry at least one entry');
+        encodeInvalid('PUSH_RESULT_DETAILS must carry at least one entry');
       }
       const seen = new Set<number>();
       w.str(frame.clientCommitId);
       w.u32(frame.entries.length);
       for (const entry of frame.entries) {
         if (!Number.isInteger(entry.opIndex) || entry.opIndex < 0) {
-          throw new Error('PUSH_RESULT_DETAILS.opIndex must be non-negative');
+          encodeInvalid('PUSH_RESULT_DETAILS.opIndex must be non-negative');
         }
         if (seen.has(entry.opIndex)) {
-          throw new Error('PUSH_RESULT_DETAILS.opIndex must be unique');
+          encodeInvalid('PUSH_RESULT_DETAILS.opIndex must be unique');
         }
         seen.add(entry.opIndex);
         w.i32(entry.opIndex);
         w.str(JSON.stringify(normalizeRejectionDetails(entry.details)));
       }
-      return {
-        frameType: FrameType.PUSH_RESULT_DETAILS,
-        payload: w.finish(),
-      };
+      break;
     }
     case 'SUB_START': {
       w.str(frame.id);
@@ -1021,7 +1041,7 @@ function encodeFrame(
       w.str(frame.reasonCode);
       writeStringListMap(w, frame.effectiveScopes);
       w.bool(frame.bootstrap);
-      return { frameType: FrameType.SUB_START, payload: w.finish() };
+      break;
     }
     case 'COMMIT': {
       w.i64(frame.commitSeq);
@@ -1032,21 +1052,19 @@ function encodeFrame(
       w.u32(frame.changes.length);
       for (const change of frame.changes) {
         if (change.tableIndex >= frame.tables.length) {
-          throw new Error(
-            `change tableIndex ${change.tableIndex} out of range`,
-          );
+          encodeInvalid(`change tableIndex ${change.tableIndex} out of range`);
         }
         if (
           change.op === 'upsert' &&
           (change.rowVersion === undefined || change.row === undefined)
         ) {
-          throw new Error('upsert change requires rowVersion and row');
+          encodeInvalid('upsert change requires rowVersion and row');
         }
         if (
           change.op === 'delete' &&
           (change.rowVersion !== undefined || change.row !== undefined)
         ) {
-          throw new Error('delete change must not carry rowVersion or row');
+          encodeInvalid('delete change must not carry rowVersion or row');
         }
         w.u16(change.tableIndex);
         w.str(change.rowId);
@@ -1055,13 +1073,11 @@ function encodeFrame(
         writeStringMap(w, change.scopes);
         w.opt(change.row, (v) => w.bytes(v));
       }
-      return { frameType: FrameType.COMMIT, payload: w.finish() };
+      break;
     }
     case 'SEGMENT_REF': {
       if ((frame.url === undefined) !== (frame.urlExpiresAtMs === undefined)) {
-        throw new Error(
-          'SEGMENT_REF.urlExpiresAtMs must be present iff url is',
-        );
+        encodeInvalid('SEGMENT_REF.urlExpiresAtMs must be present iff url is');
       }
       w.str(frame.segmentId);
       w.u8(MEDIA_TYPE_BYTES[frame.mediaType]);
@@ -1074,7 +1090,7 @@ function encodeFrame(
       w.opt(frame.nextRowCursor, (v) => w.str(v));
       w.opt(frame.url, (v) => w.str(v));
       w.opt(frame.urlExpiresAtMs, (v) => w.i64(v));
-      return { frameType: FrameType.SEGMENT_REF, payload: w.finish() };
+      break;
     }
     case 'SEGMENT_INLINE': {
       return { frameType: FrameType.SEGMENT_INLINE, payload: frame.payload };
@@ -1082,7 +1098,7 @@ function encodeFrame(
     case 'SUB_END': {
       w.i64(frame.nextCursor);
       w.opt(frame.bootstrapState, (v) => w.str(v));
-      return { frameType: FrameType.SUB_END, payload: w.finish() };
+      break;
     }
     case 'ERROR': {
       w.str(frame.code);
@@ -1091,7 +1107,7 @@ function encodeFrame(
       w.bool(frame.retryable);
       w.str(frame.recommendedAction);
       w.opt(frame.details, (v) => w.str(v));
-      return { frameType: FrameType.ERROR, payload: w.finish() };
+      break;
     }
     case 'UNKNOWN': {
       if (
@@ -1100,13 +1116,14 @@ function encodeFrame(
         frame.frameType > 0xff ||
         KNOWN_FRAME_TYPES.has(frame.frameType)
       ) {
-        throw new Error(
+        encodeInvalid(
           `UNKNOWN frame type ${frame.frameType} collides with a defined frame type`,
         );
       }
       return { frameType: frame.frameType, payload: frame.payload };
     }
   }
+  return { frameType: FrameType[frame.type], payload: w.finish() };
 }
 
 // ---------------------------------------------------------------------------
@@ -1115,7 +1132,7 @@ function encodeFrame(
 
 export function encodeMessage(message: SyncMessage): Uint8Array {
   if (!isSupportedProtocolWireVersion(message.wireVersion)) {
-    throw new Error(`unsupported wireVersion ${message.wireVersion}`);
+    encodeInvalid(`unsupported wireVersion ${message.wireVersion}`);
   }
   validateFrameSequence(message);
   const w = new ByteWriter();

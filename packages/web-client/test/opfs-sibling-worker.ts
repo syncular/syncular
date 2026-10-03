@@ -151,7 +151,12 @@ async function runSiblingScenario(): Promise<SiblingEvidence> {
   fresh.removeFile();
   const filesAtEnd = pool.getFileNames();
   const fileCountAtEnd = pool.getFileCount();
+  const capacity = pool.getCapacity();
   database.close();
+  const pausedAfterClose = pool.isPaused();
+  const resumed = await openPersistentWasmDatabase(SIBLING_REPLICA);
+  const reopenedRoot = resumed.query('SELECT id, note FROM replica_only');
+  resumed.close();
 
   // 6. The floor: a request below SAH_POOL_MIN_CAPACITY must clamp to 3, and 3
   // slots must actually carry the replica plus a writable sibling.
@@ -174,7 +179,9 @@ async function runSiblingScenario(): Promise<SiblingEvidence> {
   floor.close();
 
   return {
-    capacity: pool.getCapacity(),
+    capacity,
+    pausedAfterClose,
+    reopenedRoot,
     filesAfterReplicaOpen,
     fileCountAfterReplicaOpen,
     replicaTables,

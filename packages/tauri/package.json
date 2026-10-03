@@ -54,6 +54,7 @@
     "@tauri-apps/api": ">=2.0.0"
   },
   "devDependencies": {
-    "@syncular/react": "workspace:*"
+    "@syncular/react": "workspace:*",
+    "@syncular/server": "workspace:*"
   }
 }

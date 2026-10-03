@@ -89,6 +89,20 @@ malformed native response fails with the sanitized, stable
 `client.invalid_host_response` code before application recovery state can
 persist it.
 
+## Local commands during sync
+
+The native owner captures one request and gives its network I/O to a separate
+executor. Local mutations and queries continue while the server reply or segment
+bytes are pending. The owner applies the reply with the captured commit IDs and
+normal version checks; writes authored during the round replay over that base
+and enter the next request. Socket acknowledgements use the same I/O executor.
+There is no extra polling loop.
+
+An acknowledgement rebuilds only the tables touched by that commit or pull.
+Unchanged tables and their FTS projections stay untouched, so a catalogue's size
+does not add a full-table copy to an unrelated edit. A schema reset or restart
+can still rebuild the complete projection.
+
 ## Secure preflight and native disposal
 
 Create with `securityPreflight: true` when authentication, signed device
@@ -186,3 +200,11 @@ pulls and restart. `commitOutcome(id).retainedRows` exposes intended rows and th
 latest authorized server base. Resolve with `resolved_keep_server`, or create a
 reviewed replacement and link it with `superseded`. Scope revocation and local
 security purge remove whole retained aggregates.
+
+A retained insert whose unique key belongs to another server primary key remains
+journal intent while reads show the server winner. `retainedRows[].uniqueConflicts`
+contains each matching index, its columns, competing `rowId`, authorized
+`serverRow` and `serverVersion`. Keep-mine patches that competing ID at its
+current version and links the replacement through `superseded`. Edit can choose
+a free unique key. Take-server uses `resolved_keep_server`. Revocation and local
+security purge erase the retained aggregate's protected journal payloads.

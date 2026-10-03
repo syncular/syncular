@@ -363,6 +363,7 @@ fn main() {
     let mut io = HostIo::new();
     let mut client: Option<SyncClient> = None;
     let mut effects = CreateEffects::default();
+    let mut prepared_round: Option<syncular_client::PreparedSyncRound> = None;
     let progress_events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<
         syncular_client::SyncProgress,
     >::new()));
@@ -392,6 +393,52 @@ fn main() {
                     Ok(json!(std::mem::take(
                         &mut *progress_events.lock().expect("progress events")
                     )))
+                } else if method == "prepareRound" {
+                    match client.as_mut() {
+                        Some(instance) => {
+                            match instance.prepare_sync_round(io.supports_url_fetch()) {
+                                Ok(round) => {
+                                    prepared_round = Some(round);
+                                    Ok(json!({}))
+                                }
+                                Err(outcome) => Err((
+                                    "harness.round_prepare_failed".into(),
+                                    outcome.to_json().to_string(),
+                                )),
+                            }
+                        }
+                        None => Err((
+                            "harness.invalid_request".into(),
+                            "client is required".into(),
+                        )),
+                    }
+                } else if method == "completeRound" {
+                    match (client.as_mut(), prepared_round.take()) {
+                        (Some(instance), Some(prepared)) => {
+                            let mut next = prepared;
+                            loop {
+                                match instance.apply_sync_round(next.exchange(&mut io)) {
+                                    syncular_client::AppliedSyncRound::Continue(prepared) => {
+                                        next = prepared
+                                    }
+                                    syncular_client::AppliedSyncRound::Complete {
+                                        outcome,
+                                        controls,
+                                        ..
+                                    } => {
+                                        for text in controls {
+                                            let _ = io.realtime_send(&text);
+                                        }
+                                        break Ok(outcome.to_json());
+                                    }
+                                }
+                            }
+                        }
+                        _ => Err((
+                            "harness.invalid_request".into(),
+                            "captured round is required".into(),
+                        )),
+                    }
                 } else if method == "executeStorageSql" {
                     match (client.as_mut(), params.get("sql").and_then(Value::as_str)) {
                         (Some(instance), Some(sql)) => instance

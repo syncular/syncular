@@ -453,12 +453,12 @@ export function readPreviousVersionContainer(
   db: ClientDatabase,
 ): PreviousVersionRecord | undefined {
   const meta = db.query(
-    "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?",
+    "SELECT 1 AS present FROM sqlite_master WHERE type='table' AND name=?",
     [CONTAINER_META_TABLE],
   );
   if (meta.length === 0) return undefined;
   const raw = db.query(
-    `SELECT record FROM ${quoteIdent(CONTAINER_META_TABLE)} WHERE id = 1`,
+    `SELECT record FROM ${quoteIdent(CONTAINER_META_TABLE)} WHERE id=1`,
   )[0]?.record;
   if (raw === undefined) return undefined;
   try {
@@ -504,13 +504,11 @@ function decodeRecord(value: string): PreviousVersionRecord {
 
 function writeRecord(db: ClientDatabase, record: PreviousVersionRecord): void {
   db.exec(
-    `CREATE TABLE IF NOT EXISTS ${quoteIdent(CONTAINER_META_TABLE)} (
-       id INTEGER PRIMARY KEY CHECK (id = 1),
-       record TEXT NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS ${quoteIdent(CONTAINER_META_TABLE)}(id INTEGER PRIMARY KEY CHECK(id=1),record TEXT NOT NULL)`,
   );
   db.exec(`DELETE FROM ${quoteIdent(CONTAINER_META_TABLE)}`);
   db.exec(
-    `INSERT INTO ${quoteIdent(CONTAINER_META_TABLE)}(id, record) VALUES (1, ?)`,
+    `INSERT INTO ${quoteIdent(CONTAINER_META_TABLE)}(id,record)VALUES(1,?)`,
     [JSON.stringify(record)],
   );
 }
@@ -541,9 +539,7 @@ export function capturePreviousVersion(
   const discovered = new Set(
     replica
       .query(
-        `SELECT name FROM sqlite_master WHERE type = 'table'
-           AND name NOT LIKE '_syncular_%'
-           AND name NOT LIKE 'sqlite_%'`,
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '_syncular_%' AND name NOT LIKE 'sqlite_%'",
       )
       .map((row) => String(row.name)),
   );
@@ -567,7 +563,7 @@ export function capturePreviousVersion(
   for (const table of tables) {
     const probeRows = Number(
       replica.query(
-        `SELECT COUNT(*) AS count FROM (SELECT 1 FROM ${quoteIdent(table.name)} LIMIT ?)`,
+        `SELECT COUNT(*)AS count FROM(SELECT 1 FROM ${quoteIdent(table.name)} LIMIT ?)`,
         [config.maxRows + 1],
       )[0]?.count ?? 0,
     );
@@ -584,15 +580,12 @@ export function capturePreviousVersion(
       .join(' + ');
     if (table.columns.length === 0) continue;
     const oversized = replica.query(
-      `SELECT 1 AS hit FROM ${quoteIdent(table.name)}
-         WHERE (${byteSum}) > ? LIMIT 1`,
+      `SELECT 1 AS hit FROM ${quoteIdent(table.name)} WHERE(${byteSum})>? LIMIT 1`,
       [config.maxRowBytes],
     );
     if (oversized.length > 0) return over(measuredRows, measuredBytes);
     const total = replica.query(
-      `SELECT COALESCE(SUM(bytes), 0) AS total FROM (
-         SELECT (${byteSum}) AS bytes FROM ${quoteIdent(table.name)} LIMIT ?
-       )`,
+      `SELECT COALESCE(SUM(bytes),0)AS total FROM(SELECT(${byteSum})AS bytes FROM ${quoteIdent(table.name)} LIMIT ?)`,
       [perTableRows[index] ?? 0],
     )[0]?.total;
     measuredBytes += Number(total ?? 0);
@@ -604,11 +597,7 @@ export function capturePreviousVersion(
   container.transaction(() => {
     dropPreviousVersionContainer(container);
     container.exec(
-      `CREATE TABLE ${quoteIdent(CONTAINER_TABLE)} (
-         tbl TEXT NOT NULL,
-         row_id TEXT NOT NULL,
-         payload TEXT NOT NULL,
-         PRIMARY KEY (tbl, row_id))`,
+      `CREATE TABLE ${quoteIdent(CONTAINER_TABLE)}(tbl TEXT NOT NULL,row_id TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(tbl,row_id))`,
     );
     for (const table of tables) {
       const selectColumns = table.columns
@@ -617,8 +606,7 @@ export function capturePreviousVersion(
       let lastRowId = -1;
       for (;;) {
         const rows = replica.query(
-          `SELECT rowid AS _rid, ${selectColumns} FROM ${quoteIdent(table.name)}
-             WHERE rowid > ? ORDER BY rowid ASC LIMIT ?`,
+          `SELECT rowid AS _rid,${selectColumns} FROM ${quoteIdent(table.name)} WHERE rowid>? ORDER BY rowid ASC LIMIT ?`,
           [lastRowId, COPY_BATCH_ROWS],
         );
         if (rows.length === 0) break;
@@ -632,8 +620,7 @@ export function capturePreviousVersion(
             payload[column.name] = rowValueToJson(value);
           }
           container.exec(
-            `INSERT INTO ${quoteIdent(CONTAINER_TABLE)}(tbl, row_id, payload)
-               VALUES (?, ?, ?)`,
+            `INSERT INTO ${quoteIdent(CONTAINER_TABLE)}(tbl,row_id,payload)VALUES(?,?,?)`,
             [table.name, rowIdText(table, row), JSON.stringify(payload)],
           );
         }
@@ -703,8 +690,7 @@ export function readPreviousVersionRows(
       ? ''
       : ` AND row_id IN (${rowIds.map(() => '?').join(', ')})`;
   const rows = db.query(
-    `SELECT row_id, payload FROM ${quoteIdent(CONTAINER_TABLE)}
-       WHERE tbl = ?${where} ORDER BY row_id ASC LIMIT ?`,
+    `SELECT row_id,payload FROM ${quoteIdent(CONTAINER_TABLE)} WHERE tbl=?${where} ORDER BY row_id ASC LIMIT ?`,
     [table.name, ...rowIds, limit + 1],
   );
   const truncated = rows.length > limit;
@@ -738,7 +724,7 @@ export function writePreviousVersionRefusal(
 
 /** Delete the durable refusal. Part of the orphan sweep and of a successful capture. */
 export function clearPreviousVersionRefusal(db: ClientDatabase): void {
-  db.exec('DELETE FROM _syncular_meta WHERE key = ?', [
+  db.exec('DELETE FROM _syncular_meta WHERE key=?', [
     PREVIOUS_VERSION_CONTEXT_KEY,
   ]);
 }
@@ -906,7 +892,7 @@ export function writePreviousVersionAudit(
 
 /** Delete the advisory audit. Part of a discard, never of a normal bump. */
 export function clearPreviousVersionAudit(db: ClientDatabase): void {
-  db.exec('DELETE FROM _syncular_meta WHERE key = ?', [
+  db.exec('DELETE FROM _syncular_meta WHERE key=?', [
     PREVIOUS_VERSION_AUDIT_KEY,
   ]);
 }

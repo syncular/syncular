@@ -654,6 +654,27 @@ pub struct SyncReport {
     pub schema_floor: Option<SchemaFloor>,
 }
 
+impl SyncReport {
+    /// Aggregate completed rounds without changing the final bootstrap state.
+    pub fn merge(&mut self, report: &Self) {
+        self.pushed += report.pushed;
+        self.applied.extend(report.applied.iter().cloned());
+        self.rejected.extend(report.rejected.iter().cloned());
+        self.retryable.extend(report.retryable.iter().cloned());
+        self.conflicts += report.conflicts;
+        self.commits_applied += report.commits_applied;
+        self.segment_rows_applied += report.segment_rows_applied;
+        self.bootstrapping = report.bootstrapping.clone();
+        self.resets.extend(report.resets.iter().cloned());
+        self.revoked.extend(report.revoked.iter().cloned());
+        self.failed.extend(report.failed.iter().cloned());
+        self.deferred_commits = report.deferred_commits;
+        if report.schema_floor.is_some() {
+            self.schema_floor = report.schema_floor.clone();
+        }
+    }
+}
+
 /// `sync()` never panics or errors out-of-band: transport and protocol
 /// failures come back as `Failed` (the driver's `{ ok: false }`).
 #[derive(Debug, Clone)]
@@ -918,7 +939,19 @@ pub enum CommitOperationOutcome {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct RetainedUniqueConflict {
+    pub index: String,
+    pub columns: Vec<String>,
+    pub row_id: String,
+    pub server_row: Map<String, Value>,
+    pub server_version: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct RetainedCommitRow {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unique_conflicts: Vec<RetainedUniqueConflict>,
     pub table: String,
     pub row_id: String,
     pub local_row: Option<Map<String, Value>>,

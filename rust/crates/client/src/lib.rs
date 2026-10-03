@@ -6,10 +6,12 @@
 //! v2 TypeScript client — the conformance catalog (packages/conformance)
 //! is the proof that both cores implement one written protocol.
 //!
-//! The API is synchronous request/response: the host drives `sync()` /
-//! `sync_until_idle()` and feeds inbound realtime traffic through
-//! `on_realtime_text` / `on_realtime_binary`. Scheduling is host policy
-//! (§8.4); the core exposes the coalesced `sync_needed` signal only.
+//! Blocking hosts drive `sync()` / `sync_until_idle()`. Mailbox hosts prepare
+//! a round on the owner, run `PreparedSyncRound::exchange` on an I/O executor,
+//! and apply the result on the owner. An upload continuation repeats that
+//! exchange/apply cycle before the captured metadata request. The owner can
+//! serve local commands throughout; it queues inbound realtime traffic until
+//! the round completes. Scheduling is host policy (§8.4).
 
 pub mod api;
 #[cfg(feature = "bench-internals")]
@@ -24,10 +26,12 @@ pub mod crdt;
 /// in dependency-lean builds so host code needs only one transport type.
 pub mod native_transport;
 mod progress;
+mod round;
 pub use progress::{
     ProgressObserver, ProgressPhase, ProgressState, ProgressSubscription, SyncProgress,
     SyncProgressListener,
 };
+pub use round::{AppliedSyncRound, CompletedSyncRound, PreparedSyncRound};
 /// RFC 0005 previous-version context: the persisted schema descriptor, the
 /// bounded capture, and the sibling container FILE beside the replica.
 pub mod previous_version;
@@ -49,9 +53,9 @@ pub use api::{
     LocalDataPurgeResult, LocalDataPurgeTarget, LocalDataRebootstrapInput,
     LocalDataRebootstrapResult, Mutation, PresencePeer, QueryOwner, QueryReadFailure, QueryRow,
     QuerySnapshot, QueryValue, RealtimePolicy, RealtimeState, RejectionRecord,
-    ResolveCommitOutcomeInput, RetainedCommitRow, RowState, SchemaFloor, SubscriptionStateView,
-    SyncIntent, SyncOutcome, SyncReport, SyncStatusSnapshot, TableChange, TimeBucketUnit,
-    WindowBase, WindowChange, WindowCoverage, WindowState, WindowUnitRef,
+    ResolveCommitOutcomeInput, RetainedCommitRow, RetainedUniqueConflict, RowState, SchemaFloor,
+    SubscriptionStateView, SyncIntent, SyncOutcome, SyncReport, SyncStatusSnapshot, TableChange,
+    TimeBucketUnit, WindowBase, WindowChange, WindowCoverage, WindowState, WindowUnitRef,
     CLIENT_DIAGNOSTICS_VERSION, MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
     MAX_DIAGNOSTIC_QUERY_FAILURES, REALTIME_LOST_CODE, REALTIME_UNAVAILABLE_CODE,
 };

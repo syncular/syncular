@@ -16,6 +16,20 @@ webview is a thin RPC client of it. The shape matches the browser worker
 mode: the client core runs outside the UI thread, reached over RPC (here,
 Tauri IPC).
 
+## Local commands during sync
+
+The native owner captures one request and gives its network I/O to a separate
+executor. Local mutations and queries continue while the server reply or segment
+bytes are pending. The owner applies the reply with the captured commit IDs and
+normal version checks; writes authored during the round replay over that base
+and enter the next request. Socket acknowledgements use the same I/O executor.
+There is no extra polling loop.
+
+An acknowledgement rebuilds only the tables touched by that commit or pull.
+Unchanged tables and their FTS projections stay untouched, so a catalogue's size
+does not add a full-table copy to an unrelated edit. A schema reset or restart
+can still rebuild the complete projection.
+
 ## Install
 
 Install the JS bridge and its required Tauri API peer in your frontend project:

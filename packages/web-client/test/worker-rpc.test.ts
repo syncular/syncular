@@ -23,6 +23,7 @@ import {
   type WorkerErrorShape,
   workerStartupError,
 } from '@syncular/client';
+import { decodeMessage } from '@syncular/core';
 import { hostBoolean } from '../../typegen/test/fixtures/basic/syncular.queries';
 import {
   CLIENT_SCHEMA,
@@ -212,6 +213,91 @@ test('worker RPC retains structured segment transport evidence', async () => {
     });
   } finally {
     await handle.close();
+  }
+});
+
+test('worker serves local mutations and reads while a sync reply is pending', async () => {
+  const isolatedHttp = serveOverHttp(makeServer());
+  const held = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let hold = false;
+  const pushed: string[][] = [];
+  const proxy = Bun.serve({
+    port: 0,
+    async fetch(request) {
+      const message = decodeMessage(
+        new Uint8Array(await request.clone().arrayBuffer()),
+      );
+      if (message.msgKind !== 'request')
+        throw new Error('expected sync request');
+      const ids = message.frames.flatMap((frame) =>
+        frame.type === 'PUSH_COMMIT' ? [frame.clientCommitId] : [],
+      );
+      if (ids.length) pushed.push(ids);
+      const response = await fetch(new Request(isolatedHttp.syncUrl, request));
+      if (hold) {
+        hold = false;
+        held.resolve();
+        await release.promise;
+      }
+      return response;
+    },
+  });
+  const { handle } = await makeHandle({
+    clientId: 'rpc-inflight',
+    autoSync: false,
+    endpoints: {
+      syncUrl: `${proxy.url}sync`,
+      segmentsUrl: isolatedHttp.segmentsUrl,
+    },
+  });
+  try {
+    await handle.subscribe({
+      id: 'tasks',
+      table: 'tasks',
+      scopes: { project_id: ['p1'] },
+    });
+    await handle.syncUntilIdle();
+    const first = await handle.mutate([
+      {
+        table: 'tasks',
+        op: 'upsert',
+        values: taskValues('inflight-one', 'p1', 'first'),
+      },
+    ]);
+    hold = true;
+    const syncing = handle.syncUntilIdle();
+    await held.promise;
+    // These await real worker replies before releasing the network barrier.
+    const started = performance.now();
+    const second = await handle.mutate([
+      {
+        table: 'tasks',
+        op: 'upsert',
+        values: taskValues('inflight-two', 'p1', 'second'),
+      },
+    ]);
+    const elapsed = performance.now() - started;
+    const rows = await handle.query(
+      "SELECT id FROM tasks WHERE id LIKE 'inflight-%' ORDER BY id",
+    );
+    expect(rows).toEqual([{ id: 'inflight-one' }, { id: 'inflight-two' }]);
+    expect(
+      (await handle.pendingCommits()).map((commit) => commit.clientCommitId),
+    ).toEqual([first, second]);
+    expect(elapsed).toBeLessThan(100);
+    release.resolve();
+    await syncing;
+    await handle.syncUntilIdle();
+    expect(await handle.pendingCommits()).toEqual([]);
+    expect(pushed).toEqual([[first], [second]]);
+    expect((await handle.commitOutcome(first))?.status).toBe('applied');
+    expect((await handle.commitOutcome(second))?.status).toBe('applied');
+  } finally {
+    release.resolve();
+    await handle.close();
+    proxy.stop(true);
+    await isolatedHttp.stop();
   }
 });
 

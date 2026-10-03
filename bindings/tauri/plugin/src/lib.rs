@@ -132,6 +132,12 @@ enum Request {
     },
     /// Native realtime reader wake; contains no data (the transport buffer does).
     TransportWake,
+    RoundFinished(
+        Box<(
+            syncular_client::CompletedSyncRound,
+            crate::transport::HostTransport,
+        )>,
+    ),
     /// §7.6: an owned read-sidecar failure, or the first success after one.
     QueryRead {
         id: String,
@@ -324,21 +330,35 @@ fn run_reader_thread(path: String, rx: Receiver<ReadRequest>, owner_tx: Sender<R
 
 /// The owning thread: builds the core, then loops over the mailbox and the
 /// background host policy. `emit` pushes drained events onto the Tauri channel.
+/// One serialized I/O executor per owner. It never owns a SQLite connection.
+enum NetworkWork {
+    Round(
+        Box<syncular_client::PreparedSyncRound>,
+        crate::transport::HostTransport,
+    ),
+    Controls(Vec<String>, crate::transport::HostTransport),
+}
+
+struct RoundRun {
+    reply: Option<Sender<Value>>,
+    until_idle: bool,
+    max_rounds: Option<u32>,
+    spent: u32,
+    aggregate: syncular_client::SyncReport,
+}
+
 fn run_owner_thread<F>(config: SyncularConfig, tx: Sender<Request>, rx: Receiver<Request>, emit: F)
 where
     F: Fn(&Value) + Send + Sync + 'static,
 {
     let emit = std::sync::Arc::new(emit);
-    let transport_json = config.to_transport_json();
     let wake_tx = tx.clone();
     let notify: std::sync::Arc<dyn Fn() + Send + Sync> = std::sync::Arc::new(move || {
         let _ = wake_tx.send(Request::TransportWake);
     });
-    let mut core = match SyncularCore::new_with_notify(&transport_json, Some(notify)) {
+    let mut core = match SyncularCore::new_with_notify(&config.to_transport_json(), Some(notify)) {
         Ok(core) => core,
         Err(message) => {
-            // A construction failure is terminal for this instance; surface it
-            // once on the channel so the webview can show it, then stop.
             emit(&json!({ "type": "error", "message": message }));
             return;
         }
@@ -347,72 +367,191 @@ where
     core.progress_listener = Some(std::sync::Arc::new(move |progress| {
         progress_emit(&json!({ "type": "progress", "progress": progress }));
     }));
-
-    // No idle poll: commands/realtime wake the mailbox, while a retryable
-    // transport failure contributes one real monotonic deadline.
-    let mut background_deadline: Option<Instant> = None;
-    loop {
-        if config.auto_sync {
-            match core.take_sync_intent() {
-                syncular_client::SyncIntent::Interactive => {
-                    background_deadline = None;
-                    core.sync_until_idle();
-                    pump_events(&mut core, &*emit);
-                    continue;
+    let (network_tx, network_rx) = std::sync::mpsc::channel();
+    let completed_tx = tx.clone();
+    let network = std::thread::spawn(move || {
+        use syncular_client::Transport;
+        while let Ok(work) = network_rx.recv() {
+            match work {
+                NetworkWork::Round(prepared, mut transport) => {
+                    let completed = (*prepared).exchange(&mut transport);
+                    if completed_tx
+                        .send(Request::RoundFinished(Box::new((completed, transport))))
+                        .is_err()
+                    {
+                        return;
+                    }
                 }
-                syncular_client::SyncIntent::Background { delay_ms } => {
-                    let candidate = Instant::now()
-                        .checked_add(Duration::from_millis(delay_ms))
-                        .unwrap_or_else(Instant::now);
-                    background_deadline = Some(
-                        background_deadline.map_or(candidate, |current| current.min(candidate)),
-                    );
+                NetworkWork::Controls(controls, mut transport) => {
+                    for text in controls {
+                        let _ = transport.realtime_send(&text);
+                    }
                 }
-                syncular_client::SyncIntent::None => {}
             }
         }
-
-        let request = if let Some(deadline) = background_deadline {
-            let now = Instant::now();
-            if deadline <= now {
-                background_deadline = None;
-                core.sync_until_idle();
-                pump_events(&mut core, &*emit);
-                continue;
+    });
+    let mut active: Option<RoundRun> = None;
+    let mut queued = std::collections::VecDeque::new();
+    let mut background_deadline: Option<Instant> = None;
+    loop {
+        if let Some((controls, transport)) = core.take_controls() {
+            if network_tx
+                .send(NetworkWork::Controls(controls, transport))
+                .is_err()
+            {
+                break;
             }
-            match rx.recv_timeout(deadline.saturating_duration_since(now)) {
-                Ok(request) => request,
-                Err(RecvTimeoutError::Timeout) => {
-                    background_deadline = None;
-                    core.sync_until_idle();
-                    pump_events(&mut core, &*emit);
+        }
+        // Consume sync intent only while idle. Mutations arriving mid-round
+        // retain their coalesced intent and enter the next captured request.
+        if active.is_none() {
+            if let Some(run) = queued.pop_front() {
+                active = Some(run);
+            } else if config.auto_sync {
+                match core.take_sync_intent() {
+                    syncular_client::SyncIntent::Interactive => {
+                        background_deadline = None;
+                        active = Some(RoundRun {
+                            reply: None,
+                            until_idle: true,
+                            max_rounds: None,
+                            spent: 0,
+                            aggregate: Default::default(),
+                        });
+                    }
+                    syncular_client::SyncIntent::Background { delay_ms } => {
+                        let candidate = Instant::now()
+                            .checked_add(Duration::from_millis(delay_ms))
+                            .unwrap_or_else(Instant::now);
+                        background_deadline = Some(
+                            background_deadline.map_or(candidate, |current| current.min(candidate)),
+                        );
+                    }
+                    syncular_client::SyncIntent::None => {}
+                }
+            }
+            if active.is_some() {
+                match core.prepare_round() {
+                    Ok((prepared, transport)) => {
+                        active.as_mut().expect("active run").spent += 1;
+                        if network_tx
+                            .send(NetworkWork::Round(Box::new(prepared), transport))
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(outcome) => {
+                        if let Some(reply) = active.take().and_then(|run| run.reply) {
+                            let _ = reply.send(json!({ "result": outcome.to_json() }));
+                        }
+                    }
+                }
+                pump_events(&mut core, &*emit);
+                if active.is_none() {
                     continue;
                 }
-                Err(RecvTimeoutError::Disconnected) => {
-                    core.shutdown();
-                    return;
+            }
+        }
+        let request = if active.is_none() {
+            if let Some(deadline) = background_deadline {
+                match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                    Ok(request) => request,
+                    Err(RecvTimeoutError::Timeout) => {
+                        background_deadline = None;
+                        queued.push_back(RoundRun {
+                            reply: None,
+                            until_idle: true,
+                            max_rounds: None,
+                            spent: 0,
+                            aggregate: Default::default(),
+                        });
+                        continue;
+                    }
+                    Err(RecvTimeoutError::Disconnected) => break,
+                }
+            } else {
+                match rx.recv() {
+                    Ok(request) => request,
+                    Err(_) => break,
                 }
             }
         } else {
             match rx.recv() {
                 Ok(request) => request,
-                Err(std::sync::mpsc::RecvError) => {
-                    core.shutdown();
-                    return;
-                }
+                Err(_) => break,
             }
         };
-
         match request {
+            Request::RoundFinished(completed) => {
+                let (completed, transport) = *completed;
+                let applied = core.apply_round(completed);
+                let (mut outcome, more, bootstrap_advanced) = match applied {
+                    syncular_client::AppliedSyncRound::Continue(prepared) => {
+                        if network_tx
+                            .send(NetworkWork::Round(Box::new(prepared), transport))
+                            .is_err()
+                        {
+                            break;
+                        }
+                        pump_events(&mut core, &*emit);
+                        continue;
+                    }
+                    syncular_client::AppliedSyncRound::Complete {
+                        outcome,
+                        more,
+                        bootstrap_advanced,
+                        ..
+                    } => (outcome, more, bootstrap_advanced),
+                };
+                let Some(mut run) = active.take() else {
+                    continue;
+                };
+                let mut keep_running = false;
+                if run.until_idle {
+                    if let syncular_client::SyncOutcome::Ok(report) = &outcome {
+                        run.aggregate.merge(report);
+                        if bootstrap_advanced && run.max_rounds.is_none() {
+                            run.spent = 0;
+                        }
+                        keep_running = more;
+                        if keep_running && run.spent >= run.max_rounds.unwrap_or(20).max(1) {
+                            keep_running = false;
+                            outcome = syncular_client::SyncOutcome::Failed {
+                                error_code: "sync.invalid_request".into(),
+                                message: "sync did not reach idle within the round budget".into(),
+                                details: None,
+                            };
+                        } else if !keep_running {
+                            outcome = syncular_client::SyncOutcome::Ok(run.aggregate.clone());
+                        }
+                    }
+                }
+                if keep_running {
+                    queued.push_front(run);
+                } else if let Some(reply) = run.reply {
+                    let _ = reply.send(json!({ "result": outcome.to_json() }));
+                }
+                pump_events(&mut core, &*emit);
+            }
             Request::Command { command, reply } => {
+                let method = command.get("method").and_then(Value::as_str);
+                if matches!(method, Some("sync" | "syncUntilIdle")) {
+                    queued.push_back(RoundRun {
+                        reply: Some(reply),
+                        until_idle: method == Some("syncUntilIdle"),
+                        max_rounds: command
+                            .pointer("/params/maxRounds")
+                            .and_then(Value::as_u64)
+                            .map(|n| n as u32),
+                        spent: 0,
+                        aggregate: Default::default(),
+                    });
+                    continue;
+                }
                 let result = core.command(&command);
                 if result.get("error").is_none() {
                     if let Some(headers) = activation_headers(&command) {
-                        // A successful `activateSecurity` may carry a fresh
-                        // header set; apply it here, before this loop consumes
-                        // the startup sync intent the activation enqueued, so
-                        // a preflight that outlived the boot token starts its
-                        // first round with valid credentials.
                         core.set_headers(headers);
                     }
                 }
@@ -420,8 +559,7 @@ where
                 pump_events(&mut core, &*emit);
             }
             Request::Query { sql, params, reply } => {
-                let result = core.query(&sql, params);
-                let _ = reply.send(result);
+                let _ = reply.send(core.query(&sql, params));
                 pump_events(&mut core, &*emit);
             }
             Request::SetHeaders { headers, reply } => {
@@ -445,10 +583,17 @@ where
                 let _ = entered.send(());
                 std::thread::sleep(duration);
             }
-            Request::Shutdown => {
-                core.shutdown();
-                return;
-            }
+            Request::Shutdown => break,
+        }
+    }
+    core.shutdown();
+    drop(network_tx);
+    // Transport shutdown releases a pending socket round. An HTTP request
+    // finishes on its own bounded transport timeout, outside the owner.
+    let _ = network.join();
+    for run in active.into_iter().chain(queued) {
+        if let Some(reply) = run.reply {
+            let _ = reply.send(json!({ "error": { "code": "client.closed", "message": "client owner has closed" } }));
         }
     }
 }
@@ -1323,6 +1468,176 @@ mod tests {
             .collect();
         // The local mutate emits the exact revisioned batch onto the channel.
         assert!(kinds.iter().any(|k| k == "change"), "kinds: {kinds:?}");
+    }
+
+    #[cfg(feature = "native-transport")]
+    #[test]
+    fn pending_network_round_keeps_local_mutations_and_queries_responsive() {
+        use ssp2::model::{Frame, Message, MsgKind, OpResult, PushStatus};
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::mpsc::channel;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (entered_tx, entered_rx) = channel();
+        let (release_tx, release_rx) = channel();
+        let server = std::thread::spawn(move || {
+            let mut pushed = Vec::new();
+            while pushed.len() < 2 {
+                let (mut socket, _) = listener.accept().unwrap();
+                let mut header = Vec::new();
+                while !header.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    socket.read_exact(&mut byte).unwrap();
+                    header.push(byte[0]);
+                }
+                let header = String::from_utf8(header).unwrap();
+                let length: usize = header
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse().unwrap())
+                    })
+                    .unwrap();
+                let mut bytes = vec![0; length];
+                socket.read_exact(&mut bytes).unwrap();
+                let request = ssp2::decode_message(&bytes).unwrap();
+                let reset = matches!(
+                    &request.frames[0],
+                    Frame::ReqHeader {
+                        log_epoch: None,
+                        ..
+                    }
+                );
+                let mut frames = vec![Frame::RespHeader {
+                    required_schema_version: None,
+                    latest_schema_version: None,
+                    log_epoch: Some("epoch".into()),
+                    reset_required: Some(reset),
+                }];
+                if !reset {
+                    let commits: Vec<_> = request
+                        .frames
+                        .iter()
+                        .filter_map(|frame| {
+                            if let Frame::PushCommit {
+                                client_commit_id,
+                                operations,
+                            } = frame
+                            {
+                                Some((client_commit_id.clone(), operations.len()))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    if !commits.is_empty() && pushed.is_empty() {
+                        entered_tx.send(()).unwrap();
+                        release_rx.recv().unwrap();
+                    }
+                    for (id, count) in commits {
+                        pushed.push(id.clone());
+                        frames.push(Frame::PushResult {
+                            client_commit_id: id,
+                            status: PushStatus::Applied,
+                            commit_seq: Some(pushed.len() as i64),
+                            results: (0..count)
+                                .map(|i| OpResult::Applied { op_index: i as i32 })
+                                .collect(),
+                        });
+                    }
+                }
+                let response = ssp2::encode_message(&Message {
+                    wire_version: ssp2::decode::WIRE_VERSION,
+                    msg_kind: MsgKind::Response,
+                    frames,
+                });
+                write!(
+                    socket,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    response.len()
+                )
+                .unwrap();
+                socket.write_all(&response).unwrap();
+            }
+            pushed
+        });
+        let (tx, rx) = channel();
+        let owner_tx = tx.clone();
+        let owner = std::thread::spawn(move || {
+            run_owner_thread(
+                SyncularConfig {
+                    base_url: Some(format!("http://{address}")),
+                    auto_sync: true,
+                    ..Default::default()
+                },
+                owner_tx,
+                rx,
+                |_| {},
+            )
+        });
+        let call = |command: Value| {
+            let (reply, result) = channel();
+            tx.send(Request::Command { command, reply }).unwrap();
+            result
+        };
+        let created = call(json!({ "method": "create", "params": {
+            "clientId": "pending-round", "schema": { "version": 1, "tables": [{
+                "name": "todo", "primaryKey": "id", "columns": [
+                    { "name": "id", "type": "string", "nullable": false },
+                    { "name": "title", "type": "string", "nullable": false }
+                ], "scopes": []
+            }] }
+        } }));
+        assert!(created.recv().unwrap().get("error").is_none());
+        let first = call(json!({ "method": "mutate", "params": { "mutations": [{
+            "op": "upsert", "table": "todo", "values": { "id": "one", "title": "first" }
+        }] } }))
+        .recv()
+        .unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        let started = Instant::now();
+        let second = call(json!({ "method": "mutate", "params": { "mutations": [{
+            "op": "upsert", "table": "todo", "values": { "id": "two", "title": "second" }
+        }] } }));
+        let local_reply = second.recv_timeout(Duration::from_millis(100));
+        let elapsed = started.elapsed();
+        let (query_tx, query_rx) = channel();
+        tx.send(Request::Query {
+            sql: "SELECT title FROM todo ORDER BY id".into(),
+            params: Value::Null,
+            reply: query_tx,
+        })
+        .unwrap();
+        let local_rows = query_rx.recv_timeout(Duration::from_millis(100));
+        // Release even on the old blocking implementation, so a failing test
+        // joins its transport and owner rather than leaving network threads.
+        release_tx.send(()).unwrap();
+        let second_reply = local_reply
+            .clone()
+            .unwrap_or_else(|_| second.recv().unwrap());
+        let rows = local_rows
+            .clone()
+            .unwrap_or_else(|_| query_rx.recv().unwrap());
+        let pushed = server.join().unwrap();
+        tx.send(Request::Shutdown).unwrap();
+        owner.join().unwrap();
+        assert!(
+            local_reply.is_ok(),
+            "local mutation waited for network reply"
+        );
+        assert!(local_rows.is_ok(), "local query waited for network reply");
+        eprintln!("second local mutation while network pending: {elapsed:?}");
+        assert_eq!(rows["result"]["rows"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            pushed,
+            vec![
+                first["result"]["clientCommitId"].as_str().unwrap(),
+                second_reply["result"]["clientCommitId"].as_str().unwrap()
+            ]
+        );
     }
 
     #[test]

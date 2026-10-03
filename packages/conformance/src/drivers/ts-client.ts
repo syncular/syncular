@@ -188,7 +188,14 @@ async function constructClient(
   db: BunClientDatabase,
   schema: DriverSchema,
   options: ClientCreateOptions,
-): Promise<{ client: SyncClient; loseRealtime: () => void }> {
+): Promise<{
+  client: SyncClient;
+  loseRealtime: () => void;
+  deferredRound: {
+    prepare(): Promise<void>;
+    complete(): Promise<ClientSyncResult>;
+  };
+}> {
   const endpoints = options.endpoints;
   const nowMs = options.nowMs;
   const fetchSegmentUrl = endpoints.fetchSegmentUrl?.bind(endpoints);
@@ -243,6 +250,13 @@ async function constructClient(
   const encryption = buildEncryption(options.encryption);
   const previousVersionContext = options.previousVersionContext;
   let loseRealtime: (() => void) | undefined;
+  let held:
+    | {
+        entered: ReturnType<typeof Promise.withResolvers<void>>;
+        release: ReturnType<typeof Promise.withResolvers<void>>;
+      }
+    | undefined;
+  let pending: Promise<ClientSyncResult> | undefined;
   const client = new SyncClient({
     database: db,
     schema: toClientSchema(schema),
@@ -258,7 +272,16 @@ async function constructClient(
     ...(nowMs !== undefined ? { now: () => nowMs } : {}),
     ...(encryption !== undefined ? { encryption } : {}),
     ...(previousVersionContext !== undefined ? { previousVersionContext } : {}),
-    transport: (bytes) => endpoints.sync(bytes),
+    transport: async (bytes) => {
+      const response = await endpoints.sync(bytes);
+      const barrier = held;
+      if (barrier !== undefined) {
+        held = undefined;
+        barrier.entered.resolve();
+        await barrier.release.promise;
+      }
+      return response;
+    },
     segments,
     ...(blobs !== undefined ? { blobs } : {}),
     realtime: async (handlers) => {
@@ -282,7 +305,37 @@ async function constructClient(
   });
   await client.start();
   // The connector runs at connect time, so the loss hook reads the slot then.
-  return { client, loseRealtime: () => loseRealtime?.() };
+  let release: (() => void) | undefined;
+  const deferredRound = {
+    async prepare(): Promise<void> {
+      if (pending !== undefined) throw new Error('round already captured');
+      const barrier = {
+        entered: Promise.withResolvers<void>(),
+        release: Promise.withResolvers<void>(),
+      };
+      held = barrier;
+      release = () => barrier.release.resolve();
+      pending = client
+        .sync()
+        .then(toReport)
+        .catch((error: unknown) => ({
+          ok: false as const,
+          ...errorCodeOf(error),
+          errorCode: errorCodeOf(error).code,
+        }));
+      await barrier.entered.promise;
+    },
+    async complete(): Promise<ClientSyncResult> {
+      if (pending === undefined || release === undefined)
+        throw new Error('no captured round');
+      release();
+      const result = await pending;
+      pending = undefined;
+      release = undefined;
+      return result;
+    },
+  };
+  return { client, loseRealtime: () => loseRealtime?.(), deferredRound };
 }
 
 /**
@@ -312,6 +365,10 @@ class TsClientInstance implements ClientInstance {
   #schema: DriverSchema;
   readonly #options: ClientCreateOptions;
   #loseRealtime: () => void;
+  #deferredRound: {
+    prepare(): Promise<void>;
+    complete(): Promise<ClientSyncResult>;
+  };
   readonly #changes: ClientChangeBatch[] = [];
   readonly #progress: SyncProgress[] = [];
   readonly #intents: SyncIntent[] = [];
@@ -322,8 +379,12 @@ class TsClientInstance implements ClientInstance {
     db: BunClientDatabase,
     schema: DriverSchema,
     options: ClientCreateOptions,
-    cleanup: () => void = () => {},
-    loseRealtime: () => void = () => {},
+    cleanup: () => void,
+    loseRealtime: () => void,
+    deferredRound: {
+      prepare(): Promise<void>;
+      complete(): Promise<ClientSyncResult>;
+    },
   ) {
     this.#client = client;
     this.#db = db;
@@ -331,6 +392,7 @@ class TsClientInstance implements ClientInstance {
     this.#schema = schema;
     this.#options = options;
     this.#loseRealtime = loseRealtime;
+    this.#deferredRound = deferredRound;
     client.onChange((batch) => this.#changes.push(batch));
     client.onProgress((progress) => this.#progress.push(progress));
     this.#recordBackgroundIntents(client);
@@ -584,6 +646,13 @@ class TsClientInstance implements ClientInstance {
     return this.#intents.splice(0);
   }
 
+  async prepareRound(): Promise<void> {
+    await this.#deferredRound.prepare();
+  }
+  async completeRound(): Promise<ClientSyncResult> {
+    return this.#deferredRound.complete();
+  }
+
   async sync(): Promise<ClientSyncResult> {
     try {
       const first = toReport(await this.#client.sync());
@@ -662,7 +731,21 @@ class TsClientInstance implements ClientInstance {
       ...(outcome.retainedRows
         ? {
             retainedRows: outcome.retainedRows.map((row) => ({
-              ...row,
+              table: row.table,
+              rowId: row.rowId,
+              serverVersion: row.serverVersion,
+              ...(row.uniqueConflicts
+                ? {
+                    uniqueConflicts: row.uniqueConflicts.map((conflict) => ({
+                      ...conflict,
+                      serverRow: Object.fromEntries(
+                        Object.entries(conflict.serverRow).map(
+                          ([key, value]) => [key, toDriverValue(value)],
+                        ),
+                      ),
+                    })),
+                  }
+                : {}),
               localRow:
                 row.localRow === null
                   ? null
@@ -861,6 +944,7 @@ class TsClientInstance implements ClientInstance {
     });
     this.#client = reopened.client;
     this.#loseRealtime = reopened.loseRealtime;
+    this.#deferredRound = reopened.deferredRound;
     this.#client.onChange((batch) => this.#changes.push(batch));
     this.#recordBackgroundIntents(this.#client);
     if (this.#client.statusSnapshot().syncNeeded) {
@@ -1027,7 +1111,7 @@ export const tsClientDriver: ClientDriver = {
     // the harness endpoints have a URL host — that presence is what makes
     // the client core advertise accept bit 3. §5.9 blob transport likewise.
     const { db, cleanup } = createClientDatabase(options);
-    const { client, loseRealtime } = await constructClient(
+    const { client, loseRealtime, deferredRound } = await constructClient(
       db,
       options.schema,
       options,
@@ -1039,6 +1123,7 @@ export const tsClientDriver: ClientDriver = {
       options,
       cleanup,
       loseRealtime,
+      deferredRound,
     );
   },
 };

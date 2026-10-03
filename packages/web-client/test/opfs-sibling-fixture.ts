@@ -32,6 +32,8 @@ export interface SahPoolProbeGlobal {
 export interface SiblingEvidence {
   /** Pool capacity the adapter requested: sqlite-wasm's default of 6. */
   capacity: number;
+  pausedAfterClose: boolean;
+  reopenedRoot: Record<string, unknown>[];
   filesAfterReplicaOpen: string[];
   fileCountAfterReplicaOpen: number;
   /** The replica's own tables, used as the D3 baseline. */

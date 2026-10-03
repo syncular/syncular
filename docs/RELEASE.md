@@ -1,8 +1,54 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.30.10** (`v0.30.10`). All artifacts use Apache-2.0, except
+current release is **0.30.11** (`v0.30.11`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.30.11 release notes
+
+A retained full insert no longer violates a local secondary unique index when
+another primary key holds the same key. Both cores keep the intended row in the
+protected journal and preserve the authorized server winner in physical tables.
+`retainedRows[].uniqueConflicts` identifies each matching index, its columns,
+the competing row ID, decoded server row and current version. SQLite equality
+preserves composite keys, affinity and NULL semantics.
+
+Take-server discards the retained intent. Keep-mine explicitly patches the
+competing ID at its current version; edit can submit a free unique key. Both
+replacement paths link the original outcome through `superseded`. Restart
+preserves the evidence. Revocation and security purge remove retained intent,
+its operation envelope and row-bearing results; static outcome history remains.
+Existing browser replicas migrate their protected bookkeeping on open.
+
+Bun SQLite clients against SQLite and PGlite servers, Chromium worker OPFS,
+Rust conformance and the real Tauri native transport cover distinct-ID races,
+restart and explicit resolution. SSP2 remains at wire version 3. Adopters update
+all npm packages and native crates to 0.30.11 and read `uniqueConflicts` in their
+recovery UI. No application schema bump or generated-schema change is required. The browser
+own-code bundle remains within its unchanged 148 KiB limit.
+
+Schema bumps now prune registrations whose scope variables, pattern prefixes or
+mapped columns changed, together with their windows and pending evictions.
+Compatible registrations survive and re-bootstrap; same-version opens retain
+cursors. The SDK never translates old scope values. Apps register their current
+subscriptions after open. An existing pre-0.30.11 replica lacks declaration
+metadata and re-registers on its next bump.
+
+The browser worker releases OPFS access handles on close and page teardown.
+A worker-owned directory Web Lock keeps the next opener behind the physical
+handle holder. Chromium covers bootstrap reload, schema-bump reload, double
+reload and live two-tab handover.
+
+The Rust overlay rebuilds only changed tables and their FTS indexes. A
+100,000-row unchanged catalogue regression records zero catalogue copies.
+The isolated debug probe measures 0.069 ms at 100,000 unchanged rows and
+0.068 ms at 200,000, over 30 base/ack/rebuild rounds; see `bench/RESULTS.md`.
+Tauri prepares rounds on the owner, runs uploads, request exchange and segment
+fetches on a separate I/O executor, then applies on the owner. Local mutations
+and queries remain available while replies are pending; later commits enter the
+next round. Existing version checks and event-driven retry scheduling remain.
+Rebuild the native application with `tauri-plugin-syncular` 0.30.11 to receive
+these changes. The web worker has the same in-flight local-write guarantee.
 
 ## 0.30.10 release notes
 

@@ -28,6 +28,7 @@ serde_json = "1"
 tauri-plugin = { version = "2", features = ["build"] }
 
 [dev-dependencies]
+ssp2 = { package = "syncular-ssp2", path = "../../../rust/crates/ssp2", version = "0.0.0" }
 # The mock runtime (tauri::test) drives the plugin commands without a real
 # window — a genuine round-trip through the Tauri IPC + invoke handler.
 tauri = { version = "2", features = ["test"] }

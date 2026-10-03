@@ -5,6 +5,7 @@
  * exactly for that purpose.
  */
 import type { ScopeMap } from '@syncular/core';
+import type { CompiledClientSchema } from './schema';
 import type { ClientDatabase } from './database';
 import type { LocalRevision } from './invalidation';
 
@@ -65,7 +66,7 @@ export function getSubscription(
   db: ClientDatabase,
   id: string,
 ): SubscriptionRecord | undefined {
-  const row = db.query('SELECT * FROM _syncular_subscriptions WHERE id = ?', [
+  const row = db.query('SELECT * FROM _syncular_subscriptions WHERE id=?', [
     id,
   ])[0];
   return row === undefined ? undefined : rowToRecord(row);
@@ -76,10 +77,7 @@ export function saveSubscription(
   record: SubscriptionRecord,
 ): void {
   db.exec(
-    `INSERT OR REPLACE INTO _syncular_subscriptions(
-       id, tbl, requested_scopes, params, cursor, bootstrap_state,
-       effective_scopes, status, reason_code)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    'INSERT OR REPLACE INTO _syncular_subscriptions(id,tbl,requested_scopes,params,cursor,bootstrap_state,effective_scopes,status,reason_code)VALUES(?,?,?,?,?,?,?,?,?)',
     [
       record.id,
       record.table,
@@ -97,11 +95,11 @@ export function saveSubscription(
 }
 
 export function deleteSubscription(db: ClientDatabase, id: string): void {
-  db.exec('DELETE FROM _syncular_subscriptions WHERE id = ?', [id]);
+  db.exec('DELETE FROM _syncular_subscriptions WHERE id=?', [id]);
 }
 
 /**
- * §7.4.3 reset: keep every subscription REGISTRATION (id, table,
+ * §7.4.3 reset: keep compatible subscription REGISTRATIONS (id, table,
  * requested scopes, params — the app's declared intent) but discard all
  * synced state (cursor → -1, no resume token, no effective-scope map,
  * status → active), so the next round fresh-bootstraps exactly the
@@ -109,56 +107,115 @@ export function deleteSubscription(db: ClientDatabase, id: string): void {
  */
 export function resetSubscriptionsForBump(db: ClientDatabase): void {
   db.exec(
-    `UPDATE _syncular_subscriptions
-       SET cursor = -1, bootstrap_state = NULL, effective_scopes = NULL,
-           status = 'active', reason_code = NULL`,
+    "UPDATE _syncular_subscriptions SET cursor=-1,bootstrap_state=NULL,effective_scopes=NULL,status='active',reason_code=NULL",
   );
 }
 
-/**
- * Remove registrations whose table no longer exists in the running schema.
- * Keeping one would make every subsequent pull fail with
- * `sync.unknown_table`. Window bookkeeping belongs to the registration and
- * is removed with it. The caller supplies its startup subscription snapshot
- * so pruning and startup-work detection stay a single read.
- */
+type ScopeDeclarations = Record<
+  string,
+  Record<string, readonly [string, string]>
+>;
+
+/** Persist declarations separately from the previous-version row descriptor. */
+export function saveSubscriptionScopeSchema(
+  db: ClientDatabase,
+  schema: CompiledClientSchema,
+): void {
+  const declarations: ScopeDeclarations = {};
+  for (const table of schema.tables.values()) {
+    declarations[table.name] = Object.fromEntries(
+      [...table.scopeColumnByVariable].map(([variable, column]) => [
+        variable,
+        [table.scopePrefixByVariable.get(variable)!, column],
+      ]),
+    );
+  }
+  setMeta(db, 'subscriptionScopeSchema', JSON.stringify(declarations));
+}
+
+/** Drop incompatible registrations and their windows; never translate scopes. */
 export function pruneUnknownSubscriptions(
   db: ClientDatabase,
   subscriptions: readonly SubscriptionRecord[],
-  tableNames: ReadonlySet<string>,
+  schema: CompiledClientSchema,
+  bump = false,
 ): SubscriptionRecord[] {
-  const retained = subscriptions.filter((record) =>
-    tableNames.has(record.table),
+  const stored = bump ? getMeta(db, 'subscriptionScopeSchema') : undefined;
+  const previous =
+    stored === undefined
+      ? undefined
+      : (JSON.parse(stored) as ScopeDeclarations);
+  const compatible = (
+    record: Pick<SubscriptionRecord, 'table' | 'scopes'>,
+  ): boolean => {
+    const table = schema.tables.get(record.table);
+    if (table === undefined) return false;
+    const variables = Object.keys(record.scopes);
+    if (
+      !variables.every((variable) => table.scopeColumnByVariable.has(variable))
+    )
+      return false;
+    if (!bump) return true;
+    // An old binary stored no declaration evidence. Re-registration is required
+    // at a bump: matching names cannot prove unchanged column/prefix meaning.
+    const old = previous?.[record.table];
+    if (old === undefined) return false;
+    const compared =
+      variables.length === 0
+        ? [
+            ...new Set([
+              ...Object.keys(old),
+              ...table.scopeColumnByVariable.keys(),
+            ]),
+          ]
+        : variables;
+    return compared.every(
+      (variable) =>
+        old[variable]?.[0] === table.scopePrefixByVariable.get(variable) &&
+        old[variable]?.[1] === table.scopeColumnByVariable.get(variable),
+    );
+  };
+  const retained = subscriptions.filter(compatible);
+  const staleIds = new Set(
+    subscriptions
+      .filter((record) => !compatible(record))
+      .map((record) => record.id),
   );
-  const staleIds = subscriptions
-    .filter((record) => !tableNames.has(record.table))
-    .map((record) => record.id);
-  // A redundant subscription scan plus an empty write transaction cut the
-  // fresh-client bootstrap lane by more than half on bun:sqlite. The supplied
-  // snapshot and this branch are synchronous, so no application work can
-  // interleave before a real pruning transaction begins.
-  if (staleIds.length === 0) return retained;
+  // Shrinking a pinned window already removed its registration. Its deferred
+  // eviction still carries the old scope declaration and needs the same fence.
+  for (const row of db.query(
+    'SELECT sub_id,tbl,effective_scopes FROM _syncular_window_pending_evict',
+  )) {
+    if (
+      !compatible({
+        table: String(row.tbl),
+        scopes: JSON.parse(String(row.effective_scopes)) as ScopeMap,
+      })
+    )
+      staleIds.add(String(row.sub_id));
+  }
+  if (staleIds.size === 0) return retained;
   db.transaction(() => {
     for (const id of staleIds) {
-      db.exec('DELETE FROM _syncular_windows WHERE sub_id = ?', [id]);
-      db.exec('DELETE FROM _syncular_window_pending_evict WHERE sub_id = ?', [
+      db.exec('DELETE FROM _syncular_windows WHERE sub_id=?', [id]);
+      db.exec('DELETE FROM _syncular_window_pending_evict WHERE sub_id=?', [
         id,
       ]);
-      db.exec('DELETE FROM _syncular_subscriptions WHERE id = ?', [id]);
+      db.exec('DELETE FROM _syncular_subscriptions WHERE id=?', [id]);
     }
   });
   return retained;
 }
 
 export function getMeta(db: ClientDatabase, key: string): string | undefined {
-  const row = db.query('SELECT value FROM _syncular_meta WHERE key = ?', [
+  const row = db.query('SELECT value FROM _syncular_meta WHERE key=?', [
     key,
   ])[0];
   return row === undefined ? undefined : (row.value as string);
 }
 
 export function setMeta(db: ClientDatabase, key: string, value: string): void {
-  db.exec('INSERT OR REPLACE INTO _syncular_meta(key, value) VALUES (?, ?)', [
+  db.exec('INSERT OR REPLACE INTO _syncular_meta(key,value)VALUES(?,?)', [
     key,
     value,
   ]);

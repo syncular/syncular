@@ -389,6 +389,14 @@ and scope revocation remove whole retained aggregates. If a sparse conflict
 loses its server base, the client keeps the sparse operation and conflict
 evidence without materializing a local row from the saved before-image.
 
+A retained insert whose unique key belongs to another server primary key remains
+journal intent while reads show the server winner. `retainedRows[].uniqueConflicts`
+contains each matching index, its columns, competing `rowId`, authorized
+`serverRow` and `serverVersion`. Keep-mine patches that competing ID at its
+current version and links the replacement through `superseded`. Edit can choose
+a free unique key. Take-server uses `resolved_keep_server`. Revocation and local
+security purge erase the retained aggregate's protected journal payloads.
+
 ## Application-authorized local security purge
 
 `purgeLocalData({ purgeId, targets })` is the narrow local-storage primitive

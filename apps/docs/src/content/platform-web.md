@@ -14,6 +14,18 @@ leader lock. Local SQL is the query API: you read your own tables directly.
 bun add @syncular/client   # or: npm install @syncular/client
 ```
 
+## Persistent worker lifecycle
+
+The worker holds a Web Lock for its OPFS directory while its SQLite access
+handles are open. Closing the database pauses the SAH pool before releasing that
+lock. Page teardown terminates the worker, including a worker still bootstrapping;
+the next document waits for the physical owner to release its handles. A live
+second tab uses the existing leader/follower state and can take over after the
+leader closes or reloads.
+
+Worker RPCs continue serving local mutations and queries while a sync response
+is pending. Commits authored after request capture enter the next round.
+
 ## The architecture: whole core in a worker
 
 There is one persistent browser mode, and it is the default: the entire

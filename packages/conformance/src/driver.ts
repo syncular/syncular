@@ -738,6 +738,13 @@ export interface ClientCommitOutcome {
   readonly status: string;
   readonly resolution: string;
   readonly retainedRows?: readonly {
+    readonly uniqueConflicts?: readonly {
+      readonly index: string;
+      readonly columns: readonly string[];
+      readonly rowId: string;
+      readonly serverRow: DriverRow;
+      readonly serverVersion: number;
+    }[];
     readonly table: string;
     readonly rowId: string;
     readonly localRow: DriverRow | null;
@@ -997,6 +1004,9 @@ export interface ClientInstance {
 
   /** Harness-only SQLite fault setup; absent from the shipping command API. */
   executeStorageSql?(sql: string): Promise<void>;
+  /** Harness-only request capture barrier, followed by its deferred apply. */
+  prepareRound?(): Promise<void>;
+  completeRound?(): Promise<ClientSyncResult>;
 
   connectRealtime(): Promise<void>;
   disconnectRealtime(): Promise<void>;
