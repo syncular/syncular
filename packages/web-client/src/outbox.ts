@@ -1,3 +1,6 @@
+export const OUTBOX_TABLE = '_syncular_outbox';
+export const OUTBOX_IMAGES = '_syncular_outbox_before_images';
+import { overlayScopePredicate, type OverlayScope } from './failed-overlay';
 /**
  * The durable outbox (SPEC.md §7.1) with encode-at-send (the §0 binary-push
  * outbox rule): local mutations are persisted in a schema-agnostic JSON
@@ -68,7 +71,7 @@ export function appendOutboxCommit(
     );
   }
   db.exec(
-    'INSERT INTO _syncular_outbox(client_commit_id,created_at_ms,operations)VALUES(?,?,?)',
+    `INSERT INTO ${OUTBOX_TABLE}(client_commit_id,created_at_ms,operations)VALUES(?,?,?)`,
     [clientCommitId, nowMs, JSON.stringify(operations)],
   );
   replaceOutboxBeforeImages(db, clientCommitId, beforeImages);
@@ -77,14 +80,14 @@ export function appendOutboxCommit(
 /** Pending commits in FIFO creation order (§7.1). Full reads serve replay and the public listing. */
 export function listOutbox(
   db: ClientDatabase,
-  rowKeys?: readonly string[],
+  scope?: OverlayScope,
 ): OutboxCommit[] {
   return db
     .query(
-      rowKeys === undefined
-        ? 'SELECT seq, client_commit_id, created_at_ms, operations FROM _syncular_outbox ORDER BY seq ASC'
-        : "SELECT * FROM _syncular_outbox WHERE EXISTS(SELECT 1 FROM json_each(operations) WHERE json_array(json_extract(value,'$.table'),json_extract(value,'$.rowId')) IN(SELECT value FROM json_each(?))) ORDER BY seq",
-      rowKeys && [JSON.stringify(rowKeys)],
+      scope === undefined
+        ? `SELECT * FROM ${OUTBOX_TABLE} ORDER BY seq ASC`
+        : `SELECT * FROM ${OUTBOX_TABLE} WHERE EXISTS(SELECT 1 FROM json_each(operations) WHERE ${overlayScopePredicate("json_extract(value,'$.table')", "json_extract(value,'$.rowId')")}) ORDER BY seq`,
+      scope && [JSON.stringify(scope)],
     )
     .map(decodeOutboxRow);
 }
@@ -106,7 +109,7 @@ export function* iterateOutbox(
   let afterSeq = 0;
   while (afterSeq < throughSeq) {
     const rows = db.query(
-      'SELECT seq, client_commit_id, created_at_ms, operations FROM _syncular_outbox WHERE seq > ? AND seq <= ? ORDER BY seq ASC LIMIT 32',
+      `SELECT * FROM ${OUTBOX_TABLE} WHERE seq > ? AND seq <= ? ORDER BY seq ASC LIMIT 32`,
       [afterSeq, throughSeq],
     );
     if (rows.length === 0) return;
@@ -120,7 +123,7 @@ export function* iterateOutbox(
 
 /** Routine status reads never load operation bodies. */
 export function countOutbox(db: ClientDatabase): number {
-  return db.query('SELECT COUNT(*)AS count FROM _syncular_outbox')[0]!
+  return db.query(`SELECT COUNT(*)AS count FROM ${OUTBOX_TABLE}`)[0]!
     .count as number;
 }
 
@@ -131,11 +134,10 @@ export function deleteOutboxCommit(
   db.exec('DELETE FROM _syncular_blob_commit_refs WHERE commit_id=?', [
     clientCommitId,
   ]);
-  db.exec(
-    'DELETE FROM _syncular_outbox_before_images WHERE client_commit_id=?',
-    [clientCommitId],
-  );
-  db.exec('DELETE FROM _syncular_outbox WHERE client_commit_id=?', [
+  db.exec(`DELETE FROM ${OUTBOX_IMAGES} WHERE client_commit_id=?`, [
+    clientCommitId,
+  ]);
+  db.exec(`DELETE FROM ${OUTBOX_TABLE} WHERE client_commit_id=?`, [
     clientCommitId,
   ]);
 }
@@ -146,7 +148,7 @@ export function listOutboxBeforeImages(
 ): OutboxBeforeImage[] {
   return db
     .query(
-      'SELECT op_index,existed,sync_version,values_json,delivery_seq FROM _syncular_outbox_before_images WHERE client_commit_id=? ORDER BY op_index',
+      `SELECT op_index,existed,sync_version,values_json,delivery_seq FROM ${OUTBOX_IMAGES} WHERE client_commit_id=? ORDER BY op_index`,
       [clientCommitId],
     )
     .map((row) => ({
@@ -175,7 +177,7 @@ export function replaceOutboxBeforeImages(
 ): void {
   for (const image of replacements) {
     db.exec(
-      'INSERT INTO _syncular_outbox_before_images(client_commit_id,op_index,existed,sync_version,values_json)VALUES(?,?,?,?,?) ON CONFLICT(client_commit_id,op_index)DO UPDATE SET existed=excluded.existed,sync_version=excluded.sync_version,values_json=excluded.values_json',
+      `INSERT INTO ${OUTBOX_IMAGES}(client_commit_id,op_index,existed,sync_version,values_json)VALUES(?,?,?,?,?) ON CONFLICT(client_commit_id,op_index)DO UPDATE SET existed=excluded.existed,sync_version=excluded.sync_version,values_json=excluded.values_json`,
       [
         clientCommitId,
         image.opIndex,

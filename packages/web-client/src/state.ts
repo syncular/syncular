@@ -1,3 +1,4 @@
+export const SUBSCRIPTIONS_TABLE = '_syncular_subscriptions';
 /**
  * Durable client sync state: per-subscription cursor, bootstrap resume
  * token (round-tripped opaquely, §4.7), and the last-echoed effective
@@ -58,7 +59,7 @@ function rowToRecord(row: Record<string, unknown>): SubscriptionRecord {
 
 export function loadSubscriptions(db: ClientDatabase): SubscriptionRecord[] {
   return db
-    .query('SELECT * FROM _syncular_subscriptions ORDER BY rowid ASC')
+    .query(`SELECT * FROM ${SUBSCRIPTIONS_TABLE} ORDER BY rowid ASC`)
     .map(rowToRecord);
 }
 
@@ -66,7 +67,7 @@ export function getSubscription(
   db: ClientDatabase,
   id: string,
 ): SubscriptionRecord | undefined {
-  const row = db.query('SELECT * FROM _syncular_subscriptions WHERE id=?', [
+  const row = db.query(`SELECT * FROM ${SUBSCRIPTIONS_TABLE} WHERE id=?`, [
     id,
   ])[0];
   return row === undefined ? undefined : rowToRecord(row);
@@ -77,7 +78,7 @@ export function saveSubscription(
   record: SubscriptionRecord,
 ): void {
   db.exec(
-    'INSERT OR REPLACE INTO _syncular_subscriptions(id,tbl,requested_scopes,params,cursor,bootstrap_state,effective_scopes,status,reason_code)VALUES(?,?,?,?,?,?,?,?,?)',
+    `INSERT OR REPLACE INTO ${SUBSCRIPTIONS_TABLE}(id,tbl,requested_scopes,params,cursor,bootstrap_state,effective_scopes,status,reason_code)VALUES(?,?,?,?,?,?,?,?,?)`,
     [
       record.id,
       record.table,
@@ -95,7 +96,7 @@ export function saveSubscription(
 }
 
 export function deleteSubscription(db: ClientDatabase, id: string): void {
-  db.exec('DELETE FROM _syncular_subscriptions WHERE id=?', [id]);
+  db.exec(`DELETE FROM ${SUBSCRIPTIONS_TABLE} WHERE id=?`, [id]);
 }
 
 /**
@@ -107,7 +108,7 @@ export function deleteSubscription(db: ClientDatabase, id: string): void {
  */
 export function resetSubscriptionsForBump(db: ClientDatabase): void {
   db.exec(
-    "UPDATE _syncular_subscriptions SET cursor=-1,bootstrap_state=NULL,effective_scopes=NULL,status='active',reason_code=NULL",
+    `UPDATE ${SUBSCRIPTIONS_TABLE} SET cursor=-1,bootstrap_state=NULL,effective_scopes=NULL,status='active',reason_code=NULL`,
   );
 }
 
@@ -201,7 +202,7 @@ export function pruneUnknownSubscriptions(
       db.exec('DELETE FROM _syncular_window_pending_evict WHERE sub_id=?', [
         id,
       ]);
-      db.exec('DELETE FROM _syncular_subscriptions WHERE id=?', [id]);
+      db.exec(`DELETE FROM ${SUBSCRIPTIONS_TABLE} WHERE id=?`, [id]);
     }
   });
   return retained;

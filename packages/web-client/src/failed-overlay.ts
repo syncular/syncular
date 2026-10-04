@@ -1,3 +1,5 @@
+import { OUTCOMES_TABLE } from './outcomes';
+import { OUTBOX_TABLE } from './outbox';
 export const RETAINED_ROWS = '_syncular_failed_rows';
 import { ClientSyncError } from './errors';
 import type { ClientDatabase } from './database';
@@ -164,48 +166,110 @@ export function uniqueConflicts(
     );
 }
 
-function retainedRows(db: ClientDatabase, rowKeys?: readonly string[]) {
+/** Exact row keys are JSON [table,id]; table scopes include unique-key peers. */
+export type OverlayScope = readonly string[];
+
+export function overlayScopePredicate(table: string, id: string): string {
+  return `?1 IS NULL OR json_array(${table},${id}) IN(SELECT value FROM json_each(?1)) OR json_array(${table}) IN(SELECT value FROM json_each(?1))`;
+}
+
+function retainedRows(
+  db: ClientDatabase,
+  scope?: OverlayScope,
+  acknowledged?: boolean,
+) {
   return db.query(
-    `SELECT * FROM ${RETAINED_ROWS} WHERE ?1 IS NULL OR json_array(tbl,id) IN(SELECT value FROM json_each(?1)) ORDER BY commit_seq,at,commit_id,idx`,
-    [rowKeys ? JSON.stringify(rowKeys) : null],
+    `SELECT * FROM ${RETAINED_ROWS} WHERE (${overlayScopePredicate('tbl', 'id')})${acknowledged === undefined ? '' : ` AND commit_seq IS${acknowledged ? ' NOT' : ''} NULL`} ORDER BY commit_seq,at,commit_id,idx`,
+    [scope ? JSON.stringify(scope) : null],
   );
+}
+
+function retainedTable(
+  schema: CompiledClientSchema,
+  name: string,
+): CompiledClientTable {
+  const table = schema.tables.get(name);
+  if (!table)
+    throw new ClientSyncError(
+      'sync.unknown_table',
+      'retained table is unknown',
+    );
+  return table;
 }
 
 export function restoreFailedBases(
   db: ClientDatabase,
   schema: CompiledClientSchema,
-  absentIntent = false,
-  rowKeys?: readonly string[],
+  scope?: OverlayScope,
 ): boolean {
   const seen = new Set<string>();
-  for (const row of retainedRows(db, rowKeys)) {
+  for (const row of retainedRows(db, scope)) {
     const key = JSON.stringify([row.tbl, row.id]);
-    if (!absentIntent && seen.has(key)) continue;
+    if (seen.has(key)) continue;
     seen.add(key);
-    const table = schema.tables.get(row.tbl as string);
-    if (!table)
-      throw new ClientSyncError(
-        'sync.unknown_table',
-        'retained table is unknown',
-      );
-    const json = absentIntent ? row.intent : row.base;
-    if (absentIntent && row.intent !== null) {
-      const values: Record<string, JsonRowValue> = JSON.parse(
-        row.intent as string,
-      );
-      const conflicts = uniqueConflicts(
+    const table = retainedTable(schema, row.tbl as string);
+    if (row.base === null) deleteLocalRow(db, table, row.id as string, false);
+    else {
+      const values: Record<string, JsonRowValue> = JSON.parse(String(row.base));
+      upsertLocalRow(
         db,
         table,
-        mapRowValues(values, jsonToRowValue),
+        table.columns.map((column) =>
+          jsonToRowValue(values[column.name] ?? null),
+        ),
+        (row.version ?? -1) as number,
+        false,
       );
-      // Hydrate a pre-0.30.11 failure after its winner was already imported.
-      // Pending and retained overlays cannot supply authoritative row evidence.
-      if (row.commit_seq === null && row.unique_conflicts === null) {
-        const authorized = conflicts.filter(
+    }
+  }
+  return seen.size > 0;
+}
+
+export function failedOverlayCommits(
+  db: ClientDatabase,
+  acknowledged = false,
+  scope?: OverlayScope,
+  schema?: CompiledClientSchema,
+): OutboxCommit[] {
+  const commits = new Map<
+    string,
+    {
+      seq: number;
+      clientCommitId: string;
+      createdAtMs: number;
+      operations: OutboxOperation[];
+    }
+  >();
+  for (const row of retainedRows(db, scope, acknowledged)) {
+    const id = row.commit_id as string;
+    let operation: OutboxOperation = JSON.parse(row.op as string);
+    if (schema && operation.op === 'upsert') {
+      const table = retainedTable(schema, operation.table);
+      if (acknowledged) {
+        if (
+          !db.query(
+            `SELECT 1 FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)}=?`,
+            [operation.rowId],
+          ).length
+        )
+          operation = {
+            ...operation,
+            values: JSON.parse(row.intent as string),
+          };
+      } else if (row.unique_conflicts === null && row.intent !== null) {
+        // Hydrate legacy failure evidence from authoritative unique-key peers.
+        const values: Record<string, JsonRowValue> = JSON.parse(
+          row.intent as string,
+        );
+        const authorized = uniqueConflicts(
+          db,
+          table,
+          mapRowValues(values, jsonToRowValue),
+        ).filter(
           (conflict) =>
             conflict.serverVersion >= 0 &&
             !db.query(
-              `SELECT 1 FROM ${RETAINED_ROWS} WHERE tbl=? AND id=? UNION ALL SELECT 1 FROM _syncular_outbox,json_each(operations)WHERE json_extract(json_each.value,'$.table')=? AND json_extract(json_each.value,'$.rowId')=? LIMIT 1`,
+              `SELECT 1 FROM ${RETAINED_ROWS} WHERE tbl=? AND id=? UNION ALL SELECT 1 FROM ${OUTBOX_TABLE},json_each(operations)WHERE json_extract(json_each.value,'$.table')=? AND json_extract(json_each.value,'$.rowId')=? LIMIT 1`,
               [table.name, conflict.rowId, table.name, conflict.rowId],
             ).length,
         );
@@ -224,62 +288,7 @@ export function restoreFailedBases(
             ],
           );
       }
-      if (conflicts.length) continue;
     }
-    if (
-      absentIntent &&
-      (json === null ||
-        db.query(
-          `SELECT 1 FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)}=?`,
-          [row.id as string],
-        ).length)
-    )
-      continue;
-    if (json === null) deleteLocalRow(db, table, row.id as string, false);
-    else {
-      const values: Record<string, JsonRowValue> = JSON.parse(String(json));
-      if (absentIntent) {
-        const operation: OutboxOperation = JSON.parse(row.op as string);
-        if (
-          row.commit_seq === null &&
-          !table.columns.every((column) =>
-            Object.hasOwn(operation.values ?? {}, column.name),
-          )
-        )
-          continue;
-      }
-      upsertLocalRow(
-        db,
-        table,
-        table.columns.map((column) =>
-          jsonToRowValue(values[column.name] ?? null),
-        ),
-        (row.version ?? -1) as number,
-        false,
-      );
-    }
-  }
-  return seen.size > 0;
-}
-
-export function failedOverlayCommits(
-  db: ClientDatabase,
-  acknowledged = false,
-  rowKeys?: readonly string[],
-): OutboxCommit[] {
-  const commits = new Map<
-    string,
-    {
-      seq: number;
-      clientCommitId: string;
-      createdAtMs: number;
-      operations: OutboxOperation[];
-    }
-  >();
-  for (const row of retainedRows(db, rowKeys)) {
-    if ((row.commit_seq !== null) !== acknowledged) continue;
-    const id = row.commit_id as string;
-    const operation: OutboxOperation = JSON.parse(row.op as string);
     const prior = commits.get(id);
     if (prior) prior.operations.push(operation);
     else
@@ -295,6 +304,7 @@ export function failedOverlayCommits(
 
 export function dropFailedRows(
   db: ClientDatabase,
+  schema: CompiledClientSchema,
   matches: (
     table: string,
     values: Readonly<Record<string, JsonRowValue>>,
@@ -312,10 +322,17 @@ export function dropFailedRows(
     ...failedOverlayCommits(db),
     ...failedOverlayCommits(db, true),
   ].filter((commit) => ids.has(commit.clientCommitId));
+  restoreFailedBases(
+    db,
+    schema,
+    dropped.flatMap((commit) =>
+      commit.operations.map((op) => JSON.stringify([op.table, op.rowId])),
+    ),
+  );
   for (const id of ids) {
     db.exec(`DELETE FROM ${RETAINED_ROWS} WHERE commit_id=?`, [id]);
     db.exec(
-      "UPDATE _syncular_commit_outcomes SET operations=NULL,results='[]' WHERE client_commit_id=?",
+      `UPDATE ${OUTCOMES_TABLE} SET operations=NULL,results='[]' WHERE client_commit_id=?`,
       [id],
     );
   }

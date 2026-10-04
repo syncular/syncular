@@ -29,6 +29,11 @@ notification to the originating client. Row delivery and overlay reconciliation
 share one local transaction. Revocation and security purge remove affected
 aggregates. Window eviction removes the evicted row's intent.
 
+Imports restore and replay only affected rows or tables. Unique constraints can
+require peer rows in the same table. An unrelated bootstrap, including an empty
+one, does not rewrite acknowledged rows or decode their protected operations.
+ACK protection remains active until authoritative delivery.
+
 Each request sends a contiguous prefix of pending commits in creation order.
 When the next whole commit exceeds the remaining operation budget, the client
 defers that commit and every later commit to the next round. Retries retain

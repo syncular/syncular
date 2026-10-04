@@ -1,3 +1,5 @@
+export const OUTCOMES_TABLE = '_syncular_commit_outcomes';
+const SELECT_OUTCOME = `SELECT * FROM ${OUTCOMES_TABLE}`;
 import { RETAINED_ROWS } from './failed-overlay';
 /**
  * Durable per-client commit outcomes.
@@ -233,7 +235,7 @@ export function recordCommitOutcome(
   outcome: Omit<CommitOutcome, 'sequence' | 'resolution'>,
 ): CommitOutcome {
   db.exec(
-    "INSERT INTO _syncular_commit_outcomes(client_commit_id,status,recorded_at_ms,results,operations,resolution)VALUES(?,?,?,?,?,'active')",
+    `INSERT INTO ${OUTCOMES_TABLE}(client_commit_id,status,recorded_at_ms,results,operations,resolution)VALUES(?,?,?,?,?,'active')`,
     [
       outcome.clientCommitId,
       outcome.status,
@@ -251,10 +253,9 @@ export function commitOutcome(
   db: ClientDatabase,
   clientCommitId: string,
 ): CommitOutcome | undefined {
-  const row = db.query(
-    'SELECT seq,client_commit_id,status,recorded_at_ms,results,operations,resolution,resolved_at_ms,replacement_client_commit_id FROM _syncular_commit_outcomes WHERE client_commit_id=?',
-    [clientCommitId],
-  )[0];
+  const row = db.query(`${SELECT_OUTCOME} WHERE client_commit_id=?`, [
+    clientCommitId,
+  ])[0];
   return row === undefined ? undefined : parseOutcome(db, row);
 }
 
@@ -273,7 +274,7 @@ export function listCommitOutcomes(
     ? "WHERE resolution = 'active' AND status IN ('conflict', 'rejected')"
     : '';
   const rows = db.query(
-    `SELECT seq,client_commit_id,status,recorded_at_ms,results,operations,resolution,resolved_at_ms,replacement_client_commit_id FROM _syncular_commit_outcomes ${where} ORDER BY seq DESC${limit === undefined ? '' : ' LIMIT ?'}`,
+    `${SELECT_OUTCOME} ${where} ORDER BY seq DESC${limit === undefined ? '' : ' LIMIT ?'}`,
     limit === undefined ? [] : [limit],
   );
   return rows.map((row) => parseOutcome(db, row));
@@ -285,7 +286,7 @@ export function persistCommitOutcomeResolution(
   nowMs: number,
 ): CommitOutcome | undefined {
   db.exec(
-    "UPDATE _syncular_commit_outcomes SET resolution=?,resolved_at_ms=?,replacement_client_commit_id=? WHERE client_commit_id=? AND resolution='active'",
+    `UPDATE ${OUTCOMES_TABLE} SET resolution=?,resolved_at_ms=?,replacement_client_commit_id=? WHERE client_commit_id=? AND resolution='active'`,
     [
       input.resolution,
       nowMs,
@@ -310,17 +311,16 @@ export function pruneCommitOutcomes(
       'outcome retention maxEntries must be a positive safe integer',
     );
   }
-  const count = db.query(
-    'SELECT COUNT(*) AS count FROM _syncular_commit_outcomes',
-  )[0]?.count as number | undefined;
+  const count = db.query(`SELECT COUNT(*) AS count FROM ${OUTCOMES_TABLE}`)[0]
+    ?.count as number | undefined;
   const excess = Math.max(0, (count ?? 0) - maxEntries);
   if (excess === 0) return 0;
   const candidates = db.query(
-    "SELECT seq FROM _syncular_commit_outcomes WHERE status IN('applied','cached')OR resolution !='active' ORDER BY seq ASC LIMIT ?",
+    `SELECT seq FROM ${OUTCOMES_TABLE} WHERE status IN('applied','cached')OR resolution !='active' ORDER BY seq ASC LIMIT ?`,
     [excess],
   );
   for (const candidate of candidates) {
-    db.exec('DELETE FROM _syncular_commit_outcomes WHERE seq=?', [
+    db.exec(`DELETE FROM ${OUTCOMES_TABLE} WHERE seq=?`, [
       candidate.seq as number,
     ]);
   }

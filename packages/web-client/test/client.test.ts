@@ -48,11 +48,7 @@ class OutboxReadCountingDatabase extends BunClientDatabase {
     }
     const rows = super.query(sql, params);
     if (normalized.includes('FROM _syncular_outbox')) this.outboxSqlCalls += 1;
-    if (
-      normalized.startsWith(
-        'SELECT seq, client_commit_id, created_at_ms, operations',
-      )
-    ) {
+    if (normalized.startsWith('SELECT * FROM _syncular_outbox')) {
       for (const row of rows) {
         const operations = row.operations;
         if (typeof operations !== 'string')
@@ -482,9 +478,9 @@ describe('durable commit outcomes', () => {
       const summary = await entry.client.sync();
 
       expect(summary.applied).toHaveLength(32);
-      // Only the final optimistic replay uses a full scan. Status and
-      // diagnostics count rows without decoding their operations.
-      expect(db.outboxReadCount).toBe(1);
+      // ACK reconciliation selects affected rows. Status and diagnostics
+      // count rows without decoding unrelated operation bodies.
+      expect(db.outboxReadCount).toBe(0);
       expect(db.decodedOutboxBodies).toBe(32);
       expect(db.outcomePruneCount).toBe(1);
       expect(diagnosticsCount).toBe(1);

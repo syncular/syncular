@@ -55,6 +55,11 @@ The value must be nonempty and unique for that partition timeline.
 
 ## Client behavior after traffic resumes
 
+A replica without a stored log epoch acquires it in its first round. The client
+persists the epoch and schedules the next round without raising `upgrading`,
+dropping tables or resetting subscription progress. Local outbox rows remain
+visible throughout acquisition. A differing stored epoch still resets the replica.
+
 A wire-version 2 client sends its stored partition log epoch on every round.
 The server answers an epoch mismatch with a header-only response containing
 the current epoch and `resetRequired: true`. The client then clears server

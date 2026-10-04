@@ -1,4 +1,5 @@
-import { RETAINED_ROWS } from './failed-overlay';
+import { OUTBOX_TABLE, OUTBOX_IMAGES } from './outbox';
+import { RETAINED_ROWS, type OverlayScope } from './failed-overlay';
 import { retainedBaseWrite, restoreFailedBases } from './failed-overlay';
 /**
  * Local application of server data: `COMMIT` frames (§4.5), rows segments
@@ -28,7 +29,7 @@ import {
 } from './schema';
 
 /** Lets the client wrap the physical write in its revision transaction. */
-export type ApplyTransaction = <T>(fn: () => T) => T;
+export type ApplyTransaction = (fn: () => OverlayScope) => unknown;
 
 function upsertSql(table: CompiledClientTable): string {
   const names = [
@@ -96,8 +97,7 @@ export async function applyCommitFrame(
   schema: CompiledClientSchema,
   frame: CommitFrame,
   encryption?: EncryptionConfig,
-  transaction: (fn: () => readonly string[] | undefined) => unknown = (fn) =>
-    db.transaction(fn),
+  transaction: (fn: () => OverlayScope) => unknown = (fn) => db.transaction(fn),
 ): Promise<void> {
   type Resolved =
     | { op: 'delete'; table: CompiledClientTable; rowId: string }
@@ -142,18 +142,18 @@ export async function applyCommitFrame(
     });
   }
   transaction(() => {
-    const rowKeys = frame.tables.some((name) =>
-      schema.tables.get(name)?.indexes.some((index) => index.unique),
-    )
-      ? undefined
-      : frame.changes.map((change) =>
-          JSON.stringify([frame.tables[change.tableIndex], change.rowId]),
-        );
-    restoreFailedBases(db, schema, false, rowKeys);
+    const scope = resolved.map((change, index) =>
+      JSON.stringify(
+        change.table.indexes.some((entry) => entry.unique)
+          ? [change.table.name]
+          : [change.table.name, frame.changes[index]!.rowId],
+      ),
+    );
+    restoreFailedBases(db, schema, scope);
     for (const [index, change] of resolved.entries()) {
       const rowId = frame.changes[index]!.rowId;
       db.exec(
-        "UPDATE _syncular_outbox_before_images SET delivery_seq=MAX(COALESCE(delivery_seq,0),?) WHERE (client_commit_id,op_index) IN(SELECT client_commit_id,json_each.key FROM _syncular_outbox,json_each(operations) WHERE json_extract(value,'$.table')=? AND json_extract(value,'$.rowId')=?)",
+        `UPDATE ${OUTBOX_IMAGES} SET delivery_seq=MAX(COALESCE(delivery_seq,0),?) WHERE (client_commit_id,op_index) IN(SELECT client_commit_id,json_each.key FROM ${OUTBOX_TABLE},json_each(operations) WHERE json_extract(value,'$.table')=? AND json_extract(value,'$.rowId')=?)`,
         [frame.commitSeq, change.table.name, rowId],
       );
       db.exec(
@@ -166,7 +166,7 @@ export async function applyCommitFrame(
         upsertLocalRow(db, change.table, change.values, change.rowVersion);
       }
     }
-    return rowKeys;
+    return scope;
   });
 }
 
@@ -452,7 +452,8 @@ export async function applySqliteSegment(
         params.push(boundary);
       }
       (options.transaction ?? ((fn) => db.transaction(fn)))(() => {
-        restoreFailedBases(db, schema);
+        const scope = [JSON.stringify([table.name])];
+        restoreFailedBases(db, schema, scope);
         if (after === undefined && options.clearFirst)
           deleteScopedRows(db, table, options.effective);
         db.exec(
@@ -477,6 +478,7 @@ export async function applySqliteSegment(
             Number(row._syncular_version),
           );
         }
+        return scope;
       });
       options.onProgress?.(applied);
       await yieldToHost();
@@ -537,7 +539,16 @@ export async function applyRowsSegment(
     first = false;
     if (!clearThisBlock && rows.length === 0) continue;
     (options.transaction ?? ((fn) => db.transaction(fn)))(() => {
-      const protectedRows = restoreFailedBases(db, schema);
+      const scope: OverlayScope =
+        clearThisBlock || table.indexes.some((index) => index.unique)
+          ? [JSON.stringify([table.name])]
+          : rows.map((row) =>
+              JSON.stringify([
+                table.name,
+                String(row.values[table.primaryKeyIndex]),
+              ]),
+            );
+      const protectedRows = restoreFailedBases(db, schema, scope);
       if (clearThisBlock) {
         deleteScopedRows(db, table, options.effective);
       }
@@ -546,6 +557,7 @@ export async function applyRowsSegment(
         applied += 1;
         if (applied % 1024 === 0) options.onProgress?.(applied);
       }
+      return scope;
     });
     options.onProgress?.(applied);
     await yieldToHost();

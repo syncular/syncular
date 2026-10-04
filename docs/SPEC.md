@@ -616,7 +616,12 @@ push application, pull reads, or client-record updates:
 3. A different value is a log discontinuity. The server returns the same
    reset response and performs no other request work.
 
-On a reset response, the client stores the returned `logEpoch`, discards all
+If the replica has never stored a `logEpoch`, the client persists the acquired
+value and schedules the next round. Acquisition MUST NOT raise `upgrading`,
+drop synced tables, alter rows or reset subscription progress. Existing local
+outbox intent remains visible and is sent only in the next epoch-bound request.
+
+When a stored epoch differs, the client stores the returned `logEpoch`, discards all
 synced rows, row versions, subscription cursors, effective scopes, and
 bootstrap state, then re-registers its subscription intent from cursor `-1`.
 The client preserves `clientId`, outbox commits, commit outcomes, auth lease,
@@ -3640,6 +3645,11 @@ an outbox commit. This includes a patch following an insert in the same batch.
   remain untouched. A schema reset or restart recovering an interrupted overlay
   can rebuild the whole replica. A commit spanning tables dirties every table
   in that commit, including when rejection, resolution or revocation removes it.
+  Imports MUST restrict protected-journal reads and replay to affected rows or
+  tables, including empty bootstrap clears. Unique constraints can require
+  same-table peer reconciliation. Unrelated subscriptions MUST NOT restore or
+  rewrite protected rows. A committed import restores each affected base once
+  and replays its intent once before publishing the observation batch.
 - A local commit that violates a declared secondary unique index against the
   current optimistic overlay MUST fail atomically with
   `sync.constraint_violation`. The client MUST leave no operation from that

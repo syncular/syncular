@@ -1,9 +1,12 @@
+import { OUTCOMES_TABLE } from './outcomes';
+import { OUTBOX_TABLE } from './outbox';
 import { RETAINED_ROWS } from './failed-overlay';
 import {
   dropFailedRows,
   failedOverlayCommits,
   retainFailedRows,
   restoreFailedBases,
+  type OverlayScope,
   uniqueConflicts,
 } from './failed-overlay';
 import {
@@ -1168,6 +1171,13 @@ export class SyncClient {
 
   /** §2.1 reset after the server reports a different log continuity. */
   #runLogEpochReset(logEpoch: string): string[] {
+    if (getMeta(this.#db, LOG_EPOCH_META_KEY) === undefined) {
+      this.#applyBatch(() => setMeta(this.#db, LOG_EPOCH_META_KEY, logEpoch));
+      this.#setSyncNeeded(true);
+      this.#emitSyncNeeded('startup');
+      this.#emitSyncIntent({ kind: 'interactive' });
+      return [];
+    }
     const subscriptions = loadSubscriptions(this.#db);
     const pending = listOutbox(this.#db);
     this.#setUpgrading(true);
@@ -1917,11 +1927,11 @@ export class SyncClient {
       );
       const outboxBytes = Number(
         this.#db.query(
-          'SELECT COALESCE(SUM(LENGTH(operations)),0)AS bytes FROM _syncular_outbox',
+          `SELECT COALESCE(SUM(LENGTH(operations)),0)AS bytes FROM ${OUTBOX_TABLE}`,
         )[0]?.bytes ?? 0,
       );
       const outcome = this.#db.query(
-        'SELECT COUNT(*)AS entries,COALESCE(SUM(LENGTH(results)+ COALESCE(LENGTH(operations),0)),0)AS bytes FROM _syncular_commit_outcomes',
+        `SELECT COUNT(*)AS entries,COALESCE(SUM(LENGTH(results)+ COALESCE(LENGTH(operations),0)),0)AS bytes FROM ${OUTCOMES_TABLE}`,
       )[0];
       const blobBytes = this.#hasBlobs
         ? Number(
@@ -3295,7 +3305,7 @@ export class SyncClient {
     // Pin before the first encryption await: mutations can append while a
     // round is encoding, and belong to the next request.
     const bounds = this.#db.query(
-      'SELECT COUNT(*)AS count,MAX(seq)AS last_seq FROM _syncular_outbox',
+      `SELECT COUNT(*)AS count,MAX(seq)AS last_seq FROM ${OUTBOX_TABLE}`,
     )[0]!;
     const pendingCount = bounds.count as number;
     const throughSeq = (bounds.last_seq as number | null) ?? 0;
@@ -4398,13 +4408,7 @@ export class SyncClient {
         if (errorFrame !== undefined) break;
       }
     } finally {
-      try {
-        // §7.1: local reads see outbox state applied optimistically — replay
-        // the still-pending commits on top of the freshly applied server state.
-        this.#replayOutbox();
-      } finally {
-        this.#endDiagnosticsDeferral();
-      }
+      this.#endDiagnosticsDeferral();
     }
 
     if (errorFrame !== undefined) throw errorFrame;
@@ -4558,6 +4562,15 @@ export class SyncClient {
           listOutboxBeforeImages(this.#db, commit.clientCommitId),
         );
       this.#rollbackFailedCommit(commit, batch);
+      this.#replayOutbox(
+        commit.operations.map((operation) =>
+          JSON.stringify(
+            this.#table(operation.table).indexes.some((index) => index.unique)
+              ? [operation.table]
+              : [operation.table, operation.rowId],
+          ),
+        ),
+      );
     });
     batch.status();
     summary.rejected.push(frame.clientCommitId);
@@ -4567,7 +4580,7 @@ export class SyncClient {
   #outboxCommitExists(clientCommitId: string): boolean {
     return (
       this.#db.query(
-        'SELECT 1 FROM _syncular_outbox WHERE client_commit_id=? LIMIT 1',
+        `SELECT 1 FROM ${OUTBOX_TABLE} WHERE client_commit_id=? LIMIT 1`,
         [clientCommitId],
       ).length > 0
     );
@@ -4621,7 +4634,7 @@ export class SyncClient {
         this.#applyBatch((batch) => {
           this.#recordCommitChanges(batch, frame);
           const result = fn();
-          this.#replayOutbox(result);
+          this.#replayOutbox(result, false);
           return result;
         }),
     );
@@ -4704,7 +4717,7 @@ export class SyncClient {
           )
             batch.table(table.name);
           const result = fn();
-          this.#replayOutbox();
+          this.#replayOutbox(result, false);
           return result;
         }),
     };
@@ -4888,14 +4901,17 @@ export class SyncClient {
               }),
             );
           if (covered.length) {
-            restoreFailedBases(this.#db, this.#schema);
+            const scope = covered.map((row) =>
+              JSON.stringify([sub.table, String(row.id)]),
+            );
+            restoreFailedBases(this.#db, this.#schema, scope);
             for (const row of covered)
               this.#db.exec(
                 `DELETE FROM ${RETAINED_ROWS} WHERE tbl=? AND id=? AND commit_seq<=?`,
                 [sub.table, String(row.id), nextCursor],
               );
             batch.table(sub.table);
-            this.#replayOutbox();
+            this.#replayOutbox(scope, false);
           }
         }
         if (completed && registered !== undefined) {
@@ -4945,13 +4961,15 @@ export class SyncClient {
         Object.keys(lastEffective).length > 0
       ) {
         try {
-          restoreFailedBases(this.#db, this.#schema);
-          this.#dropRetainedRows(
-            batch,
-            (name, values) =>
-              name === table.name &&
-              matchesLocalScopes(table, lastEffective, values),
-          );
+          const scope = [
+            JSON.stringify([table.name]),
+            ...this.#dropRetainedRows(
+              batch,
+              (name, values) =>
+                name === table.name &&
+                matchesLocalScopes(table, lastEffective, values),
+            ),
+          ];
           deleteScopedRows(this.#db, table, lastEffective);
           batch.scopeMap(table, lastEffective);
           const pendingById = new Map(
@@ -4997,6 +5015,7 @@ export class SyncClient {
             batch.rejections();
             batch.outcomes();
           }
+          this.#replayOutbox(scope);
           this.#deleteUnreferencedBlobs();
         } catch (error) {
           if (
@@ -5245,8 +5264,9 @@ export class SyncClient {
       table: string,
       values: Readonly<Record<string, JsonRowValue>>,
     ) => boolean,
-  ): void {
-    for (const commit of dropFailedRows(this.#db, matches)) {
+  ): string[] {
+    const scope: string[] = [];
+    for (const commit of dropFailedRows(this.#db, this.#schema, matches)) {
       batch.conflicts();
       batch.rejections();
       batch.outcomes();
@@ -5256,32 +5276,38 @@ export class SyncClient {
       this.#rejections = this.#rejections.filter(
         (record) => record.clientCommitId !== commit.clientCommitId,
       );
-      for (const op of commit.operations) batch.table(op.table);
+      for (const op of commit.operations) {
+        batch.table(op.table);
+        scope.push(JSON.stringify([op.table, op.rowId]));
+      }
     }
+    return scope;
   }
 
-  #replayOutbox(rowKeys?: readonly string[]): void {
-    const acknowledged = failedOverlayCommits(this.#db, true, rowKeys);
-    const pending = [
-      ...failedOverlayCommits(this.#db, false, rowKeys),
-      ...listOutbox(this.#db, rowKeys),
-    ].sort((a, b) => a.createdAtMs - b.createdAtMs || a.seq - b.seq);
-    if (pending.length === 0 && acknowledged.length === 0) return;
+  #replayOutbox(scope?: OverlayScope, restoreBases = true): void {
     this.#applyBatch((batch) => {
-      this.#db.transaction(() => {
-        restoreFailedBases(this.#db, this.#schema, false, rowKeys);
-        restoreFailedBases(this.#db, this.#schema, true, rowKeys);
-        for (const commit of [...acknowledged, ...pending])
-          this.#applyOperationsLocally(
-            rowKeys === undefined
-              ? commit.operations
-              : commit.operations.filter((op) =>
-                  rowKeys.includes(JSON.stringify([op.table, op.rowId])),
-                ),
-            batch,
-            true,
-          );
-      });
+      if (restoreBases) restoreFailedBases(this.#db, this.#schema, scope);
+      const acknowledged = failedOverlayCommits(
+        this.#db,
+        true,
+        scope,
+        this.#schema,
+      );
+      const pending = [
+        ...failedOverlayCommits(this.#db, false, scope, this.#schema),
+        ...listOutbox(this.#db, scope),
+      ].sort((a, b) => a.createdAtMs - b.createdAtMs || a.seq - b.seq);
+      for (const commit of [...acknowledged, ...pending])
+        this.#applyOperationsLocally(
+          commit.operations.filter(
+            (op) =>
+              scope === undefined ||
+              scope.includes(JSON.stringify([op.table, op.rowId])) ||
+              scope.includes(JSON.stringify([op.table])),
+          ),
+          batch,
+          true,
+        );
     });
   }
 

@@ -1,8 +1,26 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.30.13** (`v0.30.13`). All artifacts use Apache-2.0, except
+current release is **0.30.14** (`v0.30.14`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.30.14 release notes
+
+Protected ACK and failed-intent reconciliation now selects only the rows or
+tables affected by an import. Empty unrelated bootstraps leave acknowledged
+rows untouched. Each import restores its affected bases once and replays intent
+before publishing its committed observation. ACK-only missing rows hydrate from
+the protected intent once. Matching delivery, sparse writes, unique conflicts,
+restart and revocation keep their existing semantics.
+
+First-epoch acquisition persists the epoch and schedules an epoch-bound round
+without raising `upgrading`, dropping tables or resetting subscriptions. Local
+outbox rows remain visible. A differing stored epoch still performs the existing
+replica reset and bootstrap.
+
+Upgrade all 12 npm packages and 6 crates together and rebuild native applications.
+No schema bump, generated-schema change or application workaround is required.
+SSP2 stays at wire version 3. Keep existing runtime and render budgets.
 
 ## 0.30.13 release notes
 

@@ -330,7 +330,8 @@ test('boot → subscribe → mutate → sync → query, all over the RPC', async
   // sending the outbox. The next round reports the push; syncUntilIdle would
   // return the final quiescent round's empty summary.
   const acquisition = await handle.sync();
-  expect(acquisition.resets).toEqual(['tasks']);
+  expect(acquisition.resets).toEqual([]);
+  expect((await handle.statusSnapshot()).upgrading).toBe(false);
   const summary = await handle.sync();
   expect(summary.applied).toEqual([commitId]);
   await handle.syncUntilIdle();

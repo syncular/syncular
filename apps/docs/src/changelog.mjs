@@ -16,6 +16,21 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-10-04',
+    title: 'Bounded ACK replay and epoch acquisition without migration',
+    body: 'Released in 0.30.14. Imports restore and replay only affected rows or tables. Empty unrelated bootstraps leave protected ACK intent untouched. First-epoch acquisition preserves ready readers and subscription progress without raising upgrading. A differing stored epoch still resets the replica.',
+    links: [
+      {
+        href: '/concepts-conflicts/#the-optimistic-outbox',
+        label: 'Protected intent reconciliation',
+      },
+      {
+        href: '/server-backup-restore/',
+        label: 'Epoch acquisition and resets',
+      },
+    ],
+  },
+  {
     date: '2026-10-03',
     title: 'Native local activation with transport closed',
     body: 'Released in 0.30.13. Both cores have an explicit transport gate. Tauri can activate security, read its replica and queue local commits before a fresh bearer is available. Pausing suppresses new HTTP, realtime and retry work; captured replies retain atomic apply and revocation checks. Resume wakes the existing scheduler and flushes queued commits in order.',

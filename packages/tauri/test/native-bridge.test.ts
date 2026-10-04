@@ -199,6 +199,167 @@ if (!available) {
   });
 } else {
   describe('native Tauri bridge', () => {
+    test('native first epoch preserves ready readers; stored epoch changes reset', async () => {
+      for (const stored of [undefined, 'old-epoch']) {
+        const source = makeServer(schema);
+        source.allowed['actor-1'] = { list_id: ['one'] };
+        const server = Bun.serve({
+          hostname: '127.0.0.1',
+          port: 0,
+          async fetch(request) {
+            return new Response(
+              (
+                await handleSyncRequest(
+                  new Uint8Array(await request.arrayBuffer()),
+                  source.ctxFor('actor-1'),
+                )
+              ).slice().buffer,
+            );
+          },
+        });
+        const host = nativeTauri(`http://127.0.0.1:${server.port}`);
+        const client = await createTauriSyncClient({
+          schema,
+          transportEnabled: false,
+          tauri: host.api,
+        });
+        try {
+          await client.subscribe({
+            id: 'todos',
+            table: 'todos',
+            scopes: { list_id: ['one'] },
+          });
+          const id = await client.mutate([
+            {
+              op: 'upsert',
+              table: 'todos',
+              values: { id: 'offline', list_id: 'one', title: 'local' },
+            },
+          ]);
+          await host.exec(
+            'CREATE TRIGGER epoch_table_identity AFTER INSERT ON todos BEGIN SELECT 1; END',
+          );
+          if (stored !== undefined)
+            await host.exec(
+              "INSERT INTO _syncular_meta(key,value) VALUES('logEpoch','old-epoch')",
+            );
+          const before = (await client.diagnosticsSnapshot()).subscriptions;
+          const statuses: boolean[] = [];
+          client.onChange((batch) => {
+            if (batch.status) statuses.push(batch.status.upgrading);
+          });
+          await client.setTransportEnabled(true);
+          expect(await client.sync()).toMatchObject({
+            ok: true,
+            report: { resets: stored === undefined ? [] : ['todos'] },
+          });
+          expect((await client.statusSnapshot()).upgrading).toBe(
+            stored !== undefined,
+          );
+          expect(await client.pendingCommits()).toEqual([id]);
+          expect(
+            (await client.query('SELECT title FROM todos'))[0]?.title,
+          ).toBe('local');
+          expect(
+            (
+              await client.query(
+                "SELECT name FROM sqlite_master WHERE name='epoch_table_identity'",
+              )
+            ).length,
+          ).toBe(stored === undefined ? 1 : 0);
+          if (stored === undefined) {
+            expect(statuses.every((upgrading) => !upgrading)).toBe(true);
+            expect((await client.diagnosticsSnapshot()).subscriptions).toEqual(
+              before,
+            );
+          } else expect(statuses).toContain(true);
+          await client.syncUntilIdle();
+          expect((await client.statusSnapshot()).upgrading).toBe(false);
+          expect(await client.pendingCommits()).toEqual([]);
+        } finally {
+          await client.close();
+          await host.close();
+          server.stop(true);
+          source.storage.db.close();
+        }
+      }
+    });
+
+    test('native ACK protection survives unrelated bootstraps without task rewrites', async () => {
+      const nativeSchema = {
+        ...schema,
+        tables: [...schema.tables, { ...schema.tables[0], name: 'other' }],
+      };
+      const source = makeServer(nativeSchema);
+      source.allowed['actor-1'] = { list_id: ['one'] };
+      const server = Bun.serve({
+        hostname: '127.0.0.1',
+        port: 0,
+        async fetch(request) {
+          return new Response(
+            (
+              await handleSyncRequest(
+                new Uint8Array(await request.arrayBuffer()),
+                source.ctxFor('actor-1'),
+              )
+            ).slice().buffer,
+          );
+        },
+      });
+      const host = nativeTauri(`http://127.0.0.1:${server.port}`);
+      const client = await createTauriSyncClient({
+        schema: nativeSchema,
+        tauri: host.api,
+      });
+      try {
+        await client.sync();
+        for (let index = 0; index < 32; index += 1)
+          await client.mutate([
+            {
+              op: 'upsert',
+              table: 'todos',
+              values: {
+                id: `todo-${index}`,
+                list_id: 'one',
+                title: 'accepted',
+              },
+            },
+          ]);
+        await client.sync();
+        expect(await client.pendingCommits()).toEqual([]);
+        await host.exec(
+          "CREATE TABLE ack_replay_writes(kind TEXT); CREATE TRIGGER count_ack_restore AFTER DELETE ON todos BEGIN INSERT INTO ack_replay_writes VALUES('restore'); END; CREATE TRIGGER count_ack_replay AFTER INSERT ON todos BEGIN INSERT INTO ack_replay_writes VALUES('replay'); END;",
+        );
+        for (const subscriptions of [2, 6, 12]) {
+          for (let index = 0; index < subscriptions; index += 1)
+            await client.subscribe({
+              id: `other-${subscriptions}-${index}`,
+              table: 'other',
+              scopes: { list_id: ['one'] },
+            });
+          await client.sync();
+          expect(
+            (
+              await client.query('SELECT count(*) AS n FROM ack_replay_writes')
+            )[0]?.n,
+          ).toBe(0);
+          expect(await client.query('SELECT id FROM todos')).toHaveLength(32);
+        }
+        await client.subscribe({
+          id: 'todos',
+          table: 'todos',
+          scopes: { list_id: ['one'] },
+        });
+        await client.syncUntilIdle();
+        expect(await client.query('SELECT id FROM todos')).toHaveLength(32);
+      } finally {
+        await client.close();
+        await host.close();
+        server.stop(true);
+        source.storage.db.close();
+      }
+    });
+
     test('closed native transport allows security activation and consecutive local writes before fresh bearer resume', async () => {
       const source = makeServer(schema);
       source.allowed['actor-1'] = { list_id: ['one'] };

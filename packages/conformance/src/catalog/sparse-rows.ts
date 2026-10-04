@@ -82,6 +82,74 @@ async function serverRow(ctx: ScenarioContext, rowId: string) {
 
 export const sparseRowScenarios: readonly Scenario[] = [
   {
+    name: 'sparse-rows/acknowledged-intent-ignores-unrelated-bootstraps',
+    specRefs: ['§7.1', '§5.6', '§7.2'],
+    async run(ctx) {
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: { ...P1, org_id: ['o1'], projectId: ['p1'] },
+      });
+      await syncOk(a);
+      const ids: string[] = [];
+      for (let index = 0; index < 32; index += 1)
+        ids.push(
+          await a.api.mutate([
+            {
+              op: 'upsert',
+              table: 'tasks',
+              values: task(`task-${index}`, 'p1', 'accepted'),
+            },
+          ]),
+        );
+      const acked = await syncOk(a);
+      checkEqual(acked.applied, ids, 'unsubscribed writes are accepted');
+      check(
+        a.api.executeStorageSql !== undefined &&
+          a.api.querySnapshot !== undefined,
+        'client supplies SQL-count evidence',
+      );
+      await a.api.executeStorageSql(
+        "CREATE TABLE ack_replay_writes(kind TEXT); CREATE TRIGGER count_ack_restore AFTER DELETE ON tasks BEGIN INSERT INTO ack_replay_writes VALUES('restore'); END; CREATE TRIGGER count_ack_replay AFTER INSERT ON tasks BEGIN INSERT INTO ack_replay_writes VALUES('replay'); END;",
+      );
+      for (const subscriptions of [2, 6, 12]) {
+        for (let index = 0; index < subscriptions; index += 1)
+          await a.api.subscribe({
+            id: `docs-${subscriptions}-${index}`,
+            table: 'docs',
+            scopes: { org_id: ['o1'], projectId: ['p1'] },
+          });
+        await syncOk(a);
+        checkEqual(
+          (
+            await a.api.querySnapshot(
+              'SELECT count(*) AS n FROM ack_replay_writes',
+            )
+          ).rows,
+          [{ n: 0 }],
+          'unrelated empty bootstraps never restore or replay ACK rows',
+        );
+        checkEqual(
+          (await a.api.readRows('tasks')).length,
+          32,
+          'unsubscribed intent stays visible',
+        );
+      }
+      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await syncIdle(a);
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [],
+        'ACK protection never resends intent',
+      );
+      checkEqual(
+        (await a.api.readRows('tasks')).length,
+        32,
+        'authoritative delivery converges',
+      );
+    },
+  },
+  {
     name: 'sparse-rows/acknowledged-intent-awaits-row-delivery',
     specRefs: ['§7.1', '§7.2', '§3.3'],
     async run(ctx) {

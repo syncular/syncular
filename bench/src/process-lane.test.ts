@@ -134,9 +134,9 @@ test.each(['independent', 'repeated'])(
       const measurements = result.writerStats.measurements;
       expect(
         measurements[
-          'database.query: SELECT seq, client_commit_id, created_at_ms, operations FROM _syncular_outbox ORDER BY seq ASC'
-        ].rowsReturned,
-      ).toBe(1);
+          'database.query: SELECT * FROM _syncular_outbox ORDER BY seq ASC'
+        ],
+      ).toBeUndefined();
       expect(measurements['clientSqlite.run: COMMIT'].calls).toBe(
         measurements['clientSqlite.run: BEGIN'].calls,
       );

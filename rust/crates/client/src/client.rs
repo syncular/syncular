@@ -1194,6 +1194,7 @@ mod observation_tests {
     #[test]
     fn log_epoch_reset_requests_an_immediate_follow_up_round() {
         let mut client = client();
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
         client
             .subscribe(
                 "epoch-tasks".to_owned(),
@@ -2044,6 +2045,259 @@ mod observation_tests {
                 row["version"],
                 json!(3),
                 "the queued domain version must remain monotonic"
+            );
+        }
+    }
+
+    #[test]
+    fn first_epoch_acquisition_preserves_tables_subscriptions_and_local_intent() {
+        for stored in [None, Some("epoch-old")] {
+            let mut client = client();
+            client
+                .subscribe(
+                    "tasks".into(),
+                    "tasks".into(),
+                    vec![("project_id".into(), vec!["p1".into()])],
+                    None,
+                )
+                .unwrap();
+            client
+                .conn
+                .execute_batch(
+                    "CREATE TRIGGER epoch_table_identity AFTER INSERT ON tasks BEGIN SELECT 1; END",
+                )
+                .unwrap();
+            let id = client
+                .mutate(vec![Mutation::Upsert {
+                    table: "tasks".into(),
+                    values: Map::from_iter([
+                        ("id".into(), json!("offline")),
+                        ("project_id".into(), json!("p1")),
+                    ]),
+                    base_version: None,
+                }])
+                .unwrap();
+            if let Some(epoch) = stored {
+                client.set_meta(LOG_EPOCH_KEY, epoch);
+            }
+            let before = serde_json::to_value(client.subscription_state("tasks")).unwrap();
+            let (_, meta) = client.build_request(false);
+            client.drain_change_batches();
+            client.drain_sync_intents();
+            let response = Message {
+                wire_version: WIRE_VERSION,
+                msg_kind: MsgKind::Response,
+                frames: vec![Frame::RespHeader {
+                    required_schema_version: None,
+                    latest_schema_version: None,
+                    log_epoch: Some("epoch-new".into()),
+                    reset_required: Some(true),
+                }],
+            };
+            let mut transport = HostTransport::new_from_config(&json!({})).unwrap();
+            let outcome = client.process_response(&mut transport, response, &meta);
+            let SyncOutcome::Ok(report) = outcome else {
+                panic!("epoch round failed: {outcome:?}");
+            };
+            assert_eq!(
+                report.resets,
+                if stored.is_none() {
+                    Vec::<String>::new()
+                } else {
+                    vec!["tasks".into()]
+                }
+            );
+            assert_eq!(client.get_meta(LOG_EPOCH_KEY).as_deref(), Some("epoch-new"));
+            assert_eq!(client.pending_commit_ids(), vec![id]);
+            assert_eq!(
+                client.query("SELECT id FROM tasks", &[]).unwrap()[0]["id"],
+                json!("offline")
+            );
+            let trigger: i64 = client
+                .conn
+                .query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE name='epoch_table_identity'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            if stored.is_none() {
+                assert!(!client.upgrading);
+                assert!(client
+                    .drain_change_batches()
+                    .iter()
+                    .all(|batch| batch.status.as_ref().is_none_or(|status| !status.upgrading)));
+                assert_eq!(
+                    serde_json::to_value(client.subscription_state("tasks")).unwrap(),
+                    before
+                );
+                assert_eq!(trigger, 1, "acquisition must not drop the synced table");
+            } else {
+                assert!(client.upgrading);
+                assert_eq!(trigger, 0, "an epoch change must drop the old table");
+            }
+            assert!(matches!(
+                client.drain_sync_intents().as_slice(),
+                [SyncIntent::Interactive]
+            ));
+        }
+    }
+
+    #[test]
+    fn epoch_acquisition_storage_failures_preserve_ready_state_and_intent() {
+        for key in ["logEpoch", "localRevision"] {
+            let mut client = client();
+            let id = client
+                .mutate(vec![Mutation::Upsert {
+                    table: "tasks".into(),
+                    values: Map::from_iter([
+                        ("id".into(), json!("offline")),
+                        ("project_id".into(), json!("p1")),
+                    ]),
+                    base_version: None,
+                }])
+                .unwrap();
+            let revision = client.local_revision();
+            let needed = client.sync_needed;
+            client.drain_change_batches();
+            client.drain_sync_intents();
+            client.conn.execute_batch(&format!("CREATE TRIGGER fail_acquisition BEFORE INSERT ON _syncular_meta WHEN NEW.key='{key}' BEGIN SELECT RAISE(FAIL,'injected acquisition failure'); END")).unwrap();
+            assert!(client.run_log_epoch_reset("epoch-new").is_err());
+            assert!(client.get_meta(LOG_EPOCH_KEY).is_none());
+            assert!(!client.upgrading);
+            assert_eq!(client.sync_needed, needed);
+            assert_eq!(client.local_revision(), revision);
+            assert_eq!(client.pending_commit_ids(), [id]);
+            assert!(client.drain_change_batches().is_empty());
+            assert!(client.drain_sync_intents().is_empty());
+        }
+    }
+
+    #[test]
+    fn acknowledged_restore_and_replay_ignore_unrelated_subscription_count() {
+        for subscriptions in [0, 2, 6, 12] {
+            let mut client = SyncClient::new("ack-scope".into(), &json!({ "version": 1, "tables": [
+                { "name": "tasks", "primaryKey": "id", "columns": [{ "name": "id", "type": "string", "nullable": false }, { "name": "project_id", "type": "string", "nullable": false }], "scopes": [{ "pattern": "project:{project_id}" }] },
+                { "name": "docs", "primaryKey": "id", "columns": [{ "name": "id", "type": "string", "nullable": false }, { "name": "project_id", "type": "string", "nullable": false }], "scopes": [{ "pattern": "project:{project_id}" }] }
+            ] }), ClientLimits::default()).unwrap();
+            client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+            client.conn.execute_batch("CREATE TABLE ack_writes(kind TEXT); CREATE TRIGGER count_ack_restore AFTER DELETE ON tasks BEGIN INSERT INTO ack_writes VALUES('restore'); END; CREATE TRIGGER count_ack_replay AFTER INSERT ON tasks BEGIN INSERT INTO ack_writes VALUES('replay'); END;").unwrap();
+            for index in 0..32 {
+                client
+                    .mutate(vec![Mutation::Upsert {
+                        table: "tasks".into(),
+                        values: Map::from_iter([
+                            ("id".into(), json!(format!("task-{index}"))),
+                            ("project_id".into(), json!("p1")),
+                        ]),
+                        base_version: None,
+                    }])
+                    .unwrap();
+            }
+            let (_, meta) = client.build_request(false);
+            let mut frames = vec![Frame::RespHeader {
+                required_schema_version: None,
+                latest_schema_version: None,
+                log_epoch: Some("epoch-1".into()),
+                reset_required: Some(false),
+            }];
+            frames.extend(meta.pushed_ids.iter().enumerate().map(|(index, id)| {
+                Frame::PushResult {
+                    client_commit_id: id.clone(),
+                    status: PushStatus::Applied,
+                    commit_seq: Some(index as i64 + 1),
+                    results: vec![OpResult::Applied { op_index: 0 }],
+                }
+            }));
+            let mut transport = HostTransport::new_from_config(&json!({})).unwrap();
+            client.acknowledged_replay_count.set(0);
+            client.conn.execute("DELETE FROM ack_writes", []).unwrap();
+            assert!(matches!(
+                client.process_response(
+                    &mut transport,
+                    Message {
+                        wire_version: WIRE_VERSION,
+                        msg_kind: MsgKind::Response,
+                        frames
+                    },
+                    &meta
+                ),
+                SyncOutcome::Ok(_)
+            ));
+            assert_eq!(client.acknowledged_replay_count.get(), 32);
+            assert_eq!(
+                client
+                    .query(
+                        "SELECT count(*) AS n FROM ack_writes WHERE kind='restore'",
+                        &[]
+                    )
+                    .unwrap()[0]["n"],
+                json!(32)
+            );
+            assert_eq!(
+                client
+                    .query(
+                        "SELECT count(*) AS n FROM ack_writes WHERE kind='replay'",
+                        &[]
+                    )
+                    .unwrap()[0]["n"],
+                json!(32)
+            );
+            client.conn.execute("DELETE FROM ack_writes", []).unwrap();
+            client.acknowledged_replay_count.set(0);
+            for index in 0..subscriptions {
+                client
+                    .subscribe(
+                        format!("docs-{index}"),
+                        "docs".into(),
+                        vec![("project_id".into(), vec![format!("scope-{index}")])],
+                        None,
+                    )
+                    .unwrap();
+                let sub = client.subs.len() - 1;
+                client.subs[sub].effective =
+                    Some(vec![("project_id".into(), vec![format!("scope-{index}")])]);
+                let segment = RowsSegment {
+                    table: "docs".into(),
+                    schema_version: 1,
+                    columns: client.schema.table("docs").unwrap().wire_columns.clone(),
+                    blocks: if index % 2 == 0 {
+                        vec![vec![ssp2::segment::SegmentRow {
+                            values: vec![
+                                Some(ColumnValue::String(format!("doc-{index}"))),
+                                Some(ColumnValue::String(format!("scope-{index}"))),
+                            ],
+                            server_version: 1,
+                        }]]
+                    } else {
+                        vec![]
+                    },
+                };
+                assert!(client.apply_segment(sub, &segment, true).is_ok());
+            }
+            assert_eq!(
+                client
+                    .query("SELECT count(*) AS n FROM ack_writes", &[])
+                    .unwrap()[0]["n"],
+                json!(0),
+                "unrelated bootstrap must not restore/replay tasks"
+            );
+            assert_eq!(
+                client.acknowledged_replay_count.get(),
+                0,
+                "unrelated bootstrap must not decode task ACKs"
+            );
+            assert_eq!(
+                client
+                    .query("SELECT count(*) AS n FROM tasks", &[])
+                    .unwrap()[0]["n"],
+                json!(32)
+            );
+            assert_eq!(
+                client
+                    .query("SELECT count(*) AS n FROM _syncular_acked_rows", &[])
+                    .unwrap()[0]["n"],
+                json!(32)
             );
         }
     }
@@ -5514,6 +5768,8 @@ pub struct SyncClient {
     /// turn a batch of acknowledgements into one full overlay rebuild each.
     #[cfg(test)]
     overlay_rebuild_count: Cell<usize>,
+    #[cfg(test)]
+    acknowledged_replay_count: Cell<usize>,
     /// Test-only structural performance signal: outcome retention is enforced
     /// once per response rather than once per acknowledgement.
     #[cfg(test)]
@@ -6142,6 +6398,8 @@ impl SyncClient {
             storage_failure: RefCell::new(None),
             #[cfg(test)]
             overlay_rebuild_count: Cell::new(0),
+            #[cfg(test)]
+            acknowledged_replay_count: Cell::new(0),
             #[cfg(test)]
             outcome_prune_count: Cell::new(0),
             progress: ProgressObserver::default(),
@@ -7588,6 +7846,29 @@ impl SyncClient {
     }
 
     fn run_log_epoch_reset(&mut self, log_epoch: &str) -> Result<Vec<String>, String> {
+        if self.get_meta(LOG_EPOCH_KEY).is_none() {
+            self.begin_observation("syncular_epoch_acquisition")?;
+            let previous_sync_needed = self.sync_needed;
+            if let Err(error) = self.conn.execute(
+                "INSERT OR REPLACE INTO _syncular_meta(key,value) VALUES (?1,?2)",
+                rusqlite::params![LOG_EPOCH_KEY, log_epoch],
+            ) {
+                self.rollback_observation("syncular_epoch_acquisition");
+                return Err(Self::sqlite_failure(&self.storage_failure, error));
+            }
+            self.sync_needed = true;
+            let batch = ChangeAccumulator {
+                status: true,
+                ..ChangeAccumulator::default()
+            };
+            if let Err(error) = self.finish_observation("syncular_epoch_acquisition", batch) {
+                self.rollback_observation("syncular_epoch_acquisition");
+                self.sync_needed = previous_sync_needed;
+                return Err(error);
+            }
+            self.sync_intent_queue.push_back(SyncIntent::Interactive);
+            return Ok(Vec::new());
+        }
         let resets = self.subs.iter().map(|sub| sub.id.clone()).collect();
         self.begin_observation("syncular_log_epoch_reset")?;
         let prior_subs = self.subs.clone();
@@ -10988,7 +11269,11 @@ impl SyncClient {
                         // ack had arrived.
                         let sequence =
                             commit_seq.ok_or_else(|| "ACK lacks a commit sequence".to_owned())?;
-                        let prior = self.acknowledged_operations(None)?;
+                        let affected: HashSet<_> = operations
+                            .iter()
+                            .map(|op| (op.table.as_str(), op.row_id.as_str()))
+                            .collect();
+                        let prior = self.acknowledged_operations(Some(&affected), None)?;
                         for (op_index, operation) in operations.iter().enumerate() {
                             let delivered: bool = self.conn.query_row("SELECT EXISTS(SELECT 1 FROM _syncular_row_deliveries WHERE tbl=?1 AND id=?2 AND commit_seq>=?3)", rusqlite::params![operation.table, operation.row_id, sequence], |row| row.get(0))
                                 .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
@@ -11933,7 +12218,7 @@ impl SyncClient {
                     })
                     .collect();
                 let acknowledged = self
-                    .acknowledged_operations(Some(&changed_rows))
+                    .acknowledged_operations(Some(&changed_rows), None)
                     .map_err(|error| ("storage.failed".to_owned(), error))?;
                 self.apply_outbox_ops(&acknowledged);
                 self.apply_outbox_ops(
@@ -12073,7 +12358,7 @@ impl SyncClient {
                     );
                     self.overlay_dirty.set(false);
                 } else {
-                    self.rebuild_overlay();
+                    self.rebuild_overlay_if_dirty();
                 }
                 self.finish_observation("syncular_segment_block", batch)
                     .map_err(|message| SectionError::Abort("storage.failed".into(), message))
@@ -12395,7 +12680,7 @@ impl SyncClient {
                     );
                     self.overlay_dirty.set(false);
                 } else {
-                    self.rebuild_overlay();
+                    self.rebuild_overlay_if_dirty();
                 }
                 self.finish_observation("syncular_image_chunk", batch)
                     .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
@@ -13527,6 +13812,7 @@ impl SyncClient {
     fn acknowledged_operations(
         &self,
         rows: Option<&HashSet<(&str, &str)>>,
+        tables: Option<&BTreeSet<&str>>,
     ) -> Result<Vec<OutboxOp>, String> {
         let keys = rows.map(|rows| {
             serde_json::to_string(
@@ -13539,12 +13825,21 @@ impl SyncClient {
         });
         let mut statement = self
             .conn
-            .prepare("SELECT op_json,intent_json FROM _syncular_acked_rows WHERE ?1 IS NULL OR json_array(tbl,id) IN(SELECT value FROM json_each(?1)) ORDER BY commit_seq,idx")
+            .prepare("SELECT op_json,intent_json FROM _syncular_acked_rows WHERE (?1 IS NULL OR json_array(tbl,id) IN(SELECT value FROM json_each(?1))) AND (?2 IS NULL OR tbl IN(SELECT value FROM json_each(?2))) ORDER BY commit_seq,idx")
             .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         let rows = statement
-            .query_map([keys], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })
+            .query_map(
+                rusqlite::params![
+                    keys,
+                    tables.map(|tables| serde_json::to_string(tables).expect("table keys"))
+                ],
+                |row| {
+                    #[cfg(test)]
+                    self.acknowledged_replay_count
+                        .set(self.acknowledged_replay_count.get() + 1);
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                },
+            )
             .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         rows.map(|row| {
             let (op, intent) =
@@ -13689,7 +13984,7 @@ impl SyncClient {
             self.exec(&format!("INSERT INTO {visible} SELECT * FROM {base}"));
         }
         let acknowledged = self
-            .acknowledged_operations(None)
+            .acknowledged_operations(None, Some(&names))
             .expect("decode acknowledged intent");
         self.apply_outbox_ops(
             acknowledged

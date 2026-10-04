@@ -107,7 +107,8 @@ export async function runWindowShardLane(
     if (
       summary.segmentRowsApplied === 0 &&
       summary.bootstrapping.length === 0 &&
-      summary.resets.length === 0
+      summary.resets.length === 0 &&
+      !client.statusSnapshot().syncNeeded
     ) {
       break;
     }
@@ -122,7 +123,8 @@ export async function runWindowShardLane(
     if (
       summary.segmentRowsApplied === 0 &&
       summary.bootstrapping.length === 0 &&
-      summary.resets.length === 0
+      summary.resets.length === 0 &&
+      !client.statusSnapshot().syncNeeded
     ) {
       break;
     }

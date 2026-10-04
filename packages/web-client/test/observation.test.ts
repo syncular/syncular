@@ -443,7 +443,7 @@ describe('revisioned local observation (SPEC §7.5)', () => {
           ).toEqual(ids);
           expect(client.commitOutcomes()).toEqual([]);
           expect(outcomes).toEqual([]);
-          expect(client.localRevision).toBe(revision + 1n); // Response-finally row replay only.
+          expect(client.localRevision).toBe(revision); // A rolled-back ACK changes no rows.
           expect(client.query('SELECT * FROM tasks ORDER BY id')).toEqual(rows);
           db.exec('DROP TRIGGER fail_run');
         }
@@ -598,14 +598,12 @@ describe('revisioned local observation (SPEC §7.5)', () => {
           expect(
             client.pendingCommits().map((commit) => commit.clientCommitId),
           ).toEqual([id, later]);
-          expect(client.localRevision).toBe(revision + 1n);
+          expect(client.localRevision).toBe(revision);
           expect(client.commitOutcome(id)).toBeUndefined();
           expect(client.conflicts()).toEqual([]);
           expect(client.rejections()).toEqual([]);
           expect(callbacks).toEqual([]);
-          expect(changes).toHaveLength(1);
-          expect(changes[0]?.outcomesChanged).toBe(false);
-          expect(changes[0]?.status).toBeUndefined();
+          expect(changes).toHaveLength(0);
           expect(client.query('SELECT * FROM tasks ORDER BY id')).toEqual(rows);
           db.exec('DROP TRIGGER fail_ack');
           if (status === 'conflict') {

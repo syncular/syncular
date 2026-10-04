@@ -1,3 +1,6 @@
+import { OUTBOX_TABLE, OUTBOX_IMAGES } from './outbox';
+import { OUTCOMES_TABLE } from './outcomes';
+import { SUBSCRIPTIONS_TABLE } from './state';
 import { ensureFailedOverlaySchema } from './failed-overlay';
 /**
  * Client schema IR (SPEC.md §2.4, §3.1) — the same shape the server
@@ -543,39 +546,35 @@ export function ensureLocalBookkeepingSchema(db: ClientDatabase): void {
       "INSERT OR IGNORE INTO _syncular_meta(key,value)VALUES('localRevision','0')",
     );
     createTable(
-      '_syncular_outbox',
+      OUTBOX_TABLE,
       'seq INTEGER PRIMARY KEY AUTOINCREMENT,client_commit_id TEXT NOT NULL UNIQUE,created_at_ms INTEGER NOT NULL,operations TEXT NOT NULL',
     );
     createTable(
-      '_syncular_outbox_before_images',
+      OUTBOX_IMAGES,
       'client_commit_id TEXT NOT NULL,op_index INTEGER NOT NULL,existed INTEGER NOT NULL CHECK(existed IN (0,1)),sync_version INTEGER,values_json TEXT,PRIMARY KEY(client_commit_id,op_index)',
     );
     if (
       !db
-        .query('PRAGMA table_info(_syncular_outbox_before_images)')
+        .query(`PRAGMA table_info(${OUTBOX_IMAGES})`)
         .some((row) => row.name === 'delivery_seq')
     )
-      db.exec(
-        'ALTER TABLE _syncular_outbox_before_images ADD COLUMN delivery_seq INTEGER',
-      );
+      db.exec(`ALTER TABLE ${OUTBOX_IMAGES} ADD COLUMN delivery_seq INTEGER`);
     createTable(
-      '_syncular_commit_outcomes',
+      OUTCOMES_TABLE,
       "seq INTEGER PRIMARY KEY AUTOINCREMENT,client_commit_id TEXT NOT NULL UNIQUE,status TEXT NOT NULL CHECK(status IN ('applied','cached','conflict','rejected')),recorded_at_ms INTEGER NOT NULL,results TEXT NOT NULL,operations TEXT,resolution TEXT NOT NULL DEFAULT 'active' CHECK(resolution IN ('active','resolved_keep_server','superseded','dismissed')),resolved_at_ms INTEGER,replacement_client_commit_id TEXT",
     );
     // Outcomes created before durable aggregate recovery retain no commit
     // envelope. New failed outcomes store it in the protected client DB.
     try {
-      db.exec(
-        'ALTER TABLE _syncular_commit_outcomes ADD COLUMN operations TEXT',
-      );
+      db.exec(`ALTER TABLE ${OUTCOMES_TABLE} ADD COLUMN operations TEXT`);
     } catch {
       // column already exists — the CREATE above included it
     }
     db.exec(
-      'CREATE INDEX IF NOT EXISTS _syncular_commit_outcomes_resolution_seq ON _syncular_commit_outcomes(resolution,seq)',
+      `CREATE INDEX IF NOT EXISTS _syncular_commit_outcomes_resolution_seq ON ${OUTCOMES_TABLE}(resolution,seq)`,
     );
     createTable(
-      '_syncular_subscriptions',
+      SUBSCRIPTIONS_TABLE,
       "id TEXT PRIMARY KEY,tbl TEXT NOT NULL,requested_scopes TEXT NOT NULL,params TEXT,cursor INTEGER NOT NULL DEFAULT -1,bootstrap_state TEXT,effective_scopes TEXT,status TEXT NOT NULL DEFAULT 'active',reason_code TEXT",
     );
     // §4.8 window registry: which units (scope values) of a window base are
