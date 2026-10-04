@@ -19,6 +19,150 @@ const P1 = { project_id: ['p1'] } as const;
 
 export const lifecycleScenarios: readonly Scenario[] = [
   {
+    name: 'security/authority-snapshot-preflight-base-intent-and-scope-loss',
+    specRefs: ['§5.11', '§7.5'],
+    async run(ctx) {
+      const a = await ctx.newClient({
+        actorId: 'authority',
+        clientId: 'authority',
+        allowed: P1,
+        authorityReads: [
+          {
+            table: 'tasks',
+            columns: ['id', 'project_id', 'title'],
+            scopes: P1,
+          },
+        ],
+      });
+      checkEqual(
+        (await a.api.authoritySnapshot()).tables[0]?.coverage,
+        'missing',
+        'unregistered coverage is explicit',
+      );
+      await seedTasks(ctx, [task('t1', 'p1', 'accepted')]);
+      await a.api.subscribe({ id: 'authority', table: 'tasks', scopes: P1 });
+      checkEqual(
+        (await a.api.authoritySnapshot()).tables[0]?.coverage,
+        'pending',
+        'registration is incomplete',
+      );
+      await syncIdle(a);
+      await a.api.setTransportEnabled(false);
+      await a.api.mutate([
+        {
+          op: 'patch',
+          table: 'tasks',
+          values: { id: 't1', title: 'unaccepted' },
+        },
+        { op: 'upsert', table: 'tasks', values: task('local', 'p1', 'local') },
+      ]);
+      await a.api.beginSecurityPreflight();
+      const revision = await a.api.localRevision!();
+      const snapshot = await a.api.authoritySnapshot();
+      checkEqual(
+        snapshot.revision,
+        revision,
+        'read revision is the committed revision',
+      );
+      check(
+        snapshot.complete,
+        'completed accepted coverage survives preflight',
+      );
+      checkEqual(
+        snapshot.tables[0]?.rows,
+        [
+          {
+            values: { id: 't1', project_id: 'p1', title: 'accepted' },
+            version: 1,
+            hasLocalIntent: true,
+          },
+        ],
+        'base is distinct from edit and local creation',
+      );
+      checkEqual(
+        snapshot.tables[0]?.localIntentRowIds,
+        ['local', 't1'],
+        'only intent identifiers are exposed',
+      );
+      checkEqual(
+        await a.api.localRevision!(),
+        revision,
+        'snapshot writes nothing',
+      );
+      let code = '';
+      try {
+        await a.api.mutate([{ op: 'delete', table: 'tasks', rowId: 't1' }]);
+      } catch (e) {
+        code = (e as { code: string }).code;
+      }
+      checkEqual(
+        code,
+        'client.security_preflight_required',
+        'writes remain closed',
+      );
+      await a.api.activateSecurity();
+      await a.api.setTransportEnabled(true);
+      await ctx.server.setAllowedScopes('authority', {});
+      await syncIdle(a);
+      await a.api.setTransportEnabled(false);
+      await a.api.beginSecurityPreflight();
+      const revoked = await a.api.authoritySnapshot();
+      check(!revoked.complete, 'scope loss invalidates completeness');
+      checkEqual(
+        revoked.tables[0]?.rows,
+        [],
+        'revoked base and intent disappear',
+      );
+    },
+  },
+  {
+    name: 'security/authority-snapshot-static-policy-and-empty-preflight',
+    specRefs: ['§5.11'],
+    async run(ctx) {
+      const a = await ctx.newClient({
+        actorId: 'preflight',
+        clientId: 'preflight',
+        allowed: P1,
+        securityPreflight: true,
+        transportEnabled: false,
+        authorityReads: [
+          { table: 'tasks', columns: ['id', 'project_id'], scopes: P1 },
+        ],
+      });
+      const snapshot = await a.api.authoritySnapshot();
+      check(!snapshot.complete, 'empty replica has no coverage proof');
+      checkEqual(snapshot.tables[0]?.rows, [], 'empty evidence is explicit');
+      checkEqual(
+        a.sentRequests.length,
+        0,
+        'snapshot does not invoke transport',
+      );
+      for (const columns of [
+        ['id', 'project_id', 'missing'],
+        ['id', 'project_id', 'id FROM tasks; DELETE FROM tasks'],
+        ['id', 'project_id', '_sync_version'],
+      ]) {
+        let code = '';
+        try {
+          await ctx.newClient({
+            actorId: 'forbidden',
+            clientId: 'forbidden',
+            securityPreflight: true,
+            transportEnabled: false,
+            authorityReads: [{ table: 'tasks', columns, scopes: P1 }],
+          });
+        } catch (e) {
+          code = (e as { code: string }).code;
+        }
+        checkEqual(
+          code,
+          'client.authority_read_forbidden',
+          'only static schema-approved plain columns pass',
+        );
+      }
+    },
+  },
+  {
     name: 'lifecycle/pruning-during-pull-resets-and-rebootstraps',
     specRefs: ['§4.6', '§4.7'],
     requires: ['concurrent-storage-faults'],

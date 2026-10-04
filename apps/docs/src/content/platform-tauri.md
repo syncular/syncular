@@ -327,6 +327,76 @@ Native CRDT text (plugin `crdt-yjs` feature) goes through `syncular_command`, an
 `@syncular/crdt-yjs` helper, so a Tauri app and a browser can edit the same
 document. See [CRDT columns](/concepts-crdt/).
 
+## Authority evidence before activation
+
+Declare authority reads at client creation with `defineAuthorityReads` from
+`@syncular/client`. Each table declares plain columns, including its primary
+key and scope columns, and concrete scope selectors. These selectors remain
+fixed for that client. A declaration cannot include encrypted, bytes, blob,
+CRDT or internal columns. Choose only authority fields; clinical fields and
+credentials do not belong in this policy.
+
+```ts
+import { defineAuthorityReads } from '@syncular/client';
+
+const client = await createTauriSyncClient({
+  schema,
+  securityPreflight: true,
+  transportEnabled: false,
+  authorityReads: defineAuthorityReads([{
+    table: 'memberships',
+    columns: ['id', 'user_id', 'facility_id', 'status', 'version'],
+    scopes: { membership_id: acceptedMembershipIds },
+  }]),
+});
+const evidence = await client.authoritySnapshot();
+```
+
+The native application must also set an independent ceiling at plugin creation:
+
+```rust
+let config = SyncularConfig {
+    authority_columns: [("memberships".into(), vec![
+        "id".into(), "user_id".into(), "facility_id".into(),
+        "status".into(), "version".into(),
+    ])].into(),
+    ..Default::default()
+};
+```
+
+Rust rejects any webview declaration outside that ceiling. It also validates
+columns against the schema. `authoritySnapshot()` accepts zero arguments;
+forged IPC carrying SQL, replacement tables or columns fails with
+`client.authority_read_forbidden`. Ordinary `query`, `querySnapshot` and writes
+still fail with `client.security_preflight_required`.
+
+The result contains `revision: bigint`, `complete`, and `tables`. Every table
+contains accepted `rows` (`values`, server `version`, `hasLocalIntent`), scoped
+`localIntentRowIds`, the declared `scopes`, `coverage`, and sanitized
+`persisted` subscription evidence (`requestedScopes`, `effectiveScopes`,
+`cursor`, `status`, `complete`). It exposes no intended values, bootstrap
+tokens, subscription parameters or keys. Both cores read rows, revision and
+coverage in one SQLite snapshot. The native authority read runs on the mutable
+owner; it does not use the ordinary query sidecar or its latency contract.
+
+`coverage` is `complete`, `pending` or `missing`. Complete coverage requires
+completed unfiltered subscriptions for every requested scope tuple. Several
+subscriptions can cover the selection together. Scope loss and an unfinished
+bootstrap invalidate completeness. Completed empty coverage has an empty row
+set. The application must reject admission when an expected authority row is
+absent, even when the set is complete.
+
+Accepted bases remain separate from pending, failed and protected ACK intent.
+A local-only creation appears only in `localIntentRowIds`. The application
+validates the complete chain against independently accepted authority evidence,
+actor/device identity, signed lease and trusted time before installing keys.
+The SDK does not authorize the application. The read changes no lifecycle,
+transport, keyring, subscriptions or rows.
+
+The direct Bun/SQLite client and worker handle expose the same policy and
+snapshot shape. Importing the policy is opt-in; ordinary clients do not ship
+its reader. Update npm packages and native crates together and rebuild the app.
+
 ## Local activation with transport closed
 
 Create with `transportEnabled: false` to open the replica without starting

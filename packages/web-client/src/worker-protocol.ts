@@ -111,6 +111,7 @@ export interface WorkerInitConfig {
   /** Portable raw keyring installed inside the worker-owned client core. */
   readonly encryption?: EncryptionKeyringConfig;
   /** Open the worker-owned replica behind the fail-closed security gate. */
+  readonly authorityReads?: readonly import('./authority').AuthorityReadDeclaration[];
   readonly securityPreflight?: boolean;
   readonly transportEnabled?: boolean;
   readonly clientId?: string;
@@ -186,6 +187,7 @@ export interface WorkerApi extends Omit<
   sync(): Promise<SyncSummary>;
   syncUntilIdle(maxRounds?: number): Promise<SyncSummary>;
   query(sql: string, params?: readonly SqlValue[]): SqlRow[];
+  authoritySnapshot(): import('./authority').AuthoritySnapshot;
   querySnapshot(spec: QueryReadSpec): QuerySnapshot;
   localRevision(): LocalRevision;
   pendingCommits(): OutboxCommit[];

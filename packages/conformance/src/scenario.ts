@@ -20,6 +20,7 @@ import {
   type ResponseMessage,
 } from '@syncular/core';
 import type {
+  ClientCreateOptions,
   ClientInstance,
   ClientLimitsOptions,
   ClientPreviousVersionContextOptions,
@@ -324,6 +325,8 @@ export interface ClientHandle {
 }
 
 export interface NewClientOptions {
+  readonly authorityReads?: ClientCreateOptions['authorityReads'];
+  readonly securityPreflight?: boolean;
   readonly transportEnabled?: boolean;
   readonly retainFailedCommits?: boolean;
   readonly actorId: string;
@@ -539,6 +542,12 @@ export class ScenarioContext {
         : {}),
       ...(options.previousVersionContext !== undefined
         ? { previousVersionContext: options.previousVersionContext }
+        : {}),
+      ...(options.authorityReads !== undefined
+        ? { authorityReads: options.authorityReads }
+        : {}),
+      ...(options.securityPreflight !== undefined
+        ? { securityPreflight: options.securityPreflight }
         : {}),
       ...(options.transportEnabled !== undefined
         ? { transportEnabled: options.transportEnabled }

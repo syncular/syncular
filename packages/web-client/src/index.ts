@@ -8,6 +8,12 @@
  * (`worker-host`) and the RPC protocol types are root exports — they
  * import no SQLite.
  */
+export {
+  defineAuthorityReads,
+  type AuthorityReadPolicy,
+  type AuthorityReadDeclaration,
+  type AuthoritySnapshot,
+} from './authority';
 export * from './apply';
 export * from './availability';
 export * from './blob';

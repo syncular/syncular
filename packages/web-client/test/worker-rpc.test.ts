@@ -8,6 +8,7 @@
  */
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import {
+  defineAuthorityReads,
   ClientSyncError,
   createSyncClientHandle,
   INVALID_HOST_RESPONSE_CODE,
@@ -420,9 +421,28 @@ test('worker preflight gates protected RPCs and activates the host loop later', 
   const { handle, events } = await makeHandle({
     clientId: 'rpc-security-preflight',
     securityPreflight: true,
+    transportEnabled: false,
+    authorityReads: defineAuthorityReads([
+      {
+        table: 'tasks',
+        columns: ['id', 'project_id', 'title'],
+        scopes: { project_id: ['p1'] },
+      },
+    ]),
   });
 
   expect(await handle.securityLifecycle()).toBe('preflight');
+  expect(await handle.authoritySnapshot()).toMatchObject({
+    complete: false,
+    tables: [{ table: 'tasks', rows: [], coverage: 'missing' }],
+  });
+  expect(() =>
+    Reflect.apply(handle.authoritySnapshot, handle, [
+      { sql: 'SELECT title FROM tasks' },
+    ]),
+  ).toThrow(
+    expect.objectContaining({ code: 'client.authority_read_forbidden' }),
+  );
   expect((await handle.statusSnapshot()).currentSchemaVersion).toBe(1);
   await expectRejectsWithCode(
     handle.query('SELECT id FROM tasks'),

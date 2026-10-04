@@ -13,6 +13,7 @@
  * RPC-driven and auto-driven sync rounds serialize on one queue because
  * the core owns exactly one loop.
  */
+import { defineAuthorityReads } from './authority';
 import { SyncClient } from './client';
 import type { ClientDatabase } from './database';
 import {
@@ -323,6 +324,9 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
       ...(config.encryption !== undefined
         ? { encryption: encryptionConfigFromKeyring(config.encryption) }
         : {}),
+      ...(config.authorityReads !== undefined
+        ? { authorityReads: defineAuthorityReads(config.authorityReads) }
+        : {}),
       ...(config.securityPreflight !== undefined
         ? { securityPreflight: config.securityPreflight }
         : {}),
@@ -441,6 +445,7 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
       return serializedSync(() => running.syncUntilIdle(maxRounds));
     },
     query: (sql, params) => requireClient().query(sql, params),
+    authoritySnapshot: () => requireClient().authoritySnapshot(),
     querySnapshot: (spec) => requireClient().querySnapshot(spec),
     localRevision: () => requireClient().localRevision,
     statusSnapshot: () => requireClient().statusSnapshot(),
@@ -520,6 +525,11 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
   ]);
 
   async function dispatch(message: WorkerCallMessage): Promise<unknown> {
+    if (message.method === 'authoritySnapshot' && message.args.length)
+      throw new ClientSyncError(
+        'client.authority_read_forbidden',
+        'authoritySnapshot accepts no arguments',
+      );
     const method = api[message.method] as (...args: unknown[]) => unknown;
     const invoke = () => method.apply(api, message.args as unknown[]);
     if (syncChainMethods.has(message.method)) {

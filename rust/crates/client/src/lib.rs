@@ -43,10 +43,10 @@ pub mod transport;
 pub mod values;
 
 pub use api::{
-    creation_time_bucket, last, ClientChangeBatch, ClientDiagnosticsHost, ClientDiagnosticsLease,
-    ClientDiagnosticsReplica, ClientDiagnosticsRequest, ClientDiagnosticsSchema,
-    ClientDiagnosticsSnapshot, ClientDiagnosticsStorage, ClientLimits, CommandEffects,
-    CommitOperation, CommitOperationOutcome, CommitOutcome, CommitOutcomeQuery,
+    creation_time_bucket, last, AuthorityReadDeclaration, ClientChangeBatch, ClientDiagnosticsHost,
+    ClientDiagnosticsLease, ClientDiagnosticsReplica, ClientDiagnosticsRequest,
+    ClientDiagnosticsSchema, ClientDiagnosticsSnapshot, ClientDiagnosticsStorage, ClientLimits,
+    CommandEffects, CommitOperation, CommitOperationOutcome, CommitOutcome, CommitOutcomeQuery,
     CommitOutcomeResolution, CommitOutcomeStatus, ConflictRecord, CoverageSnapshot,
     DiagnosticLastChange, DiagnosticLastRound, DiagnosticQueryFailure, DiagnosticRoundCounters,
     DiagnosticSubscription, ExpectedDiagnosticSubscription, FetchedBlob, LocalDataPurgeInput,

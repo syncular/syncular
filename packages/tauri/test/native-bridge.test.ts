@@ -6,6 +6,7 @@ import { describe, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  defineAuthorityReads,
   ReactiveClientStore,
   SECURITY_PREFLIGHT_REQUIRED_CODE,
 } from '@syncular/client';
@@ -1187,3 +1188,71 @@ if (!available) {
     });
   });
 }
+
+test.skipIf(!available)(
+  'real native authority snapshot keeps preflight and transport closed, rejects forged parameters, and discards a close-racing reply',
+  async () => {
+    const harness = nativeTauri();
+    try {
+      const client = await createTauriSyncClient({
+        schema,
+        tauri: harness.api,
+        securityPreflight: true,
+        transportEnabled: false,
+        authorityReads: defineAuthorityReads([
+          {
+            table: 'todos',
+            columns: ['id', 'list_id', 'title'],
+            scopes: { list_id: ['l1'] },
+          },
+        ]),
+      });
+      await harness.exec(
+        `INSERT INTO _syncular_base_todos VALUES('one','l1','accepted',7); INSERT INTO todos VALUES('one','l1','unaccepted',7); INSERT INTO _syncular_subscriptions VALUES('s','todos','{"requested":{"list_id":["l1"]},"effectiveScopes":{"list_id":["l1"]},"status":"active","cursor":7}');`,
+      );
+      const before = await client.localRevision();
+      const snapshot = await client.authoritySnapshot();
+      expect(snapshot).toMatchObject({
+        revision: before,
+        complete: true,
+        tables: [
+          {
+            rows: [
+              {
+                values: { id: 'one', list_id: 'l1', title: 'accepted' },
+                version: 7,
+                hasLocalIntent: false,
+              },
+            ],
+          },
+        ],
+      });
+      expect(await client.securityLifecycle()).toBe('preflight');
+      await expect(client.query('SELECT id FROM todos')).rejects.toMatchObject({
+        code: 'client.security_preflight_required',
+      });
+      for (const params of [
+        { sql: 'SELECT title FROM todos' },
+        { table: '_syncular_meta' },
+        { columns: ['*'] },
+        { authorityReads: [] },
+      ]) {
+        const reply = await harness.api.invoke<{ error: { code: string } }>(
+          'plugin:syncular|syncular_command',
+          { command: { method: 'authoritySnapshot', params } },
+        );
+        expect(reply.error.code).toBe('client.authority_read_forbidden');
+      }
+      expect(await client.localRevision()).toBe(before);
+      const read = client.authoritySnapshot();
+      const closing = client.close();
+      await expect(read).rejects.toMatchObject({ code: 'client.closed' });
+      await closing;
+      await expect(client.authoritySnapshot()).rejects.toMatchObject({
+        code: 'client.closed',
+      });
+    } finally {
+      await harness.close();
+    }
+  },
+);

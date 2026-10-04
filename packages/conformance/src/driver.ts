@@ -753,7 +753,36 @@ export interface ClientCommitOutcome {
   }[];
 }
 
+export interface DriverAuthorityRead {
+  readonly table: string;
+  readonly columns: readonly string[];
+  readonly scopes: DriverScopeMap;
+}
+export interface DriverAuthoritySnapshot {
+  readonly revision: string;
+  readonly complete: boolean;
+  readonly tables: readonly {
+    readonly table: string;
+    readonly rows: readonly {
+      readonly values: DriverRow;
+      readonly version: number;
+      readonly hasLocalIntent: boolean;
+    }[];
+    readonly localIntentRowIds: readonly string[];
+    readonly coverage: string;
+    readonly scopes: DriverScopeMap;
+    readonly persisted: readonly {
+      readonly requestedScopes: DriverScopeMap;
+      readonly status: string;
+      readonly cursor: number;
+      readonly effectiveScopes: DriverScopeMap | null;
+      readonly complete: boolean;
+    }[];
+  }[];
+}
 export interface ClientCreateOptions {
+  readonly authorityReads?: readonly DriverAuthorityRead[];
+  readonly securityPreflight?: boolean;
   readonly transportEnabled?: boolean;
   readonly retainFailedCommits?: boolean;
   readonly clientId: string;
@@ -838,6 +867,9 @@ export interface DriverSyncProgress {
 }
 
 export interface ClientInstance {
+  authoritySnapshot(): Promise<DriverAuthoritySnapshot>;
+  beginSecurityPreflight(): Promise<void>;
+  activateSecurity(): Promise<void>;
   subscribe(input: {
     readonly id: string;
     readonly table: string;

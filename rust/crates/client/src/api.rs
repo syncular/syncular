@@ -1086,4 +1086,15 @@ pub struct ClientLimits {
     /// `enabled: false` runs the feature off (default); the descriptor write
     /// and the container orphan sweep still happen.
     pub previous_version_context: Option<PreviousVersionContextConfig>,
+    /// Immutable, explicit preflight authority read policy.
+    pub authority_reads: Vec<AuthorityReadDeclaration>,
+}
+
+/// Static read policy; never accepted as snapshot parameters.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AuthorityReadDeclaration {
+    pub table: String,
+    pub columns: Vec<String>,
+    pub scopes: std::collections::BTreeMap<String, Vec<String>>,
 }

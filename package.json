@@ -1,6 +1,6 @@
 {
   "name": "syncular",
-  "version": "0.30.14",
+  "version": "0.30.15",
   "private": true,
   "type": "module",
   "workspaces": [

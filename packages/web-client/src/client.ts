@@ -1,4 +1,5 @@
 import { BLOB_COMMIT_REFS } from './blob';
+import type { AuthorityReadPolicy, AuthoritySnapshot } from './authority';
 import { hasUniqueIndex } from './schema';
 import { OUTCOMES_TABLE } from './outcomes';
 import { OUTBOX_TABLE } from './outbox';
@@ -424,6 +425,7 @@ export interface SyncClientConfig {
    * hosts must not materialize key bytes before their preflight has passed.
    */
   readonly securityPreflight?: boolean;
+  readonly authorityReads?: AuthorityReadPolicy;
   /**
    * RFC 0005 previous-version context. A feature flag, default off: when
    * absent or `enabled: false`, a schema bump behaves exactly as 0.22.0 did
@@ -746,6 +748,7 @@ export type ClientSnapshotReader = {
 
 export class SyncClient {
   readonly #config: SyncClientConfig;
+  readonly #authorityReads: AuthorityReadPolicy | undefined;
   readonly #db: ClientDatabase;
   readonly #schema: CompiledClientSchema;
   /** §5.11 client-side encryption config; undefined ⇒ E2EE off. */
@@ -860,6 +863,8 @@ export class SyncClient {
     this.#retainFailedCommits = config.retainFailedCommits === true;
     this.#db = config.database;
     this.#schema = compileClientSchema(config.schema);
+    this.#authorityReads = config.authorityReads;
+    this.#authorityReads?.validate(this.#schema);
     const realtimePolicy = config.realtimePolicy ?? 'optional';
     if (
       realtimePolicy !== 'required' &&
@@ -1232,6 +1237,7 @@ export class SyncClient {
   }
 
   async close(): Promise<void> {
+    this.#started = false;
     this.#emitSyncIntent({ kind: 'none' });
     this.#devtoolsUnregister?.();
     this.#devtoolsUnregister = undefined;
@@ -1239,7 +1245,6 @@ export class SyncClient {
     this.#abortPendingRound('client closed mid-round');
     await this.#lease?.release();
     this.#lease = undefined;
-    this.#started = false;
     this.#progress.clear();
     this.#syncNeededListeners.clear();
     this.#syncIntentListeners.clear();
@@ -1398,6 +1403,17 @@ export class SyncClient {
     return getLocalRevision(this.#db);
   }
 
+  /** Read the creation-time plain authority policy, including preflight. */
+  authoritySnapshot(): AuthoritySnapshot {
+    this.#requireStarted();
+    if (!this.#authorityReads || arguments.length)
+      throw new ClientSyncError(
+        'client.authority_read_forbidden',
+        'authority read denied',
+      );
+    return this.#authorityReads.snapshot(this.#db, this.#schema);
+  }
+
   /**
    * Read rows, window answerability, and revision from one SQLite snapshot.
    * Reactive integrations use this instead of composing `query()` and
@@ -1418,28 +1434,11 @@ export class SyncClient {
         const missing: WindowUnitRef[] = [];
         for (const requested of spec.coverage ?? []) {
           const baseKey = windowBaseKey(requested.base);
-          const live = new Map(
-            loadWindowUnits(this.#db, baseKey).map((entry) => [
-              entry.unit,
-              entry.subId,
-            ]),
-          );
+          const state = this.windowState(requested.base);
           for (const unit of new Set(requested.units)) {
-            const subId = live.get(unit);
             const ref = { baseKey, unit };
-            if (subId === undefined) {
-              missing.push(ref);
-              continue;
-            }
-            const sub = getSubscription(this.#db, subId);
-            if (
-              sub === undefined ||
-              sub.status !== 'active' ||
-              sub.cursor < 0 ||
-              sub.bootstrapState !== undefined
-            ) {
-              pending.push(ref);
-            }
+            if (!state.units.includes(unit)) missing.push(ref);
+            else if (state.pending.includes(unit)) pending.push(ref);
           }
         }
         return {
@@ -1817,7 +1816,7 @@ export class SyncClient {
         item.table.length === 0
       ) {
         throw invalidRequest(
-          'diagnosticsSnapshot expected subscriptions require non-empty id and table strings',
+          'diagnosticsSnapshot needs subscription id and table',
         );
       }
       const registeredSubscription = subscriptions.get(item.id);
@@ -3170,9 +3169,7 @@ export class SyncClient {
       };
     }
     if (this.#schemaFloor !== undefined) {
-      throw invalidRequest(
-        'local rebootstrap cannot bypass an active schema-floor stop; update the application first',
-      );
+      throw invalidRequest('local rebootstrap needs a schema-floor update');
     }
 
     const pending = listOutbox(this.#db);
@@ -5331,7 +5328,7 @@ export class SyncClient {
 
   #requireStarted(): void {
     if (!this.#started) {
-      throw invalidRequest('call SyncClient.start() first');
+      throw invalidRequest('call start() first');
     }
   }
 
@@ -5340,7 +5337,7 @@ export class SyncClient {
     if (this.#securityLifecycle === 'preflight') {
       throw new ClientSyncError(
         SECURITY_PREFLIGHT_REQUIRED_CODE,
-        'security preflight must complete before accessing protected data; call activateSecurity',
+        'protected reads require activateSecurity',
       );
     }
   }

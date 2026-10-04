@@ -818,3 +818,13 @@ See [windowing](https://syncular.dev/concepts-windowing/) and
 Custom database adapters implementing `withSqliteImage` must return a promise and
 await their callback before detaching the image. The callback can await between
 committed import chunks; no write transaction spans that await.
+
+## Preflight authority reads
+
+Pass `authorityReads: defineAuthorityReads([{ table, columns, scopes }])` at
+creation to enable the zero-argument `authoritySnapshot()`. It reads approved
+plain authority columns and accepted bases with revision and persisted scope
+coverage from one SQLite snapshot, including during security preflight.
+Unaccepted local intent remains separate. The read changes no keys, transport,
+subscriptions or lifecycle. See the [authority contract](../../docs/SPEC.md)
+and [native configuration](../tauri/README.md#authority-evidence-before-activation).

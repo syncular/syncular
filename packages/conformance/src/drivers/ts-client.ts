@@ -5,6 +5,7 @@
  * and outputs stay JSON-able + bytes; row values convert at this edge.
  */
 
+import { defineAuthorityReads } from '@syncular/client';
 import { ClientSyncError } from '@syncular/client';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -266,6 +267,12 @@ async function constructClient(
     database: db,
     schema: toClientSchema(schema),
     clientId: options.clientId,
+    ...(options.authorityReads !== undefined
+      ? { authorityReads: defineAuthorityReads(options.authorityReads) }
+      : {}),
+    ...(options.securityPreflight !== undefined
+      ? { securityPreflight: options.securityPreflight }
+      : {}),
     ...(options.transportEnabled !== undefined
       ? { transportEnabled: options.transportEnabled }
       : {}),
@@ -716,6 +723,21 @@ class TsClientInstance implements ClientInstance {
         ...realtimeRefusal(error),
       };
     }
+  }
+
+  async authoritySnapshot(): Promise<
+    import('../driver').DriverAuthoritySnapshot
+  > {
+    const snapshot = this.#client.authoritySnapshot();
+    return JSON.parse(
+      JSON.stringify({ ...snapshot, revision: snapshot.revision.toString() }),
+    );
+  }
+  async beginSecurityPreflight(): Promise<void> {
+    await this.#client.beginSecurityPreflight();
+  }
+  async activateSecurity(): Promise<void> {
+    await this.#client.activateSecurity();
   }
 
   async readRows(table: string): Promise<ClientRowState[]> {

@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-10-04',
+    title: 'Declared authority snapshots during security preflight',
+    body: 'Released in 0.30.15. A static plain-column policy exposes accepted authority bases, local revision and persisted scope coverage before key activation. Local intent remains separate. Rust enforces the native app column ceiling and rejects forged IPC. The snapshot changes no lifecycle, keys, transport or data.',
+    links: [
+      {
+        href: '/platform-tauri/#authority-evidence-before-activation',
+        label: 'Authority evidence and native policy',
+      },
+    ],
+  },
+  {
+    date: '2026-10-04',
     title: 'Bounded ACK replay and epoch acquisition without migration',
     body: 'Released in 0.30.14. Imports restore and replay only affected rows or tables. Empty unrelated bootstraps leave protected ACK intent untouched. First-epoch acquisition preserves ready readers and subscription progress without raising upgrading. A differing stored epoch still resets the replica.',
     links: [

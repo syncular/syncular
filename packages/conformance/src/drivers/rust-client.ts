@@ -1087,6 +1087,19 @@ class RustClientInstance implements ClientInstance {
     return typed;
   }
 
+  async authoritySnapshot(): Promise<
+    import('../driver').DriverAuthoritySnapshot
+  > {
+    const value = await this.#shim.call('authoritySnapshot', {});
+    return JSON.parse(JSON.stringify(value));
+  }
+  async beginSecurityPreflight(): Promise<void> {
+    await this.#shim.call('beginSecurityPreflight', {});
+  }
+  async activateSecurity(): Promise<void> {
+    await this.#shim.call('activateSecurity', {});
+  }
+
   async readRows(table: string): Promise<ClientRowState[]> {
     const result = asObject(
       await this.#shim.call('readRows', { table }),
@@ -1546,6 +1559,12 @@ export const rustClientDriver: ClientDriver = {
     }
     await shim.call('create', {
       clientId: options.clientId,
+      ...(options.authorityReads !== undefined
+        ? { authorityReads: JSON.parse(JSON.stringify(options.authorityReads)) }
+        : {}),
+      ...(options.securityPreflight !== undefined
+        ? { securityPreflight: options.securityPreflight }
+        : {}),
       ...(options.transportEnabled !== undefined
         ? { transportEnabled: options.transportEnabled }
         : {}),

@@ -463,7 +463,8 @@ pub fn dispatch<T: Transport>(
     } else {
         let allowed_during_preflight = matches!(
             method,
-            "securityLifecycle"
+            "authoritySnapshot"
+                | "securityLifecycle"
                 | "beginSecurityPreflight"
                 | "activateSecurity"
                 | "setTransportEnabled"
@@ -501,6 +502,13 @@ pub fn dispatch<T: Transport>(
                 parse_previous_version_context(params.get("previousVersionContext"))?;
             let mut limits = limits;
             limits.previous_version_context = previous_version_context;
+            if let Some(reads) = params.get("authorityReads") {
+                limits.authority_reads = serde_json::from_value(reads.clone()).map_err(|_| {
+                    client_err(
+                        "client.authority_read_forbidden: invalid authority declaration".into(),
+                    )
+                })?;
+            }
             // §native: a `dbPath` installs a file-backed rusqlite connection so
             // native hosts (Tauri plugin, FFI file variant) persist across
             // restarts; absent it, the default in-memory core (the shim's mode).
@@ -587,6 +595,19 @@ pub fn dispatch<T: Transport>(
             running.begin_security_preflight();
             effects.security_preflight_pending = true;
             Ok(json!({}))
+        }
+        "authoritySnapshot" => {
+            if !params.as_object().is_some_and(|p| p.is_empty()) {
+                return Err(client_err(
+                    "client.authority_read_forbidden: authoritySnapshot accepts no arguments"
+                        .into(),
+                ));
+            }
+            client
+                .as_ref()
+                .ok_or_else(|| client_err("client.closed: no authority client is open".into()))?
+                .authority_snapshot()
+                .map_err(client_err)
         }
         "activateSecurity" => {
             let encryption = match params.get("encryption") {

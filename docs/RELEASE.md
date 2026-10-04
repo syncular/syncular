@@ -1,8 +1,26 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.30.14** (`v0.30.14`). All artifacts use Apache-2.0, except
+current release is **0.30.15** (`v0.30.15`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.30.15 release notes
+
+`authoritySnapshot()` reads a creation-time `defineAuthorityReads` policy during
+security preflight. It returns complete accepted base rows, server versions,
+local revision, local-intent identifiers and persisted scope coverage from one
+SQLite snapshot. Pending and protected ACK intent never substitutes for the
+accepted base. Missing coverage, partial bootstrap and scope loss remain explicit.
+The API accepts no runtime read parameters or SQL and changes no lifecycle,
+keyring, subscription, transport or data.
+
+Tauri enforces schema columns in Rust and requires a native
+`SyncularConfig.authority_columns` ceiling. Forged IPC cannot expand it.
+Ordinary queries and writes remain closed. Upgrade all 12 npm packages and
+6 crates together and rebuild native applications. No schema bump or wire
+change is required. Benchmark and bundle caps remain unchanged. Application
+admission still validates its complete authority chain against independent
+accepted evidence before activation.
 
 ## 0.30.14 release notes
 

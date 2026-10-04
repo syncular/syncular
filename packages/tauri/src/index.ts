@@ -34,6 +34,8 @@ import type { ClientSnapshotMethods, PromiseMethods } from '@syncular/client';
  */
 
 import type {
+  AuthorityReadPolicy,
+  AuthoritySnapshot,
   ClientChangeBatch,
   ClientChangeListener,
   ClientDiagnosticsListener,
@@ -139,6 +141,8 @@ export interface TauriSyncClientConfig {
    * encoded into the native command envelope and never sent to the server.
    */
   readonly encryption?: EncryptionKeyringConfig;
+  /** Fixed plain authority reads permitted before security activation. */
+  readonly authorityReads?: AuthorityReadPolicy;
   /** Open the native replica behind the fail-closed security gate. */
   readonly securityPreflight?: boolean;
   /** Open local storage with network transport closed until explicitly resumed. */
@@ -346,6 +350,7 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
     if (
       this.#securityLifecycle === 'preflight' &&
       ![
+        'authoritySnapshot',
         'securityLifecycle',
         'beginSecurityPreflight',
         'activateSecurity',
@@ -586,6 +591,31 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
     }
     const rows = (reply.result as { rows?: unknown[] }).rows ?? [];
     return rows.map((r) => decodeRow(r as Record<string, unknown>));
+  }
+
+  async authoritySnapshot(): Promise<AuthoritySnapshot> {
+    this.#requireOpen();
+    if (arguments.length)
+      throw new TauriSyncError(
+        'client.authority_read_forbidden',
+        'authoritySnapshot accepts no arguments',
+      );
+    const result = (await this.#command('authoritySnapshot', {})) as Omit<
+      AuthoritySnapshot,
+      'revision'
+    > & { revision: string };
+    this.#requireOpen();
+    return {
+      ...result,
+      revision: BigInt(result.revision),
+      tables: result.tables.map((table) => ({
+        ...table,
+        rows: table.rows.map((row) => ({
+          ...row,
+          values: decodeRow(row.values),
+        })),
+      })),
+    };
   }
 
   async querySnapshot<Row = SqlRow>(
@@ -932,18 +962,19 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
   /** Shut down the native core, release its keyring, then detach listeners. */
   async close(): Promise<void> {
     if (this.#closed) return;
+    const shutdown = this.#command('shutdown', {});
+    this.#closed = true;
     try {
-      await this.#command('shutdown', {});
+      await shutdown;
     } finally {
-      this.#closed = true;
+      this.#unlisten?.();
+      this.#unlisten = undefined;
+      this.#invalidationListeners.clear();
+      this.#progress.clear();
+      this.#changeListeners.clear();
+      this.#diagnosticsListeners.clear();
+      this.#presenceListeners.clear();
     }
-    this.#unlisten?.();
-    this.#unlisten = undefined;
-    this.#invalidationListeners.clear();
-    this.#progress.clear();
-    this.#changeListeners.clear();
-    this.#diagnosticsListeners.clear();
-    this.#presenceListeners.clear();
   }
 }
 
@@ -1118,6 +1149,9 @@ export async function createTauriSyncClient(
           : {}),
         ...(config.transportEnabled !== undefined
           ? { transportEnabled: config.transportEnabled }
+          : {}),
+        ...(config.authorityReads !== undefined
+          ? { authorityReads: config.authorityReads.declarations }
           : {}),
         ...(config.securityPreflight !== undefined
           ? { securityPreflight: config.securityPreflight }

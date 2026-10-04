@@ -74,6 +74,9 @@ pub struct SyncularConfig {
     pub database_dir: Option<String>,
     /// Run the background host loop (§8.4). Default true.
     pub auto_sync: bool,
+    /// Native app-approved table/column ceiling. Webview create selects scopes
+    /// and a subset; raw IPC cannot expand this policy.
+    pub authority_columns: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 impl Default for SyncularConfig {
@@ -85,6 +88,7 @@ impl Default for SyncularConfig {
             db_path: None,
             database_dir: None,
             auto_sync: true,
+            authority_columns: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -759,6 +763,28 @@ async fn syncular_command<R: Runtime>(
     let mut command = command;
     let mut database = None;
     if method == "create" {
+        if let Some(reads) = command.pointer("/params/authorityReads") {
+            let declarations: Vec<syncular_client::AuthorityReadDeclaration> =
+                match serde_json::from_value(reads.clone()) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        return Ok(
+                            json!({"error": {"code": "client.authority_read_forbidden", "message": "invalid authority declaration"}}),
+                        )
+                    }
+                };
+            if !declarations.iter().all(|read| {
+                state
+                    .config
+                    .authority_columns
+                    .get(&read.table)
+                    .is_some_and(|columns| read.columns.iter().all(|c| columns.contains(c)))
+            }) {
+                return Ok(
+                    json!({"error": {"code": "client.authority_read_forbidden", "message": "authority declaration exceeds the native app policy"}}),
+                );
+            }
+        }
         database =
             match resolve_database(&state.config, command.get("params").unwrap_or(&Value::Null)) {
                 Ok(path) => path,
@@ -1158,6 +1184,169 @@ mod tests {
             }
         }));
         assert!(recreated.get("error").is_none(), "{recreated}");
+    }
+
+    #[test]
+    fn authority_snapshot_raw_ipc_obeys_native_columns_and_never_opens_protected_reads() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+        let path =
+            std::env::temp_dir().join(format!("syncular-authority-ipc-{}.db", std::process::id()));
+        let app = mock_builder()
+            .plugin(init(SyncularConfig {
+                auto_sync: false,
+                db_path: Some(path.to_string_lossy().into_owned()),
+                authority_columns: [(
+                    "authority".into(),
+                    vec!["id".into(), "actor_id".into(), "role".into()],
+                )]
+                .into(),
+                ..Default::default()
+            }))
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
+        let handle = app.handle().clone();
+        let command = |value: Value| {
+            tauri::async_runtime::block_on(syncular_command(handle.clone(), value))
+                .expect("IPC reply")
+        };
+        let schema = json!({"version": 1, "tables": [{"name": "authority", "primaryKey": "id", "scopes": [{"pattern": "actor:{actor_id}"}], "columns": [
+            {"name": "id", "type": "string", "nullable": false}, {"name": "actor_id", "type": "string", "nullable": false}, {"name": "role", "type": "string", "nullable": false}, {"name": "secret", "type": "bytes", "encrypted": true, "declaredType": "string", "nullable": true}
+        ]}]});
+        let policy = json!([{"table": "authority", "columns": ["id", "actor_id", "role"], "scopes": {"actor_id": ["a", "b"]}}]);
+        let create = |reads: Value| json!({"method": "create", "params": {"schema": schema, "securityPreflight": true, "transportEnabled": false, "authorityReads": reads}});
+        let created = command(create(policy.clone()));
+        assert!(created.get("error").is_none(), "{created}");
+        let conn = rusqlite::Connection::open(&path).expect("fixture db");
+        conn.execute_batch("INSERT INTO _syncular_base_authority(id,actor_id,role,secret,_syncular_version)VALUES('one','a','accepted','clinical plaintext',7); INSERT INTO authority SELECT * FROM _syncular_base_authority;").expect("fixture base");
+        for actor in ["a", "b"] {
+            let state = json!({"requested": {"actor_id": [actor]}, "effectiveScopes": {"actor_id": [actor]}, "status": "active", "cursor": 7});
+            conn.execute(
+                "INSERT INTO _syncular_subscriptions(id,tbl,state_json)VALUES(?1,'authority',?2)",
+                rusqlite::params![actor, state.to_string()],
+            )
+            .expect("fixture subscription");
+        }
+        let snapshot = command(json!({"method": "authoritySnapshot", "params": {}}));
+        assert_eq!(snapshot["result"]["complete"], true, "{snapshot}");
+        assert_eq!(
+            snapshot["result"]["tables"][0]["rows"][0]["values"],
+            json!({"id": "one", "actor_id": "a", "role": "accepted"})
+        );
+        assert!(!snapshot.to_string().contains("clinical plaintext"));
+        assert_eq!(
+            command(json!({"method": "securityLifecycle", "params": {}}))["result"]["state"],
+            "preflight"
+        );
+        for params in [
+            json!({"sql": "SELECT secret FROM authority"}),
+            json!({"columns": ["secret"]}),
+            json!({"table": "_syncular_meta"}),
+            json!({"scopes": {"actor_id": ["outside"]}}),
+            json!({"authorityReads": policy}),
+        ] {
+            assert_eq!(
+                command(json!({"method": "authoritySnapshot", "params": params}))["error"]["code"],
+                "client.authority_read_forbidden"
+            );
+        }
+        for columns in [
+            json!(["id", "actor_id", "secret"]),
+            json!([
+                "id",
+                "actor_id",
+                "role FROM authority; DELETE FROM authority"
+            ]),
+        ] {
+            assert_eq!(
+                command(create(
+                    json!([{"table": "authority", "columns": columns, "scopes": {"actor_id": ["a"]}}])
+                ))["error"]["code"],
+                "client.authority_read_forbidden"
+            );
+        }
+        for method in [
+            "query",
+            "querySnapshot",
+            "mutate",
+            "setHeaders",
+            "subscribe",
+            "sync",
+        ] {
+            assert_eq!(
+                command(json!({"method": method, "params": {"sql": "SELECT id FROM authority"}}))
+                    ["error"]["code"],
+                "client.security_preflight_required"
+            );
+        }
+        assert_eq!(
+            tauri::async_runtime::block_on(syncular_query(
+                app.handle().clone(),
+                "SELECT id FROM authority".into(),
+                None
+            ))
+            .unwrap()["error"]["code"],
+            "client.security_preflight_required"
+        );
+        assert_eq!(
+            tauri::async_runtime::block_on(syncular_query_snapshot(
+                app.handle().clone(),
+                "SELECT id FROM authority".into(),
+                None,
+                None,
+                None
+            ))
+            .unwrap()["error"]["code"],
+            "client.security_preflight_required"
+        );
+        let before = snapshot["result"]["revision"].clone();
+        assert_eq!(
+            command(json!({"method": "authoritySnapshot", "params": {}}))["result"]["revision"],
+            before
+        );
+        conn.execute("UPDATE _syncular_subscriptions SET state_json=?1 WHERE id='b'", [json!({"requested": {"actor_id": ["b"]}, "effectiveScopes": {"actor_id": ["b"]}, "status": "active", "cursor": 7, "bootstrapState": "credential-do-not-expose"}).to_string()]).unwrap();
+        let partial = command(json!({"method": "authoritySnapshot", "params": {}}));
+        assert_eq!(partial["result"]["complete"], false);
+        assert!(!partial.to_string().contains("credential-do-not-expose"));
+        command(json!({"method": "beginSecurityPreflight", "params": {}}));
+        assert!(
+            command(json!({"method": "authoritySnapshot", "params": {}}))
+                .get("error")
+                .is_none()
+        );
+        // The owner's mailbox serializes a lock/read race without admitting SQL.
+        let barrier = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            let locking = scope.spawn(|| {
+                barrier.wait();
+                command(json!({"method": "beginSecurityPreflight", "params": {}}))
+            });
+            barrier.wait();
+            let reading = command(json!({"method": "authoritySnapshot", "params": {}}));
+            assert_eq!(reading["result"]["revision"], before);
+            assert!(locking.join().unwrap().get("error").is_none());
+        });
+        // A racing close either follows the entire snapshot or rejects it.
+        let barrier = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            let closing = scope.spawn(|| {
+                barrier.wait();
+                command(json!({"method": "shutdown", "params": {}}))
+            });
+            barrier.wait();
+            let reading = command(json!({"method": "authoritySnapshot", "params": {}}));
+            assert!(
+                reading["result"]["revision"] == before
+                    || reading["error"]["code"] == "client.closed",
+                "{reading}"
+            );
+            assert!(closing.join().unwrap().get("error").is_none());
+        });
+        assert_eq!(
+            command(json!({"method": "authoritySnapshot", "params": {}}))["error"]["code"],
+            "client.closed"
+        );
+        drop(conn);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

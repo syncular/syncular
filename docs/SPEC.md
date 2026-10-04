@@ -2749,11 +2749,53 @@ Construction with `securityPreflight: true` MUST NOT accept an `encryption`
 keyring in the same call. During preflight the host MAY inspect
 `securityLifecycle`, `statusSnapshot`, and `localRevision`; it MAY execute the
 bounded, application-authorized `purgeLocalData` primitive (§7.3.4); and it MAY
-close/shut down the client or set the transport gate (§8.8). No other
-application-data operation is permitted.
+close/shut down the client or set the transport gate (§8.8). It MAY read the
+creation-time authority policy through `authoritySnapshot()` as defined below.
+No other application-data operation is permitted.
 In particular, runtime transport-header replacement is an active-session
 operation; native bridges MUST gate it independently rather than relying only
 on a JavaScript wrapper.
+**Preflight authority snapshot.** `defineAuthorityReads(declarations)` creates
+an immutable opt-in policy for `authorityReads` at client creation. Each
+`{ table, columns, scopes }` declaration names one schema table, its primary
+key and explicitly approved plain columns, and nonempty concrete scope values.
+Scope columns MUST appear in `columns`. Encrypted, bytes, blob and CRDT columns,
+internal names, duplicate tables/columns, unknown identifiers and wildcard
+selectors MUST fail with `client.authority_read_forbidden`. Applications MUST
+approve only authority columns, excluding clinical data and credentials.
+Tauri additionally requires a Rust-host `SyncularConfig.authority_columns`
+ceiling. The native create boundary MUST reject any declaration exceeding that
+ceiling, independently of the webview. Scope selection is static per client;
+a new read MUST NOT redefine or extend the creation policy.
+
+`authoritySnapshot()` accepts zero arguments. Native/worker command parameters,
+including SQL, columns, tables and replacement declarations, MUST fail with
+`client.authority_read_forbidden`. A client without a declared policy MUST
+return the same code. The read returns every matching accepted base row,
+its server row version, `hasLocalIntent`, scoped `localIntentRowIds`, the local
+revision, and persisted requested/effective scopes, cursor, status and
+completeness from one SQLite snapshot. Pending, failed and protected ACK intent
+MUST NOT replace accepted base values. Local-only creations have no base row.
+The read MUST NOT disclose intended values, subscription params, bootstrap
+tokens, keys or internal credentials. Missing/corrupt revision or rollback
+base evidence MUST fail explicitly.
+
+Each table reports `coverage: complete | pending | missing`. Complete coverage
+requires the union of unfiltered, active, bootstrap-finished subscriptions to
+cover every requested scope tuple with persisted effective scopes. A registration,
+partial bootstrap, restricted effective scope or filtered subscription cannot
+prove completeness. Completed empty coverage returns an empty row set with
+`complete`; an absent authority row still requires application rejection when
+the authority chain expects that row. The application validates actor, device,
+signed lease, trusted time, and independently accepted authority pins; the SDK
+MUST NOT infer application authorization from completeness or intent.
+
+The read MUST NOT write, register a subscription, install keys, open transport,
+or change lifecycle. Native reads run on the serialized owner and MUST observe
+lock, purge, replacement and shutdown ordering. A closed native command returns
+`client.closed`; a bridge MUST discard a reply racing its local close. Ordinary
+query and write gates remain engaged during preflight.
+
 The host installs the accepted keyring and releases the gate only through
 `activateSecurity({ encryption? })`.
 

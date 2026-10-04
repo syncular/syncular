@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use rusqlite::types::{ToSqlOutput, Value as SqlValue, ValueRef};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use ssp2::decode::WIRE_VERSION;
 use ssp2::model::{Frame, MediaType, Message, MsgKind, Op, OpResult, PushStatus, SubStatus};
@@ -155,6 +155,106 @@ mod observation_tests {
     use crate::native_transport::HostTransport;
     use crate::values::encode_row_json;
     use serde_json::json;
+
+    #[test]
+    fn authority_policy_refuses_encrypted_and_undeclared_columns_before_open() {
+        let schema = json!({"version": 1, "tables": [{"name": "authority", "primaryKey": "id", "scopes": [{"pattern": "actor:{actor_id}"}], "columns": [
+            {"name": "id", "type": "string", "nullable": false}, {"name": "actor_id", "type": "string", "nullable": false}, {"name": "secret", "type": "bytes", "encrypted": true, "declaredType": "string", "nullable": true}
+        ]}]});
+        for name in [
+            "secret",
+            "missing",
+            "*",
+            "id FROM authority; DELETE FROM authority",
+            "_syncular_version",
+        ] {
+            let limits = ClientLimits {
+                authority_reads: vec![crate::api::AuthorityReadDeclaration {
+                    table: "authority".into(),
+                    columns: vec!["id".into(), "actor_id".into(), name.into()],
+                    scopes: [("actor_id".into(), vec!["a".into()])].into(),
+                }],
+                ..Default::default()
+            };
+            let error = SyncClient::new("authority".into(), &schema, limits)
+                .err()
+                .expect("forbidden policy");
+            assert!(
+                error.starts_with("client.authority_read_forbidden:"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn authority_snapshot_observes_one_file_transaction_during_concurrent_writes() {
+        let path = std::env::temp_dir().join(format!(
+            "syncular-authority-snapshot-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let schema = json!({"version": 1, "tables": [{"name": "authority", "primaryKey": "id", "scopes": [{"pattern": "actor:{actor_id}"}], "columns": [
+            {"name": "id", "type": "string", "nullable": false}, {"name": "actor_id", "type": "string", "nullable": false}, {"name": "revision", "type": "integer", "nullable": false}
+        ]}]});
+        let limits = ClientLimits {
+            authority_reads: vec![crate::api::AuthorityReadDeclaration {
+                table: "authority".into(),
+                columns: vec!["id".into(), "actor_id".into(), "revision".into()],
+                scopes: [("actor_id".into(), vec!["a".into()])].into(),
+            }],
+            ..Default::default()
+        };
+        let mut client =
+            SyncClient::open_path("authority".into(), &schema, limits, path.to_str().unwrap())
+                .unwrap();
+        client.begin_security_preflight();
+        let update = |conn: &Connection, revision: i64| {
+            conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+            conn.execute(
+                "INSERT OR REPLACE INTO _syncular_base_authority VALUES('one','a',?1,1)",
+                [revision],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE _syncular_meta SET value=?1 WHERE key='localRevision'",
+                [revision.to_string()],
+            )
+            .unwrap();
+            conn.execute("INSERT OR REPLACE INTO _syncular_subscriptions VALUES('s','authority',?1)", [json!({"requested": {"actor_id": ["a"]}, "effectiveScopes": {"actor_id": ["a"]}, "status": "active", "cursor": revision}).to_string()]).unwrap();
+            conn.execute_batch("COMMIT").unwrap();
+        };
+        update(&client.conn, 1);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let writer_barrier = barrier.clone();
+        let writer_path = path.clone();
+        let writer = std::thread::spawn(move || {
+            let conn = Connection::open(writer_path).unwrap();
+            conn.busy_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            writer_barrier.wait();
+            for revision in 2..=100 {
+                update(&conn, revision);
+            }
+        });
+        barrier.wait();
+        for _ in 0..100 {
+            let snapshot = client.authority_snapshot().unwrap();
+            let revision = snapshot["revision"]
+                .as_str()
+                .unwrap()
+                .parse::<i64>()
+                .unwrap();
+            assert_eq!(
+                snapshot["tables"][0]["rows"][0]["values"]["revision"],
+                revision
+            );
+            assert_eq!(snapshot["tables"][0]["persisted"][0]["cursor"], revision);
+            assert_eq!(snapshot["complete"], true);
+        }
+        writer.join().unwrap();
+        assert_eq!(client.authority_snapshot().unwrap()["revision"], "100");
+        drop(client);
+        let _ = std::fs::remove_file(path);
+    }
 
     fn client() -> SyncClient {
         SyncClient::new(
@@ -6261,6 +6361,51 @@ impl FileQuerySnapshotReader {
     }
 }
 
+fn validate_authority_reads(
+    schema: &ClientSchema,
+    declarations: &[crate::api::AuthorityReadDeclaration],
+) -> Result<(), String> {
+    let mut seen = BTreeSet::new();
+    for read in declarations {
+        let table = schema
+            .table(&read.table)
+            .ok_or("client.authority_read_forbidden: authority table is not declared")?;
+        let plain = |name: &str| {
+            table.columns.iter().enumerate().any(|(i, c)| {
+                c.name == name
+                    && name != "authority_version"
+                    && !name.starts_with("_sync")
+                    && !table.encrypted_columns.iter().any(|e| e.index == i)
+                    && matches!(
+                        c.ty,
+                        ssp2::segment::ColumnType::String
+                            | ssp2::segment::ColumnType::Integer
+                            | ssp2::segment::ColumnType::Float
+                            | ssp2::segment::ColumnType::Boolean
+                            | ssp2::segment::ColumnType::Json
+                    )
+            })
+        };
+        if !seen.insert(&read.table)
+            || read.columns.is_empty()
+            || read.columns.iter().collect::<BTreeSet<_>>().len() != read.columns.len()
+            || !read.columns.contains(&table.primary_key)
+            || !read.columns.iter().all(|c| plain(c))
+            || read.scopes.is_empty()
+            || !read.scopes.iter().all(|(v, values)| {
+                table
+                    .scope_column(v)
+                    .is_some_and(|c| read.columns.iter().any(|column| column == c) && plain(c))
+                    && !values.is_empty()
+                    && values.iter().all(|v| !v.is_empty() && v != "*")
+            })
+        {
+            return Err("client.authority_read_forbidden: authority reads require plain columns, a primary key and nonempty plain scope selectors".into());
+        }
+    }
+    Ok(())
+}
+
 impl SyncClient {
     pub fn new_with_identity(
         client_id: Option<String>,
@@ -6356,6 +6501,7 @@ impl SyncClient {
             );
         }
         let schema = parse_schema_json(schema_json)?;
+        validate_authority_reads(&schema, &limits.authority_reads)?;
         // RFC 0005 D8: resolve the previous-version config before the opening
         // reset runs — the capture happens inside it. Bad bounds fail loud.
         let previous_version = match limits.previous_version_context {
@@ -7740,6 +7886,7 @@ impl SyncClient {
     /// the Rust core has no persistent restart, so recreation IS the boot.
     pub fn recreate_with_schema(&mut self, schema_json: &Value) -> Result<(), String> {
         let new_schema = parse_schema_json(schema_json)?;
+        validate_authority_reads(&new_schema, &self.limits.authority_reads)?;
         let marker: Option<i32> = self
             .get_meta(LOCAL_SCHEMA_VERSION_KEY)
             .and_then(|v| v.parse().ok());
@@ -10332,6 +10479,245 @@ impl SyncClient {
     ) -> Result<Option<Value>, String> {
         self.benchmark_phases.configure(enabled, reset)?;
         Ok(self.benchmark_phases.snapshot())
+    }
+
+    /// One serialized, read-only authority observation, including durable coverage.
+    pub fn authority_snapshot(&self) -> Result<Value, String> {
+        validate_authority_reads(&self.schema, &self.limits.authority_reads)?;
+        if self.limits.authority_reads.is_empty() {
+            return Err("client.authority_read_forbidden: no authority reads were declared at client creation".into());
+        }
+        self.conn
+            .execute_batch("SAVEPOINT authority_snapshot")
+            .map_err(|e| e.to_string())?;
+        let result = (|| {
+            let revision = self
+                .get_meta(LOCAL_REVISION_KEY)
+                .ok_or("sync.local_corrupt: authority revision is missing")?;
+            let parsed_revision = revision
+                .parse::<u64>()
+                .map_err(|_| "sync.local_corrupt: authority revision is invalid")?;
+            if parsed_revision.to_string() != revision {
+                return Err("sync.local_corrupt: authority revision is invalid".into());
+            }
+            let mut tables = Vec::new();
+            for read in &self.limits.authority_reads {
+                let table = self
+                    .schema
+                    .table(&read.table)
+                    .ok_or("client.authority_read_forbidden: authority table is not declared")?;
+                let scalar = |column: &str, value: &Value| -> Result<String, String> {
+                    let ty = table
+                        .columns
+                        .iter()
+                        .find(|c| c.name == column)
+                        .expect("validated authority column")
+                        .ty;
+                    if ty == ColumnType::Boolean {
+                        if let Some(value) = value.as_bool() {
+                            return Ok(value.to_string());
+                        }
+                        return match value.as_i64() {
+                            Some(0) => Ok("false".into()),
+                            Some(1) => Ok("true".into()),
+                            _ => Err("sync.local_corrupt: authority boolean is invalid".into()),
+                        };
+                    }
+                    match value {
+                        Value::String(s) => Ok(s.clone()),
+                        Value::Number(n) => Ok(n.to_string()),
+                        Value::Object(o) if ty == ColumnType::Integer && o.len() == 1 => o
+                            .get("$bigint")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                            .ok_or("sync.local_corrupt: authority integer is invalid".into()),
+                        _ => {
+                            Err("sync.local_corrupt: authority scalar is missing or invalid".into())
+                        }
+                    }
+                };
+                let matches = |row: &QueryRow| -> Result<bool, String> {
+                    for (variable, values) in &read.scopes {
+                        let column = table
+                            .scope_column(variable)
+                            .expect("validated authority scope");
+                        let value = row
+                            .get(column)
+                            .ok_or("sync.local_corrupt: authority scope column is missing")?;
+                        if value.is_null() || !values.contains(&scalar(column, value)?) {
+                            return Ok(false);
+                        }
+                    }
+                    Ok(true)
+                };
+                let selected = read
+                    .columns
+                    .iter()
+                    .map(|c| quote_ident(c))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let mut intent = BTreeSet::new();
+                let mut relevant = BTreeSet::new();
+                for row in query_connection(&self.conn,
+                    "SELECT id,values_json FROM (SELECT json_extract(value,'$.table') AS tbl,json_extract(value,'$.rowId') AS id,json_extract(value,'$.values') AS values_json FROM _syncular_outbox,json_each(ops_json) UNION ALL SELECT json_extract(value,'$.table'),json_extract(value,'$.rowId'),json_extract(value,'$.values') FROM _syncular_failed_commits,json_each(operations_json) UNION ALL SELECT tbl,id,intent_json FROM _syncular_acked_rows) WHERE tbl=?",
+                    &[Value::String(read.table.clone())]).map_err(|e| e.to_string())? {
+                    let id = row.get("id").and_then(Value::as_str).ok_or("sync.local_corrupt: authority intent id is invalid")?.to_owned();
+                    intent.insert(id.clone());
+                    if let Some(raw) = row.get("values_json").and_then(Value::as_str) {
+                        let values: QueryRow = serde_json::from_str(raw).map_err(|_| "sync.local_corrupt: authority intent values are invalid")?;
+                        if read.scopes.keys().all(|v| values.contains_key(table.scope_column(v).expect("validated scope"))) && matches(&values)? {relevant.insert(id);}
+                    }
+                }
+                let mut rows = BTreeMap::new();
+                for full in [base_table(&read.table), visible_table(&read.table)] {
+                    for mut values in query_connection(
+                        &self.conn,
+                        &format!(
+                            "SELECT {selected},_syncular_version AS authority_version FROM {full}"
+                        ),
+                        &[],
+                    )
+                    .map_err(|e| e.to_string())?
+                    {
+                        if !matches(&values)? {
+                            continue;
+                        }
+                        let id = scalar(
+                            &table.primary_key,
+                            values
+                                .get(&table.primary_key)
+                                .expect("selected primary key"),
+                        )?;
+                        relevant.insert(id.clone());
+                        if full == base_table(&read.table) {
+                            let version = values
+                                .remove("authority_version")
+                                .expect("selected version");
+                            let version = version
+                                .as_i64()
+                                .ok_or("sync.local_corrupt: authority server version is invalid")?;
+                            if version >= 0 {
+                                rows.insert(id.clone(), json!({"values": values, "version": version, "hasLocalIntent": intent.contains(&id)}));
+                            }
+                        }
+                    }
+                }
+                intent.retain(|id| relevant.contains(id));
+                let rows = rows.into_values().collect::<Vec<_>>();
+                let mut persisted = Vec::new();
+                for row in query_connection(
+                    &self.conn,
+                    "SELECT state_json FROM _syncular_subscriptions WHERE tbl=? ORDER BY rowid",
+                    &[Value::String(read.table.clone())],
+                )
+                .map_err(|e| e.message)?
+                {
+                    let state: Value =
+                        serde_json::from_str(row.get("state_json").and_then(Value::as_str).ok_or(
+                            "sync.local_corrupt: authority subscription state is missing",
+                        )?)
+                        .map_err(|e| e.to_string())?;
+                    let effective = state.get("effectiveScopes").and_then(Value::as_object);
+                    let status = state
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .ok_or("sync.local_corrupt: authority subscription status is missing")?;
+                    let cursor = state
+                        .get("cursor")
+                        .and_then(Value::as_i64)
+                        .ok_or("sync.local_corrupt: authority subscription cursor is missing")?;
+                    let complete = effective.is_some_and(|s| s.len() == read.scopes.len())
+                        && status == "active"
+                        && cursor >= 0
+                        && state.get("bootstrapState").is_none_or(Value::is_null)
+                        && state.get("params").is_none_or(Value::is_null);
+                    let exposed = effective.map(|s| {
+                        read.scopes
+                            .keys()
+                            .map(|v| (v.clone(), s.get(v).cloned().unwrap_or(json!([]))))
+                            .collect::<Map<_, _>>()
+                    });
+                    let requested = read
+                        .scopes
+                        .keys()
+                        .map(|v| {
+                            (
+                                v.clone(),
+                                state
+                                    .get("requested")
+                                    .and_then(|s| s.get(v))
+                                    .cloned()
+                                    .unwrap_or(json!([])),
+                            )
+                        })
+                        .collect::<Map<_, _>>();
+                    persisted.push(json!({"requestedScopes": requested, "status": status, "cursor": cursor, "effectiveScopes": exposed, "complete": complete}));
+                }
+                fn covered(selectors: &[(&String, &Vec<String>)], candidates: &[&Value]) -> bool {
+                    match selectors.split_first() {
+                        None => !candidates.is_empty(),
+                        Some(((variable, values), rest)) => values.iter().all(|value| {
+                            covered(
+                                rest,
+                                &candidates
+                                    .iter()
+                                    .copied()
+                                    .filter(|p| {
+                                        p["effectiveScopes"][variable.as_str()]
+                                            .as_array()
+                                            .is_some_and(|held| {
+                                                held.contains(&Value::String(value.clone()))
+                                                    || held.contains(&Value::String("*".into()))
+                                            })
+                                    })
+                                    .collect::<Vec<_>>(),
+                            )
+                        }),
+                    }
+                }
+                let coverage = if covered(
+                    &read.scopes.iter().collect::<Vec<_>>(),
+                    &persisted
+                        .iter()
+                        .filter(|p| p["complete"] == true)
+                        .collect::<Vec<_>>(),
+                ) {
+                    "complete"
+                } else if persisted.iter().any(|p| {
+                    p["status"] == "active"
+                        && read.scopes.iter().all(|(v, values)| {
+                            values.iter().any(|value| {
+                                p["requestedScopes"][v].as_array().is_some_and(|held| {
+                                    held.contains(&Value::String(value.clone()))
+                                        || held.contains(&Value::String("*".into()))
+                                })
+                            })
+                        })
+                }) {
+                    "pending"
+                } else {
+                    "missing"
+                };
+                tables.push(json!({"table": read.table, "rows": rows, "localIntentRowIds": intent, "scopes": read.scopes, "coverage": coverage, "persisted": persisted}));
+            }
+            Ok(
+                json!({"revision": revision, "complete": tables.iter().all(|t| t["coverage"] == "complete"), "tables": tables}),
+            )
+        })();
+        match result {
+            Ok(snapshot) => {
+                self.conn
+                    .execute_batch("RELEASE authority_snapshot")
+                    .map_err(|e| e.to_string())?;
+                Ok(snapshot)
+            }
+            Err(error) => {
+                self.conn
+                    .execute_batch("ROLLBACK TO authority_snapshot; RELEASE authority_snapshot")
+                    .map_err(|e| format!("{error}; rollback failed: {e}"))?;
+                Err(error)
+            }
+        }
     }
 
     /// Rows, coverage, and local revision from one SQLite read snapshot.
