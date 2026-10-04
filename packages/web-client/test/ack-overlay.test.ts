@@ -9,9 +9,11 @@ class OverlayCountingDatabase extends BunClientDatabase {
   journalRows = 0;
 
   override exec(sql: string, params: readonly SqlValue[] = []): void {
-    if (sql.startsWith('DELETE FROM "tasks"')) this.restores += 1;
-    if (sql.startsWith('INSERT INTO "tasks"')) this.replays += 1;
     super.exec(sql, params);
+    if (sql.startsWith('DELETE FROM "tasks"'))
+      this.restores += Number(super.query('SELECT changes() AS n')[0]?.n);
+    if (sql.startsWith('INSERT INTO "tasks"'))
+      this.replays += Number(super.query('SELECT changes() AS n')[0]?.n);
   }
 
   override query(sql: string, params: readonly SqlValue[] = []): SqlRow[] {
@@ -124,6 +126,7 @@ for (const subscriptions of [0, 2, 6, 12]) {
       });
       db.reset();
       await client.sync();
+      expect([db.restores, db.replays]).toEqual([0, 0]);
       expect(db.query('SELECT title FROM tasks')).toHaveLength(32);
 
       // Matching delivery retires the ACK journal. Later server changes win.

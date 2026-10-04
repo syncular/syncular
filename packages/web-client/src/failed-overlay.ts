@@ -1,3 +1,4 @@
+import { hasUniqueIndex } from './schema';
 import { OUTCOMES_TABLE } from './outcomes';
 import { OUTBOX_TABLE } from './outbox';
 export const RETAINED_ROWS = '_syncular_failed_rows';
@@ -50,7 +51,7 @@ export function retainedBaseWrite(
     table.name,
     rowId,
   ]);
-  if (!table.indexes.some((index) => index.unique)) return;
+  if (!hasUniqueIndex(table)) return;
   for (const retained of db.query(
     `SELECT commit_id,idx,intent,unique_conflicts FROM ${RETAINED_ROWS} WHERE tbl=? AND commit_seq IS NULL`,
     [table.name],

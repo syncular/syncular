@@ -1,3 +1,6 @@
+import { BLOB_COMMIT_REFS } from './blob';
+import { PENDING_EVICTIONS } from './window';
+import { WINDOWS_TABLE } from './window';
 import { OUTBOX_TABLE, OUTBOX_IMAGES } from './outbox';
 import { OUTCOMES_TABLE } from './outcomes';
 import { SUBSCRIPTIONS_TABLE } from './state';
@@ -268,6 +271,10 @@ export function stripSyncColumns(rows: SqlRow[]): SqlRow[] {
   });
 }
 
+export function hasUniqueIndex(table: CompiledClientTable): boolean {
+  return table.indexes.some((index) => index.unique);
+}
+
 export function matchesLocalScopes(
   table: CompiledClientTable,
   scopes: Readonly<Record<string, readonly string[]>>,
@@ -536,11 +543,11 @@ export function ensureLocalBookkeepingSchema(db: ClientDatabase): void {
       db.exec(`CREATE TABLE IF NOT EXISTS ${name}(${columns})`);
     createTable('_syncular_meta', 'key TEXT PRIMARY KEY,value TEXT NOT NULL');
     createTable(
-      '_syncular_blob_commit_refs',
+      BLOB_COMMIT_REFS,
       'commit_id TEXT NOT NULL,blob_id TEXT NOT NULL,PRIMARY KEY(commit_id,blob_id)',
     );
     db.exec(
-      'CREATE INDEX IF NOT EXISTS _syncular_blob_commit_refs_body ON _syncular_blob_commit_refs(blob_id)',
+      `CREATE INDEX IF NOT EXISTS ${BLOB_COMMIT_REFS}_body ON ${BLOB_COMMIT_REFS}(blob_id)`,
     );
     db.exec(
       "INSERT OR IGNORE INTO _syncular_meta(key,value)VALUES('localRevision','0')",
@@ -581,13 +588,13 @@ export function ensureLocalBookkeepingSchema(db: ClientDatabase): void {
     // live locally — the completeness oracle (I3) and the shrink driver
     // (a unit's omission from the next pull unregisters it, §4.1).
     createTable(
-      '_syncular_windows',
+      WINDOWS_TABLE,
       'base TEXT NOT NULL,unit TEXT NOT NULL,sub_id TEXT NOT NULL,PRIMARY KEY(base,unit)',
     );
     // §4.8 E1: units that left the window but still had outbox-pinned rows.
     // Retried when the outbox drains; cancelled if the unit re-enters.
     createTable(
-      '_syncular_window_pending_evict',
+      PENDING_EVICTIONS,
       'sub_id TEXT PRIMARY KEY,tbl TEXT NOT NULL,effective_scopes TEXT NOT NULL',
     );
   });

@@ -1,3 +1,5 @@
+export const PENDING_EVICTIONS = '_syncular_window_pending_evict';
+export const WINDOWS_TABLE = '_syncular_windows';
 /**
  * Windowed subscriptions (SPEC.md §4.8).
  *
@@ -151,7 +153,7 @@ export function loadWindowUnits(
 ): WindowUnit[] {
   return db
     .query(
-      'SELECT unit, sub_id FROM _syncular_windows WHERE base = ? ORDER BY unit ASC',
+      `SELECT unit, sub_id FROM ${WINDOWS_TABLE} WHERE base = ? ORDER BY unit ASC`,
       [baseKey],
     )
     .map((row) => ({ unit: row.unit as string, subId: row.sub_id as string }));
@@ -163,7 +165,7 @@ export function getWindowUnitBySubId(
   subId: string,
 ): RegisteredWindowUnit | undefined {
   const row = db.query(
-    `SELECT base, unit, sub_id FROM _syncular_windows
+    `SELECT base, unit, sub_id FROM ${WINDOWS_TABLE}
       WHERE sub_id = ? LIMIT 1`,
     [subId],
   )[0];
@@ -183,7 +185,7 @@ export function insertWindowUnit(
   subId: string,
 ): void {
   db.exec(
-    'INSERT OR REPLACE INTO _syncular_windows(base, unit, sub_id) VALUES (?, ?, ?)',
+    `INSERT OR REPLACE INTO ${WINDOWS_TABLE}(base, unit, sub_id) VALUES (?, ?, ?)`,
     [baseKey, unit, subId],
   );
 }
@@ -193,7 +195,7 @@ export function deleteWindowUnit(
   baseKey: string,
   unit: string,
 ): void {
-  db.exec('DELETE FROM _syncular_windows WHERE base = ? AND unit = ?', [
+  db.exec(`DELETE FROM ${WINDOWS_TABLE} WHERE base = ? AND unit = ?`, [
     baseKey,
     unit,
   ]);
@@ -207,7 +209,7 @@ export function isUnitLive(
 ): boolean {
   return (
     db.query(
-      'SELECT 1 FROM _syncular_windows WHERE base = ? AND unit = ? LIMIT 1',
+      `SELECT 1 FROM ${WINDOWS_TABLE} WHERE base = ? AND unit = ? LIMIT 1`,
       [baseKey, unit],
     ).length > 0
   );
@@ -230,23 +232,19 @@ export function savePendingEviction(
   effective: ScopeMap,
 ): void {
   db.exec(
-    `INSERT OR REPLACE INTO _syncular_window_pending_evict(sub_id, tbl, effective_scopes)
+    `INSERT OR REPLACE INTO ${PENDING_EVICTIONS}(sub_id, tbl, effective_scopes)
        VALUES (?, ?, ?)`,
     [subId, table, JSON.stringify(effective)],
   );
 }
 
 export function deletePendingEviction(db: ClientDatabase, subId: string): void {
-  db.exec('DELETE FROM _syncular_window_pending_evict WHERE sub_id = ?', [
-    subId,
-  ]);
+  db.exec(`DELETE FROM ${PENDING_EVICTIONS} WHERE sub_id = ?`, [subId]);
 }
 
 export function loadPendingEvictions(db: ClientDatabase): PendingEviction[] {
   return db
-    .query(
-      'SELECT sub_id, tbl, effective_scopes FROM _syncular_window_pending_evict',
-    )
+    .query(`SELECT sub_id, tbl, effective_scopes FROM ${PENDING_EVICTIONS}`)
     .map((row) => ({
       subId: row.sub_id as string,
       table: row.tbl as string,

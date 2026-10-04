@@ -1,3 +1,5 @@
+import { BLOB_COMMIT_REFS } from './blob';
+import { hasUniqueIndex } from './schema';
 import { OUTCOMES_TABLE } from './outcomes';
 import { OUTBOX_TABLE } from './outbox';
 import { RETAINED_ROWS } from './failed-overlay';
@@ -2904,7 +2906,7 @@ export class SyncClient {
               continue;
             }
             this.#db.exec(
-              'INSERT OR IGNORE INTO _syncular_blob_commit_refs(commit_id,blob_id)SELECT ?,? WHERE EXISTS(SELECT 1 FROM _syncular_blobs WHERE blob_id=?)',
+              `INSERT OR IGNORE INTO ${BLOB_COMMIT_REFS}(commit_id,blob_id)SELECT ?,? WHERE EXISTS(SELECT 1 FROM _syncular_blobs WHERE blob_id=?)`,
               [clientCommitId, blobId, blobId],
             );
           }
@@ -4565,7 +4567,7 @@ export class SyncClient {
       this.#replayOutbox(
         commit.operations.map((operation) =>
           JSON.stringify(
-            this.#table(operation.table).indexes.some((index) => index.unique)
+            hasUniqueIndex(this.#table(operation.table))
               ? [operation.table]
               : [operation.table, operation.rowId],
           ),
@@ -5236,7 +5238,7 @@ export class SyncClient {
           : (local[SYNC_VERSION_COLUMN] as number);
       if (
         replay &&
-        table.indexes.some((index) => index.unique) &&
+        hasUniqueIndex(table) &&
         uniqueConflicts(
           this.#db,
           table,

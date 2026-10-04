@@ -1,3 +1,4 @@
+import { BLOB_COMMIT_REFS } from './blob';
 export const OUTBOX_TABLE = '_syncular_outbox';
 export const OUTBOX_IMAGES = '_syncular_outbox_before_images';
 import { overlayScopePredicate, type OverlayScope } from './failed-overlay';
@@ -131,7 +132,7 @@ export function deleteOutboxCommit(
   db: ClientDatabase,
   clientCommitId: string,
 ): void {
-  db.exec('DELETE FROM _syncular_blob_commit_refs WHERE commit_id=?', [
+  db.exec(`DELETE FROM ${BLOB_COMMIT_REFS} WHERE commit_id=?`, [
     clientCommitId,
   ]);
   db.exec(`DELETE FROM ${OUTBOX_IMAGES} WHERE client_commit_id=?`, [

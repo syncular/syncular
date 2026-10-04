@@ -1,3 +1,5 @@
+import { PENDING_EVICTIONS } from './window';
+import { WINDOWS_TABLE } from './window';
 export const SUBSCRIPTIONS_TABLE = '_syncular_subscriptions';
 /**
  * Durable client sync state: per-subscription cursor, bootstrap resume
@@ -185,7 +187,7 @@ export function pruneUnknownSubscriptions(
   // Shrinking a pinned window already removed its registration. Its deferred
   // eviction still carries the old scope declaration and needs the same fence.
   for (const row of db.query(
-    'SELECT sub_id,tbl,effective_scopes FROM _syncular_window_pending_evict',
+    `SELECT sub_id,tbl,effective_scopes FROM ${PENDING_EVICTIONS}`,
   )) {
     if (
       !compatible({
@@ -198,10 +200,8 @@ export function pruneUnknownSubscriptions(
   if (staleIds.size === 0) return retained;
   db.transaction(() => {
     for (const id of staleIds) {
-      db.exec('DELETE FROM _syncular_windows WHERE sub_id=?', [id]);
-      db.exec('DELETE FROM _syncular_window_pending_evict WHERE sub_id=?', [
-        id,
-      ]);
+      db.exec(`DELETE FROM ${WINDOWS_TABLE} WHERE sub_id=?`, [id]);
+      db.exec(`DELETE FROM ${PENDING_EVICTIONS} WHERE sub_id=?`, [id]);
       db.exec(`DELETE FROM ${SUBSCRIPTIONS_TABLE} WHERE id=?`, [id]);
     }
   });

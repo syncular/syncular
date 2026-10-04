@@ -1,3 +1,4 @@
+import { hasUniqueIndex } from './schema';
 import { OUTBOX_TABLE, OUTBOX_IMAGES } from './outbox';
 import { RETAINED_ROWS, type OverlayScope } from './failed-overlay';
 import { retainedBaseWrite, restoreFailedBases } from './failed-overlay';
@@ -144,7 +145,7 @@ export async function applyCommitFrame(
   transaction(() => {
     const scope = resolved.map((change, index) =>
       JSON.stringify(
-        change.table.indexes.some((entry) => entry.unique)
+        hasUniqueIndex(change.table)
           ? [change.table.name]
           : [change.table.name, frame.changes[index]!.rowId],
       ),
@@ -238,6 +239,41 @@ export function localScopePredicate(
   return { sql, params };
 }
 
+function scopedRows(
+  db: ClientDatabase,
+  table: CompiledClientTable,
+  scope: ReturnType<typeof localScopePredicate>,
+) {
+  return scope
+    ? db.query(
+        `SELECT ${quoteIdent(table.primaryKey)} AS id FROM ${quoteIdent(table.name)} WHERE ${scope.sql}`,
+        scope.params,
+      )
+    : [];
+}
+
+function bootstrapScope(
+  db: ClientDatabase,
+  table: CompiledClientTable,
+  effective: ScopeMap,
+): string[] {
+  const rows = scopedRows(db, table, localScopePredicate(table, effective));
+  rows.push(
+    ...db
+      .query(`SELECT id,base,intent FROM ${RETAINED_ROWS} WHERE tbl=?`, [
+        table.name,
+      ])
+      .filter((row) =>
+        [row.base, row.intent].some(
+          (json) =>
+            json !== null &&
+            matchesLocalScopes(table, effective, JSON.parse(json as string)),
+        ),
+      ),
+  );
+  return rows.map((row) => JSON.stringify([table.name, String(row.id)]));
+}
+
 export function deleteScopedRows(
   db: ClientDatabase,
   table: CompiledClientTable,
@@ -246,10 +282,7 @@ export function deleteScopedRows(
   const scope = localScopePredicate(table, effective);
   if (!scope) return;
   const { sql, params } = scope;
-  for (const row of db.query(
-    `SELECT ${quoteIdent(table.primaryKey)} AS id FROM ${quoteIdent(table.name)} WHERE ${sql}`,
-    params,
-  )) {
+  for (const row of scopedRows(db, table, scope)) {
     retainedBaseWrite(db, table, String(row.id));
   }
   db.exec(`DELETE FROM ${quoteIdent(table.name)} WHERE ${sql}`, params);
@@ -451,8 +484,21 @@ export async function applySqliteSegment(
         predicates.push(`${primaryKey} <= ?`);
         params.push(boundary);
       }
+      const rows = db.query(
+        `SELECT * FROM ${source} WHERE ${predicates.join(' AND ') || 'true'}`,
+        params,
+      );
       (options.transaction ?? ((fn) => db.transaction(fn)))(() => {
-        const scope = [JSON.stringify([table.name])];
+        const scope = hasUniqueIndex(table)
+          ? [JSON.stringify([table.name])]
+          : [
+              ...(after === undefined && options.clearFirst
+                ? bootstrapScope(db, table, options.effective)
+                : []),
+              ...rows.map((row) =>
+                JSON.stringify([table.name, String(row[table.primaryKey])]),
+              ),
+            ];
         restoreFailedBases(db, schema, scope);
         if (after === undefined && options.clearFirst)
           deleteScopedRows(db, table, options.effective);
@@ -461,10 +507,7 @@ export async function applySqliteSegment(
           params,
         );
         applied += Number(db.query('SELECT changes()AS n')[0]?.n ?? 0);
-        for (const row of db.query(
-          `SELECT * FROM ${source} WHERE ${predicates.join(' AND ') || 'true'}`,
-          params,
-        )) {
+        for (const row of rows) {
           retainedBaseWrite(
             db,
             table,
@@ -539,15 +582,19 @@ export async function applyRowsSegment(
     first = false;
     if (!clearThisBlock && rows.length === 0) continue;
     (options.transaction ?? ((fn) => db.transaction(fn)))(() => {
-      const scope: OverlayScope =
-        clearThisBlock || table.indexes.some((index) => index.unique)
-          ? [JSON.stringify([table.name])]
-          : rows.map((row) =>
+      const scope: OverlayScope = hasUniqueIndex(table)
+        ? [JSON.stringify([table.name])]
+        : [
+            ...(clearThisBlock
+              ? bootstrapScope(db, table, options.effective)
+              : []),
+            ...rows.map((row) =>
               JSON.stringify([
                 table.name,
                 String(row.values[table.primaryKeyIndex]),
               ]),
-            );
+            ),
+          ];
       const protectedRows = restoreFailedBases(db, schema, scope);
       if (clearThisBlock) {
         deleteScopedRows(db, table, options.effective);

@@ -1,3 +1,4 @@
+export const BLOB_COMMIT_REFS = '_syncular_blob_commit_refs';
 /**
  * Client-side blob cache + transport (SPEC.md §5.9.7).
  *
@@ -187,7 +188,7 @@ export function enforceBlobCacheCap(
   if (total <= maxBytes) return [];
   // Oldest eligible body first, with blob ID as a stable tie.
   const candidates = db.query(
-    `SELECT blob_id,byte_length FROM _syncular_blobs WHERE blob_id NOT IN(SELECT blob_id FROM _syncular_blob_uploads)AND blob_id NOT IN(SELECT blob_id FROM _syncular_blob_commit_refs)AND blob_id NOT IN(${visibleBlobIdsSql(schema)})ORDER BY created_at_ms ASC,blob_id ASC`,
+    `SELECT blob_id,byte_length FROM _syncular_blobs WHERE blob_id NOT IN(SELECT blob_id FROM _syncular_blob_uploads)AND blob_id NOT IN(SELECT blob_id FROM ${BLOB_COMMIT_REFS})AND blob_id NOT IN(${visibleBlobIdsSql(schema)})ORDER BY created_at_ms ASC,blob_id ASC`,
   );
   const evicted: string[] = [];
   db.transaction(() => {
@@ -207,7 +208,7 @@ export function listPendingUploads(
 ): { blobId: string; mediaType?: string }[] {
   return db
     .query(
-      'SELECT blob_id,media_type FROM(SELECT blob_id,media_type,created_at_ms FROM _syncular_blob_uploads UNION ALL SELECT DISTINCT r.blob_id,b.media_type,9223372036854775807 AS created_at_ms FROM _syncular_blob_commit_refs r LEFT JOIN _syncular_blobs b ON b.blob_id=r.blob_id WHERE NOT EXISTS(SELECT 1 FROM _syncular_blob_uploads u WHERE u.blob_id=r.blob_id))ORDER BY created_at_ms,blob_id',
+      `SELECT blob_id,media_type FROM(SELECT blob_id,media_type,created_at_ms FROM _syncular_blob_uploads UNION ALL SELECT DISTINCT r.blob_id,b.media_type,9223372036854775807 AS created_at_ms FROM ${BLOB_COMMIT_REFS} r LEFT JOIN _syncular_blobs b ON b.blob_id=r.blob_id WHERE NOT EXISTS(SELECT 1 FROM _syncular_blob_uploads u WHERE u.blob_id=r.blob_id))ORDER BY created_at_ms,blob_id`,
     )
     .map((row) => {
       if (
@@ -285,7 +286,7 @@ export function deleteUnreferencedCachedBlobs(
   schema: CompiledClientSchema,
 ): void {
   db.exec(
-    `DELETE FROM _syncular_blobs WHERE blob_id NOT IN(SELECT blob_id FROM _syncular_blob_uploads)AND blob_id NOT IN(SELECT blob_id FROM _syncular_blob_commit_refs)AND blob_id NOT IN(${visibleBlobIdsSql(schema)})`,
+    `DELETE FROM _syncular_blobs WHERE blob_id NOT IN(SELECT blob_id FROM _syncular_blob_uploads)AND blob_id NOT IN(SELECT blob_id FROM ${BLOB_COMMIT_REFS})AND blob_id NOT IN(${visibleBlobIdsSql(schema)})`,
   );
 }
 
