@@ -1,3 +1,4 @@
+export const META_TABLE = '_syncular_meta';
 import { PENDING_EVICTIONS } from './window';
 import { WINDOWS_TABLE } from './window';
 export const SUBSCRIPTIONS_TABLE = '_syncular_subscriptions';
@@ -209,14 +210,12 @@ export function pruneUnknownSubscriptions(
 }
 
 export function getMeta(db: ClientDatabase, key: string): string | undefined {
-  const row = db.query('SELECT value FROM _syncular_meta WHERE key=?', [
-    key,
-  ])[0];
+  const row = db.query(`SELECT value FROM ${META_TABLE} WHERE key=?`, [key])[0];
   return row === undefined ? undefined : (row.value as string);
 }
 
 export function setMeta(db: ClientDatabase, key: string, value: string): void {
-  db.exec('INSERT OR REPLACE INTO _syncular_meta(key,value)VALUES(?,?)', [
+  db.exec(`INSERT OR REPLACE INTO ${META_TABLE}(key,value)VALUES(?,?)`, [
     key,
     value,
   ]);

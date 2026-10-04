@@ -11,6 +11,8 @@ import { Database } from 'bun:sqlite';
 import { describe, expect, test } from 'bun:test';
 import {
   type ClientSchema,
+  type SqlRow,
+  type SqlValue,
   compileClientSchema,
   dropAndRecreateSyncedTables,
   ensureLocalSchema,
@@ -171,6 +173,57 @@ describe('CREATE INDEX subset — client local DDL', () => {
       { id: 't1', project_id: 'p1', title: 'renamed', _sync_version: 2 },
       { id: 't2', project_id: 'p1', title: 'a', _sync_version: 1 },
     ]);
+  });
+
+  test('image chunks without an overlay decode no row bodies or retained bases', async () => {
+    class CountingDatabase extends BunClientDatabase {
+      decoded = 0;
+      maintenance = 0;
+      override query(sql: string, params: readonly SqlValue[] = []): SqlRow[] {
+        const rows = super.query(sql, params);
+        if (sql.startsWith('SELECT * FROM syncular_image.'))
+          this.decoded += rows.length;
+        return rows;
+      }
+      override exec(sql: string, params: readonly SqlValue[] = []): void {
+        if (sql.startsWith('UPDATE _syncular_failed_rows SET'))
+          this.maintenance += 1;
+        super.exec(sql, params);
+      }
+    }
+    const db = new CountingDatabase();
+    try {
+      const compiled = compileClientSchema(SCHEMA);
+      ensureLocalSchema(db, compiled);
+      const rows = Array.from({ length: 2050 }, (_, index) => ({
+        id: `row-${index}`,
+        projectId: 'p1',
+        title: `row-${index}`,
+        version: 1,
+      }));
+      expect(
+        await applySqliteSegment(
+          db,
+          compiled,
+          compiled.tables.get('tasks')!,
+          sqliteImageBytes(rows),
+          {
+            table: 'tasks',
+            rowCount: rows.length,
+            asOfCommitSeq: 7,
+            scopeDigest: 'digest',
+          },
+          { clearFirst: true, effective: { project_id: ['p1'] } },
+        ),
+      ).toBe(rows.length);
+      expect(db.decoded).toBe(0);
+      expect(db.maintenance).toBe(0);
+      expect(db.query('SELECT count(*) AS n FROM tasks')[0]?.n).toBe(
+        rows.length,
+      );
+    } finally {
+      db.close();
+    }
   });
 
   test('image chunks keep their committed prefix and detach after a later failure', async () => {

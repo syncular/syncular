@@ -42,7 +42,7 @@ import {
   quoteIdent,
   rowValueToJson,
 } from './schema';
-import { getMeta, setMeta } from './state';
+import { getMeta, setMeta, META_TABLE } from './state';
 
 /** `_syncular_meta` key holding the persisted {@link LocalSchemaDescriptor}. */
 const LOCAL_SCHEMA_DESCRIPTOR_KEY = 'localSchemaDescriptor';
@@ -724,7 +724,7 @@ export function writePreviousVersionRefusal(
 
 /** Delete the durable refusal. Part of the orphan sweep and of a successful capture. */
 export function clearPreviousVersionRefusal(db: ClientDatabase): void {
-  db.exec('DELETE FROM _syncular_meta WHERE key=?', [
+  db.exec(`DELETE FROM ${META_TABLE} WHERE key=?`, [
     PREVIOUS_VERSION_CONTEXT_KEY,
   ]);
 }
@@ -892,7 +892,7 @@ export function writePreviousVersionAudit(
 
 /** Delete the advisory audit. Part of a discard, never of a normal bump. */
 export function clearPreviousVersionAudit(db: ClientDatabase): void {
-  db.exec('DELETE FROM _syncular_meta WHERE key=?', [
+  db.exec(`DELETE FROM ${META_TABLE} WHERE key=?`, [
     PREVIOUS_VERSION_AUDIT_KEY,
   ]);
 }

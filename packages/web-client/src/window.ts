@@ -153,7 +153,7 @@ export function loadWindowUnits(
 ): WindowUnit[] {
   return db
     .query(
-      `SELECT unit, sub_id FROM ${WINDOWS_TABLE} WHERE base = ? ORDER BY unit ASC`,
+      `SELECT unit,sub_id FROM ${WINDOWS_TABLE} WHERE base=? ORDER BY unit`,
       [baseKey],
     )
     .map((row) => ({ unit: row.unit as string, subId: row.sub_id as string }));
@@ -185,7 +185,7 @@ export function insertWindowUnit(
   subId: string,
 ): void {
   db.exec(
-    `INSERT OR REPLACE INTO ${WINDOWS_TABLE}(base, unit, sub_id) VALUES (?, ?, ?)`,
+    `INSERT OR REPLACE INTO ${WINDOWS_TABLE}(base,unit,sub_id)VALUES(?,?,?)`,
     [baseKey, unit, subId],
   );
 }
@@ -195,7 +195,7 @@ export function deleteWindowUnit(
   baseKey: string,
   unit: string,
 ): void {
-  db.exec(`DELETE FROM ${WINDOWS_TABLE} WHERE base = ? AND unit = ?`, [
+  db.exec(`DELETE FROM ${WINDOWS_TABLE} WHERE base=? AND unit=?`, [
     baseKey,
     unit,
   ]);
@@ -208,10 +208,10 @@ export function isUnitLive(
   unit: string,
 ): boolean {
   return (
-    db.query(
-      `SELECT 1 FROM ${WINDOWS_TABLE} WHERE base = ? AND unit = ? LIMIT 1`,
-      [baseKey, unit],
-    ).length > 0
+    db.query(`SELECT 1 FROM ${WINDOWS_TABLE} WHERE base=? AND unit=? LIMIT 1`, [
+      baseKey,
+      unit,
+    ]).length > 0
   );
 }
 

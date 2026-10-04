@@ -5287,6 +5287,7 @@ export class SyncClient {
   }
 
   #replayOutbox(scope?: OverlayScope, restoreBases = true): void {
+    if (scope?.length === 0) return;
     this.#applyBatch((batch) => {
       if (restoreBases) restoreFailedBases(this.#db, this.#schema, scope);
       const acknowledged = failedOverlayCommits(

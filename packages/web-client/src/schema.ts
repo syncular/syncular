@@ -3,7 +3,7 @@ import { PENDING_EVICTIONS } from './window';
 import { WINDOWS_TABLE } from './window';
 import { OUTBOX_TABLE, OUTBOX_IMAGES } from './outbox';
 import { OUTCOMES_TABLE } from './outcomes';
-import { SUBSCRIPTIONS_TABLE } from './state';
+import { SUBSCRIPTIONS_TABLE, META_TABLE } from './state';
 import { ensureFailedOverlaySchema } from './failed-overlay';
 /**
  * Client schema IR (SPEC.md §2.4, §3.1) — the same shape the server
@@ -541,7 +541,7 @@ export function ensureLocalBookkeepingSchema(db: ClientDatabase): void {
     ensureFailedOverlaySchema(db);
     const createTable = (name: string, columns: string) =>
       db.exec(`CREATE TABLE IF NOT EXISTS ${name}(${columns})`);
-    createTable('_syncular_meta', 'key TEXT PRIMARY KEY,value TEXT NOT NULL');
+    createTable(META_TABLE, 'key TEXT PRIMARY KEY,value TEXT NOT NULL');
     createTable(
       BLOB_COMMIT_REFS,
       'commit_id TEXT NOT NULL,blob_id TEXT NOT NULL,PRIMARY KEY(commit_id,blob_id)',
@@ -550,7 +550,7 @@ export function ensureLocalBookkeepingSchema(db: ClientDatabase): void {
       `CREATE INDEX IF NOT EXISTS ${BLOB_COMMIT_REFS}_body ON ${BLOB_COMMIT_REFS}(blob_id)`,
     );
     db.exec(
-      "INSERT OR IGNORE INTO _syncular_meta(key,value)VALUES('localRevision','0')",
+      `INSERT OR IGNORE INTO ${META_TABLE}(key,value)VALUES('localRevision','0')`,
     );
     createTable(
       OUTBOX_TABLE,
@@ -578,7 +578,7 @@ export function ensureLocalBookkeepingSchema(db: ClientDatabase): void {
       // column already exists — the CREATE above included it
     }
     db.exec(
-      `CREATE INDEX IF NOT EXISTS _syncular_commit_outcomes_resolution_seq ON ${OUTCOMES_TABLE}(resolution,seq)`,
+      `CREATE INDEX IF NOT EXISTS ${OUTCOMES_TABLE}_resolution_seq ON ${OUTCOMES_TABLE}(resolution,seq)`,
     );
     createTable(
       SUBSCRIPTIONS_TABLE,

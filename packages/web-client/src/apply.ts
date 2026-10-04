@@ -1,5 +1,5 @@
 import { hasUniqueIndex } from './schema';
-import { OUTBOX_TABLE, OUTBOX_IMAGES } from './outbox';
+import { OUTBOX_TABLE, OUTBOX_IMAGES, countOutbox } from './outbox';
 import { RETAINED_ROWS, type OverlayScope } from './failed-overlay';
 import { retainedBaseWrite, restoreFailedBases } from './failed-overlay';
 /**
@@ -484,22 +484,31 @@ export async function applySqliteSegment(
         predicates.push(`${primaryKey} <= ?`);
         params.push(boundary);
       }
-      const rows = db.query(
-        `SELECT * FROM ${source} WHERE ${predicates.join(' AND ') || 'true'}`,
-        params,
-      );
+      const replay =
+        countOutbox(db) ||
+        db.query(`SELECT 1 FROM ${RETAINED_ROWS} WHERE tbl=? LIMIT 1`, [
+          table.name,
+        ]).length;
+      const rows = replay
+        ? db.query(
+            `SELECT * FROM ${source} WHERE ${predicates.join(' AND ') || 'true'}`,
+            params,
+          )
+        : [];
       (options.transaction ?? ((fn) => db.transaction(fn)))(() => {
-        const scope = hasUniqueIndex(table)
-          ? [JSON.stringify([table.name])]
-          : [
-              ...(after === undefined && options.clearFirst
-                ? bootstrapScope(db, table, options.effective)
-                : []),
-              ...rows.map((row) =>
-                JSON.stringify([table.name, String(row[table.primaryKey])]),
-              ),
-            ];
-        restoreFailedBases(db, schema, scope);
+        const scope = !replay
+          ? []
+          : hasUniqueIndex(table)
+            ? [JSON.stringify([table.name])]
+            : [
+                ...(after === undefined && options.clearFirst
+                  ? bootstrapScope(db, table, options.effective)
+                  : []),
+                ...rows.map((row) =>
+                  JSON.stringify([table.name, String(row[table.primaryKey])]),
+                ),
+              ];
+        const protectedRows = restoreFailedBases(db, schema, scope);
         if (after === undefined && options.clearFirst)
           deleteScopedRows(db, table, options.effective);
         db.exec(
@@ -507,20 +516,21 @@ export async function applySqliteSegment(
           params,
         );
         applied += Number(db.query('SELECT changes()AS n')[0]?.n ?? 0);
-        for (const row of rows) {
-          retainedBaseWrite(
-            db,
-            table,
-            String(row[table.primaryKey]),
-            Object.fromEntries(
-              table.columns.map((column) => [
-                column.name,
-                rowValueToJson(row[column.name] as RowValue),
-              ]),
-            ),
-            Number(row._syncular_version),
-          );
-        }
+        if (protectedRows)
+          for (const row of rows) {
+            retainedBaseWrite(
+              db,
+              table,
+              String(row[table.primaryKey]),
+              Object.fromEntries(
+                table.columns.map((column) => [
+                  column.name,
+                  rowValueToJson(row[column.name] as RowValue),
+                ]),
+              ),
+              Number(row._syncular_version),
+            );
+          }
         return scope;
       });
       options.onProgress?.(applied);
