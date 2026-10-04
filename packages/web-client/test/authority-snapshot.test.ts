@@ -299,6 +299,16 @@ test('authority protected ACK and retained failures expose delivered bases befor
     expect(() => client.authoritySnapshot()).toThrow(
       expect.objectContaining({ code: 'sync.local_corrupt' }),
     );
+    db.exec('UPDATE _syncular_failed_rows SET base=?,version=7', [
+      'credential-must-not-leak',
+    ]);
+    try {
+      client.authoritySnapshot();
+      throw new Error('malformed evidence must fail');
+    } catch (error) {
+      expect(error).toMatchObject({ code: 'sync.local_corrupt' });
+      expect(String(error)).not.toContain('credential-must-not-leak');
+    }
     db.exec('UPDATE _syncular_failed_rows SET base=NULL,version=NULL');
     expect(client.authoritySnapshot().tables[0]?.rows).toEqual([]);
   } finally {

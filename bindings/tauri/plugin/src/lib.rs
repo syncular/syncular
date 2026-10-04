@@ -1307,6 +1307,16 @@ mod tests {
         let partial = command(json!({"method": "authoritySnapshot", "params": {}}));
         assert_eq!(partial["result"]["complete"], false);
         assert!(!partial.to_string().contains("credential-do-not-expose"));
+        conn.execute(
+            "UPDATE _syncular_subscriptions SET state_json='credential-do-not-expose' WHERE id='b'",
+            [],
+        )
+        .unwrap();
+        let corrupt = command(json!({"method": "authoritySnapshot", "params": {}}));
+        assert_eq!(corrupt["error"]["code"], "sync.local_corrupt");
+        assert!(!corrupt.to_string().contains("credential-do-not-expose"));
+        conn.execute("DELETE FROM _syncular_subscriptions WHERE id='b'", [])
+            .unwrap();
         command(json!({"method": "beginSecurityPreflight", "params": {}}));
         assert!(
             command(json!({"method": "authoritySnapshot", "params": {}}))

@@ -394,7 +394,16 @@ export class AuthorityReadPolicy {
     schema: CompiledClientSchema,
   ): AuthoritySnapshot {
     validateAuthorityReads(schema, this.declarations);
-    return readAuthoritySnapshot(db, schema, this.declarations);
+    try {
+      return readAuthoritySnapshot(db, schema, this.declarations);
+    } catch (error) {
+      if (error instanceof SyntaxError)
+        throw new ClientSyncError(
+          'sync.local_corrupt',
+          'authority persisted evidence is invalid',
+        );
+      throw error;
+    }
   }
 }
 /** Declare authority tables, plain columns and scope selectors at creation. */

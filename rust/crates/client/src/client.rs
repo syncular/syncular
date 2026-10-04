@@ -10612,11 +10612,12 @@ impl SyncClient {
                 )
                 .map_err(|e| e.message)?
                 {
-                    let state: Value =
-                        serde_json::from_str(row.get("state_json").and_then(Value::as_str).ok_or(
-                            "sync.local_corrupt: authority subscription state is missing",
-                        )?)
-                        .map_err(|e| e.to_string())?;
+                    let state: Value = serde_json::from_str(
+                        row.get("state_json")
+                            .and_then(Value::as_str)
+                            .ok_or("sync.local_corrupt: authority subscription state is missing")?,
+                    )
+                    .map_err(|_| "sync.local_corrupt: authority subscription state is invalid")?;
                     let effective = state.get("effectiveScopes").and_then(Value::as_object);
                     let status = state
                         .get("status")
