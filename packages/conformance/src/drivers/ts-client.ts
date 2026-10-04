@@ -5,7 +5,7 @@
  * and outputs stay JSON-able + bytes; row values convert at this edge.
  */
 
-import { defineAuthorityReads } from '@syncular/client';
+import { defineAuthorityReads } from '@syncular/client/authority';
 import { ClientSyncError } from '@syncular/client';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-10-04',
+    title: 'Authority readers require an explicit bundle opt-in',
+    body: 'Released in 0.30.16. Ordinary workers exclude the authority reader. Authority-enabled workers inject the factory from @syncular/client/authority. Native apps use @syncular/tauri/authority for the snapshot bridge. Missing worker opt-in fails before storage opens. Accepted-base evidence and independent Rust enforcement retain their 0.30.15 semantics; bundle caps are unchanged.',
+    links: [
+      {
+        href: '/platform-tauri/#authority-evidence-before-activation',
+        label: 'Authority opt-in and native policy',
+      },
+    ],
+  },
+  {
+    date: '2026-10-04',
     title: 'Declared authority snapshots during security preflight',
     body: 'Released in 0.30.15. A static plain-column policy exposes accepted authority bases, local revision and persisted scope coverage before key activation. Local intent remains separate. Rust enforces the native app column ceiling and rejects forged IPC. The snapshot changes no lifecycle, keys, transport or data.',
     links: [

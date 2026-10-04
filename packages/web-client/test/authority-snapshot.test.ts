@@ -1,6 +1,6 @@
+import { defineAuthorityReads } from '@syncular/client/authority';
 import { expect, test } from 'bun:test';
 import {
-  defineAuthorityReads,
   SyncClient,
   type AuthorityReadDeclaration,
   type ClientSchema,

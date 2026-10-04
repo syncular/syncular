@@ -6,9 +6,9 @@
  * database-factory indirection; opfs-bootstrap.browser.test.ts exercises
  * opfs-sahpool in Chromium).
  */
+import { defineAuthorityReads } from '@syncular/client/authority';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import {
-  defineAuthorityReads,
   ClientSyncError,
   createSyncClientHandle,
   INVALID_HOST_RESPONSE_CODE,
@@ -1257,4 +1257,73 @@ test('worker atomic sparse conflict keeps its local aggregate and explicit resol
   ]);
   await a.close();
   await b.close();
+});
+
+test('ordinary worker rejects authority declarations before opening storage', async () => {
+  await expectRejectsWithCode(
+    createSyncClientHandle({
+      worker: () =>
+        new Worker(new URL('./ordinary-rpc-worker.ts', import.meta.url).href),
+      schema: CLIENT_SCHEMA,
+      database: { mode: 'custom' },
+      endpoints: { syncUrl: 'https://invalid.test/sync' },
+      autoSync: false,
+      multiTab: false,
+      securityPreflight: true,
+      authorityReads: defineAuthorityReads([
+        {
+          table: 'tasks',
+          columns: ['id', 'project_id'],
+          scopes: { project_id: ['p1'] },
+        },
+      ]),
+    }),
+    'client.authority_read_forbidden',
+  );
+});
+
+test('forged worker authority RPC arguments reach the core zero-argument refusal', async () => {
+  const worker = new Worker(WORKER_URL);
+  const handle = await createSyncClientHandle({
+    worker: () => worker,
+    schema: CLIENT_SCHEMA,
+    database: { mode: 'custom' },
+    endpoints: { syncUrl: 'https://invalid.test/sync' },
+    autoSync: false,
+    multiTab: false,
+    securityPreflight: true,
+    authorityReads: defineAuthorityReads([
+      {
+        table: 'tasks',
+        columns: ['id', 'project_id'],
+        scopes: { project_id: ['p1'] },
+      },
+    ]),
+  });
+  try {
+    const reply = new Promise<WorkerErrorShape>((resolve) => {
+      const receive = (event: MessageEvent) => {
+        const message = event.data as {
+          t: string;
+          id?: number;
+          error: WorkerErrorShape;
+        };
+        if (message.id !== 987654) return;
+        worker.removeEventListener('message', receive);
+        expect(message.t).toBe('error');
+        resolve(message.error);
+      };
+      worker.addEventListener('message', receive);
+    });
+    worker.postMessage({
+      t: 'call',
+      id: 987654,
+      method: 'authoritySnapshot',
+      args: [{ sql: 'SELECT title FROM tasks' }],
+    });
+    expect((await reply).code).toBe('client.authority_read_forbidden');
+    expect(await handle.securityLifecycle()).toBe('preflight');
+  } finally {
+    await handle.close();
+  }
 });

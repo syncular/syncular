@@ -821,10 +821,26 @@ committed import chunks; no write transaction spans that await.
 
 ## Preflight authority reads
 
-Pass `authorityReads: defineAuthorityReads([{ table, columns, scopes }])` at
+Import `defineAuthorityReads` from `@syncular/client/authority`. Pass
+`authorityReads: defineAuthorityReads([{ table, columns, scopes }])` at
 creation to enable the zero-argument `authoritySnapshot()`. It reads approved
 plain authority columns and accepted bases with revision and persisted scope
 coverage from one SQLite snapshot, including during security preflight.
 Unaccepted local intent remains separate. The read changes no keys, transport,
 subscriptions or lifecycle. See the [authority contract](../../docs/SPEC.md)
 and [native configuration](../tauri/README.md#authority-evidence-before-activation).
+
+Workers must opt in in their entry script:
+
+```ts
+import { defineAuthorityReads } from '@syncular/client/authority';
+import { startSyncWorker } from '@syncular/client/worker';
+
+startSyncWorker({ createAuthorityReads: defineAuthorityReads });
+```
+
+Pass the policy to `createSyncClientHandle({ authorityReads, ...config })` on
+the main thread. Declarations without the injected worker factory fail with
+`client.authority_read_forbidden` before opening storage. Ordinary workers
+keep `startSyncWorker()` and bundle no authority reader. No dynamic import
+changes the declared capability.

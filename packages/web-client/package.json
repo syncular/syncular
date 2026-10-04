@@ -73,6 +73,14 @@
         "types": "./dist/worker-entry.d.ts",
         "default": "./dist/worker-entry.js"
       }
+    },
+    "./authority": {
+      "bun": "./src/authority.ts",
+      "browser": "./dist/authority.js",
+      "import": {
+        "types": "./dist/authority.d.ts",
+        "default": "./dist/authority.js"
+      }
     }
   },
   "files": [

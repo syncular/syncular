@@ -1,8 +1,24 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.30.15** (`v0.30.15`). All artifacts use Apache-2.0, except
+current release is **0.30.16** (`v0.30.16`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.30.16 release notes
+
+Authority snapshots are an explicit bundle opt-in. Import `defineAuthorityReads`
+from `@syncular/client/authority`; authority-enabled worker entries call
+`startSyncWorker({ createAuthorityReads: defineAuthorityReads })`. Declared
+reads without the injected factory fail before storage opens. Ordinary workers
+retain no authority reader and instantiate no policy. No dynamic import or
+capability fallback is used.
+
+Native callers import `createTauriAuthoritySyncClient` from
+`@syncular/tauri/authority` to include the snapshot method and reply decoder.
+Ordinary Tauri bridges exclude them. The 0.30.15 accepted-base, scope coverage,
+preflight and independent Rust ceiling semantics remain unchanged.
+Upgrade all 12 npm packages and 6 crates together and rebuild native applications.
+No schema bump or wire change is required. Benchmark and bundle caps are unchanged.
 
 ## 0.30.15 release notes
 

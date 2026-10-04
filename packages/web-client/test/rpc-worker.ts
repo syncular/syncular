@@ -6,10 +6,12 @@
  */
 import { BunClientDatabase } from '../src/bun-database';
 import { ClientSyncError, STORAGE_BUSY_CODE } from '../src/errors';
+import { defineAuthorityReads } from '../src/authority';
 import { startSyncWorker } from '../src/worker-entry';
 
 let opens = 0;
 startSyncWorker({
+  createAuthorityReads: defineAuthorityReads,
   waitForStorageRetry: async (delayMs) => {
     postMessage({ t: 'storage-retry', delayMs });
   },

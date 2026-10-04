@@ -2756,7 +2756,14 @@ In particular, runtime transport-header replacement is an active-session
 operation; native bridges MUST gate it independently rather than relying only
 on a JavaScript wrapper.
 **Preflight authority snapshot.** `defineAuthorityReads(declarations)` creates
-an immutable opt-in policy for `authorityReads` at client creation. Each
+an immutable opt-in policy for `authorityReads` at client creation. The
+TypeScript factory lives at `@syncular/client/authority`. Ordinary client and
+worker graphs MUST exclude the authority reader implementation. Workers that
+accept declarations MUST inject `createAuthorityReads: defineAuthorityReads`
+into `startSyncWorker`; declarations without that factory MUST fail with
+`client.authority_read_forbidden` before opening storage. No authority module
+is dynamically loaded. The Tauri authority bridge is explicitly constructed
+with `createTauriAuthoritySyncClient` from `@syncular/tauri/authority`. Each
 `{ table, columns, scopes }` declaration names one schema table, its primary
 key and explicitly approved plain columns, and nonempty concrete scope values.
 Scope columns MUST appear in `columns`. Encrypted, bytes, blob and CRDT columns,
@@ -2770,8 +2777,9 @@ a new read MUST NOT redefine or extend the creation policy.
 
 `authoritySnapshot()` accepts zero arguments. Native/worker command parameters,
 including SQL, columns, tables and replacement declarations, MUST fail with
-`client.authority_read_forbidden`. A client without a declared policy MUST
-return the same code. The read returns every matching accepted base row,
+`client.authority_read_forbidden`. An exposed authority reader without a
+declared policy MUST return the same code. Ordinary Tauri bridges do not
+expose the authority method. The read returns every matching accepted base row,
 its server row version, `hasLocalIntent`, scoped `localIntentRowIds`, the local
 revision, and persisted requested/effective scopes, cursor, status and
 completeness from one SQLite snapshot. Pending, failed and protected ACK intent

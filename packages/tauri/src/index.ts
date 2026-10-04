@@ -35,7 +35,6 @@ import type { ClientSnapshotMethods, PromiseMethods } from '@syncular/client';
 
 import type {
   AuthorityReadPolicy,
-  AuthoritySnapshot,
   ClientChangeBatch,
   ClientChangeListener,
   ClientDiagnosticsListener,
@@ -250,7 +249,8 @@ function decodeCell(value: unknown): SqlValue {
   return JSON.stringify(value);
 }
 
-function decodeRow(row: Record<string, unknown>): SqlRow {
+/** @internal Shared native row codec. */
+export function decodeRow(row: Record<string, unknown>): SqlRow {
   const out: SqlRow = {};
   for (const [key, value] of Object.entries(row)) {
     // Reserved `_sync_*` columns stay engine-internal (parity with the
@@ -392,6 +392,19 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
         'the Tauri sync client is closed',
       );
     }
+  }
+
+  /** @internal Shared command gate for explicit bridge extensions. */
+  protected command(
+    method: string,
+    params: Record<string, unknown>,
+  ): Promise<unknown> {
+    return this.#command(method, params);
+  }
+
+  /** @internal Recheck local close after an extension's asynchronous reply. */
+  protected requireOpen(): void {
+    this.#requireOpen();
   }
 
   #requireActive(): void {
@@ -591,31 +604,6 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
     }
     const rows = (reply.result as { rows?: unknown[] }).rows ?? [];
     return rows.map((r) => decodeRow(r as Record<string, unknown>));
-  }
-
-  async authoritySnapshot(): Promise<AuthoritySnapshot> {
-    this.#requireOpen();
-    if (arguments.length)
-      throw new TauriSyncError(
-        'client.authority_read_forbidden',
-        'authoritySnapshot accepts no arguments',
-      );
-    const result = (await this.#command('authoritySnapshot', {})) as Omit<
-      AuthoritySnapshot,
-      'revision'
-    > & { revision: string };
-    this.#requireOpen();
-    return {
-      ...result,
-      revision: BigInt(result.revision),
-      tables: result.tables.map((table) => ({
-        ...table,
-        rows: table.rows.map((row) => ({
-          ...row,
-          values: decodeRow(row.values),
-        })),
-      })),
-    };
   }
 
   async querySnapshot<Row = SqlRow>(
@@ -1097,8 +1085,20 @@ function encodeMutation(mutation: MutationInput): unknown {
  * `TauriSyncClient` that satisfies `SyncClientLike` — pass it straight to the
  * React `<SyncProvider client={…}>`.
  */
+export function createTauriSyncClient(
+  config: TauriSyncClientConfig,
+): Promise<TauriSyncClient>;
+/** @internal Explicit bridge extension used by the authority entry. */
+export function createTauriSyncClient<Client extends TauriSyncClient>(
+  config: TauriSyncClientConfig,
+  createClient: (
+    ...args: ConstructorParameters<typeof TauriSyncClient>
+  ) => Client,
+): Promise<Client>;
 export async function createTauriSyncClient(
   config: TauriSyncClientConfig,
+  createClient = (...args: ConstructorParameters<typeof TauriSyncClient>) =>
+    new TauriSyncClient(...args),
 ): Promise<TauriSyncClient> {
   const tauri = await resolveTauri(config.tauri);
 
@@ -1121,7 +1121,7 @@ export async function createTauriSyncClient(
     );
   }
 
-  const client = new TauriSyncClient(
+  const client = createClient(
     tauri,
     unlisten,
     config.securityPreflight === true ? 'preflight' : 'active',

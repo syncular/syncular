@@ -330,16 +330,17 @@ document. See [CRDT columns](/concepts-crdt/).
 ## Authority evidence before activation
 
 Declare authority reads at client creation with `defineAuthorityReads` from
-`@syncular/client`. Each table declares plain columns, including its primary
-key and scope columns, and concrete scope selectors. These selectors remain
+`@syncular/client/authority`. Each table declares plain columns, including
+its primary key and scope columns, and concrete scope selectors. These selectors remain
 fixed for that client. A declaration cannot include encrypted, bytes, blob,
 CRDT or internal columns. Choose only authority fields; clinical fields and
 credentials do not belong in this policy.
 
 ```ts
-import { defineAuthorityReads } from '@syncular/client';
+import { defineAuthorityReads } from '@syncular/client/authority';
+import { createTauriAuthoritySyncClient } from '@syncular/tauri/authority';
 
-const client = await createTauriSyncClient({
+const client = await createTauriAuthoritySyncClient({
   schema,
   securityPreflight: true,
   transportEnabled: false,
@@ -351,6 +352,11 @@ const client = await createTauriSyncClient({
 });
 const evidence = await client.authoritySnapshot();
 ```
+
+Use `createTauriAuthoritySyncClient` for the bridge that exposes
+`authoritySnapshot()`. The ordinary `createTauriSyncClient` class does not
+contain that method or its reply decoder. Upgrade 0.30.15 callers to these
+explicit subpaths; the snapshot and native security checks keep their semantics.
 
 The native application must also set an independent ceiling at plugin creation:
 
@@ -405,7 +411,7 @@ handling local reads and commits, and resumes its existing scheduler when the
 gate opens. The gate is independent of security preflight and encryption keys.
 
 ```ts
-const client = await createTauriSyncClient({
+const client = await createTauriAuthoritySyncClient({
   schema,
   securityPreflight: true,
   transportEnabled: false,

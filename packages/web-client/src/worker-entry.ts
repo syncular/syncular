@@ -13,7 +13,7 @@
  * RPC-driven and auto-driven sync rounds serialize on one queue because
  * the core owns exactly one loop.
  */
-import { defineAuthorityReads } from './authority';
+import type { defineAuthorityReads } from './authority';
 import { SyncClient } from './client';
 import type { ClientDatabase } from './database';
 import {
@@ -52,6 +52,8 @@ import {
 } from './worker-protocol';
 
 export interface SyncWorkerOverrides {
+  /** Explicit authority reader factory. Required when init declares authorityReads. */
+  readonly createAuthorityReads?: typeof defineAuthorityReads;
   /** Database factory indirection: tests inject bun:sqlite here. */
   readonly openDatabase?: (
     config: WorkerInitConfig,
@@ -239,6 +241,11 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
   }
 
   async function init(config: WorkerInitConfig): Promise<WorkerInitResult> {
+    if (config.authorityReads !== undefined && !overrides.createAuthorityReads)
+      throw new ClientSyncError(
+        'client.authority_read_forbidden',
+        'authorityReads requires startSyncWorker({ createAuthorityReads })',
+      );
     if (client !== undefined) {
       throw new ClientSyncError(
         WORKER_FAILED_CODE,
@@ -325,7 +332,11 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
         ? { encryption: encryptionConfigFromKeyring(config.encryption) }
         : {}),
       ...(config.authorityReads !== undefined
-        ? { authorityReads: defineAuthorityReads(config.authorityReads) }
+        ? {
+            authorityReads: overrides.createAuthorityReads!(
+              config.authorityReads,
+            ),
+          }
         : {}),
       ...(config.securityPreflight !== undefined
         ? { securityPreflight: config.securityPreflight }
@@ -393,8 +404,46 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
     return { clientId: started.clientId };
   }
 
+  // Forward every argument to core methods, including authority's zero-argument check.
+  const coreMethods = [
+    'securityLifecycle',
+    'subscribe',
+    'unsubscribe',
+    'windowState',
+    'purgeLocalData',
+    'rebootstrapLocalData',
+    'previousVersionSnapshot',
+    'previousVersionAudit',
+    'previousVersionDiscard',
+    'query',
+    'authoritySnapshot',
+    'querySnapshot',
+    'statusSnapshot',
+    'conflicts',
+    'rejections',
+    'commitOutcome',
+    'commitOutcomes',
+    'resolveCommitOutcome',
+    'pendingCommits',
+    'subscriptions',
+    'subscription',
+    'connectRealtime',
+    'disconnectRealtime',
+    'setPresence',
+    'presence',
+    'uploadBlob',
+    'fetchBlob',
+  ] as const satisfies readonly (keyof WorkerApi & keyof SyncClient)[];
   const api: WorkerApi = {
-    securityLifecycle: () => requireClient().securityLifecycle(),
+    ...(Object.fromEntries(
+      coreMethods.map((method) => [
+        method,
+        (...args: unknown[]) => {
+          const running = requireClient();
+          return Reflect.apply(running[method], running, args);
+        },
+      ]),
+    ) as Pick<WorkerApi, (typeof coreMethods)[number]>),
     beginSecurityPreflight: async () => {
       if (backgroundTimer !== undefined) clearTimeout(backgroundTimer);
       backgroundTimer = undefined;
@@ -409,12 +458,9 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
           : {}),
       });
     },
-    subscribe: (input) => requireClient().subscribe(input),
-    unsubscribe: (id) => requireClient().unsubscribe(id),
     setWindow: async (base, units) => {
       await requireClient().setWindowCommand(base, units);
     },
-    windowState: (base) => requireClient().windowState(base),
     mutate: (mutations) => {
       return requireClient().mutateCommand(mutations).value;
     },
@@ -429,13 +475,6 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
       );
       return result.value;
     },
-    purgeLocalData: (input) => requireClient().purgeLocalData(input),
-    rebootstrapLocalData: (input) =>
-      requireClient().rebootstrapLocalData(input),
-    previousVersionSnapshot: (spec) =>
-      requireClient().previousVersionSnapshot(spec),
-    previousVersionAudit: () => requireClient().previousVersionAudit(),
-    previousVersionDiscard: () => requireClient().previousVersionDiscard(),
     sync: () => {
       const running = requireClient();
       return serializedSync(() => running.sync());
@@ -444,11 +483,7 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
       const running = requireClient();
       return serializedSync(() => running.syncUntilIdle(maxRounds));
     },
-    query: (sql, params) => requireClient().query(sql, params),
-    authoritySnapshot: () => requireClient().authoritySnapshot(),
-    querySnapshot: (spec) => requireClient().querySnapshot(spec),
     localRevision: () => requireClient().localRevision,
-    statusSnapshot: () => requireClient().statusSnapshot(),
     diagnosticsSnapshot: (request) => {
       const snapshot = requireClient().diagnosticsSnapshot(request);
       return withClientDiagnosticsHost(snapshot, {
@@ -458,22 +493,6 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
         realtime: snapshot.host.realtime,
       });
     },
-    conflicts: () => requireClient().conflicts(),
-    rejections: () => requireClient().rejections(),
-    commitOutcome: (clientCommitId) =>
-      requireClient().commitOutcome(clientCommitId),
-    commitOutcomes: (query) => requireClient().commitOutcomes(query),
-    resolveCommitOutcome: (input) =>
-      requireClient().resolveCommitOutcome(input),
-    pendingCommits: () => requireClient().pendingCommits(),
-    subscriptions: () => requireClient().subscriptions(),
-    subscription: (id) => requireClient().subscription(id),
-    connectRealtime: () => requireClient().connectRealtime(),
-    disconnectRealtime: () => requireClient().disconnectRealtime(),
-    setPresence: (scopeKey, doc) => requireClient().setPresence(scopeKey, doc),
-    presence: (scopeKey) => requireClient().presence(scopeKey),
-    uploadBlob: (bytes, options) => requireClient().uploadBlob(bytes, options),
-    fetchBlob: (blobIdOrRef) => requireClient().fetchBlob(blobIdOrRef),
     setHeaders: (next) => {
       headers = next;
     },
@@ -525,11 +544,6 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
   ]);
 
   async function dispatch(message: WorkerCallMessage): Promise<unknown> {
-    if (message.method === 'authoritySnapshot' && message.args.length)
-      throw new ClientSyncError(
-        'client.authority_read_forbidden',
-        'authoritySnapshot accepts no arguments',
-      );
     const method = api[message.method] as (...args: unknown[]) => unknown;
     const invoke = () => method.apply(api, message.args as unknown[]);
     if (syncChainMethods.has(message.method)) {

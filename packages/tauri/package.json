@@ -33,6 +33,14 @@
         "types": "./dist/index.d.ts",
         "default": "./dist/index.js"
       }
+    },
+    "./authority": {
+      "bun": "./src/authority.ts",
+      "browser": "./dist/authority.js",
+      "import": {
+        "types": "./dist/authority.d.ts",
+        "default": "./dist/authority.js"
+      }
     }
   },
   "files": [

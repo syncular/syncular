@@ -2,11 +2,11 @@
  * through the TypeScript Tauri bridge and renderer-independent reactive store.
  * Set SYNCULAR_TAURI_NATIVE_TEST=1 to build the non-published harness first;
  * the Tauri binding gate does so in CI. */
+import { defineAuthorityReads } from '@syncular/client/authority';
 import { describe, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  defineAuthorityReads,
   ReactiveClientStore,
   SECURITY_PREFLIGHT_REQUIRED_CODE,
 } from '@syncular/client';
@@ -14,6 +14,7 @@ import { makeClient, makeServer } from '../../web-client/test/helpers';
 import { decodeMessage, encodeMessage } from '../../core/src/index';
 import { handleSyncRequest, handleSegmentDownload } from '@syncular/server';
 import { createTauriSyncClient, type TauriApi } from '../src/index';
+import { createTauriAuthoritySyncClient } from '../src/authority';
 
 const ROOT = join(import.meta.dir, '..', '..', '..');
 const DEFAULT_BIN = join(
@@ -1194,7 +1195,7 @@ test.skipIf(!available)(
   async () => {
     const harness = nativeTauri();
     try {
-      const client = await createTauriSyncClient({
+      const client = await createTauriAuthoritySyncClient({
         schema,
         tauri: harness.api,
         securityPreflight: true,
