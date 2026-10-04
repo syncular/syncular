@@ -32,7 +32,7 @@ on:
         type: string
 
 # `id-token: write` is granted per job, on the two jobs that publish via
-# OIDC. The deploy jobs authenticate with a Cloudflare API token secret and
+# OIDC; `github-release` alone gets `contents: write`. The deploy jobs authenticate with a Cloudflare API token secret and
 # run with read-only permissions.
 permissions:
   contents: read
@@ -69,6 +69,7 @@ jobs:
         run: |
           bun run version:check
           bun scripts/version.ts assert-tag "$RELEASE_TAG"
+          bun scripts/version.ts release-notes > /dev/null
       - name: materialize release metadata
         run: |
           bun run version:materialize
@@ -197,6 +198,32 @@ jobs:
           # constraints that resolve against the crates just published.
           cd ../bindings/tauri
           publish tauri-plugin-syncular
+
+  github-release:
+    needs: [npm, crates]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.0
+      - name: publish the GitHub release from docs/RELEASE.md
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bun scripts/version.ts assert-tag "$RELEASE_TAG"
+          bun scripts/version.ts release-notes > notes.md
+          # Re-runs after a partial failure update the existing release.
+          if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" --title "Syncular ${RELEASE_TAG#v}" --notes-file notes.md --latest
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --title "Syncular ${RELEASE_TAG#v}" --notes-file notes.md --latest
+          fi
 
   docs:
     needs: [npm, crates]

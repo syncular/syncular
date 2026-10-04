@@ -2295,8 +2295,10 @@ git push origin "v$VERSION"
 `.github/workflows/release.yml` verifies the tag against root `package.json`,
 materializes all distributable metadata, runs the npm and native gates, builds
 packages, validates packed dependency pins, and publishes in dependency order
-with trusted OIDC publishing. After both registries succeed, the same tagged
-checkout builds and deploys the versioned docs/landing page and public demo.
+with trusted OIDC publishing. The npm job fails before publishing when
+this runbook has no `## <version> release notes` section. After both
+registries succeed, the workflow publishes that section as the GitHub release
+for the tag and marks it latest, and the same tagged checkout builds and deploys the versioned docs/landing page and public demo.
 Changes to `apps/docs` on `main` also build and deploy the docs/landing site
 through `.github/workflows/docs.yml`. The public demo deploys from release tags.
 
