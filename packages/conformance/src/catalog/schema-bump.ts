@@ -687,8 +687,7 @@ export const schemaBumpScenarios: readonly Scenario[] = [
       });
       await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
 
-      // Two offline v1 commits: an upsert into the removed `docs` table and an
-      // upsert into the surviving `tasks` table.
+      // Queue an upsert and delete for removed `docs`, plus a surviving task.
       const docsCommit = await a.api.mutate([
         {
           op: 'upsert',
@@ -696,23 +695,26 @@ export const schemaBumpScenarios: readonly Scenario[] = [
           values: doc('d1', 'o1', 'p1', 'removed'),
         },
       ]);
+      const docsDelete = await a.api.mutate([
+        { op: 'delete', table: 'docs', rowId: 'd2' },
+      ]);
       const tasksCommit = await a.api.mutate([
         { op: 'upsert', table: 'tasks', values: task('t1', 'p1', 'survives') },
       ]);
       checkEqual(
         await a.api.pendingCommitIds(),
-        [docsCommit, tasksCommit],
-        'both offline commits are queued',
+        [docsCommit, docsDelete, tasksCommit],
+        'all offline commits are queued',
       );
 
       // App update to the docs-dropping v2 schema.
       await ctx.recreateClient(a, FIXTURE_SCHEMA_V2_DROP_DOCS);
       // §7.4.3/§7.4.4 parity: the reset preserves the outbox, so both cores
-      // still hold the removed-table commit and raise no rejection before the
+      // still hold the removed-table commits and raise no rejection before the
       // send-time prepass runs.
       checkEqual(
         await a.api.pendingCommitIds(),
-        [docsCommit, tasksCommit],
+        [docsCommit, docsDelete, tasksCommit],
         'the reset preserves the removed-table commit',
       );
       check(
@@ -747,6 +749,13 @@ export const schemaBumpScenarios: readonly Scenario[] = [
         incompatible?.retryable,
         false,
         'a schema-incompatible commit is not retryable',
+      );
+      check(
+        rejections.some(
+          (r) =>
+            r.clientCommitId === docsDelete && r.code === 'sync.unknown_table',
+        ),
+        'the removed-table delete receives ordinary server validation',
       );
       checkEqual(
         await a.api.pendingCommitIds(),
