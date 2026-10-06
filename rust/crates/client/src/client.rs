@@ -337,6 +337,34 @@ mod observation_tests {
     }
 
     #[test]
+    fn patch_scope_read_preserves_sqlite_failure() {
+        let mut client = client();
+        client
+            .conn
+            .execute_batch(
+                "DROP TABLE tasks;
+            CREATE VIEW tasks AS SELECT 't1' AS id, abs(-9223372036854775808) AS project_id;",
+            )
+            .unwrap();
+        let error = client
+            .patch(
+                "tasks",
+                "t1",
+                Map::from_iter([("project_id".to_owned(), json!("p1"))]),
+                None,
+            )
+            .expect_err("the scope read must fail");
+        assert_ne!(error.code, "sync.invalid_request");
+        assert_eq!(error.code, "client.failed");
+        assert!(error.details.as_ref().unwrap()["legacyCause"]
+            .as_str()
+            .unwrap()
+            .contains("integer overflow"));
+        assert!(client.pending_commit_ids().is_empty());
+        assert!(client.conn.is_autocommit());
+    }
+
+    #[test]
     fn patch_with_a_scope_column_matches_the_stored_local_row() {
         let mut client = client();
         client.create_synced_tables().unwrap();
@@ -4041,6 +4069,131 @@ mod observation_tests {
             {"name":"title","type":"string","nullable":false},
             {"name":"done","type":"boolean","nullable":false}
         ],"scopes":[{"pattern":"project:{project_id}"}], "ftsIndexes": if fts { json!([{"name":"tasks_fts","columns":["title"],"tokenize":"unicode61"}]) } else { json!([]) }}]})
+    }
+
+    #[test]
+    fn aborted_schema_and_epoch_resets_restore_memory_and_durable_intent() {
+        for schema_reset in [false, true] {
+            let mut schema = replay_schema(false);
+            let mut client =
+                SyncClient::new("reset-failure".into(), &schema, ClientLimits::default()).unwrap();
+            let id = client
+                .mutate(vec![Mutation::Upsert {
+                    table: "tasks".into(),
+                    values: Map::from_iter([
+                        ("id".into(), json!("queued")),
+                        ("project_id".into(), json!("p1")),
+                        ("title".into(), json!("old")),
+                        ("done".into(), json!(false)),
+                    ]),
+                    base_version: None,
+                }])
+                .unwrap();
+            client.set_meta(LOG_EPOCH_KEY, "old");
+            let revision = client.local_revision();
+            let needed = client.sync_needed;
+            client.drain_change_batches();
+            client.drain_sync_intents();
+            client.conn.execute_batch("CREATE TRIGGER refuse_revision BEFORE INSERT ON _syncular_meta WHEN NEW.key='localRevision' BEGIN SELECT RAISE(ABORT,'reset completion failed'); END;").unwrap();
+            if schema_reset {
+                schema["version"] = json!(2);
+                schema["tables"][0]["columns"]
+                    .as_array_mut()
+                    .unwrap()
+                    .retain(|column| column["name"] != "title");
+                client.schema = parse_schema_json(&schema).unwrap();
+                assert!(client.run_schema_reset().is_err());
+            } else {
+                assert!(client.run_log_epoch_reset("new").is_err());
+            }
+            assert!(!client.upgrading);
+            assert_eq!(client.sync_needed, needed);
+            assert_eq!(client.local_revision(), revision);
+            assert_eq!(client.pending_commit_ids(), vec![id.clone()]);
+            assert!(client.rejections.is_empty());
+            assert!(client.commit_outcome(&id).unwrap().is_none());
+            assert_eq!(client.get_meta(LOG_EPOCH_KEY).as_deref(), Some("old"));
+            assert_eq!(
+                client
+                    .query("SELECT title FROM tasks WHERE id='queued'", &[])
+                    .unwrap()[0]["title"],
+                "old"
+            );
+            assert_eq!(
+                client
+                    .conn
+                    .query_row("SELECT count(*) FROM _syncular_outbox", [], |row| row
+                        .get::<_, i64>(0))
+                    .unwrap(),
+                1
+            );
+            assert!(client.drain_change_batches().is_empty());
+            assert!(client.drain_sync_intents().is_empty());
+            assert!(client.conn.is_autocommit());
+        }
+    }
+
+    #[test]
+    fn cached_blob_cleanup_propagates_delete_failures() {
+        let schema = json!({"version":1,"tables":[{"name":"attachments","primaryKey":"id","columns":[
+            {"name":"id","type":"string","nullable":false},
+            {"name":"file","type":"blob_ref","nullable":true}],"scopes":[]}]});
+        let mut client =
+            SyncClient::new("blob-cleanup".into(), &schema, ClientLimits::default()).unwrap();
+        client.conn.execute_batch("CREATE TRIGGER refuse_blob_cleanup BEFORE DELETE ON _syncular_blobs BEGIN SELECT RAISE(ABORT,'blob cleanup failed'); END;").unwrap();
+        client.conn.execute("INSERT INTO _syncular_blobs(blob_id,bytes,byte_length,created_at_ms) VALUES ('test',X'01',1,0)", []).unwrap();
+        client
+            .subscribe("attachments".into(), "attachments".into(), vec![], None)
+            .unwrap();
+        client.subs[0].effective = Some(vec![]);
+        client.persist_sub(&client.subs[0]).unwrap();
+        let revision = client.local_revision();
+        let (_, meta) = client.build_request(false).unwrap();
+        let mut transport = CountingRealtimeTransport::default();
+        let mut report = SyncReport::default();
+        assert!(client
+            .process_section(
+                &mut transport,
+                "attachments",
+                SubStatus::Revoked,
+                "sync.scope_revoked",
+                vec![],
+                vec![],
+                Some((0, None)),
+                &meta,
+                &mut report
+            )
+            .is_err());
+        assert_eq!(client.subs[0].state, SubState::Active);
+        assert_eq!(client.local_revision(), revision);
+        assert!(report.revoked.is_empty());
+        assert!(client.conn.is_autocommit());
+        client
+            .conn
+            .execute_batch("DROP TRIGGER refuse_blob_cleanup")
+            .unwrap();
+        assert!(client
+            .process_section(
+                &mut transport,
+                "attachments",
+                SubStatus::Revoked,
+                "sync.scope_revoked",
+                vec![],
+                vec![],
+                Some((0, None)),
+                &meta,
+                &mut report
+            )
+            .is_ok());
+        assert_eq!(client.subs[0].state, SubState::Revoked);
+        assert_eq!(
+            client
+                .conn
+                .query_row("SELECT count(*) FROM _syncular_blobs", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
     }
 
     #[test]
@@ -8956,16 +9109,29 @@ impl SyncClient {
     fn run_schema_reset(&mut self) -> Result<(), String> {
         self.begin_observation("syncular_schema_reset")?;
         let prior_subs = self.subs.clone();
+        let prior_outbox = self.outbox.clone();
+        let prior_rejections = self.rejections.clone();
+        let prior_upgrading = self.upgrading;
+        let prior_stopped = self.stopped;
+        let prior_schema_floor = self.schema_floor.clone();
+        let prior_overlay_dirty = self.overlay_dirty.snapshot();
+        let prior_sync_needed = self.sync_needed;
+        let prior_active_round = self.active_round;
         let mut batch = ChangeAccumulator::default();
-        let result = self.run_schema_reset_observed(&mut batch, true, true);
+        let result = self
+            .run_schema_reset_observed(&mut batch, true, true)
+            .and_then(|()| self.finish_observation("syncular_schema_reset", batch));
         if let Err(error) = result {
             self.rollback_observation("syncular_schema_reset");
             self.subs = prior_subs;
-            return Err(error);
-        }
-        if let Err(error) = self.finish_observation("syncular_schema_reset", batch) {
-            self.rollback_observation("syncular_schema_reset");
-            self.subs = prior_subs;
+            self.outbox = prior_outbox;
+            self.rejections = prior_rejections;
+            self.upgrading = prior_upgrading;
+            self.stopped = prior_stopped;
+            self.schema_floor = prior_schema_floor;
+            self.overlay_dirty.restore(prior_overlay_dirty);
+            self.sync_needed = prior_sync_needed;
+            self.active_round = prior_active_round;
             return Err(error);
         }
         Ok(())
@@ -8998,19 +9164,34 @@ impl SyncClient {
         let resets = self.subs.iter().map(|sub| sub.id.clone()).collect();
         self.begin_observation("syncular_log_epoch_reset")?;
         let prior_subs = self.subs.clone();
+        let prior_outbox = self.outbox.clone();
+        let prior_rejections = self.rejections.clone();
+        let prior_upgrading = self.upgrading;
+        let prior_stopped = self.stopped;
+        let prior_schema_floor = self.schema_floor.clone();
+        let prior_overlay_dirty = self.overlay_dirty.snapshot();
+        let prior_sync_needed = self.sync_needed;
+        let prior_active_round = self.active_round;
         let mut batch = ChangeAccumulator::default();
-        let result = self.run_schema_reset_observed(&mut batch, false, false);
+        let result = self
+            .run_schema_reset_observed(&mut batch, false, false)
+            .and_then(|()| {
+                self.set_meta(LOG_EPOCH_KEY, log_epoch);
+                self.sync_needed = true;
+                batch.status = true;
+                self.finish_observation("syncular_log_epoch_reset", batch)
+            });
         if let Err(error) = result {
             self.rollback_observation("syncular_log_epoch_reset");
             self.subs = prior_subs;
-            return Err(error);
-        }
-        self.set_meta(LOG_EPOCH_KEY, log_epoch);
-        self.sync_needed = true;
-        batch.status = true;
-        if let Err(error) = self.finish_observation("syncular_log_epoch_reset", batch) {
-            self.rollback_observation("syncular_log_epoch_reset");
-            self.subs = prior_subs;
+            self.outbox = prior_outbox;
+            self.rejections = prior_rejections;
+            self.upgrading = prior_upgrading;
+            self.stopped = prior_stopped;
+            self.schema_floor = prior_schema_floor;
+            self.overlay_dirty.restore(prior_overlay_dirty);
+            self.sync_needed = prior_sync_needed;
+            self.active_round = prior_active_round;
             return Err(error);
         }
         self.sync_intent_queue.push_back(SyncIntent::Interactive);
@@ -10822,7 +11003,8 @@ impl SyncClient {
                     rusqlite::params![row_id],
                     |row| Ok(sql_ref_to_json(column, row.get_ref(0)?)),
                 )
-                .ok();
+                .optional()
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
             // Decode the supplied value through the same column-type path the
             // rest of the patch encoding uses, so a value that only equals
             // the stored one in another number representation still compares
@@ -15175,16 +15357,18 @@ impl SyncClient {
             return Ok(());
         }
         self.rebuild_overlay_if_dirty()?;
-        let _ = self.conn.execute(
-            &format!(
-                "DELETE FROM _syncular_blobs
+        self.conn
+            .execute(
+                &format!(
+                    "DELETE FROM _syncular_blobs
                  WHERE blob_id NOT IN (SELECT blob_id FROM _syncular_blob_uploads)
                    AND blob_id NOT IN (SELECT blob_id FROM _syncular_blob_commit_refs)
                    AND blob_id NOT IN ({})",
-                self.visible_blob_ids_sql(),
-            ),
-            [],
-        );
+                    self.visible_blob_ids_sql(),
+                ),
+                [],
+            )
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         Ok(())
     }
 
