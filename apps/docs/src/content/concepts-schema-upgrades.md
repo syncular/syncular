@@ -99,6 +99,10 @@ the outbox and its purely-optimistic rows are undone, exactly like a server
 rejection. Later outbox commits that *do* encode keep replaying, so the
 queue keeps moving past the one incompatible commit.
 
+The client classifies incompatible commits before collecting their pending blob
+uploads. A dropped commit no longer requires its cached bodies; independent
+staging pins and surviving commit dependencies still require upload.
+
 ## What the app sees
 
 A small, queryable `upgrading` client state is `true` from the moment the reset
