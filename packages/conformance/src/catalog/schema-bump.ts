@@ -30,6 +30,54 @@ const WITH_SQLITE = 0b0111;
 
 export const schemaBumpScenarios: readonly Scenario[] = [
   {
+    name: 'schema-bump/missing-paired-marker-refuses-recreation',
+    specRefs: ['§7.4.1', '§7.4.2'],
+    requires: ['storage-fault'],
+    async run(ctx) {
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: P1,
+      });
+      const commit = await a.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('kept', 'p1', 'pending') },
+      ]);
+      check(a.api.executeStorageSql !== undefined, 'storage fault seam');
+      await a.api.executeStorageSql(
+        "DELETE FROM _syncular_meta WHERE key = 'localSchemaVersion'",
+      );
+      let code: unknown;
+      try {
+        await ctx.recreateClient(a, FIXTURE_SCHEMA_V2_DROP_META);
+      } catch (error) {
+        code =
+          error instanceof Error && 'code' in error ? error.code : undefined;
+      }
+      checkEqual(
+        code,
+        'sync.local_corrupt',
+        'an existing descriptor cannot authorize an absent marker',
+      );
+      // Restore the exact known fixture marker, then reopen compatibly. The
+      // refused recreation must leave durable intent and table contents intact.
+      await a.api.executeStorageSql(
+        "INSERT INTO _syncular_meta(key,value) VALUES ('localSchemaVersion','1')",
+      );
+      await ctx.recreateClient(a, FIXTURE_SCHEMA);
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [commit],
+        'queued intent survives refusal',
+      );
+      checkEqual(
+        (await a.api.readRows('tasks')).map((row) => row.rowId),
+        ['kept'],
+        'local row survives refusal',
+      );
+    },
+  },
+
+  {
     name: 'schema-bump/downgrade-refuses-and-preserves-v3-outbox',
     specRefs: ['§7.4.1', '§7.4.2'],
     server: { schema: { ...FIXTURE_SCHEMA, version: 3 } },
@@ -126,7 +174,7 @@ export const schemaBumpScenarios: readonly Scenario[] = [
       const rows = await a.api.readRows('tasks');
       const subscription = await a.api.subscriptionState('tasks');
       await a.api.executeStorageSql(
-        "DELETE FROM _syncular_meta WHERE key = 'localSchemaVersion'",
+        "DELETE FROM _syncular_meta WHERE key IN ('localSchemaVersion', 'localSchemaDescriptor')",
       );
       await ctx.recreateClient(a, FIXTURE_SCHEMA);
       checkEqual(
@@ -639,8 +687,7 @@ export const schemaBumpScenarios: readonly Scenario[] = [
       });
       await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
 
-      // Two offline v1 commits: an upsert into the removed `docs` table and an
-      // upsert into the surviving `tasks` table.
+      // Queue an upsert and delete for removed `docs`, plus a surviving task.
       const docsCommit = await a.api.mutate([
         {
           op: 'upsert',
@@ -648,23 +695,26 @@ export const schemaBumpScenarios: readonly Scenario[] = [
           values: doc('d1', 'o1', 'p1', 'removed'),
         },
       ]);
+      const docsDelete = await a.api.mutate([
+        { op: 'delete', table: 'docs', rowId: 'd2' },
+      ]);
       const tasksCommit = await a.api.mutate([
         { op: 'upsert', table: 'tasks', values: task('t1', 'p1', 'survives') },
       ]);
       checkEqual(
         await a.api.pendingCommitIds(),
-        [docsCommit, tasksCommit],
-        'both offline commits are queued',
+        [docsCommit, docsDelete, tasksCommit],
+        'all offline commits are queued',
       );
 
       // App update to the docs-dropping v2 schema.
       await ctx.recreateClient(a, FIXTURE_SCHEMA_V2_DROP_DOCS);
       // §7.4.3/§7.4.4 parity: the reset preserves the outbox, so both cores
-      // still hold the removed-table commit and raise no rejection before the
+      // still hold the removed-table commits and raise no rejection before the
       // send-time prepass runs.
       checkEqual(
         await a.api.pendingCommitIds(),
-        [docsCommit, tasksCommit],
+        [docsCommit, docsDelete, tasksCommit],
         'the reset preserves the removed-table commit',
       );
       check(
@@ -699,6 +749,13 @@ export const schemaBumpScenarios: readonly Scenario[] = [
         incompatible?.retryable,
         false,
         'a schema-incompatible commit is not retryable',
+      );
+      check(
+        rejections.some(
+          (r) =>
+            r.clientCommitId === docsDelete && r.code === 'sync.unknown_table',
+        ),
+        'the removed-table delete receives ordinary server validation',
       );
       checkEqual(
         await a.api.pendingCommitIds(),

@@ -42,11 +42,13 @@ An unreadable or corrupt marker fails with `sync.local_corrupt`, and so does a
 metadata table carrying more than one marker row: the client never resolves
 the ambiguity by picking a row. A generated schema version outside the marker's
 range (1 through 2147483647) is refused with `sync.invalid_request` before the
-replica is created or opened, and a refused open leaves the replica's journal
-mode and contents untouched. The client accepts an absent metadata table or
+replica is created or opened. Schema validation refusals leave the replica's
+journal mode and contents untouched. The client accepts an absent metadata table or
 marker for fresh and legacy replicas.
 Equal versions keep ordinary startup behavior, and version increases keep the
-wipe-re-bootstrap-replay flow. Discarding previous-version context does not
+wipe-re-bootstrap-replay flow. A failed schema or log-epoch reset rolls
+back its SQLite writes and restores the client's in-memory readiness, active
+round, subscriptions, outbox, and overlay state. Discarding previous-version context does not
 permit a schema downgrade. Older binaries that predate this guard retain their
 historical reset behavior.
 
@@ -92,10 +94,15 @@ as a rejection with the client-local code
 `sync.outbox_incompatible` (§7.4.4). For a removed table the local overlay has
 no mirror to replay into, so the replay skips that operation: an upsert cannot
 be encoded and is classified at send time, while a value-free delete stays
-encodable and is validated by the server. The un-encodable commit then leaves
+encodable and is validated by the server. A rejection of that delete drains
+the commit without looking up a removed local table. The un-encodable commit then leaves
 the outbox and its purely-optimistic rows are undone, exactly like a server
 rejection. Later outbox commits that *do* encode keep replaying, so the
 queue keeps moving past the one incompatible commit.
+
+The client classifies incompatible commits before collecting their pending blob
+uploads. A dropped commit no longer requires its cached bodies; independent
+staging pins and surviving commit dependencies still require upload.
 
 ## What the app sees
 
@@ -153,3 +160,14 @@ the schema stop alongside the query's local completeness. Applications can show
 a notice with the distribution host's update action and pause edits because an
 incompatible outbox commit can be rejected during replay. Leadership and security
 gates still refuse local access when the owner or authorization is unavailable.
+
+A missing schema marker with a retained schema descriptor is corrupt local
+state. Both cores refuse it with `sync.local_corrupt` before writes; the
+requested schema cannot establish which version last wrote those tables.
+
+Previous-version capture uses a separate file. The pre-reset sweep discards
+an older capture before creating its replacement, so a failed replica
+transaction does not restore that older capture. A read or boot discards a
+replacement whose recorded version differs from the active schema. The
+replica transaction still preserves its queued writes and local tables on
+failure.

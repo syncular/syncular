@@ -83,6 +83,10 @@ Three constructors cover the storage choices: `SyncClient::new` (in-memory),
 `SyncClient::open_path` (on-disk file, `CREATE TABLE IF NOT EXISTS` so
 re-opening reuses persisted rows), and `SyncClient::with_connection` (a
 caller-supplied fresh rusqlite `Connection`).
+`open_path_with_identity` also persists the client identity and enables WAL
+after schema validation. It checks SQLite's returned journal mode and fails
+with `sync.invalid_request` if WAL is unavailable. Pass a persistent file
+path; an empty path or `:memory:` cannot enter WAL mode.
 
 ## Transport gate
 
@@ -462,7 +466,9 @@ freshness. A commit delivery is `pending` while the id has an outbox entry,
 otherwise the persisted retained outcome, otherwise `unknown`. The sidecar
 reports the persisted outcome fields (status, every result with its conflict
 or rejection code, the retained operation envelope, and the resolution) and
-omits the owner-derived `retainedRows` images.
+omits the owner-derived `retainedRows` images. Invalid stored field types,
+fractional indexes or versions, unsafe integer metadata, malformed conflict
+columns, and invalid rejection details fail with `sync.local_corrupt`.
 
 `local_revision` reads the durable revision without a dummy query; a
 non-canonical marker fails `sync.local_corrupt` instead of reading as zero.

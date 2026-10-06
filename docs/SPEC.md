@@ -4244,6 +4244,10 @@ created and rewritten only at the end of a successful reset (§7.4.3).
 A client that has never persisted a marker is treated as already at its
 generated version (fresh install — the tables it just created match the
 running code; nothing to reset).
+If the marker is absent while `localSchemaDescriptor` remains, the client
+MUST refuse with `sync.local_corrupt` before writes. The descriptor proves
+the replica previously persisted the paired marker; its version cannot be
+guessed from the requested schema.
 
 The marker is written together with the persisted schema descriptor
 (§7.4.6.1) in the same transaction; §7.4.1 and §7.4.6.1 describe the two
@@ -4409,6 +4413,10 @@ schema and retrying it unmodified never succeeds). Later outbox commits
 that *do* encode continue to replay — one incompatible commit does not
 wedge the queue, matching the §7.2 rule that dependents are app policy.
 
+The send-time classification MUST complete before collecting blob uploads for
+pending commits. Dropping an incompatible commit removes its blob dependencies;
+an independent staging pin or a surviving commit can still require that body.
+
 An operation that names a table the new schema removed has no local mirror to
 replay into, so the overlay replay skips it. That skip is structural and never
 a replay failure. A value-free delete remains encodable and takes ordinary
@@ -4557,7 +4565,11 @@ container file, or the durable refusal when the capture is refused;
 (§7.4.1) and the descriptor (§7.4.6.1). A crash before the reset commits
 leaves the old marker, so the next boot re-runs the whole reset and the
 sweep discards any container: the reset is idempotent by the existing
-marker, with no cross-file transaction and no new idempotency token. The
+marker, with no cross-file transaction and no new idempotency token. A failed
+reset transaction has the same boundary: it restores the replica but does
+not restore a container discarded by the pre-reset sweep. A container for
+an uncommitted version is unavailable and discarded at the next read or
+boot. The
 §2.1 log-epoch reset is not a schema bump: it performs the orphan sweep
 and captures nothing.
 
@@ -4619,7 +4631,7 @@ file removed, the records deleted in one transaction — on ANY of:
   every read;
 - **orphan/stale** — missing or undecodable metadata, or a container whose
   `currentVersion` differs from the running generated version, discarded
-  at boot before anything can read it;
+  at boot and at every read before returning any captured rows;
 - **explicit `previousVersionDiscard()`** — returns
   `{ present, discarded }`. A no-op is a success: the discard is
   idempotent by construction and never fails for absence.
@@ -4765,7 +4777,11 @@ both an id the client never held and one whose outcome retention pruned.
 The read never reduces a multi-error outcome to one code, and the existing
 outcome-retention policy bounds what a later read can still resolve. The owning core additionally attaches in-memory
 retained-row images to its own outcomes; the sidecar reports the persisted
-outcome fields.
+outcome fields. Persisted outcome readers validate SQL field types, integral
+indexes and safe-integer versions and timestamps, conflict-column arrays,
+and rejection details against their existing bounds. Malformed journal
+metadata fails with `sync.local_corrupt`; recognized SQLite storage errors
+retain their storage classification.
 
 **Snapshot read failure.** The revision read is fallible. A missing
 revision marker is the legacy zero; `+1`, `01`, a negative value,
@@ -5261,7 +5277,9 @@ pinned, never interpreted.
   that request can be acknowledged by that round. Later local commits remain
   in the outbox for the next round. Apply replays them over the server base.
   Teardown, security preflight, purge and released subscription contexts
-  invalidate their in-flight result. Socket deltas buffered during a round
+  invalidate their in-flight result. A local purge or rebootstrap that rolls
+  back MUST preserve the captured round so its response can still apply.
+  Socket deltas buffered during a round
   follow its response. Hosts MUST use completion notifications and existing
   sync intents, without introducing a polling loop. Synchronous core APIs
   drive the same lifecycle on their calling thread.

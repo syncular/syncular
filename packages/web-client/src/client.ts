@@ -1069,6 +1069,14 @@ export class SyncClient {
             // newer replica.
             if (rows.length > 1) throw new Error('invalid schema marker');
             const row = rows[0];
+            if (
+              row === undefined &&
+              this.#db.query(
+                "SELECT 1 FROM _syncular_meta WHERE key = 'localSchemaDescriptor' LIMIT 1",
+              ).length > 0
+            ) {
+              throw new Error('missing paired schema marker');
+            }
             if (row !== undefined) {
               const value = row.value;
               const version = Number(value);
@@ -1852,6 +1860,13 @@ export class SyncClient {
       return this.#previousVersionUnavailable(
         currentVersion,
         refusal?.reason ?? 'no-previous-descriptor',
+      );
+    }
+    if (record.currentVersion !== currentVersion) {
+      this.#discardPreviousVersion();
+      return this.#previousVersionUnavailable(
+        currentVersion,
+        'no-previous-descriptor',
       );
     }
     if (
@@ -3938,15 +3953,6 @@ export class SyncClient {
     try {
       await this.#drainPendingEvictions();
       const logEpoch = getMeta(this.#db, LOG_EPOCH_META_KEY);
-      // §5.9.7 B4: upload pending blobs BEFORE pushing rows that reference
-      // them, so the server-side existence check (§6.6) passes.
-      if (
-        logEpoch !== undefined &&
-        this.#hasBlobs &&
-        this.#config.blobs !== undefined
-      ) {
-        await this.#flushBlobUploads();
-      }
       // §7.4.4: encode the outbox with the CURRENT codec; a commit that
       // cannot express itself under the new schema (a dropped column/table)
       // is removed from the push and surfaced as a rejection, never wedging
@@ -3975,6 +3981,15 @@ export class SyncClient {
       } = logEpoch === undefined
         ? { pushFrames: [], outbox: [], frameBytes: [], deferred: 0 }
         : await this.#encodeOutboxForPush(header, pull, byteCap);
+      // §5.9.7 B4: upload pending blobs BEFORE pushing rows that reference
+      // them, so the server-side existence check (§6.6) passes.
+      if (
+        logEpoch !== undefined &&
+        this.#hasBlobs &&
+        this.#config.blobs !== undefined
+      ) {
+        await this.#flushBlobUploads();
+      }
       // Captured after encoding: a subscribe/unsubscribe during the
       // encryption await must not make the final request exceed the byte
       // budget, and the reset epoch must be the one the response apply checks.
@@ -5062,13 +5077,18 @@ export class SyncClient {
       // (table-wide scope) and later commits over legacy before-images.
       // ACK-only groups reconcile nothing and stay zero-work.
       this.#replayOutbox(
-        commit.operations.map((operation) =>
-          JSON.stringify(
-            hasUniqueIndex(this.#table(operation.table))
-              ? [operation.table]
-              : [operation.table, operation.rowId],
-          ),
-        ),
+        commit.operations.flatMap((operation) => {
+          const table = this.#schema.tables.get(operation.table);
+          return table === undefined
+            ? []
+            : [
+                JSON.stringify(
+                  hasUniqueIndex(table)
+                    ? [operation.table]
+                    : [operation.table, operation.rowId],
+                ),
+              ];
+        }),
       );
     });
     batch.status();

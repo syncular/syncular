@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 // Bun 1.4.0, minified browser graphs with SQLite external. The client
-// measures 154330 bytes and the worker 171291 bytes after this
+// measures 155303 bytes and the worker 172264 bytes after this
 // change. Pin the measured graphs and independently assert that ordinary
 // imports exclude authority modules.
 test('ordinary client, worker and native graphs exclude authority; only explicit opt-in retains it', async () => {
@@ -16,19 +16,19 @@ test('ordinary client, worker and native graphs exclude authority; only explicit
         'client',
         `export { SyncClient } from '${root}/packages/web-client/src/client.ts';`,
         false,
-        154330,
+        155303,
       ],
       [
         'client-root',
         `export { SyncClient } from '${root}/packages/web-client/src/index.ts';`,
         false,
-        154330,
+        155303,
       ],
       [
         'worker',
         `import { startSyncWorker } from '${root}/packages/web-client/src/worker-entry.ts'; startSyncWorker();`,
         false,
-        171291,
+        172264,
       ],
       [
         'authority-worker',

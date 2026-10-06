@@ -81,6 +81,51 @@ async function flooredClientWithOfflineRow(
 
 export const previousVersionScenarios: readonly Scenario[] = [
   {
+    name: 'previous-version/failed-upgrade-discards-uncommitted-capture',
+    specRefs: ['§7.4.6.3', '§7.4.6.5'],
+    requires: ['storage-fault'],
+    server: { schema: FIXTURE_SCHEMA_V2 },
+    async run(ctx) {
+      const { handle: a, commitId } = await flooredClientWithOfflineRow(ctx, {
+        previousVersionContext: PREVIOUS_VERSION,
+      });
+      await ctx.recreateClient(a, FIXTURE_SCHEMA_V2);
+      checkEqual(
+        (await a.api.previousVersionSnapshot?.({ table: 'tasks' }))?.available,
+        true,
+        'v1 context exists before the next upgrade',
+      );
+      check(a.api.executeStorageSql !== undefined, 'storage fault seam');
+      await a.api.executeStorageSql(
+        "CREATE TRIGGER refuse_v3 BEFORE INSERT ON _syncular_meta WHEN NEW.key = 'localSchemaVersion' AND NEW.value = '3' BEGIN SELECT RAISE(ABORT, 'refuse version'); END",
+      );
+      let failed = false;
+      try {
+        await ctx.recreateClient(a, { ...FIXTURE_SCHEMA_V2, version: 3 });
+      } catch {
+        failed = true;
+      }
+      check(failed, 'the v3 reset fails after capture');
+      await ctx.recreateClient(a, FIXTURE_SCHEMA_V2);
+      const snapshot = await a.api.previousVersionSnapshot?.({
+        table: 'tasks',
+      });
+      checkEqual(
+        snapshot?.available,
+        false,
+        'the uncommitted v3 capture is unavailable',
+      );
+      checkEqual(snapshot?.currentVersion, 2, 'the active schema remains v2');
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [commitId],
+        'failed reset preserves durable intent',
+      );
+      await a.api.executeStorageSql('DROP TRIGGER refuse_v3');
+    },
+  },
+
+  {
     // RFC 0005 D8: the feature flag defaults OFF. A bump captures nothing and
     // the read surface reports `not-configured` — the 0.22.0 behaviour plus the
     // descriptor write and the unconditional orphan sweep.

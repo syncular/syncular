@@ -1728,30 +1728,32 @@ mod observation_tests {
     }
 
     #[test]
-    fn open_path_rejects_invalid_push_limits_before_wal() {
-        let path = std::env::temp_dir().join(format!(
-            "syncular-bad-limits-{}.sqlite",
-            uuid::Uuid::new_v4()
-        ));
-        let schema = json!({"version":1,"tables":[]});
-        let error = SyncClient::open_path_with_identity(
-            None,
-            &schema,
-            ClientLimits {
+    fn open_path_rejects_invalid_push_limits_before_storage() {
+        for identity in [false, true] {
+            let path = std::env::temp_dir().join(format!(
+                "syncular-bad-limits-{}.sqlite",
+                uuid::Uuid::new_v4()
+            ));
+            let schema = json!({"version":1,"tables":[]});
+            let limits = ClientLimits {
                 max_push_request_bytes: Some(0),
                 ..Default::default()
-            },
-            path.to_str().unwrap(),
-        )
-        .err();
-        assert_eq!(
-            error.as_deref(),
-            Some("sync.invalid_request: push limit must be an integer in 1..=4294967295")
-        );
-        assert!(
-            !path.exists(),
-            "an invalid limit is rejected before the database file is created"
-        );
+            };
+            let error = if identity {
+                SyncClient::open_path_with_identity(None, &schema, limits, path.to_str().unwrap())
+            } else {
+                SyncClient::open_path("bad-limits".into(), &schema, limits, path.to_str().unwrap())
+            }
+            .err();
+            assert_eq!(
+                error.as_deref(),
+                Some("sync.invalid_request: push limit must be an integer in 1..=4294967295")
+            );
+            assert!(
+                !path.exists(),
+                "an invalid limit is rejected before the database file is created"
+            );
+        }
     }
 
     #[test]
@@ -2778,6 +2780,63 @@ mod observation_tests {
     }
 
     #[test]
+    fn failed_log_epoch_resets_restore_memory_and_durable_state() {
+        for key in [
+            "localSchemaVersion",
+            "localSchemaDescriptor",
+            "logEpoch",
+            "localRevision",
+        ] {
+            let mut client = client();
+            client.set_meta(LOG_EPOCH_KEY, "epoch-old");
+            let commit = client
+                .mutate(vec![Mutation::Upsert {
+                    table: "tasks".into(),
+                    values: Map::from_iter([
+                        ("id".into(), json!("offline")),
+                        ("project_id".into(), json!("p1")),
+                    ]),
+                    base_version: None,
+                }])
+                .unwrap();
+            client.active_round = Some(uuid::Uuid::new_v4());
+            client.overlay_dirty.set(false);
+            let round = client.active_round;
+            let needed = client.sync_needed;
+            let revision = client.local_revision();
+            let rows = serde_json::to_value(client.read_rows("tasks").unwrap()).unwrap();
+            client.drain_change_batches();
+            client.drain_sync_intents();
+            client.conn.execute_batch(&format!("CREATE TRIGGER fail_reset BEFORE INSERT ON _syncular_meta WHEN NEW.key='{key}' BEGIN SELECT RAISE(FAIL,'injected reset failure'); END")).unwrap();
+            assert!(client.run_log_epoch_reset("epoch-new").is_err(), "{key}");
+            assert_eq!(client.get_meta(LOG_EPOCH_KEY).as_deref(), Some("epoch-old"));
+            assert!(!client.upgrading);
+            assert_eq!(client.active_round, round);
+            assert!(!client.overlay_dirty.get());
+            assert_eq!(client.sync_needed, needed);
+            assert_eq!(client.local_revision(), revision);
+            assert_eq!(
+                client.pending_commit_ids().as_slice(),
+                std::slice::from_ref(&commit)
+            );
+            assert_eq!(
+                serde_json::to_value(client.read_rows("tasks").unwrap()).unwrap(),
+                rows
+            );
+            assert!(client.drain_change_batches().is_empty());
+            assert!(client.drain_sync_intents().is_empty());
+            assert!(client.conn.is_autocommit());
+            client
+                .conn
+                .execute_batch("DROP TRIGGER fail_reset")
+                .unwrap();
+            client.run_log_epoch_reset("epoch-new").unwrap();
+            assert_eq!(client.get_meta(LOG_EPOCH_KEY).as_deref(), Some("epoch-new"));
+            assert_eq!(client.pending_commit_ids(), [commit]);
+        }
+    }
+
+    #[test]
     fn acknowledged_restore_and_replay_ignore_unrelated_subscription_count() {
         for subscriptions in [0, 2, 6, 12] {
             let mut client = SyncClient::new("ack-scope".into(), &json!({ "version": 1, "tables": [
@@ -3564,7 +3623,15 @@ mod observation_tests {
 
     #[test]
     fn released_context_discards_in_flight_ack_and_server_rows() {
-        for barrier in ["preflight", "purge", "subscription"] {
+        for barrier in [
+            "preflight",
+            "purge",
+            "rebootstrap",
+            "subscription",
+            "failed-purge-replay",
+            "failed-purge-publish",
+            "failed-rebootstrap",
+        ] {
             let mut client = client();
             client.set_meta(LOG_EPOCH_KEY, "epoch");
             client
@@ -3662,6 +3729,68 @@ mod observation_tests {
                             }],
                         })
                         .unwrap();
+                }
+                "rebootstrap" => {
+                    client
+                        .rebootstrap_local_data(&LocalDataRebootstrapInput {
+                            rebootstrap_id: "pending-round".into(),
+                        })
+                        .unwrap();
+                }
+                "failed-purge-replay" | "failed-purge-publish" | "failed-rebootstrap" => {
+                    let trigger = if barrier == "failed-purge-replay" {
+                        "CREATE TRIGGER fail_local BEFORE DELETE ON tasks BEGIN SELECT RAISE(ABORT, 'local fault'); END"
+                    } else {
+                        "CREATE TRIGGER fail_local BEFORE INSERT ON _syncular_meta WHEN NEW.key = 'localRevision' BEGIN SELECT RAISE(ABORT, 'local fault'); END"
+                    };
+                    client.conn.execute_batch(trigger).unwrap();
+                    let revision = client.local_revision();
+                    if barrier == "failed-rebootstrap" {
+                        assert!(client
+                            .rebootstrap_local_data(&LocalDataRebootstrapInput {
+                                rebootstrap_id: "failed-round".into(),
+                            })
+                            .is_err());
+                    } else {
+                        assert!(client
+                            .purge_local_data(&LocalDataPurgeInput {
+                                purge_id: "failed-round".into(),
+                                targets: vec![LocalDataPurgeTarget {
+                                    table: "tasks".into(),
+                                    selectors: BTreeMap::from([(
+                                        "project_id".into(),
+                                        vec!["p1".into()]
+                                    )]),
+                                }],
+                            })
+                            .is_err());
+                    }
+                    assert_eq!(client.local_revision(), revision);
+                    assert_eq!(client.pending_commit_ids(), vec![commit.clone()]);
+                    client
+                        .conn
+                        .execute_batch("DROP TRIGGER fail_local")
+                        .unwrap();
+                    let applied = client.apply_sync_round(completed);
+                    assert!(
+                        matches!(
+                            applied,
+                            crate::AppliedSyncRound::Complete {
+                                outcome: SyncOutcome::Ok(_),
+                                ..
+                            }
+                        ),
+                        "{barrier}"
+                    );
+                    assert!(client.pending_commit_ids().is_empty());
+                    assert_eq!(
+                        client
+                            .query("SELECT id FROM tasks WHERE id = 'server'", &[])
+                            .unwrap()
+                            .len(),
+                        1
+                    );
+                    continue;
                 }
                 "subscription" => {
                     client.unsubscribe("tasks");
@@ -8560,7 +8689,14 @@ fn snapshot_read_connection(
                     rusqlite::params![id],
                     StoredCommitOutcomeRow::from_row,
                 )
-                .optional()?;
+                .optional()
+                .map_err(|error| match error {
+                    rusqlite::Error::InvalidColumnType(..)
+                    | rusqlite::Error::FromSqlConversionFailure(..)
+                    | rusqlite::Error::IntegralValueOutOfRange(..) =>
+                        corrupt("persisted commit outcome is invalid"),
+                    _ => QueryReadFailure::from(error),
+                })?;
             deliveries.push(match row {
                 Some(row) => CommitDelivery::Known {
                     client_commit_id: id.clone(),
@@ -8836,6 +8972,18 @@ fn read_local_schema_version(conn: &Connection, requested: i32) -> Result<Option
         return Err(corrupt());
     }
     let Some(value) = value else {
+        let has_descriptor = conn
+            .query_row(
+                "SELECT 1 FROM _syncular_meta WHERE key = ?1 LIMIT 1",
+                [crate::previous_version::LOCAL_SCHEMA_DESCRIPTOR_KEY],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(schema_marker_read_failure)?
+            .is_some();
+        if has_descriptor {
+            return Err(corrupt());
+        }
         return Ok(None);
     };
     if !matches!(value.as_bytes().first(), Some(b'1'..=b'9'))
@@ -8884,6 +9032,8 @@ impl SyncClient {
         limits: ClientLimits,
         path: &str,
     ) -> Result<Self, String> {
+        validate_client_limits(&limits)?;
+        parse_schema_json(schema_json)?;
         let conn = Connection::open(path).map_err(|e| format!("open db {path:?}: {e}"))?;
         Self::with_connection(client_id, schema_json, limits, conn)
     }
@@ -8909,10 +9059,15 @@ impl SyncClient {
         conn.busy_timeout(std::time::Duration::from_millis(250))
             .map_err(|error| format!("configure db {path:?} busy timeout: {error}"))?;
         let client = Self::with_connection_identity(client_id, schema_json, limits, conn)?;
-        client
+        let journal_mode: String = client
             .conn
-            .pragma_update(None, "journal_mode", "WAL")
-            .map_err(|error| format!("configure db {path:?} WAL mode: {error}"))?;
+            .pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))
+            .map_err(|error| Self::sqlite_failure(&client.storage_failure, error))?;
+        if journal_mode != "wal" {
+            return Err(
+                "sync.invalid_request: file-backed client requires WAL journal mode".to_owned(),
+            );
+        }
         Ok(client)
     }
 
@@ -9043,9 +9198,7 @@ impl SyncClient {
             match marker {
                 None => {
                     client.create_synced_tables()?;
-                    client.set_meta(LOCAL_SCHEMA_VERSION_KEY, &client.schema.version.to_string());
-                    // D1: the descriptor is written beside every marker write.
-                    set_local_schema_descriptor(&client.conn, &client.schema);
+                    client.persist_schema_version()?;
                     client.save_subscription_scope_schema();
                 }
                 Some(version) if version == client.schema.version => {
@@ -9053,7 +9206,8 @@ impl SyncClient {
                     // RFC 0005 D1: the same-version open backfills the descriptor
                     // for a database first opened by an unaware binary, so the
                     // NEXT bump can capture without needing a schema bump first.
-                    set_local_schema_descriptor(&client.conn, &client.schema);
+                    set_local_schema_descriptor(&client.conn, &client.schema)
+                        .map_err(|error| Self::sqlite_failure(&client.storage_failure, error))?;
                     client.save_subscription_scope_schema();
                 }
                 Some(_) => client.run_schema_reset()?,
@@ -9350,6 +9504,19 @@ impl SyncClient {
             .map_err(|_| {
                 "sync.local_corrupt: persisted local rebootstrap receipt is unreadable".to_owned()
             })
+    }
+
+    // The caller holds the startup/reset transaction. Either both schema
+    // records persist or the enclosing operation fails and rolls back.
+    fn persist_schema_version(&self) -> Result<(), String> {
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO _syncular_meta(key,value) VALUES (?1,?2)",
+                rusqlite::params![LOCAL_SCHEMA_VERSION_KEY, self.schema.version.to_string()],
+            )
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+        set_local_schema_descriptor(&self.conn, &self.schema)
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
     }
 
     fn set_meta(&self, key: &str, value: &str) {
@@ -10418,8 +10585,7 @@ impl SyncClient {
                 Some(version) if version < self.schema.version => self.run_schema_reset()?,
                 None => {
                     self.create_synced_tables()?;
-                    self.set_meta(LOCAL_SCHEMA_VERSION_KEY, &self.schema.version.to_string());
-                    set_local_schema_descriptor(&self.conn, &self.schema);
+                    self.persist_schema_version()?;
                 }
                 _ => {}
             }
@@ -10611,7 +10777,12 @@ impl SyncClient {
         let result = self
             .run_schema_reset_observed(&mut batch, false)
             .and_then(|()| {
-                self.set_meta(LOG_EPOCH_KEY, log_epoch);
+                self.conn
+                    .execute(
+                        "INSERT OR REPLACE INTO _syncular_meta(key,value) VALUES (?1,?2)",
+                        rusqlite::params![LOG_EPOCH_KEY, log_epoch],
+                    )
+                    .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
                 self.sync_needed = true;
                 batch.status = true;
                 self.finish_observation("syncular_log_epoch_reset", batch)
@@ -10792,10 +10963,7 @@ impl SyncClient {
         self.schema_floor = None;
         self.delete_meta(SCHEMA_FLOOR_KEY);
         // Rewrite the marker LAST so a crash mid-reset re-runs the reset.
-        self.set_meta(LOCAL_SCHEMA_VERSION_KEY, &self.schema.version.to_string());
-        // D1: the descriptor follows every marker write. A crash in between
-        // self-heals on the next same-version open, which backfills it.
-        set_local_schema_descriptor(&self.conn, &self.schema);
+        self.persist_schema_version()?;
         self.save_subscription_scope_schema();
         // §7.4.3/§7.4.4: the reset preserves the outbox. A pending upsert that
         // cannot re-encode under the new schema stays pending and is classified
@@ -11314,13 +11482,40 @@ impl SyncClient {
             resolved_at_ms,
             replacement_client_commit_id,
         } = row;
+        if sequence.unsigned_abs() > MAX_JS_SAFE_INTEGER
+            || recorded_at_ms.unsigned_abs() > MAX_JS_SAFE_INTEGER
+            || resolved_at_ms.is_some_and(|value| value.unsigned_abs() > MAX_JS_SAFE_INTEGER)
+        {
+            return Err("sync.local_corrupt: persisted commit outcome is invalid".to_owned());
+        }
+        let results: Vec<CommitOperationOutcome> = serde_json::from_str(&results_json)
+            .map_err(|_| "sync.local_corrupt: persisted commit outcome is invalid".to_owned())?;
+        for result in &results {
+            match result {
+                CommitOperationOutcome::Conflict { conflict }
+                    if conflict.server_version.unsigned_abs() > MAX_JS_SAFE_INTEGER =>
+                {
+                    return Err("sync.local_corrupt: persisted commit outcome is invalid".to_owned())
+                }
+                CommitOperationOutcome::Error { rejection } => {
+                    if let Some(details) = &rejection.details {
+                        let encoded = serde_json::to_string(details).map_err(|_| {
+                            "sync.local_corrupt: persisted commit outcome is invalid".to_owned()
+                        })?;
+                        RejectionDetails::parse(&encoded).map_err(|_| {
+                            "sync.local_corrupt: persisted commit outcome is invalid".to_owned()
+                        })?;
+                    }
+                }
+                _ => {}
+            }
+        }
         Ok(CommitOutcome {
             sequence,
             client_commit_id,
             status: Self::parse_outcome_status(&status)?,
             recorded_at_ms,
-            results: serde_json::from_str(&results_json)
-                .map_err(|error| format!("invalid persisted commit outcome results: {error}"))?,
+            results,
             operations: operations_json
                 .map(|value| {
                     serde_json::from_str(&value).map_err(|error| {
@@ -13773,6 +13968,7 @@ impl SyncClient {
                     .expect("retained storage failures are classified");
                 *error_code = code.to_owned();
                 *message = match code {
+                    "client.storage_busy" => "local SQLite storage is busy",
                     "client.storage_full" => "local SQLite storage is full",
                     "client.storage_io" => "local SQLite storage I/O failed",
                     "client.storage_corrupt" => "local SQLite storage is corrupt",
@@ -13887,6 +14083,16 @@ impl SyncClient {
                 }));
             }
             self.set_sync_needed(false, false);
+            self.drain_pending_evictions()
+                .and_then(|_| self.drop_incompatible_outbox())
+                .and_then(|_| self.drop_unencodable_outbox())
+                .map_err(|message| {
+                    Box::new(SyncOutcome::Failed {
+                        error_code: "storage.failed".into(),
+                        message,
+                        details: None,
+                    })
+                })?;
             let uploads = if self.get_meta(LOG_EPOCH_KEY).is_some() && self.schema_has_blobs() {
                 self.pending_blob_uploads().map_err(|e| {
                     Box::new(SyncOutcome::Failed {
@@ -13898,16 +14104,6 @@ impl SyncClient {
             } else {
                 Vec::new()
             };
-            self.drain_pending_evictions()
-                .and_then(|_| self.drop_incompatible_outbox())
-                .and_then(|_| self.drop_unencodable_outbox())
-                .map_err(|message| {
-                    Box::new(SyncOutcome::Failed {
-                        error_code: "storage.failed".into(),
-                        message,
-                        details: None,
-                    })
-                })?;
             if self.realtime_state != RealtimeState::Connected
                 && self.realtime_policy == RealtimePolicy::Required
             {
@@ -16218,7 +16414,6 @@ impl SyncClient {
         input: &LocalDataPurgeInput,
     ) -> Result<LocalDataPurgeResult, String> {
         let (targets, canonical_plan) = self.compile_local_data_purge(input)?;
-        self.cancel_sync_round();
         let meta_key = format!("localPurge:{}", input.purge_id);
         let applied_plan = self
             .conn
@@ -16391,6 +16586,7 @@ impl SyncClient {
             self.overlay_dirty.restore(prior_overlay_dirty.clone());
             return Err(error);
         }
+        self.cancel_sync_round();
         Ok(result)
     }
 
@@ -16440,7 +16636,7 @@ impl SyncClient {
         let prior_sync_intents = self.sync_intent_queue.clone();
         let receipt = encode_local_rebootstrap_receipt(retained_commits, reset_subscriptions)?;
 
-        self.cancel_sync_round();
+        let prior_active_round = self.active_round;
         self.begin_observation("syncular_local_rebootstrap")?;
         let mut batch = ChangeAccumulator::default();
         let applied = (|| -> Result<(), String> {
@@ -16458,6 +16654,7 @@ impl SyncClient {
         })();
         if let Err(error) = applied {
             self.rollback_observation("syncular_local_rebootstrap");
+            self.active_round = prior_active_round;
             self.subs = prior_subs;
             self.upgrading = prior_upgrading;
             self.stopped = prior_stopped;
@@ -16469,6 +16666,7 @@ impl SyncClient {
         }
         if let Err(error) = self.finish_observation("syncular_local_rebootstrap", batch) {
             self.rollback_observation("syncular_local_rebootstrap");
+            self.active_round = prior_active_round;
             self.subs = prior_subs;
             self.upgrading = prior_upgrading;
             self.stopped = prior_stopped;
@@ -18043,6 +18241,7 @@ mod previous_version_wiring_tests {
             "v3-only"
         );
         reopened.delete_meta(LOCAL_SCHEMA_VERSION_KEY);
+        reopened.delete_meta(crate::previous_version::LOCAL_SCHEMA_DESCRIPTOR_KEY);
         drop(reopened);
         let legacy = SyncClient::open_path(
             "downgrade".into(),
@@ -18181,6 +18380,35 @@ mod previous_version_wiring_tests {
     }
 
     #[test]
+    fn file_identity_constructor_requires_the_returned_wal_mode() {
+        for path in [":memory:", ""] {
+            let error = SyncClient::open_path_with_identity(
+                None,
+                &previous_version_schema(1),
+                ClientLimits::default(),
+                path,
+            )
+            .err()
+            .expect("temporary SQLite databases cannot enter WAL mode");
+            assert_eq!(
+                error,
+                "sync.invalid_request: file-backed client requires WAL journal mode"
+            );
+        }
+        let path = temp_replica("confirmed-wal");
+        let client = SyncClient::open_path_with_identity(
+            None,
+            &previous_version_schema(1),
+            ClientLimits::default(),
+            path.to_str().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(journal_mode(&client.conn), "wal");
+        drop(client);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn non_positive_generated_schema_versions_are_refused_before_storage() {
         for version in [json!(0), json!(-1), json!(i32::MIN), json!(2147483648i64)] {
             let mut schema = previous_version_schema(1);
@@ -18195,22 +18423,33 @@ mod previous_version_wiring_tests {
             // The file-backed seam refuses before the replica gains a table.
             let path = temp_replica("bad-version");
             let path_str = path.to_str().expect("path");
-            let error = SyncClient::open_path_with_identity(
-                None,
-                &schema,
-                ClientLimits::default(),
-                path_str,
-            )
-            .err()
-            .expect("refuse before storage");
-            assert!(
-                error.starts_with("sync.invalid_request:"),
-                "{version}: {error}"
-            );
-            assert!(
-                !path.exists(),
-                "{version}: a refused constructor creates no replica file"
-            );
+            for identity in [false, true] {
+                let error = if identity {
+                    SyncClient::open_path_with_identity(
+                        None,
+                        &schema,
+                        ClientLimits::default(),
+                        path_str,
+                    )
+                } else {
+                    SyncClient::open_path(
+                        "bad-version".into(),
+                        &schema,
+                        ClientLimits::default(),
+                        path_str,
+                    )
+                }
+                .err()
+                .expect("refuse before storage");
+                assert!(
+                    error.starts_with("sync.invalid_request:"),
+                    "{version}: {error}"
+                );
+                assert!(
+                    !path.exists(),
+                    "{version}: a refused constructor creates no replica file"
+                );
+            }
         }
         // A missing version is the same request error, not a parse failure.
         let mut schema = previous_version_schema(1);
@@ -18418,6 +18657,41 @@ mod previous_version_wiring_tests {
     }
 
     #[test]
+    fn failed_schema_record_writes_roll_back_recreation() {
+        for key in [
+            LOCAL_SCHEMA_VERSION_KEY,
+            crate::previous_version::LOCAL_SCHEMA_DESCRIPTOR_KEY,
+        ] {
+            let mut client = SyncClient::new(
+                "schema-record".into(),
+                &previous_version_schema(1),
+                ClientLimits::default(),
+            )
+            .expect("v1");
+            let marker = client.get_meta(LOCAL_SCHEMA_VERSION_KEY);
+            let descriptor = client.get_meta(crate::previous_version::LOCAL_SCHEMA_DESCRIPTOR_KEY);
+            client.conn.execute_batch(&format!("CREATE TRIGGER refuse_schema_record BEFORE INSERT ON _syncular_meta WHEN NEW.key = '{key}' BEGIN SELECT RAISE(ABORT, 'refuse schema record'); END")).expect("fault");
+            client
+                .recreate_with_schema(&previous_version_schema(2))
+                .expect_err("both record writes must propagate failure");
+            assert_eq!(client.schema.version, 1);
+            assert_eq!(client.get_meta(LOCAL_SCHEMA_VERSION_KEY), marker);
+            assert_eq!(
+                client.get_meta(crate::previous_version::LOCAL_SCHEMA_DESCRIPTOR_KEY),
+                descriptor
+            );
+            client
+                .conn
+                .execute_batch("DROP TRIGGER refuse_schema_record")
+                .expect("remove fault");
+            client
+                .recreate_with_schema(&previous_version_schema(2))
+                .expect("retry");
+            assert_eq!(client.schema.version, 2);
+        }
+    }
+
+    #[test]
     fn a_failed_outer_commit_restores_every_reset_side_effect() {
         let path = temp_replica("outer-commit");
         let path_str = path.to_str().expect("path");
@@ -18427,7 +18701,7 @@ mod previous_version_wiring_tests {
         let mut client = SyncClient::with_connection(
             "outer-commit".into(),
             &previous_version_schema(1),
-            ClientLimits::default(),
+            previous_version_limits(),
             conn,
         )
         .expect("v1 replica");
@@ -18527,11 +18801,26 @@ mod previous_version_wiring_tests {
             client.rejections.is_empty(),
             "the dropped-column rejection is rolled back too"
         );
+        // The capture committed in its separate file before the failed replica
+        // COMMIT. It belongs to v2 and cannot be exposed by the restored v1 core.
+        let container = crate::previous_version::previous_version_container_path(path_str);
+        assert!(std::path::Path::new(&container).exists());
+        // The reader no longer needs its snapshot, so discard can clean the
+        // replica's audit records along with the stale sibling file.
+        drop(reader);
+        let snapshot = client
+            .previous_version_snapshot(&PreviousVersionReadSpec {
+                table: "tasks".into(),
+                ..Default::default()
+            })
+            .expect("refuse stale capture");
+        assert!(!snapshot.available);
+        assert_eq!(snapshot.current_version, 1);
+        assert!(!std::path::Path::new(&container).exists());
         // The client remains usable: releasing the reader lets the identical
         // recreation run to completion, and the reset preserves the
         // incompatible intent until the send-time prepass classifies it
         // (§7.4.3/§7.4.4: the reset never touches the outbox).
-        drop(reader);
         client
             .conn
             .busy_timeout(std::time::Duration::from_secs(1))
@@ -18561,6 +18850,7 @@ mod previous_version_wiring_tests {
                 .any(|rejection| rejection.code == OUTBOX_INCOMPATIBLE_CODE),
             "the dropped-column commit surfaced as a rejection at send time"
         );
+        client.previous_version_discard();
         drop(client);
         std::fs::remove_file(path).expect("remove replica");
     }

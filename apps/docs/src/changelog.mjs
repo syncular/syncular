@@ -40,7 +40,7 @@ export const changelog = [
   {
     date: '2026-10-06',
     title: 'Snapshot read sidecar: revision, catch-up, and delivery',
-    body: 'TS and Rust clients expose atomic snapshot reads with multiple SQL statements, window coverage, subscription bootstrap progress, and commit delivery status under one revision. Native file-backed reads use the independent SQLite sidecar. Corrupt revision markers fail with sync.local_corrupt, and Tauri preserves structured read failures and query-owner diagnostics. Generic and dedicated Tauri snapshot commands share one read path; repeated successful reads add no diagnostics mailbox traffic.',
+    body: 'TS and Rust clients expose atomic snapshot reads with multiple SQL statements, window coverage, subscription bootstrap progress, and commit delivery status under one revision. Native file-backed reads use the independent SQLite sidecar. Corrupt revision markers and malformed persisted outcome metadata fail with sync.local_corrupt, and Tauri preserves structured read failures and query-owner diagnostics. Generic and dedicated Tauri snapshot commands share one read path; repeated successful reads add no diagnostics mailbox traffic.',
     links: [
       {
         href: '/platform-rust/#snapshot-read-sidecar',
@@ -150,7 +150,7 @@ export const changelog = [
   {
     date: '2026-10-06',
     title: 'Overlay replay failures roll back local apply',
-    body: 'Rust propagates replay read, decode, write, savepoint and FTS failures. Both clients reconcile acknowledgements before committing their local apply transaction and refuse failed startup replay. Failed apply retains durable intent and publishes no successful apply revision. Confirmed secondary unique conflicts remain deferred during replay.',
+    body: 'Rust propagates replay read, decode, write, savepoint and FTS failures. Both clients reconcile acknowledgements before committing their local apply transaction and refuse failed startup replay. Failed apply retains durable intent and publishes no successful apply revision. Failed native purge and rebootstrap preserve the in-flight round. Incompatible commits lose their blob dependencies before upload collection. Server rejections of removed-table deletes drain the queue. Confirmed secondary unique conflicts remain deferred during replay.',
     links: [
       {
         href: '/concepts-conflicts/#the-optimistic-outbox',
@@ -161,7 +161,7 @@ export const changelog = [
   {
     date: '2026-10-06',
     title: 'Replica opens refuse schema downgrades',
-    body: 'TypeScript and Rust clients refuse a newer persisted schema with client.schema_downgrade before bookkeeping writes or reset. The replica, outbox and previous-version context remain intact. Unreadable or corrupt markers fail with sync.local_corrupt. Fresh replicas, same-version opens and upgrades keep their existing behavior.',
+    body: 'TypeScript and Rust clients refuse a newer persisted schema with client.schema_downgrade before bookkeeping writes or reset. The replica, outbox and previous-version context remain intact. Unreadable, corrupt or missing paired markers fail with sync.local_corrupt. Startup writes are transactional. Previous-version reads discard captures for an uncommitted schema; capture remains a separate-file operation.',
     links: [
       {
         href: '/concepts-schema-upgrades/',
