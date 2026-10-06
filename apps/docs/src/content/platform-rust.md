@@ -303,7 +303,10 @@ let policy = HostTransportPolicy {
 - `redirects` selects `Deny` (the default) or `Follow`. `Follow` follows
   a redirect only for a request with no configured headers, no base-URL
   userinfo, and no signed capability URL. A credential-bearing request is
-  refused with `transport.redirect` under both policies.
+  refused with `transport.redirect` under both policies. The WebSocket
+  handshake obeys the same policy: a handshake may follow a redirect only
+  when it carries no configured headers and its realtime URL has neither
+  userinfo nor a query.
 
 Build the transport with the policy through
 `HostTransport::from_config_with_policy`, or replace it later with
@@ -311,11 +314,15 @@ Build the transport with the policy through
 same seam on the plugin core. A host that supplies JSON config (the
 `new` command) sets the same fields with the keys `requestTimeoutMs`,
 `roundDeadlineMs`, `maxRequestBytes`, `maxResponseBytes`, and `redirects`.
+Each numeric bound is a `u64` integer token, so a binding that derives the
+JSON from a floating-point value must serialize the bound losslessly.
 An invalid policy is rejected with a `sync.invalid_request` message and
 leaves the current policy in force.
 
 The whole-round deadline covers network work. It does not interrupt local
-SQLite or CPU time.
+SQLite or CPU time. Local work before the round's first network call does
+not consume the budget; after the anchor the deadline is absolute, so local
+work between continuations runs against the remaining budget.
 
 ## Realtime
 

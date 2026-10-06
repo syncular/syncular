@@ -602,9 +602,9 @@ export class RealtimeSession {
             ? syncError(error.code, error.message)
             : adapterSyncError(
                 error,
-                this.#hub.onError,
+                (error, context) => this.#hub.onError?.(error, context),
                 'realtime',
-                this.#hub.mapError,
+                (error, context) => this.#hub.mapError?.(error, context),
               );
         finishRound(); // END is in this one chunk
         await this.#sendRoundChunk(
@@ -633,9 +633,9 @@ export class RealtimeSession {
             ? syncError(error.code, error.message)
             : adapterSyncError(
                 error,
-                this.#hub.onError,
+                (error, context) => this.#hub.onError?.(error, context),
                 'realtime',
-                this.#hub.mapError,
+                (error, context) => this.#hub.mapError?.(error, context),
               );
         finishRound();
         await this.#sendRoundChunk(
@@ -652,7 +652,11 @@ export class RealtimeSession {
     } catch (error) {
       // A host failure mid-stream leaves the byte stream unfinishable —
       // fail loud, drop the connection (§8.7 / §1.4 abort rule).
-      reportError(error, this.#hub.onError, 'realtime');
+      reportError(
+        error,
+        (error, context) => this.#hub.onError?.(error, context),
+        'realtime',
+      );
       this.#violation('sync round failed mid-stream');
     } finally {
       finishRound();

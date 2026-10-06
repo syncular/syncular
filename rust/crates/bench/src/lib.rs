@@ -1096,7 +1096,7 @@ fn handle(
                         let started = Instant::now();
                         let id = instance
                             .mutate(mutations)
-                            .map_err(|error| (error.code, error.message))?;
+                            .map_err(CommandError::from_client)?;
                         durations.push(started.elapsed().as_nanos() as u64);
                         ids.push(id);
                     }

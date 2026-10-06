@@ -11,6 +11,10 @@ public enum JSONValue: Sendable, Equatable {
     case null
     case bool(Bool)
     case number(Double)
+    /// An exact 64-bit unsigned integer. Foundation writes `Double` values
+    /// in exponent form for some magnitudes, which the core's `u64` parser refuses, and
+    /// `Double(value)` rounds, so a policy bound travels as this case.
+    case unsigned(UInt64)
     case string(String)
     case array([JSONValue])
     case object([String: JSONValue])
@@ -28,8 +32,11 @@ public enum JSONValue: Sendable, Equatable {
     }
 
     public var numberValue: Double? {
-        if case let .number(n) = self { return n }
-        return nil
+        switch self {
+        case let .number(n): return n
+        case let .unsigned(u): return Double(u)
+        default: return nil
+        }
     }
 
     public var arrayValue: [JSONValue]? {
@@ -77,6 +84,7 @@ public enum JSONValue: Sendable, Equatable {
         case .null: return NSNull()
         case let .bool(b): return b
         case let .number(n): return n
+        case let .unsigned(u): return NSNumber(value: u)
         case let .string(s): return s
         case let .array(a): return a.map { $0.toFoundation() }
         case let .object(o): return o.mapValues { $0.toFoundation() }

@@ -299,9 +299,9 @@ export class SyncularRealtimeHost {
     } catch (error) {
       const sync = adapterSyncError(
         error,
-        this.#getHub().onError,
+        (error, context) => this.#getHub().onError?.(error, context),
         'sync',
-        this.#getHub().mapError,
+        (error, context) => this.#getHub().mapError?.(error, context),
       );
       return Response.json(errorBody(sync), { status: sync.httpStatus });
     }
@@ -350,9 +350,9 @@ export class SyncularRealtimeHost {
       server.close(1011, 'realtime connect failed');
       const sync = adapterSyncError(
         error,
-        this.#getHub().onError,
+        (error, context) => this.#getHub().onError?.(error, context),
         'realtime',
-        this.#getHub().mapError,
+        (error, context) => this.#getHub().mapError?.(error, context),
       );
       return Response.json(errorBody(sync), { status: sync.httpStatus });
     }

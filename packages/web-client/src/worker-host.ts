@@ -43,6 +43,7 @@ import type {
   SyncClientConfig,
   SyncClientLimits,
   SyncSummary,
+  SyncIdleResult,
   WindowState,
 } from './client';
 import type { SqlRow, SqlValue } from './database';
@@ -652,7 +653,7 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     return this.#call('sync', []);
   }
 
-  syncUntilIdle(maxRounds?: number): Promise<SyncSummary> {
+  syncUntilIdle(maxRounds?: number): Promise<SyncIdleResult> {
     return this.#call('syncUntilIdle', [maxRounds]);
   }
 

@@ -98,18 +98,20 @@ public struct SyncularConfig: Sendable {
     }
 
     /// The `syncular_client_new` config JSON. `dbPath` rides on `create`, not
-    /// here, so only transport fields belong in the constructor config.
-    fileprivate func newConfigJSON() -> JSONValue {
+    /// here, so only transport fields belong in the constructor config. Each
+    /// numeric bound is a `u64` in the core, so it is serialized as an exact
+    /// integer instead of a `Double`.
+    func newConfigJSON() -> JSONValue {
         var object: [String: JSONValue] = [:]
         if let baseUrl { object["baseUrl"] = .string(baseUrl) }
         if let wsUrl { object["wsUrl"] = .string(wsUrl) }
         if !headers.isEmpty {
             object["headers"] = .object(headers.mapValues { .string($0) })
         }
-        if let requestTimeoutMs { object["requestTimeoutMs"] = .number(Double(requestTimeoutMs)) }
-        if let roundDeadlineMs { object["roundDeadlineMs"] = .number(Double(roundDeadlineMs)) }
-        if let maxRequestBytes { object["maxRequestBytes"] = .number(Double(maxRequestBytes)) }
-        if let maxResponseBytes { object["maxResponseBytes"] = .number(Double(maxResponseBytes)) }
+        if let requestTimeoutMs { object["requestTimeoutMs"] = .unsigned(requestTimeoutMs) }
+        if let roundDeadlineMs { object["roundDeadlineMs"] = .unsigned(roundDeadlineMs) }
+        if let maxRequestBytes { object["maxRequestBytes"] = .unsigned(maxRequestBytes) }
+        if let maxResponseBytes { object["maxResponseBytes"] = .unsigned(maxResponseBytes) }
         if let redirects { object["redirects"] = .string(redirects) }
         return .object(object)
     }

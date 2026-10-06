@@ -80,9 +80,9 @@ export function createSyncularAdminRoutes(
   const jsonError = (error: unknown): Response => {
     const sync = adapterSyncError(
       error,
-      options.onError,
+      (error, context) => options.onError?.(error, context),
       'admin',
-      options.mapError,
+      (error, context) => options.mapError?.(error, context),
     );
     return Response.json(errorBody(sync), { status: sync.httpStatus });
   };

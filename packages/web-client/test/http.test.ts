@@ -575,3 +575,37 @@ test('synchronous websocket exceptions never expose the request or their cause',
     else Object.defineProperty(globalThis, 'WebSocket', original);
   }
 });
+
+test('a 404 body establishes blob absence only on the blob download endpoint', async () => {
+  const options = {
+    fetch: Object.assign(
+      async () => Response.json({ code: 'blob.not_found' }, { status: 404 }),
+      { preconnect: fetch.preconnect },
+    ),
+  };
+  const blobs = httpBlobTransport('/blobs', options);
+  await expect(blobs.download('sha256:test')).rejects.toMatchObject({
+    code: 'blob.not_found',
+  });
+  const attempts = [
+    () => httpSyncTransport('/sync', options)(new Uint8Array()),
+    () =>
+      httpRemoteOperationTransport('/operations', options)(new Uint8Array()),
+    () =>
+      httpSegmentDownloader(
+        '/segments',
+        options,
+      )({
+        segmentId: 'sha256:test',
+        table: 'tasks',
+        requestedScopesJson: '{}',
+      }),
+    () => blobs.upload('sha256:test', new Uint8Array()),
+    () => blobs.fetchUrl!('https://signed-url'),
+  ];
+  for (const attempt of attempts) {
+    await expect(attempt()).rejects.toMatchObject({
+      code: 'sync.transport_failed',
+    });
+  }
+});

@@ -29,7 +29,7 @@ export const changelog = [
   {
     date: '2026-10-06',
     title: 'Native HTTP transport policy',
-    body: 'HostTransportPolicy bounds the shared native transport: a per-request deadline, one whole-round deadline across uploads, continuations, the main request, segments, and realtime rounds, HTTP request and decoded-response byte limits, and redirect refusal for credential-bearing requests. Failures are typed transport.timeout, transport.redirect, transport.request_too_large, and transport.response_too_large. Deadlines and size limits stay unbounded by default; redirects now default to Deny. Tauri exposes the same fields on SyncularConfig.',
+    body: 'HostTransportPolicy bounds the shared native transport: a per-request deadline, one whole-round deadline across uploads, continuations, the main request, segments, and realtime rounds, HTTP request and decoded-response byte limits, and redirect refusal for credential-bearing requests on both HTTP requests and the WebSocket handshake. Failures are typed transport.timeout, transport.redirect, transport.request_too_large, and transport.response_too_large. Deadlines and size limits stay unbounded by default; redirects now default to Deny. Tauri exposes the same fields on SyncularConfig, and the Kotlin and Swift bindings serialize every byte and millisecond bound as an exact integer.',
     links: [
       {
         href: '/platform-rust/#native-transport-policy',
