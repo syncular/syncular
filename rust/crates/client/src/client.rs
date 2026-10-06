@@ -7521,6 +7521,18 @@ fn read_local_schema_version(conn: &Connection, requested: i32) -> Result<Option
         return Err(corrupt());
     }
     let Some(value) = value else {
+        let has_descriptor = conn
+            .query_row(
+                "SELECT 1 FROM _syncular_meta WHERE key = ?1 LIMIT 1",
+                [crate::previous_version::LOCAL_SCHEMA_DESCRIPTOR_KEY],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(schema_marker_read_failure)?
+            .is_some();
+        if has_descriptor {
+            return Err(corrupt());
+        }
         return Ok(None);
     };
     if !matches!(value.as_bytes().first(), Some(b'1'..=b'9'))
@@ -7569,6 +7581,7 @@ impl SyncClient {
         limits: ClientLimits,
         path: &str,
     ) -> Result<Self, String> {
+        parse_schema_json(schema_json)?;
         let conn = Connection::open(path).map_err(|e| format!("open db {path:?}: {e}"))?;
         Self::with_connection(client_id, schema_json, limits, conn)
     }
@@ -7731,9 +7744,7 @@ impl SyncClient {
             match marker {
                 None => {
                     client.create_synced_tables()?;
-                    client.set_meta(LOCAL_SCHEMA_VERSION_KEY, &client.schema.version.to_string());
-                    // D1: the descriptor is written beside every marker write.
-                    set_local_schema_descriptor(&client.conn, &client.schema);
+                    client.persist_schema_version()?;
                     client.save_subscription_scope_schema();
                 }
                 Some(version) if version == client.schema.version => {
@@ -7741,7 +7752,8 @@ impl SyncClient {
                     // RFC 0005 D1: the same-version open backfills the descriptor
                     // for a database first opened by an unaware binary, so the
                     // NEXT bump can capture without needing a schema bump first.
-                    set_local_schema_descriptor(&client.conn, &client.schema);
+                    set_local_schema_descriptor(&client.conn, &client.schema)
+                        .map_err(|error| Self::sqlite_failure(&client.storage_failure, error))?;
                     client.save_subscription_scope_schema();
                 }
                 Some(_) => client.run_schema_reset()?,
@@ -8038,6 +8050,19 @@ impl SyncClient {
             .map_err(|_| {
                 "sync.local_corrupt: persisted local rebootstrap receipt is unreadable".to_owned()
             })
+    }
+
+    // The caller holds the startup/reset transaction. Either both schema
+    // records persist or the enclosing operation fails and rolls back.
+    fn persist_schema_version(&self) -> Result<(), String> {
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO _syncular_meta(key,value) VALUES (?1,?2)",
+                rusqlite::params![LOCAL_SCHEMA_VERSION_KEY, self.schema.version.to_string()],
+            )
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+        set_local_schema_descriptor(&self.conn, &self.schema)
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
     }
 
     fn set_meta(&self, key: &str, value: &str) {
@@ -9089,8 +9114,7 @@ impl SyncClient {
                 Some(version) if version < self.schema.version => self.run_schema_reset()?,
                 None => {
                     self.create_synced_tables()?;
-                    self.set_meta(LOCAL_SCHEMA_VERSION_KEY, &self.schema.version.to_string());
-                    set_local_schema_descriptor(&self.conn, &self.schema);
+                    self.persist_schema_version()?;
                 }
                 _ => {}
             }
@@ -9464,10 +9488,7 @@ impl SyncClient {
         self.schema_floor = None;
         self.delete_meta(SCHEMA_FLOOR_KEY);
         // Rewrite the marker LAST so a crash mid-reset re-runs the reset.
-        self.set_meta(LOCAL_SCHEMA_VERSION_KEY, &self.schema.version.to_string());
-        // D1: the descriptor follows every marker write. A crash in between
-        // self-heals on the next same-version open, which backfills it.
-        set_local_schema_descriptor(&self.conn, &self.schema);
+        self.persist_schema_version()?;
         self.save_subscription_scope_schema();
         // §7.4.4: drop outbox commits that cannot re-encode under the new
         // schema (a referenced column/table the bump removed), surfacing each
@@ -16542,6 +16563,7 @@ mod previous_version_wiring_tests {
             "v3-only"
         );
         reopened.delete_meta(LOCAL_SCHEMA_VERSION_KEY);
+        reopened.delete_meta(crate::previous_version::LOCAL_SCHEMA_DESCRIPTOR_KEY);
         drop(reopened);
         let legacy = SyncClient::open_path(
             "downgrade".into(),
@@ -16694,22 +16716,33 @@ mod previous_version_wiring_tests {
             // The file-backed seam refuses before the replica gains a table.
             let path = temp_replica("bad-version");
             let path_str = path.to_str().expect("path");
-            let error = SyncClient::open_path_with_identity(
-                None,
-                &schema,
-                ClientLimits::default(),
-                path_str,
-            )
-            .err()
-            .expect("refuse before storage");
-            assert!(
-                error.starts_with("sync.invalid_request:"),
-                "{version}: {error}"
-            );
-            assert!(
-                !path.exists(),
-                "{version}: a refused constructor creates no replica file"
-            );
+            for identity in [false, true] {
+                let error = if identity {
+                    SyncClient::open_path_with_identity(
+                        None,
+                        &schema,
+                        ClientLimits::default(),
+                        path_str,
+                    )
+                } else {
+                    SyncClient::open_path(
+                        "bad-version".into(),
+                        &schema,
+                        ClientLimits::default(),
+                        path_str,
+                    )
+                }
+                .err()
+                .expect("refuse before storage");
+                assert!(
+                    error.starts_with("sync.invalid_request:"),
+                    "{version}: {error}"
+                );
+                assert!(
+                    !path.exists(),
+                    "{version}: a refused constructor creates no replica file"
+                );
+            }
         }
         // A missing version is the same request error, not a parse failure.
         let mut schema = previous_version_schema(1);
@@ -16917,6 +16950,41 @@ mod previous_version_wiring_tests {
     }
 
     #[test]
+    fn failed_schema_record_writes_roll_back_recreation() {
+        for key in [
+            LOCAL_SCHEMA_VERSION_KEY,
+            crate::previous_version::LOCAL_SCHEMA_DESCRIPTOR_KEY,
+        ] {
+            let mut client = SyncClient::new(
+                "schema-record".into(),
+                &previous_version_schema(1),
+                ClientLimits::default(),
+            )
+            .expect("v1");
+            let marker = client.get_meta(LOCAL_SCHEMA_VERSION_KEY);
+            let descriptor = client.get_meta(crate::previous_version::LOCAL_SCHEMA_DESCRIPTOR_KEY);
+            client.conn.execute_batch(&format!("CREATE TRIGGER refuse_schema_record BEFORE INSERT ON _syncular_meta WHEN NEW.key = '{key}' BEGIN SELECT RAISE(ABORT, 'refuse schema record'); END")).expect("fault");
+            client
+                .recreate_with_schema(&previous_version_schema(2))
+                .expect_err("both record writes must propagate failure");
+            assert_eq!(client.schema.version, 1);
+            assert_eq!(client.get_meta(LOCAL_SCHEMA_VERSION_KEY), marker);
+            assert_eq!(
+                client.get_meta(crate::previous_version::LOCAL_SCHEMA_DESCRIPTOR_KEY),
+                descriptor
+            );
+            client
+                .conn
+                .execute_batch("DROP TRIGGER refuse_schema_record")
+                .expect("remove fault");
+            client
+                .recreate_with_schema(&previous_version_schema(2))
+                .expect("retry");
+            assert_eq!(client.schema.version, 2);
+        }
+    }
+
+    #[test]
     fn a_failed_outer_commit_restores_every_reset_side_effect() {
         let path = temp_replica("outer-commit");
         let path_str = path.to_str().expect("path");
@@ -16926,7 +16994,7 @@ mod previous_version_wiring_tests {
         let mut client = SyncClient::with_connection(
             "outer-commit".into(),
             &previous_version_schema(1),
-            ClientLimits::default(),
+            previous_version_limits(),
             conn,
         )
         .expect("v1 replica");
@@ -17026,9 +17094,24 @@ mod previous_version_wiring_tests {
             client.rejections.is_empty(),
             "the dropped-column rejection is rolled back too"
         );
+        // The capture committed in its separate file before the failed replica
+        // COMMIT. It belongs to v2 and cannot be exposed by the restored v1 core.
+        let container = crate::previous_version::previous_version_container_path(path_str);
+        assert!(std::path::Path::new(&container).exists());
+        // The reader no longer needs its snapshot, so discard can clean the
+        // replica's audit records along with the stale sibling file.
+        drop(reader);
+        let snapshot = client
+            .previous_version_snapshot(&PreviousVersionReadSpec {
+                table: "tasks".into(),
+                ..Default::default()
+            })
+            .expect("refuse stale capture");
+        assert!(!snapshot.available);
+        assert_eq!(snapshot.current_version, 1);
+        assert!(!std::path::Path::new(&container).exists());
         // The client remains usable: releasing the reader lets the identical
         // recreation run to completion and drop the incompatible commit.
-        drop(reader);
         client
             .conn
             .busy_timeout(std::time::Duration::from_secs(1))
@@ -17045,6 +17128,7 @@ mod previous_version_wiring_tests {
                 .any(|rejection| rejection.code == OUTBOX_INCOMPATIBLE_CODE),
             "the dropped-column commit surfaced as a rejection"
         );
+        client.previous_version_discard();
         drop(client);
         std::fs::remove_file(path).expect("remove replica");
     }
