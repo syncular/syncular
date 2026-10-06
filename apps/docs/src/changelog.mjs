@@ -62,7 +62,7 @@ export const changelog = [
   {
     date: '2026-10-06',
     title: 'Replica opens refuse schema downgrades',
-    body: 'TypeScript and Rust clients refuse a newer persisted schema with client.schema_downgrade before bookkeeping writes or reset. The replica, outbox and previous-version context remain intact. Unreadable or corrupt markers fail with sync.local_corrupt. Fresh replicas, same-version opens and upgrades keep their existing behavior.',
+    body: 'TypeScript and Rust clients refuse a newer persisted schema with client.schema_downgrade before bookkeeping writes or reset. The replica, outbox and previous-version context remain intact. Unreadable, corrupt or missing paired markers fail with sync.local_corrupt. Startup writes are transactional. Previous-version reads discard captures for an uncommitted schema; capture remains a separate-file operation.',
     links: [
       {
         href: '/concepts-schema-upgrades/',

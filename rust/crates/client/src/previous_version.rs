@@ -291,12 +291,18 @@ pub fn decode_local_schema_descriptor(raw: &str) -> Result<LocalSchemaDescriptor
 /// D1: persist the descriptor. Callers write this beside every write of
 /// [`LOCAL_SCHEMA_VERSION_KEY`]; a descriptor without a matching marker is
 /// treated as absent at reset time.
-pub fn set_local_schema_descriptor(conn: &Connection, schema: &ClientSchema) {
-    meta_set(
-        conn,
-        LOCAL_SCHEMA_DESCRIPTOR_KEY,
-        &encode_local_schema_descriptor(&build_local_schema_descriptor(schema)),
-    );
+pub fn set_local_schema_descriptor(
+    conn: &Connection,
+    schema: &ClientSchema,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO _syncular_meta(key,value) VALUES (?1,?2)",
+        rusqlite::params![
+            LOCAL_SCHEMA_DESCRIPTOR_KEY,
+            encode_local_schema_descriptor(&build_local_schema_descriptor(schema))
+        ],
+    )?;
+    Ok(())
 }
 
 /// Load and strictly decode the stored descriptor; `None` when absent/corrupt.
@@ -1076,6 +1082,9 @@ pub fn previous_version_snapshot(
             reason.as_read_reason(),
         ));
     };
+    if record.current_version != current_version {
+        return discard(PreviousVersionReason::NoPreviousDescriptor);
+    }
     if now_ms - record.created_at_ms > config.max_age_ms {
         return discard(PreviousVersionReason::Expired);
     }
@@ -1914,7 +1923,7 @@ mod tests {
             .expect("insert note");
         // D1: the descriptor the bump's capture reads, exactly as the client
         // writes it — plus the §7.4.1 marker of the version that wrote it.
-        set_local_schema_descriptor(&replica, &schema(1));
+        set_local_schema_descriptor(&replica, &schema(1)).expect("descriptor");
         meta_set(&replica, LOCAL_SCHEMA_VERSION_KEY, "1");
     }
 
@@ -1930,7 +1939,7 @@ mod tests {
         )
         .expect("create meta");
         let schema = schema(4);
-        set_local_schema_descriptor(&conn, &schema);
+        set_local_schema_descriptor(&conn, &schema).expect("descriptor");
 
         let stored = meta_get(&conn, LOCAL_SCHEMA_DESCRIPTOR_KEY).expect("descriptor written");
         let parsed: Value = serde_json::from_str(&stored).expect("descriptor is JSON");
