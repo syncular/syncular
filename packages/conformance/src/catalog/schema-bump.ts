@@ -11,8 +11,10 @@
  */
 import { check, checkEqual } from '../checks';
 import {
+  doc,
   FIXTURE_SCHEMA,
   FIXTURE_SCHEMA_V2,
+  FIXTURE_SCHEMA_V2_DROP_DOCS,
   FIXTURE_SCHEMA_V2_DROP_META,
   task,
 } from '../fixture';
@@ -615,6 +617,107 @@ export const schemaBumpScenarios: readonly Scenario[] = [
   },
 
   {
+    // §7.4.4: a pending UPSERT into a table the bump REMOVES cannot re-encode.
+    // The reset must not fail on it: the local overlay has no mirror for the
+    // removed table, so replay skips it and the send-time encoder surfaces the
+    // commit as `sync.outbox_incompatible`. Pre-fix the reset replay threw
+    // `sync.unknown_table` inside the reset transaction, so the marker never
+    // advanced and every later open repeated the failure. The surviving
+    // `tasks` commit still converges.
+    name: 'schema-bump/removed-table-pending-commit-surfaces',
+    specRefs: ['§7.4.4', '§7.2', '§10.3'],
+    server: { schema: FIXTURE_SCHEMA_V2_DROP_DOCS },
+    async run(ctx) {
+      // No seed rows: the docs-dropping server schema cannot declare the
+      // `docs` scope variables, and the surviving `tasks` push is the proof
+      // that the queue kept moving.
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        schema: FIXTURE_SCHEMA,
+        allowed: P1,
+      });
+      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+
+      // Two offline v1 commits: an upsert into the removed `docs` table and an
+      // upsert into the surviving `tasks` table.
+      const docsCommit = await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'docs',
+          values: doc('d1', 'o1', 'p1', 'removed'),
+        },
+      ]);
+      const tasksCommit = await a.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('t1', 'p1', 'survives') },
+      ]);
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [docsCommit, tasksCommit],
+        'both offline commits are queued',
+      );
+
+      // App update to the docs-dropping v2 schema.
+      await ctx.recreateClient(a, FIXTURE_SCHEMA_V2_DROP_DOCS);
+      // §7.4.3/§7.4.4 parity: the reset preserves the outbox, so both cores
+      // still hold the removed-table commit and raise no rejection before the
+      // send-time prepass runs.
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [docsCommit, tasksCommit],
+        'the reset preserves the removed-table commit',
+      );
+      check(
+        !(await a.api.rejections()).some(
+          (r) => r.code === 'sync.outbox_incompatible',
+        ),
+        'no send-time classification before the first push encode',
+      );
+      check(
+        !(await a.api.commitOutcomes()).some(
+          (outcome) => outcome.clientCommitId === docsCommit,
+        ),
+        'no durable outcome exists before the send-time classification',
+      );
+      const upgraded = await syncIdle(a);
+      checkEqual(upgraded.schemaFloor, undefined, 'converged at v2');
+
+      const rejections = await a.api.rejections();
+      const incompatible = rejections.find(
+        (r) => r.code === 'sync.outbox_incompatible',
+      );
+      check(
+        incompatible !== undefined,
+        'the removed-table upsert surfaced as sync.outbox_incompatible (§7.4.4)',
+      );
+      checkEqual(
+        incompatible?.clientCommitId,
+        docsCommit,
+        'the incompatible rejection names the removed-table upsert',
+      );
+      checkEqual(
+        incompatible?.retryable,
+        false,
+        'a schema-incompatible commit is not retryable',
+      );
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [],
+        'the incompatible commit left the outbox; the surviving one drained',
+      );
+      checkEqual(
+        (await ctx.server.readRows('tasks')).map((row) => row.rowId),
+        ['t1'],
+        'the surviving upsert reached the server',
+      );
+      await expectConverged(ctx, 'tasks', [a], {
+        variable: 'project_id',
+        values: ['p1'],
+      });
+    },
+  },
+
+  {
     // §7.4.4: a pending UPSERT that carried a column the bump DROPS cannot
     // re-encode — it surfaces cleanly as `sync.outbox_incompatible` (a
     // client-local rejection). A later commit that DOES encode (a delete
@@ -656,8 +759,27 @@ export const schemaBumpScenarios: readonly Scenario[] = [
         'both offline commits are queued',
       );
 
-      // App update to the meta-dropping v2 schema, then replay.
+      // App update to the meta-dropping v2 schema.
       await ctx.recreateClient(a, FIXTURE_SCHEMA_V2_DROP_META);
+      // §7.4.3/§7.4.4 parity: the reset preserves the outbox. The dropped
+      // column is classified only by the send-time prepass.
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [upsertT1, deleteT2],
+        'the reset preserves the pending commits',
+      );
+      check(
+        !(await a.api.rejections()).some(
+          (r) => r.code === 'sync.outbox_incompatible',
+        ),
+        'the dropped-column commit is classified only at send time',
+      );
+      check(
+        !(await a.api.commitOutcomes()).some(
+          (outcome) => outcome.clientCommitId === upsertT1,
+        ),
+        'no durable outcome exists before the send-time classification',
+      );
       const upgraded = await syncIdle(a);
       checkEqual(upgraded.schemaFloor, undefined, 'converged at v2');
 
