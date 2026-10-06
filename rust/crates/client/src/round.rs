@@ -64,7 +64,7 @@ pub struct PreparedSyncRound {
     pub(crate) progress: ProgressObserver,
     pub(crate) fixed_now: Option<i64>,
     /// Absolute whole-round network deadline, anchored from the transport's
-    /// `round_deadline` budget on the round's first exchange and carried
+    /// `round_deadline` budget on the round's first network call and carried
     /// across `Continue`s. `exchange` scopes it onto the transport for the
     /// duration of each network call.
     pub(crate) round_deadline_at: Option<std::time::Instant>,
@@ -103,44 +103,51 @@ pub enum AppliedSyncRound {
 }
 
 impl PreparedSyncRound {
-    /// Run network I/O without accessing client state. Download errors stay at
-    /// their descriptor's position so apply retains the same completed prefix.
-    pub fn exchange(mut self, transport: &mut dyn Transport) -> CompletedSyncRound {
-        // Anchor the round deadline once, on the first exchange; a continuation
-        // reuses the carried anchor instead of refreshing it. Scoping it to the
-        // exchange keeps the reused transport free of stale deadline state.
+    /// Scope the round deadline for one network call. The round anchors its
+    /// deadline on its first network call, so local work before that call does
+    /// not consume the network budget; the anchor is absolute from then on, and
+    /// a continuation reuses the carried anchor instead of refreshing it.
+    fn scope_round_deadline(
+        &mut self,
+        transport: &mut dyn Transport,
+    ) -> Result<(), TransportError> {
         if self.round_deadline_at.is_none() {
             if let Some(budget) = transport.round_deadline() {
                 match std::time::Instant::now().checked_add(budget) {
                     Some(deadline) => self.round_deadline_at = Some(deadline),
                     // Reject an unrepresentable host budget before network I/O.
                     None => {
-                        return CompletedSyncRound {
-                            prepared: self,
-                            exchange: ExchangeResult::Reply {
-                                response: Err(TransportError::new(
-                                    "sync.invalid_request",
-                                    "transport round deadline is out of range",
-                                )),
-                                transport_failed: false,
-                                downloads: DownloadResults::default(),
-                            },
-                        }
+                        return Err(TransportError::new(
+                            "sync.invalid_request",
+                            "transport round deadline is out of range",
+                        ))
                     }
                 }
             }
         }
         transport.set_round_deadline(self.round_deadline_at);
+        Ok(())
+    }
+
+    /// Run network I/O without accessing client state. Download errors stay at
+    /// their descriptor's position so apply retains the same completed prefix.
+    pub fn exchange(mut self, transport: &mut dyn Transport) -> CompletedSyncRound {
         if let Some(upload) = self.uploads.pop_front() {
-            let result = upload.bytes.and_then(|bytes| {
-                upload_one(
-                    transport,
-                    &upload.id,
-                    &bytes,
-                    upload.media_type.as_deref(),
-                    self.fixed_now,
-                )
-            });
+            // A staged body that failed to read locally performs no network
+            // I/O, so it cannot be the round's first network call and must not
+            // anchor the round deadline either.
+            let result = match upload.bytes {
+                Ok(bytes) => self.scope_round_deadline(transport).and_then(|()| {
+                    upload_one(
+                        transport,
+                        &upload.id,
+                        &bytes,
+                        upload.media_type.as_deref(),
+                        self.fixed_now,
+                    )
+                }),
+                Err(error) => Err(error),
+            };
             transport.set_round_deadline(None);
             return CompletedSyncRound {
                 prepared: self,
@@ -159,6 +166,10 @@ impl PreparedSyncRound {
             let request = encode_message(&self.message);
             #[cfg(feature = "bench-internals")]
             drop(encode_phase);
+            // The round's first network call anchors the deadline here, after
+            // the encode; a continuation's encode runs against the already
+            // anchored deadline like the rest of the round (§1.8).
+            self.scope_round_deadline(transport)?;
             let round = if self.realtime {
                 transport.realtime_sync(&request)
             } else {

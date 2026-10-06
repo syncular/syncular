@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use crate::{BlobDownload, BlobUploadGrant, SegmentRequest, Transport, TransportError};
 
-/// Redirect handling for native HTTP requests.
+/// Redirect handling for native HTTP requests and the WebSocket handshake.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RedirectPolicy {
     /// Never follow a 3xx. A redirected request would replay configured
@@ -34,8 +34,11 @@ pub enum RedirectPolicy {
     /// headers, base-URL userinfo, nor a signed capability URL. A
     /// credential-bearing request is still refused even under this policy,
     /// because ureq forwards configured headers and URL userinfo to the
-    /// redirect target. Enable only for a deployment whose unauthenticated
-    /// requests may safely move.
+    /// redirect target, and tungstenite forwards configured headers to a
+    /// WebSocket redirect target. A WebSocket handshake additionally may not
+    /// follow a redirect when its realtime URL carries userinfo or a query
+    /// (a signed capability). Enable only for a deployment whose
+    /// unauthenticated requests may safely move.
     Follow,
 }
 
@@ -46,9 +49,9 @@ pub struct HostTransportPolicy {
     /// End-to-end deadline for one request (DNS through response body).
     pub request_timeout: Option<Duration>,
     /// One monotonic deadline for a whole sync round: uploads, continuations,
-    /// the main request, and every segment fetch. Anchored once at round start;
-    /// a continuation never resets it. Independent of the per-request
-    /// deadline, which still bounds each individual call.
+    /// the main request, and every segment fetch. Anchored once on the round's
+    /// first network call; a continuation never resets it. Independent of the
+    /// per-request deadline, which still bounds each individual call.
     pub round_deadline: Option<Duration>,
     /// Largest HTTP request body the transport will send. Checked before any
     /// network I/O. Does not cap realtime socket buffers.
@@ -769,6 +772,11 @@ mod native {
         match error {
             tungstenite::Error::Io(error) => io_err(message, error),
             tungstenite::Error::Tls(_) => transfer_error(message, "tls", None),
+            // A 3xx that reached the caller was refused (the policy denies
+            // redirects or the handshake request is credential bearing).
+            tungstenite::Error::Http(response) if response.status().is_redirection() => {
+                redirect_error(message, Some(response.status().as_u16()))
+            }
             tungstenite::Error::Http(response) => {
                 transfer_error(message, "status", Some(response.status().as_u16()))
             }
@@ -810,6 +818,10 @@ mod native {
         /// credentials; a request to it is credential bearing even without
         /// configured headers.
         base_url_has_userinfo: bool,
+        /// The realtime URL carries userinfo or a query. The handshake request
+        /// line carries the query (a signed capability); userinfo is refused
+        /// as a credential by policy.
+        ws_url_credentialed: bool,
         agent: ureq::Agent,
         policy: HostTransportPolicy,
         /// Absolute whole-round deadline scoped by `set_round_deadline` for
@@ -861,6 +873,7 @@ mod native {
                 ws_url: self.ws_url.clone(),
                 headers: self.headers.clone(),
                 base_url_has_userinfo: self.base_url_has_userinfo,
+                ws_url_credentialed: self.ws_url_credentialed,
                 agent: self.agent.clone(),
                 policy: self.policy.clone(),
                 round_deadline_at: None,
@@ -908,11 +921,22 @@ mod native {
             let base_url_has_userinfo = url::Url::parse(base_url)
                 .map(|url| !url.username().is_empty() || url.password().is_some())
                 .unwrap_or(false);
+            // The handshake request line carries the realtime URL's path and
+            // query; a query is a signed capability, and userinfo is refused
+            // as a credential by policy.
+            let ws_url_credentialed = url::Url::parse(&ws_url)
+                .map(|url| {
+                    !url.username().is_empty()
+                        || url.password().is_some()
+                        || url.query().is_some_and(|query| !query.is_empty())
+                })
+                .unwrap_or(false);
             Ok(NativeTransport {
                 base_url: base_url.trim_end_matches('/').to_owned(),
                 ws_url,
                 headers,
                 base_url_has_userinfo,
+                ws_url_credentialed,
                 agent: build_agent(&policy),
                 policy,
                 round_deadline_at: None,
@@ -977,6 +1001,13 @@ mod native {
         /// headers, or `user:pass@` userinfo ureq replays as Basic auth.
         fn credentialed(&self) -> bool {
             !self.headers.is_empty() || self.base_url_has_userinfo
+        }
+
+        /// Whether the WebSocket handshake carries a credential: configured
+        /// headers (tungstenite replays them to a redirect target) or a
+        /// realtime URL with userinfo or a query (a signed capability).
+        fn realtime_credentialed(&self) -> bool {
+            !self.headers.is_empty() || self.ws_url_credentialed
         }
 
         /// Apply the per-call bounds to a request: the effective timeout, and
@@ -1472,8 +1503,22 @@ mod native {
                     }
                 }
             }
-            let (mut ws, _resp) = tungstenite::connect(request)
-                .map_err(|error| ws_err("realtime connection failed", error))?;
+            let (mut ws, _resp) = tungstenite::client::connect_with_config(
+                request,
+                None,
+                // The redirect policy covers the WebSocket handshake too:
+                // tungstenite replays every request header (the configured
+                // authorization and actor headers) to the redirect target,
+                // and the handshake request line carries the realtime URL's
+                // query.
+                if self.policy.redirects == RedirectPolicy::Follow && !self.realtime_credentialed()
+                {
+                    3
+                } else {
+                    0
+                },
+            )
+            .map_err(|error| ws_err("realtime connection failed", error))?;
             let stream = match ws.get_mut() {
                 MaybeTlsStream::Plain(stream) => stream.try_clone(),
                 MaybeTlsStream::Rustls(stream) => stream.get_ref().try_clone(),
@@ -2314,6 +2359,146 @@ mod tests {
                     "{credentials} {redirects}: the destination is never contacted"
                 );
                 server.join().unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn websocket_handshake_redirects_obey_the_redirect_policy() {
+        // tungstenite replays every handshake header to a redirect target and
+        // the handshake request line carries the realtime URL's query, so the
+        // policy has to gate the WebSocket handshake exactly like an HTTP
+        // request. The Location points at a second listener so the test can
+        // prove whether it was contacted at all.
+        for (credential, redirects, refused) in [
+            ("headers", "deny", true),
+            ("headers", "follow", true),
+            ("userinfo", "follow", true),
+            ("query", "follow", true),
+            ("none", "deny", true),
+            ("none", "follow", false),
+        ] {
+            let destination = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let destination_addr = destination.local_addr().unwrap();
+            let location = format!("ws://{destination_addr}/realtime");
+            // The redirect target answers every handshake with 400 and stops
+            // on an explicit sentinel connection, so a leaked redirect fails
+            // the assertions below instead of hanging the test.
+            let landed = Arc::new(Mutex::new(Vec::new()));
+            let landed_writer = Arc::clone(&landed);
+            let destination_thread = std::thread::spawn(move || loop {
+                let (mut socket, _) = destination.accept().unwrap();
+                let mut reader = BufReader::new(socket.try_clone().unwrap());
+                let mut head = String::new();
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    head.push_str(&line);
+                }
+                let sentinel = head.starts_with("GET /sentinel");
+                landed_writer.lock().unwrap().push(head);
+                let _ = write!(
+                    socket,
+                    "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                if sentinel {
+                    break;
+                }
+            });
+            let origin = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let origin_addr = origin.local_addr().unwrap();
+            let (headers, ws_url) = match credential {
+                "headers" => (serde_json::json!({"authorization": "Bearer secret"}), None),
+                "userinfo" => (
+                    serde_json::json!({}),
+                    Some(format!("ws://user:secret@{origin_addr}/realtime")),
+                ),
+                "query" => (
+                    serde_json::json!({}),
+                    Some(format!("ws://{origin_addr}/realtime?token=secret")),
+                ),
+                _ => (serde_json::json!({}), None),
+            };
+            let (head_tx, head_rx) = std::sync::mpsc::channel();
+            let origin_thread = std::thread::spawn(move || {
+                let (mut socket, _) = origin.accept().unwrap();
+                let mut reader = BufReader::new(socket.try_clone().unwrap());
+                let mut head = String::new();
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    head.push_str(&line);
+                }
+                let _ = head_tx.send(head);
+                let _ = write!(
+                    socket,
+                    "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+            });
+            let mut config = serde_json::json!({
+                "baseUrl": format!("http://{origin_addr}"),
+                "headers": headers,
+                "redirects": redirects,
+            });
+            if let Some(ws_url) = &ws_url {
+                config["wsUrl"] = serde_json::json!(ws_url);
+            }
+            let mut transport = HostTransport::from_config(&config).unwrap();
+            let result = transport.realtime_connect();
+            // Stop the responder even when the redirect was refused; the
+            // sentinel is the only connection it may have seen.
+            let mut sentinel = std::net::TcpStream::connect(destination_addr).unwrap();
+            let _ = write!(sentinel, "GET /sentinel HTTP/1.1\r\nHost: sentinel\r\n\r\n");
+            destination_thread.join().unwrap();
+            let landed = landed.lock().unwrap().clone();
+            origin_thread.join().unwrap();
+            if refused {
+                let error = result.unwrap_err();
+                assert_eq!(
+                    error.code, "transport.redirect",
+                    "{credential} {redirects}: a refused handshake redirect surfaces the redirect code"
+                );
+                let details = error.details.unwrap();
+                assert_eq!(details["causeKind"], "redirect");
+                assert_eq!(details["httpStatus"], 302);
+                assert_eq!(
+                    landed.len(),
+                    1,
+                    "{credential} {redirects}: the redirect target is never contacted: {landed:?}"
+                );
+                assert!(landed[0].starts_with("GET /sentinel"), "{landed:?}");
+                let head = head_rx.recv().unwrap();
+                if credential == "userinfo" {
+                    assert!(
+                        !head.contains("secret"),
+                        "the handshake request line drops URL userinfo"
+                    );
+                }
+                if credential == "query" {
+                    assert!(
+                        head.contains("token=secret"),
+                        "the handshake request line carries the realtime query"
+                    );
+                }
+            } else {
+                // An uncredentialed handshake may follow: the destination
+                // answers the replayed handshake, so the client surfaces its
+                // 400 instead of a redirect refusal.
+                let error = result.unwrap_err();
+                assert_eq!(error.code, "transport.failed", "{credential} {redirects}");
+                assert_eq!(
+                    error.details.unwrap()["httpStatus"],
+                    400,
+                    "{credential} {redirects}: the redirect target answered"
+                );
+                assert_eq!(landed.len(), 2, "{landed:?}");
+                assert!(landed[0].starts_with("GET /realtime"), "{landed:?}");
             }
         }
     }

@@ -595,14 +595,19 @@ observable behavior is contractual:
   deadline. The round anchors the deadline on its first network call and
   never refreshes it on a continuation. The default is unbounded. The
   deadline covers network work; it does not interrupt local SQLite or CPU
-  time. A bound that elapses on the socket path surfaces
-  `transport.timeout`.
+  time. Local work before that first call does not consume the budget;
+  after the anchor the deadline is absolute, so local work between
+  continuations runs against the remaining budget. A bound that elapses on
+  the socket path surfaces `transport.timeout`.
 - **Redirect refusal.** The `deny` default refuses every 3xx. Under the
   `follow` policy the transport follows a redirect only for a request that
   carries no configured headers, no base-URL userinfo, and no signed
   capability URL; a credential-bearing request is still refused, because
   the configured headers or URL userinfo would replay to the redirect
-  target. A refusal surfaces `transport.redirect`.
+  target. The WebSocket handshake obeys the same policy: it may follow a
+  redirect only when it carries no configured headers and its realtime URL
+  has neither userinfo nor a query. A refusal surfaces
+  `transport.redirect`.
 - **Request byte limit.** An HTTP request body larger than the
   configured limit is refused before any network I/O, with
   `transport.request_too_large`.
@@ -622,7 +627,9 @@ The JSON config keys are `requestTimeoutMs`, `roundDeadlineMs`,
 `maxRequestBytes`, `maxResponseBytes`, and `redirects` (`"deny"` or
 `"follow"`). A programmatic policy carries the same fields, and a
 non-positive or unrepresentable bound is rejected before it reaches the
-transport.
+transport. A numeric bound is a `u64` integer token in the config JSON; a
+float-formatted value is refused, so a host binding serializes a
+configured bound losslessly.
 
 The native transport reports `transport.timeout`, `transport.redirect`,
 `transport.request_too_large`, and `transport.response_too_large`.
@@ -4266,12 +4273,28 @@ converge on the identical wipe-re-bootstrap-replay:
    container cleanup or capture, and outbox replay. The
    database, outbox, and an existing client remain unchanged.
 
+   A requested generated version outside the marker's range (1 through
+   2147483647) MUST be refused with `sync.invalid_request` before the replica
+   is created or opened, so a client can never persist a marker its own next
+   open rejects.
+
    An absent metadata table or absent marker is a fresh/legacy replica. A
    present marker MUST be a text value containing a canonical positive decimal
-   `i32` (1 through 2147483647). An unreadable metadata table or marker, or an
-   invalid marker value, MUST fail with `sync.local_corrupt` before mutation;
-   clients MUST NOT reinterpret a read or parse failure as an absent marker.
-   Equal versions retain ordinary same-version startup behavior.
+   `i32` (1 through 2147483647). An unreadable metadata table or marker, an
+   invalid marker value, or more than one marker row MUST fail with
+   `sync.local_corrupt` before mutation; clients MUST NOT reinterpret a read or
+   parse failure as an absent marker, and MUST NOT resolve a duplicated marker
+   by picking one row. Equal versions retain ordinary same-version startup
+   behavior.
+
+   The marker guard and every write it authorizes (bookkeeping, schema
+   replacement, previous-version capture, outbox replay, subscription pruning)
+   MUST run under one transaction whose first statement is the marker read, so
+   the version the writes commit under is the version the guard validated. A
+   concurrent upgrade that commits after that read leaves the writing
+   transaction on a stale snapshot; the transaction MUST fail with the
+   storage-busy classification, and MUST NOT commit the older schema. A
+   refused open MUST NOT change the replica's journal mode.
 
 2. **Server schema floor (`requiredSchemaVersion`, §1.6).** A running
    client whose generated schema does not match the server receives the

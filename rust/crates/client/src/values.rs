@@ -253,8 +253,13 @@ pub fn json_to_column_value(
             None => fail("a string"),
         },
         ColumnType::Integer => match value.as_i64() {
-            Some(i) => Ok(Some(ColumnValue::Integer(i))),
-            None => fail("an integer"),
+            Some(i)
+                if (-ssp2::primitives::I64_SAFE_MAX..=ssp2::primitives::I64_SAFE_MAX)
+                    .contains(&i) =>
+            {
+                Ok(Some(ColumnValue::Integer(i)))
+            }
+            _ => fail("an integer within the JavaScript safe-integer range"),
         },
         ColumnType::Float => match value.as_f64() {
             Some(f) => Ok(Some(ColumnValue::Float(f))),
@@ -750,6 +755,27 @@ mod naming_tests {
         bytes_to_hex, hex_to_bytes, normalize_values_casing, snake_to_camel, EncryptionConfig,
     };
     use crate::schema::{EncryptedColumn, TableSchema};
+
+    #[test]
+    fn authored_integer_cells_respect_the_wire_safe_range() {
+        let column = Column {
+            name: "n".into(),
+            ty: ColumnType::Integer,
+            nullable: false,
+        };
+        for value in [
+            9007199254740992_i64,
+            9007199254740993,
+            i64::MAX,
+            -9007199254740992,
+            i64::MIN,
+        ] {
+            assert!(super::json_to_column_value(&column, Some(&json!(value))).is_err());
+        }
+        for value in [-9007199254740991_i64, 0, 9007199254740991] {
+            assert!(super::json_to_column_value(&column, Some(&json!(value))).is_ok());
+        }
+    }
 
     #[test]
     fn byte_envelopes_preserve_canonical_hex_for_every_byte() {

@@ -350,9 +350,8 @@ fn spawn_reader(path: String, owner_tx: Sender<Request>) -> Result<Sender<ReadRe
 
 fn run_reader_thread(path: String, rx: Receiver<ReadRequest>, owner_tx: Sender<Request>) {
     let mut reader = FileQuerySnapshotReader::new(path);
-    // §7.6: owner ids whose last sidecar read failed. Only a failure or the
-    // first success after one reaches the owning core's mailbox.
-    let mut failing = std::collections::HashSet::<String>::new();
+    // The owning core holds the bounded diagnostic journal and deduplicates
+    // unchanged results. The sidecar retains no owner ids between reads.
     while let Ok(request) = rx.recv() {
         match request {
             ReadRequest::QuerySnapshot {
@@ -369,19 +368,11 @@ fn run_reader_thread(path: String, rx: Receiver<ReadRequest>, owner_tx: Sender<R
                 };
                 if let Some((id, tables)) = owner {
                     let failure = result.err();
-                    let report = if failure.is_some() {
-                        failing.insert(id.clone());
-                        true
-                    } else {
-                        failing.remove(&id)
-                    };
-                    if report {
-                        let _ = owner_tx.send(Request::QueryRead {
-                            id,
-                            tables,
-                            failure,
-                        });
-                    }
+                    let _ = owner_tx.send(Request::QueryRead {
+                        id,
+                        tables,
+                        failure,
+                    });
                 }
                 let _ = reply.send(value);
             }
@@ -411,19 +402,11 @@ fn run_reader_thread(path: String, rx: Receiver<ReadRequest>, owner_tx: Sender<R
                 // read uses, so a named owner gets one diagnostic path.
                 if let Some((id, tables)) = owner {
                     let failure = result.err();
-                    let report = if failure.is_some() {
-                        failing.insert(id.clone());
-                        true
-                    } else {
-                        failing.remove(&id)
-                    };
-                    if report {
-                        let _ = owner_tx.send(Request::QueryRead {
-                            id,
-                            tables,
-                            failure,
-                        });
-                    }
+                    let _ = owner_tx.send(Request::QueryRead {
+                        id,
+                        tables,
+                        failure,
+                    });
                 }
                 let _ = reply.send(value);
             }
@@ -2553,6 +2536,32 @@ mod tests {
             cleared_rx.recv().expect("cleared diagnostics reply")["result"]["queryFailures"],
             json!([])
         );
+
+        // More distinct failed owners than the diagnostic cap cannot leave
+        // extra process-lifetime bookkeeping in the sidecar.
+        for index in 0..300 {
+            let (reply, result) = channel();
+            read_tx
+                .send(ReadRequest::QuerySnapshot {
+                    sql: "SELECT value FROM absent_owner_table".to_owned(),
+                    params: Vec::new(),
+                    coverage: Vec::new(),
+                    owner: Some((format!("owner-{index}"), vec!["tasks".to_owned()])),
+                    reply,
+                })
+                .expect("post owner failure");
+            assert!(result.recv().expect("failure reply")["error"].is_object());
+        }
+        let (reply, result) = channel();
+        tx.send(Request::Command {
+            command: json!({ "method": "diagnosticsSnapshot", "params": {} }),
+            reply,
+        })
+        .expect("post bounded diagnostics");
+        let value = result.recv().expect("bounded diagnostics");
+        let failures = value["result"]["queryFailures"].as_array().unwrap();
+        assert_eq!(failures.len(), 256);
+        assert_eq!(failures.last().unwrap()["id"], "owner-299");
 
         read_tx.send(ReadRequest::Shutdown).expect("stop reader");
         reader.join().expect("join reader");
