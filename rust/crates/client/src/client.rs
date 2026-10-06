@@ -3155,7 +3155,14 @@ mod observation_tests {
 
     #[test]
     fn released_context_discards_in_flight_ack_and_server_rows() {
-        for barrier in ["preflight", "purge", "subscription"] {
+        for barrier in [
+            "preflight",
+            "purge",
+            "subscription",
+            "failed-purge-replay",
+            "failed-purge-publish",
+            "failed-rebootstrap",
+        ] {
             let mut client = client();
             client.set_meta(LOG_EPOCH_KEY, "epoch");
             client
@@ -3253,6 +3260,61 @@ mod observation_tests {
                             }],
                         })
                         .unwrap();
+                }
+                "failed-purge-replay" | "failed-purge-publish" | "failed-rebootstrap" => {
+                    let trigger = if barrier == "failed-purge-replay" {
+                        "CREATE TRIGGER fail_local BEFORE DELETE ON tasks BEGIN SELECT RAISE(ABORT, 'local fault'); END"
+                    } else {
+                        "CREATE TRIGGER fail_local BEFORE INSERT ON _syncular_meta WHEN NEW.key = 'localRevision' BEGIN SELECT RAISE(ABORT, 'local fault'); END"
+                    };
+                    client.conn.execute_batch(trigger).unwrap();
+                    let revision = client.local_revision();
+                    if barrier == "failed-rebootstrap" {
+                        assert!(client
+                            .rebootstrap_local_data(&LocalDataRebootstrapInput {
+                                rebootstrap_id: "failed-round".into(),
+                            })
+                            .is_err());
+                    } else {
+                        assert!(client
+                            .purge_local_data(&LocalDataPurgeInput {
+                                purge_id: "failed-round".into(),
+                                targets: vec![LocalDataPurgeTarget {
+                                    table: "tasks".into(),
+                                    selectors: BTreeMap::from([(
+                                        "project_id".into(),
+                                        vec!["p1".into()]
+                                    )]),
+                                }],
+                            })
+                            .is_err());
+                    }
+                    assert_eq!(client.local_revision(), revision);
+                    assert_eq!(client.pending_commit_ids(), vec![commit.clone()]);
+                    client
+                        .conn
+                        .execute_batch("DROP TRIGGER fail_local")
+                        .unwrap();
+                    let applied = client.apply_sync_round(completed);
+                    assert!(
+                        matches!(
+                            applied,
+                            crate::AppliedSyncRound::Complete {
+                                outcome: SyncOutcome::Ok(_),
+                                ..
+                            }
+                        ),
+                        "{barrier}"
+                    );
+                    assert!(client.pending_commit_ids().is_empty());
+                    assert_eq!(
+                        client
+                            .query("SELECT id FROM tasks WHERE id = 'server'", &[])
+                            .unwrap()
+                            .len(),
+                        1
+                    );
+                    continue;
                 }
                 "subscription" => {
                     client.unsubscribe("tasks");
@@ -12289,6 +12351,16 @@ impl SyncClient {
                 }));
             }
             self.set_sync_needed(false, false);
+            self.drain_pending_evictions()
+                .and_then(|_| self.drop_incompatible_outbox())
+                .and_then(|_| self.drop_unencodable_outbox())
+                .map_err(|message| {
+                    Box::new(SyncOutcome::Failed {
+                        error_code: "storage.failed".into(),
+                        message,
+                        details: None,
+                    })
+                })?;
             let uploads = if self.get_meta(LOG_EPOCH_KEY).is_some() && self.schema_has_blobs() {
                 self.pending_blob_uploads().map_err(|e| {
                     Box::new(SyncOutcome::Failed {
@@ -12300,16 +12372,6 @@ impl SyncClient {
             } else {
                 Vec::new()
             };
-            self.drain_pending_evictions()
-                .and_then(|_| self.drop_incompatible_outbox())
-                .and_then(|_| self.drop_unencodable_outbox())
-                .map_err(|message| {
-                    Box::new(SyncOutcome::Failed {
-                        error_code: "storage.failed".into(),
-                        message,
-                        details: None,
-                    })
-                })?;
             if self.realtime_state != RealtimeState::Connected
                 && self.realtime_policy == RealtimePolicy::Required
             {
@@ -14588,7 +14650,6 @@ impl SyncClient {
         input: &LocalDataPurgeInput,
     ) -> Result<LocalDataPurgeResult, String> {
         let (targets, canonical_plan) = self.compile_local_data_purge(input)?;
-        self.cancel_sync_round();
         let meta_key = format!("localPurge:{}", input.purge_id);
         let applied_plan = self
             .conn
@@ -14761,6 +14822,7 @@ impl SyncClient {
             self.overlay_dirty.restore(prior_overlay_dirty.clone());
             return Err(error);
         }
+        self.cancel_sync_round();
         Ok(result)
     }
 
@@ -14810,7 +14872,7 @@ impl SyncClient {
         let prior_sync_intents = self.sync_intent_queue.clone();
         let receipt = encode_local_rebootstrap_receipt(retained_commits, reset_subscriptions)?;
 
-        self.cancel_sync_round();
+        let prior_active_round = self.active_round;
         self.begin_observation("syncular_local_rebootstrap")?;
         let mut batch = ChangeAccumulator::default();
         let applied = (|| -> Result<(), String> {
@@ -14828,6 +14890,7 @@ impl SyncClient {
         })();
         if let Err(error) = applied {
             self.rollback_observation("syncular_local_rebootstrap");
+            self.active_round = prior_active_round;
             self.subs = prior_subs;
             self.upgrading = prior_upgrading;
             self.stopped = prior_stopped;
@@ -14839,6 +14902,7 @@ impl SyncClient {
         }
         if let Err(error) = self.finish_observation("syncular_local_rebootstrap", batch) {
             self.rollback_observation("syncular_local_rebootstrap");
+            self.active_round = prior_active_round;
             self.subs = prior_subs;
             self.upgrading = prior_upgrading;
             self.stopped = prior_stopped;
