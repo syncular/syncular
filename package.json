@@ -20,7 +20,8 @@
     "svgo": "^4.0.2",
     "postcss": "^8.5.23",
     "sharp": "^0.35.3",
-    "undici": "7.29.1"
+    "undici": "7.29.1",
+    "tinypool": "2.1.2"
   },
   "scripts": {
     "postinstall": "git config core.hooksPath .githooks 2>/dev/null || true; test -e CLAUDE.md || ln -s AGENTS.md CLAUDE.md || true",
