@@ -337,6 +337,34 @@ mod observation_tests {
     }
 
     #[test]
+    fn patch_scope_read_preserves_sqlite_failure() {
+        let mut client = client();
+        client
+            .conn
+            .execute_batch(
+                "DROP TABLE tasks;
+            CREATE VIEW tasks AS SELECT 't1' AS id, abs(-9223372036854775808) AS project_id;",
+            )
+            .unwrap();
+        let error = client
+            .patch(
+                "tasks",
+                "t1",
+                Map::from_iter([("project_id".to_owned(), json!("p1"))]),
+                None,
+            )
+            .expect_err("the scope read must fail");
+        assert_ne!(error.code, "sync.invalid_request");
+        assert_eq!(error.code, "client.failed");
+        assert!(error.details.as_ref().unwrap()["legacyCause"]
+            .as_str()
+            .unwrap()
+            .contains("integer overflow"));
+        assert!(client.pending_commit_ids().is_empty());
+        assert!(client.conn.is_autocommit());
+    }
+
+    #[test]
     fn patch_with_a_scope_column_matches_the_stored_local_row() {
         let mut client = client();
         client.create_synced_tables().unwrap();
@@ -10733,7 +10761,8 @@ impl SyncClient {
                     rusqlite::params![row_id],
                     |row| Ok(sql_ref_to_json(column, row.get_ref(0)?)),
                 )
-                .ok();
+                .optional()
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
             // Decode the supplied value through the same column-type path the
             // rest of the patch encoding uses, so a value that only equals
             // the stored one in another number representation still compares
