@@ -47,11 +47,18 @@ echo "== cargo clippy (crdt-yjs) =="
 # §5.10.5 native CRDT commands compile clean on their own feature lane too.
 cargo clippy -p tauri-plugin-syncular --all-targets --features crdt-yjs -- -D warnings
 
+echo "== cargo clippy (test-clock) =="
+# The consumer test-clock feature compiles the public clock seam outside cfg(test).
+cargo clippy -p tauri-plugin-syncular --all-targets --features test-clock -- -D warnings
+
 echo "== cargo test =="
 cargo test
 
 echo "== cargo test (native-transport) =="
 cargo test -p tauri-plugin-syncular --features native-transport
+
+echo "== cargo test (test-clock consumer seam) =="
+cargo test -p tauri-plugin-syncular --features test-clock
 
 echo "== real native core -> TypeScript bridge -> reactive store =="
 cargo build -p syncular-tauri-bridge-harness

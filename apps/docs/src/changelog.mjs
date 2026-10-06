@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-10-06',
+    title: 'Set client time in Tauri integration tests',
+    body: 'Enable the plugin test-clock feature to call SyncularCore::set_now_ms from host integration tests. The setter updates the client time used by diagnostics, lease expiry, and previous-version retention. create.nowMs continues to set the initial client time.',
+    links: [
+      {
+        href: '/platform-tauri/#test-clock',
+        label: 'Test clock',
+      },
+    ],
+  },
+  {
+    date: '2026-10-06',
     title: 'syncUntilIdle reports budget exhaustion as a partial success',
     body: 'A round budget that runs out no longer discards the aggregate report or surfaces sync.invalid_request. syncUntilIdle returns the report with budgetExhausted: true, aggregating counters and outcomes across every round while readiness fields (bootstrapping, deferredCommits, schemaFloor) describe the latest round, so an empty bootstrapping list alone does not establish readiness. A real transport or protocol failure still fails. The round limit must be an integer in 1..=4294967295.',
     links: [

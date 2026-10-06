@@ -93,6 +93,20 @@ impl SyncularCore {
         })
     }
 
+    /// Test-only host seam: pin the client clock to the host's test time.
+    /// `create`'s `nowMs` sets the initial clock; this sets it again so
+    /// timestamps and expiries are deterministic without sleeps. Off by
+    /// default; consumers opt in with the `test-clock` feature, and the
+    /// plugin's own tests see it under `cfg(test)`.
+    #[cfg(any(test, feature = "test-clock"))]
+    pub fn set_now_ms(&mut self, now_ms: i64) -> Result<(), String> {
+        let Some(client) = self.client.as_mut() else {
+            return Err("client.not_created: create a client before setting the clock".to_owned());
+        };
+        client.set_now_ms(now_ms);
+        Ok(())
+    }
+
     /// Run one JSON command (`{"method","params"}`) through the shared router,
     /// then drain inbound realtime traffic and exact core events. Returns the
     /// driver-protocol `{"result"|"error"}` reply.
@@ -658,7 +672,7 @@ mod tests {
         assert_eq!(initial.len(), 1);
         assert_eq!(initial[0].json["snapshot"]["capturedAtMs"], 1000);
 
-        core.client.as_mut().unwrap().set_now_ms(2000);
+        core.set_now_ms(2000).unwrap();
         let read = json!({"method": "query", "params": {"sql": "SELECT 1 AS id"}});
         assert_eq!(core.command(&read)["result"]["rows"], json!([{"id": 1}]));
         assert!(core.drain_events().is_empty());
@@ -688,7 +702,7 @@ mod tests {
         );
         assert_eq!(diagnostics[0]["snapshot"]["capturedAtMs"], 2000);
 
-        core.client.as_mut().unwrap().set_now_ms(3000);
+        core.set_now_ms(3000).unwrap();
         assert!(core.command(&read).get("error").is_none());
         assert!(core.drain_events().is_empty());
         let revision = core.client.as_ref().unwrap().local_revision();
@@ -725,6 +739,45 @@ mod tests {
             .drain_events()
             .iter()
             .all(|event| event.json["type"] != "diagnostics"));
+    }
+
+    #[test]
+    fn set_now_ms_sets_observable_capture_times_and_requires_a_client() {
+        let mut core = SyncularCore::new(&json!({})).unwrap();
+        // The plugin's `client.not_created` identity (also used by
+        // `prepare_round`) covers a missing client.
+        assert_eq!(
+            core.set_now_ms(500).unwrap_err(),
+            "client.not_created: create a client before setting the clock"
+        );
+        let created = core.command(&json!({"method": "create", "params": {
+            "clientId": "clock-seam", "schema": simple_schema(), "nowMs": 1000
+        }}));
+        assert!(created.get("error").is_none(), "{created}");
+        core.command(&json!({"method": "enableDiagnostics", "params": {}}));
+        let initial = core.drain_events();
+        assert_eq!(
+            initial[0].json["snapshot"]["capturedAtMs"], 1000,
+            "create.nowMs pins the client clock"
+        );
+
+        core.set_now_ms(2500).unwrap();
+        let read = json!({"method": "query", "params": {"sql": "SELECT 1 AS id"}});
+        assert!(core.command(&read).get("error").is_none());
+        core.command(&json!({"method": "mutate", "params": {
+            "mutations": [{"op": "upsert", "table": "todo", "values": {
+                "id": "clocked", "title": "x", "done": false
+            }}]
+        }}));
+        let advanced = core
+            .drain_events()
+            .into_iter()
+            .find(|event| event.json["type"] == "diagnostics")
+            .expect("advanced diagnostics snapshot");
+        assert_eq!(
+            advanced.json["snapshot"]["capturedAtMs"], 2500,
+            "the seam sets the observable clock"
+        );
     }
 
     #[test]
