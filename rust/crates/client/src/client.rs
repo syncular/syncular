@@ -3082,7 +3082,13 @@ mod observation_tests {
                     .write_base_row(
                         "tasks",
                         &vec![
-                            json_to_column_value(&table.columns[0], Some(id)).unwrap(),
+                            if kind == "integer" {
+                                // Exercise local SQLite key lookup across its
+                                // full i64 range independently of authoring.
+                                Some(ColumnValue::Integer(id.as_i64().unwrap()))
+                            } else {
+                                json_to_column_value(&table.columns[0], Some(id)).unwrap()
+                            },
                             Some(ColumnValue::String(format!("p{index}"))),
                         ],
                         1,
