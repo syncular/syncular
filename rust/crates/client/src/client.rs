@@ -6500,6 +6500,7 @@ impl SyncClient {
         limits: ClientLimits,
         path: &str,
     ) -> Result<Self, String> {
+        parse_schema_json(schema_json)?;
         let conn = Connection::open(path).map_err(|e| format!("open db {path:?}: {e}"))?;
         Self::with_connection(client_id, schema_json, limits, conn)
     }
@@ -15436,22 +15437,33 @@ mod previous_version_wiring_tests {
             // The file-backed seam refuses before the replica gains a table.
             let path = temp_replica("bad-version");
             let path_str = path.to_str().expect("path");
-            let error = SyncClient::open_path_with_identity(
-                None,
-                &schema,
-                ClientLimits::default(),
-                path_str,
-            )
-            .err()
-            .expect("refuse before storage");
-            assert!(
-                error.starts_with("sync.invalid_request:"),
-                "{version}: {error}"
-            );
-            assert!(
-                !path.exists(),
-                "{version}: a refused constructor creates no replica file"
-            );
+            for identity in [false, true] {
+                let error = if identity {
+                    SyncClient::open_path_with_identity(
+                        None,
+                        &schema,
+                        ClientLimits::default(),
+                        path_str,
+                    )
+                } else {
+                    SyncClient::open_path(
+                        "bad-version".into(),
+                        &schema,
+                        ClientLimits::default(),
+                        path_str,
+                    )
+                }
+                .err()
+                .expect("refuse before storage");
+                assert!(
+                    error.starts_with("sync.invalid_request:"),
+                    "{version}: {error}"
+                );
+                assert!(
+                    !path.exists(),
+                    "{version}: a refused constructor creates no replica file"
+                );
+            }
         }
         // A missing version is the same request error, not a parse failure.
         let mut schema = previous_version_schema(1);
