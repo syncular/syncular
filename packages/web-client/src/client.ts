@@ -1002,6 +1002,14 @@ export class SyncClient {
             // newer replica.
             if (rows.length > 1) throw new Error('invalid schema marker');
             const row = rows[0];
+            if (
+              row === undefined &&
+              this.#db.query(
+                "SELECT 1 FROM _syncular_meta WHERE key = 'localSchemaDescriptor' LIMIT 1",
+              ).length > 0
+            ) {
+              throw new Error('missing paired schema marker');
+            }
             if (row !== undefined) {
               const value = row.value;
               const version = Number(value);
@@ -1655,6 +1663,13 @@ export class SyncClient {
       return this.#previousVersionUnavailable(
         currentVersion,
         refusal?.reason ?? 'no-previous-descriptor',
+      );
+    }
+    if (record.currentVersion !== currentVersion) {
+      this.#discardPreviousVersion();
+      return this.#previousVersionUnavailable(
+        currentVersion,
+        'no-previous-descriptor',
       );
     }
     if (
