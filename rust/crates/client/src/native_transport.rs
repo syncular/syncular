@@ -473,24 +473,75 @@ mod native {
         }
     }
 
-    fn http_err(op: &str, e: impl std::fmt::Display) -> TransportError {
-        TransportError::new("transport.failed", format!("{op}: {e}"))
-    }
-
-    fn segment_error(
-        path: Option<&str>,
+    fn transfer_error(
+        message: &'static str,
+        cause_kind: &'static str,
         http_status: Option<u16>,
-        cause: impl std::fmt::Display,
     ) -> TransportError {
-        let mut details = serde_json::json!({ "causeMessage": cause.to_string() });
-        if let Some(path) = path {
-            details["path"] = path.into();
-        }
+        let mut details = serde_json::json!({ "causeKind": cause_kind });
         if let Some(status) = http_status {
             details["httpStatus"] = status.into();
         }
-        let mut error = TransportError::new("sync.transport_failed", "segment transfer failed");
+        let mut error = TransportError::new("transport.failed", message);
         error.details = Some(details);
+        error
+    }
+
+    fn http_err(message: &'static str, error: ureq::Error) -> TransportError {
+        let (kind, status) = match error {
+            ureq::Error::StatusCode(status) => ("status", Some(status)),
+            ureq::Error::Timeout(_) => ("timeout", None),
+            ureq::Error::Io(error) => return io_err(message, error),
+            ureq::Error::HostNotFound
+            | ureq::Error::ConnectionFailed
+            | ureq::Error::ConnectProxyFailed(_) => ("connect", None),
+            ureq::Error::Tls(_)
+            | ureq::Error::Rustls(_)
+            | ureq::Error::Pem(_)
+            | ureq::Error::TlsRequired => ("tls", None),
+            ureq::Error::BadUri(_)
+            | ureq::Error::Http(_)
+            | ureq::Error::RequireHttpsOnly(_)
+            | ureq::Error::InvalidProxyUrl => ("request", None),
+            ureq::Error::Protocol(_) => ("protocol", None),
+            ureq::Error::BodyExceedsLimit(_)
+            | ureq::Error::BodyStalled
+            | ureq::Error::Decompress(_, _) => ("body", None),
+            ureq::Error::RedirectFailed | ureq::Error::TooManyRedirects => ("redirect", None),
+            _ => ("unknown", None),
+        };
+        transfer_error(message, kind, status)
+    }
+
+    fn io_err(message: &'static str, error: std::io::Error) -> TransportError {
+        let kind = match error.kind() {
+            std::io::ErrorKind::TimedOut => "timeout",
+            std::io::ErrorKind::ConnectionRefused
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::NotConnected => "connect",
+            _ => "io",
+        };
+        transfer_error(message, kind, None)
+    }
+
+    fn ws_err(message: &'static str, error: tungstenite::Error) -> TransportError {
+        match error {
+            tungstenite::Error::Io(error) => io_err(message, error),
+            tungstenite::Error::Tls(_) => transfer_error(message, "tls", None),
+            tungstenite::Error::Http(response) => {
+                transfer_error(message, "status", Some(response.status().as_u16()))
+            }
+            tungstenite::Error::Url(_) | tungstenite::Error::HttpFormat(_) => {
+                transfer_error(message, "request", None)
+            }
+            _ => transfer_error(message, "protocol", None),
+        }
+    }
+
+    fn segment_error(mut error: TransportError) -> TransportError {
+        error.code = "sync.transport_failed".into();
+        error.message = "segment transfer failed".into();
         error
     }
 
@@ -600,7 +651,9 @@ mod native {
             for (k, v) in &self.headers {
                 req = req.header(k.as_str(), v.as_str());
             }
-            let resp = req.send(body).map_err(|e| http_err("POST", e))?;
+            let resp = req
+                .send(body)
+                .map_err(|e| http_err("sync request failed", e))?;
             read_body(resp, None)
         }
 
@@ -615,7 +668,7 @@ mod native {
             }
             let response = req
                 .send(body)
-                .map_err(|error| http_err("POST operation", error))?;
+                .map_err(|error| http_err("remote operation request failed", error))?;
             read_body(response, None)
         }
 
@@ -626,7 +679,7 @@ mod native {
                     req = req.header(k.as_str(), v.as_str());
                 }
             }
-            let resp = req.call().map_err(|e| http_err("GET", e))?;
+            let resp = req.call().map_err(|e| http_err("URL fetch failed", e))?;
             read_body(resp, None)
         }
 
@@ -673,7 +726,7 @@ mod native {
                 outgoing
                     .poller
                     .notify()
-                    .map_err(|e| http_err("ws wake", e))?;
+                    .map_err(|e| io_err("realtime wake failed", e))?;
                 result.recv_timeout(ROUND_TIMEOUT).map_err(|_| {
                     TransportError::new("transport.failed", "realtime send did not complete")
                 })?
@@ -692,12 +745,23 @@ mod native {
         mut progress: Option<&mut dyn FnMut(u64)>,
     ) -> Result<Vec<u8>, TransportError> {
         use std::io::Read;
+        let status = resp.status().as_u16();
         let mut reader = resp.into_body().into_with_config().reader();
         let mut bytes = Vec::new();
         let mut chunk = [0u8; 64 * 1024];
         let mut reported = 0;
         loop {
-            let n = reader.read(&mut chunk).map_err(|e| http_err("read", e))?;
+            let n = reader.read(&mut chunk).map_err(|error| {
+                transfer_error(
+                    "response body read failed",
+                    if error.kind() == std::io::ErrorKind::TimedOut {
+                        "timeout"
+                    } else {
+                        "body"
+                    },
+                    Some(status),
+                )
+            })?;
             if n == 0 {
                 break;
             }
@@ -758,7 +822,6 @@ mod native {
             // re-authorizes the download against it (§5.5) and answers
             // `sync.forbidden` when it is missing.
             let url = format!("{}/segments/{}", self.base_url, request.segment_id);
-            let parsed = url::Url::parse(&url).map_err(|error| segment_error(None, None, error))?;
             let mut req = self
                 .agent
                 .get(&url)
@@ -766,16 +829,10 @@ mod native {
             for (k, v) in &self.headers {
                 req = req.header(k.as_str(), v.as_str());
             }
-            let resp = req.call().map_err(|error| {
-                let status = match &error {
-                    ureq::Error::StatusCode(status) => Some(*status),
-                    _ => None,
-                };
-                segment_error(Some(parsed.path()), status, error)
-            })?;
-            let status = resp.status().as_u16();
-            read_body(resp, Some(on_progress))
-                .map_err(|error| segment_error(Some(parsed.path()), Some(status), error.message))
+            let resp = req
+                .call()
+                .map_err(|error| segment_error(http_err("segment request failed", error)))?;
+            read_body(resp, Some(on_progress)).map_err(segment_error)
         }
 
         fn supports_url_fetch(&self) -> bool {
@@ -788,17 +845,12 @@ mod native {
             on_progress: &mut dyn FnMut(u64),
         ) -> Result<Vec<u8>, TransportError> {
             // §5.4: the URL is the entire grant — no host credentials attached.
-            let parsed = url::Url::parse(url).map_err(|error| segment_error(None, None, error))?;
-            let resp = self.agent.get(url).call().map_err(|error| {
-                let status = match &error {
-                    ureq::Error::StatusCode(status) => Some(*status),
-                    _ => None,
-                };
-                segment_error(Some(parsed.path()), status, error)
-            })?;
-            let status = resp.status().as_u16();
-            read_body(resp, Some(on_progress))
-                .map_err(|error| segment_error(Some(parsed.path()), Some(status), error.message))
+            let resp = self
+                .agent
+                .get(url)
+                .call()
+                .map_err(|error| segment_error(http_err("segment request failed", error)))?;
+            read_body(resp, Some(on_progress)).map_err(segment_error)
         }
 
         fn blob_upload(
@@ -817,7 +869,8 @@ mod native {
             for (k, v) in &self.headers {
                 req = req.header(k.as_str(), v.as_str());
             }
-            req.send(bytes).map_err(|e| http_err("PUT blob", e))?;
+            req.send(bytes)
+                .map_err(|e| http_err("blob upload failed", e))?;
             Ok(())
         }
 
@@ -829,14 +882,28 @@ mod native {
             for (k, v) in &self.headers {
                 req = req.header(k.as_str(), v.as_str());
             }
-            let resp = req.call().map_err(|e| {
-                let e = http_err("GET blob", e);
-                // Preserve a blob.* semantics hint (§5.9.5) for the caller.
-                if e.code == "transport.failed" {
-                    TransportError::new("blob.not_found", e.message)
-                } else {
-                    e
+            let resp = req.call().map_err(|cause| {
+                let status = match &cause {
+                    ureq::Error::StatusCode(status) => Some(*status),
+                    _ => None,
+                };
+                let mut error = http_err("blob download failed", cause);
+                match status {
+                    Some(404) => {
+                        error.code = "blob.not_found".into();
+                        error.message = "blob not found".into();
+                    }
+                    Some(403) => {
+                        error.code = "blob.forbidden".into();
+                        error.message = "blob download forbidden".into();
+                    }
+                    Some(401) => {
+                        error.code = "sync.auth_required".into();
+                        error.message = "host authentication required".into();
+                    }
+                    _ => {}
                 }
+                error
             })?;
             // §5.9.5 always-issue: a JSON body carries a presigned `url`; an
             // octet-stream body is inline bytes.
@@ -886,10 +953,10 @@ mod native {
             });
             let resp = req
                 .send(body.to_string())
-                .map_err(|e| http_err("POST upload-grant", e))?;
+                .map_err(|e| http_err("blob upload grant request failed", e))?;
             let grant_body = read_body(resp, None)?;
             let parsed: serde_json::Value = serde_json::from_slice(&grant_body)
-                .map_err(|e| TransportError::new("transport.failed", format!("read grant: {e}")))?;
+                .map_err(|_| transfer_error("blob upload grant decode failed", "decode", None))?;
             if let Some(u) = parsed.get("url").and_then(|v| v.as_str()) {
                 return Ok(BlobUploadGrant::Url {
                     url: u.to_owned(),
@@ -913,7 +980,8 @@ mod native {
                 "content-type",
                 media_type.unwrap_or("application/octet-stream"),
             );
-            req.send(bytes).map_err(|e| http_err("PUT blob url", e))?;
+            req.send(bytes)
+                .map_err(|e| http_err("signed blob upload failed", e))?;
             Ok(())
         }
 
@@ -937,7 +1005,7 @@ mod native {
             // Then layer the configured auth/actor headers on top.
             use tungstenite::client::IntoClientRequest;
             let mut url = url::Url::parse(&self.ws_url)
-                .map_err(|e| TransportError::new("transport.failed", format!("ws url: {e}")))?;
+                .map_err(|_| transfer_error("realtime URL invalid", "request", None))?;
             if let Some(client_id) = self.realtime_client_id.as_deref() {
                 let retained_query: Vec<(String, String)> = url
                     .query_pairs()
@@ -952,7 +1020,7 @@ mod native {
             let mut request = url
                 .as_str()
                 .into_client_request()
-                .map_err(|e| TransportError::new("transport.failed", format!("ws url: {e}")))?;
+                .map_err(|error| ws_err("realtime request failed", error))?;
             {
                 let out = request.headers_mut();
                 for (k, v) in &self.headers {
@@ -965,7 +1033,7 @@ mod native {
                 }
             }
             let (mut ws, _resp) = tungstenite::connect(request)
-                .map_err(|e| TransportError::new("transport.failed", format!("ws connect: {e}")))?;
+                .map_err(|error| ws_err("realtime connection failed", error))?;
             let stream = match ws.get_mut() {
                 MaybeTlsStream::Plain(stream) => stream.try_clone(),
                 MaybeTlsStream::Rustls(stream) => stream.get_ref().try_clone(),
@@ -976,14 +1044,14 @@ mod native {
                     ))
                 }
             }
-            .map_err(|e| http_err("ws clone", e))?;
+            .map_err(|e| io_err("realtime clone failed", e))?;
             stream
                 .set_nonblocking(true)
-                .map_err(|e| http_err("ws nonblocking", e))?;
-            let poller = Arc::new(Poller::new().map_err(|e| http_err("ws poller", e))?);
+                .map_err(|e| io_err("realtime nonblocking failed", e))?;
+            let poller = Arc::new(Poller::new().map_err(|e| io_err("realtime poller failed", e))?);
             // SAFETY: SocketRegistration owns this handle and unregisters it before drop.
             unsafe { poller.add(&stream, Event::readable(0)) }
-                .map_err(|e| http_err("ws register", e))?;
+                .map_err(|e| io_err("realtime register failed", e))?;
             let registration = SocketRegistration {
                 poller: Arc::clone(&poller),
                 stream,
@@ -1016,7 +1084,7 @@ mod native {
                             // WouldBlock retains the frame in tungstenite's write buffer.
                             if let Err(error) = ws.write(outgoing.message) {
                                 if !is_would_block(&error) {
-                                    break http_err("ws write", error);
+                                    break ws_err("realtime write failed", error);
                                 }
                             }
                         }
@@ -1061,18 +1129,18 @@ mod native {
                             Event::readable(0)
                         }
                         Err(error) if is_would_block(&error) => Event::all(0),
-                        Err(error) => break http_err("ws flush", error),
+                        Err(error) => break ws_err("realtime flush failed", error),
                     };
                     if !drained {
                         continue;
                     }
                     if let Err(error) = registration.poller.modify(&registration.stream, interest) {
-                        break http_err("ws rearm", error);
+                        break io_err("realtime rearm failed", error);
                     }
                     events.clear();
                     if let Err(error) = registration.poller.wait(&mut events, None) {
                         if error.kind() != std::io::ErrorKind::Interrupted {
-                            break http_err("ws wait", error);
+                            break io_err("realtime wait failed", error);
                         }
                     }
                 };
@@ -1094,6 +1162,162 @@ mod native {
         fn realtime_close(&mut self) -> Result<(), TransportError> {
             self.shutdown();
             Ok(())
+        }
+    }
+    #[cfg(test)]
+    mod transfer_tests {
+        use super::*;
+        use ureq::unversioned::resolver::DefaultResolver;
+        use ureq::unversioned::transport::{ConnectionDetails, Connector};
+
+        const SECRET: &str = "https://user:password@cdn.example/secret-capability-path?secret-query=value#secret-fragment";
+
+        #[derive(Debug)]
+        struct SecretError;
+        impl std::fmt::Display for SecretError {
+            fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                panic!("transport error must never be formatted")
+            }
+        }
+        impl std::error::Error for SecretError {}
+
+        #[derive(Debug)]
+        struct FailingConnector(&'static str);
+        impl Connector for FailingConnector {
+            type Out = ();
+            fn connect(
+                &self,
+                _: &ConnectionDetails,
+                _: Option<()>,
+            ) -> Result<Option<()>, ureq::Error> {
+                Err(match self.0 {
+                    "io" => ureq::Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::ConnectionRefused,
+                        format!("404 {SECRET}"),
+                    )),
+                    "tls" => ureq::Error::Tls(SECRET),
+                    "request" => ureq::Error::BadUri(SECRET.into()),
+                    "timeout" => ureq::Error::Timeout(ureq::Timeout::Global),
+                    "404" => ureq::Error::StatusCode(404),
+                    "401" => ureq::Error::StatusCode(401),
+                    "403" => ureq::Error::StatusCode(403),
+                    "503" => ureq::Error::StatusCode(503),
+                    _ => ureq::Error::Other(Box::new(SecretError)),
+                })
+            }
+        }
+
+        #[test]
+        fn injected_http_failures_never_expose_capabilities_or_format_the_cause() {
+            for kind in [
+                "io", "tls", "request", "timeout", "unknown", "404", "401", "403", "503",
+            ] {
+                for operation in [
+                    "sync",
+                    "remote",
+                    "segment",
+                    "signed_segment",
+                    "blob",
+                    "signed_blob",
+                    "upload",
+                    "grant",
+                    "signed_put",
+                ] {
+                    let mut transport =
+                        NativeTransport::new("http://127.0.0.1", &serde_json::json!({}), None)
+                            .unwrap();
+                    transport.agent = ureq::Agent::with_parts(
+                        ureq::Agent::config_builder().build(),
+                        FailingConnector(kind),
+                        DefaultResolver::default(),
+                    );
+                    let mut progress = |_| {};
+                    let result = match operation {
+                        "sync" => transport.sync(&[]).map(|_| ()),
+                        "remote" => transport.remote_operation(&[]).map(|_| ()),
+                        "segment" => transport.download_segment(&SegmentRequest { segment_id: "sha256:test".into(), table: "tasks".into(), requested_scopes_json: "{}".into() }, &mut progress).map(|_| ()),
+                        "signed_segment" => transport.fetch_url("http://127.0.0.1/secret-capability-path?secret-query=value#secret-fragment", &mut progress).map(|_| ()),
+                        "blob" => transport.blob_download("sha256:test").map(|_| ()),
+                        "signed_blob" => transport.fetch_blob_url("http://127.0.0.1/secret-capability-path?secret-query=value#secret-fragment").map(|_| ()),
+                        "upload" => transport.blob_upload("sha256:test", &[], None),
+                        "grant" => transport.blob_upload_grant("sha256:test", 0, None).map(|_| ()),
+                        _ => transport.blob_put_url("http://127.0.0.1/secret-capability-path?secret-query=value#secret-fragment", &[], None),
+                    };
+                    let error = result.unwrap_err();
+                    let expected_code = match (operation, kind) {
+                        ("segment" | "signed_segment", _) => "sync.transport_failed",
+                        ("blob", "404") => "blob.not_found",
+                        ("blob", "401") => "sync.auth_required",
+                        ("blob", "403") => "blob.forbidden",
+                        _ => "transport.failed",
+                    };
+                    assert_eq!(error.code, expected_code, "{operation} {kind}");
+                    let details = error.details.unwrap();
+                    assert_eq!(
+                        details["causeKind"],
+                        match kind {
+                            "io" => "connect",
+                            "404" | "401" | "403" | "503" => "status",
+                            other => other,
+                        }
+                    );
+                    assert_eq!(
+                        details.get("httpStatus").and_then(|value| value.as_u64()),
+                        kind.parse::<u64>().ok()
+                    );
+                    let rendered = format!("{}{}", error.message, details);
+                    for secret in [
+                        "http://",
+                        "https://",
+                        "password",
+                        "secret-capability-path",
+                        "secret-query",
+                        "secret-fragment",
+                    ] {
+                        assert!(!rendered.contains(secret), "{operation} {kind}");
+                    }
+                    assert!(details.get("causeMessage").is_none());
+                    assert!(details.get("path").is_none());
+                }
+            }
+        }
+
+        #[test]
+        fn injected_body_and_websocket_errors_do_not_expose_payloads_or_source_chains() {
+            struct FailingRead;
+            impl std::io::Read for FailingRead {
+                fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                    Err(std::io::Error::other(SECRET))
+                }
+            }
+            let response = ureq::http::Response::builder()
+                .status(200)
+                .body(ureq::Body::builder().reader(FailingRead))
+                .unwrap();
+            let error = segment_error(read_body(response, None).unwrap_err());
+            assert_eq!(error.code, "sync.transport_failed");
+            assert_eq!(error.message, "segment transfer failed");
+            assert_eq!(
+                error.details,
+                Some(serde_json::json!({ "causeKind": "body", "httpStatus": 200 }))
+            );
+            for cause in [
+                tungstenite::Error::Io(std::io::Error::other(SecretError)),
+                tungstenite::Error::Http(Box::new(
+                    tungstenite::http::Response::builder()
+                        .status(403)
+                        .header("location", SECRET)
+                        .body(Some(SECRET.as_bytes().to_vec()))
+                        .unwrap(),
+                )),
+            ] {
+                let error = ws_err("realtime connection failed", cause);
+                assert_eq!(error.message, "realtime connection failed");
+                let details = error.details.unwrap();
+                assert!(details.get("path").is_none());
+                assert!(details.get("causeMessage").is_none());
+                assert!(!details.to_string().contains("secret"));
+            }
         }
     }
 }
@@ -1187,7 +1411,7 @@ mod tests {
     }
 
     #[test]
-    fn segment_http_failures_have_named_codes_and_request_details() {
+    fn segment_http_failures_have_named_codes_and_safe_cause_details() {
         for signed in [false, true] {
             for body_failure in [false, true] {
                 let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1228,17 +1452,53 @@ mod tests {
                 assert_eq!(error.code, "sync.transport_failed");
                 assert_eq!(error.message, "segment transfer failed");
                 let details = error.details.unwrap();
+                assert!(details.get("path").is_none());
+                assert!(details.get("causeMessage").is_none());
                 assert_eq!(
-                    details["path"],
-                    if signed {
-                        "/signed"
-                    } else {
-                        "/segments/sha256:test"
-                    }
+                    details["causeKind"],
+                    if body_failure { "body" } else { "status" }
                 );
                 assert_eq!(details["httpStatus"], if body_failure { 200 } else { 403 });
                 server.join().unwrap();
             }
+        }
+    }
+
+    #[test]
+    fn blob_status_classification_uses_the_actual_http_response() {
+        for (status, expected) in [
+            (404, "blob.not_found"),
+            (401, "sync.auth_required"),
+            (403, "blob.forbidden"),
+            (500, "transport.failed"),
+        ] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let server = std::thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(socket.try_clone().unwrap());
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    assert!(!line.is_empty());
+                }
+                let body = r#"{"code":"blob.not_found","message":"https://host/secret-path?secret-query#secret-fragment","retryable":false}"#;
+                write!(socket, "HTTP/1.1 {status} Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            });
+            let mut transport =
+                HostTransport::new_from_config(&serde_json::json!({"baseUrl":base})).unwrap();
+            let error = transport.blob_download("sha256:test").unwrap_err();
+            assert_eq!(error.code, expected);
+            assert_eq!(
+                error.details,
+                Some(serde_json::json!({ "causeKind":"status", "httpStatus":status }))
+            );
+            assert!(!error.message.contains("secret"));
+            assert!(!error.message.contains("http"));
+            server.join().unwrap();
         }
     }
 

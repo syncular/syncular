@@ -1678,8 +1678,17 @@ export const blobScenarios: readonly Scenario[] = [
       let failed = false;
       try {
         await reader.api.fetchBlob?.(fileRef);
-      } catch {
+      } catch (error) {
         failed = true;
+        check(
+          typeof error === 'object' && error !== null && 'code' in error,
+          'a lost signed transfer reports its error code',
+        );
+        checkEqual(
+          error.code,
+          'transport.lost',
+          'a lost signed transfer retains transport semantics',
+        );
       }
       check(failed, 'a lost presigned-url fetch fails the fetchBlob (§5.9.5)');
       // Recovery: the re-request mints a fresh url and the retry converges.

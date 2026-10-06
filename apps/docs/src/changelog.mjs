@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-10-06',
+    title: 'Transfer errors protect signed capabilities',
+    body: 'Native and browser transports use static local error messages and allowlisted cause metadata without request URLs or raw exceptions. Blob downloads classify only HTTP 404 as blob.not_found; network and TLS failures retain transport semantics. Browser HTTP bindings preserve authenticated server catalog errors while rejecting blob.not_found on non-404 responses.',
+    links: [
+      {
+        href: '/concepts-blobs/#transfer-failures',
+        label: 'Transfer failures',
+      },
+    ],
+  },
+  {
+    date: '2026-10-06',
     title: 'Overlay replay failures roll back local apply',
     body: 'Rust propagates replay read, decode, write, savepoint and FTS failures. Both clients reconcile acknowledgements before committing their local apply transaction and refuse failed startup replay. Failed apply retains durable intent and publishes no successful apply revision. Confirmed secondary unique conflicts remain deferred during replay.',
     links: [
