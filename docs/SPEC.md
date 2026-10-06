@@ -4413,6 +4413,10 @@ schema and retrying it unmodified never succeeds). Later outbox commits
 that *do* encode continue to replay — one incompatible commit does not
 wedge the queue, matching the §7.2 rule that dependents are app policy.
 
+The send-time classification MUST complete before collecting blob uploads for
+pending commits. Dropping an incompatible commit removes its blob dependencies;
+an independent staging pin or a surviving commit can still require that body.
+
 An operation that names a table the new schema removed has no local mirror to
 replay into, so the overlay replay skips it. That skip is structural and never
 a replay failure. A value-free delete remains encodable and takes ordinary
@@ -5273,7 +5277,9 @@ pinned, never interpreted.
   that request can be acknowledged by that round. Later local commits remain
   in the outbox for the next round. Apply replays them over the server base.
   Teardown, security preflight, purge and released subscription contexts
-  invalidate their in-flight result. Socket deltas buffered during a round
+  invalidate their in-flight result. A local purge or rebootstrap that rolls
+  back MUST preserve the captured round so its response can still apply.
+  Socket deltas buffered during a round
   follow its response. Hosts MUST use completion notifications and existing
   sync intents, without introducing a polling loop. Synchronous core APIs
   drive the same lifecycle on their calling thread.
