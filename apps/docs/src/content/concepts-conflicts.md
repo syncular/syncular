@@ -34,6 +34,21 @@ require peer rows in the same table. An unrelated bootstrap, including an empty
 one, does not rewrite acknowledged rows or decode their protected operations.
 ACK protection remains active until authoritative delivery.
 
+Clients surface overlay replay failures on reopen and during sync. SQL reads,
+value decoding, row writes, savepoints, and FTS maintenance must succeed before
+the local apply transaction commits. A failure rolls back that transaction's
+visible rows, FTS projection, base changes, cursor, acknowledgements, outbox
+changes, and observation revision. Earlier completed protocol commits remain
+applied. Pending intent remains available for retry after the storage failure
+is corrected.
+
+Replay leaves a sparse operation over a genuinely absent row unapplied. A read
+or decode failure does not establish absence. Replay also defers a confirmed
+secondary unique conflict until a later replay admits the intended row or the
+server answers its push. Other replay failures abort the local transaction.
+Authoring a commit that violates a secondary unique index continues to fail
+atomically with `sync.constraint_violation`.
+
 Each request sends a contiguous prefix of pending commits in creation order.
 When the next whole commit exceeds the remaining operation budget, the client
 defers that commit and every later commit to the next round. Retries retain

@@ -33,6 +33,7 @@ import {
   decodeRow,
   decodeRowsSegment,
   encodeMessage,
+  encodeRow,
   encodePresencePublish,
   MessageStreamScanner,
   PROTOCOL_WIRE_VERSION,
@@ -210,6 +211,7 @@ import {
   ensureLocalSyncedSchema,
   fromSqlValue,
   coerceSqlRepresentation,
+  localColumnType,
   type JsonRowValue,
   jsonToRowValue,
   LOCAL_SCHEMA_VERSION_KEY,
@@ -1006,7 +1008,16 @@ export class SyncClient {
     // generated version this client ships — run the wipe/re-bootstrap reset
     // before the first sync round. A fresh install (no marker) is treated as
     // already at the generated version.
-    this.#detectAndResetSchema(marker);
+    try {
+      this.#detectAndResetSchema(marker);
+      if (marker === this.#schema.version) {
+        this.#replayOutbox(undefined, true, false);
+      }
+    } catch (error) {
+      await this.#lease.release();
+      this.#lease = undefined;
+      throw error;
+    }
     // RFC 0005 D9: a container with missing/stale metadata, or past its TTL, is
     // discarded at boot before anything can read it. The orphan/stale sweep is
     // unconditional; the TTL is aware-binary hygiene only.
@@ -1131,6 +1142,7 @@ export class SyncClient {
         this.#discardAcknowledgedRows();
         dropAndRecreateSyncedTables(this.#db, this.#schema);
         resetSubscriptionsForBump(this.#db);
+        this.#replayOutbox();
         setMeta(
           this.#db,
           LOCAL_SCHEMA_VERSION_KEY,
@@ -1142,11 +1154,10 @@ export class SyncClient {
       // Whole-DB reset: every synced table's rows changed (I1 eviction-shaped).
       for (const table of this.#schema.tables.values()) batch.table(table.name);
     });
-    // The stop state is over: this client now ships a servable schema. The
-    // outbox is re-applied optimistically over the (now empty) tables so
-    // pending offline writes stay visible across the bump (§7.4.5).
+    // The stop state is over: this client now ships a servable schema.
+    // The reset transaction already replayed pending intent before committing
+    // its marker and visible rows (§7.4.5).
     this.#setSchemaFloor(undefined);
-    this.#replayOutbox();
   }
 
   /**
@@ -4258,6 +4269,24 @@ export class SyncClient {
                     drained = true;
                   }
                 }
+                if (drained) {
+                  this.#replayOutbox([
+                    ...new Set(
+                      results.flatMap(
+                        (result) =>
+                          commitsById
+                            .get(result.clientCommitId)
+                            ?.operations.map((operation) =>
+                              JSON.stringify(
+                                hasUniqueIndex(this.#table(operation.table))
+                                  ? [operation.table]
+                                  : [operation.table, operation.rowId],
+                              ),
+                            ) ?? [],
+                      ),
+                    ),
+                  ]);
+                }
                 if (
                   drained &&
                   results.some((result) => result === lastFinalPushResult)
@@ -4604,15 +4633,6 @@ export class SyncClient {
           listOutboxBeforeImages(this.#db, commit.clientCommitId),
         );
       this.#rollbackFailedCommit(commit, batch);
-      this.#replayOutbox(
-        commit.operations.map((operation) =>
-          JSON.stringify(
-            hasUniqueIndex(this.#table(operation.table))
-              ? [operation.table]
-              : [operation.table, operation.rowId],
-          ),
-        ),
-      );
     });
     batch.status();
     summary.rejected.push(frame.clientCommitId);
@@ -5257,8 +5277,32 @@ export class SyncClient {
         if (value !== undefined) return jsonToRowValue(value);
         return local === undefined
           ? null
-          : fromSqlValue(column, local[column.name] ?? null);
+          : replay
+            ? (coerceSqlRepresentation(
+                column,
+                local[column.name] ?? null,
+              ) as RowValue)
+            : fromSqlValue(column, local[column.name] ?? null);
       });
+      if (replay) {
+        try {
+          encodeRow(
+            table.columns.map((column, index) => ({
+              ...column,
+              type:
+                column.encrypted && values[index] instanceof Uint8Array
+                  ? 'bytes'
+                  : localColumnType(column),
+            })),
+            values,
+          );
+        } catch {
+          throw new ClientSyncError(
+            'sync.local_corrupt',
+            'persisted optimistic row value is invalid',
+          );
+        }
+      }
       // Record the row's scope keys from its scope columns (I2 refinement).
       if (batch !== undefined) {
         for (const [variable, column] of table.scopeColumnByVariable) {
@@ -5326,9 +5370,13 @@ export class SyncClient {
     return scope;
   }
 
-  #replayOutbox(scope?: OverlayScope, restoreBases = true): void {
+  #replayOutbox(
+    scope?: OverlayScope,
+    restoreBases = true,
+    observe = true,
+  ): void {
     if (scope?.length === 0) return;
-    this.#applyBatch((batch) => {
+    const replay = (batch?: ChangeAccumulator) => {
       if (restoreBases) restoreFailedBases(this.#db, this.#schema, scope);
       const acknowledged = failedOverlayCommits(
         this.#db,
@@ -5351,7 +5399,9 @@ export class SyncClient {
           batch,
           true,
         );
-    });
+    };
+    if (observe) this.#applyBatch(replay);
+    else this.#db.transaction(() => replay());
   }
 
   #deleteUnreferencedBlobs(): void {

@@ -310,7 +310,7 @@ mod observation_tests {
                 1,
             )
             .unwrap();
-        client.rebuild_overlay();
+        client.rebuild_overlay().expect("rebuild overlay");
         let commit_id = client
             .patch(
                 "secrets",
@@ -2081,7 +2081,7 @@ mod observation_tests {
                 1,
             )
             .unwrap();
-        client.rebuild_overlay();
+        client.rebuild_overlay().expect("rebuild overlay");
         let first = client
             .patch(
                 "tasks",
@@ -2515,7 +2515,9 @@ mod observation_tests {
                 instance
                     .apply_commit_changes(&tables, std::slice::from_ref(&change))
                     .unwrap();
-                instance.rebuild_overlay_if_dirty();
+                instance
+                    .rebuild_overlay_if_dirty()
+                    .expect("rebuild overlay");
                 instance.finish_observation("mirror_test", batch).unwrap();
             }
             for sql in [
@@ -2583,7 +2585,7 @@ mod observation_tests {
                     )
                     .unwrap();
             }
-            client.rebuild_overlay_if_dirty();
+            client.rebuild_overlay_if_dirty().expect("rebuild overlay");
             for base in [true, false] {
                 let full = if base {
                     base_table("tasks")
@@ -2650,13 +2652,15 @@ mod observation_tests {
                     if base {
                         client.delete_base_row("tasks", row_id).unwrap();
                     } else {
-                        client.apply_outbox_ops(&[OutboxOp {
-                            upsert: false,
-                            table: "tasks".into(),
-                            row_id: row_id.into(),
-                            base_version: None,
-                            values: None,
-                        }]);
+                        client
+                            .apply_outbox_ops(&[OutboxOp {
+                                upsert: false,
+                                table: "tasks".into(),
+                                row_id: row_id.into(),
+                                base_version: None,
+                                values: None,
+                            }])
+                            .expect("replay delete");
                     }
                     let remaining: i64 = client
                         .conn
@@ -2756,7 +2760,9 @@ mod observation_tests {
                             .unwrap();
                     }
                 }
-                instance.rebuild_overlay_if_dirty();
+                instance
+                    .rebuild_overlay_if_dirty()
+                    .expect("rebuild overlay");
             }
             for index in 0..80 {
                 let mutations = (0..3)
@@ -2876,7 +2882,7 @@ mod observation_tests {
                 )
                 .unwrap();
         }
-        client.rebuild_overlay_if_dirty();
+        client.rebuild_overlay_if_dirty().expect("rebuild overlay");
         let pending = client
             .mutate(vec![Mutation::Upsert {
                 table: "tasks".into(),
@@ -2953,7 +2959,7 @@ mod observation_tests {
         if unchanged_rows > 0 {
             client.conn.execute_batch(&format!("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<{unchanged_rows}) INSERT INTO _syncular_base_catalogue SELECT 'c'||i,'p1','needle '||i,1 FROM n")).unwrap();
         }
-        client.rebuild_overlay();
+        client.rebuild_overlay().expect("rebuild overlay");
         client.conn.execute_batch("CREATE TABLE audit(tbl TEXT); CREATE TRIGGER catalogue_changed AFTER DELETE ON catalogue BEGIN INSERT INTO audit VALUES ('catalogue'); END;").unwrap();
         let mut elapsed = Vec::new();
         for round in 1..=rounds {
@@ -2993,7 +2999,7 @@ mod observation_tests {
                     Some(&pending),
                 )
                 .unwrap();
-            client.rebuild_overlay_if_dirty();
+            client.rebuild_overlay_if_dirty().expect("rebuild overlay");
             elapsed.push(started.elapsed().as_nanos());
         }
         assert_eq!(
@@ -3290,7 +3296,9 @@ mod observation_tests {
                     )
                     .unwrap();
             }
-            instance.rebuild_overlay_if_dirty();
+            instance
+                .rebuild_overlay_if_dirty()
+                .expect("rebuild overlay");
             instance.overlay_rebuild_count.set(0);
         }
         for index in 0..100 {
@@ -3415,7 +3423,7 @@ mod observation_tests {
             .apply_commit_changes(&tables, &[first, invalid])
             .is_err());
         client.rollback_observation("failed_mirror");
-        client.rebuild_overlay_if_dirty();
+        client.rebuild_overlay_if_dirty().expect("rebuild overlay");
         assert!(client.query("SELECT * FROM tasks", &[]).unwrap().is_empty());
         assert_eq!(
             client
@@ -3676,7 +3684,7 @@ mod observation_tests {
     }
 
     #[test]
-    fn mixed_push_results_reconcile_and_prune_once_per_response() {
+    fn mixed_push_results_reconcile_each_boundary_and_prune_once_per_response() {
         let mut client = client();
         client.set_meta(LOG_EPOCH_KEY, "epoch-1");
         for index in 0..4 {
@@ -3763,8 +3771,423 @@ mod observation_tests {
                 .map(|id| Map::from_iter([("id".to_owned(), Value::from(id))]))
                 .to_vec()
         );
-        assert_eq!(client.overlay_rebuild_count.get(), 1);
+        // The successful ACK run and final rejection have distinct durable boundaries.
+        assert_eq!(client.overlay_rebuild_count.get(), 2);
         assert_eq!(client.outcome_prune_count.get(), 1);
+    }
+
+    fn replay_schema(fts: bool) -> Value {
+        json!({"version":1,"tables":[{"name":"tasks","primaryKey":"id","columns":[
+            {"name":"id","type":"string","nullable":false},
+            {"name":"project_id","type":"string","nullable":false},
+            {"name":"title","type":"string","nullable":false},
+            {"name":"done","type":"boolean","nullable":false}
+        ],"scopes":[{"pattern":"project:{project_id}"}], "ftsIndexes": if fts { json!([{"name":"tasks_fts","columns":["title"],"tokenize":"unicode61"}]) } else { json!([]) }}]})
+    }
+
+    #[test]
+    fn overlay_replay_trigger_refuses_reopen_and_preserves_durable_intent() {
+        let path =
+            std::env::temp_dir().join(format!("syncular-replay-{}.db", uuid::Uuid::new_v4()));
+        let schema = replay_schema(false);
+        let mut client = SyncClient::open_path(
+            "replay".into(),
+            &schema,
+            ClientLimits::default(),
+            path.to_str().unwrap(),
+        )
+        .unwrap();
+        let ids = ["early", "bad"].map(|id| {
+            client
+                .mutate(vec![Mutation::Upsert {
+                    table: "tasks".into(),
+                    values: Map::from_iter([
+                        ("id".into(), json!(id)),
+                        ("project_id".into(), json!("p1")),
+                        ("title".into(), json!(id)),
+                        ("done".into(), json!(false)),
+                    ]),
+                    base_version: None,
+                }])
+                .unwrap()
+        });
+        client.conn.execute_batch("DELETE FROM tasks; CREATE TRIGGER fail_replay BEFORE INSERT ON tasks WHEN new.id='bad' BEGIN SELECT RAISE(ABORT,'replay failed'); END;").unwrap();
+        let revision = client.local_revision();
+        drop(client);
+        let error = SyncClient::open_path(
+            "replay".into(),
+            &schema,
+            ClientLimits::default(),
+            path.to_str().unwrap(),
+        )
+        .err()
+        .expect("reopen must fail");
+        assert!(error.contains("replay failed"));
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM tasks", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM _syncular_outbox", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            meta_get(&conn, LOCAL_REVISION_KEY),
+            Some(revision.to_string())
+        );
+        conn.execute_batch("DROP TRIGGER fail_replay").unwrap();
+        drop(conn);
+        let reopened = SyncClient::open_path(
+            "replay".into(),
+            &schema,
+            ClientLimits::default(),
+            path.to_str().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(reopened.pending_commit_ids(), ids);
+        assert_eq!(
+            reopened
+                .query("SELECT id FROM tasks ORDER BY id", &[])
+                .unwrap()
+                .len(),
+            2
+        );
+        drop(reopened);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn overlay_replay_failure_rolls_back_push_and_pull_apply_boundaries() {
+        let schema = replay_schema(false);
+        let mut client =
+            SyncClient::new("replay".into(), &schema, ClientLimits::default()).unwrap();
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        client
+            .write_base_row(
+                "tasks",
+                &vec![
+                    Some(ColumnValue::String("queued".into())),
+                    Some(ColumnValue::String("p1".into())),
+                    Some(ColumnValue::String("server".into())),
+                    Some(ColumnValue::Boolean(false)),
+                ],
+                1,
+            )
+            .unwrap();
+        client.rebuild_overlay().unwrap();
+        let id = client
+            .patch(
+                "tasks",
+                "queued",
+                Map::from_iter([("title".into(), json!("local"))]),
+                Some(1),
+            )
+            .unwrap();
+        let rows = client.query("SELECT * FROM tasks", &[]).unwrap();
+        let base = client
+            .query("SELECT * FROM _syncular_base_tasks", &[])
+            .unwrap();
+        let revision = client.local_revision();
+        client.drain_change_batches();
+        client.conn.execute_batch("CREATE TRIGGER fail_replay BEFORE INSERT ON tasks WHEN new.title='local' BEGIN SELECT RAISE(ABORT,'replay failed'); END").unwrap();
+        let remote = vec![
+            Some(ColumnValue::String("queued".into())),
+            Some(ColumnValue::String("p1".into())),
+            Some(ColumnValue::String("remote".into())),
+            Some(ColumnValue::Boolean(false)),
+        ];
+        let bytes = crate::values::encode_row_json(
+            client.schema.table("tasks").unwrap(),
+            "queued",
+            &Map::from_iter(
+                client
+                    .schema
+                    .table("tasks")
+                    .unwrap()
+                    .columns
+                    .iter()
+                    .zip(&remote)
+                    .map(|(column, value)| (column.name.clone(), column_value_to_json(value))),
+            ),
+            &client.encryption,
+        )
+        .unwrap();
+        let change = ssp2::model::Change {
+            table_index: 0,
+            op: Op::Upsert,
+            row_id: "queued".into(),
+            row_version: Some(2),
+            scopes: vec![("project_id".into(), "p1".into())],
+            row: Some(bytes),
+        };
+        assert!(client
+            .apply_commit_frame(&["tasks".into()], std::slice::from_ref(&change), Some(2))
+            .is_err());
+        assert_eq!(client.query("SELECT * FROM tasks", &[]).unwrap(), rows);
+        assert_eq!(
+            client
+                .query("SELECT * FROM _syncular_base_tasks", &[])
+                .unwrap(),
+            base
+        );
+        assert_eq!(client.local_revision(), revision);
+        assert!(client.drain_change_batches().is_empty());
+        let response = Message {
+            wire_version: 2,
+            msg_kind: MsgKind::Response,
+            frames: vec![
+                Frame::RespHeader {
+                    required_schema_version: None,
+                    latest_schema_version: None,
+                    log_epoch: Some("epoch-1".into()),
+                    reset_required: Some(false),
+                },
+                Frame::PushResult {
+                    client_commit_id: id.clone(),
+                    status: PushStatus::Applied,
+                    commit_seq: Some(2),
+                    results: vec![OpResult::Applied { op_index: 0 }],
+                },
+            ],
+        };
+        let (_, meta) = client.build_request(false);
+        let mut transport = HostTransport::new_from_config(&json!({})).unwrap();
+        assert!(
+            matches!(client.process_response(&mut transport,response.clone(),&meta),SyncOutcome::Failed { error_code,.. } if error_code=="client.outcome_persistence_failed")
+        );
+        assert_eq!(client.pending_commit_ids(), vec![id.clone()]);
+        assert!(client.commit_outcome(&id).unwrap().is_none());
+        assert_eq!(
+            client
+                .conn
+                .query_row("SELECT count(*) FROM _syncular_acked_rows", [], |row| row
+                    .get::<_, i64>(
+                    0
+                ))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            client
+                .conn
+                .query_row("SELECT count(*) FROM _syncular_row_deliveries", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0
+        );
+        assert_eq!(client.query("SELECT * FROM tasks", &[]).unwrap(), rows);
+        assert_eq!(client.local_revision(), revision);
+        assert!(client.drain_change_batches().is_empty());
+        client
+            .conn
+            .execute_batch("DROP TRIGGER fail_replay")
+            .unwrap();
+        assert!(matches!(
+            client.process_response(&mut transport, response, &meta),
+            SyncOutcome::Ok(_)
+        ));
+        client
+            .apply_commit_frame(&["tasks".into()], &[change], Some(2))
+            .unwrap();
+        assert!(client.pending_commit_ids().is_empty());
+        assert_eq!(
+            client.query("SELECT title FROM tasks", &[]).unwrap()[0]["title"],
+            json!("remote")
+        );
+    }
+
+    #[test]
+    fn overlay_replay_distinguishes_absence_from_sql_and_value_decode_errors() {
+        let client = SyncClient::new(
+            "replay".into(),
+            &replay_schema(false),
+            ClientLimits::default(),
+        )
+        .unwrap();
+        let table = client.schema.table("tasks").unwrap();
+        let patch = OutboxOp {
+            table: "tasks".into(),
+            row_id: "absent".into(),
+            upsert: true,
+            base_version: Some(1),
+            values: Some(Map::from_iter([
+                ("id".into(), json!("absent")),
+                ("title".into(), json!("patch")),
+            ])),
+        };
+        assert!(client.visible_row(table, "absent").unwrap().is_none());
+        client
+            .apply_outbox_ops([&patch])
+            .expect("sparse replay over truly absent row");
+        client
+            .conn
+            .execute_batch("INSERT INTO tasks VALUES ('bad','p1','title','invalid',1)")
+            .unwrap();
+        assert!(client
+            .visible_row(table, "bad")
+            .unwrap_err()
+            .starts_with("sync.local_corrupt:"));
+        let mut invalid = patch.clone();
+        invalid.values = Some(Map::from_iter([
+            ("id".into(), json!("bad-value")),
+            ("project_id".into(), json!("p1")),
+            ("title".into(), json!("title")),
+            ("done".into(), json!({"bad":true})),
+        ]));
+        assert!(client
+            .apply_outbox_ops([&invalid])
+            .unwrap_err()
+            .starts_with("sync.local_corrupt:"));
+        client.conn.execute_batch("DROP TABLE tasks").unwrap();
+        assert!(
+            client.apply_outbox_ops([&patch]).is_err(),
+            "SQL failure must not count as absence"
+        );
+    }
+
+    #[test]
+    fn overlay_replay_keeps_secondary_unique_deferral_and_lazy_base_precedence() {
+        let mut schema = replay_schema(false);
+        schema["tables"][0]["indexes"] =
+            json!([{"name":"tasks_project_title", "columns":["project_id","title"],"unique":true}]);
+        let mut client =
+            SyncClient::new("replay".into(), &schema, ClientLimits::default()).unwrap();
+        let id = client
+            .mutate(vec![Mutation::Upsert {
+                table: "tasks".into(),
+                values: Map::from_iter([
+                    ("id".into(), json!("queued")),
+                    ("project_id".into(), json!("p1")),
+                    ("title".into(), json!("occupied")),
+                    ("done".into(), json!(false)),
+                ]),
+                base_version: None,
+            }])
+            .unwrap();
+        client
+            .write_base_row(
+                "tasks",
+                &vec![
+                    Some(ColumnValue::String("server".into())),
+                    Some(ColumnValue::String("p1".into())),
+                    Some(ColumnValue::String("occupied".into())),
+                    Some(ColumnValue::Boolean(false)),
+                ],
+                1,
+            )
+            .unwrap();
+        client.rebuild_overlay_if_dirty().unwrap();
+        assert_eq!(client.pending_commit_ids(), vec![id.clone()]);
+        assert!(client
+            .visible_row(client.schema.table("tasks").unwrap(), "queued")
+            .unwrap()
+            .is_none());
+        assert!(client.rejections().is_empty());
+        client.delete_base_row("tasks", "server").unwrap();
+        client.rebuild_overlay_if_dirty().unwrap();
+        assert!(client
+            .visible_row(client.schema.table("tasks").unwrap(), "queued")
+            .unwrap()
+            .is_some());
+        client
+            .write_base_row(
+                "tasks",
+                &vec![
+                    Some(ColumnValue::String("base".into())),
+                    Some(ColumnValue::String("p1".into())),
+                    Some(ColumnValue::String("base-title".into())),
+                    Some(ColumnValue::Boolean(false)),
+                ],
+                1,
+            )
+            .unwrap();
+        client.conn.execute_batch("DROP TABLE tasks").unwrap();
+        client
+            .retain_failed_commit(
+                "retained",
+                &[OutboxOp {
+                    table: "tasks".into(),
+                    row_id: "base".into(),
+                    upsert: true,
+                    base_version: Some(1),
+                    values: Some(Map::from_iter([
+                        ("id".into(), json!("base")),
+                        ("title".into(), json!("patch")),
+                    ])),
+                }],
+            )
+            .expect("an existing base must not read the unavailable visible table");
+    }
+
+    #[test]
+    fn overlay_replay_fts_and_savepoint_release_failures_roll_back_all_visible_changes() {
+        for failure in ["fts", "release"] {
+            let mut client = SyncClient::new(
+                "replay".into(),
+                &replay_schema(true),
+                ClientLimits::default(),
+            )
+            .unwrap();
+            client
+                .mutate(vec![Mutation::Upsert {
+                    table: "tasks".into(),
+                    values: Map::from_iter([
+                        ("id".into(), json!("queued")),
+                        ("project_id".into(), json!("p1")),
+                        ("title".into(), json!("needle")),
+                        ("done".into(), json!(false)),
+                    ]),
+                    base_version: None,
+                }])
+                .unwrap();
+            let before = client.query("SELECT * FROM tasks", &[]).unwrap();
+            let fts_before = client
+                .query("SELECT _syncular_source_id,title FROM tasks_fts", &[])
+                .unwrap();
+            let triggers_before: Vec<String> = client
+                .conn
+                .prepare("SELECT sql FROM sqlite_master WHERE type='trigger' ORDER BY name")
+                .unwrap()
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            if failure == "fts" {
+                client.conn.execute_batch("CREATE TRIGGER fail_fts BEFORE INSERT ON _syncular_fts_tasks_fts BEGIN SELECT RAISE(ABORT,'fts replay failed'); END;").unwrap();
+            } else {
+                client.conn.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE parent(id TEXT PRIMARY KEY); CREATE TABLE deferred(id TEXT REFERENCES parent(id) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER fail_release AFTER INSERT ON tasks BEGIN INSERT INTO deferred VALUES ('missing'); END;").unwrap();
+            }
+            client.overlay_dirty.set(true);
+            assert!(client.rebuild_overlay().is_err());
+            assert!(client.overlay_dirty.get());
+            assert!(client.conn.is_autocommit());
+            assert_eq!(client.query("SELECT * FROM tasks", &[]).unwrap(), before);
+            assert_eq!(
+                client
+                    .query("SELECT _syncular_source_id,title FROM tasks_fts", &[])
+                    .unwrap(),
+                fts_before
+            );
+            let original_triggers: Vec<String> = client.conn.prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND name NOT LIKE 'fail_%' ORDER BY name").unwrap().query_map([], |row| row.get(0)).unwrap().collect::<Result<_,_>>().unwrap();
+            assert_eq!(original_triggers, triggers_before);
+            assert_eq!(client.pending_commit_ids().len(), 1);
+            client
+                .conn
+                .execute_batch(if failure == "fts" {
+                    "DROP TRIGGER fail_fts"
+                } else {
+                    "DROP TRIGGER fail_release"
+                })
+                .unwrap();
+            client
+                .rebuild_overlay()
+                .expect("retry after removing the fault");
+        }
     }
 
     #[test]
@@ -4329,7 +4752,7 @@ mod observation_tests {
                     1,
                 )
                 .unwrap();
-            first.rebuild_overlay();
+            first.rebuild_overlay().expect("rebuild overlay");
             let operation = OutboxOp {
                 table: "tasks".into(),
                 row_id: "t1".into(),
@@ -4351,7 +4774,7 @@ mod observation_tests {
                     Some(&[operation]),
                 )
                 .unwrap();
-            first.rebuild_overlay();
+            first.rebuild_overlay().expect("rebuild overlay");
         }
         {
             let mut reopened = SyncClient::open_path(
@@ -4363,6 +4786,7 @@ mod observation_tests {
             .unwrap();
             let row = reopened
                 .visible_row(reopened.schema.table("tasks").unwrap(), "t1")
+                .expect("read visible row")
                 .unwrap();
             assert_eq!(row.0[2], Some(ColumnValue::String("mine".into())));
             assert_eq!(
@@ -4381,9 +4805,10 @@ mod observation_tests {
                 .conn
                 .execute("DELETE FROM _syncular_base_tasks WHERE id = 't1'", [])
                 .unwrap();
-            reopened.rebuild_overlay();
+            reopened.rebuild_overlay().expect("rebuild overlay");
             assert!(reopened
                 .visible_row(reopened.schema.table("tasks").unwrap(), "t1")
+                .expect("read visible row")
                 .is_none());
             let retained = reopened.commit_outcome("retained").unwrap().unwrap();
             assert!(retained.retained_rows.is_some());
@@ -4402,6 +4827,7 @@ mod observation_tests {
                 .unwrap();
             assert!(reopened
                 .visible_row(reopened.schema.table("tasks").unwrap(), "t1")
+                .expect("read visible row")
                 .is_none());
             assert!(reopened
                 .commit_outcome("retained")
@@ -4952,7 +5378,7 @@ mod observation_tests {
                         )
                         .unwrap();
                 }
-                client.rebuild_overlay_if_dirty();
+                client.rebuild_overlay_if_dirty().expect("rebuild overlay");
                 client
                     .mutate(vec![
                         Mutation::Upsert {
@@ -5031,7 +5457,7 @@ mod observation_tests {
                     assert!(matches!(actual.apply_segment(0, &segment, false), Ok(1)));
                 }
                 reference.write_base_row("tasks", &values, 2).unwrap();
-                reference.rebuild_overlay();
+                reference.rebuild_overlay().expect("rebuild overlay");
                 for table in ["tasks", "notes"] {
                     for sql in [format!("SELECT * FROM {table} ORDER BY id"),format!("SELECT _syncular_source_id,title FROM {table}_fts ORDER BY _syncular_source_id"),format!("SELECT source_id FROM _syncular_fts_{table}_fts ORDER BY source_id")] {
                         assert_eq!(actual.query(&sql, &[]).unwrap(), reference.query(&sql, &[]).unwrap(), "images={images}, {id}/{title}: {sql}");
@@ -5113,7 +5539,7 @@ mod observation_tests {
                         )
                         .unwrap();
                 }
-                client.rebuild_overlay_if_dirty();
+                client.rebuild_overlay_if_dirty().expect("rebuild overlay");
                 client
                     .mutate(vec![Mutation::Upsert {
                         table: "tasks".into(),
@@ -5196,7 +5622,7 @@ mod observation_tests {
         let mut client =
             SyncClient::new("unique-import".into(), &schema, ClientLimits::default()).unwrap();
         client.conn.execute_batch("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<8192) INSERT INTO _syncular_base_notes SELECT printf('%08d',x),'p2','note-'||x,1 FROM n").unwrap();
-        client.rebuild_overlay();
+        client.rebuild_overlay().expect("rebuild overlay");
         client
             .mutate(vec![Mutation::Upsert {
                 table: "tasks".into(),
@@ -5491,7 +5917,7 @@ mod observation_tests {
             )
             .expect("seed base rows");
         client.overlay_dirty.set(true);
-        client.rebuild_overlay_if_dirty();
+        client.rebuild_overlay_if_dirty().expect("rebuild overlay");
 
         let note = |id: &str, key_id: &str, title: &str| {
             Map::from_iter([
@@ -6659,7 +7085,7 @@ impl SyncClient {
             // Reconstruct the visible optimistic overlay from the durable base
             // plus outbox instead of trusting a process-interrupted mirror.
             client.overlay_dirty.set(true);
-            client.rebuild_overlay();
+            client.rebuild_overlay()?;
         }
         // Every persisted active subscription needs one catch-up pull on open:
         // realtime only covers changes after connection, while an idempotent
@@ -7941,6 +8367,14 @@ impl SyncClient {
             }
             _ => {}
         }
+        if marker == Some(self.schema.version)
+            && (!self.outbox.is_empty()
+                || !self.failed_commits.is_empty()
+                || self.has_acknowledged_rows())
+        {
+            self.overlay_dirty.set(true);
+            self.rebuild_overlay()?;
+        }
         self.prune_unknown_subscriptions(false)?;
         self.save_subscription_scope_schema();
         // The conformance recreate is the in-memory equivalent of reopening a
@@ -8252,7 +8686,7 @@ impl SyncClient {
             batch.outcomes = true;
         }
         // Re-apply the surviving outbox optimistically over the empty tables.
-        self.rebuild_overlay();
+        self.rebuild_overlay()?;
         Ok(())
     }
 
@@ -8824,7 +9258,7 @@ impl SyncClient {
                 let key =
                     serde_json::to_string(&(operation.table.clone(), operation.row_id.clone()))
                         .map_err(|_| "sync.local_corrupt".to_owned())?;
-                let base = self.stored_row(table, &operation.row_id, true);
+                let base = self.stored_row(table, &operation.row_id, true)?;
                 rows.push(RetainedCommitRow {
                     table: operation.table.clone(),
                     row_id: operation.row_id.clone(),
@@ -9096,7 +9530,7 @@ impl SyncClient {
             if wanted.contains(&unit) {
                 continue;
             }
-            self.rebuild_overlay_if_dirty();
+            self.rebuild_overlay_if_dirty()?;
             let prior_subs = self.subs.clone();
             self.begin_observation("syncular_window")?;
             let effective = self
@@ -9376,7 +9810,7 @@ impl SyncClient {
         if pending.is_empty() {
             return Ok(());
         }
-        self.rebuild_overlay_if_dirty();
+        self.rebuild_overlay_if_dirty()?;
         for (sub_id, table_name, effective) in pending {
             if self.schema.table(&table_name).is_none() {
                 self.delete_pending_evict(&sub_id)?;
@@ -9543,10 +9977,11 @@ impl SyncClient {
                 .schema
                 .table(&operation.table)
                 .ok_or_else(|| "sync.unknown_table".to_owned())?;
-            if let Some((values, _)) = self
-                .stored_row(table, &operation.row_id, true)
-                .or_else(|| self.visible_row(table, &operation.row_id))
-            {
+            let initial_row = match self.stored_row(table, &operation.row_id, true)? {
+                Some(row) => Some(row),
+                None => self.visible_row(table, &operation.row_id)?,
+            };
+            if let Some((values, _)) = initial_row {
                 let mut intended: Map<String, Value> = table
                     .columns
                     .iter()
@@ -9735,8 +10170,10 @@ impl SyncClient {
         // the new commit applies over it. §7.1: an operation that does not
         // apply (a secondary unique collision) fails the whole commit; the
         // savepoint rollback removes the outbox entry and every visible write.
-        if self.overlay_dirty.get() {
-            self.rebuild_overlay();
+        if let Err(error) = self.rebuild_overlay_if_dirty() {
+            self.rollback_observation("syncular_mutation");
+            self.overlay_dirty.restore(was_dirty.clone());
+            return Err(error);
         }
         if let Some(error) = commit
             .ops
@@ -9999,7 +10436,7 @@ impl SyncClient {
             self.rejections.push(rejection);
         }
         self.prune_commit_outcomes()?;
-        self.rebuild_overlay_if_dirty();
+        self.rebuild_overlay_if_dirty()?;
         Ok(true)
     }
 
@@ -10172,8 +10609,10 @@ impl SyncClient {
                 batch.table(&operation.table);
             }
         }
-        self.rebuild_overlay_if_dirty();
-        if let Err(error) = self.finish_observation("syncular_outcome_resolution", batch) {
+        if let Err(error) = self
+            .rebuild_overlay_if_dirty()
+            .and_then(|()| self.finish_observation("syncular_outcome_resolution", batch))
+        {
             self.rollback_observation("syncular_outcome_resolution");
             self.failed_commits = previous_failed;
             self.conflicts = previous_conflicts;
@@ -11619,17 +12058,19 @@ impl SyncClient {
             }
         }
 
-        // §7.1: reconcile the visible overlay once at the response boundary
-        // after all outbox acknowledgements and server data applied so a
-        // batch of PUSH_RESULT frames cannot trigger repeated full-table
-        // rebuilds. This also covers a round that aborted mid-way.
-        if self.overlay_dirty.get() {
-            self.rebuild_overlay();
-        }
         if let Some((error_code, message)) = failure {
             return SyncOutcome::Failed {
                 details: None,
                 error_code,
+                message,
+            };
+        }
+        // Local apply boundaries already reconciled their affected overlay.
+        // Refuse round success if any remaining dirty work fails to reconcile.
+        if let Err(message) = self.rebuild_overlay_if_dirty() {
+            return SyncOutcome::Failed {
+                details: None,
+                error_code: "storage.failed".into(),
                 message,
             };
         }
@@ -11718,7 +12159,7 @@ impl SyncClient {
                                 .table(&operation.table)
                                 .ok_or_else(|| "sync.unknown_table".to_owned())?;
                             let mut intended: Map<String, Value> = self
-                                .stored_row(table, &operation.row_id, true)
+                                .stored_row(table, &operation.row_id, true)?
                                 .map(|(row, _)| {
                                     table
                                         .columns
@@ -11971,6 +12412,7 @@ impl SyncClient {
             if batch.outcomes && frames.iter().any(|frame| matches!(frame, Frame::PushResult { client_commit_id, .. } if Some(client_commit_id.as_str()) == last_final_push_result_id)) {
                 self.prune_commit_outcomes()?;
             }
+            self.rebuild_overlay_if_dirty()?;
             self.finish_observation("syncular_push_results", batch)
         })();
         if let Err(error) = persisted {
@@ -12045,99 +12487,103 @@ impl SyncClient {
                 let previous_conflicts = self.conflicts.clone();
                 let revoked_count = report.revoked.len();
                 let failed_count = report.failed.len();
-                let result =
-                    (|| {
-                        let mut batch = ChangeAccumulator::default();
-                        let registered = self.window_unit_by_sub_id(id);
-                        // §3.3: stop pulling, purge exactly the last effective grant.
-                        let (table, effective) = {
-                            let sub = &self.subs[sub_index];
-                            (sub.table.clone(), sub.effective.clone().unwrap_or_default())
-                        };
-                        let scoped_table = self.schema.table(&table).cloned().ok_or_else(|| {
-                            SectionError::Abort(
-                                "sync.unknown_table".to_owned(),
-                                "revoked scope references an unknown table".to_owned(),
-                            )
+                let result = (|| {
+                    let mut batch = ChangeAccumulator::default();
+                    let registered = self.window_unit_by_sub_id(id);
+                    // §3.3: stop pulling, purge exactly the last effective grant.
+                    let (table, effective) = {
+                        let sub = &self.subs[sub_index];
+                        (sub.table.clone(), sub.effective.clone().unwrap_or_default())
+                    };
+                    let scoped_table = self.schema.table(&table).cloned().ok_or_else(|| {
+                        SectionError::Abort(
+                            "sync.unknown_table".to_owned(),
+                            "revoked scope references an unknown table".to_owned(),
+                        )
+                    })?;
+                    let dropped = self
+                        .drop_failed_commits(|name, values| {
+                            name == table
+                                && !effective.is_empty()
+                                && effective.iter().all(|(variable, allowed)| {
+                                    scoped_table
+                                        .scope_column(variable)
+                                        .and_then(|column| values.get(column))
+                                        .and_then(Value::as_str)
+                                        .is_some_and(|value| {
+                                            allowed.iter().any(|allowed| allowed == value)
+                                        })
+                                })
+                        })
+                        .map_err(|message| {
+                            SectionError::Abort("storage.failed".to_owned(), message)
                         })?;
-                        let dropped = self
-                            .drop_failed_commits(|name, values| {
-                                name == table
-                                    && !effective.is_empty()
-                                    && effective.iter().all(|(variable, allowed)| {
-                                        scoped_table
-                                            .scope_column(variable)
-                                            .and_then(|column| values.get(column))
-                                            .and_then(Value::as_str)
-                                            .is_some_and(|value| {
-                                                allowed.iter().any(|allowed| allowed == value)
-                                            })
-                                    })
-                            })
-                            .map_err(|message| {
-                                SectionError::Abort("storage.failed".to_owned(), message)
+                    for commit in dropped {
+                        batch.conflicts = true;
+                        batch.rejections = true;
+                        batch.outcomes = true;
+                        for operation in commit.ops {
+                            batch.table(&operation.table);
+                        }
+                    }
+                    let purged = self.purge_scope_rows(&table, &effective);
+                    match purged {
+                        Ok(()) => {
+                            self.record_scope_map(&mut batch, &table, &effective);
+                            let sub = &mut self.subs[sub_index];
+                            sub.state = SubState::Revoked;
+                            sub.reason_code = Some(if reason_code.is_empty() {
+                                "sync.scope_revoked".to_owned()
+                            } else {
+                                reason_code.to_owned()
+                            });
+                            report.revoked.push(id.to_owned());
+                            let doomed_effective = effective;
+                            let sub_table = table;
+                            self.persist_sub(&self.subs[sub_index].clone())
+                                .map_err(|message| {
+                                    SectionError::Abort("storage.failed".into(), message)
+                                })?;
+                            let dropped = self
+                                .drop_doomed_outbox(&sub_table, &doomed_effective)
+                                .map_err(|message| {
+                                    SectionError::Abort("storage.failed".to_owned(), message)
+                                })?;
+                            if dropped {
+                                batch.status = true;
+                                batch.rejections = true;
+                                batch.outcomes = true;
+                            }
+                            // §5.9.7 B2: revocation deletes now-unauthorized blob
+                            // bodies (evicted ≠ revoked).
+                            self.delete_unreferenced_cached_blobs().map_err(|message| {
+                                SectionError::Abort("storage.failed".into(), message)
                             })?;
-                        for commit in dropped {
-                            batch.conflicts = true;
-                            batch.rejections = true;
-                            batch.outcomes = true;
-                            for operation in commit.ops {
-                                batch.table(&operation.table);
-                            }
                         }
-                        let purged = self.purge_scope_rows(&table, &effective);
-                        match purged {
-                            Ok(()) => {
-                                self.record_scope_map(&mut batch, &table, &effective);
-                                let sub = &mut self.subs[sub_index];
-                                sub.state = SubState::Revoked;
-                                sub.reason_code = Some(if reason_code.is_empty() {
-                                    "sync.scope_revoked".to_owned()
-                                } else {
-                                    reason_code.to_owned()
-                                });
-                                report.revoked.push(id.to_owned());
-                                let doomed_effective = effective;
-                                let sub_table = table;
-                                self.persist_sub(&self.subs[sub_index].clone()).map_err(
-                                    |message| SectionError::Abort("storage.failed".into(), message),
-                                )?;
-                                let dropped = self
-                                    .drop_doomed_outbox(&sub_table, &doomed_effective)
-                                    .map_err(|message| {
-                                        SectionError::Abort("storage.failed".to_owned(), message)
-                                    })?;
-                                if dropped {
-                                    batch.status = true;
-                                    batch.rejections = true;
-                                    batch.outcomes = true;
-                                }
-                                // §5.9.7 B2: revocation deletes now-unauthorized blob
-                                // bodies (evicted ≠ revoked).
-                                self.delete_unreferenced_cached_blobs();
-                            }
-                            Err(()) => {
-                                // §3.3 fail closed: no local mapping — never clear by
-                                // approximation; fatal configuration error.
-                                let sub = &mut self.subs[sub_index];
-                                sub.state = SubState::Failed;
-                                sub.reason_code = Some("sync.scope_revoked".to_owned());
-                                report.failed.push(id.to_owned());
-                                self.persist_sub(&self.subs[sub_index].clone()).map_err(
-                                    |message| SectionError::Abort("storage.failed".into(), message),
-                                )?;
-                            }
+                        Err(()) => {
+                            // §3.3 fail closed: no local mapping — never clear by
+                            // approximation; fatal configuration error.
+                            let sub = &mut self.subs[sub_index];
+                            sub.state = SubState::Failed;
+                            sub.reason_code = Some("sync.scope_revoked".to_owned());
+                            report.failed.push(id.to_owned());
+                            self.persist_sub(&self.subs[sub_index].clone())
+                                .map_err(|message| {
+                                    SectionError::Abort("storage.failed".into(), message)
+                                })?;
                         }
-                        if let Some((base_key, unit)) = registered {
-                            batch.window(&base_key, &self.subs[sub_index].table, &unit);
-                        }
-                        self.rebuild_overlay_if_dirty();
-                        self.finish_observation("syncular_revocation", batch)
-                            .map_err(|message| {
-                                SectionError::Abort("storage.failed".to_owned(), message)
-                            })?;
-                        Ok(())
-                    })();
+                    }
+                    if let Some((base_key, unit)) = registered {
+                        batch.window(&base_key, &self.subs[sub_index].table, &unit);
+                    }
+                    self.rebuild_overlay_if_dirty()
+                        .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
+                    self.finish_observation("syncular_revocation", batch)
+                        .map_err(|message| {
+                            SectionError::Abort("storage.failed".to_owned(), message)
+                        })?;
+                    Ok(())
+                })();
                 if result.is_err() {
                     self.rollback_observation("syncular_revocation");
                     self.subs[sub_index] = previous;
@@ -12308,7 +12754,7 @@ impl SyncClient {
                     self.overlay_dirty.table(&previous.table);
                     batch.table(&previous.table);
                 }
-                self.rebuild_overlay_if_dirty();
+                self.rebuild_overlay_if_dirty()?;
                 if let Some((base_key, unit)) = self.window_unit_by_sub_id(&previous.id) {
                     batch.window(&base_key, &previous.table, &unit);
                 }
@@ -12552,7 +12998,8 @@ impl SyncClient {
                 }
             }
             self.apply_commit_changes(tables, changes)?;
-            self.rebuild_overlay_if_dirty();
+            self.rebuild_overlay_if_dirty()
+                .map_err(|message| ("storage.failed".into(), message))?;
             self.finish_observation("syncular_commit", batch)
                 .map_err(|message| ("storage.failed".into(), message))
         })();
@@ -12653,7 +13100,8 @@ impl SyncClient {
                 let acknowledged = self
                     .acknowledged_operations(Some(&changed_rows), None)
                     .map_err(|error| ("storage.failed".to_owned(), error))?;
-                self.apply_outbox_ops(&acknowledged);
+                self.apply_outbox_ops(&acknowledged)
+                    .map_err(|message| ("storage.failed".into(), message))?;
                 self.apply_outbox_ops(
                     self.outbox
                         .iter()
@@ -12661,7 +13109,8 @@ impl SyncClient {
                         .filter(|op| {
                             changed_rows.contains(&(op.table.as_str(), op.row_id.as_str()))
                         }),
-                );
+                )
+                .map_err(|message| ("storage.failed".into(), message))?;
             }
             self.overlay_dirty.set(false);
         }
@@ -12730,7 +13179,8 @@ impl SyncClient {
             self.begin_observation("syncular_segment_block")
                 .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
             let outcome = (|| {
-                self.rebuild_overlay_if_dirty();
+                self.rebuild_overlay_if_dirty()
+                    .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
                 let mut changed_keys = Vec::new();
                 let mut batch = ChangeAccumulator::default();
                 if !block.is_empty() || (clear && self.scoped_rows_exist(&table.name, &effective)) {
@@ -12788,10 +13238,12 @@ impl SyncClient {
                             .iter()
                             .flat_map(|commit| &commit.ops)
                             .filter(|op| op.table == table.name),
-                    );
+                    )
+                    .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
                     self.overlay_dirty.set(false);
                 } else {
-                    self.rebuild_overlay_if_dirty();
+                    self.rebuild_overlay_if_dirty()
+                        .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
                 }
                 self.finish_observation("syncular_segment_block", batch)
                     .map_err(|message| SectionError::Abort("storage.failed".into(), message))
@@ -13021,7 +13473,8 @@ impl SyncClient {
             self.begin_observation("syncular_image_chunk")
                 .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
             let result = (|| {
-                self.rebuild_overlay_if_dirty();
+                self.rebuild_overlay_if_dirty()
+                    .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
                 let mut changed_keys = Vec::new();
                 let mut batch = ChangeAccumulator::default();
                 if clear {
@@ -13110,10 +13563,12 @@ impl SyncClient {
                             .iter()
                             .flat_map(|commit| &commit.ops)
                             .filter(|op| op.table == table.name),
-                    );
+                    )
+                    .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
                     self.overlay_dirty.set(false);
                 } else {
-                    self.rebuild_overlay_if_dirty();
+                    self.rebuild_overlay_if_dirty()
+                        .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
                 }
                 self.finish_observation("syncular_image_chunk", batch)
                     .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
@@ -13522,8 +13977,8 @@ impl SyncClient {
                     purged_rows += 1;
                 }
             }
-            self.rebuild_overlay_if_dirty();
-            self.delete_unreferenced_cached_blobs();
+            self.rebuild_overlay_if_dirty()?;
+            self.delete_unreferenced_cached_blobs()?;
             self.conn
                 .execute(
                     "INSERT INTO _syncular_meta(key, value) VALUES (?1, ?2)",
@@ -14132,13 +14587,13 @@ impl SyncClient {
         }
     }
 
-    fn delete_unreferenced_cached_blobs(&mut self) {
+    fn delete_unreferenced_cached_blobs(&mut self) -> Result<(), String> {
         #[cfg(feature = "bench-internals")]
         let _phase = self.benchmark_phases.start(Phase::BlobRetention);
         if !self.schema_has_blobs() {
-            return;
+            return Ok(());
         }
-        self.rebuild_overlay_if_dirty();
+        self.rebuild_overlay_if_dirty()?;
         let _ = self.conn.execute(
             &format!(
                 "DELETE FROM _syncular_blobs
@@ -14149,6 +14604,7 @@ impl SyncClient {
             ),
             [],
         );
+        Ok(())
     }
 
     // -- local row storage ----------------------------------------------------------
@@ -14283,7 +14739,7 @@ impl SyncClient {
                 .schema
                 .table(&op.table)
                 .ok_or_else(|| "sync.unknown_table".to_owned())?;
-            let values = if op.op == "upsert" && self.visible_row(table, &op.row_id).is_none() {
+            let values = if op.op == "upsert" && self.visible_row(table, &op.row_id)?.is_none() {
                 Some(serde_json::from_str(&intent).map_err(|_| "sync.local_corrupt".to_owned())?)
             } else {
                 op.values
@@ -14326,7 +14782,9 @@ impl SyncClient {
             let base_matches = self
                 .schema
                 .table(&table)
-                .and_then(|schema| self.stored_row(schema, &row_id, true))
+                .map(|schema| self.stored_row(schema, &row_id, true))
+                .transpose()?
+                .flatten()
                 .is_some_and(|(base, _)| {
                     let schema = self.schema.table(&table).expect("acknowledged table");
                     let values = schema
@@ -14378,16 +14836,17 @@ impl SyncClient {
 
     /// [`Self::rebuild_overlay`], skipped when neither the base tables nor
     /// the outbox changed since the last rebuild (the no-op sync round).
-    fn rebuild_overlay_if_dirty(&mut self) {
+    fn rebuild_overlay_if_dirty(&mut self) -> Result<(), String> {
         if self.overlay_dirty.get() {
-            self.rebuild_overlay();
+            self.rebuild_overlay()?;
         }
+        Ok(())
     }
 
     /// §7.1: local reads see outbox state applied optimistically — rebuild
     /// every visible table as (base server state) + (pending outbox replay
     /// on top). Optimistic rows carry version `-1`.
-    fn rebuild_overlay(&mut self) {
+    fn rebuild_overlay(&mut self) -> Result<(), String> {
         #[cfg(feature = "bench-internals")]
         let _phase = self.benchmark_phases.start(Phase::OverlayRebuild);
         #[cfg(test)]
@@ -14406,82 +14865,98 @@ impl SyncClient {
             .cloned()
             .collect();
         let names: BTreeSet<_> = tables.iter().map(|table| table.name.as_str()).collect();
-        self.exec("SAVEPOINT syncular_overlay");
-        for table in &tables {
-            for index in &table.fts_indexes {
-                let _ = self.drop_fts_triggers(index);
-            }
-            let visible = visible_table(&table.name);
-            let base = base_table(&table.name);
-            self.exec(&format!("DELETE FROM {visible}"));
-            self.exec(&format!("INSERT INTO {visible} SELECT * FROM {base}"));
-        }
-        let acknowledged = self
-            .acknowledged_operations(None, Some(&names))
-            .expect("decode acknowledged intent");
-        self.apply_outbox_ops(
-            acknowledged
-                .iter()
-                .filter(|op| names.contains(op.table.as_str())),
-        );
-        for (commit, initial) in &self.failed_commits {
-            for operation in &commit.ops {
-                if !names.contains(operation.table.as_str()) || !operation.upsert {
-                    continue;
+        self.begin_observation("syncular_overlay")?;
+        let rebuilt = (|| {
+            for table in &tables {
+                for index in &table.fts_indexes {
+                    self.drop_fts_triggers(index)?;
                 }
-                if let Some(table) = self.schema.table(&operation.table) {
-                    if self.visible_row(table, &operation.row_id).is_none()
-                        && operation.values.as_ref().is_some_and(|values| {
-                            table
-                                .columns
-                                .iter()
-                                .all(|column| values.contains_key(&column.name))
-                        })
-                    {
-                        let key = serde_json::to_string(&(
-                            operation.table.clone(),
-                            operation.row_id.clone(),
-                        ))
-                        .expect("row key serialization");
-                        if let Some(Value::Object(values)) = initial.get(&key) {
-                            self.apply_outbox_ops(&[OutboxOp {
-                                values: Some(values.clone()),
-                                ..operation.clone()
-                            }]);
+                let visible = visible_table(&table.name);
+                let base = base_table(&table.name);
+                self.conn
+                    .execute_batch(&format!(
+                        "DELETE FROM {visible}; INSERT INTO {visible} SELECT * FROM {base}"
+                    ))
+                    .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+            }
+            let acknowledged = self.acknowledged_operations(None, Some(&names))?;
+            self.apply_outbox_ops(
+                acknowledged
+                    .iter()
+                    .filter(|op| names.contains(op.table.as_str())),
+            )?;
+            for (commit, initial) in &self.failed_commits {
+                for operation in &commit.ops {
+                    if !names.contains(operation.table.as_str()) || !operation.upsert {
+                        continue;
+                    }
+                    if let Some(table) = self.schema.table(&operation.table) {
+                        if self.visible_row(table, &operation.row_id)?.is_none()
+                            && operation.values.as_ref().is_some_and(|values| {
+                                table
+                                    .columns
+                                    .iter()
+                                    .all(|column| values.contains_key(&column.name))
+                            })
+                        {
+                            let key = serde_json::to_string(&(
+                                operation.table.clone(),
+                                operation.row_id.clone(),
+                            ))
+                            .expect("row key serialization");
+                            if let Some(Value::Object(values)) = initial.get(&key) {
+                                self.apply_outbox_ops(&[OutboxOp {
+                                    values: Some(values.clone()),
+                                    ..operation.clone()
+                                }])?;
+                            }
                         }
                     }
                 }
+                self.apply_outbox_ops(
+                    commit
+                        .ops
+                        .iter()
+                        .filter(|op| names.contains(op.table.as_str())),
+                )?;
             }
-            self.apply_outbox_ops(
-                commit
-                    .ops
-                    .iter()
-                    .filter(|op| names.contains(op.table.as_str())),
-            );
-        }
-        for commit in &self.outbox {
-            self.apply_outbox_ops(
-                commit
-                    .ops
-                    .iter()
-                    .filter(|op| names.contains(op.table.as_str())),
-            );
-        }
-        for table in &tables {
-            for index in &table.fts_indexes {
-                let _ = self.rebuild_fts_projection(table, index);
-                let _ = self.create_fts_triggers(table, index);
+            for commit in &self.outbox {
+                self.apply_outbox_ops(
+                    commit
+                        .ops
+                        .iter()
+                        .filter(|op| names.contains(op.table.as_str())),
+                )?;
             }
+            for table in &tables {
+                for index in &table.fts_indexes {
+                    self.rebuild_fts_projection(table, index)?;
+                    self.create_fts_triggers(table, index)?;
+                }
+            }
+            self.conn
+                .execute_batch("RELEASE syncular_overlay")
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+            Ok(())
+        })();
+        if rebuilt.is_err() {
+            self.conn
+                .execute_batch("ROLLBACK TO syncular_overlay; RELEASE syncular_overlay")
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+        } else {
+            self.overlay_dirty.set(false);
         }
-        self.exec("RELEASE syncular_overlay");
-        self.overlay_dirty.set(false);
+        rebuilt
     }
 
     /// §7.1 replay: every operation is applied over the current visible
     /// state. An operation that no longer applies (a server row now holds its
     /// unique value) stays pending and invisible until a later replay admits
     /// it or the server answers its push.
-    fn apply_outbox_ops<'a>(&self, ops: impl IntoIterator<Item = &'a OutboxOp>) {
+    fn apply_outbox_ops<'a>(
+        &self,
+        ops: impl IntoIterator<Item = &'a OutboxOp>,
+    ) -> Result<(), String> {
         #[cfg(feature = "bench-internals")]
         let mut phase = self.benchmark_phases.start(Phase::PendingReplay);
         for op in ops {
@@ -14497,7 +14972,7 @@ impl SyncClient {
                     op.values.as_ref(),
                 ) {
                     let mut intended: Map<String, Value> = self
-                        .visible_row(table, &op.row_id)
+                        .visible_row(table, &op.row_id)?
                         .map(|(row, _)| {
                             table
                                 .columns
@@ -14510,17 +14985,14 @@ impl SyncClient {
                         })
                         .unwrap_or_default();
                     intended.extend(values.clone());
-                    if !self
-                        .unique_conflicts(table, &intended, false)
-                        .expect("overlay unique-key read failed")
-                        .is_empty()
-                    {
+                    if !self.unique_conflicts(table, &intended, false)?.is_empty() {
                         continue;
                     }
                 }
             }
-            let _ = self.apply_outbox_op(op);
+            self.apply_outbox_op(op)?;
         }
+        Ok(())
     }
 
     fn apply_outbox_op(&self, op: &OutboxOp) -> Result<(), String> {
@@ -14547,23 +15019,34 @@ impl SyncClient {
             .columns
             .iter()
             .all(|column| values.contains_key(&column.name));
-        let local = self.visible_row(table, &op.row_id);
+        let local = self.visible_row(table, &op.row_id)?;
         if local.is_none() && !full {
             return Ok(());
         }
         let mut row: Row = Vec::with_capacity(table.columns.len());
         for (index, column) in table.columns.iter().enumerate() {
             let incoming = match values.get(&column.name) {
-                Some(raw) => json_to_column_value(column, Some(raw)),
+                Some(raw) => json_to_column_value(
+                    if raw.get("$bytes").is_some()
+                        && table
+                            .encrypted_columns
+                            .iter()
+                            .any(|encrypted| encrypted.index == index)
+                    {
+                        &table.wire_columns[index]
+                    } else {
+                        column
+                    },
+                    Some(raw),
+                ),
                 None => Ok(local
                     .as_ref()
                     .and_then(|(values, _)| values.get(index).cloned())
                     .flatten()),
             };
-            match incoming {
-                Ok(value) => row.push(value),
-                Err(_) => return Ok(()),
-            }
+            row.push(incoming.map_err(|_| {
+                "sync.local_corrupt: persisted optimistic row value is invalid".to_owned()
+            })?);
         }
         let version = local.as_ref().map_or(-1, |(_, version)| *version);
         self.write_row(&visible, &table.name, &row, version)
@@ -14578,11 +15061,16 @@ impl SyncClient {
 
     /// The visible (optimistic) row's values plus version, or `None` when the
     /// row is absent from the overlay.
-    fn visible_row(&self, table: &TableSchema, row_id: &str) -> Option<(Row, i64)> {
+    fn visible_row(&self, table: &TableSchema, row_id: &str) -> Result<Option<(Row, i64)>, String> {
         self.stored_row(table, row_id, false)
     }
 
-    fn stored_row(&self, table: &TableSchema, row_id: &str, base: bool) -> Option<(Row, i64)> {
+    fn stored_row(
+        &self,
+        table: &TableSchema,
+        row_id: &str,
+        base: bool,
+    ) -> Result<Option<(Row, i64)>, String> {
         let sql = format!(
             "SELECT * FROM {} WHERE {}",
             if base {
@@ -14592,21 +15080,43 @@ impl SyncClient {
             },
             row_id_predicate(table)
         );
-        let mut stmt = self.conn.prepare_cached(&sql).ok()?;
-        let mut rows = stmt.query(rusqlite::params![row_id]).ok()?;
-        let row = rows.next().ok()??;
+        let mut stmt = self
+            .conn
+            .prepare_cached(&sql)
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+        let mut rows = stmt
+            .query(rusqlite::params![row_id])
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+        let Some(row) = rows
+            .next()
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?
+        else {
+            return Ok(None);
+        };
         let mut values = Vec::with_capacity(table.columns.len());
         for (index, column) in table.columns.iter().enumerate() {
-            let raw = row.get_ref(index).ok()?;
+            let raw = row
+                .get_ref(index)
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+            if let rusqlite::types::ValueRef::Blob(bytes) = raw {
+                if table
+                    .encrypted_columns
+                    .iter()
+                    .any(|encrypted| encrypted.index == index)
+                {
+                    values.push(Some(ColumnValue::Bytes(bytes.to_vec())));
+                    continue;
+                }
+            }
             let json = sql_ref_to_json(column, raw);
-            values.push(json_to_column_value(column, Some(&json)).ok()?);
+            values.push(json_to_column_value(column, Some(&json)).map_err(|_| {
+                "sync.local_corrupt: persisted local row value is invalid".to_owned()
+            })?);
         }
-        let version: i64 = row.get(table.columns.len()).ok()?;
-        Some((values, version))
-    }
-
-    fn exec(&self, sql: &str) {
-        let _ = self.conn.execute_batch(sql);
+        let version: i64 = row
+            .get(table.columns.len())
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+        Ok(Some((values, version)))
     }
 
     // -- realtime (§8) ---------------------------------------------------------------

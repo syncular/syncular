@@ -3700,6 +3700,22 @@ an outbox commit. This includes a patch following an insert in the same batch.
   same-table peer reconciliation. Unrelated subscriptions MUST NOT restore or
   rewrite protected rows. A committed import restores each affected base once
   and replays its intent once before publishing the observation batch.
+- Overlay replay MUST propagate SQL reads, row decoding, writes, savepoint,
+  and FTS maintenance failures. A failed rebuild MUST roll back every visible
+  table and FTS change in that rebuild. When reconciliation accompanies a
+  durable apply, the same observation transaction MUST roll back its base
+  changes, cursors, acknowledgements, outbox changes, and local revision.
+  The client MUST surface the failure and retain durable pending intent; it
+  MUST NOT publish a successful observation batch for the failed apply.
+  A successful read returning no row permits the partial-operation absence
+  rule above. Read or decode failures MUST NOT be treated as row absence.
+  During replay, an intended row that conflicts with a declared secondary
+  unique index remains pending and invisible until a later replay admits it
+  or the server answers its push. This deferral applies only to a confirmed
+  secondary unique conflict; other replay failures abort the transaction.
+  A locked replica's encrypted column can contain opaque ciphertext. Replay
+  MUST preserve omitted ciphertext bytes while validating the supplied plain
+  columns; missing keys do not make a plain-column patch a decode failure.
 - A local commit that violates a declared secondary unique index against the
   current optimistic overlay MUST fail atomically with
   `sync.constraint_violation`. The client MUST leave no operation from that

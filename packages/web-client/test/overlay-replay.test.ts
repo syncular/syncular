@@ -1,0 +1,169 @@
+import { expect, test } from 'bun:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  SyncClient,
+  type ClientSchema,
+  type ClientChangeBatch,
+  type SqlRow,
+  type SqlValue,
+} from '@syncular/client';
+import { BunClientDatabase } from '@syncular/client/bun';
+import { CLIENT_SCHEMA, taskValues } from './helpers';
+
+class ReplayDatabase extends BunClientDatabase {
+  failRead = false;
+  override query(sql: string, params: readonly SqlValue[] = []): SqlRow[] {
+    if (
+      this.failRead &&
+      sql.startsWith('SELECT * FROM "tasks" WHERE') &&
+      params[0] === 'bad'
+    ) {
+      // Fail a real SQL read after the first operation has replayed.
+      this.db.query('SELECT missing_column FROM tasks').all();
+    }
+    return super.query(sql, params);
+  }
+}
+
+for (const failure of [
+  'trigger',
+  'read',
+  'decode',
+  'fts',
+  'upgrade-read',
+  'upgrade-decode',
+] as const) {
+  test(`reopen replay fails atomically on ${failure} and retains durable intent`, async () => {
+    const fault = failure.replace('upgrade-', '');
+    const dir = mkdtempSync(join(tmpdir(), 'syncular-overlay-replay-'));
+    const path = join(dir, 'replica.sqlite');
+    let db = new ReplayDatabase(path);
+    const schema: ClientSchema = {
+      ...CLIENT_SCHEMA,
+      tables: CLIENT_SCHEMA.tables
+        .filter((table) => table.name === 'tasks')
+        .map((table) => ({
+          ...table,
+          ftsIndexes: [
+            { name: 'tasks_fts', columns: ['title'], tokenize: 'unicode61' },
+          ],
+        })),
+    };
+    let held = false;
+    const leaderLock = {
+      acquire: async () => {
+        if (held) throw new Error('leadership was not released');
+        held = true;
+        return {
+          release: () => {
+            held = false;
+          },
+        };
+      },
+    };
+    const config = {
+      schema,
+      clientId: 'replay',
+      leaderLock,
+      transport: async (): Promise<Uint8Array> => {
+        throw new Error('offline');
+      },
+    };
+    try {
+      const first = new SyncClient({ ...config, database: db });
+      await first.start();
+      const ids = ['early', 'bad'].map((id) =>
+        first.mutate([
+          { op: 'upsert', table: 'tasks', values: taskValues(id, 'p1', id) },
+        ]),
+      );
+      await first.close();
+      if (fault === 'trigger')
+        db.exec(
+          "CREATE TRIGGER fail_replay BEFORE INSERT ON tasks WHEN new.id='bad' BEGIN SELECT RAISE(ABORT,'replay failed'); END",
+        );
+      if (fault === 'fts')
+        db.exec(
+          "CREATE TRIGGER fail_fts BEFORE INSERT ON _syncular_fts_tasks_fts WHEN new.source_id='bad' BEGIN SELECT RAISE(ABORT,'fts failed'); END",
+        );
+      if (fault === 'decode')
+        db.exec(
+          "UPDATE _syncular_outbox SET operations=json_set(operations, '$[0].values.done', 'invalid') WHERE client_commit_id=?",
+          [ids[1]!],
+        );
+      const rows = db.query('SELECT * FROM tasks ORDER BY id');
+      const fts = db.query(
+        'SELECT _syncular_source_id,title FROM tasks_fts ORDER BY _syncular_source_id',
+      );
+      const outbox = db.query('SELECT * FROM _syncular_outbox ORDER BY seq');
+      const marker = db.query(
+        "SELECT value FROM _syncular_meta WHERE key='localSchemaVersion'",
+      );
+      const revision = db.query(
+        "SELECT value FROM _syncular_meta WHERE key='localRevision'",
+      );
+      db.close();
+      db = new ReplayDatabase(path);
+      db.failRead = fault === 'read';
+      const refused = new SyncClient({
+        ...config,
+        database: db,
+        schema: failure.startsWith('upgrade-')
+          ? { ...schema, version: schema.version + 1 }
+          : schema,
+      });
+      const changes: ClientChangeBatch[] = [];
+      refused.onChange((batch) => changes.push(batch));
+      await expect(refused.start()).rejects.toThrow();
+      expect(
+        changes.every(
+          (batch) => batch.tables.length === 0 && !batch.outcomesChanged,
+        ),
+      ).toBe(true);
+      expect(held).toBe(false);
+      db.failRead = false;
+      expect(db.query('SELECT * FROM tasks ORDER BY id')).toEqual(rows);
+      expect(
+        db.query(
+          'SELECT _syncular_source_id,title FROM tasks_fts ORDER BY _syncular_source_id',
+        ),
+      ).toEqual(fts);
+      expect(db.query('SELECT * FROM _syncular_outbox ORDER BY seq')).toEqual(
+        outbox,
+      );
+      // Upgrade readiness is a separate status-only observation before reset.
+      // The failing reset publishes no visible-state revision.
+      expect(
+        db.query("SELECT value FROM _syncular_meta WHERE key='localRevision'"),
+      ).toEqual(
+        failure.startsWith('upgrade-')
+          ? [{ value: (BigInt(String(revision[0]?.value)) + 1n).toString() }]
+          : revision,
+      );
+      expect(
+        db.query(
+          "SELECT value FROM _syncular_meta WHERE key='localSchemaVersion'",
+        ),
+      ).toEqual(marker);
+      if (fault === 'trigger') db.exec('DROP TRIGGER fail_replay');
+      if (fault === 'fts') db.exec('DROP TRIGGER fail_fts');
+      if (fault === 'decode')
+        db.exec(
+          "UPDATE _syncular_outbox SET operations=json_set(operations, '$[0].values.done', json('false')) WHERE client_commit_id=?",
+          [ids[1]!],
+        );
+      const reopened = new SyncClient({ ...config, database: db });
+      await reopened.start();
+      expect(
+        reopened.pendingCommits().map((commit) => commit.clientCommitId),
+      ).toEqual(ids);
+      expect(db.query('SELECT * FROM tasks ORDER BY id')).toEqual(rows);
+      await reopened.close();
+    } finally {
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
