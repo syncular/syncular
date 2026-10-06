@@ -952,7 +952,12 @@ export class SyncClient {
             marker = version;
           }
         }
-      } catch {
+      } catch (error) {
+        // A recognized SQLite storage failure (including BUSY/LOCKED
+        // contention on the marker read) stays classified; only an invalid or
+        // otherwise unreadable marker is `sync.local_corrupt`.
+        const failure = classifySqliteFailure(error);
+        if (failure.code !== undefined) throw failure.error;
         throw new ClientSyncError(
           'sync.local_corrupt',
           'persisted local schema marker is unreadable or invalid',

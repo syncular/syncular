@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-10-06',
+    title: 'Storage contention and authoring errors are typed',
+    body: 'SQLite BUSY/LOCKED (5/6), including extended codes, now classify as retryable client.storage_busy in both cores, and both cores preserve the classified code, retryable flag, and SQLite details on authoring. The native Rust mutate and patch return a structured failure with a stable code, a static message, optional details, and retryable, instead of a string callers must parse. Each authoring call classifies its own failure, so a retained storage failure cannot classify a later unrelated one. The command, shim, FFI, and Tauri boundaries forward code, message, retryable, and details. Legacy cause strings with dynamic values move to details.legacyCause.',
+    links: [
+      {
+        href: '/platform-rust/#structured-authoring-failures',
+        label: 'Structured authoring failures',
+      },
+    ],
+  },
+  {
+    date: '2026-10-06',
     title: 'Push retry binds to the commit ID alone',
     body: 'A push replayed under the same (partition, clientId, clientCommitId) returns the persisted result when its operations changed. Host authentication, request-envelope validation, and the clientId-actor binding run first; the server then skips buildOperations, the commit and write validators, and the apply transaction. Clients must not reuse a clientCommitId for changed intent, including after the result is pruned. Idempotency keys on the ID: client-side encryption re-encodes with a fresh nonce on every send and schema upgrades re-encode pending commits, so a payload fingerprint would reject legitimate lost-ack retries. Per-device namespacing and content binding are documented as unimplemented.',
     links: [

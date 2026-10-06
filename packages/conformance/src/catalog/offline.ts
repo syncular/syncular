@@ -476,6 +476,96 @@ export const offlineScenarios: readonly Scenario[] = [
     },
   },
   {
+    // §7.1/§7.5: a storage failure during authoring surfaces a structured,
+    // non-retryable failure with its numeric SQLite evidence, leaves no
+    // orphaned outbox entry or revision, and succeeds on retry once cleared.
+    name: 'offline/authoring-storage-failure-is-typed-and-atomic',
+    specRefs: ['§7.1', '§7.5', '§6.1'],
+    async run(ctx) {
+      const client = await ctx.newClient({
+        actorId: 'actor',
+        clientId: 'storage-typed',
+        allowed: P1,
+      });
+      check(
+        client.api.executeStorageSql !== undefined,
+        'owned storage SQL is available',
+      );
+      check(
+        client.api.localRevision !== undefined,
+        'reference clients expose local revisions',
+      );
+      const revision = await client.api.localRevision();
+      await client.api.executeStorageSql('PRAGMA max_page_count = 1');
+
+      let code: unknown;
+      let retryable: unknown;
+      let details: unknown;
+      try {
+        await client.api.mutate([
+          {
+            op: 'upsert',
+            table: 'tasks',
+            values: task('typed', 'p1', 'full '.repeat(32768)),
+          },
+        ]);
+      } catch (error) {
+        if (error instanceof Error && 'code' in error) code = error.code;
+        if (typeof error === 'object' && error !== null) {
+          if ('retryable' in error) retryable = error.retryable;
+          if ('details' in error) details = error.details;
+        }
+      }
+      checkEqual(
+        code,
+        'client.storage_full',
+        'the mutation reports the storage code',
+      );
+      checkEqual(retryable, false, 'the storage failure is not retryable');
+      const sqliteCode =
+        typeof details === 'object' &&
+        details !== null &&
+        'sqliteCode' in details
+          ? details.sqliteCode
+          : undefined;
+      checkEqual(sqliteCode, 13, 'the numeric SQLite code survives');
+      checkEqual(
+        await client.api.pendingCommitIds(),
+        [],
+        'the failed authoring call leaves no outbox entry',
+      );
+      checkEqual(
+        await client.api.localRevision(),
+        revision,
+        'the failed authoring call publishes no revision',
+      );
+      checkEqual(
+        (await client.api.readRows('tasks')).length,
+        0,
+        'the failed authoring call leaves no visible row',
+      );
+
+      await client.api.executeStorageSql('PRAGMA max_page_count = 1073741823');
+      const id = await client.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: task('typed', 'p1', 'recovered'),
+        },
+      ]);
+      check(
+        typeof id === 'string' && id.length > 0,
+        'retry enqueues the commit',
+      );
+      await syncIdle(client);
+      checkEqual(
+        await client.api.pendingCommitIds(),
+        [],
+        'the retry drains after the fault clears',
+      );
+    },
+  },
+  {
     name: 'offline/first-handshake-drains-without-subscriptions',
     specRefs: ['§7.1', '§2.1', '§8.4'],
     async run(ctx) {

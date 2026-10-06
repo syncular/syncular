@@ -42,10 +42,8 @@ fn a_commit_violating_a_secondary_unique_index_fails_and_enqueues_nothing() {
     let error = client
         .mutate(vec![task("t1", "p1", "same"), task("t2", "p1", "same")])
         .expect_err("the second row violates idx_tasks_project_title");
-    assert_eq!(
-        error,
-        "sync.constraint_violation: local write violates a unique constraint"
-    );
+    assert_eq!(error.code, "sync.constraint_violation");
+    assert_eq!(error.message, "local write violates a unique constraint");
     assert!(task_ids(&client).is_empty());
     assert!(client.pending_commit_ids().is_empty());
     assert_eq!(client.local_revision(), 0);
@@ -56,7 +54,7 @@ fn a_commit_violating_a_secondary_unique_index_fails_and_enqueues_nothing() {
     let error = client
         .mutate(vec![task("t2", "p1", "same")])
         .expect_err("a later commit collides with the pending row");
-    assert!(error.starts_with("sync.constraint_violation:"), "{error}");
+    assert_eq!(error.code.as_str(), "sync.constraint_violation", "{error}");
     assert_eq!(task_ids(&client), vec!["t1".to_owned()]);
     assert_eq!(client.pending_commit_ids(), vec![first]);
     assert_eq!(client.local_revision(), 1);
@@ -90,7 +88,7 @@ fn a_patch_violating_a_secondary_unique_index_fails_and_enqueues_nothing() {
             None,
         )
         .expect_err("the patch collides with t1");
-    assert!(error.starts_with("sync.constraint_violation:"), "{error}");
+    assert_eq!(error.code.as_str(), "sync.constraint_violation", "{error}");
     assert_eq!(client.pending_commit_ids().len(), 1);
     let titles: Vec<Value> = client
         .read_rows("tasks")

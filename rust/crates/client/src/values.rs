@@ -170,7 +170,7 @@ pub fn normalize_values_casing(
         if let Some(value) = values.remove(&camel) {
             if values.contains_key(&column.name) {
                 return Err(format!(
-                    "table {:?}: column {:?} appears twice in mutation values (as both snake_case and camelCase) — pass it once",
+                    "sync.invalid_request: table {:?}: column {:?} appears twice in mutation values (as both snake_case and camelCase) — pass it once",
                     table.name, column.name
                 ));
             }
@@ -181,7 +181,7 @@ pub fn normalize_values_casing(
         if !table.columns.iter().any(|column| column.name == *key) {
             if key.starts_with("_sync_") {
                 return Err(format!(
-                    "table {:?}: {:?} is an internal sync column and cannot appear in mutation values",
+                    "sync.invalid_request: table {:?}: {:?} is an internal sync column and cannot appear in mutation values",
                     table.name, key
                 ));
             }
@@ -649,7 +649,7 @@ pub fn render_row_id_json(value: Option<&Value>) -> Result<String, String> {
         Some(Value::String(s)) => Ok(s.clone()),
         Some(Value::Number(n)) => Ok(n.to_string()),
         Some(Value::Bool(b)) => Ok(b.to_string()),
-        _ => Err("primary key value is missing or not renderable".to_owned()),
+        _ => Err("sync.invalid_request: primary key value is missing or not renderable".to_owned()),
     }
 }
 

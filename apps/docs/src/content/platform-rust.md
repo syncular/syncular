@@ -344,3 +344,25 @@ A failed rollback adds `details.rollbackFailure` with its own code and message.
 The core keeps the first storage failure as the reported error and releases its
 transaction state before the next import. After the host restores capacity, an
 explicit sync can import the pending rows on the same connection.
+
+## Structured authoring failures
+
+`mutate` and `patch` return a `ClientError` instead of a string: a stable
+`code`, a static `message`, optional `details`, and `retryable`. A verified
+code identity is kept; a failure with no code identity reports `client.failed`.
+When a legacy cause string embedded table or row values, the static message
+carries the fixed text and `details.legacyCause` preserves the original.
+
+A storage failure during authoring carries `details.sqliteCode` and
+`details.sqliteMessage`, and a failed rollback adds `details.rollbackFailure`.
+SQLite `SQLITE_BUSY` (5) and `SQLITE_LOCKED` (6), including extended codes,
+report retryable `client.storage_busy`. Retry after resolving lock contention;
+`SQLITE_LOCKED` can involve another statement on the same connection. The
+other classified storage codes stay non-retryable.
+
+Each authoring call classifies its own failure. A storage failure retained by
+an earlier operation cannot classify a later call, so an unrelated validation
+failure reports its own code. A failed authoring call leaves no outbox entry,
+no visible row from the failed commit, and no local revision publication; a
+retry after the fault clears enqueues the commit once. The command and FFI
+boundaries forward `code`, `message`, `retryable`, and `details` to the host.

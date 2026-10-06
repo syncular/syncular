@@ -118,31 +118,28 @@ impl BenchBackend for EngineBackend {
         let mut remaining = bytes.as_slice();
         while !remaining.is_empty() {
             if remaining.len() < 5 {
-                return Err((
-                    "bench.invalid_host_response".into(),
-                    "Invalid engine event header".into(),
+                return Err(CommandError::new(
+                    "bench.invalid_host_response",
+                    "Invalid engine event header",
                 ));
             }
             let length =
                 u32::from_le_bytes(remaining[1..5].try_into().expect("four-byte length")) as usize;
             let Some(body) = remaining.get(5..).and_then(|bytes| bytes.get(..length)) else {
-                return Err((
-                    "bench.invalid_host_response".into(),
-                    "Invalid engine event length".into(),
+                return Err(CommandError::new(
+                    "bench.invalid_host_response",
+                    "Invalid engine event length",
                 ));
             };
             frames.push(match remaining[0] {
                 0 => Inbound::Binary(body.to_vec()),
                 1 => Inbound::Text(String::from_utf8(body.to_vec()).map_err(|_| {
-                    (
-                        "bench.invalid_host_response".into(),
-                        "Invalid engine event text".into(),
-                    )
+                    CommandError::new("bench.invalid_host_response", "Invalid engine event text")
                 })?),
                 _ => {
-                    return Err((
-                        "bench.invalid_host_response".into(),
-                        "Invalid engine event kind".into(),
+                    return Err(CommandError::new(
+                        "bench.invalid_host_response",
+                        "Invalid engine event kind",
                     ))
                 }
             });
@@ -159,9 +156,9 @@ impl BenchBackend for EngineBackend {
 
     fn set_signed_urls(&mut self, enabled: bool) -> Result<(), CommandError> {
         if enabled {
-            return Err((
-                "bench.unsupported_capability".into(),
-                "Engine transport does not fetch signed URLs".into(),
+            return Err(CommandError::new(
+                "bench.unsupported_capability",
+                "Engine transport does not fetch signed URLs",
             ));
         }
         Ok(())
@@ -215,7 +212,7 @@ pub unsafe extern "C" fn syncular_bench_engine_new(
                     &(remaining.as_millis().min(u128::from(u32::MAX)) as u32).to_le_bytes(),
                 )
                 .map(|_| ())
-                .map_err(|error| (error.code, error.message))
+                .map_err(|error| CommandError::new(error.code, error.message))
             }),
         },
     }))
@@ -239,7 +236,7 @@ pub unsafe extern "C" fn syncular_bench_engine_command(
     let handle = unsafe { &mut *handle };
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if thread::current().id() != handle.host.thread {
-            return Err(("bench.wrong_thread".into(), "Engine handle belongs to another thread".into()));
+            return Err(CommandError::new("bench.wrong_thread", "Engine handle belongs to another thread"));
         }
         // SAFETY: the request is live and NUL-terminated for this call.
         let request: Value = serde_json::from_slice(unsafe { CStr::from_ptr(request) }.to_bytes())
@@ -248,13 +245,13 @@ pub unsafe extern "C" fn syncular_bench_engine_command(
             .ok_or_else(|| ("bench.invalid_request".to_owned(), "Missing engine command".to_owned()))?;
         let params = request.get("params").unwrap_or(&Value::Null);
         if params.get("transport").is_some() || params.get("benchBoundary").is_some() {
-            return Err(("bench.invalid_request".into(), "Engine transport cannot change".into()));
+            return Err(CommandError::new("bench.invalid_request", "Engine transport cannot change"));
         }
         if params.get("signedUrls").and_then(Value::as_bool) == Some(true) {
-            return Err(("bench.unsupported_capability".into(), "Engine transport does not fetch signed URLs".into()));
+            return Err(CommandError::new("bench.unsupported_capability", "Engine transport does not fetch signed URLs"));
         }
         if method == "stats" && params.get("sqlCounts").is_some() {
-            return Err(("bench.unsupported_capability".into(), "SQL counters require the direct or command socket driver".into()));
+            return Err(CommandError::new("bench.unsupported_capability", "SQL counters require the direct or command socket driver"));
         }
         if method == "benchEngineInfo" {
             return Ok(json!({"processId": std::process::id(), "threadId": format!("{:?}", handle.host.thread), "responseCapacity": handle.host.capacity}));
@@ -262,10 +259,12 @@ pub unsafe extern "C" fn syncular_bench_engine_command(
         let result = super::handle(&mut handle.transport, &mut handle.client, &mut handle.effects, method, params);
         let drained = drain_inbound(&mut handle.transport, &mut handle.client);
         result.and_then(|value| drained.map(|()| value))
-    })).unwrap_or_else(|_| Err(("bench.native_panic".into(), "Engine command panicked".into())));
+    })).unwrap_or_else(|_| Err(CommandError::new("bench.native_panic", "Engine command panicked")));
     let envelope = match result {
         Ok(value) => json!({"result": value}),
-        Err((code, message)) => json!({"error": {"code": code, "message": message}}),
+        Err(error) => {
+            json!({"error": {"code": error.code, "message": error.message, "retryable": error.retryable, "details": error.details}})
+        }
     };
     CString::new(envelope.to_string())
         .expect("JSON contains no raw NUL")
@@ -363,7 +362,7 @@ mod tests {
                 thread: thread::current().id(),
             });
             assert_eq!(
-                backend.take_inbound().err().unwrap().0,
+                backend.take_inbound().err().unwrap().code,
                 "bench.invalid_host_response"
             );
         }

@@ -91,7 +91,7 @@ impl FfiClient {
             serde_json::from_slice(&bytes).map_err(|error| client_err(error.to_string()))?;
         let parse_ns = started.elapsed().as_nanos() as u64;
         let result = if let Some(error) = envelope.get_mut("error") {
-            Err((
+            Err(CommandError::new(
                 error
                     .get("code")
                     .and_then(Value::as_str)
@@ -121,9 +121,9 @@ impl FfiClient {
         if method == "stats"
             && (params.get("sqlCounts").is_some() || params.get("phases").is_some())
         {
-            return Err((
-                "bench.unsupported_capability".into(),
-                "Internal counters require the direct or command driver".into(),
+            return Err(CommandError::new(
+                "bench.unsupported_capability",
+                "Internal counters require the direct or command driver",
             ));
         }
         if method == "benchRead" {
@@ -163,8 +163,10 @@ impl FfiClient {
         if method == "benchBlob" {
             Ok(match result {
                 Ok(value) => json!({"value": value, "elapsedNs": timing["callNs"], "ffi": timing}),
-                Err((code, message)) => json!({"error": {"code": code, "message": message},
-                    "elapsedNs": timing["callNs"], "ffi": timing}),
+                Err(error) => {
+                    json!({"error": {"code": error.code, "message": error.message, "retryable": error.retryable, "details": error.details},
+                    "elapsedNs": timing["callNs"], "ffi": timing})
+                }
             })
         } else if method == "benchSync" {
             Ok(json!({"outcome": result?, "elapsedNs": timing["callNs"], "ffi": timing}))
@@ -501,7 +503,7 @@ impl Transport for BenchTransport {
 // -- driver host ---------------------------------------------------------------
 
 fn client_err(message: String) -> CommandError {
-    ("client.failed".to_owned(), message)
+    CommandError::new("client.failed", message)
 }
 
 fn need_client(client: &mut Option<SyncClient>) -> Result<&mut SyncClient, CommandError> {
@@ -1035,9 +1037,9 @@ fn handle(
     match method {
         "create" => {
             if SQL_COUNTS.with(|counts| counts.borrow().is_some()) {
-                return Err((
-                    "bench.incompatible_diagnostic".into(),
-                    "Disable SQL counters before replacing the client".into(),
+                return Err(CommandError::new(
+                    "bench.incompatible_diagnostic",
+                    "Disable SQL counters before replacing the client",
                 ));
             }
             // Bench extension: the transport config rides the create params
@@ -1059,10 +1061,12 @@ fn handle(
         }
         "waitForQuery" => wait_for_query(transport, client, params),
         "benchQuery" => bench_query(client, params),
-        "benchRead" if SQL_COUNTS.with(|counts| counts.borrow().is_some()) => Err((
-            "bench.incompatible_diagnostic".into(),
-            "Read diagnostics require SQL counters disabled".into(),
-        )),
+        "benchRead" if SQL_COUNTS.with(|counts| counts.borrow().is_some()) => {
+            Err(CommandError::new(
+                "bench.incompatible_diagnostic",
+                "Read diagnostics require SQL counters disabled",
+            ))
+        }
         "benchRead" => bench_read(
             ReadClient::Direct {
                 transport,
@@ -1090,7 +1094,9 @@ fn handle(
                     let instance = need_client(client)?;
                     for mutations in parsed {
                         let started = Instant::now();
-                        let id = instance.mutate(mutations).map_err(client_err)?;
+                        let id = instance
+                            .mutate(mutations)
+                            .map_err(|error| (error.code, error.message))?;
                         durations.push(started.elapsed().as_nanos() as u64);
                         ids.push(id);
                     }
@@ -1278,17 +1284,19 @@ fn handle(
                 let result = instance.fetch_blob_bytes(transport, blob);
                 let elapsed_ns = started.elapsed().as_nanos() as u64;
                 (
-                    result.map(|blob| {
-                        let mut value = json!({
-                            "blobId": blob.blob_id,
-                            "byteLength": blob.byte_length,
-                            "bytes": syncular_command::bytes_value(&blob.bytes),
-                        });
-                        if let Some(media_type) = blob.media_type {
-                            value["mediaType"] = Value::from(media_type);
-                        }
-                        json!({"blob": value})
-                    }),
+                    result
+                        .map(|blob| {
+                            let mut value = json!({
+                                "blobId": blob.blob_id,
+                                "byteLength": blob.byte_length,
+                                "bytes": syncular_command::bytes_value(&blob.bytes),
+                            });
+                            if let Some(media_type) = blob.media_type {
+                                value["mediaType"] = Value::from(media_type);
+                            }
+                            json!({"blob": value})
+                        })
+                        .map_err(CommandError::from),
                     elapsed_ns,
                 )
             };
@@ -1297,8 +1305,10 @@ fn handle(
                 Ok(value) => {
                     json!({"value": value, "elapsedNs": elapsed_ns, "stats": transport.stats_json()})
                 }
-                Err((code, message)) => json!({"error": {"code": code, "message": message},
-                    "elapsedNs": elapsed_ns, "stats": transport.stats_json()}),
+                Err(error) => {
+                    json!({"error": {"code": error.code, "message": error.message, "retryable": error.retryable, "details": error.details},
+                    "elapsedNs": elapsed_ns, "stats": transport.stats_json()})
+                }
             })
         }
         "benchSync" => {
@@ -1349,7 +1359,7 @@ fn handle(
                         ..
                     } = outcome
                     {
-                        return Err((error_code, message));
+                        return Err(CommandError::new(error_code, message));
                     }
                 }
                 if transport.last_ack >= cursor {
@@ -1501,8 +1511,9 @@ pub fn run_stdio() {
     let respond = |id: &Value, result: Result<Value, CommandError>| {
         let reply = match result {
             Ok(value) => json!({ "id": id, "result": value }),
-            Err((code, message)) => {
-                json!({ "id": id, "error": { "code": code, "message": message } })
+            Err(error) => {
+                json!({ "id": id, "error": { "code": error.code, "message": error.message,
+                    "retryable": error.retryable, "details": error.details } })
             }
         };
         let mut handle = stdout.lock();
@@ -1647,7 +1658,7 @@ mod tests {
                 &json!({"phases":"true"})
             )
             .unwrap_err()
-            .0,
+            .code,
             "bench.invalid_request"
         );
         handle(
@@ -1709,7 +1720,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            ffi.handle("stats", json!({"phases":true})).unwrap_err().0,
+            ffi.handle("stats", json!({"phases":true}))
+                .unwrap_err()
+                .code,
             "bench.unsupported_capability"
         );
     }
@@ -1735,7 +1748,7 @@ mod tests {
                 &json!({"sqlCounts": "true"})
             )
             .unwrap_err()
-            .0,
+            .code,
             "bench.invalid_request"
         );
         handle(
@@ -1763,7 +1776,7 @@ mod tests {
                     &json!({})
                 )
                 .unwrap_err()
-                .0,
+                .code,
                 "bench.incompatible_diagnostic"
             );
         }
@@ -1791,7 +1804,7 @@ mod tests {
         assert_eq!(
             ffi.handle("stats", json!({"sqlCounts": true}))
                 .unwrap_err()
-                .0,
+                .code,
             "bench.unsupported_capability"
         );
     }
@@ -1802,7 +1815,7 @@ mod tests {
         assert!(client
             .handle("benchRead", json!({"mode": "direct"}))
             .unwrap_err()
-            .1
+            .message
             .contains("boundary"));
         client
             .handle(

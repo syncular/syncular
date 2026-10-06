@@ -4628,10 +4628,39 @@ local storage code. Storage failures never become segment fetch refusals.
 The core classifies by the numeric result code the SQLite driver exposes,
 never by message text, and records the extended result code in the owner's
 diagnostics entry (§7.6). Every other read failure keeps its existing host
-error code. A reactive observation whose latest read failed publishes phase
+error code. The boot-time schema-marker read follows the same classification:
+a recognized storage failure, including BUSY/LOCKED contention, keeps its
+code and retryability, and only an invalid marker or an unclassified
+unreadable read is `sync.local_corrupt`. A reactive observation whose latest read failed publishes phase
 `error` with that error and keeps the rows and revision of its last successful
 read. It publishes `ready` again only after a read succeeds, so `ready` with
 zero rows always means an answerable empty result.
+
+**Write failure.** Primary result codes `SQLITE_BUSY` (5) and `SQLITE_LOCKED`
+(6), including every extended code, raise retryable `client.storage_busy`:
+retry the operation after resolving lock contention. `SQLITE_LOCKED` can
+involve another statement on the same connection or a shared-cache connection.
+The storage codes above stay non-retryable.
+
+The native authoring APIs that return a `Result` (`mutate` and `patch` in the
+Rust core, and the command route that fronts them) MUST return a structured
+failure: a stable `code`, a `message`, optional `details`, and `retryable`.
+Both cores guarantee that a classified SQLite storage failure preserves its
+`code`, `retryable`, `sqliteCode`/`sqliteMessage`, and any secondary
+`rollbackFailure` in `details`. A native failure with a known code identity
+keeps that code; a failure with no code identity uses the stable default
+`client.failed`. The native APIs use a static `message` that carries no table,
+row, column, or other dynamic value, and preserve a legacy cause string with
+dynamic values in `details.legacyCause`. Hosts of the native API MUST read
+the structured fields and MUST NOT parse a `"<code>: "` prefix from a rendered
+string.
+
+Each authoring call classifies its own failure. A storage failure retained by
+an earlier operation MUST NOT classify a later call: an unrelated validation
+failure reports its own code, and a later storage failure reports its own
+`code` and `details`. A failed authoring call leaves no outbox entry, no
+visible row from the failed commit, and no local revision publication; once
+the fault clears, a retry enqueues the commit once.
 
 **Failed transfer.** A reactive observation whose latest successful read has
 incomplete coverage waits on sync attempts (§7.6 progress). When the latest
@@ -5676,6 +5705,8 @@ retryable, and never on the wire],
 `SQLITE_CORRUPT` or `SQLITE_NOTADB`; non-retryable], `client.storage_io`
 [§7.5 — a local snapshot read hit SQLite `SQLITE_IOERR`; non-retryable],
 `client.storage_full` [§7.5 — local SQLite storage hit `SQLITE_FULL`; non-retryable],
+`client.storage_busy` [§7.5 — a local write hit SQLite `SQLITE_BUSY` or
+`SQLITE_LOCKED`, including extended codes; retryable],
 `client.query_failed` [§7.6 — the diagnostics code for any other failed
 owned snapshot read; never raised as an error],
 `client.worker_restart_required` [a browser worker module

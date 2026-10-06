@@ -29,7 +29,7 @@ use ssp2::{decode_message, encode_presence_publish, parse_control, ControlMessag
 use crate::api::{
     ClientChangeBatch, ClientDiagnosticsHost, ClientDiagnosticsLease, ClientDiagnosticsReplica,
     ClientDiagnosticsRequest, ClientDiagnosticsSchema, ClientDiagnosticsSnapshot,
-    ClientDiagnosticsStorage, ClientLimits, CommandEffects, CommitOperation,
+    ClientDiagnosticsStorage, ClientError, ClientLimits, CommandEffects, CommitOperation,
     CommitOperationOutcome, CommitOutcome, CommitOutcomeQuery, CommitOutcomeResolution,
     CommitOutcomeStatus, ConflictRecord, CoverageSnapshot, DiagnosticLastChange,
     DiagnosticLastRound, DiagnosticQueryFailure, DiagnosticRoundCounters, DiagnosticSubscription,
@@ -375,9 +375,17 @@ mod observation_tests {
             Map::from_iter([("project_id".to_owned(), json!("p2"))]),
             None,
         );
-        assert!(differing
-            .expect_err("a differing scope column is rejected")
-            .contains("patch cannot write scope column"));
+        let differing = differing.expect_err("a differing scope column is rejected");
+        assert_eq!(differing.code, "sync.invalid_request");
+        assert_eq!(differing.message, "the authoring request is invalid");
+        assert!(
+            differing
+                .details
+                .as_ref()
+                .and_then(|details| details["legacyCause"].as_str())
+                .is_some_and(|cause| cause.contains("patch cannot write scope column")),
+            "{differing:?}"
+        );
 
         // An absent local row leaves nothing to prove equality against, so
         // the patch fails closed.
@@ -387,9 +395,9 @@ mod observation_tests {
             Map::from_iter([("project_id".to_owned(), json!("p1"))]),
             None,
         );
-        assert!(absent
-            .expect_err("an absent local row is rejected")
-            .starts_with("sync.row_missing:"));
+        let absent = absent.expect_err("an absent local row is rejected");
+        assert_eq!(absent.code, "sync.row_missing");
+        assert!(absent.message.contains("requires a local row"));
         assert_eq!(client.pending_commit_ids().len(), 1);
     }
 
@@ -475,9 +483,17 @@ mod observation_tests {
             Map::from_iter([("bucket".to_owned(), json!(3))]),
             None,
         );
-        assert!(differing
-            .expect_err("a differing scope value is rejected")
-            .contains("patch cannot write scope column"));
+        let differing = differing.expect_err("a differing scope value is rejected");
+        assert_eq!(differing.code, "sync.invalid_request");
+        assert_eq!(differing.message, "the authoring request is invalid");
+        assert!(
+            differing
+                .details
+                .as_ref()
+                .and_then(|details| details["legacyCause"].as_str())
+                .is_some_and(|cause| cause.contains("patch cannot write scope column")),
+            "{differing:?}"
+        );
     }
 
     #[cfg(feature = "e2ee")]
@@ -5078,6 +5094,27 @@ mod observation_tests {
             None,
         ));
         assert_eq!(corrupt.code, Some("client.storage_corrupt"));
+        assert!(!io.retryable());
+        assert!(!corrupt.retryable());
+
+        // SQLITE_BUSY (5) and SQLITE_LOCKED (6), including extended codes, are
+        // transient lock contention: classified busy and retryable.
+        for (raw, extended) in [(5, 5), (5 | (1 << 8), 261), (6, 6), (6 | (1 << 8), 262)] {
+            let busy = QueryReadFailure::from(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(raw),
+                Some("database is locked".to_owned()),
+            ));
+            assert_eq!(busy.code, Some("client.storage_busy"));
+            assert_eq!(busy.sqlite_code, Some(extended));
+            assert_eq!(busy.message, "local SQLite storage is busy");
+            assert!(busy.retryable());
+        }
+        let unrelated = QueryReadFailure::from(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(1),
+            Some("generic SQLite prose".to_owned()),
+        ));
+        assert_eq!(unrelated.code, None);
+        assert!(!unrelated.retryable());
 
         let mut client = client();
         let generic = QueryReadFailure::from("private query prose".to_owned());
@@ -5677,6 +5714,214 @@ mod observation_tests {
             Ok(1)
         ));
         assert!(client.conn.is_autocommit());
+    }
+
+    #[test]
+    fn authoring_storage_failures_are_structured_and_scoped() {
+        let path = std::env::temp_dir().join(format!(
+            "syncular-authoring-failure-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let schema = json!({"version":1,"tables":[{"name":"tasks","primaryKey":"id","columns":[
+            {"name":"id","type":"string","nullable":false},
+            {"name":"project_id","type":"string","nullable":false},
+            {"name":"title","type":"string","nullable":false}],"scopes":[{"pattern":"project:{project_id}"}]}]});
+        let mut client = SyncClient::open_path(
+            "authoring".into(),
+            &schema,
+            ClientLimits::default(),
+            path.to_str().unwrap(),
+        )
+        .expect("open client");
+        client.create_synced_tables().expect("create synced tables");
+        // Return BUSY immediately rather than waiting out the file timeout.
+        client.conn.busy_timeout(std::time::Duration::ZERO).unwrap();
+
+        let upsert = |id: &str| {
+            vec![Mutation::Upsert {
+                table: "tasks".into(),
+                values: Map::from_iter([
+                    ("id".into(), json!(id)),
+                    ("project_id".into(), json!("p1")),
+                    ("title".into(), json!("first")),
+                ]),
+                base_version: None,
+            }]
+        };
+
+        let locker = Connection::open(&path).expect("second connection");
+        locker.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let busy = client.mutate(upsert("t1")).expect_err("busy write");
+        assert_eq!(busy.code, "client.storage_busy");
+        assert!(busy.retryable);
+        assert_eq!(busy.details.as_ref().unwrap()["sqliteCode"], 5);
+        assert!(client.pending_commit_ids().is_empty());
+        assert_eq!(client.local_revision(), 0);
+
+        // A stale classified failure must not classify a later unrelated one.
+        let invalid = client.mutate(Vec::new()).expect_err("empty commit");
+        assert_eq!(invalid.code, "sync.invalid_request");
+        assert_eq!(invalid.message, "the authoring request is invalid");
+        assert!(
+            invalid.details.as_ref().unwrap()["legacyCause"]
+                .as_str()
+                .unwrap()
+                .contains("at least one operation"),
+            "{invalid:?}"
+        );
+
+        locker.execute_batch("ROLLBACK").unwrap();
+        let id = client.mutate(upsert("t1")).expect("retry after busy");
+        assert_eq!(client.pending_commit_ids(), vec![id]);
+        assert_eq!(client.local_revision(), 1);
+
+        // A later storage failure reports its own code and details.
+        locker.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let busy_again = client.mutate(upsert("t2")).expect_err("busy write again");
+        assert_eq!(busy_again.code, "client.storage_busy");
+        assert!(busy_again.retryable);
+        locker.execute_batch("ROLLBACK").unwrap();
+
+        // Non-retryable classified failures keep their sqlite evidence too.
+        let full = ClientError::from(QueryReadFailure::from(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(13),
+            Some("database or disk is full".to_owned()),
+        )));
+        assert_eq!(full.code, "client.storage_full");
+        assert!(!full.retryable);
+        assert_eq!(full.details.as_ref().unwrap()["sqliteCode"], 13);
+
+        drop(locker);
+        drop(client);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn client_error_maps_legacy_codes_and_static_messages() {
+        let code_only = ClientError::from("sync.unknown_table".to_owned());
+        assert_eq!(code_only.code, "sync.unknown_table");
+        assert_eq!(code_only.message, "the commit targets an unknown table");
+        assert!(code_only.details.is_none());
+
+        let dynamic = ClientError::from(
+            "sync.invalid_request: table \"tasks\": patch cannot write scope column".to_owned(),
+        );
+        assert_eq!(dynamic.code, "sync.invalid_request");
+        assert_eq!(dynamic.message, "the authoring request is invalid");
+        assert!(dynamic.details.as_ref().unwrap()["legacyCause"]
+            .as_str()
+            .unwrap()
+            .contains("patch cannot write scope column"));
+
+        let unclassified =
+            ClientError::from("a commit must contain at least one operation".to_owned());
+        assert_eq!(unclassified.code, "client.failed");
+        assert_eq!(unclassified.message, "the local authoring operation failed");
+        assert!(unclassified.details.as_ref().unwrap()["legacyCause"]
+            .as_str()
+            .unwrap()
+            .contains("at least one operation"));
+
+        // An unclassified QueryReadFailure keeps its numeric SQLite evidence.
+        let metadata = ClientError::from(QueryReadFailure {
+            code: None,
+            sqlite_code: Some(1),
+            sqlite_message: Some("generic SQLite prose".to_owned()),
+            rollback_failure: Some(Box::new(QueryReadFailure::from(
+                rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), None),
+            ))),
+            message: "unclassified read".to_owned(),
+        });
+        assert_eq!(metadata.code, "client.failed");
+        assert_eq!(metadata.message, "the local authoring operation failed");
+        let details = metadata.details.as_ref().unwrap();
+        assert_eq!(details["sqliteCode"], 1);
+        assert_eq!(details["sqliteMessage"], "generic SQLite prose");
+        assert_eq!(details["rollbackFailure"]["sqliteCode"], 1);
+        assert_eq!(details["legacyCause"], "unclassified read");
+    }
+
+    #[test]
+    fn schema_marker_read_keeps_storage_classification() {
+        let busy = schema_marker_read_failure(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(5),
+            Some("database is locked".to_owned()),
+        ));
+        assert!(busy.starts_with("client.storage_busy:"), "{busy}");
+        let invalid = schema_marker_read_failure(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(1),
+            Some("unreadable".to_owned()),
+        ));
+        assert_eq!(
+            invalid,
+            "sync.local_corrupt: persisted local schema marker is unreadable or invalid"
+        );
+
+        // A real exclusive lock on the marker read surfaces BUSY, not corrupt,
+        // and the guard writes nothing.
+        let path =
+            std::env::temp_dir().join(format!("syncular-marker-busy-{}.db", uuid::Uuid::new_v4()));
+        let setup = Connection::open(&path).expect("setup connection");
+        setup
+            .execute_batch(
+                "CREATE TABLE _syncular_meta(key TEXT PRIMARY KEY, value TEXT);\n                 INSERT INTO _syncular_meta VALUES ('localSchemaVersion','1');",
+            )
+            .unwrap();
+        let locker = Connection::open(&path).expect("locker connection");
+        locker.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        let reader = Connection::open(&path).expect("reader connection");
+        reader.busy_timeout(std::time::Duration::ZERO).unwrap();
+        let locked = read_local_schema_version(&reader, 1).expect_err("locked marker read");
+        assert!(locked.starts_with("client.storage_busy:"), "{locked}");
+        locker.execute_batch("ROLLBACK").unwrap();
+        assert_eq!(read_local_schema_version(&reader, 1).unwrap(), Some(1));
+        let rows = setup
+            .query_row("SELECT count(*) FROM _syncular_meta", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap();
+        assert_eq!(rows, 1, "the guard performed no writes");
+        drop(reader);
+        drop(locker);
+        drop(setup);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(feature = "crdt-yjs")]
+    #[test]
+    fn crdt_authoring_pre_read_preserves_storage_classification() {
+        let path =
+            std::env::temp_dir().join(format!("syncular-crdt-busy-{}.db", uuid::Uuid::new_v4()));
+        let schema = json!({"version":1,"tables":[{"name":"notes","primaryKey":"id","columns":[
+            {"name":"id","type":"string","nullable":false},
+            {"name":"project_id","type":"string","nullable":false},
+            {"name":"doc","type":"crdt","nullable":true,"crdtType":"yjs-doc"}],
+            "scopes":[{"pattern":"project:{project_id}"}]}]});
+        let mut client = SyncClient::open_path(
+            "crdt-busy".into(),
+            &schema,
+            ClientLimits::default(),
+            path.to_str().unwrap(),
+        )
+        .expect("open client");
+        client.create_synced_tables().expect("create synced tables");
+        client.conn.busy_timeout(std::time::Duration::ZERO).unwrap();
+
+        let locker = Connection::open(&path).expect("locker connection");
+        locker.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        let busy = client
+            .crdt_apply_update("notes", "n1", "doc", &[])
+            .expect_err("busy crdt pre-read");
+        assert_eq!(busy.code, "client.storage_busy");
+        assert!(busy.retryable);
+        assert_eq!(busy.details.as_ref().unwrap()["sqliteCode"], 5);
+        assert!(client.pending_commit_ids().is_empty());
+        assert_eq!(client.local_revision(), 0);
+
+        locker.execute_batch("ROLLBACK").unwrap();
+        drop(locker);
+        drop(client);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -6833,6 +7078,18 @@ fn validate_authority_reads(
 }
 
 // §7.4.2: every open and recreation checks before any persistent writes.
+/// A marker read that hit a recognized SQLite storage failure keeps that
+/// classification (BUSY/LOCKED stay retryable); only an unclassified read
+/// failure is the invalid-marker `sync.local_corrupt`.
+fn schema_marker_read_failure(error: rusqlite::Error) -> String {
+    let failure = QueryReadFailure::from(error);
+    if failure.code.is_some() {
+        failure.to_string()
+    } else {
+        "sync.local_corrupt: persisted local schema marker is unreadable or invalid".to_owned()
+    }
+}
+
 fn read_local_schema_version(conn: &Connection, requested: i32) -> Result<Option<i32>, String> {
     let corrupt =
         || "sync.local_corrupt: persisted local schema marker is unreadable or invalid".to_owned();
@@ -6843,7 +7100,7 @@ fn read_local_schema_version(conn: &Connection, requested: i32) -> Result<Option
             |row| row.get(0),
         )
         .optional()
-        .map_err(|_| corrupt())?;
+        .map_err(schema_marker_read_failure)?;
     let Some(table_type) = table_type else {
         return Ok(None);
     };
@@ -6857,7 +7114,7 @@ fn read_local_schema_version(conn: &Connection, requested: i32) -> Result<Option
             |row| row.get(0),
         )
         .optional()
-        .map_err(|_| corrupt())?;
+        .map_err(schema_marker_read_failure)?;
     let Some(value) = value else {
         return Ok(None);
     };
@@ -10066,76 +10323,105 @@ impl SyncClient {
         Ok(doomed)
     }
 
-    pub fn mutate(&mut self, mutations: Vec<Mutation>) -> Result<String, String> {
-        if mutations.is_empty() {
-            return Err("a commit must contain at least one operation (§6.1)".to_owned());
-        }
-        let mut ops = Vec::with_capacity(mutations.len());
-        for mutation in mutations {
-            match mutation {
-                Mutation::Patch {
-                    table,
-                    values,
-                    base_version,
-                } => {
-                    let schema_table = self
-                        .schema
-                        .table(&table)
-                        .ok_or_else(|| "sync.unknown_table".to_owned())?;
-                    let values = normalize_values_casing(schema_table, values)?;
-                    let row_id = render_row_id_json(values.get(&schema_table.primary_key))?;
-                    ops.push(self.prepare_patch(&table, &row_id, values, base_version)?);
-                }
-                Mutation::Upsert {
-                    table,
-                    values,
-                    base_version,
-                } => {
-                    let schema_table = self
-                        .schema
-                        .table(&table)
-                        .ok_or_else(|| format!("unknown table {table:?}"))?;
-                    // §5: value keys are accepted in snake_case AND the
-                    // generated row types' camelCase; normalize to SQL truth
-                    // before the pk lookup / codec see them.
-                    let values = normalize_values_casing(schema_table, values)?;
-                    let row_id = render_row_id_json(values.get(&schema_table.primary_key))?;
-                    // §6.7 `mutate` marks every column present: fill missing
-                    // nullable columns with NULL before the payload is built.
-                    let values = full_row_values(schema_table, values)?;
-                    // §5.11: validate the payload encodes with the current
-                    // codec. A key-selection or unknown-key failure is a
-                    // durable rejection at the push seam (§10.3), never an
-                    // author-time error. Full-row `mutate` presents every
-                    // column, so no stored fallback is needed.
-                    self.validate_author_encode(schema_table, &row_id, &values)?;
-                    ops.push(OutboxOp {
-                        upsert: true,
+    /// Record one commit of local mutations. The returned commit ID is the
+    /// §2.3 idempotency key. Failures are structured so callers read
+    /// `code`/`message`/`details` instead of parsing a string prefix.
+    pub fn mutate(&mut self, mutations: Vec<Mutation>) -> Result<String, ClientError> {
+        let prior = self.storage_failure.borrow_mut().take();
+        let outcome = (|| -> Result<String, String> {
+            if mutations.is_empty() {
+                return Err(
+                    "sync.invalid_request: a commit must contain at least one operation (§6.1)"
+                        .to_owned(),
+                );
+            }
+            let mut ops = Vec::with_capacity(mutations.len());
+            for mutation in mutations {
+                match mutation {
+                    Mutation::Patch {
                         table,
-                        row_id,
+                        values,
                         base_version,
-                        values: Some(values),
-                    });
-                }
-                Mutation::Delete {
-                    table,
-                    row_id,
-                    base_version,
-                } => {
-                    if self.schema.table(&table).is_none() {
-                        return Err(format!("unknown table {table:?}"));
+                    } => {
+                        let schema_table = self
+                            .schema
+                            .table(&table)
+                            .ok_or_else(|| "sync.unknown_table".to_owned())?;
+                        let values = normalize_values_casing(schema_table, values)?;
+                        let row_id = render_row_id_json(values.get(&schema_table.primary_key))?;
+                        ops.push(self.prepare_patch(&table, &row_id, values, base_version)?);
                     }
-                    ops.push(OutboxOp {
-                        upsert: false,
+                    Mutation::Upsert {
+                        table,
+                        values,
+                        base_version,
+                    } => {
+                        let schema_table = self.schema.table(&table).ok_or_else(|| {
+                            format!("sync.unknown_table: unknown table {table:?}")
+                        })?;
+                        // §5: value keys are accepted in snake_case AND the
+                        // generated row types' camelCase; normalize to SQL truth
+                        // before the pk lookup / codec see them.
+                        let values = normalize_values_casing(schema_table, values)?;
+                        let row_id = render_row_id_json(values.get(&schema_table.primary_key))?;
+                        // §6.7 `mutate` marks every column present: fill missing
+                        // nullable columns with NULL before the payload is built.
+                        let values = full_row_values(schema_table, values)?;
+                        // §5.11: validate the payload encodes with the current
+                        // codec. A key-selection or unknown-key failure is a
+                        // durable rejection at the push seam (§10.3), never an
+                        // author-time error. Full-row `mutate` presents every
+                        // column, so no stored fallback is needed.
+                        self.validate_author_encode(schema_table, &row_id, &values)?;
+                        ops.push(OutboxOp {
+                            upsert: true,
+                            table,
+                            row_id,
+                            base_version,
+                            values: Some(values),
+                        });
+                    }
+                    Mutation::Delete {
                         table,
                         row_id,
                         base_version,
-                        values: None,
-                    });
+                    } => {
+                        if self.schema.table(&table).is_none() {
+                            return Err(format!("sync.unknown_table: unknown table {table:?}"));
+                        }
+                        ops.push(OutboxOp {
+                            upsert: false,
+                            table,
+                            row_id,
+                            base_version,
+                            values: None,
+                        });
+                    }
                 }
             }
+            self.record_outbox_commit(ops)
+        })();
+        self.finish_authoring(prior, outcome)
+    }
+
+    /// Scope the retained `storage_failure` diagnostic to this call so an
+    /// earlier operation's failure cannot classify a new one, and surface the
+    /// call's own classified failure with its details. A fresh classified
+    /// failure replaces the retained diagnostic; otherwise the earlier one is
+    /// kept for the next sync.
+    fn finish_authoring(
+        &self,
+        prior: Option<QueryReadFailure>,
+        outcome: Result<String, String>,
+    ) -> Result<String, ClientError> {
+        let fresh = self.storage_failure.borrow_mut().take();
+        *self.storage_failure.borrow_mut() = fresh.clone().or(prior);
+        match outcome {
+            Ok(id) => Ok(id),
+            Err(message) => Err(fresh
+                .map(ClientError::from)
+                .unwrap_or_else(|| ClientError::from(message))),
         }
-        self.record_outbox_commit(ops)
     }
 
     fn record_outbox_commit(&mut self, ops: Vec<OutboxOp>) -> Result<String, String> {
@@ -10200,7 +10486,22 @@ impl SyncClient {
     /// non-scope columns are present; every other column is absent and stays
     /// untouched on the server and in the local overlay. An absent local base
     /// refuses the whole batch with sync.row_missing before enqueueing (§7.1).
+    /// Failures are structured so callers read `code`/`message`/`details`.
     pub fn patch(
+        &mut self,
+        table: &str,
+        row_id: &str,
+        partial: Map<String, Value>,
+        base_version: Option<i64>,
+    ) -> Result<String, ClientError> {
+        let prior = self.storage_failure.borrow_mut().take();
+        let outcome = self.perform_patch(table, row_id, partial, base_version);
+        self.finish_authoring(prior, outcome)
+    }
+
+    /// The unscoped patch body. Public authoring entry points scope
+    /// `storage_failure` around the whole operation, including any pre-read.
+    fn perform_patch(
         &mut self,
         table: &str,
         row_id: &str,
@@ -10221,7 +10522,7 @@ impl SyncClient {
         let schema_table = self
             .schema
             .table(table)
-            .ok_or_else(|| format!("unknown table {table:?}"))?;
+            .ok_or_else(|| format!("sync.unknown_table: unknown table {table:?}"))?;
         let partial = normalize_values_casing(schema_table, partial)?;
         if let Some(pk) = partial.get(&schema_table.primary_key) {
             if pk.as_str() != Some(row_id) {
@@ -10827,7 +11128,7 @@ impl SyncClient {
             })
             .map_err(|e| match e {
                 rusqlite::Error::QueryReturnedNoRows => "no such row".to_owned(),
-                other => other.to_string(),
+                other => Self::sqlite_failure(&self.storage_failure, other),
             })?;
         Ok(bytes)
     }
@@ -10861,12 +11162,16 @@ impl SyncClient {
         name: &str,
         index: u32,
         value: &str,
-    ) -> Result<String, String> {
-        let current = self
-            .crdt_column_bytes(table, row_id, column)?
-            .unwrap_or_default();
-        let update = crate::crdt::insert_text(&current, name, index, value)?;
-        self.crdt_push_update(table, row_id, column, &update)
+    ) -> Result<String, ClientError> {
+        let prior = self.storage_failure.borrow_mut().take();
+        let outcome = (|| -> Result<String, String> {
+            let current = self
+                .crdt_column_bytes(table, row_id, column)?
+                .unwrap_or_default();
+            let update = crate::crdt::insert_text(&current, name, index, value)?;
+            self.perform_crdt_push_update(table, row_id, column, &update)
+        })();
+        self.finish_authoring(prior, outcome)
     }
 
     /// §5.10.4 push-an-update: apply a text delete to a `crdt` column and
@@ -10881,12 +11186,16 @@ impl SyncClient {
         name: &str,
         index: u32,
         len: u32,
-    ) -> Result<String, String> {
-        let current = self
-            .crdt_column_bytes(table, row_id, column)?
-            .unwrap_or_default();
-        let update = crate::crdt::delete_text(&current, name, index, len)?;
-        self.crdt_push_update(table, row_id, column, &update)
+    ) -> Result<String, ClientError> {
+        let prior = self.storage_failure.borrow_mut().take();
+        let outcome = (|| -> Result<String, String> {
+            let current = self
+                .crdt_column_bytes(table, row_id, column)?
+                .unwrap_or_default();
+            let update = crate::crdt::delete_text(&current, name, index, len)?;
+            self.perform_crdt_push_update(table, row_id, column, &update)
+        })();
+        self.finish_authoring(prior, outcome)
     }
 
     /// §5.10.4 generic escape hatch: apply an arbitrary Yjs update onto a
@@ -10900,12 +11209,16 @@ impl SyncClient {
         row_id: &str,
         column: &str,
         update: &[u8],
-    ) -> Result<String, String> {
-        let current = self
-            .crdt_column_bytes(table, row_id, column)?
-            .unwrap_or_default();
-        let next = crate::crdt::apply_update(&current, update)?;
-        self.crdt_push_update(table, row_id, column, &next)
+    ) -> Result<String, ClientError> {
+        let prior = self.storage_failure.borrow_mut().take();
+        let outcome = (|| -> Result<String, String> {
+            let current = self
+                .crdt_column_bytes(table, row_id, column)?
+                .unwrap_or_default();
+            let next = crate::crdt::apply_update(&current, update)?;
+            self.perform_crdt_push_update(table, row_id, column, &next)
+        })();
+        self.finish_authoring(prior, outcome)
     }
 
     /// Shared tail of the crdt edit methods: record a §6.1 sparse crdt-only
@@ -10915,7 +11228,7 @@ impl SyncClient {
     /// clobber a concurrent edit to another column. A locally absent row
     /// records the same partial operation; the server answers per §6.2.
     #[cfg(feature = "crdt-yjs")]
-    fn crdt_push_update(
+    fn perform_crdt_push_update(
         &mut self,
         table: &str,
         row_id: &str,
@@ -10926,7 +11239,7 @@ impl SyncClient {
         bytes_obj.insert("$bytes".to_owned(), Value::from(bytes_to_hex(crdt_bytes)));
         let mut partial = Map::new();
         partial.insert(column.to_owned(), Value::Object(bytes_obj));
-        self.patch(table, row_id, partial, None)
+        self.perform_patch(table, row_id, partial, None)
     }
 
     /// Run an arbitrary read-only SQL query against the local database and
@@ -11436,6 +11749,7 @@ impl SyncClient {
                     "client.storage_full" => "local SQLite storage is full",
                     "client.storage_io" => "local SQLite storage I/O failed",
                     "client.storage_corrupt" => "local SQLite storage is corrupt",
+                    "client.storage_busy" => "local SQLite storage is busy",
                     _ => unreachable!("unrecognized classified storage failure"),
                 }
                 .to_owned();

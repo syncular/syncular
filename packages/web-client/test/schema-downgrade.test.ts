@@ -14,6 +14,7 @@ import { CLIENT_SCHEMA, taskValues } from './helpers';
 class GuardDatabase extends BunClientDatabase {
   writes = 0;
   failMarkerRead = false;
+  markerFailure: unknown = new Error('injected marker read failure');
 
   override exec(sql: string, params: readonly SqlValue[] = []): void {
     this.writes++;
@@ -25,7 +26,7 @@ class GuardDatabase extends BunClientDatabase {
       this.failMarkerRead &&
       sql.includes('SELECT value FROM _syncular_meta')
     ) {
-      throw new Error('injected marker read failure');
+      throw this.markerFailure;
     }
     return super.query(sql, params);
   }
@@ -202,3 +203,26 @@ for (const failure of ['missing-value-column', 'read-error', 'view'] as const) {
     db.close();
   });
 }
+
+test('a transient marker-read lock classifies as retryable busy and performs no writes', async () => {
+  const db = new GuardDatabase();
+  db.exec('CREATE TABLE _syncular_meta(key TEXT PRIMARY KEY, value)');
+  db.exec("INSERT INTO _syncular_meta VALUES ('localSchemaVersion', '1')");
+  db.failMarkerRead = true;
+  db.markerFailure = Object.assign(new Error('database is locked'), {
+    name: 'SQLiteError',
+    errno: 5,
+  });
+  const writes = db.writes;
+  const client = new SyncClient({
+    database: db,
+    schema: CLIENT_SCHEMA,
+    transport: async () => new Uint8Array(),
+  });
+  await expect(client.start()).rejects.toMatchObject({
+    code: 'client.storage_busy',
+    retryable: true,
+  });
+  expect(db.writes).toBe(writes);
+  db.close();
+});
