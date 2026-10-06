@@ -31,6 +31,16 @@ data class SyncularConfig(
     val wsUrl: String? = null,
     val headers: Map<String, String> = emptyMap(),
     val dbPath: String? = null,
+    /** End-to-end deadline for one HTTP request, in milliseconds. */
+    val requestTimeoutMs: Long? = null,
+    /** One monotonic deadline for a whole sync round, in milliseconds. */
+    val roundDeadlineMs: Long? = null,
+    /** Largest HTTP request body the transport sends, in bytes. */
+    val maxRequestBytes: Long? = null,
+    /** Largest decoded HTTP response body the transport accepts, in bytes. */
+    val maxResponseBytes: Long? = null,
+    /** Redirect handling: `"deny"` (default) or `"follow"`. */
+    val redirects: String? = null,
 ) {
     /** The `syncular_client_new` config JSON (transport fields only). */
     internal fun newConfigJson(): JsonValue {
@@ -40,6 +50,11 @@ data class SyncularConfig(
         if (headers.isNotEmpty()) {
             fields["headers"] = JsonValue.Obj(headers.mapValues { JsonValue.of(it.value) })
         }
+        requestTimeoutMs?.let { fields["requestTimeoutMs"] = JsonValue.of(it.toDouble()) }
+        roundDeadlineMs?.let { fields["roundDeadlineMs"] = JsonValue.of(it.toDouble()) }
+        maxRequestBytes?.let { fields["maxRequestBytes"] = JsonValue.of(it.toDouble()) }
+        maxResponseBytes?.let { fields["maxResponseBytes"] = JsonValue.of(it.toDouble()) }
+        redirects?.let { fields["redirects"] = JsonValue.of(it) }
         return JsonValue.Obj(fields)
     }
 }

@@ -33,7 +33,7 @@ use syncular_client::{
 };
 use syncular_command::{dispatch, CreateEffects};
 
-use crate::transport::{self, HostTransport};
+use crate::transport::{self, HostTransport, HostTransportPolicy};
 
 /// One client-observable event (§8 realtime signals + §6 conflicts + §1.6
 /// schema floor + §7.3 lease). JSON-able; delivered onto the Tauri channel.
@@ -300,6 +300,17 @@ impl SyncularCore {
         self.drain_core_outputs();
         self.emit_diagnostics_if_changed();
         applied
+    }
+
+    /// Replace the native transport's bounds for subsequent network calls
+    /// (per-round deadlines, request/response byte limits, redirect policy).
+    /// JSON config reaches the same policy through `new`; this is the
+    /// programmatic seam for a host that builds its configuration in Rust. A
+    /// round past its first exchange keeps its anchored deadline; every other
+    /// bound takes effect on the next call. An invalid policy is rejected and
+    /// the current policy stays in force.
+    pub fn set_transport_policy(&mut self, policy: HostTransportPolicy) -> Result<(), String> {
+        self.transport.set_policy(policy)
     }
 
     pub fn take_controls(&mut self) -> Option<(Vec<String>, HostTransport)> {

@@ -3661,6 +3661,173 @@ mod observation_tests {
     }
 
     #[test]
+    fn sync_round_deadline_is_anchored_once_per_round_and_carried_across_continues() {
+        struct DeadlineRecording {
+            budget: std::time::Duration,
+            seen: Vec<Option<std::time::Instant>>,
+        }
+        impl Transport for DeadlineRecording {
+            fn round_deadline(&self) -> Option<std::time::Duration> {
+                Some(self.budget)
+            }
+            fn set_round_deadline(&mut self, deadline: Option<std::time::Instant>) {
+                self.seen.push(deadline);
+            }
+            fn sync(&mut self, _: &[u8]) -> Result<Vec<u8>, TransportError> {
+                Err(TransportError::new("transport.failed", "injected"))
+            }
+            fn realtime_sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+                self.sync(request)
+            }
+            fn download_segment(
+                &mut self,
+                _: &SegmentRequest,
+                _: &mut dyn FnMut(u64),
+            ) -> Result<Vec<u8>, TransportError> {
+                Err(TransportError::new("transport.failed", "injected"))
+            }
+            fn blob_upload_grant(
+                &mut self,
+                _: &str,
+                _: u64,
+                _: Option<&str>,
+            ) -> Result<crate::BlobUploadGrant, TransportError> {
+                Ok(crate::BlobUploadGrant::Present)
+            }
+            fn realtime_connect(&mut self) -> Result<(), TransportError> {
+                Ok(())
+            }
+            fn realtime_send(&mut self, _: &str) -> Result<(), TransportError> {
+                Ok(())
+            }
+            fn realtime_close(&mut self) -> Result<(), TransportError> {
+                Ok(())
+            }
+        }
+
+        let schema = json!({"version":1,"tables":[{"name":"attachments","primaryKey":"id","columns":[
+            {"name":"id","type":"string","nullable":false},
+            {"name":"file","type":"blob_ref","nullable":true}],"scopes":[]}]});
+        let mut client =
+            SyncClient::new("deadline-round".into(), &schema, Default::default()).unwrap();
+        client.set_meta(LOG_EPOCH_KEY, "epoch");
+        client
+            .upload_blob(b"pending upload", Some("text/plain".into()), None)
+            .unwrap();
+
+        let mut transport = DeadlineRecording {
+            budget: std::time::Duration::from_secs(30),
+            seen: Vec::new(),
+        };
+        let prepared = client.prepare_sync_round(false).unwrap();
+        assert_eq!(prepared.uploads.len(), 1, "one staged upload");
+        // Upload exchange -> Continue (the pin removal is persisted by apply).
+        let prepared = match client.apply_sync_round(prepared.exchange(&mut transport)) {
+            crate::AppliedSyncRound::Continue(prepared) => prepared,
+            crate::AppliedSyncRound::Complete { .. } => panic!("the upload must continue"),
+        };
+        // Main request exchange -> Complete.
+        let completed = prepared.exchange(&mut transport);
+        let anchor = completed
+            .prepared
+            .round_deadline_at
+            .expect("the upload round anchors a deadline");
+        assert!(matches!(
+            client.apply_sync_round(completed),
+            crate::AppliedSyncRound::Complete { .. }
+        ));
+        assert_eq!(transport.seen.len(), 4, "one scope per exchange");
+        assert_eq!(
+            transport.seen[0],
+            Some(anchor),
+            "the upload anchors the round"
+        );
+        assert_eq!(
+            transport.seen[1], None,
+            "the upload exchange clears its scope"
+        );
+        assert_eq!(
+            transport.seen[2],
+            Some(anchor),
+            "a continuation reuses the carried anchor instead of refreshing it"
+        );
+        assert_eq!(transport.seen[3], None, "the continuation clears its scope");
+
+        // A fresh round anchors a new deadline from the transport's (now larger)
+        // budget and never inherits the old one; the clock granule is irrelevant.
+        transport.budget = std::time::Duration::from_secs(60);
+        let prepared = client.prepare_sync_round(false).unwrap();
+        let completed = prepared.exchange(&mut transport);
+        let fresh = completed
+            .prepared
+            .round_deadline_at
+            .expect("the next round anchors a deadline");
+        client.apply_sync_round(completed);
+        assert!(
+            fresh >= anchor + std::time::Duration::from_secs(30),
+            "the next round anchors a fresh deadline from the new budget"
+        );
+        assert_eq!(transport.seen[4], Some(fresh));
+        assert_eq!(
+            transport.seen[5], None,
+            "the new round clears its scope too"
+        );
+    }
+
+    #[test]
+    fn a_transport_budget_the_clock_cannot_represent_fails_before_network() {
+        struct HugeBudget;
+        impl Transport for HugeBudget {
+            fn round_deadline(&self) -> Option<std::time::Duration> {
+                Some(std::time::Duration::MAX)
+            }
+            fn sync(&mut self, _: &[u8]) -> Result<Vec<u8>, TransportError> {
+                panic!("no network for an invalid budget")
+            }
+            fn realtime_sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+                self.sync(request)
+            }
+            fn download_segment(
+                &mut self,
+                _: &SegmentRequest,
+                _: &mut dyn FnMut(u64),
+            ) -> Result<Vec<u8>, TransportError> {
+                panic!("no network for an invalid budget")
+            }
+            fn realtime_connect(&mut self) -> Result<(), TransportError> {
+                Ok(())
+            }
+            fn realtime_send(&mut self, _: &str) -> Result<(), TransportError> {
+                Ok(())
+            }
+            fn realtime_close(&mut self) -> Result<(), TransportError> {
+                Ok(())
+            }
+        }
+
+        let mut client = client();
+        client.set_meta(LOG_EPOCH_KEY, "epoch");
+        let prepared = client.prepare_sync_round(false).unwrap();
+        let outcome = match client.apply_sync_round(prepared.exchange(&mut HugeBudget)) {
+            crate::AppliedSyncRound::Complete { outcome, .. } => outcome,
+            crate::AppliedSyncRound::Continue(_) => {
+                panic!("an unrepresentable budget must not continue")
+            }
+        };
+        match outcome {
+            SyncOutcome::Failed {
+                error_code,
+                message,
+                ..
+            } => {
+                assert_eq!(error_code, "sync.invalid_request");
+                assert_eq!(message, "transport round deadline is out of range");
+            }
+            _ => panic!("an unrepresentable budget must fail synchronously"),
+        }
+    }
+
+    #[test]
     fn pending_row_reconciliation_failure_preserves_queue_and_frame_state() {
         for failure in ["visible", "revision", "commit"] {
             let mut client = client();
@@ -12303,6 +12470,10 @@ impl SyncClient {
             Ok(prepared) => prepared,
             Err(outcome) => return *outcome,
         };
+        // The round's network deadline rides `PreparedSyncRound` and is scoped
+        // to each exchange, so uploads, continuations, the main request, and
+        // every segment fetch share one monotonic anchor without leaving
+        // deadline state on a reused transport.
         let mut next = prepared;
         loop {
             match self.apply_sync_round(next.exchange(transport)) {
@@ -12500,6 +12671,7 @@ impl SyncClient {
                 benchmark_phases: self.benchmark_phases.clone(),
                 progress: self.progress.clone(),
                 fixed_now: self.now_ms,
+                round_deadline_at: None,
             })
         })();
         prepared.map_err(|outcome| Box::new(self.finish_sync_round(started_at_ms, *outcome)))

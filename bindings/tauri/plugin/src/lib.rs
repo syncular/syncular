@@ -63,6 +63,25 @@ pub struct SyncularConfig {
     pub ws_url: Option<String>,
     /// Extra request headers (auth, actor/project ids) as (name, value).
     pub headers: Vec<(String, String)>,
+    /// Per-request network deadline in milliseconds. `None` (the default)
+    /// leaves requests unbounded, matching the reference HTTP binding.
+    pub request_timeout_ms: Option<u64>,
+    /// One monotonic deadline for a whole sync round (uploads, continuations,
+    /// main request, and every segment fetch) in milliseconds. `None` (the
+    /// default) leaves the round unbounded.
+    pub round_deadline_ms: Option<u64>,
+    /// Largest request body the transport will send, in bytes. `None` (the
+    /// default) is unbounded.
+    pub max_request_bytes: Option<u64>,
+    /// Largest decoded (post-decompression) response body, in bytes. `None`
+    /// (the default) is unbounded.
+    pub max_response_bytes: Option<u64>,
+    /// Redirect handling: `"deny"` (the default) refuses every redirect so
+    /// configured credentials, URL userinfo, and signed capabilities never
+    /// replay to another origin; `"follow"` follows a redirect only for a
+    /// request with none of those, and still refuses a credential-bearing
+    /// request.
+    pub redirects: Option<String>,
     /// On-disk SQLite path a `create` opens when it names no database. Absent →
     /// in-memory (nothing survives a restart). Apps usually set this to a file
     /// under the app-data dir; see [`init`].
@@ -85,6 +104,11 @@ impl Default for SyncularConfig {
             base_url: None,
             ws_url: None,
             headers: Vec::new(),
+            request_timeout_ms: None,
+            round_deadline_ms: None,
+            max_request_bytes: None,
+            max_response_bytes: None,
+            redirects: None,
             db_path: None,
             database_dir: None,
             auto_sync: true,
@@ -110,6 +134,21 @@ impl SyncularConfig {
                 .map(|(k, v)| (k.clone(), Value::from(v.clone())))
                 .collect();
             map.insert("headers".to_owned(), Value::Object(headers));
+        }
+        if let Some(ms) = self.request_timeout_ms {
+            map.insert("requestTimeoutMs".to_owned(), Value::from(ms));
+        }
+        if let Some(ms) = self.round_deadline_ms {
+            map.insert("roundDeadlineMs".to_owned(), Value::from(ms));
+        }
+        if let Some(bytes) = self.max_request_bytes {
+            map.insert("maxRequestBytes".to_owned(), Value::from(bytes));
+        }
+        if let Some(bytes) = self.max_response_bytes {
+            map.insert("maxResponseBytes".to_owned(), Value::from(bytes));
+        }
+        if let Some(redirects) = &self.redirects {
+            map.insert("redirects".to_owned(), Value::from(redirects.clone()));
         }
         Value::Object(map)
     }
@@ -1062,11 +1101,51 @@ mod tests {
         let config = SyncularConfig {
             base_url: Some("https://api.example.com".to_owned()),
             headers: vec![("authorization".to_owned(), "Bearer x".to_owned())],
+            request_timeout_ms: Some(1000),
+            round_deadline_ms: Some(2000),
+            max_request_bytes: Some(1024),
+            max_response_bytes: Some(2048),
+            redirects: Some("deny".to_owned()),
             ..Default::default()
         };
         let json = config.to_transport_json();
         assert_eq!(json["baseUrl"], "https://api.example.com");
         assert_eq!(json["headers"]["authorization"], "Bearer x");
+        assert_eq!(json["requestTimeoutMs"], 1000);
+        assert_eq!(json["roundDeadlineMs"], 2000);
+        assert_eq!(json["maxRequestBytes"], 1024);
+        assert_eq!(json["maxResponseBytes"], 2048);
+        assert_eq!(json["redirects"], "deny");
+    }
+
+    #[test]
+    fn transport_policy_config_is_validated_at_the_core_boundary() {
+        // A headerless core still validates the policy it is handed.
+        let core = SyncularCore::new(&serde_json::json!({"requestTimeoutMs": 1000}));
+        assert!(core.is_ok());
+        let error = SyncularCore::new(&serde_json::json!({"requestTimeoutMs": 0}))
+            .err()
+            .unwrap();
+        assert_eq!(
+            error,
+            "sync.invalid_request: transport config requestTimeoutMs must be a positive integer"
+        );
+        let error = SyncularCore::new(&serde_json::json!({"redirects": "sometimes"}))
+            .err()
+            .unwrap();
+        assert_eq!(
+            error,
+            "sync.invalid_request: transport config redirects must be \"deny\" or \"follow\""
+        );
+        let mut core = SyncularCore::new(&serde_json::json!({})).unwrap();
+        assert_eq!(
+            core.set_transport_policy(crate::transport::HostTransportPolicy {
+                max_response_bytes: Some(0),
+                ..Default::default()
+            })
+            .unwrap_err(),
+            "sync.invalid_request: transport config maxResponseBytes must be a positive integer"
+        );
     }
 
     #[test]

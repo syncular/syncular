@@ -578,6 +578,61 @@ client conformance rule, not a decode error — the server rejects the
 joint absence of bits 0 and 1 as request validation
 (`sync.invalid_request`, §4.2).
 
+### 1.8 Native host transport policy
+
+The native host transports (the Rust core's `native-transport` feature,
+consumed by the FFI, Tauri, and future Rust hosts) bound their network
+work through host policy. The bounds are host policy, and their
+observable behavior is contractual:
+
+- **Per-request deadline.** One HTTP request is bounded end to end,
+  from DNS resolution through the response body. A bound that elapses
+  surfaces `transport.timeout`. The default is unbounded. This bound is
+  HTTP-only; it does not become the WebSocket total policy.
+- **Whole-round deadline.** One sync round may be bounded: the uploads,
+  every continuation, the main request, every segment fetch, and a
+  realtime round's socket send and reassembly wait share one monotonic
+  deadline. The round anchors the deadline on its first network call and
+  never refreshes it on a continuation. The default is unbounded. The
+  deadline covers network work; it does not interrupt local SQLite or CPU
+  time. A bound that elapses on the socket path surfaces
+  `transport.timeout`.
+- **Redirect refusal.** The `deny` default refuses every 3xx. Under the
+  `follow` policy the transport follows a redirect only for a request that
+  carries no configured headers, no base-URL userinfo, and no signed
+  capability URL; a credential-bearing request is still refused, because
+  the configured headers or URL userinfo would replay to the redirect
+  target. A refusal surfaces `transport.redirect`.
+- **Request byte limit.** An HTTP request body larger than the
+  configured limit is refused before any network I/O, with
+  `transport.request_too_large`.
+- **Decoded response byte limit.** An HTTP response body whose decoded
+  length exceeds the configured limit is refused with
+  `transport.response_too_large`. The count applies after decompression,
+  and the transport stops reading at the limit, so a compressed response
+  cannot grow the buffer past it.
+
+The byte limits apply to HTTP requests and responses. They do not cap
+realtime socket buffers; the whole-round deadline is what bounds a
+realtime round's send and wait.
+
+The defaults are unbounded deadlines and unbounded body sizes, matching
+the reference HTTP binding; a host chooses its own application policy.
+The JSON config keys are `requestTimeoutMs`, `roundDeadlineMs`,
+`maxRequestBytes`, `maxResponseBytes`, and `redirects` (`"deny"` or
+`"follow"`). A programmatic policy carries the same fields, and a
+non-positive or unrepresentable bound is rejected before it reaches the
+transport.
+
+The native transport reports `transport.timeout`, `transport.redirect`,
+`transport.request_too_large`, and `transport.response_too_large`.
+These `transport.*` codes are host transport codes, outside the §10 wire
+catalog. Every transport failure message is static and every detail is
+allowlisted (`causeKind`, `httpStatus`, `limit`, `size`); a raw URL,
+header, or payload never reaches the message or the details. Browser
+transports (`fetch`, `WebSocket`) define their own timeout and redirect
+behavior and are not required to emulate this policy.
+
 ---
 
 ## 2. Data model and identity
@@ -5776,7 +5831,11 @@ SSP2 producer — the wire `op` byte admits only upsert/delete and SSP2
 defines no per-table operation restriction; reserved if such a capability
 lands); `console.*`, `proxy.*` (post-gate features). The `blob.*` family
 is specified as four codes in §10.2 (§5.9, the blobs rung); any future
-`blob.*` code stays within that family's semantics.
+`blob.*` code stays within that family's semantics. The native host
+transport also raises `transport.failed` and the typed
+`transport.timeout`, `transport.redirect`, `transport.request_too_large`,
+and `transport.response_too_large` (§1.8); these are host transport codes
+and never on the wire.
 
 In the `sync.auth_lease_*` family (§7.3), exactly **two codes have a
 producer and are specified in §10.2** — `sync.auth_lease_required`

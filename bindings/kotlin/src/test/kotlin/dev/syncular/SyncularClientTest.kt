@@ -63,6 +63,34 @@ class SyncularClientTest {
     }
 
     @Test
+    fun positionalConstructionKeepsDbPathAsTheFourthArgument() {
+        // The original four-argument order (baseUrl, wsUrl, headers, dbPath)
+        // must keep compiling, so the new policy fields are appended after it.
+        val config =
+            SyncularConfig("https://api.example.com", null, emptyMap(), "/tmp/replica.db")
+        assertEquals("https://api.example.com", config.baseUrl)
+        assertEquals("/tmp/replica.db", config.dbPath)
+        assertEquals(null, config.requestTimeoutMs)
+    }
+
+    @Test
+    fun nativeTransportPolicySerializesIntoTheCoreConfig() {
+        val config = SyncularConfig(
+            baseUrl = "https://api.example.com",
+            requestTimeoutMs = 1000,
+            roundDeadlineMs = 2000,
+            maxRequestBytes = 1024,
+            maxResponseBytes = 2048,
+            redirects = "deny",
+        ).newConfigJson()
+        assertEquals(JsonValue.Num(1000.0), config["requestTimeoutMs"])
+        assertEquals(JsonValue.Num(2000.0), config["roundDeadlineMs"])
+        assertEquals(JsonValue.Num(1024.0), config["maxRequestBytes"])
+        assertEquals(JsonValue.Num(2048.0), config["maxResponseBytes"])
+        assertEquals(JsonValue.Str("deny"), config["redirects"])
+    }
+
+    @Test
     fun mutateThenReadRowsShowsOptimisticRow() {
         makeClient().use { client ->
             client.subscribe(id = "s1", table = "todo")

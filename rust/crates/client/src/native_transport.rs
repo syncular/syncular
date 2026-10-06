@@ -17,8 +17,128 @@
 //! wire fixes therefore reach FFI, Tauri, and future Rust hosts together.
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use crate::{BlobDownload, BlobUploadGrant, SegmentRequest, Transport, TransportError};
+
+/// Redirect handling for native HTTP requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RedirectPolicy {
+    /// Never follow a 3xx. A redirected request would replay configured
+    /// headers, URL userinfo, or a signed capability to an unverified
+    /// destination, so refusal is the default. A refused redirect surfaces
+    /// `transport.redirect`.
+    #[default]
+    Deny,
+    /// Follow a redirect for a request that carries neither configured
+    /// headers, base-URL userinfo, nor a signed capability URL. A
+    /// credential-bearing request is still refused even under this policy,
+    /// because ureq forwards configured headers and URL userinfo to the
+    /// redirect target. Enable only for a deployment whose unauthenticated
+    /// requests may safely move.
+    Follow,
+}
+
+/// Bounds and behavior for the native host transport. `Default` matches the
+/// reference HTTP binding: no deadline and no body cap, with redirects denied.
+#[derive(Debug, Clone, Default)]
+pub struct HostTransportPolicy {
+    /// End-to-end deadline for one request (DNS through response body).
+    pub request_timeout: Option<Duration>,
+    /// One monotonic deadline for a whole sync round: uploads, continuations,
+    /// the main request, and every segment fetch. Anchored once at round start;
+    /// a continuation never resets it. Independent of the per-request
+    /// deadline, which still bounds each individual call.
+    pub round_deadline: Option<Duration>,
+    /// Largest HTTP request body the transport will send. Checked before any
+    /// network I/O. Does not cap realtime socket buffers.
+    pub max_request_bytes: Option<u64>,
+    /// Largest decoded (post-decompression) HTTP response body the transport
+    /// will accept. Does not cap realtime socket buffers.
+    pub max_response_bytes: Option<u64>,
+    pub redirects: RedirectPolicy,
+}
+
+impl HostTransportPolicy {
+    /// Reject a bound the transport cannot honor: a zero or unrepresentable
+    /// duration, or a zero byte limit. Called on both the JSON and the
+    /// programmatic path, so `Follow`/`Deny` and every numeric field agree.
+    pub fn validate(&self) -> Result<(), String> {
+        let now = std::time::Instant::now();
+        if let Some(timeout) = self.request_timeout {
+            if timeout.is_zero() || now.checked_add(timeout).is_none() {
+                return Err(
+                    "sync.invalid_request: transport config requestTimeoutMs is out of range"
+                        .to_owned(),
+                );
+            }
+        }
+        if let Some(deadline) = self.round_deadline {
+            if deadline.is_zero() || now.checked_add(deadline).is_none() {
+                return Err(
+                    "sync.invalid_request: transport config roundDeadlineMs is out of range"
+                        .to_owned(),
+                );
+            }
+        }
+        if self.max_request_bytes == Some(0) {
+            return Err(
+                "sync.invalid_request: transport config maxRequestBytes must be a positive integer"
+                    .to_owned(),
+            );
+        }
+        if self.max_response_bytes == Some(0) {
+            return Err("sync.invalid_request: transport config maxResponseBytes must be a positive integer".to_owned());
+        }
+        Ok(())
+    }
+
+    /// Parse the policy from the transport JSON config. Absent keys keep their
+    /// defaults; a wrong type or an out-of-range bound is rejected loudly.
+    pub fn from_config(config: &serde_json::Value) -> Result<Self, String> {
+        let bound = |key: &str, message: &'static str| -> Result<Option<u64>, String> {
+            match config.get(key) {
+                None | Some(serde_json::Value::Null) => Ok(None),
+                Some(value) => match value.as_u64() {
+                    Some(number) if number >= 1 => Ok(Some(number)),
+                    _ => Err(message.to_owned()),
+                },
+            }
+        };
+        let redirects = match config.get("redirects") {
+            None | Some(serde_json::Value::Null) => RedirectPolicy::Deny,
+            Some(serde_json::Value::String(value)) if value == "deny" => RedirectPolicy::Deny,
+            Some(serde_json::Value::String(value)) if value == "follow" => RedirectPolicy::Follow,
+            Some(_) => return Err(
+                "sync.invalid_request: transport config redirects must be \"deny\" or \"follow\""
+                    .to_owned(),
+            ),
+        };
+        let policy = Self {
+            request_timeout: bound(
+                "requestTimeoutMs",
+                "sync.invalid_request: transport config requestTimeoutMs must be a positive integer",
+            )?
+            .map(Duration::from_millis),
+            round_deadline: bound(
+                "roundDeadlineMs",
+                "sync.invalid_request: transport config roundDeadlineMs must be a positive integer",
+            )?
+            .map(Duration::from_millis),
+            max_request_bytes: bound(
+                "maxRequestBytes",
+                "sync.invalid_request: transport config maxRequestBytes must be a positive integer",
+            )?,
+            max_response_bytes: bound(
+                "maxResponseBytes",
+                "sync.invalid_request: transport config maxResponseBytes must be a positive integer",
+            )?,
+            redirects,
+        };
+        policy.validate()?;
+        Ok(policy)
+    }
+}
 
 /// One inbound realtime frame buffered for the client's `on_realtime_*`.
 pub enum Inbound {
@@ -62,6 +182,9 @@ impl InboundBuffer {
     }
 }
 
+// One transport is held per host, so the native arm's size is not worth an
+// indirection; boxing it would change the public variant's payload type.
+#[allow(clippy::large_enum_variant)]
 pub enum HostTransport {
     /// No network: client-local commands only (dependency-lean default).
     Null {
@@ -92,16 +215,28 @@ impl HostTransport {
         config: &serde_json::Value,
         notify: Option<Arc<dyn Fn() + Send + Sync>>,
     ) -> Result<Self, String> {
+        let policy = HostTransportPolicy::from_config(config)?;
+        Self::from_config_with_policy(config, policy, notify)
+    }
+
+    /// Build the transport with an explicit programmatic policy, ignoring any
+    /// policy keys the JSON config carries. `baseUrl` selection is unchanged.
+    pub fn from_config_with_policy(
+        config: &serde_json::Value,
+        policy: HostTransportPolicy,
+        notify: Option<Arc<dyn Fn() + Send + Sync>>,
+    ) -> Result<Self, String> {
         #[cfg(feature = "native-transport")]
         {
             if let Some(base_url) = config.get("baseUrl").and_then(|v| v.as_str()) {
-                return Ok(HostTransport::Native(native::NativeTransport::new(
-                    base_url, config, notify,
+                return Ok(HostTransport::Native(native::NativeTransport::with_policy(
+                    base_url, config, policy, notify,
                 )?));
             }
         }
         #[cfg(not(feature = "native-transport"))]
         {
+            policy.validate()?;
             if config.get("baseUrl").is_some() {
                 return Err(
                     "this build has no native transport (rebuild with --features native-transport)"
@@ -150,6 +285,20 @@ impl HostTransport {
             #[cfg(feature = "native-transport")]
             HostTransport::Native(t) => t.set_headers(headers),
         }
+    }
+
+    /// Replace the transport's bounds for subsequent network calls. A round
+    /// past its first exchange keeps its anchored deadline; every other bound
+    /// takes effect on the next call. An invalid policy is rejected and the
+    /// current policy stays in force.
+    pub fn set_policy(&mut self, policy: HostTransportPolicy) -> Result<(), String> {
+        policy.validate()?;
+        match self {
+            HostTransport::Null { .. } => {}
+            #[cfg(feature = "native-transport")]
+            HostTransport::Native(t) => t.set_policy(policy)?,
+        }
+        Ok(())
     }
 
     /// Drain the inbound realtime frames buffered since the last call.
@@ -332,6 +481,22 @@ impl Transport for HostTransport {
             HostTransport::Native(t) => t.realtime_close(),
         }
     }
+
+    fn round_deadline(&self) -> Option<std::time::Duration> {
+        match self {
+            HostTransport::Null { .. } => None,
+            #[cfg(feature = "native-transport")]
+            HostTransport::Native(t) => t.round_deadline(),
+        }
+    }
+
+    fn set_round_deadline(&mut self, deadline: Option<std::time::Instant>) {
+        match self {
+            HostTransport::Null { .. } => {}
+            #[cfg(feature = "native-transport")]
+            HostTransport::Native(t) => t.set_round_deadline(deadline),
+        }
+    }
 }
 
 #[cfg(feature = "native-transport")]
@@ -357,7 +522,7 @@ mod native {
     use tungstenite::stream::MaybeTlsStream;
     use tungstenite::Message;
 
-    use super::{Inbound, InboundBuffer};
+    use super::{HostTransportPolicy, Inbound, InboundBuffer, RedirectPolicy};
     use crate::{
         BlobDownload, BlobUploadGrant, RealtimeRound, RoundInbound, SegmentRequest, Transport,
         TransportError,
@@ -450,18 +615,32 @@ mod native {
             }
         }
 
-        /// Block until the round completes, fails, or `ROUND_TIMEOUT` elapses.
-        fn wait(&self) -> Result<Vec<u8>, TransportError> {
+        /// Block until the round completes, fails, or the binding deadline
+        /// elapses. `round_deadline` is the transport's whole-round deadline,
+        /// intersected with the socket's own `ROUND_TIMEOUT`.
+        fn wait(
+            &self,
+            round_deadline: Option<std::time::Instant>,
+        ) -> Result<Vec<u8>, TransportError> {
             let mut state = self.state.lock().expect("round lock");
-            let deadline = std::time::Instant::now() + ROUND_TIMEOUT;
+            let hard = std::time::Instant::now() + ROUND_TIMEOUT;
+            let round_binding = round_deadline.is_some_and(|round| round < hard);
+            let deadline = match round_deadline {
+                Some(round) if round_binding => round,
+                _ => hard,
+            };
             while state.outcome.is_none() {
                 let now = std::time::Instant::now();
                 if now >= deadline {
                     state.round.abort();
-                    return Err(TransportError::new(
-                        "sync.transport_failed",
-                        "realtime sync round timed out (§8.7)",
-                    ));
+                    return Err(if round_binding {
+                        timeout_error("sync round deadline exceeded", "round_deadline")
+                    } else {
+                        TransportError::new(
+                            "sync.transport_failed",
+                            "realtime sync round timed out (§8.7)",
+                        )
+                    });
                 }
                 let (guard, _timeout) = self
                     .ready
@@ -487,10 +666,67 @@ mod native {
         error
     }
 
+    /// A configured deadline elapsed. `cause_kind` distinguishes the
+    /// per-request timeout from the whole-round deadline.
+    fn timeout_error(message: &'static str, cause_kind: &'static str) -> TransportError {
+        let mut error = TransportError::new("transport.timeout", message);
+        error.details = Some(serde_json::json!({ "causeKind": cause_kind }));
+        error
+    }
+
+    /// A 3xx was refused (either by policy or by exhausting the follow budget).
+    fn redirect_error(message: &'static str, http_status: Option<u16>) -> TransportError {
+        let mut details = serde_json::json!({ "causeKind": "redirect" });
+        if let Some(status) = http_status {
+            details["httpStatus"] = status.into();
+        }
+        let mut error = TransportError::new("transport.redirect", message);
+        error.details = Some(details);
+        error
+    }
+
+    /// A 3xx that reached the caller means the redirect was refused (the
+    /// request was credential bearing or the policy denies redirects). ureq
+    /// returns such a response as-is when the ceiling is zero, so the refusal
+    /// is detected here rather than in the error classifier.
+    fn redirect_refused(resp: &ureq::http::Response<ureq::Body>) -> Result<(), TransportError> {
+        let status = resp.status().as_u16();
+        if (300..400).contains(&status) {
+            return Err(redirect_error("redirect refused", Some(status)));
+        }
+        Ok(())
+    }
+
+    /// Classify a body-read timeout through ureq's wrapping chain without
+    /// formatting it: `Error::into_io` boxes a non-io ureq error as
+    /// `io::Error::other`, and the gzip decoder re-wraps a plain io error as
+    /// `Error::Decompress("gzip", e)`. Direct, nested, and plain shapes all
+    /// count.
+    fn is_timeout_io(error: &std::io::Error) -> bool {
+        if error.kind() == std::io::ErrorKind::TimedOut {
+            return true;
+        }
+        let Some(inner) = error.get_ref() else {
+            return false;
+        };
+        let Some(ureq_error) = inner.downcast_ref::<ureq::Error>() else {
+            return false;
+        };
+        match ureq_error {
+            ureq::Error::Timeout(_) => true,
+            ureq::Error::Io(nested) => is_timeout_io(nested),
+            ureq::Error::Decompress(_, nested) => is_timeout_io(nested),
+            _ => false,
+        }
+    }
+
     fn http_err(message: &'static str, error: ureq::Error) -> TransportError {
         let (kind, status) = match error {
+            ureq::Error::StatusCode(status) if (300..400).contains(&status) => {
+                return redirect_error(message, Some(status))
+            }
             ureq::Error::StatusCode(status) => ("status", Some(status)),
-            ureq::Error::Timeout(_) => ("timeout", None),
+            ureq::Error::Timeout(_) => return timeout_error(message, "timeout"),
             ureq::Error::Io(error) => return io_err(message, error),
             ureq::Error::HostNotFound
             | ureq::Error::ConnectionFailed
@@ -507,15 +743,19 @@ mod native {
             ureq::Error::BodyExceedsLimit(_)
             | ureq::Error::BodyStalled
             | ureq::Error::Decompress(_, _) => ("body", None),
-            ureq::Error::RedirectFailed | ureq::Error::TooManyRedirects => ("redirect", None),
+            ureq::Error::RedirectFailed | ureq::Error::TooManyRedirects => {
+                return redirect_error(message, None)
+            }
             _ => ("unknown", None),
         };
         transfer_error(message, kind, status)
     }
 
     fn io_err(message: &'static str, error: std::io::Error) -> TransportError {
+        if is_timeout_io(&error) {
+            return timeout_error(message, "timeout");
+        }
         let kind = match error.kind() {
-            std::io::ErrorKind::TimedOut => "timeout",
             std::io::ErrorKind::ConnectionRefused
             | std::io::ErrorKind::ConnectionAborted
             | std::io::ErrorKind::ConnectionReset
@@ -539,9 +779,14 @@ mod native {
         }
     }
 
+    /// Segment fetches keep their own generic surface (`sync.transport_failed`)
+    /// but must not swallow a typed policy failure: a refused redirect or an
+    /// exceeded deadline/byte budget survives to the caller.
     fn segment_error(mut error: TransportError) -> TransportError {
-        error.code = "sync.transport_failed".into();
-        error.message = "segment transfer failed".into();
+        if error.code == "transport.failed" {
+            error.code = "sync.transport_failed".into();
+            error.message = "segment transfer failed".into();
+        }
         error
     }
 
@@ -561,7 +806,16 @@ mod native {
         ws_url: String,
         /// Extra request headers (auth, actor/project ids) as (name, value).
         headers: Vec<(String, String)>,
+        /// The base URL carries `user:pass@`, which ureq turns into request
+        /// credentials; a request to it is credential bearing even without
+        /// configured headers.
+        base_url_has_userinfo: bool,
         agent: ureq::Agent,
+        policy: HostTransportPolicy,
+        /// Absolute whole-round deadline scoped by `set_round_deadline` for
+        /// one exchange; `None` outside a round or when the policy sets no
+        /// round budget.
+        round_deadline_at: Option<std::time::Instant>,
         pub signed_urls: bool,
         pub inbound: Arc<InboundBuffer>,
         /// One I/O thread owns the socket; callers wait for their write to flush.
@@ -571,6 +825,19 @@ mod native {
         /// §8.7 round rendezvous, shared with the reader thread.
         round: Arc<RoundChannel>,
         realtime_client_id: Option<String>,
+    }
+
+    fn build_agent(policy: &HostTransportPolicy) -> ureq::Agent {
+        ureq::Agent::config_builder()
+            .timeout_global(policy.request_timeout)
+            .max_redirects(match policy.redirects {
+                RedirectPolicy::Deny => 0,
+                RedirectPolicy::Follow => 10,
+            })
+            .max_redirects_will_error(matches!(policy.redirects, RedirectPolicy::Follow))
+            .redirect_auth_headers(ureq::config::RedirectAuthHeaders::Never)
+            .build()
+            .into()
     }
 
     fn derive_ws_url(base_url: &str) -> String {
@@ -593,7 +860,10 @@ mod native {
                 base_url: self.base_url.clone(),
                 ws_url: self.ws_url.clone(),
                 headers: self.headers.clone(),
+                base_url_has_userinfo: self.base_url_has_userinfo,
                 agent: self.agent.clone(),
+                policy: self.policy.clone(),
+                round_deadline_at: None,
                 signed_urls: self.signed_urls,
                 inbound: self.inbound.clone(),
                 outgoing: self.outgoing.clone(),
@@ -609,6 +879,17 @@ mod native {
             config: &serde_json::Value,
             notify: Option<Arc<dyn Fn() + Send + Sync>>,
         ) -> Result<Self, String> {
+            let policy = HostTransportPolicy::from_config(config)?;
+            Self::with_policy(base_url, config, policy, notify)
+        }
+
+        pub fn with_policy(
+            base_url: &str,
+            config: &serde_json::Value,
+            policy: HostTransportPolicy,
+            notify: Option<Arc<dyn Fn() + Send + Sync>>,
+        ) -> Result<Self, String> {
+            policy.validate()?;
             let mut headers = Vec::new();
             if let Some(map) = config.get("headers").and_then(|v| v.as_object()) {
                 for (k, v) in map {
@@ -622,11 +903,19 @@ mod native {
                 .and_then(|v| v.as_str())
                 .map(str::to_owned)
                 .unwrap_or_else(|| derive_ws_url(base_url));
+            // ureq replays `user:pass@` as Basic auth, so a base URL with
+            // userinfo is credential bearing even when no headers are set.
+            let base_url_has_userinfo = url::Url::parse(base_url)
+                .map(|url| !url.username().is_empty() || url.password().is_some())
+                .unwrap_or(false);
             Ok(NativeTransport {
                 base_url: base_url.trim_end_matches('/').to_owned(),
                 ws_url,
                 headers,
-                agent: ureq::Agent::new_with_defaults(),
+                base_url_has_userinfo,
+                agent: build_agent(&policy),
+                policy,
+                round_deadline_at: None,
                 signed_urls: false,
                 inbound: Arc::new(match notify {
                     Some(notify) => InboundBuffer::with_notify(notify),
@@ -640,7 +929,94 @@ mod native {
             })
         }
 
+        /// Replace the policy for subsequent calls; an invalid policy is
+        /// rejected and the current policy stays in force. The agent is
+        /// rebuilt so the new redirect ceiling and timeout defaults apply.
+        pub fn set_policy(&mut self, policy: HostTransportPolicy) -> Result<(), String> {
+            policy.validate()?;
+            self.agent = build_agent(&policy);
+            self.policy = policy;
+            Ok(())
+        }
+
+        pub fn round_deadline(&self) -> Option<Duration> {
+            self.policy.round_deadline
+        }
+
+        pub fn set_round_deadline(&mut self, deadline: Option<std::time::Instant>) {
+            self.round_deadline_at = deadline;
+        }
+
+        /// End-to-end timeout for the next call: the per-request bound
+        /// intersected with whatever remains of the round deadline. Fails
+        /// before any network I/O once the round deadline has passed.
+        fn effective_timeout(&self) -> Result<Option<Duration>, TransportError> {
+            let remaining = match self.round_deadline_at {
+                Some(deadline) => {
+                    match deadline.checked_duration_since(std::time::Instant::now()) {
+                        Some(remaining) => Some(remaining),
+                        None => {
+                            return Err(timeout_error(
+                                "sync round deadline exceeded",
+                                "round_deadline",
+                            ))
+                        }
+                    }
+                }
+                None => None,
+            };
+            Ok(match (self.policy.request_timeout, remaining) {
+                (Some(request), Some(round)) => Some(request.min(round)),
+                (Some(request), None) => Some(request),
+                (None, Some(round)) => Some(round),
+                (None, None) => None,
+            })
+        }
+
+        /// Whether a request to the base URL carries credentials: configured
+        /// headers, or `user:pass@` userinfo ureq replays as Basic auth.
+        fn credentialed(&self) -> bool {
+            !self.headers.is_empty() || self.base_url_has_userinfo
+        }
+
+        /// Apply the per-call bounds to a request: the effective timeout, and
+        /// a redirect ceiling of zero whenever the request is credential
+        /// bearing or the policy denies redirects. A credential-bearing
+        /// request is refused a redirect under every policy, because ureq
+        /// forwards configured headers to the redirect target.
+        fn finish_request<B>(
+            &self,
+            req: ureq::RequestBuilder<B>,
+            credentialed: bool,
+        ) -> Result<ureq::RequestBuilder<B>, TransportError> {
+            let timeout = self.effective_timeout()?;
+            let follow = self.policy.redirects == RedirectPolicy::Follow && !credentialed;
+            Ok(req
+                .config()
+                .timeout_global(timeout)
+                .max_redirects(if follow { 10 } else { 0 })
+                .max_redirects_will_error(true)
+                .build())
+        }
+
+        /// Refuse an oversized request body before any network I/O.
+        fn check_request_bytes(&self, len: u64) -> Result<(), TransportError> {
+            match self.policy.max_request_bytes {
+                Some(max) if len > max => {
+                    let mut error = TransportError::new(
+                        "transport.request_too_large",
+                        "request body exceeds the configured transport limit",
+                    );
+                    error.details = Some(serde_json::json!({ "limit": max, "size": len }));
+                    Err(error)
+                }
+                _ => Ok(()),
+            }
+        }
+
         fn post_sync(&self, path: &str, body: &[u8]) -> Result<Vec<u8>, TransportError> {
+            self.check_request_bytes(body.len() as u64)?;
+            let credentialed = self.credentialed();
             let url = format!("{}{}", self.base_url, path);
             // SSP2 requests carry their own media type (SPEC 1.1); a stock
             // server answers 415 to anything else.
@@ -651,13 +1027,16 @@ mod native {
             for (k, v) in &self.headers {
                 req = req.header(k.as_str(), v.as_str());
             }
+            let req = self.finish_request(req, credentialed)?;
             let resp = req
                 .send(body)
                 .map_err(|e| http_err("sync request failed", e))?;
-            read_body(resp, None)
+            read_body(resp, None, self.policy.max_response_bytes)
         }
 
         fn post_operation(&self, body: &[u8]) -> Result<Vec<u8>, TransportError> {
+            self.check_request_bytes(body.len() as u64)?;
+            let credentialed = self.credentialed();
             let url = format!("{}/operations", self.base_url);
             let mut req = self.agent.post(&url).header(
                 "content-type",
@@ -666,21 +1045,25 @@ mod native {
             for (key, value) in &self.headers {
                 req = req.header(key.as_str(), value.as_str());
             }
+            let req = self.finish_request(req, credentialed)?;
             let response = req
                 .send(body)
                 .map_err(|error| http_err("remote operation request failed", error))?;
-            read_body(response, None)
+            read_body(response, None, self.policy.max_response_bytes)
         }
 
         fn get_bytes(&self, url: &str, with_headers: bool) -> Result<Vec<u8>, TransportError> {
+            // The only caller is a signed blob URL: the URL is the capability,
+            // so the request is credential bearing either way.
             let mut req = self.agent.get(url);
             if with_headers {
                 for (k, v) in &self.headers {
                     req = req.header(k.as_str(), v.as_str());
                 }
             }
+            let req = self.finish_request(req, true)?;
             let resp = req.call().map_err(|e| http_err("URL fetch failed", e))?;
-            read_body(resp, None)
+            read_body(resp, None, self.policy.max_response_bytes)
         }
 
         pub fn set_headers(&mut self, headers: Vec<(String, String)>) {
@@ -709,6 +1092,24 @@ mod native {
         }
 
         fn send_message(&mut self, message: Message) -> Result<(), TransportError> {
+            // A whole-round deadline bounds the write wait too: intersect it
+            // with the socket's own ceiling and report the round budget as a
+            // typed timeout. The per-request HTTP deadline does not apply to a
+            // socket send.
+            let (wait, round_bound) = match self.round_deadline_at {
+                Some(deadline) => {
+                    match deadline.checked_duration_since(std::time::Instant::now()) {
+                        Some(remaining) if remaining < ROUND_TIMEOUT => (remaining, true),
+                        Some(_) => (ROUND_TIMEOUT, false),
+                        // The round is already spent: refuse before queuing the
+                        // frame so a later send cannot deliver it.
+                        None => {
+                            return Err(timeout_error("realtime send timed out", "round_deadline"));
+                        }
+                    }
+                }
+                None => (ROUND_TIMEOUT, false),
+            };
             let result = (|| {
                 let Some(outgoing) = &self.outgoing else {
                     return Err(TransportError::new(
@@ -727,8 +1128,12 @@ mod native {
                     .poller
                     .notify()
                     .map_err(|e| io_err("realtime wake failed", e))?;
-                result.recv_timeout(ROUND_TIMEOUT).map_err(|_| {
-                    TransportError::new("transport.failed", "realtime send did not complete")
+                result.recv_timeout(wait).map_err(|_| {
+                    if round_bound {
+                        timeout_error("realtime send timed out", "round_deadline")
+                    } else {
+                        TransportError::new("transport.failed", "realtime send did not complete")
+                    }
                 })?
             })();
             // A failed/timed-out write must not remain eligible for delivery
@@ -743,7 +1148,9 @@ mod native {
     fn read_body(
         resp: ureq::http::Response<ureq::Body>,
         mut progress: Option<&mut dyn FnMut(u64)>,
+        max: Option<u64>,
     ) -> Result<Vec<u8>, TransportError> {
+        redirect_refused(&resp)?;
         use std::io::Read;
         let status = resp.status().as_u16();
         let mut reader = resp.into_body().into_with_config().reader();
@@ -752,18 +1159,21 @@ mod native {
         let mut reported = 0;
         loop {
             let n = reader.read(&mut chunk).map_err(|error| {
-                transfer_error(
-                    "response body read failed",
-                    if error.kind() == std::io::ErrorKind::TimedOut {
-                        "timeout"
-                    } else {
-                        "body"
-                    },
-                    Some(status),
-                )
+                if is_timeout_io(&error) {
+                    timeout_error("response body read times out", "timeout")
+                } else {
+                    transfer_error("response body read failed", "body", Some(status))
+                }
             })?;
             if n == 0 {
                 break;
+            }
+            // The cap counts decoded bytes: ureq's reader decompresses before
+            // this loop, so a gzip bomb hits the limit before the buffer grows.
+            if let Some(max) = max {
+                if bytes.len() as u64 + n as u64 > max {
+                    return Err(response_too_large(max));
+                }
             }
             bytes.extend_from_slice(&chunk[..n]);
             if bytes.len() - reported >= 64 * 1024 {
@@ -779,6 +1189,15 @@ mod native {
             }
         }
         Ok(bytes)
+    }
+
+    fn response_too_large(max: u64) -> TransportError {
+        let mut error = TransportError::new(
+            "transport.response_too_large",
+            "response body exceeds the configured transport limit",
+        );
+        error.details = Some(serde_json::json!({ "limit": max }));
+        error
     }
 
     impl Transport for NativeTransport {
@@ -803,11 +1222,12 @@ mod native {
             if self.outgoing.is_none() {
                 return self.post_sync("/sync", request);
             }
+            self.effective_timeout()?;
             let framed = self.round.begin(request)?;
             if let Err(error) = self.send_message(Message::Binary(framed.into())) {
                 self.round.fail_in_flight(error);
             }
-            self.round.wait()
+            self.round.wait(self.round_deadline_at)
         }
 
         fn download_segment(
@@ -822,6 +1242,7 @@ mod native {
             // re-authorizes the download against it (§5.5) and answers
             // `sync.forbidden` when it is missing.
             let url = format!("{}/segments/{}", self.base_url, request.segment_id);
+            let credentialed = self.credentialed();
             let mut req = self
                 .agent
                 .get(&url)
@@ -829,10 +1250,12 @@ mod native {
             for (k, v) in &self.headers {
                 req = req.header(k.as_str(), v.as_str());
             }
+            let req = self.finish_request(req, credentialed)?;
             let resp = req
                 .call()
                 .map_err(|error| segment_error(http_err("segment request failed", error)))?;
-            read_body(resp, Some(on_progress)).map_err(segment_error)
+            read_body(resp, Some(on_progress), self.policy.max_response_bytes)
+                .map_err(segment_error)
         }
 
         fn supports_url_fetch(&self) -> bool {
@@ -845,12 +1268,12 @@ mod native {
             on_progress: &mut dyn FnMut(u64),
         ) -> Result<Vec<u8>, TransportError> {
             // §5.4: the URL is the entire grant — no host credentials attached.
-            let resp = self
-                .agent
-                .get(url)
+            let req = self.finish_request(self.agent.get(url), true)?;
+            let resp = req
                 .call()
                 .map_err(|error| segment_error(http_err("segment request failed", error)))?;
-            read_body(resp, Some(on_progress)).map_err(segment_error)
+            read_body(resp, Some(on_progress), self.policy.max_response_bytes)
+                .map_err(segment_error)
         }
 
         fn blob_upload(
@@ -861,6 +1284,8 @@ mod native {
         ) -> Result<(), TransportError> {
             // Full `sha256:<hex>` id in the path — the reference server's
             // isBlobId check rejects a bare hex id (§5.9.1).
+            self.check_request_bytes(bytes.len() as u64)?;
+            let credentialed = self.credentialed();
             let url = format!("{}/blobs/{}", self.base_url, blob_id);
             let mut req = self.agent.put(&url).header(
                 "content-type",
@@ -869,19 +1294,24 @@ mod native {
             for (k, v) in &self.headers {
                 req = req.header(k.as_str(), v.as_str());
             }
-            req.send(bytes)
+            let req = self.finish_request(req, credentialed)?;
+            let resp = req
+                .send(bytes)
                 .map_err(|e| http_err("blob upload failed", e))?;
+            redirect_refused(&resp)?;
             Ok(())
         }
 
         fn blob_download(&mut self, blob_id: &str) -> Result<BlobDownload, TransportError> {
             // Full `sha256:<hex>` id in the path — the reference server's
             // isBlobId check rejects a bare hex id (§5.9.1).
+            let credentialed = self.credentialed();
             let url = format!("{}/blobs/{}", self.base_url, blob_id);
             let mut req = self.agent.get(&url);
             for (k, v) in &self.headers {
                 req = req.header(k.as_str(), v.as_str());
             }
+            let req = self.finish_request(req, credentialed)?;
             let resp = req.call().map_err(|cause| {
                 let status = match &cause {
                     ureq::Error::StatusCode(status) => Some(*status),
@@ -912,7 +1342,7 @@ mod native {
                 .get(ureq::http::header::CONTENT_TYPE)
                 .and_then(|value| value.to_str().ok())
                 .is_some_and(|value| value.contains("application/json"));
-            let body = read_body(resp, None)?;
+            let body = read_body(resp, None, self.policy.max_response_bytes)?;
             if is_json {
                 if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&body) {
                     if let Some(u) = parsed.get("url").and_then(|v| v.as_str()) {
@@ -940,6 +1370,13 @@ mod native {
             media_type: Option<&str>,
         ) -> Result<BlobUploadGrant, TransportError> {
             let url = format!("{}/blobs/{}/upload-grant", self.base_url, blob_id);
+            let body = serde_json::json!({
+                "byteLength": byte_length,
+                "mediaType": media_type,
+            })
+            .to_string();
+            self.check_request_bytes(body.len() as u64)?;
+            let credentialed = self.credentialed();
             let mut req = self
                 .agent
                 .post(&url)
@@ -947,14 +1384,11 @@ mod native {
             for (k, v) in &self.headers {
                 req = req.header(k.as_str(), v.as_str());
             }
-            let body = serde_json::json!({
-                "byteLength": byte_length,
-                "mediaType": media_type,
-            });
+            let req = self.finish_request(req, credentialed)?;
             let resp = req
-                .send(body.to_string())
+                .send(body)
                 .map_err(|e| http_err("blob upload grant request failed", e))?;
-            let grant_body = read_body(resp, None)?;
+            let grant_body = read_body(resp, None, self.policy.max_response_bytes)?;
             let parsed: serde_json::Value = serde_json::from_slice(&grant_body)
                 .map_err(|_| transfer_error("blob upload grant decode failed", "decode", None))?;
             if let Some(u) = parsed.get("url").and_then(|v| v.as_str()) {
@@ -976,12 +1410,18 @@ mod native {
             media_type: Option<&str>,
         ) -> Result<(), TransportError> {
             // §5.9.3: the presigned URL is the entire grant — no host auth.
-            let req = self.agent.put(url).header(
-                "content-type",
-                media_type.unwrap_or("application/octet-stream"),
-            );
-            req.send(bytes)
+            self.check_request_bytes(bytes.len() as u64)?;
+            let req = self.finish_request(
+                self.agent.put(url).header(
+                    "content-type",
+                    media_type.unwrap_or("application/octet-stream"),
+                ),
+                true,
+            )?;
+            let resp = req
+                .send(bytes)
                 .map_err(|e| http_err("signed blob upload failed", e))?;
+            redirect_refused(&resp)?;
             Ok(())
         }
 
@@ -1163,6 +1603,14 @@ mod native {
             self.shutdown();
             Ok(())
         }
+
+        fn round_deadline(&self) -> Option<Duration> {
+            NativeTransport::round_deadline(self)
+        }
+
+        fn set_round_deadline(&mut self, deadline: Option<std::time::Instant>) {
+            NativeTransport::set_round_deadline(self, deadline);
+        }
     }
     #[cfg(test)]
     mod transfer_tests {
@@ -1245,6 +1693,7 @@ mod native {
                     };
                     let error = result.unwrap_err();
                     let expected_code = match (operation, kind) {
+                        (_, "timeout") => "transport.timeout",
                         ("segment" | "signed_segment", _) => "sync.transport_failed",
                         ("blob", "404") => "blob.not_found",
                         ("blob", "401") => "sync.auth_required",
@@ -1294,7 +1743,7 @@ mod native {
                 .status(200)
                 .body(ureq::Body::builder().reader(FailingRead))
                 .unwrap();
-            let error = segment_error(read_body(response, None).unwrap_err());
+            let error = segment_error(read_body(response, None, None).unwrap_err());
             assert_eq!(error.code, "sync.transport_failed");
             assert_eq!(error.message, "segment transfer failed");
             assert_eq!(
@@ -1318,6 +1767,210 @@ mod native {
                 assert!(details.get("causeMessage").is_none());
                 assert!(!details.to_string().contains("secret"));
             }
+        }
+
+        #[test]
+        fn body_read_timeouts_are_classified_through_ureq_wrapping() {
+            // Direct: Error::into_io boxes a non-io ureq error as io::Error::other.
+            let direct = ureq::Error::Timeout(ureq::Timeout::Global).into_io();
+            assert!(is_timeout_io(&direct));
+            // Compressed: gzip wraps the io error again as Error::Decompress.
+            let wrapped = ureq::Error::Decompress(
+                "gzip",
+                ureq::Error::Timeout(ureq::Timeout::Global).into_io(),
+            )
+            .into_io();
+            assert!(is_timeout_io(&wrapped));
+            // A plain socket timeout and a non-timeout are handled too.
+            assert!(is_timeout_io(&std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "plain"
+            )));
+            assert!(!is_timeout_io(&std::io::Error::other("other")));
+            assert!(!is_timeout_io(&ureq::Error::StatusCode(500).into_io()));
+        }
+
+        #[test]
+        fn the_configured_request_timeout_is_imposed_on_each_call() {
+            #[derive(Debug)]
+            #[allow(clippy::type_complexity)]
+            struct TimeoutRecording(Arc<Mutex<Vec<(Option<Duration>, bool)>>>);
+            impl Connector for TimeoutRecording {
+                type Out = ();
+                fn connect(
+                    &self,
+                    details: &ConnectionDetails,
+                    _: Option<()>,
+                ) -> Result<Option<()>, ureq::Error> {
+                    self.0
+                        .lock()
+                        .unwrap()
+                        .push((details.config.timeouts().global, details.request_level));
+                    Err(ureq::Error::ConnectionFailed)
+                }
+            }
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let mut transport =
+                NativeTransport::new("http://127.0.0.1", &serde_json::json!({}), None).unwrap();
+            transport
+                .set_policy(HostTransportPolicy {
+                    request_timeout: Some(Duration::from_millis(1234)),
+                    ..Default::default()
+                })
+                .unwrap();
+            transport.agent = ureq::Agent::with_parts(
+                ureq::Agent::config_builder().build(),
+                TimeoutRecording(Arc::clone(&seen)),
+                DefaultResolver::default(),
+            );
+            let _ = transport.blob_upload("sha256:test", &[0u8; 4], None);
+            let seen = seen.lock().unwrap();
+            assert_eq!(seen.len(), 1);
+            assert_eq!(
+                seen[0],
+                (Some(Duration::from_millis(1234)), true),
+                "the request-level config carries the policy timeout"
+            );
+        }
+
+        #[test]
+        fn body_read_wrapped_timeouts_surface_the_typed_code() {
+            struct TimeoutRead(bool);
+            impl std::io::Read for TimeoutRead {
+                fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                    Err(if self.0 {
+                        ureq::Error::Timeout(ureq::Timeout::Global).into_io()
+                    } else {
+                        ureq::Error::Decompress(
+                            "gzip",
+                            ureq::Error::Timeout(ureq::Timeout::Global).into_io(),
+                        )
+                        .into_io()
+                    })
+                }
+            }
+            for compressed in [false, true] {
+                let response = ureq::http::Response::builder()
+                    .status(200)
+                    .body(ureq::Body::builder().reader(TimeoutRead(compressed)))
+                    .unwrap();
+                let error = read_body(response, None, None).unwrap_err();
+                assert_eq!(error.code, "transport.timeout", "{compressed}");
+                assert_eq!(
+                    error.details,
+                    Some(serde_json::json!({ "causeKind": "timeout" }))
+                );
+            }
+        }
+
+        #[test]
+        fn policy_validation_rejects_zero_and_unrepresentable_bounds() {
+            assert_eq!(
+                HostTransportPolicy {
+                    request_timeout: Some(Duration::ZERO),
+                    ..Default::default()
+                }
+                .validate()
+                .unwrap_err(),
+                "sync.invalid_request: transport config requestTimeoutMs is out of range"
+            );
+            assert_eq!(
+                HostTransportPolicy {
+                    round_deadline: Some(Duration::MAX),
+                    ..Default::default()
+                }
+                .validate()
+                .unwrap_err(),
+                "sync.invalid_request: transport config roundDeadlineMs is out of range"
+            );
+            assert!(HostTransportPolicy {
+                max_request_bytes: Some(0),
+                ..Default::default()
+            }
+            .validate()
+            .is_err());
+            assert!(HostTransportPolicy {
+                max_response_bytes: Some(0),
+                ..Default::default()
+            }
+            .validate()
+            .is_err());
+            // A programmatic zero or an unrepresentable duration matches the
+            // JSON rejection instead of panicking at `Instant::now() + budget`.
+            assert!(HostTransportPolicy::default().validate().is_ok());
+            assert_eq!(
+                HostTransportPolicy::from_config(&serde_json::json!({ "requestTimeoutMs": 0 }))
+                    .unwrap_err(),
+                "sync.invalid_request: transport config requestTimeoutMs must be a positive integer"
+            );
+        }
+
+        #[test]
+        fn set_policy_rejects_invalid_and_preserves_the_current_policy() {
+            let mut transport =
+                NativeTransport::new("http://127.0.0.1", &serde_json::json!({}), None).unwrap();
+            assert_eq!(transport.policy.max_response_bytes, None);
+            let error = transport
+                .set_policy(HostTransportPolicy {
+                    max_response_bytes: Some(0),
+                    ..Default::default()
+                })
+                .unwrap_err();
+            assert_eq!(
+                error,
+                "sync.invalid_request: transport config maxResponseBytes must be a positive integer"
+            );
+            assert_eq!(transport.policy.max_response_bytes, None);
+        }
+
+        #[test]
+        fn an_expired_round_deadline_is_typed_and_cleared_for_the_next_round() {
+            let mut transport =
+                NativeTransport::new("http://127.0.0.1:9", &serde_json::json!({}), None).unwrap();
+            transport.set_round_deadline(Some(std::time::Instant::now() - Duration::from_secs(1)));
+            let error = transport.blob_download("sha256:test").unwrap_err();
+            assert_eq!(error.code, "transport.timeout");
+            assert_eq!(
+                error.details,
+                Some(serde_json::json!({ "causeKind": "round_deadline" }))
+            );
+            // Clearing the scope leaves no stale deadline for the next round.
+            transport.set_round_deadline(None);
+            assert!(transport.effective_timeout().is_ok());
+        }
+
+        #[test]
+        fn an_expired_round_deadline_refuses_before_queuing_a_realtime_send() {
+            let mut transport =
+                NativeTransport::new("http://127.0.0.1:9", &serde_json::json!({}), None).unwrap();
+            transport.set_round_deadline(Some(std::time::Instant::now() - Duration::from_secs(1)));
+            // The refusal precedes the connection check, so a not-connected
+            // transport reports the typed round timeout and leaves no frame
+            // queued behind it for a later send.
+            let error = transport.realtime_send("blocked").unwrap_err();
+            assert_eq!(error.code, "transport.timeout");
+            assert_eq!(
+                error.details,
+                Some(serde_json::json!({ "causeKind": "round_deadline" }))
+            );
+            // With the deadline cleared the same call reaches the connection
+            // check instead.
+            transport.set_round_deadline(None);
+            let error = transport.realtime_send("blocked").unwrap_err();
+            assert_eq!(error.code, "transport.failed");
+        }
+
+        #[test]
+        fn an_expired_round_deadline_bounds_the_socket_wait() {
+            let channel = RoundChannel::default();
+            let error = channel
+                .wait(Some(std::time::Instant::now() - Duration::from_secs(1)))
+                .unwrap_err();
+            assert_eq!(error.code, "transport.timeout");
+            assert_eq!(
+                error.details,
+                Some(serde_json::json!({ "causeKind": "round_deadline" }))
+            );
         }
     }
 }
@@ -1584,6 +2237,164 @@ mod tests {
             assert!(updates.iter().any(|n| *n > 0 && *n < bytes.len() as u64));
             assert_eq!(updates.last(), Some(&(bytes.len() as u64)));
             assert!(updates.windows(2).all(|pair| pair[0] < pair[1]));
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn request_over_cap_is_refused_before_network() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let mut transport =
+            HostTransport::from_config(&serde_json::json!({"baseUrl": base, "maxRequestBytes": 4}))
+                .unwrap();
+        let error = transport
+            .blob_upload("sha256:test", &[0u8; 8], None)
+            .unwrap_err();
+        assert_eq!(error.code, "transport.request_too_large");
+        assert_eq!(
+            error.details,
+            Some(serde_json::json!({ "limit": 4, "size": 8 }))
+        );
+        assert!(
+            matches!(listener.accept(), Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock),
+            "the request cap is checked before any connection"
+        );
+    }
+
+    #[test]
+    fn credential_bearing_redirects_are_refused_without_contacting_the_destination() {
+        for credentials in ["headers", "userinfo", "password"] {
+            for redirects in ["deny", "follow"] {
+                let destination = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                destination.set_nonblocking(true).unwrap();
+                let location = format!("http://{}/landed", destination.local_addr().unwrap());
+                let origin = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                let host = origin.local_addr().unwrap();
+                let (base, headers) = match credentials {
+                    "headers" => (
+                        format!("http://{host}"),
+                        serde_json::json!({"authorization": "Bearer secret"}),
+                    ),
+                    "userinfo" => (format!("http://user:secret@{host}"), serde_json::json!({})),
+                    _ => (format!("http://:secret@{host}"), serde_json::json!({})),
+                };
+                let server = std::thread::spawn(move || {
+                    let (mut socket, _) = origin.accept().unwrap();
+                    let mut reader = BufReader::new(socket.try_clone().unwrap());
+                    loop {
+                        let mut line = String::new();
+                        reader.read_line(&mut line).unwrap();
+                        if line == "\r\n" {
+                            break;
+                        }
+                    }
+                    let _ = write!(
+                        socket,
+                        "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    );
+                });
+                let mut transport = HostTransport::from_config(&serde_json::json!({
+                    "baseUrl": base,
+                    "redirects": redirects,
+                    "headers": headers,
+                }))
+                .unwrap();
+                let error = transport.blob_download("sha256:test").unwrap_err();
+                assert_eq!(
+                    error.code, "transport.redirect",
+                    "{credentials} {redirects}"
+                );
+                let details = error.details.unwrap();
+                assert_eq!(details["causeKind"], "redirect");
+                assert_eq!(details["httpStatus"], 302);
+                assert!(
+                    matches!(destination.accept(), Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock),
+                    "{credentials} {redirects}: the destination is never contacted"
+                );
+                server.join().unwrap();
+            }
+        }
+    }
+
+    // 200000 decoded bytes in 548 compressed bytes: a decompression bomb the
+    // decoded cap must stop before the buffer grows.
+    const GZIP_BOMB: [u8; 548] = [
+        0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0xed, 0xc9, 0xb1, 0x11, 0x80,
+        0x20, 0x10, 0x00, 0xb0, 0x59, 0x1c, 0x80, 0xa1, 0xfe, 0x90, 0xb3, 0x41, 0xf0, 0x7c, 0x2d,
+        0xd8, 0xde, 0x09, 0xdc, 0x20, 0x69, 0x93, 0x6b, 0xd4, 0xb7, 0xc7, 0x5d, 0xb2, 0x1d, 0x67,
+        0x1b, 0x4f, 0xb9, 0x62, 0xf5, 0x19, 0xfb, 0x96, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08,
+        0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08,
+        0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08,
+        0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08,
+        0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08,
+        0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08,
+        0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08,
+        0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08,
+        0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08,
+        0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08,
+        0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08,
+        0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08,
+        0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08,
+        0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08,
+        0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08,
+        0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08,
+        0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08,
+        0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08,
+        0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08,
+        0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08,
+        0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08,
+        0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08,
+        0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08,
+        0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08,
+        0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08,
+        0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08,
+        0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08,
+        0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08,
+        0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08,
+        0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08,
+        0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08,
+        0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08,
+        0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0x10, 0x42, 0x08, 0x21, 0x84, 0xf8, 0x8b, 0x0f,
+        0xdb, 0x82, 0xf4, 0xa9, 0x40, 0x0d, 0x03, 0x00,
+    ];
+
+    #[test]
+    fn decoded_response_cap_counts_decompressed_bytes() {
+        for cap in [200000u64, 199999] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let server = std::thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(socket.try_clone().unwrap());
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                let _ = write!(
+                    socket,
+                    "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    GZIP_BOMB.len()
+                );
+                let _ = socket.write_all(&GZIP_BOMB);
+            });
+            let mut transport = HostTransport::from_config(
+                &serde_json::json!({"baseUrl": base, "maxResponseBytes": cap}),
+            )
+            .unwrap();
+            let result = transport.fetch_blob_url(&format!("{base}/signed"));
+            if cap == 200000 {
+                let body = result.expect("a cap equal to the decoded size admits the body");
+                assert_eq!(body.len(), 200000);
+            } else {
+                let error = result.unwrap_err();
+                assert_eq!(error.code, "transport.response_too_large");
+                assert_eq!(error.details, Some(serde_json::json!({ "limit": cap })));
+            }
             server.join().unwrap();
         }
     }
