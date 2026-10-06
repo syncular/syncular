@@ -33,6 +33,7 @@
 //! an independent read-only SQLite connection for snapshots, so network work
 //! cannot block local views while the mutable client remains single-owned.
 
+use std::collections::BTreeSet;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -45,7 +46,10 @@ pub mod core;
 pub mod transport;
 
 use core::SyncularCore;
-use syncular_client::{FileQuerySnapshotReader, QueryReadFailure, WindowBase, WindowCoverage};
+use syncular_client::{
+    FileQuerySnapshotReader, QueryReadFailure, WindowBase, WindowCoverage,
+    MAX_DIAGNOSTIC_QUERY_FAILURES,
+};
 
 /// The Tauri event name carrying derived client-observable events.
 pub const EVENT_NAME: &str = "syncular://event";
@@ -348,10 +352,78 @@ fn spawn_reader(path: String, owner_tx: Sender<Request>) -> Result<Sender<ReadRe
     Ok(reader_tx)
 }
 
+/// One owner the read sidecar has reported a failure for, carrying exactly the
+/// fields the owning core journals it under (`record_query_read` compares
+/// tables, code, and sqlite code before re-ordering an entry).
+struct ReportedQueryFailure {
+    id: String,
+    tables: Vec<String>,
+    code: &'static str,
+    sqlite_code: Option<i32>,
+}
+
+/// §7.6: report an owned read to the owner mailbox only on a failure
+/// transition: every failure, plus the first success that clears one, so a
+/// clean success loop enqueues nothing and the reader never waits for the owner
+/// to catch up on an earlier message. The mirror follows the core journal's
+/// retention: the tables are normalized the same way, an unchanged failure
+/// signature keeps its position, and passing `MAX_DIAGNOSTIC_QUERY_FAILURES`
+/// evicts the oldest id, so no owner id is kept without a bound.
+fn report_owned_read(
+    reported: &mut Vec<ReportedQueryFailure>,
+    owner_tx: &Sender<Request>,
+    id: String,
+    tables: Vec<String>,
+    failure: Option<QueryReadFailure>,
+) {
+    let position = reported.iter().position(|entry| entry.id == id);
+    let Some(failure) = failure else {
+        // Only the success that clears an outstanding failure is a transition.
+        let Some(index) = position else {
+            return;
+        };
+        reported.remove(index);
+        let _ = owner_tx.send(Request::QueryRead {
+            id,
+            tables,
+            failure: None,
+        });
+        return;
+    };
+    let code = failure.code.unwrap_or("client.query_failed");
+    let sqlite_code = failure.sqlite_code;
+    let signature: Vec<String> = BTreeSet::from_iter(tables.iter().cloned())
+        .into_iter()
+        .collect();
+    let unchanged = position.is_some_and(|index| {
+        let entry = &reported[index];
+        entry.tables == signature && entry.code == code && entry.sqlite_code == sqlite_code
+    });
+    if !unchanged {
+        if let Some(index) = position {
+            reported.remove(index);
+        }
+        reported.push(ReportedQueryFailure {
+            id: id.clone(),
+            tables: signature,
+            code,
+            sqlite_code,
+        });
+        if reported.len() > MAX_DIAGNOSTIC_QUERY_FAILURES {
+            reported.remove(0);
+        }
+    }
+    let _ = owner_tx.send(Request::QueryRead {
+        id,
+        tables,
+        failure: Some(failure),
+    });
+}
+
 fn run_reader_thread(path: String, rx: Receiver<ReadRequest>, owner_tx: Sender<Request>) {
     let mut reader = FileQuerySnapshotReader::new(path);
-    // The owning core holds the bounded diagnostic journal and deduplicates
-    // unchanged results. The sidecar retains no owner ids between reads.
+    // The read sidecar's own reports, bounded like the core journal.
+    let mut reported: Vec<ReportedQueryFailure> = Vec::new();
     while let Ok(request) = rx.recv() {
         match request {
             ReadRequest::QuerySnapshot {
@@ -367,12 +439,7 @@ fn run_reader_thread(path: String, rx: Receiver<ReadRequest>, owner_tx: Sender<R
                     Err(failure) => read_failure_json(failure.clone()),
                 };
                 if let Some((id, tables)) = owner {
-                    let failure = result.err();
-                    let _ = owner_tx.send(Request::QueryRead {
-                        id,
-                        tables,
-                        failure,
-                    });
+                    report_owned_read(&mut reported, &owner_tx, id, tables, result.err());
                 }
                 let _ = reply.send(value);
             }
@@ -401,12 +468,7 @@ fn run_reader_thread(path: String, rx: Receiver<ReadRequest>, owner_tx: Sender<R
                 // §7.6: the same owner-failure bookkeeping the QuerySnapshot
                 // read uses, so a named owner gets one diagnostic path.
                 if let Some((id, tables)) = owner {
-                    let failure = result.err();
-                    let _ = owner_tx.send(Request::QueryRead {
-                        id,
-                        tables,
-                        failure,
-                    });
+                    report_owned_read(&mut reported, &owner_tx, id, tables, result.err());
                 }
                 let _ = reply.send(value);
             }
@@ -843,12 +905,50 @@ async fn syncular_command<R: Runtime>(
     app: tauri::AppHandle<R>,
     command: Value,
 ) -> Result<Value, String> {
-    let state = app.state::<SyncularState>();
     let method = command
         .get("method")
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_owned();
+    // §7.6: the generic command entry delegates both owned snapshot reads to
+    // the dedicated Tauri read commands, so one existing read path produces the
+    // owner-failure bookkeeping the sidecar's transition mirror tracks. It runs
+    // before any state borrow, because those commands take the app handle.
+    // In-memory replicas keep their own owner fallback inside those commands,
+    // and only the required fields below keep the router's error text; every
+    // other malformed shape gets the dedicated command's validation.
+    if matches!(method.as_str(), "querySnapshot" | "snapshotRead") {
+        let params = command.get("params").unwrap_or(&Value::Null);
+        if method == "querySnapshot" {
+            let Some(sql) = params.get("sql").and_then(Value::as_str) else {
+                return Ok(client_error("querySnapshot missing sql"));
+            };
+            return syncular_query_snapshot(
+                app,
+                sql.to_owned(),
+                params.get("params").cloned(),
+                params.get("coverage").cloned(),
+                params.get("owner").cloned(),
+            )
+            .await;
+        }
+        let statements = params.get("statements").cloned().unwrap_or(Value::Null);
+        if !statements.is_array() {
+            return Ok(invalid_request(
+                "sync.invalid_request: snapshotRead statements must be a list",
+            ));
+        }
+        return syncular_snapshot_read(
+            app,
+            statements,
+            params.get("coverage").cloned(),
+            params.get("subscriptions").cloned(),
+            params.get("commitIds").cloned(),
+            params.get("owner").cloned(),
+        )
+        .await;
+    }
+    let state = app.state::<SyncularState>();
     if method == "create" || method == "beginSecurityPreflight" || method == "shutdown" {
         // Gate fast reads and wait for already-started sidecar snapshots before
         // the owner-thread barrier is enqueued.
@@ -2797,6 +2897,496 @@ mod tests {
             json!([]),
             "a successful owned in-memory read clears the failure: {memory_cleared}"
         );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_file_backed_owned_read_serves_the_same_reply_on_both_public_routes() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        let path = std::env::temp_dir().join(format!(
+            "syncular-tauri-read-routes-{}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let app = mock_builder()
+            .plugin(init(SyncularConfig {
+                db_path: Some(path.to_string_lossy().into_owned()),
+                auto_sync: false,
+                ..Default::default()
+            }))
+            .build(mock_context(noop_assets()))
+            .expect("build file app");
+        let command = |value: Value| {
+            tauri::async_runtime::block_on(syncular_command(app.handle().clone(), value))
+                .expect("command reply")
+        };
+        let dedicated_snapshot = |sql: &str, owner: Option<Value>| {
+            tauri::async_runtime::block_on(syncular_query_snapshot(
+                app.handle().clone(),
+                sql.to_owned(),
+                None,
+                None,
+                owner,
+            ))
+            .expect("dedicated snapshot reply")
+        };
+        let dedicated_read = |statements: Value, owner: Option<Value>| {
+            tauri::async_runtime::block_on(syncular_snapshot_read(
+                app.handle().clone(),
+                statements,
+                None,
+                None,
+                None,
+                owner,
+            ))
+            .expect("dedicated read reply")
+        };
+        let ids = || -> Vec<String> {
+            command(json!({ "method": "diagnosticsSnapshot", "params": {} }))["result"]
+                ["queryFailures"]
+                .as_array()
+                .expect("query failures array")
+                .iter()
+                .map(|failure| failure["id"].as_str().expect("failure id").to_owned())
+                .collect()
+        };
+        assert_eq!(
+            command(json!({ "method": "create", "params": {
+                "clientId": "read-routes",
+                "schema": { "version": 1, "tables": [] },
+            } }))["result"],
+            json!({})
+        );
+        let owner = json!({ "id": "queries:routes", "tables": ["tasks"] });
+
+        // A successful owned read has one reply shape on both public routes,
+        // because the generic entry is normalized onto the file sidecar.
+        assert_eq!(
+            command(json!({ "method": "querySnapshot", "params": {
+                "sql": "SELECT 1 AS value",
+                "owner": owner,
+            } })),
+            dedicated_snapshot("SELECT 1 AS value", Some(owner.clone())),
+            "querySnapshot serves one reply on both routes"
+        );
+        assert_eq!(
+            command(json!({ "method": "snapshotRead", "params": {
+                "statements": [{ "sql": "SELECT 1 AS value" }],
+                "owner": owner,
+            } })),
+            dedicated_read(json!([{ "sql": "SELECT 1 AS value" }]), Some(owner.clone()),),
+            "snapshotRead serves one reply on both routes"
+        );
+        assert_eq!(ids(), Vec::<String>::new(), "clean reads record nothing");
+
+        // A failure on either route is cleared by a success on the other.
+        assert!(command(json!({ "method": "querySnapshot", "params": {
+            "sql": "SELECT value FROM absent_owner_table",
+            "owner": owner,
+        } }))["error"]
+            .is_object());
+        assert_eq!(ids(), ["queries:routes"]);
+        assert!(
+            dedicated_read(json!([{ "sql": "SELECT 1 AS value" }]), Some(owner.clone()),)["result"]
+                .is_object()
+        );
+        assert_eq!(
+            ids(),
+            Vec::<String>::new(),
+            "the dedicated route cleared the generic route's failure"
+        );
+        assert!(
+            dedicated_snapshot("SELECT value FROM absent_owner_table", Some(owner.clone()))
+                ["error"]
+                .is_object()
+        );
+        assert_eq!(ids(), ["queries:routes"]);
+        assert!(command(json!({ "method": "snapshotRead", "params": {
+            "statements": [{ "sql": "SELECT 1 AS value" }],
+            "owner": owner,
+        } }))["result"]
+            .is_object());
+        assert_eq!(
+            ids(),
+            Vec::<String>::new(),
+            "the generic route cleared the dedicated route's failure"
+        );
+
+        // Required fields and malformed shapes keep the errors they had before
+        // the delegation, so nothing about invalid requests changes.
+        let missing_sql = command(json!({ "method": "querySnapshot", "params": {} }));
+        assert_eq!(missing_sql["error"]["code"], "client.failed");
+        assert_eq!(missing_sql["error"]["message"], "querySnapshot missing sql");
+        let malformed = command(json!({ "method": "querySnapshot", "params": {
+            "sql": "SELECT 1",
+            "params": "oops",
+            "owner": owner,
+        } }));
+        assert_eq!(malformed["error"]["code"], "client.failed");
+        assert_eq!(
+            malformed["error"]["message"],
+            "querySnapshot params must be a list"
+        );
+        let malformed = command(json!({ "method": "snapshotRead", "params": {
+            "statements": "oops",
+            "owner": owner,
+        } }));
+        assert_eq!(malformed["error"]["code"], "sync.invalid_request");
+        assert_eq!(
+            malformed["error"]["message"],
+            "sync.invalid_request: snapshotRead statements must be a list"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_delayed_owner_receives_only_reader_failure_transitions() {
+        use std::sync::mpsc::channel;
+
+        let path = std::env::temp_dir().join(format!(
+            "syncular-tauri-read-transitions-{}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        // A real replica: the sidecar's snapshot read needs the bookkeeping
+        // tables the client creates on open, and the absent table drives the
+        // owned failures.
+        drop(
+            syncular_client::SyncClient::open_path(
+                "read-transitions".to_owned(),
+                &json!({ "version": 1, "tables": [] }),
+                syncular_client::ClientLimits::default(),
+                &path.to_string_lossy(),
+            )
+            .expect("create replica"),
+        );
+
+        let (owner_tx, owner_rx) = channel::<Request>();
+        let (read_tx, read_rx) = channel::<ReadRequest>();
+        let read_path = path.to_string_lossy().into_owned();
+        // The owning thread is deliberately absent: it neither records nor
+        // publishes anything, so the reader has to decide every transition on
+        // its own and must never wait for the owner to drain an earlier message.
+        let reader = std::thread::spawn(move || run_reader_thread(read_path, read_rx, owner_tx));
+
+        let clean = "SELECT 1 AS value";
+        let failing = "SELECT value FROM absent_owner_table";
+        let owner = |id: &str, tables: &[&str]| {
+            Some((
+                id.to_owned(),
+                tables.iter().map(|table| (*table).to_owned()).collect(),
+            ))
+        };
+        let query_snapshot = |sql: &str, owner: Option<(String, Vec<String>)>| {
+            let (reply, result) = channel();
+            read_tx
+                .send(ReadRequest::QuerySnapshot {
+                    sql: sql.to_owned(),
+                    params: Vec::new(),
+                    coverage: Vec::new(),
+                    owner,
+                    reply,
+                })
+                .expect("post snapshot read");
+            result.recv().expect("snapshot reply")
+        };
+        let snapshot_read = |sql: &str, owner: Option<(String, Vec<String>)>| {
+            let (reply, result) = channel();
+            read_tx
+                .send(ReadRequest::SnapshotRead {
+                    statements: vec![(sql.to_owned(), Vec::<syncular_client::QueryValue>::new())],
+                    coverage: Vec::new(),
+                    subscriptions: Vec::new(),
+                    commit_ids: Vec::new(),
+                    owner,
+                    reply,
+                })
+                .expect("post multi-statement read");
+            result.recv().expect("multi-statement read reply")
+        };
+        /// Drain the queued owner messages without processing them: the count
+        /// and each outcome are the assertion.
+        fn drain(owner_rx: &Receiver<Request>) -> Vec<Option<QueryReadFailure>> {
+            let mut messages = Vec::new();
+            while let Ok(Request::QueryRead { failure, .. }) = owner_rx.try_recv() {
+                messages.push(failure);
+            }
+            messages
+        }
+
+        // Failure, then success, then many successes, with the owner never
+        // draining: exactly the failure and the one clearing success are sent.
+        assert!(
+            query_snapshot(failing, owner("queries:transition", &["tasks"]))["error"].is_object()
+        );
+        assert!(
+            query_snapshot(clean, owner("queries:transition", &["tasks"]))["result"].is_object()
+        );
+        for round in 0..8 {
+            assert!(
+                query_snapshot(clean, owner("queries:transition", &["tasks"]))["result"]
+                    .is_object(),
+                "{round}"
+            );
+        }
+        let transitions = drain(&owner_rx);
+        assert_eq!(
+            transitions.len(),
+            2,
+            "a delayed owner sees the failure and one clear, not one message per read"
+        );
+        assert!(transitions[0].is_some(), "the failure is reported");
+        assert!(transitions[1].is_none(), "the clearing success is reported");
+
+        // The same transitions hold on the SnapshotRead route.
+        assert!(
+            snapshot_read(failing, owner("queries:transition", &["tasks"]))["error"].is_object()
+        );
+        assert!(
+            snapshot_read(clean, owner("queries:transition", &["tasks"]))["result"].is_object()
+        );
+        for round in 0..8 {
+            assert!(
+                snapshot_read(clean, owner("queries:transition", &["tasks"]))["result"].is_object(),
+                "{round}"
+            );
+        }
+        let transitions = drain(&owner_rx);
+        assert_eq!(transitions.len(), 2);
+        assert!(transitions[0].is_some());
+        assert!(transitions[1].is_none());
+
+        // A recovered owner reports nothing further while it stays clean.
+        for round in 0..16 {
+            assert!(
+                query_snapshot(clean, owner("queries:transition", &["tasks"]))["result"]
+                    .is_object(),
+                "{round}"
+            );
+            assert!(
+                snapshot_read(clean, owner("queries:transition", &["tasks"]))["result"].is_object(),
+                "{round}"
+            );
+        }
+        assert!(
+            drain(&owner_rx).is_empty(),
+            "a clean success loop enqueues nothing"
+        );
+
+        // A changed failure signature still clears on the next success.
+        assert!(
+            query_snapshot(failing, owner("queries:signature", &["tasks"]))["error"].is_object()
+        );
+        assert!(
+            query_snapshot(failing, owner("queries:signature", &["docs"]))["error"].is_object()
+        );
+        assert!(!drain(&owner_rx).is_empty(), "both failures are reported");
+        assert!(query_snapshot(clean, owner("queries:signature", &["docs"]))["result"].is_object());
+        let transitions = drain(&owner_rx);
+        assert_eq!(transitions.len(), 1);
+        assert!(
+            transitions[0].is_none(),
+            "a changed signature keeps the recovery report"
+        );
+        assert!(query_snapshot(clean, owner("queries:signature", &["docs"]))["result"].is_object());
+        assert!(drain(&owner_rx).is_empty());
+
+        // A fresh failure re-arms the transition even for the same owner.
+        assert!(
+            query_snapshot(failing, owner("queries:signature", &["docs"]))["error"].is_object()
+        );
+        assert!(query_snapshot(clean, owner("queries:signature", &["docs"]))["result"].is_object());
+        let transitions = drain(&owner_rx);
+        assert_eq!(transitions.len(), 2);
+        assert!(transitions[0].is_some());
+        assert!(transitions[1].is_none());
+
+        // Keep the same bounded retention order as the owner, even while its
+        // mailbox is paused. An unchanged repeat must not rescue the oldest id.
+        for index in 0..MAX_DIAGNOSTIC_QUERY_FAILURES {
+            assert!(
+                query_snapshot(failing, owner(&format!("bounded-{index}"), &["tasks"]))["error"]
+                    .is_object()
+            );
+        }
+        assert!(query_snapshot(failing, owner("bounded-0", &["tasks"]))["error"].is_object());
+        assert!(query_snapshot(failing, owner("bounded-1", &["changed"]))["error"].is_object());
+        assert!(query_snapshot(failing, owner("bounded-new", &["tasks"]))["error"].is_object());
+        assert_eq!(drain(&owner_rx).len(), MAX_DIAGNOSTIC_QUERY_FAILURES + 3);
+        assert!(query_snapshot(clean, owner("bounded-0", &["tasks"]))["result"].is_object());
+        assert!(
+            drain(&owner_rx).is_empty(),
+            "the evicted oldest id has no retained failure to clear"
+        );
+        assert!(snapshot_read(clean, owner("bounded-1", &["changed"]))["result"].is_object());
+        let retained = drain(&owner_rx);
+        assert_eq!(retained.len(), 1);
+        assert!(
+            retained[0].is_none(),
+            "the changed, retained signature still clears"
+        );
+
+        read_tx.send(ReadRequest::Shutdown).expect("stop reader");
+        reader.join().expect("join reader");
+        std::fs::remove_file(path).expect("remove replica file");
+    }
+
+    #[test]
+    fn owned_read_failures_clear_from_either_route_and_keep_journal_order() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        let path = std::env::temp_dir().join(format!(
+            "syncular-tauri-read-order-{}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let app = mock_builder()
+            .plugin(init(SyncularConfig {
+                db_path: Some(path.to_string_lossy().into_owned()),
+                auto_sync: false,
+                ..Default::default()
+            }))
+            .build(mock_context(noop_assets()))
+            .expect("build file app");
+        let command = |value: Value| {
+            tauri::async_runtime::block_on(syncular_command(app.handle().clone(), value))
+                .expect("command reply")
+        };
+        let read = |statements: Value, owner: Value| {
+            tauri::async_runtime::block_on(syncular_snapshot_read(
+                app.handle().clone(),
+                statements,
+                None,
+                None,
+                None,
+                Some(owner),
+            ))
+            .expect("read reply")
+        };
+        let failures = || {
+            command(json!({ "method": "diagnosticsSnapshot", "params": {} }))["result"]
+                ["queryFailures"]
+                .clone()
+        };
+        let ids = || -> Vec<String> {
+            failures()
+                .as_array()
+                .expect("query failures array")
+                .iter()
+                .map(|failure| failure["id"].as_str().expect("failure id").to_owned())
+                .collect()
+        };
+        let owner = |id: &str, tables: Value| json!({ "id": id, "tables": tables });
+        // The generic command entry, carrying an owner. In file-backed mode it
+        // is normalized onto the same sidecar as the dedicated commands, so one
+        // producer owns the transition bookkeeping.
+        let owned_command = |id: &str, tables: Value, sql: &str| {
+            command(json!({ "method": "snapshotRead", "params": {
+                "statements": [{ "sql": sql, "params": [] }],
+                "owner": owner(id, tables),
+            } }))
+        };
+        assert_eq!(
+            command(json!({ "method": "create", "params": {
+                "clientId": "read-routes",
+                "schema": { "version": 1, "tables": [] },
+            } }))["result"],
+            json!({}),
+            "the config db_path opens the replica the sidecar reads"
+        );
+
+        // Journal retention: an unchanged failure signature keeps its position,
+        // a changed one moves last.
+        for (id, tables) in [
+            ("owner-x", json!(["tasks"])),
+            ("owner-y", json!(["docs"])),
+            ("owner-x", json!(["tasks"])),
+        ] {
+            assert!(
+                owned_command(id, tables, "SELECT value FROM absent_owner_table")["error"]
+                    .is_object()
+            );
+        }
+        assert_eq!(
+            ids(),
+            ["owner-x", "owner-y"],
+            "an unchanged failure keeps its journal position"
+        );
+        assert!(owned_command(
+            "owner-x",
+            json!(["other"]),
+            "SELECT value FROM absent_owner_table"
+        )["error"]
+            .is_object());
+        assert_eq!(
+            ids(),
+            ["owner-y", "owner-x"],
+            "a changed failure signature moves the entry last"
+        );
+
+        // A success on one read route clears the failure the other route had
+        // the sidecar report, and the journal keeps rejection order.
+        assert!(read(
+            json!([{ "sql": "SELECT 1 AS value" }]),
+            owner("owner-x", json!(["tasks"]))
+        )["result"]
+            .is_object());
+        assert_eq!(ids(), ["owner-y"], "the sidecar success cleared owner-x");
+        assert!(read(
+            json!([{ "sql": "SELECT 1 AS value" }]),
+            owner("owner-y", json!(["docs"]))
+        )["result"]
+            .is_object());
+        assert_eq!(ids(), Vec::<String>::new());
+
+        assert!(owned_command(
+            "owner-z",
+            json!(["tasks"]),
+            "SELECT value FROM absent_owner_table"
+        )["error"]
+            .is_object());
+        assert_eq!(ids(), ["owner-z"]);
+        assert!(read(
+            json!([{ "sql": "SELECT 1 AS value" }]),
+            owner("owner-z", json!(["tasks"]))
+        )["result"]
+            .is_object());
+        assert_eq!(
+            ids(),
+            Vec::<String>::new(),
+            "a success on one route clears the other route's failure"
+        );
+
+        assert!(read(
+            json!([{ "sql": "SELECT value FROM absent_owner_table" }]),
+            owner("owner-w", json!(["tasks"]))
+        )["error"]
+            .is_object());
+        assert_eq!(ids(), ["owner-w"]);
+        assert!(
+            owned_command("owner-w", json!(["tasks"]), "SELECT 1 AS value")["result"].is_object()
+        );
+        assert_eq!(
+            ids(),
+            Vec::<String>::new(),
+            "the generic route's success clears the sidecar failure"
+        );
+
+        // Clean sidecar reads never enter the journal.
+        for round in 0..8 {
+            assert!(
+                read(
+                    json!([{ "sql": "SELECT 1 AS value" }]),
+                    owner("owner-clean", json!(["tasks"]))
+                )["result"]
+                    .is_object(),
+                "{round}"
+            );
+        }
+        assert_eq!(ids(), Vec::<String>::new());
 
         let _ = std::fs::remove_file(&path);
     }
