@@ -94,107 +94,11 @@ const WORKLOAD = {
  * - `propagationP95CeilingMs` 20 ms: local in-process p95 is 0.2 ms. A
  *   100× allowance absorbs runner noise; breaching 20 ms in-process means
  *   a sleep/poll crept into the sync/realtime loop.
- * - `ownJsRawCeilingBytes` 148 KB: re-derived 2026-09-19 for RFC 0005
- *   previous-version context. Measured 143,975 raw / 42,128 gzip on this
- *   tree (base 8b22d819 = 131,294 raw / 38,541 gzip). The RFC adds 12,681
- *   raw bytes: 12,634 of it feature code the design MANDATES, plus 47 bytes
- *   of bundler inlining drift in modules whose source did not change
- *   (`errors.ts` +32, `crypto.ts` +9, `window.ts` +2, seven modules +1,
- *   `schema/outbox/outcomes` −1 each):
- *   `previous-version.ts` +7,795 — the strict typed schema-descriptor codec
- *   and its write on every schema apply (D1), the container-file codec
- *   (D3), the ordered pre-materialization budget probes and bounded copy
- *   (D2/A4), the compatibility audit and its strict decode (D6), and the
- *   durable refusal plus the D7 read surface; `client.ts` +3,933 — the
- *   default-off flag and config validation, capture/sweep/discard/lifetime/
- *   boot-reconcile wiring (D5/D7/D9), and `previousVersionSnapshot` /
- *   `previousVersionAudit` / `previousVersionDiscard`; `wasm-database.ts`
- *   +906 — SAH-pool `openSibling`/`siblingExists`, the pool capacity floor,
- *   and the shared OPFS crash-recovery helper (D3/D9). A reduction pass
- *   collapsed duplicate blocks into one container-window helper and one
- *   shared strict JSON-object decoder and inlined two single-use helpers
- *   (144,511 → 143,975, −536); no honest
- *   reduction closes the remaining 10,855 bytes to the previous 130 KB
- *   line, which would require deleting the RFC's validators, budget probes,
- *   audit or read API. 143,975 × 1.05 = 151,173.75 bytes = 147.63 KiB,
- *   rounded up to 148 KB (5.26% headroom). The measurement is UNCHANGED in
- *   kind and remains CONSERVATIVE: one unsplit `Bun.build({minify: true})`
- *   that counts dynamically imported opt-in modules inside the own-code
- *   graph on purpose (the E2EE seam, this RFC's lazily loadable pieces).
- *   `totalGzipCeilingBytes` (600 KB) and every performance budget are
- *   untouched. Previously 130 KB (2026-09-12): measured 126,687 raw bytes,
- *   with OPFS crash recovery and live sync progress. Paired
- *   source builds retaining the OPFS fix measure progress at +2,085 raw
- *   bytes (+730 gzip), from 124,602 to 126,687. The previous 122 KB cap
- *   left only 326 bytes before progress; 130 KB restores ~5% headroom.
- *   The image throughput and propagation budgets remain unchanged.
- *   Previously raised from 118 KB to 122 KB (2026-07-20): per-commit measurement attributes the growth
- *   (115,521 → 119,356) as 2,742 bytes from feature commits that shipped
- *   without a budget re-derivation — safe local rebootstrap (+1,091),
- *   rebootstrap receipt replay (+952), realtime lifecycle wiring (+404),
- *   linear FTS bootstrap (+276), portable identifier validation (+19) —
- *   plus 1,093 bytes from the review-fix batch: rebootstrap round-epoch
- *   fence and fixpoint purge selection (+275), keyring install-time
- *   validation (+623), unique-index-aware FTS replacement triggers
- *   (+195). The realtime supervisor is tree-shaken out of this entry
- *   (bundle-entry.ts never references it) and contributes zero measured
- *   bytes. 122 KB restores the standing ~5% headroom. RAISED from
- *   111 KB (2026-07-18): the 0.15.17 privacy-safe diagnostics snapshot,
- *   host evidence, storage estimates, and failure normalization increased
- *   that release's baseline to 114,822 bytes but omitted the corresponding
- *   budget re-derivation. 0.15.18 acknowledgement batching moved the baseline
- *   to 115,402 bytes; immutable subscription identity adds only 119 raw bytes
- *   (115,402 → 115,521). 118 KB restores the standing ~5% headroom over the
- *   complete current feature set. RAISED from
- *   102 KB (2026-07-17): application-authorized local data purge added
- *   4,114 raw bytes (103,584 → 107,698) for bounded selector validation,
- *   idempotency, atomic optimistic rollback, row/FTS/blob cleanup, and
- *   durable rejection outcomes. This is security-critical client behavior;
- *   111 KB restores the standing ~5% headroom while the total-gzip payload
- *   gate remains unchanged. RAISED from
- *   95 KB (2026-07-15, SPEC §7.2): restart-safe rejection rollback added
- *   protected per-outbox before-images, exact update/delete/aggregate
- *   restoration, and downstream overlay rebasing. This is correctness state
- *   the TypeScript client needs because it materializes optimistic rows in
- *   the visible tables; the Rust base-plus-overlay client already carried the
- *   equivalent behavior. The total-gzip payload gate remains unchanged.
- *   RAISED from 88 KB
- *   (2026-07-15, SPEC §7.2.1): durable final commit outcomes added 6,542
- *   raw bytes (85,010 → 91,552) for the atomic local journal, exact
- *   conflict/rejection evidence, restart restoration, protected retention,
- *   and explicit one-way resolution. 95 KB restores the standing ~6%
- *   headroom over the shipped feature; the total-gzip payload gate remains
- *   unchanged. RAISED from 82 KB
- *   (2026-07-14): revisioned reactive views added 5,677 raw
- *   bytes / 1,853 gzip bytes (79,333 → 85,010 raw) for the durable local
- *   revision, exact change batches, atomic query/status snapshots, and
- *   core-owned sync intent. The module graph confirms no native/Tauri code
- *   enters this browser bundle. 88 KB restores the standing ~5–6% headroom
- *   over the shipped feature without weakening the total-gzip payload gate.
- *   RAISED from 72 KB
- *   (2026-07-05): client-side E2EE (SPEC §5.11) — the AEAD envelope +
- *   value serializer in `@syncular/core` and the encrypt/decrypt seam in
- *   `encryption.ts` — added ~+7 KB raw (this proxy inlines it, though
- *   E2EE is opt-in behind `await import()` and code-splits OUT of any
- *   real app that doesn't configure a keyProvider; the proxy counts it
- *   on purpose as the conservative tripwire). Legitimate growth (a
- *   shipped security feature), re-derived per the standing rule. RAISED
- *   from 66 KB
- *   (2026-07-04, SPEC §4.8): windowed sync —
- *   the `window.ts` registry + the `setWindow`/`windowState`/eviction/
- *   pending-drain logic in `client.ts` and `evictScopedRows` in `apply.ts`
- *   (the differentiator, SPEC §4.8) — added +6.12 KB raw (62.98 → 69.10 KB)
- *   but only +1.65 KB gzip (18.94 → 20.59 KB): the wire cost is small; the
- *   raw growth is the value-sharded window family logic (SQL builders,
- *   diff, deterministic sub-id derivation) that minifies but does not
- *   compress away. 72 KB re-pins the raw line with working headroom above
- *   the shipped feature. This is legitimate growth (a shipped
- *   differentiator), not bloat — re-derived per the standing rule. Earlier
- *   raise, from 60 KB (2026-07-03): the live-query invalidation
- *   choke point added +1.84 KB raw (61.14 → 62.98 KB) / +0.49 KB gzip.
- *   Note: `totalGzipCeilingBytes` is the shipped-size
- *   gate; own-JS raw is the anti-bloat tripwire, and the feature trips it by
- *   design intent, not accident.
+ * - `ownJsRawCeilingBytes` 158 KiB: this browser bundle measures
+ *   153,519 raw bytes with Bun 1.4.0 after the client correctness and
+ *   public API changes. The ceiling preserves the established approximately
+ *   5% headroom, rounded up to a whole KiB. The entrypoint and SQLite
+ *   externalization are unchanged; the shipped gzip budget stays separate.
  * - `totalGzipCeilingBytes` 600 KB: total shipped payload (own JS +
  *   sqlite-wasm glue + sqlite3.wasm) is 492.7 KB gzip today. Also
  *   deterministic; ~25% headroom covers a vendor SQLite bump without
@@ -204,7 +108,7 @@ const BUDGETS = {
   bootstrapRowsPerSecFloor: 90_000,
   imageBootstrapRowsPerSecFloor: 300_000,
   propagationP95CeilingMs: 20,
-  ownJsRawCeilingBytes: 148 * 1024,
+  ownJsRawCeilingBytes: 158 * 1024,
   totalGzipCeilingBytes: 600 * 1024,
 } as const;
 

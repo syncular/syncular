@@ -850,6 +850,7 @@ export interface DriverQueryFailure {
     | 'client.storage_corrupt'
     | 'client.storage_full'
     | 'client.storage_io'
+    | 'client.storage_busy'
     | 'client.query_failed';
   readonly sqliteCode?: number;
   readonly atMs: number;
