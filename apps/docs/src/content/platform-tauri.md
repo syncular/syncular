@@ -518,6 +518,13 @@ the independent read owner, shared by equal observers. Status/conflict-only
 changes do not rerun SQL. For large result sets serialization can dominate, so
 prefer indexed keyset pagination and bounded windows.
 
+The generic `syncular_command` entry routes `querySnapshot` and `snapshotRead`
+through the same handlers as their dedicated commands. Both return structured
+read errors with `code`, `retryable`, and `details`. Owned reads report failures
+and the first clearing success to the mutable owner; repeated successful reads
+add no diagnostics messages to its mailbox. The reader tracks at most 256
+outstanding owners, matching the diagnostic journal.
+
 ## Performance contract
 
 For the isolated native read path, use `@syncular/tauri` and
