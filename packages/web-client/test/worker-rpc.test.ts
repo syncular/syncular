@@ -1327,3 +1327,35 @@ test('forged worker authority RPC arguments reach the core zero-argument refusal
     await handle.close();
   }
 });
+
+test('worker auto-sync continues after exhausting its round budget', async () => {
+  let synced: (() => void) | undefined;
+  const { handle } = await makeHandle({
+    clientId: 'rpc-budget',
+    onSynced: () => synced?.(),
+    autoSync: true,
+    limits: { maxPushCommitsPerRequest: 1 },
+  });
+  await handle.setOffline(true);
+  for (let i = 0; i < 22; i++) {
+    await handle.mutate([
+      {
+        table: 'tasks',
+        op: 'upsert',
+        values: taskValues(`budget-${i}`, 'budget', 'queued'),
+      },
+    ]);
+  }
+  expect(await handle.pendingCommits()).toHaveLength(22);
+  await handle.setOffline(false);
+  await waitFor(
+    async () => (await handle.pendingCommits()).length === 0,
+    (notify) => {
+      synced = notify;
+      return () => {
+        synced = undefined;
+      };
+    },
+    'worker drains commits beyond its default round budget',
+  );
+});

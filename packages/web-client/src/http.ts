@@ -58,8 +58,8 @@ async function throwHttpError(
       message?: string;
       retryable?: boolean;
     };
-    // Absence requires an actual 404, even if a server body claims otherwise.
-    if (body.code !== 'blob.not_found' || response.status === 404) {
+    // Only the blob download endpoint can establish absence.
+    if (body.code !== 'blob.not_found' || defaultCode === 'blob.not_found') {
       if (typeof body.code === 'string') code = body.code;
       if (typeof body.message === 'string') message = body.message;
       if (typeof body.retryable === 'boolean') retryable = body.retryable;
