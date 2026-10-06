@@ -133,15 +133,13 @@ for (const failure of [
       expect(db.query('SELECT * FROM _syncular_outbox ORDER BY seq')).toEqual(
         outbox,
       );
-      // Upgrade readiness is a separate status-only observation before reset.
-      // The failing reset publishes no visible-state revision.
+      // The startup marker guard, the upgrade-readiness observation, and the
+      // reset it precedes are one transaction: a failing reset publishes no
+      // revision (and no readiness) at all, for upgrades and same-version
+      // replays alike.
       expect(
         db.query("SELECT value FROM _syncular_meta WHERE key='localRevision'"),
-      ).toEqual(
-        failure.startsWith('upgrade-')
-          ? [{ value: (BigInt(String(revision[0]?.value)) + 1n).toString() }]
-          : revision,
-      );
+      ).toEqual(revision);
       expect(
         db.query(
           "SELECT value FROM _syncular_meta WHERE key='localSchemaVersion'",

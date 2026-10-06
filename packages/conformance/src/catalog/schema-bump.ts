@@ -149,6 +149,107 @@ export const schemaBumpScenarios: readonly Scenario[] = [
       );
     },
   },
+  {
+    name: 'schema-bump/out-of-range-requested-version-refuses-before-storage',
+    specRefs: ['§7.4.1', '§7.4.2'],
+    async run(ctx) {
+      for (const version of [0, -1, 2147483648]) {
+        let code: unknown;
+        try {
+          await ctx.newClient({
+            actorId: 'actor-a',
+            clientId: `version-${version}`,
+            schema: { ...FIXTURE_SCHEMA, version },
+            allowed: P1,
+          });
+        } catch (error) {
+          code =
+            error instanceof Error && 'code' in error ? error.code : undefined;
+        }
+        checkEqual(
+          code,
+          'sync.invalid_request',
+          `§7.4.2 a requested schema version of ${version} is refused`,
+        );
+      }
+    },
+  },
+  {
+    name: 'schema-bump/duplicated-marker-refuses-recreation',
+    specRefs: ['§7.4.1', '§7.4.2'],
+    async run(ctx) {
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: P1,
+      });
+      check(
+        a.api.executeStorageSql !== undefined,
+        'reference clients expose storage fault injection',
+      );
+      const commit = await a.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('queued', 'p1') },
+      ]);
+      const rows = await a.api.readRows('tasks');
+      // A hand-built/legacy metadata table without its primary key carries two
+      // marker rows: taking one row could select an older version and reset.
+      await a.api.executeStorageSql(
+        'ALTER TABLE _syncular_meta RENAME TO _syncular_meta_keyed',
+      );
+      await a.api.executeStorageSql(
+        'CREATE TABLE _syncular_meta(key TEXT, value TEXT)',
+      );
+      await a.api.executeStorageSql(
+        'INSERT INTO _syncular_meta SELECT key, value FROM _syncular_meta_keyed',
+      );
+      await a.api.executeStorageSql(
+        "INSERT INTO _syncular_meta(key, value) VALUES ('localSchemaVersion', '1')",
+      );
+      await a.api.executeStorageSql('DROP TABLE _syncular_meta_keyed');
+      let code: unknown;
+      try {
+        await ctx.recreateClient(a, FIXTURE_SCHEMA_V2);
+      } catch (error) {
+        code =
+          error instanceof Error && 'code' in error ? error.code : undefined;
+      }
+      checkEqual(
+        code,
+        'sync.local_corrupt',
+        '§7.4.2 a duplicated marker is unreadable state, never a reset',
+      );
+      // Restore one canonical marker and prove the refusal reset nothing.
+      await a.api.executeStorageSql(
+        'ALTER TABLE _syncular_meta RENAME TO _syncular_meta_duplicated',
+      );
+      await a.api.executeStorageSql(
+        'CREATE TABLE _syncular_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)',
+      );
+      await a.api.executeStorageSql(
+        "INSERT INTO _syncular_meta(key, value) SELECT key, value FROM _syncular_meta_duplicated WHERE key <> 'localSchemaVersion'",
+      );
+      await a.api.executeStorageSql(
+        "INSERT INTO _syncular_meta(key, value) VALUES ('localSchemaVersion', '1')",
+      );
+      await a.api.executeStorageSql('DROP TABLE _syncular_meta_duplicated');
+      await ctx.recreateClient(a, FIXTURE_SCHEMA);
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [commit],
+        'duplicated-marker refusal preserves the outbox',
+      );
+      checkEqual(
+        await a.api.readRows('tasks'),
+        rows,
+        'duplicated-marker refusal preserves the replica rows',
+      );
+      checkEqual(
+        await a.api.upgrading?.(),
+        false,
+        'duplicated-marker refusal preserves the schema',
+      );
+    },
+  },
   ...(['invalid', 'unreadable'] as const).map(
     (failure): Scenario => ({
       name: `schema-bump/${failure}-marker-refuses-recreation`,
