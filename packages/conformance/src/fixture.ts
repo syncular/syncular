@@ -71,6 +71,17 @@ export const FIXTURE_SCHEMA_V2_DROP_META: DriverSchema = {
   ],
 };
 
+/**
+ * A version-2 bump that DROPS the `docs` table (§7.4.4): a pending outbox
+ * commit for `docs` has no local mirror to replay into and cannot re-encode,
+ * so it surfaces as `sync.outbox_incompatible` instead of failing the boot
+ * reset with `sync.unknown_table`.
+ */
+export const FIXTURE_SCHEMA_V2_DROP_DOCS: DriverSchema = {
+  version: 2,
+  tables: [FIXTURE_SCHEMA.tables[0] as DriverTable],
+};
+
 export function task(
   id: string,
   projectId: string,
