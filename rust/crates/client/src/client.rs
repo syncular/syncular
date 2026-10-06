@@ -13100,7 +13100,6 @@ impl SyncClient {
                     "client.storage_full" => "local SQLite storage is full",
                     "client.storage_io" => "local SQLite storage I/O failed",
                     "client.storage_corrupt" => "local SQLite storage is corrupt",
-                    "client.storage_busy" => "local SQLite storage is busy",
                     _ => unreachable!("unrecognized classified storage failure"),
                 }
                 .to_owned();
