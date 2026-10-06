@@ -1388,7 +1388,7 @@ export const observationScenarios: readonly Scenario[] = [
             kind: 'maxLength',
             column: 'title',
             max: 3,
-            code: 'sync.too_long',
+            code: 'validation.too_long',
           },
         },
       ]);
@@ -1418,7 +1418,7 @@ export const observationScenarios: readonly Scenario[] = [
         throw new Error('expected a rejection result');
       checkEqual(
         rejectedResult.rejection.code,
-        'sync.constraint_violation',
+        'validation.too_long',
         'the persisted rejection code is preserved',
       );
       check(
@@ -1535,6 +1535,166 @@ export const observationScenarios: readonly Scenario[] = [
           'a successful owned read clears the failure',
         );
       }
+    },
+  },
+  {
+    name: 'observation/snapshot-read-corrupt-outcome-classification',
+    specRefs: ['§7.5', '§7.6'],
+    requires: ['storage-fault'],
+    async run(ctx) {
+      const handle = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: { project_id: ['p1'] },
+      });
+      check(
+        handle.api.executeStorageSql !== undefined,
+        'storage fault injection is available',
+      );
+      const read = requireSnapshotRead(handle.api);
+      // A damaged journal has no reliable affinity or constraints. Both column
+      // spellings let the same fixture exercise each core's persisted reader.
+      await handle.api.executeStorageSql(
+        'DROP TABLE _syncular_commit_outcomes',
+      );
+      await handle.api.executeStorageSql(
+        `CREATE TABLE _syncular_commit_outcomes(seq,client_commit_id,status,recorded_at_ms,results,results_json,operations,operations_json,resolution,resolved_at_ms,replacement_client_commit_id)`,
+      );
+      await handle.api.executeStorageSql(
+        `INSERT INTO _syncular_commit_outcomes VALUES(1,'c','applied',1,'[]','[]',NULL,NULL,'active',NULL,NULL)`,
+      );
+      const conflict = {
+        clientCommitId: 'c',
+        opIndex: 0,
+        table: 'tasks',
+        rowId: 'r',
+        code: 'sync.conflict',
+        message: 'conflict',
+        serverVersion: 1,
+        serverRow: {},
+      };
+      const rejection = {
+        clientCommitId: 'c',
+        opIndex: 0,
+        code: 'validation.denied',
+        message: 'denied',
+        retryable: false,
+      };
+      const invalidResults = [
+        ...[0.5, 2147483648, -2147483649].map((opIndex) => [
+          { status: 'applied', opIndex },
+        ]),
+        ...[0.5, 9007199254740992].map((serverVersion) => [
+          { status: 'conflict', conflict: { ...conflict, serverVersion } },
+        ]),
+        ...['title', [7], null].map((conflictColumns) => [
+          { status: 'conflict', conflict: { ...conflict, conflictColumns } },
+        ]),
+        ...[
+          [],
+          {},
+          { secret: 'hidden' },
+          { reason: 'Not Valid' },
+          { fieldPaths: [] },
+          { references: { safe: 'x'.repeat(257) } },
+        ].map((details) => [
+          { status: 'error', rejection: { ...rejection, details } },
+        ]),
+        [{ status: 'error', rejection: { ...rejection, opIndex: 0.5 } }],
+      ];
+      const owner = { id: 'queries:outcome', tables: ['tasks'] };
+      for (const result of invalidResults) {
+        const json = JSON.stringify(result).replaceAll("'", "''");
+        await handle.api.executeStorageSql(
+          `UPDATE _syncular_commit_outcomes SET results='${json}',results_json='${json}'`,
+        );
+        let code: string | undefined;
+        try {
+          await read({ statements: [], commitIds: ['c'], owner });
+        } catch (error) {
+          code = (error as { code?: string }).code;
+        }
+        checkEqual(
+          code,
+          'sync.local_corrupt',
+          `malformed result fails closed: ${json}`,
+        );
+      }
+      await handle.api.executeStorageSql(
+        "UPDATE _syncular_commit_outcomes SET results='[]',results_json='[]'",
+      );
+      for (const [column, invalid, restored] of [
+        ['seq', "'bad'", '1'],
+        ['seq', '9007199254740992', '1'],
+        ['recorded_at_ms', "'bad'", '1'],
+        ['recorded_at_ms', '0.5', '1'],
+        ['resolved_at_ms', "'bad'", 'NULL'],
+        ['replacement_client_commit_id', '7', 'NULL'],
+      ]) {
+        await handle.api.executeStorageSql(
+          `UPDATE _syncular_commit_outcomes SET ${column}=${invalid}`,
+        );
+        let code: string | undefined;
+        try {
+          await read({ statements: [], commitIds: ['c'], owner });
+        } catch (error) {
+          code = (error as { code?: string }).code;
+        }
+        checkEqual(
+          code,
+          'sync.local_corrupt',
+          `malformed SQL metadata fails closed: ${column}`,
+        );
+        await handle.api.executeStorageSql(
+          `UPDATE _syncular_commit_outcomes SET ${column}=${restored}`,
+        );
+      }
+      for (const result of [
+        { status: 'conflict', conflict },
+        {
+          status: 'error',
+          rejection: { ...rejection, details: { reason: 'policy_denied' } },
+        },
+        { status: 'error', rejection: { ...rejection, details: null } },
+      ]) {
+        const json = JSON.stringify([result]).replaceAll("'", "''");
+        await handle.api.executeStorageSql(
+          `UPDATE _syncular_commit_outcomes SET results='${json}',results_json='${json}'`,
+        );
+        const snapshot = await read({
+          statements: [],
+          commitIds: ['c'],
+          owner,
+        });
+        const delivery = snapshot.deliveries[0];
+        check(
+          delivery?.status === 'known',
+          'valid persisted metadata recovers',
+        );
+        const stored = delivery.outcome.results[0];
+        if (stored?.status === 'conflict')
+          checkEqual(
+            stored.conflict.conflictColumns,
+            [],
+            'legacy conflict columns default to an empty array',
+          );
+        if (stored?.status === 'error')
+          checkEqual(
+            stored.rejection.details,
+            result.rejection?.details ?? undefined,
+            'optional validated details survive',
+          );
+      }
+      check(
+        handle.api.diagnosticsSnapshot !== undefined,
+        'query diagnostics are available',
+      );
+      check(
+        !(await handle.api.diagnosticsSnapshot()).queryFailures.some(
+          (failure) => failure.id === owner.id,
+        ),
+        'a successful read clears the owned corruption failure',
+      );
     },
   },
 ];
