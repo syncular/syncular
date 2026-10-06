@@ -46,9 +46,9 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
   ): Response => {
     const sync = adapterSyncError(
       error,
-      options.config.onError,
+      (error, context) => options.config.onError?.(error, context),
       route,
-      options.config.mapError,
+      (error, context) => options.config.mapError?.(error, context),
     );
     const response = Response.json(errorBody(sync), {
       status: sync.httpStatus,

@@ -144,6 +144,31 @@ describe('§7.5 snapshot read surface', () => {
         null,
       ],
       ['bad-op-shallow', '[]', '[{"op":"upsert"}]'],
+      [
+        'bad-op-version',
+        '[]',
+        '[{"op":"upsert","table":"t","rowId":"r","baseVersion":"bad"}]',
+      ],
+      [
+        'bad-op-values',
+        '[]',
+        '[{"op":"upsert","table":"t","rowId":"r","values":[]}]',
+      ],
+      [
+        'bad-op-bytes',
+        '[]',
+        '[{"op":"upsert","table":"t","rowId":"r","values":{"b":{"$bytes":"zz"}}}]',
+      ],
+      [
+        'bad-op-odd-bytes',
+        '[]',
+        '[{"op":"upsert","table":"t","rowId":"r","values":{"b":{"$bytes":"a"}}}]',
+      ],
+      [
+        'bad-conflict-bytes',
+        '[{"status":"conflict","conflict":{"clientCommitId":"c","opIndex":0,"table":"t","rowId":"r","code":"c","message":"m","serverVersion":1,"serverRow":{"b":{"$bytes":"zz"}}}}]',
+        null,
+      ],
       ['bad-json', 'not json', null],
     ];
     for (const [id, results, operations, status] of cases) {

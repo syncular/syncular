@@ -726,7 +726,13 @@ export function coerceSqlRepresentation(
   switch (localColumnType(column)) {
     case 'boolean':
       return value === 0 ? false : value === 1 ? true : value;
-    case 'integer':
+    case 'integer': {
+      const integer = typeof value === 'bigint' ? Number(value) : value;
+      if (typeof integer === 'number' && !Number.isSafeInteger(integer)) {
+        throw invalidRequest('integer value is outside the safe-integer range');
+      }
+      return integer;
+    }
     case 'float':
       return typeof value === 'bigint' ? Number(value) : value;
     default:

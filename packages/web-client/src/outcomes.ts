@@ -160,6 +160,23 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function isStoredRow(value: unknown): value is Record<string, JsonRowValue> {
+  return (
+    isRecord(value) &&
+    Object.values(value).every(
+      (cell) =>
+        cell === null ||
+        typeof cell === 'string' ||
+        typeof cell === 'boolean' ||
+        (typeof cell === 'number' && Number.isFinite(cell)) ||
+        (isRecord(cell) &&
+          Object.keys(cell).length === 1 &&
+          typeof cell.$bytes === 'string' &&
+          /^(?:[0-9a-fA-F]{2})*$/.test(cell.$bytes)),
+    )
+  );
+}
+
 function decodeResults(raw: string): CommitOperationOutcome[] {
   function corrupt(): never {
     throw new ClientSyncError(
@@ -179,7 +196,7 @@ function decodeResults(raw: string): CommitOperationOutcome[] {
       const conflict = result.conflict;
       if (
         !isRecord(conflict) ||
-        !isRecord(conflict.serverRow) ||
+        !isStoredRow(conflict.serverRow) ||
         typeof conflict.clientCommitId !== 'string' ||
         typeof conflict.opIndex !== 'number' ||
         typeof conflict.table !== 'string' ||
@@ -354,7 +371,10 @@ export function persistedCommitOutcome(
           !isRecord(operation) ||
           (operation.op !== 'upsert' && operation.op !== 'delete') ||
           typeof operation.table !== 'string' ||
-          typeof operation.rowId !== 'string'
+          typeof operation.rowId !== 'string' ||
+          (operation.baseVersion !== undefined &&
+            !Number.isSafeInteger(operation.baseVersion)) ||
+          (operation.values !== undefined && !isStoredRow(operation.values))
         ) {
           corrupt();
         }

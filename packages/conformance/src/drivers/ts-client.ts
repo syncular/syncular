@@ -774,7 +774,7 @@ class TsClientInstance implements ClientInstance {
           Object.fromEntries(
             Object.entries(row).map(([key, value]) => [
               key,
-              toDriverValue(value as RowValue),
+              toDriverValue(typeof value === 'bigint' ? Number(value) : value),
             ]),
           ),
         ),
