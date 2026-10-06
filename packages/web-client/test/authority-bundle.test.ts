@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 // Bun 1.4.0, minified browser graphs with SQLite external. The 0.30.14 tagged
 // source measured 146310 bytes for the client and 162403 for the worker. The
 // overlay-replay, error-redaction, storage-classification, sync-budget, and
-// push-capacity work since then grew the base graphs to 150467 and 167362 on
+// push-capacity and atomic-snapshot work grew the base graphs to 153722 and 170632 on
 // the same toolchain. Pin these measured ceilings and independently assert
 // that the ordinary graphs exclude authority modules.
 test('ordinary client, worker and native graphs exclude authority; only explicit opt-in retains it', async () => {
@@ -18,19 +18,19 @@ test('ordinary client, worker and native graphs exclude authority; only explicit
         'client',
         `export { SyncClient } from '${root}/packages/web-client/src/client.ts';`,
         false,
-        150467,
+        153722,
       ],
       [
         'client-root',
         `export { SyncClient } from '${root}/packages/web-client/src/index.ts';`,
         false,
-        150467,
+        153722,
       ],
       [
         'worker',
         `import { startSyncWorker } from '${root}/packages/web-client/src/worker-entry.ts'; startSyncWorker();`,
         false,
-        167362,
+        170632,
       ],
       [
         'authority-worker',

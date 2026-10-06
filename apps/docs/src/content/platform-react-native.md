@@ -155,6 +155,13 @@ is the designated sync path: a round while it is down then fails with
 See [Realtime](/concepts-realtime/#required-realtime) for the states and
 diagnostics.
 
+`client.snapshotRead({ statements, subscriptions, commitIds, owner })` reads
+multiple SQL statements, window coverage, subscription bootstrap progress,
+and commit delivery status in one native transaction. The result carries one
+`bigint` revision; the bridge decodes binary and large-integer query cells.
+Owned read failures appear in diagnostics and clear after a successful read.
+Native errors preserve `code`, `retryable`, and structured `details`.
+
 Final commit outcomes use the native SQLite journal: `commitOutcome`,
 `commitOutcomes`, and `resolveCommitOutcome` survive process restarts, and
 React applications observe the journal with `useCommitOutcomes()`.

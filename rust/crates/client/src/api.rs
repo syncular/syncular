@@ -1143,7 +1143,11 @@ pub struct CommitOutcomeQuery {
 /// resume token is held. A reset subscription stays `active` with
 /// `cursor < 0`; it is not a fourth status.
 #[derive(Debug, Clone, Serialize)]
-#[serde(tag = "state", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "state",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum SubscriptionCatchup {
     /// The client does not currently hold this subscription id.
     Unknown { id: String },

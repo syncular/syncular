@@ -1051,7 +1051,7 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
     const result = (await this.#command('resolveCommitOutcome', {
       input,
     })) as { outcome: CommitOutcome };
-    return result.outcome;
+    return decodeCommitOutcome(result.outcome);
   }
 
   async pendingCommits(): Promise<unknown[]> {

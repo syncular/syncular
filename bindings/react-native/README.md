@@ -111,6 +111,11 @@ supervisor are safe together because realtime connection ownership is
 idempotent; the supervisor adds the retry/catch-up policy that one-shot resume
 does not provide.
 
+`snapshotRead({ statements, coverage, subscriptions, commitIds, owner })`
+returns every requested read under one native transaction and one `bigint`
+revision. The bridge decodes query cells and conflict row images, and preserves
+native error codes, retryability, and structured details.
+
 Final commit outcomes use the same native SQLite journal as Tauri. Call
 `commitOutcome`, `commitOutcomes`, and `resolveCommitOutcome`; active
 conflicts/rejections and their losing operations survive app restarts.

@@ -524,7 +524,11 @@ fn parse_query_owner<'a>(
             let tables = value
                 .get("tables")
                 .and_then(Value::as_array)
-                .and_then(|list| list.iter().map(Value::as_str).collect::<Option<Vec<&str>>>());
+                .and_then(|list| {
+                    list.iter()
+                        .map(Value::as_str)
+                        .collect::<Option<Vec<&str>>>()
+                });
             match (id, tables) {
                 (Some(id), Some(tables)) => Ok(Some((id, tables))),
                 _ => Err(client_err(format!(
@@ -545,7 +549,9 @@ fn snapshot_string_list(value: Option<&Value>) -> Result<Vec<String>, CommandErr
             .map(|item| item.as_str().map(str::to_owned))
             .collect::<Option<Vec<String>>>()
             .ok_or_else(|| {
-                client_err("sync.invalid_request: snapshotRead list must contain strings".to_owned())
+                client_err(
+                    "sync.invalid_request: snapshotRead list must contain strings".to_owned(),
+                )
             }),
         Some(_) => Err(client_err(
             "sync.invalid_request: snapshotRead list must be a list of strings".to_owned(),

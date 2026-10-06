@@ -55,6 +55,8 @@ import type {
   RejectionRecord,
   ResolveCommitOutcomeInput,
   SecurityLifecycle,
+  SnapshotRead,
+  SnapshotReadRequest,
   SqlRow,
   SqlValue,
   SyncClientConfig,
@@ -74,7 +76,12 @@ import {
 /** A driver-protocol reply: `{result}` on success or `{error}` on failure. */
 interface CommandReply {
   readonly result?: unknown;
-  readonly error?: { readonly code: string; readonly message: string };
+  readonly error?: {
+    readonly code: string;
+    readonly message: string;
+    readonly details?: unknown;
+    readonly retryable?: boolean;
+  };
 }
 
 /** One event pushed on the native event topic (the derived observable set). */
@@ -247,6 +254,73 @@ function decodeCell(value: unknown): SqlValue {
   return JSON.stringify(value);
 }
 
+/** A decoded outcome row cell. Structurally the shared `RowValue` (bytes are
+ * `Uint8Array`); native outcome rows emit plain JSON numbers, never `$bigint`. */
+type OutcomeRowValue = ConflictRecord['serverRow'][string];
+
+/** Decode one native outcome row image. Only the `{$bytes}` envelope is
+ * honored; operation `values` stay `JsonRowValue` and are not passed here. */
+function decodeOutcomeRow(
+  row: Readonly<Record<string, unknown>>,
+): Record<string, OutcomeRowValue> {
+  const out: Record<string, OutcomeRowValue> = {};
+  for (const [key, value] of Object.entries(row)) {
+    // Reserved `_sync_*` columns stay engine-internal, matching `decodeRow`.
+    if (key.startsWith('_sync_')) continue;
+    if (
+      value === null ||
+      typeof value === 'string' ||
+      typeof value === 'number' ||
+      typeof value === 'boolean'
+    ) {
+      out[key] = value;
+    } else if (isBytesEnvelope(value)) {
+      out[key] = hexToBytes(value.$bytes);
+    } else {
+      out[key] = JSON.stringify(value);
+    }
+  }
+  return out;
+}
+
+/** Decode the row images a native `CommitOutcome` carries: conflict server
+ * rows and retained-row images. */
+function decodeCommitOutcome(outcome: CommitOutcome): CommitOutcome {
+  return {
+    ...outcome,
+    results: outcome.results.map((result) =>
+      result.status === 'conflict'
+        ? {
+            ...result,
+            conflict: {
+              ...result.conflict,
+              serverRow: decodeOutcomeRow(result.conflict.serverRow),
+            },
+          }
+        : result,
+    ),
+    ...(outcome.retainedRows !== undefined
+      ? {
+          retainedRows: outcome.retainedRows.map((row) => ({
+            ...row,
+            localRow:
+              row.localRow === null ? null : decodeOutcomeRow(row.localRow),
+            serverRow:
+              row.serverRow === null ? null : decodeOutcomeRow(row.serverRow),
+            ...(row.uniqueConflicts !== undefined
+              ? {
+                  uniqueConflicts: row.uniqueConflicts.map((conflict) => ({
+                    ...conflict,
+                    serverRow: decodeOutcomeRow(conflict.serverRow),
+                  })),
+                }
+              : {}),
+          })),
+        }
+      : {}),
+  };
+}
+
 function decodeRow(row: Record<string, unknown>): SqlRow {
   const out: SqlRow = {};
   for (const [key, value] of Object.entries(row)) {
@@ -397,7 +471,12 @@ export class NativeSyncClient implements PromiseMethods<ClientSnapshotMethods> {
     );
     const reply = JSON.parse(replyJson) as CommandReply;
     if (reply.error !== undefined) {
-      throw new NativeSyncError(reply.error.code, reply.error.message);
+      throw new NativeSyncError(
+        reply.error.code,
+        reply.error.message,
+        reply.error.details,
+        reply.error.retryable ?? false,
+      );
     }
     return reply.result;
   }
@@ -656,7 +735,12 @@ export class NativeSyncClient implements PromiseMethods<ClientSnapshotMethods> {
     );
     const reply = JSON.parse(replyJson) as CommandReply;
     if (reply.error !== undefined) {
-      throw new NativeSyncError(reply.error.code, reply.error.message);
+      throw new NativeSyncError(
+        reply.error.code,
+        reply.error.message,
+        reply.error.details,
+        reply.error.retryable ?? false,
+      );
     }
     const rows = (reply.result as { rows?: unknown[] }).rows ?? [];
     return rows.map((r) => decodeRow(r as Record<string, unknown>));
@@ -679,6 +763,37 @@ export class NativeSyncClient implements PromiseMethods<ClientSnapshotMethods> {
       revision: BigInt(result.revision),
       rows: result.rows.map(decodeRow) as unknown as readonly Row[],
       coverage: result.coverage,
+    };
+  }
+
+  /** Read rows, coverage, catch-up and delivery from one native snapshot. */
+  async snapshotRead(request: SnapshotReadRequest): Promise<SnapshotRead> {
+    const result = (await this.#command('snapshotRead', {
+      statements: request.statements.map((statement) => ({
+        sql: statement.sql,
+        params: (statement.params ?? []).map(encodeParam),
+      })),
+      coverage: request.coverage ?? [],
+      subscriptions: request.subscriptions ?? [],
+      commitIds: request.commitIds ?? [],
+      ...(request.owner !== undefined ? { owner: request.owner } : {}),
+    })) as {
+      revision: string;
+      queries: readonly (readonly Record<string, unknown>[])[];
+      coverage: SnapshotRead['coverage'];
+      subscriptions: SnapshotRead['subscriptions'];
+      deliveries: SnapshotRead['deliveries'];
+    };
+    return {
+      revision: BigInt(result.revision),
+      queries: result.queries.map((rows) => rows.map(decodeRow)),
+      coverage: result.coverage,
+      subscriptions: result.subscriptions,
+      deliveries: result.deliveries.map((delivery) =>
+        delivery.status === 'known'
+          ? { ...delivery, outcome: decodeCommitOutcome(delivery.outcome) }
+          : delivery,
+      ),
     };
   }
 
@@ -910,7 +1025,9 @@ export class NativeSyncClient implements PromiseMethods<ClientSnapshotMethods> {
     const result = (await this.#command('commitOutcome', {
       clientCommitId,
     })) as { outcome?: CommitOutcome };
-    return result.outcome;
+    return result.outcome === undefined
+      ? undefined
+      : decodeCommitOutcome(result.outcome);
   }
 
   async commitOutcomes(
@@ -919,7 +1036,7 @@ export class NativeSyncClient implements PromiseMethods<ClientSnapshotMethods> {
     const result = (await this.#command('commitOutcomes', { query })) as {
       outcomes: CommitOutcome[];
     };
-    return result.outcomes;
+    return result.outcomes.map(decodeCommitOutcome);
   }
 
   async resolveCommitOutcome(
@@ -928,7 +1045,7 @@ export class NativeSyncClient implements PromiseMethods<ClientSnapshotMethods> {
     const result = (await this.#command('resolveCommitOutcome', {
       input,
     })) as { outcome: CommitOutcome };
-    return result.outcome;
+    return decodeCommitOutcome(result.outcome);
   }
 
   async pendingCommits(): Promise<unknown[]> {
@@ -1025,10 +1142,19 @@ function decodeDiagnosticsSnapshot(
 /** The error a `{error}` reply surfaces (mirrors the web-client `ClientSyncError`). */
 export class NativeSyncError extends Error {
   readonly code: string;
-  constructor(code: string, message: string) {
+  readonly details: unknown;
+  readonly retryable: boolean;
+  constructor(
+    code: string,
+    message: string,
+    details?: unknown,
+    retryable = false,
+  ) {
     super(message);
     this.name = 'NativeSyncError';
     this.code = code;
+    this.details = details;
+    this.retryable = retryable;
   }
 }
 
@@ -1189,7 +1315,12 @@ export async function createNativeSyncClient(
   const reply = JSON.parse(replyJson) as CommandReply;
   if (reply.error !== undefined) {
     subscription.remove();
-    throw new NativeSyncError(reply.error.code, reply.error.message);
+    throw new NativeSyncError(
+      reply.error.code,
+      reply.error.message,
+      reply.error.details,
+      reply.error.retryable ?? false,
+    );
   }
 
   // Begin pumping poll_event → native event emitter.

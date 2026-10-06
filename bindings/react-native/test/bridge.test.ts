@@ -456,6 +456,123 @@ describe('createNativeSyncClient', () => {
     expect(snapshot.rows[0]?.count).toBe(9007199254740993n);
   });
 
+  test('snapshotRead preserves the atomic request, native values and structured failures', async () => {
+    let fail = false;
+    const outcome = {
+      sequence: 1,
+      clientCommitId: 'c1',
+      status: 'conflict',
+      recordedAtMs: 1,
+      resolution: 'active',
+      results: [
+        {
+          status: 'conflict',
+          conflict: {
+            clientCommitId: 'c1',
+            opIndex: 0,
+            table: 'todo',
+            rowId: 't1',
+            code: 'sync.conflict',
+            message: 'conflict',
+            serverVersion: 2,
+            conflictColumns: ['blob'],
+            serverRow: { blob: { $bytes: 'aabb' } },
+          },
+        },
+      ],
+    };
+    const { nativeModule, eventEmitter, calls } = makeNative(
+      (method, params) => {
+        if (method === 'snapshotRead') {
+          if (fail)
+            return {
+              error: {
+                code: 'client.storage_busy',
+                message: 'local SQLite storage is busy',
+                retryable: true,
+                details: { sqliteCode: 5, sqliteMessage: 'database is locked' },
+              },
+            };
+          return OK({
+            revision: '9007199254740993',
+            queries: [
+              [{ blob: { $bytes: '0102' } }],
+              [{ n: { $bigint: '9007199254740993' } }],
+            ],
+            coverage: { complete: true, pending: [], missing: [] },
+            subscriptions: [{ state: 'unknown', id: 'todo' }],
+            deliveries: [{ status: 'known', clientCommitId: 'c1', outcome }],
+          });
+        }
+        if (method === 'commitOutcome' || method === 'resolveCommitOutcome')
+          return OK({ outcome });
+        if (method === 'commitOutcomes') return OK({ outcomes: [outcome] });
+        return defaultResponder(method, params);
+      },
+    );
+    const client = await createNativeSyncClient({
+      schema: {},
+      nativeModule,
+      eventEmitter,
+    });
+    const request = {
+      statements: [
+        { sql: 'SELECT ?', params: [new Uint8Array([1, 2])] },
+        { sql: 'SELECT n FROM todo' },
+      ],
+      subscriptions: ['todo'],
+      commitIds: ['c1'],
+      owner: { id: 'queries:todo', tables: ['todo'] },
+    };
+    const result = await client.snapshotRead(request);
+    expect(result.revision).toBe(9007199254740993n);
+    expect(result.queries).toEqual([
+      [{ blob: new Uint8Array([1, 2]) }],
+      [{ n: 9007199254740993n }],
+    ]);
+    expect(result.subscriptions).toEqual([{ state: 'unknown', id: 'todo' }]);
+    expect(
+      calls.filter((call) => call.fn === 'command').map((call) => call.arg),
+    ).toContainEqual({
+      method: 'snapshotRead',
+      params: {
+        ...request,
+        statements: [
+          { sql: 'SELECT ?', params: [{ $bytes: '0102' }] },
+          { sql: 'SELECT n FROM todo', params: [] },
+        ],
+        coverage: [],
+      },
+    });
+    const delivery = result.deliveries[0];
+    expect(delivery?.status).toBe('known');
+    if (delivery?.status !== 'known') throw new Error('missing known delivery');
+    const decoded = delivery.outcome;
+    expect(decoded.results[0]).toMatchObject({
+      status: 'conflict',
+      conflict: { serverRow: { blob: new Uint8Array([170, 187]) } },
+    });
+    expect(await client.commitOutcome('c1')).toEqual(decoded);
+    expect(await client.commitOutcomes()).toEqual([decoded]);
+    expect(
+      await client.resolveCommitOutcome({
+        clientCommitId: 'c1',
+        resolution: 'dismissed',
+      }),
+    ).toEqual(decoded);
+    fail = true;
+    await expect(client.snapshotRead(request)).rejects.toMatchObject({
+      code: 'client.storage_busy',
+      retryable: true,
+      details: { sqliteCode: 5, sqliteMessage: 'database is locked' },
+    });
+    await client.beginSecurityPreflight();
+    await expect(client.snapshotRead(request)).rejects.toMatchObject({
+      code: SECURITY_PREFLIGHT_REQUIRED_CODE,
+    });
+    await client.close();
+  });
+
   test('mutate returns the clientCommitId', async () => {
     const { client } = await build();
     const id = await client.mutate([

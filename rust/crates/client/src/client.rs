@@ -5806,9 +5806,14 @@ mod observation_tests {
         assert!(reader
             .query_snapshot("SELECT * FROM does_not_exist", &[], &[])
             .is_err());
-        assert_eq!(reader.local_revision().expect("revision after rollback"), revision);
+        assert_eq!(
+            reader.local_revision().expect("revision after rollback"),
+            revision
+        );
         // The read-only guard refuses a write on any statement.
-        assert!(reader.query_snapshot("DELETE FROM tasks", &[], &[]).is_err());
+        assert!(reader
+            .query_snapshot("DELETE FROM tasks", &[], &[])
+            .is_err());
 
         // A corrupt revision marker fails typed, not as an invented zero.
         client
@@ -5925,7 +5930,10 @@ mod observation_tests {
             }
             other => panic!("expected a known conflict: {other:?}"),
         }
-        match reader.commit_delivery("rejected-commit").expect("rejection") {
+        match reader
+            .commit_delivery("rejected-commit")
+            .expect("rejection")
+        {
             CommitDelivery::Known { outcome, .. } => {
                 assert_eq!(outcome.status, CommitOutcomeStatus::Rejected);
                 assert!(matches!(
@@ -5946,8 +5954,10 @@ mod observation_tests {
     #[test]
     fn snapshot_read_isolates_a_concurrent_writer_commit() {
         use std::sync::mpsc::channel;
-        let path =
-            std::env::temp_dir().join(format!("syncular-read-concurrent-{}.db", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!(
+            "syncular-read-concurrent-{}.db",
+            uuid::Uuid::new_v4()
+        ));
         let schema = json!({
             "version": 1,
             "tables": [{
@@ -6030,7 +6040,10 @@ mod observation_tests {
                 commit_ids: Vec::new(),
             })
             .expect("snapshot read");
-        assert_eq!(read.queries[0][0]["n"], 1, "first statement sees the pre-commit row");
+        assert_eq!(
+            read.queries[0][0]["n"], 1,
+            "first statement sees the pre-commit row"
+        );
         assert_eq!(
             read.queries[1][0]["n"], 1,
             "a later statement keeps the one read snapshot"
@@ -6049,7 +6062,10 @@ mod observation_tests {
         let after = reader
             .query_snapshot("SELECT count(*) AS n FROM tasks", &[], &[])
             .expect("count after commit");
-        assert_eq!(after.rows[0]["n"], 2, "the committed row is visible afterwards");
+        assert_eq!(
+            after.rows[0]["n"], 2,
+            "the committed row is visible afterwards"
+        );
 
         drop(reader);
         drop(client);
@@ -6058,8 +6074,10 @@ mod observation_tests {
 
     #[test]
     fn snapshot_read_rejects_every_non_canonical_revision() {
-        let path =
-            std::env::temp_dir().join(format!("syncular-read-revision-{}.db", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!(
+            "syncular-read-revision-{}.db",
+            uuid::Uuid::new_v4()
+        ));
         let schema = json!({
             "version": 1,
             "tables": [{
@@ -6115,8 +6133,10 @@ mod observation_tests {
 
     #[test]
     fn snapshot_read_rejects_corrupt_subscription_state() {
-        let path =
-            std::env::temp_dir().join(format!("syncular-read-substate-{}.db", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!(
+            "syncular-read-substate-{}.db",
+            uuid::Uuid::new_v4()
+        ));
         let schema = json!({
             "version": 1,
             "tables": [{
@@ -6160,7 +6180,9 @@ mod observation_tests {
                     rusqlite::params![bad],
                 )
                 .expect("corrupt subscription state");
-            let failure = reader.subscription_catchup("s1").expect_err("corrupt state fails");
+            let failure = reader
+                .subscription_catchup("s1")
+                .expect_err("corrupt state fails");
             assert_eq!(failure.code, Some("sync.local_corrupt"), "{bad}");
         }
 
@@ -6171,8 +6193,10 @@ mod observation_tests {
 
     #[test]
     fn snapshot_read_rolls_back_a_later_invalid_statement_and_guards_every_write() {
-        let path =
-            std::env::temp_dir().join(format!("syncular-read-rollback-{}.db", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!(
+            "syncular-read-rollback-{}.db",
+            uuid::Uuid::new_v4()
+        ));
         let schema = json!({
             "version": 1,
             "tables": [{
@@ -6232,7 +6256,9 @@ mod observation_tests {
         );
         assert!(
             !matches!(
-                reader.commit_delivery(&commit_id).expect("delivery after rollback"),
+                reader
+                    .commit_delivery(&commit_id)
+                    .expect("delivery after rollback"),
                 CommitDelivery::Unknown { .. }
             ),
             "the same reader serves the next read after releasing the connection"

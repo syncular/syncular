@@ -1091,11 +1091,14 @@ fn parse_owner(value: Option<&Value>) -> Result<Option<(String, Vec<String>)>, V
                 .get("id")
                 .and_then(Value::as_str)
                 .filter(|id| !id.is_empty());
-            let tables = value.get("tables").and_then(Value::as_array).and_then(|list| {
-                list.iter()
-                    .map(|table| table.as_str().map(str::to_owned))
-                    .collect::<Option<Vec<String>>>()
-            });
+            let tables = value
+                .get("tables")
+                .and_then(Value::as_array)
+                .and_then(|list| {
+                    list.iter()
+                        .map(|table| table.as_str().map(str::to_owned))
+                        .collect::<Option<Vec<String>>>()
+                });
             match (id, tables) {
                 (Some(id), Some(tables)) => Ok(Some((id.to_owned(), tables))),
                 _ => Err(json!({ "error": {
@@ -2580,7 +2583,10 @@ mod tests {
             value["error"]["details"]["sqliteMessage"],
             "database is locked"
         );
-        assert_eq!(value["error"]["details"]["rollbackFailure"]["sqliteCode"], 6);
+        assert_eq!(
+            value["error"]["details"]["rollbackFailure"]["sqliteCode"],
+            6
+        );
         let corrupt = read_failure_json(QueryReadFailure {
             code: Some("sync.local_corrupt"),
             sqlite_code: None,
@@ -2597,10 +2603,8 @@ mod tests {
     fn snapshot_read_command_is_strict_and_dispatches_by_storage_mode() {
         use tauri::test::{mock_builder, mock_context, noop_assets};
 
-        let path = std::env::temp_dir().join(format!(
-            "syncular-tauri-snapshot-{}.db",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("syncular-tauri-snapshot-{}.db", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let file_app = mock_builder()
             .plugin(init(SyncularConfig {
@@ -2611,11 +2615,8 @@ mod tests {
             .build(mock_context(noop_assets()))
             .expect("build file app");
         let command = |value: Value| {
-            tauri::async_runtime::block_on(syncular_command(
-                file_app.handle().clone(),
-                value,
-            ))
-            .expect("command reply")
+            tauri::async_runtime::block_on(syncular_command(file_app.handle().clone(), value))
+                .expect("command reply")
         };
         let read = |statements: Value, owner: Option<Value>| {
             tauri::async_runtime::block_on(syncular_snapshot_read(
@@ -2687,9 +2688,7 @@ mod tests {
             Some(json!({ "id": "queries:snapshot", "tables": ["todo"] })),
         );
         assert!(failed["error"].is_object(), "{failed}");
-        let diagnostics = command(
-            json!({ "method": "diagnosticsSnapshot", "params": {} }),
-        );
+        let diagnostics = command(json!({ "method": "diagnosticsSnapshot", "params": {} }));
         assert_eq!(
             diagnostics["result"]["queryFailures"][0]["id"], "queries:snapshot",
             "{diagnostics}"
@@ -2718,11 +2717,8 @@ mod tests {
             .build(mock_context(noop_assets()))
             .expect("build memory app");
         let memory_command = |value: Value| {
-            tauri::async_runtime::block_on(syncular_command(
-                memory_app.handle().clone(),
-                value,
-            ))
-            .expect("command reply")
+            tauri::async_runtime::block_on(syncular_command(memory_app.handle().clone(), value))
+                .expect("command reply")
         };
         let memory_read = |statements: Value| {
             tauri::async_runtime::block_on(syncular_snapshot_read(
@@ -2742,10 +2738,7 @@ mod tests {
             json!({})
         );
         let memory_ok = memory_read(json!([{ "sql": "SELECT 7 AS n" }]));
-        assert_eq!(
-            memory_ok["result"]["queries"][0][0]["n"], 7,
-            "{memory_ok}"
-        );
+        assert_eq!(memory_ok["result"]["queries"][0][0]["n"], 7, "{memory_ok}");
 
         // The in-memory route uses the owner connection with the same owner
         // contract: failure is recorded and a later success clears it.
@@ -2759,9 +2752,8 @@ mod tests {
         ))
         .expect("read reply");
         assert!(memory_failed["error"].is_object(), "{memory_failed}");
-        let memory_diagnostics = memory_command(
-            json!({ "method": "diagnosticsSnapshot", "params": {} }),
-        );
+        let memory_diagnostics =
+            memory_command(json!({ "method": "diagnosticsSnapshot", "params": {} }));
         assert_eq!(
             memory_diagnostics["result"]["queryFailures"][0]["id"], "queries:memory",
             "{memory_diagnostics}"
@@ -2776,9 +2768,8 @@ mod tests {
         ))
         .expect("read reply");
         assert!(memory_recovered["result"].is_object(), "{memory_recovered}");
-        let memory_cleared = memory_command(
-            json!({ "method": "diagnosticsSnapshot", "params": {} }),
-        );
+        let memory_cleared =
+            memory_command(json!({ "method": "diagnosticsSnapshot", "params": {} }));
         assert_eq!(
             memory_cleared["result"]["queryFailures"],
             json!([]),
@@ -2787,5 +2778,4 @@ mod tests {
 
         let _ = std::fs::remove_file(&path);
     }
-
 }
