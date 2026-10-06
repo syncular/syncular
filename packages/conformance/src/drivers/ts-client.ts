@@ -161,7 +161,10 @@ function realtimeRefusal(error: unknown): {
   };
 }
 
-function toReport(summary: SyncSummary): ClientSyncResult {
+function toReport(
+  summary: SyncSummary,
+  budgetExhausted?: boolean,
+): ClientSyncResult {
   return {
     ok: true,
     report: {
@@ -176,10 +179,14 @@ function toReport(summary: SyncSummary): ClientSyncResult {
       resets: summary.resets,
       revoked: summary.revoked,
       failed: summary.failed,
+      ...(summary.deferredCommits !== undefined
+        ? { deferredCommits: summary.deferredCommits }
+        : {}),
       ...(summary.schemaFloor !== undefined
         ? { schemaFloor: summary.schemaFloor }
         : {}),
     },
+    ...(budgetExhausted !== undefined ? { budgetExhausted } : {}),
   };
 }
 
@@ -706,7 +713,8 @@ class TsClientInstance implements ClientInstance {
 
   async syncUntilIdle(maxRounds?: number): Promise<ClientSyncResult> {
     try {
-      const result = toReport(await this.#client.syncUntilIdle(maxRounds));
+      const summary = await this.#client.syncUntilIdle(maxRounds);
+      const result = toReport(summary, summary.budgetExhausted);
       if (result.ok && result.report.schemaFloor === undefined) {
         this.#epochEstablished = true;
       }

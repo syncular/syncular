@@ -567,6 +567,8 @@ export interface ClientSyncReport {
   readonly resets: readonly string[];
   readonly revoked: readonly string[];
   readonly failed: readonly string[];
+  /** §6.1 splitBatch: commits held back from the latest request. */
+  readonly deferredCommits?: number;
   readonly schemaFloor?: {
     readonly requiredSchemaVersion?: number;
     readonly latestSchemaVersion?: number;
@@ -574,7 +576,12 @@ export interface ClientSyncReport {
 }
 
 export type ClientSyncResult =
-  | { readonly ok: true; readonly report: ClientSyncReport }
+  | {
+      readonly ok: true;
+      readonly report: ClientSyncReport;
+      /** §7.7: true when an explicit round budget ran out before idle. */
+      readonly budgetExhausted?: boolean;
+    }
   | {
       readonly ok: false;
       readonly errorCode: string;

@@ -12,9 +12,11 @@ import {
   type ClientSchema,
   ClientSyncError,
   computeBlobId,
+  SyncClient,
   type SqlRow,
   type SqlValue,
 } from '@syncular/client';
+import { encodeMessage, encodeRow } from '@syncular/core';
 import { BunClientDatabase } from '@syncular/client/bun';
 import { ValidationRejection } from '@syncular/server';
 import { hostBoolean } from '../../typegen/test/fixtures/basic/syncular.queries';
@@ -1586,6 +1588,115 @@ describe('bounded outbox encoding', () => {
         db.close();
       }
     }, 60_000);
+  }
+});
+
+test('syncUntilIdle validates the explicit round budget and never claims false exhaustion', async () => {
+  const source = makeServer();
+  const { client } = await makeClient(source, { clientId: 'budget' });
+  try {
+    for (const value of [0, -1, 1.5, 0x1_0000_0000]) {
+      await expect(client.syncUntilIdle(value)).rejects.toMatchObject({
+        code: 'sync.invalid_request',
+      });
+    }
+    // A client with no pending work is idle: not budget-exhausted.
+    const idle = await client.syncUntilIdle();
+    expect(idle.budgetExhausted).toBe(false);
+    expect(idle.bootstrapping).toEqual([]);
+    expect(idle.deferredCommits ?? 0).toBe(0);
+  } finally {
+    await client.close();
+  }
+});
+
+test('syncUntilIdle keeps earlier work when a later round fails', async () => {
+  const db = new BunClientDatabase();
+  let calls = 0;
+  const client = new SyncClient({
+    database: db,
+    schema: CLIENT_SCHEMA,
+    clientId: 'budget-fail',
+    transport: async () => {
+      calls += 1;
+      if (calls === 1) {
+        return encodeMessage({
+          wireVersion: 3,
+          msgKind: 'response',
+          frames: [
+            { type: 'RESP_HEADER', logEpoch: 'epoch-1', resetRequired: false },
+            {
+              type: 'SUB_START',
+              id: 'tasks',
+              status: 'active',
+              reasonCode: '',
+              effectiveScopes: { project_id: ['p1'] },
+              bootstrap: false,
+            },
+            {
+              type: 'COMMIT',
+              commitSeq: 1,
+              actorId: 'writer',
+              createdAtMs: 1,
+              tables: ['tasks'],
+              changes: [
+                {
+                  tableIndex: 0,
+                  rowId: 'kept',
+                  op: 'upsert' as const,
+                  rowVersion: 1,
+                  scopes: { project_id: 'p1' },
+                  row: encodeRow(TASK_COLUMNS, [
+                    'kept',
+                    'p1',
+                    'server',
+                    false,
+                    null,
+                    null,
+                  ]),
+                },
+              ],
+            },
+            { type: 'SUB_END', nextCursor: 1 },
+          ],
+        });
+      }
+      return encodeMessage({
+        wireVersion: 3,
+        msgKind: 'response',
+        frames: [
+          { type: 'RESP_HEADER', logEpoch: 'epoch-1', resetRequired: false },
+          {
+            type: 'ERROR',
+            code: 'sync.internal_error',
+            message: 'second round failed',
+            category: 'internal',
+            retryable: false,
+            recommendedAction: 'retryLater',
+          },
+        ],
+      });
+    },
+  });
+  try {
+    await client.start();
+    db.exec(
+      "INSERT OR REPLACE INTO _syncular_meta(key,value) VALUES ('logEpoch','epoch-1')",
+    );
+    client.subscribe({
+      id: 'tasks',
+      table: 'tasks',
+      scopes: { project_id: ['p1'] },
+    });
+    // One work-bearing round applies `kept`; the second round fails.
+    await expect(client.syncUntilIdle(2)).rejects.toMatchObject({
+      code: 'sync.internal_error',
+    });
+    expect(calls).toBe(2);
+    expect(client.query('SELECT id FROM tasks')).toEqual([{ id: 'kept' }]);
+  } finally {
+    await client.close();
+    db.close();
   }
 });
 

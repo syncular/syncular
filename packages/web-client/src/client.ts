@@ -338,6 +338,15 @@ export interface SyncSummary {
   readonly deferredCommits?: number;
 }
 
+/**
+ * The result of `syncUntilIdle`. The report aggregates every round that ran;
+ * `budgetExhausted` is true when the round budget ran out with the client not
+ * idle. An exhausted run is a partial success, never idle.
+ */
+export interface SyncIdleResult extends SyncSummary {
+  readonly budgetExhausted: boolean;
+}
+
 export interface SyncClientLimits {
   readonly limitCommits?: number;
   readonly limitSnapshotRows?: number;
@@ -3732,16 +3741,73 @@ export class SyncClient {
    * Pull repeatedly until quiescent: no commits delivered, no bootstrap
    * pages pending, no resets to recover (§4.5 "pull again" SHOULD).
    */
-  async syncUntilIdle(maxRounds?: number): Promise<SyncSummary> {
+  async syncUntilIdle(maxRounds?: number): Promise<SyncIdleResult> {
+    // §7.7: an explicit budget is a strict positive round count. Zero,
+    // fractional, and out-of-range values are caller errors.
+    if (
+      maxRounds !== undefined &&
+      (!Number.isInteger(maxRounds) || maxRounds < 1 || maxRounds > 0xffffffff)
+    )
+      throw invalidRequest('maxRounds must be a positive integer');
     const budget = maxRounds ?? 20;
-    let last: SyncSummary | undefined;
+    const aggregate = {
+      pushed: 0,
+      applied: [] as string[],
+      rejected: [] as string[],
+      retryable: [] as string[],
+      conflicts: [] as ConflictRecord[],
+      commitsApplied: 0,
+      segmentRowsApplied: 0,
+      bootstrapping: [] as string[],
+      resets: [] as string[],
+      revoked: [] as string[],
+      failed: [] as string[],
+      deferredCommits: 0,
+      schemaFloor: undefined as SchemaFloor | undefined,
+    };
+    const result = (budgetExhausted: boolean): SyncIdleResult => ({
+      pushed: aggregate.pushed,
+      applied: aggregate.applied,
+      rejected: aggregate.rejected,
+      retryable: aggregate.retryable,
+      conflicts: aggregate.conflicts,
+      commitsApplied: aggregate.commitsApplied,
+      segmentRowsApplied: aggregate.segmentRowsApplied,
+      bootstrapping: aggregate.bootstrapping,
+      resets: aggregate.resets,
+      revoked: aggregate.revoked,
+      failed: aggregate.failed,
+      ...(aggregate.deferredCommits > 0
+        ? { deferredCommits: aggregate.deferredCommits }
+        : {}),
+      ...(aggregate.schemaFloor !== undefined
+        ? { schemaFloor: aggregate.schemaFloor }
+        : {}),
+      budgetExhausted,
+    });
     for (let round = 0; round < budget; round++) {
       const before = JSON.stringify(
         loadSubscriptions(this.#db).map((sub) => [sub.id, sub.bootstrapState]),
       );
-      last = await this.sync();
+      const last = await this.sync();
+      // Historical counters accumulate; current readiness (`bootstrapping`,
+      // `deferredCommits`, `schemaFloor`) describes the latest round.
+      aggregate.pushed += last.pushed;
+      aggregate.applied.push(...last.applied);
+      aggregate.rejected.push(...last.rejected);
+      aggregate.retryable.push(...last.retryable);
+      aggregate.conflicts.push(...last.conflicts);
+      aggregate.commitsApplied += last.commitsApplied;
+      aggregate.segmentRowsApplied += last.segmentRowsApplied;
+      aggregate.bootstrapping = [...last.bootstrapping];
+      aggregate.resets.push(...last.resets);
+      aggregate.revoked.push(...last.revoked);
+      aggregate.failed.push(...last.failed);
+      aggregate.deferredCommits = last.deferredCommits ?? 0;
+      aggregate.schemaFloor = last.schemaFloor;
+      // A disabled transport or a schema floor ends the loop, not the budget.
       if (!this.#transportEnabled || last.schemaFloor !== undefined)
-        return last;
+        return result(false);
       if (
         maxRounds === undefined &&
         last.segmentRowsApplied > 0 &&
@@ -3763,10 +3829,10 @@ export class SyncClient {
         (last.deferredCommits ?? 0) === 0 &&
         !this.#needsPull
       ) {
-        return last;
+        return result(false);
       }
     }
-    throw invalidRequest('sync did not reach idle within the round budget');
+    return result(true);
   }
 
   /**

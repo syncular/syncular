@@ -4888,9 +4888,19 @@ separate read connection to serve reads concurrently with native sync.
 Without an explicit round limit, `syncUntilIdle` permits continued bootstrap
 while nonempty pages advance durable resume state. A round without such progress
 consumes its 20-round budget. A caller-supplied round limit remains a hard cap.
-Exhaustion returns `sync.invalid_request`; it MUST NOT report an unfinished run
-as successfully idle. This rule lets large paged imports finish without an
-application-specific round count while bounding stalled responses.
+Exhaustion returns a distinct non-error partial-success result: the aggregate
+report of every round that ran is retained, and the result explicitly indicates
+budget exhaustion. It MUST NOT report the run as idle and MUST NOT be presented
+as a protocol failure. A transport or protocol failure remains a failure. The
+round limit MUST be an integer in `1..=4294967295` (`u32::MAX`); a zero,
+fractional, negative, or larger value is `sync.invalid_request`. The aggregate
+report accumulates historical
+counters and outcome lists, while readiness state (`bootstrapping`,
+`deferredCommits`, `schemaFloor`) describes the latest round. An empty
+`bootstrapping` list alone does not establish readiness: a pending pull, a
+pending reset, a deferred commit, or a schema floor leaves the run unfinished.
+This rule lets large paged imports finish without an application-specific round
+count while bounding stalled responses.
 
 Client FTS projections address deletion through an indexed source-identity to
 FTS-rowid mapping. TS and Rust maintain that mapping in the same transaction as

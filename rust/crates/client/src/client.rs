@@ -1267,6 +1267,248 @@ mod observation_tests {
     }
 
     #[test]
+    fn sync_until_idle_reports_budget_exhaustion_or_failure() {
+        // §7.7: the exhausted outcome is a partial success, not a failure,
+        // and serializes with an explicit flag.
+        let exhausted = SyncOutcome::BudgetExhausted(SyncReport::default()).to_json();
+        assert_eq!(exhausted["ok"], json!(true));
+        assert_eq!(exhausted["budgetExhausted"], json!(true));
+        assert!(exhausted["report"].is_object());
+
+        let mut client = client();
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        // Zero explicit budget is a caller error, not an exhaustion.
+        let mut idle_transport = HostTransport::new_from_config(&json!({})).unwrap();
+        let zero = client.sync_until_idle(&mut idle_transport, Some(0));
+        assert!(
+            matches!(zero, SyncOutcome::Failed { ref error_code, .. } if error_code == "sync.invalid_request"),
+            "{zero:?}"
+        );
+        // A real server failure stays a failure across the budget loop.
+        let mut erroring = ServerErrorTransport {
+            code: "sync.internal_error",
+            retryable: false,
+        };
+        let failed = client.sync_until_idle(&mut erroring, Some(3));
+        assert!(
+            matches!(failed, SyncOutcome::Failed { ref error_code, .. } if error_code == "sync.internal_error"),
+            "{failed:?}"
+        );
+    }
+
+    /// Returns one pre-built response per round so a test can pin a successful
+    /// work-bearing round followed by a failure or a schema floor.
+    struct ScriptedSyncTransport {
+        responses: std::collections::VecDeque<Message>,
+        calls: usize,
+    }
+
+    impl Transport for ScriptedSyncTransport {
+        fn sync(&mut self, _request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            self.calls += 1;
+            let response = self.responses.pop_front().expect("scripted response");
+            Ok(encode_message(&response))
+        }
+
+        fn realtime_sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            self.sync(request)
+        }
+
+        fn download_segment(
+            &mut self,
+            _request: &SegmentRequest,
+            _on_progress: &mut dyn FnMut(u64),
+        ) -> Result<Vec<u8>, TransportError> {
+            Err(TransportError::new("sync.transport_failed", "offline"))
+        }
+
+        fn realtime_connect(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+
+        fn realtime_send(&mut self, _text: &str) -> Result<(), TransportError> {
+            Ok(())
+        }
+
+        fn realtime_close(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn sync_until_idle_success_then_failure_keeps_earlier_work() {
+        let path = std::env::temp_dir().join(format!(
+            "syncular-budget-script-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let schema = json!({"version":1,"tables":[{"name":"tasks","primaryKey":"id","columns":[
+            {"name":"id","type":"string","nullable":false},
+            {"name":"project_id","type":"string","nullable":false}],
+            "scopes":[{"pattern":"project:{project_id}"}]}]});
+        let mut client = SyncClient::open_path(
+            "budget-script".into(),
+            &schema,
+            ClientLimits::default(),
+            path.to_str().unwrap(),
+        )
+        .expect("open client");
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        client
+            .subscribe(
+                "tasks".into(),
+                "tasks".into(),
+                vec![("project_id".into(), vec!["p1".into()])],
+                None,
+            )
+            .unwrap();
+        client.subs[0].cursor = 0;
+        client.subs[0].synced_once = true;
+        client.subs[0].effective = Some(vec![("project_id".into(), vec!["p1".into()])]);
+        client.persist_sub(&client.subs[0]).unwrap();
+        client.drain_change_batches();
+
+        let row = encode_row_json(
+            client.schema.table("tasks").unwrap(),
+            "kept",
+            &Map::from_iter([
+                ("id".into(), json!("kept")),
+                ("project_id".into(), json!("p1")),
+            ]),
+            &client.encryption,
+        )
+        .unwrap();
+        let success = Message {
+            wire_version: WIRE_VERSION,
+            msg_kind: MsgKind::Response,
+            frames: vec![
+                Frame::RespHeader {
+                    required_schema_version: None,
+                    latest_schema_version: None,
+                    log_epoch: Some("epoch-1".into()),
+                    reset_required: Some(false),
+                },
+                Frame::SubStart {
+                    id: "tasks".into(),
+                    status: SubStatus::Active,
+                    reason_code: String::new(),
+                    effective_scopes: vec![("project_id".into(), vec!["p1".into()])],
+                    bootstrap: false,
+                },
+                Frame::Commit {
+                    commit_seq: 1,
+                    created_at_ms: 1,
+                    actor_id: "writer".into(),
+                    tables: vec!["tasks".into()],
+                    changes: vec![ssp2::model::Change {
+                        table_index: 0,
+                        row_id: "kept".into(),
+                        op: Op::Upsert,
+                        row_version: Some(1),
+                        scopes: vec![("project_id".into(), "p1".into())],
+                        row: Some(row),
+                    }],
+                },
+                Frame::SubEnd {
+                    next_cursor: 1,
+                    bootstrap_state: None,
+                },
+            ],
+        };
+        let failure = Message {
+            wire_version: WIRE_VERSION,
+            msg_kind: MsgKind::Response,
+            frames: vec![
+                Frame::RespHeader {
+                    required_schema_version: None,
+                    latest_schema_version: None,
+                    log_epoch: Some("epoch-1".into()),
+                    reset_required: Some(false),
+                },
+                Frame::Error {
+                    code: "sync.internal_error".into(),
+                    message: "second round failed".into(),
+                    category: "internal".into(),
+                    retryable: false,
+                    recommended_action: "retryLater".into(),
+                    details: None,
+                },
+            ],
+        };
+        let mut transport = ScriptedSyncTransport {
+            responses: std::collections::VecDeque::from([success, failure]),
+            calls: 0,
+        };
+        let outcome = client.sync_until_idle(&mut transport, Some(2));
+        assert!(
+            matches!(outcome, SyncOutcome::Failed { ref error_code, .. } if error_code == "sync.internal_error"),
+            "{outcome:?}"
+        );
+        assert_eq!(
+            transport.calls, 2,
+            "one successful round then the failing round"
+        );
+        assert_eq!(
+            client.query("SELECT id FROM tasks", &[]).unwrap()[0]["id"],
+            json!("kept"),
+            "the earlier round's durable work survives the later failure"
+        );
+        drop(client);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn sync_until_idle_stops_on_a_schema_floor() {
+        let mut client = client();
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        let floor = Message {
+            wire_version: WIRE_VERSION,
+            msg_kind: MsgKind::Response,
+            frames: vec![Frame::RespHeader {
+                required_schema_version: Some(2),
+                latest_schema_version: Some(2),
+                log_epoch: Some("epoch-1".into()),
+                reset_required: Some(false),
+            }],
+        };
+        let mut transport = ScriptedSyncTransport {
+            responses: std::collections::VecDeque::from([floor.clone(), floor]),
+            calls: 0,
+        };
+        let outcome = client.sync_until_idle(&mut transport, Some(3));
+        match outcome {
+            SyncOutcome::Ok(report) => assert_eq!(
+                report
+                    .schema_floor
+                    .as_ref()
+                    .and_then(|floor| floor.required_schema_version),
+                Some(2),
+                "the stop retains the latest schema floor"
+            ),
+            other => panic!("expected a schema-floor stop, got {other:?}"),
+        }
+        assert_eq!(
+            transport.calls, 1,
+            "a schema floor stops the budget loop after one round"
+        );
+    }
+
+    #[test]
+    fn sync_report_merge_schema_floor_is_latest_state() {
+        let mut aggregate = SyncReport {
+            schema_floor: Some(SchemaFloor {
+                required_schema_version: Some(2),
+                latest_schema_version: Some(2),
+            }),
+            ..SyncReport::default()
+        };
+        aggregate.merge(&SyncReport::default());
+        assert!(
+            aggregate.schema_floor.is_none(),
+            "a later round without a floor clears it"
+        );
+    }
+
+    #[test]
     fn failed_progress_retry_delay_doubles_to_the_cap() {
         let mut client = client();
         client.set_meta(LOG_EPOCH_KEY, "epoch-1");
@@ -11758,10 +12000,12 @@ impl SyncClient {
         }
         let retry_delay_ms = self.round_retry_delay_ms;
         self.progress.update(|p| match &outcome {
-            SyncOutcome::Ok(report) if report.failed.is_empty() => {
+            SyncOutcome::Ok(report) | SyncOutcome::BudgetExhausted(report)
+                if report.failed.is_empty() =>
+            {
                 p.state = ProgressState::Complete
             }
-            SyncOutcome::Ok(_) => {
+            SyncOutcome::Ok(_) | SyncOutcome::BudgetExhausted(_) => {
                 p.state = ProgressState::Failed;
                 p.error_code = Some("sync.scope_revoked".into());
             }
@@ -11778,7 +12022,7 @@ impl SyncClient {
         });
         let completed_at_ms = self.clock_now_ms();
         self.last_round = Some(match &outcome {
-            SyncOutcome::Ok(report) => DiagnosticLastRound {
+            SyncOutcome::Ok(report) | SyncOutcome::BudgetExhausted(report) => DiagnosticLastRound {
                 status: "succeeded".to_owned(),
                 started_at_ms,
                 completed_at_ms,
@@ -12042,7 +12286,14 @@ impl SyncClient {
             outcome
         })();
         let more = self.transport_enabled
-            && matches!(&outcome, SyncOutcome::Ok(report) if !report.bootstrapping.is_empty() || report.commits_applied > 0 || report.segment_rows_applied > 0 || !report.resets.is_empty() || self.sync_needed);
+            && matches!(&outcome, SyncOutcome::Ok(report)
+                if report.schema_floor.is_none()
+                    && (!report.bootstrapping.is_empty()
+                        || report.commits_applied > 0
+                        || report.segment_rows_applied > 0
+                        || !report.resets.is_empty()
+                        || report.deferred_commits > 0
+                        || self.sync_needed));
         let bootstrap_advanced = matches!(&outcome, SyncOutcome::Ok(report) if report.segment_rows_applied > 0 && !report.bootstrapping.is_empty())
             && before
                 != self
@@ -12067,7 +12318,16 @@ impl SyncClient {
         transport: &mut dyn Transport,
         max_rounds: Option<u32>,
     ) -> SyncOutcome {
-        let rounds = max_rounds.unwrap_or(20).max(1);
+        // §7.7: an explicit budget is a strict positive round count. Zero is a
+        // caller error, not an exhaustion.
+        if max_rounds == Some(0) {
+            return SyncOutcome::Failed {
+                details: None,
+                error_code: "sync.invalid_request".into(),
+                message: "maxRounds must be a positive integer".into(),
+            };
+        }
+        let rounds = max_rounds.unwrap_or(20);
         let mut aggregate = SyncReport::default();
         let mut spent = 0;
         while spent < rounds {
@@ -12077,8 +12337,7 @@ impl SyncClient {
                 .iter()
                 .map(|sub| (sub.id.clone(), sub.bootstrap_state.clone()))
                 .collect::<Vec<_>>();
-            let outcome = self.sync(transport);
-            match outcome {
+            match self.sync(transport) {
                 SyncOutcome::Failed {
                     error_code,
                     message,
@@ -12090,7 +12349,10 @@ impl SyncClient {
                         message,
                     };
                 }
-                SyncOutcome::RealtimeUnavailable { .. } => return outcome,
+                outcome @ SyncOutcome::RealtimeUnavailable { .. } => return outcome,
+                SyncOutcome::BudgetExhausted(_) => {
+                    unreachable!("sync() never exhausts a round budget")
+                }
                 SyncOutcome::Ok(report) => {
                     if max_rounds.is_none()
                         && report.segment_rows_applied > 0
@@ -12104,16 +12366,23 @@ impl SyncClient {
                     {
                         spent = 0;
                     }
+                    // TS parity: a disabled transport or a schema floor ends
+                    // the loop. The latest round still merges first.
+                    let stop = !self.transport_enabled() || report.schema_floor.is_some();
                     aggregate.merge(&report);
+                    if stop {
+                        return SyncOutcome::Ok(aggregate);
+                    }
                     // §4.5: pull again whenever the response contained
                     // commits or segments; resets re-bootstrap; a pending
-                    // resume token continues paging (§4.7); a raised
-                    // sync-needed signal covers §6.1 splitBatch remainders
-                    // (deferred outbox commits push on the next round).
+                    // resume token continues paging (§4.7); deferred outbox
+                    // commits and a raised sync-needed signal push on the next
+                    // round.
                     let more = !report.bootstrapping.is_empty()
                         || report.commits_applied > 0
                         || report.segment_rows_applied > 0
                         || !report.resets.is_empty()
+                        || report.deferred_commits > 0
                         || self.sync_needed;
                     if !more {
                         return SyncOutcome::Ok(aggregate);
@@ -12121,11 +12390,9 @@ impl SyncClient {
                 }
             }
         }
-        SyncOutcome::Failed {
-            details: None,
-            error_code: "sync.invalid_request".into(),
-            message: "sync did not reach idle within the round budget".into(),
-        }
+        // §7.7: partial success. The aggregate report is retained and the run
+        // is explicitly not idle.
+        SyncOutcome::BudgetExhausted(aggregate)
     }
 
     fn process_response(

@@ -866,10 +866,21 @@ pub fn dispatch<T: Transport>(
             Ok(outcome.to_json())
         }
         "syncUntilIdle" => {
-            let max_rounds = params
-                .get("maxRounds")
-                .and_then(Value::as_u64)
-                .map(|v| v as u32);
+            let max_rounds = match params.get("maxRounds") {
+                None | Some(Value::Null) => None,
+                Some(value) => Some(
+                    value
+                        .as_u64()
+                        .and_then(|n| u32::try_from(n).ok())
+                        .filter(|n| *n >= 1)
+                        .ok_or_else(|| {
+                            client_err(
+                                "sync.invalid_request: maxRounds must be a positive integer"
+                                    .to_owned(),
+                            )
+                        })?,
+                ),
+            };
             let outcome = need_client(client)?.sync_until_idle(transport, max_rounds);
             Ok(outcome.to_json())
         }
@@ -1827,6 +1838,32 @@ mod tests {
         let full = client_err("client.storage_full: local SQLite storage is full".to_owned());
         assert_eq!(full.code, "client.storage_full");
         assert!(!full.retryable);
+    }
+
+    #[test]
+    fn sync_until_idle_rejects_an_invalid_max_rounds_budget() {
+        for value in [json!(0), json!(-1), json!(1.5), json!(4_294_967_296u64)] {
+            let mut transport = NoNetwork::default();
+            let mut client: Option<SyncClient> = None;
+            let mut effects = CreateEffects::default();
+            dispatch(
+                &mut transport,
+                &mut client,
+                &mut effects,
+                "create",
+                &json!({ "schema": schema() }),
+            )
+            .expect("create");
+            let error = dispatch(
+                &mut transport,
+                &mut client,
+                &mut effects,
+                "syncUntilIdle",
+                &json!({ "maxRounds": value }),
+            )
+            .expect_err("invalid budget");
+            assert_eq!(error.code, "sync.invalid_request", "{value}");
+        }
     }
 
     #[test]

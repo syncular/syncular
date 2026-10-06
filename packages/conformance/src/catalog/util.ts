@@ -26,6 +26,10 @@ export async function syncIdle(
     result.ok,
     `syncUntilIdle() failed for ${handle.clientId}: ${result.ok ? '' : `${result.errorCode}: ${result.message}`}`,
   );
+  check(
+    result.budgetExhausted !== true,
+    `syncUntilIdle() exhausted its default budget for ${handle.clientId}`,
+  );
   return result.report;
 }
 
