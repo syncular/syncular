@@ -591,9 +591,35 @@ describe('unsupported constructs are hard errors that name the construct', () =>
       /unsupported table constraint "UNIQUE"/,
     );
     expectError(
+      'CREATE TABLE t (id TEXT PRIMARY KEY, CHECK (id))',
+      /unsupported table constraint "CHECK"/,
+    );
+    expectError(
+      'CREATE TABLE t (id TEXT PRIMARY KEY, CONSTRAINT t_unique UNIQUE (id))',
+      /unsupported table constraint "CONSTRAINT"/,
+    );
+    expectError(
+      'CREATE TABLE t (id TEXT PRIMARY KEY, CONSTRAINT t_check CHECK (id))',
+      /unsupported table constraint "CONSTRAINT"/,
+    );
+    expectError(
       'CREATE TABLE t (id TEXT PRIMARY KEY, o TEXT, FOREIGN KEY (o) REFERENCES other (id))',
       /unsupported table constraint "FOREIGN"/,
     );
+  });
+
+  test('table-level uniqueness has a CREATE UNIQUE INDEX alternative', () => {
+    expectError(
+      'CREATE TABLE t (id TEXT PRIMARY KEY, a TEXT, b TEXT, UNIQUE (a, b))',
+      /unsupported table constraint "UNIQUE"/,
+    );
+    const tables = parse(`
+      CREATE TABLE t (id TEXT PRIMARY KEY, a TEXT, b TEXT);
+      CREATE UNIQUE INDEX idx_t_ab ON t (a, b);
+    `);
+    expect(tables.get('t')?.indexes).toEqual([
+      { name: 'idx_t_ab', columns: ['a', 'b'], unique: true },
+    ]);
   });
 
   test('column constraints', () => {

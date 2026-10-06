@@ -259,7 +259,7 @@ duplicate ordinals are errors). The parser accepts exactly:
 - `DROP INDEX [IF EXISTS] name`
 - `DROP TABLE [IF EXISTS] name`
 - `CREATE VIRTUAL TABLE [IF NOT EXISTS] name USING fts5( text-col [, text-col…], content = table [, tokenize = 'allowlisted tokenizer'] )`
-- column-def: `name TYPE [PRIMARY KEY] [NOT NULL] [NULL] [DEFAULT literal]`
+- column-def: `name TYPE [PRIMARY KEY] [NOT NULL] [NULL] [DEFAULT literal] [REFERENCES parent(pk) [ON DELETE RESTRICT | CASCADE | SET NULL]]`
 - `--` line comments and `/* … */` block comments
 
 Type map (case-insensitive) to the six §2.4 types:
@@ -343,7 +343,7 @@ statement (`CREATE TRIGGER/VIEW`, DML, `ALTER … RENAME`, …); unknown
 or parameterized types (`VARCHAR(36)`); quoted identifiers
 (`"t"`, `` `t` ``, `[t]`); table constraints (`FOREIGN KEY`, `UNIQUE`,
 `CHECK`, `CONSTRAINT`); column constraints beyond the list above
-(`REFERENCES`, `CHECK`, `COLLATE`, …); `DEFAULT (expression)`; composite
+(`CHECK`, `COLLATE`, …); `DEFAULT (expression)`; composite
 or missing primary keys; `PRIMARY KEY` on `ADD COLUMN`; duplicate
 tables/columns; ASC/DESC, expression, or partial (`WHERE`) index columns; a
 duplicate or unknown-column index; unsupported virtual-table modules or FTS5
@@ -355,6 +355,48 @@ extracts the schema *shape*; executing migrations (where defaults matter) is
 the host's job. Recording them is not needed by any emitter today. On
 `ALTER TABLE … ADD COLUMN`, a literal default does not make a non-null append
 safe and is rejected as described in the migration-lock section above.
+
+### Constraints: support and enforcement
+
+Typegen accepts the declarations below. Unsupported constraints fail during
+parsing; accepted declarations are enforced at the listed layers.
+
+| Declaration | Accepted | Enforced by |
+|---|---|---|
+| Column `NOT NULL`, or a primary-key column | yes | The §2.4 row codec, logically: the server candidate commit and every client write/apply reject a null in a non-nullable column. The TS local mirror also declares `NOT NULL`; the Rust local tables carry bare column names and rely on the codec. |
+| Single-column `PRIMARY KEY`, inline or table-level | yes | The row codec validates the key. Both client mirrors declare a primary key; the server projection keys rows by partition and the encoded row identity. |
+| Column `DEFAULT literal` | accepted, ignored | Nothing. Typegen records no default and fills none; the host runs the migration SQL where a default matters. |
+| Nullable `ALTER TABLE … ADD COLUMN` | yes | A physical column in every mirror. A SQL `DEFAULT` on the same statement is ignored and never backfills Syncular payloads. |
+| `ALTER TABLE … ADD COLUMN … NOT NULL` | rejected | not applicable |
+| Column `REFERENCES parent(pk) [ON DELETE RESTRICT\|CASCADE\|SET NULL]` | yes | The server commit boundary only (§6.11); the local SQLite DDL deliberately omits the clause. |
+| `CREATE [UNIQUE] INDEX` over existing columns | yes | A physical index in both client mirrors, the server relational projection, and typegen's named-query type-check DB. The `UNIQUE` variant additionally enforces uniqueness atomically on a local write (§7.2: `sync.constraint_violation`, no outbox entry, no revision advance) and on the server commit. |
+| Inline column `CHECK (expr)` | rejected | not applicable (see the gap below) |
+| Table-level `UNIQUE (…)`, `CHECK (…)`, `CONSTRAINT name …`, `FOREIGN KEY …` | rejected | not applicable (see the gap below) |
+| Column `COLLATE …` | rejected | not applicable |
+
+**The closed-value-set gap.** The IR column (`IrColumn`) carries no `enum` or
+`check` metadata, so a closed value set such as a state column cannot be
+declared in migration SQL. Inline `CHECK` is rejected twice over: `CHECK (n)`
+reads `CHECK` as an unsupported column constraint, and `CHECK (n > 0)` fails at
+`>` because the lexer does not read comparison operators. Table-level `CHECK`
+and `CONSTRAINT` are rejected as unsupported table constraints. Declare the
+column with the type it stores and put the rule in a §6.7 server
+write-validator, which validates each candidate row operation during commit
+application. A `ValidationRejection` carries the host rejection code. That validator does not run on optimistic local
+writes, so an application that needs immediate local feedback repeats the rule
+in its own pre-write guard. The physical server projection does not carry an
+app `CHECK` either; on a fresh `CREATE TABLE` it declares `NOT NULL` per the
+schema, while columns appended by `ALTER TABLE` are physically nullable and the
+row codec remains the type authority.
+
+**Uniqueness without table-level `UNIQUE`.** SQLite accepts `UNIQUE (a, b)`,
+but the IR models uniqueness as a named `CREATE UNIQUE INDEX` entry, so
+typegen rejects the table constraint. Declare
+`CREATE UNIQUE INDEX name ON table (a, b)` instead. It is accepted with
+`IF NOT EXISTS`, preserves column order, and is materialized by every mirror.
+`NULL` values never conflict, matching SQLite unique-index semantics.
+Table-level `FOREIGN KEY` stays rejected: a reference is a column constraint
+(§6.11).
 
 ## 4. Generated-module contract
 
