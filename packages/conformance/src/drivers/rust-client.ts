@@ -1297,7 +1297,24 @@ class RustClientInstance implements ClientInstance {
       if (!Array.isArray(rows)) {
         throw new Error(`snapshotRead: statement ${index} rows are malformed`);
       }
-      return rows.map((row) => requireDriverRow(row, 'snapshotRead query row'));
+      return rows.map((row) =>
+        requireDriverRow(
+          Object.fromEntries(
+            Object.entries(asObject(row, 'snapshotRead query row')).map(
+              ([key, cell]) => [
+                key,
+                cell !== null &&
+                typeof cell === 'object' &&
+                !Array.isArray(cell) &&
+                typeof cell.$bigint === 'string'
+                  ? Number(cell.$bigint)
+                  : cell,
+              ],
+            ),
+          ),
+          'snapshotRead query row',
+        ),
+      );
     });
     if (!Array.isArray(result.subscriptions)) {
       throw new Error('snapshotRead: response carries no subscriptions');

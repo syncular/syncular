@@ -1128,12 +1128,15 @@ export const observationScenarios: readonly Scenario[] = [
 
       // unknown: the client does not hold the id.
       const initial = await read({
-        statements: [{ sql: 'SELECT 1 AS n' }],
+        statements: [
+          { sql: 'SELECT 1 AS n' },
+          { sql: 'SELECT 9223372036854775807 AS n' },
+        ],
         subscriptions: ['tasks', 'never-registered'],
       });
       checkEqual(
         initial.queries,
-        [[{ n: 1 }]],
+        [[{ n: 1 }], [{ n: Number(9223372036854775807n) }]],
         'the statement rows resolve in the same read',
       );
       checkEqual(
@@ -1144,6 +1147,8 @@ export const observationScenarios: readonly Scenario[] = [
         ],
         'an unheld id reads unknown with no fabricated table or cursor',
       );
+
+      JSON.stringify(initial); // The conformance driver boundary is JSON-only.
 
       // pending: registered before its first bootstrap lands.
       await handle.api.subscribe({
