@@ -3,12 +3,10 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-// Bun 1.4.0, minified browser graphs with SQLite external. The 0.30.14 tagged
-// source measured 146310 bytes for the client and 162403 for the worker. The
-// overlay-replay, error-redaction, and storage-classification work since then
-// grew the base graphs to 148024 and 164919 on the same toolchain. Pin these
-// measured ceilings and independently assert that the ordinary graphs exclude
-// authority modules.
+// Bun 1.4.0, minified browser graphs with SQLite external. The client
+// measures 148105 bytes and the worker 165006 bytes after this
+// change. Pin the measured graphs and independently assert that ordinary
+// imports exclude authority modules.
 test('ordinary client, worker and native graphs exclude authority; only explicit opt-in retains it', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'syncular-authority-bundle-'));
   const root = resolve(import.meta.dir, '../../..');
@@ -18,19 +16,19 @@ test('ordinary client, worker and native graphs exclude authority; only explicit
         'client',
         `export { SyncClient } from '${root}/packages/web-client/src/client.ts';`,
         false,
-        148024,
+        148105,
       ],
       [
         'client-root',
         `export { SyncClient } from '${root}/packages/web-client/src/index.ts';`,
         false,
-        148024,
+        148105,
       ],
       [
         'worker',
         `import { startSyncWorker } from '${root}/packages/web-client/src/worker-entry.ts'; startSyncWorker();`,
         false,
-        164919,
+        165006,
       ],
       [
         'authority-worker',

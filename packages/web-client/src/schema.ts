@@ -105,6 +105,19 @@ function invalidSchema(message: string): never {
 export function compileClientSchema(
   schema: ClientSchema,
 ): CompiledClientSchema {
+  // §7.4.2: the persisted marker is a canonical positive i32 and a replica
+  // refuses any requested version outside that range before it touches
+  // storage, so a client can never persist a marker it would reject on the
+  // next open.
+  if (
+    !Number.isInteger(schema.version) ||
+    schema.version < 1 ||
+    schema.version > 2147483647
+  ) {
+    throw invalidRequest(
+      'generated schema version must be an integer in 1..=2147483647',
+    );
+  }
   const tables = new Map<string, CompiledClientTable>();
   const schemaObjectNames = new Set<string>();
   for (const table of schema.tables) {
