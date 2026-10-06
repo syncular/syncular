@@ -4310,24 +4310,6 @@ export class SyncClient {
                     drained = true;
                   }
                 }
-                if (drained) {
-                  this.#replayOutbox([
-                    ...new Set(
-                      results.flatMap(
-                        (result) =>
-                          commitsById
-                            .get(result.clientCommitId)
-                            ?.operations.map((operation) =>
-                              JSON.stringify(
-                                hasUniqueIndex(this.#table(operation.table))
-                                  ? [operation.table]
-                                  : [operation.table, operation.rowId],
-                              ),
-                            ) ?? [],
-                      ),
-                    ),
-                  ]);
-                }
                 if (
                   drained &&
                   results.some((result) => result === lastFinalPushResult)
@@ -4674,6 +4656,19 @@ export class SyncClient {
           listOutboxBeforeImages(this.#db, commit.clientCommitId),
         );
       this.#rollbackFailedCommit(commit, batch);
+      // §7.2: rebasing a rejection reaches rows the same-row replay inside
+      // `#rollbackFailedCommit` cannot: peers of a secondary UNIQUE index
+      // (table-wide scope) and later commits over legacy before-images.
+      // ACK-only groups reconcile nothing and stay zero-work.
+      this.#replayOutbox(
+        commit.operations.map((operation) =>
+          JSON.stringify(
+            hasUniqueIndex(this.#table(operation.table))
+              ? [operation.table]
+              : [operation.table, operation.rowId],
+          ),
+        ),
+      );
     });
     batch.status();
     summary.rejected.push(frame.clientCommitId);
