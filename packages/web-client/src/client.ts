@@ -5503,7 +5503,17 @@ export class SyncClient {
     replay = false,
   ): void {
     for (const op of operations) {
-      const table = this.#table(op.table);
+      // §7.4.4: the overlay replay is schema-agnostic (§0), so an operation
+      // whose table the current schema removed has no local mirror to replay
+      // into and is skipped here. A removed-table upsert stays durable for the
+      // send-time `sync.outbox_incompatible` classification; a value-free
+      // delete carries no values to classify and keeps ordinary server
+      // validation. Every other call runs against the live schema and keeps the
+      // loud `sync.unknown_table`.
+      const table = replay
+        ? this.#schema.tables.get(op.table)
+        : this.#table(op.table);
+      if (table === undefined) continue;
       let precise =
         batch === undefined
           ? false
