@@ -9,7 +9,11 @@ import { RETAINED_ROWS } from './failed-overlay';
  * restart can never turn "rejected" into an inferred success. Conflict payloads
  * deliberately stay local; retention never deletes an unresolved failure.
  */
-import type { RejectionDetails, RowValue } from '@syncular/core';
+import {
+  normalizeRejectionDetails,
+  type RejectionDetails,
+  type RowValue,
+} from '@syncular/core';
 import type { ClientDatabase } from './database';
 import { ClientSyncError } from './errors';
 import type { OutboxOperation } from './outbox';
@@ -189,7 +193,12 @@ function decodeResults(raw: string): CommitOperationOutcome[] {
   return stored.map((result) => {
     if (!isRecord(result)) corrupt();
     if (result.status === 'applied') {
-      if (typeof result.opIndex !== 'number') corrupt();
+      if (
+        !Number.isInteger(result.opIndex) ||
+        result.opIndex < -2147483648 ||
+        result.opIndex > 2147483647
+      )
+        corrupt();
       return result;
     }
     if (result.status === 'conflict') {
@@ -198,12 +207,19 @@ function decodeResults(raw: string): CommitOperationOutcome[] {
         !isRecord(conflict) ||
         !isStoredRow(conflict.serverRow) ||
         typeof conflict.clientCommitId !== 'string' ||
-        typeof conflict.opIndex !== 'number' ||
+        !Number.isInteger(conflict.opIndex) ||
+        conflict.opIndex < -2147483648 ||
+        conflict.opIndex > 2147483647 ||
         typeof conflict.table !== 'string' ||
         typeof conflict.rowId !== 'string' ||
         typeof conflict.code !== 'string' ||
         typeof conflict.message !== 'string' ||
-        typeof conflict.serverVersion !== 'number'
+        !Number.isSafeInteger(conflict.serverVersion) ||
+        (conflict.conflictColumns !== undefined &&
+          (!Array.isArray(conflict.conflictColumns) ||
+            !conflict.conflictColumns.every(
+              (column) => typeof column === 'string',
+            )))
       ) {
         corrupt();
       }
@@ -222,14 +238,29 @@ function decodeResults(raw: string): CommitOperationOutcome[] {
       if (
         !isRecord(rejection) ||
         typeof rejection.clientCommitId !== 'string' ||
-        typeof rejection.opIndex !== 'number' ||
+        !Number.isInteger(rejection.opIndex) ||
+        rejection.opIndex < -2147483648 ||
+        rejection.opIndex > 2147483647 ||
         typeof rejection.code !== 'string' ||
         typeof rejection.message !== 'string' ||
         typeof rejection.retryable !== 'boolean'
       ) {
         corrupt();
       }
-      return result;
+      try {
+        const { details, ...fields } = rejection;
+        return {
+          status: 'error',
+          rejection: {
+            ...fields,
+            ...(details == null
+              ? {}
+              : { details: normalizeRejectionDetails(details) }),
+          },
+        };
+      } catch {
+        corrupt();
+      }
     }
     corrupt();
   });
@@ -356,7 +387,16 @@ export function persistedCommitOutcome(
     (resolution !== 'active' &&
       resolution !== 'resolved_keep_server' &&
       resolution !== 'superseded' &&
-      resolution !== 'dismissed')
+      resolution !== 'dismissed') ||
+    !Number.isSafeInteger(row.seq) ||
+    typeof row.client_commit_id !== 'string' ||
+    !Number.isSafeInteger(row.recorded_at_ms) ||
+    typeof row.results !== 'string' ||
+    (row.operations !== null && typeof row.operations !== 'string') ||
+    (row.resolved_at_ms !== null &&
+      !Number.isSafeInteger(row.resolved_at_ms)) ||
+    (row.replacement_client_commit_id !== null &&
+      typeof row.replacement_client_commit_id !== 'string')
   ) {
     corrupt();
   }

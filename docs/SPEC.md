@@ -4765,7 +4765,11 @@ both an id the client never held and one whose outcome retention pruned.
 The read never reduces a multi-error outcome to one code, and the existing
 outcome-retention policy bounds what a later read can still resolve. The owning core additionally attaches in-memory
 retained-row images to its own outcomes; the sidecar reports the persisted
-outcome fields.
+outcome fields. Persisted outcome readers validate SQL field types, integral
+indexes and safe-integer versions and timestamps, conflict-column arrays,
+and rejection details against their existing bounds. Malformed journal
+metadata fails with `sync.local_corrupt`; recognized SQLite storage errors
+retain their storage classification.
 
 **Snapshot read failure.** The revision read is fallible. A missing
 revision marker is the legacy zero; `+1`, `01`, a negative value,

@@ -179,4 +179,98 @@ describe('§7.5 snapshot read surface', () => {
     }
     db.close();
   });
+
+  test('persisted outcome metadata is validated before public delivery', async () => {
+    const { db, client } = makeLocalClient();
+    await client.start();
+    // An unconstrained journal models a damaged or externally rewritten file.
+    db.exec('DROP TABLE _syncular_commit_outcomes');
+    db.exec(
+      `CREATE TABLE _syncular_commit_outcomes(seq,client_commit_id,status,recorded_at_ms,results,operations,resolution,resolved_at_ms,replacement_client_commit_id)`,
+    );
+    db.exec(
+      `INSERT INTO _syncular_commit_outcomes VALUES(1,'c','applied',1,'[]',NULL,'active',NULL,NULL)`,
+    );
+    const conflict = {
+      clientCommitId: 'c',
+      opIndex: 0,
+      table: 'tasks',
+      rowId: 'r',
+      code: 'sync.conflict',
+      message: 'conflict',
+      serverVersion: 1,
+      serverRow: {},
+    };
+    const rejection = {
+      clientCommitId: 'c',
+      opIndex: 0,
+      code: 'validation.denied',
+      message: 'denied',
+      retryable: false,
+    };
+    const invalidResults = [
+      ...[0.5, 2147483648, -2147483649, 9007199254740992].map((opIndex) => [
+        { status: 'applied', opIndex },
+      ]),
+      ...[0.5, 9007199254740992].map((serverVersion) => [
+        { status: 'conflict', conflict: { ...conflict, serverVersion } },
+      ]),
+      ...['title', [7], null].map((conflictColumns) => [
+        { status: 'conflict', conflict: { ...conflict, conflictColumns } },
+      ]),
+      ...[
+        [],
+        {},
+        { secret: 'hidden' },
+        { reason: 'Not Valid' },
+        { fieldPaths: [] },
+        { references: { safe: 'x'.repeat(257) } },
+      ].map((details) => [
+        { status: 'error', rejection: { ...rejection, details } },
+      ]),
+      [{ status: 'error', rejection: { ...rejection, opIndex: 0.5 } }],
+      [{ status: 'conflict', conflict: { ...conflict, opIndex: 0.5 } }],
+    ];
+    for (const result of invalidResults) {
+      db.exec(
+        "UPDATE _syncular_commit_outcomes SET results=? WHERE client_commit_id='c'",
+        [JSON.stringify(result)],
+      );
+      expect(() => client.commitDelivery('c')).toThrow(
+        expect.objectContaining({ code: 'sync.local_corrupt' }),
+      );
+    }
+    db.exec("UPDATE _syncular_commit_outcomes SET results='[]'");
+    for (const [column, invalid, restored] of [
+      ['seq', 'bad', 1],
+      ['seq', 9007199254740992, 1],
+      ['recorded_at_ms', 'bad', 1],
+      ['recorded_at_ms', 0.5, 1],
+      ['resolved_at_ms', 'bad', null],
+      ['replacement_client_commit_id', 7, null],
+      ['operations', 7, null],
+    ] as const) {
+      db.exec(`UPDATE _syncular_commit_outcomes SET ${column}=?`, [invalid]);
+      expect(() => client.commitDelivery('c')).toThrow(
+        expect.objectContaining({ code: 'sync.local_corrupt' }),
+      );
+      db.exec(`UPDATE _syncular_commit_outcomes SET ${column}=?`, [restored]);
+    }
+    for (const result of [
+      { status: 'conflict', conflict },
+      {
+        status: 'error',
+        rejection: { ...rejection, details: { reason: 'policy_denied' } },
+      },
+      { status: 'error', rejection: { ...rejection, details: null } },
+    ]) {
+      db.exec('UPDATE _syncular_commit_outcomes SET results=?', [
+        JSON.stringify([result]),
+      ]);
+      expect(client.commitDelivery('c').status).toBe('known');
+    }
+    const legacy = client.commitDelivery('c');
+    expect(legacy.status).toBe('known');
+    db.close();
+  });
 });

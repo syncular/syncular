@@ -8562,7 +8562,14 @@ fn snapshot_read_connection(
                     rusqlite::params![id],
                     StoredCommitOutcomeRow::from_row,
                 )
-                .optional()?;
+                .optional()
+                .map_err(|error| match error {
+                    rusqlite::Error::InvalidColumnType(..)
+                    | rusqlite::Error::FromSqlConversionFailure(..)
+                    | rusqlite::Error::IntegralValueOutOfRange(..) =>
+                        corrupt("persisted commit outcome is invalid"),
+                    _ => QueryReadFailure::from(error),
+                })?;
             deliveries.push(match row {
                 Some(row) => CommitDelivery::Known {
                     client_commit_id: id.clone(),
@@ -11290,13 +11297,40 @@ impl SyncClient {
             resolved_at_ms,
             replacement_client_commit_id,
         } = row;
+        if sequence.unsigned_abs() > MAX_JS_SAFE_INTEGER
+            || recorded_at_ms.unsigned_abs() > MAX_JS_SAFE_INTEGER
+            || resolved_at_ms.is_some_and(|value| value.unsigned_abs() > MAX_JS_SAFE_INTEGER)
+        {
+            return Err("sync.local_corrupt: persisted commit outcome is invalid".to_owned());
+        }
+        let results: Vec<CommitOperationOutcome> = serde_json::from_str(&results_json)
+            .map_err(|_| "sync.local_corrupt: persisted commit outcome is invalid".to_owned())?;
+        for result in &results {
+            match result {
+                CommitOperationOutcome::Conflict { conflict }
+                    if conflict.server_version.unsigned_abs() > MAX_JS_SAFE_INTEGER =>
+                {
+                    return Err("sync.local_corrupt: persisted commit outcome is invalid".to_owned())
+                }
+                CommitOperationOutcome::Error { rejection } => {
+                    if let Some(details) = &rejection.details {
+                        let encoded = serde_json::to_string(details).map_err(|_| {
+                            "sync.local_corrupt: persisted commit outcome is invalid".to_owned()
+                        })?;
+                        RejectionDetails::parse(&encoded).map_err(|_| {
+                            "sync.local_corrupt: persisted commit outcome is invalid".to_owned()
+                        })?;
+                    }
+                }
+                _ => {}
+            }
+        }
         Ok(CommitOutcome {
             sequence,
             client_commit_id,
             status: Self::parse_outcome_status(&status)?,
             recorded_at_ms,
-            results: serde_json::from_str(&results_json)
-                .map_err(|error| format!("invalid persisted commit outcome results: {error}"))?,
+            results,
             operations: operations_json
                 .map(|value| {
                     serde_json::from_str(&value).map_err(|error| {
