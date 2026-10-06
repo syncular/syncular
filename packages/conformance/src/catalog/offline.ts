@@ -1,15 +1,21 @@
 /**
- * Offline outbox, replay, and idempotency under transport faults
- * (SPEC.md §2.3, §6.3, §7; Appendix B.2/B.3). All faults inject at the
- * transport seam; the server is never told a fault happened.
+ * Offline outbox, replay, and idempotency under transport and storage faults
+ * (SPEC.md §2.3, §6.3, §7; Appendix B.2/B.3). Faults target the transport
+ * seam or client storage; the server is never told a fault happened.
  */
 import { decodeMessage } from '@syncular/core';
 import { check, checkEqual } from '../checks';
-import { task } from '../fixture';
+import { FIXTURE_SCHEMA, task } from '../fixture';
 import { responsePushResults } from '../raw';
 import type { DriverSchema } from '../driver';
 import type { Scenario } from '../scenario';
-import { expectConverged, syncFails, syncIdle, syncOk } from './util';
+import {
+  expectConverged,
+  seedTasks,
+  syncFails,
+  syncIdle,
+  syncOk,
+} from './util';
 
 const P1 = { project_id: ['p1'] } as const;
 const UNIQUE_SCHEMA: DriverSchema = {
@@ -48,6 +54,258 @@ async function bootstrapped(
 }
 
 export const offlineScenarios: readonly Scenario[] = [
+  {
+    name: 'offline/replay-failure-preserves-earlier-ack-boundary',
+    specRefs: ['§7.1', '§7.2.1', '§7.5'],
+    async run(ctx) {
+      await seedTasks(ctx, [task('occupied', 'p1', 'server')]);
+      const a = await bootstrapped(ctx, 'a', 'replay');
+      check(
+        a.api.executeStorageSql !== undefined,
+        'storage faults are available',
+      );
+      check(
+        a.api.drainChangeBatches !== undefined,
+        'change batches are available',
+      );
+      const first = await a.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('first', 'p1') },
+      ]);
+      const rejected = await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: task('occupied', 'p1', 'local'),
+          baseVersion: 0,
+        },
+      ]);
+      const later = await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: task('occupied', 'p1', 'later'),
+        },
+      ]);
+      const rows = await a.api.readRows('tasks');
+      const subscription = await a.api.subscriptionState('tasks');
+      await a.api.drainChangeBatches();
+      // The first ACK leaves two pending commits. Only the rejection's replay
+      // reaches this fault, after its provisional outbox removal.
+      await a.api.executeStorageSql(
+        "CREATE TRIGGER fail_replay BEFORE INSERT ON tasks WHEN new.id='occupied' AND (SELECT count(*) FROM _syncular_outbox)=1 BEGIN SELECT RAISE(ABORT,'replay failed'); END",
+      );
+      await syncFails(
+        a,
+        'client.outcome_persistence_failed',
+        'rejection replay',
+      );
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [rejected, later],
+        'earlier ACK remains durable',
+      );
+      checkEqual(
+        await a.api.readRows('tasks'),
+        rows,
+        'failing rejection restores visible state',
+      );
+      checkEqual(
+        await a.api.subscriptionState('tasks'),
+        subscription,
+        'later pull never advances',
+      );
+      checkEqual(
+        (await a.api.commitOutcomes()).map((outcome) => outcome.clientCommitId),
+        [first],
+        'only the completed ACK persists',
+      );
+      checkEqual(
+        await a.api.conflicts(),
+        [],
+        'failing rejection publishes no conflict',
+      );
+      const batches = (await a.api.drainChangeBatches()).filter(
+        (batch) => batch.outcomesChanged,
+      );
+      checkEqual(
+        batches.map((batch) => batch.status?.outbox),
+        [2],
+        'only the earlier ACK publishes',
+      );
+      await a.api.executeStorageSql('DROP TRIGGER fail_replay');
+      await ctx.recreateClient(a, FIXTURE_SCHEMA);
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [rejected, later],
+        'restart preserves the failed boundary',
+      );
+      const report = await syncOk(a);
+      checkEqual(
+        report.rejected,
+        [rejected],
+        'retry persists the original rejection',
+      );
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [],
+        'retry drains remaining intent',
+      );
+      await syncIdle(a);
+      await expectConverged(ctx, 'tasks', [a], {
+        variable: 'project_id',
+        values: ['p1'],
+      });
+    },
+  },
+  {
+    name: 'offline/replay-trigger-refuses-reopen-without-partial-overlay',
+    specRefs: ['§7.1', '§7.5'],
+    async run(ctx) {
+      const a = await ctx.newClient({
+        actorId: 'a',
+        clientId: 'replay',
+        allowed: P1,
+      });
+      check(
+        a.api.executeStorageSql !== undefined,
+        'reference clients expose deterministic storage faults',
+      );
+      check(
+        a.api.localRevision !== undefined,
+        'reference clients expose local revisions',
+      );
+      const ids = [];
+      for (const id of ['early', 'bad'])
+        ids.push(
+          await a.api.mutate([
+            { op: 'upsert', table: 'tasks', values: task(id, 'p1') },
+          ]),
+        );
+      const rows = await a.api.readRows('tasks');
+      const revision = await a.api.localRevision();
+      await a.api.executeStorageSql(
+        "CREATE TRIGGER fail_replay BEFORE INSERT ON tasks WHEN new.id='bad' BEGIN SELECT RAISE(ABORT,'replay failed'); END",
+      );
+      let refused = false;
+      try {
+        await ctx.recreateClient(a, FIXTURE_SCHEMA);
+      } catch {
+        refused = true;
+      }
+      check(refused, '§7.1 replay errors refuse reopen');
+      await a.api.executeStorageSql('DROP TRIGGER fail_replay');
+      await ctx.recreateClient(a, FIXTURE_SCHEMA);
+      checkEqual(
+        await a.api.readRows('tasks'),
+        rows,
+        '§7.1 failed replay leaves no partial visible table',
+      );
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        ids,
+        '§7.1 refusal retains durable intent',
+      );
+      checkEqual(
+        await a.api.localRevision(),
+        revision,
+        '§7.5 failed replay publishes no revision',
+      );
+      await syncIdle(a);
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [],
+        'retry delivers retained intent',
+      );
+    },
+  },
+  {
+    name: 'offline/restore-failure-preserves-later-intent',
+    specRefs: ['§7.1', '§7.2', '§7.5'],
+    async run(ctx) {
+      await seedTasks(ctx, [task('occupied', 'p1', 'server')]);
+      const a = await bootstrapped(ctx, 'a', 'replay');
+      check(
+        a.api.executeStorageSql !== undefined,
+        'storage faults are available',
+      );
+      check(
+        a.api.drainChangeBatches !== undefined,
+        'change batches are available',
+      );
+      const rejected = await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: task('occupied', 'p1', 'local'),
+          baseVersion: 0,
+        },
+      ]);
+      const later = await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: task('occupied', 'p1', 'later'),
+        },
+      ]);
+      const rows = await a.api.readRows('tasks');
+      const subscription = await a.api.subscriptionState('tasks');
+      await a.api.drainChangeBatches();
+      // The rejection's necessary replay of the later commit is the only
+      // write that reaches this fault, after its provisional outbox removal.
+      await a.api.executeStorageSql(
+        "CREATE TRIGGER fail_replay BEFORE INSERT ON tasks WHEN new.id='occupied' AND (SELECT count(*) FROM _syncular_outbox)=1 BEGIN SELECT RAISE(ABORT,'replay failed'); END",
+      );
+      await syncFails(
+        a,
+        'client.outcome_persistence_failed',
+        'rejection replay',
+      );
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [rejected, later],
+        'failed reconciliation retains every pending commit',
+      );
+      checkEqual(
+        await a.api.readRows('tasks'),
+        rows,
+        'failed reconciliation restores visible state',
+      );
+      checkEqual(
+        await a.api.subscriptionState('tasks'),
+        subscription,
+        'failed reconciliation advances no pull cursor',
+      );
+      checkEqual(
+        await a.api.commitOutcomes(),
+        [],
+        'failed reconciliation persists no outcome',
+      );
+      const changes = await a.api.drainChangeBatches();
+      check(
+        changes.every(
+          (batch) => batch.tables.length === 0 && !batch.outcomesChanged,
+        ),
+        'failed reconciliation publishes no successful apply batch',
+      );
+      await a.api.executeStorageSql('DROP TRIGGER fail_replay');
+      const report = await syncOk(a);
+      checkEqual(
+        report.rejected,
+        [rejected],
+        'retry persists the original rejection',
+      );
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [],
+        'retry drains remaining intent',
+      );
+      await syncIdle(a);
+      await expectConverged(ctx, 'tasks', [a], {
+        variable: 'project_id',
+        values: ['p1'],
+      });
+    },
+  },
   {
     name: 'offline/explicit-transport-gate-local-writes-and-resume',
     specRefs: ['§8.8', '§7.1'],

@@ -91,10 +91,18 @@ visible across the bump.
 Re-encoding fails when a pending commit references a column or table the new
 schema no longer has: the value or operation has nowhere to go. This surfaces
 as a rejection with the client-local code
-`sync.outbox_incompatible` (§7.4.4). The un-encodable commit leaves the outbox
-and its purely-optimistic rows are undone, exactly like a server rejection.
-Later outbox commits that *do* encode keep replaying, so the queue keeps
-moving past the one incompatible commit.
+`sync.outbox_incompatible` (§7.4.4). For a removed table the local overlay has
+no mirror to replay into, so the replay skips that operation: an upsert cannot
+be encoded and is classified at send time, while a value-free delete stays
+encodable and is validated by the server. A rejection of that delete drains
+the commit without looking up a removed local table. The un-encodable commit then leaves
+the outbox and its purely-optimistic rows are undone, exactly like a server
+rejection. Later outbox commits that *do* encode keep replaying, so the
+queue keeps moving past the one incompatible commit.
+
+The client classifies incompatible commits before collecting their pending blob
+uploads. A dropped commit no longer requires its cached bodies; independent
+staging pins and surviving commit dependencies still require upload.
 
 ## What the app sees
 

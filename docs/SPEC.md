@@ -3700,6 +3700,22 @@ an outbox commit. This includes a patch following an insert in the same batch.
   same-table peer reconciliation. Unrelated subscriptions MUST NOT restore or
   rewrite protected rows. A committed import restores each affected base once
   and replays its intent once before publishing the observation batch.
+- Overlay replay MUST propagate SQL reads, row decoding, writes, savepoint,
+  and FTS maintenance failures. A failed rebuild MUST roll back every visible
+  table and FTS change in that rebuild. When reconciliation accompanies a
+  durable apply, the same observation transaction MUST roll back its base
+  changes, cursors, acknowledgements, outbox changes, and local revision.
+  The client MUST surface the failure and retain durable pending intent; it
+  MUST NOT publish a successful observation batch for the failed apply.
+  A successful read returning no row permits the partial-operation absence
+  rule above. Read or decode failures MUST NOT be treated as row absence.
+  During replay, an intended row that conflicts with a declared secondary
+  unique index remains pending and invisible until a later replay admits it
+  or the server answers its push. This deferral applies only to a confirmed
+  secondary unique conflict; other replay failures abort the transaction.
+  A locked replica's encrypted column can contain opaque ciphertext. Replay
+  MUST preserve omitted ciphertext bytes while validating the supplied plain
+  columns; missing keys do not make a plain-column patch a decode failure.
 - A local commit that violates a declared secondary unique index against the
   current optimistic overlay MUST fail atomically with
   `sync.constraint_violation`. The client MUST leave no operation from that
@@ -4266,6 +4282,18 @@ raised carrying a client-local code `sync.outbox_incompatible`
 schema and retrying it unmodified never succeeds). Later outbox commits
 that *do* encode continue to replay — one incompatible commit does not
 wedge the queue, matching the §7.2 rule that dependents are app policy.
+
+The send-time classification MUST complete before collecting blob uploads for
+pending commits. Dropping an incompatible commit removes its blob dependencies;
+an independent staging pin or a surviving commit can still require that body.
+
+An operation that names a table the new schema removed has no local mirror to
+replay into, so the overlay replay skips it. That skip is structural and never
+a replay failure. A value-free delete remains encodable and takes ordinary
+server validation; an upsert cannot be encoded under the new schema and is
+classified at send time as `sync.outbox_incompatible`. A storage or
+persisted-value failure during replay still fails the transaction and rolls it
+back.
 `sync.outbox_incompatible` is a **client-local** code (§10.3 — never a
 wire code; it is produced entirely client-side at encode time, like
 `transport.failed`), surfaced through the same rejection channel the app
@@ -5020,7 +5048,9 @@ pinned, never interpreted.
   that request can be acknowledged by that round. Later local commits remain
   in the outbox for the next round. Apply replays them over the server base.
   Teardown, security preflight, purge and released subscription contexts
-  invalidate their in-flight result. Socket deltas buffered during a round
+  invalidate their in-flight result. A local purge or rebootstrap that rolls
+  back MUST preserve the captured round so its response can still apply.
+  Socket deltas buffered during a round
   follow its response. Hosts MUST use completion notifications and existing
   sync intents, without introducing a polling loop. Synchronous core APIs
   drive the same lifecycle on their calling thread.

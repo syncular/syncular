@@ -128,6 +128,89 @@ export const blobScenarios: readonly Scenario[] = [
     },
   },
   {
+    name: 'blobs/incompatible-commit-drops-before-upload-collection',
+    requires: ['blobs', 'storage-fault'],
+    specRefs: ['§5.9.7', '§7.4.4'],
+    server: {
+      schema: {
+        ...BLOB_SCHEMA,
+        version: 2,
+        tables: BLOB_SCHEMA.tables.map((table) => ({
+          ...table,
+          columns: table.columns.filter((column) => column.name !== 'title'),
+        })),
+      },
+    },
+    async run(ctx) {
+      for (const fault of ['present', 'missing', 'metadata']) {
+        const owner = await ctx.newClient({
+          actorId: fault,
+          clientId: fault,
+          schema: BLOB_SCHEMA,
+          allowed: P1,
+        });
+        check(
+          owner.api.uploadBlob !== undefined &&
+            owner.api.executeStorageSql !== undefined,
+          'blob storage hooks exist',
+        );
+        await owner.api.setTransportEnabled(false);
+        const ref = await owner.api.uploadBlob(bytesOf(fault));
+        const commit = await owner.api.mutate([
+          {
+            op: 'upsert',
+            table: 'attachments',
+            values: attachmentRow(fault, 'p1', ref),
+          },
+        ]);
+        // The standalone staging pin has been flushed; the queued commit is
+        // now the only reason to upload the body again after a lost ACK.
+        await owner.api.executeStorageSql('DELETE FROM _syncular_blob_uploads');
+        await ctx.recreateClient(owner, {
+          ...BLOB_SCHEMA,
+          version: 2,
+          tables: BLOB_SCHEMA.tables.map((table) => ({
+            ...table,
+            columns: table.columns.filter((column) => column.name !== 'title'),
+          })),
+        });
+        check(
+          owner.api.executeStorageSql !== undefined,
+          'recreated storage hook exists',
+        );
+        if (fault === 'missing')
+          await owner.api.executeStorageSql('DELETE FROM _syncular_blobs');
+        if (fault === 'metadata')
+          await owner.api.executeStorageSql(
+            "UPDATE _syncular_blobs SET media_type = x'ff'",
+          );
+        await owner.api.executeStorageSql(
+          "INSERT OR REPLACE INTO _syncular_meta(key, value) VALUES ('logEpoch', 'known-before-upgrade')",
+        );
+        await owner.api.setTransportEnabled(true);
+        await syncIdle(owner);
+        checkEqual(
+          await owner.api.pendingCommitIds(),
+          [],
+          'incompatible commit drains',
+        );
+        check(
+          (await owner.api.rejections()).some(
+            (r) =>
+              r.clientCommitId === commit &&
+              r.code === 'sync.outbox_incompatible',
+          ),
+          'local incompatibility takes precedence over the obsolete blob',
+        );
+        checkEqual(
+          owner.blobUploads.length,
+          0,
+          'dropped dependencies never reach the upload transport',
+        );
+      }
+    },
+  },
+  {
     name: 'blobs/upload-owns-nonzero-offset-input-at-call-time',
     requires: ['blobs'],
     specRefs: ['§5.9.1', '§5.9.7'],
