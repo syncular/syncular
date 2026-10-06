@@ -120,6 +120,7 @@ export function classifySqliteFailure(error: unknown): {
     | typeof STORAGE_CORRUPT_CODE
     | typeof STORAGE_FULL_CODE
     | typeof STORAGE_IO_CODE
+    | typeof STORAGE_BUSY_CODE
     | undefined;
   readonly error: unknown;
 } {
@@ -151,7 +152,8 @@ export function classifySqliteFailure(error: unknown): {
       code:
         error.code === STORAGE_FULL_CODE ||
         error.code === STORAGE_IO_CODE ||
-        error.code === STORAGE_CORRUPT_CODE
+        error.code === STORAGE_CORRUPT_CODE ||
+        error.code === STORAGE_BUSY_CODE
           ? error.code
           : undefined,
       error: retained,
@@ -179,7 +181,9 @@ export function classifySqliteFailure(error: unknown): {
         ? STORAGE_IO_CODE
         : primary === 11 || primary === 26
           ? STORAGE_CORRUPT_CODE
-          : undefined;
+          : primary === 5 || primary === 6
+            ? STORAGE_BUSY_CODE
+            : undefined;
   if (code === undefined) return { sqliteCode, code, error };
   const rollback =
     error instanceof Error && 'rollbackError' in error
@@ -191,8 +195,10 @@ export function classifySqliteFailure(error: unknown): {
       ? 'local SQLite storage is full'
       : primary === 10
         ? 'local SQLite storage I/O failed'
-        : 'local SQLite storage is corrupt',
-    false,
+        : code === STORAGE_BUSY_CODE
+          ? 'local SQLite storage is busy'
+          : 'local SQLite storage is corrupt',
+    code === STORAGE_BUSY_CODE,
     {
       sqliteCode,
       sqliteMessage: error instanceof Error ? error.message : String(error),
