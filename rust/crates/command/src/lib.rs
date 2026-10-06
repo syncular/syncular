@@ -229,10 +229,10 @@ fn parse_previous_version_snapshot_spec(
     })
 }
 
-pub fn parse_limits(value: Option<&Value>) -> ClientLimits {
+pub fn parse_limits(value: Option<&Value>) -> Result<ClientLimits, CommandError> {
     let mut limits = ClientLimits::default();
     let Some(object) = value.and_then(Value::as_object) else {
-        return limits;
+        return Ok(limits);
     };
     limits.limit_commits = object
         .get("limitCommits")
@@ -255,7 +255,33 @@ pub fn parse_limits(value: Option<&Value>) -> ClientLimits {
         .get("outcomeRetentionMaxEntries")
         .and_then(Value::as_u64)
         .map(|value| value as usize);
-    limits
+    limits.max_push_commits_per_request = parse_push_limit(object, "maxPushCommitsPerRequest")?;
+    limits.max_push_operations_per_request =
+        parse_push_limit(object, "maxPushOperationsPerRequest")?;
+    limits.max_push_request_bytes = parse_push_limit(object, "maxPushRequestBytes")?;
+    Ok(limits)
+}
+
+/// §7.1: a configured push limit is a positive integer. Null or absent uses
+/// the default for that limit; invalid values fail with a structured error.
+fn parse_push_limit(
+    object: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<Option<usize>, CommandError> {
+    match object.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_u64()
+            .and_then(|n| usize::try_from(n).ok())
+            .filter(|n| *n >= 1 && *n <= u32::MAX as usize)
+            .map(Some)
+            .ok_or_else(|| CommandError {
+                code: "sync.invalid_request".to_owned(),
+                message: "push limit must be an integer in 1..=4294967295".to_owned(),
+                details: Some(serde_json::json!({ "limit": key })),
+                retryable: false,
+            }),
+    }
 }
 
 /// §8.8: parse the `realtimePolicy` create param. Absent ⇒ `optional`.
@@ -540,7 +566,7 @@ pub fn dispatch<T: Transport>(
             let schema = params
                 .get("schema")
                 .ok_or_else(|| client_err("create missing schema".to_owned()))?;
-            let limits = parse_limits(params.get("limits"));
+            let limits = parse_limits(params.get("limits"))?;
             // RFC 0005 D8: the feature config rides the top-level key the TS
             // client uses; the Rust core carries it on `ClientLimits` so it is
             // resolved before the opening schema reset runs.
@@ -1863,6 +1889,31 @@ mod tests {
             )
             .expect_err("invalid budget");
             assert_eq!(error.code, "sync.invalid_request", "{value}");
+        }
+    }
+
+    #[test]
+    fn create_rejects_invalid_push_limits() {
+        for value in [json!(0), json!(-1), json!(1.5), json!(4_294_967_296u64)] {
+            let mut transport = NoNetwork::default();
+            let mut client: Option<SyncClient> = None;
+            let mut effects = CreateEffects::default();
+            let error = dispatch(
+                &mut transport,
+                &mut client,
+                &mut effects,
+                "create",
+                &json!({
+                    "schema": schema(),
+                    "limits": { "maxPushRequestBytes": value }
+                }),
+            )
+            .expect_err("invalid push limit");
+            assert_eq!(error.code, "sync.invalid_request", "{value}");
+            assert_eq!(
+                error.details.as_ref().unwrap()["limit"],
+                json!("maxPushRequestBytes")
+            );
         }
     }
 

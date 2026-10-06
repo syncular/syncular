@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-10-06',
+    title: 'Configurable push batching limits',
+    body: 'ClientLimits takes maxPushCommitsPerRequest, maxPushOperationsPerRequest (default 500), and maxPushRequestBytes. The byte budget counts the complete encoded SSP2 request. The client sends whole commits in FIFO order, never splits one, defers a later commit that does not fit, and fails a first commit over the operation or byte budget with the typed client.push_request_too_large error while keeping its intent and optimistic rows. Limits are integers in 1..=4294967295.',
+    links: [
+      {
+        href: '/concepts-commits/#push-batching',
+        label: 'Push batching',
+      },
+    ],
+  },
+  {
+    date: '2026-10-06',
     title: 'Host adapter error mapping hook',
     body: 'The synchronous mapError hook translates unexpected adapter exceptions to catalog errors with structured details, including host retry metadata. Existing onError observers keep their behavior. Invalid mapper results produce sync.internal_error; catalog errors retain their status and retryability. Registered operation handlers keep their operation.* failure envelope.',
     links: [
