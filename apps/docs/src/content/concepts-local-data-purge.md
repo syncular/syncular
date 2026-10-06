@@ -59,6 +59,10 @@ values do not change identity.
 
 ## Atomic effects
 
+A failed purge preserves the captured sync round, so its response can still
+apply after the local transaction rolls back. A successful purge invalidates
+the old context.
+
 One local SQLite transaction:
 
 - deletes matching visible and confirmed synced rows;
