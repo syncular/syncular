@@ -4880,13 +4880,18 @@ export class SyncClient {
       // (table-wide scope) and later commits over legacy before-images.
       // ACK-only groups reconcile nothing and stay zero-work.
       this.#replayOutbox(
-        commit.operations.map((operation) =>
-          JSON.stringify(
-            hasUniqueIndex(this.#table(operation.table))
-              ? [operation.table]
-              : [operation.table, operation.rowId],
-          ),
-        ),
+        commit.operations.flatMap((operation) => {
+          const table = this.#schema.tables.get(operation.table);
+          return table === undefined
+            ? []
+            : [
+                JSON.stringify(
+                  hasUniqueIndex(table)
+                    ? [operation.table]
+                    : [operation.table, operation.rowId],
+                ),
+              ];
+        }),
       );
     });
     batch.status();

@@ -3619,6 +3619,7 @@ mod observation_tests {
         for barrier in [
             "preflight",
             "purge",
+            "rebootstrap",
             "subscription",
             "failed-purge-replay",
             "failed-purge-publish",
@@ -3719,6 +3720,13 @@ mod observation_tests {
                                     vec!["p1".into()],
                                 )]),
                             }],
+                        })
+                        .unwrap();
+                }
+                "rebootstrap" => {
+                    client
+                        .rebootstrap_local_data(&LocalDataRebootstrapInput {
+                            rebootstrap_id: "pending-round".into(),
                         })
                         .unwrap();
                 }
