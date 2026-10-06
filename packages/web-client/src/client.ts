@@ -922,57 +922,139 @@ export class SyncClient {
     this.#lease = await lock.acquire(
       this.#config.lockName ?? 'syncular-leader',
     );
-    // Bookkeeping must exist before we inspect the persisted schema marker.
-    // Do not materialize new app indexes/FTS projections yet: on a version
-    // bump they may reference columns that only exist after the reset.
-    ensureLocalBookkeepingSchema(this.#db);
-    if (this.#hasBlobs) ensureBlobSchema(this.#db);
-    this.#db.transaction(() => {
-      pruneCommitOutcomes(this.#db, this.#outcomeRetentionMaxEntries);
-    });
-    const activeFailures = activeFailureRecords(
-      listCommitOutcomes(this.#db, { activeOnly: true }),
-    );
-    this.#conflicts = activeFailures.conflicts;
-    this.#rejections = activeFailures.rejections;
-    const persisted = getMeta(this.#db, 'clientId');
-    if (
-      persisted !== undefined &&
-      this.#config.clientId !== undefined &&
-      persisted !== this.#config.clientId
-    ) {
+    // §7.4.2: the entire synchronous storage phase below (marker guard,
+    // identity and bookkeeping writes, schema reset/replay, container
+    // reconciliation, subscription pruning) runs as one deferred transaction
+    // whose first statement is the marker read. That read pins SQLite's
+    // snapshot before any write: a replica another process upgraded after the
+    // read can never be written over (its snapshot fails with
+    // BUSY/BUSY_SNAPSHOT), and one upgraded before the read refuses with
+    // `client.schema_downgrade`. The batch emits its change event only after
+    // the commit. The onUpgrading callback still reports reset intent.
+    let subscriptions!: ReturnType<typeof pruneUnknownSubscriptions>;
+    try {
+      this.#applyBatch(() => {
+        // §7.4.1/§7.4.2: this is the transaction's first read, so it pins the
+        // snapshot every write below commits under. `undefined` is an absent
+        // marker (fresh/legacy); a non-canonical value, a `_syncular_meta` that
+        // is not a table, or a duplicated marker row is unreadable state.
+        let marker: number | undefined;
+        try {
+          const meta = this.#db.query(
+            "SELECT type FROM sqlite_master WHERE name = '_syncular_meta'",
+          )[0];
+          if (meta !== undefined) {
+            if (meta.type !== 'table')
+              throw new Error('invalid metadata table');
+            const rows = this.#db.query(
+              'SELECT value FROM _syncular_meta WHERE key = ?',
+              [LOCAL_SCHEMA_VERSION_KEY],
+            );
+            // A duplicated marker cannot be resolved. Picking one row could
+            // select an older version and drive a destructive reset over a
+            // newer replica.
+            if (rows.length > 1) throw new Error('invalid schema marker');
+            const row = rows[0];
+            if (
+              row === undefined &&
+              this.#db.query(
+                "SELECT 1 FROM _syncular_meta WHERE key = 'localSchemaDescriptor' LIMIT 1",
+              ).length > 0
+            ) {
+              throw new Error('missing paired schema marker');
+            }
+            if (row !== undefined) {
+              const value = row.value;
+              const version = Number(value);
+              if (
+                typeof value !== 'string' ||
+                !Number.isInteger(version) ||
+                version < 1 ||
+                version > 2147483647 ||
+                String(version) !== value
+              ) {
+                throw new Error('invalid schema marker');
+              }
+              marker = version;
+            }
+          }
+        } catch (error) {
+          // A recognized SQLite storage failure (including BUSY/LOCKED
+          // contention on the marker read) stays classified; only an invalid
+          // or otherwise unreadable marker is `sync.local_corrupt`.
+          const failure = classifySqliteFailure(error);
+          if (failure.code !== undefined) throw failure.error;
+          throw new ClientSyncError(
+            'sync.local_corrupt',
+            'persisted local schema marker is unreadable or invalid',
+          );
+        }
+        if (marker !== undefined && marker > this.#schema.version) {
+          throw new ClientSyncError(
+            'client.schema_downgrade',
+            'persisted local schema is newer than the requested schema',
+            false,
+            {
+              persistedVersion: marker,
+              requestedVersion: this.#schema.version,
+            },
+          );
+        }
+        // New app indexes may reference columns that only exist after the
+        // reset.
+        ensureLocalBookkeepingSchema(this.#db);
+        if (this.#hasBlobs) ensureBlobSchema(this.#db);
+        pruneCommitOutcomes(this.#db, this.#outcomeRetentionMaxEntries);
+        const activeFailures = activeFailureRecords(
+          listCommitOutcomes(this.#db, { activeOnly: true }),
+        );
+        this.#conflicts = activeFailures.conflicts;
+        this.#rejections = activeFailures.rejections;
+        const persisted = getMeta(this.#db, 'clientId');
+        if (
+          persisted !== undefined &&
+          this.#config.clientId !== undefined &&
+          persisted !== this.#config.clientId
+        ) {
+          throw new ClientSyncError(
+            'client.identity_mismatch',
+            `database clientId ${JSON.stringify(persisted)} differs from ${JSON.stringify(this.#config.clientId)}`,
+          );
+        }
+        this.#clientId =
+          persisted ?? this.#config.clientId ?? crypto.randomUUID();
+        if (persisted === undefined) {
+          setMeta(this.#db, 'clientId', this.#clientId);
+        }
+        // §7.3.5: restore the persisted lease so leaseState survives restart.
+        const leaseJson = getMeta(this.#db, 'leaseState');
+        if (leaseJson !== undefined) {
+          this.#leaseState = JSON.parse(leaseJson) as LeaseState;
+        }
+        // §7.4.2 trigger 1: the persisted local schema version is lower than
+        // the generated version this client ships — run the wipe/re-bootstrap
+        // reset before the first sync round. A fresh install (no marker) is
+        // treated as already at the generated version.
+        this.#detectAndResetSchema(marker);
+        // RFC 0005 D9: a container with missing/stale metadata, or past its
+        // TTL, is discarded at boot before anything can read it; the capture
+        // above already ran against this transaction's validated marker. The
+        // orphan/stale sweep is unconditional; the TTL is aware-binary hygiene
+        // only.
+        this.#reconcilePreviousVersionAtBoot();
+        // A registration remains app intent only while its table exists in the
+        // running schema. Removed-table registrations would poison every pull.
+        subscriptions = pruneUnknownSubscriptions(
+          this.#db,
+          loadSubscriptions(this.#db),
+          this.#schema,
+        );
+      });
+    } catch (error) {
       await this.#lease.release();
       this.#lease = undefined;
-      throw new ClientSyncError(
-        'client.identity_mismatch',
-        `database clientId ${JSON.stringify(persisted)} differs from ${JSON.stringify(this.#config.clientId)}`,
-      );
+      throw classifySqliteFailure(error).error;
     }
-    this.#clientId = persisted ?? this.#config.clientId ?? crypto.randomUUID();
-    if (persisted === undefined) {
-      setMeta(this.#db, 'clientId', this.#clientId);
-    }
-    // §7.3.5: restore the persisted lease so leaseState survives restart.
-    const leaseJson = getMeta(this.#db, 'leaseState');
-    if (leaseJson !== undefined) {
-      this.#leaseState = JSON.parse(leaseJson) as LeaseState;
-    }
-    // §7.4.2 trigger 1: the persisted local schema version differs from the
-    // generated version this client ships — run the wipe/re-bootstrap reset
-    // before the first sync round. A fresh install (no marker) is treated as
-    // already at the generated version.
-    this.#detectAndResetSchema();
-    // RFC 0005 D9: a container with missing/stale metadata, or past its TTL, is
-    // discarded at boot before anything can read it. The orphan/stale sweep is
-    // unconditional; the TTL is aware-binary hygiene only.
-    this.#reconcilePreviousVersionAtBoot();
-    // A registration remains app intent only while its table exists in the
-    // running schema. Removed-table registrations would poison every pull.
-    const subscriptions = pruneUnknownSubscriptions(
-      this.#db,
-      loadSubscriptions(this.#db),
-      this.#schema,
-    );
     this.#started = true;
     // A persisted active subscription needs one catch-up round on every open:
     // realtime only covers changes after the socket connects, and an
@@ -1012,12 +1094,14 @@ export class SyncClient {
 
   /**
    * §7.4.1/§7.4.2: compare the generated schema version to the persisted
-   * marker and run the §7.4.3 reset when they differ. Idempotent by the
+   * marker and run the §7.4.3 reset when it increases. Idempotent by the
    * marker — a mid-reset crash re-runs the reset on the next boot.
+   *
+   * The startup phase's single transaction already pinned and validated the
+   * marker, so the shape chosen here commits under that snapshot.
    */
-  #detectAndResetSchema(): void {
-    const markerJson = getMeta(this.#db, LOCAL_SCHEMA_VERSION_KEY);
-    if (markerJson === undefined) {
+  #detectAndResetSchema(marker: number | undefined): void {
+    if (marker === undefined) {
       // Fresh install: the tables just created match the running code.
       this.#db.transaction(() => {
         ensureLocalSyncedSchema(this.#db, this.#schema);
@@ -1031,7 +1115,6 @@ export class SyncClient {
       });
       return;
     }
-    const marker = Number(markerJson);
     if (marker === this.#schema.version) {
       // Same-version opens remain self-healing for absent tables/indexes, and
       // RFC 0005 D1 backfills the descriptor for a database first opened by
@@ -1530,6 +1613,13 @@ export class SyncClient {
       return this.#previousVersionUnavailable(
         currentVersion,
         refusal?.reason ?? 'no-previous-descriptor',
+      );
+    }
+    if (record.currentVersion !== currentVersion) {
+      this.#discardPreviousVersion();
+      return this.#previousVersionUnavailable(
+        currentVersion,
+        'no-previous-descriptor',
       );
     }
     if (

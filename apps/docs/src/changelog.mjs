@@ -16,6 +16,17 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-10-06',
+    title: 'Replica opens refuse schema downgrades',
+    body: 'TypeScript and Rust clients refuse a newer persisted schema with client.schema_downgrade before bookkeeping writes or reset. The replica, outbox and previous-version context remain intact. Unreadable, corrupt or missing paired markers fail with sync.local_corrupt. Startup writes are transactional. Previous-version reads discard captures for an uncommitted schema; capture remains a separate-file operation.',
+    links: [
+      {
+        href: '/concepts-schema-upgrades/',
+        label: 'Schema upgrades and downgrade refusal',
+      },
+    ],
+  },
+  {
     date: '2026-10-04',
     title: 'Authority readers require an explicit bundle opt-in',
     body: 'Released in 0.30.16. Ordinary workers exclude the authority reader. Authority-enabled workers inject the factory from @syncular/client/authority. Native apps use @syncular/tauri/authority for the snapshot bridge. Missing worker opt-in fails before storage opens. Accepted-base evidence and independent Rust enforcement retain their 0.30.15 semantics; bundle caps are unchanged.',

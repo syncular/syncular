@@ -541,6 +541,16 @@ impl From<rusqlite::Error> for QueryReadFailure {
                 rollback_failure: None,
                 message: "local SQLite storage I/O failed".to_owned(),
             },
+            // SQLITE_BUSY (5) and SQLITE_LOCKED (6), including every extended
+            // code, are transient lock contention: the same operation can
+            // succeed after the conflicting operation releases its lock.
+            Some(5 | 6) => Self {
+                code: Some("client.storage_busy"),
+                sqlite_code,
+                sqlite_message: Some(error.to_string()),
+                rollback_failure: None,
+                message: "local SQLite storage is busy".to_owned(),
+            },
             _ => Self {
                 code: None,
                 sqlite_code,
