@@ -185,19 +185,6 @@ function retainedRows(
   );
 }
 
-function retainedTable(
-  schema: CompiledClientSchema,
-  name: string,
-): CompiledClientTable {
-  const table = schema.tables.get(name);
-  if (!table)
-    throw new ClientSyncError(
-      'sync.unknown_table',
-      'retained table is unknown',
-    );
-  return table;
-}
-
 export function restoreFailedBases(
   db: ClientDatabase,
   schema: CompiledClientSchema,
@@ -208,7 +195,11 @@ export function restoreFailedBases(
     const key = JSON.stringify([row.tbl, row.id]);
     if (seen.has(key)) continue;
     seen.add(key);
-    const table = retainedTable(schema, row.tbl as string);
+    // §7.4.4: a retained row whose table the current schema removed has no
+    // mirror to project; its persisted intent and outcome stay available, only
+    // this projection is skipped.
+    const table = schema.tables.get(row.tbl as string);
+    if (table === undefined) continue;
     if (row.base === null) deleteLocalRow(db, table, row.id as string, false);
     else {
       const values: Record<string, JsonRowValue> = JSON.parse(String(row.base));
@@ -245,7 +236,11 @@ export function failedOverlayCommits(
     const id = row.commit_id as string;
     let operation: OutboxOperation = JSON.parse(row.op as string);
     if (schema && operation.op === 'upsert') {
-      const table = retainedTable(schema, operation.table);
+      // §7.4.4: the table this retained row belongs to is gone; the persisted
+      // outcome and intent stay available, only the removed-table projection is
+      // skipped.
+      const table = schema.tables.get(operation.table);
+      if (table === undefined) continue;
       if (acknowledged) {
         if (
           !db.query(
