@@ -130,8 +130,9 @@ this feature leaves the cache file in place in both cases:
 - a rollback that does not change the schema runs no reset at all, so the
   old build never touches the file, cannot purge it (its purge selector
   rejects a name that is not in its schema) and never opens it;
-- a rollback that changes the schema runs its normal reset, but that reset
-  drops replica tables only and cannot see a file it does not know about.
+- a rollback to a binary predating the schema downgrade guard runs its
+  historical reset, which drops replica tables only and cannot see a file it
+  does not know about.
 
 So the residue is **unbounded in time**: nothing removes it until a
 feature-aware build discards it, or the host's own storage GC eventually
@@ -145,7 +146,13 @@ descriptor has been backfilled (see above).
 
 ## Rolling a build back
 
-The supported procedure is executable, not a checkbox: before rolling a
+Current clients refuse to open a newer replica with an older schema through
+`client.schema_downgrade`. Discarding the cache does not bypass this guard.
+Keep a compatible build or explicitly discard the replica through the host's
+storage lifecycle before using an older schema. See
+[Schema upgrades](/concepts-schema-upgrades/).
+
+The supported cache cleanup procedure before rollback is executable: before rolling a
 build back, call `previousVersionDiscard()` and verify the returned
 `{ present, discarded }`; a rollback path that cannot run it must call
 `purgeLocalData()` instead. A build that enables the feature is expected

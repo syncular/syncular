@@ -4077,7 +4077,7 @@ the feature is invisible until a lease-issuing server sends one.
 
 **No client-side migration engine.**
 A client never transforms its local tables from schema `N` to schema
-`N+1`. When the schema version changes, it **wipes its local tables,
+`N+1`. When the schema version increases, it **wipes its local tables,
 re-bootstraps from the server at the new version, and replays the
 outbox on top** (§7.1). Bootstrap-from-segment (§5, the image lane
 especially, §5.3) makes a fresh bootstrap cheap enough that carrying a
@@ -4109,16 +4109,30 @@ The reset flow (§7.4.3) fires on either of two triggers; both mean "the
 local tables no longer match the schema this client can codec," and both
 converge on the identical wipe-re-bootstrap-replay:
 
-1. **Local generated-version change (on boot).** At `start()`, after
-   ensuring the local tables exist, the client compares its generated
-   schema version to the persisted marker (§7.4.1). If they differ (in
-   either direction — an upgrade `N → N+1` or a downgrade rollback
-   `N+1 → N`), it runs the reset **before its first sync round**. This
+1. **Local generated-version increase (on boot).** Before creating or
+   updating bookkeeping or synced tables, the client reads the persisted
+   marker (§7.4.1) and compares it to its generated schema version. An
+   upgrade `N → N+1` runs the reset **before its first sync round**. This
    is the ordinary upgrade path: the app ships new code plus a new
    generated schema `vN+1`; the client boots on top of `vN` local
    tables, detects the change locally with no server involvement, and
    resets. The next sync bootstraps at `vN+1` against a server that
    already serves `vN+1`.
+
+   Every replica constructor, open, and recreation MUST refuse a persisted
+   marker newer than the requested generated version with the non-retryable
+   typed error `client.schema_downgrade`. The error message is static; versions
+   belong in structured details when the error surface supports them. Refusal
+   MUST precede bookkeeping writes, schema replacement, previous-version
+   container cleanup or capture, and outbox replay. The
+   database, outbox, and an existing client remain unchanged.
+
+   An absent metadata table or absent marker is a fresh/legacy replica. A
+   present marker MUST be a text value containing a canonical positive decimal
+   `i32` (1 through 2147483647). An unreadable metadata table or marker, or an
+   invalid marker value, MUST fail with `sync.local_corrupt` before mutation;
+   clients MUST NOT reinterpret a read or parse failure as an absent marker.
+   Equal versions retain ordinary same-version startup behavior.
 
 2. **Server schema floor (`requiredSchemaVersion`, §1.6).** A running
    client whose generated schema does not match the server receives the
@@ -4453,7 +4467,8 @@ A code rollback to a build without this feature leaves the container file
 in place in BOTH cases. An unaware same-schema rollback runs no reset at
 all, and such a client cannot purge the container (its purge selector
 rejects a name that is not in its schema) and never opens the file. An
-unaware schema-changing rollback is no better: its §7.4.3 reset drops
+unaware schema-changing rollback to a binary predating the downgrade guard
+is no better: its historical reset drops
 replica tables only and cannot see a file it does not know about. This is
 a regression from a container stored in the replica, and it is recorded
 here, not retired.
@@ -4465,7 +4480,11 @@ stated as a limitation and never as safe or bounded. Nothing in this
 section is confidentiality or secrecy, and no downgrade is claimed to be
 safe.
 
-The supported downgrade procedure is executable, not declarative: before
+The container discard does not authorize opening a newer replica with an
+older schema. Hosts must keep a compatible build or explicitly discard the
+replica through their own storage lifecycle before using an older schema.
+
+The supported container cleanup procedure before rollback is executable: before
 rolling a build back, the host MUST call `previousVersionDiscard()` and
 verify the returned `{ present, discarded }`; a rollback path that cannot
 run it MUST call `purgeLocalData`. A host that enables the feature is

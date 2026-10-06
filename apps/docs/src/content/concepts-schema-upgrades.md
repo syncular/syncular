@@ -15,10 +15,10 @@ Authoring the change (migrations, the lock, backfills) is
 
 Two triggers converge on the same wipe-re-bootstrap-replay:
 
-1. **Boot-time version change.** The client persists a **local schema-version
+1. **Boot-time version increase.** The client persists a **local schema-version
    marker** in its database. When you ship new code with a new generated
-   schema, the client boots on top of the old local tables, notices the marker
-   no longer matches the generated version, and runs the reset before its first
+   schema, the client boots on top of the old local tables, reads a marker
+   lower than the generated version, and runs the reset before its first
    sync round; no server involvement is needed.
 2. **Server schema floor.** A running client whose generated schema is behind
    the server receives `requiredSchemaVersion` (SPEC §1.6) and stops, surfacing
@@ -26,6 +26,21 @@ Two triggers converge on the same wipe-re-bootstrap-replay:
    the floor alone: resetting while still generating old payloads would only
    hit the floor again. When the app updates to a new generated schema, the
    boot-time trigger fires and the two paths converge.
+
+Every replica open and recreation reads the persisted schema-version marker
+before changing bookkeeping, local tables, or previous-version context. A v2
+build opening a v3 replica fails with the non-retryable typed error
+`client.schema_downgrade`. The replica and queued v3 writes remain intact;
+reopen them with a compatible build. TypeScript error details contain
+`persistedVersion` and `requestedVersion`; native command errors expose the same
+static code.
+
+An unreadable or corrupt marker fails with `sync.local_corrupt`. The client
+accepts an absent metadata table or marker for fresh and legacy replicas.
+Equal versions keep ordinary startup behavior, and version increases keep the
+wipe-re-bootstrap-replay flow. Discarding previous-version context does not
+permit a schema downgrade. Older binaries that predate this guard retain their
+historical reset behavior.
 
 The server keeps N-version codec support for transition windows if it chooses;
 the reference server serves its configured window and answers the floor for

@@ -1370,6 +1370,74 @@ mod tests {
     }
 
     #[test]
+    fn schema_downgrade_has_structured_code_at_create_and_recreate_boundaries() {
+        let path = temp_db_path("schema-downgrade");
+        let mut newer = schema();
+        newer["version"] = json!(3);
+        let mut older = schema();
+        older["version"] = json!(2);
+        let mut transport = NoNetwork::default();
+        let mut client = None;
+        let mut effects = CreateEffects::default();
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({ "schema": newer, "dbPath": path }),
+        )
+        .expect("v3 create");
+        let error = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "recreateWithSchema",
+            &json!({ "schema": older }),
+        )
+        .expect_err("refuse recreation");
+        assert_eq!(error.0, "client.schema_downgrade");
+        assert_eq!(
+            error.1,
+            "client.schema_downgrade: persisted local schema is newer than the requested schema"
+        );
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "shutdown",
+            &json!({}),
+        )
+        .expect("shutdown");
+        let error = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({ "schema": older, "dbPath": path }),
+        )
+        .expect_err("refuse open");
+        assert_eq!(error.0, "client.schema_downgrade");
+        assert!(client.is_none());
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({ "schema": newer, "dbPath": path }),
+        )
+        .expect("compatible reopen");
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "shutdown",
+            &json!({}),
+        )
+        .expect("shutdown");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn native_command_realtime_policy_rides_create_and_refuses_http() {
         let mut transport = NoNetwork::default();
         let mut client: Option<SyncClient> = None;

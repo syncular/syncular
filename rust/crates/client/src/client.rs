@@ -6406,6 +6406,50 @@ fn validate_authority_reads(
     Ok(())
 }
 
+// §7.4.2: every open and recreation checks before any persistent writes.
+fn read_local_schema_version(conn: &Connection, requested: i32) -> Result<Option<i32>, String> {
+    let corrupt =
+        || "sync.local_corrupt: persisted local schema marker is unreadable or invalid".to_owned();
+    let table_type: Option<String> = conn
+        .query_row(
+            "SELECT type FROM sqlite_master WHERE name = '_syncular_meta'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| corrupt())?;
+    let Some(table_type) = table_type else {
+        return Ok(None);
+    };
+    if table_type != "table" {
+        return Err(corrupt());
+    }
+    let value: Option<String> = conn
+        .query_row(
+            "SELECT value FROM _syncular_meta WHERE key = ?1",
+            [LOCAL_SCHEMA_VERSION_KEY],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| corrupt())?;
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if !matches!(value.as_bytes().first(), Some(b'1'..=b'9'))
+        || !value.bytes().all(|b| b.is_ascii_digit())
+    {
+        return Err(corrupt());
+    }
+    let version = value.parse::<i32>().map_err(|_| corrupt())?;
+    if version > requested {
+        return Err(
+            "client.schema_downgrade: persisted local schema is newer than the requested schema"
+                .to_owned(),
+        );
+    }
+    Ok(Some(version))
+}
+
 impl SyncClient {
     pub fn new_with_identity(
         client_id: Option<String>,
@@ -6448,6 +6492,7 @@ impl SyncClient {
         path: &str,
     ) -> Result<Self, String> {
         let conn = Connection::open(path).map_err(|e| format!("open db {path:?}: {e}"))?;
+        read_local_schema_version(&conn, parse_schema_json(schema_json)?.version)?;
         // File-backed native clients use an independent read connection for
         // latency-critical snapshots. WAL is SQLite's intended reader/writer
         // concurrency mode: a view read never holds a rollback-journal lock
@@ -6502,6 +6547,7 @@ impl SyncClient {
         }
         let schema = parse_schema_json(schema_json)?;
         validate_authority_reads(&schema, &limits.authority_reads)?;
+        let marker = read_local_schema_version(&conn, schema.version)?;
         // RFC 0005 D8: resolve the previous-version config before the opening
         // reset runs — the capture happens inside it. Bad bounds fail loud.
         let previous_version = match limits.previous_version_context {
@@ -6564,9 +6610,8 @@ impl SyncClient {
         client
             .conn
             .set_prepared_statement_cache_capacity(64.max(client.schema.tables.len() * 4));
-        // Protected bookkeeping must exist before inspecting the persisted
-        // schema marker. New app indexes may reference columns that only
-        // exist after a version-bump reset.
+        // The marker guard already ran without writes. New app indexes may
+        // reference columns that only exist after a version-bump reset.
         client.create_bookkeeping_tables()?;
         match client.get_meta(CLIENT_ID_KEY) {
             Some(existing) if existing != client.client_id => {
@@ -6580,9 +6625,6 @@ impl SyncClient {
         }
         client.restore_persisted_state()?;
         client.failed_commits = client.load_failed_commits()?;
-        let marker = client
-            .get_meta(LOCAL_SCHEMA_VERSION_KEY)
-            .and_then(|value| value.parse::<i32>().ok());
         match marker {
             None => {
                 client.create_synced_tables()?;
@@ -7882,18 +7924,22 @@ impl SyncClient {
     /// §7.4.2 "app ships new code": swap to a NEW generated schema while
     /// keeping this client's local database (identity, outbox, tables). The
     /// §7.4.1 marker check then fires the wipe/re-bootstrap flow when the
-    /// version changed. Mirrors the TS client's boot-time detection —
-    /// the Rust core has no persistent restart, so recreation IS the boot.
+    /// version increases. Recreation runs the same marker guard as opening
+    /// a durable replica and preserves the current client on refusal.
     pub fn recreate_with_schema(&mut self, schema_json: &Value) -> Result<(), String> {
         let new_schema = parse_schema_json(schema_json)?;
         validate_authority_reads(&new_schema, &self.limits.authority_reads)?;
-        let marker: Option<i32> = self
-            .get_meta(LOCAL_SCHEMA_VERSION_KEY)
-            .and_then(|v| v.parse().ok());
+        let marker = read_local_schema_version(&self.conn, new_schema.version)?;
         self.schema = new_schema;
         self.create_bookkeeping_tables()?;
-        if marker != Some(self.schema.version) {
-            self.run_schema_reset()?;
+        match marker {
+            Some(version) if version < self.schema.version => self.run_schema_reset()?,
+            None => {
+                self.create_synced_tables()?;
+                self.set_meta(LOCAL_SCHEMA_VERSION_KEY, &self.schema.version.to_string());
+                set_local_schema_descriptor(&self.conn, &self.schema);
+            }
+            _ => {}
         }
         self.prune_unknown_subscriptions(false)?;
         self.save_subscription_scope_schema();
@@ -14981,6 +15027,239 @@ mod previous_version_wiring_tests {
             reason_code: None,
             effective: None,
             synced_once: false,
+        }
+    }
+
+    #[test]
+    fn schema_downgrade_refuses_all_opens_and_recreate_without_mutation() {
+        let path =
+            std::env::temp_dir().join(format!("syncular-downgrade-{}.db", uuid::Uuid::new_v4()));
+        let path_str = path.to_str().expect("temp path");
+        let schema = previous_version_schema(3);
+        let mut older = previous_version_schema(2);
+        older["tables"][0]["columns"] =
+            json!([{ "name": "id", "type": "string", "nullable": false }]);
+        let mut client = SyncClient::open_path(
+            "downgrade".into(),
+            &previous_version_schema(1),
+            previous_version_limits(),
+            path_str,
+        )
+        .expect("fresh");
+        client
+            .mutate(vec![Mutation::Upsert {
+                table: "tasks".into(),
+                values: Map::from_iter([
+                    ("id".into(), json!("accepted")),
+                    ("note".into(), json!("old")),
+                ]),
+                base_version: None,
+            }])
+            .expect("v1 write");
+        client
+            .recreate_with_schema(&schema)
+            .expect("upgrade captures context");
+        let commit = client
+            .mutate(vec![Mutation::Upsert {
+                table: "tasks".into(),
+                values: Map::from_iter([
+                    ("id".into(), json!("queued")),
+                    ("note".into(), json!("v3-only")),
+                ]),
+                base_version: None,
+            }])
+            .expect("queued v3 write");
+        let changes = client.conn.total_changes();
+        let outbox = client.pending_commit_ids();
+        assert!(outbox.contains(&commit));
+        let descriptor = client.get_meta("localSchemaDescriptor");
+        let container = format!(
+            "{path_str}{}",
+            crate::previous_version::PREVIOUS_VERSION_CONTAINER_SUFFIX
+        );
+        let context = std::fs::read(&container).expect("captured context");
+        assert!(client
+            .recreate_with_schema(&older)
+            .expect_err("refuse recreate")
+            .starts_with("client.schema_downgrade:"));
+        assert_eq!(client.schema.version, 3);
+        assert_eq!(client.conn.total_changes(), changes);
+        assert_eq!(client.pending_commit_ids(), outbox);
+        assert_eq!(client.get_meta("localSchemaDescriptor"), descriptor);
+        assert_eq!(
+            client
+                .conn
+                .query_row("SELECT note FROM tasks WHERE id = 'queued'", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .expect("queued row"),
+            "v3-only"
+        );
+        assert_eq!(std::fs::read(&container).expect("context remains"), context);
+        drop(client);
+        let before = std::fs::read(&path).expect("replica bytes");
+        // open_path uses DELETE journaling. The identity open must refuse
+        // before its normal WAL configuration changes this database.
+        for entry in 0..3 {
+            let error = match entry {
+                0 => SyncClient::open_path(
+                    "downgrade".into(),
+                    &older,
+                    previous_version_limits(),
+                    path_str,
+                ),
+                1 => SyncClient::open_path_with_identity(
+                    None,
+                    &older,
+                    previous_version_limits(),
+                    path_str,
+                ),
+                _ => SyncClient::with_connection(
+                    "downgrade".into(),
+                    &older,
+                    previous_version_limits(),
+                    Connection::open(&path).expect("connection"),
+                ),
+            }
+            .err()
+            .expect("refuse open");
+            assert!(error.starts_with("client.schema_downgrade:"));
+            let conn = Connection::open(&path).expect("inspect");
+            assert_eq!(
+                conn.query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
+                    .expect("journal mode"),
+                "delete"
+            );
+            drop(conn);
+            assert_eq!(std::fs::read(&path).expect("replica unchanged"), before);
+            assert_eq!(
+                std::fs::read(&container).expect("context unchanged"),
+                context
+            );
+        }
+        let reopened = SyncClient::open_path(
+            "downgrade".into(),
+            &schema,
+            previous_version_limits(),
+            path_str,
+        )
+        .expect("compatible reopen");
+        assert_eq!(reopened.pending_commit_ids(), outbox);
+        assert_eq!(
+            reopened
+                .conn
+                .query_row("SELECT note FROM tasks WHERE id = 'queued'", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .expect("queued row remains"),
+            "v3-only"
+        );
+        reopened.delete_meta(LOCAL_SCHEMA_VERSION_KEY);
+        drop(reopened);
+        let legacy = SyncClient::open_path(
+            "downgrade".into(),
+            &schema,
+            previous_version_limits(),
+            path_str,
+        )
+        .expect("legacy no-marker reopen");
+        assert_eq!(legacy.pending_commit_ids(), outbox);
+        assert!(!legacy.upgrading());
+        assert_eq!(
+            legacy
+                .conn
+                .query_row("SELECT note FROM tasks WHERE id = 'queued'", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .expect("legacy row remains"),
+            "v3-only"
+        );
+        drop(legacy);
+        std::fs::remove_file(path).expect("remove replica");
+        let _ = std::fs::remove_file(container);
+    }
+
+    #[test]
+    fn schema_marker_errors_refuse_open_and_recreate_without_mutation() {
+        for marker in [
+            "''",
+            "'bad'",
+            "'0'",
+            "'-1'",
+            "'2.5'",
+            "'03'",
+            "'3\n'",
+            "' 3'",
+            "'+3'",
+            "'3e0'",
+            "'2147483648'",
+            "NULL",
+            "X'33'",
+        ] {
+            let conn = Connection::open_in_memory().expect("connection");
+            conn.execute_batch(&format!("CREATE TABLE _syncular_meta(key TEXT PRIMARY KEY, value); INSERT INTO _syncular_meta VALUES ('localSchemaVersion', {marker});")).expect("invalid marker fixture");
+            let error = SyncClient::with_connection(
+                "marker".into(),
+                &previous_version_schema(3),
+                ClientLimits::default(),
+                conn,
+            )
+            .err()
+            .expect("refuse marker");
+            assert!(
+                error.starts_with("sync.local_corrupt:"),
+                "{marker}: {error}"
+            );
+        }
+        for fault in [
+            "UPDATE _syncular_meta SET value = 'bad' WHERE key = 'localSchemaVersion'",
+            "ALTER TABLE _syncular_meta RENAME COLUMN value TO unreadable_value",
+        ] {
+            let mut client = SyncClient::new(
+                "marker".into(),
+                &previous_version_schema(3),
+                ClientLimits::default(),
+            )
+            .expect("fresh");
+            let commit = client
+                .mutate(vec![Mutation::Upsert {
+                    table: "tasks".into(),
+                    values: Map::from_iter([("id".into(), json!("queued"))]),
+                    base_version: None,
+                }])
+                .expect("queued write");
+            client.conn.execute_batch(fault).expect("marker fault");
+            let changes = client.conn.total_changes();
+            let error = client
+                .recreate_with_schema(&previous_version_schema(4))
+                .expect_err("refuse corrupt marker");
+            assert!(error.starts_with("sync.local_corrupt:"));
+            assert_eq!(client.conn.total_changes(), changes);
+            assert_eq!(client.schema.version, 3);
+            assert_eq!(client.pending_commit_ids(), vec![commit]);
+        }
+        for setup in [
+            "CREATE TABLE _syncular_meta(key TEXT PRIMARY KEY)",
+            "CREATE VIEW _syncular_meta AS SELECT 'localSchemaVersion' AS key, '3' AS value",
+        ] {
+            let path =
+                std::env::temp_dir().join(format!("syncular-marker-{}.db", uuid::Uuid::new_v4()));
+            let conn = Connection::open(&path).expect("connection");
+            conn.execute_batch(setup)
+                .expect("unreadable metadata fixture");
+            drop(conn);
+            let before = std::fs::read(&path).expect("before");
+            let error = SyncClient::open_path_with_identity(
+                None,
+                &previous_version_schema(3),
+                ClientLimits::default(),
+                path.to_str().expect("path"),
+            )
+            .err()
+            .expect("refuse unreadable marker");
+            assert!(error.starts_with("sync.local_corrupt:"));
+            assert_eq!(std::fs::read(&path).expect("after"), before);
+            std::fs::remove_file(path).expect("remove fixture");
         }
     }
 

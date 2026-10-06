@@ -922,9 +922,54 @@ export class SyncClient {
     this.#lease = await lock.acquire(
       this.#config.lockName ?? 'syncular-leader',
     );
-    // Bookkeeping must exist before we inspect the persisted schema marker.
-    // Do not materialize new app indexes/FTS projections yet: on a version
-    // bump they may reference columns that only exist after the reset.
+    // §7.4.2: inspect the marker before any bookkeeping or container writes.
+    let marker: number | undefined;
+    try {
+      try {
+        const meta = this.#db.query(
+          "SELECT type FROM sqlite_master WHERE name = '_syncular_meta'",
+        )[0];
+        if (meta !== undefined) {
+          if (meta.type !== 'table') throw new Error('invalid metadata table');
+          const row = this.#db.query(
+            'SELECT value FROM _syncular_meta WHERE key = ?',
+            [LOCAL_SCHEMA_VERSION_KEY],
+          )[0];
+          if (row !== undefined) {
+            const value = row.value;
+            const version = Number(value);
+            if (
+              typeof value !== 'string' ||
+              !Number.isInteger(version) ||
+              version < 1 ||
+              version > 2147483647 ||
+              String(version) !== value
+            ) {
+              throw new Error('invalid schema marker');
+            }
+            marker = version;
+          }
+        }
+      } catch {
+        throw new ClientSyncError(
+          'sync.local_corrupt',
+          'persisted local schema marker is unreadable or invalid',
+        );
+      }
+      if (marker !== undefined && marker > this.#schema.version) {
+        throw new ClientSyncError(
+          'client.schema_downgrade',
+          'persisted local schema is newer than the requested schema',
+          false,
+          { persistedVersion: marker, requestedVersion: this.#schema.version },
+        );
+      }
+    } catch (error) {
+      await this.#lease.release();
+      this.#lease = undefined;
+      throw error;
+    }
+    // New app indexes may reference columns that only exist after the reset.
     ensureLocalBookkeepingSchema(this.#db);
     if (this.#hasBlobs) ensureBlobSchema(this.#db);
     this.#db.transaction(() => {
@@ -957,11 +1002,11 @@ export class SyncClient {
     if (leaseJson !== undefined) {
       this.#leaseState = JSON.parse(leaseJson) as LeaseState;
     }
-    // §7.4.2 trigger 1: the persisted local schema version differs from the
+    // §7.4.2 trigger 1: the persisted local schema version is lower than the
     // generated version this client ships — run the wipe/re-bootstrap reset
     // before the first sync round. A fresh install (no marker) is treated as
     // already at the generated version.
-    this.#detectAndResetSchema();
+    this.#detectAndResetSchema(marker);
     // RFC 0005 D9: a container with missing/stale metadata, or past its TTL, is
     // discarded at boot before anything can read it. The orphan/stale sweep is
     // unconditional; the TTL is aware-binary hygiene only.
@@ -1012,12 +1057,11 @@ export class SyncClient {
 
   /**
    * §7.4.1/§7.4.2: compare the generated schema version to the persisted
-   * marker and run the §7.4.3 reset when they differ. Idempotent by the
+   * marker and run the §7.4.3 reset when it increases. Idempotent by the
    * marker — a mid-reset crash re-runs the reset on the next boot.
    */
-  #detectAndResetSchema(): void {
-    const markerJson = getMeta(this.#db, LOCAL_SCHEMA_VERSION_KEY);
-    if (markerJson === undefined) {
+  #detectAndResetSchema(marker: number | undefined): void {
+    if (marker === undefined) {
       // Fresh install: the tables just created match the running code.
       this.#db.transaction(() => {
         ensureLocalSyncedSchema(this.#db, this.#schema);
@@ -1031,7 +1075,6 @@ export class SyncClient {
       });
       return;
     }
-    const marker = Number(markerJson);
     if (marker === this.#schema.version) {
       // Same-version opens remain self-healing for absent tables/indexes, and
       // RFC 0005 D1 backfills the descriptor for a database first opened by
