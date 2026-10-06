@@ -310,6 +310,44 @@ describe('application-authorized local data purge', () => {
     local.db.close();
   });
 
+  test('a failed purge keeps the captured response applicable', async () => {
+    const local = await makeClient(makeServer(), {
+      clientId: 'failed-purge-round',
+    });
+    await local.client.syncUntilIdle();
+    const commit = local.client.mutate([
+      {
+        table: 'tasks',
+        op: 'upsert',
+        values: taskValues('kept', 'p1', 'kept'),
+      },
+    ]);
+    const gate = responseGate();
+    local.faults.holdResponseOnce = gate.fault;
+    const round = local.client.sync();
+    await gate.held;
+    local.db.exec(`CREATE TRIGGER fail_purge BEFORE INSERT ON _syncular_meta
+      WHEN NEW.key = 'localPurge:failed-round' BEGIN SELECT RAISE(ABORT, 'purge fault'); END`);
+    const revision = local.client.localRevision;
+    expect(() =>
+      local.client.purgeLocalData({
+        purgeId: 'failed-round',
+        targets: [{ table: 'tasks', selectors: { project_id: ['p1'] } }],
+      }),
+    ).toThrow();
+    expect(
+      local.client.pendingCommits().map((entry) => entry.clientCommitId),
+    ).toEqual([commit]);
+    expect(local.client.localRevision).toBe(revision);
+    local.db.exec('DROP TRIGGER fail_purge');
+    gate.release();
+    expect((await round).applied).toEqual([commit]);
+    expect(local.client.pendingCommits()).toEqual([]);
+    expect(local.client.commitOutcome(commit)?.status).toBe('applied');
+    await local.client.close();
+    local.db.close();
+  });
+
   test('fails closed for unsafe selectors and never offers a full-table mode', async () => {
     const local = await makeClient(makeServer(), {
       clientId: 'local-purge-validation-client',
