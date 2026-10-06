@@ -307,6 +307,33 @@ describe('RFC 0005 preflight cleanup boundary', () => {
 });
 
 describe('RFC 0005 opt-in capture', () => {
+  test('a capture for an uncommitted schema is discarded on read', async () => {
+    const server = v2Server();
+    const path = tempPath('stale-read');
+    await seedV1(server, path);
+    const bumped = await openAt(server, path, V2_SCHEMA, enabled());
+    try {
+      const container = new BunClientDatabase(containerPath(path));
+      container.exec(
+        `UPDATE ${CONTAINER_META} SET record = json_set(record, '$.currentVersion', 3)`,
+      );
+      container.close();
+      const snapshot = bumped.client.previousVersionSnapshot({
+        table: 'things',
+      });
+      expect(snapshot).toMatchObject({
+        available: false,
+        currentVersion: 2,
+        reason: 'no-previous-descriptor',
+        rows: [],
+      });
+      expectNoContainerFile(path);
+    } finally {
+      await bumped.client.close();
+      bumped.db.close();
+    }
+  });
+
   test('every semantic type round-trips and state is previousVersion', async () => {
     const server = v2Server();
     const path = tempPath('types');

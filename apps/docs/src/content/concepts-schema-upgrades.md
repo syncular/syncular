@@ -150,3 +150,14 @@ the schema stop alongside the query's local completeness. Applications can show
 a notice with the distribution host's update action and pause edits because an
 incompatible outbox commit can be rejected during replay. Leadership and security
 gates still refuse local access when the owner or authorization is unavailable.
+
+A missing schema marker with a retained schema descriptor is corrupt local
+state. Both cores refuse it with `sync.local_corrupt` before writes; the
+requested schema cannot establish which version last wrote those tables.
+
+Previous-version capture uses a separate file. The pre-reset sweep discards
+an older capture before creating its replacement, so a failed replica
+transaction does not restore that older capture. A read or boot discards a
+replacement whose recorded version differs from the active schema. The
+replica transaction still preserves its queued writes and local tables on
+failure.
