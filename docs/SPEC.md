@@ -4098,6 +4098,10 @@ created and rewritten only at the end of a successful reset (§7.4.3).
 A client that has never persisted a marker is treated as already at its
 generated version (fresh install — the tables it just created match the
 running code; nothing to reset).
+If the marker is absent while `localSchemaDescriptor` remains, the client
+MUST refuse with `sync.local_corrupt` before writes. The descriptor proves
+the replica previously persisted the paired marker; its version cannot be
+guessed from the requested schema.
 
 The marker is written together with the persisted schema descriptor
 (§7.4.6.1) in the same transaction; §7.4.1 and §7.4.6.1 describe the two
@@ -4403,7 +4407,11 @@ container file, or the durable refusal when the capture is refused;
 (§7.4.1) and the descriptor (§7.4.6.1). A crash before the reset commits
 leaves the old marker, so the next boot re-runs the whole reset and the
 sweep discards any container: the reset is idempotent by the existing
-marker, with no cross-file transaction and no new idempotency token. The
+marker, with no cross-file transaction and no new idempotency token. A failed
+reset transaction has the same boundary: it restores the replica but does
+not restore a container discarded by the pre-reset sweep. A container for
+an uncommitted version is unavailable and discarded at the next read or
+boot. The
 §2.1 log-epoch reset is not a schema bump: it performs the orphan sweep
 and captures nothing.
 
@@ -4465,7 +4473,7 @@ file removed, the records deleted in one transaction — on ANY of:
   every read;
 - **orphan/stale** — missing or undecodable metadata, or a container whose
   `currentVersion` differs from the running generated version, discarded
-  at boot before anything can read it;
+  at boot and at every read before returning any captured rows;
 - **explicit `previousVersionDiscard()`** — returns
   `{ present, discarded }`. A no-op is a success: the discard is
   idempotent by construction and never fails for absence.
