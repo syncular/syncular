@@ -595,14 +595,19 @@ observable behavior is contractual:
   deadline. The round anchors the deadline on its first network call and
   never refreshes it on a continuation. The default is unbounded. The
   deadline covers network work; it does not interrupt local SQLite or CPU
-  time. A bound that elapses on the socket path surfaces
-  `transport.timeout`.
+  time. Local work before that first call does not consume the budget;
+  after the anchor the deadline is absolute, so local work between
+  continuations runs against the remaining budget. A bound that elapses on
+  the socket path surfaces `transport.timeout`.
 - **Redirect refusal.** The `deny` default refuses every 3xx. Under the
   `follow` policy the transport follows a redirect only for a request that
   carries no configured headers, no base-URL userinfo, and no signed
   capability URL; a credential-bearing request is still refused, because
   the configured headers or URL userinfo would replay to the redirect
-  target. A refusal surfaces `transport.redirect`.
+  target. The WebSocket handshake obeys the same policy: it may follow a
+  redirect only when it carries no configured headers and its realtime URL
+  has neither userinfo nor a query. A refusal surfaces
+  `transport.redirect`.
 - **Request byte limit.** An HTTP request body larger than the
   configured limit is refused before any network I/O, with
   `transport.request_too_large`.
@@ -622,7 +627,9 @@ The JSON config keys are `requestTimeoutMs`, `roundDeadlineMs`,
 `maxRequestBytes`, `maxResponseBytes`, and `redirects` (`"deny"` or
 `"follow"`). A programmatic policy carries the same fields, and a
 non-positive or unrepresentable bound is rejected before it reaches the
-transport.
+transport. A numeric bound is a `u64` integer token in the config JSON; a
+float-formatted value is refused, so a host binding serializes a
+configured bound losslessly.
 
 The native transport reports `transport.timeout`, `transport.redirect`,
 `transport.request_too_large`, and `transport.response_too_large`.

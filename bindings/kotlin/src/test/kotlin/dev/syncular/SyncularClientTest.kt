@@ -91,6 +91,31 @@ class SyncularClientTest {
     }
 
     @Test
+    fun policyBoundsStayExactIntegersOnTheWire() {
+        // 2^53 and 10^18 are configurable bounds; the serializer must not turn
+        // them into an exponent form the core reads as a float and refuses.
+        val config = SyncularConfig(
+            baseUrl = "https://api.example.com",
+            requestTimeoutMs = 9_007_199_254_740_992,
+            maxRequestBytes = 1_000_000_000_000_000_000,
+        ).newConfigJson()
+        val encoded = config.encode()
+        assertTrue(encoded.contains("\"requestTimeoutMs\":9007199254740992"), encoded)
+        assertTrue(encoded.contains("\"maxRequestBytes\":1000000000000000000"), encoded)
+    }
+
+    @Test
+    fun aPolicyBoundThatNeedsRoundingIsRefusedInsteadOfSerialized() {
+        val error = assertFailsWith<IllegalArgumentException> {
+            SyncularConfig(
+                baseUrl = "https://api.example.com",
+                maxResponseBytes = 9_007_199_254_740_993,
+            ).newConfigJson()
+        }
+        assertTrue(error.message!!.contains("maxResponseBytes"), error.message!!)
+    }
+
+    @Test
     fun mutateThenReadRowsShowsOptimisticRow() {
         makeClient().use { client ->
             client.subscribe(id = "s1", table = "todo")

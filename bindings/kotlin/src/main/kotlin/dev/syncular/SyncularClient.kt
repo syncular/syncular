@@ -1,6 +1,7 @@
 package dev.syncular
 
 import java.lang.foreign.MemorySegment
+import java.math.BigDecimal
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -25,6 +26,9 @@ class SyncularException(val code: String, message: String) : RuntimeException(me
  * transport (only in a `native-transport` core build); omit it for the
  * dependency-lean, offline-first local core. [dbPath] installs a file-backed
  * SQLite database for persistence across launches; omit for in-memory.
+ *
+ * A byte or millisecond bound is a `u64` in the core and must arrive exactly:
+ * [newConfigJson] refuses a bound that would have to be rounded.
  */
 data class SyncularConfig(
     val baseUrl: String? = null,
@@ -50,12 +54,25 @@ data class SyncularConfig(
         if (headers.isNotEmpty()) {
             fields["headers"] = JsonValue.Obj(headers.mapValues { JsonValue.of(it.value) })
         }
-        requestTimeoutMs?.let { fields["requestTimeoutMs"] = JsonValue.of(it.toDouble()) }
-        roundDeadlineMs?.let { fields["roundDeadlineMs"] = JsonValue.of(it.toDouble()) }
-        maxRequestBytes?.let { fields["maxRequestBytes"] = JsonValue.of(it.toDouble()) }
-        maxResponseBytes?.let { fields["maxResponseBytes"] = JsonValue.of(it.toDouble()) }
+        requestTimeoutMs?.let { fields["requestTimeoutMs"] = exactPolicyBound("requestTimeoutMs", it) }
+        roundDeadlineMs?.let { fields["roundDeadlineMs"] = exactPolicyBound("roundDeadlineMs", it) }
+        maxRequestBytes?.let { fields["maxRequestBytes"] = exactPolicyBound("maxRequestBytes", it) }
+        maxResponseBytes?.let { fields["maxResponseBytes"] = exactPolicyBound("maxResponseBytes", it) }
         redirects?.let { fields["redirects"] = JsonValue.of(it) }
         return JsonValue.Obj(fields)
+    }
+
+    /**
+     * A policy bound is a `u64` in the core, so it has to arrive exactly. A
+     * `Long` above 2^53 that needs rounding is refused here: it would
+     * otherwise be serialized as a nearby value and the transport would
+     * enforce a different bound than the caller configured.
+     */
+    private fun exactPolicyBound(name: String, value: Long): JsonValue {
+        require(BigDecimal.valueOf(value.toDouble()).compareTo(BigDecimal.valueOf(value)) == 0) {
+            "SyncularConfig.$name=$value has no exact number representation; configure a bound that does"
+        }
+        return JsonValue.of(value.toDouble())
     }
 }
 

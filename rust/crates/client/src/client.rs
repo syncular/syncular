@@ -3802,6 +3802,92 @@ mod observation_tests {
         );
     }
 
+    /// Records the round-deadline traffic so a test can prove whether a round
+    /// asked for a budget and whether it ever scoped an anchor.
+    #[derive(Default)]
+    struct RoundDeadlineProbe {
+        budget: Option<std::time::Duration>,
+        budget_queries: std::cell::Cell<usize>,
+        scoped: Vec<Option<std::time::Instant>>,
+    }
+
+    impl Transport for RoundDeadlineProbe {
+        fn round_deadline(&self) -> Option<std::time::Duration> {
+            self.budget_queries.set(self.budget_queries.get() + 1);
+            self.budget
+        }
+        fn set_round_deadline(&mut self, deadline: Option<std::time::Instant>) {
+            self.scoped.push(deadline);
+        }
+        fn sync(&mut self, _: &[u8]) -> Result<Vec<u8>, TransportError> {
+            Err(TransportError::new("transport.failed", "injected"))
+        }
+        fn realtime_sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            self.sync(request)
+        }
+        fn download_segment(
+            &mut self,
+            _: &SegmentRequest,
+            _: &mut dyn FnMut(u64),
+        ) -> Result<Vec<u8>, TransportError> {
+            Err(TransportError::new("transport.failed", "injected"))
+        }
+        fn blob_upload_grant(
+            &mut self,
+            _: &str,
+            _: u64,
+            _: Option<&str>,
+        ) -> Result<crate::BlobUploadGrant, TransportError> {
+            Ok(crate::BlobUploadGrant::Present)
+        }
+        fn realtime_connect(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+        fn realtime_send(&mut self, _: &str) -> Result<(), TransportError> {
+            Ok(())
+        }
+        fn realtime_close(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn an_unusable_upload_body_does_not_anchor_the_round_deadline() {
+        let schema = json!({"version":1,"tables":[{"name":"attachments","primaryKey":"id","columns":[
+            {"name":"id","type":"string","nullable":false},
+            {"name":"file","type":"blob_ref","nullable":true}],"scopes":[]}]});
+        let mut client =
+            SyncClient::new("deadline-unusable".into(), &schema, ClientLimits::default()).unwrap();
+        client.set_meta(LOG_EPOCH_KEY, "epoch");
+        client
+            .upload_blob(b"pending upload", Some("text/plain".into()), None)
+            .unwrap();
+        client
+            .conn
+            .execute_batch("DELETE FROM _syncular_blobs")
+            .unwrap();
+        let prepared = client.prepare_sync_round(false).unwrap();
+        assert!(
+            prepared.uploads.front().is_some_and(|u| u.bytes.is_err()),
+            "the staged body must fail locally"
+        );
+        let mut transport = RoundDeadlineProbe {
+            budget: Some(std::time::Duration::from_secs(30)),
+            ..Default::default()
+        };
+        let completed = prepared.exchange(&mut transport);
+        assert!(matches!(
+            completed.exchange,
+            crate::round::ExchangeResult::Upload { result: Err(_), .. }
+        ));
+        assert_eq!(
+            transport.budget_queries.get(),
+            0,
+            "a round with no network work never asks for a budget"
+        );
+        assert_eq!(transport.scoped, vec![None]);
+    }
+
     #[test]
     fn a_transport_budget_the_clock_cannot_represent_fails_before_network() {
         struct HugeBudget;
