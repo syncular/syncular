@@ -9,6 +9,7 @@ export const SUBSCRIPTIONS_TABLE = '_syncular_subscriptions';
  * exactly for that purpose.
  */
 import type { ScopeMap } from '@syncular/core';
+import { ClientSyncError } from './errors';
 import type { CompiledClientSchema } from './schema';
 import type { ClientDatabase } from './database';
 import type { LocalRevision } from './invalidation';
@@ -226,11 +227,17 @@ export function getLocalRevision(db: ClientDatabase): LocalRevision {
   const raw = getMeta(db, LOCAL_REVISION_KEY);
   if (raw === undefined) return 0n;
   if (!/^(0|[1-9][0-9]*)$/.test(raw)) {
-    throw new Error(`invalid persisted local revision ${JSON.stringify(raw)}`);
+    throw new ClientSyncError(
+      'sync.local_corrupt',
+      'persisted local revision is invalid',
+    );
   }
   const revision = BigInt(raw);
   if (revision > MAX_U64) {
-    throw new Error(`persisted local revision exceeds u64: ${raw}`);
+    throw new ClientSyncError(
+      'sync.local_corrupt',
+      'persisted local revision is invalid',
+    );
   }
   return revision;
 }
@@ -242,7 +249,10 @@ export function getLocalRevision(db: ClientDatabase): LocalRevision {
 export function bumpLocalRevision(db: ClientDatabase): LocalRevision {
   const current = getLocalRevision(db);
   if (current === MAX_U64) {
-    throw new Error('local revision exhausted u64');
+    throw new ClientSyncError(
+      'sync.local_corrupt',
+      'local revision exhausted u64',
+    );
   }
   const next = current + 1n;
   setMeta(db, LOCAL_REVISION_KEY, next.toString());

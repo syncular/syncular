@@ -4687,6 +4687,62 @@ rows from one read with coverage or revision from another. A result at revision
 promise completion order, IPC order, frame scheduling, and render timing never
 override revision order.
 
+**Snapshot read request.** A host read over the shared read-only sidecar
+resolves one request in a single SQLite read transaction and returns its
+`localRevision`, the rows of every requested read-only statement, the
+requested window coverage, the requested subscription catch-up states, and
+the requested commit deliveries. Every statement passes the read-only
+guard, and any statement's failure rolls the whole read back and releases
+the connection. A host that needs several statements uses this one request
+and MUST NOT compose them from separate reads.
+
+**Subscription catch-up state.** A catch-up read reports, for one
+subscription id, the state persisted in the same snapshot, never the
+mutable owner cache. It serializes with a `state` discriminant:
+
+- `state: "unknown"`: the client does not currently hold the subscription.
+  This covers an id that was never registered and one that was forgotten
+  or removed. It carries the id and no fabricated table or cursor.
+- `state: "known"`: the persisted `status` (`active`, `revoked`, or
+  `failed`; a reset stays `active` with `cursor < 0`), `cursor`, whether a
+  resume token is held, and two derived booleans.
+
+For a known state:
+
+- `bootstrapComplete` is true only for an `active` subscription with
+  `cursor >= 0` and no resume token. A failed, revoked, or reset
+  subscription is never complete.
+- `knownPendingPages` is true only for an `active` subscription while a
+  resume token remains or `cursor < 0`. A reset subscription stays
+  `active` with `cursor < 0` (reason `sync.cursor_expired`), so it reads
+  `knownPendingPages: true` while it bootstraps. A failed or revoked
+  subscription reads false.
+
+These fields name local bootstrap progress. `SUB_END` carries the next
+cursor and the bootstrap page state, so an absent token alone never proves
+that the subscription reached the server head: a delta page may remain
+after a limit. Nothing in the read asserts server freshness. The existing
+atomicity rule still holds: rows, coverage, and revision come from one
+read, so a host that needs those together reads them together.
+
+**Commit delivery.** A delivery read reports, for one client commit id,
+`pending` while the id still has an outbox entry, otherwise the full
+retained `CommitOutcome` (status `applied`, `cached`, `conflict`, or
+`rejected`, with every operation result, rejection code, conflict, and
+resolution preserved), otherwise an explicit `unknown`. `unknown` covers
+both an id the client never held and one whose outcome retention pruned.
+The read never reduces a multi-error outcome to one code, and the existing
+outcome-retention policy bounds what a later read can still resolve. The owning core additionally attaches in-memory
+retained-row images to its own outcomes; the sidecar reports the persisted
+outcome fields.
+
+**Snapshot read failure.** The revision read is fallible. A missing
+revision marker is the legacy zero; `+1`, `01`, a negative value,
+whitespace, or an overflow is `sync.local_corrupt`. A recognized SQLite
+storage failure preserves its `client.storage_*` classification, code,
+retryability, and any secondary `rollbackFailure`. The stricter authority
+snapshot keeps its own missing-marker contract.
+
 **Read failure.** A read request MAY name its owning query as
 `owner: {id, tables}`: an application-owned, stable, PHI-free id and the
 generated table names the query depends on. Reactive integrations pass the

@@ -169,6 +169,7 @@ import {
   type ConflictRecord,
   listCommitOutcomes,
   persistCommitOutcomeResolution,
+  persistedCommitOutcome,
   pruneCommitOutcomes,
   type RejectionRecord,
   type ResolveCommitOutcomeInput,
@@ -236,6 +237,7 @@ import {
   type SubscriptionRecord,
   saveSubscription,
   setMeta,
+  SUBSCRIPTIONS_TABLE,
 } from './state';
 import type {
   RealtimeConnector,
@@ -567,6 +569,70 @@ export interface QuerySnapshot<Row = SqlRow> {
   readonly coverage: CoverageSnapshot;
 }
 
+/** §7.5: one read-only statement in an atomic snapshot read. */
+export interface SnapshotStatement {
+  readonly sql: string;
+  readonly params?: readonly SqlValue[];
+}
+
+/**
+ * §7.5: the catch-up state of one subscription as persisted in the snapshot,
+ * never the mutable owner cache. `unknown` means the client does not currently
+ * hold the subscription (never registered, forgotten, or removed) and carries
+ * no fabricated table or cursor.
+ */
+export type SubscriptionCatchup =
+  | { readonly state: 'unknown'; readonly id: string }
+  | {
+      readonly state: 'known';
+      readonly id: string;
+      readonly table: string;
+      readonly status: 'active' | 'revoked' | 'failed';
+      readonly cursor: number;
+      readonly hasResumeToken: boolean;
+      /** True only for `active` with `cursor >= 0` and no resume token. */
+      readonly bootstrapComplete: boolean;
+      /** True only for `active` while a resume token remains or `cursor < 0`. */
+      readonly knownPendingPages: boolean;
+      readonly effectiveScopes?: unknown;
+      readonly reasonCode?: string;
+    };
+
+/**
+ * §7.5: delivery status for one client commit id. `pending` while the id still
+ * has an outbox entry (outbox precedence), otherwise the persisted-journal
+ * outcome, otherwise an explicit `unknown` (never held, or pruned by
+ * retention). The outcome omits the owner-derived `retainedRows` images.
+ */
+export type CommitDelivery =
+  | { readonly status: 'pending'; readonly clientCommitId: string }
+  | {
+      readonly status: 'known';
+      readonly clientCommitId: string;
+      readonly outcome: CommitOutcome;
+    }
+  | { readonly status: 'unknown'; readonly clientCommitId: string };
+
+/** §7.5: one atomic read request over a single SQLite read transaction. */
+export interface SnapshotReadRequest {
+  readonly statements: readonly SnapshotStatement[];
+  readonly coverage?: readonly WindowCoverage[];
+  readonly subscriptions?: readonly string[];
+  readonly commitIds?: readonly string[];
+  /** §7.5 owner: a failed owned read is reported in `queryFailures`. */
+  readonly owner?: QueryOwner;
+}
+
+/** §7.5: one atomic read result: one revision, every statement's rows, the
+ * requested coverage, catch-up states, and deliveries. */
+export interface SnapshotRead<Row = SqlRow> {
+  readonly revision: LocalRevision;
+  readonly queries: readonly (readonly Row[])[];
+  readonly coverage: CoverageSnapshot;
+  readonly subscriptions: readonly SubscriptionCatchup[];
+  readonly deliveries: readonly CommitDelivery[];
+}
+
 /**
  * True iff `unit` is windowed-in AND its bootstrap completed (§4.8 I3):
  * registered and not pending. A unit with zero server rows still becomes
@@ -746,6 +812,7 @@ function realtimeErrorCode(error: unknown): string | undefined {
 export type ClientSnapshotMethods = Pick<
   SyncClient,
   | 'querySnapshot'
+  | 'snapshotRead'
   | 'statusSnapshot'
   | 'diagnosticsSnapshot'
   | 'conflicts'
@@ -1523,20 +1590,143 @@ export class SyncClient {
    * Reactive integrations use this instead of composing `query()` and
    * `windowState()` across separate worker/IPC calls.
    */
-  querySnapshot<Row = SqlRow>(spec: QueryReadSpec): QuerySnapshot<Row> {
+  querySnapshot<Row = SqlRow>(spec: QueryReadSpec): QuerySnapshot<Row>;
+  querySnapshot(spec: QueryReadSpec): QuerySnapshot {
+    const read = this.#readSnapshot({
+      statements: [
+        {
+          sql: spec.sql,
+          ...(spec.params !== undefined ? { params: spec.params } : {}),
+        },
+      ],
+      ...(spec.coverage !== undefined ? { coverage: spec.coverage } : {}),
+      ...(spec.owner !== undefined ? { owner: spec.owner } : {}),
+    });
+    const rows = read.queries[0];
+    if (read.queries.length !== 1 || rows === undefined) {
+      throw new ClientSyncError(
+        'client.failed',
+        'querySnapshot produced no statement result',
+      );
+    }
+    return {
+      revision: read.revision,
+      rows,
+      coverage: read.coverage,
+    };
+  }
+
+  /**
+   * §7.5: resolve several read-only statements, window coverage, subscription
+   * catch-up states, and commit deliveries from one SQLite read transaction
+   * and one revision. A host that needs those together reads them together;
+   * every statement passes the read-only guard and any failure rolls the whole
+   * read back.
+   */
+  snapshotRead<Row = SqlRow>(spec: SnapshotReadRequest): SnapshotRead<Row>;
+  snapshotRead(spec: SnapshotReadRequest): SnapshotRead {
+    return this.#readSnapshot(spec);
+  }
+
+  /** §7.5: one subscription's persisted catch-up state (never the owner cache). */
+  subscriptionCatchup(id: string): SubscriptionCatchup {
+    return this.#readSnapshot({ statements: [], subscriptions: [id] })
+      .subscriptions[0]!;
+  }
+
+  /** §7.5: one client commit's delivery status: pending, its retained outcome,
+   * or an explicit unknown (never held, or pruned by retention). */
+  commitDelivery(id: string): CommitDelivery {
+    return this.#readSnapshot({ statements: [], commitIds: [id] })
+      .deliveries[0]!;
+  }
+
+  /**
+   * §7.5: the one atomic read primitive. Every public read (`querySnapshot`,
+   * `snapshotRead`, `subscriptionCatchup`, `commitDelivery`) enters here, so
+   * the read-only guard, transaction, revision, coverage, catch-up, delivery,
+   * and owner-failure observation exist once.
+   */
+  #readSnapshot(request: SnapshotReadRequest): SnapshotRead {
     this.#requireActive();
-    const owner = spec.owner;
-    let snapshot: QuerySnapshot<Row>;
+    const owner = request.owner;
+    const catchupOf = (id: string): SubscriptionCatchup => {
+      function corrupt(): never {
+        throw new ClientSyncError(
+          'sync.local_corrupt',
+          'persisted subscription state is invalid',
+        );
+      }
+      const row = this.#db.query(
+        `SELECT tbl,status,cursor,bootstrap_state,effective_scopes,reason_code FROM ${SUBSCRIPTIONS_TABLE} WHERE id=?`,
+        [id],
+      )[0];
+      if (row === undefined) return { state: 'unknown', id };
+      const table = row.tbl;
+      const status = row.status;
+      const cursor = row.cursor;
+      if (
+        typeof table !== 'string' ||
+        (status !== 'active' && status !== 'revoked' && status !== 'failed') ||
+        typeof cursor !== 'number' ||
+        !Number.isSafeInteger(cursor)
+      ) {
+        corrupt();
+      }
+      const token = row.bootstrap_state;
+      if (token !== null && typeof token !== 'string') corrupt();
+      const rawScopes = row.effective_scopes;
+      let effectiveScopes: unknown;
+      if (rawScopes !== null) {
+        if (typeof rawScopes !== 'string') corrupt();
+        try {
+          effectiveScopes = JSON.parse(rawScopes);
+        } catch {
+          corrupt();
+        }
+      }
+      const reasonCode = row.reason_code;
+      if (reasonCode !== null && typeof reasonCode !== 'string') corrupt();
+      const active = status === 'active';
+      const hasResumeToken = token !== null;
+      return {
+        state: 'known',
+        id,
+        table,
+        status,
+        cursor,
+        hasResumeToken,
+        bootstrapComplete: active && cursor >= 0 && !hasResumeToken,
+        knownPendingPages: active && (hasResumeToken || cursor < 0),
+        ...(effectiveScopes !== undefined ? { effectiveScopes } : {}),
+        ...(reasonCode !== null ? { reasonCode } : {}),
+      };
+    };
+    const deliveryOf = (id: string): CommitDelivery => {
+      const pending =
+        this.#db.query(
+          `SELECT 1 FROM ${OUTBOX_TABLE} WHERE client_commit_id=? LIMIT 1`,
+          [id],
+        ).length > 0;
+      if (pending) return { status: 'pending', clientCommitId: id };
+      const outcome = persistedCommitOutcome(this.#db, id);
+      return outcome === undefined
+        ? { status: 'unknown', clientCommitId: id }
+        : { status: 'known', clientCommitId: id, outcome };
+    };
+    let read: SnapshotRead;
     try {
-      assertReadOnlyQuery(spec.sql);
-      snapshot = this.#db.transaction(() => {
+      for (const statement of request.statements) {
+        assertReadOnlyQuery(statement.sql);
+      }
+      read = this.#db.transaction(() => {
         const revision = getLocalRevision(this.#db);
-        const rows = stripSyncColumns(
-          this.#db.query(spec.sql, spec.params),
-        ) as unknown as readonly Row[];
+        const queries = request.statements.map((statement) =>
+          stripSyncColumns(this.#db.query(statement.sql, statement.params)),
+        );
         const pending: WindowUnitRef[] = [];
         const missing: WindowUnitRef[] = [];
-        for (const requested of spec.coverage ?? []) {
+        for (const requested of request.coverage ?? []) {
           const baseKey = windowBaseKey(requested.base);
           const state = this.windowState(requested.base);
           for (const unit of new Set(requested.units)) {
@@ -1547,19 +1737,26 @@ export class SyncClient {
         }
         return {
           revision,
-          rows,
+          queries,
           coverage: {
             complete: pending.length === 0 && missing.length === 0,
             pending,
             missing,
           },
+          subscriptions: (request.subscriptions ?? []).map(catchupOf),
+          deliveries: (request.commitIds ?? []).map(deliveryOf),
         };
       });
     } catch (error) {
       const failure = classifySqliteFailure(error);
-      const sqliteCode = failure.sqliteCode;
-      const code = failure.code ?? 'client.query_failed';
       if (owner !== undefined) {
+        const code: DiagnosticQueryFailure['code'] =
+          failure.code ??
+          (error instanceof ClientSyncError &&
+          error.code === 'sync.local_corrupt'
+            ? 'sync.local_corrupt'
+            : 'client.query_failed');
+        const sqliteCode = failure.sqliteCode;
         const tables = [...new Set(owner.tables)].sort();
         const previous = this.#queryFailures.get(owner.id);
         if (
@@ -1575,7 +1772,7 @@ export class SyncClient {
               id: owner.id,
               tables,
               code,
-              sqliteCode: sqliteCode,
+              sqliteCode,
               atMs: this.#now(),
             }),
           );
@@ -1592,7 +1789,7 @@ export class SyncClient {
     if (owner !== undefined && this.#queryFailures.delete(owner.id)) {
       this.#emitDiagnostics();
     }
-    return snapshot;
+    return read;
   }
 
   // -- previous-version context (RFC 0005) ----------------------------------

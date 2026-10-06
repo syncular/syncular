@@ -22,8 +22,8 @@ use ssp2::{
 use syncular_client::previous_version::{PreviousVersionContextConfig, PreviousVersionReadSpec};
 use syncular_client::{
     ClientDiagnosticsRequest, ClientError, ClientLimits, CommandEffects, CommitOutcomeQuery,
-    LocalDataPurgeInput, LocalDataRebootstrapInput, Mutation, QueryOwner, RealtimePolicy,
-    ResolveCommitOutcomeInput, SyncClient, Transport, WindowBase, WindowCoverage,
+    LocalDataPurgeInput, LocalDataRebootstrapInput, Mutation, QueryOwner, QueryReadFailure,
+    RealtimePolicy, ResolveCommitOutcomeInput, SyncClient, Transport, WindowBase, WindowCoverage,
 };
 
 // -- bytes <-> {"$bytes": hex} (the driver-protocol byte envelope) ----------
@@ -118,6 +118,19 @@ pub struct CreateEffects {
     /// This in-memory flag covers the same-handle case where no file persists
     /// the marker.
     pub security_preflight_pending: bool,
+}
+
+/// §7.5: a read failure keeps its structured code, static message, SQLite
+/// details, and retryability across the command boundary.
+fn read_command_error(failure: QueryReadFailure) -> CommandError {
+    let details = failure.details();
+    let retryable = failure.retryable();
+    CommandError {
+        code: failure.code.unwrap_or("client.failed").to_owned(),
+        message: failure.message,
+        details,
+        retryable,
+    }
 }
 
 fn client_err(message: String) -> CommandError {
@@ -465,6 +478,79 @@ fn window_base_from_params(value: Option<&Value>) -> Result<WindowBase, String> 
         fixed_scopes,
         params,
     })
+}
+
+/// §7.5: parse a `coverage` array of `{base, units}` entries. Absent or null is
+/// empty; a non-array, a malformed base, or non-string units are rejected
+/// explicitly instead of silently defaulting.
+fn parse_window_coverage(value: Option<&Value>) -> Result<Vec<WindowCoverage>, String> {
+    let entries = match value {
+        None | Some(Value::Null) => return Ok(Vec::new()),
+        Some(Value::Array(entries)) => entries,
+        Some(_) => return Err("coverage must be a list".to_owned()),
+    };
+    let mut coverage = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let units = match entry.get("units") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::Array(values)) => values
+                .iter()
+                .map(|value| value.as_str().map(str::to_owned))
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| "coverage units must be a list of strings".to_owned())?,
+            Some(_) => return Err("coverage units must be a list of strings".to_owned()),
+        };
+        coverage.push(WindowCoverage {
+            base: window_base_from_params(entry.get("base"))?,
+            units,
+        });
+    }
+    Ok(coverage)
+}
+
+/// §7.5 owner: `{id, tables}`, both required when present. Shared by
+/// `querySnapshot` and `snapshotRead`.
+fn parse_query_owner<'a>(
+    params: &'a Value,
+    method: &str,
+) -> Result<Option<(&'a str, Vec<&'a str>)>, CommandError> {
+    match params.get("owner") {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => {
+            let id = value
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty());
+            let tables = value
+                .get("tables")
+                .and_then(Value::as_array)
+                .and_then(|list| list.iter().map(Value::as_str).collect::<Option<Vec<&str>>>());
+            match (id, tables) {
+                (Some(id), Some(tables)) => Ok(Some((id, tables))),
+                _ => Err(client_err(format!(
+                    "sync.invalid_request: {method} owner must be {{id: non-empty string, tables: string[]}}"
+                ))),
+            }
+        }
+    }
+}
+
+/// §7.5: parse a `subscriptions`/`commitIds` list. Absent or null is empty; a
+/// non-array or a non-string entry is rejected explicitly.
+fn snapshot_string_list(value: Option<&Value>) -> Result<Vec<String>, CommandError> {
+    match value {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| item.as_str().map(str::to_owned))
+            .collect::<Option<Vec<String>>>()
+            .ok_or_else(|| {
+                client_err("sync.invalid_request: snapshotRead list must contain strings".to_owned())
+            }),
+        Some(_) => Err(client_err(
+            "sync.invalid_request: snapshotRead list must be a list of strings".to_owned(),
+        )),
+    }
 }
 
 /// §5.10.5: parse the common `(table, rowId, column, name)` target of a crdt
@@ -949,53 +1035,8 @@ pub fn dispatch<T: Transport>(
                     return Err(client_err("querySnapshot params must be a list".to_owned()))
                 }
             };
-            let mut coverage = Vec::new();
-            for entry in params
-                .get("coverage")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-            {
-                let base = window_base_from_params(entry.get("base")).map_err(client_err)?;
-                let units = entry
-                    .get("units")
-                    .and_then(Value::as_array)
-                    .map(|values| {
-                        values
-                            .iter()
-                            .filter_map(|value| value.as_str().map(str::to_owned))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                coverage.push(WindowCoverage { base, units });
-            }
-            // §7.5 owner: `{id, tables}`, both required when present.
-            let owner = match params.get("owner") {
-                None | Some(Value::Null) => None,
-                Some(value) => {
-                    let id = value
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .filter(|id| !id.is_empty());
-                    let tables = value
-                        .get("tables")
-                        .and_then(Value::as_array)
-                        .and_then(|list| {
-                            list.iter()
-                                .map(Value::as_str)
-                                .collect::<Option<Vec<&str>>>()
-                        });
-                    match (id, tables) {
-                        (Some(id), Some(tables)) => Some((id, tables)),
-                        _ => {
-                            return Err(client_err(
-                                "sync.invalid_request: querySnapshot owner must be {id: non-empty string, tables: string[]}"
-                                    .to_owned(),
-                            ))
-                        }
-                    }
-                }
-            };
+            let coverage = parse_window_coverage(params.get("coverage")).map_err(client_err)?;
+            let owner = parse_query_owner(params, "querySnapshot")?;
             let mut snapshot = need_client(client)?
                 .query_snapshot(
                     sql,
@@ -1009,9 +1050,70 @@ pub fn dispatch<T: Transport>(
             result["rows"] = Value::Array(rows.into_iter().map(Value::Object).collect());
             Ok(result)
         }
-        "localRevision" => Ok(json!({
-            "revision": need_client(client)?.local_revision().to_string()
-        })),
+        "localRevision" => {
+            // §7.5: the public revision read is fallible. An empty shared
+            // snapshot read reports a corrupt marker instead of swallowing it
+            // to zero. The internal infallible counter stays for bookkeeping.
+            let read = need_client(client)?
+                .snapshot_read(&syncular_client::SnapshotReadRequest::default(), None)
+                .map_err(read_command_error)?;
+            Ok(json!({ "revision": read.revision }))
+        }
+        "snapshotRead" => {
+            let mut statement_sql: Vec<String> = Vec::new();
+            let mut statement_params: Vec<Vec<Value>> = Vec::new();
+            match params.get("statements") {
+                None | Some(Value::Null) => {}
+                Some(Value::Array(items)) => {
+                    for item in items {
+                        let Some(sql) = item.get("sql").and_then(Value::as_str) else {
+                            return Err(client_err(
+                                "sync.invalid_request: snapshotRead statements need a sql string"
+                                    .to_owned(),
+                            ));
+                        };
+                        let bind = match item.get("params") {
+                            None | Some(Value::Null) => Vec::new(),
+                            Some(Value::Array(values)) => values.clone(),
+                            Some(_) => {
+                                return Err(client_err(
+                                    "sync.invalid_request: snapshotRead statement params must be a list"
+                                        .to_owned(),
+                                ))
+                            }
+                        };
+                        statement_sql.push(sql.to_owned());
+                        statement_params.push(bind);
+                    }
+                }
+                Some(_) => {
+                    return Err(client_err(
+                        "sync.invalid_request: snapshotRead statements must be a list".to_owned(),
+                    ))
+                }
+            }
+            let subscription_ids = snapshot_string_list(params.get("subscriptions"))?;
+            let commit_ids = snapshot_string_list(params.get("commitIds"))?;
+            let coverage = parse_window_coverage(params.get("coverage")).map_err(client_err)?;
+            let owner = parse_query_owner(params, "snapshotRead")?;
+            let statements: Vec<syncular_client::SnapshotStatement<'_>> = statement_sql
+                .iter()
+                .zip(&statement_params)
+                .map(|(sql, params)| syncular_client::SnapshotStatement { sql, params })
+                .collect();
+            let read = need_client(client)?
+                .snapshot_read(
+                    &syncular_client::SnapshotReadRequest {
+                        statements,
+                        coverage: &coverage,
+                        subscriptions: subscription_ids,
+                        commit_ids,
+                    },
+                    owner.as_ref().map(|(id, tables)| QueryOwner { id, tables }),
+                )
+                .map_err(read_command_error)?;
+            serde_json::to_value(read).map_err(|error| client_err(error.to_string()))
+        }
         "previousVersionSnapshot" | "previous_version_snapshot" => {
             let spec = parse_previous_version_snapshot_spec(params)?;
             let snapshot = need_client(client)?
@@ -1849,6 +1951,34 @@ mod tests {
         .expect("retry after busy");
         assert!(retried.get("clientCommitId").is_some());
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_command_error_preserves_code_details_and_retryability() {
+        let corrupt = super::read_command_error(syncular_client::QueryReadFailure {
+            code: Some("sync.local_corrupt"),
+            sqlite_code: None,
+            sqlite_message: None,
+            rollback_failure: None,
+            message: "persisted local revision is invalid".to_owned(),
+        });
+        assert_eq!(corrupt.code, "sync.local_corrupt");
+        assert!(!corrupt.retryable);
+        assert!(corrupt.details.is_none());
+
+        let busy = super::read_command_error(syncular_client::QueryReadFailure {
+            code: Some("client.storage_busy"),
+            sqlite_code: Some(5),
+            sqlite_message: Some("database is locked".to_owned()),
+            rollback_failure: None,
+            message: "local SQLite storage is busy".to_owned(),
+        });
+        assert_eq!(busy.code, "client.storage_busy");
+        assert!(busy.retryable);
+        assert_eq!(
+            busy.details.expect("busy details")["sqliteCode"],
+            serde_json::json!(5)
+        );
     }
 
     #[test]

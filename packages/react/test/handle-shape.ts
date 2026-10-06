@@ -27,6 +27,7 @@ export function handleShapeOf(client: SyncClient): SyncClientLike {
     rebootstrapLocalData: (input) =>
       Promise.resolve(client.rebootstrapLocalData(input)),
     querySnapshot: (spec) => Promise.resolve(client.querySnapshot(spec)),
+    snapshotRead: (spec) => Promise.resolve(client.snapshotRead(spec)),
     statusSnapshot: () => Promise.resolve(client.statusSnapshot()),
     diagnosticsSnapshot: (request) =>
       Promise.resolve(client.diagnosticsSnapshot(request)),

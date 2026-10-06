@@ -155,61 +155,111 @@ function encodeResults(results: readonly CommitOperationOutcome[]): string {
   return JSON.stringify(stored);
 }
 
+/** A JSON object that is neither null nor an array. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function decodeResults(raw: string): CommitOperationOutcome[] {
+  function corrupt(): never {
+    throw new ClientSyncError(
+      'sync.local_corrupt',
+      'persisted commit outcome is invalid',
+    );
+  }
   const stored = JSON.parse(raw) as StoredCommitOperationOutcome[];
+  if (!Array.isArray(stored)) corrupt();
   return stored.map((result) => {
-    if (result.status !== 'conflict') return result;
-    return {
-      status: 'conflict',
-      conflict: {
-        ...result.conflict,
-        // Pre-column-version journal entries carry no conflictColumns.
-        conflictColumns: result.conflict.conflictColumns ?? [],
-        serverRow: mapRowValues(result.conflict.serverRow, jsonToRowValue),
-      },
-    };
+    if (!isRecord(result)) corrupt();
+    if (result.status === 'applied') {
+      if (typeof result.opIndex !== 'number') corrupt();
+      return result;
+    }
+    if (result.status === 'conflict') {
+      const conflict = result.conflict;
+      if (
+        !isRecord(conflict) ||
+        !isRecord(conflict.serverRow) ||
+        typeof conflict.clientCommitId !== 'string' ||
+        typeof conflict.opIndex !== 'number' ||
+        typeof conflict.table !== 'string' ||
+        typeof conflict.rowId !== 'string' ||
+        typeof conflict.code !== 'string' ||
+        typeof conflict.message !== 'string' ||
+        typeof conflict.serverVersion !== 'number'
+      ) {
+        corrupt();
+      }
+      return {
+        status: 'conflict',
+        conflict: {
+          ...conflict,
+          // Pre-column-version journal entries carry no conflictColumns.
+          conflictColumns: conflict.conflictColumns ?? [],
+          serverRow: mapRowValues(conflict.serverRow, jsonToRowValue),
+        },
+      };
+    }
+    if (result.status === 'error') {
+      const rejection = result.rejection;
+      if (
+        !isRecord(rejection) ||
+        typeof rejection.clientCommitId !== 'string' ||
+        typeof rejection.opIndex !== 'number' ||
+        typeof rejection.code !== 'string' ||
+        typeof rejection.message !== 'string' ||
+        typeof rejection.retryable !== 'boolean'
+      ) {
+        corrupt();
+      }
+      return result;
+    }
+    corrupt();
   });
 }
 
 function parseOutcome(
   db: ClientDatabase,
   row: Readonly<Record<string, unknown>>,
+  attachRetainedRows = true,
 ): CommitOutcome {
-  const retainedRows: RetainedCommitRow[] = db
-    .query(
-      `SELECT tbl,id,intent,base,version,unique_conflicts FROM ${RETAINED_ROWS} WHERE commit_seq IS NULL AND commit_id=? ORDER BY idx`,
-      [row.client_commit_id as string],
-    )
-    .map((retained) => {
-      const decode = (value: unknown): Record<string, RowValue> | null =>
-        value === null
-          ? null
-          : Object.fromEntries(
-              Object.entries(
-                JSON.parse(String(value)) as Record<string, JsonRowValue>,
-              ).map(([key, value]) => [key, jsonToRowValue(value)]),
-            );
-      return {
-        table: retained.tbl as string,
-        rowId: retained.id as string,
-        localRow: decode(retained.intent),
-        ...(retained.unique_conflicts === null
-          ? {}
-          : {
-              uniqueConflicts: (
-                JSON.parse(retained.unique_conflicts as string) as NonNullable<
-                  RetainedCommitRow['uniqueConflicts']
-                >
-              ).map((conflict) => ({
-                ...conflict,
-                serverRow: decode(JSON.stringify(conflict.serverRow))!,
-              })),
-            }),
-        serverRow: decode(retained.base),
-        serverVersion:
-          retained.version === null ? null : (retained.version as number),
-      };
-    });
+  const retainedRows: RetainedCommitRow[] = attachRetainedRows
+    ? db
+        .query(
+          `SELECT tbl,id,intent,base,version,unique_conflicts FROM ${RETAINED_ROWS} WHERE commit_seq IS NULL AND commit_id=? ORDER BY idx`,
+          [row.client_commit_id as string],
+        )
+        .map((retained) => {
+          const decode = (value: unknown): Record<string, RowValue> | null =>
+            value === null
+              ? null
+              : Object.fromEntries(
+                  Object.entries(
+                    JSON.parse(String(value)) as Record<string, JsonRowValue>,
+                  ).map(([key, value]) => [key, jsonToRowValue(value)]),
+                );
+          return {
+            table: retained.tbl as string,
+            rowId: retained.id as string,
+            localRow: decode(retained.intent),
+            ...(retained.unique_conflicts === null
+              ? {}
+              : {
+                  uniqueConflicts: (
+                    JSON.parse(
+                      retained.unique_conflicts as string,
+                    ) as NonNullable<RetainedCommitRow['uniqueConflicts']>
+                  ).map((conflict) => ({
+                    ...conflict,
+                    serverRow: decode(JSON.stringify(conflict.serverRow))!,
+                  })),
+                }),
+            serverRow: decode(retained.base),
+            serverVersion:
+              retained.version === null ? null : (retained.version as number),
+          };
+        })
+    : [];
   return {
     sequence: row.seq as number,
     clientCommitId: row.client_commit_id as string,
@@ -257,6 +307,63 @@ export function commitOutcome(
     clientCommitId,
   ])[0];
   return row === undefined ? undefined : parseOutcome(db, row);
+}
+
+/**
+ * §7.5 persisted-journal view: the stored outcome WITHOUT the owner-derived
+ * `retainedRows` images. A malformed journal row (invalid status, resolution,
+ * results, or operations JSON) raises the same static `sync.local_corrupt` the
+ * native sidecar reports, never a raw `SyntaxError`.
+ */
+export function persistedCommitOutcome(
+  db: ClientDatabase,
+  clientCommitId: string,
+): CommitOutcome | undefined {
+  const row = db.query(`${SELECT_OUTCOME} WHERE client_commit_id=?`, [
+    clientCommitId,
+  ])[0];
+  if (row === undefined) return undefined;
+  function corrupt(): never {
+    throw new ClientSyncError(
+      'sync.local_corrupt',
+      'persisted commit outcome is invalid',
+    );
+  }
+  const status = row.status;
+  const resolution = row.resolution;
+  if (
+    (status !== 'applied' &&
+      status !== 'cached' &&
+      status !== 'conflict' &&
+      status !== 'rejected') ||
+    (resolution !== 'active' &&
+      resolution !== 'resolved_keep_server' &&
+      resolution !== 'superseded' &&
+      resolution !== 'dismissed')
+  ) {
+    corrupt();
+  }
+  try {
+    const outcome = parseOutcome(db, row, false);
+    // `decodeResults` validates every result variant; validate the optional
+    // retained operation envelope here.
+    if (outcome.operations !== undefined) {
+      if (!Array.isArray(outcome.operations)) corrupt();
+      for (const operation of outcome.operations) {
+        if (
+          !isRecord(operation) ||
+          (operation.op !== 'upsert' && operation.op !== 'delete') ||
+          typeof operation.table !== 'string' ||
+          typeof operation.rowId !== 'string'
+        ) {
+          corrupt();
+        }
+      }
+    }
+    return outcome;
+  } catch {
+    corrupt();
+  }
 }
 
 export function listCommitOutcomes(

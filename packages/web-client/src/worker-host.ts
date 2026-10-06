@@ -37,6 +37,8 @@ import type {
   QuerySnapshot,
   RejectionRecord,
   SecurityLifecycle,
+  SnapshotRead,
+  SnapshotReadRequest,
   SubscribeInput,
   SyncClientConfig,
   SyncClientLimits,
@@ -671,6 +673,12 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     spec: QueryReadSpec,
   ): Promise<QuerySnapshot<Row>> {
     return this.#call('querySnapshot', [spec]) as Promise<QuerySnapshot<Row>>;
+  }
+
+  snapshotRead<Row = SqlRow>(
+    spec: SnapshotReadRequest,
+  ): Promise<SnapshotRead<Row>> {
+    return this.#call('snapshotRead', [spec]) as Promise<SnapshotRead<Row>>;
   }
 
   localRevision(): Promise<LocalRevision> {

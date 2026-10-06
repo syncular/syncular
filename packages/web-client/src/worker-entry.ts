@@ -418,6 +418,7 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
     'query',
     'authoritySnapshot',
     'querySnapshot',
+    'snapshotRead',
     'statusSnapshot',
     'conflicts',
     'rejections',

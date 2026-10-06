@@ -417,3 +417,50 @@ failure reports its own code. A failed authoring call leaves no outbox entry,
 no visible row from the failed commit, and no local revision publication; a
 retry after the fault clears enqueues the commit once. The command and FFI
 boundaries forward `code`, `message`, `retryable`, and `details` to the host.
+
+## Snapshot read sidecar
+
+A file-backed replica exposes `FileQuerySnapshotReader`, a read-only SQLite
+connection independent of the mutable core owner. `snapshot_read` resolves
+one request over a single read transaction: it returns the local revision,
+the rows of every requested read-only statement, the requested window
+coverage, the requested subscription catch-up states, and the requested
+commit deliveries. Every statement passes the read-only guard, and any
+statement's failure rolls the whole read back and releases the connection.
+`SyncClient::snapshot_read` resolves the same shape on the mutable owner
+connection, so an in-memory replica and the command surface return one
+contract. `FileQuerySnapshotReader` also exposes `subscription_catchup(id)`
+and `commit_delivery(id)`, each a one-entry snapshot read.
+
+```rust
+use syncular_client::{SnapshotReadRequest, SnapshotStatement};
+
+let read = reader.snapshot_read(&SnapshotReadRequest {
+    statements: vec![SnapshotStatement { sql: "SELECT id FROM todos ORDER BY id", params: &[] }],
+    coverage: &[],
+    subscriptions: vec!["todos".to_owned()],
+    commit_ids: vec![commit_id.clone()],
+})?;
+```
+
+A subscription catch-up state is `unknown` when the client does not
+currently hold the subscription, otherwise `known` with the persisted
+status (`active`, `revoked`, or `failed`; a reset stays `active` with
+`cursor < 0` and a reason code), the cursor, `hasResumeToken`, and the
+derived `bootstrapComplete`/`knownPendingPages`. `bootstrapComplete` is true
+only for an `active` subscription with `cursor >= 0` and no resume token;
+`knownPendingPages` is true for an `active` subscription while a resume
+token remains or `cursor < 0`. These name local progress, never server
+freshness. A commit delivery is `pending` while the id has an outbox entry,
+otherwise the persisted retained outcome, otherwise `unknown`. The sidecar
+reports the persisted outcome fields (status, every result with its conflict
+or rejection code, the retained operation envelope, and the resolution) and
+omits the owner-derived `retainedRows` images.
+
+`local_revision` reads the durable revision without a dummy query; a
+non-canonical marker fails `sync.local_corrupt` instead of reading as zero.
+The `localRevision` command reads the same canonical marker, so a corrupted
+marker fails typed on the command surface too. The TypeScript core exposes
+`SyncClient.snapshotRead`, `subscriptionCatchup`, and `commitDelivery` over
+the same one-transaction contract. Tauri exposes the read as
+`syncular_snapshot_read` and the TypeScript bridge method `snapshotRead`.

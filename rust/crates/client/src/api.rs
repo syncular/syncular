@@ -1134,6 +1134,82 @@ pub struct CommitOutcomeQuery {
     pub active_only: bool,
 }
 
+/// §7.5: the catch-up state of one subscription, read from the persisted
+/// subscription record inside the snapshot transaction (never the mutable
+/// owner cache). `Unknown` means the client does not currently hold the
+/// subscription (it was never registered, or it was forgotten or removed); it
+/// carries no fabricated table or cursor. A known state carries the persisted
+/// `status` (`active`, `revoked`, or `failed`), the cursor, and whether a
+/// resume token is held. A reset subscription stays `active` with
+/// `cursor < 0`; it is not a fourth status.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "state", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum SubscriptionCatchup {
+    /// The client does not currently hold this subscription id.
+    Unknown { id: String },
+    Known {
+        id: String,
+        table: String,
+        /// The persisted status name: `active`, `revoked`, or `failed`.
+        status: String,
+        cursor: i64,
+        has_resume_token: bool,
+        /// True only for an `active` subscription with `cursor >= 0` and no
+        /// resume token. Never true for a failed, revoked, or reset
+        /// subscription.
+        bootstrap_complete: bool,
+        /// True only for an `active` subscription while a resume token remains
+        /// or `cursor < 0`. A reset subscription stays `active` with
+        /// `cursor < 0`, so it reads true while it bootstraps; a failed or
+        /// revoked subscription reads false.
+        known_pending_pages: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        effective_scopes: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason_code: Option<String>,
+    },
+}
+
+/// §7.5: delivery status for one client commit id. A commit still in the
+/// outbox is `pending`; a drained commit carries its persisted retained
+/// outcome; an id the client never held, or whose outcome was pruned by
+/// retention, is `unknown`. The outcome preserves every operation result,
+/// rejection code, and conflict. This is the persisted-journal view in both
+/// cores: it omits the owner-derived `retained_rows` images that
+/// `SyncClient::commit_outcome` attaches from its in-memory failed-commit
+/// cache.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum CommitDelivery {
+    Pending {
+        #[serde(rename = "clientCommitId")]
+        client_commit_id: String,
+    },
+    Known {
+        #[serde(rename = "clientCommitId")]
+        client_commit_id: String,
+        outcome: CommitOutcome,
+    },
+    Unknown {
+        #[serde(rename = "clientCommitId")]
+        client_commit_id: String,
+    },
+}
+
+/// §7.5: the result of one atomic snapshot read over a single SQLite read
+/// transaction: one revision, every requested read-only statement's rows,
+/// requested window coverage, requested subscription catch-up states, and
+/// requested commit deliveries.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnapshotRead {
+    pub revision: String,
+    pub queries: Vec<Vec<QueryRow>>,
+    pub coverage: CoverageSnapshot,
+    pub subscriptions: Vec<SubscriptionCatchup>,
+    pub deliveries: Vec<CommitDelivery>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResolveCommitOutcomeInput {

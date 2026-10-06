@@ -10,8 +10,8 @@ import {
   decodeRowsSegment,
   type ResponseFrame,
 } from '@syncular/core';
-import type { ClientInstance } from '../driver';
-import { FIXTURE_SCHEMA, task } from '../fixture';
+import type { ClientInstance, DriverSchema } from '../driver';
+import { doc, FIXTURE_SCHEMA, task } from '../fixture';
 import type { Scenario } from '../scenario';
 import { seedRows, seedTasks, syncFails, syncIdle, syncOk } from './util';
 
@@ -39,6 +39,14 @@ function requireObservation(client: ClientInstance) {
     drainChangeBatches: client.drainChangeBatches.bind(client),
     drainSyncIntents: client.drainSyncIntents.bind(client),
   };
+}
+
+function requireSnapshotRead(client: ClientInstance) {
+  check(client.snapshotRead !== undefined, 'snapshotRead is available');
+  if (client.snapshotRead === undefined) {
+    throw new Error('client lacks the snapshot-read surface');
+  }
+  return client.snapshotRead.bind(client);
 }
 
 const FTS_SCHEMA = {
@@ -1086,6 +1094,442 @@ export const observationScenarios: readonly Scenario[] = [
         [],
         'rollback emits no sync intent',
       );
+    },
+  },
+  {
+    // §7.5: one atomic read reports the persisted catch-up state of every
+    // requested subscription from the same transaction and revision as the
+    // rows. The owner cache is never consulted.
+    name: 'observation/snapshot-read-catchup-states',
+    specRefs: ['§4.6', '§4.7', '§7.5'],
+    requires: ['concurrent-storage-faults'],
+    async run(ctx) {
+      await seedTasks(ctx, [task('t1', 'p1', 'one')]);
+      const handle = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: { project_id: ['p1', 'p2'] },
+      });
+      const read = requireSnapshotRead(handle.api);
+      const shapeOf = (
+        catchup: Awaited<ReturnType<typeof read>>['subscriptions'][number],
+      ) =>
+        catchup.state === 'unknown'
+          ? { state: 'unknown' }
+          : {
+              state: 'known',
+              status: catchup.status,
+              bootstrapComplete: catchup.bootstrapComplete,
+              knownPendingPages: catchup.knownPendingPages,
+              ...(catchup.reasonCode !== undefined
+                ? { reasonCode: catchup.reasonCode }
+                : {}),
+            };
+
+      // unknown: the client does not hold the id.
+      const initial = await read({
+        statements: [{ sql: 'SELECT 1 AS n' }],
+        subscriptions: ['tasks', 'never-registered'],
+      });
+      checkEqual(
+        initial.queries,
+        [[{ n: 1 }]],
+        'the statement rows resolve in the same read',
+      );
+      checkEqual(
+        initial.subscriptions,
+        [
+          { state: 'unknown', id: 'tasks' },
+          { state: 'unknown', id: 'never-registered' },
+        ],
+        'an unheld id reads unknown with no fabricated table or cursor',
+      );
+
+      // pending: registered before its first bootstrap lands.
+      await handle.api.subscribe({
+        id: 'tasks',
+        table: 'tasks',
+        scopes: { project_id: ['p1'] },
+      });
+      const pending = await read({ statements: [], subscriptions: ['tasks'] });
+      checkEqual(
+        shapeOf(pending.subscriptions[0]!),
+        {
+          state: 'known',
+          status: 'active',
+          bootstrapComplete: false,
+          knownPendingPages: true,
+        },
+        'a fresh registration is pending, never complete',
+      );
+
+      // complete: after bootstrap the cursor is set and no token remains.
+      await syncIdle(handle);
+      const complete = await read({
+        statements: [
+          { sql: 'SELECT id FROM tasks ORDER BY id' },
+          { sql: 'SELECT count(*) AS n FROM tasks' },
+        ],
+        subscriptions: ['tasks'],
+      });
+      checkEqual(
+        complete.queries,
+        [[{ id: 't1' }], [{ n: 1 }]],
+        'two statements resolve under one revision',
+      );
+      checkEqual(
+        shapeOf(complete.subscriptions[0]!),
+        {
+          state: 'known',
+          status: 'active',
+          bootstrapComplete: true,
+          knownPendingPages: false,
+        },
+        'bootstrap completes the subscription',
+      );
+      checkEqual(
+        complete.revision,
+        await handle.api.localRevision!(),
+        'the read reports the durable revision',
+      );
+
+      // reset: a pruned cursor discards progress and stays pending.
+      await seedTasks(ctx, [task('t2', 'p1', 'pruned')]);
+      await ctx.server.pruneDuringNextCommitRead!();
+      const resetReport = await syncOk(handle);
+      check(
+        resetReport.resets.includes('tasks'),
+        'the round resets the subscription',
+      );
+      const reset = await read({ statements: [], subscriptions: ['tasks'] });
+      checkEqual(
+        shapeOf(reset.subscriptions[0]!),
+        {
+          state: 'known',
+          status: 'active',
+          bootstrapComplete: false,
+          knownPendingPages: true,
+          reasonCode: 'sync.cursor_expired',
+        },
+        'a reset stays active and pending while it re-bootstraps',
+      );
+
+      // revoked: an active subscription whose grant was withdrawn.
+      await ctx.server.setAllowedScopes('actor-a', { project_id: ['p2'] });
+      await syncOk(handle);
+      const revoked = await read({ statements: [], subscriptions: ['tasks'] });
+      checkEqual(
+        shapeOf(revoked.subscriptions[0]!),
+        {
+          state: 'known',
+          status: 'revoked',
+          bootstrapComplete: false,
+          knownPendingPages: false,
+          reasonCode: 'sync.scope_revoked',
+        },
+        'a revoked subscription is known, never complete and never pending',
+      );
+
+      // failed: a subscription that fails closed on a fatal local mapping.
+      const brokenSchema: DriverSchema = {
+        version: FIXTURE_SCHEMA.version,
+        tables: FIXTURE_SCHEMA.tables.map((table) =>
+          table.name === 'docs'
+            ? { ...table, scopes: [{ pattern: 'org:{org_id}' }] }
+            : table,
+        ),
+      };
+      const broken = await ctx.newClient({
+        actorId: 'actor-b',
+        clientId: 'client-b',
+        schema: brokenSchema,
+        allowed: { projectId: ['p1'], org_id: ['o1'] },
+      });
+      await seedRows(ctx, 'docs', [doc('d1', 'o1', 'p1')]);
+      await broken.api.subscribe({
+        id: 'docs',
+        table: 'docs',
+        scopes: { projectId: ['p1'] },
+      });
+      const brokenReport = await syncOk(broken);
+      check(
+        brokenReport.failed.includes('docs'),
+        'the broken subscription fails closed',
+      );
+      const failed = await requireSnapshotRead(broken.api)({
+        statements: [],
+        subscriptions: ['docs'],
+      });
+      checkEqual(
+        shapeOf(failed.subscriptions[0]!),
+        {
+          state: 'known',
+          status: 'failed',
+          bootstrapComplete: false,
+          knownPendingPages: false,
+          reasonCode: 'sync.scope_revoked',
+        },
+        'a failed subscription is never complete and never pending',
+      );
+    },
+  },
+  {
+    // §7.5: delivery status by client commit id, with outbox precedence and
+    // the full persisted outcome (never the owner-derived retained rows).
+    name: 'observation/snapshot-read-delivery-status',
+    specRefs: ['§6.3', '§7.1', '§7.5'],
+    requires: ['validators'],
+    async run(ctx) {
+      await seedTasks(ctx, [task('occupied', 'p1', 'server')]);
+      const handle = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: { project_id: ['p1'] },
+        limits: { outcomeRetentionMaxEntries: 1 },
+      });
+      const read = requireSnapshotRead(handle.api);
+      await handle.api.subscribe({
+        id: 'tasks',
+        table: 'tasks',
+        scopes: { project_id: ['p1'] },
+      });
+      await syncIdle(handle);
+
+      // pending (outbox precedence) and unknown (never held).
+      const appliedId = await handle.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('a1', 'p1', 'a') },
+      ]);
+      const pending = await read({
+        statements: [],
+        commitIds: [appliedId, 'never-known'],
+      });
+      checkEqual(
+        pending.deliveries,
+        [
+          { status: 'pending', clientCommitId: appliedId },
+          { status: 'unknown', clientCommitId: 'never-known' },
+        ],
+        'an undrained id is pending and an unheld id is an explicit unknown',
+      );
+
+      await syncIdle(handle);
+      const applied = await read({ statements: [], commitIds: [appliedId] });
+      const appliedDelivery = applied.deliveries[0];
+      checkEqual(appliedDelivery?.status, 'known', 'a drained commit is known');
+      if (appliedDelivery?.status !== 'known')
+        throw new Error('expected a known delivery');
+      checkEqual(
+        appliedDelivery.outcome.status,
+        'applied',
+        'the persisted outcome preserves the applied status',
+      );
+      checkEqual(
+        appliedDelivery.outcome.results.length,
+        1,
+        'every result is preserved',
+      );
+      check(
+        !('retainedRows' in appliedDelivery.outcome),
+        'the snapshot view omits owner-derived retained rows',
+      );
+
+      // conflict: a stale base version retains its conflict evidence.
+      const conflictId = await handle.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: task('occupied', 'p1', 'loser'),
+          baseVersion: 0,
+        },
+      ]);
+      const conflictReport = await syncOk(handle);
+      checkEqual(
+        conflictReport.rejected,
+        [conflictId],
+        'the stale write is rejected as a durable conflict',
+      );
+      const conflict = await read({ statements: [], commitIds: [conflictId] });
+      const conflictDelivery = conflict.deliveries[0];
+      checkEqual(conflictDelivery?.status, 'known', 'the conflict is known');
+      if (conflictDelivery?.status !== 'known')
+        throw new Error('expected a known conflict');
+      checkEqual(
+        conflictDelivery.outcome.status,
+        'conflict',
+        'the outcome status is conflict',
+      );
+      const conflictResult = conflictDelivery.outcome.results[0];
+      checkEqual(
+        conflictResult?.status,
+        'conflict',
+        'the conflict result is preserved',
+      );
+      if (conflictResult?.status !== 'conflict')
+        throw new Error('expected a conflict result');
+      check(
+        conflictResult.conflict.code.length > 0,
+        'the conflict code is preserved',
+      );
+      check(
+        conflictDelivery.outcome.operations !== undefined,
+        'the failed-commit envelope is persisted with the conflict outcome',
+      );
+
+      // rejected: a server validator rejection carries its code and retryability.
+      await ctx.server.installValidators!([
+        {
+          table: 'tasks',
+          rule: {
+            kind: 'maxLength',
+            column: 'title',
+            max: 3,
+            code: 'sync.too_long',
+          },
+        },
+      ]);
+      const rejectedId = await handle.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('r1', 'p1', 'toolong') },
+      ]);
+      const rejectedReport = await syncOk(handle);
+      check(
+        rejectedReport.rejected.includes(rejectedId),
+        'the validator rejects the commit',
+      );
+      const rejected = await read({
+        statements: [],
+        commitIds: [rejectedId],
+      });
+      const rejectedDelivery = rejected.deliveries[0];
+      checkEqual(rejectedDelivery?.status, 'known', 'the rejection is known');
+      if (rejectedDelivery?.status !== 'known')
+        throw new Error('expected a known rejection');
+      checkEqual(
+        rejectedDelivery.outcome.status,
+        'rejected',
+        'the outcome status is rejected',
+      );
+      const rejectedResult = rejectedDelivery.outcome.results[0];
+      if (rejectedResult?.status !== 'error')
+        throw new Error('expected a rejection result');
+      checkEqual(
+        rejectedResult.rejection.code,
+        'sync.constraint_violation',
+        'the persisted rejection code is preserved',
+      );
+      check(
+        rejectedResult.rejection.retryable === false,
+        'a validator rejection is not retryable',
+      );
+
+      // pruned: retention removed the older applied outcome.
+      const pruned = await read({ statements: [], commitIds: [appliedId] });
+      checkEqual(
+        pruned.deliveries,
+        [{ status: 'unknown', clientCommitId: appliedId }],
+        'retention prunes the older applied outcome to unknown',
+      );
+    },
+  },
+  {
+    // §7.5/§7.6: the canonical revision marker is a fallible read on every
+    // public surface. Both cores classify the same corruption identically,
+    // record the owned failure, and recover once the marker is valid again.
+    name: 'observation/snapshot-read-corrupt-revision-classification',
+    specRefs: ['§7.5', '§7.6'],
+    requires: ['storage-fault'],
+    async run(ctx) {
+      const handle = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: { project_id: ['p1'] },
+      });
+      check(
+        handle.api.executeStorageSql !== undefined,
+        'harness storage SQL is available',
+      );
+      check(
+        handle.api.localRevision !== undefined,
+        'localRevision is available',
+      );
+      if (
+        handle.api.executeStorageSql === undefined ||
+        handle.api.localRevision === undefined
+      ) {
+        throw new Error('client lacks the corruption probe surface');
+      }
+      const read = requireSnapshotRead(handle.api);
+      const localRevision = handle.api.localRevision.bind(handle.api);
+      const diagnostics = handle.api.diagnosticsSnapshot?.bind(handle.api);
+      await handle.api.subscribe({
+        id: 'tasks',
+        table: 'tasks',
+        scopes: { project_id: ['p1'] },
+      });
+      await syncIdle(handle);
+      const revision = await localRevision();
+      const owner = { id: 'queries:revision', tables: ['tasks'] };
+
+      await handle.api.executeStorageSql(
+        "UPDATE _syncular_meta SET value='+1' WHERE key='localRevision'",
+      );
+      let revisionCode = '';
+      try {
+        await localRevision();
+      } catch (error) {
+        revisionCode = (error as { code?: string }).code ?? '';
+      }
+      checkEqual(
+        revisionCode,
+        'sync.local_corrupt',
+        'the public revision read classifies corruption',
+      );
+      let readCode = '';
+      try {
+        await read({ statements: [{ sql: 'SELECT 1 AS n' }], owner });
+      } catch (error) {
+        readCode = (error as { code?: string }).code ?? '';
+      }
+      checkEqual(
+        readCode,
+        'sync.local_corrupt',
+        'the snapshot read classifies corruption',
+      );
+
+      await handle.api.executeStorageSql(
+        `UPDATE _syncular_meta SET value='${revision}' WHERE key='localRevision'`,
+      );
+      check(diagnostics !== undefined, 'query diagnostics are available');
+      if (diagnostics !== undefined) {
+        const failed = (await diagnostics()).queryFailures;
+        checkEqual(failed[0]?.id, owner.id, 'the owned failure is recorded');
+        checkEqual(
+          failed[0]?.code,
+          'sync.local_corrupt',
+          'the owned failure keeps its typed code',
+        );
+      }
+      const restored = await read({
+        statements: [{ sql: 'SELECT 1 AS n' }],
+        owner,
+      });
+      checkEqual(
+        restored.queries,
+        [[{ n: 1 }]],
+        'the restored marker reads successfully',
+      );
+      checkEqual(
+        await localRevision(),
+        revision,
+        'the public revision read recovers',
+      );
+      if (diagnostics !== undefined) {
+        check(
+          !(await diagnostics()).queryFailures.some(
+            (failure) => failure.id === owner.id,
+          ),
+          'a successful owned read clears the failure',
+        );
+      }
     },
   },
 ];

@@ -16,8 +16,11 @@ import {
   encodeOutboxCommit,
   type ClientChangeBatch,
   type ClientSchema,
+  type CommitOutcome,
+  type ConflictRecord,
   type EncryptionConfig,
   type MutationInput,
+  type RejectionRecord,
   RealtimeUnavailableError,
   SYNC_VERSION_COLUMN,
   SyncClient,
@@ -47,6 +50,8 @@ import type {
   ClientSyncResult,
   DriverChangeBatch,
   DriverColumn,
+  DriverCommitDelivery,
+  DriverCommitOutcome,
   DriverEncryptionConfig,
   DriverPreviousVersionAudit,
   DriverPreviousVersionSnapshot,
@@ -54,6 +59,8 @@ import type {
   DriverRowValue,
   DriverSchema,
   DriverScopeMap,
+  DriverSnapshotRead,
+  DriverSubscriptionCatchup,
   DriverSyncIntent,
   DriverWindowBase,
 } from '../driver';
@@ -103,6 +110,90 @@ function toRowValue(value: DriverRowValue | undefined): RowValue {
 function toDriverValue(value: RowValue): DriverRowValue {
   if (value instanceof Uint8Array) return { $bytes: bytesToHex(value) };
   return value;
+}
+
+/** §6.3/§7.5: one durable conflict at the driver seam. */
+function driverConflict(conflict: ConflictRecord): ClientConflict {
+  const serverRow: Record<string, DriverRowValue> = {};
+  for (const [key, value] of Object.entries(conflict.serverRow)) {
+    serverRow[key] = toDriverValue(value);
+  }
+  return {
+    clientCommitId: conflict.clientCommitId,
+    opIndex: conflict.opIndex,
+    table: conflict.table,
+    rowId: conflict.rowId,
+    code: conflict.code,
+    serverVersion: conflict.serverVersion,
+    serverRow: serverRow as DriverRow,
+    conflictColumns: conflict.conflictColumns,
+    ...(conflict.operation !== undefined
+      ? { operation: { present: Object.keys(conflict.operation.values ?? {}) } }
+      : {}),
+  };
+}
+
+/** §7.5: one durable rejection at the driver seam. */
+function driverRejection(rejection: RejectionRecord): ClientRejection {
+  return {
+    clientCommitId: rejection.clientCommitId,
+    opIndex: rejection.opIndex,
+    code: rejection.code,
+    retryable: rejection.retryable,
+    ...(rejection.details !== undefined ? { details: rejection.details } : {}),
+    ...(rejection.operation !== undefined
+      ? {
+          operation: { present: Object.keys(rejection.operation.values ?? {}) },
+        }
+      : {}),
+  };
+}
+
+/** §7.5: the persisted-journal outcome a `known` delivery carries. */
+function driverOutcome(outcome: CommitOutcome): DriverCommitOutcome {
+  return {
+    clientCommitId: outcome.clientCommitId,
+    status: outcome.status,
+    resolution: outcome.resolution,
+    results: outcome.results.map((result) => {
+      if (result.status === 'applied')
+        return { status: 'applied' as const, opIndex: result.opIndex };
+      if (result.status === 'conflict')
+        return {
+          status: 'conflict' as const,
+          conflict: driverConflict(result.conflict),
+        };
+      return {
+        status: 'error' as const,
+        rejection: driverRejection(result.rejection),
+      };
+    }),
+    ...(outcome.operations !== undefined
+      ? {
+          operations: outcome.operations.map((operation) => ({
+            op: operation.op,
+            table: operation.table,
+            rowId: operation.rowId,
+            ...(operation.baseVersion !== undefined
+              ? { baseVersion: operation.baseVersion }
+              : {}),
+            present: Object.keys(operation.values ?? {}),
+          })),
+        }
+      : {}),
+  };
+}
+
+/** §7.5: one delivery at the driver seam. */
+function driverDelivery(
+  delivery: import('@syncular/client').CommitDelivery,
+): DriverCommitDelivery {
+  if (delivery.status !== 'known') return delivery;
+  return {
+    status: 'known',
+    clientCommitId: delivery.clientCommitId,
+    outcome: driverOutcome(delivery.outcome),
+  };
 }
 
 /** A raw SQLite value at the previous-version seam: bytes as `$bytes`, the
@@ -617,6 +708,83 @@ class TsClientInstance implements ClientInstance {
     };
   }
 
+  async snapshotRead(request: {
+    readonly statements: readonly {
+      readonly sql: string;
+      readonly params?: readonly DriverRowValue[];
+    }[];
+    readonly coverage?: readonly {
+      readonly base: DriverWindowBase;
+      readonly units: readonly string[];
+    }[];
+    readonly subscriptions?: readonly string[];
+    readonly commitIds?: readonly string[];
+    readonly owner?: {
+      readonly id: string;
+      readonly tables: readonly string[];
+    };
+  }): Promise<DriverSnapshotRead> {
+    const read = this.#client.snapshotRead({
+      statements: request.statements.map((statement) => ({
+        sql: statement.sql,
+        params: (statement.params ?? []).map(toRowValue),
+      })),
+      coverage: (request.coverage ?? []).map((item) => ({
+        base: {
+          table: item.base.table,
+          variable: item.base.variable,
+          ...(item.base.fixedScopes !== undefined
+            ? { fixedScopes: item.base.fixedScopes as ScopeMap }
+            : {}),
+          ...(item.base.params !== undefined
+            ? { params: item.base.params }
+            : {}),
+        },
+        units: item.units,
+      })),
+      subscriptions: request.subscriptions ?? [],
+      commitIds: request.commitIds ?? [],
+      ...(request.owner !== undefined ? { owner: request.owner } : {}),
+    });
+    const subscriptions: DriverSubscriptionCatchup[] = read.subscriptions.map(
+      (catchup) =>
+        catchup.state === 'unknown'
+          ? { state: 'unknown', id: catchup.id }
+          : {
+              state: 'known',
+              id: catchup.id,
+              table: catchup.table,
+              status: catchup.status,
+              cursor: catchup.cursor,
+              hasResumeToken: catchup.hasResumeToken,
+              bootstrapComplete: catchup.bootstrapComplete,
+              knownPendingPages: catchup.knownPendingPages,
+              ...(catchup.effectiveScopes !== undefined
+                ? { effectiveScopes: catchup.effectiveScopes as DriverScopeMap }
+                : {}),
+              ...(catchup.reasonCode !== undefined
+                ? { reasonCode: catchup.reasonCode }
+                : {}),
+            },
+    );
+    return {
+      revision: read.revision.toString(),
+      queries: read.queries.map((rows) =>
+        rows.map((row) =>
+          Object.fromEntries(
+            Object.entries(row).map(([key, value]) => [
+              key,
+              toDriverValue(value as RowValue),
+            ]),
+          ),
+        ),
+      ),
+      coverage: read.coverage,
+      subscriptions,
+      deliveries: read.deliveries.map(driverDelivery),
+    };
+  }
+
   async diagnosticsSnapshot() {
     const snapshot = this.#client.diagnosticsSnapshot();
     return {
@@ -833,48 +1001,11 @@ class TsClientInstance implements ClientInstance {
   }
 
   async conflicts(): Promise<ClientConflict[]> {
-    return this.#client.conflicts().map((conflict) => {
-      const serverRow: Record<string, DriverRowValue> = {};
-      for (const [key, value] of Object.entries(conflict.serverRow)) {
-        serverRow[key] = toDriverValue(value);
-      }
-      return {
-        clientCommitId: conflict.clientCommitId,
-        opIndex: conflict.opIndex,
-        table: conflict.table,
-        rowId: conflict.rowId,
-        code: conflict.code,
-        serverVersion: conflict.serverVersion,
-        serverRow: serverRow as DriverRow,
-        conflictColumns: conflict.conflictColumns,
-        ...(conflict.operation !== undefined
-          ? {
-              operation: {
-                present: Object.keys(conflict.operation.values ?? {}),
-              },
-            }
-          : {}),
-      };
-    });
+    return this.#client.conflicts().map(driverConflict);
   }
 
   async rejections(): Promise<ClientRejection[]> {
-    return this.#client.rejections().map((rejection) => ({
-      clientCommitId: rejection.clientCommitId,
-      opIndex: rejection.opIndex,
-      code: rejection.code,
-      retryable: rejection.retryable,
-      ...(rejection.details !== undefined
-        ? { details: rejection.details }
-        : {}),
-      ...(rejection.operation !== undefined
-        ? {
-            operation: {
-              present: Object.keys(rejection.operation.values ?? {}),
-            },
-          }
-        : {}),
-    }));
+    return this.#client.rejections().map(driverRejection);
   }
 
   async pendingCommitIds(): Promise<string[]> {

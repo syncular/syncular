@@ -60,6 +60,8 @@ import type {
   RejectionRecord,
   ResolveCommitOutcomeInput,
   SecurityLifecycle,
+  SnapshotRead,
+  SnapshotReadRequest,
   SqlRow,
   SqlValue,
   SyncClientConfig,
@@ -95,6 +97,18 @@ interface SyncularEvent {
   readonly type: string;
   readonly [key: string]: unknown;
 }
+
+/** §7.5: one read-only statement in an atomic sidecar snapshot read. */
+export type { SnapshotStatement } from '@syncular/client';
+
+/** §7.5: the catch-up state of one subscription from the sidecar. */
+export type { SubscriptionCatchup } from '@syncular/client';
+
+/** §7.5: delivery status for one client commit id. */
+export type { CommitDelivery } from '@syncular/client';
+
+/** §7.5: one atomic sidecar snapshot read result with decoded rows. */
+export type SnapshotReadResult = SnapshotRead;
 
 /** The two Tauri primitives the bridge needs — injectable for tests. */
 export interface TauriApi {
@@ -248,6 +262,73 @@ function decodeCell(value: unknown): SqlValue {
   // Objects/arrays that are not the bytes envelope round-trip as their JSON
   // string (SQLite json columns arrive as text already; this is defensive).
   return JSON.stringify(value);
+}
+
+/** A decoded outcome row cell. Structurally the shared `RowValue` (bytes are
+ * `Uint8Array`); native outcome rows emit plain JSON numbers, never `$bigint`. */
+type OutcomeRowValue = ConflictRecord['serverRow'][string];
+
+/** Decode one native outcome row image. Only the `{$bytes}` envelope is
+ * honored; operation `values` stay `JsonRowValue` and are not passed here. */
+function decodeOutcomeRow(
+  row: Readonly<Record<string, unknown>>,
+): Record<string, OutcomeRowValue> {
+  const out: Record<string, OutcomeRowValue> = {};
+  for (const [key, value] of Object.entries(row)) {
+    // Reserved `_sync_*` columns stay engine-internal, matching `decodeRow`.
+    if (key.startsWith('_sync_')) continue;
+    if (
+      value === null ||
+      typeof value === 'string' ||
+      typeof value === 'number' ||
+      typeof value === 'boolean'
+    ) {
+      out[key] = value;
+    } else if (isBytesEnvelope(value)) {
+      out[key] = hexToBytes(value.$bytes);
+    } else {
+      out[key] = JSON.stringify(value);
+    }
+  }
+  return out;
+}
+
+/** Decode the row images a native `CommitOutcome` carries: conflict server
+ * rows and retained-row images. */
+function decodeCommitOutcome(outcome: CommitOutcome): CommitOutcome {
+  return {
+    ...outcome,
+    results: outcome.results.map((result) =>
+      result.status === 'conflict'
+        ? {
+            ...result,
+            conflict: {
+              ...result.conflict,
+              serverRow: decodeOutcomeRow(result.conflict.serverRow),
+            },
+          }
+        : result,
+    ),
+    ...(outcome.retainedRows !== undefined
+      ? {
+          retainedRows: outcome.retainedRows.map((row) => ({
+            ...row,
+            localRow:
+              row.localRow === null ? null : decodeOutcomeRow(row.localRow),
+            serverRow:
+              row.serverRow === null ? null : decodeOutcomeRow(row.serverRow),
+            ...(row.uniqueConflicts !== undefined
+              ? {
+                  uniqueConflicts: row.uniqueConflicts.map((conflict) => ({
+                    ...conflict,
+                    serverRow: decodeOutcomeRow(conflict.serverRow),
+                  })),
+                }
+              : {}),
+          })),
+        }
+      : {}),
+  };
 }
 
 /** @internal Shared native row codec. */
@@ -649,6 +730,54 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
     return BigInt(result.revision);
   }
 
+  /**
+   * §7.5: one atomic read over the file-backed sidecar. Every statement and
+   * every catch-up/delivery read shares one revision (a `bigint`, matching
+   * `querySnapshot`) and one read transaction; every query row is decoded.
+   */
+  async snapshotRead(request: SnapshotReadRequest): Promise<SnapshotRead> {
+    this.#requireActive();
+    const reply = await this.#tauri.invoke<CommandReply>(
+      `${PLUGIN}syncular_snapshot_read`,
+      {
+        statements: request.statements.map((statement) => ({
+          sql: statement.sql,
+          params: (statement.params ?? []).map(encodeParam),
+        })),
+        coverage: request.coverage ?? [],
+        subscriptions: request.subscriptions ?? [],
+        commitIds: request.commitIds ?? [],
+        ...(request.owner !== undefined ? { owner: request.owner } : {}),
+      },
+    );
+    if (reply.error !== undefined) {
+      throw new TauriSyncError(
+        reply.error.code,
+        reply.error.message,
+        reply.error.details ?? undefined,
+        reply.error.retryable ?? false,
+      );
+    }
+    const result = reply.result as {
+      revision: string;
+      queries: readonly (readonly Record<string, unknown>[])[];
+      coverage: SnapshotRead['coverage'];
+      subscriptions: SnapshotRead['subscriptions'];
+      deliveries: SnapshotRead['deliveries'];
+    };
+    return {
+      revision: BigInt(result.revision),
+      queries: result.queries.map((rows) => rows.map(decodeRow)),
+      coverage: result.coverage,
+      subscriptions: result.subscriptions,
+      deliveries: result.deliveries.map((delivery) =>
+        delivery.status === 'known'
+          ? { ...delivery, outcome: decodeCommitOutcome(delivery.outcome) }
+          : delivery,
+      ),
+    };
+  }
+
   async statusSnapshot(): Promise<SyncStatusSnapshot> {
     return (await this.#command('statusSnapshot', {})) as SyncStatusSnapshot;
   }
@@ -902,7 +1031,9 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
     const result = (await this.#command('commitOutcome', {
       clientCommitId,
     })) as { outcome?: CommitOutcome };
-    return result.outcome;
+    return result.outcome === undefined
+      ? undefined
+      : decodeCommitOutcome(result.outcome);
   }
 
   async commitOutcomes(
@@ -911,7 +1042,7 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
     const result = (await this.#command('commitOutcomes', { query })) as {
       outcomes: CommitOutcome[];
     };
-    return result.outcomes;
+    return result.outcomes.map(decodeCommitOutcome);
   }
 
   async resolveCommitOutcome(
