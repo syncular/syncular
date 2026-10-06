@@ -219,78 +219,91 @@ export const offlineScenarios: readonly Scenario[] = [
     },
   },
   {
-    name: 'offline/replay-trigger-rolls-back-acknowledgements',
+    name: 'offline/restore-failure-preserves-later-intent',
     specRefs: ['§7.1', '§7.2', '§7.5'],
     async run(ctx) {
-      const a = await ctx.newClient({
-        actorId: 'a',
-        clientId: 'replay',
-        allowed: P1,
-      });
+      await seedTasks(ctx, [task('occupied', 'p1', 'server')]);
+      const a = await bootstrapped(ctx, 'a', 'replay');
       check(
         a.api.executeStorageSql !== undefined,
-        'reference clients expose deterministic storage faults',
+        'storage faults are available',
       );
       check(
-        a.api.localRevision !== undefined,
-        'reference clients expose local revisions',
+        a.api.drainChangeBatches !== undefined,
+        'change batches are available',
       );
-      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
-      await syncIdle(a);
-      const ids = [];
-      for (const id of ['early', 'bad'])
-        ids.push(
-          await a.api.mutate([
-            { op: 'upsert', table: 'tasks', values: task(id, 'p1') },
-          ]),
-        );
+      const rejected = await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: task('occupied', 'p1', 'local'),
+          baseVersion: 0,
+        },
+      ]);
+      const later = await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: task('occupied', 'p1', 'later'),
+        },
+      ]);
       const rows = await a.api.readRows('tasks');
       const subscription = await a.api.subscriptionState('tasks');
-      await a.api.drainChangeBatches?.();
+      await a.api.drainChangeBatches();
+      // The rejection's necessary replay of the later commit is the only
+      // write that reaches this fault, after its provisional outbox removal.
       await a.api.executeStorageSql(
-        "CREATE TRIGGER fail_replay BEFORE INSERT ON tasks WHEN new.id='bad' BEGIN SELECT RAISE(ABORT,'replay failed'); END",
+        "CREATE TRIGGER fail_replay BEFORE INSERT ON tasks WHEN new.id='occupied' AND (SELECT count(*) FROM _syncular_outbox)=1 BEGIN SELECT RAISE(ABORT,'replay failed'); END",
       );
       await syncFails(
         a,
         'client.outcome_persistence_failed',
-        '§7.1 ACK replay failure',
+        'rejection replay',
       );
       checkEqual(
         await a.api.pendingCommitIds(),
-        ids,
-        'failed ACK boundary retains every pending commit',
+        [rejected, later],
+        'failed reconciliation retains every pending commit',
       );
       checkEqual(
         await a.api.readRows('tasks'),
         rows,
-        'failed ACK boundary restores every visible row',
+        'failed reconciliation restores visible state',
       );
       checkEqual(
         await a.api.subscriptionState('tasks'),
         subscription,
-        'failed ACK boundary advances no pull cursor',
+        'failed reconciliation advances no pull cursor',
       );
       checkEqual(
         await a.api.commitOutcomes(),
         [],
-        'failed ACK boundary persists no success',
+        'failed reconciliation persists no outcome',
       );
-      const changes = await a.api.drainChangeBatches?.();
+      const changes = await a.api.drainChangeBatches();
       check(
-        changes !== undefined &&
-          changes.every(
-            (batch) => batch.tables.length === 0 && !batch.outcomesChanged,
-          ),
-        'failed ACK boundary publishes no successful apply batch',
+        changes.every(
+          (batch) => batch.tables.length === 0 && !batch.outcomesChanged,
+        ),
+        'failed reconciliation publishes no successful apply batch',
       );
       await a.api.executeStorageSql('DROP TRIGGER fail_replay');
-      await syncIdle(a);
+      const report = await syncOk(a);
+      checkEqual(
+        report.rejected,
+        [rejected],
+        'retry persists the original rejection',
+      );
       checkEqual(
         await a.api.pendingCommitIds(),
         [],
-        'cached ACK retry drains preserved intent',
+        'retry drains remaining intent',
       );
-      await expectConverged(ctx, 'tasks', [a]);
+      await syncIdle(a);
+      await expectConverged(ctx, 'tasks', [a], {
+        variable: 'project_id',
+        values: ['p1'],
+      });
     },
   },
   {
