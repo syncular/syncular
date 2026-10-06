@@ -8793,7 +8793,7 @@ impl SyncClient {
         let prior_active_round = self.active_round;
         let mut batch = ChangeAccumulator::default();
         let result = self
-            .run_schema_reset_observed(&mut batch, true, true)
+            .run_schema_reset_observed(&mut batch, true)
             .and_then(|()| self.finish_observation("syncular_schema_reset", batch));
         if let Err(error) = result {
             self.rollback_observation("syncular_schema_reset");
@@ -8848,7 +8848,7 @@ impl SyncClient {
         let prior_active_round = self.active_round;
         let mut batch = ChangeAccumulator::default();
         let result = self
-            .run_schema_reset_observed(&mut batch, false, false)
+            .run_schema_reset_observed(&mut batch, false)
             .and_then(|()| {
                 self.conn
                     .execute(
@@ -8880,7 +8880,6 @@ impl SyncClient {
     fn run_schema_reset_observed(
         &mut self,
         batch: &mut ChangeAccumulator,
-        drop_incompatible: bool,
         capture: bool,
     ) -> Result<(), String> {
         // §7.4.2: the reset is the only path that wipes local tables for a
@@ -9039,22 +9038,23 @@ impl SyncClient {
         // Rewrite the marker LAST so a crash mid-reset re-runs the reset.
         self.persist_schema_version()?;
         self.save_subscription_scope_schema();
-        // §7.4.4: drop outbox commits that cannot re-encode under the new
-        // schema (a referenced column/table the bump removed), surfacing each
-        // as a `sync.outbox_incompatible` rejection.
-        if drop_incompatible && self.drop_incompatible_outbox()? {
-            batch.rejections = true;
-            batch.status = true;
-            batch.outcomes = true;
-        }
+        // §7.4.3/§7.4.4: the reset preserves the outbox. A pending upsert that
+        // cannot re-encode under the new schema stays pending and is classified
+        // by the send-time prepass (`drop_incompatible_outbox` in
+        // `prepare_sync_round`), matching the SPEC's rule that the send-time drop
+        // is the only path that removes a commit, and the TypeScript core's
+        // timing.
         // Re-apply the surviving outbox optimistically over the empty tables.
         self.rebuild_overlay()?;
         Ok(())
     }
 
-    /// §7.4.4: a persisted upsert whose values reference a column the current
-    /// schema lacks (or a removed table) cannot be encoded. Drop the commit
-    /// and raise a client-local `sync.outbox_incompatible` rejection.
+    /// §7.4.4 send-time prepass: a persisted upsert whose values reference a
+    /// column the current schema lacks (or a removed table) cannot be encoded
+    /// (`commit_audit_operations` inspects upserts, so a value-free delete stays
+    /// encodable and is validated by the server). Drop the commit, undo its
+    /// optimistic projection, and raise a client-local
+    /// `sync.outbox_incompatible` rejection.
     fn drop_incompatible_outbox(&mut self) -> Result<bool, String> {
         let incompatible = self
             .outbox
@@ -9067,43 +9067,91 @@ impl SyncClient {
         if incompatible.is_empty() {
             return Ok(false);
         }
-        let mut rejections = Vec::new();
-        for commit in &incompatible {
-            let results = commit
-                .ops
+        // §7.4.4: one observation covers the durable outcome writes, the outbox
+        // removal, the in-memory drop, and the overlay rebuild, so a storage
+        // fault leaves the replica and the client unchanged and publishes no
+        // change; a successful drop publishes exactly one batch carrying the
+        // rejections, outcomes, status, and the tables whose projection changed.
+        let prior_outbox = self.outbox.clone();
+        let prior_rejections = self.rejections.clone();
+        let prior_overlay_dirty = self.overlay_dirty.snapshot();
+        let owns_transaction = self.conn.is_autocommit();
+        self.begin_observation("syncular_outbox_drop")?;
+        let mut batch = ChangeAccumulator::default();
+        let dropped = (|| -> Result<(), String> {
+            let mut rejections = Vec::new();
+            for commit in &incompatible {
+                let results = commit
+                    .ops
+                    .iter()
+                    .enumerate()
+                    .map(|(op_index, operation)| {
+                        let rejection = RejectionRecord {
+                            client_commit_id: commit.client_commit_id.clone(),
+                            op_index: op_index as i32,
+                            code: OUTBOX_INCOMPATIBLE_CODE.to_owned(),
+                            message: "the persisted commit cannot encode under the current schema"
+                                .to_owned(),
+                            retryable: false,
+                            details: None,
+                            operation: Some(CommitOperation::from(operation)),
+                        };
+                        rejections.push(rejection.clone());
+                        CommitOperationOutcome::Error { rejection }
+                    })
+                    .collect::<Vec<_>>();
+                self.persist_commit_outcome(
+                    &commit.client_commit_id,
+                    CommitOutcomeStatus::Rejected,
+                    &results,
+                    Some(&commit.ops),
+                )?;
+                self.delete_outbox_persisted(&commit.client_commit_id)?;
+                // A removed table has no local projection to invalidate; every
+                // surviving table the dropped commit touched does.
+                for operation in &commit.ops {
+                    if self.schema.table(&operation.table).is_some() {
+                        batch.table(&operation.table);
+                    }
+                }
+            }
+            self.prune_commit_outcomes()?;
+            let incompatible_ids = incompatible
                 .iter()
-                .enumerate()
-                .map(|(op_index, operation)| {
-                    let rejection = RejectionRecord {
-                        client_commit_id: commit.client_commit_id.clone(),
-                        op_index: op_index as i32,
-                        code: OUTBOX_INCOMPATIBLE_CODE.to_owned(),
-                        message: "the persisted commit cannot encode under the current schema"
-                            .to_owned(),
-                        retryable: false,
-                        details: None,
-                        operation: Some(CommitOperation::from(operation)),
-                    };
-                    rejections.push(rejection.clone());
-                    CommitOperationOutcome::Error { rejection }
-                })
-                .collect::<Vec<_>>();
-            self.persist_commit_outcome(
-                &commit.client_commit_id,
-                CommitOutcomeStatus::Rejected,
-                &results,
-                Some(&commit.ops),
-            )?;
-            self.delete_outbox_persisted(&commit.client_commit_id)?;
+                .map(|commit| commit.client_commit_id.as_str())
+                .collect::<BTreeSet<_>>();
+            self.outbox
+                .retain(|commit| !incompatible_ids.contains(commit.client_commit_id.as_str()));
+            self.rejections.extend(rejections);
+            // The dropped commits' purely-optimistic rows are undone: the
+            // visible projection is re-derived from the surviving base + outbox.
+            self.overlay_dirty.set(true);
+            self.rebuild_overlay()?;
+            batch.status = true;
+            batch.rejections = true;
+            batch.outcomes = true;
+            Ok(())
+        })();
+        let result = dropped.and_then(|()| self.finish_observation("syncular_outbox_drop", batch));
+        if let Err(error) = result {
+            // An outer RELEASE is the COMMIT. Roll back that transaction
+            // directly: retrying RELEASE after ROLLBACK TO still needs the
+            // reader's lock. A nested observation only rolls back its savepoint.
+            if owns_transaction {
+                if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
+                    let mut failure = self.storage_failure.borrow_mut();
+                    let failure =
+                        failure.get_or_insert_with(|| QueryReadFailure::from(error.clone()));
+                    failure.rollback_failure = Some(Box::new(QueryReadFailure::from(rollback)));
+                }
+            } else {
+                self.rollback_observation("syncular_outbox_drop");
+            }
+            self.outbox = prior_outbox;
+            self.rejections = prior_rejections;
+            self.overlay_dirty.restore(prior_overlay_dirty);
+            return Err(error);
         }
-        self.prune_commit_outcomes()?;
-        let incompatible_ids = incompatible
-            .iter()
-            .map(|commit| commit.client_commit_id.as_str())
-            .collect::<BTreeSet<_>>();
-        self.outbox
-            .retain(|commit| !incompatible_ids.contains(commit.client_commit_id.as_str()));
-        self.rejections.extend(rejections);
         Ok(true)
     }
 
@@ -11795,6 +11843,7 @@ impl SyncClient {
                     .expect("retained storage failures are classified");
                 *error_code = code.to_owned();
                 *message = match code {
+                    "client.storage_busy" => "local SQLite storage is busy",
                     "client.storage_full" => "local SQLite storage is full",
                     "client.storage_io" => "local SQLite storage I/O failed",
                     "client.storage_corrupt" => "local SQLite storage is corrupt",
@@ -11918,6 +11967,7 @@ impl SyncClient {
                 Vec::new()
             };
             self.drain_pending_evictions()
+                .and_then(|_| self.drop_incompatible_outbox())
                 .and_then(|_| self.drop_unencodable_outbox())
                 .map_err(|message| {
                     Box::new(SyncOutcome::Failed {
@@ -14430,7 +14480,7 @@ impl SyncClient {
         self.begin_observation("syncular_local_rebootstrap")?;
         let mut batch = ChangeAccumulator::default();
         let applied = (|| -> Result<(), String> {
-            self.run_schema_reset_observed(&mut batch, false, false)?;
+            self.run_schema_reset_observed(&mut batch, false)?;
             self.conn
                 .execute(
                     "INSERT INTO _syncular_meta(key, value) VALUES (?1, ?2)",
@@ -16606,7 +16656,9 @@ mod previous_version_wiring_tests {
         assert_eq!(snapshot.current_version, 1);
         assert!(!std::path::Path::new(&container).exists());
         // The client remains usable: releasing the reader lets the identical
-        // recreation run to completion and drop the incompatible commit.
+        // recreation run to completion, and the reset preserves the
+        // incompatible intent until the send-time prepass classifies it
+        // (§7.4.3/§7.4.4: the reset never touches the outbox).
         client
             .conn
             .busy_timeout(std::time::Duration::from_secs(1))
@@ -16615,15 +16667,283 @@ mod previous_version_wiring_tests {
             .recreate_with_schema(&dropped)
             .expect("the recreation succeeds once the reader releases");
         assert_eq!(client.schema.version, 2);
+        assert_eq!(
+            client.pending_commit_ids(),
+            vec![commit.clone()],
+            "the reset kept the incompatible commit pending"
+        );
+        assert!(
+            client.rejections.is_empty(),
+            "no rejection exists before the send-time prepass"
+        );
+        // The send boundary classifies and drops it.
+        client
+            .prepare_sync_round(false)
+            .expect("the send prepass runs during round preparation");
         assert!(client.pending_commit_ids().is_empty());
         assert!(
             client
                 .rejections
                 .iter()
                 .any(|rejection| rejection.code == OUTBOX_INCOMPATIBLE_CODE),
-            "the dropped-column commit surfaced as a rejection"
+            "the dropped-column commit surfaced as a rejection at send time"
         );
         client.previous_version_discard();
+        drop(client);
+        std::fs::remove_file(path).expect("remove replica");
+    }
+
+    #[test]
+    fn the_send_time_incompatible_drop_is_atomic_and_publishes_once() {
+        let v1 = previous_version_schema(1);
+        let mut v2 = previous_version_schema(2);
+        // v2 drops `note`, so the queued `dropped` upsert cannot re-encode.
+        v2["tables"][0]["columns"] = json!([{ "name": "id", "type": "string", "nullable": false }]);
+        let mut client = SyncClient::new("drop".to_string(), &v1, ClientLimits::default()).unwrap();
+        let dropped = client
+            .mutate(vec![Mutation::Upsert {
+                table: "tasks".into(),
+                values: Map::from_iter([
+                    ("id".into(), json!("dropped")),
+                    ("note".into(), json!("gone")),
+                ]),
+                base_version: None,
+            }])
+            .unwrap();
+        // A full-row v1 upsert always carries the v1 columns, so the surviving
+        // commit is a value-free delete (it encodes under any schema that still
+        // has the table).
+        let survivor = client
+            .mutate(vec![Mutation::Delete {
+                table: "tasks".into(),
+                row_id: "gone".into(),
+                base_version: None,
+            }])
+            .unwrap();
+        client
+            .recreate_with_schema(&v2)
+            .expect("the reset preserves the outbox");
+        assert_eq!(
+            client.pending_commit_ids(),
+            vec![dropped.clone(), survivor.clone()],
+            "the reset preserves both commits"
+        );
+        assert!(client.rejections.is_empty(), "the reset classifies nothing");
+        client.drain_change_batches();
+        let rows = client.query("SELECT * FROM tasks", &[]).unwrap();
+        assert_eq!(rows.len(), 1, "only the dropped upsert has a visible row");
+
+        // A fault anywhere in the atomic drop leaves the replica, the outbox,
+        // the durable outcomes, the visible projection, the revision, and the
+        // publish surface untouched. Clearing `syncNeeded` first keeps the
+        // round's own status flip out of the assertion, so any published change
+        // can only be the drop's.
+        for fault in [
+            "outcome-insert",
+            "outbox-delete",
+            "overlay-rebuild",
+            "publish-revision",
+        ] {
+            client.set_sync_needed(false, false);
+            client.drain_change_batches();
+            let revision = client.local_revision();
+            let trigger = match fault {
+                "outcome-insert" => {
+                    "CREATE TRIGGER fail_drop BEFORE INSERT ON _syncular_commit_outcomes BEGIN SELECT RAISE(ABORT,'drop fault'); END"
+                }
+                "outbox-delete" => {
+                    "CREATE TRIGGER fail_drop BEFORE DELETE ON _syncular_outbox BEGIN SELECT RAISE(ABORT,'drop fault'); END"
+                }
+                // The optimized replay removes only the dropped projection, so
+                // the replay fault belongs on the DELETE; a publish fault lands
+                // on the revision write that `finish_observation` performs after
+                // every durable effect already succeeded.
+                "publish-revision" => {
+                    "CREATE TRIGGER fail_drop BEFORE INSERT ON _syncular_meta WHEN NEW.key = 'localRevision' BEGIN SELECT RAISE(ABORT,'drop fault'); END"
+                }
+                _ => {
+                    "CREATE TRIGGER fail_drop BEFORE DELETE ON tasks BEGIN SELECT RAISE(ABORT,'drop fault'); END"
+                }
+            };
+            client.conn.execute_batch(trigger).unwrap();
+            let outcome = client
+                .prepare_sync_round(false)
+                .err()
+                .unwrap_or_else(|| panic!("{fault}: a fault in the drop must fail the round"));
+            assert!(
+                matches!(*outcome, SyncOutcome::Failed { ref error_code, .. } if error_code == "storage.failed"),
+                "{fault}: {outcome:?}"
+            );
+            client.conn.execute_batch("DROP TRIGGER fail_drop").unwrap();
+            assert!(client.conn.is_autocommit(), "{fault}: no leaked savepoint");
+            assert_eq!(
+                client.pending_commit_ids(),
+                vec![dropped.clone(), survivor.clone()],
+                "{fault}: the outbox is restored"
+            );
+            assert!(
+                client.rejections.is_empty(),
+                "{fault}: no in-memory rejection survives"
+            );
+            assert!(
+                client.commit_outcome(&dropped).unwrap().is_none(),
+                "{fault}: the durable outcome rolled back"
+            );
+            assert_eq!(client.local_revision(), revision, "{fault}: revision");
+            assert_eq!(
+                client.query("SELECT * FROM tasks", &[]).unwrap(),
+                rows,
+                "{fault}: the visible projection is unchanged"
+            );
+            assert!(
+                client.drain_change_batches().is_empty(),
+                "{fault}: nothing is published"
+            );
+        }
+
+        // A nested failure leaves the caller's transaction and earlier writes
+        // intact; only the drop's savepoint is rolled back.
+        client
+            .conn
+            .execute_batch(
+                "BEGIN; INSERT INTO _syncular_meta(key,value) VALUES ('outerProbe','kept');
+             CREATE TRIGGER fail_drop BEFORE INSERT ON _syncular_commit_outcomes
+             BEGIN SELECT RAISE(ABORT,'nested drop fault'); END;",
+            )
+            .unwrap();
+        assert!(client.drop_incompatible_outbox().is_err());
+        assert!(!client.conn.is_autocommit());
+        assert_eq!(client.get_meta("outerProbe").as_deref(), Some("kept"));
+        assert_eq!(
+            client.pending_commit_ids(),
+            vec![dropped.clone(), survivor.clone()]
+        );
+        assert!(client.commit_outcome(&dropped).unwrap().is_none());
+        client
+            .conn
+            .execute_batch("DROP TRIGGER fail_drop; COMMIT")
+            .unwrap();
+
+        // The successful drop publishes exactly once and leaves the surviving
+        // intent queued for the same round. A log epoch is required before a
+        // round builds push frames at all, so the classification provably runs
+        // before any operation of the dropped commit is sent.
+        client.set_meta(LOG_EPOCH_KEY, "epoch");
+        client.set_sync_needed(false, false);
+        client.drain_change_batches();
+        let revision = client.local_revision();
+        let prepared = client.prepare_sync_round(false).expect("the drop succeeds");
+        assert_eq!(client.pending_commit_ids(), vec![survivor.clone()]);
+        assert_eq!(
+            prepared.meta.pushed_ids,
+            vec![survivor.clone()],
+            "the incompatible commit is classified before any operation is sent"
+        );
+        let rejection = client
+            .rejections
+            .iter()
+            .find(|rejection| rejection.code == OUTBOX_INCOMPATIBLE_CODE)
+            .expect("a sync.outbox_incompatible rejection");
+        assert_eq!(rejection.client_commit_id, dropped);
+        assert!(
+            !rejection.retryable,
+            "a schema-incompatible commit is final"
+        );
+        assert_eq!(
+            client
+                .commit_outcome(&dropped)
+                .unwrap()
+                .expect("a durable rejected outcome")
+                .status,
+            CommitOutcomeStatus::Rejected
+        );
+        assert_eq!(client.local_revision(), revision + 1, "one revision");
+        let batches = client.drain_change_batches();
+        assert_eq!(batches.len(), 1, "one change batch");
+        assert!(
+            batches[0].rejections_changed
+                && batches[0].outcomes_changed
+                && batches[0].status.is_some(),
+            "{:?}",
+            batches[0]
+        );
+        assert!(
+            batches[0].tables.iter().any(|entry| entry.table == "tasks"),
+            "{:?}",
+            batches[0]
+        );
+        let visible = client.query("SELECT * FROM tasks", &[]).unwrap();
+        assert!(
+            visible.is_empty(),
+            "the dropped projection is undone: {visible:?}"
+        );
+
+        // The observation's outer RELEASE (transaction COMMIT) is guarded too:
+        // a rollback-journal reader holding SHARED makes it fail with the typed
+        // busy classification, and releasing the reader lets the retry succeed.
+        let path = temp_replica("outbox-drop-commit");
+        let path_str = path.to_str().expect("path");
+        let conn = Connection::open(path_str).expect("replica connection");
+        let mut client =
+            SyncClient::with_connection("drop-commit".into(), &v1, ClientLimits::default(), conn)
+                .expect("v1 replica");
+        let dropped = client
+            .mutate(vec![Mutation::Upsert {
+                table: "tasks".into(),
+                values: Map::from_iter([
+                    ("id".into(), json!("dropped")),
+                    ("note".into(), json!("gone")),
+                ]),
+                base_version: None,
+            }])
+            .unwrap();
+        client
+            .recreate_with_schema(&v2)
+            .expect("the reset preserves the outbox");
+        assert_eq!(client.pending_commit_ids(), vec![dropped.clone()]);
+        let rows = client.query("SELECT * FROM tasks", &[]).unwrap();
+        assert_eq!(rows.len(), 1, "the optimistic row is visible");
+        client.set_sync_needed(false, false);
+        client.drain_change_batches();
+        let revision = client.local_revision();
+        let reader = Connection::open(path_str).expect("reader");
+        reader
+            .execute_batch("BEGIN; SELECT count(*) FROM _syncular_meta;")
+            .expect("reader snapshot");
+        client
+            .conn
+            .busy_timeout(std::time::Duration::ZERO)
+            .expect("busy timeout");
+        let outcome = client
+            .prepare_sync_round(false)
+            .err()
+            .expect("a blocked COMMIT must fail the round");
+        assert!(
+            matches!(*outcome, SyncOutcome::Failed { ref error_code, .. } if error_code == "client.storage_busy"),
+            "{outcome:?}"
+        );
+        assert!(client.conn.is_autocommit(), "the savepoint is released");
+        assert_eq!(client.pending_commit_ids(), vec![dropped.clone()]);
+        assert!(client.rejections.is_empty());
+        assert!(client.commit_outcome(&dropped).unwrap().is_none());
+        assert_eq!(client.local_revision(), revision);
+        assert_eq!(client.query("SELECT * FROM tasks", &[]).unwrap(), rows);
+        assert!(client.drain_change_batches().is_empty());
+        // The same round succeeds once the reader releases.
+        drop(reader);
+        client
+            .conn
+            .busy_timeout(std::time::Duration::from_secs(1))
+            .expect("busy timeout");
+        client
+            .prepare_sync_round(false)
+            .expect("the drop succeeds after the reader releases");
+        assert!(client.pending_commit_ids().is_empty());
+        assert!(client
+            .rejections
+            .iter()
+            .any(|rejection| rejection.code == OUTBOX_INCOMPATIBLE_CODE));
+        assert!(client.query("SELECT * FROM tasks", &[]).unwrap().is_empty());
         drop(client);
         std::fs::remove_file(path).expect("remove replica");
     }
