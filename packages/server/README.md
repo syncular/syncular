@@ -268,6 +268,15 @@ Do not set that assertion on a stateless Worker. Custom storages must implement
 the pre-operation partition lock, locked idempotency re-check, atomic rejection
 finalization, and—when `commitValidator` is used—candidate scans.
 
+`D1ServerStorage` updates the client record in place instead of deleting and
+reinserting it, and a row update whose scope map is unchanged leaves the
+scope-index entries alone. Both liveness timestamps keep their cadence: the
+partition's `last_authenticated_at_ms` and the client's `updated_at_ms`
+retain their existing refresh cadence. A logical same-value commit still
+applies in full: it advances `server_version`, records the change, and stores
+the submitted payload. See the measured local baseline in the
+[Cloudflare Workers guide](https://syncular.dev/server-workers/#routine-write-cost).
+
 Whole-commit validation checks a client-proposed commit; it does not grant
 authority. Privileged operations such as connecting facilities still belong in
 explicit server-authoritative commands.

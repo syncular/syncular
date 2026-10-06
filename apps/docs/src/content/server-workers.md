@@ -158,6 +158,46 @@ when `commitValidator` is present. A custom coordinator may pass
 `{ pushApplySerialized: true }`; a stateless Worker must not. Different
 partitions still use different DOs and remain concurrent.
 
+### Routine write cost
+
+D1 bills `rows_written` per statement, and that count includes the index
+entries a write touches, not only the table rows:
+[D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/).
+
+Two writes dominate a caught-up client that polls on a fixed interval, and each
+refreshes a different timestamp:
+
+- The partition registry refreshes `last_authenticated_at_ms`, the partition's
+  activity time. Hosts can use it to exclude long-inactive partitions from
+  maintenance.
+- The client record refreshes `updated_at_ms`, the per-client liveness time
+  that the active-client retention floor reads. Both timestamps retain their
+  existing refresh cadence.
+
+The client record is updated in place instead of deleted and reinserted, so an
+established round writes one client row instead of two. The actor comes from
+the authenticated context, the wire version and subscription list from the
+request, the cursor from the read, and `updated_at_ms` from the server clock.
+
+A push that changes no value still applies. The server increments
+`server_version`, records the change, and stores the new payload. A row update
+whose scope map is unchanged leaves the scope-index entries in place: the
+replacement deletes only keys the new map drops, and the insert ignores keys
+already present.
+
+Measured before and after on one two-column `tasks` table with one scope and no
+declared secondary index, driven through the real `handleSyncRequest` over a real
+Miniflare D1 database and read from `meta.rows_written`:
+
+| Path | Before | After |
+|---|---|---|
+| Established idle round | 3 | 2 |
+| First write, warm client | 20 | 19 |
+| Same-value commit | 19 | 14 |
+
+These are a regression baseline for that schema, not a general billing
+estimate.
+
 ## Realtime: the Durable Object
 
 Realtime on Workers runs through `SyncularRealtimeHost`: one Durable Object

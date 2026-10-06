@@ -50,6 +50,36 @@ describe('push apply (§6.2)', () => {
     expect(row?.serverVersion).toBe(2);
   });
 
+  test('an identical-payload commit still advances the sequence, version, and change log', async () => {
+    const t = makeContext();
+    const firstSeq = await seedTask(t, 'c1', 't1', 'p1', 'same');
+    const first = await t.storage.getRow('part-1', 'tasks', 't1');
+    expect(first?.serverVersion).toBe(1);
+    // The second commit carries a NEW client commit id and the same content.
+    // The server must still apply it: skipping it would freeze the version,
+    // defeat column-version conflict tracking, drop the change event, and (for
+    // an encrypted column) discard a fresh ciphertext that the row must carry.
+    const message = await sync(t, [
+      pushCommit('c2', [upsert('tasks', 't1', taskRow('t1', 'p1', 'same'))]),
+    ]);
+    const result = pushResults(message)[0];
+    expect(result?.status).toBe('applied');
+    expect(result?.commitSeq).toBe(firstSeq + 1);
+    const row = await t.storage.getRow('part-1', 'tasks', 't1');
+    expect(row?.serverVersion).toBe(2);
+    expect(row?.payload).toEqual(first?.payload);
+    const commits = await t.storage.readCommitWindow('part-1', {
+      table: 'tasks',
+      scopeFilter: { project_id: ['p1'] },
+      afterSeq: firstSeq,
+      throughSeq: firstSeq + 1,
+      limitChanges: 10,
+    });
+    expect(commits).toHaveLength(1);
+    expect(commits[0]?.changes[0]?.op).toBe('upsert');
+    expect(commits[0]?.changes[0]?.rowVersion).toBe(2);
+  });
+
   test('matching baseVersion applies with version + 1', async () => {
     const t = makeContext();
     await seedTask(t, 'c1', 't1', 'p1');

@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-10-06',
+    title: 'D1 write cost: in-place client records and unchanged scope index',
+    body: 'D1ServerStorage updates a client record in place instead of deleting and reinserting it, and a row write whose scope map is unchanged leaves the scope-index entries alone. Both liveness timestamps keep their per-round cadence. A logical same-value commit still applies in full: it advances server_version, records the change, and stores the submitted payload.',
+    links: [
+      {
+        href: '/server-workers/#routine-write-cost',
+        label: 'Routine write cost',
+      },
+    ],
+  },
+  {
+    date: '2026-10-06',
     title: 'Constraint support and enforcement',
     body: 'The typegen SQL-subset documentation now states which constraints migration SQL accepts and which layer enforces each one. NOT NULL and the primary key are enforced logically by the row codec on the server commit and on client writes; a declared REFERENCES is enforced by the server once per commit with no local SQLite foreign key; CREATE UNIQUE INDEX is materialized by both client mirrors, the server projection, and the query type-check database, and a local collision fails atomically with sync.constraint_violation; a SQL DEFAULT literal is accepted and ignored. Closed value sets have no enum or CHECK metadata, so inline and table-level CHECK and named CONSTRAINT are hard errors: use the stored column type plus a server write-validator for the closed set, and CREATE UNIQUE INDEX for uniqueness. Compiler regressions pin the rejected forms and the index alternative.',
     links: [
