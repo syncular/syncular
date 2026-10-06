@@ -16800,6 +16800,29 @@ mod previous_version_wiring_tests {
             );
         }
 
+        // A nested failure leaves the caller's transaction and earlier writes
+        // intact; only the drop's savepoint is rolled back.
+        client
+            .conn
+            .execute_batch(
+                "BEGIN; INSERT INTO _syncular_meta(key,value) VALUES ('outerProbe','kept');
+             CREATE TRIGGER fail_drop BEFORE INSERT ON _syncular_commit_outcomes
+             BEGIN SELECT RAISE(ABORT,'nested drop fault'); END;",
+            )
+            .unwrap();
+        assert!(client.drop_incompatible_outbox().is_err());
+        assert!(!client.conn.is_autocommit());
+        assert_eq!(client.get_meta("outerProbe").as_deref(), Some("kept"));
+        assert_eq!(
+            client.pending_commit_ids(),
+            vec![dropped.clone(), survivor.clone()]
+        );
+        assert!(client.commit_outcome(&dropped).unwrap().is_none());
+        client
+            .conn
+            .execute_batch("DROP TRIGGER fail_drop; COMMIT")
+            .unwrap();
+
         // The successful drop publishes exactly once and leaves the surviving
         // intent queued for the same round. A log epoch is required before a
         // round builds push frames at all, so the classification provably runs
