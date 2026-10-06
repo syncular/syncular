@@ -7992,8 +7992,22 @@ impl SyncClient {
             .execute_batch("BEGIN IMMEDIATE")
             .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         let prior_schema = std::mem::replace(&mut self.schema, new_schema);
+        // §7.4.3/§7.4.4: a reset inside this transaction mutates in-memory
+        // state (dropped outbox commits, rejections, upgrade and floor flags,
+        // overlay dirtiness) and appends change/intent batches. A COMMIT that
+        // fails after the reset succeeded rolls the database back, so every
+        // one of those fields is captured here and restored with it.
         let prior_subs = self.subs.clone();
+        let prior_outbox = self.outbox.clone();
+        let prior_rejections = self.rejections.clone();
+        let prior_upgrading = self.upgrading;
+        let prior_stopped = self.stopped;
+        let prior_schema_floor = self.schema_floor.clone();
+        let prior_overlay_dirty = self.overlay_dirty.snapshot();
+        let prior_sync_needed = self.sync_needed;
+        let prior_active_round = self.active_round;
         let prior_changes = self.change_queue.len();
+        let prior_intents = self.sync_intent_queue.len();
         let prior_last_change = self.last_change.clone();
         let guarded = (|| -> Result<(), String> {
             // §7.4.2: the marker is re-read under the write lock the caller
@@ -8041,8 +8055,19 @@ impl SyncClient {
             }
             self.schema = prior_schema;
             self.subs = prior_subs;
+            self.outbox = prior_outbox;
+            self.rejections = prior_rejections;
+            self.upgrading = prior_upgrading;
+            self.stopped = prior_stopped;
+            self.schema_floor = prior_schema_floor;
+            self.overlay_dirty.restore(prior_overlay_dirty);
+            self.sync_needed = prior_sync_needed;
+            self.active_round = prior_active_round;
             self.change_queue.truncate(prior_changes);
+            self.sync_intent_queue.truncate(prior_intents);
             self.last_change = prior_last_change;
+            // Prepared insert statements were derived from the reverted schema.
+            self.insert_sql.borrow_mut().clear();
             return Err(error);
         }
         Ok(())
@@ -15629,6 +15654,139 @@ mod previous_version_wiring_tests {
             Some("2")
         );
         drop(probe);
+        drop(client);
+        std::fs::remove_file(path).expect("remove replica");
+    }
+
+    #[test]
+    fn a_failed_outer_commit_restores_every_reset_side_effect() {
+        let path = temp_replica("outer-commit");
+        let path_str = path.to_str().expect("path");
+        // A rollback-journal replica (no WAL), so a second read connection can
+        // hold SHARED across the recreated transaction's COMMIT.
+        let conn = Connection::open(path_str).expect("replica connection");
+        let mut client = SyncClient::with_connection(
+            "outer-commit".into(),
+            &previous_version_schema(1),
+            ClientLimits::default(),
+            conn,
+        )
+        .expect("v1 replica");
+        assert_eq!(journal_mode(&client.conn), "delete");
+        let commit = client
+            .mutate(vec![Mutation::Upsert {
+                table: "tasks".into(),
+                values: Map::from_iter([
+                    ("id".into(), json!("queued")),
+                    ("note".into(), json!("dropped-by-v2")),
+                ]),
+                base_version: None,
+            }])
+            .expect("queued write");
+        client.drain_change_batches();
+        // v2 drops `note`, so the queued upsert cannot re-encode.
+        let mut dropped = previous_version_schema(2);
+        dropped["tables"][0]["columns"] =
+            json!([{ "name": "id", "type": "string", "nullable": false }]);
+        // Prior database and memory state: the refused COMMIT must restore all
+        // of it.
+        let marker = meta_get(&client.conn, LOCAL_SCHEMA_VERSION_KEY);
+        let revision = client.local_revision();
+        let rows = client.query("SELECT * FROM tasks", &[]).expect("rows");
+        let columns: i64 = client
+            .conn
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('tasks')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("column count");
+        let rebuilds = client.overlay_rebuild_count.get();
+        let prior_subs = client.subs.len();
+        let prior_changes = client.change_queue.len();
+        let prior_intents = client.sync_intent_queue.len();
+        let prior_last_change = client.last_change.clone();
+        let prior_overlay_dirty = client.overlay_dirty.get();
+        let prior_sync_needed = client.sync_needed;
+        let prior_upgrading = client.upgrading;
+        let prior_stopped = client.stopped;
+        let prior_schema_floor = client.schema_floor.clone();
+        let prior_active_round = client.active_round;
+        // The reader holds SHARED for the whole attempt: the writer takes
+        // RESERVED, runs the reset, and fails when COMMIT needs EXCLUSIVE.
+        let reader = Connection::open(path_str).expect("reader");
+        reader
+            .execute_batch("BEGIN; SELECT count(*) FROM _syncular_meta;")
+            .expect("reader snapshot");
+        client
+            .conn
+            .busy_timeout(std::time::Duration::ZERO)
+            .expect("busy timeout");
+        let error = client
+            .recreate_with_schema(&dropped)
+            .expect_err("a blocked COMMIT must refuse the recreation");
+        assert!(error.starts_with("client.storage_busy:"), "{error}");
+        assert!(
+            client.overlay_rebuild_count.get() > rebuilds,
+            "the reset ran to its overlay rebuild inside the transaction"
+        );
+        assert!(client.conn.is_autocommit(), "the transaction is released");
+        // Database: the rolled-back reset left nothing behind.
+        assert_eq!(meta_get(&client.conn, LOCAL_SCHEMA_VERSION_KEY), marker);
+        assert_eq!(client.local_revision(), revision);
+        assert_eq!(
+            client.query("SELECT * FROM tasks", &[]).expect("rows"),
+            rows
+        );
+        assert_eq!(
+            client
+                .conn
+                .query_row(
+                    "SELECT count(*) FROM pragma_table_info('tasks')",
+                    [],
+                    |row| { row.get::<_, i64>(0) }
+                )
+                .expect("column count"),
+            columns,
+            "the previous table layout survives the rollback"
+        );
+        assert_eq!(client.pending_commit_ids(), vec![commit.clone()]);
+        // Memory: every side effect of the successful reset is restored with
+        // the rolled-back database.
+        assert_eq!(client.schema.version, 1, "compiled schema");
+        assert_eq!(client.subs.len(), prior_subs);
+        assert_eq!(client.change_queue.len(), prior_changes);
+        assert_eq!(client.sync_intent_queue.len(), prior_intents);
+        assert_eq!(client.last_change, prior_last_change);
+        assert_eq!(client.overlay_dirty.get(), prior_overlay_dirty);
+        assert_eq!(client.sync_needed, prior_sync_needed);
+        assert_eq!(client.upgrading, prior_upgrading);
+        assert_eq!(client.stopped, prior_stopped);
+        assert_eq!(client.schema_floor, prior_schema_floor);
+        assert_eq!(client.active_round, prior_active_round);
+        assert!(
+            client.rejections.is_empty(),
+            "the dropped-column rejection is rolled back too"
+        );
+        // The client remains usable: releasing the reader lets the identical
+        // recreation run to completion and drop the incompatible commit.
+        drop(reader);
+        client
+            .conn
+            .busy_timeout(std::time::Duration::from_secs(1))
+            .expect("busy timeout");
+        client
+            .recreate_with_schema(&dropped)
+            .expect("the recreation succeeds once the reader releases");
+        assert_eq!(client.schema.version, 2);
+        assert!(client.pending_commit_ids().is_empty());
+        assert!(
+            client
+                .rejections
+                .iter()
+                .any(|rejection| rejection.code == OUTBOX_INCOMPATIBLE_CODE),
+            "the dropped-column commit surfaced as a rejection"
+        );
         drop(client);
         std::fs::remove_file(path).expect("remove replica");
     }
