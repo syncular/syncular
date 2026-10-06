@@ -20,7 +20,8 @@
  * builtin, this test fails at the source that introduced it.
  */
 import { describe, expect, test } from 'bun:test';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 
 const SRC = resolve(import.meta.dir, '..', 'src');
@@ -146,20 +147,34 @@ describe('runtime neutrality (static scan)', () => {
     ]);
   });
 
-  test('neutral entry bundles for browsers without minification', async () => {
-    const result = await Bun.build({
-      entrypoints: [resolve(SRC, 'index.ts')],
-      target: 'browser',
-      minify: false,
-      conditions: ['browser'],
-    });
-    expect(result.logs).toEqual([]);
-    expect(result.success).toBe(true);
-    expect(result.outputs.length).toBeGreaterThan(0);
-    for (const output of result.outputs) {
-      expect(await output.text()).not.toMatch(
-        /(?:bun|node):(?:sqlite|fs|path)/,
-      );
+  test('neutral entry bundles for browsers without minification', () => {
+    const directory = mkdtempSync(resolve(tmpdir(), 'syncular-neutral-'));
+    const output = resolve(directory, 'server.js');
+    try {
+      // This checkout has no dist files. Select source exports and isolate
+      // Bun's build resolver from later imports in the test process.
+      const result = Bun.spawnSync({
+        cmd: [
+          process.execPath,
+          'build',
+          resolve(SRC, 'index.ts'),
+          '--target',
+          'browser',
+          '--conditions',
+          'bun',
+          '--outfile',
+          output,
+        ],
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      expect(result.stderr.toString()).toBe('');
+      expect(result.exitCode).toBe(0);
+      const source = readFileSync(output, 'utf8');
+      expect(source.length).toBeGreaterThan(0);
+      expect(source).not.toMatch(/(?:bun|node):(?:sqlite|fs|path)/);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
     }
   });
 
