@@ -2780,6 +2780,63 @@ mod observation_tests {
     }
 
     #[test]
+    fn failed_log_epoch_resets_restore_memory_and_durable_state() {
+        for key in [
+            "localSchemaVersion",
+            "localSchemaDescriptor",
+            "logEpoch",
+            "localRevision",
+        ] {
+            let mut client = client();
+            client.set_meta(LOG_EPOCH_KEY, "epoch-old");
+            let commit = client
+                .mutate(vec![Mutation::Upsert {
+                    table: "tasks".into(),
+                    values: Map::from_iter([
+                        ("id".into(), json!("offline")),
+                        ("project_id".into(), json!("p1")),
+                    ]),
+                    base_version: None,
+                }])
+                .unwrap();
+            client.active_round = Some(uuid::Uuid::new_v4());
+            client.overlay_dirty.set(false);
+            let round = client.active_round;
+            let needed = client.sync_needed;
+            let revision = client.local_revision();
+            let rows = serde_json::to_value(client.read_rows("tasks").unwrap()).unwrap();
+            client.drain_change_batches();
+            client.drain_sync_intents();
+            client.conn.execute_batch(&format!("CREATE TRIGGER fail_reset BEFORE INSERT ON _syncular_meta WHEN NEW.key='{key}' BEGIN SELECT RAISE(FAIL,'injected reset failure'); END")).unwrap();
+            assert!(client.run_log_epoch_reset("epoch-new").is_err(), "{key}");
+            assert_eq!(client.get_meta(LOG_EPOCH_KEY).as_deref(), Some("epoch-old"));
+            assert!(!client.upgrading);
+            assert_eq!(client.active_round, round);
+            assert!(!client.overlay_dirty.get());
+            assert_eq!(client.sync_needed, needed);
+            assert_eq!(client.local_revision(), revision);
+            assert_eq!(
+                client.pending_commit_ids().as_slice(),
+                std::slice::from_ref(&commit)
+            );
+            assert_eq!(
+                serde_json::to_value(client.read_rows("tasks").unwrap()).unwrap(),
+                rows
+            );
+            assert!(client.drain_change_batches().is_empty());
+            assert!(client.drain_sync_intents().is_empty());
+            assert!(client.conn.is_autocommit());
+            client
+                .conn
+                .execute_batch("DROP TRIGGER fail_reset")
+                .unwrap();
+            client.run_log_epoch_reset("epoch-new").unwrap();
+            assert_eq!(client.get_meta(LOG_EPOCH_KEY).as_deref(), Some("epoch-new"));
+            assert_eq!(client.pending_commit_ids(), [commit]);
+        }
+    }
+
+    #[test]
     fn acknowledged_restore_and_replay_ignore_unrelated_subscription_count() {
         for subscriptions in [0, 2, 6, 12] {
             let mut client = SyncClient::new("ack-scope".into(), &json!({ "version": 1, "tables": [
@@ -8932,10 +8989,15 @@ impl SyncClient {
         conn.busy_timeout(std::time::Duration::from_millis(250))
             .map_err(|error| format!("configure db {path:?} busy timeout: {error}"))?;
         let client = Self::with_connection_identity(client_id, schema_json, limits, conn)?;
-        client
+        let journal_mode: String = client
             .conn
-            .pragma_update(None, "journal_mode", "WAL")
-            .map_err(|error| format!("configure db {path:?} WAL mode: {error}"))?;
+            .pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))
+            .map_err(|error| Self::sqlite_failure(&client.storage_failure, error))?;
+        if journal_mode != "wal" {
+            return Err(
+                "sync.invalid_request: file-backed client requires WAL journal mode".to_owned(),
+            );
+        }
         Ok(client)
     }
 
@@ -10645,7 +10707,12 @@ impl SyncClient {
         let result = self
             .run_schema_reset_observed(&mut batch, false, false)
             .and_then(|()| {
-                self.set_meta(LOG_EPOCH_KEY, log_epoch);
+                self.conn
+                    .execute(
+                        "INSERT OR REPLACE INTO _syncular_meta(key,value) VALUES (?1,?2)",
+                        rusqlite::params![LOG_EPOCH_KEY, log_epoch],
+                    )
+                    .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
                 self.sync_needed = true;
                 batch.status = true;
                 self.finish_observation("syncular_log_epoch_reset", batch)
@@ -18188,6 +18255,35 @@ mod previous_version_wiring_tests {
 
     fn temp_replica(label: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("syncular-{label}-{}.db", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn file_identity_constructor_requires_the_returned_wal_mode() {
+        for path in [":memory:", ""] {
+            let error = SyncClient::open_path_with_identity(
+                None,
+                &previous_version_schema(1),
+                ClientLimits::default(),
+                path,
+            )
+            .err()
+            .expect("temporary SQLite databases cannot enter WAL mode");
+            assert_eq!(
+                error,
+                "sync.invalid_request: file-backed client requires WAL journal mode"
+            );
+        }
+        let path = temp_replica("confirmed-wal");
+        let client = SyncClient::open_path_with_identity(
+            None,
+            &previous_version_schema(1),
+            ClientLimits::default(),
+            path.to_str().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(journal_mode(&client.conn), "wal");
+        drop(client);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

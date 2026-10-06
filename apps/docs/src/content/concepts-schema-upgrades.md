@@ -42,11 +42,13 @@ An unreadable or corrupt marker fails with `sync.local_corrupt`, and so does a
 metadata table carrying more than one marker row: the client never resolves
 the ambiguity by picking a row. A generated schema version outside the marker's
 range (1 through 2147483647) is refused with `sync.invalid_request` before the
-replica is created or opened, and a refused open leaves the replica's journal
-mode and contents untouched. The client accepts an absent metadata table or
+replica is created or opened. Schema validation refusals leave the replica's
+journal mode and contents untouched. The client accepts an absent metadata table or
 marker for fresh and legacy replicas.
 Equal versions keep ordinary startup behavior, and version increases keep the
-wipe-re-bootstrap-replay flow. Discarding previous-version context does not
+wipe-re-bootstrap-replay flow. A failed schema or log-epoch reset rolls
+back its SQLite writes and restores the client's in-memory readiness, active
+round, subscriptions, outbox, and overlay state. Discarding previous-version context does not
 permit a schema downgrade. Older binaries that predate this guard retain their
 historical reset behavior.
 

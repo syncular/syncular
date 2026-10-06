@@ -83,6 +83,10 @@ Three constructors cover the storage choices: `SyncClient::new` (in-memory),
 `SyncClient::open_path` (on-disk file, `CREATE TABLE IF NOT EXISTS` so
 re-opening reuses persisted rows), and `SyncClient::with_connection` (a
 caller-supplied fresh rusqlite `Connection`).
+`open_path_with_identity` also persists the client identity and enables WAL
+after schema validation. It checks SQLite's returned journal mode and fails
+with `sync.invalid_request` if WAL is unavailable. Pass a persistent file
+path; an empty path or `:memory:` cannot enter WAL mode.
 
 ## Transport gate
 
