@@ -177,6 +177,7 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
     void serializedSync(() => running.syncUntilIdle())
       .then((summary) => {
         if (!closed) post({ t: 'event', event: { kind: 'synced', summary } });
+        if (summary.budgetExhausted) consumeSyncIntent({ kind: 'interactive' });
       })
       .catch((error: unknown) => {
         if (!closed) {

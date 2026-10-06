@@ -87,6 +87,16 @@ export function installSyncScheduler(
     backgroundReady = false;
     void client
       .syncUntilIdle(options.maxRounds)
+      .then((result) => {
+        if (
+          result !== null &&
+          typeof result === 'object' &&
+          'budgetExhausted' in result &&
+          result.budgetExhausted === true
+        ) {
+          queueImmediate();
+        }
+      })
       .catch((error: unknown) => {
         if (!stopped) report(error);
       })
