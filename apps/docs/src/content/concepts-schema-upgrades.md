@@ -94,7 +94,8 @@ as a rejection with the client-local code
 `sync.outbox_incompatible` (§7.4.4). For a removed table the local overlay has
 no mirror to replay into, so the replay skips that operation: an upsert cannot
 be encoded and is classified at send time, while a value-free delete stays
-encodable and is validated by the server. The un-encodable commit then leaves
+encodable and is validated by the server. A rejection of that delete drains
+the commit without looking up a removed local table. The un-encodable commit then leaves
 the outbox and its purely-optimistic rows are undone, exactly like a server
 rejection. Later outbox commits that *do* encode keep replaying, so the
 queue keeps moving past the one incompatible commit.
