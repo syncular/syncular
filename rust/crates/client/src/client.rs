@@ -8817,14 +8817,24 @@ fn read_local_schema_version(conn: &Connection, requested: i32) -> Result<Option
     if table_type != "table" {
         return Err(corrupt());
     }
-    let value: Option<String> = conn
-        .query_row(
-            "SELECT value FROM _syncular_meta WHERE key = ?1",
-            [LOCAL_SCHEMA_VERSION_KEY],
-            |row| row.get(0),
-        )
-        .optional()
+    // §7.4.2: a duplicated marker cannot be resolved. `query_row` would take
+    // whichever row SQLite returns first, and an older one would drive a
+    // destructive reset over a newer replica.
+    let mut statement = conn
+        .prepare("SELECT value FROM _syncular_meta WHERE key = ?1")
         .map_err(schema_marker_read_failure)?;
+    let mut rows = statement
+        .query([LOCAL_SCHEMA_VERSION_KEY])
+        .map_err(schema_marker_read_failure)?;
+    let value: Option<String> = rows
+        .next()
+        .map_err(schema_marker_read_failure)?
+        .map(|row| row.get(0))
+        .transpose()
+        .map_err(schema_marker_read_failure)?;
+    if rows.next().map_err(schema_marker_read_failure)?.is_some() {
+        return Err(corrupt());
+    }
     let Some(value) = value else {
         return Ok(None);
     };
@@ -8885,36 +8895,25 @@ impl SyncClient {
         path: &str,
     ) -> Result<Self, String> {
         validate_client_limits(&limits)?;
+        // §7.4.2: an invalid requested version is refused before the replica is
+        // even created, so a rejected constructor leaves no file behind.
+        parse_schema_json(schema_json)?;
         let conn = Connection::open(path).map_err(|e| format!("open db {path:?}: {e}"))?;
-        read_local_schema_version(&conn, parse_schema_json(schema_json)?.version)?;
-        // File-backed native clients use an independent read connection for
+        // A file-backed native client uses an independent read connection for
         // latency-critical snapshots. WAL is SQLite's intended reader/writer
         // concurrency mode: a view read never holds a rollback-journal lock
-        // that delays the mutable client's next commit, and a short busy
-        // timeout absorbs the tiny checkpoint/schema-lock windows.
+        // that delays the client's next commit. The busy timeout must precede
+        // this replica's own startup transaction; WAL is applied only after
+        // startup succeeded, because a refused open must leave the replica's
+        // journal mode and contents untouched (§7.4.2).
         conn.busy_timeout(std::time::Duration::from_millis(250))
             .map_err(|error| format!("configure db {path:?} busy timeout: {error}"))?;
-        conn.pragma_update(None, "journal_mode", "WAL")
+        let client = Self::with_connection_identity(client_id, schema_json, limits, conn)?;
+        client
+            .conn
+            .pragma_update(None, "journal_mode", "WAL")
             .map_err(|error| format!("configure db {path:?} WAL mode: {error}"))?;
-        let persisted = conn
-            .query_row(
-                "SELECT value FROM _syncular_meta WHERE key = 'clientId'",
-                [],
-                |row| row.get::<_, String>(0),
-            )
-            .ok();
-        let resolved = persisted
-            .clone()
-            .or(client_id.clone())
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        if let (Some(existing), Some(requested)) = (persisted, client_id) {
-            if existing != requested {
-                return Err(format!(
-                    "client.identity_mismatch: this database belongs to {existing:?}; refusing to rebind it to {requested:?}"
-                ));
-            }
-        }
-        Self::with_connection(resolved, schema_json, limits, conn)
+        Ok(client)
     }
 
     #[must_use]
@@ -8934,10 +8933,20 @@ impl SyncClient {
         limits: ClientLimits,
         conn: Connection,
     ) -> Result<Self, String> {
+        Self::with_connection_identity(Some(client_id), schema_json, limits, conn)
+    }
+
+    /// [`Self::with_connection`] for `open_path_with_identity`: no requested id
+    /// means a durable replica's persisted `clientId` wins over a fresh one.
+    fn with_connection_identity(
+        client_id: Option<String>,
+        schema_json: &Value,
+        limits: ClientLimits,
+        conn: Connection,
+    ) -> Result<Self, String> {
         validate_client_limits(&limits)?;
         let schema = parse_schema_json(schema_json)?;
         validate_authority_reads(&schema, &limits.authority_reads)?;
-        let marker = read_local_schema_version(&conn, schema.version)?;
         // RFC 0005 D8: resolve the previous-version config before the opening
         // reset runs — the capture happens inside it. Bad bounds fail loud.
         let previous_version = match limits.previous_version_context {
@@ -8952,7 +8961,9 @@ impl SyncClient {
             benchmark_phases: Recorder::default(),
             conn,
             schema,
-            client_id,
+            client_id: client_id
+                .clone()
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
             limits,
             subs: Vec::new(),
             outbox: Vec::new(),
@@ -9000,64 +9011,101 @@ impl SyncClient {
         client
             .conn
             .set_prepared_statement_cache_capacity(64.max(client.schema.tables.len() * 4));
-        // The marker guard already ran without writes. New app indexes may
-        // reference columns that only exist after a version-bump reset.
-        client.create_bookkeeping_tables()?;
-        match client.get_meta(CLIENT_ID_KEY) {
-            Some(existing) if existing != client.client_id => {
-                return Err(format!(
-                    "client.identity_mismatch: this database belongs to {existing:?}; refusing to rebind it to {:?}",
-                    client.client_id
-                ));
+        // §7.4.2: one write transaction (SQLite `BEGIN IMMEDIATE`, a reserved
+        // writer) covers the marker read, the identity check, and every
+        // bookkeeping/schema write, so a concurrent open that upgraded the
+        // replica cannot interleave between the guard and the writes, and a
+        // refusal leaves the replica unchanged.
+        client
+            .conn
+            .execute_batch("BEGIN IMMEDIATE")
+            .map_err(|error| Self::sqlite_failure(&client.storage_failure, error))?;
+        let startup = (|| -> Result<(), String> {
+            // The marker guard runs inside the write transaction, so the version
+            // it validates is the version every write below commits under.
+            let marker = read_local_schema_version(&client.conn, client.schema.version)?;
+            // New app indexes may reference columns that only exist after a
+            // version-bump reset.
+            client.create_bookkeeping_tables()?;
+            match client.get_meta(CLIENT_ID_KEY) {
+                Some(existing) => match client_id {
+                    Some(requested) if existing != requested => {
+                        return Err(format!(
+                            "client.identity_mismatch: this database belongs to {existing:?}; refusing to rebind it to {requested:?}"
+                        ))
+                    }
+                    _ => client.client_id = existing,
+                },
+                None => client.set_meta(CLIENT_ID_KEY, &client.client_id),
             }
-            None => client.set_meta(CLIENT_ID_KEY, &client.client_id),
-            _ => {}
-        }
-        client.restore_persisted_state()?;
-        client.failed_commits = client.load_failed_commits()?;
-        match marker {
-            None => {
-                client.create_synced_tables()?;
-                client.set_meta(LOCAL_SCHEMA_VERSION_KEY, &client.schema.version.to_string());
-                // D1: the descriptor is written beside every marker write.
-                set_local_schema_descriptor(&client.conn, &client.schema);
-                client.save_subscription_scope_schema();
+            client.restore_persisted_state()?;
+            client.failed_commits = client.load_failed_commits()?;
+            match marker {
+                None => {
+                    client.create_synced_tables()?;
+                    client.set_meta(LOCAL_SCHEMA_VERSION_KEY, &client.schema.version.to_string());
+                    // D1: the descriptor is written beside every marker write.
+                    set_local_schema_descriptor(&client.conn, &client.schema);
+                    client.save_subscription_scope_schema();
+                }
+                Some(version) if version == client.schema.version => {
+                    client.create_synced_tables()?;
+                    // RFC 0005 D1: the same-version open backfills the descriptor
+                    // for a database first opened by an unaware binary, so the
+                    // NEXT bump can capture without needing a schema bump first.
+                    set_local_schema_descriptor(&client.conn, &client.schema);
+                    client.save_subscription_scope_schema();
+                }
+                Some(_) => client.run_schema_reset()?,
             }
-            Some(version) if version == client.schema.version => {
-                client.create_synced_tables()?;
-                // RFC 0005 D1: the same-version open backfills the descriptor
-                // for a database first opened by an unaware binary, so the
-                // NEXT bump can capture without needing a schema bump first.
-                set_local_schema_descriptor(&client.conn, &client.schema);
-                client.save_subscription_scope_schema();
+            // RFC 0005 D9: the reset sweep cannot see a container whose capture
+            // committed in its OWN file while the replica's savepoint never
+            // released — a crash at that seam leaves a container beside a matching
+            // OLD marker, and the next open at that version runs no reset. Discard
+            // it before anything can read it. No-op when no container exists.
+            client.reconcile_previous_version_at_boot()?;
+            client.clear_satisfied_persisted_schema_floor();
+            client.prune_unknown_subscriptions(false)?;
+            if marker == Some(client.schema.version)
+                && (!client.outbox.is_empty()
+                    || !client.failed_commits.is_empty()
+                    || client.has_acknowledged_rows())
+            {
+                // Reconstruct the visible optimistic overlay from the durable
+                // base plus outbox instead of trusting a process-interrupted
+                // mirror.
+                client.overlay_dirty.set(true);
+                client.rebuild_overlay()?;
             }
-            Some(_) => client.run_schema_reset()?,
+            // Every persisted active subscription needs one catch-up pull on
+            // open: realtime only covers changes after connection, while an
+            // idempotent setWindow correctly creates no fresh command effect.
+            // Pending outbox work has the same restart requirement. The core
+            // owns this intent so native hosts never poll or require an
+            // application-issued sync().
+            client.enqueue_startup_sync_if_needed()?;
+            Ok(())
+        })();
+        match startup {
+            Ok(()) => match client.conn.execute_batch("COMMIT") {
+                Ok(()) => Ok(client),
+                Err(error) => {
+                    let failure = Self::sqlite_failure(&client.storage_failure, error);
+                    if let Err(rollback) = client.conn.execute_batch("ROLLBACK") {
+                        // Keep a failed rollback's typed storage classification.
+                        let _ = Self::sqlite_failure(&client.storage_failure, rollback);
+                    }
+                    Err(failure)
+                }
+            },
+            Err(error) => {
+                if let Err(rollback) = client.conn.execute_batch("ROLLBACK") {
+                    // Keep a failed rollback's typed storage classification.
+                    let _ = Self::sqlite_failure(&client.storage_failure, rollback);
+                }
+                Err(error)
+            }
         }
-        // RFC 0005 D9: the reset sweep cannot see a container whose capture
-        // committed in its OWN file while the replica's savepoint never
-        // released — a crash at that seam leaves a container beside a matching
-        // OLD marker, and the next open at that version runs no reset. Discard
-        // it before anything can read it. No-op when no container exists.
-        client.reconcile_previous_version_at_boot()?;
-        client.clear_satisfied_persisted_schema_floor();
-        client.prune_unknown_subscriptions(false)?;
-        if marker == Some(client.schema.version)
-            && (!client.outbox.is_empty()
-                || !client.failed_commits.is_empty()
-                || client.has_acknowledged_rows())
-        {
-            // Reconstruct the visible optimistic overlay from the durable base
-            // plus outbox instead of trusting a process-interrupted mirror.
-            client.overlay_dirty.set(true);
-            client.rebuild_overlay()?;
-        }
-        // Every persisted active subscription needs one catch-up pull on open:
-        // realtime only covers changes after connection, while an idempotent
-        // setWindow correctly creates no fresh command effect. Pending outbox
-        // work has the same restart requirement. The core owns this intent so
-        // native hosts never poll or require an application-issued sync().
-        client.enqueue_startup_sync_if_needed()?;
-        Ok(client)
     }
 
     /// Pin the client clock (epoch ms) — the §5.4 expiry check runs
@@ -10332,36 +10380,94 @@ impl SyncClient {
     /// keeping this client's local database (identity, outbox, tables). The
     /// §7.4.1 marker check then fires the wipe/re-bootstrap flow when the
     /// version increases. Recreation runs the same marker guard as opening
-    /// a durable replica and preserves the current client on refusal.
+    /// a durable replica, holds the guard and every write it authorizes under
+    /// one write transaction, and preserves the current client (compiled
+    /// schema, outbox, tables) on refusal.
     pub fn recreate_with_schema(&mut self, schema_json: &Value) -> Result<(), String> {
         let new_schema = parse_schema_json(schema_json)?;
         validate_authority_reads(&new_schema, &self.limits.authority_reads)?;
-        let marker = read_local_schema_version(&self.conn, new_schema.version)?;
-        self.schema = new_schema;
-        self.create_bookkeeping_tables()?;
-        match marker {
-            Some(version) if version < self.schema.version => self.run_schema_reset()?,
-            None => {
-                self.create_synced_tables()?;
-                self.set_meta(LOCAL_SCHEMA_VERSION_KEY, &self.schema.version.to_string());
-                set_local_schema_descriptor(&self.conn, &self.schema);
+        self.conn
+            .execute_batch("BEGIN IMMEDIATE")
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+        let prior_schema = std::mem::replace(&mut self.schema, new_schema);
+        // §7.4.3/§7.4.4: a reset inside this transaction mutates in-memory
+        // state (dropped outbox commits, rejections, upgrade and floor flags,
+        // overlay dirtiness) and appends change/intent batches. A COMMIT that
+        // fails after the reset succeeded rolls the database back, so every
+        // one of those fields is captured here and restored with it.
+        let prior_subs = self.subs.clone();
+        let prior_outbox = self.outbox.clone();
+        let prior_rejections = self.rejections.clone();
+        let prior_upgrading = self.upgrading;
+        let prior_stopped = self.stopped;
+        let prior_schema_floor = self.schema_floor.clone();
+        let prior_overlay_dirty = self.overlay_dirty.snapshot();
+        let prior_sync_needed = self.sync_needed;
+        let prior_active_round = self.active_round;
+        let prior_changes = self.change_queue.len();
+        let prior_intents = self.sync_intent_queue.len();
+        let prior_last_change = self.last_change.clone();
+        let guarded = (|| -> Result<(), String> {
+            // §7.4.2: the marker is re-read under the write lock the caller
+            // holds, so a replica another process upgraded meanwhile refuses
+            // this recreation instead of having its marker and tables
+            // downgraded.
+            let marker = read_local_schema_version(&self.conn, self.schema.version)?;
+            self.create_bookkeeping_tables()?;
+            match marker {
+                Some(version) if version < self.schema.version => self.run_schema_reset()?,
+                None => {
+                    self.create_synced_tables()?;
+                    self.set_meta(LOCAL_SCHEMA_VERSION_KEY, &self.schema.version.to_string());
+                    set_local_schema_descriptor(&self.conn, &self.schema);
+                }
+                _ => {}
             }
-            _ => {}
+            if marker == Some(self.schema.version)
+                && (!self.outbox.is_empty()
+                    || !self.failed_commits.is_empty()
+                    || self.has_acknowledged_rows())
+            {
+                self.overlay_dirty.set(true);
+                self.rebuild_overlay()?;
+            }
+            self.prune_unknown_subscriptions(false)?;
+            self.save_subscription_scope_schema();
+            // The conformance recreate is the in-memory equivalent of reopening
+            // a durable client. Apply the same startup catch-up contract even
+            // when the schema itself did not change.
+            self.enqueue_startup_sync_if_needed()?;
+            Ok(())
+        })();
+        let outcome = match guarded {
+            Ok(()) => self
+                .conn
+                .execute_batch("COMMIT")
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error)),
+            Err(error) => Err(error),
+        };
+        if let Err(error) = outcome {
+            if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
+                // Keep a failed rollback's typed storage classification.
+                let _ = Self::sqlite_failure(&self.storage_failure, rollback);
+            }
+            self.schema = prior_schema;
+            self.subs = prior_subs;
+            self.outbox = prior_outbox;
+            self.rejections = prior_rejections;
+            self.upgrading = prior_upgrading;
+            self.stopped = prior_stopped;
+            self.schema_floor = prior_schema_floor;
+            self.overlay_dirty.restore(prior_overlay_dirty);
+            self.sync_needed = prior_sync_needed;
+            self.active_round = prior_active_round;
+            self.change_queue.truncate(prior_changes);
+            self.sync_intent_queue.truncate(prior_intents);
+            self.last_change = prior_last_change;
+            // Prepared insert statements were derived from the reverted schema.
+            self.insert_sql.borrow_mut().clear();
+            return Err(error);
         }
-        if marker == Some(self.schema.version)
-            && (!self.outbox.is_empty()
-                || !self.failed_commits.is_empty()
-                || self.has_acknowledged_rows())
-        {
-            self.overlay_dirty.set(true);
-            self.rebuild_overlay()?;
-        }
-        self.prune_unknown_subscriptions(false)?;
-        self.save_subscription_scope_schema();
-        // The conformance recreate is the in-memory equivalent of reopening a
-        // durable client. Apply the same startup catch-up contract even when
-        // the schema itself did not change.
-        self.enqueue_startup_sync_if_needed()?;
         Ok(())
     }
 
@@ -10533,6 +10639,12 @@ impl SyncClient {
         drop_incompatible: bool,
         capture: bool,
     ) -> Result<(), String> {
+        // §7.4.2: the reset is the only path that wipes local tables for a
+        // version bump, and it rewrites the marker last. Re-read the marker
+        // under this reset's transaction: a replica another process upgraded
+        // meanwhile refuses here instead of being reset to this client's
+        // older schema.
+        read_local_schema_version(&self.conn, self.schema.version)?;
         self.conn
             .execute_batch(
                 "DELETE FROM _syncular_acked_rows; DELETE FROM _syncular_row_deliveries;",
@@ -17988,6 +18100,405 @@ mod previous_version_wiring_tests {
             assert_eq!(std::fs::read(&path).expect("after"), before);
             std::fs::remove_file(path).expect("remove fixture");
         }
+    }
+
+    std::thread_local! {
+        /// The pending concurrent upgrade a busy handler commits, so a lock
+        /// collision deterministically becomes the marker race under test.
+        static CONCURRENT_UPGRADE: RefCell<Option<Connection>> =
+            const { RefCell::new(None) };
+    }
+
+    fn commit_concurrent_upgrade(attempts: i32) -> bool {
+        CONCURRENT_UPGRADE.with(|slot| {
+            if let Some(banner) = slot.borrow_mut().take() {
+                banner
+                    .execute_batch(
+                        "UPDATE _syncular_meta SET value = '2' WHERE key = 'localSchemaVersion'; COMMIT",
+                    )
+                    .expect("commit the concurrent upgrade");
+            }
+        });
+        attempts < 10
+    }
+
+    fn journal_mode(conn: &Connection) -> String {
+        conn.query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
+            .expect("journal mode")
+    }
+
+    fn temp_replica(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("syncular-{label}-{}.db", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn non_positive_generated_schema_versions_are_refused_before_storage() {
+        for version in [json!(0), json!(-1), json!(i32::MIN), json!(2147483648i64)] {
+            let mut schema = previous_version_schema(1);
+            schema["version"] = version.clone();
+            let error = SyncClient::new("bad-version".into(), &schema, ClientLimits::default())
+                .err()
+                .expect("refuse an out-of-range generated version");
+            assert_eq!(
+                error,
+                "sync.invalid_request: generated schema version must be an integer in 1..=2147483647"
+            );
+            // The file-backed seam refuses before the replica gains a table.
+            let path = temp_replica("bad-version");
+            let path_str = path.to_str().expect("path");
+            let error = SyncClient::open_path_with_identity(
+                None,
+                &schema,
+                ClientLimits::default(),
+                path_str,
+            )
+            .err()
+            .expect("refuse before storage");
+            assert!(
+                error.starts_with("sync.invalid_request:"),
+                "{version}: {error}"
+            );
+            assert!(
+                !path.exists(),
+                "{version}: a refused constructor creates no replica file"
+            );
+        }
+        // A missing version is the same request error, not a parse failure.
+        let mut schema = previous_version_schema(1);
+        schema
+            .as_object_mut()
+            .expect("schema object")
+            .remove("version");
+        let error = SyncClient::new("bad-version".into(), &schema, ClientLimits::default())
+            .err()
+            .expect("refuse a missing version");
+        assert!(error.starts_with("sync.invalid_request:"), "{error}");
+    }
+
+    #[test]
+    fn a_duplicated_schema_marker_is_refused_without_a_reset() {
+        let path = temp_replica("duplicate-marker");
+        let path_str = path.to_str().expect("path");
+        {
+            // A hand-built/legacy metadata table without its primary key, with
+            // the older marker first: `query_row` would pick it and reset.
+            let conn = Connection::open(path_str).expect("fixture");
+            conn.execute_batch(
+                "CREATE TABLE _syncular_meta(key TEXT, value);
+                 INSERT INTO _syncular_meta VALUES
+                   ('localSchemaVersion', '1'),
+                   ('localSchemaVersion', '2'),
+                   ('clientId', 'duplicate');",
+            )
+            .expect("duplicate marker fixture");
+        }
+        let error = SyncClient::open_path_with_identity(
+            None,
+            &previous_version_schema(3),
+            ClientLimits::default(),
+            path_str,
+        )
+        .err()
+        .expect("refuse a duplicated marker");
+        assert!(error.starts_with("sync.local_corrupt:"), "{error}");
+        let probe = Connection::open(path_str).expect("probe");
+        assert_eq!(
+            probe
+                .query_row(
+                    "SELECT COUNT(*) FROM _syncular_meta WHERE key = 'localSchemaVersion'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("marker rows"),
+            2,
+            "the duplicated rows are left for the operator, not collapsed"
+        );
+        assert_eq!(
+            probe
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '_syncular_%' AND name NOT LIKE 'sqlite_%'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("synced tables"),
+            0,
+            "a duplicated marker never drives the reset that recreates v3 tables"
+        );
+        assert_eq!(
+            journal_mode(&probe),
+            "delete",
+            "the refusal leaves the journal mode alone"
+        );
+        drop(probe);
+        std::fs::remove_file(path).expect("remove replica");
+    }
+
+    #[test]
+    fn a_refused_open_does_not_persist_wal_or_mutate_the_replica() {
+        let path = temp_replica("refused-wal");
+        let path_str = path.to_str().expect("path");
+        // `open_path` leaves the default journal mode, so a refused open is
+        // the only thing that could switch this replica to WAL.
+        drop(
+            SyncClient::open_path(
+                "owner".into(),
+                &previous_version_schema(2),
+                ClientLimits::default(),
+                path_str,
+            )
+            .expect("v2 replica"),
+        );
+        let before = std::fs::read(&path).expect("before");
+        let error = SyncClient::open_path_with_identity(
+            Some("intruder".into()),
+            &previous_version_schema(2),
+            ClientLimits::default(),
+            path_str,
+        )
+        .err()
+        .expect("refuse the identity mismatch");
+        assert!(error.starts_with("client.identity_mismatch:"), "{error}");
+        let probe = Connection::open(path_str).expect("probe");
+        assert_eq!(
+            journal_mode(&probe),
+            "delete",
+            "a refused open must not persist WAL"
+        );
+        assert_eq!(std::fs::read(&path).expect("after"), before);
+        assert_eq!(
+            meta_get(&probe, LOCAL_SCHEMA_VERSION_KEY).as_deref(),
+            Some("2")
+        );
+        drop(probe);
+        std::fs::remove_file(path).expect("remove replica");
+    }
+
+    #[test]
+    fn a_concurrent_marker_upgrade_refuses_a_stale_open() {
+        let path = temp_replica("marker-race");
+        let path_str = path.to_str().expect("path");
+        drop(
+            SyncClient::open_path_with_identity(
+                Some("stale".into()),
+                &previous_version_schema(1),
+                ClientLimits::default(),
+                path_str,
+            )
+            .expect("v1 replica"),
+        );
+        // Another process holds the write lock with an uncommitted upgrade; a
+        // stale open reads the v1 marker first and only then meets the lock.
+        // The first busy therefore lands after this replica became v2.
+        let banner = Connection::open(path_str).expect("banner");
+        banner
+            .execute_batch(
+                "BEGIN IMMEDIATE; UPDATE _syncular_meta SET value = '2' WHERE key = 'localSchemaVersion';",
+            )
+            .expect("pending upgrade");
+        CONCURRENT_UPGRADE.with(|slot| *slot.borrow_mut() = Some(banner));
+        let conn = Connection::open(path_str).expect("stale connection");
+        conn.busy_handler(Some(commit_concurrent_upgrade))
+            .expect("busy handler");
+        let error = SyncClient::with_connection(
+            "stale".into(),
+            &previous_version_schema(1),
+            ClientLimits::default(),
+            conn,
+        )
+        .err()
+        .expect("a concurrent upgrade must refuse the stale open");
+        assert!(error.starts_with("client.schema_downgrade:"), "{error}");
+        let probe = Connection::open(path_str).expect("probe");
+        assert_eq!(
+            meta_get(&probe, LOCAL_SCHEMA_VERSION_KEY).as_deref(),
+            Some("2"),
+            "the concurrent upgrade survives"
+        );
+        drop(probe);
+        std::fs::remove_file(path).expect("remove replica");
+    }
+
+    #[test]
+    fn a_concurrent_marker_upgrade_refuses_a_stale_recreate() {
+        let path = temp_replica("recreate-race");
+        let path_str = path.to_str().expect("path");
+        let mut client = SyncClient::open_path_with_identity(
+            Some("stale".into()),
+            &previous_version_schema(1),
+            ClientLimits::default(),
+            path_str,
+        )
+        .expect("v1 replica");
+        client
+            .mutate(vec![Mutation::Upsert {
+                table: "tasks".into(),
+                values: Map::from_iter([("id".into(), json!("queued"))]),
+                base_version: None,
+            }])
+            .expect("queued write");
+        let commit = client.pending_commit_ids();
+        let banner = Connection::open(path_str).expect("banner");
+        banner
+            .execute_batch(
+                "BEGIN IMMEDIATE; UPDATE _syncular_meta SET value = '2' WHERE key = 'localSchemaVersion';",
+            )
+            .expect("pending upgrade");
+        CONCURRENT_UPGRADE.with(|slot| *slot.borrow_mut() = Some(banner));
+        client
+            .conn
+            .busy_handler(Some(commit_concurrent_upgrade))
+            .expect("busy handler");
+        let error = client
+            .recreate_with_schema(&previous_version_schema(1))
+            .expect_err("a concurrent upgrade must refuse the stale recreate");
+        assert!(error.starts_with("client.schema_downgrade:"), "{error}");
+        assert_eq!(client.schema.version, 1, "the compiled schema is restored");
+        assert_eq!(
+            client.pending_commit_ids(),
+            commit,
+            "the outbox is preserved"
+        );
+        let probe = Connection::open(path_str).expect("probe");
+        assert_eq!(
+            meta_get(&probe, LOCAL_SCHEMA_VERSION_KEY).as_deref(),
+            Some("2")
+        );
+        drop(probe);
+        drop(client);
+        std::fs::remove_file(path).expect("remove replica");
+    }
+
+    #[test]
+    fn a_failed_outer_commit_restores_every_reset_side_effect() {
+        let path = temp_replica("outer-commit");
+        let path_str = path.to_str().expect("path");
+        // A rollback-journal replica (no WAL), so a second read connection can
+        // hold SHARED across the recreated transaction's COMMIT.
+        let conn = Connection::open(path_str).expect("replica connection");
+        let mut client = SyncClient::with_connection(
+            "outer-commit".into(),
+            &previous_version_schema(1),
+            ClientLimits::default(),
+            conn,
+        )
+        .expect("v1 replica");
+        assert_eq!(journal_mode(&client.conn), "delete");
+        let commit = client
+            .mutate(vec![Mutation::Upsert {
+                table: "tasks".into(),
+                values: Map::from_iter([
+                    ("id".into(), json!("queued")),
+                    ("note".into(), json!("dropped-by-v2")),
+                ]),
+                base_version: None,
+            }])
+            .expect("queued write");
+        client.drain_change_batches();
+        // v2 drops `note`, so the queued upsert cannot re-encode.
+        let mut dropped = previous_version_schema(2);
+        dropped["tables"][0]["columns"] =
+            json!([{ "name": "id", "type": "string", "nullable": false }]);
+        // Prior database and memory state: the refused COMMIT must restore all
+        // of it.
+        let marker = meta_get(&client.conn, LOCAL_SCHEMA_VERSION_KEY);
+        let revision = client.local_revision();
+        let rows = client.query("SELECT * FROM tasks", &[]).expect("rows");
+        let columns: i64 = client
+            .conn
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('tasks')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("column count");
+        let rebuilds = client.overlay_rebuild_count.get();
+        let prior_subs = client.subs.len();
+        let prior_changes = client.change_queue.len();
+        let prior_intents = client.sync_intent_queue.len();
+        let prior_last_change = client.last_change.clone();
+        let prior_overlay_dirty = client.overlay_dirty.get();
+        let prior_sync_needed = client.sync_needed;
+        let prior_upgrading = client.upgrading;
+        let prior_stopped = client.stopped;
+        let prior_schema_floor = client.schema_floor.clone();
+        let prior_active_round = client.active_round;
+        // The reader holds SHARED for the whole attempt: the writer takes
+        // RESERVED, runs the reset, and fails when COMMIT needs EXCLUSIVE.
+        let reader = Connection::open(path_str).expect("reader");
+        reader
+            .execute_batch("BEGIN; SELECT count(*) FROM _syncular_meta;")
+            .expect("reader snapshot");
+        client
+            .conn
+            .busy_timeout(std::time::Duration::ZERO)
+            .expect("busy timeout");
+        let error = client
+            .recreate_with_schema(&dropped)
+            .expect_err("a blocked COMMIT must refuse the recreation");
+        assert!(error.starts_with("client.storage_busy:"), "{error}");
+        assert!(
+            client.overlay_rebuild_count.get() > rebuilds,
+            "the reset ran to its overlay rebuild inside the transaction"
+        );
+        assert!(client.conn.is_autocommit(), "the transaction is released");
+        // Database: the rolled-back reset left nothing behind.
+        assert_eq!(meta_get(&client.conn, LOCAL_SCHEMA_VERSION_KEY), marker);
+        assert_eq!(client.local_revision(), revision);
+        assert_eq!(
+            client.query("SELECT * FROM tasks", &[]).expect("rows"),
+            rows
+        );
+        assert_eq!(
+            client
+                .conn
+                .query_row(
+                    "SELECT count(*) FROM pragma_table_info('tasks')",
+                    [],
+                    |row| { row.get::<_, i64>(0) }
+                )
+                .expect("column count"),
+            columns,
+            "the previous table layout survives the rollback"
+        );
+        assert_eq!(client.pending_commit_ids(), vec![commit.clone()]);
+        // Memory: every side effect of the successful reset is restored with
+        // the rolled-back database.
+        assert_eq!(client.schema.version, 1, "compiled schema");
+        assert_eq!(client.subs.len(), prior_subs);
+        assert_eq!(client.change_queue.len(), prior_changes);
+        assert_eq!(client.sync_intent_queue.len(), prior_intents);
+        assert_eq!(client.last_change, prior_last_change);
+        assert_eq!(client.overlay_dirty.get(), prior_overlay_dirty);
+        assert_eq!(client.sync_needed, prior_sync_needed);
+        assert_eq!(client.upgrading, prior_upgrading);
+        assert_eq!(client.stopped, prior_stopped);
+        assert_eq!(client.schema_floor, prior_schema_floor);
+        assert_eq!(client.active_round, prior_active_round);
+        assert!(
+            client.rejections.is_empty(),
+            "the dropped-column rejection is rolled back too"
+        );
+        // The client remains usable: releasing the reader lets the identical
+        // recreation run to completion and drop the incompatible commit.
+        drop(reader);
+        client
+            .conn
+            .busy_timeout(std::time::Duration::from_secs(1))
+            .expect("busy timeout");
+        client
+            .recreate_with_schema(&dropped)
+            .expect("the recreation succeeds once the reader releases");
+        assert_eq!(client.schema.version, 2);
+        assert!(client.pending_commit_ids().is_empty());
+        assert!(
+            client
+                .rejections
+                .iter()
+                .any(|rejection| rejection.code == OUTBOX_INCOMPATIBLE_CODE),
+            "the dropped-column commit surfaced as a rejection"
+        );
+        drop(client);
+        std::fs::remove_file(path).expect("remove replica");
     }
 
     #[test]

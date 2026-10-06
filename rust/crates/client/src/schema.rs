@@ -186,6 +186,16 @@ fn parse_pattern_variable(pattern: &str) -> Result<String, String> {
 }
 
 pub fn compile_schema(ir: &SchemaIr) -> Result<ClientSchema, String> {
+    // §7.4.2: the persisted marker is a canonical positive i32 and a replica
+    // refuses any requested version outside that range before it touches
+    // storage, so a client can never persist a marker it would reject on the
+    // next open.
+    if ir.version < 1 {
+        return Err(
+            "sync.invalid_request: generated schema version must be an integer in 1..=2147483647"
+                .to_owned(),
+        );
+    }
     let mut tables = Vec::with_capacity(ir.tables.len());
     let mut schema_object_names = BTreeSet::new();
     for table in &ir.tables {
@@ -368,6 +378,21 @@ pub fn compile_schema(ir: &SchemaIr) -> Result<ClientSchema, String> {
 }
 
 pub fn parse_schema_json(json: &serde_json::Value) -> Result<ClientSchema, String> {
+    // §7.4.2: validate the requested version before the typed IR decode, so a
+    // missing, non-integer, or out-of-i32-range version is a request error
+    // (matching the TS core) instead of a generic parse failure. `SchemaIr`
+    // accepts the server IR spelling `schemaVersion` as an alias; giving both
+    // spellings stays a duplicate-field error from the decode below.
+    let version = json
+        .get("version")
+        .or_else(|| json.get("schemaVersion"))
+        .and_then(serde_json::Value::as_i64);
+    if !version.is_some_and(|version| (1..=i32::MAX as i64).contains(&version)) {
+        return Err(
+            "sync.invalid_request: generated schema version must be an integer in 1..=2147483647"
+                .to_owned(),
+        );
+    }
     let ir: SchemaIr =
         serde_json::from_value(json.clone()).map_err(|e| format!("bad schema IR: {e}"))?;
     compile_schema(&ir)
@@ -397,6 +422,32 @@ mod tests {
                 }]
             }]
         })
+    }
+
+    #[test]
+    fn accepts_the_schema_version_alias_and_refuses_conflicting_spellings() {
+        let schema = json!({
+            "schemaVersion": 2,
+            "tables": [{
+                "name": "tasks",
+                "primaryKey": "id",
+                "columns": [{ "name": "id", "type": "string", "nullable": false }],
+                "scopes": []
+            }]
+        });
+        let compiled = parse_schema_json(&schema).expect("the server IR alias compiles");
+        assert_eq!(compiled.version, 2);
+        // Both spellings name the same field: the duplicate is a decode error,
+        // never a silent choice between the two values.
+        let mut both = schema.clone();
+        both["version"] = json!(3);
+        let error = parse_schema_json(&both).expect_err("duplicate version spellings");
+        assert!(error.starts_with("bad schema IR:"), "{error}");
+        // The alias is subject to the same range check.
+        let mut out_of_range = schema.clone();
+        out_of_range["schemaVersion"] = json!(0);
+        let error = parse_schema_json(&out_of_range).expect_err("out-of-range alias");
+        assert!(error.starts_with("sync.invalid_request:"), "{error}");
     }
 
     #[test]

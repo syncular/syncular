@@ -4273,12 +4273,28 @@ converge on the identical wipe-re-bootstrap-replay:
    container cleanup or capture, and outbox replay. The
    database, outbox, and an existing client remain unchanged.
 
+   A requested generated version outside the marker's range (1 through
+   2147483647) MUST be refused with `sync.invalid_request` before the replica
+   is created or opened, so a client can never persist a marker its own next
+   open rejects.
+
    An absent metadata table or absent marker is a fresh/legacy replica. A
    present marker MUST be a text value containing a canonical positive decimal
-   `i32` (1 through 2147483647). An unreadable metadata table or marker, or an
-   invalid marker value, MUST fail with `sync.local_corrupt` before mutation;
-   clients MUST NOT reinterpret a read or parse failure as an absent marker.
-   Equal versions retain ordinary same-version startup behavior.
+   `i32` (1 through 2147483647). An unreadable metadata table or marker, an
+   invalid marker value, or more than one marker row MUST fail with
+   `sync.local_corrupt` before mutation; clients MUST NOT reinterpret a read or
+   parse failure as an absent marker, and MUST NOT resolve a duplicated marker
+   by picking one row. Equal versions retain ordinary same-version startup
+   behavior.
+
+   The marker guard and every write it authorizes (bookkeeping, schema
+   replacement, previous-version capture, outbox replay, subscription pruning)
+   MUST run under one transaction whose first statement is the marker read, so
+   the version the writes commit under is the version the guard validated. A
+   concurrent upgrade that commits after that read leaves the writing
+   transaction on a stale snapshot; the transaction MUST fail with the
+   storage-busy classification, and MUST NOT commit the older schema. A
+   refused open MUST NOT change the replica's journal mode.
 
 2. **Server schema floor (`requiredSchemaVersion`, §1.6).** A running
    client whose generated schema does not match the server receives the
