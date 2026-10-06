@@ -206,6 +206,50 @@ describe('idempotent replay (§2.3, §6.3)', () => {
     expect(result?.results[0]?.status).toBe('conflict');
   });
 
+  test('a changed-operations replay of an applied ID replays the original result without validating (§2.3)', async () => {
+    let validatorCalls = 0;
+    const t = makeContext({
+      validators: {
+        tasks: () => {
+          validatorCalls += 1;
+        },
+      },
+    });
+    const applied = await sync(t, [
+      pushCommit('changed', [
+        upsert('tasks', 't1', taskRow('t1', 'p1', 'first')),
+      ]),
+    ]);
+    const first = pushResults(applied)[0];
+    expect(first?.status).toBe('applied');
+    const seq = first?.commitSeq;
+    if (seq === undefined) throw new Error('applied push lacks a commitSeq');
+    expect(validatorCalls).toBe(1);
+
+    // Same (partition, clientId, clientCommitId) with different operations:
+    // a new row, a changed payload, and a delete of the original row. §2.3
+    // keys idempotency on the ID alone, so the persisted result replays and
+    // the changed operations never reach `buildOperations`, the validators,
+    // or the transaction.
+    const beforeReplay = await t.storage.getRow('part-1', 'tasks', 't1');
+    const replay = await sync(t, [
+      pushCommit('changed', [
+        upsert('tasks', 't2', taskRow('t2', 'p1', 'second')),
+        del('tasks', 't1'),
+      ]),
+    ]);
+    const result = pushResults(replay)[0];
+    expect(result?.status).toBe('cached');
+    expect(result?.commitSeq).toBe(seq);
+    expect(result?.results).toEqual([{ opIndex: 0, status: 'applied' }]);
+    expect(validatorCalls).toBe(1); // not rerun
+    const original = await t.storage.getRow('part-1', 'tasks', 't1');
+    expect(original?.serverVersion).toBe(1); // original apply survived
+    expect(original?.payload).toEqual(beforeReplay?.payload); // bytes unchanged
+    expect(await t.storage.getRow('part-1', 'tasks', 't2')).toBeUndefined();
+    expect(await t.storage.getMaxCommitSeq('part-1')).toBe(seq);
+  });
+
   test('baseVersion above server_version rejects with sync.invalid_request (§6.2)', async () => {
     const t = makeContext();
     await seedTask(t, 'c1', 't1', 'p1');

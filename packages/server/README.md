@@ -256,6 +256,42 @@ Whole-commit validation checks a client-proposed commit; it does not grant
 authority. Privileged operations such as connecting facilities still belong in
 explicit server-authoritative commands.
 
+## Push idempotency and retry contract
+
+The idempotency key for a push commit is the triple
+**(`partition`, `clientId`, `clientCommitId`)**. The server persists the full
+commit result in the same transaction as the writes, and a replay of the same
+key returns that result byte-equivalent: an applied commit replays as `cached`,
+a rejected commit replays as `rejected` (§2.3, §6.3).
+
+The key contains the commit ID and nothing about the operations. Host
+authentication, request-envelope validation, and the §1.5 clientId-actor
+binding run before the lookup.
+`clientId` is a client-supplied namespace inside the authenticated partition,
+not proof of an authenticated device. When a retained result exists for the
+key, the server skips `buildOperations`, the commit and write validators, and
+the apply transaction: a retry that reuses the key with different operations
+returns the persisted result, and those operations are never built, validated,
+or applied. `packages/server/test/push.test.ts` pins this.
+
+A client MUST NOT reuse a `clientCommitId` for changed intent, including after
+the persisted result has been pruned. One ID identifies one logical commit
+permanently, and a later edit is a later commit with a new ID.
+
+Do not key idempotency on the request payload bytes. A §5.11 client re-encrypts
+an encrypted column at every send with a fresh nonce, and a schema upgrade
+re-encodes pending commits, so the wire payload of an unchanged commit differs
+between a lost-ACK retry and the original send. A payload fingerprint rejects
+those retries. The `encryption/lost-ack-retry-dedupes-changed-ciphertext`
+conformance scenario exercises the changed-ciphertext retry against both cores.
+
+Per-device namespacing and content binding are not implemented. Each needs an
+input the ID does not carry: an authenticated device identity from the host, or
+a client-side format that binds the commit content. Neither is specified here,
+and the ID check does not authenticate the client. Within one partition the ID
+contract is a correctness property: it stops a replayed ID from applying
+different operations.
+
 ## Seed idempotency and safe revisioning
 
 `seedMutations` uses the real push path and a stable `clientId`/`commitId`.

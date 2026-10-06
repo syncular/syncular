@@ -697,6 +697,30 @@ originally-`rejected` commit is returned with `status` still `rejected`
 ack"; a rejection replays as itself. Exactly-once apply per client
 commit; at-least-once delivery of results.
 
+The key binds the commit ID alone. Host authentication, request-envelope
+validation, and the §1.5 clientId-actor binding run before the idempotency
+lookup. `clientId` is a client-supplied namespace inside the authenticated
+partition, not proof of an authenticated device. When a retained result
+exists for the key, the server MUST return it byte-equivalent and skip
+`buildOperations`, the commit and write validators, and the apply
+transaction for that commit. Changed operations under a reused key are
+never built, validated, or applied. A client MUST NOT reuse a
+`clientCommitId` for changed intent, including after the persisted result
+has been pruned: the ID identifies one logical commit permanently, and a
+later edit is a later commit with a new ID.
+
+A server MUST NOT derive the idempotency key from the request payload
+bytes. A §5.11 client re-encrypts an encrypted column at every send with
+a fresh nonce, and a schema upgrade re-encodes pending commits, so the
+wire payload of an unchanged commit legitimately differs between a
+lost-ACK retry and the original send. A payload fingerprint would reject
+that retry. Per-device namespacing and content binding are deferred: each
+needs an input the ID does not carry, an authenticated device identity
+from the host or a client-side content-binding format. The ID check is not
+an authorization or security binding within the partition; it is a
+correctness property that stops a replayed ID from applying different
+operations.
+
 ### 2.4 Schema IR and the generated row codec
 
 Column types (shared by the row codec and rows segments; tags on the wire):
