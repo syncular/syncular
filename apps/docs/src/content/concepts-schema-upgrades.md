@@ -28,15 +28,23 @@ Two triggers converge on the same wipe-re-bootstrap-replay:
    boot-time trigger fires and the two paths converge.
 
 Every replica open and recreation reads the persisted schema-version marker
-before changing bookkeeping, local tables, or previous-version context. A v2
+before changing bookkeeping, local tables, or previous-version context. The
+marker guard and every write it authorizes run in one transaction, so a
+concurrent open that upgrades the replica while this one starts refuses the
+stale attempt instead of recreating an older schema. A v2
 build opening a v3 replica fails with the non-retryable typed error
 `client.schema_downgrade`. The replica and queued v3 writes remain intact;
 reopen them with a compatible build. TypeScript error details contain
 `persistedVersion` and `requestedVersion`; native command errors expose the same
 static code.
 
-An unreadable or corrupt marker fails with `sync.local_corrupt`. The client
-accepts an absent metadata table or marker for fresh and legacy replicas.
+An unreadable or corrupt marker fails with `sync.local_corrupt`, and so does a
+metadata table carrying more than one marker row: the client never resolves
+the ambiguity by picking a row. A generated schema version outside the marker's
+range (1 through 2147483647) is refused with `sync.invalid_request` before the
+replica is created or opened, and a refused open leaves the replica's journal
+mode and contents untouched. The client accepts an absent metadata table or
+marker for fresh and legacy replicas.
 Equal versions keep ordinary startup behavior, and version increases keep the
 wipe-re-bootstrap-replay flow. Discarding previous-version context does not
 permit a schema downgrade. Older binaries that predate this guard retain their
