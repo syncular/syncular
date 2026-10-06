@@ -4282,6 +4282,14 @@ raised carrying a client-local code `sync.outbox_incompatible`
 schema and retrying it unmodified never succeeds). Later outbox commits
 that *do* encode continue to replay — one incompatible commit does not
 wedge the queue, matching the §7.2 rule that dependents are app policy.
+
+An operation that names a table the new schema removed has no local mirror to
+replay into, so the overlay replay skips it. That skip is structural and never
+a replay failure. A value-free delete remains encodable and takes ordinary
+server validation; an upsert cannot be encoded under the new schema and is
+classified at send time as `sync.outbox_incompatible`. A storage or
+persisted-value failure during replay still fails the transaction and rolls it
+back.
 `sync.outbox_incompatible` is a **client-local** code (§10.3 — never a
 wire code; it is produced entirely client-side at encode time, like
 `transport.failed`), surfaced through the same rejection channel the app
