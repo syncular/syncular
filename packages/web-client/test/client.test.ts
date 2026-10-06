@@ -92,7 +92,7 @@ describe('two clients, one server (tripwire)', () => {
         { table: 'tasks', op: 'upsert', values: taskValues('failed', 'p1') },
       ]);
       a.faults.dropResponseOnce = true;
-      await expect(a.client.sync()).rejects.toThrow('simulated response loss');
+      await expect(a.client.sync()).rejects.toThrow('transport round failed');
       expect((await a.client.sync()).rejected).toEqual([id]);
       expect(a.client.commitOutcomes()[0]?.results[0]).toMatchObject({
         status: 'error',
@@ -153,7 +153,7 @@ describe('two clients, one server (tripwire)', () => {
         ];
         first.faults.dropResponseOnce = true;
         await expect(first.client.sync()).rejects.toThrow(
-          'simulated response loss',
+          'transport round failed',
         );
         expect(
           first.client.pendingCommits().map((commit) => commit.clientCommitId),
@@ -1129,7 +1129,7 @@ describe('offline outbox (§7)', () => {
       { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1') },
     ]);
     a.faults.dropResponseOnce = true;
-    await expect(a.client.sync()).rejects.toThrow('simulated response loss');
+    await expect(a.client.sync()).rejects.toThrow('transport round failed');
     // The ack was lost; the outbox keeps the commit (§7.2).
     expect(a.client.pendingCommits()).toHaveLength(1);
     const seqAfterLoss = await server.storage.getMaxCommitSeq(PARTITION);

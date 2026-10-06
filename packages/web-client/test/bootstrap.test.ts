@@ -242,7 +242,7 @@ describe('bootstrap resume (§4.7)', () => {
     await b.client.sync(); // page 1 applied, token persisted
 
     b.faults.dropResponseOnce = true;
-    await expect(b.client.sync()).rejects.toThrow('simulated response loss');
+    await expect(b.client.sync()).rejects.toThrow('transport round failed');
     // Token unchanged — the next pull re-delivers the same window (§1.4).
     await b.client.syncUntilIdle();
     expect(tableRows(b.db, 'tasks')).toHaveLength(5);

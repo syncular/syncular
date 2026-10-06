@@ -179,7 +179,7 @@ describe('revisioned local observation (SPEC §7.5)', () => {
       });
       await client.start();
       expect(client.statusSnapshot().syncNeeded).toBe(true);
-      await expect(client.sync()).rejects.toThrow('offline');
+      await expect(client.sync()).rejects.toThrow('transport round failed');
       expect(client.query('SELECT id FROM tasks')).toEqual([{ id: 'held' }]);
       expect(db.query('SELECT * FROM _syncular_window_pending_evict')).toEqual(
         [],
@@ -861,13 +861,13 @@ describe('revisioned local observation (SPEC §7.5)', () => {
     const client = await makeClient(makeServer(), { clientId: 'retrying' });
     client.faults.dropResponseOnce = true;
     await expect(client.client.sync()).rejects.toThrow(
-      'simulated response loss',
+      'transport round failed',
     );
     expect(client.intents).toEqual([{ kind: 'background', delayMs: 250 }]);
 
     client.faults.dropResponseOnce = true;
     await expect(client.client.sync()).rejects.toThrow(
-      'simulated response loss',
+      'transport round failed',
     );
     expect(client.intents.at(-1)).toEqual({
       kind: 'background',
@@ -877,7 +877,7 @@ describe('revisioned local observation (SPEC §7.5)', () => {
     await client.client.sync();
     client.faults.dropResponseOnce = true;
     await expect(client.client.sync()).rejects.toThrow(
-      'simulated response loss',
+      'transport round failed',
     );
     expect(client.intents.at(-1)).toEqual({
       kind: 'background',
@@ -891,7 +891,7 @@ describe('revisioned local observation (SPEC §7.5)', () => {
     for (let failure = 0; failure < 9; failure++) {
       client.faults.dropResponseOnce = true;
       await expect(client.client.sync()).rejects.toThrow(
-        'simulated response loss',
+        'transport round failed',
       );
       const progress = client.client.progressSnapshot();
       expect(progress?.state).toBe('failed');
