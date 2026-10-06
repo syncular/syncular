@@ -2655,16 +2655,25 @@ mod tests {
             } }))["result"],
             json!({})
         );
-        command(json!({ "method": "mutate", "params": { "mutations": [{
+        // §2.4: authored row integers are bounded to the JavaScript safe range
+        // (±(2^53−1)); the boundary value must queue a commit.
+        let mutation = command(json!({ "method": "mutate", "params": { "mutations": [{
             "op": "upsert", "table": "todo",
-            "values": { "id": "r1", "n": 9_007_199_254_740_993u64 }
+            "values": { "id": "r1", "n": 9_007_199_254_740_991u64 }
         }] } }));
+        assert!(
+            mutation["result"]["clientCommitId"].as_str().is_some(),
+            "safe authoring must queue a commit: {mutation}"
+        );
 
         // File-backed: one sidecar read returns the revision and every row.
+        // The literal keeps the driver's full-width i64 `$bigint` envelope
+        // covered through the same multi-statement read, because the
+        // synchronized-row contract cannot carry that value through authoring.
         let ok = read(
             json!([
-                { "sql": "SELECT id FROM todo" },
-                { "sql": "SELECT n FROM todo" }
+                { "sql": "SELECT id, n FROM todo" },
+                { "sql": "SELECT CAST('9007199254740993' AS INTEGER) AS n FROM todo" }
             ]),
             None,
         );
@@ -2673,6 +2682,10 @@ mod tests {
             "expected a decimal revision: {ok}"
         );
         assert_eq!(ok["result"]["queries"][0][0]["id"], "r1");
+        assert_eq!(
+            ok["result"]["queries"][0][0]["n"],
+            json!(9_007_199_254_740_991u64)
+        );
         assert_eq!(
             ok["result"]["queries"][1][0]["n"]["$bigint"],
             "9007199254740993"
