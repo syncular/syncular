@@ -124,8 +124,10 @@ test('v3 queued write survives v2 reopen, before bookkeeping and container clean
     await reopened.close();
     expect(held).toBe(false);
     expect(releases).toBe(2);
-    // Legacy replicas without a marker still open without wiping local intent.
-    db.exec("DELETE FROM _syncular_meta WHERE key = 'localSchemaVersion'");
+    // Legacy replicas predate both paired schema records.
+    db.exec(
+      "DELETE FROM _syncular_meta WHERE key IN ('localSchemaVersion', 'localSchemaDescriptor')",
+    );
     const legacy = new SyncClient({ ...config, leaderLock });
     await legacy.start();
     expect(legacy.pendingCommits().map((item) => item.clientCommitId)).toEqual([

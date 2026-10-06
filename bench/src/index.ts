@@ -94,8 +94,8 @@ const WORKLOAD = {
  * - `propagationP95CeilingMs` 20 ms: local in-process p95 is 0.2 ms. A
  *   100× allowance absorbs runner noise; breaching 20 ms in-process means
  *   a sleep/poll crept into the sync/realtime loop.
- * - `ownJsRawCeilingBytes` 159 KiB: this browser bundle measures
- *   154,975 raw bytes with Bun 1.4.0 after the client correctness and
+ * - `ownJsRawCeilingBytes` 160 KiB: this browser bundle measures
+ *   155,210 raw bytes with Bun 1.4.0 after the client correctness and
  *   public API changes. The ceiling preserves the established approximately
  *   5% headroom, rounded up to a whole KiB. The entrypoint and SQLite
  *   externalization are unchanged; the shipped gzip budget stays separate.
@@ -108,7 +108,7 @@ const BUDGETS = {
   bootstrapRowsPerSecFloor: 90_000,
   imageBootstrapRowsPerSecFloor: 300_000,
   propagationP95CeilingMs: 20,
-  ownJsRawCeilingBytes: 159 * 1024,
+  ownJsRawCeilingBytes: 160 * 1024,
   totalGzipCeilingBytes: 600 * 1024,
 } as const;
 
