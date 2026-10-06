@@ -153,6 +153,7 @@ export interface DiagnosticQueryFailure {
     | 'client.storage_corrupt'
     | 'client.storage_full'
     | 'client.storage_io'
+    | 'client.storage_busy'
     | 'client.query_failed';
   /** SQLite extended result code, when the driver exposed one. */
   readonly sqliteCode?: number;
