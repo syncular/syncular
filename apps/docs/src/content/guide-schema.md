@@ -100,6 +100,9 @@ patterns, subscription templates, and the schema-version history:
 }
 ```
 
+Integer row values must be in `-9007199254740991..=9007199254740991`.
+Both client cores reject larger values before queuing a mutation or patch.
+
 A primary key must be `TEXT`, `INTEGER`, `BOOLEAN`, or `JSON`. Syncular
 addresses a row on the wire by a string form of its primary key, and only
 those types have a string form the TypeScript core, the Rust core, and the

@@ -61,6 +61,58 @@ async function bootstrapped(
 
 export const offlineScenarios: readonly Scenario[] = [
   {
+    name: 'offline/unsafe-row-integers-refuse-before-queuing',
+    specRefs: ['§2.4', '§7.1'],
+    async run(ctx) {
+      const a = await ctx.newClient({
+        actorId: 'a',
+        clientId: 'safe-integers',
+        allowed: P1,
+      });
+      const id = await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: task('kept', 'p1', 'safe', false, Number.MAX_SAFE_INTEGER),
+        },
+      ]);
+      const before = await a.api.readRows('tasks');
+      check(a.api.patch !== undefined, 'sparse authoring is available');
+      for (const priority of [
+        Number.MAX_SAFE_INTEGER + 1,
+        Number.MIN_SAFE_INTEGER - 1,
+      ]) {
+        for (const patch of [false, true]) {
+          let refused = false;
+          try {
+            if (patch) await a.api.patch('tasks', 'kept', { priority });
+            else
+              await a.api.mutate([
+                {
+                  op: 'upsert',
+                  table: 'tasks',
+                  values: task('unsafe', 'p1', 'unsafe', false, priority),
+                },
+              ]);
+          } catch {
+            refused = true;
+          }
+          check(refused, 'unsafe row integers fail before authoring');
+          checkEqual(
+            await a.api.pendingCommitIds(),
+            [id],
+            'only the safe commit is queued',
+          );
+          checkEqual(
+            await a.api.readRows('tasks'),
+            before,
+            'failed authoring preserves the safe row',
+          );
+        }
+      }
+    },
+  },
+  {
     name: 'offline/replay-failure-preserves-earlier-ack-boundary',
     specRefs: ['§7.1', '§7.2.1', '§7.5'],
     async run(ctx) {
