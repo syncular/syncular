@@ -95,7 +95,7 @@ export const changelog = [
   {
     date: '2026-10-06',
     title: 'Overlay replay failures roll back local apply',
-    body: 'Rust propagates replay read, decode, write, savepoint and FTS failures. Both clients reconcile acknowledgements before committing their local apply transaction and refuse failed startup replay. Failed apply retains durable intent and publishes no successful apply revision. Confirmed secondary unique conflicts remain deferred during replay.',
+    body: 'Rust propagates replay read, decode, write, savepoint and FTS failures. Both clients reconcile acknowledgements before committing their local apply transaction and refuse failed startup replay. Failed apply retains durable intent and publishes no successful apply revision. Failed native purge and rebootstrap preserve the in-flight round. Incompatible commits lose their blob dependencies before upload collection. Confirmed secondary unique conflicts remain deferred during replay.',
     links: [
       {
         href: '/concepts-conflicts/#the-optimistic-outbox',
