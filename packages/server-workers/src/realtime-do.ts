@@ -297,7 +297,12 @@ export class SyncularRealtimeHost {
         headers: { 'content-type': SSP2_CONTENT_TYPE },
       });
     } catch (error) {
-      const sync = adapterSyncError(error, this.#getHub().onError, 'sync');
+      const sync = adapterSyncError(
+        error,
+        this.#getHub().onError,
+        'sync',
+        this.#getHub().mapError,
+      );
       return Response.json(errorBody(sync), { status: sync.httpStatus });
     }
   }
@@ -343,7 +348,12 @@ export class SyncularRealtimeHost {
       this.#sessions.set(server, session);
     } catch (error) {
       server.close(1011, 'realtime connect failed');
-      const sync = adapterSyncError(error, this.#getHub().onError, 'realtime');
+      const sync = adapterSyncError(
+        error,
+        this.#getHub().onError,
+        'realtime',
+        this.#getHub().mapError,
+      );
       return Response.json(errorBody(sync), { status: sync.httpStatus });
     }
     // `webSocket` is a workerd-only ResponseInit field (the 101 upgrade

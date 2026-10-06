@@ -38,6 +38,7 @@ import {
   type ServerSchema,
   SSP2_CONTENT_TYPE,
   type SyncServerConfig,
+  SyncError,
 } from '@syncular/server';
 import { D1DatabaseDouble } from '../../server/test/d1-double';
 import {
@@ -329,6 +330,61 @@ describe('SyncularRealtimeDO (DO double + D1 double, reference codec)', () => {
     );
     expect(result?.status).toBe('applied');
     expect(result?.commitSeq).toBe(1);
+  });
+
+  test('a host mapError answers the mapped catalog error on the DO socket round', async () => {
+    const db = await makeDb();
+    const ns = new FakeDurableObjectNamespace(db, {
+      syncConfig: (storage) => {
+        storage.scanRows = async () => {
+          throw new Error('Network connection lost. secret-7f3a');
+        };
+        return {
+          schema: SCHEMA,
+          storage,
+          segments: new MemorySegmentStore(),
+          resolveScopes: () => ({ list_id: ['*'] }),
+          mapError: () =>
+            new SyncError(
+              'sync.rate_limited',
+              'service paused',
+              JSON.stringify({ retryAfterMs: 3500 }),
+            ),
+        };
+      },
+    });
+    const { do_, server } = await connect(ns, 'client-1');
+    await sendRound(
+      do_,
+      server,
+      [
+        {
+          type: 'PULL_HEADER',
+          limitCommits: 100,
+          limitSnapshotRows: 100,
+          maxSnapshotPages: 4,
+          accept: 0b0011,
+        },
+        {
+          type: 'SUBSCRIPTION',
+          id: 's1',
+          table: 'tasks',
+          scopes: { list_id: ['L'] },
+          cursor: -1,
+        },
+      ],
+      'client-1',
+    );
+    const response = decodeRoundResponse(server.sent);
+    const error = response.frames.find((frame) => frame.type === 'ERROR');
+    expect(error).toMatchObject({
+      code: 'sync.rate_limited',
+      category: 'rate-limited',
+      retryable: true,
+      recommendedAction: 'retryLater',
+    });
+    expect(error?.details).toBe(JSON.stringify({ retryAfterMs: 3500 }));
+    expect(JSON.stringify(response.frames)).not.toContain('secret-7f3a');
   });
 
   test('whole-commit validation runs under the DO partition serializer (§6.8)', async () => {

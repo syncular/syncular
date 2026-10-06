@@ -19,6 +19,7 @@ import {
   SyncError,
   type SyncularAdmin,
   type SyncularErrorHandler,
+  type SyncularErrorMapper,
   type SyncularServerEvent,
 } from '@syncular/server';
 import { Hono } from 'hono';
@@ -48,6 +49,11 @@ export interface SyncularAdminRoutesOptions {
    * `SyncError`, which answers 500 `sync.internal_error` (§10.2).
    */
   readonly onError?: SyncularErrorHandler;
+  /**
+   * Optional synchronous mapper (§10.2) for those exceptions; return a catalog
+   * `SyncError` to answer with it, or `undefined` for `sync.internal_error`.
+   */
+  readonly mapError?: SyncularErrorMapper;
 }
 
 function intParam(value: string | undefined, fallback: number): number {
@@ -72,7 +78,12 @@ export function createSyncularAdminRoutes(
   }
   const app = new Hono();
   const jsonError = (error: unknown): Response => {
-    const sync = adapterSyncError(error, options.onError, 'admin');
+    const sync = adapterSyncError(
+      error,
+      options.onError,
+      'admin',
+      options.mapError,
+    );
     return Response.json(errorBody(sync), { status: sync.httpStatus });
   };
   // Throws outside a route's own try, such as from `authorize`.

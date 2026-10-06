@@ -130,6 +130,22 @@ partition. The rotation clears stale client cursors and requires version 2
 clients to reset their server-derived rows while preserving the outbox. Follow
 the complete [backup and restore runbook](https://syncular.dev/server-backup-restore/).
 
+## Adapter error hooks
+
+A `SyncError` answers with its catalog code and status. By default, any other exception an
+adapter catches answers `sync.internal_error` and is handed to
+`SyncServerConfig.onError` exactly once; a throwing observer does not change
+the response. The same config accepts an optional synchronous `mapError` hook:
+after `onError` observes the original, `mapError` may return a catalog
+`SyncError` (with structured `details`, for example `retryAfterMs`) that the
+adapter answers instead. Return `undefined` to keep `sync.internal_error`. A
+throw, a non-`SyncError` return, a code that is not an own catalog entry, or
+`details` that is not a JSON document is contained as `sync.internal_error`.
+The hook covers the sync, operations, segments, blobs, admin, and realtime
+surfaces; `createSyncularAdminRoutes` takes its own `mapError`. It does not
+change a remote operation's `operation.*` envelope, and a mapped `retryAfterMs`
+is delivery metadata. Client retry scheduling remains unchanged.
+
 ## Write validators and recovery metadata
 
 `validators` is the server-authoritative seam for row business rules that

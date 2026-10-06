@@ -14,6 +14,7 @@ import {
   SSP2_CONTENT_TYPE,
   type SyncServerConfig,
   SyncularAdmin,
+  SyncError,
 } from '@syncular/server';
 import { Hono } from 'hono';
 import { createSyncularAdminRoutes } from './admin';
@@ -404,5 +405,43 @@ describe('static console page', () => {
     expect(ADMIN_CONSOLE_HTML).toContain("get('transport') === 'parent'");
     expect(ADMIN_CONSOLE_HTML).toContain('syncular-admin-request');
     expect(ADMIN_CONSOLE_HTML).toContain('syncular-admin-response');
+  });
+});
+
+describe('adapter error mapping (§10.2)', () => {
+  test('a host mapError answers a typed catalog error on the admin surface', async () => {
+    const storage = new SqliteServerStorage();
+    const segments = new MemorySegmentStore();
+    const admin = new SyncularAdmin({ storage, segments });
+    const observed: unknown[] = [];
+    const routes = createSyncularAdminRoutes(admin, {
+      defaultPartition: 'part-1',
+      authorize: () => {
+        throw new Error('quota exhausted');
+      },
+      onError: (error) => {
+        observed.push(error);
+      },
+      mapError: () =>
+        new SyncError(
+          'sync.rate_limited',
+          'service paused',
+          JSON.stringify({ retryAfterMs: 4000 }),
+        ),
+    });
+    const app = new Hono();
+    app.route('/admin', routes);
+    const response = await app.request('/admin/clients', {
+      headers: { authorization: 'Bearer admin' },
+    });
+    expect(response.status).toBe(429);
+    expect(await response.json()).toMatchObject({
+      code: 'sync.rate_limited',
+      category: 'rate-limited',
+      retryable: true,
+      recommendedAction: 'retryLater',
+      details: { retryAfterMs: 4000 },
+    });
+    expect(observed).toHaveLength(1);
   });
 });

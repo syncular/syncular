@@ -23,8 +23,10 @@ import {
   SqliteServerStorage,
   SSP2_CONTENT_TYPE,
   type SyncServerConfig,
+  type SyncularErrorMapper,
   type SyncularServerEvent,
   type SyncularServerEvents,
+  SyncError,
 } from '@syncular/server';
 import { createSyncularHono } from './index';
 import { Hono } from 'hono';
@@ -411,6 +413,7 @@ describe('unexpected exceptions (SYNCULAR-ERROR-CLASS-001)', () => {
   async function faultyApp(options: {
     storage?: SqliteServerStorage;
     segments?: MemorySegmentStore;
+    mapError?: SyncularErrorMapper;
   }) {
     const storage = options.storage ?? new SqliteServerStorage();
     const reported: { error: unknown; route: string }[] = [];
@@ -423,6 +426,9 @@ describe('unexpected exceptions (SYNCULAR-ERROR-CLASS-001)', () => {
         resolveScopes: () => ({ project_id: ['p1'] }),
         limits: { inlineSegmentMaxBytes: 1 },
         onError: (error, { route }) => reported.push({ error, route }),
+        ...(options.mapError !== undefined
+          ? { mapError: options.mapError }
+          : {}),
       },
       authenticate: async () => ({ actorId: 'actor-1', partition: 'part-1' }),
     });
@@ -501,6 +507,58 @@ describe('unexpected exceptions (SYNCULAR-ERROR-CLASS-001)', () => {
       retryable: false,
     });
     expect(reported).toHaveLength(0);
+  });
+
+  test('a host mapError answers a typed catalog error with retry metadata', async () => {
+    const storage = new SqliteServerStorage();
+    storage.scanRows = async () => {
+      throw new Error(SECRET);
+    };
+    const { app, reported } = await faultyApp({
+      storage,
+      mapError: () =>
+        new SyncError(
+          'sync.rate_limited',
+          'service paused',
+          JSON.stringify({ retryAfterMs: 1500 }),
+        ),
+    });
+    const response = await app.request('/sync', {
+      method: 'POST',
+      headers: { 'content-type': SSP2_CONTENT_TYPE },
+      body: requestBytes().slice().buffer as ArrayBuffer,
+    });
+    expect(response.status).toBe(429);
+    expect(await response.json()).toMatchObject({
+      code: 'sync.rate_limited',
+      category: 'rate-limited',
+      retryable: true,
+      recommendedAction: 'retryLater',
+      details: { retryAfterMs: 1500 },
+    });
+    expect(reported).toHaveLength(1);
+    expect((reported[0]?.error as Error).message).toBe(SECRET);
+  });
+
+  test('a throwing mapError is contained as sync.internal_error', async () => {
+    const storage = new SqliteServerStorage();
+    storage.scanRows = async () => {
+      throw new Error(SECRET);
+    };
+    const { app, reported } = await faultyApp({
+      storage,
+      mapError: () => {
+        throw new Error('mapper failure');
+      },
+    });
+    await expectInternalError(
+      await app.request('/sync', {
+        method: 'POST',
+        headers: { 'content-type': SSP2_CONTENT_TYPE },
+        body: requestBytes().slice().buffer as ArrayBuffer,
+      }),
+    );
+    expect(reported).toHaveLength(1);
   });
 });
 

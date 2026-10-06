@@ -5681,6 +5681,26 @@ reference-existence rejection (§6.6). No `blob.*` code is delivered as a
 stream; they surface only on the dedicated `/blobs/{blobId}` routes and,
 for `blob.not_found`, as a push operation-result `error` record.
 
+**Host adapter errors.** By default, an adapter that catches an exception
+outside this catalog MUST answer `sync.internal_error` (HTTP 500, or an in-band
+`ERROR` before the first response byte on a socket round). It MUST hand the
+original exception to the host's observation hook exactly once, and a throwing
+hook MUST NOT change the response. A `SyncError` is answered unchanged and
+bypasses both hooks. The host MAY also install a synchronous mapping hook:
+after the observation hook runs, the mapping hook may translate the exception
+to a catalog `SyncError` (including structured `details`, for example a
+`retryAfterMs` value) that the adapter answers instead. The mapping hook
+returns a catalog `SyncError`, or nothing for the default `sync.internal_error`.
+A throw, a non-`SyncError` return, a code that is not an own catalog entry, or
+`details` that is not a JSON document MUST be contained as
+`sync.internal_error`. The mapping hook applies to adapter exceptions on the
+sync, operations, segments, blobs, admin, and realtime routes. It does not
+change the remote-operation `operation.*` failure envelope, which the operation
+handler produces itself. On realtime it maps a failure before the first
+response chunk; a failure after the first chunk keeps the existing loud-close
+behavior. A mapped `retryAfterMs` is delivery metadata only; it does not by
+itself change the client's retry schedule.
+
 ### 10.3 Reserved and out-of-scope codes
 
 Outside the wire catalog: all client-local codes

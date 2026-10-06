@@ -26,6 +26,7 @@ import {
   S3BlobStore,
   type ServerSchema,
   SSP2_CONTENT_TYPE,
+  SyncError,
   type SyncServerConfig,
 } from '@syncular/server';
 import { D1DatabaseDouble } from '../../server/test/d1-double';
@@ -276,6 +277,100 @@ describe('Workers fetch handler (D1 double + memory stores)', () => {
     expect(
       await storage.getPushResult(PARTITION, 'client-1', 'unsafe-stateless'),
     ).toBeUndefined();
+  });
+
+  test('a host mapError answers a typed catalog error over the Workers HTTP entry', async () => {
+    const db = new D1DatabaseDouble();
+    const storage = new D1ServerStorage(db);
+    await storage.migrate();
+    await storage.touchPartition(PARTITION, 0, TEST_LOG_EPOCH);
+    const observed: unknown[] = [];
+    const handler = createWorkersFetchHandler<unknown>(() => ({
+      config: {
+        schema: SCHEMA,
+        storage,
+        segments: new MemorySegmentStore(),
+        resolveScopes: () => ({ list_id: ['*'] }),
+        onError: (error) => {
+          observed.push(error);
+        },
+        mapError: () =>
+          new SyncError(
+            'sync.rate_limited',
+            'service paused',
+            JSON.stringify({ retryAfterMs: 2000 }),
+          ),
+      },
+      authenticate: async () => ({ actorId: ACTOR_ID, partition: PARTITION }),
+    }));
+    const response = await handler(
+      syncRequest([
+        {
+          type: 'PUSH_COMMIT',
+          clientCommitId: 'mapped',
+          operations: [
+            {
+              table: 'tasks',
+              rowId: 'mapped',
+              op: 'upsert',
+              payload: taskRow('mapped', 'L', 'mapped'),
+            },
+          ],
+        },
+      ]),
+      {},
+      { waitUntil: () => {} },
+    );
+    expect(response.status).toBe(429);
+    expect(await response.json()).toMatchObject({
+      code: 'sync.rate_limited',
+      category: 'rate-limited',
+      retryable: true,
+      recommendedAction: 'retryLater',
+      details: { retryAfterMs: 2000 },
+    });
+    expect(observed).toHaveLength(1);
+  });
+
+  test('a throwing host mapError is contained as sync.internal_error over the Workers entry', async () => {
+    const db = new D1DatabaseDouble();
+    const storage = new D1ServerStorage(db);
+    await storage.migrate();
+    await storage.touchPartition(PARTITION, 0, TEST_LOG_EPOCH);
+    const handler = createWorkersFetchHandler<unknown>(() => ({
+      config: {
+        schema: SCHEMA,
+        storage,
+        segments: new MemorySegmentStore(),
+        resolveScopes: () => ({ list_id: ['*'] }),
+        mapError: () => {
+          throw new Error('mapper failure');
+        },
+      },
+      authenticate: async () => ({ actorId: ACTOR_ID, partition: PARTITION }),
+    }));
+    const response = await handler(
+      syncRequest([
+        {
+          type: 'PUSH_COMMIT',
+          clientCommitId: 'contained',
+          operations: [
+            {
+              table: 'tasks',
+              rowId: 'contained',
+              op: 'upsert',
+              payload: taskRow('contained', 'L', 'contained'),
+            },
+          ],
+        },
+      ]),
+      {},
+      { waitUntil: () => {} },
+    );
+    expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({
+      code: 'sync.internal_error',
+    });
   });
 
   test('push then pull round-trips a row through the Workers entry', async () => {
