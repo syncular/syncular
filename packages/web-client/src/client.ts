@@ -3635,15 +3635,6 @@ export class SyncClient {
     try {
       await this.#drainPendingEvictions();
       const logEpoch = getMeta(this.#db, LOG_EPOCH_META_KEY);
-      // §5.9.7 B4: upload pending blobs BEFORE pushing rows that reference
-      // them, so the server-side existence check (§6.6) passes.
-      if (
-        logEpoch !== undefined &&
-        this.#hasBlobs &&
-        this.#config.blobs !== undefined
-      ) {
-        await this.#flushBlobUploads();
-      }
       // §7.4.4: encode the outbox with the CURRENT codec; a commit that
       // cannot express itself under the new schema (a dropped column/table)
       // is removed from the push and surfaced as a rejection, never wedging
@@ -3653,6 +3644,15 @@ export class SyncClient {
         logEpoch === undefined
           ? { pushFrames: [], outbox: [], deferred: 0 }
           : await this.#encodeOutboxForPush();
+      // §5.9.7 B4: upload pending blobs BEFORE pushing rows that reference
+      // them, so the server-side existence check (§6.6) passes.
+      if (
+        logEpoch !== undefined &&
+        this.#hasBlobs &&
+        this.#config.blobs !== undefined
+      ) {
+        await this.#flushBlobUploads();
+      }
       // Captured together with the subscription state below: the response
       // apply persists SUB_END cursors only while this epoch is current.
       const resetEpoch = this.#localResetEpoch;
