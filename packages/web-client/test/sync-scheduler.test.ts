@@ -132,3 +132,27 @@ test('the newest background intent replaces the pending deadline', async () => {
   client.intent({ kind: 'interactive' });
   expect(queued).toHaveLength(0);
 });
+
+test('budget exhaustion schedules another batch without an external wake', async () => {
+  const client = new FakeSchedulerClient();
+  const queued: Array<() => void> = [];
+  client.run = async () => ({ budgetExhausted: client.runs < 3 });
+  const scheduler = installSyncScheduler(client, {
+    maxRounds: 1,
+    queueMicrotask: (callback) => queued.push(callback),
+  });
+  client.wake();
+  for (let round = 1; round <= 3; round++) {
+    expect(queued).toHaveLength(1);
+    queued.shift()?.();
+    await flushPromises();
+    expect(client.runs).toBe(round);
+  }
+  expect(queued).toHaveLength(0);
+  client.run = async () => ({ budgetExhausted: true });
+  client.wake();
+  queued.shift()?.();
+  scheduler.stop();
+  await flushPromises();
+  expect(queued).toHaveLength(0);
+});
