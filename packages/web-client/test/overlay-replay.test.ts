@@ -10,7 +10,7 @@ import {
   type SqlValue,
 } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
-import { CLIENT_SCHEMA, taskValues } from './helpers';
+import { CLIENT_SCHEMA, makeClient, makeServer, taskValues } from './helpers';
 
 class ReplayDatabase extends BunClientDatabase {
   failRead = false;
@@ -165,3 +165,122 @@ for (const failure of [
     }
   });
 }
+
+test('a bump that removes a table keeps the queued intent for the send-time drop', async () => {
+  // §7.4.4: the outbox is schema-agnostic, so an operation for a table the new
+  // schema removed has no local mirror to replay into. Pre-fix the reset replay
+  // threw sync.unknown_table inside the reset transaction, rolled the marker
+  // back, and failed identically on every later open.
+  const dir = mkdtempSync(join(tmpdir(), 'syncular-overlay-removed-table-'));
+  const path = join(dir, 'replica.sqlite');
+  const config = (schema: ClientSchema) => ({
+    database: new BunClientDatabase(path),
+    clientId: 'removed-table',
+    schema,
+    transport: async (): Promise<Uint8Array> => {
+      throw new Error('offline');
+    },
+  });
+  try {
+    const v1 = new SyncClient(config(CLIENT_SCHEMA));
+    await v1.start();
+    const docs = v1.mutate([
+      {
+        op: 'upsert',
+        table: 'docs',
+        values: { id: 'd1', org_id: 'o1', project_id: 'p1', body: 'removed' },
+      },
+    ]);
+    const tasks = v1.mutate([
+      { op: 'upsert', table: 'tasks', values: taskValues('t1', 'p1', 'kept') },
+    ]);
+    await v1.close();
+
+    const v2: ClientSchema = {
+      version: 2,
+      tables: CLIENT_SCHEMA.tables.filter((table) => table.name !== 'docs'),
+    };
+    const upgraded = new SyncClient(config(v2));
+    await upgraded.start();
+    expect(
+      upgraded.pendingCommits().map((commit) => commit.clientCommitId),
+    ).toEqual([docs, tasks]);
+    expect(upgraded.query('SELECT id FROM tasks')).toEqual([{ id: 't1' }]);
+    await upgraded.close();
+
+    // The marker advanced, so the next open is an ordinary same-version start.
+    const reopened = new SyncClient(config(v2));
+    await reopened.start();
+    expect(
+      reopened.pendingCommits().map((commit) => commit.clientCommitId),
+    ).toEqual([docs, tasks]);
+    await reopened.close();
+
+    const probe = new BunClientDatabase(path);
+    expect(
+      probe.query(
+        "SELECT value FROM _syncular_meta WHERE key='localSchemaVersion'",
+      ),
+    ).toEqual([{ value: '2' }]);
+    probe.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a retained rejection for a removed table does not wedge the boot reset', async () => {
+  // `retainFailedCommits` keeps the failed-intent journal. With the table later
+  // removed by a bump, the reset replay must skip those retained rows: pre-fix
+  // the base restore threw sync.unknown_table inside the reset transaction and
+  // the marker never advanced.
+  const dir = mkdtempSync(join(tmpdir(), 'syncular-overlay-retained-removed-'));
+  const path = join(dir, 'replica.sqlite');
+  const source = makeServer();
+  try {
+    const first = await makeClient(source, {
+      clientId: 'retained-removed',
+      database: new BunClientDatabase(path),
+      retainFailedCommits: true,
+    });
+    // The server does not hold docs/d1, so the optimistic baseVersion is
+    // rejected (sync.row_missing) and, with retainFailedCommits, the
+    // failed-intent rows are retained without a commit sequence, which is what
+    // keeps them past the reset's acknowledged-row discard.
+    first.client.mutate([
+      {
+        table: 'docs',
+        op: 'upsert',
+        values: {
+          id: 'd1',
+          org_id: 'org-1',
+          project_id: 'project-1',
+          body: 'retained',
+        },
+        baseVersion: 1,
+      },
+    ]);
+    await first.client.syncUntilIdle();
+    const retained = first.db.query(
+      "SELECT count(*) AS n FROM _syncular_failed_rows WHERE tbl='docs' AND commit_seq IS NULL",
+    )[0]?.n as number;
+    expect(retained).toBeGreaterThan(0);
+    await first.client.close();
+
+    const v2: ClientSchema = {
+      version: 2,
+      tables: CLIENT_SCHEMA.tables.filter((table) => table.name !== 'docs'),
+    };
+    const upgraded = new SyncClient({
+      database: new BunClientDatabase(path),
+      clientId: 'retained-removed',
+      schema: v2,
+      transport: async (): Promise<Uint8Array> => {
+        throw new Error('offline');
+      },
+    });
+    await upgraded.start();
+    await upgraded.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
