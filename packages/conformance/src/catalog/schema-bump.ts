@@ -172,7 +172,7 @@ export const schemaBumpScenarios: readonly Scenario[] = [
       const rows = await a.api.readRows('tasks');
       const subscription = await a.api.subscriptionState('tasks');
       await a.api.executeStorageSql(
-        "DELETE FROM _syncular_meta WHERE key = 'localSchemaVersion'",
+        "DELETE FROM _syncular_meta WHERE key IN ('localSchemaVersion', 'localSchemaDescriptor')",
       );
       await ctx.recreateClient(a, FIXTURE_SCHEMA);
       checkEqual(
