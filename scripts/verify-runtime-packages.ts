@@ -1,4 +1,10 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -41,13 +47,67 @@ try {
     ],
     directory,
   );
+  // Resolve the published browser export from an installed tarball, not the
+  // workspace's Bun source condition. Also check the generic neutral import.
+  const serverDirectory = realpathSync(
+    join(directory, 'node_modules/@syncular/server'),
+  );
+  const manifest: {
+    exports: { '.': { browser: string; import: { default: string } } };
+  } = JSON.parse(readFileSync(join(serverDirectory, 'package.json'), 'utf8'));
+  if (manifest.exports['.'].browser !== manifest.exports['.'].import.default) {
+    throw new Error('published neutral browser and import exports differ');
+  }
+  const browserEntry = join(directory, 'neutral.ts');
+  writeFileSync(browserEntry, "export * from '@syncular/server';\n");
+  const loaded = new Set<string>();
+  for (const entrypoint of [
+    browserEntry,
+    join(serverDirectory, manifest.exports['.'].import.default),
+  ]) {
+    const result = await Bun.build({
+      entrypoints: [entrypoint],
+      target: 'browser',
+      conditions: ['browser'],
+      minify: false,
+      plugins: [
+        {
+          name: 'record-published-imports',
+          setup(build) {
+            build.onLoad({ filter: /\.(?:js|ts)$/ }, (args) => {
+              loaded.add(args.path);
+              return undefined;
+            });
+          },
+        },
+      ],
+    });
+    if (!result.success)
+      throw new AggregateError(result.logs, 'published neutral bundle failed');
+    for (const output of result.outputs) {
+      if (/(?:bun|node):(?:sqlite|fs|path)/.test(await output.text())) {
+        throw new Error('published neutral bundle contains runtime builtins');
+      }
+    }
+  }
+  if (
+    !loaded.has(join(serverDirectory, 'dist/index.js')) ||
+    [...loaded].some((path) =>
+      /sqlite-(?:bun|node)(?:-driver)?\.js$/.test(path),
+    )
+  ) {
+    throw new Error(
+      'published neutral export selected a runtime-specific entry',
+    );
+  }
+  console.log('packed neutral exports bundle unminified for browsers');
   writeFileSync(
     join(directory, 'verify.mjs'),
     `import { openSqliteDatabase } from '@syncular/client/sqlite';
-import { SqliteServerStorage as RootStorage } from '@syncular/server';
-import { SqliteServerStorage } from '@syncular/server/sqlite';
+import { buildSqliteImage as rootBuilder, SqliteServerStorage as RootStorage } from '@syncular/server';
+import { buildSqliteImage, SqliteServerStorage } from '@syncular/server/sqlite';
 
-if (RootStorage !== SqliteServerStorage) {
+if (RootStorage !== SqliteServerStorage || rootBuilder !== buildSqliteImage || typeof buildSqliteImage !== 'function') {
   throw new Error('server root and sqlite export selected different adapters');
 }
 const local = openSqliteDatabase(':memory:');

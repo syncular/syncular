@@ -1761,6 +1761,13 @@ same scopes at the same pin download one image (from the CDN, with
 its scope; a host without a SQLite engine serves images a publisher stored
 under that key and serves the rows lane when none exists.
 
+The reference TypeScript server builds new images only when the host supplies
+`sqliteImageBuilder` in its request context or server config. The neutral server
+entry MUST NOT detect the runtime or import a runtime-specific SQLite builder.
+Bun and Node hosts opt in with the builder from `@syncular/server/sqlite`.
+Without a builder, the server serves matching stored images or the mandatory
+rows formats according to the client's `accept` mask.
+
 **Eligibility.** Servers SHOULD produce a sqlite segment when the
 client advertises `accept` bit 2 (§4.2) and the table's snapshot
 exceeds one rows page (more than the clamped `limitSnapshotRows` rows

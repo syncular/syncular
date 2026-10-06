@@ -19,10 +19,11 @@ import {
   type SyncServerConfig,
 } from '@syncular/server';
 import { createSyncularHono } from '@syncular/server-hono';
-import { SqliteServerStorage } from '@syncular/server/sqlite';
+import { buildSqliteImage, SqliteServerStorage } from '@syncular/server/sqlite';
 import { schema } from './syncular.generated';
 
 const config: SyncServerConfig = {
+  sqliteImageBuilder: buildSqliteImage,
   schema,
   storage: new SqliteServerStorage(process.env.DB_PATH ?? ':memory:'),
   segments: new MemorySegmentStore(),

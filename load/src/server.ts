@@ -17,6 +17,7 @@
  * <port>` line to stdout when listening, and prunes on demand via a control
  * endpoint so the maintenance-churn scenario can race prune against pushes.
  */
+import { buildSqliteImage } from '@syncular/server/sqlite';
 import { encodeRow } from '@syncular/core';
 import {
   compileSchema,
@@ -302,6 +303,7 @@ const events: SyncularServerEvents = LOG_EVENTS
 const resolveScopes = () => ({ project_id: ['*'] });
 
 const hub = createRealtimeHub({
+  sqliteImageBuilder: buildSqliteImage,
   schema: SCHEMA,
   storage,
   resolveScopes,
@@ -309,6 +311,7 @@ const hub = createRealtimeHub({
   events,
 });
 const config: SyncServerConfig = {
+  sqliteImageBuilder: buildSqliteImage,
   schema: SCHEMA,
   storage,
   segments,

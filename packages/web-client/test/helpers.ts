@@ -5,6 +5,7 @@
  * for the socket seam. No HTTP, no sockets. Fault injection happens at the
  * transport interface.
  */
+import { buildSqliteImage } from '@syncular/server/sqlite';
 
 import {
   type BlobTransport,
@@ -201,6 +202,7 @@ export function makeServer(
         };
   const wrapped = wrapStorage(storage, faults);
   const hub = createRealtimeHub({
+    sqliteImageBuilder: buildSqliteImage,
     schema,
     storage: wrapped,
     resolveScopes,
@@ -225,6 +227,7 @@ export function makeServer(
     faults,
     now,
     ctxFor: (actorId) => ({
+      sqliteImageBuilder: buildSqliteImage,
       partition: PARTITION,
       actorId,
       schema,

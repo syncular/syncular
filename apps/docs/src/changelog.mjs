@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-10-06',
+    title: 'Neutral server bundles use explicit SQLite image builders',
+    body: 'The neutral server entry no longer auto-loads bun:sqlite during bootstrap. Bun and Node hosts opt into image construction through sqliteImageBuilder. Hosts without a builder retain rows delivery and reuse of matching stored images. Unminified browser bundles and installed package exports guard runtime neutrality.',
+    links: [
+      {
+        href: '/concepts-bootstrap/#opting-into-image-construction',
+        label: 'SQLite image construction',
+      },
+    ],
+  },
+  {
+    date: '2026-10-06',
     title: 'Transfer errors protect signed capabilities',
     body: 'Native and browser transports use static local error messages and allowlisted cause metadata without request URLs or raw exceptions. Blob downloads classify only HTTP 404 as blob.not_found; network and TLS failures retain transport semantics. Browser HTTP bindings preserve authenticated server catalog errors while rejecting blob.not_found on non-404 responses.',
     links: [

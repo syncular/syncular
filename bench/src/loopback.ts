@@ -4,6 +4,7 @@
  * conformance loopback (no sockets, no serialization beyond the wire
  * bytes themselves).
  */
+import { buildSqliteImage } from '@syncular/server/sqlite';
 
 import {
   type ClientSchema,
@@ -107,6 +108,7 @@ export function createBenchServer(options?: BenchServerOptions): BenchServer {
       }
     : {};
   const hub = createRealtimeHub({
+    sqliteImageBuilder: buildSqliteImage,
     ...validation,
     schema,
     ...blobOptions,
@@ -126,6 +128,7 @@ export function createBenchServer(options?: BenchServerOptions): BenchServer {
     ).notifyCommit;
   }
   const ctx: SyncRequestContext = {
+    sqliteImageBuilder: buildSqliteImage,
     ...validation,
     partition: options?.partition ?? PARTITION,
     actorId: ACTOR_ID,

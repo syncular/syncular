@@ -26,7 +26,7 @@ import {
   type SyncServerConfig,
 } from '@syncular/server';
 import { createSyncularHono } from '@syncular/server-hono';
-import { SqliteServerStorage } from '@syncular/server/sqlite';
+import { buildSqliteImage, SqliteServerStorage } from '@syncular/server/sqlite';
 import { schema } from './syncular.generated';
 
 const PORT = Number(process.env.PORT ?? 8787);
@@ -41,8 +41,15 @@ const segments = new MemorySegmentStore();
  * scope values the authenticated actor is allowed to see. */
 const resolveScopes = () => ({ list_id: ['*'] });
 
-const hub = createRealtimeHub({ schema, storage, resolveScopes, segments });
+const hub = createRealtimeHub({
+  sqliteImageBuilder: buildSqliteImage,
+  schema,
+  storage,
+  resolveScopes,
+  segments,
+});
 const config: SyncServerConfig = {
+  sqliteImageBuilder: buildSqliteImage,
   schema,
   storage,
   segments,

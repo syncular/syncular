@@ -10,6 +10,7 @@
  * workers do not inherit the page's import map, so the sqlite-wasm bare
  * specifier is rewritten to /vendor/sqlite-wasm/ in both bundles.
  */
+import { buildSqliteImage } from '@syncular/server/sqlite';
 import { dirname, join } from 'node:path';
 import {
   createRealtimeHub,
@@ -43,12 +44,14 @@ const blobs = new SqliteBlobStore();
 const resolveScopes = () => ({ list_id: ['*'] });
 
 const hub = createRealtimeHub({
+  sqliteImageBuilder: buildSqliteImage,
   schema,
   storage,
   resolveScopes,
   segments,
 });
 const config: SyncServerConfig = {
+  sqliteImageBuilder: buildSqliteImage,
   schema,
   storage,
   segments,

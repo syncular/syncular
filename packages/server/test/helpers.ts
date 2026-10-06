@@ -3,6 +3,7 @@
  * helpers. The loopback doctrine: the server is driven EXCLUSIVELY through
  * bytes built and decoded with the reference codec — no HTTP, no sockets.
  */
+import { buildSqliteImage } from '@syncular/server/sqlite';
 import { expect } from 'bun:test';
 import {
   decodeMessage,
@@ -144,6 +145,7 @@ export function makeContext(
   };
   const now = { ms: 1_750_000_000_000 };
   const ctx: SyncRequestContext = {
+    sqliteImageBuilder: buildSqliteImage,
     partition: 'part-1',
     actorId: 'actor-1',
     schema: TEST_SCHEMA,
