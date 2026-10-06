@@ -202,3 +202,215 @@ for (const failure of ['missing-value-column', 'read-error', 'view'] as const) {
     db.close();
   });
 }
+
+for (const version of [0, -1, 2147483648]) {
+  test(`a generated schema version of ${version} is refused before any write`, () => {
+    const db = new GuardDatabase();
+    const writes = db.writes;
+    let constructed: SyncClient | undefined;
+    let failure: unknown;
+    try {
+      constructed = new SyncClient({
+        database: db,
+        schema: { ...CLIENT_SCHEMA, version },
+        transport: async () => new Uint8Array(),
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(constructed).toBeUndefined();
+    expect(failure).toBeInstanceOf(ClientSyncError);
+    expect(failure).toMatchObject({
+      code: 'sync.invalid_request',
+      retryable: false,
+    });
+    expect(db.writes).toBe(writes);
+    expect(db.query('SELECT count(*) AS count FROM sqlite_master')).toEqual([
+      { count: 0 },
+    ]);
+    db.close();
+  });
+}
+
+test('a duplicated local schema marker fails without a reset', async () => {
+  const db = new GuardDatabase();
+  // A hand-built/legacy metadata table without its primary key, older first:
+  // picking the first row would drive the destructive reset.
+  db.exec('CREATE TABLE _syncular_meta(key TEXT, value)');
+  db.exec("INSERT INTO _syncular_meta VALUES ('localSchemaVersion', '1')");
+  db.exec("INSERT INTO _syncular_meta VALUES ('localSchemaVersion', '2')");
+  const writes = db.writes;
+  const client = new SyncClient({
+    database: db,
+    schema: { ...CLIENT_SCHEMA, version: 3 },
+    transport: async () => new Uint8Array(),
+  });
+  await expect(client.start()).rejects.toMatchObject({
+    code: 'sync.local_corrupt',
+    retryable: false,
+  });
+  expect(db.writes).toBe(writes);
+  expect(
+    db.query(
+      "SELECT count(*) AS count FROM _syncular_meta WHERE key = 'localSchemaVersion'",
+    ),
+  ).toEqual([{ count: 2 }]);
+  expect(
+    db.query(
+      "SELECT count(*) AS count FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '_syncular_%'",
+    ),
+  ).toEqual([{ count: 0 }]);
+  db.close();
+});
+
+class InterleavedMarkerDatabase extends GuardDatabase {
+  #markerReads = 0;
+  #upgrade: (() => void) | undefined;
+
+  /** Runs after the startup transaction's marker read, before its first write. */
+  upgradeAfterMarkerRead(run: () => void): void {
+    this.#upgrade = run;
+  }
+
+  override query(sql: string, params: readonly SqlValue[] = []): SqlRow[] {
+    const rows = super.query(sql, params);
+    if (
+      sql.includes('SELECT value FROM _syncular_meta') &&
+      params[0] === 'localSchemaVersion'
+    ) {
+      this.#markerReads++;
+      if (this.#markerReads === 1) {
+        const upgrade = this.#upgrade;
+        this.#upgrade = undefined;
+        upgrade?.();
+      }
+    }
+    return rows;
+  }
+}
+
+test('a marker upgraded after the startup read cannot commit a stale schema', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'syncular-marker-race-'));
+  const path = join(dir, 'replica.sqlite');
+  const seed = new BunClientDatabase(path);
+  const banner = new BunClientDatabase(path);
+  const db = new InterleavedMarkerDatabase(path);
+  try {
+    const installed = new SyncClient({
+      database: seed,
+      clientId: 'race',
+      schema: CLIENT_SCHEMA,
+      transport: async () => new Uint8Array(),
+    });
+    await installed.start();
+    await installed.close();
+    // The concurrent upgrade commits exactly after the startup transaction's
+    // marker read, so that transaction's snapshot is stale before its writes.
+    db.upgradeAfterMarkerRead(() => {
+      banner.exec('PRAGMA busy_timeout = 0');
+      banner.exec('BEGIN IMMEDIATE');
+      banner.exec(
+        "UPDATE _syncular_meta SET value = '2' WHERE key = 'localSchemaVersion'",
+      );
+      banner.exec('COMMIT');
+    });
+    db.exec('PRAGMA busy_timeout = 0');
+    const stale = new SyncClient({
+      database: db,
+      clientId: 'race',
+      schema: CLIENT_SCHEMA,
+      transport: async () => new Uint8Array(),
+    });
+    const changes: unknown[] = [];
+    stale.onChange((batch) => changes.push(batch));
+    let failure: unknown;
+    try {
+      await stale.start();
+    } catch (error) {
+      failure = error;
+    }
+    // The stale snapshot cannot be promoted to a write (SQLITE_BUSY_SNAPSHOT).
+    expect(failure).toBeInstanceOf(ClientSyncError);
+    expect(failure).toMatchObject({
+      code: 'client.storage_busy',
+      retryable: true,
+    });
+    // The rolled-back transaction published no change event.
+    expect(changes).toEqual([]);
+    // The concurrent upgrade stands; the stale open never wrote its own marker.
+    const probe = new BunClientDatabase(path);
+    expect(
+      probe.query(
+        "SELECT value FROM _syncular_meta WHERE key = 'localSchemaVersion'",
+      ),
+    ).toEqual([{ value: '2' }]);
+    probe.close();
+  } finally {
+    db.close();
+    banner.close();
+    seed.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a marker upgraded before the startup read refuses as a downgrade', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'syncular-marker-upgraded-'));
+  const path = join(dir, 'replica.sqlite');
+  const seed = new BunClientDatabase(path);
+  const banner = new BunClientDatabase(path);
+  const db = new GuardDatabase(path);
+  try {
+    const installed = new SyncClient({
+      database: seed,
+      clientId: 'race',
+      schema: CLIENT_SCHEMA,
+      transport: async () => new Uint8Array(),
+    });
+    await installed.start();
+    await installed.close();
+    // Another process completes the upgrade before this open reads the marker.
+    banner.exec('PRAGMA busy_timeout = 0');
+    banner.exec('BEGIN IMMEDIATE');
+    banner.exec(
+      "UPDATE _syncular_meta SET value = '2' WHERE key = 'localSchemaVersion'",
+    );
+    banner.exec('COMMIT');
+    const writes = db.writes;
+    const stale = new SyncClient({
+      database: db,
+      clientId: 'race',
+      schema: CLIENT_SCHEMA,
+      transport: async () => new Uint8Array(),
+    });
+    const changes: unknown[] = [];
+    stale.onChange((batch) => changes.push(batch));
+    let failure: unknown;
+    try {
+      await stale.start();
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(ClientSyncError);
+    expect(failure).toMatchObject({
+      code: 'client.schema_downgrade',
+      retryable: false,
+      details: { persistedVersion: 2, requestedVersion: 1 },
+    });
+    // Refusal precedes every bookkeeping and schema write, and publishes no
+    // change event.
+    expect(db.writes).toBe(writes);
+    expect(changes).toEqual([]);
+    const probe = new BunClientDatabase(path);
+    expect(
+      probe.query(
+        "SELECT value FROM _syncular_meta WHERE key = 'localSchemaVersion'",
+      ),
+    ).toEqual([{ value: '2' }]);
+    probe.close();
+  } finally {
+    db.close();
+    banner.close();
+    seed.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
