@@ -11843,6 +11843,7 @@ impl SyncClient {
                     .expect("retained storage failures are classified");
                 *error_code = code.to_owned();
                 *message = match code {
+                    "client.storage_busy" => "local SQLite storage is busy",
                     "client.storage_full" => "local SQLite storage is full",
                     "client.storage_io" => "local SQLite storage I/O failed",
                     "client.storage_corrupt" => "local SQLite storage is corrupt",
