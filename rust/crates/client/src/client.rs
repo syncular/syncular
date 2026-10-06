@@ -1727,30 +1727,32 @@ mod observation_tests {
     }
 
     #[test]
-    fn open_path_rejects_invalid_push_limits_before_wal() {
-        let path = std::env::temp_dir().join(format!(
-            "syncular-bad-limits-{}.sqlite",
-            uuid::Uuid::new_v4()
-        ));
-        let schema = json!({"version":1,"tables":[]});
-        let error = SyncClient::open_path_with_identity(
-            None,
-            &schema,
-            ClientLimits {
+    fn open_path_rejects_invalid_push_limits_before_storage() {
+        for identity in [false, true] {
+            let path = std::env::temp_dir().join(format!(
+                "syncular-bad-limits-{}.sqlite",
+                uuid::Uuid::new_v4()
+            ));
+            let schema = json!({"version":1,"tables":[]});
+            let limits = ClientLimits {
                 max_push_request_bytes: Some(0),
                 ..Default::default()
-            },
-            path.to_str().unwrap(),
-        )
-        .err();
-        assert_eq!(
-            error.as_deref(),
-            Some("sync.invalid_request: push limit must be an integer in 1..=4294967295")
-        );
-        assert!(
-            !path.exists(),
-            "an invalid limit is rejected before the database file is created"
-        );
+            };
+            let error = if identity {
+                SyncClient::open_path_with_identity(None, &schema, limits, path.to_str().unwrap())
+            } else {
+                SyncClient::open_path("bad-limits".into(), &schema, limits, path.to_str().unwrap())
+            }
+            .err();
+            assert_eq!(
+                error.as_deref(),
+                Some("sync.invalid_request: push limit must be an integer in 1..=4294967295")
+            );
+            assert!(
+                !path.exists(),
+                "an invalid limit is rejected before the database file is created"
+            );
+        }
     }
 
     #[test]
@@ -7822,6 +7824,7 @@ impl SyncClient {
         limits: ClientLimits,
         path: &str,
     ) -> Result<Self, String> {
+        validate_client_limits(&limits)?;
         parse_schema_json(schema_json)?;
         let conn = Connection::open(path).map_err(|e| format!("open db {path:?}: {e}"))?;
         Self::with_connection(client_id, schema_json, limits, conn)
