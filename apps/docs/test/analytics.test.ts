@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'bun:test';
 import worker, {
-  analyticsDataset,
   classifyDevice,
   isPrefetch,
   parseArticleRead,
@@ -50,8 +49,19 @@ const articleReadRequest = (headers: Record<string, string>) =>
   });
 
 describe('docs analytics', () => {
-  test('uses the configured dataset name', () => {
-    expect(analyticsDataset).toBe('syncular_docs_engagement');
+  test('writes to the dataset bound in wrangler.jsonc', async () => {
+    const config = await Bun.file(
+      new URL('../wrangler.jsonc', import.meta.url),
+    ).text();
+    expect(config).toContain('"binding": "ANALYTICS"');
+    expect(config).toContain('"dataset": "syncular_docs_engagement"');
+  });
+
+  test('exports only values the Workers runtime accepts as entrypoints', async () => {
+    const exports = await import('../src/worker');
+    for (const [name, value] of Object.entries(exports)) {
+      expect(typeof value, name).toMatch(/^(function|object)$/);
+    }
   });
 
   test('reduces user agents to a broad class', () => {

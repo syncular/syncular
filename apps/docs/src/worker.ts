@@ -31,8 +31,6 @@ interface ArticleRead {
   utmCampaign?: string | undefined;
 }
 
-const analyticsDataset = 'syncular_docs_engagement';
-
 const dimension = (value: string | null | undefined, fallback = 'none') => {
   const normalized = value
     ?.trim()
@@ -482,5 +480,3 @@ export default {
     return finalResponse;
   },
 };
-
-export { analyticsDataset };

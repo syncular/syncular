@@ -8,6 +8,7 @@
   // deploys never touch DNS.
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "syncular-demo",
+  "account_id": "336bfd20ccb2f56e24ac0afeca6b4837",
   "compatibility_date": "2026-07-01",
   "assets": {
     "directory": "./redirects"

@@ -7,6 +7,7 @@
   // serves at the domain root, which is what its root-absolute links assume.
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "syncular-docs",
+  "account_id": "336bfd20ccb2f56e24ac0afeca6b4837",
   "main": "./src/worker.ts",
   "compatibility_date": "2026-07-01",
   "assets": {
