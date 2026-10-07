@@ -1,8 +1,73 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.30.16** (`v0.30.16`). All artifacts use Apache-2.0, except
+current release is **0.31.0** (`v0.31.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.31.0 release notes
+
+Both cores validate mutation values against the declared schema before they
+record anything. A wrong column type, an absent required column, a non-finite
+float, or a malformed `{"$bytes": hex}` envelope fails with
+`sync.invalid_request` and leaves queued intent, optimistic rows, and the local
+revision untouched. A commit an earlier version persisted with such a value is
+recovered at startup and at the schema reset or recreation boundary with
+`sync.outbox_incompatible` and `details.reason = "invalid_stored_values"`, and
+later valid commits survive and drain. Previously acknowledged bytes lost by
+the old decoder cannot be reconstructed.
+
+Snapshot reads return statements, window coverage, subscription catch-up, and
+commit delivery status under one local revision. The browser core exposes
+`querySnapshot` and `snapshotRead`, the Rust core exposes `snapshot_read`, and
+native file-backed reads use the independent SQLite sidecar. Corrupt revision
+markers, invalid SQLite metadata types, contradictory outcomes, malformed stored
+operations, and invalid subscription scopes fail with `sync.local_corrupt`, and
+the Tauri plugin routes its snapshot command to that shared read path.
+
+Compatibility work for hosts:
+
+- Bun and Node server hosts opt into image construction with
+  `sqliteImageBuilder: buildSqliteImage` in the server config. The neutral server
+  entry no longer pulls `bun:sqlite` into Worker bundles. Import the builder
+  from `@syncular/server/sqlite-bun` or `@syncular/server/sqlite-node`. Without a
+  builder the host keeps rows delivery and reuses matching stored images.
+- Rust `mutate` and `patch` return `ClientError { code, message, details,
+  retryable }` instead of a string, and `SyncOutcome` adds
+  `BudgetExhausted(SyncReport)`. `syncUntilIdle` returns the aggregate report with
+  `budgetExhausted: true` when a round budget runs out.
+- Client limits add `maxPushCommitsPerRequest`, `maxPushOperationsPerRequest`
+  (default 500), and `maxPushRequestBytes`. The operation cap now applies to
+  the first commit as well as subsequent commits. Commits are never split. A
+  first commit over the operation or byte budget raises the typed
+  `client.push_request_too_large` and stays queued.
+- The native transport policy denies HTTP and WebSocket handshake redirects
+  by default. Credential-bearing requests remain refused under `Follow`.
+  Optional request and round deadlines report `transport.timeout`; optional
+  HTTP request and decoded-response byte limits report typed capacity errors.
+  Deadlines and byte limits remain unbounded by default. Byte limits do not
+  cap WebSocket buffers; the round deadline covers socket send and wait.
+- Host adapters can register a synchronous `mapError` hook that maps unexpected
+  adapter exceptions to catalog errors with structured details.
+
+Opening a replica with a schema marker newer than the requested version fails
+with `client.schema_downgrade` before any bookkeeping write. Overlay replay
+failures roll back their local apply boundary and preserve durable intent.
+Native authoring preserves classified SQLite storage failures, including
+retryable `client.storage_busy`. Snapshot reads preserve storage failure codes.
+Removed-table upserts survive replay until atomic send-time rejection;
+removed-table deletes reach ordinary server validation.
+
+The D1 storage adapter updates client records in place and skips unchanged
+scope-index writes while preserving both activity timestamps. Clients must not
+reuse a `clientCommitId` for changed intent, including after a persisted result
+is pruned. The existing ID-based retry contract is unchanged; encrypted retries
+can carry fresh ciphertext.
+
+JavaScript dev tooling is updated for the reported advisories (`tinypool`
+2.1.2), `yrs` moves to 0.28, and the Tauri crates move to 2.12.
+
+SSP2 stays at wire version 3. Upgrade all 12 npm packages and 6 crates together
+and rebuild native applications. No schema bump or wire change is required.
 
 ## 0.30.16 release notes
 
