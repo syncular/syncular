@@ -16,10 +16,16 @@ fn fixture_schema() -> Value {
 
 #[test]
 fn generated_plain_query_runs_and_snapshots_against_the_real_client() {
-    let mut client = SyncClient::new(
+    let uri = format!(
+        "file:generated-query-{}?mode=memory&cache=shared",
+        uuid::Uuid::new_v4()
+    );
+    let fixture = rusqlite::Connection::open(&uri).expect("fixture connection");
+    let mut client = SyncClient::with_connection(
         "generated-query-test".to_owned(),
         &fixture_schema(),
         ClientLimits::default(),
+        rusqlite::Connection::open(&uri).expect("client connection"),
     )
     .expect("create client");
     client
@@ -31,7 +37,7 @@ fn generated_plain_query_runs_and_snapshots_against_the_real_client() {
                     ("project_id".to_owned(), json!("project-1")),
                     ("title".to_owned(), json!("Generated Rust")),
                     ("done".to_owned(), json!(false)),
-                    ("priority".to_owned(), json!(i64::MAX)),
+                    ("priority".to_owned(), json!(1)),
                     ("estimate".to_owned(), json!(1.5)),
                     ("meta".to_owned(), json!(r#"{"source":"rust"}"#)),
                 ]),
@@ -44,12 +50,27 @@ fn generated_plain_query_runs_and_snapshots_against_the_real_client() {
                     ("project_id".to_owned(), json!("project-1")),
                     ("title".to_owned(), json!("Nullable")),
                     ("done".to_owned(), json!(true)),
-                    ("priority".to_owned(), json!(i64::MIN)),
+                    ("priority".to_owned(), json!(-1)),
                 ]),
                 base_version: None,
             },
         ])
         .expect("insert local row");
+
+    // Query decoding supports SQLite's full i64 domain independently of the
+    // synchronized-row authoring bound. Install these read fixtures directly.
+    fixture
+        .execute(
+            "UPDATE tasks SET priority = ? WHERE id = 'task-1'",
+            [i64::MAX],
+        )
+        .unwrap();
+    fixture
+        .execute(
+            "UPDATE tasks SET priority = ? WHERE id = 'task-2'",
+            [i64::MIN],
+        )
+        .unwrap();
 
     let params = generated::list_project_tasks::Params::new("project-1".to_owned());
     let rows = generated::list_project_tasks::run(&client, &params).expect("typed query");

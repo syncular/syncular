@@ -627,6 +627,160 @@ describe('createTauriSyncClient', () => {
     });
   });
 
+  test('snapshotRead decodes every row and revision and preserves storage-busy retryability', async () => {
+    let mode: 'ok' | 'busy' = 'ok';
+    const { tauri, calls } = makeTauri((cmd, args) => {
+      if (cmd === 'plugin:syncular|syncular_snapshot_read') {
+        if (mode === 'busy') {
+          return {
+            error: {
+              code: 'client.storage_busy',
+              message: 'local SQLite storage is busy',
+              details: { sqliteCode: 5, sqliteMessage: 'database is locked' },
+              retryable: true,
+            },
+          };
+        }
+        return OK({
+          revision: '9007199254740993',
+          queries: [
+            [
+              {
+                id: 't1',
+                payload: { $bytes: '0102' },
+                big: { $bigint: '9007199254740993' },
+              },
+            ],
+            [{ id: 't2' }],
+          ],
+          coverage: { complete: true, pending: [], missing: [] },
+          subscriptions: [
+            {
+              state: 'known',
+              id: 'tasks',
+              table: 'tasks',
+              status: 'active',
+              cursor: 1,
+              hasResumeToken: false,
+              bootstrapComplete: true,
+              knownPendingPages: false,
+            },
+          ],
+          deliveries: [{ status: 'pending', clientCommitId: 'c1' }],
+        });
+      }
+      return defaultResponder(cmd, args);
+    });
+    const client = await createTauriSyncClient({ schema: {}, tauri });
+    const read = await client.snapshotRead({
+      statements: [
+        { sql: 'SELECT id FROM tasks' },
+        { sql: 'SELECT id FROM tasks WHERE id = ?', params: ['t1'] },
+      ],
+      subscriptions: ['tasks'],
+      commitIds: ['c1'],
+      owner: { id: 'queries:tasks', tables: ['tasks'] },
+    });
+    expect(read.revision).toBe(9_007_199_254_740_993n);
+    expect(read.queries[0]?.[0]?.payload).toEqual(new Uint8Array([1, 2]));
+    expect(read.queries[0]?.[0]?.big).toBe(9_007_199_254_740_993n);
+    expect(read.queries[1]).toEqual([{ id: 't2' }]);
+    expect(read.subscriptions[0]?.state).toBe('known');
+    expect(read.deliveries).toEqual([
+      { status: 'pending', clientCommitId: 'c1' },
+    ]);
+    const call = calls.find(
+      (candidate) => candidate.cmd === 'plugin:syncular|syncular_snapshot_read',
+    );
+    expect(call?.args.owner).toEqual({
+      id: 'queries:tasks',
+      tables: ['tasks'],
+    });
+    expect(call?.args.commitIds).toEqual(['c1']);
+
+    mode = 'busy';
+    let failure:
+      | { code?: string; retryable?: boolean; details?: unknown }
+      | undefined;
+    try {
+      await client.snapshotRead({ statements: [] });
+    } catch (error) {
+      failure = error as typeof failure;
+    }
+    expect(failure?.code).toBe('client.storage_busy');
+    expect(failure?.retryable).toBe(true);
+    expect(failure?.details).toEqual({
+      sqliteCode: 5,
+      sqliteMessage: 'database is locked',
+    });
+  });
+
+  test('snapshotRead decodes binary conflict rows and leaves operation JSON', async () => {
+    const { tauri } = makeTauri((cmd, args) => {
+      if (cmd === 'plugin:syncular|syncular_snapshot_read') {
+        return OK({
+          revision: '3',
+          queries: [],
+          coverage: { complete: true, pending: [], missing: [] },
+          subscriptions: [],
+          deliveries: [
+            {
+              status: 'known',
+              clientCommitId: 'c1',
+              outcome: {
+                sequence: 1,
+                clientCommitId: 'c1',
+                status: 'conflict',
+                recordedAtMs: 1,
+                results: [
+                  {
+                    status: 'conflict',
+                    conflict: {
+                      clientCommitId: 'c1',
+                      opIndex: 0,
+                      table: 'todo',
+                      rowId: 't1',
+                      code: 'sync.version_conflict',
+                      message: 'stale',
+                      serverVersion: 2,
+                      serverRow: {
+                        id: 't1',
+                        payload: { $bytes: '0102' },
+                      },
+                      conflictColumns: ['title'],
+                    },
+                  },
+                ],
+                operations: [
+                  {
+                    op: 'upsert',
+                    table: 'todo',
+                    rowId: 't1',
+                    values: { id: 't1', payload: { $bytes: '0102' } },
+                  },
+                ],
+                resolution: 'active',
+              },
+            },
+          ],
+        });
+      }
+      return defaultResponder(cmd, args);
+    });
+    const client = await createTauriSyncClient({ schema: {}, tauri });
+    const read = await client.snapshotRead({ statements: [] });
+    const delivery = read.deliveries[0];
+    if (delivery?.status !== 'known')
+      throw new Error('expected a known delivery');
+    const conflict = delivery.outcome.results[0];
+    if (conflict?.status !== 'conflict')
+      throw new Error('expected a conflict result');
+    expect(conflict.conflict.serverRow.payload).toEqual(new Uint8Array([1, 2]));
+    expect(delivery.outcome.operations?.[0]?.values?.payload).toEqual({
+      $bytes: '0102',
+    });
+  });
+
   test('mutate returns the clientCommitId', async () => {
     const { client } = await build();
     const id = await client.mutate([

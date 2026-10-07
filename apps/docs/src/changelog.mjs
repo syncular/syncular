@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-10-06',
+    title: 'Snapshot read sidecar: revision, catch-up, and delivery',
+    body: 'TS and Rust clients expose atomic snapshot reads with multiple SQL statements, window coverage, subscription bootstrap progress, and commit delivery status under one revision. Native file-backed reads use the independent SQLite sidecar. Corrupt revision markers, invalid SQLite metadata types, contradictory outcome statuses, malformed stored operations, and invalid subscription scopes fail with sync.local_corrupt, and Tauri preserves structured read failures and query-owner diagnostics. Generic and dedicated Tauri snapshot commands share one read path; repeated successful reads add no diagnostics mailbox traffic.',
+    links: [
+      {
+        href: '/platform-rust/#snapshot-read-sidecar',
+        label: 'Snapshot read sidecar',
+      },
+    ],
+  },
+  {
+    date: '2026-10-06',
     title: 'Native HTTP transport policy',
     body: 'HostTransportPolicy bounds the shared native transport: a per-request deadline, one whole-round deadline across uploads, continuations, the main request, segments, and realtime rounds, HTTP request and decoded-response byte limits, and redirect refusal for credential-bearing requests on both HTTP requests and the WebSocket handshake. Failures are typed transport.timeout, transport.redirect, transport.request_too_large, and transport.response_too_large. Deadlines and size limits stay unbounded by default; redirects now default to Deny. Tauri exposes the same fields on SyncularConfig, and the Kotlin and Swift bindings serialize every byte and millisecond bound as an exact integer.',
     links: [

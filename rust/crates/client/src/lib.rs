@@ -46,20 +46,24 @@ pub use api::{
     creation_time_bucket, last, AuthorityReadDeclaration, ClientChangeBatch, ClientDiagnosticsHost,
     ClientDiagnosticsLease, ClientDiagnosticsReplica, ClientDiagnosticsRequest,
     ClientDiagnosticsSchema, ClientDiagnosticsSnapshot, ClientDiagnosticsStorage, ClientError,
-    ClientLimits, CommandEffects, CommitOperation, CommitOperationOutcome, CommitOutcome,
-    CommitOutcomeQuery, CommitOutcomeResolution, CommitOutcomeStatus, ConflictRecord,
-    CoverageSnapshot, DiagnosticLastChange, DiagnosticLastRound, DiagnosticQueryFailure,
-    DiagnosticRoundCounters, DiagnosticSubscription, ExpectedDiagnosticSubscription, FetchedBlob,
-    LocalDataPurgeInput, LocalDataPurgeResult, LocalDataPurgeTarget, LocalDataRebootstrapInput,
-    LocalDataRebootstrapResult, Mutation, PresencePeer, QueryOwner, QueryReadFailure, QueryRow,
-    QuerySnapshot, QueryValue, RealtimePolicy, RealtimeState, RejectionRecord,
-    ResolveCommitOutcomeInput, RetainedCommitRow, RetainedUniqueConflict, RowState, SchemaFloor,
+    ClientLimits, CommandEffects, CommitDelivery, CommitOperation, CommitOperationOutcome,
+    CommitOutcome, CommitOutcomeQuery, CommitOutcomeResolution, CommitOutcomeStatus,
+    ConflictRecord, CoverageSnapshot, DiagnosticLastChange, DiagnosticLastRound,
+    DiagnosticQueryFailure, DiagnosticRoundCounters, DiagnosticSubscription,
+    ExpectedDiagnosticSubscription, FetchedBlob, LocalDataPurgeInput, LocalDataPurgeResult,
+    LocalDataPurgeTarget, LocalDataRebootstrapInput, LocalDataRebootstrapResult, Mutation,
+    PresencePeer, QueryOwner, QueryReadFailure, QueryRow, QuerySnapshot, QueryValue,
+    RealtimePolicy, RealtimeState, RejectionRecord, ResolveCommitOutcomeInput, RetainedCommitRow,
+    RetainedUniqueConflict, RowState, SchemaFloor, SnapshotRead, SubscriptionCatchup,
     SubscriptionStateView, SyncIntent, SyncOutcome, SyncReport, SyncStatusSnapshot, TableChange,
     TimeBucketUnit, WindowBase, WindowChange, WindowCoverage, WindowState, WindowUnitRef,
     CLIENT_DIAGNOSTICS_VERSION, MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
     MAX_DIAGNOSTIC_QUERY_FAILURES, REALTIME_LOST_CODE, REALTIME_UNAVAILABLE_CODE,
 };
-pub use client::{FileQuerySnapshotReader, SyncClient, SECURITY_PREFLIGHT_REQUIRED_CODE};
+pub use client::{
+    FileQuerySnapshotReader, SnapshotReadRequest, SnapshotStatement, SyncClient,
+    SECURITY_PREFLIGHT_REQUIRED_CODE,
+};
 pub use schema::{compile_schema, parse_schema_json, ClientSchema};
 pub use transport::{BlobDownload, BlobUploadGrant, SegmentRequest, Transport, TransportError};
 

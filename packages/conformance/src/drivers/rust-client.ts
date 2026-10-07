@@ -45,12 +45,17 @@ import type {
   CodecDriver,
   CodecRoundtrip,
   DriverChangeBatch,
+  DriverCommitDelivery,
+  DriverCommitOutcome,
   DriverPreviousVersionAudit,
   DriverPreviousVersionReason,
   DriverPreviousVersionSnapshot,
   DriverRow,
   DriverRowValue,
   DriverSchema,
+  DriverScopeMap,
+  DriverSnapshotRead,
+  DriverSubscriptionCatchup,
   DriverSyncIntent,
   DriverWindowBase,
   JsonValue,
@@ -697,6 +702,142 @@ function presentKeys(operation: JsonValue): readonly string[] {
   return Object.keys(values);
 }
 
+/** §6.3/§7.5: one durable conflict from the shim's JSON. */
+function driverConflictFrom(raw: JsonValue): ClientConflict {
+  const conflict = asObject(raw, 'conflict');
+  const operation = conflict.operation ?? undefined;
+  return {
+    clientCommitId: String(conflict.clientCommitId),
+    opIndex: Number(conflict.opIndex),
+    table: String(conflict.table),
+    rowId: String(conflict.rowId),
+    code: String(conflict.code),
+    serverVersion: Number(conflict.serverVersion),
+    serverRow: driverRowOf(conflict.serverRow),
+    // §6.3: the rust core serializes the decoded names already.
+    conflictColumns: stringListOf(conflict.conflictColumns),
+    ...(operation !== undefined
+      ? { operation: { present: presentKeys(operation) } }
+      : {}),
+  };
+}
+
+/** §7.5: one durable rejection from the shim's JSON. */
+function driverRejectionFrom(raw: JsonValue): ClientRejection {
+  const rejection = asObject(raw, 'rejection');
+  const operation = rejection.operation ?? undefined;
+  return {
+    clientCommitId: String(rejection.clientCommitId),
+    opIndex: Number(rejection.opIndex),
+    code: String(rejection.code),
+    retryable: rejection.retryable === true,
+    ...(rejection.details !== undefined && rejection.details !== null
+      ? { details: detailsOf(rejection.details) }
+      : {}),
+    ...(operation !== undefined
+      ? { operation: { present: presentKeys(operation) } }
+      : {}),
+  };
+}
+
+/** §7.5: the persisted-journal outcome a `known` delivery carries. */
+function driverOutcomeFrom(raw: JsonValue): DriverCommitOutcome {
+  const outcome = asObject(raw, 'commit outcome');
+  const status = outcome.status;
+  if (
+    status !== 'applied' &&
+    status !== 'cached' &&
+    status !== 'conflict' &&
+    status !== 'rejected'
+  ) {
+    throw new Error('snapshotRead: malformed outcome status');
+  }
+  const results = Array.isArray(outcome.results) ? outcome.results : [];
+  const operations = Array.isArray(outcome.operations)
+    ? outcome.operations
+    : undefined;
+  return {
+    clientCommitId: String(outcome.clientCommitId),
+    status,
+    resolution: String(outcome.resolution),
+    results: results.map((rawResult) => {
+      const result = asObject(rawResult, 'outcome result');
+      if (result.status === 'applied')
+        return { status: 'applied' as const, opIndex: Number(result.opIndex) };
+      if (result.status === 'conflict')
+        return {
+          status: 'conflict' as const,
+          conflict: driverConflictFrom(result.conflict ?? null),
+        };
+      return {
+        status: 'error' as const,
+        rejection: driverRejectionFrom(result.rejection ?? null),
+      };
+    }),
+    ...(operations !== undefined
+      ? {
+          operations: operations.map((rawOperation) => {
+            const operation = asObject(rawOperation, 'outcome operation');
+            return {
+              op: String(operation.op),
+              table: String(operation.table),
+              rowId: String(operation.rowId),
+              ...(typeof operation.baseVersion === 'number'
+                ? { baseVersion: operation.baseVersion }
+                : {}),
+              present: presentKeys(operation),
+            };
+          }),
+        }
+      : {}),
+  };
+}
+
+/** §7.5: one delivery from the shim's JSON. */
+function driverDeliveryFrom(raw: JsonValue): DriverCommitDelivery {
+  const delivery = asObject(raw, 'delivery');
+  const clientCommitId = String(delivery.clientCommitId);
+  if (delivery.status === 'known') {
+    return {
+      status: 'known',
+      clientCommitId,
+      outcome: driverOutcomeFrom(delivery.outcome ?? null),
+    };
+  }
+  if (delivery.status === 'pending') {
+    return { status: 'pending', clientCommitId };
+  }
+  return { status: 'unknown', clientCommitId };
+}
+
+/** §7.5: one subscription catch-up state from the shim's JSON. */
+function driverCatchupFrom(raw: JsonValue): DriverSubscriptionCatchup {
+  const catchup = asObject(raw, 'subscription catchup');
+  const id = String(catchup.id);
+  if (catchup.state === 'unknown') return { state: 'unknown', id };
+  const status = catchup.status;
+  if (status !== 'active' && status !== 'revoked' && status !== 'failed') {
+    throw new Error('snapshotRead: malformed catch-up status');
+  }
+  return {
+    state: 'known',
+    id,
+    table: String(catchup.table),
+    status,
+    cursor: Number(catchup.cursor),
+    hasResumeToken: catchup.hasResumeToken === true,
+    bootstrapComplete: catchup.bootstrapComplete === true,
+    knownPendingPages: catchup.knownPendingPages === true,
+    ...(catchup.effectiveScopes !== undefined &&
+    catchup.effectiveScopes !== null
+      ? { effectiveScopes: catchup.effectiveScopes as DriverScopeMap }
+      : {}),
+    ...(typeof catchup.reasonCode === 'string'
+      ? { reasonCode: catchup.reasonCode }
+      : {}),
+  };
+}
+
 function stringListOf(value: JsonValue | undefined): readonly string[] {
   return Array.isArray(value) ? value.map(String) : [];
 }
@@ -821,6 +962,62 @@ function driverRowOf(value: JsonValue | undefined): DriverRow {
     out[key] = entry as DriverRowValue;
   }
   return out;
+}
+
+/** A statement row must be a JSON object; a malformed reply is rejected, never
+ * silently replaced with an empty row. */
+function requireDriverRow(value: JsonValue, what: string): DriverRow {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`${what}: expected an object row`);
+  }
+  return driverRowOf(value);
+}
+
+/** §7.5: a window base as the shim's JSON (fixed scopes always lists). */
+function windowBaseJson(base: DriverWindowBase): JsonValue {
+  return {
+    table: base.table,
+    variable: base.variable,
+    ...(base.fixedScopes !== undefined
+      ? {
+          fixedScopes: Object.fromEntries(
+            Object.entries(base.fixedScopes).map(([key, values]) => [
+              key,
+              [...values],
+            ]),
+          ),
+        }
+      : {}),
+    ...(base.params !== undefined ? { params: base.params } : {}),
+  };
+}
+
+/** §7.5: parse the response coverage strictly; a malformed descriptor is
+ * rejected rather than defaulted. */
+function driverCoverageFrom(
+  value: JsonValue | undefined,
+): DriverSnapshotRead['coverage'] {
+  const coverage = asObject(value ?? null, 'snapshotRead coverage');
+  const refs = (raw: JsonValue | undefined, what: string) => {
+    if (!Array.isArray(raw)) {
+      throw new Error(`snapshotRead coverage ${what} is malformed`);
+    }
+    return raw.map((entry) => {
+      const ref = asObject(entry, `coverage ${what} entry`);
+      if (typeof ref.baseKey !== 'string' || typeof ref.unit !== 'string') {
+        throw new Error(`snapshotRead coverage ${what} entry is malformed`);
+      }
+      return { baseKey: ref.baseKey, unit: ref.unit };
+    });
+  };
+  if (typeof coverage.complete !== 'boolean') {
+    throw new Error('snapshotRead coverage complete is malformed');
+  }
+  return {
+    complete: coverage.complete,
+    pending: refs(coverage.pending, 'pending'),
+    missing: refs(coverage.missing, 'missing'),
+  };
 }
 
 /** §6.3.1: the shim already serializes the bounded camelCase detail shape. */
@@ -1046,6 +1243,96 @@ class RustClientInstance implements ClientInstance {
     };
   }
 
+  async snapshotRead(request: {
+    readonly statements: readonly {
+      readonly sql: string;
+      readonly params?: readonly DriverRowValue[];
+    }[];
+    readonly coverage?: readonly {
+      readonly base: DriverWindowBase;
+      readonly units: readonly string[];
+    }[];
+    readonly subscriptions?: readonly string[];
+    readonly commitIds?: readonly string[];
+    readonly owner?: {
+      readonly id: string;
+      readonly tables: readonly string[];
+    };
+  }): Promise<DriverSnapshotRead> {
+    const statements: JsonValue[] = request.statements.map((statement) => ({
+      sql: statement.sql,
+      ...(statement.params !== undefined
+        ? { params: [...statement.params] }
+        : {}),
+    }));
+    const coverage: JsonValue[] = (request.coverage ?? []).map((item) => ({
+      base: windowBaseJson(item.base),
+      units: [...item.units],
+    }));
+    const params: Record<string, JsonValue> = {
+      statements,
+      coverage,
+      subscriptions: [...(request.subscriptions ?? [])],
+      commitIds: [...(request.commitIds ?? [])],
+      ...(request.owner !== undefined
+        ? {
+            owner: {
+              id: request.owner.id,
+              tables: [...request.owner.tables],
+            },
+          }
+        : {}),
+    };
+    const result = asObject(
+      await this.#shim.call('snapshotRead', params),
+      'snapshotRead',
+    );
+    if (typeof result.revision !== 'string') {
+      throw new Error('snapshotRead: malformed revision');
+    }
+    if (!Array.isArray(result.queries)) {
+      throw new Error('snapshotRead: response carries no queries');
+    }
+    const queries = result.queries.map((rows, index) => {
+      if (!Array.isArray(rows)) {
+        throw new Error(`snapshotRead: statement ${index} rows are malformed`);
+      }
+      return rows.map((row) =>
+        requireDriverRow(
+          Object.fromEntries(
+            Object.entries(asObject(row, 'snapshotRead query row')).map(
+              ([key, cell]) => [
+                key,
+                cell !== null &&
+                typeof cell === 'object' &&
+                !Array.isArray(cell) &&
+                typeof cell.$bigint === 'string'
+                  ? Number(cell.$bigint)
+                  : cell,
+              ],
+            ),
+          ),
+          'snapshotRead query row',
+        ),
+      );
+    });
+    if (!Array.isArray(result.subscriptions)) {
+      throw new Error('snapshotRead: response carries no subscriptions');
+    }
+    const subscriptions = result.subscriptions.map(driverCatchupFrom);
+    if (!Array.isArray(result.deliveries)) {
+      throw new Error('snapshotRead: response carries no deliveries');
+    }
+    const deliveries = result.deliveries.map(driverDeliveryFrom);
+    return {
+      revision: result.revision,
+      queries,
+      coverage: driverCoverageFrom(result.coverage),
+      subscriptions,
+      deliveries,
+    };
+  }
+
   async diagnosticsSnapshot() {
     return (await this.#shim.call('diagnosticsSnapshot', {})) as unknown as {
       readonly queryFailures: readonly DriverQueryFailure[];
@@ -1203,24 +1490,7 @@ class RustClientInstance implements ClientInstance {
     );
     const conflicts = result.conflicts;
     if (!Array.isArray(conflicts)) return [];
-    return conflicts.map((raw) => {
-      const conflict = asObject(raw, 'conflict');
-      const operation = conflict.operation ?? undefined;
-      return {
-        clientCommitId: String(conflict.clientCommitId),
-        opIndex: Number(conflict.opIndex),
-        table: String(conflict.table),
-        rowId: String(conflict.rowId),
-        code: String(conflict.code),
-        serverVersion: Number(conflict.serverVersion),
-        serverRow: driverRowOf(conflict.serverRow),
-        // §6.3: the rust core serializes the decoded names already.
-        conflictColumns: stringListOf(conflict.conflictColumns),
-        ...(operation !== undefined
-          ? { operation: { present: presentKeys(operation) } }
-          : {}),
-      };
-    });
+    return conflicts.map(driverConflictFrom);
   }
 
   async rejections(): Promise<ClientRejection[]> {
@@ -1230,22 +1500,7 @@ class RustClientInstance implements ClientInstance {
     );
     const rejections = result.rejections;
     if (!Array.isArray(rejections)) return [];
-    return rejections.map((raw) => {
-      const rejection = asObject(raw, 'rejection');
-      const operation = rejection.operation ?? undefined;
-      return {
-        clientCommitId: String(rejection.clientCommitId),
-        opIndex: Number(rejection.opIndex),
-        code: String(rejection.code),
-        retryable: rejection.retryable === true,
-        ...(rejection.details !== undefined && rejection.details !== null
-          ? { details: detailsOf(rejection.details) }
-          : {}),
-        ...(operation !== undefined
-          ? { operation: { present: presentKeys(operation) } }
-          : {}),
-      };
-    });
+    return rejections.map(driverRejectionFrom);
   }
 
   async pendingCommitIds(): Promise<string[]> {

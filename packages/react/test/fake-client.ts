@@ -32,6 +32,8 @@ import type {
   ResolveCommitOutcomeInput,
   SchemaFloor,
   SecurityLifecycle,
+  SnapshotRead,
+  SnapshotReadRequest,
   SqlRow,
   SyncStatusSnapshot,
   WindowBase,
@@ -304,6 +306,32 @@ export class FakeClient implements SyncClientLike {
         pending,
         missing,
       },
+    };
+  }
+
+  snapshotRead<Row = SqlRow>(spec: SnapshotReadRequest): SnapshotRead<Row>;
+  snapshotRead(spec: SnapshotReadRequest): SnapshotRead {
+    const coverage = this.querySnapshot({
+      sql: spec.statements[0]?.sql ?? 'SELECT 1',
+      ...(spec.statements[0]?.params !== undefined
+        ? { params: spec.statements[0].params }
+        : {}),
+      ...(spec.coverage !== undefined ? { coverage: spec.coverage } : {}),
+    }).coverage;
+    return {
+      revision: this.#revision,
+      queries: spec.statements.map((statement) =>
+        this.query(statement.sql, statement.params),
+      ),
+      coverage,
+      subscriptions: (spec.subscriptions ?? []).map((id) => ({
+        state: 'unknown' as const,
+        id,
+      })),
+      deliveries: (spec.commitIds ?? []).map((id) => ({
+        status: 'unknown' as const,
+        clientCommitId: id,
+      })),
     };
   }
 

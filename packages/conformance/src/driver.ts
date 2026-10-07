@@ -654,6 +654,79 @@ export interface ClientSubscriptionState {
   readonly reasonCode?: string;
 }
 
+/**
+ * §7.5 catch-up state as the sidecar/snapshot reports it. `unknown` means the
+ * client does not currently hold the subscription (never registered, forgotten,
+ * or removed) and carries no fabricated table or cursor.
+ */
+export type DriverSubscriptionCatchup =
+  | { readonly state: 'unknown'; readonly id: string }
+  | {
+      readonly state: 'known';
+      readonly id: string;
+      readonly table: string;
+      readonly status: 'active' | 'revoked' | 'failed';
+      readonly cursor: number;
+      readonly hasResumeToken: boolean;
+      readonly bootstrapComplete: boolean;
+      readonly knownPendingPages: boolean;
+      readonly effectiveScopes?: DriverScopeMap;
+      readonly reasonCode?: string;
+    };
+
+/** One persisted outcome result, preserving its conflict or rejection. */
+export type DriverDeliveryResult =
+  | { readonly status: 'applied'; readonly opIndex: number }
+  | { readonly status: 'conflict'; readonly conflict: ClientConflict }
+  | { readonly status: 'error'; readonly rejection: ClientRejection };
+
+/** The persisted-journal outcome a `known` delivery carries. The owner-derived
+ * `retainedRows` images are absent by contract; the envelope, results, codes,
+ * and resolution are preserved. */
+export interface DriverCommitOutcome {
+  readonly clientCommitId: string;
+  readonly status: 'applied' | 'cached' | 'conflict' | 'rejected';
+  readonly resolution: string;
+  readonly results: readonly DriverDeliveryResult[];
+  readonly operations?: readonly {
+    readonly op: string;
+    readonly table: string;
+    readonly rowId: string;
+    readonly baseVersion?: number;
+    readonly present: readonly string[];
+  }[];
+}
+
+/** §7.5 delivery status for one client commit id. */
+export type DriverCommitDelivery =
+  | { readonly status: 'pending'; readonly clientCommitId: string }
+  | {
+      readonly status: 'known';
+      readonly clientCommitId: string;
+      readonly outcome: DriverCommitOutcome;
+    }
+  | { readonly status: 'unknown'; readonly clientCommitId: string };
+
+/** §7.5 one atomic snapshot read: one revision, every statement's rows, the
+ * requested coverage, catch-up states, and deliveries. */
+export interface DriverSnapshotRead {
+  readonly revision: string;
+  readonly queries: readonly (readonly Record<string, DriverRowValue>[])[];
+  readonly coverage: {
+    readonly complete: boolean;
+    readonly pending: readonly {
+      readonly baseKey: string;
+      readonly unit: string;
+    }[];
+    readonly missing: readonly {
+      readonly baseKey: string;
+      readonly unit: string;
+    }[];
+  };
+  readonly subscriptions: readonly DriverSubscriptionCatchup[];
+  readonly deliveries: readonly DriverCommitDelivery[];
+}
+
 export interface ClientLimitsOptions {
   readonly limitCommits?: number;
   readonly limitSnapshotRows?: number;
@@ -668,6 +741,8 @@ export interface ClientLimitsOptions {
   readonly maxPushOperationsPerRequest?: number;
   /** §7.1: maximum bytes of the complete encoded SSP2 request (default unbounded). */
   readonly maxPushRequestBytes?: number;
+  /** §7.5: retained commit-outcome cap; older applied/cached/resolved rows prune. */
+  readonly outcomeRetentionMaxEntries?: number;
 }
 
 /**
@@ -864,6 +939,7 @@ export interface DriverQueryFailure {
     | 'client.storage_full'
     | 'client.storage_io'
     | 'client.storage_busy'
+    | 'sync.local_corrupt'
     | 'client.query_failed';
   readonly sqliteCode?: number;
   readonly atMs: number;
@@ -949,6 +1025,28 @@ export interface ClientInstance {
     readonly queryFailures: readonly DriverQueryFailure[];
     readonly host: DriverRealtimeAvailability;
   }>;
+  /**
+   * §7.5: one atomic read over several read-only statements plus window
+   * coverage, subscription catch-up states, and commit deliveries, all from
+   * one revision and one read transaction. Present iff the client driver
+   * exposes the snapshot-read surface.
+   */
+  snapshotRead?(request: {
+    readonly statements: readonly {
+      readonly sql: string;
+      readonly params?: readonly DriverRowValue[];
+    }[];
+    readonly coverage?: readonly {
+      readonly base: DriverWindowBase;
+      readonly units: readonly string[];
+    }[];
+    readonly subscriptions?: readonly string[];
+    readonly commitIds?: readonly string[];
+    readonly owner?: {
+      readonly id: string;
+      readonly tables: readonly string[];
+    };
+  }): Promise<DriverSnapshotRead>;
   drainProgress?(): Promise<readonly DriverSyncProgress[]>;
   progressSnapshot?(): Promise<DriverSyncProgress | undefined>;
   drainChangeBatches?(): Promise<readonly DriverChangeBatch[]>;

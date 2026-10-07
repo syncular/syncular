@@ -28,17 +28,18 @@ use ssp2::{decode_message, encode_presence_publish, parse_control, ControlMessag
 use crate::api::{
     ClientChangeBatch, ClientDiagnosticsHost, ClientDiagnosticsLease, ClientDiagnosticsReplica,
     ClientDiagnosticsRequest, ClientDiagnosticsSchema, ClientDiagnosticsSnapshot,
-    ClientDiagnosticsStorage, ClientError, ClientLimits, CommandEffects, CommitOperation,
-    CommitOperationOutcome, CommitOutcome, CommitOutcomeQuery, CommitOutcomeResolution,
-    CommitOutcomeStatus, ConflictRecord, CoverageSnapshot, DiagnosticLastChange,
-    DiagnosticLastRound, DiagnosticQueryFailure, DiagnosticRoundCounters, DiagnosticSubscription,
-    FetchedBlob, LeaseState, LocalDataPurgeInput, LocalDataPurgeResult, LocalDataPurgeTarget,
-    LocalDataRebootstrapInput, LocalDataRebootstrapResult, Mutation, PresencePeer,
-    PreviousVersionStatus, QueryOwner, QueryReadFailure, QueryRow, QuerySnapshot, QueryValue,
-    RejectionDetails, RejectionRecord, ResolveCommitOutcomeInput, RetainedCommitRow,
-    RetainedUniqueConflict, RowState, SchemaFloor, SubscriptionStateView, SyncIntent, SyncOutcome,
-    SyncReport, SyncStatusSnapshot, TableChange, WindowBase, WindowChange, WindowCoverage,
-    WindowState, WindowUnitRef, CLIENT_DIAGNOSTICS_VERSION, MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
+    ClientDiagnosticsStorage, ClientError, ClientLimits, CommandEffects, CommitDelivery,
+    CommitOperation, CommitOperationOutcome, CommitOutcome, CommitOutcomeQuery,
+    CommitOutcomeResolution, CommitOutcomeStatus, ConflictRecord, CoverageSnapshot,
+    DiagnosticLastChange, DiagnosticLastRound, DiagnosticQueryFailure, DiagnosticRoundCounters,
+    DiagnosticSubscription, FetchedBlob, LeaseState, LocalDataPurgeInput, LocalDataPurgeResult,
+    LocalDataPurgeTarget, LocalDataRebootstrapInput, LocalDataRebootstrapResult, Mutation,
+    PresencePeer, PreviousVersionStatus, QueryOwner, QueryReadFailure, QueryRow, QuerySnapshot,
+    QueryValue, RejectionDetails, RejectionRecord, ResolveCommitOutcomeInput, RetainedCommitRow,
+    RetainedUniqueConflict, RowState, SchemaFloor, SnapshotRead, SubscriptionCatchup,
+    SubscriptionStateView, SyncIntent, SyncOutcome, SyncReport, SyncStatusSnapshot, TableChange,
+    WindowBase, WindowChange, WindowCoverage, WindowState, WindowUnitRef,
+    CLIENT_DIAGNOSTICS_VERSION, MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
     MAX_DIAGNOSTIC_QUERY_FAILURES,
 };
 use crate::api::{RealtimePolicy, RealtimeState, REALTIME_UNAVAILABLE_CODE};
@@ -3140,7 +3141,13 @@ mod observation_tests {
                     .write_base_row(
                         "tasks",
                         &vec![
-                            json_to_column_value(&table.columns[0], Some(id)).unwrap(),
+                            if kind == "integer" {
+                                // Exercise local SQLite key lookup across its
+                                // full i64 range independently of authoring.
+                                Some(ColumnValue::Integer(id.as_i64().unwrap()))
+                            } else {
+                                json_to_column_value(&table.columns[0], Some(id)).unwrap()
+                            },
                             Some(ColumnValue::String(format!("p{index}"))),
                         ],
                         1,
@@ -5780,7 +5787,17 @@ mod observation_tests {
                 .persist_commit_outcome(
                     "retained",
                     CommitOutcomeStatus::Rejected,
-                    &[],
+                    &[CommitOperationOutcome::Error {
+                        rejection: RejectionRecord {
+                            client_commit_id: "retained".into(),
+                            op_index: 0,
+                            code: "validation.denied".into(),
+                            message: "denied".into(),
+                            retryable: false,
+                            details: None,
+                            operation: None,
+                        },
+                    }],
                     Some(&[operation]),
                 )
                 .unwrap();
@@ -5882,7 +5899,10 @@ mod observation_tests {
                 row_id: "t1".to_owned(),
                 op: "upsert".to_owned(),
                 base_version: Some(1),
-                values: None,
+                values: Some(Map::from_iter([
+                    ("id".into(), json!("t1")),
+                    ("project_id".into(), json!("p1")),
+                ])),
             }),
         };
         let failed_operations = vec![
@@ -5891,14 +5911,20 @@ mod observation_tests {
                 table: "tasks".to_owned(),
                 row_id: "t1".to_owned(),
                 base_version: Some(1),
-                values: None,
+                values: Some(Map::from_iter([
+                    ("id".into(), json!("t1")),
+                    ("project_id".into(), json!("p1")),
+                ])),
             },
             OutboxOp {
                 upsert: true,
                 table: "tasks".to_owned(),
                 row_id: "status-event-1".to_owned(),
                 base_version: Some(0),
-                values: None,
+                values: Some(Map::from_iter([
+                    ("id".into(), json!("status-event-1")),
+                    ("project_id".into(), json!("p1")),
+                ])),
             },
         ];
 
@@ -6068,6 +6094,614 @@ mod observation_tests {
         assert!(!sidecar.coverage.complete);
         assert_eq!(sidecar.coverage.pending.len(), 1);
         assert_eq!(sidecar.coverage.missing.len(), 1);
+
+        drop(reader);
+        drop(client);
+        std::fs::remove_file(path).expect("remove temp database");
+    }
+
+    #[test]
+    fn file_snapshot_reader_reports_catchup_delivery_and_multi_statement() {
+        let path =
+            std::env::temp_dir().join(format!("syncular-read-sidecar-{}.db", uuid::Uuid::new_v4()));
+        let schema = json!({
+            "version": 1,
+            "tables": [{
+                "name": "tasks",
+                "primaryKey": "id",
+                "columns": [
+                    { "name": "id", "type": "string", "nullable": false },
+                    { "name": "project_id", "type": "string", "nullable": false }
+                ],
+                "scopes": [{ "pattern": "project:{project_id}" }]
+            }]
+        });
+        let mut client = SyncClient::open_path_with_identity(
+            Some("sidecar-catchup".to_owned()),
+            &schema,
+            ClientLimits::default(),
+            path.to_str().expect("UTF-8 temp path"),
+        )
+        .expect("open owner");
+        client
+            .subscribe(
+                "s1".into(),
+                "tasks".into(),
+                vec![("project_id".into(), vec!["one".into()])],
+                None,
+            )
+            .expect("subscribe");
+        let commit_id = client
+            .mutate(vec![Mutation::Upsert {
+                table: "tasks".to_owned(),
+                values: Map::from_iter([
+                    ("id".to_owned(), Value::from("t1")),
+                    ("project_id".to_owned(), Value::from("one")),
+                ]),
+                base_version: None,
+            }])
+            .expect("mutate");
+        let revision = client.local_revision().to_string();
+
+        let mut reader = FileQuerySnapshotReader::new(path.to_string_lossy());
+        assert_eq!(reader.local_revision().expect("revision"), revision);
+
+        let read = reader
+            .snapshot_read(&SnapshotReadRequest {
+                statements: vec![
+                    SnapshotStatement {
+                        sql: "SELECT 1 AS n",
+                        params: &[],
+                    },
+                    SnapshotStatement {
+                        sql: "SELECT id FROM tasks ORDER BY id",
+                        params: &[],
+                    },
+                ],
+                coverage: &[],
+                subscriptions: vec!["s1".to_owned(), "absent".to_owned()],
+                commit_ids: vec![commit_id.clone(), "never-known".to_owned()],
+            })
+            .expect("snapshot read");
+        assert_eq!(read.revision, revision);
+        assert_eq!(read.queries.len(), 2);
+        assert_eq!(read.queries[0][0]["n"], 1);
+        assert_eq!(read.queries[1][0]["id"], "t1");
+        match &read.subscriptions[0] {
+            SubscriptionCatchup::Known {
+                status,
+                cursor,
+                bootstrap_complete,
+                known_pending_pages,
+                ..
+            } => {
+                assert_eq!(status, "active");
+                assert_eq!(*cursor, -1);
+                assert!(!bootstrap_complete);
+                assert!(known_pending_pages);
+            }
+            other => panic!("expected a known subscription: {other:?}"),
+        }
+        assert!(matches!(
+            &read.subscriptions[1],
+            SubscriptionCatchup::Unknown { id } if id.as_str() == "absent"
+        ));
+        assert!(matches!(
+            &read.deliveries[0],
+            CommitDelivery::Pending { client_commit_id } if client_commit_id == &commit_id
+        ));
+        assert!(matches!(
+            &read.deliveries[1],
+            CommitDelivery::Unknown { client_commit_id } if client_commit_id.as_str() == "never-known"
+        ));
+
+        // A bad statement rolls the whole read back and releases the connection.
+        assert!(reader
+            .query_snapshot("SELECT * FROM does_not_exist", &[], &[])
+            .is_err());
+        assert_eq!(
+            reader.local_revision().expect("revision after rollback"),
+            revision
+        );
+        // The read-only guard refuses a write on any statement.
+        assert!(reader
+            .query_snapshot("DELETE FROM tasks", &[], &[])
+            .is_err());
+
+        // A corrupt revision marker fails typed, not as an invented zero.
+        client
+            .conn
+            .execute(
+                "UPDATE _syncular_meta SET value = '+1' WHERE key = 'localRevision'",
+                [],
+            )
+            .expect("corrupt revision");
+        let failure = reader.local_revision().expect_err("corrupt revision fails");
+        assert_eq!(failure.code, Some("sync.local_corrupt"));
+
+        drop(reader);
+        drop(client);
+        std::fs::remove_file(path).expect("remove temp database");
+    }
+
+    #[test]
+    fn snapshot_delivery_is_the_persisted_journal_view_without_retained_rows() {
+        let path =
+            std::env::temp_dir().join(format!("syncular-read-sidecar-{}.db", uuid::Uuid::new_v4()));
+        let schema = json!({
+            "version": 1,
+            "tables": [{
+                "name": "tasks",
+                "primaryKey": "id",
+                "columns": [
+                    { "name": "id", "type": "string", "nullable": false },
+                    { "name": "project_id", "type": "string", "nullable": false }
+                ],
+                "scopes": [{ "pattern": "project:{project_id}" }]
+            }]
+        });
+        let mut client = SyncClient::open_path_with_identity(
+            Some("sidecar-delivery".to_owned()),
+            &schema,
+            ClientLimits::default(),
+            path.to_str().expect("UTF-8 temp path"),
+        )
+        .expect("open owner");
+        client.begin_observation("test_delivery").expect("observe");
+        let operations = [OutboxOp {
+            upsert: true,
+            table: "tasks".to_owned(),
+            row_id: "t1".to_owned(),
+            base_version: Some(1),
+            values: Some(Map::from_iter([
+                ("id".into(), json!("t1")),
+                ("project_id".into(), json!("p1")),
+            ])),
+        }];
+        client
+            .persist_commit_outcome(
+                "conflict-commit",
+                CommitOutcomeStatus::Conflict,
+                &[CommitOperationOutcome::Conflict {
+                    conflict: ConflictRecord {
+                        client_commit_id: "conflict-commit".to_owned(),
+                        op_index: 0,
+                        table: "tasks".to_owned(),
+                        row_id: "t1".to_owned(),
+                        code: "sync.version_conflict".to_owned(),
+                        message: "stale base version".to_owned(),
+                        server_version: 2,
+                        server_row: Map::from_iter([("id".to_owned(), json!("t1"))]),
+                        conflict_columns: vec!["project_id".to_owned()],
+                        operation: None,
+                    },
+                }],
+                Some(&operations),
+            )
+            .expect("persist conflict");
+        client
+            .persist_commit_outcome(
+                "rejected-commit",
+                CommitOutcomeStatus::Rejected,
+                &[CommitOperationOutcome::Error {
+                    rejection: RejectionRecord {
+                        client_commit_id: "rejected-commit".to_owned(),
+                        op_index: 0,
+                        code: "sync.unknown_table".to_owned(),
+                        message: "unknown table".to_owned(),
+                        retryable: false,
+                        details: None,
+                        operation: None,
+                    },
+                }],
+                Some(&operations),
+            )
+            .expect("persist rejection");
+        client
+            .finish_observation(
+                "test_delivery",
+                ChangeAccumulator {
+                    conflicts: true,
+                    outcomes: true,
+                    ..ChangeAccumulator::default()
+                },
+            )
+            .expect("commit outcomes");
+
+        let mut reader = FileQuerySnapshotReader::new(path.to_string_lossy());
+        match reader.commit_delivery("conflict-commit").expect("conflict") {
+            CommitDelivery::Known { outcome, .. } => {
+                assert_eq!(outcome.status, CommitOutcomeStatus::Conflict);
+                assert!(matches!(
+                    outcome.results.as_slice(),
+                    [CommitOperationOutcome::Conflict { conflict }]
+                        if conflict.code == "sync.version_conflict"
+                            && conflict.server_version == 2
+                ));
+                assert_eq!(outcome.operations.as_ref().map(Vec::len), Some(1));
+                assert!(
+                    outcome.retained_rows.is_none(),
+                    "the sidecar reports the persisted view, not owner-derived retained rows"
+                );
+            }
+            other => panic!("expected a known conflict: {other:?}"),
+        }
+        match reader
+            .commit_delivery("rejected-commit")
+            .expect("rejection")
+        {
+            CommitDelivery::Known { outcome, .. } => {
+                assert_eq!(outcome.status, CommitOutcomeStatus::Rejected);
+                assert!(matches!(
+                    outcome.results.as_slice(),
+                    [CommitOperationOutcome::Error { rejection }]
+                        if rejection.code == "sync.unknown_table"
+                ));
+                assert_eq!(outcome.operations.as_ref().map(Vec::len), Some(1));
+                assert!(outcome.retained_rows.is_none());
+            }
+            other => panic!("expected a known rejection: {other:?}"),
+        }
+        drop(reader);
+        drop(client);
+        std::fs::remove_file(path).expect("remove temp database");
+    }
+
+    #[test]
+    fn snapshot_read_isolates_a_concurrent_writer_commit() {
+        use std::sync::mpsc::channel;
+        let path = std::env::temp_dir().join(format!(
+            "syncular-read-concurrent-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let schema = json!({
+            "version": 1,
+            "tables": [{
+                "name": "tasks",
+                "primaryKey": "id",
+                "columns": [
+                    { "name": "id", "type": "string", "nullable": false },
+                    { "name": "project_id", "type": "string", "nullable": false }
+                ],
+                "scopes": [{ "pattern": "project:{project_id}" }]
+            }]
+        });
+        let mut client = SyncClient::open_path_with_identity(
+            Some("sidecar-concurrent".to_owned()),
+            &schema,
+            ClientLimits::default(),
+            path.to_str().expect("UTF-8 temp path"),
+        )
+        .expect("open owner");
+        client
+            .mutate(vec![Mutation::Upsert {
+                table: "tasks".to_owned(),
+                values: Map::from_iter([
+                    ("id".to_owned(), Value::from("t1")),
+                    ("project_id".to_owned(), Value::from("one")),
+                ]),
+                base_version: None,
+            }])
+            .expect("seed row");
+        let revision_before = client.local_revision().to_string();
+
+        // A writer on a second connection commits while the reader is between
+        // statements; the hook rendezvous is a barrier, not a sleep.
+        let (ready_tx, ready_rx) = channel::<()>();
+        let (done_tx, done_rx) = channel::<()>();
+        let writer_path = path.to_string_lossy().into_owned();
+        let writer_schema = schema.clone();
+        let writer = std::thread::spawn(move || {
+            let mut writer = SyncClient::open_path_with_identity(
+                Some("sidecar-concurrent".to_owned()),
+                &writer_schema,
+                ClientLimits::default(),
+                &writer_path,
+            )
+            .expect("open writer");
+            ready_rx.recv().expect("reader signalled");
+            writer
+                .mutate(vec![Mutation::Upsert {
+                    table: "tasks".to_owned(),
+                    values: Map::from_iter([
+                        ("id".to_owned(), Value::from("t2")),
+                        ("project_id".to_owned(), Value::from("one")),
+                    ]),
+                    base_version: None,
+                }])
+                .expect("writer commit");
+            let _ = done_tx.send(());
+        });
+        let mut reader = FileQuerySnapshotReader::new(path.to_string_lossy());
+        SNAPSHOT_READ_HOOK.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                ready_tx.send(()).expect("signal writer");
+                done_rx.recv().expect("writer finished");
+            }));
+        });
+        let read = reader
+            .snapshot_read(&SnapshotReadRequest {
+                statements: vec![
+                    SnapshotStatement {
+                        sql: "SELECT count(*) AS n FROM tasks",
+                        params: &[],
+                    },
+                    SnapshotStatement {
+                        sql: "SELECT count(*) AS n FROM tasks",
+                        params: &[],
+                    },
+                ],
+                coverage: &[],
+                subscriptions: Vec::new(),
+                commit_ids: Vec::new(),
+            })
+            .expect("snapshot read");
+        assert_eq!(
+            read.queries[0][0]["n"], 1,
+            "first statement sees the pre-commit row"
+        );
+        assert_eq!(
+            read.queries[1][0]["n"], 1,
+            "a later statement keeps the one read snapshot"
+        );
+        assert_eq!(
+            read.revision, revision_before,
+            "the read reports the snapshot revision, not the writer's"
+        );
+        writer.join().expect("join writer");
+
+        assert_ne!(
+            reader.local_revision().expect("revision after commit"),
+            revision_before,
+            "the next read observes the committed revision"
+        );
+        let after = reader
+            .query_snapshot("SELECT count(*) AS n FROM tasks", &[], &[])
+            .expect("count after commit");
+        assert_eq!(
+            after.rows[0]["n"], 2,
+            "the committed row is visible afterwards"
+        );
+
+        drop(reader);
+        drop(client);
+        std::fs::remove_file(path).expect("remove temp database");
+    }
+
+    #[test]
+    fn snapshot_read_rejects_every_non_canonical_revision() {
+        let path = std::env::temp_dir().join(format!(
+            "syncular-read-revision-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let schema = json!({
+            "version": 1,
+            "tables": [{
+                "name": "tasks",
+                "primaryKey": "id",
+                "columns": [
+                    { "name": "id", "type": "string", "nullable": false },
+                    { "name": "project_id", "type": "string", "nullable": false }
+                ],
+                "scopes": [{ "pattern": "project:{project_id}" }]
+            }]
+        });
+        let client = SyncClient::open_path_with_identity(
+            Some("sidecar-revision".to_owned()),
+            &schema,
+            ClientLimits::default(),
+            path.to_str().expect("UTF-8 temp path"),
+        )
+        .expect("open owner");
+        let mut reader = FileQuerySnapshotReader::new(path.to_string_lossy());
+        for bad in [
+            "+1",
+            "01",
+            "-1",
+            " 1",
+            "1 ",
+            "18446744073709551616",
+            "1.0",
+            "abc",
+            "",
+        ] {
+            client
+                .conn
+                .execute(
+                    "UPDATE _syncular_meta SET value = ?1 WHERE key = 'localRevision'",
+                    rusqlite::params![bad],
+                )
+                .expect("corrupt revision");
+            let failure = reader.local_revision().expect_err("corrupt marker fails");
+            assert_eq!(failure.code, Some("sync.local_corrupt"), "{bad:?}");
+        }
+        for value in ["X'31'", "CAST(X'FF' AS TEXT)"] {
+            client
+                .conn
+                .execute_batch(&format!(
+                    "UPDATE _syncular_meta SET value={value} WHERE key='localRevision'"
+                ))
+                .expect("corrupt stored revision type");
+            assert_eq!(
+                reader.local_revision().expect_err("invalid SQL field").code,
+                Some("sync.local_corrupt")
+            );
+        }
+        // The absent marker is the legacy zero, not corruption.
+        client
+            .conn
+            .execute("DELETE FROM _syncular_meta WHERE key = 'localRevision'", [])
+            .expect("delete marker");
+        assert_eq!(reader.local_revision().expect("legacy zero"), "0");
+
+        drop(reader);
+        drop(client);
+        std::fs::remove_file(path).expect("remove temp database");
+    }
+
+    #[test]
+    fn snapshot_read_rejects_corrupt_subscription_state() {
+        let path = std::env::temp_dir().join(format!(
+            "syncular-read-substate-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let schema = json!({
+            "version": 1,
+            "tables": [{
+                "name": "tasks",
+                "primaryKey": "id",
+                "columns": [
+                    { "name": "id", "type": "string", "nullable": false },
+                    { "name": "project_id", "type": "string", "nullable": false }
+                ],
+                "scopes": [{ "pattern": "project:{project_id}" }]
+            }]
+        });
+        let mut client = SyncClient::open_path_with_identity(
+            Some("sidecar-substate".to_owned()),
+            &schema,
+            ClientLimits::default(),
+            path.to_str().expect("UTF-8 temp path"),
+        )
+        .expect("open owner");
+        client
+            .subscribe(
+                "s1".into(),
+                "tasks".into(),
+                vec![("project_id".into(), vec!["one".into()])],
+                None,
+            )
+            .expect("subscribe");
+        let mut reader = FileQuerySnapshotReader::new(path.to_string_lossy());
+        for bad in [
+            "not json".to_owned(),
+            "{}".to_owned(),
+            json!({ "status": "bogus", "cursor": 0 }).to_string(),
+            json!({ "status": "active", "cursor": "x" }).to_string(),
+            json!({ "status": "active", "cursor": 0, "bootstrapState": 7 }).to_string(),
+            json!({ "status": "active", "cursor": 0, "reasonCode": 7 }).to_string(),
+        ] {
+            client
+                .conn
+                .execute(
+                    "UPDATE _syncular_subscriptions SET state_json = ?1 WHERE id = 's1'",
+                    rusqlite::params![bad],
+                )
+                .expect("corrupt subscription state");
+            let failure = reader
+                .subscription_catchup("s1")
+                .expect_err("corrupt state fails");
+            assert_eq!(failure.code, Some("sync.local_corrupt"), "{bad}");
+        }
+
+        for assignment in [
+            "tbl=X'7461736b73'",
+            "state_json=X'7b7d'",
+            "state_json=CAST(X'FF' AS TEXT)",
+        ] {
+            client.conn.execute_batch(&format!(
+                "UPDATE _syncular_subscriptions SET tbl='tasks',state_json='{{\"status\":\"active\",\"cursor\":0}}'; UPDATE _syncular_subscriptions SET {assignment} WHERE id='s1'"
+            )).expect("corrupt stored subscription type");
+            assert_eq!(
+                reader
+                    .subscription_catchup("s1")
+                    .expect_err("invalid SQL field")
+                    .code,
+                Some("sync.local_corrupt")
+            );
+        }
+
+        drop(reader);
+        drop(client);
+        std::fs::remove_file(path).expect("remove temp database");
+    }
+
+    #[test]
+    fn snapshot_read_rolls_back_a_later_invalid_statement_and_guards_every_write() {
+        let path = std::env::temp_dir().join(format!(
+            "syncular-read-rollback-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let schema = json!({
+            "version": 1,
+            "tables": [{
+                "name": "tasks",
+                "primaryKey": "id",
+                "columns": [
+                    { "name": "id", "type": "string", "nullable": false },
+                    { "name": "project_id", "type": "string", "nullable": false }
+                ],
+                "scopes": [{ "pattern": "project:{project_id}" }]
+            }]
+        });
+        let mut client = SyncClient::open_path_with_identity(
+            Some("sidecar-rollback".to_owned()),
+            &schema,
+            ClientLimits::default(),
+            path.to_str().expect("UTF-8 temp path"),
+        )
+        .expect("open owner");
+        let commit_id = client
+            .mutate(vec![Mutation::Upsert {
+                table: "tasks".to_owned(),
+                values: Map::from_iter([
+                    ("id".to_owned(), Value::from("t1")),
+                    ("project_id".to_owned(), Value::from("one")),
+                ]),
+                base_version: None,
+            }])
+            .expect("seed row");
+        let mut reader = FileQuerySnapshotReader::new(path.to_string_lossy());
+        let revision = reader.local_revision().expect("revision");
+
+        // The second statement fails: the whole read rolls back and the
+        // connection releases, so the same reader still works afterwards.
+        let failure = reader
+            .snapshot_read(&SnapshotReadRequest {
+                statements: vec![
+                    SnapshotStatement {
+                        sql: "SELECT id FROM tasks",
+                        params: &[],
+                    },
+                    SnapshotStatement {
+                        sql: "SELECT * FROM does_not_exist",
+                        params: &[],
+                    },
+                ],
+                coverage: &[],
+                subscriptions: Vec::new(),
+                commit_ids: vec![commit_id.clone()],
+            })
+            .expect_err("second statement fails");
+        assert_eq!(failure.code, None);
+        assert_eq!(
+            reader.local_revision().expect("revision after rollback"),
+            revision,
+            "a rolled-back read consumes no revision"
+        );
+        assert!(
+            !matches!(
+                reader
+                    .commit_delivery(&commit_id)
+                    .expect("delivery after rollback"),
+                CommitDelivery::Unknown { .. }
+            ),
+            "the same reader serves the next read after releasing the connection"
+        );
+
+        // The read-only guard rejects a write in the first position too.
+        let guard = reader
+            .snapshot_read(&SnapshotReadRequest {
+                statements: vec![SnapshotStatement {
+                    sql: "DELETE FROM tasks",
+                    params: &[],
+                }],
+                coverage: &[],
+                subscriptions: Vec::new(),
+                commit_ids: Vec::new(),
+            })
+            .expect_err("write guard");
+        assert!(guard.message.contains("read-only"), "{}", guard.message);
 
         drop(reader);
         drop(client);
@@ -7506,6 +8140,22 @@ struct StoredCommitOutcomeRow {
     replacement_client_commit_id: Option<String>,
 }
 
+impl StoredCommitOutcomeRow {
+    fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            sequence: row.get(0)?,
+            client_commit_id: row.get(1)?,
+            status: row.get(2)?,
+            recorded_at_ms: row.get(3)?,
+            results_json: row.get(4)?,
+            operations_json: row.get(5)?,
+            resolution: row.get(6)?,
+            resolved_at_ms: row.get(7)?,
+            replacement_client_commit_id: row.get(8)?,
+        })
+    }
+}
+
 /// Section outcome distinguishing the §5.6 subscription-local fail-closed
 /// path from a round-aborting failure (§1.4 rule 5).
 enum SectionError {
@@ -8059,27 +8709,97 @@ fn persisted_window_state(
     Ok(WindowState { units, pending })
 }
 
-fn snapshot_connection(
+/// One read-only statement in a §7.5 snapshot read.
+#[derive(Debug, Clone, Copy)]
+pub struct SnapshotStatement<'a> {
+    pub sql: &'a str,
+    pub params: &'a [Value],
+}
+
+/// A §7.5 atomic read request: read-only statements, window coverage,
+/// subscription catch-up states, and commit deliveries, all resolved from one
+/// SQLite read transaction and one revision.
+#[derive(Debug, Clone, Default)]
+pub struct SnapshotReadRequest<'a> {
+    pub statements: Vec<SnapshotStatement<'a>>,
+    pub coverage: &'a [WindowCoverage],
+    pub subscriptions: Vec<String>,
+    pub commit_ids: Vec<String>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only rendezvous that runs between the statements of one snapshot
+    /// read. A test uses it to commit on another connection mid-read and prove
+    /// the read transaction's snapshot and revision stay stable.
+    static SNAPSHOT_READ_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+fn run_snapshot_read_hook() {
+    SNAPSHOT_READ_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+/// §7.5: resolve a request over one SQLite read transaction. The revision,
+/// every statement's rows, coverage, catch-up states, and deliveries are
+/// captured under one `SAVEPOINT`; any statement's failure rolls the whole
+/// read back and releases the connection.
+fn snapshot_read_connection(
     conn: &Connection,
-    sql: &str,
-    params: &[Value],
-    coverage: &[WindowCoverage],
-) -> Result<QuerySnapshot, QueryReadFailure> {
+    request: &SnapshotReadRequest<'_>,
+) -> Result<SnapshotRead, QueryReadFailure> {
     conn.execute_batch("SAVEPOINT syncular_snapshot_read")?;
-    let result: Result<QuerySnapshot, QueryReadFailure> = (|| {
-        let revision = conn
+    let corrupt = |message: &str| QueryReadFailure {
+        code: Some("sync.local_corrupt"),
+        sqlite_code: None,
+        sqlite_message: None,
+        rollback_failure: None,
+        message: message.to_owned(),
+    };
+    let stored_failure = |error: rusqlite::Error, message: &str| match error {
+        rusqlite::Error::Utf8Error(..)
+        | rusqlite::Error::InvalidColumnType(..)
+        | rusqlite::Error::FromSqlConversionFailure(..)
+        | rusqlite::Error::IntegralValueOutOfRange(..) => corrupt(message),
+        _ => QueryReadFailure::from(error),
+    };
+    let result: Result<SnapshotRead, QueryReadFailure> = (|| {
+        // The durable revision as a canonical decimal `u64`; a missing marker
+        // is the legacy zero, and any other non-canonical value is corrupt.
+        let revision: Option<String> = conn
             .query_row(
                 "SELECT value FROM _syncular_meta WHERE key = ?1",
                 rusqlite::params![LOCAL_REVISION_KEY],
-                |row| row.get::<_, String>(0),
+                |row| row.get(0),
             )
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(0);
-        let rows = query_connection(conn, sql, params)?;
+            .optional()
+            .map_err(|error| stored_failure(error, "persisted local revision is invalid"))?;
+        let revision = match revision {
+            None => "0".to_owned(),
+            Some(value)
+                if value == "0"
+                    || (matches!(value.as_bytes().first(), Some(b'1'..=b'9'))
+                        && value.bytes().all(|b| b.is_ascii_digit())
+                        && value.parse::<u64>().is_ok()) =>
+            {
+                value
+            }
+            Some(_) => return Err(corrupt("persisted local revision is invalid")),
+        };
+        let mut queries = Vec::with_capacity(request.statements.len());
+        for statement in &request.statements {
+            queries.push(query_connection(conn, statement.sql, statement.params)?);
+            #[cfg(test)]
+            run_snapshot_read_hook();
+        }
         let mut pending = Vec::new();
         let mut missing = Vec::new();
-        for requested in coverage {
+        for requested in request.coverage {
             let base_key = window_base_key(&requested.base);
             let state = persisted_window_state(conn, &requested.base)?;
             for unit in BTreeSet::from_iter(requested.units.iter().cloned()) {
@@ -8094,20 +8814,118 @@ fn snapshot_connection(
                 }
             }
         }
-        Ok(QuerySnapshot {
-            revision: revision.to_string(),
-            rows,
+        let mut subscriptions = Vec::with_capacity(request.subscriptions.len());
+        for id in &request.subscriptions {
+            let row: Option<(String, String)> = conn
+                .query_row(
+                    "SELECT tbl, state_json FROM _syncular_subscriptions WHERE id = ?1",
+                    rusqlite::params![id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(|error| {
+                    stored_failure(error, "persisted subscription state is invalid")
+                })?;
+            let Some((table, raw)) = row else {
+                subscriptions.push(SubscriptionCatchup::Unknown { id: id.clone() });
+                continue;
+            };
+            // Every persisted field is required to be well typed; a corrupt
+            // record fails typed instead of inventing a state.
+            let state: Value = serde_json::from_str(&raw)
+                .map_err(|_| corrupt("persisted subscription state is invalid"))?;
+            let status = match state.get("status").and_then(Value::as_str) {
+                Some(value @ ("active" | "revoked" | "failed")) => value,
+                _ => return Err(corrupt("persisted subscription state is invalid")),
+            };
+            let Some(cursor) = state.get("cursor").and_then(Value::as_i64) else {
+                return Err(corrupt("persisted subscription state is invalid"));
+            };
+            if cursor.unsigned_abs() > MAX_JS_SAFE_INTEGER {
+                return Err(corrupt("persisted subscription state is invalid"));
+            }
+            let effective_scopes = state
+                .get("effectiveScopes")
+                .filter(|value| !value.is_null());
+            if let Some(scopes) = effective_scopes {
+                json_to_scope_map(scopes)
+                    .map_err(|_| corrupt("persisted subscription state is invalid"))?;
+            }
+            let has_resume_token = match state.get("bootstrapState") {
+                None | Some(Value::Null) => false,
+                Some(Value::String(_)) => true,
+                Some(_) => return Err(corrupt("persisted subscription state is invalid")),
+            };
+            // A present reasonCode must be a string; a non-string value is a
+            // corrupt record, never silently dropped.
+            let reason_code = match state.get("reasonCode") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(value)) => Some(value.clone()),
+                Some(_) => return Err(corrupt("persisted subscription state is invalid")),
+            };
+            let active = status == "active";
+            subscriptions.push(SubscriptionCatchup::Known {
+                id: id.clone(),
+                table,
+                status: status.to_owned(),
+                cursor,
+                has_resume_token,
+                bootstrap_complete: active && cursor >= 0 && !has_resume_token,
+                known_pending_pages: active && (has_resume_token || cursor < 0),
+                effective_scopes: effective_scopes.cloned(),
+                reason_code,
+            });
+        }
+        let mut deliveries = Vec::with_capacity(request.commit_ids.len());
+        for id in &request.commit_ids {
+            let pending: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM _syncular_outbox WHERE commit_id = ?1)",
+                rusqlite::params![id],
+                |row| row.get(0),
+            )?;
+            if pending {
+                deliveries.push(CommitDelivery::Pending {
+                    client_commit_id: id.clone(),
+                });
+                continue;
+            }
+            let row = conn
+                .query_row(
+                    "SELECT seq, client_commit_id, status, recorded_at_ms, results_json, operations_json,
+                            resolution, resolved_at_ms, replacement_client_commit_id
+                       FROM _syncular_commit_outcomes WHERE client_commit_id = ?1",
+                    rusqlite::params![id],
+                    StoredCommitOutcomeRow::from_row,
+                )
+                .optional()
+                .map_err(|error| stored_failure(error, "persisted commit outcome is invalid"))?;
+            deliveries.push(match row {
+                Some(row) => CommitDelivery::Known {
+                    client_commit_id: id.clone(),
+                    outcome: SyncClient::outcome_from_row(row)
+                        .map_err(|_| corrupt("persisted commit outcome is invalid"))?,
+                },
+                None => CommitDelivery::Unknown {
+                    client_commit_id: id.clone(),
+                },
+            });
+        }
+        Ok(SnapshotRead {
+            revision,
+            queries,
             coverage: CoverageSnapshot {
                 complete: pending.is_empty() && missing.is_empty(),
                 pending,
                 missing,
             },
+            subscriptions,
+            deliveries,
         })
     })();
     match result {
-        Ok(snapshot) => {
+        Ok(read) => {
             conn.execute_batch("RELEASE syncular_snapshot_read")?;
-            Ok(snapshot)
+            Ok(read)
         }
         Err(mut error) => {
             if let Err(rollback) = conn
@@ -8118,6 +8936,32 @@ fn snapshot_connection(
             Err(error)
         }
     }
+}
+
+fn snapshot_connection(
+    conn: &Connection,
+    sql: &str,
+    params: &[Value],
+    coverage: &[WindowCoverage],
+) -> Result<QuerySnapshot, QueryReadFailure> {
+    let read = snapshot_read_connection(
+        conn,
+        &SnapshotReadRequest {
+            statements: vec![SnapshotStatement { sql, params }],
+            coverage,
+            subscriptions: Vec::new(),
+            commit_ids: Vec::new(),
+        },
+    )?;
+    Ok(QuerySnapshot {
+        revision: read.revision,
+        rows: read
+            .queries
+            .into_iter()
+            .next()
+            .expect("single-query snapshot returns one result"),
+        coverage: read.coverage,
+    })
 }
 
 /// A long-lived read-only SQLite sidecar for latency-critical native views.
@@ -8138,20 +8982,67 @@ impl FileQuerySnapshotReader {
         }
     }
 
-    fn connection(&mut self) -> Result<&Connection, String> {
+    fn connection(&mut self) -> Result<&Connection, QueryReadFailure> {
         if self.conn.is_none() {
             let conn = Connection::open_with_flags(
                 &self.path,
                 OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
             )
-            .map_err(|error| format!("open read sidecar {:?}: {error}", self.path))?;
+            .map_err(QueryReadFailure::from)?;
             conn.busy_timeout(std::time::Duration::from_millis(250))
-                .map_err(|error| error.to_string())?;
+                .map_err(QueryReadFailure::from)?;
             self.conn = Some(conn);
         }
         self.conn
             .as_ref()
-            .ok_or_else(|| "read sidecar connection missing".to_owned())
+            .ok_or_else(|| QueryReadFailure::from("read sidecar connection missing".to_owned()))
+    }
+
+    /// One atomic read over the shared primitive: every statement, coverage,
+    /// catch-up, and delivery under one `SAVEPOINT` and one revision.
+    pub fn snapshot_read(
+        &mut self,
+        request: &SnapshotReadRequest<'_>,
+    ) -> Result<SnapshotRead, QueryReadFailure> {
+        snapshot_read_connection(self.connection()?, request)
+    }
+
+    /// The current durable local revision. A host can skip a read when it is
+    /// unchanged; a corrupt or unreadable marker fails typed.
+    pub fn local_revision(&mut self) -> Result<String, QueryReadFailure> {
+        Ok(self
+            .snapshot_read(&SnapshotReadRequest::default())?
+            .revision)
+    }
+
+    /// One subscription's persisted catch-up state (see the §7.5 contract).
+    pub fn subscription_catchup(
+        &mut self,
+        id: &str,
+    ) -> Result<SubscriptionCatchup, QueryReadFailure> {
+        let read = self.snapshot_read(&SnapshotReadRequest {
+            subscriptions: vec![id.to_owned()],
+            ..Default::default()
+        })?;
+        Ok(read
+            .subscriptions
+            .into_iter()
+            .next()
+            .expect("one requested catch-up"))
+    }
+
+    /// One client commit's delivery status: pending, its retained outcome, or
+    /// an explicit unknown (never held, or pruned by retention).
+    pub fn commit_delivery(&mut self, id: &str) -> Result<CommitDelivery, QueryReadFailure> {
+        let read = self.snapshot_read(&SnapshotReadRequest {
+            commit_ids: vec![id.to_owned()],
+            ..Default::default()
+        })?;
+        Ok(read
+            .deliveries
+            .into_iter()
+            .next()
+            .expect("one requested delivery"))
     }
 
     /// Hosts report an owned failure, and the first success after it, to the
@@ -9098,6 +9989,23 @@ impl SyncClient {
         self.get_meta(LOCAL_REVISION_KEY)
             .and_then(|value| value.parse().ok())
             .unwrap_or(0)
+    }
+
+    /// §7.5: resolve a snapshot read on the mutable owner connection through
+    /// the same primitive the read-only sidecar uses, so the command surface
+    /// and the file sidecar return one revision, rows, coverage, catch-up, and
+    /// delivery shape. The structured [`QueryReadFailure`] is preserved; an
+    /// `owner` records its failure (and its next success) in diagnostics.
+    pub fn snapshot_read(
+        &mut self,
+        request: &SnapshotReadRequest<'_>,
+        owner: Option<QueryOwner<'_>>,
+    ) -> Result<SnapshotRead, QueryReadFailure> {
+        let result = snapshot_read_connection(&self.conn, request);
+        if let Some(owner) = owner {
+            self.record_query_read(owner, result.as_ref().err());
+        }
+        result
     }
 
     #[must_use]
@@ -10776,20 +11684,117 @@ impl SyncClient {
             resolved_at_ms,
             replacement_client_commit_id,
         } = row;
+        if sequence.unsigned_abs() > MAX_JS_SAFE_INTEGER
+            || recorded_at_ms.unsigned_abs() > MAX_JS_SAFE_INTEGER
+            || resolved_at_ms.is_some_and(|value| value.unsigned_abs() > MAX_JS_SAFE_INTEGER)
+        {
+            return Err("sync.local_corrupt: persisted commit outcome is invalid".to_owned());
+        }
+        fn valid_row(value: &Value) -> bool {
+            value.as_object().is_some_and(|row| {
+                row.values().all(|cell| {
+                    cell.is_null()
+                        || cell.is_string()
+                        || cell.is_boolean()
+                        || cell.is_number()
+                        || cell.as_object().is_some_and(|object| {
+                            object.len() == 1
+                                && object
+                                    .get("$bytes")
+                                    .and_then(Value::as_str)
+                                    .is_some_and(|hex| {
+                                        hex.len() % 2 == 0
+                                            && hex.bytes().all(|b| b.is_ascii_hexdigit())
+                                    })
+                        })
+                })
+            })
+        }
+        fn valid_operation(value: &Value) -> bool {
+            value.get("table").is_some_and(Value::is_string)
+                && value.get("rowId").is_some_and(Value::is_string)
+                && value.get("baseVersion").is_none_or(|v| {
+                    v.as_i64()
+                        .is_some_and(|n| n.unsigned_abs() <= MAX_JS_SAFE_INTEGER)
+                })
+                && match value.get("op").and_then(Value::as_str) {
+                    Some("upsert") => value.get("values").is_some_and(valid_row),
+                    Some("delete") => value.get("values").is_none(),
+                    _ => false,
+                }
+        }
+        let invalid = || "sync.local_corrupt: persisted commit outcome is invalid".to_owned();
+        let stored: Vec<Value> = serde_json::from_str(&results_json).map_err(|_| invalid())?;
+        for result in &stored {
+            let nested = match result.get("status").and_then(Value::as_str) {
+                Some("conflict") => result.get("conflict"),
+                Some("error") => result.get("rejection"),
+                _ => None,
+            };
+            if nested
+                .and_then(|record| record.get("operation"))
+                .is_some_and(|op| !valid_operation(op))
+                || (result.get("status").and_then(Value::as_str) == Some("conflict")
+                    && nested
+                        .and_then(|record| record.get("serverRow"))
+                        .is_some_and(|row| !valid_row(row)))
+            {
+                return Err(invalid());
+            }
+        }
+        let results: Vec<CommitOperationOutcome> =
+            serde_json::from_value(Value::Array(stored)).map_err(|_| invalid())?;
+        let has_conflict = results
+            .iter()
+            .any(|result| matches!(result, CommitOperationOutcome::Conflict { .. }));
+        let has_error = results
+            .iter()
+            .any(|result| matches!(result, CommitOperationOutcome::Error { .. }));
+        let status = Self::parse_outcome_status(&status).map_err(|_| invalid())?;
+        let redacted = results.is_empty() && operations_json.is_none();
+        if match status {
+            CommitOutcomeStatus::Applied | CommitOutcomeStatus::Cached => has_conflict || has_error,
+            CommitOutcomeStatus::Conflict => !(has_conflict || redacted),
+            CommitOutcomeStatus::Rejected => has_conflict || !(has_error || redacted),
+        } {
+            return Err(invalid());
+        }
+        let operations: Option<Vec<CommitOperation>> = operations_json
+            .map(|raw| {
+                let stored: Vec<Value> = serde_json::from_str(&raw).map_err(|_| invalid())?;
+                if !stored.iter().all(valid_operation) {
+                    return Err(invalid());
+                }
+                serde_json::from_value(Value::Array(stored)).map_err(|_| invalid())
+            })
+            .transpose()?;
+        for result in &results {
+            match result {
+                CommitOperationOutcome::Conflict { conflict }
+                    if conflict.server_version.unsigned_abs() > MAX_JS_SAFE_INTEGER =>
+                {
+                    return Err("sync.local_corrupt: persisted commit outcome is invalid".to_owned())
+                }
+                CommitOperationOutcome::Error { rejection } => {
+                    if let Some(details) = &rejection.details {
+                        let encoded = serde_json::to_string(details).map_err(|_| {
+                            "sync.local_corrupt: persisted commit outcome is invalid".to_owned()
+                        })?;
+                        RejectionDetails::parse(&encoded).map_err(|_| {
+                            "sync.local_corrupt: persisted commit outcome is invalid".to_owned()
+                        })?;
+                    }
+                }
+                _ => {}
+            }
+        }
         Ok(CommitOutcome {
             sequence,
             client_commit_id,
-            status: Self::parse_outcome_status(&status)?,
+            status,
             recorded_at_ms,
-            results: serde_json::from_str(&results_json)
-                .map_err(|error| format!("invalid persisted commit outcome results: {error}"))?,
-            operations: operations_json
-                .map(|value| {
-                    serde_json::from_str(&value).map_err(|error| {
-                        format!("invalid persisted commit outcome operations: {error}")
-                    })
-                })
-                .transpose()?,
+            results,
+            operations,
             retained_rows: None,
             resolution: Self::parse_outcome_resolution(&resolution)?,
             resolved_at_ms,
@@ -14441,6 +15446,11 @@ impl SyncClient {
                     let sub = &mut self.subs[sub_index];
                     sub.cursor = -1;
                     sub.bootstrap_state = None;
+                    sub.reason_code = Some(if reason_code.is_empty() {
+                        "sync.cursor_expired".to_owned()
+                    } else {
+                        reason_code.to_owned()
+                    });
                     report.resets.push(id.to_owned());
                     self.persist_sub(&self.subs[sub_index].clone())
                         .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
@@ -14592,6 +15602,9 @@ impl SyncClient {
             let sub = &mut self.subs[sub_index];
             sub.cursor = cursor;
             sub.bootstrap_state = bootstrap_state;
+            // §4.6: a completed (or continuing) active end clears the reset /
+            // revocation reason, matching the TS core's active-state persist.
+            sub.reason_code = None;
             sub.synced_once = true;
             self.persist_sub(&self.subs[sub_index])?;
             self.finish_observation("syncular_sub_end", batch)
