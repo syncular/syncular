@@ -16,6 +16,22 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-10-07',
+    title:
+      'Authoring rejects unrepresentable values and recovers legacy intent',
+    body: 'The clients reject wrong column types and malformed byte envelopes before recording a mutation. Browser authoring also refuses non-finite floats before JSON serialization can change them. Startup and reset recover codec-invalid queued values with a durable sync.outbox_incompatible rejection, preserving valid later commits.',
+    links: [
+      {
+        href: '/platform-web/#authoring-value-validation',
+        label: 'Authoring value validation',
+      },
+      {
+        href: '/platform-rust/#structured-authoring-failures',
+        label: 'Native authoring failures',
+      },
+    ],
+  },
+  {
     date: '2026-10-06',
     title: 'D1 write cost: in-place client records and unchanged scope index',
     body: 'D1ServerStorage updates a client record in place instead of deleting and reinserting it, and a row write whose scope map is unchanged leaves the scope-index entries alone. Both liveness timestamps keep their per-round cadence. A logical same-value commit still applies in full: it advances server_version, records the change, and stores the submitted payload.',

@@ -35,6 +35,10 @@ import type {
 // ---------------------------------------------------------------------------
 
 export function hexToBytes(hex: string): Uint8Array {
+  if (!/^(?:[0-9a-fA-F]{2})*$/.test(hex))
+    throw new Error(
+      'a $bytes envelope requires an even-length hexadecimal string',
+    );
   const out = new Uint8Array(hex.length / 2);
   for (let i = 0; i < out.length; i++) {
     out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);

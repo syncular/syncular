@@ -69,6 +69,61 @@ const CALLER_VALUE_SCHEMA: DriverSchema = {
         { name: 'project_id', type: 'string', nullable: false },
         { name: 'title', type: 'string', nullable: false },
         { name: 'priority', type: 'integer', nullable: false },
+        { name: 'ratio', type: 'float', nullable: true },
+        { name: 'done', type: 'boolean', nullable: true },
+        { name: 'meta', type: 'json', nullable: true },
+        { name: 'ref', type: 'blob_ref', nullable: true },
+        { name: 'payload', type: 'bytes', nullable: true },
+        { name: 'doc', type: 'crdt', nullable: true, crdtType: 'yjs-doc' },
+      ],
+      primaryKey: 'id',
+      scopes: [{ pattern: 'project:{project_id}' }],
+    },
+  ],
+};
+
+/** §5.11 columns whose declared types the authoring boundary validates. */
+const ENCRYPTED_VALUE_SCHEMA: DriverSchema = {
+  version: 1,
+  tables: [
+    {
+      name: 'secrets',
+      columns: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'project_id', type: 'string', nullable: false },
+        {
+          name: 'note',
+          type: 'bytes',
+          nullable: false,
+          encrypted: true,
+          declaredType: 'string',
+        },
+        {
+          name: 'amount',
+          type: 'bytes',
+          nullable: true,
+          encrypted: true,
+          declaredType: 'integer',
+        },
+      ],
+      primaryKey: 'id',
+      scopes: [{ pattern: 'project:{project_id}' }],
+    },
+  ],
+};
+
+/** §7.1/§7.4.4 legacy-intent recovery fixture. */
+const LEGACY_VALUE_SCHEMA: DriverSchema = {
+  version: 1,
+  tables: [
+    {
+      name: 'tasks',
+      columns: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'project_id', type: 'string', nullable: false },
+        { name: 'title', type: 'string', nullable: false },
+        { name: 'priority', type: 'integer', nullable: false },
+        { name: 'payload', type: 'bytes', nullable: true },
       ],
       primaryKey: 'id',
       scopes: [{ pattern: 'project:{project_id}' }],
@@ -1243,17 +1298,14 @@ export const offlineScenarios: readonly Scenario[] = [
         schema: CALLER_VALUE_SCHEMA,
         allowed: P1,
       });
+      const seedValues = {
+        id: 'kept',
+        project_id: 'p1',
+        title: 'seed',
+        priority: 1,
+      };
       const seed = await client.api.mutate([
-        {
-          op: 'upsert',
-          table: 'tasks',
-          values: {
-            id: 'kept',
-            project_id: 'p1',
-            title: 'seed',
-            priority: 1,
-          },
-        },
+        { op: 'upsert', table: 'tasks', values: seedValues },
       ]);
       const before = await client.api.readRows('tasks');
       const cases: ReadonlyArray<readonly [string, DriverRow]> = [
@@ -1281,6 +1333,26 @@ export const offlineScenarios: readonly Scenario[] = [
             priority: 1,
           },
         ],
+        ['string column, number', { ...seedValues, title: 7 }],
+        ['integer column, string', { ...seedValues, priority: 'high' }],
+        ['float column, string', { ...seedValues, ratio: 'half' }],
+        ['boolean column, number 2', { ...seedValues, done: 2 }],
+        ['blob_ref column, number', { ...seedValues, ref: 7 }],
+        [
+          'bytes, non-hex envelope',
+          { ...seedValues, payload: { $bytes: 'zz' } },
+        ],
+        [
+          'bytes, odd-length envelope',
+          { ...seedValues, payload: { $bytes: 'abc' } },
+        ],
+        [
+          'bytes, plus-sign envelope',
+          { ...seedValues, payload: { $bytes: '+a' } },
+        ],
+        ['bytes, bare number', { ...seedValues, payload: 7 }],
+        ['crdt, malformed envelope', { ...seedValues, doc: { $bytes: 'zz' } }],
+        ['nullable bytes, bare number', { ...seedValues, payload: 7 }],
       ];
       for (const [label, values] of cases) {
         let code: unknown;
@@ -1327,6 +1399,366 @@ export const offlineScenarios: readonly Scenario[] = [
         await client.api.readRows('tasks'),
         before,
         'patch preserves the projection',
+      );
+
+      // One refused operation rejects the whole batch: no commit, no row.
+      let batchCode: unknown;
+      try {
+        await client.api.mutate([
+          {
+            op: 'upsert',
+            table: 'tasks',
+            values: { ...seedValues, id: 'good' },
+          },
+          {
+            op: 'upsert',
+            table: 'tasks',
+            values: { ...seedValues, id: 'bad', payload: { $bytes: 'zz' } },
+          },
+        ]);
+      } catch (error) {
+        if (error instanceof Error && 'code' in error) batchCode = error.code;
+      }
+      checkEqual(
+        batchCode,
+        'sync.invalid_request',
+        'a batch with one refused value is refused whole',
+      );
+      checkEqual(
+        await client.api.pendingCommitIds(),
+        [seed],
+        'the refused batch queues nothing',
+      );
+      checkEqual(
+        await client.api.readRows('tasks'),
+        before,
+        'the refused batch writes nothing',
+      );
+
+      // A valid write after the refusals still syncs and lands on the server.
+      const accepted = await client.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: { ...seedValues, id: 'after', title: 'after' },
+        },
+      ]);
+      const report = await syncOk(client);
+      checkEqual(
+        report.applied,
+        [seed, accepted],
+        'the valid commits after the refusals drain',
+      );
+      check(
+        (await ctx.server.readRows('tasks')).some(
+          (row) => row.values?.id === 'after',
+        ),
+        'the accepted row reaches the server',
+      );
+    },
+  },
+
+  {
+    // §7.1 + §5.11: the authoring boundary validates an encrypted column's
+    // DECLARED type before any key is resolved, in both cores, and a valid
+    // encrypted write still syncs.
+    name: 'offline/caller-values-reject-encrypted-declared-types',
+    specRefs: ['§7.1', '§5.11'],
+    server: { schema: ENCRYPTED_VALUE_SCHEMA },
+    async run(ctx) {
+      const client = await ctx.newClient({
+        actorId: 'actor',
+        clientId: 'encrypted-values',
+        schema: ENCRYPTED_VALUE_SCHEMA,
+        allowed: P1,
+        encryption: { keys: { secrets: { $bytes: '2a'.repeat(32) } } },
+      });
+      const seed = await client.api.mutate([
+        {
+          op: 'upsert',
+          table: 'secrets',
+          values: { id: 's1', project_id: 'p1', note: 'private', amount: 7 },
+        },
+      ]);
+      const before = await client.api.readRows('secrets');
+      const cases: ReadonlyArray<readonly [string, DriverRow]> = [
+        [
+          'encrypted string column, number',
+          { id: 's2', project_id: 'p1', note: 7, amount: 7 },
+        ],
+        [
+          'encrypted integer column, string',
+          { id: 's2', project_id: 'p1', note: 'x', amount: 'high' },
+        ],
+        [
+          'encrypted integer column, malformed envelope',
+          { id: 's2', project_id: 'p1', note: 'x', amount: { $bytes: 'zz' } },
+        ],
+      ];
+      for (const [label, values] of cases) {
+        let code: unknown;
+        try {
+          await client.api.mutate([{ op: 'upsert', table: 'secrets', values }]);
+        } catch (error) {
+          if (error instanceof Error && 'code' in error) code = error.code;
+        }
+        checkEqual(
+          code,
+          'sync.invalid_request',
+          `${label} reports the declared-type identity`,
+        );
+        checkEqual(
+          await client.api.pendingCommitIds(),
+          [seed],
+          `${label} queues no commit`,
+        );
+        checkEqual(
+          await client.api.readRows('secrets'),
+          before,
+          `${label} preserves the projection`,
+        );
+      }
+      const accepted = await client.api.mutate([
+        {
+          op: 'upsert',
+          table: 'secrets',
+          values: { id: 's2', project_id: 'p1', note: 'later', amount: 9 },
+        },
+      ]);
+      const report = await syncOk(client);
+      checkEqual(
+        report.applied,
+        [seed, accepted],
+        'the valid encrypted writes drain after the refusals',
+      );
+    },
+  },
+
+  {
+    // §7.1/§7.4.4: a commit an earlier version persisted with a value the
+    // current codec refuses leaves the outbox at the recreate boundary, before
+    // any sync, while a valid successor survives and drains.
+    name: 'offline/legacy-values-recover-at-recreate-before-sync',
+    specRefs: ['§7.1', '§7.4.4'],
+    requires: ['storage-fault'],
+    server: { schema: LEGACY_VALUE_SCHEMA },
+    async run(ctx) {
+      const a = await ctx.newClient({
+        actorId: 'a',
+        clientId: 'legacy-values',
+        schema: LEGACY_VALUE_SCHEMA,
+        allowed: P1,
+      });
+      // The two cores name the persisted operation column differently.
+      const nativeCore = ctx.pairing.client.name === 'rust-client(rusqlite)';
+      const outboxColumn = nativeCore ? 'ops_json' : 'operations';
+      const outboxIdColumn = nativeCore ? 'commit_id' : 'client_commit_id';
+      const runReplicaSql = async (sql: string): Promise<void> => {
+        check(
+          a.api.executeStorageSql !== undefined,
+          'the driver exposes replica SQL',
+        );
+        await a.api.executeStorageSql(sql);
+      };
+      const seedValues = {
+        id: 'legacy',
+        project_id: 'p1',
+        title: 'legacy',
+        priority: 1,
+        payload: { $bytes: '0a' },
+      };
+      // Authored while the shape was legal, then stored the way an earlier
+      // version persisted a malformed envelope.
+      const stale = await a.api.mutate([
+        { op: 'upsert', table: 'tasks', values: seedValues },
+      ]);
+      const successor = await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: { ...seedValues, id: 'kept', title: 'kept' },
+        },
+      ]);
+      await runReplicaSql(
+        `UPDATE _syncular_outbox SET ${outboxColumn}=json_set(${outboxColumn}, '$[0].values.payload', json('{"$bytes":"zz"}')) WHERE ${outboxIdColumn}='${stale}'`,
+      );
+
+      // Recreate before any sync: the malformed intent is recovered.
+      await ctx.recreateClient(a, LEGACY_VALUE_SCHEMA);
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [successor],
+        'the malformed commit leaves before the first sync',
+      );
+      const rejections = await a.api.rejections();
+      checkEqual(
+        rejections.map((rejection) => rejection.code),
+        ['sync.outbox_incompatible'],
+        'the recovery raises the incompatible-outbox rejection',
+      );
+      checkEqual(
+        rejections[0]?.details?.reason,
+        'invalid_stored_values',
+        'the rejection carries the bounded reason',
+      );
+      checkEqual(
+        rejections[0]?.operation,
+        undefined,
+        'a malformed envelope is not journaled as an operation',
+      );
+      checkEqual(
+        (await a.api.readRows('tasks')).map((row) => row.values?.id),
+        ['kept'],
+        'the successor keeps its optimistic row',
+      );
+
+      // The successor survives, drains, and reaches the server.
+      const drained = await syncOk(a);
+      checkEqual(
+        drained.applied,
+        [successor],
+        'the successor drains after the recovery',
+      );
+      check(
+        (await ctx.server.readRows('tasks')).some(
+          (row) => row.values?.id === 'kept',
+        ),
+        'the successor reaches the server',
+      );
+
+      // A second recreate keeps the durable rejection readable.
+      await ctx.recreateClient(a, LEGACY_VALUE_SCHEMA);
+      checkEqual(
+        (await a.api.rejections()).map((rejection) => rejection.code),
+        ['sync.outbox_incompatible'],
+        'the rejection stays readable across a further recreate',
+      );
+
+      // A wrong primitive type recovers through the same boundary and keeps its
+      // journalable operation envelope.
+      const typed = await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: { ...seedValues, id: 'typed', title: 'typed' },
+        },
+      ]);
+      await runReplicaSql(
+        `UPDATE _syncular_outbox SET ${outboxColumn}=json_set(${outboxColumn}, '$[0].values.priority', 'high') WHERE ${outboxIdColumn}='${typed}'`,
+      );
+      await ctx.recreateClient(a, LEGACY_VALUE_SCHEMA);
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [],
+        'the wrong-type commit leaves before the first sync',
+      );
+      const recovered = await a.api.rejections();
+      checkEqual(
+        recovered.map((rejection) => rejection.code),
+        ['sync.outbox_incompatible', 'sync.outbox_incompatible'],
+        'both recoveries are durable',
+      );
+      checkEqual(
+        recovered[1]?.details?.reason,
+        'invalid_stored_values',
+        'the wrong-type rejection carries the same bounded reason',
+      );
+      check(
+        recovered[1]?.operation !== undefined,
+        'a representable envelope stays in the journal',
+      );
+
+      // Two codec-invalid commits on the SAME row recover in FIFO order. The
+      // older drop replays later operations on that row, so an unclassified
+      // invalid successor must not be reachable from that replay.
+      const pairValues = { ...seedValues, id: 'pair' };
+      const pairOlder = await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: { ...pairValues, title: 'older' },
+        },
+      ]);
+      const pairNewer = await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: { ...pairValues, title: 'newer' },
+        },
+      ]);
+      for (const commitId of [pairOlder, pairNewer]) {
+        await runReplicaSql(
+          `UPDATE _syncular_outbox SET ${outboxColumn}=json_set(${outboxColumn}, '$[0].values.payload', json('{"$bytes":"zz"}')) WHERE ${outboxIdColumn}='${commitId}'`,
+        );
+      }
+      const revisionBefore = await a.api.localRevision?.();
+      await ctx.recreateClient(a, LEGACY_VALUE_SCHEMA);
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [],
+        'the same-row pair leaves the outbox',
+      );
+      const pairRejections = (await a.api.rejections()).slice(-2);
+      checkEqual(
+        pairRejections.map((rejection) => rejection.clientCommitId),
+        [pairOlder, pairNewer],
+        'the same-row rejections stay in FIFO order',
+      );
+      checkEqual(
+        pairRejections.map((rejection) => rejection.code),
+        ['sync.outbox_incompatible', 'sync.outbox_incompatible'],
+        'both same-row commits recover',
+      );
+      checkEqual(
+        pairRejections.map((rejection) => rejection.details?.reason),
+        ['invalid_stored_values', 'invalid_stored_values'],
+        'both carry the bounded reason',
+      );
+      check(
+        (await a.api.readRows('tasks')).every(
+          (row) => row.values?.id !== 'pair',
+        ),
+        'the same-row pair leaves no optimistic row',
+      );
+
+      // The recovery publishes one batch carrying the revision, the table, and
+      // the rejection and outcome domains.
+      const revisionAfter = await a.api.localRevision?.();
+      check(
+        revisionBefore !== undefined &&
+          revisionAfter !== undefined &&
+          BigInt(revisionAfter) > BigInt(revisionBefore),
+        'the recovery advances the local revision',
+      );
+      if (a.api.drainChangeBatches !== undefined) {
+        // The domain flags of the startup/recreate batch are pinned by the
+        // package-local tests, whose listeners attach before the client starts;
+        // the driver subscribes after construction, so it observes the revision.
+        await a.api.drainChangeBatches();
+      }
+
+      // Recreating with nothing left to recover publishes nothing and keeps the
+      // revision where the recovery left it.
+      const revisionStable = await a.api.localRevision?.();
+      await ctx.recreateClient(a, LEGACY_VALUE_SCHEMA);
+      checkEqual(
+        (await a.api.drainChangeBatches?.())?.length ?? 0,
+        0,
+        'an ordinary recreate publishes no batch',
+      );
+      checkEqual(
+        await a.api.localRevision?.(),
+        revisionStable,
+        'an ordinary recreate keeps the local revision',
+      );
+
+      // Every recovered commit keeps a readable rejected outcome.
+      const rejected = (await a.api.commitOutcomes()).filter(
+        (outcome) => outcome.status === 'rejected',
+      );
+      check(
+        rejected.length >= 4,
+        'recovered commits keep readable rejected outcomes',
       );
     },
   },

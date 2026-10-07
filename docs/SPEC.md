@@ -3759,6 +3759,29 @@ Every patch requires its base row in the local replica at call time. An absent
 base raises `sync.row_missing` before the batch changes local rows or appends
 an outbox commit. This includes a patch following an insert in the same batch.
 
+**Authoring value validation.** `mutate` and `patch` validate every supplied
+value against the column's declared type before the call records anything. A
+value the generated row codec cannot encode is refused with
+`sync.invalid_request` (native surfaces keep the static message and
+`details.legacyCause` rule of §7.5): the call appends no outbox commit, writes
+no local row, publishes no revision, and emits no observation event.
+
+The schema-agnostic outbox form (§0) serializes values as JSON, so an
+unrepresentable value is refused. A `float` column accepts a finite number: `NaN`, `Infinity` and `-Infinity` are
+refused at authoring, while the §2.4 `f64` wire encoding stays IEEE-754
+binary64 and is unchanged. A `bytes` or `crdt` column accepts the canonical
+envelope `{"$bytes": "<hex>"}`: exactly one `$bytes` key holding a string of
+hexadecimal digit pairs, with uppercase digits accepted and lowercase digits
+emitted. Any other envelope, including an odd digit count, a non-hexadecimal
+digit, or an extra key, is refused. An explicit `null` stays a nullability question: a nullable column accepts it and a
+non-nullable column reports the required-column failure.
+
+Host-value normalization is per surface and stays as that surface documents it.
+The browser core accepts a `bigint` within the safe-integer range for an integer
+column and `0`/`1` for a boolean column, so a row read straight off the local
+mirror feeds back into `mutate`. A native host passes the JSON form its bridge
+documents: a JSON boolean for a `boolean` column.
+
 - Local writes are recorded as commits in a durable **outbox** with
   client-generated `clientCommitId`s (unique forever per client; UUIDs
   recommended). The outbox is schema-agnostic (§0): it survives a schema
@@ -4003,8 +4026,12 @@ operation. An error retains
 its stable code, message, retryability, accepted §6.3.1 details when present,
 and local operation. For a final `conflict` or `rejected` result, the entry also
 retains the complete ordered schema-agnostic local operation envelope from the
-failed commit. The envelope is required because the server reports only the
-terminating operation while every sibling rolled back; without it an
+failed commit, stored only in its canonical shape. A client-local drop of a
+commit whose envelope the journal cannot store (§7.4.4
+`invalid_stored_values`) omits the `operations` collection and the nested
+`operation`, and keeps the durable `clientCommitId`, the rejection code, and
+the bounded `details.reason` as its record. For server rejections, the envelope
+is required because the server reports only the terminating operation while every sibling rolled back; without it an
 application cannot safely reconstruct atomic aggregate intent after the
 outbox drains or the process restarts. Historical entries and successful
 outcomes MAY omit the envelope. The same rule applies to client-local terminal
@@ -4424,6 +4451,21 @@ server validation; an upsert cannot be encoded under the new schema and is
 classified at send time as `sync.outbox_incompatible`. A storage or
 persisted-value failure during replay still fails the transaction and rolls it
 back.
+A commit an earlier version persisted with a value the current codec refuses
+(an envelope whose digits or shape that version accepted, or a type its model
+allowed) is recovered at the **full startup or reset reconciliation boundary**:
+after the schema and identity guards, inside that boundary's transaction, the
+commit leaves the outbox with a durable rejection whose code is
+`sync.outbox_incompatible`, whose message is the static
+"the persisted commit carries values the current codec refuses", and whose
+`details.reason` is `invalid_stored_values`. Both cores run that recovery before
+any replay, so the legacy commit is observable as rejected immediately after
+open. A commit naming a table the current
+schema removed keeps the send-time classification above, and an unresolved
+§5.11 encryption key, a transport failure, and a storage failure keep their own
+classifications at their own seams: hosts may configure keys after open, so key
+resolution stays with the send seam.
+
 `sync.outbox_incompatible` is a **client-local** code (§10.3 — never a
 wire code; it is produced entirely client-side at encode time, like
 `transport.failed`), surfaced through the same rejection channel the app

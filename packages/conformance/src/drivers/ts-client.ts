@@ -602,10 +602,10 @@ class TsClientInstance implements ClientInstance {
             : {}),
         };
       }
-      const values: Record<string, unknown> = {};
-      for (const [key, value] of Object.entries(mutation.values)) {
-        values[key] = toRowValue(value);
-      }
+      // Driver values pass through unchanged: the client owns the §7.1 host
+      // form (`{$bytes}` envelopes included), so a malformed envelope is
+      // classified by the client instead of being normalized away here.
+      const values: Record<string, unknown> = { ...mutation.values };
       return {
         table: mutation.table,
         op: mutation.op,
@@ -626,10 +626,7 @@ class TsClientInstance implements ClientInstance {
     partial: DriverRow,
     baseVersion?: number,
   ): Promise<string> {
-    const values: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(partial)) {
-      values[key] = toRowValue(value);
-    }
+    const values: Record<string, unknown> = { ...partial };
     const result = this.#client.patchCommand(
       table,
       rowId,

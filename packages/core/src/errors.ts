@@ -16,3 +16,14 @@ export class DecodeError extends Error {
     this.code = code;
   }
 }
+
+/**
+ * A value the row codec cannot encode (SPEC.md §7.1 authoring validation,
+ * §6.1 push payloads). Structural failures stay plain `Error`s; this class
+ * marks exactly the value refusals, so a client can classify them without
+ * inspecting message text.
+ */
+export class EncodeError extends Error {
+  override readonly name = 'EncodeError';
+  readonly code = 'sync.invalid_request';
+}

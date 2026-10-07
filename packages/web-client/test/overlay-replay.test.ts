@@ -35,136 +35,280 @@ for (const failure of [
   'upgrade-read',
   'upgrade-decode',
 ] as const) {
-  test(`reopen replay fails atomically on ${failure} and retains durable intent`, async () => {
-    const fault = failure.replace('upgrade-', '');
-    const dir = mkdtempSync(join(tmpdir(), 'syncular-overlay-replay-'));
-    const path = join(dir, 'replica.sqlite');
-    let db = new ReplayDatabase(path);
-    const schema: ClientSchema = {
-      ...CLIENT_SCHEMA,
-      tables: CLIENT_SCHEMA.tables
-        .filter((table) => table.name === 'tasks')
-        .map((table) => ({
-          ...table,
-          ftsIndexes: [
-            { name: 'tasks_fts', columns: ['title'], tokenize: 'unicode61' },
-          ],
-        })),
-    };
-    let held = false;
-    const leaderLock = {
-      acquire: async () => {
-        if (held) throw new Error('leadership was not released');
-        held = true;
-        return {
-          release: () => {
-            held = false;
-          },
-        };
-      },
-    };
-    const config = {
-      schema,
-      clientId: 'replay',
-      leaderLock,
-      transport: async (): Promise<Uint8Array> => {
-        throw new Error('offline');
-      },
-    };
-    try {
-      const first = new SyncClient({ ...config, database: db });
-      await first.start();
-      const ids = ['early', 'bad'].map((id) =>
-        first.mutate([
-          { op: 'upsert', table: 'tasks', values: taskValues(id, 'p1', id) },
-        ]),
-      );
-      await first.close();
-      if (fault === 'trigger')
-        db.exec(
-          "CREATE TRIGGER fail_replay BEFORE INSERT ON tasks WHEN new.id='bad' BEGIN SELECT RAISE(ABORT,'replay failed'); END",
+  test(
+    failure.endsWith('decode')
+      ? 'reopen replay drops a value the current codec refuses and keeps the surviving intent'
+      : `reopen replay fails atomically on ${failure} and retains durable intent`,
+    async () => {
+      const fault = failure.replace('upgrade-', '');
+      const dir = mkdtempSync(join(tmpdir(), 'syncular-overlay-replay-'));
+      const path = join(dir, 'replica.sqlite');
+      let db = new ReplayDatabase(path);
+      const schema: ClientSchema = {
+        ...CLIENT_SCHEMA,
+        tables: CLIENT_SCHEMA.tables
+          .filter((table) => table.name === 'tasks')
+          .map((table) => ({
+            ...table,
+            ftsIndexes: [
+              { name: 'tasks_fts', columns: ['title'], tokenize: 'unicode61' },
+            ],
+          })),
+      };
+      let held = false;
+      const leaderLock = {
+        acquire: async () => {
+          if (held) throw new Error('leadership was not released');
+          held = true;
+          return {
+            release: () => {
+              held = false;
+            },
+          };
+        },
+      };
+      const config = {
+        schema,
+        clientId: 'replay',
+        leaderLock,
+        transport: async (): Promise<Uint8Array> => {
+          throw new Error('offline');
+        },
+      };
+      try {
+        const first = new SyncClient({ ...config, database: db });
+        await first.start();
+        const ids = ['early', 'bad'].map((id) =>
+          first.mutate([
+            { op: 'upsert', table: 'tasks', values: taskValues(id, 'p1', id) },
+          ]),
         );
-      if (fault === 'fts')
-        db.exec(
-          "CREATE TRIGGER fail_fts BEFORE INSERT ON _syncular_fts_tasks_fts WHEN new.source_id='bad' BEGIN SELECT RAISE(ABORT,'fts failed'); END",
-        );
-      if (fault === 'decode')
-        db.exec(
-          "UPDATE _syncular_outbox SET operations=json_set(operations, '$[0].values.done', 'invalid') WHERE client_commit_id=?",
-          [ids[1]!],
-        );
-      const rows = db.query('SELECT * FROM tasks ORDER BY id');
-      const fts = db.query(
-        'SELECT _syncular_source_id,title FROM tasks_fts ORDER BY _syncular_source_id',
-      );
-      const outbox = db.query('SELECT * FROM _syncular_outbox ORDER BY seq');
-      const marker = db.query(
-        "SELECT value FROM _syncular_meta WHERE key='localSchemaVersion'",
-      );
-      const revision = db.query(
-        "SELECT value FROM _syncular_meta WHERE key='localRevision'",
-      );
-      db.close();
-      db = new ReplayDatabase(path);
-      db.failRead = fault === 'read';
-      const refused = new SyncClient({
-        ...config,
-        database: db,
-        schema: failure.startsWith('upgrade-')
-          ? { ...schema, version: schema.version + 1 }
-          : schema,
-      });
-      const changes: ClientChangeBatch[] = [];
-      refused.onChange((batch) => changes.push(batch));
-      await expect(refused.start()).rejects.toThrow();
-      expect(
-        changes.every(
-          (batch) => batch.tables.length === 0 && !batch.outcomesChanged,
-        ),
-      ).toBe(true);
-      expect(held).toBe(false);
-      db.failRead = false;
-      expect(db.query('SELECT * FROM tasks ORDER BY id')).toEqual(rows);
-      expect(
-        db.query(
+        await first.close();
+        if (fault === 'trigger')
+          db.exec(
+            "CREATE TRIGGER fail_replay BEFORE INSERT ON tasks WHEN new.id='bad' BEGIN SELECT RAISE(ABORT,'replay failed'); END",
+          );
+        if (fault === 'fts')
+          db.exec(
+            "CREATE TRIGGER fail_fts BEFORE INSERT ON _syncular_fts_tasks_fts WHEN new.source_id='bad' BEGIN SELECT RAISE(ABORT,'fts failed'); END",
+          );
+        if (fault === 'decode')
+          db.exec(
+            "UPDATE _syncular_outbox SET operations=json_set(operations, '$[0].values.done', 'invalid') WHERE client_commit_id=?",
+            [ids[1]!],
+          );
+        const rows = db.query('SELECT * FROM tasks ORDER BY id');
+        const fts = db.query(
           'SELECT _syncular_source_id,title FROM tasks_fts ORDER BY _syncular_source_id',
-        ),
-      ).toEqual(fts);
-      expect(db.query('SELECT * FROM _syncular_outbox ORDER BY seq')).toEqual(
-        outbox,
-      );
-      // The startup marker guard, the upgrade-readiness observation, and the
-      // reset it precedes are one transaction: a failing reset publishes no
-      // revision (and no readiness) at all, for upgrades and same-version
-      // replays alike.
-      expect(
-        db.query("SELECT value FROM _syncular_meta WHERE key='localRevision'"),
-      ).toEqual(revision);
-      expect(
-        db.query(
-          "SELECT value FROM _syncular_meta WHERE key='localSchemaVersion'",
-        ),
-      ).toEqual(marker);
-      if (fault === 'trigger') db.exec('DROP TRIGGER fail_replay');
-      if (fault === 'fts') db.exec('DROP TRIGGER fail_fts');
-      if (fault === 'decode')
-        db.exec(
-          "UPDATE _syncular_outbox SET operations=json_set(operations, '$[0].values.done', json('false')) WHERE client_commit_id=?",
-          [ids[1]!],
         );
-      const reopened = new SyncClient({ ...config, database: db });
-      await reopened.start();
-      expect(
-        reopened.pendingCommits().map((commit) => commit.clientCommitId),
-      ).toEqual(ids);
-      expect(db.query('SELECT * FROM tasks ORDER BY id')).toEqual(rows);
-      await reopened.close();
-    } finally {
-      db.close();
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
+        const outbox = db.query('SELECT * FROM _syncular_outbox ORDER BY seq');
+        const marker = db.query(
+          "SELECT value FROM _syncular_meta WHERE key='localSchemaVersion'",
+        );
+        const revision = db.query(
+          "SELECT value FROM _syncular_meta WHERE key='localRevision'",
+        );
+        db.close();
+        db = new ReplayDatabase(path);
+        db.failRead = fault === 'read';
+        const refused = new SyncClient({
+          ...config,
+          database: db,
+          schema: failure.startsWith('upgrade-')
+            ? { ...schema, version: schema.version + 1 }
+            : schema,
+        });
+        const changes: ClientChangeBatch[] = [];
+        refused.onChange((batch) => changes.push(batch));
+        if (fault === 'decode') {
+          // §7.4.4/§7.1: a persisted value the current codec refuses leaves the
+          // outbox through the incompatible-outbox path. The surviving commit
+          // still replays, so malformed legacy intent never wedges the queue.
+          await refused.start();
+          expect(
+            refused.rejections().map((rejection) => rejection.code),
+          ).toEqual(['sync.outbox_incompatible']);
+          expect(
+            refused.pendingCommits().map((commit) => commit.clientCommitId),
+          ).toEqual([ids[0]!]);
+          expect(refused.query('SELECT id FROM tasks ORDER BY id')).toEqual([
+            { id: 'early' },
+          ]);
+          // §7.4.4: the recovery publishes one batch carrying the revision, the
+          // affected table, and the rejection and outcome domains.
+          const recovery = changes.filter(
+            (batch) => batch.rejectionsChanged || batch.outcomesChanged,
+          );
+          expect(recovery.length).toBeGreaterThanOrEqual(1);
+          expect(changes.some((batch) => batch.rejectionsChanged)).toBe(true);
+          expect(changes.some((batch) => batch.outcomesChanged)).toBe(true);
+          expect(
+            recovery.every((batch) =>
+              batch.tables.some((change) => change.table === 'tasks'),
+            ),
+          ).toBe(true);
+          expect(recovery.at(-1)?.revision).toBe(refused.localRevision);
+          await refused.close();
+          expect(held).toBe(false);
+
+          const reopened = new SyncClient({
+            ...config,
+            database: db,
+            schema: failure.startsWith('upgrade-')
+              ? { ...schema, version: schema.version + 1 }
+              : schema,
+          });
+          await reopened.start();
+          expect(
+            reopened.pendingCommits().map((commit) => commit.clientCommitId),
+          ).toEqual([ids[0]!]);
+          const next = reopened.mutate([
+            {
+              op: 'upsert',
+              table: 'tasks',
+              values: taskValues('next', 'p1', 'next'),
+            },
+          ]);
+          expect(
+            reopened.pendingCommits().map((commit) => commit.clientCommitId),
+          ).toEqual([ids[0]!, next]);
+          expect(reopened.query('SELECT id FROM tasks ORDER BY id')).toEqual([
+            { id: 'early' },
+            { id: 'next' },
+          ]);
+          await reopened.close();
+          return;
+        }
+        await expect(refused.start()).rejects.toThrow();
+        expect(
+          changes.every(
+            (batch) => batch.tables.length === 0 && !batch.outcomesChanged,
+          ),
+        ).toBe(true);
+        expect(held).toBe(false);
+        db.failRead = false;
+        expect(db.query('SELECT * FROM tasks ORDER BY id')).toEqual(rows);
+        expect(
+          db.query(
+            'SELECT _syncular_source_id,title FROM tasks_fts ORDER BY _syncular_source_id',
+          ),
+        ).toEqual(fts);
+        expect(db.query('SELECT * FROM _syncular_outbox ORDER BY seq')).toEqual(
+          outbox,
+        );
+        // The startup marker guard, the upgrade-readiness observation, and the
+        // reset it precedes are one transaction: a failing reset publishes no
+        // revision (and no readiness) at all, for upgrades and same-version
+        // replays alike.
+        expect(
+          db.query(
+            "SELECT value FROM _syncular_meta WHERE key='localRevision'",
+          ),
+        ).toEqual(revision);
+        expect(
+          db.query(
+            "SELECT value FROM _syncular_meta WHERE key='localSchemaVersion'",
+          ),
+        ).toEqual(marker);
+        if (fault === 'trigger') db.exec('DROP TRIGGER fail_replay');
+        if (fault === 'fts') db.exec('DROP TRIGGER fail_fts');
+        const reopened = new SyncClient({ ...config, database: db });
+        await reopened.start();
+        expect(
+          reopened.pendingCommits().map((commit) => commit.clientCommitId),
+        ).toEqual(ids);
+        expect(db.query('SELECT * FROM tasks ORDER BY id')).toEqual(rows);
+        await reopened.close();
+      } finally {
+        db.close();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 }
+
+test('a recovery drop rolls back when the same reconciliation later fails', async () => {
+  // §7.1/§7.4.4: the value recovery runs inside the replay transaction, so a
+  // later replay failure rolls the drop back with it: no published event, no
+  // durable rejection, and both commits still pending.
+  const dir = mkdtempSync(join(tmpdir(), 'syncular-overlay-drop-rollback-'));
+  const path = join(dir, 'replica.sqlite');
+  const config = {
+    clientId: 'drop-rollback',
+    schema: CLIENT_SCHEMA,
+    transport: async (): Promise<Uint8Array> => {
+      throw new Error('offline');
+    },
+  };
+  let db = new BunClientDatabase(path);
+  try {
+    const first = new SyncClient({ ...config, database: db });
+    await first.start();
+    const stale = first.mutate([
+      {
+        op: 'upsert',
+        table: 'tasks',
+        values: taskValues('good', 'p1', 'stale'),
+      },
+    ]);
+    const successor = first.mutate([
+      {
+        op: 'upsert',
+        table: 'tasks',
+        values: taskValues('bad', 'p1', 'behind'),
+      },
+    ]);
+    await first.close();
+    // The first commit's stored intent becomes a legacy wrong-type value, and
+    // the successor's replay fails through a real SQL trigger.
+    db.exec(
+      "UPDATE _syncular_outbox SET operations=json_set(operations, '$[0].values.done', 'invalid') WHERE client_commit_id=?",
+      [stale],
+    );
+    db.exec(
+      "CREATE TRIGGER fail_replay BEFORE INSERT ON tasks WHEN new.id='bad' BEGIN SELECT RAISE(ABORT,'replay failed'); END",
+    );
+    const rows = db.query('SELECT * FROM tasks ORDER BY id');
+    const outbox = db.query('SELECT * FROM _syncular_outbox ORDER BY seq');
+    db.close();
+
+    db = new BunClientDatabase(path);
+    const refused = new SyncClient({ ...config, database: db });
+    const changes: ClientChangeBatch[] = [];
+    refused.onChange((batch) => changes.push(batch));
+    await expect(refused.start()).rejects.toThrow();
+    expect(changes).toEqual([]);
+    expect(db.query('SELECT * FROM tasks ORDER BY id')).toEqual(rows);
+    expect(db.query('SELECT * FROM _syncular_outbox ORDER BY seq')).toEqual(
+      outbox,
+    );
+    expect(
+      db.query('SELECT COUNT(*) AS count FROM _syncular_commit_outcomes'),
+    ).toEqual([{ count: 0 }]);
+    await refused.close();
+
+    // Clearing the fault lets the next open recover and replay both.
+    db.exec('DROP TRIGGER fail_replay');
+    const recovered = new SyncClient({ ...config, database: db });
+    await recovered.start();
+    expect(
+      recovered.pendingCommits().map((commit) => commit.clientCommitId),
+    ).toEqual([successor]);
+    expect(recovered.rejections().map((entry) => entry.code)).toEqual([
+      'sync.outbox_incompatible',
+    ]);
+    expect(recovered.rejections()[0]?.details).toEqual({
+      reason: 'invalid_stored_values',
+    });
+    expect(recovered.query('SELECT id FROM tasks ORDER BY id')).toEqual([
+      { id: 'bad' },
+    ]);
+    await recovered.close();
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test('a bump that removes a table keeps the queued intent for the send-time drop', async () => {
   // §7.4.4: the outbox is schema-agnostic, so an operation for a table the new

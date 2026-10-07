@@ -560,6 +560,32 @@ describe('createTauriSyncClient', () => {
     ]);
   });
 
+  test('a malformed {$bytes} envelope in a native reply is refused, never padded', async () => {
+    for (const malformed of [
+      { $bytes: 'zz' },
+      { $bytes: 'abc' },
+      { $bytes: '+a' },
+      { $bytes: 7 },
+      { $bytes: '0a', extra: 1 },
+    ]) {
+      const { tauri } = makeTauri((cmd, args) => {
+        if (cmd === 'plugin:syncular|syncular_query') {
+          return OK({ rows: [{ blob: malformed }] });
+        }
+        return defaultResponder(cmd, args);
+      });
+      const client = await createTauriSyncClient({
+        clientId: 'malformed-bytes',
+        schema: { version: 1, tables: [] },
+        tauri,
+      });
+      await expect(client.query('SELECT * FROM todo')).rejects.toMatchObject({
+        code: 'sync.invalid_request',
+        name: 'TauriSyncError',
+      });
+    }
+  });
+
   test('query encodes Uint8Array params as {$bytes: hex}', async () => {
     const { client, calls } = await build();
     await client.query('SELECT ?', [new Uint8Array([1, 255])]);

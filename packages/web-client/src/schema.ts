@@ -794,6 +794,24 @@ function bytesToHex(bytes: Uint8Array): string {
   return out;
 }
 
+/**
+ * The canonical §7.1 byte envelope: exactly one `$bytes` key holding a string
+ * of hexadecimal digit pairs. Uppercase digits are accepted; encoders emit
+ * lowercase. A malformed envelope is a caller error, never a value to coerce.
+ */
+export function isBytesEnvelope(
+  value: unknown,
+): value is { readonly $bytes: string } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value))
+    return false;
+  const record = value as Record<string, unknown>;
+  return (
+    Object.keys(record).length === 1 &&
+    typeof record.$bytes === 'string' &&
+    /^(?:[0-9a-fA-F]{2})*$/.test(record.$bytes)
+  );
+}
+
 export function hexToBytes(hex: string): Uint8Array {
   const out = new Uint8Array(hex.length / 2);
   for (let i = 0; i < out.length; i++) {
@@ -809,6 +827,10 @@ export function rowValueToJson(value: RowValue): JsonRowValue {
 
 export function jsonToRowValue(value: JsonRowValue): RowValue {
   if (typeof value === 'object' && value !== null) {
+    if (!isBytesEnvelope(value))
+      throw invalidRequest(
+        'an object value must be one $bytes key holding an even-length hexadecimal string',
+      );
     return hexToBytes(value.$bytes);
   }
   return value;

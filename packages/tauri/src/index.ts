@@ -180,11 +180,28 @@ export type BytesEnvelope = { readonly $bytes: string };
 type BigIntEnvelope = { readonly $bigint: string };
 
 function isBytesEnvelope(value: unknown): value is BytesEnvelope {
+  if (typeof value !== 'object' || value === null) return false;
+  const record = value as Record<string, unknown>;
   return (
-    typeof value === 'object' &&
-    value !== null &&
-    typeof (value as { $bytes?: unknown }).$bytes === 'string'
+    Object.keys(record).length === 1 &&
+    typeof record.$bytes === 'string' &&
+    /^(?:[0-9a-fA-F]{2})*$/.test(record.$bytes)
   );
+}
+
+/**
+ * §7.1: a host reply that carries an envelope-shaped object with a malformed
+ * body is refused, never padded into different bytes. Objects without a
+ * `$bytes` key keep the defensive JSON text round-trip below.
+ */
+function assertBytesEnvelope(value: unknown): void {
+  if (typeof value !== 'object' || value === null || !('$bytes' in value))
+    return;
+  if (!isBytesEnvelope(value))
+    throw new TauriSyncError(
+      'sync.invalid_request',
+      'a $bytes envelope requires exactly one $bytes key holding an even-length hexadecimal string',
+    );
 }
 
 function isBigIntEnvelope(value: unknown): value is BigIntEnvelope {
@@ -204,10 +221,14 @@ function bytesToHex(bytes: Uint8Array): string {
 }
 
 function hexToBytes(hex: string): Uint8Array {
-  const clean = hex.length % 2 === 0 ? hex : `0${hex}`;
-  const out = new Uint8Array(clean.length / 2);
+  if (!/^(?:[0-9a-fA-F]{2})*$/.test(hex))
+    throw new TauriSyncError(
+      'sync.invalid_request',
+      'a $bytes envelope requires an even-length hexadecimal string',
+    );
+  const out = new Uint8Array(hex.length / 2);
   for (let i = 0; i < out.length; i++) {
-    out[i] = Number.parseInt(clean.slice(i * 2, i * 2 + 2), 16);
+    out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
   }
   return out;
 }
@@ -249,6 +270,7 @@ function encodeEncryption(config: EncryptionKeyringConfig): unknown {
 
 /** Decode one query-result cell back to an `SqlValue` (`{$bytes}` → bytes). */
 function decodeCell(value: unknown): SqlValue {
+  assertBytesEnvelope(value);
   if (isBytesEnvelope(value)) return hexToBytes(value.$bytes);
   if (isBigIntEnvelope(value)) return BigInt(value.$bigint);
   if (
@@ -277,6 +299,7 @@ function decodeOutcomeRow(
   for (const [key, value] of Object.entries(row)) {
     // Reserved `_sync_*` columns stay engine-internal, matching `decodeRow`.
     if (key.startsWith('_sync_')) continue;
+    assertBytesEnvelope(value);
     if (
       value === null ||
       typeof value === 'string' ||
