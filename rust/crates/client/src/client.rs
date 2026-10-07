@@ -8128,31 +8128,81 @@ mod observation_tests {
                 drop(reopened);
             }
 
-            // The same-version public recreation path reloads the durable outbox
-            // and rebuilds the overlay, so it must recover in place too. Plant the
-            // legacy shape while the client is open.
+            // Queue and corrupt a new commit while the client stays open so only
+            // recreation can recover it.
             if !bump {
                 let mut recreated = open(&v1, &path);
+                let fresh = recreated
+                    .mutate(upsert(row("t3")))
+                    .expect("fresh commit while open");
+                recreated.drain_change_batches();
+                let planted_fresh = json!([{
+                    "op": "upsert",
+                    "table": "tasks",
+                    "rowId": "t3",
+                    "baseVersion": null,
+                    "values": {"id": "t3", "project_id": "p1",
+                        "payload": {"$bytes": "zz"}}
+                }]);
                 let connection = Connection::open(&path).expect("raw connection");
-                connection
+                let affected = connection
                     .execute(
                         "UPDATE _syncular_outbox SET ops_json=? WHERE commit_id=?",
-                        rusqlite::params![planted.to_string(), stale],
+                        rusqlite::params![planted_fresh.to_string(), fresh],
                     )
-                    .expect("plant legacy intent");
+                    .expect("plant fresh legacy intent");
+                assert_eq!(
+                    affected, 1,
+                    "{label}: the in-place plant must hit the queued commit"
+                );
                 drop(connection);
+                let revision_before = recreated.local_revision();
                 recreated
                     .recreate_with_schema(&v1)
                     .unwrap_or_else(|error| panic!("{label}: recreation failed: {error}"));
                 assert_eq!(recreated.pending_commit_ids(), vec![successor], "{label}");
+                let fresh_rejection = recreated
+                    .rejections()
+                    .iter()
+                    .find(|rejection| rejection.client_commit_id == fresh)
+                    .expect("the in-place recovery rejection");
+                assert_eq!(fresh_rejection.code, OUTBOX_INCOMPATIBLE_CODE, "{label}");
+                assert_eq!(
+                    fresh_rejection
+                        .details
+                        .as_ref()
+                        .and_then(|details| details.reason.as_deref()),
+                    Some(INVALID_STORED_VALUES_REASON),
+                    "{label}"
+                );
+                assert!(
+                    matches!(
+                        recreated
+                            .commit_outcome(&fresh)
+                            .expect("outcome read")
+                            .map(|outcome| outcome.status),
+                        Some(CommitOutcomeStatus::Rejected)
+                    ),
+                    "{label}"
+                );
+                assert!(recreated.local_revision() > revision_before, "{label}");
+                let revision = recreated.local_revision();
+                let batches = recreated.drain_change_batches();
+                assert_eq!(batches.len(), 1, "{label}: one recovery batch");
+                assert!(
+                    batches.iter().any(|batch| batch.rejections_changed
+                        && batch.outcomes_changed
+                        && batch.tables.iter().any(|change| change.table == "tasks")
+                        && batch.revision == revision.to_string()),
+                    "{label}: {batches:?}"
+                );
+                assert_eq!(recreated.pending_payloads().len(), 1, "{label}");
                 assert_eq!(
                     recreated
-                        .rejections()
-                        .iter()
-                        .filter(|rejection| rejection.client_commit_id == stale)
-                        .count(),
-                    1,
-                    "{label}"
+                        .query("SELECT id FROM tasks ORDER BY id", &[])
+                        .unwrap(),
+                    vec![Map::from_iter([("id".to_owned(), json!("t2"))])],
+                    "{label}: the recovered commit leaves no projection"
                 );
                 drop(recreated);
             }
@@ -8330,7 +8380,7 @@ mod observation_tests {
             }])
             .expect("queued write");
         client.drain_change_batches();
-        client
+        let affected = client
             .conn
             .execute(
                 "UPDATE _syncular_outbox SET ops_json=? WHERE commit_id=?",
@@ -8348,6 +8398,7 @@ mod observation_tests {
                 ],
             )
             .expect("plant legacy intent");
+        assert_eq!(affected, 1, "the planted row must exist");
         let revision = client.local_revision();
         let rows = client.query("SELECT * FROM tasks", &[]).expect("rows");
         let prior_outbox = client.pending_commit_ids();
