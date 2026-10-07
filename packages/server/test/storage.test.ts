@@ -142,6 +142,16 @@ for (const backend of ['sqlite', 'postgres', 'd1'] as const) {
         );
       }
       const before = await entries();
+      // Scope-map semantics: rewriting a row with the same scope map leaves the
+      // exact same scope entries in place (the no-rewrite mechanism is pinned
+      // separately against real D1 in the server-workers cost test).
+      const identical = await storage.begin('part');
+      await identical.upsertRow('docs', {
+        ...row('shared', 'o4', 'p4'),
+        serverVersion: 2,
+      });
+      await identical.commit();
+      expect(await entries()).toEqual(before);
       for (const rejected of [false, true]) {
         const tx = await storage.begin('part');
         await tx.lockPartitionForPush?.();
@@ -321,6 +331,81 @@ test('Postgres migrates legacy client records to wire version 1', async () => {
   });
   await db.close();
 });
+
+for (const backend of ['sqlite', 'postgres', 'd1'] as const) {
+  test(`${backend} putClientRecord upserts one row and writes the exact fields`, async () => {
+    const pg = backend === 'postgres' ? await PGlite.create() : undefined;
+    const sqlite = backend === 'sqlite' ? new BunSqliteDatabase() : undefined;
+    const d1 = backend === 'd1' ? new D1DatabaseDouble() : undefined;
+    const storage: ServerStorage = pg
+      ? new PostgresServerStorage(pgliteExecutor(pg))
+      : sqlite
+        ? new SqliteServerStorage(sqlite)
+        : new D1ServerStorage(d1!, { pushApplySerialized: true });
+    try {
+      if (storage instanceof D1ServerStorage) await prepareD1(storage);
+      await storage.ensureSchema(compileSchema(CONTRACT_SCHEMA));
+      const first = {
+        clientId: 'client-1',
+        actorId: 'actor-1',
+        wireVersion: 3,
+        cursor: 5,
+        updatedAtMs: 1_000,
+        subscriptions: [
+          {
+            id: 'docs',
+            table: 'docs',
+            scopes: { project_id: ['p1'] },
+            schemaVersion: 1,
+          },
+        ],
+      };
+      await storage.putClientRecord('part', first);
+      // A later round overwrites every non-key field, not only the cursor and
+      // liveness timestamp: the actor, wire version, and subscriptions move
+      // with it, and the client keeps a single row.
+      await storage.putClientRecord('part', {
+        ...first,
+        actorId: 'actor-9',
+        wireVersion: 4,
+        cursor: 9,
+        updatedAtMs: 2_000,
+        subscriptions: [],
+      });
+      expect(await storage.getClientRecord('part', 'client-1')).toEqual({
+        clientId: 'client-1',
+        actorId: 'actor-9',
+        wireVersion: 4,
+        cursor: 9,
+        updatedAtMs: 2_000,
+        subscriptions: [],
+      });
+      expect(
+        (await storage.listClientCursors('part')).sort((a, b) =>
+          a.clientId.localeCompare(b.clientId),
+        ),
+      ).toEqual([{ clientId: 'client-1', cursor: 9, updatedAtMs: 2_000 }]);
+      // A distinct client is a separate row, untouched by the update.
+      await storage.putClientRecord('part', {
+        ...first,
+        clientId: 'client-2',
+        actorId: 'actor-2',
+        updatedAtMs: 3_000,
+      });
+      expect(
+        (await storage.listClientCursors('part'))
+          .sort((a, b) => a.clientId.localeCompare(b.clientId))
+          .map((entry) => entry.clientId),
+      ).toEqual(['client-1', 'client-2']);
+      expect((await storage.getClientRecord('part', 'client-2'))?.actorId).toBe(
+        'actor-2',
+      );
+    } finally {
+      sqlite?.close();
+      await pg?.close();
+    }
+  });
+}
 
 test('D1 push apply fails closed without external serialization', async () => {
   const storage = new D1ServerStorage(new D1DatabaseDouble());

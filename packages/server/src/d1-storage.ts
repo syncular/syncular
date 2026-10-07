@@ -660,13 +660,19 @@ class D1Transaction implements StorageTransaction {
       row,
     });
     const p = this.#partition;
-    this.#buffer_(deleteSqliteRowScopesSql(compiled), [
-      p,
-      table,
-      row.rowId,
-      p,
-      row.rowId,
-    ]);
+    // Scope index maintenance: delete only the old keys the new scope map no
+    // longer carries, then insert the new keys. Keys present in both are left
+    // alone, so the `INSERT OR IGNORE` below finds them and writes nothing.
+    // This DELETE precedes the row upsert in the same atomic batch, and its
+    // subquery reads the row's pre-upsert scope map.
+    const scopesJson = JSON.stringify(row.scopes);
+    this.#buffer_(
+      `${deleteSqliteRowScopesSql(compiled)}
+        AND (var, value) NOT IN (
+          SELECT key, value FROM json_each(?)
+        )`,
+      [p, table, row.rowId, p, row.rowId, scopesJson],
+    );
     this.#buffer_(
       upsertSql(compiled, 'sqlite'),
       upsertValues(compiled, p, row, 'sqlite'),
@@ -2310,9 +2316,18 @@ export class D1ServerStorage implements ServerStorage {
     partition: string,
     record: ClientRecord,
   ): Promise<void> {
+    // Update the existing record in place, so the table keeps one row per
+    // (partition, client_id). Every non-key field is written from the new
+    // record; a delete-and-insert would drop and recreate the row instead.
     await this.#db
       .prepare(
-        'INSERT OR REPLACE INTO sync_clients(partition, client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms) VALUES (?,?,?,?,?,?,?)',
+        `INSERT INTO sync_clients(partition, client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms) VALUES (?,?,?,?,?,?,?)
+         ON CONFLICT(partition, client_id) DO UPDATE SET
+           actor_id=excluded.actor_id,
+           wire_version=excluded.wire_version,
+           cursor=excluded.cursor,
+           subscriptions=excluded.subscriptions,
+           updated_at_ms=excluded.updated_at_ms`,
       )
       .bind(
         partition,
