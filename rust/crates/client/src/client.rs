@@ -6538,6 +6538,145 @@ mod observation_tests {
     }
 
     #[test]
+    fn caller_value_failures_are_invalid_request_and_leave_no_outbox_entry() {
+        let path = std::env::temp_dir().join(format!(
+            "syncular-caller-values-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let schema = json!({"version":1,"tables":[{"name":"tasks","primaryKey":"id","columns":[
+            {"name":"id","type":"string","nullable":false},
+            {"name":"project_id","type":"string","nullable":false},
+            {"name":"title","type":"string","nullable":false},
+            {"name":"priority","type":"integer","nullable":false},
+            {"name":"payload","type":"bytes","nullable":false}],"scopes":[{"pattern":"project:{project_id}"}]}]});
+        let mut client = SyncClient::open_path(
+            "caller-values".into(),
+            &schema,
+            ClientLimits::default(),
+            path.to_str().unwrap(),
+        )
+        .expect("open client");
+        client.create_synced_tables().expect("create synced tables");
+
+        let values = |id: &str| {
+            Map::from_iter([
+                ("id".to_owned(), json!(id)),
+                ("project_id".to_owned(), json!("p1")),
+                ("title".to_owned(), json!("first")),
+                ("priority".to_owned(), json!(1)),
+                ("payload".to_owned(), json!({"$bytes": "0a"})),
+            ])
+        };
+        let upsert = |values: Map<String, Value>| {
+            vec![Mutation::Upsert {
+                table: "tasks".into(),
+                values,
+                base_version: None,
+            }]
+        };
+        let seed = client.mutate(upsert(values("t1"))).expect("seed row");
+        let rows = client.query("SELECT * FROM tasks", &[]).unwrap();
+
+        // §6.1/§7.1: every caller value the authoring seam rejects reports the
+        // same stable identity instead of the internal-failure default, keeps
+        // the dynamic cause in `details.legacyCause`, and leaves the durable
+        // outbox, the local revision and the projection untouched.
+        for (label, override_value, cause) in [
+            ("unknown column", ("nope", json!(1)), "unknown column"),
+            (
+                "internal sync column",
+                ("_sync_version", json!(1)),
+                "internal sync column",
+            ),
+            ("wrong value type", ("title", json!(7)), "expected a string"),
+            (
+                "malformed bytes envelope",
+                ("payload", json!({"$bytes": "zz"})),
+                "bad hex",
+            ),
+        ] {
+            let mut full = values("t2");
+            full.insert(override_value.0.to_owned(), override_value.1);
+            let error = client.mutate(upsert(full)).expect_err(label);
+            assert_eq!(error.code, "sync.invalid_request", "{label}: {error:?}");
+            assert_eq!(error.message, "the authoring request is invalid", "{label}");
+            assert!(!error.retryable, "{label}");
+            let legacy = error.details.as_ref().unwrap()["legacyCause"]
+                .as_str()
+                .unwrap();
+            assert!(
+                legacy.starts_with("sync.invalid_request: ") && legacy.contains(cause),
+                "{label}: {legacy}"
+            );
+            assert_eq!(client.pending_commit_ids(), vec![seed.clone()], "{label}");
+            assert_eq!(client.local_revision(), 1, "{label}");
+            assert_eq!(
+                client.query("SELECT * FROM tasks", &[]).unwrap(),
+                rows,
+                "{label}"
+            );
+        }
+
+        // A full-row upsert presents every column, so a missing required one is
+        // the caller's failure too.
+        let mut missing = values("t3");
+        missing.remove("payload");
+        let missing_error = client.mutate(upsert(missing)).expect_err("missing column");
+        assert_eq!(missing_error.code, "sync.invalid_request");
+        assert!(missing_error.details.as_ref().unwrap()["legacyCause"]
+            .as_str()
+            .unwrap()
+            .contains("is not nullable"));
+
+        // A primary key the wire cannot render is rejected before any op is
+        // recorded.
+        let mut bad_row_id = values("t4");
+        bad_row_id.insert("id".to_owned(), json!({"nested": true}));
+        let row_id_error = client.mutate(upsert(bad_row_id)).expect_err("bad rowId");
+        assert_eq!(row_id_error.code, "sync.invalid_request");
+
+        // The sparse route classifies the same value failures.
+        for (label, partial, cause) in [
+            (
+                "patch wrong value type",
+                ("priority", json!("high")),
+                "expected an integer",
+            ),
+            ("patch unknown column", ("nope", json!(1)), "unknown column"),
+        ] {
+            let error = client
+                .patch(
+                    "tasks",
+                    "t1",
+                    Map::from_iter([(partial.0.to_owned(), partial.1)]),
+                    None,
+                )
+                .expect_err(label);
+            assert_eq!(error.code, "sync.invalid_request", "{label}: {error:?}");
+            assert_eq!(error.message, "the authoring request is invalid", "{label}");
+            assert!(
+                error.details.as_ref().unwrap()["legacyCause"]
+                    .as_str()
+                    .unwrap()
+                    .contains(cause),
+                "{label}"
+            );
+        }
+        assert_eq!(client.pending_commit_ids(), vec![seed.clone()]);
+        assert_eq!(client.local_revision(), 1);
+        assert_eq!(client.query("SELECT * FROM tasks", &[]).unwrap(), rows);
+
+        // Nothing is poisoned: the next valid authoring call succeeds.
+        let next = client
+            .mutate(upsert(values("t5")))
+            .expect("valid after failures");
+        assert_ne!(next, seed);
+
+        drop(client);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn client_error_maps_legacy_codes_and_static_messages() {
         let code_only = ClientError::from("sync.unknown_table".to_owned());
         assert_eq!(code_only.code, "sync.unknown_table");
