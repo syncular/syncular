@@ -415,6 +415,14 @@ code identity is kept; a failure with no code identity reports `client.failed`.
 When a legacy cause string embedded table or row values, the static message
 carries the fixed text and `details.legacyCause` preserves the original.
 
+`mutate` and `patch` validate the caller's values before they record anything.
+An unknown column, an internal `_sync_` column, a value whose JSON form does
+not match the column type, an absent required column in a full-row upsert, or a primary
+key the wire cannot render reports `sync.invalid_request`, whose fixed message
+is `the authoring request is invalid`; the dynamic cause stays in
+`details.legacyCause`. The rejected call preserves the outbox, optimistic rows, and local revision. `SyncRemoteClient::prepare_commit` classifies the
+same caller-value failures with the same code.
+
 A storage failure during authoring carries `details.sqliteCode` and
 `details.sqliteMessage`, and a failed rollback adds `details.rollbackFailure`.
 SQLite `SQLITE_BUSY` (5) and `SQLITE_LOCKED` (6), including extended codes,
