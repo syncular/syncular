@@ -6515,6 +6515,18 @@ mod observation_tests {
             let failure = reader.local_revision().expect_err("corrupt marker fails");
             assert_eq!(failure.code, Some("sync.local_corrupt"), "{bad:?}");
         }
+        for value in ["X'31'", "CAST(X'FF' AS TEXT)"] {
+            client
+                .conn
+                .execute_batch(&format!(
+                    "UPDATE _syncular_meta SET value={value} WHERE key='localRevision'"
+                ))
+                .expect("corrupt stored revision type");
+            assert_eq!(
+                reader.local_revision().expect_err("invalid SQL field").code,
+                Some("sync.local_corrupt")
+            );
+        }
         // The absent marker is the legacy zero, not corruption.
         client
             .conn
@@ -6580,6 +6592,23 @@ mod observation_tests {
                 .subscription_catchup("s1")
                 .expect_err("corrupt state fails");
             assert_eq!(failure.code, Some("sync.local_corrupt"), "{bad}");
+        }
+
+        for assignment in [
+            "tbl=X'7461736b73'",
+            "state_json=X'7b7d'",
+            "state_json=CAST(X'FF' AS TEXT)",
+        ] {
+            client.conn.execute_batch(&format!(
+                "UPDATE _syncular_subscriptions SET tbl='tasks',state_json='{{\"status\":\"active\",\"cursor\":0}}'; UPDATE _syncular_subscriptions SET {assignment} WHERE id='s1'"
+            )).expect("corrupt stored subscription type");
+            assert_eq!(
+                reader
+                    .subscription_catchup("s1")
+                    .expect_err("invalid SQL field")
+                    .code,
+                Some("sync.local_corrupt")
+            );
         }
 
         drop(reader);
@@ -8732,6 +8761,13 @@ fn snapshot_read_connection(
         rollback_failure: None,
         message: message.to_owned(),
     };
+    let stored_failure = |error: rusqlite::Error, message: &str| match error {
+        rusqlite::Error::Utf8Error(..)
+        | rusqlite::Error::InvalidColumnType(..)
+        | rusqlite::Error::FromSqlConversionFailure(..)
+        | rusqlite::Error::IntegralValueOutOfRange(..) => corrupt(message),
+        _ => QueryReadFailure::from(error),
+    };
     let result: Result<SnapshotRead, QueryReadFailure> = (|| {
         // The durable revision as a canonical decimal `u64`; a missing marker
         // is the legacy zero, and any other non-canonical value is corrupt.
@@ -8741,7 +8777,8 @@ fn snapshot_read_connection(
                 rusqlite::params![LOCAL_REVISION_KEY],
                 |row| row.get(0),
             )
-            .optional()?;
+            .optional()
+            .map_err(|error| stored_failure(error, "persisted local revision is invalid"))?;
         let revision = match revision {
             None => "0".to_owned(),
             Some(value)
@@ -8785,7 +8822,10 @@ fn snapshot_read_connection(
                     rusqlite::params![id],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
-                .optional()?;
+                .optional()
+                .map_err(|error| {
+                    stored_failure(error, "persisted subscription state is invalid")
+                })?;
             let Some((table, raw)) = row else {
                 subscriptions.push(SubscriptionCatchup::Unknown { id: id.clone() });
                 continue;
@@ -8858,13 +8898,7 @@ fn snapshot_read_connection(
                     StoredCommitOutcomeRow::from_row,
                 )
                 .optional()
-                .map_err(|error| match error {
-                    rusqlite::Error::InvalidColumnType(..)
-                    | rusqlite::Error::FromSqlConversionFailure(..)
-                    | rusqlite::Error::IntegralValueOutOfRange(..) =>
-                        corrupt("persisted commit outcome is invalid"),
-                    _ => QueryReadFailure::from(error),
-                })?;
+                .map_err(|error| stored_failure(error, "persisted commit outcome is invalid"))?;
             deliveries.push(match row {
                 Some(row) => CommitDelivery::Known {
                     client_commit_id: id.clone(),

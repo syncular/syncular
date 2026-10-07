@@ -18,7 +18,7 @@ export const changelog = [
   {
     date: '2026-10-06',
     title: 'Snapshot read sidecar: revision, catch-up, and delivery',
-    body: 'TS and Rust clients expose atomic snapshot reads with multiple SQL statements, window coverage, subscription bootstrap progress, and commit delivery status under one revision. Native file-backed reads use the independent SQLite sidecar. Corrupt revision markers, contradictory outcome statuses, malformed stored operations, and invalid subscription scopes fail with sync.local_corrupt, and Tauri preserves structured read failures and query-owner diagnostics. Generic and dedicated Tauri snapshot commands share one read path; repeated successful reads add no diagnostics mailbox traffic.',
+    body: 'TS and Rust clients expose atomic snapshot reads with multiple SQL statements, window coverage, subscription bootstrap progress, and commit delivery status under one revision. Native file-backed reads use the independent SQLite sidecar. Corrupt revision markers, invalid SQLite metadata types, contradictory outcome statuses, malformed stored operations, and invalid subscription scopes fail with sync.local_corrupt, and Tauri preserves structured read failures and query-owner diagnostics. Generic and dedicated Tauri snapshot commands share one read path; repeated successful reads add no diagnostics mailbox traffic.',
     links: [
       {
         href: '/platform-rust/#snapshot-read-sidecar',

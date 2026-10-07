@@ -474,7 +474,8 @@ freshness. A commit delivery is `pending` while the id has an outbox entry,
 otherwise the persisted retained outcome, otherwise `unknown`. The sidecar
 reports the persisted outcome fields (status, every result with its conflict
 or rejection code, the retained operation envelope, and the resolution) and
-omits the owner-derived `retainedRows` images. Invalid stored field types,
+omits the owner-derived `retainedRows` images. Invalid SQLite metadata types
+(including BLOB values where text is required), invalid stored field types,
 fractional indexes or versions, unsafe integer metadata, malformed conflict
 columns, invalid rejection details, contradictory outcome statuses, and
 malformed stored operations fail with `sync.local_corrupt`. Stored upserts
