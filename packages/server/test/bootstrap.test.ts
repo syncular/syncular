@@ -48,6 +48,54 @@ function refSegments(body: { type: string }[]): SegmentRefFrame[] {
 }
 
 describe('fresh bootstrap (§4.7, §5.7)', () => {
+  test('Bun hosts require an injected builder for cold images but reuse stored images without it', async () => {
+    const t = makeContext();
+    await seedTask(t, 'c1', 't1', 'p1', 'one');
+    await seedTask(t, 'c2', 't2', 'p1', 'two');
+    const { sqliteImageBuilder, ...withoutBuilder } = t.ctx;
+    expect(sqliteImageBuilder).toBe(buildSqliteImage);
+    const frames = [
+      pullHeader({ accept: 0b1111, limitSnapshotRows: 1 }),
+      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
+    ];
+    const rows = section(
+      await sync({ ...t, ctx: withoutBuilder }, frames),
+      's1',
+    );
+    expect(
+      inlineSegments(rows.body).length + refSegments(rows.body).length,
+    ).toBeGreaterThan(0);
+    expect(
+      refSegments(rows.body).some((frame) => frame.mediaType === 'sqlite'),
+    ).toBe(false);
+
+    const external = section(
+      await sync(
+        {
+          ...t,
+          ctx: { ...withoutBuilder, limits: { inlineSegmentMaxBytes: 0 } },
+        },
+        frames,
+      ),
+      's1',
+    );
+    expect(inlineSegments(external.body)).toHaveLength(0);
+    expect(refSegments(external.body).length).toBeGreaterThan(0);
+    expect(
+      refSegments(external.body).every((frame) => frame.mediaType === 'rows'),
+    ).toBe(true);
+
+    const image = section(await sync(t, frames), 's1');
+    const imageRefs = refSegments(image.body);
+    expect(imageRefs).toHaveLength(1);
+    expect(imageRefs[0]?.mediaType).toBe('sqlite');
+    const reused = section(
+      await sync({ ...t, ctx: withoutBuilder }, frames),
+      's1',
+    );
+    expect(refSegments(reused.body)).toEqual(imageRefs);
+  });
+
   test('cursor -1 delivers an inline rows segment and completes', async () => {
     const t = makeContext();
     t.scopes.value = { project_id: ['p1', 'p2'] };

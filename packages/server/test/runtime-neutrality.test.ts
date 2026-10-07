@@ -9,7 +9,7 @@
  * The enforcement is a static import-graph scan (not a runtime emulation):
  * starting from the neutral entry files a Workers deployment actually loads
  * (`handler.ts`, `realtime.ts`, `d1-storage.ts`, the memory stores, the
- * Workers-facing helpers), we walk every relative `import`/`export … from`
+ * Workers-facing helpers), we walk every relative static or dynamic import and `export … from`
  * and assert none of the reachable files:
  *   - import a `bun:*` or `node:*` builtin, or
  *   - reference `Bun.` or the `Buffer` global.
@@ -20,7 +20,8 @@
  * builtin, this test fails at the source that introduced it.
  */
 import { describe, expect, test } from 'bun:test';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 
 const SRC = resolve(import.meta.dir, '..', 'src');
@@ -74,7 +75,8 @@ function resolveImport(fromFile: string, specifier: string): string | null {
  * dependency and are excluded — a type-only reference to a Bun-specific
  * module's *types* is neutral.
  */
-function relativeSpecifiers(source: string): string[] {
+function runtimeSpecifiers(source: string): string[] {
+  source = stripComments(source);
   const out: string[] = [];
   const re =
     /(?:import|export)(\s+type)?\s+(?:[^'"]*?\sfrom\s+)?['"]([^'"]+)['"]/g;
@@ -83,6 +85,12 @@ function relativeSpecifiers(source: string): string[] {
     const isTypeOnly = match[1] !== undefined;
     if (!isTypeOnly && match[2] !== undefined) out.push(match[2]);
     match = re.exec(source);
+  }
+  for (const dynamic of source.matchAll(
+    /\bimport\s*\(\s*(?:'([^']+)'|"([^"]+)"|`([^`$]+)`)/g,
+  )) {
+    const specifier = dynamic[1] ?? dynamic[2] ?? dynamic[3];
+    if (specifier !== undefined) out.push(specifier);
   }
   return out;
 }
@@ -96,7 +104,7 @@ function reachableCoreFiles(): string[] {
     if (file === undefined || seen.has(file)) continue;
     seen.add(file);
     const source = readFileSync(file, 'utf8');
-    for (const specifier of relativeSpecifiers(source)) {
+    for (const specifier of runtimeSpecifiers(source)) {
       const resolved = resolveImport(file, specifier);
       if (resolved !== null && !seen.has(resolved)) queue.push(resolved);
     }
@@ -111,11 +119,64 @@ function stripComments(source: string): string {
     .replace(/(^|[^:])\/\/.*$/gm, '$1');
 }
 
-const FORBIDDEN_IMPORT = /from\s+['"](bun:[^'"]+|node:[^'"]+)['"]/;
+const FORBIDDEN_IMPORT = /^(bun|node):/;
 const FORBIDDEN_GLOBAL = /\bBun\.|\bBuffer\b/;
 
 describe('runtime neutrality (static scan)', () => {
   const files = reachableCoreFiles();
+
+  test('scanner includes guarded dynamic imports and excludes erased types and comments', () => {
+    expect(
+      runtimeSpecifiers(`
+      import type { Driver } from './sqlite-bun';
+      export type { Driver } from './sqlite-node';
+      // import('./commented');
+      /* import('node:fs'); */
+      import './side-effect';
+      export { handler } from './handler';
+      if (globalThis.Bun) await import('./sqlite-bun');
+      await import('bun:sqlite');
+      await import(\`./sqlite-node\`);
+    `),
+    ).toEqual([
+      './side-effect',
+      './handler',
+      './sqlite-bun',
+      'bun:sqlite',
+      './sqlite-node',
+    ]);
+  });
+
+  test('neutral entry bundles for browsers without minification', () => {
+    const directory = mkdtempSync(resolve(tmpdir(), 'syncular-neutral-'));
+    const output = resolve(directory, 'server.js');
+    try {
+      // This checkout has no dist files. Select source exports and isolate
+      // Bun's build resolver from later imports in the test process.
+      const result = Bun.spawnSync({
+        cmd: [
+          process.execPath,
+          'build',
+          resolve(SRC, 'index.ts'),
+          '--target',
+          'browser',
+          '--conditions',
+          'bun',
+          '--outfile',
+          output,
+        ],
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      expect(result.stderr.toString()).toBe('');
+      expect(result.exitCode).toBe(0);
+      const source = readFileSync(output, 'utf8');
+      expect(source.length).toBeGreaterThan(0);
+      expect(source).not.toMatch(/(?:bun|node):(?:sqlite|fs|path)/);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
 
   test('the core import graph is non-trivial (the walk actually ran)', () => {
     // Sanity: the handler alone pulls in pull/push/scopes/context/etc.
@@ -126,9 +187,10 @@ describe('runtime neutrality (static scan)', () => {
     const offenders: string[] = [];
     for (const file of files) {
       const source = stripComments(readFileSync(file, 'utf8'));
-      if (FORBIDDEN_IMPORT.test(source)) {
-        const line = source.split('\n').find((l) => FORBIDDEN_IMPORT.test(l));
-        offenders.push(`${file.slice(SRC.length + 1)}: ${line?.trim()}`);
+      for (const specifier of runtimeSpecifiers(source)) {
+        if (FORBIDDEN_IMPORT.test(specifier)) {
+          offenders.push(`${file.slice(SRC.length + 1)}: ${specifier}`);
+        }
       }
     }
     expect(offenders).toEqual([]);

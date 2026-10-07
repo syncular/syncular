@@ -14,6 +14,7 @@
  * Storage is bun:sqlite (in-memory by default; set SYNCULAR_DEMO_DB=path
  * for a file). The schema is the typegen-generated module.
  */
+import { buildSqliteImage } from '@syncular/server/sqlite';
 import { dirname, join } from 'node:path';
 import {
   composeEvents,
@@ -79,12 +80,14 @@ const hub = createRealtimeHub({
   // §8.7: the socket carries sync rounds through the same handler and
   // segment store as POST /sync.
   segments,
+  sqliteImageBuilder: buildSqliteImage,
   events,
 });
 const config: SyncServerConfig = {
   schema,
   storage,
   segments,
+  sqliteImageBuilder: buildSqliteImage,
   blobs,
   resolveScopes,
   realtime: hub,

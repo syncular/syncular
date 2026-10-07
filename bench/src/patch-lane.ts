@@ -6,6 +6,7 @@
  * patch; the sparse client sends the primary key plus the two written
  * columns. Request bytes are deterministic; drain time varies run to run.
  */
+import { buildSqliteImage } from '@syncular/server/sqlite';
 import type { ClientSchema } from '@syncular/client';
 import { encodeRow, type RowColumn, type RowValue } from '@syncular/core';
 import {
@@ -120,6 +121,7 @@ export async function runPatchLane(options?: {
     storage,
     resolveScopes,
     segments,
+    sqliteImageBuilder: buildSqliteImage,
   });
   const ctx: SyncRequestContext = {
     partition: PARTITION,
@@ -127,6 +129,7 @@ export async function runPatchLane(options?: {
     schema: SCHEMA,
     storage,
     segments,
+    sqliteImageBuilder: buildSqliteImage,
     resolveScopes,
     realtime: hub,
   };

@@ -23,7 +23,6 @@ import {
 import { scopeDigest } from './scopes';
 import type { SegmentRecord, SegmentStore } from './segment-store';
 import { issueSegmentUrl } from './signed-url';
-import type { SqliteImageBuilder } from './sqlite-image';
 import type { ServerStorage, StoredCommit, StoredRow } from './storage';
 import { projectRowPayload, projectRowValues } from './schema-window';
 
@@ -32,26 +31,6 @@ const imageBuilds = new WeakMap<
   ServerStorage,
   WeakMap<SegmentStore, Map<string, Promise<SegmentRecord>>>
 >();
-
-/**
- * Resolve the §5.3 image builder: the host-injected one if present, else the
- * in-tree `buildSqliteImage` on a Bun runtime (dynamic import so `bun:sqlite`
- * is never a static dep of the neutral core), else `undefined` (rows lane).
- * Memoized so the dynamic import happens at most once per process.
- */
-let cachedDefaultBuilder: SqliteImageBuilder | null | undefined;
-async function resolveImageBuilder(
-  ctx: SyncRequestContext,
-): Promise<SqliteImageBuilder | undefined> {
-  if (ctx.sqliteImageBuilder !== undefined) return ctx.sqliteImageBuilder;
-  if (cachedDefaultBuilder === undefined) {
-    const hasBun = (globalThis as { Bun?: unknown }).Bun !== undefined;
-    cachedDefaultBuilder = hasBun
-      ? (await import('./sqlite-bun')).buildSqliteImage
-      : null;
-  }
-  return cachedDefaultBuilder ?? undefined;
-}
 
 /** §4.2 accept bitmask. */
 export const ACCEPT_INLINE_ROWS = 1 << 0;
@@ -280,14 +259,9 @@ async function* sqliteImageSegment(
   // rows page — smaller tables stay on the (typically inline) rows lane.
   // The probe is the rows lane's first page, read by `prepareSections`.
   if (probe.length <= limits.limitSnapshotRows) return false;
-  // §5.3: building an image needs a SQLite engine. The host injects the
-  // builder through `sqliteImageBuilder`; when omitted we default to the
-  // in-tree `buildSqliteImage` ONLY on a Bun runtime, reached by a *dynamic*
-  // import so `bun:sqlite` is never a static dependency of the pull path
-  // (runtime neutrality is enforced by test/runtime-neutrality.test.ts). On
-  // Workers/edge (no `Bun`) this yields the rows lane for a bit-2 client — a
-  // support floor, not a fallback (§5.3: sqlite is an *accept*, not a demand).
-  const buildImage = await resolveImageBuilder(ctx);
+  // §5.3: hosts opt into image construction with a runtime-specific builder.
+  // Without one, matching stored images remain usable and cold pulls use rows.
+  const buildImage = ctx.sqliteImageBuilder;
   if (buildImage === undefined) return false;
   let stores = imageBuilds.get(storage);
   if (stores === undefined) {

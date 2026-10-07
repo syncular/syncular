@@ -28,8 +28,8 @@ telemetry. See the [domain event guide](https://syncular.dev/guide-domain-events
 
 The server core is **runtime-neutral TypeScript** — `handleSyncRequest` and
 the realtime session speak only Web `Request`/`Response`/`fetch`/Web-Crypto,
-no Bun- or Node-only builtin (enforced by a static import-graph scan,
-`test/runtime-neutrality.test.ts`). Adapters wire that core to a runtime.
+no Bun- or Node-only builtin (enforced by static and dynamic import scans
+and an unminified browser bundle in `test/runtime-neutrality.test.ts`). Adapters wire that core to a runtime.
 The supported set, and what deliberately does **not** get an adapter:
 
 | Runtime | Adapter | Transport | Storage | Status |
@@ -83,11 +83,12 @@ import {
   ensureSyncServerReady,
   type SyncServerConfig,
 } from '@syncular/server';
-import { SqliteServerStorage } from '@syncular/server/sqlite';
+import { buildSqliteImage, SqliteServerStorage } from '@syncular/server/sqlite';
 
 const config: SyncServerConfig = {
   schema,
   storage: new SqliteServerStorage('./sync.db'),
+  sqliteImageBuilder: buildSqliteImage,
   segments,
   resolveScopes,
 };
@@ -101,6 +102,14 @@ Bun.serve({ fetch: app.fetch });
 storage, leases, and SQLite-image generation without an external SQLite
 package. The runtime-specific database wrappers are `BunSqliteDatabase` and
 `NodeSqliteDatabase` when a host needs direct access to the native handle.
+
+Hosts opt into building SQLite bootstrap images by supplying
+`sqliteImageBuilder: buildSqliteImage` in the server config (and the realtime
+hub config when it serves sync rounds). The neutral `@syncular/server` entry
+never detects the runtime or loads a SQLite builder. Import the builder from
+`@syncular/server/sqlite` on Bun or Node. Without a builder, the server serves
+matching stored images and negotiates inline or external rows, including
+signed URLs when configured, according to the client's accepted formats.
 
 The helper accepts the generated `ServerSchema`, compiles it, and calls the
 storage backend's low-level `ensureSchema(CompiledSchema)`. A failure is a

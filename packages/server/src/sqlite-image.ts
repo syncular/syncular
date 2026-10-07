@@ -69,7 +69,7 @@ export interface SqliteImageInput {
  * a real SQLite engine, which is not available on every runtime. The core
  * takes the builder as an optional capability rather than importing a driver
  * on the pull path. A Bun or Node host passes `buildSqliteImage`; a Workers
- * host omits it and serves the rows lane.
+ * host omits it and serves matching stored images or the rows lane.
  */
 export type SqliteImageBuilder = (
   input: SqliteImageInput,

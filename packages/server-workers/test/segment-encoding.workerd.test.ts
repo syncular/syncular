@@ -18,45 +18,35 @@ let mf: Miniflare;
 
 beforeAll(async () => {
   const outdir = mkdtempSync(join(tmpdir(), 'syncular-workerd-'));
-  const built = await Bun.build({
-    entrypoints: [resolve(import.meta.dir, 'workerd/segment-worker.ts')],
-    outdir,
-    target: 'browser',
-    format: 'esm',
-    // pull.ts imports the Bun-only image builder lazily; workerd never
-    // evaluates that chunk.
-    splitting: true,
-    external: ['bun:sqlite'],
-    plugins: [
-      {
-        // The repo is dist-free; bundle the runtime-neutral sources.
-        name: 'syncular-sources',
-        setup(build) {
-          build.onResolve(
-            { filter: /^@syncular\/(core|server|server-hono)$/ },
-            (args) => ({
-              path: resolve(
-                packages,
-                args.path.slice('@syncular/'.length),
-                'src/index.ts',
-              ),
-            }),
-          );
-          // The test runner's bundler does not resolve bare dependencies
-          // of the redirected sources on its own.
-          build.onResolve({ filter: /^hono(\/.*)?$/ }, (args) => ({
-            path: Bun.resolveSync(args.path, resolve(packages, 'server-hono')),
-          }));
-        },
-      },
+  // Bundling a workspace package with an in-process `Bun.build` leaks the
+  // bundler's resolver state into every later import in the test process
+  // (Bun 1.4.0), so fetch/realtime tests in the same invocation cannot
+  // resolve `@syncular/core`. Run the build in its own process; the CLI
+  // resolves the dist-free sources through the `bun` condition.
+  const built = Bun.spawnSync({
+    cmd: [
+      process.execPath,
+      'build',
+      resolve(import.meta.dir, 'workerd/segment-worker.ts'),
+      '--outdir',
+      outdir,
+      '--target',
+      'browser',
+      '--format',
+      'esm',
+      '--conditions',
+      'bun',
     ],
+    cwd: packages,
+    stdout: 'pipe',
+    stderr: 'pipe',
   });
-  expect(built.logs).toEqual([]);
+  expect(built.stderr.toString()).toBe('');
+  expect(built.exitCode).toBe(0);
+  const output = join(outdir, 'segment-worker.js');
+  expect(await Bun.file(output).text()).not.toContain('bun:sqlite');
   mf = new Miniflare({
-    modules: built.outputs.map((output) => ({
-      type: 'ESModule' as const,
-      path: output.path,
-    })),
+    modules: [{ type: 'ESModule' as const, path: output }],
     modulesRoot: outdir,
     compatibilityDate: '2026-07-01',
     compatibilityFlags: ['nodejs_compat'],

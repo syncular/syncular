@@ -182,11 +182,10 @@ export interface SyncServerConfig {
    */
   readonly blobUploadUrls?: BlobUploadPresignConfig;
   /**
-   * §5.3 sqlite-image builder, injected so the pull path never
-   * statically imports `bun:sqlite`. Absent ⇒ the sqlite-image lane is off
-   * (bit-2 clients are served the rows lane) — the Workers/edge posture. A
-   * Bun or Node host wires `buildSqliteImage` from
-   * `@syncular/server/sqlite`.
+   * §5.3 sqlite-image builder. The host explicitly imports and supplies
+   * `buildSqliteImage` from `@syncular/server/sqlite` on Bun or Node.
+   * Absent ⇒ serve matching stored images or negotiate the rows lane.
+   * The neutral core never imports a runtime-specific builder.
    */
   readonly sqliteImageBuilder?: SqliteImageBuilder;
   readonly realtime?: RealtimeNotifier;

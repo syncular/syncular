@@ -81,6 +81,17 @@ Segment transfer errors omit request URLs, including signed paths, and raw
 exception messages. They report a static message with `causeKind` and optional
 `httpStatus` details. See [transfer failures](./concepts-blobs.md#transfer-failures).
 
+## Opting into image construction
+
+Bun and Node hosts import `buildSqliteImage` from `@syncular/server/sqlite`
+and set `sqliteImageBuilder: buildSqliteImage` in the server config. Set the
+same field in the realtime hub config when it serves sync rounds. The neutral
+`@syncular/server` entry never loads a runtime-specific builder automatically.
+
+Without a builder, the server can reuse a matching stored SQLite image. Cold
+bootstraps use inline or external rows according to the client's accepted
+formats; configured signed URLs remain available for external rows.
+
 ## Publishing images from another host
 
 A Workers host has no SQLite engine, so it cannot build images; it serves an

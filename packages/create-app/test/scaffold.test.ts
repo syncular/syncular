@@ -7,10 +7,17 @@
  * Tiering (reported in the changelog): the always-run tier is scaffold-shape +
  * `generate --check` + typecheck + the app smoke, all offline and fast. The
  * env-flagged tier (`SYNCULAR_TEMPLATE_INSTALL=1`) additionally does a real
- * `bun install` per template — network-dependent, so it is opt-in.
+ * `bun install` per template against packed workspace packages. Run
+ * `bun run build:packages` first; external dependencies need the network.
  */
-import { afterAll, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -20,12 +27,38 @@ import {
   TEMPLATES,
 } from '../src/scaffold';
 import { linkWorkspaceInto, workspaceRoot } from './link-workspace';
+import { WORKSPACE_PACKAGES } from '../src/constants';
 
 const CLI = join(import.meta.dir, '..', '..', 'typegen', 'src', 'cli.ts');
 const TSC = join(workspaceRoot(), 'node_modules', '.bin', 'tsc');
 const RUN_INSTALL = process.env.SYNCULAR_TEMPLATE_INSTALL === '1';
 
 const tempDirs: string[] = [];
+const packedPackages = new Map<string, string>();
+beforeAll(() => {
+  if (!RUN_INSTALL) return;
+  const directory = mkdtempSync(join(tmpdir(), 'syncular-template-packages-'));
+  tempDirs.push(directory);
+  for (const name of WORKSPACE_PACKAGES) {
+    const shortName = name.slice('@syncular/'.length);
+    const source = join(
+      workspaceRoot(),
+      'packages',
+      shortName === 'client' ? 'web-client' : shortName,
+    );
+    expect(
+      existsSync(join(source, 'dist')),
+      'run bun run build:packages before the install lane',
+    ).toBe(true);
+    const archive = join(directory, `${shortName}.tgz`);
+    const packed = run(
+      ['bun', 'pm', 'pack', '--quiet', '--filename', archive],
+      source,
+    );
+    expect(packed.exitCode, packed.stderr).toBe(0);
+    packedPackages.set(name, `file:${archive}`);
+  }
+}, 30_000);
 afterAll(() => {
   for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
 });
@@ -179,11 +212,29 @@ for (const template of TEMPLATES) {
       () => {
         const target = tmpTarget();
         scaffoldApp({ template, targetDir: target, local: true });
+        const manifestPath = join(target, 'package.json');
+        const manifest: {
+          dependencies?: Record<string, string>;
+          devDependencies?: Record<string, string>;
+          overrides?: Record<string, string>;
+        } = JSON.parse(readFileSync(manifestPath, 'utf8'));
+        for (const dependencies of [
+          manifest.dependencies,
+          manifest.devDependencies,
+        ]) {
+          if (dependencies === undefined) continue;
+          for (const [name, archive] of packedPackages) {
+            if (name in dependencies) dependencies[name] = archive;
+          }
+        }
+        manifest.overrides = Object.fromEntries(packedPackages);
+        writeFileSync(manifestPath, JSON.stringify(manifest));
         const install = run(['bun', 'install'], target);
-        expect(install.exitCode).toBe(0);
+        expect(install.exitCode, install.stderr).toBe(0);
         const smoke = run(['bun', 'test'], target);
         expect(smoke.exitCode).toBe(0);
       },
+      30_000,
     );
   });
 }

@@ -27,12 +27,13 @@ import {
   type SyncServerConfig,
 } from '@syncular/server';
 import { createSyncularHono } from '@syncular/server-hono';
-import { SqliteServerStorage } from '@syncular/server/sqlite';
+import { buildSqliteImage, SqliteServerStorage } from '@syncular/server/sqlite';
 import { schema } from './syncular.generated';
 
 const config: SyncServerConfig = {
   schema,
   storage: new SqliteServerStorage('./data.db'), // or ':memory:'
+  sqliteImageBuilder: buildSqliteImage,
   segments: new MemorySegmentStore(),
   resolveScopes: async ({ actorId }) => ({ list_id: await listsFor(actorId) }),
 };
@@ -48,6 +49,11 @@ const app = createSyncularHono({
 await ensureSyncServerReady(config);
 Bun.serve({ port: 8787, fetch: app.fetch });
 ```
+
+`sqliteImageBuilder` opts this host into building SQLite bootstrap images.
+Supply it to the realtime hub too when the hub serves sync rounds. Without
+it, the server serves matching stored images or inline/external rows. See
+[image construction](/concepts-bootstrap/#opting-into-image-construction).
 
 Two callbacks handle all of the security, and both run in **your**
 backend: `authenticate` maps a request to `{ actorId, partition }` (or

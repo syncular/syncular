@@ -5,6 +5,7 @@
  * React tests need. This proves the hooks work against the SHIPPED
  * `SyncClient` with REAL choke-point invalidation — not a fake.
  */
+import { buildSqliteImage } from '@syncular/server/sqlite';
 
 import {
   type ClientSchema,
@@ -64,6 +65,7 @@ export function makeServer(): LoopbackServer {
   };
   const resolveScopes = (): ScopeMap => ({ project_id: ['*'] });
   const hub = createRealtimeHub({
+    sqliteImageBuilder: buildSqliteImage,
     schema: SERVER_SCHEMA,
     storage,
     resolveScopes,
@@ -76,6 +78,7 @@ export function makeServer(): LoopbackServer {
     segments,
     now,
     ctxFor: (actorId) => ({
+      sqliteImageBuilder: buildSqliteImage,
       partition: PARTITION,
       actorId,
       schema: SERVER_SCHEMA,

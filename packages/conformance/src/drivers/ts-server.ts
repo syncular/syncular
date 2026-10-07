@@ -4,6 +4,7 @@
  * through bytes (`handleSyncRequest`), the §5.5 download handler, and the
  * realtime hub — the same entry points a framework adapter uses.
  */
+import { buildSqliteImage } from '@syncular/server/sqlite';
 import {
   decodeRow,
   type RowColumn,
@@ -351,6 +352,7 @@ class TsServerInstance implements ServerInstance {
     };
     this.#wrapped = this.#wrapStorage();
     this.#hub = createRealtimeHub({
+      sqliteImageBuilder: buildSqliteImage,
       schema: this.#serverSchema,
       ...(this.#schemaWindow !== undefined
         ? { schemaWindow: this.#schemaWindow }
@@ -474,6 +476,7 @@ class TsServerInstance implements ServerInstance {
 
   #ctx(actorId: string): SyncRequestContext {
     return {
+      sqliteImageBuilder: buildSqliteImage,
       onError: (error) => this.#report(error),
       partition: this.#partition,
       actorId,

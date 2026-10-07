@@ -7,6 +7,7 @@
  * `client.ts`, calling `handleSyncRequest` / `handleSegmentDownload`
  * directly.
  */
+import { buildSqliteImage } from '@syncular/server/sqlite';
 
 import { type ClientSchema, compileClientSchema } from '@syncular/client';
 import {
@@ -80,6 +81,7 @@ export function createTestServer(options: TestServerOptions): TestServer {
   const resolveScopes = options.resolveScopes ?? allowAllScopes(schema);
   const clockFn = () => clock.now();
   const hub = createRealtimeHub({
+    sqliteImageBuilder: buildSqliteImage,
     schema: serverSchema,
     storage,
     resolveScopes,
@@ -98,6 +100,7 @@ export function createTestServer(options: TestServerOptions): TestServer {
     hub,
     partition,
     ctxFor: (actorId) => ({
+      sqliteImageBuilder: buildSqliteImage,
       partition,
       actorId,
       schema: serverSchema,
