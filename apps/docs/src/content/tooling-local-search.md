@@ -1,19 +1,41 @@
 # Local full-text search
 
-Syncular can generate and maintain an FTS5 projection beside a synced table,
-giving every client full-text search while offline. The
-projection is local SQLite state: it is never subscribed, mutated, uploaded,
-or stored by the server.
+Add a local full-text projection when users must search synced text while offline, such as notes, messages, or documents. Syncular generates and maintains an FTS5 projection beside a synced table in each client's SQLite database. The projection is local state: the server never receives, stores, or serves it. This guide takes you from a declaration to a ranked, highlighted search query.
 
-The TypeScript and Rust cores implement the same schema contract, so one
-declaration works on web, Tauri, React Native, Swift, Kotlin, Flutter, and
-direct Rust hosts.
+::meta{for="App developers adding offline search on any SDK" time="10 minutes" first="tooling-queries" spec="2.4"}
 
-## Declare the projection
+:::terms
+- **FTS5 projection**: A local SQLite full-text index over columns of one synced table.
+- **Owner table**: The synced table the projection indexes, named by `content = …`.
+- **Source id**: The projection's private `_syncular_source_id` column; it holds the owner's primary key as text.
+:::
 
-Add a virtual table to your normal migration history after its owning table:
+:::figure{title="Where the index lives" note="Local state only" ticks}
+<div class="d-cols-2">
+<div class="d-box">
+<p class="d-label">Client · local SQLite</p>
+<div class="d-stack">
+<div class="node ok"><span class="t">Owner table</span>patient_notes<br>synced, scoped, subscribed</div>
+<div class="d-down"><small>triggers keep it aligned in the same transaction</small></div>
+<div class="node hot"><span class="t">FTS5 projection</span>patient_notes_fts<br>never subscribed, mutated, or uploaded</div>
+</div>
+</div>
+<div class="d-box">
+<p class="d-label">Server</p>
+<div class="node"><span class="t">Owner rows only</span>No projection, no index, no search service</div>
+</div>
+</div>
 
-```sql
+::caption[Bootstrap, incremental sync, optimistic writes, rejection rollback, deletes, scope eviction, and schema reset all update the projection with the owner row.]
+:::
+
+The TypeScript and Rust cores implement the same schema contract, so one declaration works on web, Tauri, React Native, Swift, Kotlin, Flutter, and direct Rust hosts.
+
+::::steps
+:::step{title="Declare the projection" time="3 min"}
+Add a virtual table to your migration history after its owner table:
+
+```sql title="migrations/001_notes.sql"
 CREATE TABLE patient_notes (
   id TEXT PRIMARY KEY,
   clinic_id TEXT NOT NULL,
@@ -30,31 +52,14 @@ CREATE VIRTUAL TABLE patient_notes_fts USING fts5(
 );
 ```
 
-Here `content = patient_notes` declares ownership to Syncular; it is not
-passed through as SQLite external-content mode. Keep only the owning table in
-`syncular.json.tables`. Typegen attaches the projection to that table in the
-neutral IR and every generated client schema.
+`content = patient_notes` declares ownership to Syncular and is not passed to SQLite as external-content mode. List only the owner table in `syncular.json.tables`. Typegen attaches the projection to that table in the neutral IR and in every generated client schema.
 
-Projection names are globally unique. A projection accepts 1–32 distinct
-declared-string columns. Supported tokenizers are:
+::checkpoint[`syncular generate` succeeds and the generated schema for `patient_notes` carries the projection.]
+:::
+:::step{title="Write the search query" time="4 min"}
+Use a normal `.sql` or `.syql` [named query](/tooling-queries/). Join the projection's source id back to the owner table for scopes, metadata, and a generated row key:
 
-- `unicode61` (the default), including `remove_diacritics 0`, `1`, or `2`;
-- `porter unicode61`;
-- `trigram`.
-
-Arbitrary virtual-table modules, options, tokenizers, prefix definitions, and
-hand-written maintenance triggers fail generation. There is no silent
-`LIKE '%…%'` fallback: a host without FTS5 support fails local schema creation
-instead of returning incomplete search results.
-
-## Query it
-
-Use a normal `.sql` or `.syql` named query. Join the projection's stable source
-identity back to the synced table for scopes, metadata, and a generated row
-key:
-
-```sql
--- queries/search-notes.sql
+```sql title="queries/search-notes.sql"
 SELECT patient_notes_fts._syncular_source_id AS fts_source_id,
        n.id,
        n.title,
@@ -71,66 +76,48 @@ ORDER BY rank,
 LIMIT 50;
 ```
 
-`MATCH` gives `query` a generated string type. `bm25`, `highlight`, and
-`snippet` are admitted by the portable SQL profile only when the statement
-references a schema-declared FTS projection. Typegen treats the projected
-`_syncular_source_id` as exact non-null text and can use it with the owner key
-to prove stable identity for a bounded query.
+`MATCH` gives `query` a generated string type. The portable SQL profile admits `bm25`, `highlight`, and `snippet` only in a statement that references a schema-declared FTS projection. Typegen treats the projected `_syncular_source_id` as exact non-null text and uses it with the owner key to prove stable identity for a bounded query.
 
-Reading `_syncular_source_id` from the projection makes FTS5 fetch the content
-row of every match. The client keeps a mapping table whose key equals the
-projection rowid, and the generated SQL reads each source id through it. The
-authored query, its types, and its rows stay the same; on 50,000 matches the
-generated form took 53.9 ms against 73.6 ms for the authored form (Bun 1.4.0,
-macOS arm64). `highlight` and `snippet` still read the content row of every
-match they are evaluated for.
+The `n.clinic_id = :clinicId` predicate carries the synchronization coverage. The projection maps back to its owner table for reactive dependencies, so a content change invalidates generated React queries normally, but the projection never claims independent scopes or completeness.
 
-A search that ranks many matches and returns a few wide rows ranks narrow rows
-in a bounded CTE first; see [ranked top-N](/syql/#ranked-top-n).
+::checkpoint[`syncular generate` emits a typed `searchNotesQuery` whose `query` parameter is a string.]
+:::
+:::step{title="Run the query" time="3 min"}
+Call the generated query from your SDK like any other named query ([Named queries](/tooling-queries/)). In React:
 
-The projection maps back to its owning synced table for reactive dependencies.
-A content change therefore invalidates generated React queries normally.
-Synchronization coverage still comes from predicates on the synced owner; the
-local projection never claims independent scopes or completeness.
+```tsx title="src/Search.tsx"
+const results = useQuery(searchNotesQuery, { query: term, clinicId });
+```
+
+::checkpoint[With the network off, typing a word that appears in a note returns that note with its `excerpt`.]
+:::
+::::
+
+## What a projection accepts
+
+A projection names 1 to 32 distinct declared-string columns of its owner table. Projection names are globally unique. The supported tokenizers are:
+
+- `unicode61` (the default), including `remove_diacritics 0`, `1`, or `2`;
+- `porter unicode61`;
+- `trigram`.
+
+Arbitrary virtual-table modules, options, tokenizers, prefix definitions, and hand-written maintenance triggers fail generation. No `LIKE '%…%'` fallback exists: a host without FTS5 support fails local schema creation instead of returning incomplete search results. The exact migration subset is on [Schema & typegen](/guide-schema/); the query language is [SYQL](/syql/). A search that ranks many matches and returns a few wide rows ranks narrow rows in a bounded CTE first ([ranked top-N](/syql/#ranked-top-n)).
 
 ## Lifecycle and encryption
 
-The client creates a contentful FTS table with a private stable source-id
-column and deterministic maintenance triggers. Existing owner rows are bulk
-indexed when the projection first appears. Bootstrap, incremental sync,
-optimistic writes, rejection rollback, deletes, scope eviction, and schema
-reset keep it transactionally aligned with the visible table.
+The client creates a contentful FTS table with a private stable source-id column and deterministic maintenance triggers. When a projection first appears, the client bulk-indexes the existing owner rows.
 
-Encrypted columns are eligible when their declared application type is
-`string`: `patient_notes.body` above can be an
-[encrypted column](/concepts-encryption/) and still be searched. Encryption
-happens only at the wire boundary: FTS indexes the decrypted value already
-present in the protected local mirror, while the server and commit log retain
-ciphertext. Revoking that local plaintext requires the
-same subscription gating and [authorized local purge](/concepts-local-data-purge/)
-as its owner row; the purge removes both in one transaction.
+An [encrypted column](/concepts-encryption/) is eligible when its declared application type is `string`, so `patient_notes.body` above can be encrypted and still searched. Encryption applies at the wire boundary: FTS indexes the decrypted value already in the protected local mirror, while the server and the commit log keep ciphertext. Revoking that local plaintext needs the same subscription gating and [authorized local purge](/concepts-local-data-purge/) as the owner row, and the purge removes both in one transaction.
 
 ## Boundaries
 
-- FTS is local search, not a server-side search service.
-- The projection cannot be subscribed or written through `mutate()`.
-- Rank is local presentation data; do not treat it as a cross-database
-  protocol value.
-- The application primary key is the durable identity. Syncular does not rely
-  on SQLite `rowid`, including for `WITHOUT ROWID` tables.
+- FTS is local search. No server-side search service exists.
+- A projection cannot be subscribed or written through `mutate()`.
+- Rank is local presentation data. Do not treat it as a cross-database protocol value.
+- The application primary key is the durable identity. Syncular does not rely on SQLite `rowid`, including for `WITHOUT ROWID` tables.
 
-For the exact migration subset, see [Schema & typegen](/guide-schema/). For
-typed query generation, see [Named queries](/tooling-queries/) and
-[SYQL](/syql/).
+## Advanced: the source-id mapping
 
-## Indexed projection maintenance
+Reading `_syncular_source_id` from the projection makes FTS5 fetch the content row of every match. Each managed projection therefore keeps an internal mapping table from source identity to FTS rowid, keyed by the projection rowid. The generated SQL reads each source id through that mapping, while the authored query, its types, and its rows stay the same. On 50,000 matches the generated form took 53.9 ms against 73.6 ms for the authored form (Bun 1.4.0, macOS arm64). `highlight` and `snippet` still read the content row of every match they evaluate.
 
-Each managed FTS projection maintains an internal mapping from source identity
-to FTS rowid. Deletes resolve that identity through a unique index and delete by
-rowid. This avoids scanning the unindexed source-identity column for each row
-during eviction or replacement.
-
-Both cores backfill the mapping for existing projections on startup without
-resetting application rows or pending writes. Source rows, mappings, and FTS
-changes commit or roll back together. Applications keep their existing query
-SQL and schema declarations.
+Deletes resolve the identity through a unique index and delete by rowid, which avoids scanning the unindexed source-identity column for each row during eviction or replacement. Both cores backfill the mapping for existing projections on startup without resetting application rows or pending writes. Source rows, mappings, and FTS changes commit or roll back together. Your query SQL and schema declarations need no change.

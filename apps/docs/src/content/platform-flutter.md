@@ -1,226 +1,63 @@
 # Flutter & Dart
 
-The Dart binding is a **pub package** (`syncular` under
-[`bindings/flutter/syncular`](https://github.com/syncular/syncular/tree/main/bindings/flutter/syncular))
-over the Rust native core's C FFI. It uses `dart:ffi`: five hand-written
-function bindings, no ffigen, and `package:ffi` as the only runtime
-dependency. The package itself only marshals JSON across that boundary.
-[FFI & the native core](/platform-ffi/) covers the C ABI and the command
-surface underneath.
+The `syncular` package gives a Flutter or Dart app a local SQLite replica, an outbox, and a sync loop. This page shows the shape of the SDK and a first sync in six calls; the sub-pages cover install, daily use, lifecycle, platform details, and fixes.
 
-## Install
+::meta{for="Flutter and Dart developers" time="4 minutes"}
 
-Depend on the package by path (it is not published to pub.dev):
+| Property | Value |
+|---|---|
+| **Runs on** | Android, iOS, macOS, Linux, and Windows; Flutter apps and headless Dart programs. Not the web (`dart:ffi` has no web target) |
+| **Package** | `syncular`, a pub package in [`bindings/flutter/syncular`](https://github.com/syncular/syncular/tree/main/bindings/flutter/syncular), depended on by path; `package:ffi` is its only runtime dependency |
+| **Core** | Rust core through the C ABI, bound with `dart:ffi` |
+| **Threading** | One isolate owns the client; commands and event polling both run on it |
+| **Reading time** | 4 minutes here, about 20 for the full set |
 
-```yaml
-dependencies:
-  syncular:
-    path: ../path/to/bindings/flutter/syncular
-```
+:::figure{title="How Dart reaches the core" note="Everything below the JSON line is shared" ticks}
+<div class="d-row">
+<div class="node hot"><span class="t">Your app</span>Flutter widgets<br>typed rows from typegen</div>
+<span class="d-arrow"></span>
+<div class="node"><span class="t">package:syncular</span><code>SyncularClient</code><br>poll timer, <code>events</code> stream</div>
+<span class="d-arrow"></span>
+<div class="node cool"><span class="t">dart:ffi</span>5 hand-written<br>function bindings</div>
+<span class="d-arrow"></span>
+<div class="node ok"><span class="t">libsyncular</span>Rust core<br>SQLite, native transport</div>
+</div>
 
-The native core (`libsyncular`) is built by
-[`rust/scripts/build-native.sh`](https://github.com/syncular/syncular/blob/main/rust/scripts/build-native.sh)
-and shipped per platform (see the library-loading section below). The binding
-itself is plain Dart, so it runs in Flutter apps and in headless Dart programs
-alike. `dart:ffi` does not target the web; use `@syncular/client` there.
+::caption[The three native SDKs share this model. [Native client API](/native-client-api/) documents the shared half.]
+:::
 
-## Create a client
+## First sync
 
-`SyncularClient.create` loads the native library, spins up the core, sends
-the initial `create` command with your schema and optional explicit client id, and kicks off
-the event poll loop. The schema itself comes from typegen: point a `dart`
-output in `syncular.json` and `syncular generate` produces
-`syncular.generated.dart`, exporting a ready-made `syncularSchema` map along
-with typed row classes and subscription helpers (see
-[Schema & typegen](/guide-schema/)).
+The calls below assume the package is a dependency and `libsyncular` is loadable ([Install & first sync](/platform-flutter-install/)), and `syncular generate` emitted `syncular.generated.dart`.
 
 ```dart
 import 'package:syncular/syncular.dart';
 
 final client = SyncularClient.create(
-  schema: syncularSchema,                      // from syncular.generated.dart
-  config: SyncularConfig(
-    baseUrl: 'https://your.server/sync',       // engages the native transport
-    dbPath: '${dir.path}/todos.db',            // file-backed persistence
-  ),
+  schema: syncularSchema,
+  config: SyncularConfig(baseUrl: 'http://localhost:8787', dbPath: dbPath),
 );
-```
-
-With a `baseUrl` the client runs the native HTTP and WebSocket transport;
-without one it runs the offline-only core with no network stack. The native
-transport requires a core built with the `native-transport` feature. Give the
-client a persistent database path; an in-memory database loses rows, cursors,
-client identity, and the outbox on restart. In a Flutter app,
-`getApplicationSupportDirectory()` from `path_provider` is the usual
-location. `SyncularConfig` also accepts `wsUrl` and `headers`, and `create`
-takes `limits`, an explicit `libraryPath`, and `pollInterval` (40 ms by
-default).
-
-Rotate credentials without recreating the client:
-
-```dart
-client.setHeaders({'Authorization': 'Bearer $freshToken'});
-```
-
-The next HTTP request uses the new headers. An open WebSocket keeps the
-headers from its handshake; call `pause()` and `resume()` when the new
-credential must apply to the live socket immediately.
-
-## Reads & writes
-
-```dart
-// Subscribe: table + scope map. Local; sync fills it.
 client.subscribe('todos', 'todos', scopes: {'list_id': ['groceries']});
-
-// Optimistic write: visible in local reads immediately.
-final commitId = client.mutate([
+client.mutate([
   {
     'op': 'upsert',
     'table': 'todos',
-    'values': {'id': 't1', 'list_id': 'groceries', 'title': 'Hello',
+    'values': {'id': 't1', 'list_id': 'groceries', 'title': 'Buy milk',
                'done': false, 'position': 1, 'updated_at_ms': 1},
   },
 ]);
-
-// RowState maps: {rowId, version, values}; version == -1 = optimistic.
-final states = client.readRows('todos');
-
-// Arbitrary read-only SQL, returned as flat rows.
-final rows = client.query(
-  'SELECT id, title, done FROM todos WHERE list_id = ?', params: ['groceries']);
+client.syncUntilIdle();
+print(client.query('SELECT id, title FROM todos'));
 ```
 
-Scope maps use the same authorization vocabulary as the rest of syncular;
-see [Scopes & authorization](/concepts-scopes/). The Dart client exposes the
-same convenience methods as the Swift and Kotlin wrappers: `mutate`,
-`subscribe`, `unsubscribe`, `sync`, `syncUntilIdle`, `readRows`, `query`,
-`pendingCommitIds`, `statusSnapshot`, `subscriptionState`, `conflicts`,
-`presence`, `setPresence`, `setWindow`, `windowState`, `connectRealtime`,
-`disconnectRealtime`, and the CRDT helpers. For anything not lifted into a
-named method, call `command(method, params)` directly.
+`mutate` is visible to `query` at once. `syncUntilIdle` pushes the outbox and pulls the subscribed list, so a second device with the same subscription reads `t1`.
 
-## Sync loop & events
+## The pages
 
-```dart
-final outcome = client.sync();       // one round; needs native-transport
-client.syncUntilIdle(maxRounds: 10); // drive to quiescence
+- **[Install & first sync](/platform-flutter-install/)**: depend on the package, ship the core, create a client.
+- **[Reads & writes](/platform-flutter-reads-writes/)**: subscribe, mutate, query, windows, and collaborative text.
+- **[Realtime & lifecycle](/platform-flutter-realtime/)**: the `events` stream, `pause()`, `resume()`, `close()`, and the connectivity adapter.
+- **[Platform specifics](/platform-flutter-specifics/)**: library loading per platform, transport policy, and isolate rules.
+- **[Troubleshooting](/platform-flutter-troubleshooting/)**: library lookup errors, `client.failed`, and offline results.
 
-client.events.listen((e) {
-  if (e.type == 'sync-intent') client.sync();
-});
-```
-
-Exact `change` batches, `sync-intent`, and `presence` arrive on
-`client.events`, a **broadcast Stream** delivered on the
-owning isolate's event loop, so listeners can touch UI state directly. A
-`Timer.periodic` on the owning isolate drains the core's `poll_event` queue
-with non-blocking polls, so event delivery runs alongside in-flight commands
-without blocking the isolate inside the FFI.
-
-Failed commands throw `SyncularError` (a stable `code` plus a message).
-`sync()` reports transport failure in its return value: offline, or on the
-offline-only core, it returns
-`{ok: false, errorCode: "transport.unavailable"}`, and the commit waits in
-the outbox; `pendingCommitIds()` stays non-empty until a later sync drains
-it. `mutate` applies locally at once and queues the commit for the next push.
-
-## Collaborative text (CRDT)
-
-`crdt` columns expose native editing helpers:
-
-```dart
-final text = client.crdtText('notes', 'n1', 'doc');
-client.crdtInsertText('notes', 'n1', 'doc', 0, 'Hi ');
-client.crdtDeleteText('notes', 'n1', 'doc', 0, 3);
-```
-
-`crdtApplyUpdate` applies an arbitrary Yjs update as a `List<int>` for cases
-the text helpers do not cover; each helper pushes its update through the
-normal mutate path and returns the enqueued `clientCommitId`. The merge
-model, the `crdt-yjs` feature flag, and cross-core convergence guarantees are
-on [CRDT columns](/concepts-crdt/).
-
-## Library loading
-
-`dart:ffi` resolves `libsyncular` in a fixed order: an explicit `libraryPath`
-passed to `SyncularClient.create`, then the `SYNCULAR_LIBRARY_PATH`
-environment variable, then the per-platform default name on the loader search
-path. What each platform ships:
-
-| Platform | Library | How a consuming app ships it |
-|---|---|---|
-| Android | `libsyncular.so` (`arm64-v8a`, `x86_64`) | `cargo-ndk` via `build-native.sh android` → `android/src/main/jniLibs/<abi>/` |
-| iOS | statically linked | link the `Syncular.xcframework` slice into the Runner (`build-native.sh apple`); `libraryPath` stays null since the symbols already live in the process |
-| macOS | `libsyncular.dylib` | bundle into `.app/Contents/Frameworks`, or link the xcframework mac slice |
-| Linux | `libsyncular.so` | ship next to the executable / on the loader path |
-| Windows | `syncular.dll` | ship next to the executable |
-
-These are the same artifacts the Swift and Kotlin release paths use; only
-the load call site differs.
-
-## Lifecycle & threading
-
-Adapt a reachability source to the client lifecycle with
-`FlutterConnectivitySignal`:
-
-```dart
-final connectivity = SyncularConnectivityAdapter(
-  client,
-  FlutterConnectivitySignal(
-    online: currentOnline,
-    changes: onlineChanges,
-  ),
-);
-
-// During client teardown:
-await connectivity.close();
-```
-
-The boolean stream must report network availability, rather than the selected
-interface name. If `AppLifecycleState` also controls the client, feed the
-adapter a combined foreground-and-online stream or close it while the app is
-paused.
-
-```dart
-client.pause();   // stop poll + disconnect realtime (app backgrounded)
-client.resume();  // reconnect + restart poll
-client.close();   // release DB/transport/socket; idempotent
-```
-
-- **`pause()`** shuts down the poll timer and drops the realtime connection.
-  Trigger it from `AppLifecycleState.paused` or a connectivity-lost handler.
-  The database and outbox stay intact; mutations keep queuing.
-- **`resume()`** brings the realtime socket back (if one exists) and
-  restarts polling.
-- **`close()`** cancels the poll timer, frees the core, and closes the event
-  stream. It is idempotent; once closed, commands throw `client.closed`.
-
-A schema bump on an installed app follows the wipe-and-re-bootstrap
-flow in [Schema upgrades](/concepts-schema-upgrades/).
-
-The core is thread-affine. Commands and the poll loop both run on the
-isolate that created the handle. The
-[example](https://github.com/syncular/syncular/tree/main/bindings/flutter/example)
-is a ~150-line Flutter todo app (`flutter run` against the demo server); its
-platform scaffolds come from `flutter create` and stay out of the repo.
-
-## Where to go next
-
-- [FFI & the native core](/platform-ffi/): the C ABI this package binds via `dart:ffi`.
-- [Scopes & authorization](/concepts-scopes/): the rules behind the scope maps in `subscribe`.
-- [Conflicts & optimistic writes](/concepts-conflicts/): what shows up in the `conflict` event.
-- [Quickstart](/quickstart/): the server the todo example runs against.
-
-## Snapshot and outcome methods
-
-Use `querySnapshot` for rows, coverage, and revision from one local read.
-`statusSnapshot` returns scheduling, schema, lease, and outbox state;
-`diagnosticsSnapshot` adds bounded support evidence. `commitOutcome` looks up
-one terminal result by commit ID. `commitOutcomes` lists the durable journal,
-and `resolveCommitOutcome` records an explicit resolution. A pending commit
-has no terminal outcome. `rejections` lists rejected commits.
-
-This source-breaking revision removes the `syncNeeded` convenience and the raw
-`schemaFloor`, `leaseState`, `upgrading`, and `syncNeeded` commands. Read those
-fields from `statusSnapshot` instead. The wrappers use the existing native
-command dispatcher and return the binding's JSON value types.
+The behavior shared with Swift and Kotlin (configuration, events, snapshot and outcome methods) is on [Native client API](/native-client-api/).

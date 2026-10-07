@@ -1,279 +1,81 @@
 # React
 
-`@syncular/react` exposes one hook surface over the browser worker, direct
-TypeScript core, Tauri bridge, and React Native bridge. React 18+ is a peer
-dependency.
+`@syncular/react` is one hook surface over every client Syncular ships: the
+browser worker handle, the direct TypeScript client, the Tauri bridge, and the
+React Native bridge. This overview shows how the hooks reach a core and the
+calls of a first live query.
 
-## Install
+::meta{for="React 18+ developers on web, Tauri, or React Native" runs="Whichever client you pass to `SyncProvider`: TypeScript core or Rust core" package="`@syncular/react`, with React 18+ as a peer dependency" threading="Hooks run on the render thread; the client owns the core" time="4 minutes"}
 
-```sh
-bun add @syncular/react
-```
+:::terms
+- **Client**: Any object that implements `SyncClientLike`: a worker handle, a direct client, or a native bridge.
+- **Reactive store**: The client-scoped store the hooks read through `useSyncExternalStore`.
+- **Revision**: A monotonic number that identifies one local change batch.
+- **Phase**: The state of a query result: `loading`, `partial`, `ready`, or `error`.
+:::
 
-The hooks adapt a client-scoped reactive store with `useSyncExternalStore`.
-Equal queries share one local read per revision; stale async results cannot
-replace newer state; rows and required-window completeness are read from one
-SQLite snapshot.
+## How the pieces connect
 
-## Provider
+:::figure{title="Hooks over one interface" note="Any host, same hooks" ticks}
+<div class="d-row">
+<div class="node hot"><span class="t">Your components</span><code>useQuery</code>, <code>useMutation</code>, <code>useSyncStatus</code></div>
+<span class="d-arrow"></span>
+<div class="node"><span class="t">SyncProvider</span>Holds the client and its reactive store</div>
+<span class="d-arrow"></span>
+<div class="d-stack">
+<div class="node ok"><span class="t">Browser</span>Worker handle · TypeScript core</div>
+<div class="node cool"><span class="t">Tauri</span>Bridge · Rust core</div>
+<div class="node cool"><span class="t">React Native</span>Bridge · Rust core</div>
+</div>
+</div>
 
-Pass an already-started client directly:
+::caption[Every host satisfies one structural interface, `SyncClientLike`, so the hook code never changes with the host.]
+:::
 
-```tsx
-<SyncProvider client={client}><App /></SyncProvider>
-```
+The hooks adapt the store with `useSyncExternalStore`. Equal queries share one
+local read per revision, stale async results cannot replace newer state, and a
+query reads its rows and its required-window completeness from one SQLite
+snapshot.
 
-For an asynchronous engine, create a resource outside render. This is stable
-through React StrictMode initialization and can retry a failed startup without
-replacing the provider:
+## First live query
 
-```tsx
-import { createSyncClientResource, SyncProvider } from '@syncular/react';
+[Install & first sync](/platform-react-install/) covers the provider and its
+startup handling. The shape:
 
-const clientResource = createSyncClientResource(() => createClient());
-
-<SyncProvider
-  client={clientResource}
-  fallback={<p>Starting local database…</p>}
-  renderError={(error, retry) => (
-    <button onClick={() => void retry()}>Try again: {error.message}</button>
-  )}
->
-  <App />
-</SyncProvider>
-```
-
-The application lifecycle owner calls `clientResource.dispose()` when the
-engine is truly no longer needed. A resource survives React remounts, but not
-automatic module replacement: preserve it in your bundler's HMR data or dispose
-the previous resource before constructing another persistent worker. The
-[schema-aware Vite recipe](/guide-vite/#keep-one-schema-and-runtime-correct-persistent-owner-during-hmr)
-and [official React example](https://github.com/syncular/syncular/blob/main/apps/demo-react/src/frontend/main.tsx)
-capture the generated version, reuse same-schema edits, and order disposal
-before a schema-bump replacement.
-
-## Generated live queries
-
-The recommended read path is a generated descriptor:
-
-```tsx
-import { useQuery } from '@syncular/react';
+```tsx title="src/App.tsx"
+import { SyncProvider, useQuery } from '@syncular/react';
 import { listTodosQuery } from './syncular.queries';
 
-const todos = useQuery(listTodosQuery, { listId });
-```
+function Todos({ listId }: { listId: string }) {
+  const todos = useQuery(listTodosQuery, { listId });
+  if (todos.phase === 'loading') return <p>Loading…</p>;
+  return (
+    <ul>
+      {todos.rows.map((todo) => (
+        <li key={todo.id}>{todo.title}</li>
+      ))}
+    </ul>
+  );
+}
 
-Typegen emits a QueryIR-derived id, exact table/scope dependencies, provable
-window coverage, and a safe row key. Observing the query claims its coverage;
-unobserving releases only that consumer's claim. There is no separate
-`useWindow` effect or completeness read.
-
-The result is `{ rows, phase, revision, isLoading, isRefreshing, error,
-refresh }`:
-
-- `loading`: no complete answer and no partial rows yet;
-- `partial`: rows exist while required coverage is incomplete;
-- `ready`: the atomic snapshot is complete, including a true empty result;
-- `error`: the latest read failed, or the latest sync attempt failed while
-  required coverage was incomplete. The result keeps rows and revision from
-  the last successful read. A failed attempt sets `error` to a
-  `SyncRoundFailedError` whose `code` is the attempt's stable error code (for
-  example `sync.transport_failed`); the query returns to `loading` or
-  `partial` when the next attempt starts. `retryable` is true when the client
-  scheduled a background retry, and `retryDelayMs` is that retry's delay in
-  milliseconds (250, doubling per consecutive failure up to 30,000). A
-  failure with `retryable: false` has no automatic next attempt.
-
-```tsx
-if (todos.phase === 'loading') return <Skeleton />;
-if (todos.phase === 'error') return <ErrorView error={todos.error} />;
-if (todos.phase === 'ready' && todos.rows.length === 0) return <Empty />;
-return <Rows rows={todos.rows} partial={todos.phase === 'partial'} />;
-```
-
-## Typed mutations
-
-Generated schema modules export table descriptors. Passing one to
-`useMutation` adds typed helpers:
-
-```tsx
-import { useMutation } from '@syncular/react';
-import { todosTable } from './syncular.generated';
-
-const mutation = useMutation(todosTable);
-await mutation.upsert({ id, listId, title, done: false, position, updatedAtMs });
-await mutation.patch(id, { done: true, updatedAtMs: Date.now() });
-await mutation.remove(id);
-```
-
-The hook exposes `pendingCount`, `isPending`, `error`, and `resetError` plus
-optional `onEnqueued`/`onError` callbacks. Overlapping mutations remain pending
-until every promise settles. The untyped `mutate([...])` batch API remains
-available from `useMutation()`.
-
-## Raw SQL
-
-`useRawSql` is the escape hatch for statements assembled at runtime:
-
-```tsx
-const result = useRawSql(
-  'SELECT id, title FROM todos WHERE list_id = ?',
-  [listId],
-  { dependencies: [{ table: 'todos', scopeKeys: [`list:${listId}`] }] },
+export const App = ({ client }) => (
+  <SyncProvider client={client}>
+    <Todos listId="groceries" />
+  </SyncProvider>
 );
 ```
 
-It has the same phase/revision result. Options include `dependencies`,
-`coverage`, `rowKey`, `claimCoverage`, `enabled`, and `id`. Set `id` to a stable,
-PHI-free value for support diagnostics; the default diagnostic id is `raw` and
-never contains SQL. The legacy `tables`/`scopeKeys` shorthand remains
-available. If dependencies are omitted, a conservative `FROM`/`JOIN` scanner
-is used.
+## The pages of this SDK
 
-The core guards raw SQL read-only: exactly one `SELECT`, `WITH`, `EXPLAIN`,
-`PRAGMA`, or `VALUES` statement. Writes always use mutations and the outbox.
+| Page | Type | You get |
+|---|---|---|
+| [Install & first sync](/platform-react-install/) | How-to | The package, the provider, startup handling, and a first query. |
+| [Reads & writes](/platform-react-reads-writes/) | How-to | `useQuery`, `useMutation`, `useRawSql`, and the phases of a result. |
+| [Realtime & lifecycle](/platform-react-realtime/) | How-to | Status, connectivity, commit outcomes, presence, and sync progress. |
+| [Platform specifics](/platform-react-specifics/) | Reference | Re-render rules, the full hook list, the security lifecycle, and router scheduling. |
+| [Troubleshooting](/platform-react-troubleshooting/) | Reference | Query phases that stall, startup failures, and blocked clients. |
 
-## Connectivity status
-
-`useSyncStatus` exposes `outbox`, `syncNeeded`, `upgrading`, `schemaFloor`,
-and `leaseState`, and no `online` flag: the host owns connectivity (§8.4),
-and the browser already reports it.
-
-```ts
-const [online, setOnline] = useState(navigator.onLine);
-useEffect(() => {
-  const on = () => setOnline(true);
-  const off = () => setOnline(false);
-  window.addEventListener('online', on);
-  window.addEventListener('offline', off);
-  return () => {
-    window.removeEventListener('online', on);
-    window.removeEventListener('offline', off);
-  };
-}, []);
-// "synced" = online && outbox === 0; wire onSynced (handle config) to
-// refresh app-level state after each background round.
-```
-
-Pair it with `useSyncStatus().outbox` for the three states a status pill
-needs: offline (queueing), online with a draining outbox, and in sync.
-
-## Changes, windows, and other hooks
-
-Every observer transaction produces one exact, monotonically revisioned
-change batch. Scope keys stay associated with their table. Window completion
-can invalidate a zero-row query without pretending a row changed. Status and
-conflict-only changes do not rerun SQL.
-
-A hook re-renders only when its value changes. A query re-read keeps each
-unchanged row object, and keeps the `rows` array when no row changed,
-including an empty result that stays empty. Queries without a successful read
-share one frozen snapshot per phase and availability, so a query whose
-parameters or coverage change before its first read returns the same result
-object and `rows` array. The status, conflict, and outcome
-hooks compare each new snapshot by value and keep the current object when it is
-equal. The comparison matches `Date` values by time and compares `Error` and
-other class instances by identity.
-
-Generated query coverage uses unioned claims. `useWindow(base)` is retained
-for explicit prefetching and dynamic query builders; it is not needed for an
-ordinary generated query.
-
-- `useSyncStatus()` observes outbox/upgrading/lease/schema/pull state.
-  `syncNeeded` means inbound pull/catch-up; `outbox` is pending local push work.
-- `useConflicts()` observes conflict and rejection changes.
-- `useCommitOutcomes()` observes the durable newest-first final-outcome journal
-  and resolution transitions. Resolve an entry with
-  `useSyncClient().resolveCommitOutcome(...)`.
-- `usePresence(scopeKey)` observes ephemeral realtime peers.
-- `useSyncClient()` and `useReactiveStore()` expose integration-level access.
-  A realtime supervisor installed on the concrete client before
-  `SyncProvider` is observable through the normalized `useSyncClient()` facade
-  with `realtimeSupervisorSnapshot()` and
-  `subscribeRealtimeSupervisor()`; the facade does not acquire socket
-  ownership.
-
-The normalized client also exposes
-`useSyncClient().purgeLocalData({ purgeId, targets })` on every host that
-implements the shared surface. This is an application-authorized security
-operation; follow the subscription-gating workflow in
-[Authorized local purge](/concepts-local-data-purge/).
-
-The normalized client also exposes `securityLifecycle()`,
-`beginSecurityPreflight()`, and keyless `activateSecurity()`. Install a
-portable or direct keyring through the concrete client before mounting the
-ordinary provider tree; React must not render protected hooks while the client
-reports `preflight`.
-
-## Router transition scheduling
-
-Syncular hooks use React's `useSyncExternalStore` and may publish continuously
-while realtime, local commits, diagnostics, or status are active. The router
-remains the sole owner of route and query state; do not mirror its location in
-a Syncular table or a second React store.
-
-Some React Router releases publish router state through a transition by
-default. Under sustained external-store traffic, the address bar and the
-router's internal location can advance while a mounted route continues to
-render its previous `useLocation()` or `useSearchParams()` snapshot. Syncular
-cannot guarantee another library's transition scheduling. For route-owned
-controls that must agree synchronously with the visible URL, use the
-router's explicit synchronous publication policy:
-
-```tsx
-import { RouterProvider } from 'react-router-dom';
-
-<RouterProvider router={router} useTransitions={false} />
-```
-
-Keep that choice at the application router boundary rather than scattering
-`flushSync`, browser-global reads, or mirrored query state through feature
-components. The maintained React fixture repeatedly changes a checked
-query-owned control while bursting Syncular status notifications and proves
-the rendered `useSearchParams()` value, React Router location, and browser URL
-converge without reload. Re-evaluate the explicit policy when upgrading React
-or React Router; do not assume Syncular can force synchronous publication on a
-router it does not own.
-
-See [Named queries](/tooling-queries/), [Windowing](/concepts-windowing/), and
-the [package README](https://github.com/syncular/syncular/tree/main/packages/react).
-
-This source-breaking API revision renames `useMutation`'s `onSuccess` option
-to `onEnqueued`. Replace the option name; the callback still receives the
-commit ID after local persistence. `isPending` counts local mutation calls.
-Both the callback and the resolved mutation promise can complete while
-offline. Server acceptance arrives later in the durable outcome journal.
-
-```ts
-const mutation = useMutation({
-  onEnqueued(commitId) {
-    setLastCommitId(commitId);
-  },
-});
-const { outcomes } = useCommitOutcomes();
-const outcome = outcomes.find((item) => item.clientCommitId === lastCommitId);
-```
-
-Use `client.commitOutcome(commitId)` to look up the same result after restart.
-An absent terminal outcome means the commit has not reached a recorded final
-server result. For a rejection or conflict, inspect the outcome and apply the
-resolution actions described in [conflict handling](/concepts-conflicts/).
-
-`SyncProvider` keeps the supplied client identity. `useSyncClient()` returns
-that client, whose read methods can return either values or promises. Use
-`await client.statusSnapshot()` in application code that supports multiple
-hosts. The `schemaFloor`, `leaseState`, `upgrading`, and `syncNeeded` fields
-come from that snapshot. Direct `conflicts`, `rejections`, and
-`securityLifecycle` reads are now method calls. `normalizeClient` has been
-removed; custom adapters must implement the canonical snapshot methods.
-See the [client migration](/platform-web/#snapshot-api-migration).
-
-## Cached reads during sync
-
-Query hooks request a local snapshot while their window claim registers. A
-complete cached window renders immediately; incomplete coverage remains partial.
-A registration failure remains visible even when the snapshot contains rows.
-Handle the query error and `useRetainedWindow().error` in the owning view.
-
-Imports and cache eviction yield between committed chunks automatically. See
-[windowing](/concepts-windowing/) for ownership and coverage semantics.
+Client setup lives with each host: [Browser](/platform-web/),
+[Tauri](/platform-tauri/), and [React Native](/platform-react-native/). The
+[package README](https://github.com/syncular/syncular/tree/main/packages/react)
+documents the full API.

@@ -1,382 +1,580 @@
 ---
 import Docs from '../layouts/Docs.astro';
-import {
-  PLAYGROUND_EXAMPLES,
-  PLAYGROUND_SCHEMAS,
-  schemaSummary,
-} from '../playground/examples';
+import { EXAMPLE_GROUPS, PLAYGROUND_EXAMPLES } from '../playground/examples';
 
-const initialExample = PLAYGROUND_EXAMPLES[0];
-const schema = PLAYGROUND_SCHEMAS[initialExample.schemaId];
+const first = PLAYGROUND_EXAMPLES[0];
+const groupTitle = (id: string) =>
+  EXAMPLE_GROUPS.find((group) => group.id === id)?.title ?? id;
 ---
 
 <Docs
   title="SYQL playground"
   active="playground"
-  description="Edit checked SYQL queries in the browser and inspect the compiler-selected physical SQL plan, typed inputs, dependencies, coverage, and row identity."
-  wide={true}
+  description="Edit SYQL against the Release board schema of the hosted demo, inspect the compiler-selected physical SQL plan, typed inputs, dependencies, and coverage, and run each statement on the demo's sample data."
+  full={true}
 >
-  <div id="syql-playground" class="playground" data-state="loading">
-    <header class="playground-intro">
-      <div>
-        <h1>SYQL playground</h1>
-        <p>
-          Edit the checked SYQL source and inspect every statement in the
-          compiler-selected physical SQL plan.
-        </p>
+  <div id="syql-playground" class="pg" data-state="loading" data-pane="editor" data-schema="open">
+    <h1 class="sr-only">SYQL playground</h1>
+    <div class="pg-bar">
+      <button type="button" class="pg-pick" data-open-gallery aria-haspopup="dialog">
+        <span class="pg-pick-group" data-example-group>{groupTitle(first?.group ?? '')}</span>
+        <span class="pg-pick-title" data-example-title>{first?.title}</span>
+        <svg width="9" height="9" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 3l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.4"></path></svg>
+      </button>
+      <div class="pg-step">
+        <button type="button" data-step="-1" aria-label="Previous example">‹</button>
+        <span data-example-position>1 / {PLAYGROUND_EXAMPLES.length}</span>
+        <button type="button" data-step="1" aria-label="Next example">›</button>
       </div>
-      <a href="/syql/">language guide →</a>
-    </header>
+      <p class="pg-desc" data-example-description>{first?.description}</p>
+      <div class="pg-actions">
+        <button type="button" data-action="format">Format</button>
+        <button type="button" data-action="reset" disabled>Reset</button>
+        <button type="button" data-action="share">Share</button>
+        <a href="/syql/">Guide</a>
+      </div>
+    </div>
 
-    <div class="example-bar" aria-label="Playground examples">
-      <div class="example-tabs" role="group" aria-label="Choose an example">
-        {
-          PLAYGROUND_EXAMPLES.map((example, index) => (
-            <button
-              type="button"
-              class="example-button"
-              data-example-id={example.id}
-              aria-pressed={index === 0 ? 'true' : 'false'}
-            >
-              {example.label}
+    <div class="pg-panes" role="tablist" aria-label="Playground panes">
+      <button type="button" role="tab" data-pane-tab="editor" aria-selected="true">Editor</button>
+      <button type="button" role="tab" data-pane-tab="schema" aria-selected="false">Schema</button>
+      <button type="button" role="tab" data-pane-tab="output" aria-selected="false">Output <span class="pg-count" data-problem-count hidden></span></button>
+    </div>
+
+    <div class="pg-work">
+      <div class="pg-left">
+        <section class="pg-frame pg-editor ticks" aria-label="SYQL source">
+          <span class="tk-b"></span>
+          <header class="pg-head">
+            <span class="pg-kicker">source</span>
+            <span class="pg-head-title">playground.syql</span>
+            <span class="pg-edited" data-edited hidden>edited</span>
+          </header>
+          <div class="pg-host" data-source-host>
+            <pre class="pg-fallback"><code>{first?.source}</code></pre>
+          </div>
+        </section>
+        <div class="pg-split pg-split-y" role="separator" aria-orientation="horizontal" aria-label="Resize the schema pane" tabindex="0" data-split="schema"></div>
+        <section class="pg-frame pg-schema" aria-label="Schema">
+          <header class="pg-head">
+            <span class="pg-kicker">schema</span>
+            <span class="pg-head-title">Release board</span>
+            <span class="pg-head-note">click inserts · shift-click inserts table.column</span>
+            <button type="button" class="pg-collapse" data-action="toggle-schema" aria-expanded="true" aria-label="Collapse the schema pane">
+              <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 3.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.4"></path></svg>
             </button>
+          </header>
+          <div class="pg-schema-body" data-schema-body></div>
+        </section>
+      </div>
+      <div class="pg-split pg-split-x" role="separator" aria-orientation="vertical" aria-label="Resize the panes" tabindex="0" data-split="panes"></div>
+      <section class="pg-frame pg-out ticks" aria-label="Compiler output" data-out="empty" data-active-tab="sql">
+        <span class="tk-b"></span>
+        <header class="pg-tabs">
+          <div role="tablist" aria-label="Output">
+            <button type="button" role="tab" data-tab="sql" aria-selected="true">SQL</button>
+            <button type="button" role="tab" data-tab="run" aria-selected="false">Run</button>
+            <button type="button" role="tab" data-tab="types" aria-selected="false">Types</button>
+            <button type="button" role="tab" data-tab="reactivity" aria-selected="false">Reactivity</button>
+            <button type="button" role="tab" data-tab="problems" aria-selected="false">Problems <span class="pg-count" data-problem-count hidden></span></button>
+            <button type="button" role="tab" data-tab="json" aria-selected="false">JSON</button>
+          </div>
+          <label class="pg-query" data-query-picker hidden>
+            <span>query</span>
+            <select data-query></select>
+          </label>
+        </header>
+        <div class="pg-stale" data-stale hidden>
+          <span>Showing the last successful plan. The current source does not compile.</span>
+          <button type="button" data-goto-tab="problems">Show problems</button>
+        </div>
+        <div class="pg-panel" data-panel="sql">
+          <div class="pg-tools">
+            <label><span>statement</span><select data-statement></select></label>
+            <label><span>binds</span>
+              <select data-representation>
+                <option value="named">named</option>
+                <option value="positional">positional</option>
+              </select>
+            </label>
+            <span class="pg-badges"><span data-backend>—</span><span data-statement-count>—</span></span>
+            <button type="button" data-action="copy" disabled>Copy</button>
+          </div>
+          <div class="pg-host" data-sql-host></div>
+        </div>
+        <div class="pg-panel pg-scroll" data-panel="run" hidden>
+          <form class="pg-params" data-params></form>
+          <div class="pg-run-bar">
+            <button type="button" class="pg-primary" data-action="run">Run</button>
+            <span data-run-meta>Runs the selected statement on the demo's sample data: 2 boards, 4 people, 24 cards.</span>
+          </div>
+          <div class="pg-results" data-results></div>
+        </div>
+        <div class="pg-panel pg-scroll" data-panel="types" hidden></div>
+        <div class="pg-panel pg-scroll" data-panel="reactivity" hidden></div>
+        <div class="pg-panel pg-scroll" data-panel="problems" hidden></div>
+        <div class="pg-panel pg-scroll" data-panel="json" hidden><pre data-json></pre></div>
+        <div class="pg-empty" data-empty>
+          <p data-empty-text>Loading the editor and the SYQL compiler.</p>
+        </div>
+      </section>
+    </div>
+
+    <footer class="pg-foot">
+      <span class="pg-keys">
+        <span><kbd data-key="mod"></kbd><kbd>↵</kbd> run</span>
+        <span><kbd data-key="shift"></kbd><kbd data-key="alt"></kbd><kbd>F</kbd> format</span>
+        <span><kbd data-key="alt"></kbd><kbd>[</kbd> <kbd data-key="alt"></kbd><kbd>]</kbd> example</span>
+      </span>
+      <span class="pg-status" role="status" aria-live="polite" data-status>Loading the editor and the SYQL compiler.</span>
+    </footer>
+
+    <dialog class="pg-gallery" data-gallery aria-label="Examples">
+      <header>
+        <span class="pg-kicker">examples</span>
+        <span>{PLAYGROUND_EXAMPLES.length} queries on the Release board model</span>
+        <button type="button" data-close-gallery aria-label="Close">×</button>
+      </header>
+      <div class="pg-gallery-body">
+        {
+          EXAMPLE_GROUPS.map((group) => (
+            <section>
+              <h2>{group.title}</h2>
+              {PLAYGROUND_EXAMPLES.filter((example) => example.group === group.id).map((example) => (
+                <button type="button" data-example-id={example.id}>
+                  <span class="t">{example.title}</span>
+                  <span class="d">{example.description}</span>
+                  {example.fails ? <span class="f">fails with {example.fails}</span> : null}
+                </button>
+              ))}
+            </section>
           ))
         }
       </div>
-      <p id="playground-example-description">{initialExample.description}</p>
-    </div>
-
-    <div class="playground-workspace">
-      <section class="playground-panel source-panel" aria-labelledby="source-label">
-        <header class="panel-header">
-          <div>
-            <span class="panel-kicker">source</span>
-            <h2 id="source-label">SYQL</h2>
-          </div>
-          <div class="panel-actions">
-            <button type="button" id="playground-format">Format</button>
-            <button type="button" id="playground-reset">Reset</button>
-          </div>
-        </header>
-        <div id="playground-source" class="editor-host" aria-label="Editable SYQL source">
-          <pre class="editor-fallback"><code>{initialExample.source}</code></pre>
-        </div>
-      </section>
-
-      <section class="playground-panel sql-panel" aria-labelledby="sql-label">
-        <header class="panel-header sql-header">
-          <div>
-            <span class="panel-kicker">selected physical plan</span>
-            <h2 id="sql-label">SQL</h2>
-          </div>
-          <div class="plan-badges" aria-live="polite">
-            <span id="playground-backend">initializing</span>
-            <span id="playground-statement-count">—</span>
-          </div>
-        </header>
-        <div class="plan-controls">
-          <label>
-            <span>query</span>
-            <select id="playground-query" disabled></select>
-          </label>
-          <label>
-            <span>statement</span>
-            <select id="playground-statement" disabled></select>
-          </label>
-          <label>
-            <span>view</span>
-            <select id="playground-representation">
-              <option value="named">named binds</option>
-              <option value="positional">positional binds</option>
-            </select>
-          </label>
-          <button type="button" id="playground-copy" disabled>Copy SQL</button>
-        </div>
-        <div id="playground-sql" class="editor-host" aria-label="Generated SQL output">
-          <pre class="editor-fallback"><code>-- loading the SYQL compiler…</code></pre>
-        </div>
-        <div class="stale-banner" id="playground-stale" hidden>
-          stale output — fix the source to compile again
-        </div>
-      </section>
-    </div>
-
-    <div class="playground-statusbar">
-      <p id="playground-status" role="status" aria-live="polite">
-        Loading editor and compiler…
-      </p>
-      <span id="playground-schema-summary">
-        schema: {schemaSummary(initialExample.schemaId)}
-      </span>
-    </div>
-
-    <div class="playground-details">
-      <details id="playground-schema">
-        <summary>Schema environment</summary>
-        {
-          schema.tables.map((table) => (
-            <div class="schema-table">
-              <h3>{table.name}</h3>
-              <p>
-                primary key <code>{table.primaryKey}</code>
-                {table.scopes.length > 0 && (
-                  <> · scopes {table.scopes.map((scope) => scope.column).join(', ')}</>
-                )}
-              </p>
-              {
-                table.indexes.length > 0 && (
-                  <p>
-                    indexes{' '}
-                    {table.indexes.map((index, indexPosition) => (
-                      <>
-                        {indexPosition > 0 && ', '}
-                        <code>{index.name}({index.columns.join(', ')})</code>
-                      </>
-                    ))}
-                  </p>
-                )
-              }
-              <table>
-                <thead>
-                  <tr><th>column</th><th>type</th><th>null</th></tr>
-                </thead>
-                <tbody>
-                  {table.columns.map((column) => (
-                    <tr>
-                      <td><code>{column.name}</code></td>
-                      <td>{column.type}</td>
-                      <td>{column.nullable ? 'yes' : 'no'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ))
-        }
-      </details>
-      <details id="playground-plan">
-        <summary>Plan metadata</summary>
-        <pre id="playground-metadata">Compile the source to inspect inputs, binds, dependencies, coverage, and identity.</pre>
-      </details>
-    </div>
-
-    <section class="diagnostics" aria-labelledby="diagnostics-label">
-      <h2 id="diagnostics-label">Diagnostics</h2>
-      <ol id="playground-diagnostics">
-        <li>No diagnostics.</li>
-      </ol>
-    </section>
+    </dialog>
 
     <noscript>
-      <p class="playground-noscript">
-        The playground needs JavaScript for its local editor and compiler. The{' '}
-        <a href="/syql/">SYQL language guide</a> remains available without it.
+      <p class="pg-noscript">
+        The playground needs JavaScript for its editor and compiler. The
+        <a href="/syql/">SYQL guide</a> works without it.
       </p>
     </noscript>
   </div>
 
   <script>
-    import '../playground/client';
+    // A failed module load would otherwise leave "Loading the editor" on
+    // screen with the cause only in the console.
+    import('../playground/client').catch((error: unknown) => {
+      const root = document.querySelector<HTMLElement>('#syql-playground');
+      if (!root) return;
+      root.dataset.state = 'error';
+      const status = root.querySelector('[data-status]');
+      if (status) {
+        status.textContent = `The playground failed to load: ${error instanceof Error ? error.message : String(error)}`;
+      }
+      throw error;
+    });
   </script>
 </Docs>
 
 <style is:global>
-  .wide-main { align-items: stretch; }
-  .wide-main .release-banner { max-width: 90rem; align-self: center; }
-  article.wide-article { max-width: 90rem; margin: 0 auto; }
-  .playground { --playground-height: clamp(31rem, 63vh, 47rem); }
-  .playground-intro {
+  .pg {
+    --pg-split: 48%;
+    --pg-schema: 40%;
+    --pg-red: #e0745a;
+    --pg-cyan: #6fb3c0;
+    --pg-sand: #e3d3a2;
+    --pg-phos: #a9bf6e;
+    --pg-raised: #12110f;
     display: flex;
-    align-items: flex-end;
-    justify-content: space-between;
-    gap: 1rem 2rem;
-    margin-bottom: 1.5rem;
-  }
-  .playground-intro h1 { margin-bottom: 0.45rem; }
-  .playground-intro h1 + p { max-width: 54rem; margin: 0; color: var(--dim); }
-  .playground-intro > a {
-    flex: none;
-    padding: 0.3rem 0;
-    font-size: 0.76rem;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-  }
-  .example-bar {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(16rem, 28rem);
-    align-items: center;
-    border: 1px solid var(--border);
-    border-bottom: 0;
-    background: var(--panel);
-  }
-  .example-tabs { display: flex; overflow-x: auto; }
-  .example-button,
-  .panel-actions button,
-  .plan-controls button {
-    border: 0;
-    border-right: 1px solid var(--border);
-    border-radius: 0;
-    background: transparent;
-    color: var(--dim);
-    font: inherit;
-    font-size: 0.72rem;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    cursor: pointer;
-  }
-  .example-button { flex: none; padding: 0.72rem 0.85rem; }
-  .example-button:hover,
-  .example-button[aria-pressed='true'],
-  .panel-actions button:hover,
-  .plan-controls button:hover:not(:disabled) {
-    background: var(--amber);
-    color: #000;
-  }
-  .example-button:focus-visible,
-  .panel-actions button:focus-visible,
-  .plan-controls button:focus-visible,
-  .plan-controls select:focus-visible {
-    outline: 2px solid var(--amber);
-    outline-offset: -2px;
-  }
-  #playground-example-description {
-    margin: 0;
-    padding: 0.55rem 0.8rem;
-    color: var(--faint);
-    font-size: 0.7rem;
-    line-height: 1.4;
-    border-left: 1px solid var(--border);
-  }
-  .playground-workspace {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    height: var(--playground-height);
-    border: 1px solid var(--border-strong);
-  }
-  .playground-panel { min-width: 0; display: flex; flex-direction: column; }
-  .source-panel { border-right: 1px solid var(--border-strong); }
-  .panel-header {
-    min-height: 4rem;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 1rem;
-    padding-left: 0.9rem;
-    border-bottom: 1px solid var(--border);
+    flex-direction: column;
+    height: 100%;
+    min-width: 0;
+    font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+    color: var(--ink);
     background: var(--void);
   }
-  article .panel-header h2 {
-    margin: 0;
-    padding: 0;
-    border: 0;
-    font-size: 0.95rem;
-  }
-  .panel-kicker {
-    display: block;
-    margin-bottom: 0.15rem;
-    color: var(--faint);
-    font-size: 0.6rem;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-  }
-  .panel-actions { align-self: stretch; display: flex; }
-  .panel-actions button { padding: 0 0.85rem; border-left: 1px solid var(--border); border-right: 0; }
-  .plan-badges { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.35rem; padding-right: 0.75rem; }
-  .plan-badges span {
-    border: 1px solid var(--border);
-    padding: 0.16rem 0.38rem;
+  .pg button { font: inherit; color: inherit; background: none; border: 0; border-radius: 0; }
+  .pg button:disabled { cursor: not-allowed; opacity: 0.45; }
+  .pg kbd {
+    display: inline-block;
+    min-width: 1.1rem;
+    line-height: 1.35;
+    margin-right: 0.15rem;
+    padding: 0 0.25rem;
+    border: 1px solid var(--line-strong);
     color: var(--dim);
-    font-size: 0.61rem;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    font: inherit;
+    font-size: 10px;
+    text-align: center;
   }
-  .plan-controls {
-    min-height: 3.35rem;
+  .pg-kicker { color: var(--amber); font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; }
+
+  /* Toolbar */
+  .pg-bar {
+    flex: none;
     display: flex;
     align-items: stretch;
-    border-bottom: 1px solid var(--border);
-    background: var(--panel);
-  }
-  .plan-controls label { min-width: 0; display: flex; flex: 1 1 0; flex-direction: column; justify-content: center; padding: 0.35rem 0.55rem; border-right: 1px solid var(--border); }
-  .plan-controls label > span { color: var(--faint); font-size: 0.55rem; letter-spacing: 0.08em; text-transform: uppercase; }
-  .plan-controls select {
     min-width: 0;
-    width: 100%;
-    border: 0;
+    height: 2.75rem;
+    border-bottom: 1px solid var(--line);
     background: var(--panel);
-    color: var(--ink);
-    font: inherit;
-    font-size: 0.68rem;
   }
-  .plan-controls button { flex: none; padding: 0 0.75rem; border-right: 0; }
-  .plan-controls button:disabled { cursor: not-allowed; color: var(--faint); }
-  .editor-host { position: relative; flex: 1 1 auto; min-height: 0; overflow: hidden; background: var(--panel); }
-  .editor-fallback { position: absolute; inset: 0; margin: 0; border: 0; color: var(--dim); }
-  .editor-host .monaco-editor,
-  .editor-host .overflow-guard { width: 100% !important; height: 100% !important; }
-  .stale-banner {
-    position: absolute;
-    right: 0.65rem;
-    bottom: 0.65rem;
-    z-index: 4;
-    border: 1px solid #ff6b5f;
-    background: #160604;
-    color: #ff9a91;
-    padding: 0.25rem 0.45rem;
-    font-size: 0.62rem;
-    letter-spacing: 0.04em;
+  .pg-pick {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    min-width: 0;
+    max-width: 26rem;
+    padding: 0 0.9rem;
+    border-right: 1px solid var(--line) !important;
+    text-align: left;
+  }
+  .pg-pick:hover { background: var(--pg-raised) !important; }
+  .pg-pick-group { flex: none; color: var(--faint); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; }
+  .pg-pick-title { min-width: 0; overflow: hidden; font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
+  .pg-pick svg { flex: none; color: var(--amber); }
+  .pg-step { display: flex; align-items: stretch; border-right: 1px solid var(--line); }
+  .pg-step button { width: 2rem; color: var(--dim) !important; font-size: 15px !important; }
+  .pg-step button:hover { color: var(--amber) !important; background: var(--pg-raised) !important; }
+  .pg-step span { align-self: center; min-width: 3.4rem; color: var(--faint); font-size: 10.5px; text-align: center; }
+  .pg-desc {
+    flex: 1;
+    min-width: 0;
+    align-self: center;
+    margin: 0;
+    padding: 0 0.9rem;
+    overflow: hidden;
+    color: var(--dim);
+    font-family: var(--font-sans, 'IBM Plex Sans', sans-serif);
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .pg-actions { display: flex; align-items: stretch; }
+  .pg-actions > * {
+    display: flex;
+    align-items: center;
+    padding: 0 0.85rem;
+    border-left: 1px solid var(--line) !important;
+    color: var(--dim) !important;
+    font-size: 11px !important;
+    letter-spacing: 0.12em;
+    text-decoration: none;
     text-transform: uppercase;
   }
-  .sql-panel { position: relative; }
-  .playground-statusbar {
+  .pg-actions > *:hover:not(:disabled) { color: var(--ink) !important; background: var(--pg-raised) !important; }
+
+  /* Mobile pane tabs */
+  .pg-panes { display: none; }
+
+  /* Work area */
+  .pg-work {
+    flex: 1;
+    display: grid;
+    grid-template-columns: max(32.5rem, var(--pg-split)) 0.6rem minmax(0, 1fr);
+    min-height: 0;
+    padding: 0.6rem 0.75rem 0;
+  }
+  .pg-left {
+    display: grid;
+    grid-template-rows: minmax(0, 1fr) 0.6rem minmax(0, var(--pg-schema));
+    min-height: 0;
+    min-width: 0;
+  }
+  .pg[data-schema='collapsed'] .pg-left { grid-template-rows: minmax(0, 1fr) 0.6rem auto; }
+  .pg[data-schema='collapsed'] .pg-schema-body,
+  .pg[data-schema='collapsed'] .pg-head-note { display: none; }
+  .pg[data-schema='collapsed'] .pg-collapse svg { transform: rotate(180deg); }
+  .pg-frame {
     display: flex;
+    flex-direction: column;
+    min-height: 0;
+    min-width: 0;
+    border: 1px solid var(--line-strong);
+    background: var(--panel);
+  }
+  .pg-head {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 0.7rem;
+    height: 2.1rem;
+    padding: 0 0 0 0.8rem;
+    border-bottom: 1px solid var(--line);
+    background: var(--void);
+    font-size: 11.5px;
+  }
+  .pg-head-title { color: var(--dim); white-space: nowrap; }
+  .pg-head-note { margin-left: auto; overflow: hidden; color: var(--faint); font-size: 10.5px; white-space: nowrap; text-overflow: ellipsis; }
+  .pg-edited { color: var(--amber); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; }
+  .pg-edited::before { content: ''; display: inline-block; width: 5px; height: 5px; margin-right: 0.4rem; background: var(--amber); vertical-align: 1px; }
+  .pg-collapse { align-self: stretch; width: 2.2rem; border-left: 1px solid var(--line) !important; color: var(--dim) !important; }
+  .pg-head-note + .pg-collapse { margin-left: 0; }
+  .pg-collapse:hover { color: var(--amber) !important; }
+  .pg-schema .pg-head-title + .pg-collapse { margin-left: auto; }
+  .pg-host { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+  .pg-fallback { position: absolute; inset: 0; margin: 0; padding: 0.9rem 1rem; overflow: auto; color: var(--dim); font-size: 13px; line-height: 21px; }
+  .pg-host .monaco-editor, .pg-host .overflow-guard { width: 100% !important; height: 100% !important; }
+  .pg-usage { background: rgba(255, 176, 0, 0.22); outline: 1px solid rgba(255, 176, 0, 0.5); }
+
+  /* Splitters */
+  .pg-split { position: relative; touch-action: none; }
+  .pg-split::after { content: ''; position: absolute; background: transparent; transition: background 0.15s; }
+  .pg-split-x { cursor: col-resize; }
+  .pg-split-x::after { top: 0; bottom: 0; left: calc(50% - 1px); width: 2px; }
+  .pg-split-y { cursor: row-resize; }
+  .pg-split-y::after { left: 0; right: 0; top: calc(50% - 1px); height: 2px; }
+  .pg-split:hover::after, .pg-split:focus-visible::after, .pg-split[data-dragging]::after { background: var(--amber); }
+  .pg-split:focus-visible { outline: none; }
+  .pg[data-dragging] { cursor: inherit; user-select: none; }
+  .pg[data-dragging] .pg-host { pointer-events: none; }
+
+  /* Schema */
+  .pg-schema-body {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(15.5rem, 1fr));
+    align-content: start;
+    gap: 0.6rem;
+    min-height: 0;
+    padding: 0.6rem;
+    overflow: auto;
+  }
+  .pg-table { border: 1px solid var(--line); background: var(--void); font-size: 11.5px; }
+  .pg-table-head { display: flex; align-items: baseline; gap: 0.5rem; padding: 0.4rem 0.55rem; border-bottom: 1px solid var(--line); }
+  .pg-table-head button { color: var(--ink) !important; font-size: 12.5px !important; font-weight: 600; }
+  .pg-table-head span { margin-left: auto; color: var(--faint); font-size: 10px; }
+  .pg-table ul { margin: 0; padding: 0.25rem 0; list-style: none; }
+  .pg-table li { display: flex; align-items: baseline; gap: 0.45rem; padding: 0.1rem 0.55rem; }
+  .pg-table li:hover { background: var(--pg-raised); }
+  .pg-table li button { color: var(--dim) !important; text-align: left; }
+  .pg-table button:hover, .pg-table button:focus-visible { color: var(--amber) !important; }
+  .pg-table [data-used] { color: var(--ink) !important; }
+  .pg-table [data-used]::after { content: '•'; margin-left: 0.3rem; color: var(--amber); }
+  .pg-type { margin-left: auto; color: var(--faint); font-size: 10.5px; white-space: nowrap; }
+  .pg-tag { flex: none; padding: 0 0.25rem; border: 1px solid currentColor; font-size: 9px; letter-spacing: 0.08em; }
+  .pg-tag.pk { color: var(--amber); }
+  .pg-tag.scope { color: var(--pg-cyan); }
+  .pg-tag.ref { color: var(--pg-sand); border-color: transparent; padding: 0; letter-spacing: 0; }
+  .pg-table-foot { padding: 0.35rem 0.55rem; border-top: 1px solid var(--line); color: var(--faint); font-size: 10.5px; }
+
+  /* Output */
+  .pg-out { position: relative; }
+  .pg-tabs {
+    display: flex;
+    flex: none;
+    align-items: stretch;
     justify-content: space-between;
-    gap: 0.4rem 1rem;
-    padding: 0.42rem 0.65rem;
-    border: 1px solid var(--border);
-    border-top: 0;
+    height: 2.1rem;
+    border-bottom: 1px solid var(--line);
+    background: var(--void);
+  }
+  .pg-tabs [role='tablist'] { display: flex; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+  .pg-tabs [role='tab'], .pg-panes [role='tab'] {
+    position: relative;
+    flex: none;
+    padding: 0 0.8rem;
+    border-right: 1px solid var(--line) !important;
+    color: var(--dim) !important;
+    font-size: 11px !important;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  .pg-tabs [role='tab']:hover, .pg-panes [role='tab']:hover { color: var(--ink) !important; }
+  .pg-tabs [aria-selected='true'], .pg-panes [aria-selected='true'] { color: var(--ink) !important; background: var(--panel) !important; }
+  .pg-tabs [aria-selected='true']::after, .pg-panes [aria-selected='true']::after {
+    content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--amber);
+  }
+  .pg-count { margin-left: 0.3rem; padding: 0 0.3rem; background: var(--pg-red); color: #000; font-size: 10px; letter-spacing: 0; }
+  .pg-query { display: flex; align-items: center; gap: 0.5rem; padding: 0 0.6rem; border-left: 1px solid var(--line); font-size: 11px; }
+  .pg-query span, .pg-tools label span { color: var(--faint); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; }
+  .pg select, .pg input[type='text'], .pg input[type='number'] {
+    min-width: 0;
+    height: 1.7rem;
+    padding: 0 0.4rem;
+    border: 1px solid var(--line-strong);
+    border-radius: 0;
+    background: var(--void);
+    color: var(--ink);
+    font: inherit;
+    font-size: 11.5px;
+  }
+  .pg select:focus-visible, .pg input:focus-visible { outline: 1px solid var(--amber); outline-offset: 0; }
+  .pg-panel { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+  .pg-panel[hidden] { display: none; }
+  .pg-scroll { display: block; overflow: auto; padding: 0.9rem 1rem 1.2rem; }
+  .pg-tools {
+    display: flex;
+    flex: none;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem 0.8rem;
+    padding: 0.45rem 0.8rem;
+    border-bottom: 1px solid var(--line);
+    font-size: 11.5px;
+  }
+  .pg-tools label { display: flex; align-items: center; gap: 0.45rem; min-width: 0; }
+  .pg-tools [data-statement] { max-width: 22rem; }
+  .pg-badges { display: flex; gap: 0.35rem; margin-left: auto; }
+  .pg-badges span { padding: 0.1rem 0.4rem; border: 1px solid var(--line); color: var(--dim); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; }
+  .pg-tools button, .pg-primary, .pg-stale button, .pg-problem button, .pg-empty button {
+    height: 1.7rem;
+    padding: 0 0.7rem;
+    border: 1px solid var(--line-strong) !important;
+    color: var(--dim) !important;
+    font-size: 10.5px !important;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  .pg-tools button:hover:not(:disabled), .pg-stale button:hover, .pg-problem button:hover, .pg-empty button:hover { border-color: var(--amber) !important; color: var(--amber) !important; }
+  .pg-primary { border-color: var(--amber) !important; background: var(--amber) !important; color: #000 !important; font-weight: 600; }
+  .pg-primary:hover { background: #ffc233 !important; }
+  .pg-stale {
+    display: flex;
+    flex: none;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem 0.8rem;
+    padding: 0.4rem 0.8rem;
+    border-bottom: 1px solid rgba(224, 116, 90, 0.5);
+    background: rgba(224, 116, 90, 0.08);
+    color: #f0a08c;
+    font-size: 11.5px;
+  }
+  .pg-stale[hidden] { display: none; }
+  .pg-empty { display: none; flex: 1; align-items: center; justify-content: center; padding: 2rem; text-align: center; }
+  .pg-out[data-out='empty'] .pg-empty { display: flex; }
+  .pg-out[data-out='empty'] .pg-panel:not([data-panel='problems']) { display: none; }
+  .pg-out[data-out='empty'][data-active-tab='problems'] .pg-empty { display: none; }
+  .pg-empty p { max-width: 28rem; margin: 0 auto 0.9rem; color: var(--dim); font-family: var(--font-sans, sans-serif); font-size: 13.5px; line-height: 1.6; }
+  .pg[data-state='error'] .pg-empty p { color: #f0a08c; }
+
+  /* Output sections */
+  .pg-section + .pg-section { margin-top: 1.4rem; }
+  .pg-section h3 { margin: 0 0 0.5rem; color: var(--amber); font-size: 10.5px; font-weight: 500; letter-spacing: 0.16em; text-transform: uppercase; }
+  .pg-section p { margin: 0 0 0.6rem; color: var(--dim); font-family: var(--font-sans, sans-serif); font-size: 13px; line-height: 1.6; }
+  .pg-section code, .pg-problem code { color: var(--ink); font-size: 0.92em; }
+  .pg-grid { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+  .pg-grid th { padding: 0.35rem 0.6rem; border-bottom: 1px solid var(--line-strong); color: var(--faint); font-size: 10px; font-weight: 500; letter-spacing: 0.1em; text-align: left; text-transform: uppercase; white-space: nowrap; }
+  .pg-grid td { padding: 0.32rem 0.6rem; border-bottom: 1px solid var(--line); color: var(--ink); vertical-align: top; }
+  .pg-grid td.num { color: var(--pg-cyan); text-align: right; font-variant-numeric: tabular-nums; }
+  .pg-grid td.null { color: var(--faint); font-style: italic; }
+  .pg-grid td.dim { color: var(--dim); }
+  .pg-grid tbody tr:hover td { background: var(--pg-raised); }
+  .pg-ok { color: var(--pg-phos); }
+  .pg-warn { color: var(--amber); }
+  [data-json] { margin: 0; color: var(--dim); font-size: 11.5px; line-height: 1.55; white-space: pre-wrap; }
+
+  /* Problems */
+  .pg-problem { padding: 0.75rem 0.85rem; border: 1px solid rgba(224, 116, 90, 0.55); border-left-width: 3px; background: rgba(224, 116, 90, 0.05); }
+  .pg-problem + .pg-problem { margin-top: 0.6rem; }
+  .pg-problem.expected { border-color: rgba(255, 176, 0, 0.55); background: rgba(255, 176, 0, 0.05); }
+  .pg-problem-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem 0.7rem; margin-bottom: 0.4rem; font-size: 11.5px; }
+  .pg-problem-head strong { color: #f0a08c; font-weight: 600; overflow-wrap: anywhere; }
+  .pg-problem.expected .pg-problem-head strong { color: var(--amber); }
+  .pg-problem p { margin: 0.3rem 0 0; color: var(--ink); font-family: var(--font-sans, sans-serif); font-size: 13px; line-height: 1.55; overflow-wrap: anywhere; }
+  .pg-problem p.remedy { color: var(--dim); }
+  .pg-problem pre { margin: 0.55rem 0 0; padding: 0.45rem 0.6rem; border: 1px solid var(--line); background: var(--void); color: var(--dim); font-size: 12px; line-height: 1.5; overflow-x: auto; }
+  .pg-problem pre mark { background: none; color: #f0a08c; text-decoration: underline wavy; text-underline-offset: 3px; }
+  .pg-note { margin: 0 0 0.9rem; padding: 0.55rem 0.75rem; border: 1px solid rgba(255, 176, 0, 0.45); color: var(--dim); font-family: var(--font-sans, sans-serif); font-size: 12.5px; }
+
+  /* Run */
+  .pg-params { display: grid; grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr)); gap: 0.6rem 0.9rem; margin-bottom: 0.8rem; }
+  .pg-params:empty { display: none; }
+  .pg-field { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; font-size: 11.5px; }
+  .pg-field > span { display: flex; gap: 0.4rem; align-items: baseline; color: var(--ink); }
+  .pg-field > span small { color: var(--faint); font-size: 10px; }
+  .pg-field-row { display: flex; gap: 0.35rem; min-width: 0; }
+  .pg-field-row > * { flex: 1; }
+  .pg-field-row > select { flex: none; width: 5.5rem; }
+  .pg-field input[aria-invalid='true'] { border-color: var(--pg-red); }
+  .pg-field label { display: flex; align-items: center; gap: 0.4rem; color: var(--dim); }
+  .pg-field input[type='checkbox'] { accent-color: var(--amber); }
+  .pg-run-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.9rem; margin-bottom: 0.9rem; color: var(--dim); font-size: 11.5px; }
+  .pg-results:empty { display: none; }
+  .pg-results { overflow-x: auto; border: 1px solid var(--line); }
+  .pg-results .pg-grid th { letter-spacing: 0.02em; text-transform: none; }
+  .pg-results .pg-grid td { max-width: 26rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pg-run-error { padding: 0.6rem 0.75rem; color: #f0a08c; font-size: 12px; line-height: 1.55; }
+
+  /* Footer hint row */
+  .pg-foot {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    min-width: 0;
+    height: 1.9rem;
+    padding: 0 0.9rem;
     color: var(--faint);
-    font-size: 0.66rem;
+    font-size: 10.5px;
   }
-  .playground-statusbar p { margin: 0; color: inherit; }
-  .playground[data-state='success'] #playground-status { color: var(--amber); }
-  .playground[data-state='error'] #playground-status { color: #ff8a80; }
-  .playground-details { display: grid; grid-template-columns: 1fr 1fr; margin-top: 1rem; border: 1px solid var(--border); }
-  .playground-details details + details { border-left: 1px solid var(--border); }
-  .playground-details summary { padding: 0.55rem 0.7rem; color: var(--dim); cursor: pointer; font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase; }
-  .playground-details details[open] summary { border-bottom: 1px solid var(--border); color: var(--amber); }
-  .schema-table { padding: 0.7rem; }
-  article .schema-table h3 { margin-top: 0; }
-  .schema-table p { color: var(--dim); font-size: 0.72rem; }
-  .schema-table table { margin-bottom: 0; }
-  #playground-metadata { min-height: 10rem; margin: 0; border: 0; white-space: pre-wrap; color: var(--dim); font-size: 0.72rem; }
-  .diagnostics { margin-top: 1rem; border: 1px solid var(--border); }
-  article .diagnostics h2 { margin: 0; padding: 0.55rem 0.7rem; border: 0; border-bottom: 1px solid var(--border); font-size: 0.72rem; }
-  .diagnostics ol { margin: 0; padding: 0.55rem 0.7rem 0.55rem 2.1rem; color: var(--dim); font-size: 0.72rem; }
-  .diagnostics button { border: 0; background: transparent; color: #ff9a91; font: inherit; text-align: left; cursor: pointer; }
-  .diagnostics button:hover { color: var(--ink); }
-  .diagnostic-code { color: #ff8a80; font-weight: 700; }
-  .playground-noscript { border: 1px solid #ff6b5f; padding: 0.7rem; }
+  .pg-keys { display: flex; gap: 1.1rem; white-space: nowrap; }
+  .pg-status { margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pg[data-state='success'] .pg-status { color: var(--pg-phos); }
+  .pg[data-state='error'] .pg-status { color: #f0a08c; }
+
+  /* Gallery */
+  .pg-gallery {
+    inset: 0;
+    margin: auto;
+    width: min(58rem, calc(100vw - 2rem));
+    max-height: min(44rem, calc(100dvh - 3rem));
+    padding: 0;
+    border: 1px solid rgba(255, 176, 0, 0.6);
+    background: var(--panel);
+    color: var(--ink);
+    box-shadow: 0 30px 80px -20px rgba(0, 0, 0, 0.9);
+  }
+  .pg-gallery[open] { display: flex; flex-direction: column; }
+  .pg-gallery::backdrop { background: rgba(0, 0, 0, 0.72); }
+  .pg-gallery header { display: flex; align-items: center; gap: 0.8rem; padding: 0.7rem 0.9rem; border-bottom: 1px solid var(--line); color: var(--dim); font-size: 12px; }
+  .pg-gallery header button { margin-left: auto; width: 1.8rem; height: 1.8rem; border: 1px solid var(--line) !important; color: var(--dim) !important; font-size: 16px !important; }
+  .pg-gallery header button:hover { border-color: var(--amber) !important; color: var(--amber) !important; }
+  .pg-gallery-body { display: grid; grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr)); gap: 1.2rem 1rem; padding: 0.9rem; overflow-y: auto; }
+  .pg-gallery h2 { margin: 0 0 0.45rem; color: var(--amber); font-size: 10.5px; font-weight: 500; letter-spacing: 0.16em; text-transform: uppercase; }
+  .pg-gallery section button {
+    display: block;
+    width: 100%;
+    margin-bottom: 0.35rem;
+    padding: 0.5rem 0.6rem;
+    border: 1px solid var(--line) !important;
+    text-align: left;
+  }
+  .pg-gallery section button:hover { border-color: var(--amber) !important; background: var(--pg-raised) !important; }
+  .pg-gallery section button[aria-current='true'] { border-color: var(--amber) !important; box-shadow: inset 2px 0 0 var(--amber); }
+  .pg-gallery .t { display: block; font-size: 12.5px; }
+  .pg-gallery .d { display: block; margin-top: 0.15rem; color: var(--faint); font-family: var(--font-sans, sans-serif); font-size: 12px; line-height: 1.45; }
+  .pg-gallery .f { display: block; margin-top: 0.25rem; color: #f0a08c; font-size: 10px; letter-spacing: 0.04em; overflow-wrap: anywhere; }
+  .pg-noscript { margin: 1rem; padding: 0.7rem; border: 1px solid var(--pg-red); }
+
   @media (max-width: 1100px) {
-    .example-bar { grid-template-columns: 1fr; }
-    #playground-example-description { border-top: 1px solid var(--border); border-left: 0; }
-    .playground { --playground-height: clamp(29rem, 60vh, 42rem); }
+    .pg-desc { display: none; }
+    .pg-step { margin-right: auto; }
+    .pg-head-note { display: none; }
   }
-  @media (max-width: 780px) {
-    .playground-intro { align-items: flex-start; flex-direction: column; }
-    .playground-workspace { grid-template-columns: 1fr; height: auto; }
-    .source-panel { border-right: 0; border-bottom: 1px solid var(--border-strong); }
-    .editor-host { min-height: 24rem; }
-    .playground-details { grid-template-columns: 1fr; }
-    .playground-details details + details { border-top: 1px solid var(--border); border-left: 0; }
-    .playground-statusbar { flex-direction: column; }
-  }
-  @media (max-width: 520px) {
-    .panel-header { align-items: stretch; padding-left: 0.65rem; }
-    .panel-header > div:first-child { align-self: center; }
-    .plan-badges { align-content: center; padding-right: 0.45rem; }
-    .plan-controls { flex-wrap: wrap; }
-    .plan-controls label { min-width: 50%; border-bottom: 1px solid var(--border); }
-    .plan-controls button { min-height: 2.5rem; flex: 1 0 100%; }
+
+  /* Narrow screens: one pane at a time behind Editor / Schema / Output tabs. */
+  @media (max-width: 899px) {
+    .pg-pick { flex: 1; max-width: none; padding: 0 0.7rem; }
+    .pg-pick-group { display: none; }
+    .pg-step { margin-right: 0; }
+    .pg-step span { display: none; }
+    .pg-actions > * { padding: 0 0.6rem; font-size: 10px !important; letter-spacing: 0.08em; }
+    .pg-actions a { display: none; }
+    .pg-panes { display: flex; flex: none; border-bottom: 1px solid var(--line); background: var(--void); height: 2.3rem; }
+    .pg-panes [role='tab'] { flex: 1; }
+    .pg-work { grid-template-columns: minmax(0, 1fr); padding: 0.5rem; }
+    .pg-split { display: none; }
+    .pg-left, .pg[data-schema='collapsed'] .pg-left { grid-template-rows: minmax(0, 1fr); }
+    .pg[data-pane='editor'] .pg-schema,
+    .pg[data-pane='schema'] .pg-editor,
+    .pg[data-pane='output'] .pg-left,
+    .pg:not([data-pane='output']) .pg-out { display: none; }
+    .pg[data-schema='collapsed'] .pg-schema-body { display: grid; }
+    .pg-collapse { display: none; }
+    .pg-foot .pg-keys { display: none; }
+    .pg-tools [data-statement] { max-width: 12rem; }
+    .pg-badges { margin-left: 0; }
   }
 </style>

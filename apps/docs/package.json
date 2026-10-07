@@ -4,19 +4,22 @@
   "type": "module",
   "scripts": {
     "analytics": "node scripts/analytics.mjs",
-    "build": "astro build && node scripts/agent-assets.mjs",
+    "build": "astro build && bun run ../demo/scripts/build-static.ts dist/demo && node scripts/agent-assets.mjs",
     "dev": "astro dev",
-    "deploy": "astro build && node scripts/agent-assets.mjs && wrangler deploy"
+    "deploy": "bun run build && wrangler deploy"
   },
   "dependencies": {
+    "@astrojs/markdown-satteri": "0.3.8",
     "astro": "^7.1.1"
   },
   "devDependencies": {
-    "@shikijs/monaco": "^4.3.1",
     "@shikijs/langs": "^4.3.1",
+    "@shikijs/monaco": "^4.3.1",
     "@sqlite.org/sqlite-wasm": "^3.53.0-build1",
+    "@tailwindcss/vite": "^4.3.3",
     "monaco-editor-core": "^0.55.1",
     "shiki": "^4.3.1",
+    "tailwindcss": "^4.3.3",
     "wrangler": "^4.105.0"
   }
 }

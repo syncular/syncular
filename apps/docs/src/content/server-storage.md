@@ -1,514 +1,66 @@
-# Storage backends
+# Choosing a database
 
-The server core is written against three storage interfaces: `ServerStorage`
-for the commit log and rows, `SegmentStore` for bootstrap segments, and
-`BlobStore` for file-attachment bytes. Below is every shipped backend and
-when to pick which; all backends sharing an interface pass one shared
-contract suite.
+Pick the database, segment store, and blob store your sync server runs on. This page is for backend developers deciding before they build; it ends with one choice per store and a link to its wiring. Per-backend detail is on [Storage reference](/server-storage-reference/).
 
-## Concurrent pulls and storage upgrades
+::meta{for="Backend developers" time="4 minutes" first="what-is"}
 
-Incremental pulls read their commit window and recheck the retention horizon
-before starting an active subscription section. Pruning during that read returns
-`sync.cursor_expired` as a subscription reset. Both client cores report the reset
-and `syncUntilIdle` follows it with a fresh bootstrap.
+:::terms
+- **`ServerStorage`**: The interface for the commit log and the rows. SQLite, Postgres, and D1 implement it.
+- **`SegmentStore`**: The interface for bootstrap segments. Segments are cache entries with a 24 h default lifetime.
+- **`BlobStore`**: The interface for file-attachment bytes. Blobs are durable until no row references them.
+- **Realtime fanout**: How a commit applied on one process reaches sockets connected to another.
+:::
 
-Realtime sessions track commit notification order, including commits outside their
-registered scopes. A sequence gap, duplicate, or regression sends a catch-up wake.
-A catch-up acknowledgment advances the notification watermark before deltas resume.
+:::figure{title="Pick by where the server runs" note="Three databases, one decision" ticks}
+<div class="d-cols-3">
+<div class="node ok"><span class="t">Cloudflare Workers</span><b>D1</b><br>R2 for segments and blobs<br>One Durable Object per partition<br><span class="chip ok">Edge</span></div>
+<div class="node hot"><span class="t">Bun or Node, production</span><b>Postgres</b><br>S3-compatible segments and blobs<br>LISTEN/NOTIFY across instances<br><span class="chip amber">Multi-instance</span></div>
+<div class="node cool"><span class="t">Bun or Node, one machine</span><b>SQLite</b><br>SQLite segments and blobs<br>In-process realtime hub<br><span class="chip">Dev and single node</span></div>
+</div>
 
-Custom storage adapters must implement
-`updateClientCursor(partition, clientId, cursor, updatedAtMs)`. Update only the
-existing record's cursor and timestamp with their respective maxima, atomically.
-Keep missing records absent and preserve actor, wire version, and subscriptions.
-Implement `advanceClientCursor(partition, clientId, actorId, logEpoch, cursor,
-updatedAtMs)` for realtime acknowledgments with the same atomic update plus actor
-and current partition log epoch checks.
-`putClientRecord` remains a full replacement: changing subscriptions can lower the
-retention cursor floor.
+::caption[All three store the same tables and pass one shared contract suite, so moving between them changes configuration and no client or schema code.]
+:::
 
-Declared server indexes now lead with `_sync_partition`. Unique values are enforced
-within each partition. The generated client index columns remain unchanged.
-**When upgrading an existing server database, increment the application schema
-version and regenerate its schema before starting the server.** The existing
-schema migration rebuilds Syncular-owned indexes with the partition column.
-Reopening the same schema version does not rebuild old indexes. Operator indexes
-and constraint-owned indexes remain outside the rebuild set.
+## Database
 
-A schema migration on SQLite or PostgreSQL raises the writer fence of every
-existing partition to the new schema version in the migration transaction. A
-server process still running the previous schema then fails any commit it
-appends, including server-side writes through `storage.begin()`, with
-`sync.storage.writer_fence_rejected` instead of storing payloads in the
-previous layout. Migrate the database, then replace the old processes; their
-requests fail until they are replaced.
-
-Removing a table in a schema migration also deletes its blob references. References
-from retained tables continue to protect their blobs from garbage collection.
-
-D1 upgrades save progress between Worker invocations. Run
-`D1ServerStorage.migrateSchema` until it returns `complete: true` before admitting
-traffic. See [D1 schema migration](/server-workers/#schema-migration).
-
-## Read freshness
-
-Sync storage must read committed writes immediately. Commit maxima, scope indexes,
-commit windows and row reads cannot use a stale query cache or a lagging replica.
-Authorization reads require the same freshness. If a push accepts sequence N but
-the pull maximum is below N, the server returns `sync.storage_stale_read`.
-The push remains committed; repair the storage configuration before retrying its
-original idempotency key.
-
-With Cloudflare Hyperdrive, pass a cache-disabled binding to `PostgresServerStorage`
-and to authentication and scope resolution. Hyperdrive enables query caching by
-default and writes do not invalidate cached SELECT results. Its default cache
-can serve an older result for 60 seconds plus a 15-second revalidation window.
-See [Hyperdrive query caching](https://developers.cloudflare.com/hyperdrive/concepts/query-caching/).
-Durable Object serialization does not change that cache contract.
-
-## Choosing a database
-
-| Backend | Adapter | Realtime fanout | When to use |
+| Backend | Adapter | Realtime fanout | Choose it for |
 |---|---|---|---|
-| SQLite (`bun:sqlite` or `node:sqlite`) | `SqliteServerStorage` from `@syncular/server/sqlite` | in-process hub | Development, demos, single-node deployments |
-| Postgres | `PostgresServerStorage` + your driver via `PgExecutor` | LISTEN/NOTIFY via `PostgresFanout` | Production on Bun/Node, especially multi-instance |
-| Cloudflare D1 | `D1ServerStorage` | in-Durable-Object fanout | Cloudflare Workers, see [Cloudflare Workers](/server-workers/) |
+| SQLite (`bun:sqlite` or `node:sqlite`) | `SqliteServerStorage` from `@syncular/server/sqlite` | In-process hub | Development, demos, single-node deployments. The [quickstart](/quickstart/) and the load suite use it. |
+| Postgres | `PostgresServerStorage` plus your driver through `PgExecutor` | LISTEN/NOTIFY through `PostgresFanout` | Production on Bun or Node, especially with more than one instance |
+| Cloudflare D1 | `D1ServerStorage` | In-Durable-Object fanout | Cloudflare Workers ([Cloudflare Workers](/server-workers/)) |
 
-## Materialized app tables
+`SqliteServerStorage` runs on `bun:sqlite` under Bun and on built-in `node:sqlite` under Node 22.13 or newer. The server library imports no Postgres driver; you adapt Bun.sql or node-postgres in about 20 lines ([Postgres](/server-storage-reference/#postgres)).
 
-Every synced table is stored as a real table in the server database, on all
-three backends. Each one carries your app's typed columns plus the sync
-meta columns:
+Every backend materializes each synced table as a real table with your typed columns beside the sync columns, so you can run SQL and analytics against synced data in the server database ([Materialized app tables](/server-storage-reference/#materialized-app-tables)).
 
-```sql
-CREATE TABLE todos(
-  _sync_partition       TEXT NOT NULL,
-  _sync_row_id          TEXT NOT NULL,
-  id                    TEXT NOT NULL,
-  list_id               TEXT,
-  title                 TEXT,
-  done                  INTEGER,
-  _sync_server_version  INTEGER NOT NULL,   -- BIGINT on Postgres
-  _sync_scopes          TEXT NOT NULL,      -- JSONB on Postgres
-  _sync_payload         BLOB NOT NULL,      -- BYTEA on Postgres
-  _sync_column_versions BLOB,               -- BYTEA on Postgres
-  PRIMARY KEY (_sync_partition, _sync_row_id)
-);
-```
-
-The typed columns are a queryable projection: you can run live SQL, joins,
-and analytics against synced data right in your server database, and
-indexes declared in your migrations are created here as well. The sync
-serve path (pull, bootstrap, segments) reads `_sync_payload`, the verbatim
-wire bytes, so server-side querying and the protocol stay decoupled.
-App hosts create and migrate these tables by calling
-`ensureSyncServerReady(config)` before binding a port
-([Server setup](/guide-server/)); the low-level `storage.ensureSchema`
-accepts a compiled schema directly.
-
-When the stored schema version equals the running one, `ensureSchema` still
-checks the database before serving, on all three backends. It compares the
-stored column layouts with the configured schema, then reads each synced table
-from the catalog (`PRAGMA table_info` on SQLite and D1, `pg_attribute` on
-Postgres). A missing table or column, a `_sync_*` column whose type or
-nullability differs from the declaration above, or a primary key other than
-`(_sync_partition, _sync_row_id)` fails the open with `StorageQueryError`:
-
-| Code | Cause | `details` |
-|---|---|---|
-| `sync.storage.stored_layout_mismatch` | Stored layouts differ from the configured schema | `table`, `column` |
-| `sync.storage.physical_layout_mismatch` | A synced table differs from the storage layout | `table`, `column`, `reason`, and `expected`/`actual` for a type or nullability mismatch |
-
-`reason` is one of `missing_table`, `missing_column`, `type`, `nullability`,
-or `primary_key`. Neither refusal writes DDL. A table from before
-`_sync_column_versions` existed gains the column only through a schema-version
-bump ([version-only bumps](/guide-schema/#a-version-only-bump-server-internal-storage-changes)).
-D1 also refuses a missing core table that its request path reads or writes
-(`sync_tombstones`, `sync_commits`, `sync_clients`, and the rest of the
-`sync_*` tables except `sync_backfill_checkpoints` and `sync_writer_fence`),
-because D1 creates those tables only in `migrate()` or during a schema
-upgrade. On D1 the check costs one `sqlite_master` read plus one
-`PRAGMA table_info` statement per synced table the first time a storage
-instance opens.
-
-A per-table `materialize` flag on the server schema controls the
-projection:
-
-- **Default `true`.** Tables whose every non-key, non-scope column is
-  end-to-end encrypted default to `false`, since their projection would be
-  columns of ciphertext. An explicit value always wins.
-- **`materialize: false`** writes only the meta columns on push (skipping
-  the row decode) and skips user indexes. Use it for very wide tables on
-  D1, where the 100-bind-parameter cap holds a materialized row to roughly
-  95 app columns.
-- **Changing the flag requires a schema-version bump.** Turning it on
-  backfills the typed columns from stored payloads; turning it off stops
-  writing them, and the stale columns remain until you drop them manually.
-
-The storage layout, scope index, and serve path are identical in both
-modes; the flag only decides whether the typed projection is populated.
-
-## Choosing the right row lookup
-
-Syncular has four lookup shapes. Do not turn a server search need into a
-client scope unless clients need to subscribe by that dimension.
-
-| Need | API / pattern | Authorization meaning |
-|---|---|---|
-| One known row | `getRow(table, rowId)` | Trusted partition-local primary-key read |
-| Rows in a client delivery scope | `scanRows({ scopeFilter, ... })` | Syncular scope-index scan; at least one variable is mandatory |
-| Exact authoritative lookup by app columns | `scanRowsByIndex({ index, values, ... })` | Trusted server-host relational-index scan; never a client scope |
-| Ordered/range work queue or derived topology | Atomically maintained reverse-index/queue rows | Explicit application projection with its own completeness invariant |
-
-An empty or omitted `scopeFilter` is never an “all rows” request. All shipped
-adapters throw `StorageQueryError` with
-`code: 'sync.storage.scan_requires_scope'`; an empty result therefore cannot
-hide an unsupported administrative scan. A relational index also does not
-make its columns available to `scanRows`; scope indexes and SQL indexes solve
-different problems.
-
-### Trusted alternate lookup
-
-Suppose encryption-key grants sync only to their exact user, but revoking a
-clinic must revoke every grant in that clinic. Keep the client scope small and
-declare an ordinary relational index for the authoritative lookup:
-
-```ts
-const schema: ServerSchema = {
-  version: 12,
-  tables: [{
-    name: 'device_encryption_key_grants',
-    columns: [
-      { name: 'id', type: 'string', nullable: false },
-      { name: 'user_id', type: 'string', nullable: false },
-      { name: 'clinic_id', type: 'string', nullable: false },
-      { name: 'wrapped_key', type: 'bytes', nullable: false },
-    ],
-    primaryKey: 'id',
-    scopes: ['user:{user_id}'],
-    indexes: [{
-      name: 'device_key_grants_by_clinic',
-      columns: ['clinic_id'],
-    }],
-  }],
-};
-```
-
-The index does not enter `declaredVariables`, named-query scope coverage, a
-subscription descriptor, or `resolveScopes`. A client can request only
-`user_id`; knowing the clinic ID or index name grants nothing. Trusted host
-code can use the exact index inside the same authoritative transaction:
-
-```ts
-const tx = await storage.begin(partition);
-if (tx.scanRowsByIndex === undefined) {
-  throw new Error('storage adapter lacks trusted relational-index scans');
-}
-
-let afterRowId: string | null = null;
-for (;;) {
-  const page = await tx.scanRowsByIndex({
-    table: 'device_encryption_key_grants',
-    index: 'device_key_grants_by_clinic',
-    values: [clinicId],    // one exact value per declared index column
-    afterRowId,
-    limit: 250,            // required integer, 1..1,000
-  });
-  for (const grant of page) {
-    await tx.deleteRow('device_encryption_key_grants', grant.rowId);
-  }
-  if (page.length < 250) break;
-  afterRowId = page.at(-1)?.rowId ?? null;
-}
-await tx.commit();
-```
-
-SQLite, PostgreSQL, and D1 implement ordered keyset pagination and
-transaction-local read-your-own-writes. The table must be materialized, the
-named index must exist, and every index column receives one exact value.
-Failures use privacy-safe `StorageQueryError.code` values. The API exists only
-on `@syncular/server` storage capabilities and is not reachable through SSP2;
-never wrap it in a route that accepts table, index, or value choices from an
-untrusted client. Custom storage adapters may omit this additive capability
-and should fail the command closed, as above.
-
-`values` is a complete, order-sensitive tuple; a SQL-style leading-prefix
-request is unsupported. For an index declared as
-`columns: ['clinic_id', 'state', 'id']`, only
-`values: [clinicId, state, id]` is valid. `values: [clinicId]` fails with
-`sync.storage.index_value_count_mismatch`; it does not enumerate the
-clinic. If a command needs that enumeration, declare a dedicated
-`columns: ['clinic_id']` index and query it with one value. Trusted prefix
-and range scans are intentionally not part of this API.
-
-This is also the right shape for a provider webhook: declare, for example,
-`clinics_by_workos_organization` over `workos_organization_id`, resolve the
-exact clinic, then use another declared index or known primary key from
-there. The external tenant identifier never becomes an actor scope.
-
-### When a reverse-index row is still correct
-
-`scanRowsByIndex` is intentionally exact; it is not an arbitrary SQL or range
-query escape hatch. A time-ordered expiry worker, a custom adapter without the
-capability, or a derived relationship that is not a column on the target row
-still needs an application projection. Model a small reverse-index/queue table
-whose row ID begins with the lookup or sortable timestamp, give it a dedicated
-server scope that `resolveScopes` never grants to application actors, and
-create/delete that projection in the same authoritative transaction as the
-domain change. Validate the projection's target row and rebuild it with an
-idempotent repair job. Tests must prove both completeness (every live target
-has the expected index row) and isolation (an application actor cannot
-subscribe even when it knows IDs).
-
-This differs from correlated scopes: multiple scope variables are independent
-authorization dimensions, not alternate indexes or paired tuples. Use a
-parent-and-child scope only when both values are real client delivery fences;
-use the trusted relational lookup for an exact server command; use a reverse
-projection when the lookup is derived, ordered, or ranged.
-
-## SQLite (`SqliteServerStorage`)
-
-Import `SqliteServerStorage` from `@syncular/server/sqlite`, then pass
-`'./data.db'` or `':memory:'`. The export selects `bun:sqlite` on Bun and
-Node's built-in `node:sqlite` on Node 22.13 or newer. The server manages all
-of its own tables (the
-`sync_*` internals plus the materialized app tables above): your app
-migrations feed typegen, and the server derives its DDL from the compiled
-schema. It is
-the storage the [quickstart](/quickstart/) uses and the baseline the load
-suite runs against.
-
-SQLite and D1 row replacement and deletion remove the old row's exact scope
-entries through the existing scope primary key. The storage backend reads the
-old scope map before changing the row and keeps the deletion and row change in
-the same transaction or D1 atomic batch. This adds no indexes or schema migration.
-The Postgres implementation retains its existing row-ID predicate.
-
-## Postgres (`PostgresServerStorage`)
-
-The production database path. It implements the same `ServerStorage`
-contract with the inverted scope index carried through as **covering
-indexes**, so scope fanout always runs as an index range scan. A dedicated
-test asserts via
-`EXPLAIN` that the fanout candidate scans stay index-driven, so a
-regression to row scans fails in CI. `storage.migrate()` applies the DDL
-idempotently: safe to call on every boot.
-
-Pushes lock an existing partition with `SELECT ... FOR UPDATE`. A new partition
-requires initialization and a second lock query to serialize concurrent first
-writers. Each push keeps its own transaction and rejection savepoint; rollback
-does not consume a commit sequence. Existing partitions avoid repeating the
-initialization statement on every push.
-
-Sequence allocation and commit metadata insertion share one SQL statement. The
-allocation feeds the commit insert through its returned sequence, retaining the
-partition lock and transaction rollback behavior. Change rows and their scope
-entries remain in that same commit transaction.
-
-One statement appends all of a commit's changes and populates their inverted
-scope entries and delete tombstones. The statement expands each inserted scope
-object and deduplicates entries shared by changes in the same commit.
-Empty-scope changes still enter the log. Serialized
-scopes bind as text before JSONB parsing so driver JSON encoding cannot turn them
-into a JSON string. Existing change rows with string-form scopes remain readable.
-
-Before a commit applies its operations, the push reads every row they target
-and its delete tombstone with one statement per table, and each operation reads
-that snapshot until the operation or an earlier one in the commit writes the
-row. A row write is one statement: the upsert plus the row's scope-index
-entries. A commit that inserts rows into two tables costs 10 statements plus one
-per row, whatever the number of scope variables per row, and runs in its own
-transaction.
-
-An HTTP `POST /sync` request and a realtime socket round run the same
-handler, so both get the reads below. A pull starts the commit-window read or first snapshot page of every
-subscription before it awaits any of them, then re-reads the pruning horizon
-once. `PostgresServerStorage` queues the page reads issued in one microtask
-turn and sends one `LATERAL` statement per table, in which each subscription
-keeps its own scope filter, cursor, and limit. A pull therefore issues a
-number of statements that grows with the tables it reads: in the server test
-suite, a 68-subscription pull over two tables issues 10 statements to
-bootstrap and 11 to catch up, the same counts as an 8-subscription pull. The
-serve gate reads the schema marker, the log epoch, and incomplete checkpoints
-in one statement. A custom `ServerStorage` receives these `readCommitWindow`
-and `scanRows` calls concurrently and may batch them the same way.
-
-The server library never imports a Postgres driver. You wire yours through
-the minimal `PgExecutor` interface (`query(text, params)` plus a
-`transaction(fn)` scope). Bun.sql or node-postgres both adapt in ~20
-lines:
-
-```ts
-import {
-  PostgresServerStorage,
-  type PgExecutor,
-  type PgQueryable,
-} from '@syncular/server';
-
-function bunSqlExecutor(sql: import('bun').SQL): PgExecutor {
-  const over = (h: any): PgQueryable => ({
-    async query(text, params) {
-      const rows = await h.unsafe(text, params ? [...params] : []);
-      return { rows, rowCount: rows.length };
-    },
-  });
-  return {
-    query: over(sql).query,
-    transaction: (fn) => sql.begin((tx: any) => fn(over(tx))),
-    close: () => sql.end(),
-  };
-}
-
-const storage = new PostgresServerStorage(
-  bunSqlExecutor(new Bun.SQL(process.env.DATABASE_URL!)),
-);
-await storage.migrate();
-```
-
-Drivers decode `int8` differently (node-postgres → `string`, Bun.sql →
-`bigint`); the storage layer coerces every sequence read through
-`Number(...)`, so no type-parser config is needed. Per-partition
-`commitSeq` is allocated with an `UPDATE … RETURNING` row lock on the
-partition row: dense and gap-free, concurrent pushes to the same
-partition serialize, cross-partition pushes never contend. The node-postgres
-adapter and the full wiring notes are in the
-[server README](https://github.com/syncular/syncular/blob/main/packages/server/README.md).
-
-### Multi-instance fanout (`PostgresFanout`)
-
-Behind a load balancer, a commit applied on instance A reaches A's local
-realtime sessions in-memory. A socket connected to instance B does not see
-it without help. `PostgresFanout` bridges the gap over LISTEN/NOTIFY: the
-originating instance notifies `syncular_commit`, every instance's listen
-loop wakes its local hub, and remote sessions re-pull the delta from the
-shared Postgres they already read from. The NOTIFY payload only wakes
-listeners and stays small and capped, so only cross-instance delivery pays
-for a re-pull. Single-instance deployments install no fanout at all.
-
-```ts
-import { PostgresFanout, type PgNotificationConnection } from '@syncular/server';
-
-const fanout = new PostgresFanout(conn); // conn: your driver's LISTEN + NOTIFY
-await fanout.install(hub);               // start the LISTEN loop
-// after a push commit lands:
-await fanout.notifyCommit(partition, commitSeq);
-```
-
-## Cloudflare D1 (`D1ServerStorage`)
-
-D1 is SQLite over an async, batch-at-a-time API; `D1ServerStorage` shares
-the schema and value codecs with `SqliteServerStorage` and differs only in
-execution shape. The concurrent page reads of a pull leave as one
-`db.batch` round trip. It ships in `@syncular/server` but its home is the Workers
-deployment: per-partition write serialization, migration workflow, and the
-Durable Object are covered in [Cloudflare Workers](/server-workers/).
-
-## Custom storage pruning
-
-Implement `getPartitionLogEpoch(partition)` as a point read that leaves the
-last-authenticated timestamp unchanged. `pruneCommitLog` reads it before
-computing retention inputs.
-
-Replace `pruneCommitsThrough(partition, seq)` with
-`pruneCommitsThrough(partition, { logEpoch, throughSeq })`. In one transaction,
-verify the epoch, compute `max(currentHorizon, throughSeq)`, advance the horizon,
-and delete commit/change/scope records through it. Return
-`{ previousHorizonSeq, horizonSeq, removedCommits }` from that transaction.
-Serialize this operation with restore rotation. An epoch mismatch must reject
-before deleting; retries must clean up even when the horizon already covers
-the requested sequence. Retained `setHorizonSeq` implementations must use a
-monotonic update.
-
-The built-in adapters implement this contract. The D1 adapter requires
-partition coordination; use the Durable Object maintenance method in the
-[Workers guide](/server-workers/).
+:::rule{title="Reads must be fresh"}
+Sync storage must read committed writes immediately. A stale query cache or a lagging replica on the sync path fails pushes with `sync.storage_stale_read`. This includes Cloudflare Hyperdrive, which caches SELECT results by default ([Read freshness](/server-storage-reference/#read-freshness)).
+:::
 
 ## Segment stores
 
-Bootstrap segments are **TTL cache entries** with a default 24 h lifetime;
-they hold no durable state. Three backends pass the shared contract suite:
+Bootstrap segments are cache entries, so losing them costs a rebuild and no data.
 
-| Backend | Use |
+| Store | Choose it for |
 |---|---|
-| `MemorySegmentStore` | Tests, single process |
-| `SqliteSegmentStore` | Single node |
-| `S3SegmentStore` | Production, any S3-compatible store (AWS S3, Cloudflare R2, MinIO), dependency-free |
-
-`S3SegmentStore` hand-rolls SigV4 over `fetch` (no AWS SDK) and uses a
-deterministic content-addressed key layout, so every lookup is a direct
-GET/HEAD by key rather than a LIST call. For R2 it takes
-`endpoint: 'https://<account-id>.r2.cloudflarestorage.com'` with
-`region: 'auto'`.
-
-For zero-egress bootstrap storms, add signed URLs: native HMAC
-(`SignedUrlConfig`, you serve the bytes and verify the token) or delegated
-presign (`s3PresignedUrls(store)`, the object store enforces the grant and
-the sync server never proxies segment bytes). Both emit identical
-descriptors; clients cannot tell them apart. Keep the direct-download
-endpoint mounted as the mandatory fallback. A CDN can cache segment objects
-by path alone, since the key is the content address and clients verify the
-hash after download, but it must never cache the authorization decision:
-cache on the path, keep forwarding the query for origin auth, and align the
-CDN TTL with the store `ttlMs`.
+| `MemorySegmentStore` | Tests and single processes |
+| `SqliteSegmentStore` | A single node |
+| `S3SegmentStore` | Production on any S3-compatible service (AWS S3, Cloudflare R2, MinIO) |
 
 ## Blob stores
 
-File-attachment bytes get the same backend spread: `MemoryBlobStore`,
-`SqliteBlobStore`, and `S3BlobStore` (S3, R2, MinIO, same SigV4, same
-content-addressed layout, partition-scoped keys).
+Blobs carry file attachments and have no expiry, so the store must be durable.
 
-Blobs differ from segments: they are durable, with no
-expiration. A blob referenced by a live row must stay downloadable
-indefinitely, so `S3BlobStore` has no `ttlMs` and maps to no lifecycle
-rule. Do **not** put an S3/R2 lifecycle-expiration rule on the `blob/`
-prefix; it would delete still-referenced attachments out from under live
-rows. Reclamation is reference-driven: the only thing that deletes a blob
-is the scheduled `sweepOrphanBlobs` pass, which deletes only blobs no live
-row references. See [Operations and maintenance](/server-operations/).
+| Store | Choose it for |
+|---|---|
+| `MemoryBlobStore` | Tests |
+| `SqliteBlobStore` | A single node |
+| `S3BlobStore` | Production on any S3-compatible service |
 
-Two independent presign switches take the server out of the blob byte
-path: `blobSignedUrls: s3PresignedBlobUrls(blobs)` issues presigned
-download URLs after the row-derived authorization check, and
-`blobUploadUrls: s3PresignedBlobUploads(blobs)` mints direct-to-storage
-upload grants. Absent config means clients stream through the direct
-`PUT /blobs/:blobId` endpoint, which is fully supported.
+Presigned URLs for segments and blobs take the server out of the byte path. [Segment stores](/server-storage-reference/#segment-stores) and [Blob stores](/server-storage-reference/#blob-stores) cover them.
 
-## Where to go next
+## Wire the choice
 
-- [Server setup](/guide-server/): wire a chosen backend into the minimal
-  server.
-- [Cloudflare Workers](/server-workers/): D1, R2, and Durable Object
-  realtime end to end.
-- [Operations and maintenance](/server-operations/): pruning the commit log and sweeping
-  orphan blobs.
-- [Bootstrap & segments](/concepts-bootstrap/): why segments are cache
-  entries and how reuse absorbs storms.
-
-Custom storage adapters must implement
-`getActiveClientCursorFloor(partition, cutoffMs)`. Return the minimum cursor
-whose `updatedAtMs >= cutoffMs`, or `null` when no client qualifies. Preserve
-negative bootstrap cursors. Pruning and admin horizon status use this scalar
-aggregate; `listClientCursors` remains the explicit listing interface.
-
-SQLite image builders now return `Promise<Uint8Array>` and receive
-`rowBatches`, an iterable or async iterable of row arrays. Replace custom
-builders' `input.rows` loop with `for await (const rows of input.rowBatches)`,
-insert each batch into the dedicated image database, and count rows during
-consumption. Write the final row count into `_syncular_segment` before
-serialization. Await `buildSqliteImage(input)` when calling the built-in
-Bun or Node builder directly.
-
-The server shares in-flight builds for the same storage pair and artifact
-identity after authorization. Sharing is local to one process. Signed URL
-grants remain per request. The first eligibility probe has at most
-`limitSnapshotRows + 1` rows; subsequent builder batches have at most 5,000
-rows. The image database and serialized output still consume memory.
-
-
-Realtime acknowledgements call `advanceClientCursor(partition, clientId,
-actorId, logEpoch, cursor, updatedAtMs)`. Custom storage adapters must implement
-this atomic update: advance the cursor and activity timestamp to their respective
-maxima, preserve registration fields, and require a matching actor and current
-partition log epoch. Leave missing records unchanged. SQLite, Postgres, and D1
-perform one update without reading or serializing the subscription list. HTTP
-registration keeps its existing cursor and subscription replacement rules.
+- **Bun or Node**: pass the three stores in `SyncServerConfig` ([Server setup](/guide-server/)).
+- **Workers**: D1, R2, and the Durable Object are wired together on [Cloudflare Workers](/server-workers/).
+- **Several partitions or tenants**: [Partitions & multi-tenancy](/server-partitions/) explains how the storage backend scopes them.

@@ -1,26 +1,49 @@
 # Durable server reactions
 
-Durable server reactions run application work after Syncular accepts a client
-commit. Use them for email, webhooks, projection updates, and jobs that must not
-disappear when a server process stops after committing the source data.
+Run application work after the server accepts a client commit: email, webhooks, projection updates, and jobs that must survive a server process stopping after the commit. This page is for backend developers who need post-commit work with at-least-once delivery. You finish with a planner that records work inside the commit and a runner that delivers it.
 
-A reaction has two application callbacks with different constraints:
+::meta{for="Backend developers" time="25 minutes" first="guide-server" spec="6.9"}
 
-1. `reactionPlanner` examines an accepted candidate commit inside the
-   authoritative transaction and returns bounded JSON records.
-2. `ReactionRunner` claims committed records and invokes handlers outside the
-   transaction.
+:::terms
+- **Reaction**: A persisted JSON record that names a handler to run after a commit.
+- **Planner**: The `reactionPlanner` callback. It runs inside the authoritative transaction and returns reactions.
+- **Runner**: A `ReactionRunner`. It claims committed reactions and invokes handlers outside the transaction.
+- **Lease**: A runner's time-limited claim on one reaction.
+- **Dead letter**: The terminal state of a reaction that failed permanently or exhausted its attempts.
+:::
 
-Delivery is at least once. A process can stop after a handler calls an external
-system and before Syncular records completion. The next worker receives the
-same reaction and the same `idempotencyKey`. Pass that key to every external
-system that supports idempotent requests.
+:::figure{title="From accepted commit to external effect" note="Delivery is at least once" ticks}
+<div class="d-row">
+<div class="d-box">
+<p class="d-label">One transaction</p>
+<div class="d-stack">
+<div class="node"><span class="t">Accepted commit</span>App rows and commit metadata</div>
+<div class="node hot"><span class="t">Planner</span>Returns bounded JSON records</div>
+</div>
+</div>
+<span class="d-arrow"></span>
+<div class="node"><span class="t">sync_reactions</span>Pending records, committed with the rows</div>
+<span class="d-arrow"></span>
+<div class="d-box">
+<p class="d-label">Outside the transaction</p>
+<div class="d-stack">
+<div class="node cool"><span class="t">Runner</span>Claims with a lease</div>
+<div class="node ok"><span class="t">Handler</span>Calls the provider with the idempotencyKey</div>
+</div>
+</div>
+</div>
 
-Normative behavior is defined in
-[SPEC §6.9](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#69-durable-server-reactions).
+::caption[A process can stop after the handler calls a provider and before Syncular records completion. The next worker receives the same reaction and the same `idempotencyKey`. Pass that key to every external system that supports idempotent requests.]
+:::
 
-## Define typed reaction records
+A reaction has two application callbacks with different constraints. `reactionPlanner` examines an accepted candidate commit inside the authoritative transaction and returns bounded JSON records. `ReactionRunner` claims committed records and invokes handlers outside the transaction. SPEC defines the behavior in [§6.9](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#69-durable-server-reactions).
 
+To choose between a reaction, an event row, a server-side `SyncClient`, and `SyncRemoteClient`, use the [decision page](/guide-server-clients/).
+
+## Steps
+
+:::::steps
+::::step{title="Define typed reaction records" time="5 min"}
 Map each reaction type to its persisted payload. The type name is the handler
 registration key. `version` belongs to the record so handlers can migrate
 independently of old queued work.
@@ -84,7 +107,10 @@ perform another external effect. TypeScript cannot enforce callback purity. A
 planner exception rolls the transaction back and surfaces as a server failure,
 so a later client retry may run the planner again.
 
-## Add the planner to the server
+::checkpoint[The planner typechecks against `ReactionPlanner<AppReactions>`.]
+::::
+
+::::step{title="Add the planner to the server" time="5 min"}
 
 Pass the planner with the rest of the canonical server configuration:
 
@@ -120,7 +146,10 @@ An invalid planned record fails the source transaction. Current bounds are:
 Payloads cannot contain class instances, functions, accessors, symbols,
 `undefined`, cyclic values, or non-finite numbers.
 
-## Run handlers after commit
+::checkpoint[Pushing an accepted commit emits `reaction.queued`.]
+::::
+
+::::step{title="Run handlers after commit" time="8 min"}
 
 `ReactionRunner` performs one bounded delivery pass. Call `runOnce()` from a
 host scheduler, queue wake, process loop, cron event, or Durable Object alarm.
@@ -178,7 +207,10 @@ Use a separate runner per partition. This keeps tenant isolation and the
 per-partition commit model intact. Several runners may process one partition;
 their atomic claims normally return disjoint records.
 
-## Classify failures
+::checkpoint[`runOnce()` returns `completed: 1` after one accepted commit.]
+::::
+
+::::step{title="Classify failures" time="4 min"}
 
 An ordinary exception and `RetryableReactionError` schedule another attempt.
 The delay is bounded exponential backoff, starting at one second and capped at
@@ -222,6 +254,10 @@ const reset = await retryDeadLetterReaction({
 
 The reset clears attempts and failure information and makes the reaction due.
 There is no unauthenticated or automatic retry endpoint.
+
+::checkpoint[A throwing handler returns `retried: 1`; a permanent error returns `deadLettered: 1`.]
+::::
+:::::
 
 ## Understand the crash window
 
@@ -334,7 +370,3 @@ The repository examples are in
 [`packages/server/test/reactions.test.ts`](https://github.com/syncular/syncular/blob/main/packages/server/test/reactions.test.ts)
 and
 [`packages/server/test/storage-contract.ts`](https://github.com/syncular/syncular/blob/main/packages/server/test/storage-contract.ts).
-
-For choosing between a reaction, an event row, a server-side `SyncClient`,
-and `SyncRemoteClient`, use the
-[capability matrix](/guide-remote-operations/#capability-matrix).

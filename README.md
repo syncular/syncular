@@ -99,7 +99,8 @@ PowerSync, Zero, Electric, Replicache, Turso, LiveStore, and Jazz closely
 before writing this engine. The concepts and their first implementations are
 hand-written, and the checks above apply to every diff no matter where it
 came from. The full story is at
-[syncular.dev/llms](https://syncular.dev/llms/).
+[the blog](https://syncular.dev/blog/two-cores-check-llm-code/); the docs entry
+points for agents are at [syncular.dev/llms](https://syncular.dev/llms/).
 
 Contributions with LLM help are welcome. If a model drafted or rewrote
 something that's still in your pull request, say so in the description. Read

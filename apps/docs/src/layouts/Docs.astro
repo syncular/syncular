@@ -1,36 +1,58 @@
 ---
-// The docs shell: teletype sidebar + article column. Styling lives in
-// public/style.css (shared with the landing page), not in scoped styles —
-// the markdown body needs the global classes anyway.
+// The docs shell: header with the SDK switcher and search, collapsible
+// sidebar, article column with a page-type header, on-page contents, and
+// prev/next, all driven by src/nav.ts. Styling lives in src/docs.css.
 //
-// <ClientRouter> turns docs↔docs navigation into client-side swaps (no full
-// reload, no white flash). The sidebar carries `transition:persist`, so the
-// SAME element survives each swap — its scroll position is kept and it never
-// re-renders. Links to pages without the router (the landing hero, 404) fall
-// back to a normal full navigation automatically.
-import { ClientRouter } from 'astro:transitions';
+// PageMeta mounts <ClientRouter>, so every navigation is a client-side swap.
+// The sidebar carries `transition:persist`, so the same element survives
+// each docs-to-docs swap and keeps its scroll position and open groups. The
+// script at the bottom re-derives everything page-specific on every page
+// view.
+import type { MarkdownHeading } from 'astro';
 import PageMeta from '../components/PageMeta.astro';
 import Search from '../components/Search.astro';
-import { nav } from '../nav';
+import { nav, navPages, neighbors, sdkOfSlug, sdks } from '../nav';
 import { DEFAULT_DESCRIPTION } from '../seo';
 // package.json at the repository root is the one release-version authority.
 import rootPkg from '../../../../package.json';
+import '../docs.css';
 
 interface Props {
   title: string;
   active: string;
   description?: string;
   canonicalPath?: string;
-  wide?: boolean;
+  /** Header plus a viewport-filling app pane: no sidebar column, article,
+   * contents rail, or footer (the playground). */
+  full?: boolean;
+  /** The docs home: no page header, contents, or prev/next. */
+  hub?: boolean;
+  /** Headings for the contents rail; markdown pages pass `getHeadings()`. */
+  headings?: readonly MarkdownHeading[];
+  /** Path of the markdown source, relative to the repository root. */
+  sourcePath?: string;
+  /** Robots meta content; the 404 page sets `noindex, nofollow`. */
+  robots?: string;
 }
 const {
   title,
   active,
   description = DEFAULT_DESCRIPTION,
   canonicalPath = `/${active}/`,
-  wide = false,
+  full = false,
+  hub = false,
+  headings = [],
+  sourcePath,
+  robots,
 } = Astro.props;
-const releasedVersion = rootPkg.version;
+const version = rootPkg.version;
+
+const page = navPages.find((entry) => entry.slug === active);
+const owner = sdkOfSlug(active);
+const { prev, next } = neighbors(active);
+const toc = headings.filter((h) => h.depth === 2 || h.depth === 3);
+const pageIndex = owner?.pages.findIndex((entry) => entry.slug === active) ?? 0;
+const kindLabel = { concept: 'Concept', 'how-to': 'How-to', reference: 'Reference' };
 ---
 
 <!doctype html>
@@ -40,63 +62,296 @@ const releasedVersion = rootPkg.version;
       title={title}
       description={description}
       canonicalPath={canonicalPath}
+      robots={robots}
     />
-    <link rel="alternate" type="text/markdown" href={`/${active}.md`} />
-    <link rel="api-catalog" href="/.well-known/api-catalog" />
-    <link rel="stylesheet" href="/style.css" />
-    <script src="/webmcp.js" defer></script>
-    <ClientRouter />
+    {!hub ? <link rel="alternate" type="text/markdown" href={`/${active}.md`} /> : null}
   </head>
-  <body>
-    <nav class="sidebar" transition:persist="sidebar">
-      <input
-        type="checkbox"
-        id="sidebar-toggle"
-        class="sidebar-toggle"
-        aria-label="Toggle navigation"
-      />
-      <div class="sidebar-top">
-        <a class="brand" href="/">syncular</a>
-        <Search />
-        <label class="sidebar-burger" for="sidebar-toggle"></label>
-      </div>
-      {
-        nav.map((section) => (
-          <div class="nav-section">
-            <h4>{section.title}</h4>
-            <ul>
-              {section.items.map((item) => (
-                <li>
-                  <a
-                    href={`/${item.slug}/`}
-                    class={item.slug === active ? 'active' : undefined}
-                  >
-                    {item.title}
-                  </a>
-                </li>
-              ))}
-            </ul>
+  <body
+    class="overflow-x-hidden bg-void font-mono text-ink"
+    data-slug={active}
+    data-sdk={owner?.id}
+  >
+    <input type="checkbox" id="drawer" class="sr-only" aria-label="Toggle navigation" />
+    <header class="sticky top-0 z-40 h-14 border-b border-line bg-void/85 backdrop-blur-md">
+      <div class="mx-auto flex h-full max-w-[92rem] items-center gap-3 px-4 sm:gap-5 sm:px-6">
+        <label for="drawer" class="-ml-1 grid h-9 w-9 shrink-0 place-items-center border border-line text-dim hover:text-ink lg:hidden" aria-label="Open navigation">
+          <svg width="16" height="12" viewBox="0 0 16 12" aria-hidden="true"><path d="M0 1h16M0 6h16M0 11h16" stroke="currentColor" stroke-width="1.4"></path></svg>
+        </label>
+        <a href="/" class="flex shrink-0 items-center gap-2.5 text-[13.5px] font-semibold tracking-[0.2em] text-ink">
+          <img src="/favicon.svg" width="24" height="24" alt="" class="shrink-0" />
+          <span>SYNCULAR</span>
+        </a>
+        <a href="/docs/" class="hidden shrink-0 text-[13.5px] tracking-[0.14em] text-faint hover:text-ink sm:inline">/ DOCS</a>
+        <a href={`https://github.com/syncular/syncular/releases/tag/v${version}`} class="hidden border border-line px-1.5 py-0.5 text-[10.5px] tracking-[0.12em] text-faint hover:border-line-strong hover:text-ink md:inline-flex">v{version}</a>
+        <div class="docs-search w-9 shrink-0 md:w-[19rem] lg:w-[22rem]"><Search /></div>
+        <div class="flex-1"></div>
+        <button type="button" popovertarget="sdk-panel" class="flex h-9 items-center gap-2.5 border border-amber/60 bg-amber/[0.06] pr-2.5 pl-3 text-[12px] hover:bg-amber/[0.12]" aria-label="Choose your SDK">
+          <span class="hidden text-[10px] tracking-[0.16em] text-faint sm:inline">SDK</span>
+          <span class="h-1.5 w-1.5 bg-amber"></span>
+          <span data-sdk-label class="text-ink">Choose</span>
+          <svg width="9" height="9" viewBox="0 0 10 10" class="rotate-90 text-amber" aria-hidden="true"><path d="M3 2l3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.4"></path></svg>
+        </button>
+        <div id="sdk-panel" popover class="sdk-panel">
+          <div class="border-b border-line px-4 py-3 text-[11px] tracking-[0.16em] text-amber">CHOOSE YOUR SDK</div>
+          <div class="grid grid-cols-2">
+            {
+              sdks.map((sdk, i) => (
+                <button
+                  type="button"
+                  data-pick-sdk={sdk.id}
+                  data-page-href={owner ? `/${(sdk.pages[pageIndex] ?? sdk.pages[0])?.slug}/` : undefined}
+                  class:list={['border-b border-line px-4 py-3 text-left hover:bg-raised', i % 2 === 0 && 'border-r']}
+                >
+                  <span class="name flex items-center gap-2 text-[13px] text-ink">{sdk.name}</span>
+                  <span class="mt-0.5 block font-sans text-[11.5px] text-faint">{sdk.core} · {sdk.language}</span>
+                </button>
+              ))
+            }
           </div>
-        ))
-      }
-    </nav>
-    <main class:list={{ 'wide-main': wide }}>
-      <div class="release-banner" role="note">
-        documentation for published release <code>v{releasedVersion}</code>
+          <p class="px-4 py-3 font-sans text-[12px] leading-relaxed text-faint">The sidebar lists this SDK's pages. Saved in this browser.</p>
+        </div>
+        <a href="/blog/" class="hidden text-[12px] tracking-[0.12em] text-dim hover:text-ink md:block">BLOG</a>
+        <a href="https://github.com/syncular/syncular" class="hidden text-[12px] tracking-[0.12em] text-dim hover:text-ink lg:block">GITHUB</a>
+        <a href="/quickstart/" class="hidden h-9 items-center bg-amber px-3.5 text-[12px] font-semibold tracking-[0.12em] text-void hover:bg-[#ffc233] sm:flex">QUICKSTART</a>
       </div>
-      <article class:list={{ 'wide-article': wide }}>
-        <slot />
-      </article>
-    </main>
+    </header>
+    <label for="drawer" class="drawer-backdrop" aria-label="Close navigation"></label>
+
+    <div
+      class:list={['flex', full ? 'lg:[&>.sidebar]:hidden' : 'mx-auto max-w-[92rem]']}
+    >
+      <aside
+        class="sidebar sticky top-14 hidden h-[calc(100vh-3.5rem)] w-[17.5rem] shrink-0 self-start overflow-y-auto border-r border-line lg:block"
+        transition:persist="sidebar"
+      >
+        <nav class="border-b border-line py-2 lg:hidden" aria-label="Site">
+          <a href="/" class="block px-4 py-2 text-[12px] tracking-[0.12em] text-dim hover:text-ink">HOME</a>
+          <a href="/blog/" class="block px-4 py-2 text-[12px] tracking-[0.12em] text-dim hover:text-ink">BLOG</a>
+          <a href="/playground/" class="block px-4 py-2 text-[12px] tracking-[0.12em] text-dim hover:text-ink">PLAYGROUND</a>
+          <a href="/demo/" data-astro-reload class="block px-4 py-2 text-[12px] tracking-[0.12em] text-dim hover:text-ink">LIVE DEMO</a>
+          <a href="/changelog/" class="block px-4 py-2 text-[12px] tracking-[0.12em] text-dim hover:text-ink">CHANGELOG</a>
+          <a href="https://github.com/syncular/syncular" class="block px-4 py-2 text-[12px] tracking-[0.12em] text-dim hover:text-ink">GITHUB</a>
+        </nav>
+        {
+          sdks.map((sdk) => (
+            <nav class="pt-5 pb-4" data-sdk-nav={sdk.id} aria-label={`${sdk.name} SDK pages`} hidden>
+              <p class="flex items-baseline justify-between px-4 pb-1.5 text-[11px] tracking-[0.14em]">
+                <span class="text-amber uppercase">{sdk.name}</span>
+                <span class="text-[10px] tracking-[0.1em] text-faint uppercase">{sdk.core}</span>
+              </p>
+              <div class="pl-2">
+                {sdk.pages.map((entry) => (
+                  <a href={`/${entry.slug}/`} data-slug={entry.slug} class:list={['side-link', entry.slug === active && 'active']}>
+                    <span class={`mk ${entry.kind}`}></span>{entry.title}
+                  </a>
+                ))}
+              </div>
+            </nav>
+          ))
+        }
+        <div class="px-4 pt-5 pb-4" data-sdk-none>
+          <p class="text-[11px] tracking-[0.14em] text-amber">CHOOSE AN SDK</p>
+          <p class="mt-1.5 font-sans text-[12.5px] leading-snug text-dim">Pick your platform in the <span class="text-ink">SDK</span> menu at the top of the page. Its pages appear here.</p>
+        </div>
+        {
+          nav.map((group, i) => (
+            <details
+              class="nav-group group border-t border-line"
+              data-group={group.title}
+              data-sdk-group={group.sdk}
+              open={group.pages.some((entry) => entry.slug === active) || (group.sdk && owner !== undefined)}
+            >
+              <summary class="flex cursor-pointer items-center gap-2.5 px-4 py-2.5 text-[11px] tracking-[0.14em] text-dim hover:text-ink">
+                <span class="text-amber">{String(i + 1).padStart(2, '0')}</span>
+                <span class="flex-1 uppercase">{group.title}</span>
+                {group.advanced ? <span class="badge adv">ADV</span> : null}
+                <span class="text-[10px] text-faint">{group.pages.length}</span>
+                <svg width="10" height="10" viewBox="0 0 10 10" class="text-faint transition-transform group-open:rotate-90" aria-hidden="true"><path d="M3 2l3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.3"></path></svg>
+              </summary>
+              <div class="pb-2 pl-2">
+                {group.sdk ? (
+                  <>
+                    {sdks.map((sdk) => (
+                      <a href={`/${sdk.pages[0]?.slug}/`} data-sdk-link={sdk.id} class="side-link" hidden>
+                        <span class="mk concept"></span>{sdk.name} SDK overview
+                      </a>
+                    ))}
+                    <a href="/docs/#sdk" data-sdk-none class="side-link"><span class="mk concept"></span>SDK overviews</a>
+                  </>
+                ) : null}
+                {group.pages.map((entry) => (
+                  <a href={`/${entry.slug}/`} data-slug={entry.slug} class:list={['side-link', entry.slug === active && 'active']}>
+                    <span class={`mk ${entry.kind}`}></span>
+                    <span class="flex-1">{entry.title}</span>
+                    {entry.advanced && !group.advanced ? <span class="badge adv">ADV</span> : null}
+                  </a>
+                ))}
+              </div>
+            </details>
+          ))
+        }
+        <div class="space-y-1.5 border-t border-line px-4 py-4 text-[10px] tracking-[0.12em] text-faint">
+          <p class="flex items-center gap-2"><span class="mk concept"></span>CONCEPT · how it works</p>
+          <p class="flex items-center gap-2"><span class="mk how-to"></span>HOW-TO · steps to a result</p>
+          <p class="flex items-center gap-2"><span class="mk reference"></span>REFERENCE · look it up</p>
+          <p class="flex items-center gap-2 pt-1"><span class="badge adv">ADV</span>skip on a first read</p>
+        </div>
+      </aside>
+      <script is:inline data-astro-rerun>
+        // Show the saved SDK before first paint; the page script below keeps
+        // it current. Without this the sidebar renders the "choose" state
+        // for a frame on every full page load and on the first swap in from
+        // another layout.
+        (() => {
+          const id = document.body.dataset.sdk || localStorage.getItem('syncular.docs.sdk');
+          const choice = document.querySelector(`[data-pick-sdk="${id}"]`);
+          if (!choice) return;
+          for (const el of document.querySelectorAll('[data-sdk-nav], [data-sdk-link]')) {
+            el.hidden = (el.dataset.sdkNav ?? el.dataset.sdkLink) !== id;
+          }
+          for (const el of document.querySelectorAll('[data-sdk-none]')) el.hidden = true;
+          for (const el of document.querySelectorAll('[data-sdk-label]')) {
+            el.textContent = choice.querySelector('.name')?.textContent ?? 'Choose';
+          }
+        })();
+      </script>
+
+      {full ? (
+        <main class="h-[calc(100dvh-3.5rem)] min-w-0 flex-1 overflow-hidden"><slot /></main>
+      ) : (
+      <main class="min-w-0 flex-1 px-5 pt-8 pb-20 sm:px-8 lg:px-12">
+        <article class:list={['doc', hub ? 'max-w-[64rem]' : 'max-w-[47rem]']}>
+          {
+            page && !hub ? (
+              <>
+                <p class="text-[11px] tracking-[0.14em] text-faint uppercase">
+                  <a href={`/${page.group.pages[0]?.slug}/`} class="hover:text-ink">{page.group.title}</a>
+                  <span class="mx-1.5">/</span>
+                  <span class="text-dim">{page.title}</span>
+                </p>
+                <div class="mt-5 flex flex-wrap gap-2">
+                  <span class={`kind ${page.kind}`}>{kindLabel[page.kind]}</span>
+                  {page.advanced ? <span class="kind text-faint">Advanced</span> : null}
+                </div>
+              </>
+            ) : null
+          }
+          {
+            toc.length > 0 && !hub ? (
+              <details class="mt-6 border border-line xl:hidden" data-toc-mobile>
+                <summary class="cursor-pointer px-4 py-2.5 text-[11px] tracking-[0.16em] text-dim">ON THIS PAGE · {toc.length} SECTIONS</summary>
+                <nav class="toc px-4 pb-3">
+                  {toc.map((h) => <a href={`#${h.slug}`} class:list={[h.depth === 3 && 'sub']}>{h.text}</a>)}
+                </nav>
+              </details>
+            ) : null
+          }
+          <div class:list={[!hub && 'prose']}>
+            <slot />
+          </div>
+          {
+            !hub && (prev || next) ? (
+              <nav class="mt-16 grid gap-3 sm:grid-cols-2" aria-label="Previous and next page">
+                {prev ? (
+                  <a href={`/${prev.slug}/`} class="card"><span class="k">← PREVIOUS</span><span class="h">{prev.title}</span></a>
+                ) : <span></span>}
+                {next ? (
+                  <a href={`/${next.slug}/`} class="card sm:items-end sm:text-right"><span class="k">NEXT →</span><span class="h">{next.title}</span></a>
+                ) : null}
+              </nav>
+            ) : null
+          }
+          <footer class="mt-10 flex flex-wrap gap-x-6 gap-y-2 border-t border-line pt-5 text-[10.5px] tracking-[0.12em] text-faint">
+            {sourcePath ? <a href={`https://github.com/syncular/syncular/edit/main/${sourcePath}`} class="hover:text-ink">EDIT ON GITHUB</a> : null}
+            {!hub ? <a href={`/${active}.md`} data-astro-reload class="hover:text-ink">VIEW AS MARKDOWN</a> : null}
+            <span class="sm:ml-auto">DOCS FOR v{version}</span>
+          </footer>
+        </article>
+      </main>
+      )}
+
+      {
+        toc.length > 0 && !full && !hub ? (
+          <aside class="sticky top-14 hidden h-[calc(100vh-3.5rem)] w-[15.5rem] shrink-0 self-start overflow-y-auto py-10 pr-6 xl:block">
+            <p class="mb-3 text-[10px] tracking-[0.18em] text-faint">ON THIS PAGE</p>
+            <nav class="toc">
+              {toc.map((h) => <a href={`#${h.slug}`} class:list={[h.depth === 3 && 'sub']}>{h.text}</a>)}
+            </nav>
+            <div data-rail-terms></div>
+          </aside>
+        ) : null
+      }
+    </div>
 
     <script>
-      // The sidebar is persisted across swaps. Two things need doing by hand:
-      // (1) its server-rendered `.active` is frozen on the first page, so
-      // re-derive it from the URL on every navigation; (2) re-inserting the
-      // persisted node during a swap drops its scrollTop, so save it just
-      // before the swap and restore it just after.
+      import { navigate } from 'astro:transitions/client';
+      import { showTab } from '../code-frames';
+      import { pageScript } from '../page-lifecycle';
+
+      const SDK_KEY = 'syncular.docs.sdk';
+      const OPEN_KEY = 'syncular.docs.open';
+      const sidebar = () => document.querySelector<HTMLElement>('.sidebar');
       let sidebarScroll = 0;
-      const sidebar = () => document.querySelector('.sidebar');
+
+      // The chosen SDK is the one value shared by the header label, the
+      // sidebar's SDK block, and the docs home. An SDK page pins itself.
+      const applySdk = () => {
+        const pinned = document.body.dataset.sdk;
+        if (pinned) localStorage.setItem(SDK_KEY, pinned);
+        const stored = localStorage.getItem(SDK_KEY);
+        const choice = document.querySelector<HTMLElement>(
+          `[data-pick-sdk="${stored}"]`,
+        );
+        const id = choice?.dataset.pickSdk;
+        for (const el of document.querySelectorAll<HTMLElement>(
+          '[data-sdk-nav], [data-sdk-link]',
+        )) {
+          el.hidden = (el.dataset.sdkNav ?? el.dataset.sdkLink) !== id;
+        }
+        for (const el of document.querySelectorAll<HTMLElement>('[data-sdk-none]')) {
+          el.hidden = id !== undefined;
+        }
+        for (const el of document.querySelectorAll<HTMLElement>('[data-pick-sdk]')) {
+          el.setAttribute('aria-current', String(el === choice));
+        }
+        for (const el of document.querySelectorAll('[data-sdk-label]')) {
+          el.textContent = choice?.querySelector('.name')?.textContent ?? 'Choose';
+        }
+        const link = document.querySelector<HTMLAnchorElement>(
+          `.sidebar [data-sdk-link="${id}"]`,
+        );
+        for (const el of document.querySelectorAll<HTMLAnchorElement>('[data-sdk-continue]')) {
+          el.hidden = link === null;
+          if (link) el.href = link.href;
+        }
+        for (const el of document.querySelectorAll('[data-sdk-name]')) {
+          el.textContent = choice?.querySelector('.name')?.textContent ?? '';
+        }
+        // Code tabs open on the chosen SDK's sample; the markdown build
+        // precomputed which tab each SDK opens (data-pick).
+        for (const tabs of document.querySelectorAll<HTMLElement>('.code.tabs[data-sync]')) {
+          const pick: Record<string, string> = JSON.parse(tabs.dataset.pick ?? '{}');
+          const tab = (id && pick[id]) || tabs.querySelector<HTMLElement>('[role=tab]')?.dataset.tab;
+          if (tab) showTab(tabs, tab, id && tab !== id ? choice?.querySelector('.name')?.textContent : undefined);
+        }
+      };
+
+      // The terms glossary sits in the right rail when the rail is visible.
+      const wide = matchMedia('(min-width: 1280px)');
+      const placeTerms = () => {
+        const terms = document.querySelector<HTMLDetailsElement>('[data-terms]');
+        const rail = document.querySelector('[data-rail-terms]');
+        if (!terms || !rail) return;
+        if (wide.matches && terms.parentElement !== rail) {
+          terms.before(Object.assign(document.createElement('span'), { hidden: true, className: 'terms-home' }));
+          rail.append(terms);
+          terms.open = true;
+        } else if (!wide.matches && terms.parentElement === rail) {
+          document.querySelector('.terms-home')?.replaceWith(terms);
+          terms.open = false;
+        }
+      };
+      wide.addEventListener('change', placeTerms);
 
       document.addEventListener('astro:before-swap', () => {
         sidebarScroll = sidebar()?.scrollTop ?? 0;
@@ -104,18 +359,105 @@ const releasedVersion = rootPkg.version;
       document.addEventListener('astro:after-swap', () => {
         const sb = sidebar();
         if (sb) sb.scrollTop = sidebarScroll;
+        applySdk();
+        syncSidebar();
       });
-      document.addEventListener('astro:page-load', () => {
-        // The persisted sidebar keeps its checkbox state across swaps, so the
-        // mobile menu would stay open after navigating; close it by hand.
-        const toggle = document.querySelector<HTMLInputElement>('.sidebar-toggle');
-        if (toggle) toggle.checked = false;
-        const path = location.pathname;
-        for (const a of document.querySelectorAll<HTMLAnchorElement>(
-          '.sidebar .nav-section a',
+      // The persisted sidebar keeps the server-rendered state of the first
+      // page; re-derive the active link and open groups from the URL. This
+      // runs before the swapped page paints, so groups never open a frame late.
+      const syncSidebar = () => {
+        const saved: string[] = JSON.parse(localStorage.getItem(OPEN_KEY) ?? '[]');
+        for (const group of document.querySelectorAll<HTMLDetailsElement>(
+          '.sidebar details[data-group]',
         )) {
-          a.classList.toggle('active', a.getAttribute('href') === path);
+          if (saved.includes(group.dataset.group ?? '')) group.open = true;
         }
+        const slug = document.body.dataset.slug;
+        let current: HTMLElement | undefined;
+        for (const a of document.querySelectorAll<HTMLAnchorElement>('.sidebar a[data-slug]')) {
+          const isActive = a.dataset.slug === slug;
+          a.classList.toggle('active', isActive);
+          if (isActive && a.offsetParent !== null) current = a;
+        }
+        const group =
+          current?.closest('details') ??
+          (document.body.dataset.sdk
+            ? document.querySelector<HTMLDetailsElement>('.sidebar details[data-sdk-group]')
+            : null);
+        if (group) group.open = true;
+        const sb = sidebar();
+        if (sb && current) {
+          const at = current.getBoundingClientRect();
+          const box = sb.getBoundingClientRect();
+          if (at.top < box.top || at.bottom > box.bottom) {
+            sb.scrollTop += at.top - box.top - box.height / 3;
+          }
+        }
+      };
+
+      pageScript(() => {
+        // Blog, landing, and 404 views have no sidebar to maintain.
+        if (!sidebar()) return;
+        applySdk();
+        syncSidebar();
+        // The mobile contents list reads after the lede, not above the title.
+        const lede =
+          document.querySelector('.prose > h1 + p + .meta') ??
+          document.querySelector('.prose > h1 + p');
+        const mobileToc = document.querySelector('[data-toc-mobile]');
+        if (lede && mobileToc) lede.after(mobileToc);
+        placeTerms();
+        // Scrollspy for the contents rail.
+        const links = [...document.querySelectorAll<HTMLAnchorElement>('.toc a')];
+        if (links.length === 0) return;
+        const spy = new IntersectionObserver(
+          (entries) => {
+            for (const entry of entries) {
+              if (!entry.isIntersecting) continue;
+              for (const a of links) {
+                a.classList.toggle('on', a.getAttribute('href') === `#${entry.target.id}`);
+              }
+            }
+          },
+          { rootMargin: '-15% 0px -75% 0px' },
+        );
+        for (const h of document.querySelectorAll('.prose h2[id], .prose h3[id]')) {
+          spy.observe(h);
+        }
+        return () => spy.disconnect();
+      });
+
+      document.addEventListener(
+        'toggle',
+        (event) => {
+          const group = event.target;
+          if (!(group instanceof HTMLDetailsElement) || !group.dataset.group) return;
+          const open = new Set<string>(JSON.parse(localStorage.getItem(OPEN_KEY) ?? '[]'));
+          if (group.open) open.add(group.dataset.group);
+          else open.delete(group.dataset.group);
+          localStorage.setItem(OPEN_KEY, JSON.stringify([...open]));
+        },
+        true,
+      );
+
+      document.addEventListener('click', (event) => {
+        const target = event.target as Element | null;
+        const pick = target?.closest<HTMLElement>('[data-pick-sdk]');
+        if (!pick?.dataset.pickSdk) return;
+        localStorage.setItem(SDK_KEY, pick.dataset.pickSdk);
+        document.querySelector<HTMLElement>('#sdk-panel')?.hidePopover();
+        // On an SDK page the switch lands on the same page of the new SDK.
+        if (pick.dataset.pageHref && pick.dataset.pageHref !== location.pathname) {
+          void navigate(pick.dataset.pageHref);
+        } else {
+          applySdk();
+        }
+      });
+
+      document.addEventListener('keydown', (event) => {
+        if (event.key !== 'Escape') return;
+        const drawer = document.querySelector<HTMLInputElement>('#drawer');
+        if (drawer) drawer.checked = false;
       });
     </script>
   </body>

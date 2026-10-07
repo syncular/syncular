@@ -1,0 +1,29 @@
+---
+// The header menu below the `md` breakpoint, where the inline links are
+// hidden. A <details> element needs no script and closes with the page swap.
+const links = [
+  ['/docs/', 'DOCS'],
+  ['/blog/', 'BLOG'],
+  ['/playground/', 'PLAYGROUND'],
+  ['/demo/', 'LIVE DEMO'],
+  ['/benchmarks/', 'BENCHMARKS'],
+  ['/changelog/', 'CHANGELOG'],
+  ['https://github.com/syncular/syncular', 'GITHUB'],
+] as const;
+---
+
+<details class="relative md:hidden">
+  <summary
+    class="grid h-9 w-9 cursor-pointer list-none place-items-center border border-line text-dim hover:text-ink [&::-webkit-details-marker]:hidden"
+    aria-label="Site menu"
+  >
+    <svg width="16" height="12" viewBox="0 0 16 12" aria-hidden="true"><path d="M0 1h16M0 6h16M0 11h16" stroke="currentColor" stroke-width="1.4"></path></svg>
+  </summary>
+  <nav class="absolute right-0 top-11 z-50 w-56 border border-line bg-void py-1 text-[12px] tracking-[0.12em]" aria-label="Site">
+    {
+      links.map(([href, label]) => (
+        <a href={href} data-astro-reload={href === '/demo/' ? '' : undefined} class="block px-4 py-2.5 text-dim hover:bg-raised hover:text-ink">{label}</a>
+      ))
+    }
+  </nav>
+</details>

@@ -1,32 +1,63 @@
 # Server setup
 
-This page wires the sync server itself. A backend process that consumes it
-runs a [server-side `SyncClient`](/guide-server-clients/) when it needs a
-local SQLite read model, or [`SyncRemoteClient`](/guide-remote-operations/)
-for database-less commits, registered queries, and commands.
+Build the sync server your clients connect to: a schema, a database, an `authenticate` callback, and a `resolveScopes` callback, mounted on Hono. This page is for backend developers starting a Syncular server on Bun or Node. You finish with a server that answers sync rounds on port 8787. Cloudflare Workers has its own page, [Cloudflare Workers](/server-workers/).
 
-The server is a framework-free protocol library:
-`handleSyncRequest(bytes, ctx) → bytes` over host-provided storage,
-scope-resolution, and segment/blob-store interfaces. A thin Hono adapter
-mounts the routes, and `resolveScopes` runs in your process, next to your
-auth. This page walks through that wiring; storage choices, Workers
-deployment, and operations each have their own page.
+::meta{for="Backend developers" time="10 minutes" first="quickstart"}
 
-The full host surface is the
-[server README](https://github.com/syncular/syncular/blob/main/packages/server/README.md).
+:::terms
+- **Host**: Your process. It owns the HTTP listener, authentication, and scope resolution.
+- **Actor**: The identity `authenticate` returns for a request.
+- **Partition**: The isolation boundary `authenticate` assigns to a request, such as a tenant ([Partitions](/server-partitions/)).
+- **Segment**: A cached bootstrap snapshot of one subscription's rows ([Bootstrap & segments](/concepts-bootstrap/)).
+:::
 
-## The minimal server
+:::figure{title="What you assemble" note="Two callbacks hold all of the security" ticks}
+<div class="d-row">
+<div class="node"><span class="t">Clients</span>POST /sync<br>GET /segments, /blobs</div>
+<span class="d-arrow"></span>
+<div class="d-box">
+<p class="d-label">Your host process</p>
+<div class="d-stack">
+<div class="node hot"><span class="t">authenticate</span>request → actor + partition</div>
+<div class="node"><span class="t">createSyncularHono</span>mounts the routes, calls handleSyncRequest</div>
+<div class="node hot"><span class="t">resolveScopes</span>actor → readable and writable scopes</div>
+</div>
+</div>
+<span class="d-arrow"></span>
+<div class="d-stack">
+<div class="node ok"><span class="t">ServerStorage</span>commit log and rows</div>
+<div class="node ok"><span class="t">SegmentStore</span>bootstrap segments</div>
+<div class="node ok"><span class="t">BlobStore</span>attachment bytes</div>
+</div>
+</div>
 
-Everything the [quickstart](/quickstart/) server needs: a schema, storage, a
-segment store, and a resolver, wrapped by the Hono adapter.
+::caption[The core is a protocol library: `handleSyncRequest(bytes, ctx)` returns bytes over the three storage interfaces. The Hono adapter is the HTTP binding around it. Storage choices are on [Choosing a database](/server-storage/).]
+:::
 
-```ts
+A backend process that consumes the server runs a [server-side client](/guide-server-clients/) instead of embedding more server code. The full host surface is the [server README](https://github.com/syncular/syncular/blob/main/packages/server/README.md).
+
+## Steps
+
+:::::steps
+::::step{title="Generate the schema" time="1 min"}
+The server compiles the `schema` object that [typegen](/guide-schema/) writes to `src/syncular.generated.ts`. Clients import the same object.
+
+```sh title="terminal"
+bun run generate     # runs: syncular generate --manifest-dir .
+```
+
+::checkpoint[`src/syncular.generated.ts` exports `schema`.]
+::::
+
+::::step{title="Write the server config" time="3 min"}
+The config names the schema, the storage, a segment store, and the scope resolver.
+
+```ts title="src/server.ts"
 import {
   ensureSyncServerReady,
   MemorySegmentStore,
   type SyncServerConfig,
 } from '@syncular/server';
-import { createSyncularHono } from '@syncular/server-hono';
 import { buildSqliteImage, SqliteServerStorage } from '@syncular/server/sqlite';
 import { schema } from './syncular.generated';
 
@@ -37,6 +68,22 @@ const config: SyncServerConfig = {
   segments: new MemorySegmentStore(),
   resolveScopes: async ({ actorId }) => ({ list_id: await listsFor(actorId) }),
 };
+```
+
+`resolveScopes` maps the actor to the scope values it may read and write; [Scopes & authorization](/concepts-scopes/) defines the contract. `sqliteImageBuilder` opts this host into building SQLite bootstrap images ([image construction](/concepts-bootstrap/#opting-into-image-construction)). Without it, the server serves stored images when they exist and inline or external rows otherwise. Supply it to the realtime hub too when the hub serves sync rounds.
+
+:::warning{title="Use a file path in production"}
+`:memory:` loses the commit log on restart. Pick a real database on [Choosing a database](/server-storage/).
+:::
+
+::checkpoint[`config` typechecks against `SyncServerConfig`.]
+::::
+
+::::step{title="Mount the routes" time="2 min"}
+`createSyncularHono` returns a Hono app. `authenticate` runs in your process before every route and returns `{ actorId, partition }`, or `null` for a 401.
+
+```ts title="src/server.ts"
+import { createSyncularHono } from '@syncular/server-hono';
 
 const app = createSyncularHono({
   config,
@@ -45,32 +92,36 @@ const app = createSyncularHono({
     return actor ? { actorId: actor.id, partition: actor.tenant } : null;
   },
 });
+```
 
+[Authentication](/guide-auth/) shows a bearer-token and a cookie `authenticate`.
+
+::checkpoint[`app.fetch` is a standard `(Request) => Response` handler.]
+::::
+
+::::step{title="Check readiness and listen" time="1 min"}
+`ensureSyncServerReady(config)` compiles the schema and applies the storage projection migration. Run it before binding a port.
+
+```ts title="src/server.ts"
 await ensureSyncServerReady(config);
 Bun.serve({ port: 8787, fetch: app.fetch });
 ```
 
-`sqliteImageBuilder` opts this host into building SQLite bootstrap images.
-Supply it to the realtime hub too when the hub serves sync rounds. Without
-it, the server serves matching stored images or inline/external rows. See
-[image construction](/concepts-bootstrap/#opting-into-image-construction).
+Failure throws `SyncServerReadinessError` with the stable code `sync.schema_not_ready`, a `phase` (`schema_compile` or `storage_migration`), and the schema version. Log its cause for operators and stop startup. Do not catch it inside authentication or translate it into a 401.
 
-Two callbacks handle all of the security, and both run in **your**
-backend: `authenticate` maps a request to `{ actorId, partition }` (or
-`null` for a 401), and `resolveScopes` maps that identity to the scope
-values it may read and write. See
-[Authentication](/guide-auth/) for a bearer-token and cookie
-`authenticate`, and [Scopes & authorization](/concepts-scopes/) for
-`resolveScopes`.
+```sh title="terminal"
+bun run src/server.ts
+```
 
-Run `ensureSyncServerReady(config)` before binding a port. It accepts the
-generated `ServerSchema`, compiles it, and applies the storage projection
-migration. Failure throws `SyncServerReadinessError` with the stable code
-`sync.schema_not_ready`, a `phase` (`schema_compile` or `storage_migration`),
-and the schema version. Log its cause for operators and stop startup; do not
-catch a schema-readiness failure inside authentication or translate it into a
-401. Lazy schema checks in request handling remain defensive, not the startup
-contract.
+::checkpoint[The process stays up. A `POST /sync` with any content type other than the sync media type answers HTTP 415, which shows the route is mounted.]
+::::
+
+::::step{title="Point a client at it" time="2 min"}
+Give a client `httpSyncTransport('http://localhost:8787/sync')` and a subscription. The [quickstart](/quickstart/) runs this exact pairing with two clients.
+
+::checkpoint[A row written on one client appears on the other.]
+::::
+:::::
 
 ## The route surface
 
@@ -78,32 +129,22 @@ contract.
 
 | Route | Method | Purpose |
 |---|---|---|
-| `/sync` | POST | Combined push+pull; the whole protocol runs through here |
-| `/segments/:segmentId` | GET | Bootstrap segment download (compressed per `Accept-Encoding`) |
+| `/sync` | POST | Combined push and pull; the whole protocol runs through here |
+| `/operations` | POST | Registered queries and commands ([Remote server operations](/guide-remote-operations/)); answers `operation.unknown` unless the `operations` option is set |
+| `/segments/:segmentId` | GET | Bootstrap segment download, compressed per `Accept-Encoding` |
 | `/blobs/:blobId` | PUT | Blob upload, content-address verified |
 | `/blobs/:blobId` | GET | Blob download, re-authorized against referencing rows |
-| `/blobs/:blobId/upload-grant` | POST | Presigned direct-to-storage upload grant (only when configured) |
+| `/blobs/:blobId/upload-grant` | POST | Presigned direct-to-storage upload grant, only when configured |
 
-Two more surfaces attach outside the adapter:
+Two surfaces attach outside the adapter. `GET /realtime` is a WebSocket upgrade that depends on the runtime, so your host owns it ([below](#advanced-wire-the-realtime-hub)). `GET /admin` is the optional operator console, mounted separately and never open by default ([Operations and maintenance](/server-operations/#admin-console)).
 
-- `GET /realtime`: the WebSocket upgrade is runtime-specific and stays with
-  your host process (below).
-- `GET /admin`: the optional operator console, mounted separately and
-  never open by default. See [Operations and maintenance](/server-operations/).
+A deployment without the realtime socket conforms to the protocol. Clients that never open it sync over `POST /sync` with identical semantics.
 
-An HTTP-only deployment is conformant: clients that never open the socket
-sync over `POST /sync` with identical semantics. Realtime is a second
-binding onto the same handler.
+## Add CORS and other host headers
 
-## Host middleware headers
+Mount `createSyncularHono` behind the host's Hono middleware. Headers set with `c.header()` before `await next()` carry through successful segment downloads, 304 replies, and adapter errors. This includes the CORS headers a Tauri WebView or a browser on another origin needs. The adapter keeps `encodeBody: 'manual'` for segment bodies it compressed on Cloudflare Workers.
 
-Mount `createSyncularHono` behind the host's Hono middleware. Headers set with
-`c.header()` before `await next()` carry through successful segment downloads,
-304 replies and adapter errors. This includes CORS headers required by a Tauri
-WebView or a browser served from another origin. The adapter retains
-`encodeBody: 'manual'` for segment bodies it compressed on Cloudflare Workers.
-
-```ts
+```ts title="src/server.ts"
 import { Hono } from 'hono';
 
 const host = new Hono();
@@ -116,31 +157,20 @@ host.route('/api', createSyncularHono({ config, authenticate }));
 
 ## Reporting server errors
 
-A `SyncError` answers with its catalog code and HTTP status. Any other
-exception (a storage or network failure, a bug in a validator or resolver
-helper) answers HTTP 500 with `sync.internal_error`, which clients retry with
-backoff, and a fixed message that never contains the exception text. Pass
-`onError` in the sync config to receive the original exception:
+A `SyncError` answers with its catalog code and HTTP status. Any other exception (a storage or network failure, a bug in a validator or resolver helper) answers HTTP 500 with `sync.internal_error` and a fixed message that never contains the exception text. Clients retry it with backoff. Pass `onError` in the config to receive the original exception:
 
-```ts
+```ts title="src/server.ts"
 const config: SyncServerConfig = {
   // ...
   onError: (error, { route }) => Sentry.captureException(error, { tags: { route } }),
 };
-createSyncularHono({ config, authenticate });
 ```
 
-`route` names the surface that caught it: `sync`, `operations`, `segments`,
-`blobs`, `realtime` (a socket round, answered in-band with the same code), or
-`admin` (`createSyncularAdminRoutes` takes its own `onError`). A remote
-operation that fails unexpectedly still answers its `operation.*` code and
-reports the original. A throwing `onError` does not change the response.
+`route` names the surface that caught the exception: `sync`, `operations`, `segments`, `blobs`, `realtime` (a socket round, answered in-band with the same code), or `admin` (`createSyncularAdminRoutes` takes its own `onError`). A remote operation that fails unexpectedly still answers its `operation.*` code and reports the original. A throwing `onError` does not change the response.
 
-To answer a typed catalog error instead of `sync.internal_error`, add a
-synchronous `mapError` hook. `onError` still observes the original once;
-`mapError` may return a catalog `SyncError` carrying structured `details`:
+To answer a typed catalog error instead of `sync.internal_error`, add a synchronous `mapError` hook. `onError` still observes the original once. `mapError` may return a catalog `SyncError` that carries structured `details`:
 
-```ts
+```ts title="src/server.ts"
 const config: SyncServerConfig = {
   // ...
   onError: (error, { route }) => log.warn({ route }, error),
@@ -156,25 +186,13 @@ const config: SyncServerConfig = {
 };
 ```
 
-`mapError` handles exceptions caught by the HTTP adapters and realtime errors
-before the first response chunk. Registered operation handlers retain their
-`operation.*` failure envelope. The admin routes take their own `mapError`.
-A throw, a non-`SyncError` return, a code that is not an
-own catalog entry, or `details` that is not JSON is contained as
-`sync.internal_error`. A `SyncError` itself bypasses both hooks. A mapped
-`retryAfterMs` is delivery metadata; it does not by itself change the client's
-retry schedule.
+`mapError` handles exceptions the HTTP adapters catch and realtime errors raised before the first response chunk. Registered operation handlers keep their `operation.*` failure envelope, and the admin routes take their own `mapError`. A throw, a non-`SyncError` return, a code outside the catalog, or `details` that are not JSON is contained as `sync.internal_error`. A `SyncError` raised by the server bypasses both hooks. A mapped `retryAfterMs` is delivery metadata and does not change the client's retry schedule.
 
-## Realtime hub wiring
+## Advanced: wire the realtime hub
 
-`createRealtimeHub` builds the transport-agnostic hub; passing it as
-`config.realtime` makes every applied commit fan out to connected sockets.
-Build both from one canonical sync capability object: the same storage,
-segments, blobs, CRDT mergers, validators, limits, leases, signed delivery,
-clock, and events. The type inherits `SyncServerConfig` specifically
-to prevent socket rounds from becoming a narrower handler.
+Realtime is optional. `createRealtimeHub` builds the transport-agnostic hub, and passing it as `config.realtime` fans every applied commit out to connected sockets. Build the hub and the config from one capability object (storage, segments, blobs, CRDT mergers, validators, limits, leases, signed delivery, clock, events), so a socket round cannot run a narrower handler than `POST /sync`. `RealtimeHubConfig` inherits `SyncServerConfig` for that reason. The protocol is on [Realtime & the WebSocket-native loop](/concepts-realtime/).
 
-```ts
+```ts title="src/server.ts"
 import {
   createRealtimeHub,
   type RealtimeHubConfig,
@@ -197,10 +215,9 @@ const config: SyncServerConfig = {
 };
 ```
 
-The upgrade itself belongs to the host. With `Bun.serve`, upgrade on
-`/realtime` and hand the socket to the hub:
+The host owns the upgrade. With `Bun.serve`, upgrade on `/realtime` and hand the socket to the hub. The `partition` and `actorId` come from your own authentication of the upgrade request; [Authentication](/guide-auth/#browser-authenticate-the-realtime-socket) shows the authenticated upgrade and [short-lived tickets](/guide-auth/#realtime-tickets) for bearer-token apps.
 
-```ts
+```ts title="src/server.ts"
 const server = Bun.serve<{ clientId: string; session?: RealtimeSession }, never>({
   port: 8787,
   fetch(request, bunServer) {
@@ -241,50 +258,12 @@ const server = Bun.serve<{ clientId: string; session?: RealtimeSession }, never>
 });
 ```
 
-The
-[demo server](https://github.com/syncular/syncular/blob/main/apps/demo/src/server.ts)
-is the complete worked example: one Bun process serving HTTP, WebSocket
-realtime, the admin console, and a static frontend. On Cloudflare Workers
-the upgrade runs through a Durable Object instead; see
-[Cloudflare Workers](/server-workers/).
+The [demo server](https://github.com/syncular/syncular/blob/main/apps/demo/src/server.ts) is the complete worked example: one Bun process serving HTTP, WebSocket realtime, the admin console, and a static frontend. On Cloudflare Workers the upgrade runs through a Durable Object ([Cloudflare Workers](/server-workers/#add-the-durable-object)).
 
-Behind a load balancer, an in-memory hub only reaches its own instance's
-sockets. Multi-instance deployments add a fanout bridge
-(`PostgresFanout` on Postgres, the Durable Object on Workers). See
-[Storage backends](/server-storage/).
+An in-memory hub reaches only its own instance's sockets. Behind a load balancer, add a fanout bridge: `PostgresFanout` on Postgres ([Multi-instance fanout](/server-storage-reference/#multi-instance-fanout)) or the Durable Object on Workers.
 
-## Choosing the rest
+## Related setup
 
-- **Storage**: `SqliteServerStorage` uses `bun:sqlite` on Bun and built-in
-  `node:sqlite` on Node 22.13 or newer. It fits development and single-node
-  deployments. `PostgresServerStorage` is the production database path;
-  `D1ServerStorage`
-  serves Workers. Full trade-offs in [Storage backends](/server-storage/).
-- **Segments and blobs**: memory stores for tests, SQLite for a single
-  node, S3-compatible object storage (AWS S3, Cloudflare R2, MinIO) with
-  presigned URLs for production. Also in
-  [Storage backends](/server-storage/).
-- **Runtime**: the core is runtime-neutral TypeScript (enforced by a static
-  import-graph test). `@syncular/server-hono` covers Bun/Node;
-  `@syncular/server-workers` covers Cloudflare Workers. See
-  [Cloudflare Workers](/server-workers/).
-- **Day two**: structured events, the admin console, seeding, commit-log
-  pruning, blob GC, and load testing live in
-  [Operations and maintenance](/server-operations/).
-- **Post-commit application work**: configure planners, leased handlers,
-  retries, and dead letters in
-  [Durable server reactions](/server-reactions/).
-
-## Where to go next
-
-- [Authentication](/guide-auth/): verify tokens in `authenticate`, send
-  and rotate them from every client.
-- [Storage backends](/server-storage/): SQLite, Postgres, D1, segment and
-  blob stores, signed URLs and CDN.
-- [Cloudflare Workers](/server-workers/): D1 + R2 + Durable Object realtime.
-- [Durable server reactions](/server-reactions/): email, webhooks,
-  projections, and jobs after accepted commits.
-- [Operations and maintenance](/server-operations/): events, admin console, pruning, GC,
-  load tests.
-- [Scopes & authorization](/concepts-scopes/): how `resolveScopes` gates
-  every read and write.
+- **Runtime**: the core is runtime-neutral TypeScript, enforced by a static import-graph test. `@syncular/server-hono` covers Bun and Node; `@syncular/server-workers` covers Workers.
+- **Day two**: events, the admin console, seeding, pruning, blob GC, backup, and load testing are on [Operations and maintenance](/server-operations/).
+- **Post-commit work**: planners, leased handlers, retries, and dead letters are on [Durable server reactions](/server-reactions/).

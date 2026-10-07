@@ -11,7 +11,7 @@
   ],
   "tables": [
     {
-      "name": "todos",
+      "name": "boards",
       "primaryKey": "id",
       "columns": [
         {
@@ -20,18 +20,157 @@
           "nullable": false
         },
         {
-          "name": "list_id",
+          "name": "board_id",
           "type": "string",
           "nullable": false
         },
         {
-          "name": "title",
+          "name": "name",
           "type": "string",
           "nullable": false
         },
         {
-          "name": "done",
-          "type": "boolean",
+          "name": "color",
+          "type": "string",
+          "nullable": false
+        }
+      ],
+      "scopes": [
+        {
+          "pattern": "board:{board_id}",
+          "variable": "board_id",
+          "column": "board_id"
+        }
+      ],
+      "extensions": {}
+    },
+    {
+      "name": "members",
+      "primaryKey": "id",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "board_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "user_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "color",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "role",
+          "type": "string",
+          "nullable": false
+        }
+      ],
+      "scopes": [
+        {
+          "pattern": "board:{board_id}",
+          "variable": "board_id",
+          "column": "board_id"
+        }
+      ],
+      "references": [
+        {
+          "column": "board_id",
+          "parentTable": "boards",
+          "onDelete": "RESTRICT"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_members_board_id_ref",
+          "columns": [
+            "board_id"
+          ],
+          "unique": false
+        }
+      ],
+      "extensions": {}
+    },
+    {
+      "name": "labels",
+      "primaryKey": "id",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "board_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "color",
+          "type": "string",
+          "nullable": false
+        }
+      ],
+      "scopes": [
+        {
+          "pattern": "board:{board_id}",
+          "variable": "board_id",
+          "column": "board_id"
+        }
+      ],
+      "references": [
+        {
+          "column": "board_id",
+          "parentTable": "boards",
+          "onDelete": "RESTRICT"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_labels_board_id_ref",
+          "columns": [
+            "board_id"
+          ],
+          "unique": false
+        }
+      ],
+      "extensions": {}
+    },
+    {
+      "name": "cards",
+      "primaryKey": "id",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "board_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "column_id",
+          "type": "string",
           "nullable": false
         },
         {
@@ -40,21 +179,239 @@
           "nullable": false
         },
         {
-          "name": "updated_at_ms",
+          "name": "title",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "assignee_id",
+          "type": "string",
+          "nullable": true
+        },
+        {
+          "name": "estimate",
           "type": "integer",
           "nullable": false
         },
         {
-          "name": "attachment",
-          "type": "blob_ref",
-          "nullable": true
+          "name": "created_at_ms",
+          "type": "integer",
+          "nullable": false
+        },
+        {
+          "name": "updated_at_ms",
+          "type": "integer",
+          "nullable": false
         }
       ],
       "scopes": [
         {
-          "pattern": "list:{list_id}",
-          "variable": "list_id",
-          "column": "list_id"
+          "pattern": "board:{board_id}",
+          "variable": "board_id",
+          "column": "board_id"
+        }
+      ],
+      "references": [
+        {
+          "column": "board_id",
+          "parentTable": "boards",
+          "onDelete": "RESTRICT"
+        },
+        {
+          "column": "assignee_id",
+          "parentTable": "members",
+          "onDelete": "SET NULL"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_cards_board_id_ref",
+          "columns": [
+            "board_id"
+          ],
+          "unique": false
+        },
+        {
+          "name": "idx_cards_assignee_id_ref",
+          "columns": [
+            "assignee_id"
+          ],
+          "unique": false
+        },
+        {
+          "name": "cards_by_column",
+          "columns": [
+            "board_id",
+            "column_id",
+            "position"
+          ],
+          "unique": false
+        }
+      ],
+      "extensions": {}
+    },
+    {
+      "name": "card_labels",
+      "primaryKey": "id",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "card_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "label_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "board_id",
+          "type": "string",
+          "nullable": false
+        }
+      ],
+      "scopes": [
+        {
+          "pattern": "board:{board_id}",
+          "variable": "board_id",
+          "column": "board_id"
+        }
+      ],
+      "references": [
+        {
+          "column": "card_id",
+          "parentTable": "cards",
+          "onDelete": "CASCADE"
+        },
+        {
+          "column": "label_id",
+          "parentTable": "labels",
+          "onDelete": "CASCADE"
+        },
+        {
+          "column": "board_id",
+          "parentTable": "boards",
+          "onDelete": "RESTRICT"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_card_labels_card_id_ref",
+          "columns": [
+            "card_id"
+          ],
+          "unique": false
+        },
+        {
+          "name": "idx_card_labels_label_id_ref",
+          "columns": [
+            "label_id"
+          ],
+          "unique": false
+        },
+        {
+          "name": "idx_card_labels_board_id_ref",
+          "columns": [
+            "board_id"
+          ],
+          "unique": false
+        }
+      ],
+      "extensions": {}
+    },
+    {
+      "name": "comments",
+      "primaryKey": "id",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "card_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "board_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "author_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "body",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "created_at_ms",
+          "type": "integer",
+          "nullable": false
+        }
+      ],
+      "scopes": [
+        {
+          "pattern": "board:{board_id}",
+          "variable": "board_id",
+          "column": "board_id"
+        }
+      ],
+      "references": [
+        {
+          "column": "card_id",
+          "parentTable": "cards",
+          "onDelete": "CASCADE"
+        },
+        {
+          "column": "board_id",
+          "parentTable": "boards",
+          "onDelete": "RESTRICT"
+        },
+        {
+          "column": "author_id",
+          "parentTable": "members",
+          "onDelete": "RESTRICT"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_comments_card_id_ref",
+          "columns": [
+            "card_id"
+          ],
+          "unique": false
+        },
+        {
+          "name": "idx_comments_board_id_ref",
+          "columns": [
+            "board_id"
+          ],
+          "unique": false
+        },
+        {
+          "name": "idx_comments_author_id_ref",
+          "columns": [
+            "author_id"
+          ],
+          "unique": false
+        },
+        {
+          "name": "comments_by_card",
+          "columns": [
+            "card_id",
+            "created_at_ms"
+          ],
+          "unique": false
         }
       ],
       "extensions": {}
@@ -62,15 +419,90 @@
   ],
   "subscriptions": [
     {
-      "name": "todoList",
-      "table": "todos",
+      "name": "boardBoards",
+      "table": "boards",
       "scopes": [
         {
-          "variable": "list_id",
+          "variable": "board_id",
           "values": [
             {
               "kind": "parameter",
-              "name": "listId"
+              "name": "boardId"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "boardMembers",
+      "table": "members",
+      "scopes": [
+        {
+          "variable": "board_id",
+          "values": [
+            {
+              "kind": "parameter",
+              "name": "boardId"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "boardLabels",
+      "table": "labels",
+      "scopes": [
+        {
+          "variable": "board_id",
+          "values": [
+            {
+              "kind": "parameter",
+              "name": "boardId"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "boardCards",
+      "table": "cards",
+      "scopes": [
+        {
+          "variable": "board_id",
+          "values": [
+            {
+              "kind": "parameter",
+              "name": "boardId"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "boardCardLabels",
+      "table": "card_labels",
+      "scopes": [
+        {
+          "variable": "board_id",
+          "values": [
+            {
+              "kind": "parameter",
+              "name": "boardId"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "boardComments",
+      "table": "comments",
+      "scopes": [
+        {
+          "variable": "board_id",
+          "values": [
+            {
+              "kind": "parameter",
+              "name": "boardId"
             }
           ]
         }

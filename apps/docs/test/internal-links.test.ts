@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
+import { headingAnchors } from './anchors';
 
 // Every internal link in reader-facing sources must resolve to a page the
 // build produces, and every anchored link must resolve to a real heading.
@@ -19,12 +20,14 @@ const walk = (dir: string, ext: string): string[] =>
 const contentFiles = walk(contentDir, '.md');
 
 // Pages the build produces: one per content markdown file, plus the
-// non-markdown routes (landing, playground, changelog, blog index).
+// non-markdown routes (landing, docs home, playground, changelog, blog index).
 const knownPaths = new Set<string>([
   '/',
+  '/docs/',
   '/playground/',
   '/changelog/',
   '/blog/',
+  '/demo/',
 ]);
 for (const file of contentFiles) {
   const slug = relative(contentDir, file)
@@ -33,28 +36,12 @@ for (const file of contentFiles) {
   knownPaths.add(`/${slug}/`);
 }
 
-// GitHub-slugger shape, matching Astro's markdown heading ids.
-const slugify = (heading: string): string =>
-  heading
-    .toLowerCase()
-    .replaceAll(/`/g, '')
-    .replaceAll(/[^\p{L}\p{N}\s-]/gu, '')
-    .trim()
-    .replaceAll(/\s+/g, '-');
-
 const anchorsBySlug = new Map<string, Set<string>>();
 for (const file of contentFiles) {
   const slug = relative(contentDir, file)
     .replaceAll('\\', '/')
     .replace(/\.md$/, '');
-  const anchors = new Set<string>();
-  for (const match of readFileSync(file, 'utf8').matchAll(
-    /^#{1,6}\s+(.+)$/gm,
-  )) {
-    const heading = match[1];
-    if (heading === undefined) continue;
-    anchors.add(slugify(heading.replaceAll(/\[([^\]]*)\]\([^)]*\)/g, '$1')));
-  }
+  const anchors = headingAnchors(readFileSync(file, 'utf8'));
   anchorsBySlug.set(slug, anchors);
 }
 
@@ -68,13 +55,16 @@ const sources = [
   ...contentFiles,
   ...walk(join(docsRoot, 'src/pages'), '.astro'),
   ...walk(join(docsRoot, 'src/layouts'), '.astro'),
+  join(docsRoot, 'src/changelog.mjs'),
 ];
 for (const file of sources) {
   const body = readFileSync(file, 'utf8');
   const source = relative(docsRoot, file);
   // Markdown links and HTML/JSX hrefs to site-internal paths.
-  for (const match of body.matchAll(/\]\((\/[^)\s]*)\)|href="(\/[^"]*)"/g)) {
-    const href = match[1] ?? match[2];
+  for (const match of body.matchAll(
+    /\]\((\/[^)\s]*)\)|href="(\/[^"]*)"|href: '(\/[^']*)'/g,
+  )) {
+    const href = match[1] ?? match[2] ?? match[3];
     if (href !== undefined) links.push({ source, href });
   }
   // Relative markdown-file links are always wrong in this build: the page

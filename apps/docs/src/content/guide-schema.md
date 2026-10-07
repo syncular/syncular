@@ -1,76 +1,70 @@
 # Schema & typegen
 
-Your schema is authored once, as SQL migrations plus one manifest, and
-compiled to a neutral **schema IR** plus the language outputs you request. The
-default TypeScript module exports the `schema` object both server and client
-use, plus per-table row types. Swift, Kotlin, and Dart can receive native schema
-modules; TypeScript, Swift, Kotlin, Dart, and Rust can receive generated named
-queries. Rust loads the neutral schema IR directly. Generated schema modules
-have zero imports, so pulling one in adds no dependency edge.
+You author your schema once, as SQL migrations plus one manifest. This page
+takes you from an empty `migrations/` directory to a locked migration history
+and a generated schema that your server and clients share, then lists the rules
+the migration parser enforces. It is for developers who add or change synced
+tables.
 
-The authoritative contract for the manifest, the IR, and the SQL subset is the
-[typegen README](https://github.com/syncular/syncular/blob/main/packages/typegen/README.md); this is the workflow.
+::meta{for="App developers on any SDK" time="15 minutes" first="quickstart" spec="2"}
 
-## Add Syncular to an existing project
+:::terms
+- **Migration**: A `migrations/NNNN_name/up.sql` file that declares table shape. Typegen reads it and never runs it.
+- **Manifest**: `syncular.json`, which names the synced tables, their scopes, subscription templates, and schema versions.
+- **Migration lock**: `syncular.migrations.lock.json`, the committed baseline that makes deployed history immutable.
+- **Schema IR**: The neutral JSON description of the head schema that every generated output derives from.
+- **Typegen**: The `syncular` CLI in `@syncular/typegen` that turns migrations into the IR and typed code.
+:::
 
-The `syncular` CLI ships in `@syncular/typegen`. From the directory containing
-your app's `package.json`, install it as a development dependency:
+:::figure{title="From SQL to a schema both sides share" note="One command" ticks}
+<div class="d-row">
+<div class="d-stack">
+<div class="node"><span class="t">Migrations</span>migrations/NNNN_name/up.sql</div>
+<div class="node"><span class="t">Manifest</span>syncular.json</div>
+<div class="node"><span class="t">Lock</span>checksums of deployed history</div>
+</div>
+<span class="d-arrow"></span>
+<div class="node hot"><span class="t">syncular generate</span>Checks history against the lock, then lowers the head schema</div>
+<span class="d-arrow"></span>
+<div class="node ok"><span class="t">Schema IR</span>syncular.ir.json</div>
+<span class="d-arrow"></span>
+<div class="d-stack">
+<div class="node cool"><span class="t">Schema module</span>TypeScript (default), Swift, Kotlin, Dart</div>
+<div class="node cool"><span class="t">Named queries</span>TypeScript, Swift, Kotlin, Dart, Rust</div>
+</div>
+</div>
 
-```sh
-bun add --dev @syncular/typegen
-```
+::caption[The Rust core loads the schema IR directly and needs no generated schema module. Generated schema modules have zero imports, so importing one adds no dependency edge.]
+:::
 
-If the app has no Syncular schema yet, create and generate the starter schema:
-
-```sh
-bunx syncular init --manifest-dir .
-bunx syncular generate --manifest-dir .
-```
-
-`init` adds these inputs to your app:
-
-| File | Purpose |
-| --- | --- |
-| `syncular.json` | Names the synced tables, scopes, schema versions, and output paths. |
-| `migrations/0001_initial/up.sql` | Declares a starter `notes` table with `id`, `list_id`, `body`, and `updated_at_ms` columns. |
-| `syncular.migrations.lock.json` | Locks the initial migration against later edits. |
-| `queries/notes-in-list.sql` | Defines a typed read of notes in one list. |
-
-`generate` writes `syncular.ir.json`, `src/syncular.generated.ts`, and
-`src/syncular.queries.ts`. The `output.module` field in `syncular.json`
-controls the schema module's path. Import its `schema` export from a file
-in `src/`:
-
-```ts
-import { schema } from './syncular.generated';
-```
-
-Pass that object to `createSyncClientHandle`, `createTauriSyncClient`, or
-`SyncClient`, and use the same generated schema on the sync server. Generate
-the module before starting your app. Commit the schema inputs, migration
-lock, and generated outputs.
-
-`init` refuses to overwrite existing starter inputs. If you already have
-`syncular.json`, keep it and skip `init`. If its migration history has no lock
-yet, run the baseline command below before generation.
-
-To start with your own tables, author the migration and manifest described
-below, then baseline and generate them. `typegen` reads those SQL files; it
-does not inspect or import an existing database. The starter created by `init`
-already has a lock, so extend it through new migrations and
-[schema versions](#schema-bumps).
+The manifest, IR, and SQL subset contract is in the
+[typegen README](https://github.com/syncular/syncular/blob/main/packages/typegen/README.md).
+To add Syncular to an app that has no schema yet, start with
+[Add Syncular to an existing app](/add-to-existing-app/).
 
 ## The committed schema inputs
 
-**Migrations** (`migrations/NNNN_name/up.sql`) declare table shape. typegen
-parses a strict SQL subset (`CREATE TABLE`, `ALTER TABLE ADD COLUMN`,
-`CREATE INDEX`, `DROP INDEX`, and `DROP TABLE`, plus the supported column types and one
-single-column primary key per table) and reads only the head table shape. It
-never runs your migrations: your host does that, and the server manages its
-own internal tables.
+Four files live in version control. Typegen reads the first three and writes the
+fourth.
 
-```sql
--- migrations/0001_initial/up.sql
+| File | Holds |
+|---|---|
+| `migrations/NNNN_name/up.sql` | Table shape, one directory per migration |
+| `syncular.json` | Synced tables, scope patterns, subscription templates, schema versions, output paths |
+| `syncular.migrations.lock.json` | Checksums of deployed migration history |
+| Generated outputs | The IR, the schema module, and named-query modules, each stamped with the IR hash |
+
+## Steps
+
+:::::steps
+::::step{title="Write the first migration" time="2 min"}
+Create `migrations/0001_initial/up.sql`. Typegen parses a strict SQL subset:
+`CREATE TABLE`, `ALTER TABLE ADD COLUMN`, `CREATE INDEX`, `DROP INDEX`, and
+`DROP TABLE`, with the supported column types and one single-column primary
+key per table. It reads only the head table shape. Your host runs the
+migration SQL; the server manages its own internal tables.
+
+```sql title="migrations/0001_initial/up.sql"
 CREATE TABLE todos (
   id TEXT PRIMARY KEY,
   list_id TEXT NOT NULL,
@@ -81,10 +75,26 @@ CREATE TABLE todos (
 );
 ```
 
-**The manifest** (`syncular.json`) names the synced tables, their scope
-patterns, subscription templates, and the schema-version history:
+Two value rules apply to every table:
 
-```json
+- Integer row values stay within `-9007199254740991..=9007199254740991`. Both
+  client cores reject larger values before they queue a mutation or patch.
+- A primary key is `TEXT`, `INTEGER`, `BOOLEAN`, or `JSON`. The wire addresses
+  a row by a string form of its primary key, and only those types have a string
+  form that the TypeScript core, the Rust core, and the SQLite build inside
+  each render identically. Generation fails with the table and column name for
+  `REAL`, `FLOAT`, `DOUBLE`, `BLOB`, `crdt`, and `blob_ref` keys. The server and
+  client cores reject the same schema at compile time if it reaches them
+  another way.
+
+::checkpoint[The file parses: `syncular generate` in step 4 names no migration error.]
+::::
+
+::::step{title="Write the manifest" time="2 min"}
+`syncular.json` lists every synced table with its scope patterns, the
+subscription templates, and the schema-version history:
+
+```json title="syncular.json"
 {
   "manifestVersion": 1,
   "migrations": "./migrations",
@@ -100,54 +110,138 @@ patterns, subscription templates, and the schema-version history:
 }
 ```
 
-Integer row values must be in `-9007199254740991..=9007199254740991`.
-Both client cores reject larger values before queuing a mutation or patch.
+The `tables` array order is the bootstrap order: parents before children. List
+every table present at the head of migration history; omit a table that
+`DROP TABLE` retired. Unknown manifest keys are hard errors.
 
-A primary key must be `TEXT`, `INTEGER`, `BOOLEAN`, or `JSON`. Syncular
-addresses a row on the wire by a string form of its primary key, and only
-those types have a string form the TypeScript core, the Rust core, and the
-SQLite build inside each render identically. `REAL`, `FLOAT`, and `DOUBLE`
-are rejected, as are `BLOB` and the `crdt` and `blob_ref` column types.
-Generation fails with the table and column name when a migration declares
-one of the others; the server and client cores reject the same schema at
-compile time if it reaches them another way.
+::checkpoint[`syncular.json` names every table that `up.sql` creates.]
+::::
 
-Table array order is the bootstrap order (parents before children). Every table
-present at the head of migration history must be listed; a table retired by
-`DROP TABLE` is omitted. Unknown manifest keys are hard errors.
+::::step{title="Lock the migration history" time="1 min"}
+The lock is the immutable, version-controlled baseline. Scaffolds and
+`syncular init` create it. For an existing project, review the current history
+once, then baseline it:
 
-`DROP TABLE IF EXISTS name` is also accepted. A dropped table name cannot be
-reused later: the generated head schema cannot safely distinguish that from an
-incompatible in-place rewrite on an upgrading server. The reference server
-drops the retired relational current-row table and its live scope index during
-the schema bump. Historical commit-log rows remain subject to normal retention,
-so table retirement is not a compliance erasure operation.
-
-`DROP INDEX [IF EXISTS] name` removes a previously declared secondary index
-from the generated head schema. You may recreate the same name later with a
-new column or uniqueness definition. On a server schema bump, Syncular
-rebuilds the declared secondary indexes on its relational projection tables;
-clients recreate their application tables during their normal re-bootstrap.
-
-**The migration lock** (`syncular.migrations.lock.json`) is the immutable,
-version-controlled baseline. Compact format 2 stores migration names,
-normalized SQL checksums, and one privacy-safe canonical head-schema snapshot
-for diagnostics. It never stores SQL, rows, database paths, or secrets, and its
-size grows with migration metadata plus the current schema rather than every
-cumulative schema snapshot. Scaffolds and `syncular init` create it. For an
-existing project, review the current migration history once and run:
-
-```sh
+```sh title="terminal"
 syncular migrations baseline --manifest-dir .
 syncular migrations check --manifest-dir .
 ```
 
-The baseline command refuses overwrite. Once deployed, restore any accidentally
-edited migration and add a new migration for the repair. Do not delete and
-re-baseline the lock. Existing-table additions must be trailing nullable
-columns; changing names, order, types, or nullability in locked history is not
-an upgrade. A SQL `DEFAULT` does not backfill existing Syncular row payloads,
-so a required appended column is rejected even when it has a literal default.
+Compact format 2 stores migration names, normalized SQL checksums, and one
+privacy-safe canonical head-schema snapshot for diagnostics. It never stores
+SQL, rows, database paths, or secrets, and it grows with migration metadata
+plus the current schema.
+
+```output
+migration history is locked and unchanged
+```
+
+::checkpoint[`syncular.migrations.lock.json` exists and `migrations check` prints the line above.]
+::::
+
+::::step{title="Generate and commit" time="1 min"}
+```sh title="terminal"
+syncular generate --manifest-dir .
+```
+
+`generate` validates locked history, appends valid new migrations to the lock,
+and writes the IR plus every configured schema or named-query output. Commit
+the lock and all generated outputs. Each generated file carries the IR hash in
+its header, so freshness is verifiable:
+
+```sh title="CI"
+syncular generate --check     # exits non-zero unless on-disk files are byte-exact
+```
+
+Run `--check` in CI. It catches missing generated changes and any edit,
+removal, rename, reorder, type change, or nullability change in deployed
+history. `syncular migrations check` is a faster history-only gate. Every
+command and option is on the [CLI reference](/tooling-cli/).
+
+::checkpoint[`src/syncular.generated.ts` and `syncular.ir.json` exist, and `generate --check` prints `generated output is up to date`.]
+::::
+
+::::step{title="Pass the schema to server and client" time="2 min"}
+For a table `todos`, the generated module exports:
+
+- `schema`: the object you pass to both `SyncClient` and `SyncServerConfig`. It
+  is structurally a `ServerSchema` and a `ClientSchema`.
+- `TodosRow`: one field per column, in row-codec order.
+- `TodosInsert` and `TodosUpdate`: client-side input types that honor
+  nullability. Insert requires the non-nullable columns; update requires the
+  primary key and makes the rest optional. A `patch` records the supplied
+  columns as a sparse push operation.
+
+For a subscription template `todosInList`, the module exports
+`todosInListSubscription`, with a `scopes(params)` builder and a typed `params`
+interface.
+
+Configured `.sql` and `.syql` named queries add typed inputs, projection rows,
+physical-plan selection, and proven reactive metadata. TypeScript, Swift,
+Kotlin, Dart, and Rust consume the same QueryIR; none parses or lowers the
+query independently. The Rust output also exposes typed `run` and atomic
+`snapshot` functions over `syncular-client`. See [Named queries](/tooling-queries/)
+and [Rust](/platform-rust/).
+
+::checkpoint[The import `import { schema } from './syncular.generated'` typechecks in your server and client.]
+::::
+:::::
+
+## Schema bumps
+
+Add a migration, extend `schemaVersions` in the manifest with the new version
+and the migration it runs through, and regenerate. A deployed migration is
+immutable: restore any accidentally edited one and add a new migration for the
+repair. Do not delete and re-baseline the lock.
+
+Changes to existing tables follow three rules:
+
+- An addition to an existing table is a trailing nullable column. A SQL
+  `DEFAULT` does not backfill existing Syncular row payloads, so a required
+  appended column is rejected even when it has a literal default.
+- Renames, reordering, type changes, and nullability changes in locked history
+  are not upgrades.
+- A synced appended column stays nullable. Do not tighten its SQL nullability
+  later.
+
+There is no client-side migration engine. On a version change a client keeps its
+outbox, wipes its local tables, re-bootstraps at the new version, and replays the
+outbox on top. The triggers, what the reset preserves, dropped-column handling,
+the `upgrading` state, and the cost of a bump are on
+[Schema upgrades](/concepts-schema-upgrades/).
+
+### Retire tables and indexes
+
+`DROP TABLE [IF EXISTS] name` removes a table from the head schema. A dropped
+table name cannot be reused later: the generated head schema cannot safely
+distinguish that from an incompatible in-place rewrite on an upgrading server.
+The reference server drops the retired relational current-row table and its live
+scope index during the schema bump. Historical commit-log rows stay subject to
+normal retention, so table retirement does not erase data for compliance.
+
+`DROP INDEX [IF EXISTS] name` removes a previously declared secondary index
+from the head schema. You may recreate the same name later with a new column or
+uniqueness definition. On a server schema bump, Syncular rebuilds the declared
+secondary indexes on its relational projection tables; clients recreate their
+application tables during their normal re-bootstrap.
+
+### Data changes and backfills
+
+Migration SQL is schema-only. `UPDATE`, `INSERT`, and `DELETE` do not modify
+accepted Syncular row payloads, and typegen rejects them before it parses their
+inner SQL. Retain the old representation until the replacement is proven
+complete, and roll a data change out in five steps:
+
+1. Add the trailing column as nullable and deploy the schema.
+2. Backfill existing rows with versioned, server-authoritative writes under a
+   new idempotency key. A SQL `DEFAULT` on the appended column is accepted and
+   ignored, so it does not stand in for this step.
+3. Enforce the required value in host validation for future writes.
+4. Validate the backfill and all supported client versions against accepted
+   server evidence.
+5. Retire the old column or table in a later schema version.
+
+## Migration SQL rules
 
 ### Declared references
 
@@ -162,53 +256,43 @@ CREATE TABLE todos (
 ```
 
 The parser accepts `REFERENCES parent(pk)` with an optional
-`ON DELETE RESTRICT | CASCADE | SET NULL`, and rejects `ON UPDATE`,
-`SET DEFAULT`, and `NO ACTION`. An absent `ON DELETE` clause means `RESTRICT`.
-The parent and child tables must declare the same scope patterns, the child
-column type must equal the parent primary-key type, and `SET NULL` needs a
-nullable child column.
+`ON DELETE RESTRICT | CASCADE | SET NULL`. It rejects `ON UPDATE`, `SET DEFAULT`,
+and `NO ACTION`. An absent `ON DELETE` clause means `RESTRICT`. The parent and
+child tables declare the same scope patterns, the child column type equals the
+parent primary-key type, and `SET NULL` needs a nullable child column.
 
-typegen records the reference in the schema IR and emits a non-unique index
-over the child column. The local replica DDL omits the clause, so local SQLite
-never enforces a reference. The server enforces it once per commit over the
-candidate state a commit produces: a commit that deletes a parent and its
-children together passes, a `CASCADE` delete emits the child deletes in the
-same commit, a `SET NULL` delete nulls the child column, and `RESTRICT`
-rejects the delete while a child remains. A violation rejects the commit with
-`sync.reference_violation`.
+Typegen records the reference in the schema IR and emits a non-unique index over
+the child column. The local replica DDL omits the clause, so local SQLite never
+enforces a reference. The server enforces it once per commit over the candidate
+state the commit produces (SPEC §6.11):
+
+- A commit that deletes a parent and its children together passes.
+- A `CASCADE` delete emits the child deletes in the same commit.
+- A `SET NULL` delete nulls the child column.
+- `RESTRICT` rejects the delete while a child remains.
+
+A violation rejects the commit with `sync.reference_violation`.
 
 ### Constraints and where they are enforced
 
-The migration parser accepts a fixed constraint surface. The full table with
-the accepted syntax lives in the [typegen
-README](https://github.com/syncular/syncular/blob/main/packages/typegen/README.md#constraints-support-and-enforcement).
+The migration parser accepts a fixed constraint surface. The full table with the
+accepted syntax is in the
+[typegen README](https://github.com/syncular/syncular/blob/main/packages/typegen/README.md#constraints-support-and-enforcement).
 
-- **`NOT NULL` and the primary key** are enforced by the row codec on the
-  server candidate commit and on every client write and apply. The TS local
-  mirror also declares `NOT NULL`; the Rust local tables carry bare column
-  names and rely on the codec. A null in a non-nullable column fails the
-  commit.
-- **A declared reference** is enforced by the server once per commit
-  (§6.11). Local SQLite does not enforce declared references.
-- **`CREATE UNIQUE INDEX`** is a physical index in both client mirrors, the
-  server relational projection, and typegen's query type-check database. A
-  local write that collides with a declared unique index fails atomically
-  with `sync.constraint_violation` and leaves no outbox entry and no revision
-  advance. The server rejects the same collision at commit.
-- **A hand-written server write-validator** (§6.7) validates each candidate row operation
-  during server commit application. It does not run on optimistic local writes, so
-  a rule that needs immediate local feedback also belongs in the
-  application's pre-write guard.
-- **A SQL `DEFAULT` literal on `CREATE TABLE`** is accepted and ignored.
-  Typegen records no default, and the server relational projection adds no
-  app-level default. The host runs the migration SQL where a default matters.
+| Constraint | Enforced by |
+|---|---|
+| `NOT NULL` and the primary key | The row codec on the server candidate commit and on every client write and apply. The TypeScript local mirror also declares `NOT NULL`; the Rust local tables carry bare column names. A null in a non-nullable column fails the commit. |
+| Declared reference | The server, once per commit. Local SQLite does not enforce it. |
+| `CREATE UNIQUE INDEX` | A physical index in both client mirrors, the server relational projection, and typegen's query type-check database. A local collision fails atomically with `sync.constraint_violation` and leaves no outbox entry and no revision advance. The server rejects the same collision at commit. |
+| Hand-written server write-validator (§6.7) | The server, on each candidate row operation during commit application. It does not run on optimistic local writes, so a rule that needs immediate local feedback also belongs in the application's pre-write guard. |
+| SQL `DEFAULT` literal on `CREATE TABLE` | Nothing. Typegen accepts and ignores it, and the server projection adds no app-level default. The host runs the migration SQL where a default matters. |
 
-Closed value sets (an `enum` or a `CHECK`-style predicate) cannot be declared
-in migration SQL today. The IR column carries no enum or check metadata, so an
-inline `CHECK`, a table-level `CHECK`, and a named `CONSTRAINT` are hard
-errors. Use the stored column type plus a §6.7 write-validator for the closed
-set, and a `CREATE UNIQUE INDEX` for uniqueness. Table-level `UNIQUE` requires a named unique index; table-level `FOREIGN KEY`
-requires a column `REFERENCES` declaration.
+Migration SQL cannot declare a closed value set. The IR column carries no enum
+or check metadata, so an inline `CHECK`, a table-level `CHECK`, and a named
+`CONSTRAINT` are hard errors. Use the stored column type plus a §6.7
+write-validator for the closed set, and a named `CREATE UNIQUE INDEX` for
+uniqueness. A table-level `UNIQUE` requires a named unique index, and a
+table-level `FOREIGN KEY` requires a column `REFERENCES` declaration.
 
 ```sql
 -- Declare uniqueness with a named index.
@@ -218,105 +302,30 @@ CREATE UNIQUE INDEX todos_list_title ON todos (list_id, title);
 ALTER TABLE todos ADD COLUMN parent_id TEXT REFERENCES todos(id) ON DELETE SET NULL;
 ```
 
-## Data changes and backfills
-
-Migration SQL is schema-only. `UPDATE`, `INSERT`, and `DELETE` do not modify
-accepted Syncular row payloads and are rejected before their inner SQL is
-parsed. The diagnostic links back to this rollout contract instead of reporting
-punctuation from SQL that cannot run here. Retain the old representation until
-the replacement is proven complete.
-
-Roll such a change out in five explicit steps:
-
-1. Add the trailing column as nullable and deploy the schema.
-2. Backfill existing rows with versioned, server-authoritative writes under a
-   new idempotency key.
-3. Enforce the required value in host validation for future writes.
-4. Validate the backfill and all supported client versions against accepted
-   server evidence.
-5. Retire the old column or table only in a later schema version. Keep a synced
-   appended column nullable; do not tighten its SQL nullability later. A SQL
-   `DEFAULT` on the appended column is accepted and ignored, so it does not
-   stand in for the backfill in step 2.
-
-Existing format-1 locks remain valid and are not silently rewritten by
-generation. Compact one only through the explicit, reviewable transition:
-
-```sh
-syncular migrations check --manifest-dir .
-syncular migrations upgrade-lock --manifest-dir .
-git add syncular.migrations.lock.json
-```
+### Local full-text projections
 
 `CREATE VIRTUAL TABLE … USING fts5` declares a client-local full-text
-projection owned by an existing synced table. It is emitted into every client
-schema but never enters the wire or server schema. See
-[Local full-text search](/tooling-local-search/) for the accepted syntax,
-query pattern, and lifecycle.
+projection owned by an existing synced table. Typegen emits it into every
+client schema and keeps it out of the wire and the server schema. The accepted
+syntax, query pattern, and lifecycle are on
+[Local full-text search](/tooling-local-search/).
 
-## Generate
-
-```sh
-syncular generate --manifest-dir .
-```
-
-This validates locked history, appends valid new migrations to the lock, and
-writes the IR JSON plus every configured schema or named-query output. **Commit
-the lock and all generated outputs.** Each generated file carries the IR hash
-in its header, so freshness is verifiable:
-
-```sh
-syncular generate --check     # exits non-zero unless on-disk files are byte-exact
-```
-
-Wire `--check` into CI so it catches missing generated changes and any edit,
-removal, rename, reorder, type change, or nullability change in deployed
-history. `syncular migrations check` is a faster history-only CI gate.
-
-## What you get
-
-For a table `todos`, the module exports:
-
-- `schema`: the object passed to both `SyncClient` and `SyncServerConfig`
-  (structurally a `ServerSchema` *and* a `ClientSchema`).
-- `TodosRow`: one field per column, in row-codec order.
-- `TodosInsert` / `TodosUpdate`: client-side input conveniences honoring
-  nullability (insert requires non-nullable columns; update requires the
-  primary key and makes the rest optional). A `patch` records the supplied
-  columns as a sparse push operation.
-
-For a subscription `todosInList`, a `todosInListSubscription` with a
-`scopes(params)` builder and a typed `params` interface.
-
-Configured `.sql` and `.syql` named queries add typed inputs, projection rows,
-physical-plan selection, and proven reactive metadata. TypeScript, Swift,
-Kotlin, Dart, and Rust consume the same QueryIR rather than independently
-parsing or lowering the query. The Rust output additionally exposes typed
-`run` and atomic `snapshot` functions over `syncular-client`; see
-[Named queries](/tooling-queries/) and [Rust](/platform-rust/).
-
-## Schema bumps
-
-When your schema changes, you bump `schemaVersions` in the manifest and
-regenerate. There is no client-side migration engine: on a version change a
-client keeps its outbox, wipes its local tables, re-bootstraps at the new
-version, and replays the outbox on top. The triggers, what the reset
-preserves, dropped-column handling, the `upgrading` state, and what a bump
-costs are on [Schema upgrades](/concepts-schema-upgrades/).
+## Advanced
 
 ### A version-only bump (server-internal storage changes)
 
-A Syncular release can change only the engine's own storage — a new internal
-column on every synced table, for example — with no application column change.
-The application schema version still has to advance, because the version is
-what makes the server apply the storage change: `ensureSchema` compares the
+A Syncular release can change only the engine's own storage, such as a new
+internal column on every synced table, with no application column change. The
+application schema version still has to advance. `ensureSchema` compares the
 server's `sync_schema_meta` marker with the generated schema version and skips
-all DDL when the two match. A deployment that never advances keeps serving the
-old storage layout while reporting healthy.
+all DDL when the two match, so a deployment that never advances keeps serving
+the old storage layout while reporting healthy.
 
-Append a migration and point the version at it:
+Append an empty migration and point the version at it. Migration history is
+immutable, so the version can only advance by appending a migration, and the
+server owns its internal DDL instead of running application SQL for it.
 
-```sh
+```sh title="terminal"
 mkdir -p migrations/0002_storage_internal
 touch migrations/0002_storage_internal/up.sql
 ```
@@ -324,32 +333,28 @@ touch migrations/0002_storage_internal/up.sql
 Set `schemaVersions` in `syncular.json` to version `2` through
 `0002_storage_internal`, then regenerate and validate:
 
-```sh
+```sh title="terminal"
 syncular generate --manifest-dir .
 syncular migrations check --manifest-dir .
 ```
 
-`generate` appends the new migration to `syncular.migrations.lock.json`,
-rewrites the generated schema's `version`, and leaves the IR's table shapes
-unchanged. `migrations check` confirms the committed history is still an
-unchanged prefix. The empty `up.sql` is deliberate: migration history is
-immutable, so the version can only advance by appending a migration, and the
-server owns its own internal DDL rather than running application SQL for it.
+`generate` appends the migration to the lock and rewrites the generated schema's
+`version`; the IR's table shapes stay unchanged. `migrations check` confirms the
+committed history is an unchanged prefix. Deploy the server and let its gate
+apply the pending version before the port opens:
 
-Deploy the server and let its gate apply the pending version before the port
-opens:
-
-```ts
+```ts title="src/server.ts"
 await ensureSyncServerReady(config);
 ```
 
-A failure surfaces as `sync.schema_not_ready` with a compile or migration
-phase instead of a request-time error. Confirm the bump landed by reading
-`sync_schema_meta.schema_version` on the server database — it must equal the
-new version — and, for a new internal column, that the column exists on a
-synced table (`PRAGMA table_info('todos')` on SQLite,
-`information_schema.columns` on Postgres). A marker still at the old version
-means the bump never ran. A marker at the new version whose synced tables are
-missing an internal column, or carry one with the wrong type, nullability, or
-primary key, fails closed at startup with
-`sync.storage.physical_layout_mismatch`, before the first write.
+A failure surfaces as `sync.schema_not_ready` with a compile or migration phase
+instead of a request-time error. Confirm the bump landed:
+
+- `sync_schema_meta.schema_version` on the server database equals the new
+  version. A marker at the old version means the bump never ran.
+- For a new internal column, the column exists on a synced table
+  (`PRAGMA table_info('todos')` on SQLite, `information_schema.columns` on
+  Postgres). A marker at the new version whose synced tables miss an internal
+  column, or carry one with the wrong type, nullability, or primary key, fails
+  closed at startup with `sync.storage.physical_layout_mismatch`, before the
+  first write.

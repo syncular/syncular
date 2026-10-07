@@ -1,7 +1,7 @@
 ---
-// Every markdown file in src/content/ becomes /<filename>/ — the same URLs
-// the previous generator produced. The page's first `# Heading` is the
-// <title>; the heading itself stays in the rendered body.
+// Every markdown file in src/content/ becomes /<filename>/. The page's first
+// `# Heading` is the <title>; the heading itself stays in the rendered body.
+// The page type and sidebar position come from src/nav.ts.
 import type { MarkdownInstance } from 'astro';
 import Docs from '../layouts/Docs.astro';
 import { markdownDescription } from '../seo';
@@ -22,12 +22,18 @@ interface Props {
 }
 const { mod } = Astro.props;
 const { slug } = Astro.params;
-const title =
-  mod.getHeadings().find((h) => h.depth === 1)?.text ?? 'syncular';
+const headings = mod.getHeadings();
+const title = headings.find((h) => h.depth === 1)?.text ?? 'syncular';
 const description = markdownDescription(mod.rawContent());
 const Content = mod.Content;
 ---
 
-<Docs title={title} description={description} active={slug ?? ''}>
+<Docs
+  title={title}
+  active={slug ?? ''}
+  description={description}
+  headings={headings}
+  sourcePath={`apps/docs/src/content/${slug}.md`}
+>
   <Content />
 </Docs>

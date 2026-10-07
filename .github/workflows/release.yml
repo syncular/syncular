@@ -251,30 +251,3 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: 336bfd20ccb2f56e24ac0afeca6b4837
         run: bun run wrangler deploy
-
-  demo:
-    needs: [npm, crates]
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    concurrency:
-      group: demo-deploy
-      cancel-in-progress: false
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ env.RELEASE_TAG }}
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: 1.4.0
-      - run: bun install --frozen-lockfile
-      - name: validate tag and build versioned demo
-        run: |
-          bun run version:check
-          bun scripts/version.ts assert-tag "$RELEASE_TAG"
-          bun run --cwd apps/demo build:static
-      - name: deploy demo to Cloudflare Workers
-        working-directory: apps/demo
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: 336bfd20ccb2f56e24ac0afeca6b4837
-        run: bun run wrangler deploy

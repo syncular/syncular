@@ -1,289 +1,81 @@
 # Conflicts & optimistic writes
 
-Writes are **optimistic**: `mutate` applies to the local database immediately
-and queues the commit for the next push. Reads never wait for the server. When
-two clients edit the same row, syncular surfaces a **conflict** for your app to
-resolve.
+Writes are optimistic: `mutate` applies to the local database at once, and the commit waits in the outbox for the next push. When two clients edit the same row, the server detects it by version and returns a **conflict** for your app to resolve. This page is for developers who need to know when a conflict fires and what the three resolutions do; the full React repair flow is [Handling conflicts](/guide-concurrency-correction/).
 
-Normative detail: [SPEC.md §6](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#6-push-conflicts-results) and
-[§7](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#7-the-client-outbox).
-For the complete generated-query, React, aggregate-repair, acknowledgement,
-and restart flow, use [Concurrency and conflict correction](/guide-concurrency-correction/).
+::meta{for="App developers on any SDK" time="6 minutes" first="concepts-subscriptions" spec="6 7"}
 
-## The optimistic outbox
+:::terms
+- **`baseVersion`**: The row version a client says it edited. A push opts into conflict checks by passing it.
+- **`column_version`**: The row version at a column's last server write.
+- **Conflict**: A push that names a column written after `baseVersion`. The record carries the server row.
+- **Rejection**: A refused commit that is not a version conflict, such as `sync.forbidden`.
+- **Commit outcome**: The durable record of how the server answered one commit.
+:::
 
-`mutate` does two things in one local transaction: append the commit to the
-**outbox** (in schema-agnostic form) and apply it optimistically to the local
-mirror. The row shows up in your queries at once. The next `sync()` round
-pushes the outbox and drains the results.
+:::figure{title="When two clients edit one row" note="todo t1 · title" ticks}
+<div class="d-row">
+<div class="node"><span class="t">Server row</span>"Buy milk"<br><span class="chip">version 3</span></div>
+<span class="d-arrow"></span>
+<div class="node ok"><span class="t">Client B pushes first</span>title = "Buy oat milk", baseVersion 3<br><span class="chip ok">Applied · version 4</span></div>
+<span class="d-arrow"></span>
+<div class="node hot"><span class="t">Client A pushes later</span>title = "Buy 2 milk", baseVersion 3, but column_version is 4<br><span class="chip amber">Conflict</span></div>
+</div>
+<p class="d-label">Your app resolves the conflict with the server row attached</p>
+<div class="d-cols-3">
+<div class="node"><span class="t">Keep server</span>Apply serverRow, drop the operation</div>
+<div class="node"><span class="t">Keep local</span>Re-push with baseVersion = serverVersion</div>
+<div class="node"><span class="t">Custom merge</span>Push merged values for conflictColumns</div>
+</div>
 
-An `applied` or `cached` acknowledgement confirms server acceptance and removes
-the commit from the send queue. The client keeps its local intent in protected
-storage until an authoritative change for the same row arrives at that commit
-sequence or later. A completed covering bootstrap also retires it. Empty pulls,
-restart and later edits preserve acknowledged intent. This is automatic in Bun,
-the web worker and native clients, independent of `retainFailedCommits`.
+::caption[The server rolls back the whole conflicted commit. Rebase the whole commit.]
+:::
 
-The acknowledgement schedules a following pull even when realtime sends no
-notification to the originating client. Row delivery and overlay reconciliation
-share one local transaction. Revocation and security purge remove affected
-aggregates. Window eviction removes the evicted row's intent.
+## Optimistic writes
 
-Imports restore and replay only affected rows or tables. Unique constraints can
-require peer rows in the same table. An unrelated bootstrap, including an empty
-one, does not rewrite acknowledged rows or decode their protected operations.
-ACK protection remains active until authoritative delivery.
-
-Clients surface overlay replay failures on reopen and during sync. SQL reads,
-value decoding, row writes, savepoints, and FTS maintenance must succeed before
-the local apply transaction commits. A failure rolls back that transaction's
-visible rows, FTS projection, base changes, cursor, acknowledgements, outbox
-changes, and observation revision. Earlier completed protocol commits remain
-applied. Pending intent remains available for retry after the storage failure
-is corrected.
-
-Replay leaves a sparse operation over a genuinely absent row unapplied. A read
-or decode failure does not establish absence. Replay also defers a confirmed
-secondary unique conflict until a later replay admits the intended row or the
-server answers its push. Other replay failures abort the local transaction.
-Authoring a commit that violates a secondary unique index continues to fail
-atomically with `sync.constraint_violation`.
-
-Each request sends a contiguous prefix of pending commits in creation order.
-When the next whole commit exceeds the remaining operation budget, the client
-defers that commit and every later commit to the next round. Retries retain
-the original commit IDs and order. A single commit that exceeds the server's
-operation cap fails with `sync.too_many_operations`; the client keeps it atomic.
-
-```ts
-const commitId = client.mutate([
-  {
-    table: 'todos',
-    op: 'upsert',
-    values: {
-      id: 't1',
-      list_id: 'groceries',
-      title: 'Buy milk',
-      done: false,
-      position: 1,
-      updated_at_ms: Date.now(),
-    },
-  },
-]);
-// the row is already visible locally:
-client.query('SELECT * FROM todos WHERE id = ?', ['t1']);
-```
-
-Because the outbox is schema-agnostic and encoded at send time, a commit
-written under schema N replays cleanly after an upgrade to N+1: the outbox
-re-encodes it with the current codec, so the server only ever sees current
-encodings
-([SPEC §2.4](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#24-schema-ir-and-the-generated-row-codec)).
-
-## Atomic sparse aggregates
-
-A `mutate` call accepts `op: 'patch'` alongside full `upsert` and `delete`
-operations. Include each patch's primary key in `values`. Every sparse patch
-requires a row in the local replica at call time. An absent row rejects the
-whole batch with `sync.row_missing` before any local write or outbox insert.
-The client queues one atomic commit and updates all available local rows in one transaction.
-Omitted columns retain their values. A patch that writes only plaintext columns
-needs no encryption key for omitted encrypted columns. Their stored ciphertext
-remains unchanged.
-
-```ts
-client.mutate([
-  { table: 'todos', op: 'patch', values: { id: 't1', position: 2 }, baseVersion: 3 },
-  { table: 'todos', op: 'patch', values: { id: 't2', position: 1 }, baseVersion: 4 },
-  { table: 'events', op: 'upsert', values: auditEvent, baseVersion: 0 },
-]);
-```
-
-## Retain failed local intent
-
-Set `retainFailedCommits: true` when constructing the browser, worker or Tauri
-client. The Rust core exposes `set_retain_failed_commits(true)`. The default
-removes rejected optimistic overlays; the enabled policy preserves the complete
-failed aggregate as durable local intent. A failed commit leaves the outbox and
-is never retried implicitly. Incoming server rows continue to advance a separate
-base while local reads retain the intended changes. Restart preserves that state.
-
-`commitOutcome(id)` and `commitOutcomes()` expose `retainedRows`. Each row carries
-its table, primary key, complete intended `localRow`, latest authorized
-`serverRow` and `serverVersion`. A deletion or absent server row is `null`.
-The outcome's results carry the conflict or rejection reason. Display that
-reason on the affected item and offer an explicit resolution.
-
-Use `resolveCommitOutcome({ clientCommitId, resolution: 'resolved_keep_server' })`
-to restore the latest server base. Keep-local and edit create a new validated
-aggregate with current base versions, then resolve the failed outcome as
-`superseded` with the new `replacementClientCommitId`. The replacement retains
-its own sync outcome. Security purge and scope revocation remove whole retained
-aggregates; retained intent never grants access.
-
-When a sparse conflict loses its server base, its operation and conflict
-evidence remain readable. The client leaves the local row absent; it does not
-materialize a complete row from the saved before-image. An application must
-restore an authorized base or write a complete row before retrying that intent.
-
-A failed insert can collide with a different server primary key through a
-secondary unique index. The intended row stays in the journal while physical
-reads show the server winner. `retainedRows[].uniqueConflicts` lists the matching
-`index`, `columns`, competing `rowId`, authorized `serverRow` and `serverVersion`.
-The same-ID `serverRow` remains null when that primary key has no server base.
-NULL values follow SQLite's unique-index semantics and do not collide.
-
-For keep-mine, patch the competing `rowId` using its `serverVersion`, then link
-the replacement through `superseded`. An edit can insert the intended ID with a
-free unique key. Take-server discards the intent through `resolved_keep_server`.
-Revocation and security purge erase retained rows, the aggregate operation
-envelope and row-bearing journal results. Static outcome history remains.
-Update the npm packages and native crates together to 0.30.11. Existing browser
-replicas migrate their bookkeeping on open; the application schema does not change.
+`mutate` appends the commit to the [outbox](/concepts-subscriptions/#the-outbox) and applies it to the local table in one transaction, so your queries see the row at once. The next `sync()` round pushes the outbox and drains the results. The outbox stores commits in a schema-independent form and encodes them at send time, so a commit written under schema N replays under N+1 ([Schema upgrades](/concepts-schema-upgrades/)).
 
 ## Conflict detection
 
-Pass a `baseVersion` on a mutation to assert "I edited version K." The
-server tracks a `column_version` per column: the row version at that column's
-last write. A push payload is a sparse row naming the columns the operation
-writes, and the server compares only the present ones. A conflict
-(`sync.version_conflict`) fires when a present non-`crdt` column has
-`column_version > baseVersion`, and `conflictColumns` names exactly those
-columns. Absent columns keep their stored value, so two edits that name
-disjoint columns both apply
-([SPEC §6.2](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#62-conflict-detection)):
+Pass a `baseVersion` on a mutation to assert "I edited version K". The server tracks a `column_version` per column. A push payload is a sparse row naming the columns the operation writes, and the server compares only those. A conflict (`sync.version_conflict`) fires when a named non-`crdt` column has `column_version > baseVersion`, and `conflictColumns` lists exactly those columns. Edits that name disjoint columns both apply ([SPEC §6.2](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#62-conflict-detection)).
 
-```ts
-client.mutate([
-  { table: 'todos', op: 'upsert', baseVersion: 3, values: { /* … */ } },
-]);
-```
-
-The server rejects a `baseVersion` above the row's `server_version` with
-`sync.invalid_request`: a client cannot hold a version the server never
-issued.
-
-The conflict record carries the current server row already decoded, so you can
-resolve without a round-trip, and `conflictColumns` tells a merge which
-columns to recompute:
-
-```ts
+```ts title="src/sync.ts"
 const client = new SyncClient({
   /* … */
   onConflict: (c) => {
-    console.log(c.table, c.rowId, 'server has:', c.serverRow, 'version', c.serverVersion);
+    console.log(c.table, c.rowId, 'server has', c.serverRow, 'version', c.serverVersion);
     console.log('contended columns', c.conflictColumns);
   },
 });
-// or drain them after a round:
+
+client.patch('todos', 't1', { title: 'Buy oat milk' }, { baseVersion: 3 });
+// after a round, read the conflicts instead of the callback:
 client.conflicts; // readonly ConflictRecord[]
 ```
 
-Three resolutions cover a conflict
-([SPEC §6.5](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#65-conflict-resolution-contract-client)):
+Without a `baseVersion`, upserts apply with last-write-wins per column; conflicts arise only when you opt into version checking. The server rejects a `baseVersion` above the row's `server_version` with `sync.invalid_request`, because a client cannot hold a version the server never issued.
 
-- **Keep server**: apply `serverRow` and drop the operation.
-- **Keep local**: re-push the same sparse operation with
-  `baseVersion = serverVersion` from the conflict record. This is an
-  explicit overwrite.
-- **Custom merge**: compute new values for the columns named by
-  `conflictColumns`, then push a sparse operation carrying those columns
-  with `baseVersion = serverVersion`.
+`patch` records one sparse operation: the primary key plus the columns the caller supplied. The keys of the operation's `values` are the presence set, and they survive restart on conflict and rejection records. A full-row `mutate` marks every column present; Syncular never infers intent by diffing against a changing local base.
 
-The server rolls back the whole commit when one operation conflicts, so
-sibling operations of the conflicted one are also unapplied; rebase the whole
-commit.
+## Resolving a conflict
 
-Without a `baseVersion`, upserts apply with last-write-wins per column;
-conflicts only arise when you opt into version checking.
+The conflict record carries the current server row, already decoded, so resolution needs no round trip ([SPEC §6.5](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#65-conflict-resolution-contract-client)).
 
-For an edit form, prefer `patch` after reading the row locally. It records one
-sparse push operation: the primary key plus the columns the caller supplied.
-The server writes those columns and leaves the rest untouched.
+| Resolution | What you do |
+|---|---|
+| Keep server | Apply `serverRow` and drop the operation. |
+| Keep local | Re-push the same sparse operation with `baseVersion = serverVersion`. This is an explicit overwrite. |
+| Custom merge | Compute new values for the columns in `conflictColumns`, then push a sparse operation carrying them with `baseVersion = serverVersion`. |
 
-```ts
-client.patch('todos', 't1', { title: 'Buy oat milk' }, { baseVersion: 3 });
+## Rejections
 
-const [conflict] = client.conflicts;
-conflict.operation?.values; // { title: 'Buy oat milk', id: 't1' }
-```
+A rejected commit that is not a version conflict surfaces in `client.rejections` instead. Examples are `sync.forbidden` from a scope check and a retryable serving error. Retry behavior follows the error's `retryable` flag. The [error catalog](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#10-errors) is normative.
 
-The keys of the operation's `values` map are the presence set, and they survive
-restart on both conflict and rejection records. A full-row `mutate` marks every
-column present; Syncular never infers intent by diffing against a changing
-local base.
-
-## Rejections vs conflicts
-
-A rejected commit that is not a version conflict (e.g. `sync.forbidden` from a
-scope check, or a serving hiccup that is retryable) surfaces as a
-**rejection** instead, with its own list (`client.rejections`) and retry
-semantics driven by the error's `retryable` flag. The
-[error catalog](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#10-errors) is normative.
+Conflicts and rejections persist as durable commit outcomes with structured recovery metadata: bounded `details` attached by server validators, and the sparse operation that `patch` recorded. [Handling conflicts](/guide-concurrency-correction/) covers server validators, aggregate validation, the outcome journal, restart, and acknowledgement. [Outbox & commit outcomes](/reference-outbox-outcomes/) lists the retention, acknowledgement, and persistence rules.
 
 ## Delete precedence
 
-A delete beats a concurrent upsert that carries no `baseVersion`. The server
-records a **tombstone** for every applied delete and keeps it until the
-pruning horizon. An unversioned upsert that finds the row absent and the
-tombstone still inside the horizon rejects with `sync.row_deleted`; the client
-drops the operation and journals the rejection. Pass `baseVersion = 0` to
-recreate the row deliberately: an explicit insert intent clears the tombstone.
-Once pruning advances the horizon past the delete, the tombstone is gone and
-the ordinary insert rule applies again
-([SPEC §6.2](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#62-conflict-detection),
-[SPEC §4.6](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#46-the-pruning-horizon)).
+A delete beats a concurrent upsert that carries no `baseVersion`. The server records a tombstone for every applied delete and keeps it until the [pruning horizon](/concepts-commits/#the-pruning-horizon). An unversioned upsert that finds the row absent with its tombstone still inside the horizon rejects with `sync.row_deleted`; the client drops the operation and journals the rejection. Pass `baseVersion = 0` to recreate the row deliberately, because an explicit insert intent clears the tombstone. Once pruning moves the horizon past the delete, the ordinary insert rule applies again ([SPEC §6.2](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#62-conflict-detection), [§4.6](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#46-the-pruning-horizon)).
 
-## Declared reference outcomes
+## Declared references
 
-A parent/child existence rule belongs in the schema, not in a
-`commitValidator`. A declared `REFERENCES` column enforces parent existence,
-`RESTRICT`, `CASCADE`, and `SET NULL` on the server once per commit, so the
-aggregate hook stays for invariants that references and scopes cannot express.
-
-A violation rejects the commit with `sync.reference_violation` and structured
-recovery details. `reason = missing_parent` marks a present non-null reference
-column naming an absent parent, with `fieldPaths` naming the column and
-`references` carrying the parent table and row. `reason = restricted_delete`
-marks a delete blocked by a live child under `RESTRICT`, with
-`references.child` naming the child table. `reason = cascade_limit` marks a
-cascade past the per-commit operation cap. A `CASCADE` or `SET NULL` delete
-applies inside the originating commit and reaches subscribers as ordinary
-changes. A rejected reference operation removes its optimistic effect on
-rebuild, like any other rejection.
-
-## Recovery
-
-Conflicts and rejections persist as durable **commit outcomes** with
-structured recovery metadata: bounded `details` attached by server
-validators, and the sparse operation recorded by `patch`. The end-to-end
-repair flow (server validators, atomic aggregate validation, the outcome
-journal, restart, and acknowledgement) is
-[Concurrency and conflict correction](/guide-concurrency-correction/).
-
-## Local outcome persistence failures
-
-The client records a final outcome and removes its outbox entry in one local
-transaction. If the journal write, revision write, or transaction commit fails,
-sync reports `client.outcome_persistence_failed`. The pending commit retains its
-original ID and optimistic state. Conflicts and rejections from the failed
-transaction remain absent from local collections and change events. Earlier
-completed acknowledgements remain durable.
-
-Restore the local store's ability to commit, then run sync again. The server's
-idempotency record lets the original commit retry without applying its writes
-twice. TypeScript's `onConflict` callback runs after the outcome commits. An
-exception in that callback leaves the outcome durable and the outbox drained.
-
-## Successful acknowledgement batches
-
-Consecutive applied or cached acknowledgements commit in one local transaction.
-Each commit keeps its own outcome journal entry. The client publishes one change
-batch with the final outbox count after the transaction commits. Progress
-observers therefore receive one update for a successful run. A rejected result
-ends that run and keeps its own rollback and conflict-publication boundary.
-Other frames also end the run, and a run never crosses a response boundary.
-
-If a local write or commit fails, every acknowledgement in that run rolls back.
-A later response error preserves earlier completed runs. Server transactions
-and their realtime notifications still execute per commit.
+Parent and child existence rules belong in the schema. A declared `REFERENCES` column enforces parent existence, `RESTRICT`, `CASCADE`, and `SET NULL` on the server once per commit ([Schema & typegen](/guide-schema/#declared-references)). A violation rejects the commit with `sync.reference_violation` and structured details, listed in [Outbox & commit outcomes](/reference-outbox-outcomes/#reference-violations).

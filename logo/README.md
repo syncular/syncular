@@ -9,13 +9,15 @@ tab size.
 
 ## Assets in use
 
-- `../apps/docs/public/favicon.svg` — the singularity, near-square crop.
-  Linked from every page head (landing, docs layout, 404).
+- `../apps/docs/public/favicon.svg` — the site mark: a dashed amber horizon
+  ring, an ink ring and an amber core on black. Linked from every page head
+  and drawn in the landing, docs and blog headers. `apple-touch-icon.png`,
+  `icon-192.png` and `icon-512.png` are rasters of the same mark.
 - `mark-dark.svg` / `mark-light.svg` — a detailed, text-free singularity mark
   for large placements. The dark variant is also published as
   `../apps/docs/public/brand-mark.svg`.
-- `../apps/docs/public/social-card.png` — a 1200×630 raster of the detailed
-  mark, centered in a crop-safe field for Open Graph and Twitter previews.
+- `../apps/docs/public/social-card.png` — a 1200×630 raster of the site mark,
+  centered in a crop-safe field for Open Graph and Twitter previews.
 - `banner-dark.svg` / `banner-light.svg` — the wordmark lockup (mark +
   `SYNCULAR_`) retained as the static wordmark.
 - `readme-animated-dark.svg` / `readme-animated-light.svg` — script-free,

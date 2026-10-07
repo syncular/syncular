@@ -1,0 +1,1246 @@
+/* Docs shell styles: Tailwind v4 compiled at build time for the layout
+   (layouts/Docs.astro), the docs home (pages/docs.astro), and the 404 page.
+   The markdown body styles below target the rendered output of
+   `src/content/*.md`, which carries no classes. The landing page keeps
+   src/landing.css and the blog adds src/blog.css. Fonts come from
+   public/fonts.css. */
+@import 'tailwindcss' source(none);
+@source './layouts/Docs.astro';
+@source './pages/docs.astro';
+@source './pages/404.astro';
+
+@theme {
+  --color-void: #000000;
+  --color-panel: #0a0908;
+  --color-raised: #12110f;
+  --color-ink: #f4efe4;
+  --color-dim: #9a948a;
+  --color-faint: #756f64;
+  --color-line: rgba(154, 148, 138, 0.22);
+  --color-line-strong: rgba(154, 148, 138, 0.45);
+  --color-amber: #ffb000;
+  --color-phos: #a9bf6e;
+  --color-cyan: #6fb3c0;
+  --color-sand: #e3d3a2;
+  --color-red: #e0745a;
+  --font-mono:
+    'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-sans: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
+}
+
+/* The search dialog (components/Search.astro) and the playground style
+   themselves with these. */
+:root {
+  --void: var(--color-void);
+  --panel: var(--color-panel);
+  --ink: var(--color-ink);
+  --dim: var(--color-dim);
+  --faint: var(--color-faint);
+  --amber: var(--color-amber);
+  --border: rgba(154, 148, 138, 0.35);
+  --border-strong: rgba(154, 148, 138, 0.6);
+  --line: var(--color-line);
+  --line-strong: var(--color-line-strong);
+  /* One color per page type: badges, sidebar markers, page headers. */
+  --kind-concept: var(--color-cyan);
+  --kind-how-to: var(--color-phos);
+  --kind-reference: var(--color-sand);
+  --header-h: 3.5rem;
+  /* Shiki css-variables theme on the phosphor palette. */
+  --astro-code-color-text: var(--color-ink);
+  --astro-code-color-background: var(--color-void);
+  --astro-code-token-comment: var(--color-faint);
+  --astro-code-token-keyword: var(--color-amber);
+  --astro-code-token-string: var(--color-phos);
+  --astro-code-token-string-expression: var(--color-phos);
+  --astro-code-token-constant: var(--color-cyan);
+  --astro-code-token-parameter: var(--color-ink);
+  --astro-code-token-function: var(--color-sand);
+  --astro-code-token-punctuation: var(--color-dim);
+  --astro-code-token-link: var(--color-amber);
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    scroll-padding-top: calc(var(--header-h) + 1.5rem);
+  }
+  body {
+    -webkit-font-smoothing: antialiased;
+  }
+  button:not(:disabled) {
+    cursor: pointer;
+  }
+  :focus-visible {
+    outline: 1px solid var(--color-amber);
+    outline-offset: 3px;
+  }
+  ::selection {
+    background: var(--color-amber);
+    color: #000;
+  }
+  [hidden] {
+    display: none !important;
+  }
+}
+
+/* ---------- Header ---------- */
+/* Unlayered so it outranks the search trigger's own rules. */
+.docs-search .search-trigger {
+  height: 2.25rem;
+  width: 100%;
+  margin: 0;
+  gap: 0.75rem;
+  padding: 0 0.75rem;
+  font-size: 12px;
+  letter-spacing: 0;
+  color: var(--color-faint);
+  border-color: var(--color-line);
+}
+.docs-search .search-trigger:hover {
+  color: var(--color-dim);
+  border-color: var(--color-line-strong);
+}
+.docs-search .search-trigger kbd {
+  font-size: 10.5px;
+}
+@media (max-width: 767px) {
+  .docs-search .search-trigger {
+    width: 2.25rem;
+    justify-content: center;
+    padding: 0;
+  }
+  .docs-search .search-trigger span {
+    display: none;
+  }
+}
+.sdk-panel {
+  position: fixed;
+  inset: 3.5rem 0.75rem auto 0.75rem;
+  margin: 0;
+  padding: 0;
+  color: var(--color-ink);
+  background: var(--color-panel);
+  border: 1px solid rgba(255, 176, 0, 0.6);
+  box-shadow: 0 30px 80px -20px rgba(0, 0, 0, 0.9);
+}
+@media (min-width: 640px) {
+  .sdk-panel {
+    inset: 3.6rem 1.5rem auto auto;
+    width: 25rem;
+  }
+}
+.sdk-panel [data-pick-sdk][aria-current='true'] {
+  background: rgba(255, 176, 0, 0.08);
+}
+.sdk-panel [data-pick-sdk][aria-current='true'] .name {
+  color: var(--color-amber);
+}
+
+/* ---------- Sidebar ---------- */
+.side-link {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.32rem 0.6rem 0.32rem 0.75rem;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--color-dim);
+  border-left: 1px solid transparent;
+  text-decoration: none;
+}
+.side-link:hover {
+  color: var(--color-ink);
+}
+.side-link.active {
+  color: var(--color-ink);
+  border-left-color: var(--color-amber);
+  background: linear-gradient(90deg, rgba(255, 176, 0, 0.09), transparent);
+}
+.mk {
+  width: 5px;
+  height: 5px;
+  flex-shrink: 0;
+  background: var(--kind-concept);
+}
+.mk.how-to {
+  background: var(--kind-how-to);
+}
+.mk.reference {
+  background: var(--kind-reference);
+}
+.nav-group > summary {
+  list-style: none;
+}
+.nav-group > summary::-webkit-details-marker {
+  display: none;
+}
+@media (max-width: 1023px) {
+  body:has(#drawer:checked) .sidebar {
+    display: block;
+    position: fixed;
+    inset: 3.5rem auto 0 0;
+    z-index: 30;
+    width: 86%;
+    max-width: 20rem;
+    height: calc(100dvh - 3.5rem);
+    overscroll-behavior: contain;
+    background: var(--color-void);
+  }
+  body:has(#drawer:checked) .drawer-backdrop {
+    display: block;
+  }
+}
+.drawer-backdrop {
+  display: none;
+  position: fixed;
+  inset: 3.5rem 0 0 0;
+  z-index: 20;
+  background: rgba(0, 0, 0, 0.7);
+}
+
+/* ---------- Right rail ---------- */
+.toc a {
+  display: block;
+  padding: 0.28rem 0 0.28rem 0.8rem;
+  border-left: 1px solid var(--color-line);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--color-faint);
+  text-decoration: none;
+}
+.toc a:hover {
+  color: var(--color-ink);
+}
+.toc a.on {
+  color: var(--color-amber);
+  border-left-color: var(--color-amber);
+}
+.toc a.sub {
+  padding-left: 1.6rem;
+}
+
+/* ---------- Page header and shared components ---------- */
+.kind {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.6rem;
+  border: 1px solid currentColor;
+  font-size: 10.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+.kind::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  background: currentColor;
+}
+.kind.concept {
+  color: var(--kind-concept);
+}
+.kind.how-to {
+  color: var(--kind-how-to);
+}
+.kind.reference {
+  color: var(--kind-reference);
+}
+.badge {
+  display: inline-flex;
+  align-items: center;
+  height: 1.25rem;
+  padding: 0 0.4rem;
+  border: 1px solid var(--color-line-strong);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: var(--color-dim);
+  white-space: nowrap;
+}
+.badge.adv {
+  color: var(--color-faint);
+  border-style: dashed;
+}
+.card {
+  display: flex;
+  flex-direction: column;
+  padding: 1.1rem 1.2rem;
+  border: 1px solid var(--color-line);
+  background: var(--color-void);
+  text-decoration: none;
+  transition:
+    border-color 0.15s,
+    background 0.15s;
+}
+a.card:hover {
+  border-color: var(--color-amber);
+  background: var(--color-panel);
+}
+.card .k {
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: var(--color-faint);
+}
+.card .h {
+  margin-top: 0.4rem;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-ink);
+}
+.card .b {
+  margin-top: 0.35rem;
+  font-family: var(--font-sans);
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--color-dim);
+}
+.stage {
+  position: relative;
+  border: 1px solid var(--color-line);
+  background: var(--color-void);
+  padding: 1.2rem 1.2rem 1rem;
+}
+.stage .num {
+  font-size: 2rem;
+  line-height: 1;
+  font-weight: 600;
+  color: var(--color-amber);
+}
+.stage li a {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0;
+  font-size: 12px;
+  color: var(--color-dim);
+  text-decoration: none;
+}
+.stage li a:hover {
+  color: var(--color-amber);
+}
+.fig {
+  margin: 2rem 0;
+  border: 1px solid var(--color-line);
+  background: var(--color-panel);
+}
+.fig > .fig-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.55rem 1rem;
+  border-bottom: 1px solid var(--color-line);
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  color: var(--color-faint);
+}
+.fig > .fig-head b {
+  color: var(--color-amber);
+  font-weight: 500;
+}
+.fig > .fig-body {
+  padding: 1.4rem 1.2rem;
+  color: var(--color-ink);
+}
+.node {
+  display: block;
+  padding: 0.7rem 0.8rem;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--color-line-strong);
+  background: var(--color-void);
+  font-size: 12px;
+  line-height: 1.5;
+  text-decoration: none;
+  transition:
+    border-color 0.15s,
+    background 0.15s;
+}
+a.node:hover {
+  border-color: var(--color-amber);
+  background: var(--color-raised);
+}
+.node .t {
+  display: block;
+  margin-bottom: 0.25rem;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: var(--color-faint);
+}
+.node .go {
+  float: right;
+  color: var(--color-faint);
+}
+a.node:hover .go {
+  color: var(--color-amber);
+}
+.node.hot {
+  border-color: var(--color-amber);
+  box-shadow: 0 0 30px -12px rgba(255, 176, 0, 0.55);
+}
+.node.ok {
+  border-color: rgba(169, 191, 110, 0.6);
+}
+.node.cool {
+  border-color: rgba(111, 179, 192, 0.6);
+}
+.grid-bg {
+  background-image:
+    linear-gradient(rgba(154, 148, 138, 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(154, 148, 138, 0.07) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(
+    ellipse 75% 70% at 50% 0%,
+    #000 30%,
+    transparent 75%
+  );
+}
+.halo {
+  background: radial-gradient(
+    closest-side,
+    rgba(255, 176, 0, 0.14),
+    rgba(255, 176, 0, 0.03) 55%,
+    transparent
+  );
+}
+.ticks {
+  position: relative;
+}
+.ticks > .tk-b {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.ticks::before,
+.ticks::after,
+.ticks > .tk-b::before,
+.ticks > .tk-b::after {
+  content: '';
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  border-color: var(--color-amber);
+  pointer-events: none;
+}
+.ticks::before {
+  top: -1px;
+  left: -1px;
+  border-top: 1px solid;
+  border-left: 1px solid;
+}
+.ticks::after {
+  top: -1px;
+  right: -1px;
+  border-top: 1px solid;
+  border-right: 1px solid;
+}
+.ticks > .tk-b::before {
+  bottom: -1px;
+  left: -1px;
+  border-bottom: 1px solid;
+  border-left: 1px solid;
+}
+.ticks > .tk-b::after {
+  bottom: -1px;
+  right: -1px;
+  border-bottom: 1px solid;
+  border-right: 1px solid;
+}
+
+/* ---------- Markdown body ---------- */
+.prose {
+  font-family: var(--font-sans);
+  font-size: 15.5px;
+  line-height: 1.75;
+  color: var(--color-dim);
+  overflow-wrap: break-word;
+}
+.prose h1 {
+  margin: 1rem 0 0;
+  font-family: var(--font-mono);
+  font-size: clamp(2rem, 5vw, 2.6rem);
+  line-height: 1.1;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  color: var(--color-ink);
+}
+.prose h1::after {
+  content: '.';
+  color: var(--color-amber);
+}
+.prose h1 + p {
+  margin-top: 1.25rem;
+  max-width: 40rem;
+  font-size: 17px;
+  line-height: 1.7;
+}
+.prose h2,
+.prose h3,
+.prose h4 {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--color-ink);
+}
+.prose h2 {
+  margin: 3.4rem 0 1rem;
+  font-size: 1.45rem;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+}
+.prose h3 {
+  margin: 2.2rem 0 0.6rem;
+  font-size: 1.02rem;
+}
+.prose h4 {
+  margin: 1.6rem 0 0.5rem;
+  font-size: 0.92rem;
+}
+.prose p {
+  margin: 0 0 1rem;
+}
+.prose strong {
+  color: var(--color-ink);
+  font-weight: 500;
+}
+.prose em {
+  color: var(--color-dim);
+}
+.prose a {
+  color: var(--color-ink);
+  text-decoration: underline;
+  text-decoration-color: rgba(255, 176, 0, 0.55);
+  text-underline-offset: 4px;
+}
+.prose a:hover {
+  color: var(--color-amber);
+}
+.prose :not(pre) > code {
+  padding: 0.05em 0.35em;
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  color: var(--color-ink);
+  background: rgba(154, 148, 138, 0.12);
+  border: 1px solid var(--color-line);
+  overflow-wrap: anywhere;
+}
+.prose ul,
+.prose ol {
+  margin: 0 0 1.2rem;
+  padding: 0;
+  list-style: none;
+}
+.prose ol {
+  counter-reset: item;
+}
+.prose li {
+  position: relative;
+  margin: 0.45rem 0;
+  padding-left: 1.3rem;
+}
+.prose ul > li::before {
+  content: '';
+  position: absolute;
+  left: 0.2rem;
+  top: 0.72em;
+  width: 6px;
+  height: 6px;
+  background: var(--color-amber);
+}
+.prose ol > li {
+  counter-increment: item;
+}
+.prose ol > li::before {
+  content: counter(item) '.';
+  position: absolute;
+  left: 0;
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  color: var(--color-amber);
+}
+.prose li > ul,
+.prose li > ol {
+  margin: 0.4rem 0 0;
+}
+.prose hr {
+  margin: 2.5rem 0;
+  border: 0;
+  border-top: 1px solid var(--color-line);
+}
+.prose pre {
+  margin: 1.3rem 0;
+  padding: 1rem 1.1rem;
+  overflow-x: auto;
+  border: 1px solid var(--color-line);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.75;
+  color: var(--color-ink);
+}
+.prose pre code {
+  font-family: inherit;
+}
+.astro-code .line span[style*='comment'] {
+  font-style: italic;
+}
+.prose blockquote {
+  margin: 1.5rem 0;
+  padding: 0.95rem 1.1rem;
+  border: 1px solid var(--color-line);
+  border-left: 2px solid var(--color-cyan);
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--color-cyan) 7%, transparent),
+    transparent 60%
+  );
+}
+.prose blockquote > :last-child {
+  margin-bottom: 0;
+}
+.prose table {
+  display: block;
+  width: 100%;
+  margin: 1.3rem 0;
+  overflow-x: auto;
+  border: 1px solid var(--color-line);
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.prose th {
+  padding: 0.65rem 0.9rem;
+  text-align: left;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--color-faint);
+  background: var(--color-panel);
+  border-bottom: 1px solid var(--color-line);
+}
+.prose td code {
+  overflow-wrap: normal;
+  white-space: nowrap;
+}
+.prose td {
+  padding: 0.7rem 0.9rem;
+  vertical-align: top;
+  line-height: 1.6;
+  border-bottom: 1px solid var(--color-line);
+}
+.prose tr:last-child td {
+  border-bottom: 0;
+}
+.prose img {
+  max-width: 100%;
+  height: auto;
+}
+
+/* ---------- Changelog timeline ---------- */
+.timeline {
+  margin: 2.2rem 0 0;
+  padding: 0 0 0 0.3rem;
+}
+.prose .timeline > li {
+  position: relative;
+  margin: 0;
+  padding: 0 0 2.1rem 1.6rem;
+  border-left: 1px solid var(--color-line-strong);
+}
+.prose .timeline > li:last-child {
+  padding-bottom: 0.4rem;
+}
+.prose .timeline > li::before {
+  content: '';
+  position: absolute;
+  left: -0.3rem;
+  top: 0.5rem;
+  width: 0.55rem;
+  height: 0.55rem;
+  background: var(--color-void);
+  border: 1px solid var(--color-line-strong);
+}
+.prose .timeline > li:first-child::before {
+  background: var(--color-amber);
+  border-color: var(--color-amber);
+}
+.timeline time {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-faint);
+}
+.prose .timeline h2 {
+  margin: 0.2rem 0 0.4rem;
+  font-size: 1rem;
+}
+.timeline-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 1.2rem;
+  font-size: 0.82rem;
+}
+
+/* ---------- Content components (src/markdown-components.ts) ---------- */
+/* Page meta strip: ::meta{for time first spec}. */
+.prose .meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10.5rem, 1fr));
+  margin: 1.8rem 0 1.6rem;
+  border: 1px solid var(--color-line);
+}
+.prose .meta > div {
+  margin: 0 -1px -1px 0;
+  padding: 0.8rem 1rem;
+  border-right: 1px solid var(--color-line);
+  border-bottom: 1px solid var(--color-line);
+}
+.prose .meta dt {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--color-faint);
+}
+.prose .meta dd {
+  margin: 0.3rem 0 0;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--color-ink);
+}
+
+/* Callouts: :::note, :::tip, :::rule, :::warning. */
+.prose .callout {
+  --c: var(--color-cyan);
+  margin: 1.5rem 0;
+  padding: 0.95rem 1.1rem;
+  border: 1px solid var(--color-line);
+  border-left: 2px solid var(--c);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--c) 7%, transparent), transparent 60%);
+}
+.prose .callout.tip {
+  --c: var(--color-phos);
+}
+.prose .callout.rule {
+  --c: var(--color-amber);
+}
+.prose .callout.warning {
+  --c: var(--color-red);
+}
+.prose .callout > .callout-label {
+  margin: 0 0 0.35rem;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--c);
+}
+.prose .callout > :last-child {
+  margin-bottom: 0;
+}
+
+/* `## Advanced: …` sections (src/markdown-components.ts). */
+.prose :is(h2, h3).advanced::after {
+  content: 'ADV';
+  display: inline-flex;
+  align-items: center;
+  height: 1.25rem;
+  margin-left: 0.7rem;
+  padding: 0 0.4rem;
+  border: 1px dashed var(--color-line-strong);
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.1em;
+  vertical-align: middle;
+  color: var(--color-faint);
+}
+
+/* Steps: ::::steps with :::step blocks and ::checkpoint. */
+.prose ol.steps {
+  margin: 2rem 0;
+  counter-reset: step;
+}
+.prose ol.steps > li.step {
+  margin: 0;
+  padding: 0 0 2.4rem 3.4rem;
+  counter-increment: step;
+}
+.prose ol.steps > li.step::before {
+  content: counter(step);
+  left: 0;
+  top: 0;
+  display: grid;
+  place-items: center;
+  width: 2.1rem;
+  height: 2.1rem;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-void);
+  background: var(--color-amber);
+}
+.prose ol.steps > li.step::after {
+  content: '';
+  position: absolute;
+  left: 1.05rem;
+  top: 2.4rem;
+  bottom: 0.3rem;
+  border-left: 1px dashed var(--color-line-strong);
+}
+.prose ol.steps > li.step:last-child::after {
+  display: none;
+}
+.prose li.step > h3 {
+  margin: 0.25rem 0 0;
+}
+.prose li.step > .step-time {
+  margin: 0.15rem 0 0.6rem;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-faint);
+}
+.prose li.step > h3 + :not(.step-time) {
+  margin-top: 0.6rem;
+}
+.prose .checkpoint {
+  position: relative;
+  margin: 1rem 0 0;
+  padding: 0.7rem 0.9rem 0.7rem 2.3rem;
+  border: 1px solid rgba(169, 191, 110, 0.4);
+  background: rgba(169, 191, 110, 0.05);
+  font-size: 14px;
+  color: var(--color-ink);
+}
+.prose .checkpoint::before {
+  content: '✓';
+  position: absolute;
+  left: 0.9rem;
+  top: 0.7rem;
+  font-family: var(--font-mono);
+  color: var(--color-phos);
+}
+@media (max-width: 640px) {
+  .prose ol.steps > li.step {
+    padding-left: 2.4rem;
+  }
+  .prose ol.steps > li.step::before {
+    width: 1.7rem;
+    height: 1.7rem;
+    font-size: 12px;
+  }
+  .prose ol.steps > li.step::after {
+    left: 0.85rem;
+    top: 2rem;
+  }
+}
+
+/* Figures: :::figure with ::caption. The diagram vocabulary below is what
+   hand-authored figure HTML uses; it reflows to one column on phones. */
+.prose figure.fig {
+  font-family: var(--font-mono);
+}
+.prose .fig .fig-head {
+  text-transform: uppercase;
+}
+.prose .fig-body {
+  margin: 0;
+  padding: 1.4rem 1.2rem;
+  border: 0;
+  background: none;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-ink);
+}
+.prose .fig-body > :last-child {
+  margin-bottom: 0;
+}
+.prose :is(.fig-body, .d-box) > * + * {
+  margin-top: 0.75rem;
+}
+.prose :is(.fig-body, .d-box) > :is(.d-down, :has(> .d-down)),
+.prose :is(.fig-body, .d-box) > :is(.d-down, :has(> .d-down)) + * {
+  margin-top: 0;
+}
+.prose .fig-body pre {
+  margin: 0;
+  border: 0;
+  padding: 0;
+  background: none;
+}
+.prose figcaption {
+  padding: 0.7rem 1rem;
+  border-top: 1px solid var(--color-line);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--color-dim);
+}
+.node .t {
+  text-transform: uppercase;
+}
+.node.bad {
+  border-color: rgba(224, 116, 90, 0.6);
+}
+.d-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: stretch;
+}
+.d-row > :not(.d-arrow) {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.d-row > .d-arrow {
+  flex: none;
+  width: 1.5rem;
+}
+.d-row:has(> :is(.d-stack, .d-box, .d-cols-2, .d-cols-3)) {
+  align-items: center;
+}
+/* A connector between two boxes in a row runs sideways. */
+.d-row > .d-down {
+  flex: none;
+  align-self: center;
+  padding: 0 0.3rem;
+}
+.d-row > .d-down::before {
+  width: 3rem;
+  height: 0;
+  margin-bottom: 0.3rem;
+  border-left: 0;
+  border-top: 1px dashed currentColor;
+}
+.d-cols-2,
+.d-cols-3 {
+  display: grid;
+  gap: 0.5rem;
+  align-items: stretch;
+}
+:is(.d-cols-2, .d-cols-3, .d-stack) > * {
+  min-width: 0;
+}
+.d-cols-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.d-cols-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.d-stack {
+  display: grid;
+  gap: 0.4rem;
+}
+.prose .d-label {
+  margin: 1.2rem 0 0.5rem;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--color-faint);
+}
+.d-box {
+  padding: 0.9rem;
+  border: 1px solid var(--color-line-strong);
+}
+.d-arrow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  font-size: 11px;
+  color: var(--color-amber);
+}
+.d-row > .d-arrow::before {
+  content: '▶';
+}
+.d-down {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 0.4rem 0;
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-align: center;
+  text-transform: uppercase;
+  color: var(--color-amber);
+}
+.d-down.ok {
+  color: var(--color-phos);
+}
+.d-down::before {
+  content: '';
+  height: 1.8rem;
+  border-left: 1px dashed currentColor;
+}
+.d-down.up::before {
+  order: 2;
+}
+.d-down small {
+  font-size: 10.5px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--color-faint);
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.6rem;
+  padding: 0.15rem 0.55rem;
+  line-height: 1.3;
+  border: 1px solid var(--color-line-strong);
+  background: var(--color-void);
+  font-size: 11px;
+  color: var(--color-ink);
+}
+.node .chip {
+  margin-top: 0.5rem;
+}
+.chip.amber {
+  border-color: rgba(255, 176, 0, 0.6);
+  color: var(--color-amber);
+}
+.chip.ok {
+  border-color: rgba(169, 191, 110, 0.6);
+  color: var(--color-phos);
+}
+.chip.bad {
+  border-color: rgba(224, 116, 90, 0.6);
+  color: var(--color-red);
+}
+.chip.cool {
+  border-color: rgba(111, 179, 192, 0.6);
+  color: var(--color-cyan);
+}
+@media (max-width: 640px) {
+  .d-row {
+    flex-direction: column;
+  }
+  .d-row > .d-arrow {
+    width: auto;
+    height: 1.4rem;
+  }
+  .d-row > .d-arrow::before {
+    content: '▼';
+  }
+  .d-row,
+  .d-row:has(> :is(.d-stack, .d-box, .d-cols-2, .d-cols-3)) {
+    align-items: stretch;
+  }
+  .d-cols-2:has(> .d-box) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .d-row > .d-down::before {
+    width: 0;
+    height: 1.8rem;
+    margin-bottom: 0;
+    border-top: 0;
+    border-left: 1px dashed currentColor;
+  }
+  .d-cols-3 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .fig > .fig-head {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.15rem;
+  }
+}
+
+/* Code frames, tabs, file trees, expected output. */
+.prose .code {
+  margin: 1.3rem 0;
+  padding: 0;
+  border: 1px solid var(--color-line);
+  background: var(--color-void);
+}
+.prose .code pre {
+  margin: 0;
+  border: 0;
+}
+.code-bar {
+  display: flex;
+  align-items: stretch;
+  min-height: 2.4rem;
+  border-bottom: 1px solid var(--color-line);
+  font-family: var(--font-mono);
+}
+.code-tabs {
+  display: flex;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.code-tabs button {
+  position: relative;
+  padding: 0 0.95rem;
+  border-right: 1px solid var(--color-line);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--color-faint);
+}
+.code-tabs button:hover {
+  color: var(--color-dim);
+}
+.code-tabs button[aria-selected='true'] {
+  color: var(--color-ink);
+  background: var(--color-panel);
+}
+.code-tabs button[aria-selected='true']::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 2px;
+  background: var(--color-amber);
+}
+.code-file {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  min-width: 0;
+  padding: 0 1rem;
+  overflow: hidden;
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--color-faint);
+}
+.code-copy {
+  flex-shrink: 0;
+  padding: 0 0.9rem;
+  border-left: 1px solid var(--color-line);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  color: var(--color-faint);
+}
+.code-copy::after {
+  content: 'COPY';
+}
+.code-copy[data-copied]::after {
+  content: 'COPIED';
+  color: var(--color-phos);
+}
+.code-copy:hover {
+  color: var(--color-amber);
+}
+.prose .code-note {
+  margin: 0;
+  padding: 0.5rem 1rem;
+  border-top: 1px solid var(--color-line);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-faint);
+}
+.prose .tab-panel {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+.prose .code.output {
+  border-color: rgba(169, 191, 110, 0.35);
+}
+.prose .code.output .code-file {
+  color: var(--color-phos);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+.prose ul.tree {
+  margin: 0;
+  padding: 0.9rem 1.1rem;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.9;
+}
+.prose ul.tree > li {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.8rem;
+  margin: 0;
+  padding: 0 0 0 calc(var(--level, 0) * 1.1rem);
+}
+.prose ul.tree > li::before {
+  display: none;
+}
+.tree .file {
+  color: var(--color-ink);
+}
+.tree .dir {
+  color: var(--color-amber);
+}
+.tree .note {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  text-align: right;
+  color: var(--color-faint);
+}
+@media (max-width: 640px) {
+  .prose ul.tree > li {
+    flex-direction: column;
+    gap: 0;
+  }
+  .tree .note {
+    margin-bottom: 0.3rem;
+    padding-left: 1.2rem;
+    text-align: left;
+  }
+}
+
+/* Terms on this page: :::terms, moved into the right rail on wide screens. */
+.terms {
+  margin: 1.5rem 0;
+  border: 1px solid var(--color-line);
+}
+.terms > summary {
+  padding: 0.6rem 0.9rem;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--color-faint);
+}
+.terms > ul {
+  margin: 0;
+  padding: 0 0.9rem 0.8rem;
+  list-style: none;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--color-faint);
+}
+.terms > ul > li {
+  position: static;
+  margin: 0.55rem 0 0;
+  padding: 0;
+}
+.terms > ul > li::before {
+  display: none;
+}
+.terms strong {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--color-ink);
+}
+[data-rail-terms] .terms {
+  margin: 2rem 0 0;
+}
+/* With a rail on screen the page script moves the terms there. Hiding the
+   in-flow copy from the first paint keeps the article from shifting up when
+   the script runs. */
+@media (min-width: 1280px) {
+  body:has([data-rail-terms]) .prose [data-terms] {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}

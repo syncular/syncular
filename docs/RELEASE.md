@@ -989,7 +989,7 @@ changed, so no schema bump is required for 0.22.0 itself.
   each asserting row state on both cores.
 
 Upgrade Syncular packages and crates together. Details:
-[encryption keys](https://syncular.dev/concepts-encryption-keys/) and
+[encryption keys](https://syncular.dev/concepts-encryption/#encryption-keys) and
 [troubleshooting](https://syncular.dev/troubleshooting/).
 
 ## 0.21.0 release notes
@@ -1092,7 +1092,7 @@ implementations must accept the new progress callback. Upgrade Syncular packages
 and crates together. The wire protocol and local database format are unchanged
 from 0.19.0.
 
-API details: [web progress](https://syncular.dev/platform-web/#live-sync-progress)
+API details: [web progress](https://syncular.dev/platform-web-realtime/#sync-progress)
 and [Rust](https://syncular.dev/platform-rust/).
 
 ## 0.19.0 release notes
@@ -1214,7 +1214,7 @@ starting the server. The SSP2 frame layout is unchanged.
   supervisor-observation forwarding export are removed. Native wrappers expose
   the canonical snapshot and outcome methods.
 
-Migration guides: [client](https://syncular.dev/platform-web/#snapshot-api-migration),
+Migration guides: [client](https://syncular.dev/platform-web-reads-writes/#reading-local-state),
 [React](https://syncular.dev/platform-react/),
 [storage](https://syncular.dev/server-storage/), and
 [query regeneration](https://syncular.dev/guide-remote-operations/).
@@ -2364,9 +2364,9 @@ packages, validates packed dependency pins, and publishes in dependency order
 with trusted OIDC publishing. The npm job fails before publishing when
 this runbook has no `## <version> release notes` section. After both
 registries succeed, the workflow publishes that section as the GitHub release
-for the tag and marks it latest, and the same tagged checkout builds and deploys the versioned docs/landing page and public demo.
+for the tag and marks it latest, and the same tagged checkout builds and deploys the versioned docs/landing page, which includes the public demo at `/demo/`.
 Changes to `apps/docs` on `main` also build and deploy the docs/landing site
-through `.github/workflows/docs.yml`. The public demo deploys from release tags.
+through `.github/workflows/docs.yml`. The `syncular-demo` worker on demo.syncular.dev only redirects to `https://syncular.dev/demo/` (`apps/demo/redirects/_redirects`); it has no workflow and is redeployed by hand with `bun run deploy` in `apps/demo` when the redirect changes.
 
 The npm publish order is:
 

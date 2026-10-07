@@ -9,7 +9,7 @@ bun add @syncular/tauri @tauri-apps/api
 ```
 
 The bridge works with any frontend framework. Generate the schema module using
-the [existing-project setup](https://syncular.dev/guide-schema/#add-syncular-to-an-existing-project),
+the [existing-project setup](https://syncular.dev/add-to-existing-app/),
 then create one shared client in the webview:
 
 ```ts
@@ -307,7 +307,7 @@ The snapshot API revision removes the individual `schemaFloor`, `leaseState`,
 `upgrading`, and `syncNeeded` methods. Read those fields from
 `await client.statusSnapshot()`. Collection and outcome reads remain methods.
 React accepts the bridge directly. See the
-[client migration](https://syncular.dev/platform-web/#snapshot-api-migration).
+[client migration](https://syncular.dev/platform-web-reads-writes/#reading-local-state).
 
 
 ## Atomic sparse writes and retained conflicts

@@ -1,28 +1,16 @@
 ---
-// The landing page — a transmission printout with a live ASCII singularity.
-// The hero simulation (bottom of this file, is:inline) is the site's only
-// client-side script; the code tabs are CSS-only radios highlighted by Shiki
-// at build time.
+// The landing page: a transmission printout with a live ASCII singularity,
+// styled by Tailwind (src/landing.css). Code panels are highlighted by Shiki
+// at build time. The script at the bottom runs the hero canvas, the platform
+// tabs, the copy buttons, and the interactive sync model; it starts on each
+// page view and stops before the client router swaps the page out.
 import { Code } from 'astro:components';
 import PageMeta from '../components/PageMeta.astro';
+import MobileMenu from '../components/MobileMenu.astro';
 import Search from '../components/Search.astro';
 import { TABS } from '../snippets';
 import rootPkg from '../../../../package.json';
-
-const FEATURES = [
-  { title: 'scopes-as-code', body: 'one resolveScopes(actor) in your backend gates every read and write', href: '/concepts-scopes/' },
-  { title: 'offline outbox', body: 'writes queue while out of range, replay in order on reconnect', href: '/concepts-subscriptions/' },
-  { title: 'durable recovery', body: 'structured rejections and losing writes survive restart until your app resolves them', href: '/concepts-conflicts/' },
-  { title: 'realtime', body: 'verified deltas pushed over a single WebSocket loop', href: '/concepts-realtime/' },
-  { title: 'fast bootstrap', body: 'precomputed sqlite-image segments; 100k rows in ~30 ms', href: '/concepts-bootstrap/' },
-  { title: 'offline FTS5', body: 'generated full-text projections stay current with the local SQLite mirror', href: '/tooling-local-search/' },
-  { title: 'typed SQL / SYQL', body: 'one checked query plan generates TypeScript, Swift, Kotlin, Dart, and Rust APIs', href: '/tooling-queries/' },
-  { title: 'CRDT columns', body: 'collaborative text per column, byte-identical across both cores', href: '/concepts-crdt/' },
-  { title: 'blobs', body: 'content-addressed attachments on S3/R2, re-authorized per download', href: '/concepts-blobs/' },
-  { title: 'optional E2EE', body: 'portable per-column AES-256-GCM keyrings with authorized local revocation', href: '/concepts-encryption/' },
-  { title: 'windowed sync', body: 'partial replicas with atomic eviction and a completeness oracle', href: '/concepts-windowing/' },
-  { title: 'testkit', body: 'in-process server, fault injection, and a virtual clock drive the real engine', href: '/tooling-testing/' },
-] as const;
+import '../landing.css';
 
 // Kept aligned with packages/conformance/src/catalog by
 // test/conformance-count.test.ts; the catalog itself is Bun-only
@@ -42,15 +30,42 @@ const PLATFORM_LINKS = [
   { label: 'C FFI', href: '/platform-ffi/' },
 ] as const;
 
-const RULE_EQ = '='.repeat(160);
-const RULE_DASH = '-'.repeat(160);
-const title = 'syncular: offline-first SQL sync for every platform';
+const CAPS = [
+  ['Recovery that survives a restart', 'Rejected commits and losing writes stay on disk as structured records until your app resolves them.', '/concepts-conflicts/'],
+  ['Realtime over one socket', 'A connected client runs its whole sync loop over one WebSocket and receives verified deltas.', '/concepts-realtime/'],
+  ['Partial replicas', 'Windowed sync evicts rows atomically, and a completeness check tells a query whether its local data is whole.', '/concepts-windowing/'],
+  ['Full-text search offline', 'Generated FTS5 projections follow the local SQLite data, so search runs without a network.', '/tooling-local-search/'],
+  ['Collaborative text', 'CRDT columns merge concurrent text edits per column, byte-identical across both cores.', '/concepts-crdt/'],
+  ['Attachments', 'Content-addressed blobs on S3 or R2. The server re-authorizes every download.', '/concepts-blobs/'],
+  ['Column encryption', 'Optional end-to-end encryption per column with AES-256-GCM keyrings and local revocation.', '/concepts-encryption/'],
+  ['Testkit', 'An in-process server, fault injection, and a virtual clock drive the real engine in your tests.', '/tooling-testing/'],
+] as const;
+
+// The resolver is transcribed from concepts-scopes.md.
+const SERVER_CODE = `const config: SyncServerConfig = {
+  schema,
+  storage,
+  segments,
+  // Every scope value this actor holds, across all tables.
+  resolveScopes: async ({ actorId }) => {
+    const lists = await db.listsForUser(actorId); // your query
+    return { list_id: lists.map((l) => l.id) };
+  },
+};`;
+
+const SQL_CODE = `-- queries/list-todos.sql
+select id, list_id, title, done
+from todos
+where list_id = :listId
+order by position, id;`;
+
+const title = 'syncular: SQLite on every device, one log on your server';
 const description =
-  'Local SQLite on every client, kept in sync through a server-authoritative commit log. One protocol across web, Swift, Kotlin, Flutter, React Native, Tauri, and Rust.';
+  'Syncular gives web and native apps a local SQLite database and keeps every client in sync through one ordered commit log on your server. Apache-2.0.';
 ---
 
 <!doctype html>
-<html lang="en">
+<html lang="en" class="bg-void">
   <head>
     <PageMeta
       title={title}
@@ -59,358 +74,931 @@ const description =
       documentTitle={title}
     />
     <link rel="alternate" type="text/markdown" href="/index.md" />
-    <link rel="api-catalog" href="/.well-known/api-catalog" />
-    <link rel="stylesheet" href="/style.css" />
-    <script src="/webmcp.js" defer></script>
   </head>
-  <body class="landing-body">
-    <div class="wrap">
-      <div class="statusbar">
-        <span>SYNCULAR v{rootPkg.version} // OFFLINE-FIRST SQL SYNC</span>
-        <span>SYNC: <span class="ok">NOMINAL</span> · OUTBOX: 0 · LINK: <span class="ok">WS/OK</span></span>
+  <body class="overflow-x-hidden bg-void font-mono text-ink antialiased">
+<!-- Navigation -->
+<header class="sticky top-0 z-40 border-b border-line bg-void/75 backdrop-blur-md">
+  <div class="mx-auto max-w-page px-5 sm:px-8 h-16 flex items-center justify-between gap-6">
+    <div class="flex items-center gap-3">
+      <a href="/" class="flex items-center gap-3 font-semibold tracking-[0.22em] text-[15px]">
+        <img src="/favicon.svg" width="24" height="24" alt="" class="shrink-0" />
+        SYNCULAR<span class="text-amber blink">_</span>
+      </a>
+      <a href={`https://github.com/syncular/syncular/releases/tag/v${rootPkg.version}`} class="hidden border border-line px-1.5 py-0.5 text-[10.5px] tracking-[0.12em] text-faint hover:border-line-strong hover:text-ink transition-colors sm:inline-flex">v{rootPkg.version}</a>
+    </div>
+    <nav class="flex items-center gap-0 sm:gap-1 text-[12px] sm:text-[12.5px] tracking-[0.12em]">
+      <a href="/docs/" class="hidden md:block px-3 py-2 text-dim hover:text-ink transition-colors">DOCS</a>
+      <a href="/blog/" class="hidden md:block px-3 py-2 text-dim hover:text-ink transition-colors">BLOG</a>
+      <a href="/benchmarks/" class="hidden md:block px-3 py-2 text-dim hover:text-ink transition-colors">BENCHMARKS</a>
+      <a href="/changelog/" class="hidden md:block px-3 py-2 text-dim hover:text-ink transition-colors">CHANGELOG</a>
+      <a href="https://github.com/syncular/syncular" class="hidden md:block px-3 py-2 text-dim hover:text-ink transition-colors">GITHUB</a>
+      <div class="nav-search hidden lg:contents"><Search /></div>
+      <MobileMenu />
+      <a href="/quickstart/" class="ml-2 h-9 px-3 sm:px-4 flex items-center bg-amber text-void font-semibold hover:bg-[#ffc233] transition-colors">QUICKSTART</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<!-- ============================== HERO: what is this ============================== -->
+<section class="relative isolate overflow-hidden">
+  <div class="grid-bg absolute inset-0 -z-10" aria-hidden="true"></div>
+  <div class="mx-auto max-w-page px-5 sm:px-8 pt-14 pb-16 lg:pt-24 lg:pb-24 grid grid-cols-1 lg:grid-cols-12 gap-12 lg:gap-10 items-center">
+    <div class="lg:col-span-6">
+      <p class="inline-flex items-center gap-3 border border-line px-3 py-1.5 text-[11px] tracking-[0.16em] text-dim">
+        <span class="h-1.5 w-1.5 bg-phos shadow-[0_0_8px_#a9bf6e]"></span>
+        OPEN-SOURCE SYNC ENGINE · APACHE-2.0
+      </p>
+      <h1 class="mt-7 text-[2.3rem] leading-[1.08] sm:text-[3.3rem] lg:text-[3.6rem] font-semibold tracking-[-0.035em]">
+        SQLite on every device<span class="text-amber">.</span><br />
+        <span class="text-amber">One log on your server.</span>
+      </h1>
+      <p class="mt-7 max-w-xl lead text-[1.075rem] leading-[1.7]">
+        Syncular gives web and native apps a local SQLite database. Reads and
+        writes run against it without a network round trip, online or off.
+        Your server orders every write into one commit log, checks it against
+        your access rules, and sends each client the rows it may see.
+      </p>
+      <div class="mt-9 flex flex-wrap gap-3">
+        <a href="/quickstart/" class="group h-12 px-6 inline-flex items-center gap-3 bg-amber text-void font-semibold text-[13px] tracking-[0.12em] hover:bg-[#ffc233] transition-colors">
+          START THE QUICKSTART <span class="transition-transform group-hover:translate-x-1">→</span>
+        </a>
+        <a href="/demo/" data-astro-reload class="h-12 px-6 inline-flex items-center gap-3 border border-line-strong text-[13px] tracking-[0.12em] hover:border-ink transition-colors">
+          OPEN THE LIVE DEMO <span class="text-faint">→</span>
+        </a>
       </div>
-      <header class="topnav">
-        <a class="brand" href="/">SYNCULAR<span class="blink">_</span></a>
-        <nav>
-          <a href="/what-is/">DOCS</a>
-          <a href="/changelog/">CHANGELOG</a>
-          <a href="/blog/">BLOG</a>
-          <a href="https://demo.syncular.dev/">DEMO</a>
-          <a href="https://github.com/syncular/syncular">GITHUB</a>
-          <Search />
-          <a class="accent" href="/quickstart/">QUICKSTART</a>
-        </nav>
-      </header>
-      <div class="rule" aria-hidden="true">{RULE_EQ}</div>
-
-      <main class="landing">
-        <section class="hero">
-          <div
-            id="hole-wrap"
-            aria-label="Animated ASCII rendering of a black hole accretion disk; labeled commits spiral into the event horizon"
-          >
-            <pre id="hole"></pre>
-            <pre id="hole-glow" aria-hidden="true"></pre>
-          </div>
-          <div class="fig-row">
-            <span>FIG. 1: SERVER-AUTHORITATIVE COMMIT LOG (LIVE SIMULATION)</span>
-            <span><span id="sim-status"></span> <button id="sim-toggle" type="button">[ PAUSE ]</button></span>
-          </div>
-          <h1>ALL YOUR DATA, DRAWN TO A<br />SINGLE POINT OF TRUTH<span>.</span></h1>
-          <p class="sub">
-            syncular is offline-first SQL sync. Local SQLite on every client, a
-            server-authoritative commit log at the center, scope-based
-            authorization on every read and write; commits apply in order or
-            not at all. On the web, and natively on iOS, Android, Flutter,
-            React Native, Tauri, and Rust.
-          </p>
-          <div class="cta-row">
-            <a class="btn primary" href="/quickstart/">[ QUICKSTART · 5 MIN ]</a>
-            <a class="btn" href="https://demo.syncular.dev/">[ TRY LIVE DEMO ]</a>
-          </div>
-          <div class="install"><span class="p">$</span> bun create syncular-app my-app <span class="p"># Apache-2.0</span></div>
-        </section>
-
-        <div class="rule" aria-hidden="true">{RULE_DASH}</div>
-        <section>
-          <p class="kicker">TELEMETRY: MEASURED NUMBERS</p>
-          <div class="receipt"><pre>BOOTSTRAP 100,000 ROWS ..................... <span class="v">30 ms</span>
-REALTIME PROPAGATION (p95) ................. <span class="v">0.2 ms</span>
-WEB CLIENT, GZIPPED ........................ <span class="v">31.3 KB</span>
-CONFORMANCE SCENARIOS ...................... <span class="v">{CONFORMANCE_SCENARIOS} × 2 cores</span></pre></div>
-          <p class="lead">Methodology and caveats in the <a href="/benchmarks/">benchmarks</a>.</p>
-        </section>
-
-        <div class="rule" aria-hidden="true">{RULE_EQ}</div>
-        <section>
-          <p class="kicker">SECTION 01</p>
-          <h2>WHAT YOU STOP BUILDING<span>.</span></h2>
-          <p class="lead">
-            Hand-rolled offline sync means building a durable retry queue, a
-            conflict surface, an authorization check on every sync path, a
-            bootstrap pipeline, and an upgrade story. Syncular ships those as
-            protocol behavior. You write a SQL schema,
-            one <a href="/concepts-scopes/">resolveScopes(actor)</a> function,
-            and your app.
-          </p>
-          <div class="receipt"><pre>YOU WRITE ................ migrations · resolveScopes(actor) · your app
-SYNCULAR RUNS ............ outbox replay · conflict records · bootstrap
-                           realtime deltas · upgrade resets · pruning + GC</pre></div>
-        </section>
-
-        <div class="rule" aria-hidden="true">{RULE_DASH}</div>
-        <section>
-          <p class="kicker">SECTION 02</p>
-          <h2>ONE ENGINE, YOUR LANGUAGE<span>.</span></h2>
-          <p class="lead">
-            The same flow everywhere: create a client, subscribe to a scope,
-            write locally, sync. Web clients run the TypeScript core; everything
-            else runs the Rust core. Both implement one written protocol and
-            pass the same conformance suite. Typegen carries that parity into
-            application reads: one checked SQL or SYQL source becomes typed
-            query APIs for TypeScript, Swift, Kotlin, Dart, and Rust.
-          </p>
-          <div class="tabs">
-            {TABS.map((tab, i) => (
-              <input
-                type="radio"
-                name="platform-tab"
-                id={`tab-${tab.id}`}
-                class={`tab-input tab-input-${tab.id}`}
-                checked={i === 0}
-              />
-            ))}
-            <div class="tab-labels">
-              {TABS.map((tab) => <label for={`tab-${tab.id}`}>[ {tab.label} ]</label>)}
-            </div>
-            <div class="tab-panels">
-              {TABS.map((tab) => (
-                <div class={`tab-panel tab-panel-${tab.id}`}>
-                  <Code code={tab.code} lang={tab.lang} theme="css-variables" />
-                </div>
-              ))}
-            </div>
-          </div>
-          <div class="chip-row">
-            {PLATFORM_LINKS.map((p) => <a class="chip" href={p.href}>{p.label}</a>)}
-          </div>
-        </section>
-
-        <div class="rule" aria-hidden="true">{RULE_DASH}</div>
-        <section>
-          <p class="kicker">SECTION 03</p>
-          <h2>THE SERVER IS THE GRAVITY WELL<span>.</span></h2>
-          <p class="lead">
-            Every client keeps its own local SQLite; reads and writes stay
-            local and instant. Pushes land in the commit log, where every
-            change is ordered, validated against your scopes, and delivered back
-            to exactly the clients allowed to see it. Offline, the <a href="/concepts-subscriptions/">outbox</a> holds your writes;
-            on reconnect they replay, in order, against the same log
-            everyone else sees.
-          </p>
-          <div class="diagram"><pre>   [ client / sqlite ]          [ client / sqlite ]
-             \  push                    /  pull
-              \                        /
-               v                      v
-   +----------------------------------------------+
-   |  <span class="hi">COMMIT LOG: ordered · validated · scoped</span>    |
-   |  <span class="am" id="logticker">c41  c42  c43  c44  c45  c46  c47  &gt;&gt;</span>        |
-   +----------------------------------------------+
-               ^                      \
-              /  pull                  v  push
-   [ client / sqlite ]          [ client / sqlite ]</pre></div>
-          <p class="lead">
-            The mechanics, page by page: <a href="/concepts-commits/">commits, cursors &amp; idempotency</a> ·
-            <a href="/concepts-subscriptions/">subscriptions &amp; the outbox</a> ·
-            <a href="/concepts-bootstrap/">bootstrap &amp; segments</a> ·
-            <a href="/concepts-realtime/">realtime</a>.
-          </p>
-        </section>
-
-        <div class="rule" aria-hidden="true">{RULE_DASH}</div>
-        <section>
-          <p class="kicker">SECTION 04</p>
-          <h2>CAPABILITIES, TYPEWRITTEN<span>.</span></h2>
-          <div class="feature-list">
-            {FEATURES.map((f) => (
-              <p><a href={f.href}>{f.title}</a><span>: {f.body}</span></p>
-            ))}
-          </div>
-        </section>
-
-        <div class="rule" aria-hidden="true">{RULE_DASH}</div>
-        <section>
-          <p class="kicker">SECTION 05</p>
-          <h2>TWO CORES, ONE PROTOCOL<span>.</span></h2>
-          <p class="lead">
-            Both cores implement
-            one <a href="https://github.com/syncular/syncular/blob/main/docs/SPEC.md">written protocol</a>,
-            held identical by golden byte-level vectors
-            and {CONFORMANCE_SCENARIOS} conformance scenarios run against both
-            in CI. Divergence shows up as a failing vector, and a third
-            implementation joins by reading
-            the <a href="/guide-conformance/">spec</a>.
-          </p>
-          <div class="cores">
-            <div class="core">
-              <p class="t">CORE A: TYPESCRIPT</p>
-              <p class="d">Web (worker + OPFS sqlite-wasm) · React · 31.3 KB gzipped of its own code</p>
-            </div>
-            <div class="core">
-              <p class="t">CORE B: RUST <span style="font-weight:400">(C FFI)</span></p>
-              <p class="d">Swift · Kotlin · Flutter · React Native · Tauri · Rust, over one JSON command surface</p>
-            </div>
-          </div>
-          <p class="lead">
-            Servers run on <a href="/guide-server/">Bun/Node via Hono</a> or <a href="/server-workers/">Cloudflare Workers</a>, storage on <a href="/server-storage/">SQLite, Postgres, or D1</a>, segments and
-            blobs on S3-compatible stores. Pruning, blob GC, events, and an
-            admin surface are <a href="/server-operations/">part of the product</a>.
-          </p>
-        </section>
-
-        <div class="rule" aria-hidden="true">{RULE_DASH}</div>
-        <section>
-          <p class="kicker">SECTION 06</p>
-          <h2>BOUNDARIES<span>.</span></h2>
-          <p class="lead">
-            One server and one ordered log per deployment; there is no
-            peer-to-peer mode. Rows converge by version, and a concurrent edit
-            surfaces to <a href="/concepts-conflicts/">your app</a> as a
-            conflict; collaborative text uses <a href="/concepts-crdt/">CRDT columns</a>. Authorization runs in
-            your backend, next to your auth. Frame-by-frame multiplayer state
-            belongs in a dedicated netcode layer.
-          </p>
-        </section>
-
-        <div class="rule" aria-hidden="true">{RULE_EQ}</div>
-        <section class="fin">
-          <p class="big">EVERY WRITE FALLS INTO ONE LOG<span style="color:var(--amber)">.</span></p>
-          <div class="install"><span class="p">$</span> bun create syncular-app my-app</div>
-          <div class="cta-row">
-            <a class="btn primary" href="/quickstart/">[ QUICKSTART ]</a>
-            <a class="btn" href="/what-is/">[ READ THE DOCS ]</a>
-          </div>
-        </section>
-      </main>
-
-      <footer class="footer">
-        <div class="rule" aria-hidden="true">{RULE_EQ}</div>
-        <div class="row">
-          <nav>
-            <a href="/changelog/">CHANGELOG</a>
-            <a href="/blog/">BLOG</a>
-            <a href="https://github.com/syncular/syncular">GITHUB</a>
-            <a href="https://www.npmjs.com/org/syncular">NPM</a>
-            <a href="https://crates.io/crates/syncular-client">CRATES.IO</a>
-            <a href="/what-is/">DOCS</a>
-            <a href="https://demo.syncular.dev/">DEMO</a>
-            <a href="/privacy/">PRIVACY</a>
-          </nav>
-          <span class="end">SYNCULAR v{rootPkg.version} · APACHE-2.0 · END OF TRANSMISSION <span class="sq">■</span></span>
-        </div>
-      </footer>
+      <button type="button" data-copy="bun create syncular-app my-app" class="copy mt-6 group w-full sm:w-auto inline-flex items-center justify-between gap-6 border border-line bg-panel/80 pl-4 pr-3 h-11 text-[13.5px] hover:border-line-strong transition-colors">
+        <span><span class="text-amber">$</span> bun create syncular-app my-app</span>
+        <span class="copy-label text-[11px] tracking-[0.14em] text-faint group-hover:text-dim">COPY</span>
+      </button>
     </div>
 
-    <script is:inline>
-      // The one script on the site: the hero's ASCII singularity. Everything
-      // else — including syntax highlighting — is static, built markup.
-      (() => {
-        const W = 90, H = 40, CX = W / 2, CY = H / 2, ASPECT = 0.55;
-        const RAMP = ' .,:;+*#@';
-        const main = document.getElementById('hole');
-        const glow = document.getElementById('hole-glow');
-        const status = document.getElementById('sim-status');
-        const toggle = document.getElementById('sim-toggle');
-        const hash = (x, y) => {
-          const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
-          return s - Math.floor(s);
-        };
+    <figure class="lg:col-span-6 relative">
+      <div class="halo absolute -inset-10 -z-10" aria-hidden="true"></div>
+      <div class="ticks border border-line bg-void/60">
+        <span class="tk-b" aria-hidden="true"></span>
+        <div class="flex items-center justify-between border-b border-line px-4 h-9 text-[10.5px] tracking-[0.16em] text-faint">
+          <span>FIG. 1 · COMMIT LOG</span>
+          <span class="flex items-center gap-2"><span class="h-1.5 w-1.5 bg-amber blink"></span>LIVE SIMULATION</span>
+        </div>
+        <canvas id="hole" class="block aspect-[99/80] w-full" role="img" aria-label="Animated ASCII rendering of a black hole accretion disk; labeled commits spiral into the event horizon"></canvas>
+        <div class="flex items-center justify-between border-t border-line px-4 h-9 text-[10.5px] tracking-[0.14em] text-faint">
+          <span id="sim-status">INFALL 0 WRITES · NEXT c41</span>
+          <button id="sim-toggle" type="button" class="text-amber hover:text-ink">[ PAUSE ]</button>
+        </div>
+      </div>
+      <figcaption class="mt-4 text-[11.5px] leading-relaxed tracking-[0.06em] text-faint">
+        Each client owns a database. The server owns the order.
+        <a href="#follow" class="text-dim underline decoration-line-strong underline-offset-4 hover:text-amber hover:decoration-amber">Run the model below ↓</a>
+      </figcaption>
+    </figure>
+  </div>
+</section>
 
-        // Infalling writes: labeled commits spiral across the disk into the log.
-        let seq = 41;
-        let commits = [];
-        let nextSpawn = 0;
-        const spawn = (t) => {
-          commits.push({
-            label: 'c' + seq++,
-            a: Math.random() * Math.PI * 2,
-            r: 24 + Math.random() * 8,
-            born: t,
-            speed: 2.4 + Math.random() * 1.6,
+<!-- Platforms -->
+<div class="border-y border-line bg-panel/60">
+  <div class="mx-auto max-w-page px-5 sm:px-8 py-5 flex flex-col md:flex-row md:items-center gap-4 md:gap-8">
+    <span class="label shrink-0">ONE PROTOCOL ON</span>
+    <div class="flex flex-1 flex-wrap md:justify-between gap-x-5 gap-y-2 text-[12px] tracking-[0.12em] text-dim">
+      {PLATFORM_LINKS.map((p) => <a href={p.href} class="hover:text-amber">{p.label}</a>)}
+    </div>
+  </div>
+</div>
+
+<!-- ============================== §01 WHY ============================== -->
+<section class="mx-auto max-w-page px-5 sm:px-8 py-24 lg:py-32">
+  <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-end">
+    <div class="lg:col-span-7">
+      <p class="kicker">§01 · WHY</p>
+      <h2 class="h2">What the sync layer<br />does for you<span class="text-amber">.</span></h2>
+    </div>
+    <p class="lg:col-span-5 lead">
+      Syncular implements five parts of offline sync as protocol behavior: a
+      durable outbox, conflict reporting, scope-based authorization, segment
+      bootstrap for new devices, and schema upgrades for old clients. You
+      write a SQL schema and one function.
+    </p>
+  </div>
+
+  <div class="mt-14 grid grid-cols-1 lg:grid-cols-12 gap-12 lg:gap-10">
+    <ol class="lg:col-span-6 border-t border-line">
+      <li class="grid grid-cols-[2.5rem_1fr] sm:grid-cols-[2.5rem_9.5rem_1fr] gap-x-4 gap-y-1 py-5 border-b border-line">
+        <span class="text-[11px] text-amber pt-0.5">01</span>
+        <span class="text-[14px] font-semibold">Retry queue</span>
+        <span class="col-start-2 sm:col-start-auto font-sans text-[14px] leading-[1.7] text-dim">A durable <a href="/concepts-subscriptions/" class="ul">outbox</a> that survives restarts and replays in order on reconnect.</span>
+      </li>
+      <li class="grid grid-cols-[2.5rem_1fr] sm:grid-cols-[2.5rem_9.5rem_1fr] gap-x-4 gap-y-1 py-5 border-b border-line">
+        <span class="text-[11px] text-amber pt-0.5">02</span>
+        <span class="text-[14px] font-semibold">Conflicts</span>
+        <span class="col-start-2 sm:col-start-auto font-sans text-[14px] leading-[1.7] text-dim">A version mismatch reaches <a href="/concepts-conflicts/" class="ul">your app</a> with the server row attached, and stays recorded until you resolve it.</span>
+      </li>
+      <li class="grid grid-cols-[2.5rem_1fr] sm:grid-cols-[2.5rem_9.5rem_1fr] gap-x-4 gap-y-1 py-5 border-b border-line">
+        <span class="text-[11px] text-amber pt-0.5">03</span>
+        <span class="text-[14px] font-semibold">Authorization</span>
+        <span class="col-start-2 sm:col-start-auto font-sans text-[14px] leading-[1.7] text-dim">The server checks every commit and every subscription against the <a href="/concepts-scopes/" class="ul">scopes</a> your resolver returns.</span>
+      </li>
+      <li class="grid grid-cols-[2.5rem_1fr] sm:grid-cols-[2.5rem_9.5rem_1fr] gap-x-4 gap-y-1 py-5 border-b border-line">
+        <span class="text-[11px] text-amber pt-0.5">04</span>
+        <span class="text-[14px] font-semibold">Bootstrap</span>
+        <span class="col-start-2 sm:col-start-auto font-sans text-[14px] leading-[1.7] text-dim">A new device downloads its rows as bootstrap <a href="/concepts-bootstrap/" class="ul">segments</a>: 100,000 rows in 379.9 ms. <span class="text-faint">Prebuilt SQLite image: 46.5 ms.</span></span>
+      </li>
+      <li class="grid grid-cols-[2.5rem_1fr] sm:grid-cols-[2.5rem_9.5rem_1fr] gap-x-4 gap-y-1 py-5 border-b border-line">
+        <span class="text-[11px] text-amber pt-0.5">05</span>
+        <span class="text-[14px] font-semibold">Upgrades</span>
+        <span class="col-start-2 sm:col-start-auto font-sans text-[14px] leading-[1.7] text-dim">On a <a href="/concepts-schema-upgrades/" class="ul">schema change</a> a client keeps its outbox, re-bootstraps at the new version, and replays.</span>
+      </li>
+    </ol>
+
+    <div class="lg:col-span-6">
+      <div class="ticks border border-line bg-panel shadow-[0_30px_80px_-40px_rgba(255,176,0,0.25)]">
+        <span class="tk-b" aria-hidden="true"></span>
+        <div class="flex items-center justify-between border-b border-line px-4 h-10 text-[11px] tracking-[0.12em] text-faint">
+          <span><span class="text-dim">server/</span>sync.ts</span>
+          <span class="text-amber">THE FUNCTION YOU WRITE</span>
+        </div>
+        <div class="[&_pre]:overflow-x-auto [&_pre]:p-5 sm:[&_pre]:p-6 [&_pre]:text-[12px] sm:[&_pre]:text-[13px] [&_pre]:leading-[1.8]">
+          <Code code={SERVER_CODE} lang="ts" theme="css-variables" />
+        </div>
+      </div>
+      <p class="mt-5 font-sans text-[14px] leading-[1.7] text-dim">
+        The server calls <code class="font-mono text-[12.5px] text-ink">resolveScopes</code>
+        at most once per request, next to your existing auth. If it throws,
+        the request syncs no rows.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================== §02 HOW IT WORKS ============================== -->
+<section id="follow" class="border-t border-line">
+  <div class="mx-auto max-w-page px-5 sm:px-8 py-24 lg:py-32">
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-end">
+      <div class="lg:col-span-7">
+        <p class="kicker">§02 · HOW IT WORKS</p>
+        <h2 class="h2">Follow one write<span class="text-amber">.</span></h2>
+      </div>
+      <p class="lg:col-span-5 lead">
+        Three devices share one server below. Write on any of them, take the
+        iPhone offline, and watch the commit log decide who receives what.
+      </p>
+    </div>
+
+    <div class="mt-14 grid grid-cols-1 md:grid-cols-3 border-l border-t border-line">
+      <div class="p-6 sm:p-7 border-r border-b border-line">
+        <p class="label">01 · ON THE DEVICE</p>
+        <h3 class="mt-4 text-[17px] font-semibold tracking-tight">The write is local first<span class="text-amber">.</span></h3>
+        <p class="mt-3 font-sans text-[14px] leading-[1.7] text-dim">One local transaction updates the table and appends the commit to the outbox. Queries see the new row immediately.</p>
+      </div>
+      <div class="p-6 sm:p-7 border-r border-b border-line">
+        <p class="label">02 · ON YOUR SERVER</p>
+        <h3 class="mt-4 text-[17px] font-semibold tracking-tight">The server orders it<span class="text-amber">.</span></h3>
+        <p class="mt-3 font-sans text-[14px] leading-[1.7] text-dim">The outbox pushes an idempotent commit. The server checks it against the actor's scopes and appends all of it to the log, or none of it.</p>
+      </div>
+      <div class="p-6 sm:p-7 border-r border-b border-line">
+        <p class="label">03 · ON EVERY OTHER DEVICE</p>
+        <h3 class="mt-4 text-[17px] font-semibold tracking-tight">Subscribers receive it<span class="text-amber">.</span></h3>
+        <p class="mt-3 font-sans text-[14px] leading-[1.7] text-dim">Connected clients with a matching scope get the delta over one WebSocket. A device that was offline pulls what it missed on reconnect.</p>
+      </div>
+    </div>
+
+    <div id="sim" class="mt-14">
+      <div class="ticks border border-line bg-panel">
+        <span class="tk-b" aria-hidden="true"></span>
+        <div class="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-2.5 text-[11px] tracking-[0.14em]">
+          <span class="text-ink">YOUR SERVER · COMMIT LOG <span class="text-faint">· ORDERED · SCOPED</span></span>
+          <span class="flex items-center gap-4 text-faint">
+            <span id="sim-mode">AUTOPLAY</span>
+            <button type="button" id="sim-reset" class="text-amber hover:text-ink">[ RESET ]</button>
+          </span>
+        </div>
+        <div class="hidden sm:grid grid-cols-[4.5rem_6rem_1fr_9rem_1fr] gap-3 px-4 pt-3 pb-1 text-[10px] tracking-[0.16em] text-faint">
+          <span>SEQ</span><span>FROM</span><span>CHANGE</span><span>SCOPE</span><span>DELIVERED TO</span>
+        </div>
+        <ol id="log" class="px-2 pb-2 h-[13rem] sm:h-[13.5rem] overflow-hidden flex flex-col justify-end text-[12.5px]"></ol>
+      </div>
+      <div id="devices" class="grid grid-cols-1 md:grid-cols-3 gap-x-5"></div>
+      <p class="mt-6 text-[11.5px] leading-relaxed tracking-[0.06em] text-faint">
+        <span class="text-dim">Interactive model.</span> It runs in this page without a network.
+        The Pixel subscribes to <span class="text-dim">list_id = work</span>, so commits scoped to groceries never reach it.
+      </p>
+    </div>
+
+    <p class="mt-14 border-t border-line pt-6 text-[12px] tracking-[0.08em] text-faint leading-loose">
+      THE MECHANICS:
+      <a href="/concepts-commits/" class="text-dim hover:text-amber">commits, cursors &amp; idempotency</a> ·
+      <a href="/concepts-realtime/" class="text-dim hover:text-amber">realtime</a> ·
+      <a href="/concepts-conflicts/" class="text-dim hover:text-amber">conflicts</a>
+    </p>
+  </div>
+</section>
+
+<!-- ============================== §03 DIFFERENCE ============================== -->
+<section class="border-t border-line relative isolate overflow-hidden">
+  <div class="halo absolute left-1/2 top-1/2 -z-10 h-[50rem] w-[70rem] -translate-x-1/2 -translate-y-1/2 opacity-70" aria-hidden="true"></div>
+  <div class="mx-auto max-w-page px-5 sm:px-8 py-20 lg:py-28">
+    <div class="ticks border border-amber/70 bg-[rgba(255,176,0,0.035)] shadow-[0_0_120px_-40px_rgba(255,176,0,0.35)]">
+      <span class="tk-b" aria-hidden="true"></span>
+      <div class="flex flex-wrap items-center justify-between gap-x-6 gap-y-1 bg-amber text-void px-5 py-2.5 text-[11px] font-semibold tracking-[0.18em]">
+        <span>§03 · WHAT SETS SYNCULAR APART</span>
+        <span class="font-medium opacity-70">QUERIES · SCHEMA · PERMISSIONS · SPEED</span>
+      </div>
+      <div class="px-5 sm:px-8 pt-8 sm:pt-10 pb-2">
+        <h2 class="text-[1.9rem] sm:text-[2.5rem] leading-[1.1] font-semibold tracking-[-0.03em]">What sets Syncular apart<span class="text-amber">.</span></h2>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 mt-6 border-t border-amber/30">
+        <article class="flex flex-col p-6 sm:p-7 border-amber/30 border-b lg:border-b-0 md:border-r lg:border-r ">
+          <p class="text-[2.2rem] leading-none font-semibold text-amber tracking-tight">01</p>
+          <h3 class="mt-5 text-[18px] font-semibold tracking-tight leading-snug">Real SQL, with types.</h3>
+          <p class="mt-3 font-sans text-[14px] leading-[1.7] text-dim">Your app reads from a real SQLite database on the device. Write a query in SQL and the generator gives you a typed function for TypeScript, Swift, Kotlin, Dart, or Rust.</p>
+          <a href="/tooling-queries/" class="mt-auto pt-6 text-[11px] tracking-[0.14em] text-amber hover:text-ink">TYPED QUERIES →</a>
+        </article>
+        <article class="flex flex-col p-6 sm:p-7 border-amber/30 border-b lg:border-b-0 lg:border-r ">
+          <p class="text-[2.2rem] leading-none font-semibold text-amber tracking-tight">02</p>
+          <h3 class="mt-5 text-[18px] font-semibold tracking-tight leading-snug">Your schema stays your schema.</h3>
+          <p class="mt-3 font-sans text-[14px] leading-[1.7] text-dim">Tables are normal SQL tables with foreign keys and indexes. Syncular adds one requirement: each synced row carries a column such as <code class="font-mono text-[12.5px] text-ink">list_id</code> that says which group it belongs to.</p>
+          <a href="/guide-schema/" class="mt-auto pt-6 text-[11px] tracking-[0.14em] text-amber hover:text-ink">SCHEMA →</a>
+        </article>
+        <article class="flex flex-col p-6 sm:p-7 border-amber/30 border-b lg:border-b-0 md:border-r lg:border-r ">
+          <p class="text-[2.2rem] leading-none font-semibold text-amber tracking-tight">03</p>
+          <h3 class="mt-5 text-[18px] font-semibold tracking-tight leading-snug">Permissions are a function.</h3>
+          <p class="mt-3 font-sans text-[14px] leading-[1.7] text-dim">You write one function that returns what each user may see, using your own tables. The server enforces it on every write and every subscription, so a device never receives a row outside it.</p>
+          <a href="/concepts-scopes/" class="mt-auto pt-6 text-[11px] tracking-[0.14em] text-amber hover:text-ink">SCOPES →</a>
+        </article>
+        <article class="flex flex-col p-6 sm:p-7 border-amber/30 border-b lg:border-b-0 lg:border-r-0 ">
+          <p class="text-[2.2rem] leading-none font-semibold text-amber tracking-tight">04</p>
+          <h3 class="mt-5 text-[18px] font-semibold tracking-tight leading-snug">Fast, because nothing waits.</h3>
+          <p class="mt-3 font-sans text-[14px] leading-[1.7] text-dim">Reads are local queries and writes commit locally first. A new device downloads snapshots instead of replaying history, and a connected device receives only its own changes.</p>
+          <a href="/concepts-bootstrap/" class="mt-auto pt-6 text-[11px] tracking-[0.14em] text-amber hover:text-ink">BOOTSTRAP →</a>
+        </article>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================== §04 YOUR PLATFORM ============================== -->
+<section class="border-t border-line bg-panel/40">
+  <div class="mx-auto max-w-page px-5 sm:px-8 py-24 lg:py-32 grid grid-cols-1 lg:grid-cols-12 gap-12 lg:gap-10">
+    <div class="lg:col-span-4">
+      <p class="kicker">§04 · YOUR PLATFORM</p>
+      <h2 class="h2">Create, subscribe,<br />write, sync<span class="text-amber">.</span></h2>
+      <p class="mt-6 lead">
+        The calls are the same on every platform. Web apps run the TypeScript
+        core in a Web Worker on OPFS-backed sqlite-wasm. Every other platform
+        runs the Rust core through a five-function C FFI.
+      </p>
+      <p class="mt-4 lead">
+        Both cores implement one written protocol, so a Swift client and a
+        browser tab sync against the same server.
+      </p>
+
+      <div class="mt-10 pt-6 border-t border-line">
+        <p class="label">TYPED READS</p>
+        <p class="mt-3 font-sans text-[14px] leading-[1.7] text-dim">Typegen checks a SQL or SYQL query against your schema and generates a typed API for each target.</p>
+        <div class="mt-4 border border-line bg-void">
+          <div class="[&_pre]:overflow-x-auto [&_pre]:px-4 [&_pre]:py-4 [&_pre]:text-[11.5px] [&_pre]:leading-[1.8]">
+            <Code code={SQL_CODE} lang="sql" theme="css-variables" />
+          </div>
+        </div>
+        <div class="mt-3 flex flex-wrap items-center gap-2">
+          <span class="text-faint text-[12px] mr-1">→</span>
+          <span class="chip h-7">TYPESCRIPT</span><span class="chip h-7">SWIFT</span><span class="chip h-7">KOTLIN</span><span class="chip h-7">DART</span><span class="chip h-7">RUST</span>
+        </div>
+        <a href="/tooling-queries/" class="mt-5 inline-block text-[12px] tracking-[0.1em] text-amber hover:text-ink">TYPED QUERIES →</a>
+      </div>
+    </div>
+
+    <div class="lg:col-span-8">
+      <div class="border border-line bg-void">
+        <div class="flex items-stretch border-b border-line">
+          <div role="tablist" aria-label="Client platform" id="tabs" class="scroll-x flex overflow-x-auto text-[11.5px] tracking-[0.12em]">
+            {TABS.map((tab, i) => (
+              <button
+                type="button"
+                role="tab"
+                id={`tab-${tab.id}`}
+                aria-controls={`panel-${tab.id}`}
+                aria-selected={i === 0 ? 'true' : 'false'}
+                data-core={tab.core}
+                class="relative h-11 whitespace-nowrap border-r border-line px-4 text-faint transition-colors before:absolute before:inset-x-0 before:top-0 before:h-0.5 aria-selected:bg-panel aria-selected:text-ink aria-selected:before:bg-amber aria-[selected=false]:hover:text-dim sm:px-5"
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        {TABS.map((tab, i) => (
+          <div
+            role="tabpanel"
+            id={`panel-${tab.id}`}
+            aria-labelledby={`tab-${tab.id}`}
+            hidden={i !== 0}
+            class="[&_pre]:min-h-[36rem] [&_pre]:overflow-x-auto [&_pre]:p-5 sm:[&_pre]:p-6 [&_pre]:text-[12px] sm:[&_pre]:text-[13px] [&_pre]:leading-[1.75]"
+          >
+            <Code code={tab.code} lang={tab.lang} theme="css-variables" />
+          </div>
+        ))}
+        <p class="border-t border-line px-5 sm:px-6 py-3 text-[10.5px] tracking-[0.14em] text-faint">RUNS ON: <span id="tab-core" class="text-dim">{TABS[0]?.core}</span></p>
+      </div>
+      <div class="mt-5 flex flex-wrap gap-2">
+        {PLATFORM_LINKS.map((p) => <a href={p.href} class="chip">{p.label}</a>)}
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================== RUNS ON YOUR STACK ============================== -->
+<section id="stack" class="border-t border-line">
+  <div class="mx-auto max-w-page px-5 sm:px-8 py-20 lg:py-24">
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-end">
+      <div class="lg:col-span-7">
+        <p class="kicker">RUNS ON YOUR STACK</p>
+        <h2 class="h2">Your server, your database<span class="text-amber">.</span></h2>
+      </div>
+      <p class="lg:col-span-5 lead">
+        The sync server is a library you mount in your own server. Every synced
+        table is stored as a real table in your database, next to the rest of
+        your data.
+      </p>
+    </div>
+
+    <div class="mt-12 ticks border border-line bg-panel/60 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-[1fr_1.35fr_1fr]">
+      <span class="tk-b" aria-hidden="true"></span>
+      <div class="border-b lg:border-b-0 md:border-r border-line flex flex-col">
+        <p class="px-5 py-3 border-b border-line label">01 · SERVER</p>
+          <a href="/guide-server/" class="group block p-5 border-b border-line last:border-b-0 hover:bg-panel transition-colors">
+            <span class="flex items-start justify-between gap-3"><span class="text-[14px] font-semibold group-hover:text-amber transition-colors">Bun or Node, via Hono</span><span class="text-faint group-hover:text-amber">↗</span></span>
+            <span class="mt-2 flex flex-wrap gap-1.5"><span class="inline-flex items-center h-5 px-1.5 border border-line-strong text-dim text-[9.5px] tracking-[0.14em]">YOUR PROCESS</span></span>
+            <span class="mt-2.5 block font-sans text-[13.5px] leading-[1.6] text-dim">A Hono adapter mounts the sync routes beside your own routes and auth.</span>
+          </a>
+          <a href="/server-workers/" class="group block p-5 border-b border-line last:border-b-0 hover:bg-panel transition-colors">
+            <span class="flex items-start justify-between gap-3"><span class="text-[14px] font-semibold group-hover:text-amber transition-colors">Cloudflare Workers</span><span class="text-faint group-hover:text-amber">↗</span></span>
+            <span class="mt-2 flex flex-wrap gap-1.5"><span class="inline-flex items-center h-5 px-1.5 border border-line-strong text-dim text-[9.5px] tracking-[0.14em]">EDGE</span></span>
+            <span class="mt-2.5 block font-sans text-[13.5px] leading-[1.6] text-dim">One Durable Object per partition orders pushes and hosts realtime.</span>
+          </a>
+      </div>
+      <div class="border-b lg:border-b-0 lg:border-r border-line flex flex-col">
+        <p class="px-5 py-3 border-b border-line label">02 · DATABASE</p>
+          <a href="/server-storage-reference/#sqlite" class="group block p-5 border-b border-line last:border-b-0 hover:bg-panel transition-colors">
+            <span class="flex items-start justify-between gap-3"><span class="text-[14px] font-semibold group-hover:text-amber transition-colors">SQLite</span><span class="text-faint group-hover:text-amber">↗</span></span>
+            <span class="mt-2 flex flex-wrap gap-1.5"><span class="inline-flex items-center h-5 px-1.5 border border-line-strong text-dim text-[9.5px] tracking-[0.14em]">DEVELOPMENT</span><span class="inline-flex items-center h-5 px-1.5 border border-line-strong text-dim text-[9.5px] tracking-[0.14em]">DEMOS</span><span class="inline-flex items-center h-5 px-1.5 border border-line-strong text-dim text-[9.5px] tracking-[0.14em]">SINGLE NODE</span></span>
+            <span class="mt-2.5 block font-sans text-[13.5px] leading-[1.6] text-dim"><code class="font-mono text-[12px] text-ink">bun:sqlite</code> on Bun, <code class="font-mono text-[12px] text-ink">node:sqlite</code> on Node.</span>
+          </a>
+          <a href="/server-storage-reference/#postgres" class="group block p-5 border-b border-line last:border-b-0 hover:bg-panel transition-colors">
+            <span class="flex items-start justify-between gap-3"><span class="text-[14px] font-semibold group-hover:text-amber transition-colors">Postgres</span><span class="text-faint group-hover:text-amber">↗</span></span>
+            <span class="mt-2 flex flex-wrap gap-1.5"><span class="inline-flex items-center h-5 px-1.5 border border-amber/50 text-amber text-[9.5px] tracking-[0.14em]">PRODUCTION</span><span class="inline-flex items-center h-5 px-1.5 border border-amber/50 text-amber text-[9.5px] tracking-[0.14em]">MULTI-INSTANCE</span></span>
+            <span class="mt-2.5 block font-sans text-[13.5px] leading-[1.6] text-dim">For Bun and Node in production. Instances behind a load balancer share new commits through LISTEN/NOTIFY.</span>
+          </a>
+          <a href="/server-workers/" class="group block p-5 border-b border-line last:border-b-0 hover:bg-panel transition-colors">
+            <span class="flex items-start justify-between gap-3"><span class="text-[14px] font-semibold group-hover:text-amber transition-colors">Cloudflare D1</span><span class="text-faint group-hover:text-amber">↗</span></span>
+            <span class="mt-2 flex flex-wrap gap-1.5"><span class="inline-flex items-center h-5 px-1.5 border border-phos/50 text-phos text-[9.5px] tracking-[0.14em]">WORKERS</span></span>
+            <span class="mt-2.5 block font-sans text-[13.5px] leading-[1.6] text-dim">Storage on Workers; the Durable Object fans each commit out to connected clients.</span>
+          </a>
+      </div>
+      <div class="md:col-span-2 lg:col-span-1 flex flex-col">
+        <p class="px-5 py-3 border-b border-line label">03 · SEGMENTS &amp; BLOBS</p>
+          <a href="/server-storage/#segment-stores" class="group block p-5 border-b border-line last:border-b-0 hover:bg-panel transition-colors">
+            <span class="flex items-start justify-between gap-3"><span class="text-[14px] font-semibold group-hover:text-amber transition-colors">S3-compatible storage</span><span class="text-faint group-hover:text-amber">↗</span></span>
+            <span class="mt-2 flex flex-wrap gap-1.5"><span class="inline-flex items-center h-5 px-1.5 border border-line-strong text-dim text-[9.5px] tracking-[0.14em]">AWS S3</span><span class="inline-flex items-center h-5 px-1.5 border border-line-strong text-dim text-[9.5px] tracking-[0.14em]">CLOUDFLARE R2</span><span class="inline-flex items-center h-5 px-1.5 border border-line-strong text-dim text-[9.5px] tracking-[0.14em]">MINIO</span></span>
+            <span class="mt-2.5 block font-sans text-[13.5px] leading-[1.6] text-dim">Bootstrap segments and file attachments, through a built-in SigV4 client with no AWS SDK.</span>
+          </a>
+          <a href="/server-workers/" class="group block p-5 border-b border-line last:border-b-0 hover:bg-panel transition-colors">
+            <span class="flex items-start justify-between gap-3"><span class="text-[14px] font-semibold group-hover:text-amber transition-colors">R2 on Workers</span><span class="text-faint group-hover:text-amber">↗</span></span>
+            <span class="mt-2 flex flex-wrap gap-1.5"><span class="inline-flex items-center h-5 px-1.5 border border-phos/50 text-phos text-[9.5px] tracking-[0.14em]">WORKERS</span></span>
+            <span class="mt-2.5 block font-sans text-[13.5px] leading-[1.6] text-dim">The Workers server keeps segment and blob bytes in R2.</span>
+          </a>
+      </div>
+    </div>
+    <p class="mt-5 text-[11.5px] tracking-[0.06em] text-faint">The three databases pass one shared contract suite. <a href="/server-storage/" class="text-dim underline decoration-line-strong underline-offset-4 hover:text-amber hover:decoration-amber">Choosing a database →</a></p>
+  </div>
+</section>
+
+<!-- ============================== §05 AS YOUR APP GROWS ============================== -->
+<section class="border-t border-line">
+  <div class="mx-auto max-w-page px-5 sm:px-8 py-24 lg:py-32">
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-end">
+      <div class="lg:col-span-7">
+        <p class="kicker">§05 · AS YOUR APP GROWS</p>
+        <h2 class="h2">Eight more features<br />in the same engine<span class="text-amber">.</span></h2>
+      </div>
+      <p class="lg:col-span-5 lead">Both cores implement each one, and each has its own page in the documentation.</p>
+    </div>
+    <div id="caps" class="mt-14 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 border-l border-t border-line">
+      {CAPS.map(([title, body, href], i) => (
+        <a
+          href={href}
+          class="group relative flex flex-col border-r border-b border-line p-6 transition-colors hover:bg-panel sm:min-h-[13rem]"
+        >
+          <span class="absolute inset-x-0 top-0 h-px origin-left scale-x-0 bg-amber transition-transform duration-300 group-hover:scale-x-100" />
+          <span class="flex items-center justify-between text-[10.5px] tracking-[0.16em] text-faint">
+            <span>{String(i + 1).padStart(2, '0')}</span>
+            <span class="transition-all group-hover:translate-x-0.5 group-hover:text-amber">→</span>
+          </span>
+          <span class="pt-5 text-[15px] font-semibold tracking-tight transition-colors group-hover:text-amber sm:pt-10">{title}</span>
+          <span class="mt-2 font-sans text-[13.5px] leading-relaxed text-dim">{body}</span>
+        </a>
+      ))}
+    </div>
+  </div>
+</section>
+
+<!-- ============================== §06 PROOF ============================== -->
+<section class="border-t border-line bg-panel/40 relative overflow-hidden">
+  <div class="mx-auto max-w-page px-5 sm:px-8 py-24 lg:py-32">
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-end">
+      <div class="lg:col-span-7">
+        <p class="kicker">§06 · PROOF</p>
+        <h2 class="h2">Numbers you can<br />rerun yourself<span class="text-amber">.</span></h2>
+      </div>
+      <p class="lg:col-span-5 lead">
+        <code class="font-mono text-[13px] text-ink">bun run bench</code> in the
+        repository produces every figure below. The
+        <a href="/benchmarks/" class="ul">benchmarks page</a> lists the machine,
+        the versions, and the caveats.
+      </p>
+    </div>
+
+    <dl class="mt-14 grid grid-cols-2 lg:grid-cols-4 border-l border-t border-line bg-void">
+      <div class="p-5 sm:p-7 border-r border-b border-line">
+        <dt class="label">BOOTSTRAP 100,000 ROWS</dt>
+        <dd class="mt-4 text-[2.1rem] sm:text-[2.8rem] font-semibold tracking-tight leading-none">379.9<span class="text-amber text-[0.5em] ml-1">ms</span></dd>
+        <dd class="mt-4 font-sans text-[13px] leading-relaxed text-dim">Row by row, no prebuilt image.</dd>
+        <dd class="mt-2 font-sans text-[12px] leading-relaxed text-faint"><span class="font-mono text-[10px] tracking-[0.12em] text-dim">PREBUILT IMAGE:</span> 46.5 ms warm; 246.6 ms when the server builds it on first request.</dd>
+      </div>
+      <div class="p-5 sm:p-7 border-r border-b border-line">
+        <dt class="label">WRITE TO REMOTE APPLY, p95</dt>
+        <dd class="mt-4 text-[2.1rem] sm:text-[2.8rem] font-semibold tracking-tight leading-none">1.2<span class="text-amber text-[0.5em] ml-1">ms</span></dd>
+        <dd class="mt-4 font-sans text-[13px] leading-relaxed text-dim">Two clients on loopback, p50 0.7 ms, measured at host load 3.3 on 10 cores. Over a real network, latency dominates.</dd>
+      </div>
+      <div class="p-5 sm:p-7 border-r border-b border-line">
+        <dt class="label">WEB CLIENT CODE, GZIPPED</dt>
+        <dd class="mt-4 text-[2.1rem] sm:text-[2.8rem] font-semibold tracking-tight leading-none">59.8<span class="text-amber text-[0.5em] ml-1">KiB</span></dd>
+        <dd class="mt-4 font-sans text-[13px] leading-relaxed text-dim">Page entry 7.6 KiB plus worker 52.1 KiB, 195.6 KiB raw. The stock sqlite-wasm build adds 461.3 KiB gzipped.</dd>
+      </div>
+      <div class="p-5 sm:p-7 border-r border-b border-line">
+        <dt class="label">CONFORMANCE SCENARIOS</dt>
+        <dd class="mt-4 text-[2.1rem] sm:text-[2.8rem] font-semibold tracking-tight leading-none">{CONFORMANCE_SCENARIOS}<span class="text-amber text-[0.5em] ml-1">× 2</span></dd>
+        <dd class="mt-4 font-sans text-[13px] leading-relaxed text-dim">Run against the TypeScript and the Rust core in CI.</dd>
+      </div>
+    </dl>
+
+    <div class="mt-8 ticks border border-amber/50 bg-void grid grid-cols-1 lg:grid-cols-12">
+      <span class="tk-b" aria-hidden="true"></span>
+      <p class="lg:col-span-4 px-5 pt-5 lg:py-5 text-[13px] font-semibold tracking-[0.1em]"><a href="https://github.com/syncular/syncular/blob/main/docs/SPEC.md" class="text-amber hover:text-ink">SPEC.md</a> · ONE WRITTEN PROTOCOL</p>
+      <p class="lg:col-span-8 px-5 pt-3 pb-5 lg:py-5 font-sans text-[14px] leading-[1.7] text-dim">
+        Both cores implement the spec, and golden byte-level vectors pin every
+        encoding. The TypeScript and the Rust core run the same {CONFORMANCE_SCENARIOS}-scenario
+        conformance catalog in CI, so a divergence fails the build. A third
+        implementation needs only the spec and its vectors to interoperate.
+        <a href="/reference/#protocol--conformance" class="ml-1 font-mono text-[11px] tracking-[0.14em] text-amber hover:text-ink">PROTOCOL &amp; CONFORMANCE →</a>
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================== §07 FIT ============================== -->
+<section class="border-t border-line">
+  <div class="mx-auto max-w-page px-5 sm:px-8 py-24 lg:py-32 grid grid-cols-1 lg:grid-cols-12 gap-12 lg:gap-10">
+    <div class="lg:col-span-4">
+      <p class="kicker">§07 · FIT</p>
+      <h2 class="h2">Check the<br />boundaries first<span class="text-amber">.</span></h2>
+      <p class="mt-6 lead">These four design choices decide whether Syncular fits your app.</p>
+    </div>
+    <dl class="lg:col-span-8 grid grid-cols-1 sm:grid-cols-2 gap-px bg-line border border-line">
+      <div class="bg-void p-6 sm:p-7">
+        <dt class="text-[13px] font-semibold tracking-[0.06em]">One server, one log</dt>
+        <dd class="mt-3 font-sans text-[14.5px] leading-relaxed text-dim">Each deployment has one ordered commit log, which keeps authorization, audit, and pruning in one place. There is no peer-to-peer mode.</dd>
+      </div>
+      <div class="bg-void p-6 sm:p-7">
+        <dt class="text-[13px] font-semibold tracking-[0.06em]">Your app merges</dt>
+        <dd class="mt-3 font-sans text-[14.5px] leading-relaxed text-dim">Rows converge by version. Your code decides what a conflict resolves to; Syncular delivers both sides.</dd>
+      </div>
+      <div class="bg-void p-6 sm:p-7">
+        <dt class="text-[13px] font-semibold tracking-[0.06em]">CRDT per column</dt>
+        <dd class="mt-3 font-sans text-[14.5px] leading-relaxed text-dim">Collaborative text uses <a href="/concepts-crdt/" class="ul">CRDT columns</a> (Yjs on the web, yrs in Rust). Every other column is a versioned value.</dd>
+      </div>
+      <div class="bg-void p-6 sm:p-7">
+        <dt class="text-[13px] font-semibold tracking-[0.06em]">Durable app data</dt>
+        <dd class="mt-3 font-sans text-[14.5px] leading-relaxed text-dim">Syncular stores authorized records. Frame-by-frame multiplayer state belongs in a dedicated netcode layer.</dd>
+      </div>
+    </dl>
+  </div>
+</section>
+
+<!-- ============================== START ============================== -->
+<section class="relative isolate overflow-hidden border-t border-line">
+  <div class="grid-bg absolute inset-0 -z-10" aria-hidden="true"></div>
+  <div class="halo absolute left-1/2 top-1/3 -z-10 h-[40rem] w-[40rem] -translate-x-1/2 -translate-y-1/2" aria-hidden="true"></div>
+  <div class="mx-auto max-w-page px-5 sm:px-8 py-24 lg:py-36">
+    <div class="text-center">
+      <p class="kicker">START</p>
+      <h2 class="mt-5 mx-auto max-w-3xl text-[2.1rem] sm:text-[3.3rem] leading-[1.08] font-semibold tracking-[-0.035em]">Two clients, one server, about five minutes<span class="text-amber">.</span></h2>
+      <p class="mt-6 mx-auto max-w-xl lead">
+        The quickstart scaffolds a schema, a server of about 30 lines, and a
+        script that runs two independent clients against it. A CI smoke test
+        runs the same path on every change.
+      </p>
+      <div class="mt-9 flex flex-wrap justify-center gap-3">
+        <a href="/quickstart/" class="h-12 px-6 inline-flex items-center gap-3 bg-amber text-void font-semibold text-[13px] tracking-[0.12em] hover:bg-[#ffc233] transition-colors">OPEN THE QUICKSTART →</a>
+        <button type="button" data-copy="bun create syncular-app my-app" class="copy group inline-flex items-center gap-6 border border-line bg-panel/80 pl-4 pr-3 h-12 text-[13.5px] hover:border-line-strong transition-colors">
+          <span><span class="text-amber">$</span> bun create syncular-app my-app</span>
+          <span class="copy-label text-[11px] tracking-[0.14em] text-faint group-hover:text-dim">COPY</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="mt-16 ticks border border-line bg-void/70">
+      <span class="tk-b" aria-hidden="true"></span>
+      <p class="border-b border-line px-5 py-3 label">OTHER STARTING POINTS</p>
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 text-[13px]">
+        <a href="/add-to-existing-app/" class="group flex items-center justify-between gap-4 p-5 border-b lg:border-b-0 sm:border-r border-line hover:bg-panel"><span>Add to an existing app</span><span class="text-faint group-hover:text-amber">↗</span></a>
+        <a href="/platform-web/" class="group flex items-center justify-between gap-4 p-5 border-b lg:border-b-0 lg:border-r border-line hover:bg-panel"><span>Browser app<span class="block text-faint text-[11px]">--template web</span></span><span class="text-faint group-hover:text-amber">↗</span></a>
+        <a href="/platform-tauri-install/#one-codebase-web-and-desktop" class="group flex items-center justify-between gap-4 p-5 border-b sm:border-b-0 sm:border-r border-line hover:bg-panel"><span>Web and desktop<span class="block text-faint text-[11px]">--template tauri</span></span><span class="text-faint group-hover:text-amber">↗</span></a>
+        <a href="/server-workers/" class="group flex items-center justify-between gap-4 p-5 hover:bg-panel"><span>Server on Cloudflare Workers</span><span class="text-faint group-hover:text-amber">↗</span></a>
+      </div>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer class="border-t border-line">
+  <div class="mx-auto max-w-page px-5 sm:px-8 py-10 flex flex-col lg:flex-row gap-6 lg:items-center justify-between text-[11.5px] tracking-[0.12em]">
+    <nav class="flex flex-wrap gap-x-6 gap-y-2 text-dim">
+      <a href="/docs/" class="hover:text-ink">DOCS</a>
+      <a href="/changelog/" class="hover:text-ink">CHANGELOG</a>
+      <a href="/blog/" class="hover:text-ink">BLOG</a>
+      <a href="https://github.com/syncular/syncular" class="hover:text-ink">GITHUB</a>
+      <a href="https://www.npmjs.com/org/syncular" class="hover:text-ink">NPM</a>
+      <a href="https://crates.io/crates/syncular-client" class="hover:text-ink">CRATES.IO</a>
+      <a href="/demo/" data-astro-reload class="hover:text-ink">DEMO</a>
+      <a href="/privacy/" class="hover:text-ink">PRIVACY</a>
+    </nav>
+    <span class="text-faint">SYNCULAR v{rootPkg.version} · APACHE-2.0 · END OF TRANSMISSION <span class="text-amber">■</span></span>
+  </div>
+</footer>
+
+    <script>
+      import { pageScript } from '../page-lifecycle';
+
+      pageScript(() => {
+        // The other pages have no hero canvas.
+        if (!document.getElementById('hole')) return;
+        const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+        // Everything a page view starts that outlives its DOM: frames, timers,
+        // observers, and window listeners. The teardown below cancels them.
+        let alive = true;
+        const timeouts = new Set();
+        const cleanups = [];
+
+        /* ---------------- Copy buttons ---------------- */
+        for (const btn of document.querySelectorAll('.copy')) {
+          btn.addEventListener('click', async () => {
+            const label = btn.querySelector('.copy-label');
+            try {
+              await navigator.clipboard.writeText(btn.dataset.copy);
+              label.textContent = 'COPIED';
+              label.classList.add('text-phos');
+            } catch {
+              label.textContent = 'SELECT TO COPY';
+            }
+            const id = setTimeout(() => { timeouts.delete(id); label.textContent = 'COPY'; label.classList.remove('text-phos'); }, 1400);
+            timeouts.add(id);
           });
-        };
+        }
 
-        function frame(t) {
-          const cell = new Array(W * H).fill(' ');
-          const amb = new Array(W * H).fill(' ');
-          for (let y = 0; y < H; y++) {
-            for (let x = 0; x < W; x++) {
-              const dx = (x - CX) * ASPECT, dy = y - CY;
-              const r = Math.hypot(dx, dy), a = Math.atan2(dy, dx);
-              const i = y * W + x;
-              if (r < 5.0) {
-                // event horizon: darkness
-              } else if (r < 6.6) {
-                const p = 0.5 + 0.5 * Math.sin(a * 3 - t * 3.6 + r);
-                amb[i] = p > 0.66 ? '@' : p > 0.33 ? '#' : '*';
-              } else if (r < 19) {
-                const band = (r - 6.6) / 12.4;
-                let b = (0.5 + 0.5 * Math.sin(2 * a - r * 1.35 + t * 2.4)) * (1 - band * 0.85);
-                b += 0.3 * Math.cos(a - t * 0.9) * (1 - band);
-                b += (hash(x, y) - 0.5) * 0.18;
-                cell[i] = RAMP[Math.max(0, Math.min(8, Math.floor(b * 9)))];
-              } else {
-                const h = hash(x * 3.1, y * 7.7);
-                if (h > 0.972) cell[i] = Math.sin(t * 1.7 + h * 90) > -0.3 ? (h > 0.994 ? '+' : '.') : ' ';
-              }
-            }
-          }
-          for (const c of commits) {
-            const age = t - c.born;
-            c.rNow = c.r - c.speed * age * (1 + 0.06 * age);
-            c.aNow = c.a + 1.7 * Math.log(c.r / Math.max(c.rNow, 1));
-            for (let k = 0; k <= 6; k++) {
-              const rr = c.rNow + k * 0.8, aa = c.aNow - k * 0.1;
-              if (rr < 5 || rr > 34) continue;
-              const px = Math.round(CX + (rr * Math.cos(aa)) / ASPECT);
-              const py = Math.round(CY + rr * Math.sin(aa));
-              if (px < 0 || px >= W || py < 0 || py >= H) continue;
-              if (k === 0) {
-                amb[py * W + px] = '@';
-                for (let l = 0; l < c.label.length; l++) {
-                  if (px + 2 + l < W) amb[py * W + px + 2 + l] = c.label[l];
+        /* ---------------- Hero: ASCII singularity on canvas ----------------
+           The accretion disk, photon ring, and infalling labeled commits, drawn per
+           glyph so brightness maps onto an amber-to-ink ramp. */
+        (() => {
+          const W = 90, H = 40, CX = W / 2, CY = H / 2, ASPECT = 0.55;
+          const RAMP = ' .,:;+*#@';
+          const canvas = document.getElementById('hole');
+          const ctx = canvas.getContext('2d');
+          const status = document.getElementById('sim-status');
+          const toggle = document.getElementById('sim-toggle');
+          const hash = (x, y) => { const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453; return s - Math.floor(s); };
+          let cw = 0, ch = 0;
+
+          const resize = () => {
+            const dpr = Math.min(devicePixelRatio || 1, 2);
+            const w = canvas.clientWidth;
+            cw = w / W; ch = cw / ASPECT;
+            canvas.width = Math.round(w * dpr);
+            canvas.height = Math.round(ch * H * dpr);
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            ctx.font = `500 ${(cw / 0.6).toFixed(2)}px "IBM Plex Mono", monospace`;
+            ctx.textBaseline = 'middle';
+            ctx.textAlign = 'center';
+          };
+
+          // Disk glyphs warm from dim ink at the rim to amber at the photon ring.
+          const mix = (t, a) => {
+            const r = Math.round(154 + (255 - 154) * t), g = Math.round(148 + (176 - 148) * t), b = Math.round(138 * (1 - t));
+            return `rgba(${r},${g},${b},${a.toFixed(2)})`;
+          };
+
+          let seq = 41, commits = [], nextSpawn = 0;
+          const spawn = (t) => commits.push({ label: 'c' + seq++, a: Math.random() * Math.PI * 2, r: 24 + Math.random() * 8, born: t, speed: 2.4 + Math.random() * 1.6 });
+
+          function frame(t) {
+            const w = cw * W, h = ch * H;
+            ctx.clearRect(0, 0, w, h);
+            const g = ctx.createRadialGradient(w / 2, h / 2, ch * 3, w / 2, h / 2, ch * 14);
+            g.addColorStop(0, 'rgba(255,176,0,0.20)');
+            g.addColorStop(0.4, 'rgba(255,176,0,0.05)');
+            g.addColorStop(1, 'rgba(255,176,0,0)');
+            ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+
+            const buckets = new Map();
+            const put = (style, chr, x, y) => { let b = buckets.get(style); if (!b) buckets.set(style, b = []); b.push(chr, x, y); };
+
+            for (let y = 0; y < H; y++) {
+              for (let x = 0; x < W; x++) {
+                const dx = (x - CX) * ASPECT, dy = y - CY;
+                const r = Math.hypot(dx, dy), a = Math.atan2(dy, dx);
+                if (r < 5.0) continue;
+                if (r < 6.6) {
+                  const p = 0.5 + 0.5 * Math.sin(a * 3 - t * 3.6 + r);
+                  put('#ffb000', p > 0.66 ? '@' : p > 0.33 ? '#' : '*', x, y);
+                } else if (r < 19) {
+                  const band = (r - 6.6) / 12.4;
+                  let b = (0.5 + 0.5 * Math.sin(2 * a - r * 1.35 + t * 2.4)) * (1 - band * 0.85);
+                  b += 0.3 * Math.cos(a - t * 0.9) * (1 - band);
+                  b += (hash(x, y) - 0.5) * 0.18;
+                  const k = Math.max(0, Math.min(8, Math.floor(b * 9)));
+                  if (k === 0) continue;
+                  const warm = Math.max(0, 1 - band * 1.6);
+                  put(mix(Math.round(warm * 4) / 4, 0.35 + Math.round(k / 2) * 0.14), RAMP[k], x, y);
+                } else {
+                  const hh = hash(x * 3.1, y * 7.7);
+                  if (hh > 0.972 && Math.sin(t * 1.7 + hh * 90) > -0.3) put('rgba(154,148,138,0.55)', hh > 0.994 ? '+' : '.', x, y);
                 }
-              } else {
-                cell[py * W + px] = k < 3 ? '*' : k < 5 ? ':' : '.';
               }
             }
-          }
-          commits = commits.filter((c) => c.rNow > 5.2);
-          if (t > nextSpawn) { spawn(t); nextSpawn = t + 1.1 + Math.random() * 1.6; }
+            for (const c of commits) {
+              const age = t - c.born;
+              c.rNow = c.r - c.speed * age * (1 + 0.06 * age);
+              c.aNow = c.a + 1.7 * Math.log(c.r / Math.max(c.rNow, 1));
+              for (let k = 6; k >= 0; k--) {
+                const rr = c.rNow + k * 0.8, aa = c.aNow - k * 0.1;
+                if (rr < 5 || rr > 34) continue;
+                const px = Math.round(CX + (rr * Math.cos(aa)) / ASPECT), py = Math.round(CY + rr * Math.sin(aa));
+                if (px < 0 || px >= W || py < 0 || py >= H) continue;
+                if (k === 0) {
+                  put('#ffffff', '@', px, py);
+                  for (let l = 0; l < c.label.length; l++) if (px + 2 + l < W) put('#ffb000', c.label[l], px + 2 + l, py);
+                } else {
+                  put(`rgba(255,176,0,${(0.9 - k * 0.12).toFixed(2)})`, k < 3 ? '*' : k < 5 ? ':' : '.', px, py);
+                }
+              }
+            }
+            commits = commits.filter((c) => c.rNow > 5.2);
+            if (t > nextSpawn) { spawn(t); nextSpawn = t + 1.1 + Math.random() * 1.6; }
 
-          let out = '', amber = '';
-          for (let y = 0; y < H; y++) {
-            out += cell.slice(y * W, (y + 1) * W).join('') + '\n';
-            amber += amb.slice(y * W, (y + 1) * W).join('') + '\n';
+            for (const [style, list] of buckets) {
+              ctx.fillStyle = style;
+              for (let i = 0; i < list.length; i += 3) ctx.fillText(list[i], (list[i + 1] + 0.5) * cw, (list[i + 2] + 0.5) * ch);
+            }
+            status.textContent = `INFALL ${commits.length} WRITE${commits.length === 1 ? '' : 'S'} · NEXT c${seq}`;
           }
-          main.textContent = out;
-          glow.textContent = amber;
-          if (status) {
-            status.textContent = 'INFALL ' + commits.length +
-              ' WRITE' + (commits.length === 1 ? '' : 'S') + ' · NEXT c' + seq;
-          }
-        }
 
-        let running = true;
-        let tick = 0;
-        toggle?.addEventListener('click', () => {
-          running = !running;
+          let running = !reducedMotion, tick = 0;
           toggle.textContent = running ? '[ PAUSE ]' : '[ RUN ]';
-        });
-        frame(0);
-        const loop = (now) => {
-          if (running && tick++ % 2 === 0) frame(now / 1000);
-          requestAnimationFrame(loop);
-        };
-        requestAnimationFrame(loop);
-        // Embedded webviews report the page hidden and never fire rAF — a
-        // timer keeps the singularity turning wherever it is watched.
-        setInterval(() => {
-          if (running && document.hidden) frame(performance.now() / 1000);
-        }, 66);
+          toggle.addEventListener('click', () => { running = !running; toggle.textContent = running ? '[ PAUSE ]' : '[ RUN ]'; });
+          resize();
+          const onResize = () => { resize(); frame(performance.now() / 1000); };
+          addEventListener('resize', onResize);
+          document.fonts?.ready.then(() => { if (alive) onResize(); });
+          frame(0);
+          let raf = 0;
+          const loop = (now) => { if (running && tick++ % 2 === 0) frame(now / 1000); raf = requestAnimationFrame(loop); };
+          raf = requestAnimationFrame(loop);
+          cleanups.push(() => { cancelAnimationFrame(raf); removeEventListener('resize', onResize); });
+        })();
 
-        // The commit-log figure ticks forward too — the log only ever appends.
-        const ticker = document.getElementById('logticker');
-        if (ticker) {
-          let n = 47;
-          setInterval(() => {
-            n++;
-            const xs = [];
-            for (let k = 6; k >= 0; k--) xs.push('c' + (n - k));
-            ticker.textContent = xs.join('  ') + '  >>';
-          }, 1300);
-        }
-      })();
+        /* ---------------- Platform tabs ---------------- */
+        (() => {
+          const tabs = document.querySelectorAll('[role="tab"]');
+          const core = document.getElementById('tab-core');
+          for (const tab of tabs) {
+            tab.addEventListener('click', () => {
+              for (const other of tabs) {
+                const on = other === tab;
+                other.setAttribute('aria-selected', String(on));
+                document.getElementById(other.getAttribute('aria-controls')).hidden = !on;
+              }
+              core.textContent = tab.dataset.core;
+            });
+          }
+        })();
+
+        /* ---------------- Sync model ----------------
+           Three devices, one commit log. Writes apply locally and enter the outbox;
+           online devices push, the log assigns a sequence and delivers to devices
+           whose subscription scope matches. Offline devices hold their outbox and
+           pull missed commits on reconnect. */
+        (() => {
+          const POOL = {
+            groceries: ['coffee beans', 'olive oil', 'eggs', 'parmesan', 'rice', 'tomatoes', 'oat milk', 'rye bread', 'lemons', 'basil'],
+            work: ['cut release', 'update SPEC §3.3', 'rotate keys', 'bench run', 'review PR 107', 'triage issues'],
+          };
+          const DEVICES = [
+            { id: 'web', name: 'Browser tab', core: 'TS core · OPFS', scope: 'groceries' },
+            { id: 'ios', name: 'iPhone', core: 'Rust core · Swift', scope: 'groceries' },
+            { id: 'android', name: 'Pixel', core: 'Rust core · Kotlin', scope: 'work' },
+          ];
+          const MAX_ROWS = 4;
+          const narrow = matchMedia('(max-width: 639px)');
+          const wait = (ms) => new Promise((r) => {
+            const id = setTimeout(() => { timeouts.delete(id); r(); }, reducedMotion ? 0 : ms);
+            timeouts.add(id);
+          });
+          const root = document.getElementById('devices');
+          const logEl = document.getElementById('log');
+          const modeEl = document.getElementById('sim-mode');
+          const name = (id) => DEVICES.find((d) => d.id === id).name;
+          let state, chain, poolIdx, auto = true, autoTimer;
+
+          function reset() {
+            poolIdx = { groceries: 0, work: 0 };
+            chain = Promise.resolve();
+            const seed = [
+              { seq: 42, from: 'ios', scope: 'groceries', title: 'lemons' },
+              { seq: 43, from: 'android', scope: 'work', title: 'triage issues' },
+              { seq: 44, from: 'web', scope: 'groceries', title: 'basil' },
+              { seq: 45, from: 'web', scope: 'groceries', title: 'oat milk' },
+              { seq: 46, from: 'android', scope: 'work', title: 'review PR 107' },
+              { seq: 47, from: 'ios', scope: 'groceries', title: 'rye bread' },
+            ];
+            state = { seq: 47, log: seed.map((c) => ({ ...c, delivered: DEVICES.filter((d) => d.id !== c.from && d.scope === c.scope).map((d) => d.id) })) };
+            for (const d of DEVICES) {
+              d.online = true; d.outbox = []; d.cursor = 47;
+              d.rows = seed.filter((c) => c.scope === d.scope).reverse().map((c) => ({ title: c.title, seq: c.seq }));
+            }
+            renderDevices(); renderLog();
+          }
+
+          function renderDevices() {
+            root.innerHTML = '';
+            for (const d of DEVICES) {
+              const col = document.createElement('div');
+              col.innerHTML = `
+                <div class="wire h-12" aria-hidden="true"><span class="pkt"></span></div>
+                <article class="dev border bg-panel transition-colors">
+                  <header class="flex items-center justify-between gap-3 border-b border-line px-4 h-12">
+                    <div class="min-w-0">
+                      <p class="text-[13px] font-semibold truncate">${d.name}</p>
+                      <p class="text-[10.5px] tracking-[0.08em] text-faint truncate">${d.core}</p>
+                    </div>
+                    <button type="button" class="net shrink-0 inline-flex items-center gap-2 h-7 px-2.5 border text-[10.5px] tracking-[0.14em]"></button>
+                  </header>
+                  <div class="px-4 pt-3 pb-1 flex justify-between text-[10px] tracking-[0.16em] text-faint"><span>todos <span class="text-dim">WHERE list_id = ${d.scope}</span></span><span>STATE</span></div>
+                  <ul class="rows px-2 h-[8.6rem] text-[12.5px]"></ul>
+                  <footer class="flex items-center justify-between gap-3 border-t border-line px-4 h-12">
+                    <span class="ob text-[11px] tracking-[0.12em]"></span>
+                    <button type="button" class="write h-8 px-3 border border-amber/60 text-amber text-[11px] tracking-[0.14em] hover:bg-amber hover:text-void transition-colors">+ WRITE</button>
+                  </footer>
+                </article>`;
+              d.el = col;
+              col.querySelector('.write').addEventListener('click', () => { stopAuto(); write(d); });
+              col.querySelector('.net').addEventListener('click', () => { stopAuto(); setOnline(d, !d.online); });
+              root.append(col);
+              renderDevice(d);
+            }
+          }
+
+          function renderDevice(d, fresh) {
+            const net = d.el.querySelector('.net');
+            net.className = 'net shrink-0 inline-flex items-center gap-2 h-7 px-2.5 border text-[10.5px] tracking-[0.14em] transition-colors ' +
+              (d.online ? 'border-phos/50 text-phos hover:border-phos' : 'border-line-strong text-faint hover:text-dim');
+            net.innerHTML = `<span class="h-1.5 w-1.5 ${d.online ? 'bg-phos shadow-[0_0_8px_#a9bf6e]' : 'bg-faint'}"></span>${d.online ? 'ONLINE' : 'OFFLINE'}`;
+            net.setAttribute('aria-label', d.online ? `Take ${d.name} offline` : `Bring ${d.name} online`);
+            const card = d.el.querySelector('.dev');
+            card.classList.toggle('border-line', d.online);
+            card.classList.toggle('border-dashed', !d.online);
+            card.classList.toggle('border-line-strong', !d.online);
+            d.el.querySelector('.rows').innerHTML = d.rows.slice(0, MAX_ROWS).map((r) => `
+              <li class="${fresh === r ? 'row-in ' : ''}flex items-center justify-between gap-3 px-2 h-[2.1rem] border-b border-line/60 last:border-0">
+                <span class="truncate ${r.seq ? '' : 'text-amber'}">${r.title}</span>
+                <span class="shrink-0 text-[11px] ${r.seq ? 'text-faint' : 'text-amber'}">${r.seq ? 'c' + r.seq : '● outbox'}</span>
+              </li>`).join('');
+            const n = d.outbox.length;
+            d.el.querySelector('.ob').innerHTML = n
+              ? `<span class="text-amber">OUTBOX ${n}</span> <span class="text-faint">· ${d.online ? 'pushing' : 'held offline'}</span>`
+              : '<span class="text-faint">OUTBOX 0 · in sync</span>';
+          }
+
+          function renderLog(freshSeq) {
+            logEl.innerHTML = state.log.slice(narrow.matches ? -4 : -6).map((c) => {
+              const others = DEVICES.some((o) => o.id !== c.from && o.scope === c.scope);
+              const to = c.delivered.length ? '→ ' + c.delivered.map(name).join(', ') : others ? 'held for offline subscriber' : 'no other subscriber';
+              return `
+              <li class="${c.seq === freshSeq ? 'log-in ' : ''}grid grid-cols-[3.5rem_1fr] sm:grid-cols-[4.5rem_6rem_1fr_9rem_1fr] gap-x-3 px-2 py-1.5 border-b border-line/50 last:border-0">
+                <span class="text-amber">c${c.seq}</span>
+                <span class="hidden sm:block text-dim truncate">${name(c.from)}</span>
+                <span class="truncate">upsert todos <span class="text-dim">"${c.title}"</span></span>
+                <span class="hidden sm:block text-faint">${c.scope}</span>
+                <span class="col-start-2 sm:col-start-auto text-[11.5px] truncate ${c.delivered.length ? 'text-phos' : 'text-faint'}">${to}</span>
+              </li>`;
+            }).join('');
+          }
+
+          function pulse(d, dir) {
+            const p = d.el.querySelector('.pkt');
+            p.classList.remove('up', 'down');
+            void p.offsetWidth;
+            p.classList.add(dir);
+          }
+
+          const enqueue = (fn) => (chain = chain.then(fn));
+
+          function deliver(o, c) {
+            const row = { title: c.title, seq: c.seq };
+            o.rows.unshift(row); o.cursor = c.seq;
+            if (!c.delivered.includes(o.id)) c.delivered.push(o.id);
+            renderDevice(o, row);
+          }
+
+          async function push(d) {
+            while (d.online && d.outbox.length) {
+              const row = d.outbox[0];
+              pulse(d, 'up');
+              await wait(520);
+              if (!d.online) return;
+              const c = { seq: ++state.seq, from: d.id, scope: d.scope, title: row.title, delivered: [] };
+              state.log.push(c);
+              d.outbox.shift();
+              row.seq = c.seq; d.cursor = c.seq;
+              renderLog(c.seq); renderDevice(d);
+              const targets = DEVICES.filter((o) => o !== d && o.online && o.scope === d.scope);
+              for (const o of targets) pulse(o, 'down');
+              if (targets.length) await wait(520);
+              for (const o of targets) deliver(o, c);
+              if (targets.length) renderLog();
+              await wait(180);
+            }
+          }
+
+          function write(d) {
+            const pool = POOL[d.scope];
+            const row = { title: pool[poolIdx[d.scope]++ % pool.length], seq: 0 };
+            d.rows.unshift(row); d.outbox.push(row);
+            renderDevice(d, row);
+            if (d.online) enqueue(() => push(d));
+          }
+
+          function setOnline(d, online) {
+            d.online = online;
+            renderDevice(d);
+            if (!online) return;
+            enqueue(async () => {
+              const missed = state.log.filter((c) => c.seq > d.cursor && c.scope === d.scope && c.from !== d.id);
+              if (missed.length) {
+                pulse(d, 'down');
+                await wait(520);
+                for (const c of missed) deliver(d, c);
+                renderLog();
+              }
+              renderDevice(d);
+              await push(d);
+            });
+          }
+
+          // Autoplay until the visitor touches a control: a plain write, an offline
+          // write, and the replay on reconnect.
+          const SCRIPT = [
+            () => write(DEVICES[0]),
+            () => write(DEVICES[2]),
+            () => setOnline(DEVICES[1], false),
+            () => write(DEVICES[1]),
+            () => write(DEVICES[0]),
+            () => setOnline(DEVICES[1], true),
+            () => write(DEVICES[1]),
+          ];
+          let step = 0;
+          function stopAuto() {
+            if (!auto) return;
+            auto = false; clearInterval(autoTimer);
+            modeEl.textContent = 'MANUAL';
+            modeEl.className = 'text-dim';
+          }
+          document.getElementById('sim-reset').addEventListener('click', () => { stopAuto(); reset(); });
+          reset();
+          const seen = new IntersectionObserver((entries) => {
+            if (!entries[0].isIntersecting || !auto || autoTimer) return;
+            if (reducedMotion) { stopAuto(); return; }
+            autoTimer = setInterval(() => SCRIPT[step++ % SCRIPT.length](), 2200);
+          }, { threshold: 0.3 });
+          seen.observe(document.getElementById('sim'));
+          cleanups.push(() => { seen.disconnect(); clearInterval(autoTimer); });
+        })();
+
+        return () => {
+          alive = false;
+          for (const id of timeouts) clearTimeout(id);
+          for (const cleanup of cleanups) cleanup();
+        };
+      });
     </script>
   </body>
 </html>

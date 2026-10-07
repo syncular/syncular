@@ -165,7 +165,7 @@ schema-bump or package-upgrade factory behind old-resource disposal. Await its
 true. A failed handoff is also exposed by the resource through the ordinary
 startup boundary and never opens a second owner. This recipe requires no
 top-level await; the official example, optimizer exclusion, and upgrade
-workflow are in the [Vite guide](https://syncular.dev/guide-vite/).
+workflow are in the [Vite guide](https://syncular.dev/platform-web-install/#configure-vite).
 `retainViteSyncClientResource` remains the async alternative for targets that
 deliberately support top-level await. Either helper may close
 the retained client before React runs cleanup for the old provider; Syncular
@@ -349,7 +349,7 @@ hosts. The `schemaFloor`, `leaseState`, `upgrading`, and `syncNeeded` fields
 come from that snapshot. Direct `conflicts`, `rejections`, and
 `securityLifecycle` reads are now method calls. `normalizeClient` has been
 removed; custom adapters must implement the canonical snapshot methods.
-See the [client migration](https://syncular.dev/platform-web/#snapshot-api-migration).
+See the [client migration](https://syncular.dev/platform-web-reads-writes/#reading-local-state).
 
 ## Live sync progress
 
@@ -357,5 +357,5 @@ See the [client migration](https://syncular.dev/platform-web/#snapshot-api-migra
 client's live progress stream and returns `SyncProgress | undefined`. The hook
 releases its subscription on unmount or when `client` changes. Download counters
 use bytes; import counters use processed rows and can include uncommitted work.
-See [browser progress](https://syncular.dev/platform-web/#live-sync-progress) for
+See [browser progress](https://syncular.dev/platform-web-realtime/#sync-progress) for
 the attempt, phase, failure, and completion contract.

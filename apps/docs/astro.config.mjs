@@ -1,11 +1,14 @@
 // Astro replaces the hand-rolled generator: markdown + Shiki highlighting
-// (css-variables theme, colored by the teletype palette in public/style.css),
+// (css-variables theme, colored by the teletype palette in src/docs.css),
 // same URLs, still a fully static dist/. The site serves at the domain root,
 // so authored links, the search index, and search result links are
 // root-absolute.
+import { satteri } from '@astrojs/markdown-satteri';
+import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'astro/config';
 import { fileURLToPath } from 'node:url';
 import { reflectReleaseVersion } from './scripts/release-version.mjs';
+import { docsComponents } from './src/markdown-components.ts';
 import { SYQL_HIGHLIGHTER_LANGUAGES } from './src/syql-highlighting.ts';
 
 export default defineConfig({
@@ -13,6 +16,9 @@ export default defineConfig({
   compressHTML: true,
   server: { port: 3100 },
   devToolbar: { enabled: false },
+  // Every page runs under the client router; links prefetch their page on
+  // hover so a navigation swaps in without waiting on the network.
+  prefetch: { prefetchAll: true, defaultStrategy: 'hover' },
   vite: {
     resolve: {
       alias: {
@@ -26,6 +32,7 @@ export default defineConfig({
     },
     optimizeDeps: { exclude: ['@sqlite.org/sqlite-wasm'] },
     plugins: [
+      tailwindcss(),
       {
         name: 'syncular-release-version-in-markdown',
         enforce: 'pre',
@@ -39,6 +46,12 @@ export default defineConfig({
     ],
   },
   markdown: {
+    // Content components (callouts, steps, figures, tabs, …) are `:::`
+    // directives handled by src/markdown-components.ts.
+    processor: satteri({
+      features: { directive: true },
+      mdastPlugins: [docsComponents],
+    }),
     shikiConfig: {
       theme: 'css-variables',
       langs: SYQL_HIGHLIGHTER_LANGUAGES,

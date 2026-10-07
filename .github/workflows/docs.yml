@@ -8,6 +8,7 @@ on:
     branches: [main]
     paths:
       - 'apps/docs/**'
+      - 'apps/demo/**'
       - 'package.json'
       - '.github/workflows/docs.yml'
 

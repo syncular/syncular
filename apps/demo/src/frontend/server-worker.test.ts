@@ -33,7 +33,7 @@ test('embedded server seeds before serving its admin routes', async () => {
           worker.postMessage({
             kind: 'admin',
             id: 2,
-            path: '/rows/todos/seed-1',
+            path: '/rows/cards/c-web-01',
           });
         } else if (message.kind === 'result' && message.id === 2) {
           resolve(message);
@@ -46,6 +46,41 @@ test('embedded server seeds before serving its admin routes', async () => {
     expect(response.body?.row).toMatchObject({
       exists: true,
       serverVersion: 1,
+    });
+  } finally {
+    worker.terminate();
+  }
+});
+
+test('the event tail replays the seed commit before following live events', async () => {
+  const worker = new Worker(new URL('./server-worker.ts', import.meta.url));
+  try {
+    const event = await new Promise<{
+      readonly type: string;
+      readonly clientId?: string;
+      readonly commitSeq?: number;
+    }>((resolve, reject) => {
+      worker.onerror = (error) => reject(error.error);
+      worker.onmessage = (
+        message: MessageEvent<{
+          readonly kind: string;
+          readonly event?: { readonly type: string };
+        }>,
+      ) => {
+        if (message.data.kind === 'ready')
+          worker.postMessage({ kind: 'events' });
+        else if (
+          message.data.kind === 'event' &&
+          message.data.event?.type === 'push.applied'
+        ) {
+          resolve(message.data.event);
+        }
+      };
+    });
+    expect(event).toMatchObject({
+      type: 'push.applied',
+      clientId: 'seed',
+      commitSeq: 1,
     });
   } finally {
     worker.terminate();

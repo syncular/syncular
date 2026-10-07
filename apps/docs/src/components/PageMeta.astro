@@ -1,4 +1,8 @@
 ---
+// The head shared by every page. It also mounts the client router, so the
+// whole site is one client-routed app, and the two site-wide scripts.
+import { ClientRouter } from 'astro:transitions';
+
 interface Props {
   title: string;
   description: string;
@@ -36,6 +40,54 @@ const publishedDate = publishedAt
 <title>{documentTitle}</title>
 <meta name="description" content={description} />
 <meta name="theme-color" content="#000000" />
+<meta name="color-scheme" content="dark" />
+<style is:inline>
+  html {
+    background: #000;
+    color-scheme: dark;
+  }
+  /* Every navigation is a cut: the new page replaces the old one in a single
+     frame, with no crossfade between two layouts. */
+  ::view-transition-group(root),
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation: none;
+    mix-blend-mode: normal;
+  }
+</style>
+<link rel="stylesheet" href="/fonts.css" />
+<script is:inline>
+  // The stylesheets smooth-scroll in-page anchors. The router restores a
+  // history entry's scroll position with a plain scrollTo, which would
+  // animate from the top; swap in with smooth scrolling off, then restore it.
+  document.addEventListener('astro:before-swap', (event) => {
+    event.newDocument.documentElement.style.scrollBehavior = 'auto';
+  });
+  // The demo is a different document with its own scripts and workers, so a
+  // link into /demo/ must be a full load. Markdown content cannot carry
+  // data-astro-reload; mark such links when they are clicked, before the
+  // router's own click handler reads the attribute.
+  window.addEventListener(
+    'click',
+    (event) => {
+      const link = event.target instanceof Element ? event.target.closest('a[href]') : null;
+      if (link && link.origin === location.origin && /^\/demo(\/|$)/.test(link.pathname)) {
+        link.setAttribute('data-astro-reload', '');
+      }
+    },
+    true,
+  );
+  document.addEventListener('astro:page-load', () => {
+    document.documentElement.style.removeProperty('scroll-behavior');
+    // Page scripts that evaluate after this event (a slow module graph) read
+    // the marker and initialise themselves; the next swap replaces the root element
+    // attributes, which clears it.
+    document.documentElement.dataset.pageLoaded = '';
+  });
+</script>
+<link rel="preload" href="/fonts/plex-mono-400.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="preload" href="/fonts/plex-mono-600.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="preload" href="/fonts/plex-sans-400.woff2" as="font" type="font/woff2" crossorigin />
 {robots ? <meta name="robots" content={robots} /> : null}
 {author ? <meta name="author" content={author} /> : null}
 
@@ -64,3 +116,9 @@ const publishedDate = publishedAt
 
 {canonicalUrl ? <link rel="canonical" href={canonicalUrl} /> : null}
 <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+<link rel="manifest" href="/site.webmanifest" />
+<link rel="api-catalog" href="/.well-known/api-catalog" />
+<script src="/webmcp.js" defer></script>
+<script src="/engagement.js" defer></script>
+<ClientRouter fallback="swap" />

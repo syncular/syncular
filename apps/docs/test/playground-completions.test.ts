@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import { syqlCompletions } from '../src/playground/completions';
-import { PLAYGROUND_SCHEMAS } from '../src/playground/examples';
+import { BOARD_SCHEMA } from '../src/playground/examples';
 
-const schema = PLAYGROUND_SCHEMAS.todos;
+const schema = BOARD_SCHEMA;
 
 function complete(markedSource: string) {
   const offset = markedSource.indexOf('|');
@@ -24,55 +24,59 @@ describe('SYQL playground completions', () => {
     expect(
       labels(`query q() {
   select id
-  from to|
+  from ca|
 }`),
-    ).toContain('todos');
+    ).toContain('cards');
 
     expect(
       labels(`query q() {
-  select todos.id from todos
-  join to|
+  select cards.id from cards
+  join me|
 }`),
-    ).toContain('todos');
+    ).toContain('members');
   });
 
   test('offers columns for tables and aliases with schema type details', () => {
     const qualified = complete(`query q() {
-  select id from todos
-  where todos.|
+  select id from cards
+  where cards.|
 }`);
-    expect(qualified.map((item) => item.label)).toContain('list_id');
-    expect(qualified.find((item) => item.label === 'done')).toMatchObject({
+    expect(qualified.map((item) => item.label)).toContain('board_id');
+    expect(qualified.find((item) => item.label === 'estimate')).toMatchObject({
       kind: 'column',
-      detail: 'todos · boolean',
+      detail: 'cards · integer',
     });
 
     expect(
       labels(`query q() {
-  select t.| from todos as t;
+  select t.| from cards as t;
 }`),
     ).toContain('title');
   });
 
   test('offers public inputs and group members after a bind colon', () => {
     const found = complete(`query q(
-  listId,
+  boardId,
   window?: { start: integer, end: integer },
 ) {
-  select id from todos where list_id = :li|
+  select id from cards where board_id = :bo|
 }`);
-    expect(found.map((item) => item.label)).toEqual(['listId', 'start', 'end']);
-    expect(found[0]).toMatchObject({ kind: 'input', insertText: 'listId' });
+    expect(found.map((item) => item.label)).toEqual([
+      'boardId',
+      'start',
+      'end',
+    ]);
+    expect(found[0]).toMatchObject({ kind: 'input', insertText: 'boardId' });
   });
 
   test('offers columns, inputs, qualifiers, and SYQL clause snippets in a query', () => {
-    const found = labels(`query q(listId) {
-  select id from todos
+    const found = labels(`query q(boardId) {
+  select id from cards
   where |
 }`);
-    expect(found).toContain('list_id');
-    expect(found).toContain('todos');
-    expect(found).toContain(':listId');
+    expect(found).toContain('board_id');
+    expect(found).toContain('cards');
+    expect(found).toContain(':boardId');
     expect(found).toContain('and when (…) …');
     expect(found).toContain('order by profiles …');
     expect(found).toContain('limit control …');
@@ -81,7 +85,7 @@ describe('SYQL playground completions', () => {
   test('ignores table-looking text in comments and strings', () => {
     const found = labels(`query q() {
   -- from imaginary alias
-  select 'join imaginary fake' from todos
+  select 'join imaginary fake' from cards
   where |
 }`);
     expect(found).toContain('title');

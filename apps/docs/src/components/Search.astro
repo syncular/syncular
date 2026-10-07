@@ -35,6 +35,107 @@
   <p class="search-status" data-search-status aria-live="polite"></p>
 </dialog>
 
+<style is:global>
+.search-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  font: inherit;
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+  background: none;
+  border: 1px solid var(--border);
+  padding: 0.25rem 0.55rem;
+  cursor: pointer;
+}
+.search-trigger:hover { color: var(--ink); border-color: var(--border-strong); }
+.search-trigger::before { content: '/ '; color: var(--amber); }
+.search-trigger span { flex: 1; text-align: left; }
+.search-trigger kbd,
+.search-box kbd { font-size: 0.68rem; color: var(--faint); }
+.topnav .search-trigger { padding: 0 0.4rem; font-size: 0.75rem; }
+
+.search-dialog {
+  width: min(44rem, calc(100vw - 2rem));
+  max-height: min(34rem, calc(100vh - 4rem));
+  margin: 8vh auto auto;
+  padding: 0;
+  background: var(--void);
+  color: var(--ink);
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 0 0 1px #000, 0 0 40px rgba(255, 176, 0, 0.08);
+  font-family: inherit;
+  font-size: 0.85rem;
+}
+.search-dialog[open] { display: flex; flex-direction: column; }
+.search-dialog::backdrop { background: rgba(0, 0, 0, 0.72); }
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.7rem 0.9rem;
+  border-bottom: 1px solid var(--border);
+}
+.search-prompt { color: var(--amber); font-weight: 700; }
+.search-box input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 0.95rem;
+  color: var(--ink);
+  background: none;
+  border: none;
+  outline: none;
+  caret-color: var(--amber);
+}
+.search-box input::placeholder { color: var(--faint); }
+.search-box input::-webkit-search-cancel-button { display: none; }
+.search-results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+}
+.search-results:empty { display: none; }
+.search-results a {
+  display: block;
+  padding: 0.55rem 0.9rem;
+  color: var(--dim);
+  text-decoration: none;
+  border-left: 2px solid transparent;
+}
+.search-results a[aria-selected='true'],
+.search-results a:hover,
+.search-results a:focus-visible {
+  background: var(--panel);
+  border-left-color: var(--amber);
+  outline: none;
+}
+.search-hit-path { display: block; color: var(--ink); }
+.search-hit-path span { color: var(--faint); }
+.search-hit-text {
+  display: block;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.search-results mark { background: none; color: var(--amber); }
+.search-status {
+  margin: 0;
+  padding: 0.5rem 0.9rem;
+  font-size: 0.7rem;
+  color: var(--faint);
+}
+.search-status:empty { display: none; }
+@media (max-width: 860px) {
+  .search-trigger kbd { display: none; }
+}
+</style>
+
 <script>
   import { highlight, searchIndex, type SearchSection } from '../search';
 
@@ -150,8 +251,8 @@
     if (target?.closest('[data-search-results] a') || target === d) d.close();
   });
 
-  // Docs pages swap the trigger in with <ClientRouter>; blog and landing
-  // pages load once. Label it for this platform in both cases.
+  // Each <ClientRouter> swap brings in a fresh trigger. Label it for this
+  // platform on first load and after every swap.
   const labelShortcut = () => {
     const shortcut = document.querySelector('[data-search-shortcut]');
     if (shortcut !== null && !/Mac|iPhone|iPad/.test(navigator.userAgent)) {

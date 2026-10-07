@@ -2,6 +2,8 @@
  * Demo backend: one Bun process serving
  * - POST /sync + GET /segments/:id via the server-hono adapter,
  * - GET /realtime as a WebSocket wired to the server's RealtimeHub,
+ * - GET /events as a server-sent event tail of the server event ring (the
+ *   sync lab's commit log),
  * - the static frontend: TWO bundles built with Bun.build at startup —
  *   /app.js (the page) and /worker.js (the sync worker running the whole
  *   client core on opfs-sahpool). Module workers do
@@ -23,12 +25,13 @@ import {
   ensureSyncServerReady,
   MemorySegmentStore,
   type RealtimeSession,
+  type ResolveScopesArgs,
   RingBufferEvents,
-  type SeedMutation,
   SqliteBlobStore,
   SqliteServerStorage,
   type SyncServerConfig,
   SyncularAdmin,
+  type SyncularServerEvent,
   type SyncularServerEvents,
   seedMutations,
 } from '@syncular/server';
@@ -38,11 +41,16 @@ import {
 } from '@syncular/server-hono';
 import { Hono } from 'hono';
 import rootPackage from '../../../package.json';
+import {
+  DEMO_PARTITION as PARTITION,
+  isDemoActor,
+  resolveBoardScopes,
+  SEED_ACTOR,
+} from './access';
+import { releaseBoardSeedMutations } from './seed';
 import { schema } from './syncular.generated';
 
 const PORT = Number(process.env.PORT ?? 8787);
-const PARTITION = 'demo';
-const ACTOR_ID = 'demo-user';
 
 function reflectReleaseVersion(text: string): string {
   if (text.split('0.0.0').length - 1 !== 1) {
@@ -59,8 +67,9 @@ const storage = new SqliteServerStorage(
 const segments = new MemorySegmentStore();
 /** §5.9 blobs: durable content-addressed store sharing the demo DB. */
 const blobs = new SqliteBlobStore();
-/** Demo authorization: the single demo actor may see every list. */
-const resolveScopes = () => ({ list_id: ['*'] });
+/** Release board authorization: an actor sees the boards it is a member of. */
+const resolveScopes = (args: ResolveScopesArgs) =>
+  resolveBoardScopes(storage, args);
 
 /**
  * Ops events. The in-memory ring always feeds the admin console;
@@ -95,7 +104,12 @@ const config: SyncServerConfig = {
 };
 const hono = createSyncularHono({
   config,
-  authenticate: async () => ({ actorId: ACTOR_ID, partition: PARTITION }),
+  // Demo sign-in: each device names its actor in a header. Anything else
+  // is unauthenticated.
+  authenticate: async (request) => {
+    const actorId = request.headers.get('x-syncular-demo-actor');
+    return isDemoActor(actorId) ? { actorId, partition: PARTITION } : null;
+  },
 });
 
 /**
@@ -129,33 +143,14 @@ const adminHono = adminEnabled
     })()
   : undefined;
 
-/** Seed a few rows (the supported recipe: `seedMutations`
- * pushes app-shaped values through the real §6 pipeline, idempotent per
- * commit id). */
+/** Seed the two demo lists through the real §6 pipeline (idempotent per
+ * commit id; skipped once the log holds commits). */
 async function seed(): Promise<void> {
   if ((await storage.getMaxCommitSeq(PARTITION)) > 0) return;
-  const now = Date.now();
-  const mutations: SeedMutation[] = [
-    'Open this page in two panes',
-    'Toggle a pane offline and keep editing',
-    'Attach a file to a todo — it uploads then syncs',
-  ].map((title, index) => ({
-    table: 'todos',
-    op: 'upsert',
-    values: {
-      id: `seed-${index + 1}`,
-      listId: 'demo',
-      title,
-      done: false,
-      position: index + 1,
-      updatedAtMs: now,
-      attachment: null,
-    },
-  }));
   await seedMutations(
     config,
-    { partition: PARTITION, actorId: ACTOR_ID },
-    mutations,
+    { partition: PARTITION, actorId: SEED_ACTOR },
+    releaseBoardSeedMutations(),
   );
 }
 
@@ -187,7 +182,7 @@ async function bundleText(basename: string): Promise<string> {
   const text = await artifact.text();
   return text.replaceAll(
     /(["'])@sqlite\.org\/sqlite-wasm\1/g,
-    '"/vendor/sqlite-wasm/index.mjs"',
+    '"./vendor/sqlite-wasm/index.mjs"',
   );
 }
 const appJs = await bundleText('main.js');
@@ -202,6 +197,16 @@ const wasmDir = dirname(
   Bun.resolveSync('@sqlite.org/sqlite-wasm', import.meta.dir),
 );
 /** Only the files the sqlite-wasm ESM entry actually references. */
+/** The docs site's self-hosted fonts and mark, shared with the static build. */
+const docsPublicDir = join(import.meta.dir, '..', '..', 'docs', 'public');
+const BRAND_FILES: Record<string, string> = {
+  'favicon.svg': 'image/svg+xml',
+  'fonts/plex-mono-400.woff2': 'font/woff2',
+  'fonts/plex-mono-500.woff2': 'font/woff2',
+  'fonts/plex-mono-600.woff2': 'font/woff2',
+  'fonts/plex-sans-400.woff2': 'font/woff2',
+  'fonts/plex-sans-500.woff2': 'font/woff2',
+};
 const WASM_FILES: Record<string, string> = {
   'index.mjs': 'text/javascript',
   'sqlite3.wasm': 'application/wasm',
@@ -226,6 +231,7 @@ function staticResponse(body: string | Uint8Array, type: string): Response {
 
 interface SocketData {
   clientId: string;
+  actorId: string;
   session?: RealtimeSession;
 }
 
@@ -234,13 +240,18 @@ await seed();
 
 const server = Bun.serve<SocketData, never>({
   port: PORT,
+  ...(process.env.HOST !== undefined ? { hostname: process.env.HOST } : {}),
   async fetch(request, bunServer) {
     const url = new URL(request.url);
     const path = url.pathname;
 
     if (path === '/realtime') {
       const clientId = url.searchParams.get('clientId') ?? crypto.randomUUID();
-      if (bunServer.upgrade(request, { data: { clientId } })) {
+      const actorId = url.searchParams.get('actor');
+      if (!isDemoActor(actorId)) {
+        return new Response('realtime requires a demo actor', { status: 401 });
+      }
+      if (bunServer.upgrade(request, { data: { clientId, actorId } })) {
         return undefined as unknown as Response;
       }
       return new Response('expected a websocket upgrade', { status: 400 });
@@ -263,6 +274,31 @@ const server = Bun.serve<SocketData, never>({
     }
     if (path === '/worker.js') {
       return staticResponse(workerJs, 'text/javascript; charset=utf-8');
+    }
+    if (path === '/events') {
+      // The lab's commit log: the retained ring oldest first, then every
+      // new event. No idle timeout, so the tail stays open while idle.
+      bunServer.timeout(request, 0);
+      let unsubscribe = () => {};
+      const body = new ReadableStream<string>({
+        start(controller) {
+          const send = (event: SyncularServerEvent) =>
+            controller.enqueue(`data: ${JSON.stringify(event)}\n\n`);
+          for (const event of ring.query().reverse()) send(event);
+          unsubscribe = ring.subscribe(send);
+        },
+        cancel() {
+          unsubscribe();
+        },
+      });
+      return new Response(body, {
+        headers: { ...STATIC_HEADERS, 'Content-Type': 'text/event-stream' },
+      });
+    }
+    const brandType = BRAND_FILES[path.slice(1)];
+    if (brandType !== undefined) {
+      const bytes = await Bun.file(join(docsPublicDir, path.slice(1))).bytes();
+      return staticResponse(bytes, brandType);
     }
     if (path === '/version.json') {
       return Response.json(
@@ -287,7 +323,7 @@ const server = Bun.serve<SocketData, never>({
       hub
         .connect({
           partition: PARTITION,
-          actorId: ACTOR_ID,
+          actorId: ws.data.actorId,
           clientId: ws.data.clientId,
           send: (data) => {
             ws.send(data);
@@ -313,4 +349,4 @@ const server = Bun.serve<SocketData, never>({
   },
 });
 
-console.log(`syncular demo: http://localhost:${server.port}`);
+console.log(`syncular demo: http://${server.hostname}:${server.port}`);

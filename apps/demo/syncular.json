@@ -6,12 +6,20 @@
     "module": "./src/syncular.generated.ts"
   },
   "schemaVersions": [{ "version": 1, "through": "0001_initial" }],
-  "tables": [{ "name": "todos", "scopes": ["list:{list_id}"] }],
+  "tables": [
+    { "name": "boards", "scopes": ["board:{board_id}"] },
+    { "name": "members", "scopes": ["board:{board_id}"] },
+    { "name": "labels", "scopes": ["board:{board_id}"] },
+    { "name": "cards", "scopes": ["board:{board_id}"] },
+    { "name": "card_labels", "scopes": ["board:{board_id}"] },
+    { "name": "comments", "scopes": ["board:{board_id}"] }
+  ],
   "subscriptions": [
-    {
-      "name": "todoList",
-      "table": "todos",
-      "scopes": { "list_id": ["{listId}"] }
-    }
+    { "name": "boardBoards", "table": "boards", "scopes": { "board_id": ["{boardId}"] } },
+    { "name": "boardMembers", "table": "members", "scopes": { "board_id": ["{boardId}"] } },
+    { "name": "boardLabels", "table": "labels", "scopes": { "board_id": ["{boardId}"] } },
+    { "name": "boardCards", "table": "cards", "scopes": { "board_id": ["{boardId}"] } },
+    { "name": "boardCardLabels", "table": "card_labels", "scopes": { "board_id": ["{boardId}"] } },
+    { "name": "boardComments", "table": "comments", "scopes": { "board_id": ["{boardId}"] } }
   ]
 }

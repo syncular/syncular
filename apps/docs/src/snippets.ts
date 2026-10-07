@@ -7,6 +7,7 @@
 export interface Tab {
   readonly id: string;
   readonly label: string;
+  readonly core: string;
   readonly lang: 'ts' | 'tsx' | 'swift' | 'kotlin' | 'dart' | 'rust';
   readonly code: string;
 }
@@ -14,7 +15,8 @@ export interface Tab {
 export const TABS: readonly Tab[] = [
   {
     id: 'ts',
-    label: 'TS',
+    label: 'TYPESCRIPT',
+    core: 'TS CORE · WORKER + OPFS',
     lang: 'ts',
     code: `import { SyncClient, httpSyncTransport, httpSegmentDownloader } from '@syncular/client';
 import { openBunDatabase } from '@syncular/client/bun';
@@ -43,6 +45,7 @@ client.query('SELECT * FROM todos WHERE done = 0');`,
   {
     id: 'react',
     label: 'REACT',
+    core: 'TS CORE · HOOKS',
     lang: 'tsx',
     code: `import { useMutation, useRawSql } from '@syncular/react';
 
@@ -73,6 +76,7 @@ function Todos() {
   {
     id: 'swift',
     label: 'SWIFT',
+    core: 'RUST CORE · SWIFT PACKAGE',
     lang: 'swift',
     code: `import Syncular
 
@@ -102,6 +106,7 @@ client.onEvent = { event in
   {
     id: 'kotlin',
     label: 'KOTLIN',
+    core: 'RUST CORE · FFM, JDK 21+',
     lang: 'kotlin',
     code: `import dev.syncular.*
 
@@ -132,6 +137,7 @@ client.listener = SyncularEventListener { event ->
   {
     id: 'dart',
     label: 'FLUTTER',
+    core: 'RUST CORE · DART:FFI',
     lang: 'dart',
     code: `import 'package:syncular/syncular.dart';
 
@@ -162,6 +168,7 @@ client.events.listen((e) {
   {
     id: 'rust',
     label: 'RUST',
+    core: 'RUST CORE · NATIVE',
     lang: 'rust',
     code: `use syncular_client::{ClientLimits, Mutation, SyncClient};
 use syncular_queries::list_todos;

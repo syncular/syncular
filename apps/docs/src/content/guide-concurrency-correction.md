@@ -1,26 +1,54 @@
-# Concurrency and conflict correction
+# Handling conflicts
 
-This guide is the complete application path for an ordinary synced write:
-read a confirmed server version, submit one optimistic multi-row aggregate,
-classify a conflict or rejection, build a corrected replacement, acknowledge
-the old outcome, and restore any remaining correction UI after restart.
+This guide takes one synced write from the form to a durable, recoverable
+outcome in React: read a confirmed server version, submit an optimistic
+multi-row aggregate, classify a conflict or rejection, build a replacement,
+acknowledge the old outcome, and restore the correction UI after a restart. It
+is for React developers who edit rows that other clients also edit. The short
+model is on [Conflicts & optimistic writes](/concepts-conflicts/), and the
+retention, acknowledgement, and persistence rules are on
+[Outbox & commit outcomes](/reference-outbox-outcomes/).
 
-Use this for user-owned offline creation and editing. The final section explains
-when an operation needs a server-authoritative command instead.
+::meta{for="React developers handling concurrent edits" time="30 minutes" first="concepts-conflicts" spec="6 7"}
 
-Unexpected row-validator, whole-commit-validator, and CRDT merger exceptions
-produce static public messages. Their original text never enters newly
-recorded push results or client outcomes. Capture errors inside the host
-callback when private diagnostics are needed, and isolate diagnostic failures
-from the callback result. Deliberate `ValidationRejection` and
-`CommitValidationRejection` messages remain public content. Existing stored
-rejections retain their historical messages; upgrading does not rewrite them.
+:::terms
+- **Confirmed version**: The `serverVersion` the server issued for a row. A positive value is a valid `baseVersion`.
+- **Aggregate**: Several rows written by one `mutate()` call, which becomes one atomic server commit.
+- **Commit validator**: A server hook that accepts or rejects a whole candidate commit.
+- **Correction inbox**: The UI over active conflict and rejection outcomes.
+- **Replacement commit**: A new commit that supersedes a failed one and links to it.
+:::
 
-## 1. Read the confirmed version
+:::figure{title="One write, three possible endings" note="The reschedule example" ticks}
+<div class="d-row">
+<div class="node"><span class="t">1 · Read</span>Row plus <code>serverVersion</code></div>
+<span class="d-arrow"></span>
+<div class="node hot"><span class="t">2 · Mutate</span>Three rows, one commit, <code>baseVersion</code> on the first</div>
+<span class="d-arrow"></span>
+<div class="node"><span class="t">3 · Server</span>Per-row validators, then the commit validator</div>
+</div>
+<div class="d-cols-3">
+<div class="node ok"><span class="t">Applied</span>Optimistic rows stay; the journal records the outcome</div>
+<div class="node hot"><span class="t">Conflict</span><code>sync.version_conflict</code> with the winning row and <code>conflictColumns</code></div>
+<div class="node bad"><span class="t">Rejected</span>A protocol or domain code; all optimistic siblings roll back</div>
+</div>
+<p class="d-label">A failed commit becomes an active outcome in the correction inbox</p>
+<div class="d-cols-3">
+<div class="node"><span class="t">Keep server</span>Acknowledge as <code>resolved_keep_server</code></div>
+<div class="node"><span class="t">Keep local</span>Replacement on the new base</div>
+<div class="node"><span class="t">Merge</span>Replacement with chosen values</div>
+</div>
 
+::caption[The outcome journal is durable, so an active conflict is still in the inbox after the app restarts.]
+:::
+
+## Steps
+
+:::::steps
+::::step{title="Read the confirmed version" time="3 min"}
 Project Syncular's private version column explicitly and alias it. This SYQL
-query produces an exact generated `serverVersion: number`; `_sync_version`
-itself remains absent from mutation types and `select *`:
+query produces an exact generated `serverVersion: number`. The `_sync_version`
+column itself stays out of mutation types and `select *`:
 
 ```syql
 sync query appointmentForCorrection(clinicId, appointmentId) {
@@ -37,6 +65,8 @@ sync query appointmentForCorrection(clinicId, appointmentId) {
 }
 ```
 
+Read it with the generated descriptor:
+
 ```tsx
 const appointment = useQuery(appointmentForCorrectionQuery, {
   clinicId,
@@ -51,28 +81,31 @@ Choose `baseVersion` by intent:
 | Create only if the primary key is absent | `0` |
 | Compare-and-set an existing confirmed row | The positive generated `serverVersion` you read |
 | Deliberate last-write-wins | Omit it |
-| Chain edits on a new/unconfirmed local row | Omit it until a positive confirmed version arrives |
+| Chain edits on a new or unconfirmed local row | Omit it until a positive confirmed version arrives |
 
-A positive `baseVersion` compares per column, so a stale base conflicts only
-when an operation presents a column that moved past it. An operation that
-leaves the contended column absent applies, and `conflictColumns` reports the
-columns that moved. The server rejects a `baseVersion` above the row's current
-`server_version` with `sync.invalid_request`. An unversioned
-upsert loses to a delete inside the tombstone horizon with `sync.row_deleted`,
-so use `0` to recreate a deleted row deliberately.
+A positive `baseVersion` compares per column. A stale base conflicts only when
+an operation presents a column that moved past it. An operation that leaves the
+contended column absent applies, and `conflictColumns` reports the columns that
+moved. The server rejects a `baseVersion` above the row's current
+`server_version` with `sync.invalid_request`. An unversioned upsert loses to a
+delete inside the tombstone horizon with `sync.row_deleted`, so use `0` to
+recreate a deleted row deliberately.
 
-A newly optimistic local row uses an internal negative sentinel. That sentinel
-is evidence only that the server has not confirmed the row; it is never a
-server concurrency token. Do not pass it as `baseVersion`. Use `0` when the
-domain means create-if-absent, or omit the base when deliberately chaining
-unconfirmed offline work.
+:::warning{title="Never pass the local sentinel as a base"}
+A newly optimistic local row carries an internal negative version. It marks a row
+the server has not confirmed and is never a server concurrency token. Use `0`
+when the domain means create-if-absent, or omit the base when you deliberately
+chain unconfirmed offline work.
+:::
 
-## 2. Validate the complete aggregate
+::checkpoint[`appointment.serverVersion` is a positive integer for a row the server has confirmed.]
+::::
 
+::::step{title="Validate the complete aggregate on the server" time="5 min"}
 Suppose rescheduling writes three rows atomically: the appointment, its room
-reservation, and an audit event. A per-row validator can validate each proposed
-row, but it cannot prove that all three siblings are present. Install a
-`commitValidator` for that aggregate invariant:
+reservation, and an audit event. A per-row validator checks each proposed row and
+cannot see whether the siblings are present. Install a `commitValidator` for
+that aggregate invariant:
 
 ```ts
 import {
@@ -125,21 +158,33 @@ const config: SyncServerConfig = {
 ```
 
 The hook runs after every decoded, authorized operation is staged and reads the
-final candidate transaction. Throwing rejects the whole commit: the valid
-appointment and reservation siblings, indexes, and commit-log candidate all
-roll back. Use ordinary row validators for one authorized proposed row; use
-`commitValidator` when correctness depends on the complete candidate aggregate.
+final candidate transaction. Throwing rejects the whole commit: the appointment
+and reservation siblings, the indexes, and the commit-log candidate all roll
+back. Use a row validator for one authorized proposed row, and `commitValidator`
+when correctness depends on the complete candidate aggregate.
 
-A parent/child existence rule belongs in the schema instead. A declared
-`REFERENCES` column ([Declared references](/guide-schema/#declared-references))
-enforces parent existence, `RESTRICT`, `CASCADE`, and `SET NULL` on the server
-once per commit, so the aggregate hook stays for invariants that references and
-scopes cannot express.
+A parent and child existence rule belongs in the schema. A declared `REFERENCES`
+column ([Declared references](/guide-schema/#declared-references)) enforces
+parent existence, `RESTRICT`, `CASCADE`, and `SET NULL` on the server once per
+commit. Keep the aggregate hook for invariants that references and scopes cannot
+express.
 
-## 3. Submit one optimistic aggregate from React
+:::note{title="Validator messages"}
+An unexpected exception in a row validator, whole-commit validator, or CRDT
+merger produces a static public message. The original text never enters newly
+recorded push results or client outcomes. Capture errors inside the host
+callback when you need private diagnostics, and isolate diagnostic failures from
+the callback result. The messages of deliberate `ValidationRejection` and
+`CommitValidationRejection` are public content. Stored rejections keep their
+historical messages.
+:::
 
-Use one `mutate()` call. Splitting the rows across calls would create separate
-server commits and defeat atomic validation:
+::checkpoint[A push that carries the appointment without the reservation and audit rows returns `rejected` with `appointment.reschedule_aggregate_required`.]
+::::
+
+::::step{title="Submit one optimistic aggregate" time="5 min"}
+Use one `mutate()` call. Splitting the rows across calls creates separate server
+commits and defeats atomic validation.
 
 ```tsx
 import type { SyncClientHandle } from '@syncular/client';
@@ -265,32 +310,37 @@ function AppointmentEditor(props: {
 
 The local mirror updates immediately. If the server rejects the commit, the
 client restores the confirmed before-images for every sibling, records one
-durable final outcome, and then reapplies any later pending commits.
+durable final outcome, and reapplies any later pending commits.
 
-## 4. Classify what failed
+::checkpoint[The form shows the new time at once, and `await handle.commitOutcome(clientCommitId)` returns the server's answer after `syncUntilIdle()`.]
+::::
 
-Do not collapse every failed commit into “conflict”:
+::::step{title="Classify what failed" time="2 min"}
+Branch on the outcome's `status` and `code`. A failed commit takes one of three
+shapes:
 
 | Outcome | How to recognize it | What it means |
 | --- | --- | --- |
-| Version conflict | `status === 'conflict'` and `code === 'sync.version_conflict'` | The positive base is stale; `serverVersion` and `serverRow` contain the winner observed by that push, and `conflictColumns` names the columns that moved past the base. |
-| Protocol rejection | `status === 'rejected'` with a reserved code such as `sync.row_missing`, `sync.row_deleted`, or `sync.constraint_violation` | The request violated a protocol/storage contract. Follow the stable catalog action and retryability, not message text. |
-| Host/domain rejection | `status === 'rejected'` with an application code such as `appointment.reschedule_aggregate_required` | The authorized proposal violated domain validation. Map the stable code and bounded `details` to application UI. |
+| Version conflict | `status === 'conflict'` and `code === 'sync.version_conflict'` | The positive base is stale. `serverVersion` and `serverRow` hold the winner that push observed, and `conflictColumns` names the columns that moved past the base. |
+| Protocol rejection | `status === 'rejected'` with a reserved code such as `sync.row_missing`, `sync.row_deleted`, or `sync.constraint_violation` | The request violated a protocol or storage contract. Follow the stable catalog action and retryability. |
+| Host or domain rejection | `status === 'rejected'` with an application code such as `appointment.reschedule_aggregate_required` | The authorized proposal violated domain validation. Map the stable code and bounded `details` to application UI. |
 
-Messages are diagnostics. User copy should be selected from stable codes and
-bounded detail tokens. A non-retryable outcome has already drained its poison
-commit from the outbox; repeatedly calling sync does not repair it.
+Messages are diagnostics. Select user copy from stable codes and bounded detail
+tokens. A non-retryable outcome has already drained its poison commit from the
+outbox, so calling sync again repairs nothing.
 
-## 5. Keep server, keep local, or merge
+::checkpoint[Each failed commit maps to one of the three rows above, and your UI copy keys off `code`.]
+::::
 
-Failed multi-operation outcomes retain their complete ordered local envelope in
-`outcome.operations`. That is protected recovery data, not automatically safe
-intent: inspect it only in a domain-specific correction flow.
+::::step{title="Keep server, keep local, or merge" time="8 min"}
+A failed multi-operation outcome retains its complete ordered local envelope in
+`outcome.operations`. It is protected recovery data. Read it only inside a
+domain-specific correction flow, because the stored operations may no longer
+express safe intent.
 
-The following functions handle all three choices for the reschedule aggregate.
-The replacement uses the conflict's `serverVersion`, or the freshly generated
-query version after a domain rejection. It never reuses the stale original
-base.
+The functions below handle all three choices for the reschedule aggregate. The
+replacement uses the conflict's `serverVersion`, or the freshly generated query
+version after a domain rejection. It never reuses the stale original base.
 
 ```ts
 import type {
@@ -401,21 +451,24 @@ export async function replaceReschedule(
 
 - **Keep server** submits no replacement and acknowledges the failure as
   `resolved_keep_server`.
-- **Keep local** reconstructs the authorized local aggregate and compares it
-  against the new positive server base.
-- **Merge** constructs explicit values from local intent plus the chosen server
-  state, then uses that same new base. A conflict names its contended columns
-  in `conflictColumns`, so a custom merge recomputes exactly those columns and
-  can leave the rest at the server values.
+- **Keep local** rebuilds the authorized local aggregate and compares it against
+  the new positive server base.
+- **Merge** builds explicit values from local intent plus the chosen server
+  state, on that same new base. A conflict names its contended columns in
+  `conflictColumns`, so a custom merge recomputes exactly those columns and
+  leaves the rest at the server values.
 
-If another writer wins before the replacement lands, the replacement safely
-becomes a new active conflict. Omitting `baseVersion` here would turn the
-correction into an unannounced last-write-wins overwrite.
+If another writer wins before the replacement lands, the replacement becomes a
+new active conflict. Omitting `baseVersion` here would turn the correction into
+an unannounced last-write-wins overwrite.
 
-## 6. Render and restore the correction inbox
+::checkpoint[After a correction, the old outcome shows `resolution: 'superseded'` with a `replacementClientCommitId`, and the replacement is in the outbox.]
+::::
 
+::::step{title="Render and restore the correction inbox" time="5 min"}
 `useCommitOutcomes()` observes the durable journal. Filter on `resolution` and
-failure status; do not derive correction state from transient toast state:
+failure status, and derive correction state from the journal instead of from
+transient toast state:
 
 ```tsx
 import type { SyncClientHandle } from '@syncular/client';
@@ -491,7 +544,7 @@ export function CorrectionInbox(props: {
 }
 ```
 
-Mount the same component after reopening the same persistent database:
+Mount the same component after you reopen the same persistent database:
 
 ```tsx
 const handle = await createSyncClientHandle({
@@ -511,36 +564,43 @@ const handle = await createSyncClientHandle({
 ```
 
 For an asynchronous provider resource, expose the ready handle from that same
-factory rather than constructing a second handle. On process restart,
-unresolved conflicts and rejections are still `active`; resolved entries retain
-their resolution and replacement link. Retention may prune old applied/cached
-or resolved history, but it never removes active failures, even when active
-failures alone exceed the configured cap.
+factory so the app builds one handle. On process restart, unresolved conflicts
+and rejections are still `active`. Resolved entries keep their resolution and
+replacement link. Retention may prune old applied, cached, or resolved history
+and never removes active failures, even when active failures alone exceed the
+configured cap.
 
-For a non-React lifecycle, the equivalent restoration read is:
+Outside React, the equivalent restoration read is:
 
 ```ts
 const remaining = await handle.commitOutcomes({ activeOnly: true });
 ```
 
-## 7. Know when sync is the wrong authority
+::checkpoint[Kill the tab with a conflict showing, reopen it, and the same item appears in the inbox without any new sync.]
+::::
 
-Validators answer “may this authorized client proposal be accepted?” They must
-not allocate or choose privileged global state. If the server must pick the
-room, allocate a scarce operating slot, charge a payment, issue a sequence,
-connect facilities, or transform protected state, call a server-authoritative
-command and sync its resulting projection back to clients.
+::::step{title="Check that sync is the right authority" time="3 min"}
+Validators answer "may this authorized client proposal be accepted?" They never
+allocate or choose privileged global state. If the server must pick the room,
+allocate a scarce operating slot, charge a payment, issue a sequence, connect
+facilities, or transform protected state, call a server-authoritative command and
+sync its resulting projection back to clients
+([Server-authoritative commands](/guide-remote-operations/#server-authoritative-commands)).
 
 | Requirement | Use |
 | --- | --- |
-| Offline creation/editing with deterministic row ownership | Synced mutation |
+| Offline creation or editing with deterministic row ownership | Synced mutation |
 | Compare-and-set edit of a confirmed row | Synced mutation with positive `baseVersion` |
 | Create only if the primary key is absent | Synced mutation with `baseVersion = 0` |
 | Deliberate last-write-wins or chained unconfirmed local edit | Synced mutation without a base |
 | Mergeable CRDT field | Synced CRDT mutation without a base for the CRDT-only change |
 | Validate one authorized proposed row | Row validator |
 | Validate one atomic candidate aggregate | `commitValidator` |
-| Allocate scarce/global resources, choose privileged values, or transform authoritative state | Server-authoritative command plus synced projection |
+| Allocate scarce or global resources, choose privileged values, or transform authoritative state | Server-authoritative command plus synced projection |
 
-The protocol specification remains normative for wire behavior. This guide is
-the application decision and recovery flow.
+The protocol specification is normative for wire behavior. This page is the
+application decision and recovery flow.
+
+::checkpoint[Every write in your feature appears in the table with its mechanism.]
+::::
+:::::

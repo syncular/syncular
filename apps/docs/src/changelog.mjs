@@ -17,16 +17,54 @@
 export const changelog = [
   {
     date: '2026-10-07',
+    title: 'The sync lab lives at syncular.dev/demo/',
+    body: 'The hosted sync lab is served from the docs deployment at syncular.dev/demo/ instead of its own host. The docs build emits the lab into `dist/demo/`, every URL in the lab is relative to the page, and demo.syncular.dev answers every request with a 301 to the same path under syncular.dev/demo/. Browser storage is per origin, so a browser that used the old host starts the lab fresh.',
+    links: [{ href: '/demos/', label: 'Live demos' }],
+  },
+  {
+    date: '2026-10-07',
+    title: 'The SYQL playground runs queries on the demo data',
+    body: 'The playground fills the window: the SYQL editor and a schema pane on the left, the compiler output on the right in SQL, Run, Types, Reactivity, Problems, and JSON tabs. It compiles against the Release board schema of the hosted demo, and the Run tab executes the selected statement on the demo seed in SQLite WASM through a form generated from the typed inputs. 24 examples cover basics, optional filters, joins, aggregates, ranking, sync coverage, and queries that fail closed. Diagnostics show the code, the remedy, and the source line. The URL hash carries the example and edited source.',
+    links: [
+      { href: '/playground/', label: 'SYQL playground' },
+      { href: '/syql/', label: 'SYQL' },
+    ],
+  },
+  {
+    date: '2026-10-07',
+    title: 'The hosted demo is a scoped release board with a live commit log',
+    body: "The demo at syncular.dev/demo/ shows a kanban board on two devices: a team lead's laptop with the Web and Mobile boards, and an engineer's phone with only the Mobile board. Each device has its own client core and SQLite database, and the server commit log sits between them. The embedded server streams its events to the page, so every log entry, packet, and delivery comes from `push.applied`, `push.conflicted`, `realtime.delta`, and `pull.served`. A membership write grants or revokes the phone's Web board, which bootstraps or purges its rows; a Local SQL lens on each device shows the result. Network switches, outboxes, a latency slider, a conflict scenario resolved through `resolveCommitOutcome`, and a five-step tour complete it. The SYQL playground uses the same schema and sample rows.",
+    links: [{ href: '/demos/', label: 'Live demos' }],
+  },
+  {
+    date: '2026-10-07',
+    title:
+      'Benchmark record regenerated with host load and worker bundle sizes',
+    body: 'The published record had measured a slowdown in the sqlite-image import path that a later release fixed: 100,000 rows now bootstrap from a stored image in 46.5 ms (rows lane 379.9 ms), against the 122.7 ms recorded earlier. `bench/RESULTS.md` now states the host core count and 1-minute load average, sizes use KiB, and the harness reports the page and worker bundles of the web setup (59.8 KiB gzipped) next to the main-thread entry (48.7 KiB). `bun run bench:ci` also fails when the warm image lane drops below 600,000 rows/s or below 5x the rows lane in the same run; the old 300,000 rows/s floor passed the regression.',
+    links: [{ href: '/benchmarks/', label: 'Benchmarks' }],
+  },
+  {
+    date: '2026-10-07',
+    title: 'Redesigned docs and blog with per-SDK sections',
+    body: 'The documentation has a docs home, a sidebar grouped by reading order, and a page type on every page: concept, how-to, or reference. Each SDK has its own section (overview, install and first sync, reads and writes, realtime and lifecycle, platform specifics, troubleshooting), and the SDK chosen in the header sets the sidebar and the code tabs. Concept pages explain the sync model with numbered figures. The blog shows a chapter list with reading progress, and the long post on offline writes is now a two-part series. The landing page, docs, blog, changelog, playground, and 404 page run as one client-routed app: a link swaps the page in one frame without a reload, and hovering a link prefetches its page.',
+    links: [
+      { href: '/docs/', label: 'Docs home' },
+      { href: '/platform-web/', label: 'Browser SDK section' },
+      { href: '/blog/', label: 'Blog' },
+    ],
+  },
+  {
+    date: '2026-10-07',
     title:
       'Authoring rejects unrepresentable values and recovers legacy intent',
     body: 'The clients reject wrong column types and malformed byte envelopes before recording a mutation. Browser authoring also refuses non-finite floats before JSON serialization can change them. Startup and reset recover codec-invalid queued values with a durable sync.outbox_incompatible rejection, preserving valid later commits.',
     links: [
       {
-        href: '/platform-web/#authoring-value-validation',
+        href: '/platform-web-reads-writes/#authoring-value-validation',
         label: 'Authoring value validation',
       },
       {
-        href: '/platform-rust/#structured-authoring-failures',
+        href: '/platform-rust-specifics/#structured-authoring-failures',
         label: 'Native authoring failures',
       },
     ],
@@ -59,7 +97,7 @@ export const changelog = [
     body: 'TS and Rust clients expose atomic snapshot reads with multiple SQL statements, window coverage, subscription bootstrap progress, and commit delivery status under one revision. Native file-backed reads use the independent SQLite sidecar. Corrupt revision markers, invalid SQLite metadata types, contradictory outcome statuses, malformed stored operations, and invalid subscription scopes fail with sync.local_corrupt, and Tauri preserves structured read failures and query-owner diagnostics. Generic and dedicated Tauri snapshot commands share one read path; repeated successful reads add no diagnostics mailbox traffic.',
     links: [
       {
-        href: '/platform-rust/#snapshot-read-sidecar',
+        href: '/platform-rust-specifics/#snapshot-read-sidecar',
         label: 'Snapshot read sidecar',
       },
     ],
@@ -70,7 +108,7 @@ export const changelog = [
     body: 'HostTransportPolicy bounds the shared native transport: a per-request deadline, one whole-round deadline across uploads, continuations, the main request, segments, and realtime rounds, HTTP request and decoded-response byte limits, and redirect refusal for credential-bearing requests on both HTTP requests and the WebSocket handshake. Failures are typed transport.timeout, transport.redirect, transport.request_too_large, and transport.response_too_large. Deadlines and size limits stay unbounded by default; redirects now default to Deny. Tauri exposes the same fields on SyncularConfig, and the Kotlin and Swift bindings serialize every byte and millisecond bound as an exact integer.',
     links: [
       {
-        href: '/platform-rust/#native-transport-policy',
+        href: '/platform-rust-specifics/#native-transport-policy',
         label: 'Native transport policy',
       },
     ],
@@ -103,7 +141,7 @@ export const changelog = [
     body: 'Enable the plugin test-clock feature to call SyncularCore::set_now_ms from host integration tests. The setter updates the client time used by diagnostics, lease expiry, and previous-version retention. create.nowMs continues to set the initial client time.',
     links: [
       {
-        href: '/platform-tauri/#test-clock',
+        href: '/platform-tauri-specifics/#test-clock',
         label: 'Test clock',
       },
     ],
@@ -114,7 +152,7 @@ export const changelog = [
     body: 'A round budget that runs out no longer discards the aggregate report or surfaces sync.invalid_request. syncUntilIdle returns the report with budgetExhausted: true, aggregating counters and outcomes across every round while readiness fields (bootstrapping, deferredCommits, schemaFloor) describe the latest round, so an empty bootstrapping list alone does not establish readiness. A real transport or protocol failure still fails. The round limit must be an integer in 1..=4294967295.',
     links: [
       {
-        href: '/concepts-bootstrap/#reads-during-import',
+        href: '/concepts-bootstrap/#reading-during-import',
         label: 'Reads during import and the round budget',
       },
     ],
@@ -125,7 +163,7 @@ export const changelog = [
     body: 'SQLite BUSY/LOCKED (5/6), including extended codes, now classify as retryable client.storage_busy in both cores, and both cores preserve the classified code, retryable flag, and SQLite details on authoring. The native Rust mutate and patch return a structured failure with a stable code, a static message, optional details, and retryable, instead of a string callers must parse. Each authoring call classifies its own failure, so a retained storage failure cannot classify a later unrelated one. The command, shim, FFI, and Tauri boundaries forward code, message, retryable, and details. Legacy cause strings with dynamic values move to details.legacyCause. Caller value failures during authoring, including an unknown column, a value that does not match the column type, an absent required column, and an unrenderable primary key, report sync.invalid_request instead of client.failed.',
     links: [
       {
-        href: '/platform-rust/#structured-authoring-failures',
+        href: '/platform-rust-specifics/#structured-authoring-failures',
         label: 'Structured authoring failures',
       },
     ],
@@ -169,7 +207,7 @@ export const changelog = [
     body: 'Rust propagates replay read, decode, write, savepoint and FTS failures. Both clients reconcile acknowledgements before committing their local apply transaction and refuse failed startup replay. Failed apply retains durable intent and publishes no successful apply revision. Failed native purge and rebootstrap preserve the in-flight round. Incompatible commits lose their blob dependencies before upload collection. Server rejections of removed-table deletes drain the queue. Confirmed secondary unique conflicts remain deferred during replay.',
     links: [
       {
-        href: '/concepts-conflicts/#the-optimistic-outbox',
+        href: '/concepts-conflicts/#optimistic-writes',
         label: 'Optimistic outbox and replay failures',
       },
     ],
@@ -191,7 +229,7 @@ export const changelog = [
     body: 'Released in 0.30.16. Ordinary workers exclude the authority reader. Authority-enabled workers inject the factory from @syncular/client/authority. Native apps use @syncular/tauri/authority for the snapshot bridge. Missing worker opt-in fails before storage opens. Accepted-base evidence and independent Rust enforcement retain their 0.30.15 semantics; bundle caps are unchanged.',
     links: [
       {
-        href: '/platform-tauri/#authority-evidence-before-activation',
+        href: '/platform-tauri-specifics/#authority-evidence-before-activation',
         label: 'Authority opt-in and native policy',
       },
     ],
@@ -202,7 +240,7 @@ export const changelog = [
     body: 'Released in 0.30.15. A static plain-column policy exposes accepted authority bases, local revision and persisted scope coverage before key activation. Local intent remains separate. Rust enforces the native app column ceiling and rejects forged IPC. The snapshot changes no lifecycle, keys, transport or data.',
     links: [
       {
-        href: '/platform-tauri/#authority-evidence-before-activation',
+        href: '/platform-tauri-specifics/#authority-evidence-before-activation',
         label: 'Authority evidence and native policy',
       },
     ],
@@ -213,11 +251,11 @@ export const changelog = [
     body: 'Released in 0.30.14. Imports restore and replay only affected rows or tables. Empty unrelated bootstraps leave protected ACK intent untouched. First-epoch acquisition preserves ready readers and subscription progress without raising upgrading. A differing stored epoch still resets the replica.',
     links: [
       {
-        href: '/concepts-conflicts/#the-optimistic-outbox',
+        href: '/concepts-conflicts/#optimistic-writes',
         label: 'Protected intent reconciliation',
       },
       {
-        href: '/server-backup-restore/',
+        href: '/server-operations/#backup-and-restore',
         label: 'Epoch acquisition and resets',
       },
     ],
@@ -228,7 +266,7 @@ export const changelog = [
     body: 'Released in 0.30.13. Both cores have an explicit transport gate. Tauri can activate security, read its replica and queue local commits before a fresh bearer is available. Pausing suppresses new HTTP, realtime and retry work; captured replies retain atomic apply and revocation checks. Resume wakes the existing scheduler and flushes queued commits in order.',
     links: [
       {
-        href: '/platform-tauri/#local-activation-with-transport-closed',
+        href: '/platform-tauri-specifics/#local-activation-with-transport-closed',
         label: 'Offline activation and resume',
       },
     ],
@@ -239,10 +277,13 @@ export const changelog = [
     body: 'Released in 0.30.12. Both cores preserve accepted local intent through empty pulls and restart, stack later edits above it, and request an immediate following pull. Matching server delivery retires the intent atomically. Revocation and purge remove it. Servers detect a pull maximum behind their accepted push; sync storage and authorization require uncached reads.',
     links: [
       {
-        href: '/concepts-conflicts/#the-optimistic-outbox',
+        href: '/concepts-conflicts/#optimistic-writes',
         label: 'Acknowledgements and local reads',
       },
-      { href: '/server-storage/#read-freshness', label: 'Storage freshness' },
+      {
+        href: '/server-storage-reference/#read-freshness',
+        label: 'Storage freshness',
+      },
     ],
   },
   {
@@ -251,7 +292,7 @@ export const changelog = [
     body: 'Released in 0.30.11. Tauri runs sync network I/O outside the mutable owner. New mutations and queries finish while replies are pending; their commits enter the next round. The Rust overlay rebuilds only changed tables and FTS indexes, leaving unrelated catalogues untouched.',
     links: [
       {
-        href: '/platform-tauri/#local-commands-during-sync',
+        href: '/platform-tauri-specifics/#local-commands-during-sync',
         label: 'Native local-first commands',
       },
     ],
@@ -273,7 +314,7 @@ export const changelog = [
     body: 'Released in 0.30.11. Closing a persistent database pauses its access-handle pool before releasing its Web Lock. Page teardown terminates the worker, and the next opener waits for the physical holder. Live second tabs retain leader/follower behavior.',
     links: [
       {
-        href: '/platform-web/#persistent-worker-lifecycle',
+        href: '/platform-web-specifics/#architecture',
         label: 'Persistent worker lifecycle',
       },
     ],
@@ -284,7 +325,7 @@ export const changelog = [
     body: 'Released in 0.30.11. Both client cores retain a rejected distinct-ID insert as protected journal intent when another server row owns its unique key. Recovery exposes the matching index and competing row with its current version. Restart and explicit resolution preserve replica consistency; revocation removes protected conflict payloads.',
     links: [
       {
-        href: '/concepts-conflicts/#retain-failed-local-intent',
+        href: '/reference-outbox-outcomes/#retain-failed-local-intent',
         label: 'Unique-key conflict recovery',
       },
     ],
@@ -317,7 +358,7 @@ export const changelog = [
     body: 'A full local database reports client.storage_full with its numeric SQLite code. A failed rollback stays secondary. Browser, Bun, Node and native clients accept another import after capacity returns. Server cleanup also retains its original exception.',
     links: [
       {
-        href: '/platform-web/#local-storage-failures',
+        href: '/platform-web-troubleshooting/#local-storage-failures',
         label: 'Local storage failures',
       },
     ],
@@ -348,7 +389,7 @@ export const changelog = [
     body: 'A follower call that the leader tab settled after its `LeaderBridge` closed, for example while the app signed out, posted the answer on the closed BroadcastChannel, and the browser threw an uncaught `InvalidStateError`. The leader now drops answers after close.',
     links: [
       {
-        href: '/platform-web/#multi-tab',
+        href: '/platform-web-specifics/#multi-tab',
         label: 'Web (browser)',
       },
     ],
@@ -359,7 +400,7 @@ export const changelog = [
     body: '`SyncularConfig.database_dir` and `createTauriSyncClient({ database })` open `<database_dir>/<database>.db`, so an app opens one replica, and one client id, per signed-in actor. The plugin refuses names that could leave the directory and a `dbPath` supplied by the webview with `sync.invalid_request`; the snapshot reader follows the database the last successful `create` opened.',
     links: [
       {
-        href: '/platform-tauri/#one-replica-per-actor',
+        href: '/platform-tauri-realtime/#open-one-replica-per-actor',
         label: 'Tauri',
       },
     ],
@@ -403,7 +444,7 @@ export const changelog = [
     body: 'A follower that won the Web Lock rejected the calls it had queued for the next leader with `client.worker_failed` when it installed its own core, and its live queries kept that rejection. The new core now runs them, and the reactive store claims a rejected coverage claim again whenever a leader serves the tab.',
     links: [
       {
-        href: '/platform-web/#multi-tab',
+        href: '/platform-web-specifics/#multi-tab',
         label: 'Web (browser)',
       },
     ],
@@ -415,7 +456,7 @@ export const changelog = [
     body: "A follower's forwarded call no longer fails after `followerCallTimeoutMs` while the leader answers probes, so a `setWindow` that waits behind a long bootstrap download completes. Calls reject when the link blocks or another leader takes over (`client.leader_handover`). Every cross-tab message carries `MULTI_TAB_PROTOCOL_VERSION` and the schema version: a follower whose leader runs another build is `blocked` with reason `leader-incompatible`, and a leader steps down for a newer tab (SYNCULAR-FOLLOWER-CALL-DEADLINE-001, SYNCULAR-MULTI-TAB-VERSION-001).",
     links: [
       {
-        href: '/platform-web/#multi-tab',
+        href: '/platform-web-specifics/#multi-tab',
         label: 'Web (browser)',
       },
     ],
@@ -426,7 +467,7 @@ export const changelog = [
     body: "`GET /segments/:id` on Cloudflare Workers gzipped a segment above 16 MiB itself and declared `Content-Encoding: gzip`; workerd then gzipped the response again, so a client that decoded it once failed content-address verification and retried without end. The route now marks every body it encodes with `encodeBody: 'manual'`, and a workerd test verifies the content address of a streamed segment after one decode (SYNCULAR-WORKERS-SEGMENT-ENCODING-001).",
     links: [
       {
-        href: '/concepts-bootstrap/#setting-it-up',
+        href: '/concepts-bootstrap/#streaming-large-segments',
         label: 'Bootstrap',
       },
     ],
@@ -437,7 +478,7 @@ export const changelog = [
     body: "Typegen emits FTS joins that read `_syncular_source_id` through the client's source-id mapping table on the projection rowid, so FTS5 no longer fetches the content row of every match. The authored SQL, its types, its identity, and its rows stay the same; a 50,000-match search took 53.9 ms against 73.6 ms. Both client cores keep one mapping row per projection row, pinned by a conformance scenario (SYNCULAR-FTS-SOURCE-ID-001).",
     links: [
       {
-        href: '/tooling-local-search/#query-it',
+        href: '/tooling-local-search/#run-the-query',
         label: 'Local search',
       },
     ],
@@ -459,7 +500,7 @@ export const changelog = [
     body: '`SyncRoundFailedError` carries `retryable` and `retryDelayMs`. A retryable failure names the delay of the background retry the client scheduled (250 ms, doubling per consecutive failure up to 30 s); a non-retryable failure has no automatic next attempt. Failed sync progress carries the same `retryDelayMs` in the TypeScript and Rust cores. The Rust core now re-pulls after a segment content-address mismatch, as the TypeScript core does (SYNCULAR-ROUND-FAILURE-RETRY-001).',
     links: [
       {
-        href: '/platform-react/#generated-live-queries',
+        href: '/platform-react-reads-writes/#read-with-a-generated-query',
         label: 'Query phases',
       },
     ],
@@ -470,7 +511,7 @@ export const changelog = [
     body: "A live query whose required coverage is incomplete publishes phase `error` when the latest sync attempt fails, with a `SyncRoundFailedError` carrying the attempt's stable code (for example `sync.transport_failed`) and number. It keeps its rows and revision, stays `error` across local re-reads, and returns to `loading` or `partial` when the next attempt starts. `useQuery` and `useRawSql` show the same phase, so an interrupted bootstrap no longer renders as an endless `loading` (SYNCULAR-QUERY-PHASE-STALL-001).",
     links: [
       {
-        href: '/platform-react/#generated-live-queries',
+        href: '/platform-react-reads-writes/#read-with-a-generated-query',
         label: 'Query phases',
       },
     ],
@@ -514,7 +555,7 @@ export const changelog = [
     body: 'A push commit on `PostgresServerStorage` reads every row its operations target, with the delete tombstones, in one statement per table, writes each row and its scope-index entries in one statement, and appends all of its changes in one statement. A first realtime round carrying 10 three-row commits and 68 subscriptions issues 141 statements in 10 transactions, down from 400 (SYNCULAR-PULL-ROUNDTRIPS-001). HTTP `POST /sync` and realtime socket rounds share the path.',
     links: [
       {
-        href: '/server-storage/#postgres-postgresserverstorage',
+        href: '/server-storage-reference/#postgres',
         label: 'Postgres storage',
       },
     ],
@@ -525,7 +566,7 @@ export const changelog = [
     body: 'A pull starts the commit-window read or first snapshot page of every subscription before awaiting any of them and re-reads the pruning horizon once. `PostgresServerStorage` answers the page reads of one table with one statement, and `D1ServerStorage` sends them as one `db.batch` round trip. A 68-subscription PostgreSQL pull over two tables issues 11 statements to catch up and 10 to bootstrap, down from 146 and 79 (SYNCULAR-PULL-ROUNDTRIPS-001). The PostgreSQL serve gate reads its three parts in one statement. Response frames do not change.',
     links: [
       {
-        href: '/server-storage/#postgres-postgresserverstorage',
+        href: '/server-storage-reference/#postgres',
         label: 'Postgres storage',
       },
     ],
@@ -545,7 +586,7 @@ export const changelog = [
     date: '2026-09-29',
     title: 'A hidden leader tab no longer blocks its followers',
     body: 'Follower tabs now check leader liveness by probing: after a third of `followerCallTimeoutMs` without hearing from the leader, a follower posts a probe that the leader tab answers from its message handler, and the follower goes `blocked` with `client.follower_timeout` only when that probe stays unanswered. The leader runs no heartbeat timer, so browser timer throttling in a hidden leader tab no longer blocks visible followers. A hung leader still blocks its followers within `followerCallTimeoutMs`, a blocked follower rebinds when the leader answers again, and one slow call rejects on its own deadline without blocking the handle. Remove any raised `followerCallTimeoutMs` that worked around background-tab throttling. Upgrade note: after upgrading, reload every open tab of the origin. A tab running 0.26.0 or older as a follower next to a leader on this release waits for the removed leader heartbeat and reports the leader unreachable (`client.follower_timeout`) until it reloads; a current follower next to an older leader works.',
-    links: [{ href: '/platform-web/#multi-tab', label: 'Multi-tab' }],
+    links: [{ href: '/platform-web-specifics/#multi-tab', label: 'Multi-tab' }],
   },
   {
     date: '2026-09-28',
@@ -573,7 +614,7 @@ export const changelog = [
     body: "A live query that has no successful read now publishes a shared, frozen snapshot per phase and availability. When a query's parameters or coverage change before its first read completes, the new query returns the same snapshot object and `rows` array, and React does not re-render for the switch.",
     links: [
       {
-        href: '/platform-react/#changes-windows-and-other-hooks',
+        href: '/platform-react-specifics/#change-batches-and-re-renders',
         label: 'React hooks',
       },
     ],
@@ -584,7 +625,7 @@ export const changelog = [
     body: 'A live query that reads an empty result again now keeps its previous `rows` array and does not notify subscribers. `useSyncStatus`, `useConflicts`, and `useCommitOutcomes` compare each new snapshot by value and skip the notification when it is equal, so a sync batch with an unchanged status no longer re-renders every status subscriber. Row reconciliation compares mapped `Date` values by time and class instances by identity.',
     links: [
       {
-        href: '/platform-react/#changes-windows-and-other-hooks',
+        href: '/platform-react-specifics/#change-batches-and-re-renders',
         label: 'React hooks',
       },
     ],
@@ -595,7 +636,7 @@ export const changelog = [
     body: 'TypeScript and Rust clients now fail a local commit with `sync.constraint_violation` when its optimistic writes conflict with a declared secondary unique index. The client rolls back every sibling write and the outbox append in the same SQLite transaction, and the local revision does not advance. Rust previously ignored the failed overlay write and queued a commit whose optimistic row was absent.',
     links: [
       {
-        href: '/concepts-commits/#local-constraint-failures',
+        href: '/reference-outbox-outcomes/#local-constraint-failures',
         label: 'Commits, cursors & idempotency',
       },
     ],
@@ -606,11 +647,11 @@ export const changelog = [
     body: 'Generated TypeScript and Rust queries now identify their snapshot reads with a stable query id and generated table dependencies. A failed owned read adds a privacy-safe `queryFailures` entry to client diagnostics until the query reads successfully. The list retains 256 entries and contains no SQL, parameters, rows, paths, or driver prose. SQLite corruption and I/O failures raise the stable non-retryable codes `client.storage_corrupt` and `client.storage_io`; other read failures keep their existing application error and use `client.query_failed` only in diagnostics. React live queries now enter `error` after a failed refresh while retaining the last successful rows and revision.',
     links: [
       {
-        href: '/platform-react/#generated-live-queries',
+        href: '/platform-react-reads-writes/#read-with-a-generated-query',
         label: 'React live queries',
       },
       {
-        href: '/platform-rust/#generated-queries',
+        href: '/platform-rust-reads-writes/#generated-named-queries',
         label: 'Rust generated queries',
       },
     ],
@@ -644,7 +685,7 @@ export const changelog = [
     body: 'At a matching schema version, `ensureSchema` on SQLite, PostgreSQL, and D1 now checks each synced table against the storage layout: a missing table or column, a `_sync_*` column whose type or nullability differs from what the storage creates, or a primary key other than `(_sync_partition, _sync_row_id)` refuses the open with `StorageQueryError` code `sync.storage.physical_layout_mismatch`. The stored-layout comparison now fails with `sync.storage.stored_layout_mismatch`. Both carry the table and column in `details` and keep them out of the message. D1 previously trusted a matching version marker without either check, so a replica whose internal columns drifted answered healthy and failed at the first write. D1 also refuses a same-version database missing a core table its request path reads or writes, such as `sync_tombstones`, with `reason: missing_table`, because D1 creates those tables only in `migrate()` or during a schema upgrade. On D1 the check reads `sqlite_master` once plus one `PRAGMA table_info` per synced table the first time a storage instance opens.',
     links: [
       {
-        href: '/server-storage/#materialized-app-tables',
+        href: '/server-storage-reference/#materialized-app-tables',
         label: 'Storage backends',
       },
       { href: '/guide-schema/', label: 'Schema & typegen' },
@@ -671,7 +712,7 @@ export const changelog = [
     body: 'A schema bump wipes the local replica before the replacement bootstrap restores anything, so an app can briefly see none of its own rows. `previousVersionContext` is a new opt-in, default-off feature that keeps a bounded, typed, read-only copy of the pre-bump rows in a second database file beside the replica, and exposes `previousVersionSnapshot`, `previousVersionAudit` and `previousVersionDiscard`, with `statusSnapshot().previousVersionContext` reporting presence. The capture is measured before any row is materialized and is all-or-nothing; its semantic types come from a persisted schema descriptor, never from SQLite affinity. The guarantee is narrow: the normal replica query connection does not attach the file, which is not confidentiality against same-origin or filesystem access. An unaware rollback leaves the file in place, the aware-only TTL does not bound that residue, and the supported downgrade procedure calls `previousVersionDiscard()` first.',
     links: [
       {
-        href: '/concepts-previous-version-context/',
+        href: '/concepts-schema-upgrades/#advanced-previous-version-context',
         label: 'Previous-version context',
       },
       { href: '/concepts-schema-upgrades/', label: 'Schema upgrades' },
@@ -680,7 +721,7 @@ export const changelog = [
   {
     date: '2026-09-19',
     title: 'Version-only schema bumps are documented and fail closed',
-    body: 'A Syncular release can change only engine-internal storage, with no application column change, and the application schema version still has to advance because that version is what makes the server apply the storage change. The schema guide now gives the verbatim procedure — append an empty `up.sql`, point `schemaVersions` at it, regenerate, and confirm the bump landed by reading `sync_schema_meta.schema_version` — and states that a marker at the new version whose synced tables are missing an internal column now fails closed at startup rather than at the first write.',
+    body: 'A Syncular release can change only engine-internal storage, with no application column change, and the application schema version still has to advance because that version is what makes the server apply the storage change. The schema guide now gives the verbatim procedure (append an empty `up.sql`, point `schemaVersions` at it, regenerate, and confirm the bump landed by reading `sync_schema_meta.schema_version`) and states that a marker at the new version whose synced tables are missing an internal column now fails closed at startup rather than at the first write.',
     links: [{ href: '/guide-schema/', label: 'Schema & typegen' }],
   },
   {
@@ -724,7 +765,10 @@ export const changelog = [
     title: 'Sparse-patch key resolution without sync abort',
     body: 'A sparse patch that omits the key-id column resolves the key from the stored local row: present columns first, then the stored row for absent slots only, never for a present NULL. A patch with no encrypted column needs no key. An unresolvable key records one durable client.encrypt_failed rejection instead of aborting sync(), identically in both cores; the code is client-local and never on the wire. The conformance catalog pins keyless, present-NULL, fallback, and ghost-row cases on both cores.',
     links: [
-      { href: '/concepts-encryption-keys/', label: 'Encryption keys' },
+      {
+        href: '/concepts-encryption/#encryption-keys',
+        label: 'Encryption keys',
+      },
       { href: '/troubleshooting/', label: 'Troubleshooting' },
     ],
   },
@@ -750,7 +794,7 @@ export const changelog = [
         label: 'Declared references',
       },
       {
-        href: '/concepts-conflicts/#declared-reference-outcomes',
+        href: '/reference-outbox-outcomes/#reference-violations',
         label: 'Reference outcomes',
       },
     ],
@@ -771,10 +815,13 @@ export const changelog = [
     body: 'Both client cores expose live sync progress with per-attempt identities, byte and row counters, and terminal failures. Worker, Tauri, and FFI events deliver updates while sync is running. JavaScript clients provide onProgress and progressSnapshot; React adds useSyncProgress(client), and Rust provides a cloneable observer with subscription guards. SQLite image imports retain their atomic transaction.',
     links: [
       {
-        href: '/platform-web/#live-sync-progress',
+        href: '/platform-web-realtime/#sync-progress',
         label: 'JavaScript progress',
       },
-      { href: '/platform-rust/#live-sync-progress', label: 'Rust progress' },
+      {
+        href: '/platform-rust-specifics/#live-progress',
+        label: 'Rust progress',
+      },
     ],
   },
   {
@@ -783,7 +830,7 @@ export const changelog = [
     body: 'The persistent browser client corrects the OPFS SAH-pool reserved-lock callback before the first SQL statement, allowing SQLite to roll back interrupted writes on reopen. Bounded startup retries handle transient storage_busy errors while retaining leadership. Seven Chromium cases verify crash recovery within the same browser session, database and FTS integrity, checkpoint recovery, and contention without losing pending writes.',
     links: [
       {
-        href: '/platform-web/#interrupted-writes',
+        href: '/platform-web-specifics/#interrupted-writes',
         label: 'Browser crash recovery',
       },
     ],
@@ -942,7 +989,7 @@ export const changelog = [
     body: 'Pulls reset before emitting an active section when pruning crosses their commit-window read. Realtime notifications that break sequence trigger catch-up, and acknowledgment persistence preserves concurrent subscription updates. Declared server indexes include the partition column; existing databases require an application schema-version bump to rebuild them. Table retirement removes stale blob references. Includes focused contributions from Chase Pursley in PR #47.',
     links: [
       {
-        href: '/server-storage/#concurrent-pulls-and-storage-upgrades',
+        href: '/server-storage-reference/#concurrent-pulls-during-pruning',
         label: 'Storage upgrade instructions',
       },
     ],
@@ -960,7 +1007,7 @@ export const changelog = [
     links: [
       { href: '/platform-react/', label: 'Mutation callback migration' },
       {
-        href: '/platform-web/#snapshot-api-migration',
+        href: '/platform-web-reads-writes/#reading-local-state',
         label: 'Client snapshot migration',
       },
       { href: '/server-storage/', label: 'Image builder migration' },
@@ -982,7 +1029,7 @@ export const changelog = [
     body: 'The schema guide documents installing typegen, initializing schema inputs, and generating the client schema inside an existing app. The Tauri guide starts with a framework-independent client and introduces React bindings as an optional step.',
     links: [
       {
-        href: '/guide-schema/#add-syncular-to-an-existing-project',
+        href: '/add-to-existing-app/',
         label: 'Existing-project setup',
       },
       { href: '/platform-tauri/', label: 'Tauri' },
@@ -999,7 +1046,10 @@ export const changelog = [
     title: 'Restore fencing and host lifecycle controls',
     body: 'Wire version 2 fences restored partition timelines with log epochs while preserving each client outbox. The client package adds a shared sync scheduler and UTC month-window helpers. Native bindings add runtime header rotation and connectivity adapters. The server adds an authenticated partition registry, and typegen publishes a diagnostic remedy catalog.',
     links: [
-      { href: '/server-backup-restore/', label: 'Backup and restore' },
+      {
+        href: '/server-operations/#backup-and-restore',
+        label: 'Backup and restore',
+      },
       { href: '/guide-server-clients/', label: 'Server-side sync clients' },
       { href: '/concepts-windowing/', label: 'Windowed sync' },
       { href: '/syql/', label: 'SYQL language' },
@@ -1209,6 +1259,11 @@ export const changelog = [
     date: '2026-07-03',
     title: 'Two cores, one conformance catalog',
     body: 'The Rust client core passes the same conformance catalog as the TypeScript core; golden vectors and shared scenarios hold both to SPEC.md.',
-    links: [{ href: '/guide-conformance/', label: 'Protocol & conformance' }],
+    links: [
+      {
+        href: '/reference/#protocol--conformance',
+        label: 'Protocol & conformance',
+      },
+    ],
   },
 ];

@@ -1,6 +1,6 @@
 # Visual style
 
-The canonical implementation is `apps/docs/public/style.css`. Other Syncular
+The canonical implementation is `apps/docs/src/docs.css`. Other Syncular
 surfaces use the same colors, typography, and interaction rules.
 
 ## Colors

@@ -1,16 +1,56 @@
-# Server-side sync clients
+# Server-side clients
 
-`SyncClient` can run server-side when a process needs a local synchronized
-read model. The same client used in a browser runs in a CLI, background worker,
-or long-running Node or Bun service. It has no DOM dependency when supplied a
-native SQLite backend. This deployment is sometimes called a headless client.
+Choose how a backend process talks to a Syncular server, then set up the local-replica option. This page is for backend developers whose CLI, cron job, webhook handler, or service reads or writes synced data. You finish knowing which surface fits and, for a local replica, with a running `SyncClient` that syncs on a schedule.
 
-Use a persistent database path. An in-memory database loses rows, subscription
-cursors, client identity, and the outbox on restart.
+::meta{for="Backend developers" time="15 minutes" first="guide-server"}
 
-## Open the local replica
+:::terms
+- **Headless client**: A `SyncClient` that runs in a process with no UI, such as a CLI, a background worker, or a long-running Node or Bun service. It is the same client a browser runs and has no DOM dependency when given a native SQLite backend.
+- **Local replica**: The SQLite database a `SyncClient` keeps, holding subscribed rows and the outbox.
+- **Remote client**: A `SyncRemoteClient`. It talks to the server over HTTP and keeps no local database.
+- **Scheduler**: The host code that decides when a round runs. A `SyncClient` never starts one by itself.
+:::
 
-```ts
+:::figure{title="Which server-side client" note="Decide by what the process needs" ticks}
+<div class="node hot"><span class="t">The process needs</span>Reads and writes to synced rows</div>
+<div class="d-cols-2">
+<div class="d-stack">
+<div class="node"><span class="t">Question</span>Local SQL, an offline outbox, or realtime convergence?</div>
+<div class="d-down ok">Yes</div>
+<div class="node ok"><span class="t">Local replica</span><b>SyncClient</b><br>SQLite file, outbox, subscriptions<br><span class="chip ok">This page</span></div>
+</div>
+<div class="d-stack">
+<div class="node"><span class="t">Question</span>Only commits, registered queries, or commands?</div>
+<div class="d-down">Yes</div>
+<div class="node cool"><span class="t">Remote client</span><b>SyncRemoteClient</b><br>No database, HTTP calls<br><span class="chip cool">Reference below</span></div>
+</div>
+</div>
+
+::caption[A local replica reads at SQLite speed and survives offline periods, and it must hold a persistent database. A remote client needs only a token and the network.]
+:::
+
+## Capability matrix
+
+| Need | Surface | Local SQLite | Authorization | Durable retry |
+|---|---|---:|---|---|
+| Local SQL read model and offline outbox | Server-side `SyncClient` | Required | Resolved scopes or wildcard access | Outbox owned by client |
+| Ordinary commit from a job or webhook | `SyncRemoteClient.commit()` | None | Normal write scopes | Caller retains prepared bytes |
+| Predefined typed server SQL | `SyncRemoteClient.query()` | None | Generated scope coverage or privileged callback | Read-only request |
+| Privileged transactional operation | `SyncRemoteClient.command()` | None | Command callback plus normal write scopes | Stable request ID |
+| Live predefined query | `SyncRemoteClient.watch()` | None | Same rule as the query | Replacement snapshots while connected |
+| Operator SQL next to the database | Storage or driver directly | None | Server trust boundary | Application-owned |
+| Protocol telemetry | `SyncularServerEvents` | None | Operator access | Sink-owned |
+| Durable post-commit work | [Durable server reactions](/server-reactions/) | None | Server configuration | Reaction store |
+
+Application intent that must be durable and queryable belongs in immutable [domain event rows](/guide-domain-events/). `SyncRemoteClient` is documented on [Remote server operations](/guide-remote-operations/).
+
+## Set up a local replica
+
+Use a persistent database path. An in-memory database loses rows, subscription cursors, client identity, and the outbox on restart.
+
+:::::steps
+::::step{title="Open the local replica" time="4 min"}
+```ts title="src/worker.ts"
 import {
   httpSegmentDownloader,
   httpSyncTransport,
@@ -45,46 +85,25 @@ client.subscribe({
 await client.syncUntilIdle();
 ```
 
-This is a complete client for batch-style work. `syncUntilIdle()` runs sync
-rounds until the outbox is pushed and the subscription has caught up, so a
-CLI or cron worker calls it explicitly: once after start, then again after
-writing. The [quickstart](/quickstart/) runs exactly this shape in a
-terminal.
+This is a complete client for batch-style work. `syncUntilIdle()` runs sync rounds until the outbox is pushed and the subscription has caught up. A CLI or cron worker calls it explicitly, once after start and again after writing. The [quickstart](/quickstart/) runs this shape in a terminal.
 
-The bearer token is application auth: the server's `authenticate` callback
-maps it to an actor and partition. The client ID identifies the replica and
-is not an authentication credential. `openSqliteDatabase()` selects
-`bun:sqlite` on Bun and the built-in `node:sqlite` module on Node 22.13 or
-newer; there is no SQLite package or native addon to install.
-Runtime-specific code can still import `openBunDatabase()` from
-`@syncular/client/bun` or `openNodeDatabase()` from
-`@syncular/client/node`.
+The bearer token is application auth: the server's `authenticate` callback maps it to an actor and partition. The client ID identifies the replica and is no authentication credential. `openSqliteDatabase()` selects `bun:sqlite` on Bun and built-in `node:sqlite` on Node 22.13 or newer, so no SQLite package or native addon is needed. Runtime-specific code can import `openBunDatabase()` from `@syncular/client/bun` or `openNodeDatabase()` from `@syncular/client/node`.
 
-## Long-running services: scheduling sync rounds
+::checkpoint[`client.query('SELECT count(*) FROM appointments')` returns the rows in `clinic-42`.]
+::::
 
-A `SyncClient` never starts a sync round on its own; its host decides when to
-call `syncUntilIdle()`. In the browser deployment the shipped worker host
-contains that scheduler, so you never see it. A headless process is its own
-host: explicit calls (above) cover batch jobs, and a long-running service
-reacts to two callbacks.
+::::step{title="Schedule sync rounds in a long-running service" time="5 min"}
+A batch job skips this step. A `SyncClient` never starts a round itself, and a long-running service is its own host. In the browser the shipped worker host contains the scheduler, so the browser never shows one. A service reacts to two callbacks:
 
-- `onSyncNeeded(reason)`: a wake-up. Startup found queued work, the server's
-  hello requested a sync, or a realtime message announced new commits. Run a
-  round soon.
-- `onSyncIntent(intent)`: the core's exact scheduling instruction, emitted
-  whenever its state changes:
-  - `{ kind: 'interactive' }`: work is queued (for example a local write
-    entered the outbox). Run a round now.
-  - `{ kind: 'background', delayMs }`: the last round failed with a
-    retryable error. Retry after `delayMs`; the core owns the backoff
-    (doubling, capped at 30 seconds).
+- `onSyncNeeded(reason)`: a wake-up. Startup found queued work, the server's hello requested a sync, or a realtime message announced new commits. Run a round soon.
+- `onSyncIntent(intent)`: the core's exact scheduling instruction, emitted whenever its state changes.
+  - `{ kind: 'interactive' }`: work is queued, for example a local write entered the outbox. Run a round now.
+  - `{ kind: 'background', delayMs }`: the last round failed with a retryable error. Retry after `delayMs`. The core owns the backoff, which doubles up to a cap of 30 seconds.
   - `{ kind: 'none' }`: nothing is pending. Cancel any scheduled round.
 
-A host installs the shared scheduler. It coalesces duplicate wake-ups, runs one
-round at a time, replaces an older retry deadline with the newest intent, and
-removes its listeners on stop.
+`installSyncScheduler` is the shared scheduler. It coalesces duplicate wake-ups, runs one round at a time, replaces an older retry deadline with the newest intent, and removes its listeners on stop.
 
-```ts
+```ts title="src/worker.ts"
 import {
   installSyncScheduler,
   installRealtimeSupervisor,
@@ -114,27 +133,17 @@ client.subscribe({
 installRealtimeSupervisor(client);
 ```
 
-The realtime connection makes the callbacks fire while the service sits
-idle: the server announces new commits over the WebSocket, the client
-raises `onSyncNeeded`, and the scheduler pulls them. `installRealtimeSupervisor`
-owns the initial connection, reconnect with bounded backoff, and a catch-up
-sync after reconnect. A custom service loop can call `connectRealtime()` and
-`disconnectRealtime()` directly instead.
+With a realtime connection the callbacks fire while the service sits idle: the server announces new commits over the WebSocket, the client raises `onSyncNeeded`, and the scheduler pulls them. `installRealtimeSupervisor` owns the initial connection, reconnection with bounded backoff, and a catch-up sync after reconnect. A custom service loop can call `connectRealtime()` and `disconnectRealtime()` directly.
 
-The example authenticates the WebSocket with a query parameter because the
-built-in connector uses the standard `WebSocket` constructor. Keep
-long-lived service bearers out of URLs that a proxy may log: mint and verify
-a short-lived ticket instead ([Realtime tickets](/server-realtime-tickets/));
-a rotating flow provides a custom `RealtimeConnector` that obtains one per
-connection attempt. The
-connector requires a global `WebSocket`, which Bun and Node 22.13 or newer
-provide.
+The built-in connector uses the standard `WebSocket` constructor, which Bun and Node 22.13 or newer provide globally and which cannot send headers. The example therefore authenticates the socket with a query parameter. Keep long-lived service bearers out of URLs that a proxy may log. Mint and verify a short-lived ticket ([Realtime tickets](/guide-auth/#realtime-tickets)), and supply a custom `RealtimeConnector` that obtains one per connection attempt when you rotate.
 
-## Query and mutate
+::checkpoint[A commit written by another client reaches the service's replica without a manual `syncUntilIdle()`.]
+::::
 
+::::step{title="Query and mutate" time="3 min"}
 Reads use the local SQLite replica and do not wait for the network:
 
-```ts
+```ts title="src/worker.ts"
 const rows = client.query(
   `SELECT id, starts_at_ms, status
      FROM appointments
@@ -146,7 +155,7 @@ const rows = client.query(
 
 Writes enter the same durable outbox as browser writes:
 
-```ts
+```ts title="src/worker.ts"
 const commitId = client.mutate([
   {
     table: 'appointments',
@@ -159,19 +168,39 @@ await client.syncUntilIdle();
 console.log({ commitId });
 ```
 
-Keep one live client per database file. The default server-side lock assumes a
-single owner and does not coordinate across processes. Enforce ownership with
-your service manager or supply a `LeaderLock` backed by a cross-process lock
-when several processes could open the same path.
+Keep one live client per database file. The default server-side lock assumes a single owner and does not coordinate across processes. Enforce ownership with your service manager, or supply a `LeaderLock` backed by a cross-process lock when several processes could open the same path.
 
-## Idempotent event consumption
+::checkpoint[After `syncUntilIdle()` resolves, the commit appears in the server's commit log and on other clients.]
+::::
 
-Use immutable [domain event rows](/guide-domain-events/) as the work source.
-Keep consumer receipts in a worker-local table. Direct database writes are
-appropriate for this local-only table; never write a synced table through
-`client.database`.
+::::step{title="Shut down cleanly" time="2 min"}
+Stop the scheduler before closing the client and SQLite. `client.close()` aborts an in-flight round and releases the client lock.
 
-```ts
+```ts title="src/worker.ts"
+let shutdownPromise: Promise<void> | undefined;
+
+function shutdown(): Promise<void> {
+  shutdownPromise ??= (async () => {
+    scheduler.stop();
+    await client.close();
+    database.close();
+  })();
+  return shutdownPromise;
+}
+
+process.once('SIGINT', () => void shutdown());
+process.once('SIGTERM', () => void shutdown());
+```
+
+::checkpoint[The process exits on SIGTERM without a held lock on the database file.]
+::::
+:::::
+
+## Advanced: consume event rows idempotently
+
+Use immutable [domain event rows](/guide-domain-events/) as the work source and keep consumer receipts in a worker-local table. Direct database writes suit this local-only table. Never write a synced table through `client.database`.
+
+```ts title="src/worker.ts"
 client.database.exec(`
   CREATE TABLE IF NOT EXISTS worker_receipts (
     event_id TEXT PRIMARY KEY,
@@ -205,35 +234,4 @@ for (const event of pending) {
 }
 ```
 
-The downstream idempotency key covers a crash after the external call and
-before the local receipt insert. The local receipt avoids repeated calls in
-normal operation.
-
-## Clean shutdown
-
-Stop the scheduler before closing the client and SQLite. `client.close()`
-aborts an in-flight round and releases the client lock.
-
-```ts
-let shutdownPromise: Promise<void> | undefined;
-
-function shutdown(): Promise<void> {
-  shutdownPromise ??= (async () => {
-    scheduler.stop();
-    await client.close();
-    database.close();
-  })();
-  return shutdownPromise;
-}
-
-process.once('SIGINT', () => void shutdown());
-process.once('SIGTERM', () => void shutdown());
-```
-
-## Choose the correct server-side surface
-
-A server-side `SyncClient` fits a process that needs a persistent local SQL
-read model with a durable outbox and realtime convergence. Every other
-server-side need (database-less commits, registered queries, commands,
-watches, telemetry, durable post-commit work) is compared in the
-[capability matrix](/guide-remote-operations/#capability-matrix).
+The downstream idempotency key covers a crash after the external call and before the local receipt insert. The local receipt avoids repeated calls in normal operation.

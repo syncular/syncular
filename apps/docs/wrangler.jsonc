@@ -3,8 +3,8 @@
   // at the apex syncular.dev via a zone route over the apex's existing
   // proxied DNS record — a plain worker route rather than a custom domain, so
   // deploys never touch DNS. `dist/` is produced by `bun run build` (astro
-  // build + agent assets); the site serves at the domain root, which is what
-  // its root-absolute links assume.
+  // build, the sync lab built into `dist/demo/`, and agent assets); the site
+  // serves at the domain root, which is what its root-absolute links assume.
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "syncular-docs",
   "main": "./src/worker.ts",

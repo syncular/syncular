@@ -1,54 +1,30 @@
 ---
-// Teletype 404 — served by the Workers static-assets deploy
-// (not_found_handling: "404-page").
-import PageMeta from '../components/PageMeta.astro';
+// Served by the Workers static-assets deploy (not_found_handling:
+// "404-page") for any path that has no page. It renders in the docs shell so
+// a client-side navigation to a missing path swaps in like any other page.
+import Docs from '../layouts/Docs.astro';
 ---
 
-<!doctype html>
-<html lang="en">
-  <head>
-    <PageMeta
-      title="404 — signal lost"
-      description="That path crossed the event horizon and never came back. Return to syncular's offline-first SQL sync documentation."
-      robots="noindex, nofollow"
-    />
-    <link rel="stylesheet" href="/style.css" />
-  </head>
-  <body class="landing-body">
-    <div class="wrap">
-      <div class="statusbar">
-        <span>SYNCULAR TRANSMISSION // OFFLINE-FIRST SQL SYNC</span>
-        <span>SYNC: <span class="ok">NOMINAL</span> · LINK: <span class="ok">WS/OK</span></span>
-      </div>
-      <header class="topnav">
-        <a class="brand" href="/">SYNCULAR<span class="blink">_</span></a>
-        <nav>
-          <a href="/what-is/">DOCS</a>
-          <a href="/blog/">BLOG</a>
-          <a href="/quickstart/">QUICKSTART</a>
-          <a href="https://github.com/syncular/syncular">GITHUB</a>
-        </nav>
-      </header>
-      <div class="rule" aria-hidden="true">{'='.repeat(160)}</div>
-      <main class="landing">
-        <section class="hero" style="text-align:center; padding-top:4rem;">
-          <h1 style="font-size:clamp(3rem,12vw,7rem); margin:0;">404<span>.</span></h1>
-          <p class="sub" style="margin-left:auto; margin-right:auto;">
-            Signal lost. That path crossed the event horizon and never came
-            back. Nothing escapes validation — including broken links.
-          </p>
-          <div class="cta-row" style="justify-content:center;">
-            <a class="btn primary" href="/">[ RETURN TO ORBIT ]</a>
-            <a class="btn" href="/what-is/">[ READ THE DOCS ]</a>
-          </div>
-        </section>
-      </main>
-      <footer class="footer">
-        <div class="rule" aria-hidden="true">{'='.repeat(160)}</div>
-        <div class="row">
-          <span class="end">SYNCULAR · APACHE-2.0 · END OF TRANSMISSION <span class="sq">■</span></span>
-        </div>
-      </footer>
+<Docs
+  title="404"
+  active="404"
+  hub={true}
+  canonicalPath=""
+  robots="noindex, nofollow"
+  description="This path has no page. Return to the Syncular documentation."
+>
+  <section class="relative isolate -mx-5 -mt-8 overflow-hidden px-5 pt-16 pb-24 sm:-mx-8 sm:px-8 lg:-mx-12 lg:px-12">
+    <div class="grid-bg absolute inset-0 -z-10"></div>
+    <div class="halo absolute -top-40 right-0 -z-10 h-[36rem] w-[36rem]"></div>
+    <p class="text-[11px] tracking-[0.18em] text-amber">404 · NO PAGE AT THIS PATH</p>
+    <h1 class="mt-4 text-[3rem] leading-[1.05] font-semibold tracking-[-0.035em] text-ink sm:text-[4.5rem]">404<span class="text-amber">.</span></h1>
+    <p class="mt-5 max-w-[34rem] font-sans text-[16.5px] leading-[1.7] text-dim">
+      The path you followed has no page. Start from the docs home, or search
+      for the page by name.
+    </p>
+    <div class="mt-7 flex flex-wrap gap-3">
+      <a href="/docs/" class="inline-flex h-11 items-center bg-amber px-5 text-[12.5px] font-semibold tracking-[0.12em] text-void hover:bg-[#ffc233]">DOCS HOME →</a>
+      <a href="/" class="inline-flex h-11 items-center border border-line-strong px-5 text-[12.5px] tracking-[0.12em] text-dim hover:text-ink">LANDING PAGE</a>
     </div>
-  </body>
-</html>
+  </section>
+</Docs>

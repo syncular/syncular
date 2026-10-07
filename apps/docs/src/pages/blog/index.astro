@@ -1,59 +1,75 @@
 ---
+// The blog index: the newest post as a framed lead card, the rest as a
+// grid, newest first.
 import type { MarkdownInstance } from 'astro';
 import Blog from '../../layouts/Blog.astro';
+import { type BlogFrontmatter, chaptersOf, formatDate, readingMinutes } from '../../blog';
 
-interface BlogFrontmatter {
-  title: string;
-  description: string;
-  author: string;
-  publishedAt: string;
-}
-
-const modules = import.meta.glob<MarkdownInstance<BlogFrontmatter>>(
-  '../../content/blog/*.md',
-  { eager: true },
-);
-
+const modules = import.meta.glob<MarkdownInstance<BlogFrontmatter>>('../../content/blog/*.md', { eager: true });
 const posts = Object.entries(modules)
   .map(([path, mod]) => ({
     slug: path.split('/').pop()?.replace(/\.md$/, '') ?? '',
+    minutes: readingMinutes(mod.rawContent()),
+    chapters: chaptersOf(mod.getHeadings()).length,
     ...mod.frontmatter,
+    summary: mod.frontmatter.summary ?? mod.frontmatter.description,
   }))
-  .sort((a, b) => b.publishedAt.localeCompare(a.publishedAt));
-
-const formatDate = (value: string) =>
-  new Intl.DateTimeFormat('en', {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    timeZone: 'UTC',
-  }).format(new Date(`${value}T00:00:00Z`));
+  .sort((a, b) => b.publishedAt.localeCompare(a.publishedAt) || b.slug.localeCompare(a.slug));
+const [lead, ...rest] = posts;
 ---
 
 <Blog
   title="Blog"
-  description="Field notes on offline-first writes, sync protocols, local SQLite, and building Syncular."
+  description="Engineering notes on offline writes, sync protocols, local SQLite, and the design decisions behind Syncular."
   canonicalPath="/blog/"
   index
 >
-  <p class="kicker">TRANSMISSIONS FROM THE COMMIT LOG</p>
-  <h1>Blog</h1>
-  <p>
-    Field notes on offline-first writes, protocol design, local SQLite, and
-    the engineering decisions behind Syncular.
-  </p>
+  <section class="relative isolate overflow-hidden border-b border-line">
+    <div class="grid-bg absolute inset-0 -z-10"></div>
+    <div class="halo absolute -top-48 right-0 -z-10 h-[34rem] w-[34rem]"></div>
+    <div class="mx-auto max-w-[76rem] px-5 pt-12 pb-12 sm:px-8 lg:pt-16">
+      <p class="text-[11px] tracking-[0.18em] text-amber">SYNCULAR BLOG · {posts.length} POSTS</p>
+      <h1 class="mt-4 text-[2.1rem] leading-[1.08] font-semibold tracking-[-0.035em] text-ink sm:text-[3rem]">Engineering notes<span class="text-amber">.</span></h1>
+      <p class="mt-5 max-w-[40rem] font-sans text-[16.5px] leading-[1.7] text-dim">
+        Long-form posts on offline writes, sync protocols, local SQLite, and the decisions behind Syncular,
+        each worked through one concrete scenario.
+      </p>
+    </div>
+  </section>
 
-  <div class="blog-list">
-    {posts.map((post) => (
-      <a class="blog-card" href={`/blog/${post.slug}/`}>
-        <div class="blog-card-meta">
-          <time datetime={post.publishedAt}>{formatDate(post.publishedAt)}</time>
-          <span>{post.author}</span>
+  <div class="mx-auto max-w-[76rem] px-5 py-12 sm:px-8 lg:py-16">
+    {
+      lead ? (
+        <a href={`/blog/${lead.slug}/`} class="ticks group block border border-amber/50 bg-amber/[0.035] p-6 transition-colors hover:bg-amber/[0.07] sm:p-8">
+          <span class="tk-b"></span>
+          <p class="flex flex-wrap gap-x-3 gap-y-1 text-[10.5px] tracking-[0.16em] text-amber uppercase">
+            <span>Latest</span><span class="text-faint">·</span>
+            <time datetime={lead.publishedAt}>{formatDate(lead.publishedAt)}</time><span class="text-faint">·</span>
+            <span>{lead.minutes} min read</span><span class="text-faint">·</span><span>{lead.chapters} {lead.chapters === 1 ? 'chapter' : 'chapters'}</span>
+          </p>
+          <h2 class="mt-4 max-w-[48rem] text-[1.5rem] leading-[1.2] font-semibold tracking-[-0.02em] text-ink group-hover:text-amber sm:text-[1.9rem]">{lead.title}</h2>
+          <p class="mt-3 max-w-[44rem] font-sans text-[15.5px] leading-[1.7] text-dim">{lead.summary}</p>
+          <p class="mt-6 text-[11px] tracking-[0.14em] text-ink">READ THE POST →</p>
+        </a>
+      ) : null
+    }
+
+    {
+      rest.length > 0 ? (
+        <div class="mt-5 grid gap-5 md:grid-cols-2">
+          {rest.map((post) => (
+            <a href={`/blog/${post.slug}/`} class="group flex flex-col border border-line bg-void p-6 transition-colors hover:border-amber hover:bg-panel">
+              <p class="flex flex-wrap gap-x-3 gap-y-1 text-[10.5px] tracking-[0.16em] text-faint uppercase">
+                <time datetime={post.publishedAt}>{formatDate(post.publishedAt, 'short')}</time><span>·</span>
+                <span>{post.minutes} min read</span><span>·</span><span>{post.chapters} {post.chapters === 1 ? 'chapter' : 'chapters'}</span>
+              </p>
+              <h2 class="mt-3 text-[1.15rem] leading-[1.3] font-semibold tracking-[-0.01em] text-ink group-hover:text-amber">{post.title}</h2>
+              <p class="mt-2 font-sans text-[14.5px] leading-[1.65] text-dim">{post.summary}</p>
+              <p class="mt-auto pt-5 text-[11px] tracking-[0.14em] text-dim group-hover:text-amber">READ →</p>
+            </a>
+          ))}
         </div>
-        <h2>{post.title}</h2>
-        <p>{post.description}</p>
-        <span class="blog-card-link">READ TRANSMISSION →</span>
-      </a>
-    ))}
+      ) : null
+    }
   </div>
 </Blog>

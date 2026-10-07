@@ -1,0 +1,166 @@
+---
+// The docs home: the path through the sections, a link into the chosen
+// SDK's pages, and a map from the sync model to its concept pages. The
+// stages and their links come from src/nav.ts.
+import Docs from '../layouts/Docs.astro';
+import { nav, navPages, type NavPage } from '../nav';
+import rootPkg from '../../../../package.json';
+
+const page = (slug: string): NavPage => {
+  const found = navPages.find((entry) => entry.slug === slug);
+  if (!found) throw new Error(`docs home links a page missing from nav.ts: ${slug}`);
+  return found;
+};
+const group = (title: string) => {
+  const found = nav.find((entry) => entry.title === title);
+  if (!found) throw new Error(`docs home links a group missing from nav.ts: ${title}`);
+  return found;
+};
+
+const stages = [
+  { kind: 'how-to', label: 'Try it', title: 'See it converge', body: 'Two clients, one server, in a terminal.', pages: ['quickstart', 'demos'].map(page) },
+  { kind: 'concept', label: 'Learn', title: 'Understand the model', body: `${group('Core model').pages.length} concept pages, read in order.`, pages: group('Core model').pages.slice(0, 4), more: group('Core model').pages.length - 4 },
+  { kind: 'how-to', label: 'Build', title: 'Build with your SDK', body: 'The SDK section, then task guides.', pages: ['guide-schema', 'tooling-queries', 'guide-auth'].map(page), sdk: true },
+  { kind: 'how-to', label: 'Ship', title: 'Run your server', body: 'Storage, deployment, operations.', pages: ['guide-server', 'server-storage', 'server-workers', 'server-operations'].map(page) },
+] as const;
+
+const map = [
+  { title: 'Device A', nodes: [['concepts-subscriptions', 'Outbox', 'The write waits here, durable, until it is sent', 'hot'], ['concepts-conflicts', 'Conflicts', 'If the row changed on the server first, the app gets both versions', '']] },
+  { title: 'Your server', nodes: [['concepts-scopes', 'Scopes', 'Your function decides which rows this user may write and read', ''], ['concepts-commits', 'Commits', 'Accepted writes join one ordered log, whole or not at all', 'hot'], ['concepts-schema-upgrades', 'Schema upgrades', 'Old clients reset and keep their outbox', '']] },
+  { title: 'Device B', nodes: [['concepts-bootstrap', 'Bootstrap', 'A new device downloads a snapshot first', 'cool'], ['concepts-realtime', 'Realtime', 'A connected device receives the change over one socket', 'ok'], ['concepts-subscriptions', 'Subscriptions', 'The device only receives rows it subscribed to', '']] },
+] as const;
+
+const kinds = [
+  { kind: 'concept', title: 'How it works', body: 'Diagrams and the reasons behind each mechanism. Read once, in order.' },
+  { kind: 'how-to', title: 'Steps to a result', body: 'Numbered steps with checkpoints and code for your SDK.' },
+  { kind: 'reference', title: 'Look it up', body: 'Tables of options, types, and defaults. Scan, find, leave.' },
+] as const;
+---
+
+<Docs
+  title="Documentation"
+  active="docs"
+  hub={true}
+  description="Syncular documentation: run the quickstart, choose your SDK, then read the Core model, build your app, and run your server."
+>
+  <section class="relative isolate -mx-5 -mt-8 overflow-hidden border-b border-line px-5 pt-12 pb-12 sm:-mx-8 sm:px-8 lg:-mx-12 lg:px-12">
+    <div class="grid-bg absolute inset-0 -z-10"></div>
+    <div class="halo absolute -top-40 right-0 -z-10 h-[36rem] w-[36rem]"></div>
+    <p class="text-[11px] tracking-[0.18em] text-amber">SYNCULAR DOCS · v{rootPkg.version}</p>
+    <h1 class="mt-4 max-w-[44rem] text-[2.1rem] leading-[1.08] font-semibold tracking-[-0.035em] text-ink sm:text-[3rem]">
+      Local SQLite on every device<span class="text-amber">.</span><br /><span class="font-normal text-dim">One log on your server.</span>
+    </h1>
+    <p class="mt-5 max-w-[38rem] font-sans text-[16.5px] leading-[1.7] text-dim">
+      Run the quickstart, choose your SDK in the header, then read the {group('Core model').pages.length} Core
+      model pages. Every page here is a concept, a how-to, or a reference, and says which at the top.
+    </p>
+    <div class="mt-7 flex flex-wrap gap-3">
+      <a href="/quickstart/" class="inline-flex h-11 items-center gap-3 bg-amber px-5 text-[12.5px] font-semibold tracking-[0.12em] text-void hover:bg-[#ffc233]">QUICKSTART →</a>
+      <button type="button" data-search-open class="flex h-11 w-full items-center gap-3 border border-line-strong bg-panel/80 px-4 text-[12.5px] text-faint hover:text-dim sm:w-[22rem]">
+        <span class="text-amber">/</span><span class="flex-1 text-left">Search the docs</span><kbd class="text-[10.5px]">⌘K</kbd>
+      </button>
+    </div>
+  </section>
+
+  <section id="sdk" class="pt-10">
+    <div class="grid gap-3 sm:grid-cols-[1.4fr_1fr_1fr]">
+      <a data-sdk-continue href="/docs/#sdk" class="card !border-amber/60 !bg-amber/[0.04]" hidden>
+        <span class="k !text-amber">YOUR SDK</span>
+        <span class="h">Continue in <span data-sdk-name></span> →</span>
+        <span class="b">Install, first sync, reads and writes, and platform specifics for your SDK.</span>
+      </a>
+      <div class="card !border-amber/60 !bg-amber/[0.04]" data-sdk-none>
+        <span class="k !text-amber">CHOOSE AN SDK</span>
+        <span class="h">Use the SDK menu at the top right ↗</span>
+        <span class="b">The sidebar then lists your platform's pages.</span>
+      </div>
+      <a href="/guide-server/" class="card"><span class="k">RUNNING THE SERVER</span><span class="h">Server setup →</span><span class="b">Bun or Node with Hono, or Cloudflare Workers.</span></a>
+      <a href="/platform-ffi/" class="card"><span class="k">ANOTHER LANGUAGE</span><span class="h">C FFI embedding →</span><span class="b">Five C functions host the Rust core.</span></a>
+    </div>
+  </section>
+
+  <section class="pt-14">
+    <p class="text-[11px] tracking-[0.18em] text-amber">FOLLOW THE PATH</p>
+    <h2 class="mt-3 text-[1.45rem] leading-tight font-semibold tracking-[-0.02em] text-ink">From first sync to production<span class="text-amber">.</span></h2>
+    <div class="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      {
+        stages.map((stage, i) => (
+          <div class:list={['stage', i === 0 && 'ticks']}>
+            {i === 0 ? <span class="tk-b" /> : null}
+            <div class="flex items-baseline justify-between">
+              <span class="num">{String(i + 1).padStart(2, '0')}</span>
+              <span class={`kind ${stage.kind} !text-[9.5px]`}>{stage.label}</span>
+            </div>
+            <p class="mt-3 text-[14px] font-semibold text-ink">{stage.title}</p>
+            <p class="mt-1 font-sans text-[13px] leading-snug">{stage.body}</p>
+            <ul class="mt-3 grid gap-0.5">
+              {'sdk' in stage ? (
+                <li><a data-sdk-continue href="/docs/#sdk" hidden><span class="mk how-to"></span><span data-sdk-name></span> guide</a></li>
+              ) : null}
+              {stage.pages.map((entry) => (
+                <li><a href={`/${entry.slug}/`}><span class={`mk ${entry.kind}`}></span>{entry.title}</a></li>
+              ))}
+              {'more' in stage ? (
+                <li><a href={`/${group('Core model').pages[0]?.slug}/`} class="!text-faint">+ {stage.more} more</a></li>
+              ) : null}
+            </ul>
+          </div>
+        ))
+      }
+    </div>
+    <p class="mt-4 font-sans text-[13.5px]">
+      When you need them: <a href="/concepts-crdt/" class="text-ink underline decoration-amber/55 underline-offset-4">Optional features</a>
+      (CRDT, blobs, encryption, local search, windowed sync) and the
+      <a href="/reference/" class="text-ink underline decoration-amber/55 underline-offset-4">Reference</a>
+      (specifications, CLI, SYQL, benchmarks).
+    </p>
+  </section>
+
+  <section class="pt-16">
+    <p class="text-[11px] tracking-[0.18em] text-amber">THE MODEL ON ONE PAGE</p>
+    <h2 class="mt-3 text-[1.45rem] leading-tight font-semibold tracking-[-0.02em] text-ink">Click any part to read about it<span class="text-amber">.</span></h2>
+    <figure class="fig ticks !mt-6">
+      <span class="tk-b"></span>
+      <div class="fig-head"><span><b>MAP</b> · WHAT HAPPENS TO ONE WRITE</span><span class="hidden sm:inline">EACH BOX IS A CONCEPT PAGE</span></div>
+      <div class="fig-body">
+        <div class="grid grid-cols-1 items-stretch gap-2 md:grid-cols-[1fr_auto_1.2fr_auto_1fr]">
+          {
+            map.map((column, i) => (
+              <>
+                {i > 0 ? (
+                  <div class="flex items-center justify-center py-1 text-[13px] text-amber md:px-1">
+                    <span class="md:hidden">▼ {i === 1 ? 'push' : 'deliver'}</span>
+                    <span class="hidden md:inline">{i === 1 ? 'push' : 'deliver'} ▶</span>
+                  </div>
+                ) : null}
+                <div class="space-y-2">
+                  <p class="text-[10px] tracking-[0.16em] text-faint uppercase">{column.title}</p>
+                  {column.nodes.map(([slug, label, body, tone]) => (
+                    <a href={`/${slug}/`} class:list={['node', tone]}>
+                      <span class="go">→</span><span class="t uppercase">{label}</span>{body}
+                    </a>
+                  ))}
+                </div>
+              </>
+            ))
+          }
+        </div>
+      </div>
+    </figure>
+  </section>
+
+  <section class="pt-10 pb-6">
+    <p class="text-[11px] tracking-[0.18em] text-amber">HOW THESE DOCS ARE BUILT</p>
+    <div class="mt-5 grid gap-3 sm:grid-cols-3">
+      {
+        kinds.map((entry) => (
+          <div class="card">
+            <span class={`kind ${entry.kind} self-start`}>{entry.kind}</span>
+            <span class="h">{entry.title}</span>
+            <span class="b">{entry.body}</span>
+          </div>
+        ))
+      }
+    </div>
+  </section>
+</Docs>

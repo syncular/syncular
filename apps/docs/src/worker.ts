@@ -1,3 +1,5 @@
+import { redirects } from './nav';
+
 interface AssetFetcher {
   fetch(request: Request): Promise<Response>;
 }
@@ -73,6 +75,7 @@ export const referrerHost = (value: string | null | undefined) => {
 
 const sectionFor = (pathname: string) => {
   if (pathname === '/') return 'landing';
+  if (pathname === '/demo' || pathname.startsWith('/demo/')) return 'demo';
   if (pathname === '/blog/' || pathname === '/blog') return 'blog_index';
   if (pathname.startsWith('/blog/')) return 'blog_article';
   return 'docs';
@@ -340,23 +343,27 @@ const respondWithHeaders = (
   });
 };
 
-// Pages that moved or merged keep their old URLs alive here.
-const redirects = new Map([
-  ['/guide-client/', '/platform-web/'],
-  ['/guide-web-desktop/', '/platform-tauri/'],
-]);
+// Pages that moved or merged keep their old URLs alive: `/old/`, `/old`, and
+// the Markdown copy `/old.md` all answer 301 to the page in `redirects`.
+const redirectFor = (pathname: string, origin: string) => {
+  const slug = pathname.replace(/^\/|\/$/g, '').replace(/\.md$/, '');
+  const target = Object.hasOwn(redirects, slug) ? redirects[slug] : undefined;
+  if (target === undefined) return undefined;
+  const [path = '/', hash] = target.split('#');
+  const location = pathname.endsWith('.md')
+    ? `${path.replace(/\/$/, '')}.md`
+    : hash === undefined
+      ? path
+      : `${path}#${hash}`;
+  return Response.redirect(new URL(location, origin), 301);
+};
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
-    const redirectTarget =
-      redirects.get(url.pathname) ??
-      redirects.get(`${url.pathname}/`) ??
-      undefined;
-    if (redirectTarget !== undefined) {
-      return Response.redirect(new URL(redirectTarget, url.origin), 301);
-    }
+    const redirect = redirectFor(url.pathname, url.origin);
+    if (redirect !== undefined) return redirect;
 
     if (url.pathname === '/_analytics/read' && request.method === 'POST') {
       return articleReadResponse(request, env);

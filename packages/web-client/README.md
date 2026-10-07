@@ -284,7 +284,7 @@ stable code-like values (`A-Z`, `a-z`, `0-9`, dot, underscore, dash).
 During Vite development, retain the React client resource only while its
 captured generated schema version and published Syncular runtime identity both
 match. The
-[schema-and-runtime-aware Vite guide](https://syncular.dev/guide-vite/) uses
+[schema-and-runtime-aware Vite guide](https://syncular.dev/platform-web-install/#configure-vite) uses
 `retainViteSyncClientResource` to close the old worker before constructing a
 schema-bump or package-upgrade replacement; hot-reloading query code alone does
 not migrate the worker-owned database.

@@ -2,11 +2,16 @@
 
 The documentation site — an **Astro** static site. Documentation Markdown in
 `src/content/` plus the `src/nav.ts` manifest renders through
-`src/pages/[slug].astro` into the teletype layout. Blog Markdown lives in
+`src/pages/[slug].astro` into the docs shell (`src/layouts/Docs.astro`, styled
+by `src/docs.css`). `src/nav.ts` holds the sidebar groups, each page's type
+(concept, how-to, reference) and `advanced` flag, the SDK list that drives the
+header switcher, and `redirects` for slugs that moved or merged; the Worker
+answers those with a 301. Adding an SDK sub-page is one `pages` entry on its
+`sdks` item. The docs home is `src/pages/docs.astro`. Blog Markdown lives in
 `src/content/blog/`, with an index at `/blog/` and one static page per post;
 the landing page is `src/pages/index.astro`. Syntax highlighting is Shiki at
 build time (`css-variables` theme, colored by the palette in
-`public/style.css`), so the published site ships no highlighter JavaScript.
+`src/docs.css`), so the published site ships no highlighter JavaScript.
 
 Search is built in. `src/pages/search-index.json.ts` splits every content page
 at its h1–h3 headings into a static `/search-index.json` (about 150 KB
@@ -31,7 +36,7 @@ bun run build     # astro build + agent assets -> dist/
 bun run dev       # astro dev at http://localhost:3100
 ```
 
-`dist/` is a plain static bundle: one directory per page, `style.css`, and
+`dist/` is a plain static bundle: one directory per page, the bundled CSS, and
 self-hosted `fonts/` (IBM Plex Mono woff2 — no CDN at runtime). Nothing about
 it is host-specific except the path: internal links, the search index, and
 search results are root-absolute, so the site must serve at a domain root.
@@ -39,6 +44,13 @@ search results are root-absolute, so the site must serve at a domain root.
 The repository root `package.json` is the release-version authority. Source
 install snippets use `0.0.0`; the Markdown processor, landing page, and agent
 asset generator reflect the root version into `dist/` during the build.
+
+`bun run build` also builds the sync lab from `apps/demo` into `dist/demo/`
+(`build-static.ts dist/demo`), served at `/demo/`. The lab uses page-relative
+URLs, so it is the one part of the site that does not assume the domain root.
+Links into `/demo/` do a full page load: `PageMeta.astro` marks them
+`data-astro-reload` on click, because the lab is a separate document with its
+own scripts and workers.
 
 ## Deploy — Cloudflare Workers (static assets)
 

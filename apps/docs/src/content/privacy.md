@@ -1,14 +1,17 @@
 # Privacy
 
-Syncular does not use analytics cookies, fingerprint visitors, or create user
-profiles. The documentation site records privacy-conscious, aggregate traffic
+This page is for visitors to syncular.dev and states what the documentation site
+records about them. The site does not use analytics cookies, fingerprint visitors, or create user
+profiles. The documentation site records aggregate traffic
 and reading signals in Cloudflare Workers Analytics Engine so the maintainers
 can understand which documentation and articles are useful.
+
+::meta{for="Visitors to syncular.dev" time="1 minute"}
 
 For an HTML page request, the analytics dataset stores the page path, referring
 hostname (never the referring URL), two-letter country code, broad device class,
 HTTP status, site section, Cloudflare cache outcome, and sanitized
-`utm_source`, `utm_medium`, and `utm_campaign` values. It does **not** store IP
+`utm_source`, `utm_medium`, and `utm_campaign` values. It does not store IP
 addresses, full user-agent strings, cookies, account IDs, or any other stable
 visitor identifier.
 

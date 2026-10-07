@@ -145,7 +145,7 @@ Grant the plugin's default permission in a capability
 ```
 
 Generate the schema module using the
-[existing-project setup](https://syncular.dev/guide-schema/#add-syncular-to-an-existing-project),
+[existing-project setup](https://syncular.dev/add-to-existing-app/),
 then create the client in the webview:
 
 ```ts

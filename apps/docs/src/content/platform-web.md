@@ -1,492 +1,95 @@
-# Web (browser)
+# Browser
 
-The browser client runs the whole core in a Web Worker on SQLite (WASM) over
-OPFS, with the page holding a thin RPC handle: a persistent, offline-capable
-local database that syncs in the background.
+`@syncular/client` runs the whole sync core in a Web Worker on SQLite (WASM)
+over OPFS. The page holds a promise-based handle to it. This overview shows how
+the pieces connect and the calls of a first sync; the pages after it cover each
+task.
 
-The client core (`@syncular/client`) is plain library code: storage behind a
-`ClientDatabase`, network behind transport seams, multi-tab ownership behind a
-leader lock. Local SQL is the query API: you read your own tables directly.
+::meta{for="Web app developers using the TypeScript client" runs="TypeScript core in a Web Worker, SQLite WASM on OPFS" package="`@syncular/client`" threading="Core in the worker; page calls are promises over postMessage" time="4 minutes"}
 
-## Transport gate
+:::terms
+- **Handle**: The object `createSyncClientHandle` returns. It exposes the `SyncClient` API as promises.
+- **Leader**: The one tab per origin that owns the worker, the database, and the socket.
+- **Follower**: Any other tab. It proxies calls to the leader over a `BroadcastChannel`.
+- **OPFS**: The browser's origin private file system, where the SQLite file lives.
+:::
 
-Direct clients accept `transportEnabled: false` at construction and expose
-`setTransportEnabled(enabled)`. Worker clients accept the same initial option
-and retain `setOffline(offline)`, which controls the core gate. Closed transport
-keeps authorized SQLite reads and queued local commits available, refuses new
-network work with `sync.offline`, and suspends automatic retry scheduling.
-Resume emits one interactive wake. An already-started round finishes its atomic
-apply; the client closes realtime afterwards and sends no follow-up while paused.
-The gate is independent of security preflight and defaults open on each new
-client instance. Install fresh transport headers before resuming.
+## How the pieces connect
 
-## Install
+:::figure{title="The browser SDK" note="One core per origin" ticks}
+<div class="d-row">
+<div class="d-stack">
+<div class="node hot"><span class="t">Page · each tab</span>Your UI calls <code>handle.query</code>, <code>handle.mutate</code></div>
+<div class="node"><span class="t">Follower tabs</span>Proxy the same API to the leader over <code>BroadcastChannel</code></div>
+</div>
+<span class="d-arrow"></span>
+<div class="d-box">
+<p class="d-label">Leader tab · Web Worker</p>
+<div class="d-stack">
+<div class="node hot"><span class="t">SyncClient</span>Outbox, subscriptions, sync rounds</div>
+<div class="node ok"><span class="t">SQLite WASM</span><code>opfs-sahpool</code> file: rows, cursors, outbox</div>
+</div>
+</div>
+<span class="d-arrow"></span>
+<div class="node cool"><span class="t">Your server</span><code>fetch</code> for <code>/sync</code>, segments, blobs; one WebSocket for realtime</div>
+</div>
 
-```sh
-bun add @syncular/client   # or: npm install @syncular/client
-```
+::caption[The leader tab holds a Web Locks lock, spawns the worker, and runs the only sync loop, WebSocket, and OPFS connection for the origin. A follower promotes in place when the leader closes.]
+:::
 
-## Persistent worker lifecycle
+The worker entry is one line, `startSyncWorker()` from
+`@syncular/client/worker`. The page side is `createSyncClientHandle`, which
+takes a factory so the bundler sees `new Worker(new URL(...))` at the call site.
+`opfs-sahpool` needs no COOP/COEP headers and no `SharedArrayBuffer`.
 
-The worker holds a Web Lock for its OPFS directory while its SQLite access
-handles are open. Closing the database pauses the SAH pool before releasing that
-lock. Page teardown terminates the worker, including a worker still bootstrapping;
-the next document waits for the physical owner to release its handles. A live
-second tab uses the existing leader/follower state and can take over after the
-leader closes or reloads.
+## First sync in four calls
 
-Worker RPCs continue serving local mutations and queries while a sync response
-is pending. Commits authored after request capture enter the next round.
+[Install & first sync](/platform-web-install/) walks through the setup and the
+generated schema. The shape of the calls:
 
-## The architecture: whole core in a worker
-
-There is one persistent browser mode, and it is the default: the entire
-client core (`SyncClient`, the fetch/WebSocket transports, and SQLite on the
-`opfs-sahpool` VFS) runs inside a Web Worker. SAHPool needs no COOP/COEP
-headers and no SharedArrayBuffer. The UI thread drives the worker through a
-thin postMessage RPC handle.
-
-The worker bundle is one line that boots the whole core:
-
-```ts
-// worker.ts
-import { startSyncWorker } from '@syncular/client/worker';
-startSyncWorker();
-```
-
-On the main thread, `createSyncClientHandle` spawns that worker and returns
-the handle. Generate the imported schema module first using the
-[existing-project setup](/guide-schema/#add-syncular-to-an-existing-project).
-The scaffolded templates already include the schema inputs.
-
-```ts
-// main thread
+```ts title="src/sync.ts"
 import { createSyncClientHandle } from '@syncular/client';
 import { schema } from './syncular.generated';
 
+// 1. Create: spawns the worker and opens the OPFS database.
 const handle = await createSyncClientHandle({
   worker: () => new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }),
   schema,
-  database: { mode: 'persistent', name: 'my-app' }, // OPFS, survives reloads while the origin remains stored
-  endpoints: {
-    syncUrl: '/sync',
-    segmentsUrl: '/segments',
-    realtimeUrl: 'wss://example.com/realtime?clientId={clientId}',
-  },
-  autoSync: true,
+  database: { mode: 'persistent', name: 'my-app' },
+  endpoints: { syncUrl: '/sync', segmentsUrl: '/segments' },
 });
-```
 
-Pass `headers` (for example `Authorization`) to authenticate sync, segment,
-and blob requests, and rotate them with `handle.setHeaders(...)`. The
-realtime socket authenticates by cookie or ticket; see
-[Authentication](/guide-auth/#browser-send-and-rotate-the-header). Set
-`realtimePolicy: 'required'` when the socket is the designated sync path:
-sync then refuses a round with `RealtimeUnavailableError` instead of using
-`POST /sync` while the socket is not connected
-([Realtime](/concepts-realtime/#required-realtime)).
-
-The handle exposes the same logical API as `SyncClient` (`subscribe` /
-`mutate` / `sync` / `query` / conflicts / …), every method a promise. It
-acquires the Web Locks leader lock before spawning the worker, so there is one
-core per origin. Wake-ups are handled inside the worker (with `autoSync` the worker
-IS the sync host); the main thread gets `onSyncNeeded` / `onConflict` /
-`onSynced` events for rendering.
-
-## Eviction-resistant storage
-
-OPFS survives ordinary reloads, but it uses the origin's best-effort storage
-bucket unless the browser grants persistence. Browser storage pressure may
-evict a best-effort origin, deleting the SQLite database and any pending
-outbox commits together.
-
-Check the state at startup. Request persistence from a user action near the
-first important offline write or when the user enables offline work:
-
-```ts
-import {
-  checkBrowserStoragePersistence,
-  requestBrowserStoragePersistence,
-} from '@syncular/client';
-
-let storagePersistence = await checkBrowserStoragePersistence();
-
-protectOfflineDataButton.addEventListener('click', async () => {
-  storagePersistence = await requestBrowserStoragePersistence();
-  renderStoragePersistence(storagePersistence);
-});
-```
-
-Both functions return `{ state: 'persistent' }` or a structured
-`{ state: 'best-effort', reason }` result. A denial is a valid browser policy
-decision, so the database remains available. Show a visible warning whenever
-the result is best effort and `pendingCommits()` is non-empty. Applications
-whose offline writes cannot accept that risk should disable offline mutation
-until persistence is granted.
-
-Persistence applies to the origin's storage as a whole. It reduces automatic
-eviction risk but cannot prevent a user from clearing site data. See the
-[browser persistence API](https://developer.mozilla.org/en-US/docs/Web/API/StorageManager/persist)
-and [storage eviction criteria](https://developer.mozilla.org/en-US/docs/Web/API/Storage_API/Storage_quotas_and_eviction_criteria).
-
-## Reads & writes
-
-Reads are local SQL against your own tables; every write goes through
-`mutate`, which queues it in the outbox:
-
-```ts
+// 2. Subscribe: which rows this device receives.
 await handle.subscribe({ id: 'todos', table: 'todos', scopes: { list_id: ['groceries'] } });
-await handle.syncUntilIdle();
 
-const rows = await handle.query('SELECT id, title FROM todos ORDER BY id');
+// 3. Write: visible to local reads at once, queued in the outbox.
 await handle.mutate([
-  { table: 'todos', op: 'upsert', values: { id: crypto.randomUUID(), list_id: 'groceries', title: 'hi', done: false } },
+  { table: 'todos', op: 'upsert', values: { id: crypto.randomUUID(), list_id: 'groceries', title: 'Hello', done: false } },
 ]);
+
+// 4. Sync: push the outbox, pull new rows.
+await handle.syncUntilIdle();
 ```
 
-For typed reads (generated `.sql` queries) see
-[Named queries](/tooling-queries/). For React live queries see
-[React](/platform-react/). During development, use the
-[schema-aware Vite owner recipe](/guide-vite/#keep-one-schema-and-runtime-correct-persistent-owner-during-hmr)
-so query HMR cannot outpace the worker's generated schema; the
-[official React example](https://github.com/syncular/syncular/blob/main/apps/demo-react/src/frontend/main.tsx)
-uses that exact record.
+:::warning{title="Use a persistent database"}
+`database: { mode: 'persistent' }` keeps rows, cursors, and the outbox across
+reloads. The origin's storage is best-effort until the browser grants
+persistence; [Platform specifics](/platform-web-specifics/#eviction-resistant-storage)
+covers the check and the request.
+:::
 
-Schema-declared [local FTS5 projections](/tooling-local-search/) are ordinary
-local read targets too. They are built and maintained inside the worker-owned
-SQLite database and invalidate through their synced owner table.
+## The pages of this SDK
 
-### Authoring value validation
+| Page | Type | You get |
+|---|---|---|
+| [Install & first sync](/platform-web-install/) | How-to | The package, the worker, the Vite config, and a first round against a server. |
+| [Reads & writes](/platform-web-reads-writes/) | How-to | Subscriptions, local SQL reads, `mutate`, and the validation rules for authored values. |
+| [Realtime & lifecycle](/platform-web-realtime/) | How-to | The realtime supervisor, the transport gate, sync progress, offline replay, and HMR handoff. |
+| [Platform specifics](/platform-web-specifics/) | Reference | Persistent worker lifecycle, eviction-resistant storage, multi-tab, support floor, ephemeral and Node modes. |
+| [Troubleshooting](/platform-web-troubleshooting/) | Reference | Segment transport failures, storage failures, and links to the shared failure catalog. |
 
-`mutate` and `patch` validate every supplied value against the declared column
-type before the call records anything, so a wrong type, an absent required
-column, a non-finite float, or a malformed byte envelope rejects with
-`sync.invalid_request`. The rejected call appends no outbox commit, writes no
-optimistic row, publishes no revision, and emits no event.
-
-Host values keep the normalizations this surface documents: a `bigint` within
-the safe-integer range for an `integer` column and `0`/`1` for a `boolean`
-column, so a row read straight off the local mirror feeds back into `mutate`. A
-`bytes` or `crdt` column takes a `Uint8Array` or the canonical
-`{"$bytes": "<hex>"}` envelope with one key and an even number of hexadecimal
-digits; uppercase digits are accepted and lowercase digits are emitted.
-
-A commit that an earlier version persisted with a value the current codec
-refuses leaves the outbox at the startup or reset reconciliation boundary,
-before any replay, with a rejection whose code is `sync.outbox_incompatible`
-and whose `details.reason` is `invalid_stored_values`. The commit's operation
-envelope stays in the journal when its stored shape is representable; a
-malformed envelope is omitted so the journal keeps a canonical shape. Commits
-behind the recovered one survive and drain.
-
-## Ephemeral mode (explicit, in-memory)
-
-The only main-thread mode is ephemeral: `openWasmDatabase()` returns an
-in-memory sqlite-wasm database for tests, demos, and SSR. Memory storage is
-wiped on every reload by design.
-
-```ts
-import { SyncClient } from '@syncular/client';
-import { openWasmDatabase } from '@syncular/client/wasm';
-
-const client = new SyncClient({ database: await openWasmDatabase(), schema, /* … */ });
-```
-
-`openPersistentWasmDatabase` refuses to run on the main thread; this enforces
-the whole-core-in-a-worker architecture.
-
-## Transports
-
-The browser bindings are `fetch`/WebSocket wrappers over the protocol
-([SPEC §1.1](https://github.com/syncular/syncular/blob/main/docs/SPEC.md)):
-
-- `httpSyncTransport(syncUrl)`: `POST /sync` with protocol bodies.
-- `httpSegmentDownloader(segmentsUrl)`: direct segment download plus the
-  signed-URL capability.
-- `httpBlobTransport(blobsUrl)`: blob upload/download ([Blobs](/concepts-blobs/)).
-- `webSocketRealtimeConnector(realtimeUrl)`: the realtime channel.
-
-The worker handle wires all of them for you from the `endpoints` config; you
-only construct transports by hand when building a direct `SyncClient`.
-
-## The realtime supervisor
-
-Install the supervisor after registering subscription intent:
-
-```ts
-import {
-  browserConnectivitySignal,
-  documentLifecycleSignal,
-  installRealtimeSupervisor,
-  realtimeSupervisorSnapshot,
-  subscribeRealtimeSupervisor,
-} from '@syncular/client';
-
-await handle.subscribe({ id: 'todos', table: 'todos', scopes });
-installRealtimeSupervisor(handle, {
-  connectivity: browserConnectivitySignal(),
-  lifecycle: documentLifecycleSignal(),
-  // For encrypted/locked apps, also pass the host's protection signal. An
-  // explicit signal fails closed until it reports `active`.
-});
-```
-
-The supervisor owns initial connect, socket-close reconnect, bounded retry
-with jitter, background/offline suspension, cancellation on close, and an
-explicit catch-up before publishing `connected`. Render local rows
-immediately instead of blocking startup on a network promise.
-
-`browserConnectivitySignal()` observes online/offline and
-`documentLifecycleSignal()` observes visibility and page lifecycle. React
-Native hosts pass an `AppState`-backed signal; protected applications pass a
-signal that publishes `preflight` before draining keys. Unknown browser
-connectivity remains connectable, while an explicit protection signal remains
-suspended until it is `active`.
-
-```ts
-const off = subscribeRealtimeSupervisor(handle, renderConnectionState);
-const state = realtimeSupervisorSnapshot(handle);
-// idle | connecting | connected | retrying | offline | background |
-// protected | unsupported | stopped
-```
-
-The snapshot contains only the bounded phase, attempt, and library-owned
-retry delay; transport errors, URLs, identities, and headers are never copied
-into it. The lower-level `connectRealtime()` and `disconnectRealtime()`
-remain available for custom hosts and are idempotent and single-flight:
-repeated or concurrent connects cannot orphan another socket.
-
-After connection, deltas arrive over the socket and server wake-ups raise an
-immediate sync intent. With `autoSync`, the worker owns coalescing those
-intents; the page reacts to revisioned changes and re-queries. The supervisor
-is still required for reconnect policy. Under the default `optional` policy,
-an HTTP round runs whenever the socket is absent, so continuous convergence
-still needs a host event, deadline, or explicit command to start that round;
-`realtimePolicy: 'required'` refuses the round instead
-([Realtime](/concepts-realtime/#required-realtime)). On a direct `SyncClient`,
-provide `onSyncNeeded` and run `sync()` when it fires.
-
-## Offline replay
-
-Take the network away and keep calling `mutate`: the outbox accumulates
-and your local reads stay live. On reconnect, the next sync drains the outbox
-with [idempotent retry](/concepts-commits/); applied commits leave the outbox,
-conflicts and rejections surface. Nothing is lost across a schema upgrade: the
-outbox is schema-agnostic and re-encodes at send time. Whole-origin deletion or
-eviction is outside that guarantee; use the persistence setup above and warn
-while best-effort storage holds pending commits.
-
-The [demo app](https://github.com/syncular/syncular/tree/main/apps/demo)
-exercises all of this live: two panes with offline toggles, a pending-commit
-counter, surfaced conflicts, and file attachments.
-
-## Multi-tab
-
-`createSyncClientHandle` gives N tabs one core by default: the tab holding
-the Web Locks leader lock spawns the worker (one sync loop, one WebSocket,
-one OPFS database), and every other tab becomes a follower proxying the
-identical async API over BroadcastChannel, with the leader's events fanned
-out to all tabs. When the leader closes, a follower promotes in place over
-the same OPFS database: the handle object survives, `role` flips to
-`'leader'`, and `onRoleChange` fires, so a React provider keeps a stable
-reference. All tabs share the leader's one connection, so a device is exactly
-one presence peer.
-
-Followers check that the leader is alive by probing it. A follower that has
-heard nothing from the leader for a third of `followerCallTimeoutMs` (default
-10 s) posts a probe on the channel, and the leader tab answers it from its
-message handler. Browsers throttle the timers of hidden tabs but still deliver
-their channel messages, so a leader in a background tab keeps every visible
-follower working. When a probe stays unanswered for the rest of
-`followerCallTimeoutMs`, `handle.leadership` becomes `blocked` with reason
-`leader-unreachable` and code `client.follower_timeout`, and calls reject
-immediately; a leader tab that processes no messages (hung or frozen) reaches
-this state within `followerCallTimeoutMs`. A blocked follower keeps probing and
-rebinds when the leader answers. A forwarded call has no deadline of its
-own: the leader's core can run a follower's `setWindow` after a long
-bootstrap download, and the follower waits for it while the leader answers
-probes. The call rejects when the link blocks or another leader takes over.
-A visible tab never takes leadership from a hidden leader: leadership moves
-only when the leader tab closes and its Web Lock passes to a follower.
-
-Tabs of different builds never serve each other. Each tab sends its
-`MULTI_TAB_PROTOCOL_VERSION` and schema version with every message. A
-follower whose leader differs becomes `blocked` with reason
-`leader-incompatible`, code `client.leader_incompatible`, and `leader:
-'older'` or `'newer'`. A leader that hears from a newer tab closes its core
-and releases the lock, so the newer tab promotes and the older one stays
-blocked until it reloads. Tabs running 0.29.1 or older send no version and
-never step down; reload or close them.
-
-Pass `multiTab: false` to opt out: a losing tab is then a
-`role === 'follower'` handle whose calls reject with `client.not_leader`, a
-defined state your code can detect and render. Use this when your app must
-run in exactly one tab and any second tab should show a "already open
-elsewhere" screen.
-
-## Windowed sync
-
-The client can hold a partial local replica: set the live scope values
-with `setWindow(base, units)` and syncular bootstraps what enters and evicts
-what leaves, with a completeness oracle (`windowState`) that flags a query
-over un-held data as partial. See
-[Windowed sync](/concepts-windowing/).
-
-## Authorized local purge
-
-Direct clients and worker/multi-tab handles expose
-`purgeLocalData({ purgeId, targets })`. Use it only after validating a
-server-authoritative revocation directive and gating subscriptions that could
-download the rows again. The client removes matching rows, FTS documents,
-unsafe pending commits, and blob references atomically. See
-[Authorized local purge](/concepts-local-data-purge/).
-
-For quarantine-before-data, create the direct client or Worker handle with
-`securityPreflight: true`; the lifecycle is defined in
-[Authorized local purge](/concepts-local-data-purge/). A follower request
-applies to the one shared origin leader.
-
-## Node and Bun backends
-
-The same core runs outside the browser (a CLI, a plain Node service, an
-Electron main process) by swapping the database backend for
-`openSqliteDatabase()` from `@syncular/client/sqlite`. The
-[quickstart](/quickstart/) runs this shape in a terminal, and
-[Server-side sync clients](/guide-server-clients/) covers the complete
-service lifecycle.
-
-## Browser support
-
-There is a single support floor and a single persistence path:
-
-- Persistence is OPFS via `opfs-sahpool`. It needs no COOP/COEP headers and
-  no SharedArrayBuffer.
-- Browsers without OPFS (~pre-2023) are unsupported:
-  `openPersistentWasmDatabase` throws immediately on them.
-- OPFS is the only persistence path. The client does not touch IndexedDB, and
-  a wa-sqlite/absurd-sql style fallback is not planned.
-- OPFS starts in the origin's best-effort storage bucket. Use
-  `checkBrowserStoragePersistence()` and a user-triggered
-  `requestBrowserStoragePersistence()` call to establish and surface the
-  browser's durability decision.
-- Persistent worker startup retries retryable `client.storage_busy` up to six
-  times after the first attempt, retaining its leader lease and opening the same
-  directory. Retry delays are 50, 100, 200, 400, 800, and 1000 ms. Browser
-  scheduling and storage operations can extend the 2550 ms total delay.
-- If ownership remains unavailable, handle creation rejects with
-  `client.storage_busy` and releases the worker and leader lease. Close the
-  competing instance, then create the handle again. Never wipe the database
-  because its live owner has not released it. Direct database opens remain
-  single attempts.
-- Other startup errors fail immediately. Missing or obsolete OPFS APIs use
-  non-retryable `client.storage_unavailable`.
-
-### Interrupted writes
-
-The persistent browser binding enables SQLite's rollback-journal recovery before
-the first SQL statement. It corrects the SAH-pool VFS's reserved-lock callback,
-which otherwise reports an active writer after a worker crash and suppresses
-recovery. The database format and DELETE/FULL journal settings remain unchanged.
-The correction applies when opening existing replicas as well as new replicas.
-
-Browser regression tests interrupt image bootstrap during download, before
-import, during a physical database write, after import and after the subscription
-checkpoint. They reload within the same browser session and check SQLite integrity,
-FTS integrity, rows and checkpoint recovery. Separate contention tests require
-successful startup when another owner closes during retry and a bounded
-`client.storage_busy` failure while that owner remains live. Both preserve the
-replica identity and pending outbox. Existing corruption with a lost or
-overwritten journal requires separate recovery.
-
-### Live sync progress
-
-Subscribe to `client.onProgress(listener)` on a direct client or worker handle.
-The callback receives the latest snapshot immediately when one exists, then
-updates during download and import. It returns an unsubscribe function.
-
-```ts
-const unsubscribe = client.onProgress((progress) => {
-  console.log(progress.phase, progress.bytesReceived, progress.rowsProcessed);
-});
-```
-
-`progressSnapshot()` returns the cached value synchronously. `attempt` identifies
-one sync round. `phase` is `request`, `download`, or `import`; `state` is `running`,
-`complete`, or `failed`. The snapshot names the current `subscriptionId`, `table`,
-and optional `segmentId`. `bytesTotal` and `rowsTotal` are absent when unknown.
-Counters reset when the payload changes or a new attempt starts.
-
-`rowsProcessed` reports work inside an import transaction, including rows that a
-failure can roll back. `complete` follows checkpoint persistence and optimistic
-read-model reconciliation for that round. It does not mean every subscription
-has finished bootstrap. Failures retain the last counters and set `errorCode`.
-A failure that scheduled a background retry also sets `retryDelayMs`, the
-retry's delay: 250 ms, doubling per consecutive failure up to 30,000 ms.
-Unsubscribing stops observations and leaves sync running.
-
-React views can call `useSyncProgress(client)` from `@syncular/react`. The hook
-subscribes to the same events and releases its listener on unmount. Tauri and
-React Native client handles expose the same listener and snapshot methods.
-
-## Where to go next
-
-- [React](/platform-react/): live queries and the hook surface over this client.
-- [Realtime](/concepts-realtime/): the connect-then-sync boot order and wake-ups.
-- [Named queries](/tooling-queries/): typed `.sql` reads on every platform.
-- [Local full-text search](/tooling-local-search/): offline FTS5 over synced rows.
-- [`@syncular/client` README](https://github.com/syncular/syncular/tree/main/packages/web-client): the full API reference, including blob caching and the RPC protocol.
-
-## Snapshot API migration
-
-This source-breaking revision uses methods for application reads across the
-direct client, worker leaders and followers, Tauri, and React Native. Replace
-`client.conflicts`, `client.rejections`, and `client.securityLifecycle` on the
-direct client with method calls. Replace `schemaFloor`, `leaseState`,
-`upgrading`, and `syncNeeded` getters or bridge methods with fields from one
-`statusSnapshot()` call:
-
-```ts
-const status = await client.statusSnapshot();
-if (status.schemaFloor) showUpgradeRequired(status.schemaFloor);
-const conflicts = await client.conflicts();
-const outcome = await client.commitOutcome(commitId);
-```
-
-The direct client returns snapshots synchronously. Worker and native bridges
-return promises; `await` works with both. `querySnapshot` returns rows, coverage,
-and revision from one read. `diagnosticsSnapshot`, `commitOutcome`,
-`commitOutcomes`, and `resolveCommitOutcome` retain their existing arguments.
-The shared `ClientSnapshotMethods` and `PromiseMethods` types describe these
-contracts. Key-bearing security activation stays on each concrete host type.
-
-React uses the supplied client directly; `useSyncClient()` preserves its
-identity. Remove imports of `normalizeClient` and the
-`@syncular/client/realtime-supervisor-observation` forwarding utility. Pass the
-client to `SyncProvider` and use `realtimeSupervisorSnapshot(client)` to inspect
-an attached supervisor. Custom React clients must implement the snapshot
-methods and method-form collection reads. See the [React migration](/platform-react/)
-for the `onEnqueued` callback rename.
-
-## Segment transport failures
-
-`httpSegmentDownloader` reports rejected fetches and interrupted response bodies
-as retryable `sync.transport_failed`. `ClientSyncError.details` contains `path`,
-`causeMessage` and `httpStatus` when a response arrived. The path omits URL
-credentials, query parameters and fragments. Worker and follower RPC preserve
-these details. Treat cause messages as operator evidence; they come from the
-runtime and are outside the redacted diagnostics contract.
-
-A direct endpoint's JSON error retains the server's code and retry policy with
-the request path and HTTP status. A failed signed URL carries
-`sync.transport_failed` and invalidates the descriptor. The client aborts that
-transfer; the next pull obtains a fresh grant.
-
-
-## Local storage failures
-
-SQLite exhaustion raises non-retryable `client.storage_full` on browser, Bun,
-Node and native clients. `details.sqliteCode` retains the numeric SQLite code;
-`details.sqliteMessage` retains the first driver message. Cleanup failures
-appear only in `details.rollbackFailure`. The core reconciles the transaction
-before another import. Restore capacity before requesting sync again. The
-client keeps its replica and pending writes.
+The model behind the calls is shared across SDKs:
+[Subscriptions & the outbox](/concepts-subscriptions/) defines it once. For
+React hooks over this client, see [React](/platform-react/). The
+[`@syncular/client` README](https://github.com/syncular/syncular/tree/main/packages/web-client)
+documents the full API, including blob caching and the RPC protocol.

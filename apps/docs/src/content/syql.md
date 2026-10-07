@@ -1,24 +1,69 @@
 # SYQL
 
-SYQL is SQLite for named, typed, reactive reads, with a small amount of checked
-sugar for optional filters, reusable predicates, finite sort choices, bounded
-limits, and synchronization coverage.
+SYQL is SQLite for named, typed, reactive reads, plus checked syntax for
+optional filters, reusable predicates, finite sort choices, bounded limits, and
+synchronization coverage. You need it when a query's shape depends on optional
+inputs, or when a screen must know that the rows it shows are fully synced.
+This page is the language reference for developers who write `.syql` files.
+
+::meta{for="App developers who write named queries" time="Reference" first="tooling-queries" spec="2"}
+
+:::terms
+- **Presence**: Whether the caller supplied an optional input. Generated targets keep presence separate from SQL `NULL`.
+- **`when` conjunct**: A `WHERE` or `HAVING` term that exists only when its input is present.
+- **Sort profile**: A named, complete `ORDER BY` that a runtime sort choice selects.
+- **Sync coverage**: The claim that every scope unit a query reads has a complete local window.
+- **QueryIR**: The target-neutral compiled form that every SDK output consumes.
+:::
+
+## SQL or SYQL
+
+Write a plain `.sql` query when the statement is fixed. Write `.syql` when one
+of these applies:
+
+| You need | SYQL gives you |
+|---|---|
+| A filter that applies only when the caller supplies it | `when(x)` conjuncts with presence-aware inputs |
+| One predicate reused in several queries | `predicate` declarations and imports |
+| A sort the user picks at runtime | A closed `order by` enum of named profiles |
+| A result page of bounded size | `limit pageSize default 50 max 200` validated in every runtime |
+| A ready state that waits for a complete local window | `sync query` with proven scope coverage |
+
+:::figure{title="What the compiler does with an optional filter" note="One query, two inputs" ticks}
+<div class="d-cols-2">
+<div class="d-stack">
+<div class="node"><span class="t">Caller omits status</span><code>and when(status) status is :status</code></div>
+<div class="d-down"><small>conjunct dropped</small></div>
+<div class="node ok"><span class="t">Selected SQL</span><code>where todos.list_id = ?</code></div>
+</div>
+<div class="d-stack">
+<div class="node"><span class="t">Caller passes status</span><code>and when(status) status is :status</code></div>
+<div class="d-down"><small>conjunct kept, bound</small></div>
+<div class="node hot"><span class="t">Selected SQL</span><code>where todos.list_id = ? and status is ?</code></div>
+</div>
+</div>
+
+::caption[The compiler lowers the query to one target-neutral physical plan. The `variants` backend omits an inactive conjunct; the `neutralize` backend keeps one statement and guards the conjunct with a generated boolean bind. Both return the same rows. `syncular generate --print <name>` shows the checked SQL.]
+:::
 
 The formal definition is the
-[SYQL language specification](https://github.com/syncular/syncular/blob/main/docs/SYQL.md).
-The executable vectors live under
-[`spec/syql`](https://github.com/syncular/syncular/tree/main/spec/syql).
+[SYQL language specification](https://github.com/syncular/syncular/blob/main/docs/SYQL.md),
+and the executable vectors are under
+[`spec/syql`](https://github.com/syncular/syncular/tree/main/spec/syql). The
+CLI, output configuration, and generated shapes are on
+[Named queries](/tooling-queries/).
 
-Use a plain `.sql` query when the statement is fixed. Use `.syql` when its
-shape depends on optional inputs or when it should declare sync coverage.
-
-Explore the compiler directly in the [SYQL playground](/playground/), or jump
-to the [optional-filter](/playground/?example=optional),
-[sort-and-limit](/playground/?example=sort-limit),
-[sync-coverage](/playground/?example=sync-coverage), or
-[reusable-predicate](/playground/?example=predicate) examples. Everything runs
-locally in the browser against the same parser, validator, and lowerer used by
-typegen.
+The [SYQL playground](/playground/) runs the same parser, validator, and
+lowerer as typegen in the browser, against the Release board schema of the
+[hosted demo](/demos/). It shows the physical SQL of every statement, the typed
+inputs and result columns, dependencies, coverage, and row identity, and its
+Run tab executes the selected statement on the demo's sample data in SQLite
+WASM. The examples are grouped by topic, from
+[optional filters](/playground/#example=optional) and
+[sort profiles](/playground/#example=sort-limit) to
+[sync coverage](/playground/#example=sync-board) and queries that
+[fail closed](/playground/#example=sync-unscoped). The address bar carries the
+example and any edited source, so a copied link reopens the same state.
 
 ## Complete example
 
@@ -65,6 +110,9 @@ The signature is the public API authority:
 
 Generated targets preserve presence separately from SQL `NULL`. Optional
 records must be supplied completely; partial values fail before querying.
+
+Unannotated input types are inferred from all SQL and predicate uses. Add a
+type when SQL provides no evidence. Conflicting evidence is a compile error.
 
 ## Optional predicates
 
@@ -231,7 +279,7 @@ limit pageSize default 50 max 200;
 The limit input is optional and validated as an integer from 1 through 200 in
 every generated runtime.
 
-## Identity and types
+## Result identity
 
 The compiler infers result identity from schema primary keys, SQL lineage, and
 projection aliases. When proof is not possible, the generated query uses
@@ -240,7 +288,7 @@ unkeyed reconciliation.
 ## Ranked top-N
 
 A search that ranks every match and returns a page of wide rows ranks narrow
-rows in a CTE that keeps only the page, and reads the wide row after the limit:
+rows in a CTE that keeps only the page, then reads the wide row after the limit:
 
 ```syql
 sync query searchCodes(setId, searchQuery, codeQuery: string) by c.set_id {
@@ -293,9 +341,6 @@ about 30 % more than a plain one-scope `ORDER BY ... LIMIT`; that form pays off
 only for wide rows of several kilobytes. The
 [SYQL specification](https://github.com/syncular/syncular/blob/main/docs/SYQL.md#143-ranked-top-n)
 states the identity rules and the measurements.
-
-Unannotated input types are inferred from all SQL and predicate uses. Add a
-type when SQL provides no evidence. Conflicting evidence is a compile error.
 
 ## Generated targets and tooling
 

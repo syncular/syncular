@@ -13,7 +13,7 @@ export function markdownDescription(
     const value = block.trim();
     return (
       value.length > 0 &&
-      !/^(?:#{1,6}\s|```|~~~|>|[-*+]\s|\d+[.)]\s|\|)/.test(value)
+      !/^(?:#{1,6}\s|```|~~~|>|[-*+]\s|\d+[.)]\s|\||::)/.test(value)
     );
   });
 

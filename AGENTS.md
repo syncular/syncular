@@ -86,7 +86,7 @@ uncertain or unmeasured, say so plainly or leave it out.
 - One canonical name per concept, reused verbatim across the page.
   Repeating a technical noun is correct; rotating synonyms makes readers
   hunt for a distinction that does not exist.
-- Numbers and names over adjectives: "bootstraps 100k rows in 30.7 ms
+- Numbers and names over adjectives: "bootstraps 100k rows in 46.5 ms
   warm", never "fast bootstrap". A claim needs a number, a spec section,
   or a code path behind it; otherwise cut it.
 - Instructions in the imperative, consequence stated as fact: "Use a

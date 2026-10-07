@@ -1,9 +1,14 @@
 ---
-// Blog shell: the landing page's teletype header/footer around a focused,
-// readable article column. Blog posts remain plain Markdown sources.
-import rootPkg from '../../../../package.json';
+// The blog shell: the docs header (with search and a reading-progress bar),
+// the landing footer, and the page script that drives the chapters box. The
+// index and post pages (pages/blog/) supply everything between. Styles live
+// in src/blog.css, which builds on src/docs.css.
+import MobileMenu from '../components/MobileMenu.astro';
 import PageMeta from '../components/PageMeta.astro';
 import Search from '../components/Search.astro';
+// package.json at the repository root is the one release-version authority.
+import rootPkg from '../../../../package.json';
+import '../blog.css';
 
 interface Props {
   title: string;
@@ -11,27 +16,11 @@ interface Props {
   canonicalPath: string;
   author?: string;
   publishedAt?: string;
-  readingMinutes?: number;
   index?: boolean;
 }
 
-const {
-  title,
-  description,
-  canonicalPath,
-  author,
-  publishedAt,
-  readingMinutes,
-  index = false,
-} = Astro.props;
-const formattedDate = publishedAt
-  ? new Intl.DateTimeFormat('en', {
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-      timeZone: 'UTC',
-    }).format(new Date(`${publishedAt}T00:00:00Z`))
-  : undefined;
+const { title, description, canonicalPath, author, publishedAt, index = false } = Astro.props;
+const version = rootPkg.version;
 ---
 
 <!doctype html>
@@ -46,57 +35,130 @@ const formattedDate = publishedAt
       publishedAt={publishedAt}
     />
     <link rel="alternate" type="text/markdown" href={index ? '/blog.md' : `${canonicalPath.replace(/\/$/, '')}.md`} />
-    <link rel="api-catalog" href="/.well-known/api-catalog" />
-    <link rel="stylesheet" href="/style.css" />
-    <script src="/webmcp.js" defer></script>
-    {!index ? <script src="/engagement.js" defer></script> : null}
   </head>
-  <body class="landing-body">
-    <div class="wrap">
-      <div class="statusbar">
-        <span>SYNCULAR v{rootPkg.version} // FIELD NOTES</span>
-        <span>CHANNEL: <span class="ok">BLOG</span> · LINK: <span class="ok">LIVE</span></span>
-      </div>
-      <header class="topnav">
-        <a class="brand" href="/">SYNCULAR<span class="blink">_</span></a>
-        <nav>
-          <a href="/what-is/">DOCS</a>
-          <a class="accent" href="/blog/">BLOG</a>
-          <a href="/demos/">DEMOS</a>
-          <a href="https://github.com/syncular/syncular">GITHUB</a>
-          <Search />
-          <a href="/quickstart/">QUICKSTART</a>
+  <body class="overflow-x-hidden bg-void font-mono text-ink">
+    <header class="sticky top-0 z-40 h-14 border-b border-line bg-void/85 backdrop-blur-md">
+      <div class="mx-auto flex h-full max-w-[76rem] items-center gap-3 px-5 sm:gap-5 sm:px-8">
+        <a href="/" class="flex shrink-0 items-center gap-2.5 text-[13.5px] font-semibold tracking-[0.2em] text-ink">
+          <img src="/favicon.svg" width="24" height="24" alt="" class="shrink-0" />
+          <span>SYNCULAR</span>
+        </a>
+        <a href="/blog/" class="text-[13.5px] tracking-[0.14em] text-faint hover:text-ink">/ BLOG</a>
+        <div class="flex-1"></div>
+        <nav class="flex items-center gap-1 text-[12px] tracking-[0.12em] sm:gap-2">
+          <a href="/docs/" class="hidden px-3 py-2 text-dim hover:text-ink md:block">DOCS</a>
+          <a href="/changelog/" class="hidden px-3 py-2 text-dim hover:text-ink md:block">CHANGELOG</a>
+          <a href="https://github.com/syncular/syncular" class="hidden px-3 py-2 text-dim hover:text-ink lg:block">GITHUB</a>
         </nav>
-      </header>
-      <div class="rule" aria-hidden="true">{'='.repeat(160)}</div>
+        <div class="docs-search w-9 shrink-0 md:w-[15rem]"><Search /></div>
+        <MobileMenu />
+        <a href="/quickstart/" class="hidden h-9 items-center bg-amber px-3.5 text-[12px] font-semibold tracking-[0.12em] text-void hover:bg-[#ffc233] sm:flex">QUICKSTART</a>
+      </div>
+      {!index ? <span class="read-progress" data-read-progress aria-hidden="true"></span> : null}
+    </header>
 
-      <main class="blog-main">
-        {!index ? <a class="blog-back" href="/blog/">← ALL TRANSMISSIONS</a> : null}
-        {publishedAt ? (
-          <div class="blog-meta">
-            <span>{formattedDate}</span>
-            {author ? <span>BY {author.toUpperCase()}</span> : null}
-            {readingMinutes ? <span>{readingMinutes} MIN READ</span> : null}
-          </div>
-        ) : null}
-        <article class={index ? 'blog-index' : 'blog-post'}>
-          <slot />
-        </article>
-      </main>
+    <main>
+      <slot />
+    </main>
 
-      <footer class="footer">
-        <div class="rule" aria-hidden="true">{'='.repeat(160)}</div>
-        <div class="row">
-          <nav>
-            <a href="/blog/">BLOG</a>
-            <a href="/what-is/">DOCS</a>
-            <a href="https://github.com/syncular/syncular">GITHUB</a>
-            <a href="https://www.npmjs.com/org/syncular">NPM</a>
-            <a href="/privacy/">PRIVACY</a>
-          </nav>
-          <span class="end">SYNCULAR v{rootPkg.version} · APACHE-2.0 · END OF TRANSMISSION <span class="sq">■</span></span>
-        </div>
-      </footer>
-    </div>
+    <footer class="border-t border-line">
+      <div class="mx-auto flex max-w-[76rem] flex-col justify-between gap-6 px-5 py-10 text-[11.5px] tracking-[0.12em] sm:px-8 lg:flex-row lg:items-center">
+        <nav class="flex flex-wrap gap-x-6 gap-y-2 text-dim">
+          <a href="/docs/" class="hover:text-ink">DOCS</a>
+          <a href="/changelog/" class="hover:text-ink">CHANGELOG</a>
+          <a href="/blog/" class="hover:text-ink">BLOG</a>
+          <a href="https://github.com/syncular/syncular" class="hover:text-ink">GITHUB</a>
+          <a href="https://www.npmjs.com/org/syncular" class="hover:text-ink">NPM</a>
+          <a href="https://crates.io/crates/syncular-client" class="hover:text-ink">CRATES.IO</a>
+          <a href="/privacy/" class="hover:text-ink">PRIVACY</a>
+        </nav>
+        <span class="text-faint">SYNCULAR v{version} · APACHE-2.0 · END OF TRANSMISSION <span class="text-amber">■</span></span>
+      </div>
+    </footer>
+
+    <script>
+      // Post pages: chapter highlighting, reading progress, and the mobile
+      // chapters bar. Code-frame controls come from the shared module. The
+      // index has none of these elements, so nothing runs there.
+      import '../code-frames';
+      import { pageScript } from '../page-lifecycle';
+
+      pageScript(() => {
+        const article = document.querySelector<HTMLElement>('[data-post-body]');
+        if (!article) return;
+        const lists = [...document.querySelectorAll<HTMLElement>('[data-chapters]')];
+        const bar = document.querySelector<HTMLDetailsElement>('[data-chapters-bar]');
+        const progressBar = document.querySelector<HTMLElement>('[data-read-progress]');
+        const minutes = Number(article.dataset.minutes ?? 0);
+        const headings = [...article.querySelectorAll<HTMLElement>('h2[id], h3[id]')];
+
+        const update = () => {
+          // The current heading is the last one above a line a fifth of the way down.
+          const line = innerHeight * 0.2 + 56;
+          let current: HTMLElement | undefined;
+          for (const heading of headings) {
+            if (heading.getBoundingClientRect().top <= line) current = heading;
+            else break;
+          }
+          const chapter = current?.tagName === 'H3'
+            ? headings.slice(0, headings.indexOf(current)).reverse().find((h) => h.tagName === 'H2')
+            : current;
+          const chapterIds = headings.filter((h) => h.tagName === 'H2').map((h) => h.id);
+          const at = chapter ? chapterIds.indexOf(chapter.id) : -1;
+          for (const list of lists) {
+            for (const item of list.querySelectorAll<HTMLElement>(':scope > ol > li')) {
+              const index = chapterIds.indexOf(item.dataset.chapter ?? '');
+              item.classList.toggle('on', index === at);
+              item.classList.toggle('done', index < at);
+            }
+            for (const link of list.querySelectorAll<HTMLAnchorElement>('li > ol a')) {
+              link.classList.toggle('on', current?.tagName === 'H3' && link.hash === `#${current.id}`);
+            }
+          }
+          const box = article.getBoundingClientRect();
+          const read = Math.min(1, Math.max(0, (line - box.top) / Math.max(1, box.height - innerHeight * 0.6)));
+          progressBar?.style.setProperty('--progress', String(read));
+          for (const el of document.querySelectorAll('[data-read-percent]')) {
+            el.textContent = `${Math.round(read * 100)}% read`;
+          }
+          for (const el of document.querySelectorAll('[data-read-left]')) {
+            const left = Math.ceil(minutes * (1 - read));
+            el.textContent = left > 0 ? `${left} min left` : 'done';
+          }
+          for (const el of document.querySelectorAll('[data-current-chapter]')) {
+            el.textContent = chapter
+              ? (document.querySelector(`[data-chapter="${chapter.id}"] .t`)?.textContent ?? '')
+              : 'Introduction';
+          }
+          for (const el of document.querySelectorAll('[data-current-index]')) {
+            el.textContent = `${String(at + 1).padStart(2, '0')}/${String(chapterIds.length).padStart(2, '0')}`;
+          }
+        };
+
+        let frame = 0;
+        const schedule = () => {
+          if (frame) return;
+          frame = requestAnimationFrame(() => {
+            frame = 0;
+            update();
+          });
+        };
+        // A chapter picked from the mobile bar closes the bar.
+        const closeBar = (event: Event) => {
+          if (bar && (event.target as Element | null)?.closest('[data-chapters-bar] a')) bar.open = false;
+        };
+        addEventListener('scroll', schedule, { passive: true });
+        addEventListener('resize', schedule);
+        document.addEventListener('click', closeBar);
+        update();
+
+        return () => {
+          cancelAnimationFrame(frame);
+          removeEventListener('scroll', schedule);
+          removeEventListener('resize', schedule);
+          document.removeEventListener('click', closeBar);
+        };
+      });
+    </script>
   </body>
 </html>

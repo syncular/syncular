@@ -1,6 +1,7 @@
 ---
 title: 'After the Offline Write: Durable Server Work in Syncular'
 description: A technician finishes a repair offline. Follow the work order and service report through server acceptance, a queued customer email, and recovery after a worker crash.
+summary: A repair finished offline, followed through server acceptance, a queued customer email, and recovery after a worker crash.
 author: Benjamin Kniffler
 publishedAt: '2026-09-05'
 ---
@@ -11,9 +12,9 @@ A technician replaces a broken pump in a basement with no mobile signal. They ma
 
 If the server saves the completed job and then crashes before sending the email, the office sees no work left to do. The customer is still waiting for the report. Retrying the email has its own failure case: the provider might have accepted it before the worker crashed.
 
-I've been working on this part of Syncular: what runs on the server after a device's changes arrive. Syncular is an open-source sync engine that keeps local SQLite databases in sync with your server. My [previous post](/blog/offline-first-writes/) covered saving offline writes and getting them accepted. This one follows the work order through acceptance, report delivery, and recovery after a worker stops.
+This post covers what runs on the server after a device's changes arrive. Syncular is an open-source sync engine that keeps local SQLite databases in sync with your server, and [Durable Offline Writes, Part 2](/blog/syncular-write-path/) covers how offline writes are saved and accepted. Here the work order goes through acceptance, report delivery, and recovery after a worker stops.
 
-The example uses three application tables: `work_orders`, `service_reports`, and `domain_events`. A partner's maintenance system can submit the same completion through a webhook, which I'll cover toward the end.
+The example uses three application tables: `work_orders`, `service_reports`, and `domain_events`. A partner's maintenance system can submit the same completion through a webhook; the second-to-last chapter covers that path.
 
 ## Save the completed job with its report
 
@@ -164,7 +165,7 @@ A replay of an applied client commit returns its cached result and skips the pla
 
 ## Let a worker deliver it
 
-[`ReactionRunner`](https://github.com/syncular/syncular/blob/main/packages/server/src/reactions.ts#L400) claims committed reactions and calls their handlers. Each claim has a lease: a period during which that worker owns the delivery attempt. If the worker stops, another worker can reclaim the record after the lease expires.
+[`ReactionRunner`](https://github.com/syncular/syncular/blob/main/packages/server/src/reactions.ts) claims committed reactions and calls their handlers. Each claim has a lease: a period during which that worker owns the delivery attempt. If the worker stops, another worker can reclaim the record after the lease expires.
 
 The application schedules `runOnce()`, for example from a process loop or a queue wake. Constructing a runner does not start background delivery.
 
@@ -204,7 +205,7 @@ After a successful handler call, the runner records completion. Ordinary excepti
 
 ## Stop the process at different points
 
-I find this easier to reason about by interrupting the same operation in a few places. Expand a failure point to follow its recovery.
+Interrupting the same operation at three points shows what recovers it. Expand a failure point to follow its recovery.
 
 <details>
 <summary>The server stops before the source transaction commits</summary>
@@ -236,7 +237,7 @@ This is at-least-once delivery. The external provider and Syncular's database ca
 
 Syncular derives the handler's idempotency key from the partition, source client, source commit, and planner key. Use that supplied key for every attempt. The provider's deduplication retention must cover your retry period, including manual retries; a key the provider has forgotten cannot prevent another send. If the provider has no deduplication contract, the application must account for possible duplicate report emails.
 
-The repository has a [crash-after-delivery test](https://github.com/syncular/syncular/blob/main/packages/server/test/reactions.test.ts#L442) that interrupts acknowledgement, advances a virtual clock past lease expiry, and runs another worker. It asserts two handler calls with the same key. It cannot prove what an external email provider will do with those calls.
+The repository's [reaction tests](https://github.com/syncular/syncular/blob/main/packages/server/test/reactions.test.ts) include a crash-after-side-effect case that interrupts acknowledgement, advances a virtual clock past lease expiry, and runs another worker. It asserts two handler calls with the same key. It cannot prove what an external email provider will do with those calls.
 
 ## Bring webhooks and jobs through the same write path
 
@@ -272,7 +273,7 @@ Other integrations need different capabilities:
 | Refresh a connected report when data changes | A [live query watch](/guide-remote-operations/#live-query-watches) |
 | Retain notification work after an accepted commit | A durable server reaction |
 
-Commands are useful when the server must choose the operation, such as assigning the next work order using current technician availability. Their returned mutations still pass normal write authorization and validation. External calls belong in the resulting reaction handler; putting them inside the command callback recreates the earlier transaction problem.
+Commands are useful when the server must choose the operation, such as assigning the next work order using current technician availability. Their returned mutations still pass normal write authorization and validation. External calls belong in the resulting reaction handler; putting them inside the command callback recreates the crash window from the opening example.
 
 A live query watch sends replacement snapshots while connected. Use it to refresh the office's job list. Notifications that must survive a disconnection need retained work, such as a reaction or an event consumer with durable receipts.
 

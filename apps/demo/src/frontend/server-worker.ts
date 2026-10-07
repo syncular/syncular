@@ -8,9 +8,12 @@
  * SQLite instead of bun:sqlite).
  *
  * The page talks to this worker over a small RPC:
- *   page → worker: {kind:'sync'|'blob-upload'|'blob-download'|'admin', id, …}
+ *   page → worker: {kind:'sync'|'admin', id, actorId, …}
  *                  {kind:'rt-open'|'rt-text'|'rt-bytes'|'rt-close', channel, …}
+ *                  {kind:'events'} once, to tail the server event ring
  *   worker → page: {kind:'result', id, ok, …} · {kind:'rt-…', channel, …}
+ *                  {kind:'event', event} for the retained backlog (oldest
+ *                  first), then for every new event
  *                  {kind:'ready'} once seeded.
  *
  * Realtime is the real `RealtimeHub` — each pane opens a channel that
@@ -22,27 +25,29 @@
  */
 import sqlite3InitModule from '@sqlite.org/sqlite-wasm';
 import {
+  compileSchema,
   createRealtimeHub,
   type D1Database,
   type D1PreparedStatement,
   D1ServerStorage,
-  handleBlobDownload,
-  handleBlobUpload,
   handleSyncRequest,
-  MemoryBlobStore,
   MemorySegmentStore,
   type RealtimeSession,
+  type ResolveScopesArgs,
   RingBufferEvents,
-  type SeedMutation,
   seedMutations,
   type SyncServerConfig,
   SyncularAdmin,
 } from '@syncular/server';
 import { createSyncularAdminRoutes } from '@syncular/server-hono';
+import {
+  DEMO_PARTITION,
+  isDemoActor,
+  resolveBoardScopes,
+  SEED_ACTOR,
+} from '../access';
+import { releaseBoardSeedMutations } from '../seed';
 import { schema } from '../syncular.generated';
-
-const PARTITION = 'demo';
-const ACTOR_ID = 'demo-user';
 
 // -- sqlite-wasm wearing the D1 statement shape -------------------------------
 
@@ -113,9 +118,15 @@ async function bootServer(): Promise<EmbeddedServerParts> {
   const storage = new D1ServerStorage(d1OverWasm(db), {
     pushApplySerialized: true,
   });
+  // The D1 migration budget exists for Worker invocation limits; this
+  // worker has none, so it drives the resumable migration to completion.
+  const compiled = compileSchema(schema);
+  while (
+    !(await storage.migrateSchema(compiled, { maxStatements: 1000 })).complete
+  );
   const segments = new MemorySegmentStore();
-  const blobs = new MemoryBlobStore();
-  const resolveScopes = () => ({ list_id: ['*'] });
+  const resolveScopes = (args: ResolveScopesArgs) =>
+    resolveBoardScopes(storage, args);
   const hub = createRealtimeHub({
     schema,
     storage,
@@ -127,7 +138,6 @@ async function bootServer(): Promise<EmbeddedServerParts> {
     schema,
     storage,
     segments,
-    blobs,
     resolveScopes,
     realtime: hub,
     events: ring,
@@ -137,7 +147,7 @@ async function bootServer(): Promise<EmbeddedServerParts> {
   const adminRoutes = createSyncularAdminRoutes(
     SyncularAdmin.fromConfig(config, { ring }),
     {
-      defaultPartition: PARTITION,
+      defaultPartition: DEMO_PARTITION,
       // This route surface is reachable only through the worker RPC. The page
       // verifies the same-origin console frame before forwarding a request.
       authorize: () => true,
@@ -148,33 +158,6 @@ async function bootServer(): Promise<EmbeddedServerParts> {
     hub,
     adminRequest: async (path) => adminRoutes.request(path),
   };
-}
-
-/** Seed a few rows through the real push path (same seed as the dev server). */
-async function seed(config: SyncServerConfig): Promise<void> {
-  const now = Date.now();
-  const mutations: SeedMutation[] = [
-    'Open this page in two panes',
-    'Toggle a pane offline and keep editing',
-    'Attach a file to a todo — it uploads then syncs',
-  ].map((title, index) => ({
-    table: 'todos',
-    op: 'upsert',
-    values: {
-      id: `seed-${index + 1}`,
-      listId: 'demo',
-      title,
-      done: false,
-      position: index + 1,
-      updatedAtMs: now,
-      attachment: null,
-    },
-  }));
-  await seedMutations(
-    config,
-    { partition: PARTITION, actorId: ACTOR_ID },
-    mutations,
-  );
 }
 
 // -- RPC ----------------------------------------------------------------------
@@ -212,7 +195,11 @@ function serializeSyncRound<T>(operation: () => Promise<T>): Promise<T> {
 
 const booted = bootServer()
   .then(async (parts) => {
-    await seed(parts.config);
+    await seedMutations(
+      parts.config,
+      { partition: DEMO_PARTITION, actorId: SEED_ACTOR },
+      releaseBoardSeedMutations(),
+    );
     scope.postMessage({ kind: 'ready' });
     return parts;
   })
@@ -224,21 +211,29 @@ const booted = bootServer()
 scope.onmessage = (event: MessageEvent) => {
   void (async () => {
     const { config, hub, adminRequest } = await booted;
-    const ctx = { ...config, partition: PARTITION, actorId: ACTOR_ID };
     const msg = event.data as {
       kind: string;
+      actorId?: string;
       id?: number;
       bytes?: Uint8Array;
-      blobId?: string;
-      mediaType?: string;
       channel?: number;
       clientId?: string;
       text?: string;
       path?: string;
     };
+    // The page names the signed-in actor of each device; the worker
+    // accepts only the two demo actors.
+    const actorId = msg.actorId ?? '';
+    const ctx = { ...config, partition: DEMO_PARTITION, actorId };
     const reply = (body: Record<string, unknown>, transfer?: Transferable[]) =>
       scope.postMessage({ id: msg.id, ...body }, transfer);
     try {
+      if (
+        (msg.kind === 'sync' || msg.kind === 'rt-open') &&
+        !isDemoActor(msg.actorId)
+      ) {
+        throw new Error(`${msg.kind} requires a demo actor`);
+      }
       switch (msg.kind) {
         case 'sync': {
           if (msg.bytes === undefined) throw new Error('sync without bytes');
@@ -246,31 +241,6 @@ scope.onmessage = (event: MessageEvent) => {
             handleSyncRequest(msg.bytes as Uint8Array, ctx),
           );
           reply({ kind: 'result', ok: true, bytes: out }, [out.buffer]);
-          break;
-        }
-        case 'blob-upload': {
-          if (msg.blobId === undefined || msg.bytes === undefined) {
-            throw new Error('blob-upload without blobId/bytes');
-          }
-          await handleBlobUpload(ctx, {
-            blobId: msg.blobId,
-            bytes: msg.bytes,
-            ...(msg.mediaType !== undefined
-              ? { mediaType: msg.mediaType }
-              : {}),
-          });
-          reply({ kind: 'result', ok: true });
-          break;
-        }
-        case 'blob-download': {
-          if (msg.blobId === undefined) {
-            throw new Error('blob-download without blobId');
-          }
-          const result = await handleBlobDownload(ctx, msg.blobId);
-          if (result.bytes === undefined) {
-            throw new Error('memory blob store always serves inline bytes');
-          }
-          reply({ kind: 'result', ok: true, bytes: result.bytes });
           break;
         }
         case 'admin': {
@@ -286,14 +256,25 @@ scope.onmessage = (event: MessageEvent) => {
           });
           break;
         }
+        case 'events': {
+          // The sync lab's commit log: the same ring that feeds the admin
+          // event tail, replayed oldest first and then followed live.
+          for (const backlog of ring.query().reverse()) {
+            scope.postMessage({ kind: 'event', event: backlog });
+          }
+          ring.subscribe((live) =>
+            scope.postMessage({ kind: 'event', event: live }),
+          );
+          break;
+        }
         case 'rt-open': {
           const channel = msg.channel;
           if (channel === undefined || msg.clientId === undefined) {
             throw new Error('rt-open without channel/clientId');
           }
           const session = await hub.connect({
-            partition: PARTITION,
-            actorId: ACTOR_ID,
+            partition: DEMO_PARTITION,
+            actorId,
             clientId: msg.clientId,
             send: (data: string | Uint8Array) => {
               if (typeof data === 'string') {

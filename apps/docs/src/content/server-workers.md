@@ -1,49 +1,62 @@
 # Cloudflare Workers
 
-`@syncular/server-workers` runs the sync server on Cloudflare's edge: D1
-for storage, R2 for segment and blob bytes, and one Durable Object per
-partition for push serialization and optional realtime.
+Deploy the sync server on Cloudflare: D1 for storage, R2 for segment and blob bytes, and one Durable Object per partition for push serialization and optional realtime. This page is for backend developers shipping to Workers. You finish with a deployed Worker that answers sync rounds and a cron trigger that runs maintenance.
 
-The package is thin: the server core is runtime-neutral
-TypeScript (Web `Request`/`Response`/`fetch`/Web-Crypto only, enforced by a
-static import-graph test), so the Workers lane runs the same HTTP handler,
-wired to `env` bindings.
+::meta{for="Backend developers on Cloudflare" time="25 minutes" first="guide-server"}
 
-When using PostgreSQL through Hyperdrive, disable query caching on the binding
-used by sync storage, authentication and scope resolution. A serialized coordinator
-cannot make a cached SELECT fresh. The [storage freshness contract](/server-storage/#read-freshness)
-owns the requirement and the `sync.storage_stale_read` refusal.
+:::terms
+- **D1**: Cloudflare's SQLite database. It has no interactive transaction, only atomic `db.batch([...])`.
+- **Coordinator**: The Durable Object that serializes one partition's pushes and hosts its realtime sockets.
+- **R2**: Cloudflare's S3-compatible object store, used through `S3SegmentStore` and `S3BlobStore`.
+:::
 
-## The fetch handler
+:::figure{title="What the Worker runs" note="One Durable Object per partition" ticks}
+<div class="d-row">
+<div class="node"><span class="t">Client</span>POST /sync<br>GET /realtime</div>
+<span class="d-arrow"></span>
+<div class="node hot"><span class="t">Worker</span>createWorkersFetchHandler<br>authenticate, route</div>
+<span class="d-arrow"></span>
+<div class="node cool"><span class="t">Durable Object</span>One per partition<br>FIFO for pushes, WebSocket hub</div>
+<span class="d-arrow"></span>
+<div class="d-stack">
+<div class="node ok"><span class="t">D1</span>commit log, rows</div>
+<div class="node ok"><span class="t">R2</span>segments, blobs</div>
+</div>
+</div>
 
-`createWorkersFetchHandler(factory)` builds the Hono app per request from
-your factory. This keeps it stateless, the correct posture on Workers
-since each invocation may run on a fresh isolate. It mounts the same routes as the
-Bun/Node adapter: `POST /sync`, `GET /segments/:id`, `PUT|GET /blobs/:id`,
-plus `GET /realtime` when the Durable Object is enabled.
+::caption[The Worker forwards each authenticated `POST /sync` to the partition's Durable Object, which serializes pushes and writes D1. The same object hosts that partition's sockets, so a commit reaches them without LISTEN/NOTIFY.]
+:::
 
-```ts
-// src/worker.ts
+`@syncular/server-workers` is thin. The server core is runtime-neutral TypeScript (Web `Request`, `Response`, `fetch`, and Web Crypto only, enforced by a static import-graph test), so the Workers lane runs the same HTTP handler as Bun and Node, wired to `env` bindings. The routes match [Server setup](/guide-server/#the-route-surface): `POST /sync`, `GET /segments/:id`, `PUT` and `GET /blobs/:id`, plus `GET /realtime` when you enable the Durable Object.
+
+When PostgreSQL runs behind Hyperdrive instead of D1, disable query caching on the binding that sync storage, authentication, and scope resolution use. A serialized coordinator cannot make a cached SELECT fresh ([Read freshness](/server-storage-reference/#read-freshness)).
+
+## Steps
+
+:::::steps
+::::step{title="Write the sync config" time="5 min"}
+One factory builds the canonical sync capabilities for HTTP-forwarded rounds and socket rounds. Presigned URLs take segment and blob bytes out of the Worker.
+
+```ts title="src/worker.ts"
 import {
   D1ServerStorage,
   S3BlobStore,
   S3SegmentStore,
   s3PresignedBlobUrls,
   s3PresignedUrls,
-  type SyncServerConfig,
+  type RealtimeHubConfig,
 } from '@syncular/server';
-import { createWorkersFetchHandler } from '@syncular/server-workers';
 import { schema } from './syncular.generated';
 
 interface Env {
   DB: D1Database; // wrangler [[d1_databases]] binding = "DB"
-  SYNC_COORDINATOR: DurableObjectNamespace<SyncularRealtimeDO>;
+  REALTIME: DurableObjectNamespace<SyncularRealtimeDO>;
   R2_ACCOUNT_ID: string;
   R2_ACCESS_KEY_ID: string;
   R2_SECRET_ACCESS_KEY: string;
 }
 
-function syncConfig(env: Env): SyncServerConfig {
+const canonicalSyncConfig = (env: Env, storage: D1ServerStorage) => {
   const r2 = {
     endpoint: `https://${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
     region: 'auto' as const,
@@ -54,54 +67,25 @@ function syncConfig(env: Env): SyncServerConfig {
   const blobs = new S3BlobStore({ ...r2, bucket: 'syncular-blobs' });
   return {
     schema,
-    storage: new D1ServerStorage(env.DB),
+    storage,
     segments,
     blobs,
     signedUrls: s3PresignedUrls(segments, { ttlSeconds: 900 }),
     blobSignedUrls: s3PresignedBlobUrls(blobs, { ttlSeconds: 900 }),
     resolveScopes: (args) => resolveScopes(args, env),
-  };
-}
-
-export default {
-  fetch: createWorkersFetchHandler<Env>({
-    config: (env) => ({
-      config: syncConfig(env),
-      authenticate: (request) => authenticate(request, env),
-    }),
-    coordinator: (env) => ({ namespace: env.SYNC_COORDINATOR }),
-  }),
+  } satisfies RealtimeHubConfig;
 };
 ```
 
-HTTP-only transport remains fully conformant, but D1 writes are not stateless:
-the `coordinator` forwards authenticated `/sync` rounds through the partition
-DO. WebSocket upgrades are optional; the DO binding and FIFO are mandatory for
-D1 pushes. Workers has no SQLite engine, so there is no `sqliteImageBuilder`:
-a client advertising the image lane receives a stored image when one exists
-for its scope and rows otherwise. Store images for large tables from a Bun
-process with `publishSqliteImage`
-([Bootstrap & segments](/concepts-bootstrap/#publishing-images-from-another-host));
-`GET /segments/:id` streams them out of an `S3SegmentStore` without buffering
-them in the isolate.
+Workers has no SQLite engine, so the config sets no `sqliteImageBuilder`. A client that advertises the image lane receives a stored image when one exists for its scope and rows otherwise. Store images for large tables from a Bun process with `publishSqliteImage` ([Bootstrap & segments](/concepts-bootstrap/#publishing-images-from-another-host)). `GET /segments/:id` streams them out of an `S3SegmentStore` without buffering them in the isolate.
 
-## D1 storage
+::checkpoint[`canonicalSyncConfig` typechecks against `RealtimeHubConfig`.]
+::::
 
-`D1ServerStorage` uses the same schema and value codecs as
-`SqliteServerStorage`; only the execution shape changes. D1 has no
-interactive transaction: the only atomic primitive is `db.batch([...])`,
-so the storage executes reads immediately and **buffers** writes, flushing
-them as one atomic batch at commit. A rejected op rolls back by never
-flushing.
+::::step{title="Schema migration" time="5 min"}
+Call `D1ServerStorage.migrateSchema(compileSchema(schema))` from an authenticated maintenance handler before the Worker admits sync traffic. It creates the core tables, applies application DDL, and rewrites stored rows. Each call saves its progress and returns `{ complete, statementsExecuted }`.
 
-### Schema migration
-
-Call `D1ServerStorage.migrateSchema(compileSchema(schema))` from an authenticated
-maintenance handler before admitting sync traffic. It creates the core tables,
-applies application DDL, and rewrites stored rows. Each call saves its progress
-and returns `{ complete, statementsExecuted }`.
-
-```ts
+```ts title="src/maintenance.ts"
 import { compileSchema, D1ServerStorage } from '@syncular/server';
 import { schema } from './syncular.generated';
 
@@ -113,112 +97,27 @@ const result = await storage.migrateSchema(compileSchema(schema), {
 return Response.json(result, { status: result.complete ? 200 : 202 });
 ```
 
-Send another request after a `202` response. Run one migration call per Worker
-invocation; a loop or `waitUntil` in the same invocation shares its query limit.
-`maxStatements` defaults to 50 and accepts integers from 10 through 1000. It
-counts the statements issued by this call, including progress tracking. Leave
-room for other D1 queries in the invocation. Cloudflare allows 50 queries on Free
-and 1000 on Paid; see [D1 limits](https://developers.cloudflare.com/d1/platform/limits/).
-A row batch rewrites at most 32 rows. Each individual DDL statement must still
-finish within D1's time limit; this budget cannot split an index build.
+Send another request after a `202` response. Run one migration call per Worker invocation, because a loop or `waitUntil` in the same invocation shares its query limit. `maxStatements` defaults to 50 and accepts integers from 10 through 1000. It counts the statements this call issues, including progress tracking, so leave room for other D1 queries in the invocation. Cloudflare allows 50 queries on Free and 1000 on Paid ([D1 limits](https://developers.cloudflare.com/d1/platform/limits/)). A row batch rewrites at most 32 rows. Each DDL statement must still finish within D1's time limit; this budget cannot split an index build.
 
-Retry the same schema after an interrupted request. The storage commits each
-batch and its progress together, and competing requests cannot apply the same
-batch twice. An unfinished migration rejects a different target schema with
-`sync.storage.schema_migration_conflict`. Keep the target schema available until
-the migration completes.
+Retry the same schema after an interrupted request. The storage commits each batch and its progress together, and competing requests cannot apply the same batch twice. An unfinished migration rejects a different target schema with `sync.storage.schema_migration_conflict`, so keep the target schema available until the migration completes.
 
-The storage rejects application row reads and transaction commits while a
-migration is pending. A storage instance using an older schema remains unusable
-after completion. Each protected read or commit adds one guard statement to its
-D1 batch. Drain Workers running Syncular versions without these checks
-before starting the first upgrade with this API. Direct SQL access must observe
-the same maintenance window.
+While a migration is pending, the storage rejects application row reads and transaction commits. A storage instance on an older schema stays unusable after completion. Each protected read or commit adds one guard statement to its D1 batch. Drain Workers that run Syncular versions without these checks before starting the first upgrade with this API. Direct SQL access must observe the same maintenance window.
 
-`ensureSchema` runs one step with the default budget. It throws
-`sync.storage.schema_migration_pending` if more work remains;
-`ensureSyncServerReady` wraps this as `sync.schema_not_ready` with the original
-error in `cause`. Finish the maintenance requests before calling the readiness
-helper to admit traffic.
+`ensureSchema` runs one step with the default budget and throws `sync.storage.schema_migration_pending` if more work remains. `ensureSyncServerReady` wraps that as `sync.schema_not_ready` with the original error in `cause`. Finish the maintenance requests before the readiness helper admits traffic.
 
-`migrateSchema` creates `sync_reactions` before completing. Planned records join
-the source commit's atomic batch.
-`ReactionRunner` claims work with one atomic write statement and can be driven
-from a scheduled Worker event or Durable Object alarm. D1 statement and
-invocation limits apply to the source batch and delivery passes; see
-[Durable server reactions](/server-reactions/#storage-and-migrations).
+`migrateSchema` also creates `sync_reactions` before it completes. Planned reactions join the source commit's atomic batch, and `ReactionRunner` claims work with one atomic write statement. Drive it from a scheduled Worker event or a Durable Object alarm. D1 statement and invocation limits apply to the source batch and delivery passes ([Durable server reactions](/server-reactions/#storage-and-migrations)).
 
-**Per-partition write serialization.** Every push must serialize before row
-reads/validation/CRDT merge and re-check idempotency under that boundary. The
-Workers adapter forwards `/sync` to one DO per partition and the DO uses an
-explicit FIFO; Durable Object events may otherwise interleave at `await`.
+::checkpoint[The maintenance handler answers `200` with `complete: true`.]
+::::
 
-A plain `new D1ServerStorage(env.DB)` fails closed before every push, not only
-when `commitValidator` is present. A custom coordinator may pass
-`{ pushApplySerialized: true }`; a stateless Worker must not. Different
-partitions still use different DOs and remain concurrent.
+::::step{title="Add the Durable Object" time="8 min"}
+D1 writes are not stateless. Every push must serialize before row reads, validation, and CRDT merge, and must re-check idempotency under that boundary. The Workers adapter forwards `/sync` to one Durable Object per partition, and the object runs an explicit FIFO, because Durable Object events can interleave at `await`. Different partitions use different objects and stay concurrent.
 
-### Routine write cost
+A plain `new D1ServerStorage(env.DB)` fails closed before every push, whether or not a `commitValidator` is present. A custom coordinator may pass `{ pushApplySerialized: true }`; a stateless Worker must not.
 
-D1 bills `rows_written` per statement, and that count includes the index
-entries a write touches, not only the table rows:
-[D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/).
+Declare a class that delegates to `SyncularRealtimeHost`, and pass a `realtime` factory to `createWorkersFetchHandler`. Its namespace coordinates HTTP `/sync` and also handles WebSocket upgrades.
 
-Two writes dominate a caught-up client that polls on a fixed interval, and each
-refreshes a different timestamp:
-
-- The partition registry refreshes `last_authenticated_at_ms`, the partition's
-  activity time. Hosts can use it to exclude long-inactive partitions from
-  maintenance.
-- The client record refreshes `updated_at_ms`, the per-client liveness time
-  that the active-client retention floor reads. Both timestamps retain their
-  existing refresh cadence.
-
-The client record is updated in place instead of deleted and reinserted, so an
-established round writes one client row instead of two. The actor comes from
-the authenticated context, the wire version and subscription list from the
-request, the cursor from the read, and `updated_at_ms` from the server clock.
-
-A push that changes no value still applies. The server increments
-`server_version`, records the change, and stores the new payload. A row update
-whose scope map is unchanged leaves the scope-index entries in place: the
-replacement deletes only keys the new map drops, and the insert ignores keys
-already present.
-
-Measured before and after on one two-column `tasks` table with one scope and no
-declared secondary index, driven through the real `handleSyncRequest` over a real
-Miniflare D1 database and read from `meta.rows_written`:
-
-| Path | Before | After |
-|---|---|---|
-| Established idle round | 3 | 2 |
-| First write, warm client | 20 | 19 |
-| Same-value commit | 19 | 14 |
-
-These are a regression baseline for that schema, not a general billing
-estimate.
-
-## Realtime: the Durable Object
-
-Realtime on Workers runs through `SyncularRealtimeHost`: one Durable Object
-per partition (`idFromName(partition)`), hosting the same `RealtimeHub` the
-Bun/Node path uses. Because a partition's sockets, explicit sync FIFO, and
-commit fan-out are co-located, a sync round landing over the socket
-fans its delta to the partition's other sockets with no LISTEN/NOTIFY
-needed, and the DO doubles as the per-partition write serialization point
-D1 wants.
-
-The DO is **hibernation-aware**: idle sockets do not pin the DO in memory
-or bill wall time. On the first message after a wake, the host rebuilds
-the session from a minimal serialized attachment plus the client record in
-D1, the durable source of truth; nothing in-flight can be hibernated.
-
-Wiring: declare the DO class delegating to `SyncularRealtimeHost`, reuse one
-canonical sync-config factory for HTTP-forwarded and socket rounds, and pass a
-`realtime` factory to `createWorkersFetchHandler`. Its namespace coordinates
-HTTP `/sync` and also handles WebSocket upgrades.
-
-```ts
+```ts title="src/worker.ts"
 import {
   createWorkersFetchHandler,
   D1ServerStorage,
@@ -226,19 +125,6 @@ import {
   type RealtimeDOConfig,
 } from '@syncular/server-workers';
 import { DurableObject } from 'cloudflare:workers';
-import type { RealtimeHubConfig } from '@syncular/server';
-
-const canonicalSyncConfig = (
-  env: Env,
-  storage: D1ServerStorage,
-) => ({
-    schema,
-    storage,
-    resolveScopes: (args) => resolveScopes(args, env),
-    segments: makeSegments(env),
-    blobs: makeBlobs(env),
-    crdtMergers: makeCrdtMergers(env),
-  } satisfies RealtimeHubConfig);
 
 const realtimeDOConfig = (env: Env): RealtimeDOConfig => ({
   syncConfig: (storage) => canonicalSyncConfig(env, storage),
@@ -257,31 +143,33 @@ export class SyncularRealtimeDO extends DurableObject<Env> {
   webSocketError(ws: WebSocket) { return this.#host.webSocketError(ws); }
 }
 
-export default {
-  fetch: createWorkersFetchHandler<Env>({
-    config: (env) => ({
-      config: canonicalSyncConfig(env, new D1ServerStorage(env.DB)),
-      authenticate: (request) => authenticate(request, env),
-    }),
-    realtime: (env) => ({
-      namespace: env.REALTIME,
-      authenticate: (request) => authenticateRealtime(request, env),
-    }),
+const handler = createWorkersFetchHandler<Env>({
+  config: (env) => ({
+    config: canonicalSyncConfig(env, new D1ServerStorage(env.DB)),
+    authenticate: (request) => authenticate(request, env),
   }),
-};
+  realtime: (env) => ({
+    namespace: env.REALTIME,
+    authenticate: (request) => authenticateRealtime(request, env),
+  }),
+});
 ```
 
-The platform types (`DurableObjectState`, `WebSocket`, `D1Database`) are
-declared structurally, so the package takes no `@cloudflare/workers-types`
-dependency; your Worker's own types are structurally compatible.
+`createWorkersFetchHandler(factory)` builds the Hono app per request from your factory. That keeps it stateless, which Workers requires because each invocation may run on a fresh isolate.
 
-## Wrangler config
+The Durable Object is hibernation-aware. Idle sockets do not pin it in memory or bill wall time. On the first message after a wake, the host rebuilds the session from a minimal serialized attachment plus the client record in D1, the durable source of truth. Nothing in flight can hibernate. Because a partition's sockets, sync FIFO, and commit fan-out sit in one object, a round that lands over the socket fans its delta out to the partition's other sockets directly. The protocol it hosts is on [Realtime & the WebSocket-native loop](/concepts-realtime/).
 
-The package ships a complete
-[`wrangler.toml.example`](https://github.com/syncular/syncular/blob/main/packages/server-workers/wrangler.toml.example).
-Here are the blocks that matter:
+For an HTTP-only deployment, keep the Durable Object binding and migration, and pass `coordinator: (env) => ({ namespace: env.REALTIME })` in place of `realtime`. Only the WebSocket route goes away; the FIFO stays mandatory for D1 pushes.
 
-```toml
+The package declares the platform types (`DurableObjectState`, `WebSocket`, `D1Database`) structurally, so it takes no `@cloudflare/workers-types` dependency. Your Worker's own types are structurally compatible.
+
+::checkpoint[`wrangler dev` answers `POST /sync` through the Durable Object, and a WebSocket client connects to `/realtime`.]
+::::
+
+::::step{title="Configure wrangler" time="3 min"}
+The package ships a complete [`wrangler.toml.example`](https://github.com/syncular/syncular/blob/main/packages/server-workers/wrangler.toml.example). These are the blocks that matter:
+
+```toml title="wrangler.toml"
 name = "syncular-sync"
 main = "src/worker.ts"
 compatibility_date = "2024-09-23"
@@ -300,22 +188,15 @@ tag = "v1"
 new_classes = ["SyncularRealtimeDO"]
 ```
 
-Secrets (`wrangler secret put`): `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`,
-`R2_SECRET_ACCESS_KEY`, plus whatever your `authenticate()` needs. For an
-HTTP-only deployment, keep the DO binding/migration and use `coordinator`
-instead of `realtime`; only the WebSocket route is omitted.
+Set the secrets with `wrangler secret put`: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, plus whatever `authenticate()` needs.
 
-## Maintenance on a schedule
+::checkpoint[`wrangler deploy` completes and lists the `SyncularRealtimeDO` class.]
+::::
 
-The host schedules reaction retention, commit-log pruning, and blob cleanup.
-On Workers the natural place is a cron trigger: add
-`[triggers] crons = [...]` and run the maintenance helpers per partition from
-the `scheduled` handler. Commit-log pruning calls the DO method shown above,
-which shares the HTTP/socket write queue. Generate the Worker binding types
-with `REALTIME` referencing `DurableObjectNamespace<SyncularRealtimeDO>` so the
-RPC method is available on its stub. Direct uncoordinated D1 pruning fails.
+::::step{title="Schedule maintenance" time="4 min"}
+The host schedules reaction retention, commit-log pruning, and blob cleanup. On Workers, add `[triggers] crons = [...]` and run the maintenance helpers per partition from the `scheduled` handler. Commit-log pruning calls the Durable Object method from step 3, which shares the HTTP and socket write queue. Type `REALTIME` as `DurableObjectNamespace<SyncularRealtimeDO>` so the RPC method exists on its stub. Direct uncoordinated D1 pruning fails.
 
-```ts
+```ts title="src/worker.ts"
 import {
   D1ServerStorage,
   pruneReactions,
@@ -323,11 +204,11 @@ import {
 } from '@syncular/server';
 
 export default {
-  fetch: /* … as above … */,
+  fetch: handler,
   async scheduled(_event: unknown, env: Env) {
     const storage = new D1ServerStorage(env.DB);
     await storage.migrate();
-    const blobs = makeBlobs(env); // the same S3BlobStore config
+    const { blobs } = canonicalSyncConfig(env, storage);
     for (const { partition } of await storage.listPartitionRegistry()) {
       await env.REALTIME.getByName(partition).pruneCommitLog(partition, Date.now());
 
@@ -346,14 +227,35 @@ export default {
 };
 ```
 
-Retention windows, eligibility rules, and what to alert on are the
-[Operations and maintenance](/server-operations/) runbook.
+Retention windows, eligibility rules, and what to alert on are in [Operations and maintenance](/server-operations/).
 
-## Where to go next
+::checkpoint[A cron run logs `prune.completed` for each partition.]
+::::
+:::::
 
-- [Operations and maintenance](/server-operations/): events, pruning, blob GC, and what to
-  alert on.
-- [Storage backends](/server-storage/): how D1 compares to SQLite and
-  Postgres, and the R2 store details.
-- [Server setup](/guide-server/): the Bun/Node reference deployment.
-- [Realtime](/concepts-realtime/): the protocol the Durable Object hosts.
+## Advanced: D1 storage
+
+`D1ServerStorage` uses the same schema and value codecs as `SqliteServerStorage` and differs in execution shape. D1 has no interactive transaction, and its only atomic primitive is `db.batch([...])`. The storage executes reads immediately and **buffers** writes, then flushes them as one atomic batch at commit. A rejected operation rolls back by never flushing. The concurrent page reads of a pull leave as one `db.batch` round trip. Backend comparison is on [Storage reference](/server-storage-reference/#cloudflare-d1).
+
+### Routine write cost
+
+D1 bills `rows_written` per statement, and that count includes the index entries a write touches as well as the table rows ([D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/)).
+
+Two writes dominate a caught-up client that polls on a fixed interval, and each refreshes a different timestamp:
+
+- The partition registry refreshes `last_authenticated_at_ms`, the partition's activity time. Hosts can use it to exclude long-inactive partitions from maintenance.
+- The client record refreshes `updated_at_ms`, the per-client liveness time that the active-client retention floor reads. Both timestamps keep their existing refresh cadence.
+
+The client record updates in place instead of deleting and reinserting, so an established round writes one client row. The actor comes from the authenticated context, the wire version and subscription list from the request, the cursor from the read, and `updated_at_ms` from the server clock.
+
+A push that changes no value still applies: the server increments `server_version`, records the change, and stores the new payload. A row update whose scope map is unchanged leaves the scope-index entries in place. The replacement deletes only keys the new map drops, and the insert ignores keys already present.
+
+Rows written on one two-column `tasks` table with one scope and no declared secondary index, driven through the real `handleSyncRequest` over a Miniflare D1 database and read from `meta.rows_written`:
+
+| Path | Rows written |
+|---|---|
+| Established idle round | 2 |
+| First write, warm client | 19 |
+| Same-value commit | 14 |
+
+The numbers are a regression baseline for that schema and not a billing estimate.

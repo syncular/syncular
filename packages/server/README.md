@@ -128,7 +128,7 @@ After restoring an authoritative database, keep traffic stopped and call
 `rotatePartitionLogEpoch({ storage, partition })` for every restored
 partition. The rotation clears stale client cursors and requires version 2
 clients to reset their server-derived rows while preserving the outbox. Follow
-the complete [backup and restore runbook](https://syncular.dev/server-backup-restore/).
+the complete [backup and restore runbook](https://syncular.dev/server-operations/#backup-and-restore).
 
 ## Adapter error hooks
 

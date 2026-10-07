@@ -86,9 +86,9 @@ const managedArtifactVersionTextPaths = [
 ] as const;
 
 const managedBuildTimeVersionTextPaths = [
-  { path: 'apps/docs/src/content/platform-rust.md', occurrences: 3 },
-  { path: 'apps/docs/src/content/platform-tauri.md', occurrences: 1 },
-  { path: 'apps/docs/src/content/platform-ffi.md', occurrences: 1 },
+  { path: 'apps/docs/src/content/platform-rust.md', occurrences: 1 },
+  { path: 'apps/docs/src/content/platform-rust-install.md', occurrences: 1 },
+  { path: 'apps/docs/src/content/platform-tauri-install.md', occurrences: 1 },
   { path: 'apps/demo/src/frontend/index.html', occurrences: 1 },
 ] as const;
 

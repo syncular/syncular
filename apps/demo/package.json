@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "bun run src/server.ts",
     "build:static": "bun run scripts/build-static.ts",
+    "deploy": "wrangler deploy",
     "generate": "syncular generate --manifest-dir ."
   },
   "dependencies": {

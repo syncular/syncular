@@ -1,45 +1,140 @@
 ---
+// One blog post: a header with date, reading time, and summary; the article;
+// a pinned chapters box on wide screens and a chapters bar on narrow ones;
+// then the neighbouring posts. Chapters are the post's h2 headings, with h3
+// headings nested under them.
 import type { MarkdownInstance } from 'astro';
 import Blog from '../../layouts/Blog.astro';
-
-interface BlogFrontmatter {
-  title: string;
-  description: string;
-  author: string;
-  publishedAt: string;
-}
+import { articleHtml, type BlogFrontmatter, chaptersOf, formatDate, readingMinutes } from '../../blog';
 
 export async function getStaticPaths() {
-  const modules = import.meta.glob<MarkdownInstance<BlogFrontmatter>>(
-    '../../content/blog/*.md',
-    { eager: true },
-  );
-
-  return Object.entries(modules).map(([path, mod]) => ({
-    params: { slug: path.split('/').pop()?.replace(/\.md$/, '') ?? '' },
-    props: { mod },
+  const modules = import.meta.glob<MarkdownInstance<BlogFrontmatter>>('../../content/blog/*.md', { eager: true });
+  const posts = Object.entries(modules)
+    .map(([path, mod]) => ({ slug: path.split('/').pop()?.replace(/\.md$/, '') ?? '', mod }))
+    .sort((a, b) => b.mod.frontmatter.publishedAt.localeCompare(a.mod.frontmatter.publishedAt) || b.slug.localeCompare(a.slug));
+  return posts.map((post, i) => ({
+    params: { slug: post.slug },
+    props: {
+      mod: post.mod,
+      newer: posts[i - 1] && { slug: posts[i - 1]?.slug, title: posts[i - 1]?.mod.frontmatter.title },
+      older: posts[i + 1] && { slug: posts[i + 1]?.slug, title: posts[i + 1]?.mod.frontmatter.title },
+    },
   }));
 }
 
+interface Neighbour {
+  slug: string;
+  title: string;
+}
 interface Props {
   mod: MarkdownInstance<BlogFrontmatter>;
+  newer?: Neighbour;
+  older?: Neighbour;
 }
 
-const { mod } = Astro.props;
+const { mod, newer, older } = Astro.props;
 const { slug } = Astro.params;
 const { title, description, author, publishedAt } = mod.frontmatter;
-const words = mod.rawContent().trim().match(/\S+/g)?.length ?? 0;
-const readingMinutes = Math.max(1, Math.ceil(words / 220));
-const Content = mod.Content;
+const summary = mod.frontmatter.summary ?? description;
+const minutes = readingMinutes(mod.rawContent());
+const chapters = chaptersOf(mod.getHeadings());
+const html = articleHtml(await mod.compiledContent());
 ---
 
-<Blog
-  title={title}
-  description={description}
-  canonicalPath={`/blog/${slug}/`}
-  author={author}
-  publishedAt={publishedAt}
-  readingMinutes={readingMinutes}
->
-  <Content />
+<Blog title={title} description={description} canonicalPath={`/blog/${slug}/`} author={author} publishedAt={publishedAt}>
+  <section class="relative isolate overflow-hidden border-b border-line">
+    <div class="grid-bg absolute inset-0 -z-10"></div>
+    <div class="halo absolute -top-48 right-0 -z-10 h-[34rem] w-[34rem]"></div>
+    <div class="mx-auto max-w-[76rem] px-5 pt-10 pb-10 sm:px-8 lg:pt-14 lg:pb-12">
+      <a href="/blog/" class="text-[11px] tracking-[0.16em] text-faint hover:text-ink">← ALL POSTS</a>
+      <p class="mt-6 flex flex-wrap gap-x-4 gap-y-1 text-[11px] tracking-[0.16em] text-amber uppercase">
+        <time datetime={publishedAt}>{formatDate(publishedAt)}</time>
+        <span class="text-faint">·</span><span>{minutes} min read</span>
+        <span class="text-faint">·</span><span>{chapters.length} {chapters.length === 1 ? 'chapter' : 'chapters'}</span>
+      </p>
+      <h1 class="mt-4 max-w-[52rem] text-[1.9rem] leading-[1.12] font-semibold tracking-[-0.03em] text-ink sm:text-[2.6rem]">
+        {title}<span class="text-amber">.</span>
+      </h1>
+      <p class="mt-5 max-w-[44rem] font-sans text-[17px] leading-[1.65] text-dim">{summary}</p>
+      <p class="mt-6 text-[11px] tracking-[0.14em] text-faint uppercase">By {author}</p>
+    </div>
+  </section>
+
+  {
+    chapters.length > 0 ? (
+      <details class="chapters-bar sticky top-14 z-30 border-b border-line bg-void/95 backdrop-blur-md lg:hidden" data-chapters-bar>
+        <summary class="flex h-12 cursor-pointer items-center gap-3 px-5 text-[11.5px] sm:px-8">
+          <span class="shrink-0 tracking-[0.14em] text-amber">CHAPTERS</span>
+          <span class="shrink-0 text-faint" data-current-index>00/{String(chapters.length).padStart(2, '0')}</span>
+          <span class="min-w-0 flex-1 truncate text-ink" data-current-chapter>Introduction</span>
+          <svg width="10" height="10" viewBox="0 0 10 10" class="chevron rotate-90 text-amber transition-transform" aria-hidden="true"><path d="M3 2l3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.4"></path></svg>
+        </summary>
+        <nav class="chapters border-t border-line pt-2 pb-3" data-chapters aria-label="Chapters">
+          <ol>
+            {chapters.map((chapter) => (
+              <li data-chapter={chapter.slug}>
+                <a href={`#${chapter.slug}`}><span class="t">{chapter.text}</span></a>
+              </li>
+            ))}
+          </ol>
+        </nav>
+      </details>
+    ) : null
+  }
+
+  <div class="mx-auto grid max-w-[76rem] grid-cols-1 gap-12 px-5 pt-10 pb-20 sm:px-8 lg:grid-cols-[minmax(0,1fr)_16.5rem] lg:gap-14 lg:pt-14">
+    <article class="min-w-0">
+      <div class="prose post-body max-w-[46rem]" data-post-body data-minutes={minutes} set:html={html} />
+
+      <nav class="mt-16 grid max-w-[46rem] gap-3 sm:grid-cols-2" aria-label="More posts">
+        {older ? (
+          <a href={`/blog/${older.slug}/`} class="card"><span class="k">← OLDER POST</span><span class="h">{older.title}</span></a>
+        ) : <span></span>}
+        {newer ? (
+          <a href={`/blog/${newer.slug}/`} class="card sm:items-end sm:text-right"><span class="k">NEWER POST →</span><span class="h">{newer.title}</span></a>
+        ) : (
+          <a href="/blog/" class="card sm:items-end sm:text-right"><span class="k">ALL POSTS →</span><span class="h">Blog index</span></a>
+        )}
+      </nav>
+      <p class="mt-8 flex max-w-[46rem] flex-wrap gap-x-6 gap-y-2 border-t border-line pt-5 text-[10.5px] tracking-[0.12em] text-faint">
+        <a href={`https://github.com/syncular/syncular/edit/main/apps/docs/src/content/blog/${slug}.md`} class="hover:text-ink">EDIT ON GITHUB</a>
+        <a href={`/blog/${slug}.md`} data-astro-reload class="hover:text-ink">VIEW AS MARKDOWN</a>
+      </p>
+    </article>
+
+    {
+      chapters.length > 0 ? (
+        <aside class="hidden lg:block">
+          <div class="sticky top-[5.5rem]">
+          <div class="ticks border border-line bg-panel/70">
+            <span class="tk-b"></span>
+            <p class="flex items-baseline justify-between border-b border-line px-4 py-3 text-[10.5px] tracking-[0.16em]">
+              <span class="text-amber">CHAPTERS</span>
+              <span class="text-faint">{chapters.length}</span>
+            </p>
+            <nav class="chapters max-h-[calc(100vh-14rem)] overflow-y-auto py-2" data-chapters aria-label="Chapters">
+              <ol>
+                {chapters.map((chapter) => (
+                  <li data-chapter={chapter.slug}>
+                    <a href={`#${chapter.slug}`}><span class="t">{chapter.text}</span></a>
+                    {chapter.sections.length > 0 ? (
+                      <ol>
+                        {chapter.sections.map((section) => (
+                          <li><a href={`#${section.slug}`}>{section.text}</a></li>
+                        ))}
+                      </ol>
+                    ) : null}
+                  </li>
+                ))}
+              </ol>
+            </nav>
+            <p class="flex justify-between border-t border-line px-4 py-3 text-[10.5px] tracking-[0.14em] text-faint uppercase">
+              <span data-read-percent>0% read</span><span data-read-left>{minutes} min left</span>
+            </p>
+          </div>
+          </div>
+        </aside>
+      ) : null
+    }
+  </div>
 </Blog>

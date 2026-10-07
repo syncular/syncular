@@ -30,22 +30,12 @@ describe('conformance scenario count', () => {
     ).toBe(CATALOG.length);
   });
 
-  test('what-is page matches the catalog', () => {
+  test('syncular-write-path article matches the catalog', () => {
     expect(
       extract(
-        read('src/content/what-is.md'),
-        /(\d+)-scenario\s*\nconformance catalog/,
-        'src/content/what-is.md',
-      ),
-    ).toBe(CATALOG.length);
-  });
-
-  test('offline-first-writes article matches the catalog', () => {
-    expect(
-      extract(
-        read('src/content/blog/offline-first-writes.md'),
+        read('src/content/blog/syncular-write-path.md'),
         /catalog contains (\d+) scenarios/,
-        'src/content/blog/offline-first-writes.md',
+        'src/content/blog/syncular-write-path.md',
       ),
     ).toBe(CATALOG.length);
   });

@@ -1,106 +1,54 @@
-# What is syncular
+# What is Syncular
 
-Syncular gives your app a **local SQLite database that stays in sync** with a
-server-authoritative commit log, scoped to the data each user is allowed to
-see. You read and write local SQL; syncular handles optimistic writes,
-bootstrap, realtime deltas, offline replay, and conflicts.
+Syncular is a local-first sync engine. Every client reads and writes a local SQLite database, and one server converges all clients through an ordered commit log. This page is for engineers deciding whether Syncular fits an app; it covers the model, the platforms, and the limits.
 
-## How it fits together
+::meta{for="Engineers evaluating Syncular" time="3 minutes" first="quickstart"}
 
-Every client (a browser tab, an iPhone, a Flutter app, a Rust process) owns a
-real SQLite database. Reads are plain SQL against that database, so joins,
-aggregates, and indexes work locally without a network round trip. Writes
-apply locally at once and queue in a durable **outbox**; when the network is
-there, they push to the server as idempotent **commits**.
+:::terms
+- **Commit**: An atomic group of row writes that the server applies entirely or not at all.
+- **Outbox**: The local queue of commits waiting to be sent.
+- **Scope**: The group a row belongs to, such as one list. Scopes decide which rows a user receives.
+- **Segment**: A snapshot of a client's rows that a new client downloads to start.
+:::
 
-Reads can remain raw SQL or become checked named queries. One SQL or SYQL
-source is lowered to a target-neutral QueryIR and generates typed APIs for
-TypeScript, Swift, Kotlin, Dart, and Rust, including the reactive dependencies
-and synchronization coverage the compiler can prove.
+:::figure{title="How a write reaches every client" note="Server is the authority" ticks}
+<div class="d-row">
+<div class="node hot"><span class="t">Client · local SQLite</span>Reads are local SQL<br>Writes apply at once</div>
+<span class="d-arrow"></span>
+<div class="node"><span class="t">Outbox</span>Commits queue until the network is there</div>
+<span class="d-arrow"></span>
+<div class="node ok"><span class="t">Server</span>Checks scopes, appends to the commit log</div>
+<span class="d-arrow"></span>
+<div class="node cool"><span class="t">Other clients</span>Segment on first sync, then realtime deltas</div>
+</div>
 
-The server is authoritative. It validates every commit against your **scopes**
-(one `resolveScopes(actor)` function that lives in *your* backend, next to your
-auth), appends it to an ordered commit log, and delivers it to every subscribed
-client: as a fast bootstrap **segment** for fresh replicas, and as realtime
-deltas over WebSocket for live ones. Conflicting writes are detected by version
-and handed to your app with the server row attached, so your app decides the
-merge.
+::caption[The server checks scopes with `resolveScopes(actor)`, a function in your backend next to your auth.]
+:::
+
+## What you get
+
+- **Local reads.** Queries are plain SQL against the device database, so joins, aggregates, and indexes need no network round trip. Named queries written in SQL or [SYQL](/syql/) generate typed APIs for TypeScript, Swift, Kotlin, Dart, and Rust.
+- **Optimistic writes.** A write changes the local table and joins the outbox in one transaction. The outbox retries as idempotent commits ([Commits](/concepts-commits/)).
+- **Authorization you already have.** The server validates every commit against your scopes ([Scopes](/concepts-scopes/)).
+- **Explicit conflicts.** A version mismatch returns to your app with the server row attached, and your code decides the merge ([Conflicts](/concepts-conflicts/)).
 
 ## One protocol, two cores
 
-Syncular is a **written protocol** ([SPEC.md](https://github.com/syncular/syncular/blob/main/docs/SPEC.md))
-with two independent, conformance-locked implementations:
+The protocol is written down in [SPEC.md](https://github.com/syncular/syncular/blob/main/docs/SPEC.md). A TypeScript core serves the web and a Rust core serves every other platform, and CI runs a shared conformance catalog against both ([Protocol & conformance](/reference/#protocol--conformance)). Measured performance is on [Benchmarks](/benchmarks/).
 
-- A **TypeScript core** for the web. The whole client runs in a Web Worker on
-  OPFS-backed sqlite-wasm, 31.3 KB gzip of syncular's own code.
-- A **Rust core** for everything else: rusqlite on the device filesystem,
-  shipped through a five-function C FFI.
-
-Both pass the same golden byte-level vectors and the same 242-scenario
-conformance catalog, run against both cores in CI. The platform bindings are
-thin marshaling over the shared Rust core, so protocol behavior is identical
-everywhere:
-
-| Platform | What you use | Guide |
-|---|---|---|
-| Browser | `@syncular/client` (worker + OPFS) | [Web](/platform-web/) |
-| React | `@syncular/react` hooks | [React](/platform-react/) |
-| iOS / macOS | `SyncularClient` Swift package | [Swift](/platform-swift/) |
-| Android / JVM | `SyncularClient` Kotlin library (FFM) | [Kotlin](/platform-kotlin/) |
-| Flutter | `syncular` Dart package (dart:ffi) | [Flutter](/platform-flutter/) |
-| React Native | `@syncular/react-native` TurboModule | [React Native](/platform-react-native/) |
-| Desktop (Tauri) | `tauri-plugin-syncular` + `@syncular/tauri` | [Tauri](/platform-tauri/) |
-| Rust | `syncular-client` crate | [Rust](/platform-rust/) |
-| Anything with a C FFI | `syncular-ffi` (5 functions) | [Embedding](/platform-ffi/) |
-
-On the server you get a framework-neutral core with adapters for
-[Bun/Node via Hono](/guide-server/) and
-[Cloudflare Workers](/server-workers/), storage on
-[SQLite, Postgres, or D1](/server-storage/), and segments/blobs on
-S3-compatible stores.
-
-Backend processes can also run a [server-side `SyncClient`](/guide-server-clients/)
-with persistent SQLite. Processes that do not need a replica use
-[`SyncRemoteClient`](/guide-remote-operations/) for ordinary commits,
-registered typed queries, authoritative commands, and live query snapshots.
-Application intent is represented by [domain event rows](/guide-domain-events/)
-written atomically with the state change.
-
-## Boundaries
-
-- **One server, one ordered log.** A single source of truth keeps
-  authorization, audit, and pruning tractable. There is no peer-to-peer mode.
-- **Versioned rows with explicit conflicts.** Rows converge through versioned
-  upserts, and conflicts surface to your app. Where you want collaborative
-  text, [CRDT columns](/concepts-crdt/) (Yjs/yrs) handle merging per column.
-- **Your app resolves conflicts.** Version mismatches arrive with the server
-  row attached, and your code decides what happens next. See
-  [Conflicts](/concepts-conflicts/).
-- **Built for durable, authorized app data.** Frame-by-frame multiplayer
-  state belongs in a dedicated netcode layer.
-
-## Design decisions
-
-| Decision | Why it matters |
+| Platform | Guide |
 |---|---|
-| A written protocol ([SPEC.md](https://github.com/syncular/syncular/blob/main/docs/SPEC.md)) | A third implementation plugs in against the spec and its golden vectors. Divergence shows up as a failing vector or scenario. |
-| Two cores, one protocol | The web core is small, debuggable TypeScript that builds without the Rust toolchain; the Rust core ships native. Parity between them is a CI gate. |
-| One query plan, five targets | TypeScript, Swift, Kotlin, Dart, and Rust generated queries share inputs, selected SQL, bind order, dependencies, coverage, and row identity. |
-| One path per concern | One sync loop over WebSocket, one persistent browser mode (OPFS), one preferred bootstrap format. An unsupported environment produces a clear error. |
-| Scopes run in *your* backend | `resolveScopes(actor)` lives next to your auth, so sync reuses the authorization you already have. |
-| One command to a running app | `bun create syncular-app my-app` scaffolds a working server and client with the typed schema already wired up. |
+| Browser, React | [Web](/platform-web/), [React](/platform-react/) |
+| iOS and macOS, Android and JVM | [Swift](/platform-swift/), [Kotlin](/platform-kotlin/) |
+| Flutter, React Native, Tauri | [Flutter](/platform-flutter/), [React Native](/platform-react-native/), [Tauri](/platform-tauri/) |
+| Rust, any language with a C FFI | [Rust](/platform-rust/), [C FFI](/platform-ffi/) |
 
-## The numbers
+The server runs on Bun or Node through Hono ([Server setup](/guide-server/)) or on [Cloudflare Workers](/server-workers/), with storage on [SQLite, Postgres, or D1](/server-storage/).
 
-- **30 ms** to bootstrap a 100k-row image on a fresh client (the rows lane is
-  365 ms).
-- **0.2 ms p95** realtime propagation between two live clients.
+## Limits
 
-Methodology and the rest of the record are in [benchmarks](/benchmarks/).
+- **One server, one ordered log.** There is no peer-to-peer mode.
+- **Versioned rows.** Rows converge through versioned upserts. [CRDT columns](/concepts-crdt/) merge collaborative text per column.
+- **Durable, authorized app data.** Frame-by-frame multiplayer state belongs in a dedicated netcode layer.
 
-## Where to go next
-
-- **[Quickstart](/quickstart/)**: two synced clients in a terminal, ≤ 5 minutes.
-- **[Live demos](/demos/)**: see convergence, offline replay, and conflicts run.
-- **[Scopes & authorization](/concepts-scopes/)**: the one piece you write yourself.
-- **[Protocol & conformance](/guide-conformance/)**: how the two cores stay in lockstep.
+Run the [quickstart](/quickstart/) to see two clients converge in a terminal, or open the [live demos](/demos/).

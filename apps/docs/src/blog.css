@@ -1,0 +1,177 @@
+/* Blog styles: the docs tokens, prose, and content components from
+   src/docs.css, plus the post layout below (chapters box, mobile chapters
+   bar, reading progress, post figures). Tailwind compiles the blog layout
+   and pages through the extra @source lines. */
+@import './docs.css';
+@source './layouts/Blog.astro';
+@source './components/MobileMenu.astro';
+@source './pages/blog';
+
+/* ---------- Reading progress (a 2px bar under the header) ---------- */
+.read-progress {
+  position: absolute;
+  left: 0;
+  bottom: -1px;
+  height: 2px;
+  width: 100%;
+  transform: scaleX(var(--progress, 0));
+  transform-origin: left;
+  background: var(--color-amber);
+  box-shadow: 0 0 10px rgba(255, 176, 0, 0.6);
+}
+
+/* ---------- Chapters box (desktop) ---------- */
+.chapters ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: chapter;
+}
+.chapters > ol > li {
+  counter-increment: chapter;
+}
+.chapters a {
+  display: grid;
+  grid-template-columns: 1.6rem 1fr;
+  gap: 0.2rem;
+  padding: 0.38rem 0.9rem 0.38rem 0.75rem;
+  border-left: 2px solid transparent;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--color-faint);
+  text-decoration: none;
+  transition:
+    color 0.15s,
+    background 0.15s;
+}
+.chapters > ol > li > a::before {
+  content: counter(chapter, decimal-leading-zero);
+  font-size: 10.5px;
+  color: var(--color-faint);
+}
+.chapters a:hover {
+  color: var(--color-ink);
+}
+.chapters > ol > li.on > a {
+  color: var(--color-ink);
+  border-left-color: var(--color-amber);
+  background: linear-gradient(90deg, rgba(255, 176, 0, 0.1), transparent);
+}
+.chapters > ol > li.on > a::before {
+  color: var(--color-amber);
+}
+.chapters li.done > a::before {
+  content: '✓';
+  color: var(--color-phos);
+}
+/* Sections of a chapter appear while the reader is in that chapter. */
+.chapters li > ol {
+  display: none;
+  padding: 0 0 0.3rem;
+}
+.chapters li.on > ol {
+  display: block;
+}
+.chapters li > ol a {
+  padding-left: 2.55rem;
+  grid-template-columns: 1fr;
+  font-family: var(--font-sans);
+  font-size: 12px;
+}
+.chapters li > ol a.on {
+  color: var(--color-amber);
+}
+
+/* ---------- Chapters bar (mobile) ---------- */
+.chapters-bar > summary {
+  list-style: none;
+}
+.chapters-bar > summary::-webkit-details-marker {
+  display: none;
+}
+.chapters-bar[open] .chevron {
+  rotate: -90deg;
+}
+.chapters-bar .chapters {
+  max-height: min(60vh, 26rem);
+  overflow-y: auto;
+}
+
+/* ---------- Post body ---------- */
+.prose .heading-anchor {
+  margin-left: 0.5rem;
+  font-weight: 400;
+  color: var(--color-faint);
+  text-decoration: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.prose h2:hover .heading-anchor,
+.prose h3:hover .heading-anchor,
+.prose .heading-anchor:focus-visible {
+  opacity: 1;
+}
+.prose .heading-anchor:hover {
+  color: var(--color-amber);
+}
+@media (hover: none) {
+  .prose .heading-anchor {
+    opacity: 0.6;
+  }
+}
+/* A chapter opens with a rule so long posts read in visible parts. */
+.post-body > h2 {
+  margin-top: 4rem;
+  padding-top: 2.2rem;
+  border-top: 1px solid var(--color-line);
+}
+.post-body > :first-child {
+  margin-top: 0;
+}
+/* Figures written as plain <figure><img> in post markdown. */
+.prose figure:not(.fig) {
+  margin: 2.2rem 0;
+  border: 1px solid var(--color-line);
+  background: var(--color-panel);
+}
+.prose figure:not(.fig) img {
+  display: block;
+  width: 100%;
+  max-width: 30rem;
+  height: auto;
+  margin: 0 auto;
+  padding: 1.4rem 1.2rem;
+}
+.prose details:not(.terms) {
+  margin: 1.4rem 0;
+  border: 1px solid var(--color-line);
+  background: var(--color-panel);
+}
+.prose details:not(.terms) > summary {
+  padding: 0.7rem 1rem;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  color: var(--color-ink);
+}
+.prose details:not(.terms)[open] > summary {
+  border-bottom: 1px solid var(--color-line);
+}
+.prose details:not(.terms) > :not(summary) {
+  margin-inline: 1rem;
+}
+.prose details:not(.terms) > :last-child {
+  margin-bottom: 1rem;
+}
+.prose details:not(.terms) pre,
+.prose details:not(.terms) .code {
+  margin-inline: 0;
+}
+
+/* The mobile chapters bar sits under the header; anchors land below both. */
+@media (max-width: 1023px) {
+  html:has(.chapters-bar) {
+    scroll-padding-top: 7.2rem;
+  }
+}

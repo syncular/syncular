@@ -9,6 +9,7 @@ import {
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { changelog } from '../src/changelog.mjs';
+import { navPages } from '../src/nav.ts';
 import { reflectReleaseVersion, releaseVersion } from './release-version.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -37,10 +38,7 @@ const readTitle = (body, fallback) => {
   return match?.[1]?.trim() ?? fallback;
 };
 
-const navSource = readFileSync(join(root, 'src/nav.ts'), 'utf8');
-const navItems = [...navSource.matchAll(/slug: '([^']+)', title: '([^']+)'/g)]
-  .map((match) => ({ slug: match[1], title: match[2] }))
-  .filter((item) => item.slug && item.title);
+const navItems = navPages.map(({ slug, title }) => ({ slug, title }));
 
 const findMarkdownFiles = (directory) =>
   readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -54,12 +52,16 @@ const contentFiles = findMarkdownFiles(contentDir).map((path) => {
     .replaceAll('\\', '/')
     .replace(/\.md$/, '');
   const body = reflectReleaseVersion(readFileSync(path, 'utf8'));
+  // Blog posts carry their publication date in frontmatter.
+  const publishedAt = body.match(
+    /^publishedAt:\s*'?(\d{4}-\d{2}-\d{2})'?$/m,
+  )?.[1];
   return {
     slug,
     path,
     body,
     title: readTitle(body, slug),
-    lastmod: statSync(path).mtime.toISOString().slice(0, 10),
+    lastmod: publishedAt ?? statSync(path).mtime.toISOString().slice(0, 10),
   };
 });
 
@@ -74,18 +76,22 @@ const playgroundPage = {
 The interactive SYQL playground compiles editable SYQL to its complete,
 compiler-selected physical SQLite plan. It runs locally in the browser with
 the same parser, semantic analysis, schema validation, formatter, and lowerer
-used by Syncular typegen.
+used by Syncular typegen, against the Release board schema of the hosted demo
+(boards, members, labels, cards, card_labels, comments, all scoped by
+\`board:{board_id}\`). The Run tab executes the selected statement on the
+demo's sample data in SQLite WASM.
 
 - [Open the playground](${site}/playground/)
 - [Read the SYQL language guide](${site}/syql/)
-- [Try optional filters](${site}/playground/?example=optional)
-- [Try sort profiles and a bounded limit](${site}/playground/?example=sort-limit)
-- [Inspect synchronization coverage](${site}/playground/?example=sync-coverage)
-- [Try a reusable predicate](${site}/playground/?example=predicate)
+- [Try optional filters](${site}/playground/#example=optional)
+- [Try sort profiles and a bounded limit](${site}/playground/#example=sort-limit)
+- [Inspect synchronization coverage](${site}/playground/#example=sync-board)
+- [See a sync query fail closed](${site}/playground/#example=sync-unscoped)
 
-The initial schema is a scoped \`todos\` table. The page exposes generated SQL,
-statement variants, public inputs, private binds, dependencies, coverage, and
-row identity. Source text is never uploaded or persisted.
+The page shows generated SQL, statement variants, public inputs, result
+columns, private binds, dependencies, coverage, row identity, and query
+results. The URL hash carries the example and edited source; source text is
+never uploaded or persisted.
 `,
 };
 const changelogPage = {
@@ -164,8 +170,8 @@ ensureWrite(
   join(distDir, 'blog.md'),
   `# Syncular blog
 
-Field notes on offline-first writes, protocol design, local SQLite, and the
-engineering decisions behind Syncular.
+Engineering notes on offline writes, sync protocols, local SQLite, and the
+design decisions behind Syncular.
 
 ${blogPosts
   .map((post) => `- [${post.title}](${site}/${post.slug}/)`)
@@ -187,7 +193,9 @@ const latestLastmod = orderedPages
 
 const sitemapUrls = [
   { loc: `${site}/`, lastmod: latestLastmod },
+  { loc: `${site}/docs/`, lastmod: latestLastmod },
   { loc: `${site}/blog/`, lastmod: blogLastmod ?? latestLastmod },
+  { loc: `${site}/demo/`, lastmod: latestLastmod },
   ...orderedPages.map((page) => ({
     loc: `${site}/${page.slug}/`,
     lastmod: page.lastmod,
@@ -247,6 +255,7 @@ ensureWrite(
 
 Canonical site: ${site}
 Markdown negotiation: send Accept: text/markdown to any public HTML page.
+Live demo (interactive sync lab, no Markdown copy): ${site}/demo/
 
 ## Pages
 

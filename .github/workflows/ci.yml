@@ -71,7 +71,7 @@ jobs:
           bun-version: latest
       - name: Install dependencies
         run: bun install --frozen-lockfile
-      - name: Build versioned docs, landing page, and demo
+      - name: Build versioned docs, landing page, and the demo under /demo/
         run: bun run build:sites
 
   # Perf budgets (migration gate B3: "perf budgets in CI from day one"). Reduced

@@ -1,236 +1,63 @@
 # Kotlin (Android & JVM)
 
-The Kotlin binding is a **Kotlin/JVM library** (`dev.syncular`) over the Rust
-native core's C FFI, bound via **FFM** (`java.lang.foreign`, JDK 21+). FFM
-downcalls bind the dylib directly, so the build is a single step with no
-hand-written JNI layer, and the only runtime surface beyond `kotlin-stdlib`
-is the JDK itself. See [FFI & the native core](/platform-ffi/) for the
-underlying C ABI.
+`SyncularClient` gives a Kotlin app a local SQLite replica, an outbox, and a sync loop. This page shows the shape of the SDK and a first sync in six calls; the sub-pages cover install, daily use, lifecycle, platform details, and fixes.
 
-## Install
+::meta{for="Android and JVM developers" time="4 minutes"}
 
-The library lives at
-[`bindings/kotlin`](https://github.com/syncular/syncular/tree/main/bindings/kotlin),
-a separate Gradle project (`kotlin("jvm")`, `jvmToolchain(21)`). FFM is
-stable from JDK 22 and a preview feature on JDK 21, so the build passes
-`--enable-preview` (benign on 22+) plus `--enable-native-access=ALL-UNNAMED`
-for the downcalls. JDK 21+ with FFM is the only supported JVM path.
+| Property | Value |
+|---|---|
+| **Runs on** | JDK 21 or newer on desktop and server JVMs; Android through an AAR with `jniLibs` |
+| **Package** | `dev.syncular`, a Gradle project in [`bindings/kotlin`](https://github.com/syncular/syncular/tree/main/bindings/kotlin) (`kotlin("jvm")`, Kotlin 2.4.20) |
+| **Core** | Rust core through the C ABI, bound with FFM (`java.lang.foreign`); no JNI glue |
+| **Threading** | Call from any thread; an internal lock serializes commands. Events arrive on the `syncular-poll` thread |
+| **Reading time** | 4 minutes here, about 20 for the full set |
 
-The native core itself (`libsyncular`) is built by
-[`rust/scripts/build-native.sh`](https://github.com/syncular/syncular/blob/main/rust/scripts/build-native.sh)
-and loaded at runtime; see the library-loading section below.
+:::figure{title="How Kotlin reaches the core" note="The JDK is the only runtime dependency" ticks}
+<div class="d-row">
+<div class="node hot"><span class="t">Your app</span>Android or JVM<br>typed rows from typegen</div>
+<span class="d-arrow"></span>
+<div class="node"><span class="t">dev.syncular</span><code>SyncularClient</code><br>command lock, poll thread</div>
+<span class="d-arrow"></span>
+<div class="node cool"><span class="t">FFM downcalls</span><code>SyncularFfi</code> binds the<br>5 C functions</div>
+<span class="d-arrow"></span>
+<div class="node ok"><span class="t">libsyncular</span>Rust core<br>SQLite, native transport</div>
+</div>
 
-## Create a client
+::caption[The three native SDKs share this model. [Native client API](/native-client-api/) documents the shared half.]
+:::
 
-`SyncularClient.create` constructs the native core, issues `create` with your
-schema and optional explicit client id, and starts the event poll loop. The schema comes from
-typegen: declare a `kotlin` output in `syncular.json` and
-`syncular generate` emits a `Syncular.generated.kt` with a ready-made
-`SyncularSchema.schema` value plus typed rows and subscription helpers (see
-[Schema & typegen](/guide-schema/)).
+## First sync
+
+The calls below assume the library is on the classpath and `libsyncular` is loadable ([Install & first sync](/platform-kotlin-install/)), and `syncular generate` emitted `Syncular.generated.kt`.
 
 ```kotlin
 import dev.syncular.*
 
 val client = SyncularClient.create(
-    schema = SyncularSchema.schema,           // from Syncular.generated.kt
-    config = SyncularConfig(
-        baseUrl = "https://your.server/sync", // engages the native transport
-        dbPath = "$appData/syncular.db",      // file-backed persistence
-    ),
+    schema = SyncularSchema.schema,
+    config = SyncularConfig(baseUrl = "http://localhost:8787", dbPath = dbPath),
 )
-```
-
-With a `baseUrl` the client runs the native HTTP and WebSocket transport;
-without one it runs the offline-only core with no network stack. The native
-transport requires a core built with the `native-transport` feature. Give the
-client a persistent database path; an in-memory database loses rows, cursors,
-client identity, and the outbox on restart. `SyncularConfig` also takes
-`wsUrl` and `headers` (auth, tenant, …) for the native transport.
-
-Rotate credentials without recreating the client:
-
-```kotlin
-client.setHeaders(mapOf("Authorization" to "Bearer $freshToken"))
-```
-
-The next HTTP request uses the new headers. An open WebSocket keeps the
-headers from its handshake; call `pause()` and `resume()` when the new
-credential must apply to the live socket immediately.
-
-## Reads & writes
-
-```kotlin
-// Subscribe: table + scope map. Local; sync fills it.
-client.subscribe(id = "todos", table = "todos",
-                 scopes = mapOf("list_id" to listOf("groceries")))
-
-// Optimistic write: visible in local reads immediately.
-val commitId = client.mutate(listOf(
-    JsonValue.obj(
-        "table" to JsonValue.of("todos"), "op" to JsonValue.of("upsert"),
-        "values" to JsonValue.obj(
-            "id" to JsonValue.of("t1"), "list_id" to JsonValue.of("groceries"),
-            "title" to JsonValue.of("Hello"), "updated_at_ms" to JsonValue.of(1),
-        ),
+client.subscribe("todos", "todos", mapOf("list_id" to listOf("groceries")))
+client.mutate(listOf(JsonValue.obj(
+    "table" to JsonValue.of("todos"), "op" to JsonValue.of("upsert"),
+    "values" to JsonValue.obj(
+        "id" to JsonValue.of("t1"), "list_id" to JsonValue.of("groceries"),
+        "title" to JsonValue.of("Buy milk"), "done" to JsonValue.of(false),
+        "position" to JsonValue.of(1), "updated_at_ms" to JsonValue.of(1),
     ),
-))
-
-// RowState objects: {rowId, version, values}; version == -1 = optimistic.
-val rows = client.readRows("todos")
-
-// Arbitrary read-only SQL, returned as flat rows.
-val hits = client.query("SELECT id, title FROM todos WHERE list_id = ?",
-                        listOf(JsonValue.of("groceries")))
+)))
+client.syncUntilIdle()
+println(client.query("SELECT id, title FROM todos"))
 ```
 
-`JsonValue` is the binding's hand-rolled JSON model (no third-party JSON
-dependency). Scope maps carry the authorization vocabulary used throughout
-syncular; see [Scopes & authorization](/concepts-scopes/). Anything the
-typed conveniences do not cover is reachable through the raw
-`client.command(method, params)`.
+`mutate` is visible to `query` at once. `syncUntilIdle` pushes the outbox and pulls the subscribed list, so a second device with the same subscription reads `t1`.
 
-## Sync loop & events
+## The pages
 
-```kotlin
-val outcome = client.sync()        // one round; needs native-transport
-client.syncUntilIdle(maxRounds = 10)
+- **[Install & first sync](/platform-kotlin-install/)**: JDK flags, loading the core, and a first client.
+- **[Reads & writes](/platform-kotlin-reads-writes/)**: subscribe, mutate, query, `JsonValue`, and collaborative text.
+- **[Realtime & lifecycle](/platform-kotlin-realtime/)**: events, `pause()`, `resume()`, `close()`, and the Android connectivity adapter.
+- **[Platform specifics](/platform-kotlin-specifics/)**: library loading, Android packaging, transport policy, and threading.
+- **[Troubleshooting](/platform-kotlin-troubleshooting/)**: FFM errors, missing library, and offline results.
 
-client.listener = SyncularEventListener { event ->
-    when (event.type) {
-        "sync-intent" -> scheduleSync()
-        "change"      -> refreshVisibleState()
-    }
-}
-```
-
-Exact `change` batches, `sync-intent`, and `presence` are drained from the
-core's `poll_event` queue on a background daemon
-thread and delivered to the registered `listener` **on that poll thread**;
-marshal to your UI thread as needed. Supporting reads: `statusSnapshot()`,
-`pendingCommitIds()`, `subscriptionState(id)`, `conflicts()`,
-`presence(scopeKey)`, `setPresence(scopeKey, doc)`, and `connectRealtime()` /
-`disconnectRealtime()`.
-
-Failed commands throw `SyncularException` (a stable `code` plus a message).
-`sync()` reports transport failure in its return value: offline, or on the
-offline-only core, it returns
-`{ok: false, errorCode: "transport.unavailable"}`, and the commit waits in
-the outbox; `pendingCommitIds()` stays non-empty until a later sync drains
-it. `mutate` applies locally at once and queues the commit for the next push.
-
-## Collaborative text (CRDT)
-
-`crdt` columns expose native editing helpers:
-
-```kotlin
-val text = client.crdtText("notes", "n1", "doc")
-client.crdtInsertText("notes", "n1", "doc", 0, "Hi ")
-client.crdtDeleteText("notes", "n1", "doc", 0, 3)
-```
-
-`crdtApplyUpdate` applies an arbitrary Yjs update as a `ByteArray` for cases
-the text helpers do not cover; each helper pushes its update through the
-normal mutate path and returns the enqueued `clientCommitId`. The merge
-model, the `crdt-yjs` feature flag, and cross-core convergence guarantees are
-on [CRDT columns](/concepts-crdt/).
-
-## Library loading
-
-The FFM `SymbolLookup` resolves `libsyncular` in a fixed order:
-
-- **Explicit path**: the `syncular.library.path` system property, e.g.
-  `-Dsyncular.library.path=/abs/path/libsyncular.dylib`. This is how the
-  binding's own tests load the freshly built core.
-- **By name**: failing that, `System.loadLibrary("syncular")` resolves
-  `libsyncular.dylib`/`.so` / `syncular.dll` via `java.library.path`.
-
-**Plain JVM / desktop:** ship the host cdylib (`build-native.sh desktop`) and
-point one of the two mechanisms at it. **Android:** the wrapper compiles
-JVM-neutral (no Android SDK dependency), so it drops into an Android library
-module unchanged; the native `.so`s come from `build-native.sh android`
-(`arm64-v8a` + `x86_64` via `cargo-ndk`) and land under `jniLibs/`. The `.so`
-then loads by name from the APK, so no `syncular.library.path` is needed.
-Packaging a real AAR needs the Android Gradle Plugin + `cargo-ndk`; FFM on
-Android also requires a recent runtime.
-
-## Lifecycle & threading
-
-`AndroidConnectivitySignal` adapts the host's current network check and
-`ConnectivityManager.NetworkCallback` registration:
-
-```kotlin
-fun online(): Boolean = connectivityManager
-    .getNetworkCapabilities(connectivityManager.activeNetwork)
-    ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
-
-val signal = AndroidConnectivitySignal(
-    current = ::online,
-    observe = { listener ->
-        val callback = object : ConnectivityManager.NetworkCallback() {
-            override fun onCapabilitiesChanged(
-                network: Network,
-                capabilities: NetworkCapabilities,
-            ) = listener(
-                capabilities.hasCapability(
-                    NetworkCapabilities.NET_CAPABILITY_VALIDATED,
-                ),
-            )
-            override fun onLost(network: Network) = listener(false)
-        }
-        connectivityManager.registerDefaultNetworkCallback(callback)
-        SyncularConnectivitySubscription {
-            connectivityManager.unregisterNetworkCallback(callback)
-        }
-    },
-)
-val connectivity = SyncularConnectivityAdapter(client, signal)
-
-// During client teardown:
-connectivity.close()
-```
-
-The signal reports network availability only. If activity state also controls
-the client, supply a combined foreground-and-online signal or close this
-adapter in `onStop()`.
-
-- **`pause()`** stops the event poll loop and disconnects the realtime
-  socket. Call from an Android `Activity.onStop()` or a connectivity-lost
-  callback. Database and outbox intact; mutations still queue.
-- **`resume()`** reconnects realtime (if present) and restarts the poll loop.
-- **`close()`** releases the core. `SyncularClient` is `AutoCloseable`
-  (use `client.use { … }` for scoped lifetimes). Idempotent; it joins the poll
-  thread first so the handle is never freed under an in-flight `poll_event`,
-  and commands throw `client.closed` afterwards.
-
-A schema bump on an installed app follows the wipe-and-re-bootstrap
-flow in [Schema upgrades](/concepts-schema-upgrades/).
-
-The core is thread-affine. The wrapper serializes every command through an
-internal lock, so `SyncularClient` itself is safe to call from any thread;
-leave the raw FFI functions to the wrapper. The
-[example](https://github.com/syncular/syncular/tree/main/bindings/kotlin/example)
-is a terminal todo app against the [quickstart](/quickstart/) server; its CI
-smoke pushes a write through a live server and reads it back from an
-independent client.
-
-## Where to go next
-
-- [FFI & the native core](/platform-ffi/): the five-function contract this wrapper binds with FFM.
-- [Scopes & authorization](/concepts-scopes/): what a scope map means server-side.
-- [Conflicts & optimistic writes](/concepts-conflicts/): background for the `conflict` event.
-- [Quickstart](/quickstart/): the server used by the example.
-
-## Snapshot and outcome methods
-
-Use `querySnapshot` for rows, coverage, and revision from one local read.
-`statusSnapshot` returns scheduling, schema, lease, and outbox state;
-`diagnosticsSnapshot` adds bounded support evidence. `commitOutcome` looks up
-one terminal result by commit ID. `commitOutcomes` lists the durable journal,
-and `resolveCommitOutcome` records an explicit resolution. A pending commit
-has no terminal outcome. `rejections` lists rejected commits.
-
-This source-breaking revision removes the `syncNeeded` convenience and the raw
-`schemaFloor`, `leaseState`, `upgrading`, and `syncNeeded` commands. Read those
-fields from `statusSnapshot` instead. The wrappers use the existing native
-command dispatcher and return the binding's JSON value types.
+The behavior shared with Swift and Flutter (configuration, events, snapshot and outcome methods) is on [Native client API](/native-client-api/).

@@ -1,6 +1,9 @@
 /**
- * Static demo build: the backend-free bundle published at demo.syncular.dev.
- * Emits `dist/`: index.html, admin.html, the shared favicon and social card,
+ * Static demo build: the backend-free bundle served at syncular.dev/demo/.
+ * Every URL in the bundle is relative to the page, so it works under any
+ * base path. Emits `dist/` (or the directory given as the first argument; the
+ * docs build passes `../docs/dist/demo`): index.html, admin.html, the docs site's favicon, social card
+ * and self-hosted IBM Plex fonts,
  * app.js (the page, with the embedded flag baked in), server-worker.js (the
  * WHOLE sync server, running in a Web Worker over sqlite-wasm wearing the D1
  * shape), and the sqlite-wasm vendor files. Cloudflare serves it as plain
@@ -15,14 +18,14 @@
  *   instantiates (it runs `D1ServerStorage`), but a browser bundle still
  *   has to resolve the import.
  */
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import type { BunPlugin } from 'bun';
 import rootPackage from '../../../package.json';
 import { ADMIN_CONSOLE_HTML } from '../../../packages/server-hono/src/admin-page';
 
 const appDir = join(import.meta.dir, '..');
 const frontendDir = join(appDir, 'src', 'frontend');
-const outDir = join(appDir, 'dist');
+const outDir = resolve(process.argv[2] ?? join(appDir, 'dist'));
 const docsPublicDir = join(appDir, '..', 'docs', 'public');
 
 function reflectReleaseVersion(text: string): string {
@@ -83,7 +86,7 @@ async function bundleText(basename: string): Promise<string> {
   const text = await artifact.text();
   return text.replaceAll(
     /(["'])@sqlite\.org\/sqlite-wasm\1/g,
-    '"/vendor/sqlite-wasm/index.mjs"',
+    '"./vendor/sqlite-wasm/index.mjs"',
   );
 }
 
@@ -97,7 +100,15 @@ const WASM_FILES = [
   'sqlite3-opfs-async-proxy.js',
   'sqlite3-worker1.mjs',
 ];
-const BRAND_ASSETS = ['favicon.svg', 'social-card.png'];
+const BRAND_ASSETS = [
+  'favicon.svg',
+  'social-card.png',
+  'fonts/plex-mono-400.woff2',
+  'fonts/plex-mono-500.woff2',
+  'fonts/plex-mono-600.woff2',
+  'fonts/plex-sans-400.woff2',
+  'fonts/plex-sans-500.woff2',
+];
 
 import { mkdir, rm } from 'node:fs/promises';
 

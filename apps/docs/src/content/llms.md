@@ -1,65 +1,53 @@
 # LLMs
 
-I use LLMs heavily, on syncular and on my other projects. Docs, tests,
-benchmarks, design discussions, production code: all of it has had model
-help, including this page. I'll keep updating it as the workflow changes.
+This page is for people who point a language model at the Syncular docs: coding
+agents, editor assistants, and retrieval pipelines. It lists the machine-readable
+entry points the build generates and what each one contains.
 
-I've also spent years deep in the offline-first rabbit hole, and most of
-syncular's code, design, and trade-offs come from that experience and predate
-LLMs. Back in 2019 I built [`debe`](https://github.com/bkniffler/debe), a
-reactive offline-first datastore with CRDT sync, multi-master replication,
-and adapters for SQLite, Postgres, and in-memory stores. It never shipped,
-but building it showed me where the real work in a sync engine sits:
-authorization, bootstrap, retention, recovery, debugging. Convergence was
-maybe a fifth of it.
+::meta{for="Developers using agents or retrieval over the docs" time="2 minutes"}
 
-I kept coming back to the problem over the years, mostly through prototypes,
-and before starting syncular I went through the current generation properly:
-PowerSync, Zero, Electric, Replicache, Turso, LiveStore, and Jazz. I followed
-a single offline write through each of them (a lost ack, access revoked while
-writes are pending, a schema change in between) and wrote it up in
-[Durable Offline Writes](/blog/offline-first-writes/). That study is where
-syncular's shape comes from: local SQLite as the read model, writes through
-an outbox, a server with the final say, explicit scopes, bootstrap and
-retention as part of the protocol. The first implementations of all of that
-are hand-written too.
+:::terms
+- **`llms.txt`**: A generated Markdown index of every docs page, with a link to each page's Markdown copy.
+- **Markdown mirror**: The page's Markdown source served at `/<slug>.md`.
+- **Docs index**: `/.well-known/docs-index.json`, the machine-readable list of the same pages.
+:::
 
-The reason I'm comfortable letting models write production code here is how
-the project is checked. The protocol is written down first
-([`SPEC.md`](https://github.com/syncular/syncular/blob/main/docs/SPEC.md) is
-normative), and golden vectors pin the wire format down to the byte. There
-are two full implementations of the core, one in TypeScript and one in Rust,
-and both have to pass the same conformance catalog. The Rust core exists for
-the native platforms, but it's turned out to be the best defense I have
-against confidently wrong code: a plausible shortcut rarely survives a second
-implementation in another language.
+## Entry points
 
-The conformance harness also injects faults at the transport seam: dropped
-requests, lost acks, duplicated and reordered delivery, truncated bytes. All
-of it is deterministic (the one random value is seeded from the scenario
-name), so every failure reproduces. Sleeps are banned in tests, and a
-doctrine test greps the package to keep it that way. Beyond that there are
-the package tests, the examples get smoke-tested in CI, and the benchmarks
-are committed programs with the methodology written down.
+The build (`apps/docs/scripts/agent-assets.mjs`) generates these from the docs
+and blog sources, so they track `main`:
 
-Everything lands through the same `bun run check` gate, and I read every diff
-before it goes in. The thing I type back most often is some version of
-"smaller".
+| URL | Contents |
+|---|---|
+| [`/llms.txt`](https://syncular.dev/llms.txt) | An index of every page: title, canonical URL, and Markdown URL. It links to the pages and holds none of their text. |
+| `/<slug>.md` | The Markdown source of one page, with a `Canonical` comment on the first line. `/index.md` is the landing page and `/blog.md` lists the blog posts. |
+| `/.well-known/docs-index.json` | The page list as JSON: `title`, `path`, and `markdown` for each page. |
+| `/sitemap.xml`, `/robots.txt` | The sitemap with a `lastmod` per page, and a robots file that allows all agents. |
+| `/.well-known/api-catalog` | An RFC 9727 API catalog that points at the discovery endpoints. |
+| `/.well-known/openapi.json` | An OpenAPI description of the public discovery endpoints. |
+| `/.well-known/agent-skills/index.json` | An Agent Skills index with one skill, `syncular-docs`, that explains how to navigate the docs. |
+| `/auth.md`, OAuth metadata under `/.well-known/` | How an agent gets anonymous read access to the public docs. The token grants access to public documentation only. |
+| `/.well-known/mcp/server-card.json` | A card for the browser WebMCP tools. |
 
-## Contributing with LLMs
+## Fetching Markdown
 
-Same rules for contributions. Use them for whatever helps: tests,
-reproductions, benchmarks, tooling, docs, production code. If a model drafted
-or rewrote something that's still in your pull request, say so in the
-description; routine completion and spelling fixes don't need a note. Read
-your own diff, run `bun run check`, and be ready to explain your changes.
-Pull requests pasted straight out of a model are closed without comment. The
-rest of the ground rules are in [Contributing](/contributing/).
+Send `Accept: text/markdown` to any public HTML page and the Worker returns
+the generated Markdown copy of that page, with an `x-markdown-tokens` header
+that estimates its size and `Vary: Accept` set. The same Markdown is available
+at the `.md` URL without content negotiation.
 
-## Docs for language models
+The site also registers WebMCP tools in the browser when
+`navigator.modelContext` exists: `syncular_list_docs`, `syncular_search_docs`,
+`syncular_get_page_markdown`, and `syncular_open_doc`.
 
-The entire documentation is one plain-text file at
-[syncular.dev/llms.txt](https://syncular.dev/llms.txt); point your agent or
-editor assistant at it. The repository root also carries
+## Source of truth
+
+For protocol claims, cite [`docs/SPEC.md`](https://github.com/syncular/syncular/blob/main/docs/SPEC.md) and the [specifications and packages page](/reference/). The repository root also carries
 [`AGENTS.md`](https://github.com/syncular/syncular/blob/main/AGENTS.md), the
-instructions agents (and humans) follow when working on syncular itself.
+instructions that agents and humans follow when they change Syncular itself.
+Contribution rules for model-assisted pull requests are on
+[Contributing](/contributing/#llm-assistance).
+
+How Syncular's maintainer uses models, and why the project's checks make that
+safe, is the blog post
+[Why a Second Implementation Is the Best Check on LLM-Written Code](/blog/two-cores-check-llm-code/).

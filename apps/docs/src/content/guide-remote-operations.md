@@ -1,29 +1,35 @@
 # Remote server operations
 
-Server processes do not all need a local replica. `SyncRemoteClient` is the
-database-less client for ordinary commits, registered authoritative queries,
-server-authoritative commands, and live query snapshots. It fits
-machine-to-machine (M2M) integrations, admin queries, and workers without local
-SQLite.
+Call a Syncular server from a process that keeps no local database. This page is the reference for `SyncRemoteClient` and its server-side registries: ordinary commits, registered authoritative queries, server-authoritative commands, and live query snapshots. It is for backend developers building machine-to-machine (M2M) integrations, admin queries, and workers without local SQLite. [Server-side clients](/guide-server-clients/) helps you decide between this client and a local replica.
 
-## Capability matrix
+::meta{for="Backend developers" first="guide-server-clients"}
 
-| Need | Surface | Local SQLite | Authorization | Durable retry |
-|---|---|---:|---|---|
-| Local SQL read model and offline outbox | Server-side `SyncClient` | Required | Resolved scopes or wildcard access | Outbox owned by client |
-| Ordinary commit from a job or webhook | `SyncRemoteClient.commit()` | None | Normal write scopes | Caller retains prepared bytes |
-| Predefined typed server SQL | `SyncRemoteClient.query()` | None | Generated scope coverage or privileged callback | Read-only request |
-| Privileged transactional operation | `SyncRemoteClient.command()` | None | Command callback plus normal write scopes | Stable request ID |
-| Live predefined query | `SyncRemoteClient.watch()` | None | Same rule as the query | Replacement snapshots while connected |
-| Operator SQL next to the database | Storage or driver directly | None | Server trust boundary | Application-owned |
-| Protocol telemetry | `SyncularServerEvents` | None | Operator access | Sink-owned |
-| Durable post-commit work | Durable server reactions | None | Server configuration | Reaction store |
+:::terms
+- **`SyncRemoteClient`**: The database-less client. It sends HTTP requests and holds no outbox.
+- **Registered operation**: A query or command the server registers under a generated or declared ID. The client sends the ID and parameters, never SQL.
+- **Registry**: The `RemoteOperationRegistry` that maps IDs to server handlers.
+- **Watch**: A live registered query that sends full replacement snapshots.
+:::
+
+:::figure{title="Four calls, two server routes" note="No local database" ticks}
+<div class="d-row">
+<div class="node hot"><span class="t">SyncRemoteClient</span>commit()<br>query()<br>command()<br>watch()</div>
+<span class="d-arrow"></span>
+<div class="d-stack">
+<div class="node"><span class="t">POST /sync</span>Ordinary commit through the normal push path</div>
+<div class="node cool"><span class="t">POST /operations</span>Registered ID plus encoded parameters</div>
+<div class="node cool"><span class="t">/operations/realtime</span>Watch snapshots over a WebSocket</div>
+</div>
+<span class="d-arrow"></span>
+<div class="node ok"><span class="t">Server</span>Authorization, one transaction, commit log, realtime fanout</div>
+</div>
+
+::caption[Requests carry a registered ID and encoded values. They never carry caller-supplied SQL.]
+:::
 
 ## Construct the client
 
-One construction serves every example on this page. The bearer token is
-application auth, exactly as for a
-[server-side sync client](/guide-server-clients/).
+One construction serves every example on this page. The bearer token is application auth, as for a [local-replica client](/guide-server-clients/#set-up-a-local-replica).
 
 ```ts
 import {
@@ -151,76 +157,11 @@ server database. Typegen currently checks the SQLite form, so a Postgres
 deployment should keep remotely registered SQL within the common SQL subset or
 test it against Postgres in CI.
 
-Regenerate query modules with `syncular generate` before upgrading the server.
-Generated descriptors now include `relationPlans` for every selected SQL
-variant. The compiler records each physical table occurrence, including quoted
-self joins and tables inside CTEs. QueryIR uses version 4. The server rejects
-descriptors without matching relation plans; hand-authored descriptors must be
-replaced with generated ones.
+Generated descriptors include `relationPlans` for every selected SQL variant. The compiler records each physical table occurrence, including quoted self joins and tables inside CTEs. QueryIR uses version 4. The server rejects descriptors without matching relation plans, so register descriptors that `syncular generate` produced and replace hand-authored ones.
 
 Registration also requires generated result-column metadata. The server validates
 and returns only those columns, so driver-specific or undeclared fields do not
 cross the operation boundary.
-
-## Read a generated query inside a push transaction
-
-Row validators, the whole-commit validator, the reaction planner, and command
-`run` callbacks execute inside the push transaction. Each receives a
-transaction-bound `queryAuthoritative`: `context.queryAuthoritative` in a row
-validator or a command, `read.queryAuthoritative` in the whole-commit
-validator or the reaction planner. It takes the request that
-`storage.queryAuthoritative` takes, built from the same generated descriptor:
-
-```ts
-import { ValidationRejection, type Validator } from '@syncular/server';
-import { clinicRoleQuery } from './syncular.queries';
-
-const [rolePlan] = clinicRoleQuery.relationPlans;
-if (rolePlan === undefined) throw new Error('regenerate queries');
-
-export const requireScheduler: Validator = async (operation, context) => {
-  const clinicId = String(operation.row?.clinic_id ?? operation.stored?.clinic_id);
-  const { rows } = await context.queryAuthoritative({
-    plan: rolePlan,
-    params: clinicRoleQuery.bind({ clinicId, actorId: context.actorId }),
-    tables: clinicRoleQuery.tables,
-  });
-  if (rows[0]?.role !== 'scheduler') {
-    throw new ValidationRejection(
-      'app.scheduler_required',
-      'scheduler role required',
-    );
-  }
-};
-```
-
-For a descriptor with `sqlFor`, select the plan whose `sql` equals
-`sqlFor(params)`, as the registered-query handler does.
-
-The storage binds every relation to the commit's partition and runs the
-statement on the push transaction's connection. The read returns the rows the
-commit staged before the current operation, returns no row of another
-partition, and needs no second connection, so a push completes on a pool of
-one connection. Pushes to a partition are serialized, so a revocation that a
-concurrent push commits first is visible to every push that applies after it.
-
-Do not call `storage.queryAuthoritative` from these hooks. On SQLite and
-PGlite it waits for the transaction the hook is inside, and the push never
-completes. On a `pg` or `Bun.sql` pool it reads committed state without the
-staged writes, and it blocks once push transactions hold every connection.
-
-D1 buffers writes until commit. A D1 query over a table the commit has already
-written throws `StorageQueryError` with code
-`sync.storage.query_over_staged_writes`; read those rows with `read.getRow` or
-`read.scanRows`, which overlay the buffered writes. A custom storage
-transaction without the capability throws
-`sync.storage.transaction_query_unsupported`. Inside a validator either error
-rejects the commit with `sync.constraint_violation`.
-
-The query is bound to the partition and ignores the actor's scopes. A
-command's `getRow` returns `undefined` for a row outside the actor's scopes;
-`queryAuthoritative` returns every matching row of the partition, so the hook
-decides what the actor may act on.
 
 ## Server-authoritative commands
 
@@ -307,21 +248,6 @@ The command context exposes the request's identity-checked `clientId`, its
 keys.
 The authorizer can run again on a retry, so it must not have side effects.
 
-### Do not hand-roll a command on `storage.begin()`
-
-`registerRemoteCommand` is the lock: it builds the command after
-`lockPartitionForPush` and the idempotency recheck, and its reads share the
-committed transaction. `storage.begin()` is the raw primitive and acquires no
-partition write lock. In-tree SQLite opens with `BEGIN IMMEDIATE`, so a
-hand-rolled command on SQLite is serialized against a concurrent push by
-accident; PostgreSQL's `BEGIN` takes no row lock, so the same command races the
-push there and a SQLite-only test conceals it. If a host must own the
-transaction, call `lockPartitionForPush()` before its first authority, version,
-or replay read and keep it through the commit.
-Command callbacks should restrict side effects to planning database mutations.
-External calls belong after the commit in an idempotent worker or durable
-reaction.
-
 ## Live query watches
 
 `RemoteOperationWatchHub` reruns affected registered queries and sends full
@@ -397,7 +323,7 @@ client.close();
 
 The ticket rules are the same as for the sync WebSocket: short-lived,
 because proxy access logs retain URLs, with a custom connector for
-per-attempt rotation ([Realtime tickets](/server-realtime-tickets/)).
+per-attempt rotation ([Realtime tickets](/guide-auth/#realtime-tickets)).
 
 Watches are live invalidations, not durable work delivery. After a connection
 loss, reconnect and register the watch again to receive a fresh snapshot.
@@ -414,3 +340,82 @@ loss, reconnect and register the watch again to receive a fresh snapshot.
 - Durable server reactions schedule recoverable post-commit work. Query
   watches provide replaceable live state and may repeat or disappear with the
   connection.
+
+## Advanced: server-side transaction hooks
+
+Row validators, the whole-commit validator, the reaction planner, and command callbacks run inside the push transaction. The two sections below cover reads and raw transactions in those hooks.
+
+### Read a generated query inside a push transaction
+
+Row validators, the whole-commit validator, the reaction planner, and command
+`run` callbacks execute inside the push transaction. Each receives a
+transaction-bound `queryAuthoritative`: `context.queryAuthoritative` in a row
+validator or a command, `read.queryAuthoritative` in the whole-commit
+validator or the reaction planner. It takes the request that
+`storage.queryAuthoritative` takes, built from the same generated descriptor:
+
+```ts
+import { ValidationRejection, type Validator } from '@syncular/server';
+import { clinicRoleQuery } from './syncular.queries';
+
+const [rolePlan] = clinicRoleQuery.relationPlans;
+if (rolePlan === undefined) throw new Error('regenerate queries');
+
+export const requireScheduler: Validator = async (operation, context) => {
+  const clinicId = String(operation.row?.clinic_id ?? operation.stored?.clinic_id);
+  const { rows } = await context.queryAuthoritative({
+    plan: rolePlan,
+    params: clinicRoleQuery.bind({ clinicId, actorId: context.actorId }),
+    tables: clinicRoleQuery.tables,
+  });
+  if (rows[0]?.role !== 'scheduler') {
+    throw new ValidationRejection(
+      'app.scheduler_required',
+      'scheduler role required',
+    );
+  }
+};
+```
+
+For a descriptor with `sqlFor`, select the plan whose `sql` equals
+`sqlFor(params)`, as the registered-query handler does.
+
+The storage binds every relation to the commit's partition and runs the
+statement on the push transaction's connection. The read returns the rows the
+commit staged before the current operation, returns no row of another
+partition, and needs no second connection, so a push completes on a pool of
+one connection. Pushes to a partition are serialized, so a revocation that a
+concurrent push commits first is visible to every push that applies after it.
+
+Do not call `storage.queryAuthoritative` from these hooks. On SQLite and
+PGlite it waits for the transaction the hook is inside, and the push never
+completes. On a `pg` or `Bun.sql` pool it reads committed state without the
+staged writes, and it blocks once push transactions hold every connection.
+
+D1 buffers writes until commit. A D1 query over a table the commit has already
+written throws `StorageQueryError` with code
+`sync.storage.query_over_staged_writes`; read those rows with `read.getRow` or
+`read.scanRows`, which overlay the buffered writes. A custom storage
+transaction without the capability throws
+`sync.storage.transaction_query_unsupported`. Inside a validator either error
+rejects the commit with `sync.constraint_violation`.
+
+The query is bound to the partition and ignores the actor's scopes. A
+command's `getRow` returns `undefined` for a row outside the actor's scopes;
+`queryAuthoritative` returns every matching row of the partition, so the hook
+decides what the actor may act on.
+
+### Do not hand-roll a command on `storage.begin()`
+
+`registerRemoteCommand` is the lock: it builds the command after
+`lockPartitionForPush` and the idempotency recheck, and its reads share the
+committed transaction. `storage.begin()` is the raw primitive and acquires no
+partition write lock. In-tree SQLite opens with `BEGIN IMMEDIATE`, so a
+hand-rolled command on SQLite is serialized against a concurrent push by
+accident; PostgreSQL's `BEGIN` takes no row lock, so the same command races the
+push there and a SQLite-only test conceals it. If a host must own the
+transaction, call `lockPartitionForPush()` before its first authority, version,
+or replay read and keep it through the commit.
+Command callbacks should restrict side effects to planning database mutations.
+External calls belong after the commit in an idempotent worker or durable
+reaction.

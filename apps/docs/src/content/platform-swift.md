@@ -1,220 +1,61 @@
 # Swift (iOS & macOS)
 
-The Swift binding is a **SwiftPM package** (`Syncular`) wrapping the Rust
-native core via its C FFI: the five functions in
-[`rust/ffi.h`](https://github.com/syncular/syncular/blob/main/rust/ffi.h). A
-`SyncularClient` class owns the opaque handle, marshals JSON commands, and
-delivers events to a closure on the main queue. Everything below the JSON
-boundary is the shared core; [FFI & the native core](/platform-ffi/) covers
-the C ABI and the command surface all bindings drive.
+`SyncularClient` gives a Swift app a local SQLite replica, an outbox, and a sync loop. This page shows the shape of the SDK and a first sync in six calls; the sub-pages cover install, daily use, lifecycle, platform details, and fixes.
 
-## Install
+::meta{for="iOS and macOS developers" time="4 minutes"}
 
-The package lives at
-[`bindings/swift`](https://github.com/syncular/syncular/tree/main/bindings/swift).
-It links `libsyncular`, the native core built by
-[`rust/scripts/build-native.sh`](https://github.com/syncular/syncular/blob/main/rust/scripts/build-native.sh),
-in one of two modes:
+| Property | Value |
+|---|---|
+| **Runs on** | iOS 14+ and macOS 12+ (SwiftPM `platforms`) |
+| **Package** | `Syncular`, a SwiftPM package in [`bindings/swift`](https://github.com/syncular/syncular/tree/main/bindings/swift); consumed from a checkout, not a registry |
+| **Core** | Rust core through the C ABI, linked as `libsyncular` or `Syncular.xcframework` |
+| **Threading** | Call from any thread; the wrapper serializes commands on a private serial queue. Events arrive on the main queue |
+| **Reading time** | 4 minutes here, about 20 for the full set |
 
-- **Local dev.** `./check.sh` builds the mac dylib into `vendor/`;
-  `Package.swift` links it via `-L vendor -lsyncular` and the loader finds it
-  through `DYLD_LIBRARY_PATH=vendor`. A Command-Line-Tools mac builds and
-  tests the mac slice without Xcode.
-- **Release (a consuming app).** Build the `Syncular.xcframework`
-  (`build-native.sh apple` on a full-Xcode machine; iOS device, simulator,
-  and macOS slices) and consume it as a `.binaryTarget`:
+:::figure{title="How Swift reaches the core" note="Everything below the JSON line is shared" ticks}
+<div class="d-row">
+<div class="node hot"><span class="t">Your app</span>SwiftUI or UIKit<br>typed rows from typegen</div>
+<span class="d-arrow"></span>
+<div class="node"><span class="t">Syncular package</span><code>SyncularClient</code><br>command queue, poll queue</div>
+<span class="d-arrow"></span>
+<div class="node cool"><span class="t">CSyncularFFI</span>Clang module over<br><code>rust/ffi.h</code></div>
+<span class="d-arrow"></span>
+<div class="node ok"><span class="t">libsyncular</span>Rust core<br>SQLite, native transport</div>
+</div>
 
-```swift
-.binaryTarget(name: "CSyncular", path: "Syncular.xcframework"),
-.target(name: "Syncular", dependencies: ["CSyncular"]),  // drop linkerSettings
-```
+::caption[The three native SDKs share this model. [Native client API](/native-client-api/) documents the shared half.]
+:::
 
-The C module map in `Sources/CSyncularFFI` is a verbatim copy of `rust/ffi.h`
-(the gate fails on drift), and the xcframework embeds the same header, so the
-Swift target compiles unchanged against either linkage.
+## First sync
 
-## Create a client
-
-The initializer creates the native core, issues `create` with your schema and
-optional explicit client id, and starts the background event poll loop. The schema comes from
-typegen: declare a `swift` output in `syncular.json` and `syncular generate`
-emits a `Syncular.generated.swift` with a ready-made `SyncularSchema.schema`
-value plus typed row structs and subscription helpers (see
-[Schema & typegen](/guide-schema/)).
+The calls below assume the package is linked ([Install & first sync](/platform-swift-install/)) and `syncular generate` emitted `Syncular.generated.swift`.
 
 ```swift
 import Syncular
 
 let client = try SyncularClient(
-    schema: SyncularSchema.schema,             // from Syncular.generated.swift
-    config: SyncularConfig(
-        baseUrl: "https://your.server/sync",   // engages the native transport
-        dbPath: "\(appSupport)/syncular.db"    // file-backed persistence
-    )
+    schema: SyncularSchema.schema,
+    config: SyncularConfig(baseUrl: "http://localhost:8787", dbPath: dbPath)
 )
+try client.subscribe(id: "todos", table: "todos", scopes: ["list_id": ["groceries"]])
+try client.mutate([.object([
+    "table": .string("todos"), "op": .string("upsert"),
+    "values": .object(["id": .string("t1"), "list_id": .string("groceries"),
+                       "title": .string("Buy milk"), "done": .bool(false),
+                       "position": .number(1), "updated_at_ms": .number(1)]),
+])])
+try client.syncUntilIdle()
+print(try client.query("SELECT id, title FROM todos"))
 ```
 
-With a `baseUrl` the client runs the native HTTP and WebSocket transport;
-without one it runs the offline-only core with no network stack. The native
-transport requires a core built with the `native-transport` feature. Give the
-client a persistent database path; an in-memory database loses rows, cursors,
-client identity, and the outbox on restart. `SyncularConfig` also takes
-`wsUrl` (derived from `baseUrl` if nil) and `headers` (auth, tenant, …) for
-the native transport.
+`mutate` is visible to `query` at once. `syncUntilIdle` pushes the outbox and pulls the subscribed list, so a second device with the same subscription reads `t1`.
 
-Rotate credentials without recreating the client:
+## The pages
 
-```swift
-try client.setHeaders(["Authorization": "Bearer \(freshToken)"])
-```
+- **[Install & first sync](/platform-swift-install/)**: link the core, create a client against the quickstart server.
+- **[Reads & writes](/platform-swift-reads-writes/)**: subscribe, mutate, query, and collaborative text.
+- **[Realtime & lifecycle](/platform-swift-realtime/)**: events, `pause()`, `resume()`, `close()`, and the `NWPathMonitor` adapter.
+- **[Platform specifics](/platform-swift-specifics/)**: linkage modes, transport policy, threading, and the example app.
+- **[Troubleshooting](/platform-swift-troubleshooting/)**: link errors, `client.failed`, and offline results.
 
-The next HTTP request uses the new headers. An open WebSocket keeps the
-headers from its handshake; call `pause()` and `resume()` when the new
-credential must apply to the live socket immediately.
-
-## Reads & writes
-
-```swift
-// Subscribe: table + scope map. Local; sync fills it.
-try client.subscribe(id: "todos", table: "todos",
-                     scopes: ["list_id": ["groceries"]])
-
-// Optimistic write: visible in local reads immediately.
-let commitId = try client.mutate([
-    .object([
-        "table": .string("todos"), "op": .string("upsert"),
-        "values": .object([
-            "id": .string("t1"), "list_id": .string("groceries"),
-            "title": .string("Hello"), "updated_at_ms": .number(1),
-        ]),
-    ]),
-])
-
-// RowState objects: {rowId, version, values}; version == -1 = optimistic.
-let rows = try client.readRows(table: "todos")
-
-// Arbitrary read-only SQL, returned as flat rows.
-let hits = try client.query("SELECT id, title FROM todos WHERE list_id = ?",
-                            params: [.string("groceries")])
-```
-
-The scope map is the same authorization vocabulary used across syncular
-(see [Scopes & authorization](/concepts-scopes/)). Read lease and schema state from one snapshot:
-
-```swift
-let status = try client.statusSnapshot()
-let lease = status["leaseState"]
-```
-
-## Sync loop & events
-
-```swift
-let outcome = try client.sync()             // one round; needs native-transport
-try client.syncUntilIdle(maxRounds: 10)     // drive to quiescence
-
-client.onEvent = { event in
-    switch event.type {
-    case "sync-intent": scheduleSync()
-    case "change":      refreshVisibleState()
-    default:            break
-    }
-}
-```
-
-Exact `change` batches, `sync-intent`, and `presence` are drained from the
-core's `poll_event` queue on a background queue
-and delivered on the main queue; set the `onEvent` closure or a
-`SyncularClientDelegate`. A different `deliveryQueue` can be passed to the
-initializer. Supporting reads: `statusSnapshot()`, `pendingCommitIds()`,
-`subscriptionState(id:)`, `conflicts()`, `presence(scopeKey:)`,
-`setPresence(scopeKey:doc:)`, and `connectRealtime()` /
-`disconnectRealtime()`.
-
-Failed commands throw `SyncularError` (a stable `code` plus a message).
-`sync()` reports transport failure in its return value: offline, or on the
-offline-only core, it returns
-`{ok: false, errorCode: "transport.unavailable"}`, and the commit waits in
-the outbox; `pendingCommitIds()` stays non-empty until a later sync drains
-it. `mutate` applies locally at once and queues the commit for the next push.
-
-## Collaborative text (CRDT)
-
-`crdt` columns expose native editing helpers:
-
-```swift
-let text = try client.crdtText(table: "notes", rowId: "n1", column: "doc")
-try client.crdtInsertText(table: "notes", rowId: "n1", column: "doc",
-                          index: 0, value: "Hi ")
-try client.crdtDeleteText(table: "notes", rowId: "n1", column: "doc",
-                          index: 0, len: 3)
-```
-
-`crdtApplyUpdate` applies an arbitrary Yjs update (raw bytes) for cases the
-text helpers do not cover; each helper pushes its update through the normal
-mutate path and returns the enqueued `clientCommitId`. The merge model, the
-`crdt-yjs` feature flag, and cross-core convergence guarantees are on
-[CRDT columns](/concepts-crdt/).
-
-## Lifecycle & threading
-
-`IOSPathConnectivitySignal` adapts `NWPathMonitor` and drives the same
-pause/resume lifecycle:
-
-```swift
-let pathSignal = IOSPathConnectivitySignal()
-let connectivity = SyncularConnectivityAdapter(
-    client: client,
-    signal: pathSignal
-)
-
-// During client teardown:
-connectivity.stop()
-pathSignal.stop()
-```
-
-The path signal reports network availability only. If app background state
-also controls the client, use one combined foreground-and-online signal or
-stop this adapter while the app is backgrounded. Two independent lifecycle
-owners could otherwise resume the client while the other still requires a
-pause.
-
-- **`pause()`** stops the event poll loop and disconnects the realtime
-  socket. Call when the app backgrounds (SwiftUI: `.onChange(of: scenePhase)`
-  → `.background`). The database and outbox are intact; mutations still queue.
-- **`resume()`** reconnects realtime (if a transport is present) and
-  restarts the poll loop.
-- **`close()`** releases the core (database, transport, socket thread).
-  Idempotent; it blocks until the poll loop has left its in-flight
-  `poll_event` call, so the handle is never freed under a waiter. Commands
-  throw `client.closed` afterwards.
-
-A schema bump on an installed app follows the wipe-and-re-bootstrap
-flow in [Schema upgrades](/concepts-schema-upgrades/).
-
-The core is thread-affine. The wrapper serializes all command dispatch
-through a private serial queue, so you may call `SyncularClient` from any
-thread. Never call the FFI directly. The
-[example todo app](https://github.com/syncular/syncular/tree/main/bindings/swift/example)
-ships a SwiftUI macOS window and a terminal app over one shared ~30-line
-integration against the [quickstart](/quickstart/) server.
-
-## Where to go next
-
-- [FFI & the native core](/platform-ffi/): the shared C ABI underneath this wrapper.
-- [Scopes & authorization](/concepts-scopes/): how the scope maps you subscribe with are authorized.
-- [Conflicts & optimistic writes](/concepts-conflicts/): the payload behind the `conflict` event.
-- [Quickstart](/quickstart/): the server the examples above talk to.
-
-## Snapshot and outcome methods
-
-Use `querySnapshot` for rows, coverage, and revision from one local read.
-`statusSnapshot` returns scheduling, schema, lease, and outbox state;
-`diagnosticsSnapshot` adds bounded support evidence. `commitOutcome` looks up
-one terminal result by commit ID. `commitOutcomes` lists the durable journal,
-and `resolveCommitOutcome` records an explicit resolution. A pending commit
-has no terminal outcome. `rejections` lists rejected commits.
-
-This source-breaking revision removes the `syncNeeded` convenience and the raw
-`schemaFloor`, `leaseState`, `upgrading`, and `syncNeeded` commands. Read those
-fields from `statusSnapshot` instead. The wrappers use the existing native
-command dispatcher and return the binding's JSON value types.
+The behavior shared with Kotlin and Flutter (configuration, events, snapshot and outcome methods) is on [Native client API](/native-client-api/).

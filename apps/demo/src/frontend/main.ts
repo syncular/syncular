@@ -1,1111 +1,630 @@
 /**
- * Demo frontend: two side-by-side panes, EACH with its own independent
- * client core syncing through one server. Plain TypeScript + vanilla DOM.
+ * The sync lab: a team lead's laptop and a mobile engineer's phone, EACH
+ * with its own client core and SQLite database, editing one Release board
+ * through a server whose commit log sits between them. Plain TypeScript and
+ * vanilla DOM; the client cores live in `cores.ts`, the board app in
+ * `device.ts`, and the state model in `lab.ts`.
  *
- * Default mode: each pane's WHOLE core runs in a
- * Web Worker on a persistent opfs-sahpool database (`demo-a` / `demo-b`),
- * driven through the `SyncClientHandle` RPC. Add `?ephemeral` for the
- * explicit in-memory main-thread mode (nothing survives a reload).
- *
- * Per pane: add/toggle/delete todos, an offline toggle that severs the
- * transport (outbox accumulates, drains with idempotent retry on
- * reconnect), a pending-commit counter, and surfaced §6.3 conflicts.
+ * Everything the lab shows comes from the engine: the commit log and the
+ * packets on the wires fold server events (`push.*`, `realtime.delta`,
+ * `pull.served`), each device renders its own SQLite rows, outbox,
+ * subscriptions, and conflict records, and the tour completes from the
+ * same data.
  */
+import { ClientSyncError } from '@syncular/client';
+import type { SyncularServerEvent } from '@syncular/server';
+import { PEOPLE } from '../seed';
 import {
-  ClientSyncError,
-  type ConflictRecord,
-  createSyncClientHandle,
-  documentLifecycleSignal,
-  httpBlobTransport,
-  httpSegmentDownloader,
-  httpSyncTransport,
-  installRealtimeSupervisor,
-  type MutationInput,
-  NOT_LEADER_CODE,
-  type RealtimeHandlers,
-  type RealtimeSocket,
-  type SqlRow,
-  type SqlValue,
-  type SubscribeInput,
-  SYNC_VERSION_COLUMN,
-  SyncClient,
-  type SyncSummary,
-  webSocketRealtimeConnector,
-} from '@syncular/client';
-import { openWasmDatabase } from '@syncular/client/wasm';
+  EMBEDDED,
+  EPHEMERAL,
+  getEmbeddedServer,
+  latency,
+  MULTITAB,
+} from './cores';
 import {
-  schema,
-  type TodosRow,
-  todoListSubscription,
-} from '../syncular.generated';
+  COLUMN_LABEL,
+  Device,
+  type DeviceHost,
+  el,
+  errorText,
+  part,
+  SQL_EXAMPLES,
+} from './device';
+import {
+  advanceTour,
+  applyServerEvent,
+  currentStep,
+  type DeviceId,
+  EMPTY_LOG,
+  type LogEntry,
+  type LogState,
+  resetTour,
+  TOUR_STEPS,
+  type TourState,
+  type Transit,
+  type WriteIntent,
+} from './lab';
 
-/**
- * Build-time flag (Bun.build `define`): the static, backend-free bundle sets
- * it, and the panes then talk to the embedded server worker instead of HTTP.
- * The dev server bundle leaves it unset.
- */
-declare const SYNCULAR_DEMO_EMBEDDED: boolean;
-const EMBEDDED =
-  typeof SYNCULAR_DEMO_EMBEDDED !== 'undefined' && SYNCULAR_DEMO_EMBEDDED;
+const REDUCED_MOTION = matchMedia('(prefers-reduced-motion: reduce)');
 
-const LIST_ID = 'demo';
-const SUBSCRIPTION_ID = 'todos';
-const EPHEMERAL = new URLSearchParams(location.search).has('ephemeral');
-/**
- * `?multitab` makes each pane a multi-tab core — open the demo in
- * two tabs and the first tab's pane is the leader, the second's is a
- * follower proxying to it (one socket, one DB, N tabs). Off by default so
- * the two panes stay two independent "devices".
- */
-const MULTITAB = new URLSearchParams(location.search).has('multitab');
-const WS_PROTO = location.protocol === 'https:' ? 'wss' : 'ws';
-
-function mutableConnectivitySignal() {
-  let state: 'online' | 'offline' = 'online';
-  const listeners = new Set<(value: 'online' | 'offline') => void>();
-  return {
-    signal: {
-      current: () => state,
-      subscribe(listener: (value: 'online' | 'offline') => void) {
-        listeners.add(listener);
-        return () => listeners.delete(listener);
-      },
-    },
-    set(value: 'online' | 'offline') {
-      state = value;
-      for (const listener of listeners) listener(value);
-    },
-  };
+function pause(ms: number): Promise<void> {
+  return new Promise((resolve) =>
+    window.setTimeout(resolve, REDUCED_MOTION.matches ? 0 : ms),
+  );
 }
 
-type LocalTodo = TodosRow & { syncVersion: number };
-
-/**
- * The pane's view of a client core: the handle's async surface. The
- * worker handle implements it directly; the ephemeral main-thread
- * SyncClient is adapted below so both modes drive the same pane code.
- */
-interface PaneCore {
-  readonly backendLabel: string;
-  /** 'leader' | 'follower' in multi-tab mode; undefined otherwise. */
-  role?(): 'leader' | 'follower';
-  onRoleChange?(cb: (role: 'leader' | 'follower') => void): void;
-  subscribe(input: SubscribeInput): Promise<void>;
-  mutate(mutations: readonly MutationInput[]): Promise<string>;
-  syncUntilIdle(): Promise<SyncSummary>;
-  query(sql: string, params?: readonly SqlValue[]): Promise<SqlRow[]>;
-  pendingCount(): Promise<number>;
-  conflicts(): Promise<readonly ConflictRecord[]>;
-  setOffline(offline: boolean): Promise<void>;
-  /** §5.9: stage a blob → its canonical ref string; resolve a ref → bytes. */
-  uploadBlob(
-    bytes: Uint8Array,
-    options?: { readonly mediaType?: string; readonly name?: string },
-  ): Promise<string>;
-  fetchBlob(blobIdOrRef: string): Promise<Uint8Array>;
-  /** Best-effort; connect-then-sync is the reference boot order — the
-   * first sync round rides the socket and registers this connection's
-   * subscriptions at round end (§8.7). */
-  connectRealtime(): Promise<void>;
-  /** Install retry/resume policy after the explicit first catch-up. */
-  startRealtimeSupervisor(): void;
+function person(id: string): (typeof PEOPLE)[number] {
+  const found = PEOPLE.find((candidate) => candidate.id === id);
+  if (found === undefined) throw new Error(`unknown person ${id}`);
+  return found;
 }
 
-// -- worker mode (the default): whole core behind the RPC handle -------------
+class Lab implements DeviceHost {
+  readonly devices: Device[] = [];
+  /** True while a script narrates its own steps. */
+  scripted = false;
+  readonly #intents = new Map<string, WriteIntent>();
+  #log: LogState = EMPTY_LOG;
+  #tour: TourState = resetTour(EMPTY_LOG);
+  #renderedArrivals = 0;
+  #renderQueued = false;
 
-async function makeWorkerCore(
-  paneName: string,
-  onDataMaybeChanged: () => void,
-): Promise<PaneCore> {
-  const handle = await createSyncClientHandle({
-    worker: () => new Worker('/worker.js', { type: 'module' }),
-    schema,
-    database: { mode: 'persistent', name: `demo-${paneName.toLowerCase()}` },
-    endpoints: {
-      syncUrl: '/sync',
-      segmentsUrl: '/segments',
-      blobsUrl: '/blobs',
-      realtimeUrl: `${WS_PROTO}://${location.host}/realtime?clientId={clientId}`,
-    },
-    limits: { limitSnapshotRows: 5000, maxSnapshotPages: 20 },
-    // §8.4 host loop: wake-ups coalesce into sync rounds INSIDE the
-    // worker; the page only re-renders when told (or on its poll tick).
-    autoSync: true,
-    lockName: `syncular-demo-${paneName.toLowerCase()}`,
-    // With ?multitab, a second tab's pane follows this one.
-    multiTab: MULTITAB,
-    onRoleChange: () => onDataMaybeChanged(),
-    onSynced: () => onDataMaybeChanged(),
-    onConflict: () => onDataMaybeChanged(),
-  });
-  if (!MULTITAB && !handle.isLeader) {
-    throw new ClientSyncError(
-      NOT_LEADER_CODE,
-      `another tab owns pane ${paneName}'s core — close it first, ` +
-        'or open with ?multitab to follow it',
+  recordIntent(clientCommitId: string, intent: WriteIntent): void {
+    this.#intents.set(clientCommitId, intent);
+    this.#scheduleRender();
+  }
+
+  intentOf(clientCommitId: string): WriteIntent | undefined {
+    return this.#intents.get(clientCommitId);
+  }
+
+  device(id: DeviceId): Device {
+    const device = this.devices.find((candidate) => candidate.id === id);
+    if (device === undefined) throw new Error(`unknown device ${id}`);
+    return device;
+  }
+
+  deviceChanged(): void {
+    this.#scheduleRender();
+  }
+
+  serverEvent(event: SyncularServerEvent): void {
+    const result = applyServerEvent(
+      this.#log,
+      event,
+      (clientId) =>
+        this.devices.find(
+          (device) => device.ready && device.core.clientId === clientId,
+        )?.id,
+    );
+    if (!this.scripted) this.#narrateEvent(event, result.state);
+    this.#log = result.state;
+    for (const transit of result.transits) {
+      this.#animate(transit);
+      this.device(transit.device).refreshSoon();
+    }
+    this.#scheduleRender();
+  }
+
+  resetTour(): void {
+    this.#tour = resetTour(this.#log);
+    this.#scheduleRender();
+  }
+
+  narrate(text: string): void {
+    part(document, '#narration').textContent = text;
+  }
+
+  #narrateEvent(event: SyncularServerEvent, log: LogState): void {
+    if (
+      event.type !== 'push.applied' &&
+      event.type !== 'push.conflicted' &&
+      event.type !== 'push.rejected'
+    ) {
+      return;
+    }
+    const entry = log.entries.find(
+      (candidate) => candidate.clientCommitId === event.clientCommitId,
+    );
+    if (
+      entry === undefined ||
+      (entry.origin !== 'laptop' && entry.origin !== 'phone')
+    ) {
+      return;
+    }
+    const from = this.device(entry.origin).label.toLowerCase();
+    this.narrate(
+      entry.status === 'applied'
+        ? `The server appended c${entry.commitSeq} from the ${from} and forwarded it to every device that syncs its board.`
+        : entry.status === 'conflict'
+          ? `The server refused a stale write from the ${from} and returned its current row.`
+          : `The server rejected a write from the ${from}: ${entry.code ?? 'rejected'}.`,
     );
   }
-  const connectRealtime = async () => {
-    try {
-      await handle.connectRealtime();
-    } catch {
-      // HTTP sync still works without the socket.
-    }
-  };
-  // The pane's offline toggle drives the supervisor's connectivity evidence,
-  // matching the embedded and ephemeral modes below.
-  const network = mutableConnectivitySignal();
-  return {
-    backendLabel: MULTITAB
-      ? 'sqlite-wasm (OPFS, worker, multi-tab)'
-      : 'sqlite-wasm (OPFS, worker)',
-    role: () => handle.role,
-    onRoleChange: (cb) => handle.onRoleChange(cb),
-    subscribe: (input) => handle.subscribe(input),
-    mutate: (mutations) => handle.mutate(mutations),
-    syncUntilIdle: () => handle.syncUntilIdle(),
-    query: (sql, params) => handle.query(sql, params),
-    pendingCount: async () => (await handle.pendingCommits()).length,
-    conflicts: () => handle.conflicts(),
-    setOffline: async (offline) => {
-      network.set(offline ? 'offline' : 'online');
-      await handle.setOffline(offline);
-    },
-    startRealtimeSupervisor: () => {
-      // With ?multitab the panes share one leader socket, so
-      // `sharedTransport` keeps a hidden tab from tearing it down for a
-      // sibling tab that is still visible.
-      installRealtimeSupervisor(handle, {
-        connectivity: network.signal,
-        lifecycle: documentLifecycleSignal(),
-        sharedTransport: MULTITAB,
-      });
-    },
-    uploadBlob: async (bytes, options) => {
-      const ref = await handle.uploadBlob(bytes, options);
-      return JSON.stringify(ref);
-    },
-    fetchBlob: async (blobIdOrRef) =>
-      (await handle.fetchBlob(blobIdOrRef)).bytes,
-    connectRealtime,
-  };
-}
 
-// -- embedded mode (static build): the server runs in a web worker -----------
-
-/** The page-side handle on the embedded server worker (one per page). */
-interface EmbeddedServer {
-  sync(bytes: Uint8Array): Promise<Uint8Array>;
-  blobUpload(
-    blobId: string,
-    bytes: Uint8Array,
-    mediaType?: string,
-  ): Promise<void>;
-  blobDownload(blobId: string): Promise<Uint8Array>;
-  admin(
-    path: string,
-  ): Promise<{ readonly status: number; readonly body: unknown }>;
-  /** A realtime "socket": a numbered channel into the worker's hub (§8.7). */
-  rtOpen(clientId: string, handlers: RealtimeHandlers): Promise<RealtimeSocket>;
-}
-
-let embeddedServer: Promise<EmbeddedServer> | undefined;
-
-function getEmbeddedServer(): Promise<EmbeddedServer> {
-  if (embeddedServer !== undefined) return embeddedServer;
-  embeddedServer = new Promise<EmbeddedServer>((resolve, reject) => {
-    const worker = new Worker('/server-worker.js', { type: 'module' });
-    let nextId = 1;
-    let nextChannel = 1;
-    const pending = new Map<
-      number,
-      {
-        resolve: (msg: {
-          bytes?: Uint8Array;
-          status?: number;
-          body?: unknown;
-        }) => void;
-        reject: (error: Error) => void;
-      }
-    >();
-    const channels = new Map<number, RealtimeHandlers>();
-    const call = (
-      body: Record<string, unknown>,
-    ): Promise<{ bytes?: Uint8Array; status?: number; body?: unknown }> =>
-      new Promise((res, rej) => {
-        const id = nextId++;
-        pending.set(id, { resolve: res, reject: rej });
-        worker.postMessage({ id, ...body });
-      });
-    const api: EmbeddedServer = {
-      sync: async (bytes) => {
-        const out = (await call({ kind: 'sync', bytes })).bytes;
-        if (out === undefined) throw new Error('sync rpc returned no bytes');
-        return out;
-      },
-      blobUpload: async (blobId, bytes, mediaType) => {
-        await call({ kind: 'blob-upload', blobId, bytes, mediaType });
-      },
-      blobDownload: async (blobId) => {
-        const out = (await call({ kind: 'blob-download', blobId })).bytes;
-        if (out === undefined) throw new Error('blob rpc returned no bytes');
-        return out;
-      },
-      admin: async (path) => {
-        const result = await call({ kind: 'admin', path });
-        if (result.status === undefined || result.body === undefined) {
-          throw new Error('admin rpc returned no response');
-        }
-        return { status: result.status, body: result.body };
-      },
-      rtOpen: async (clientId, handlers) => {
-        const channel = nextChannel++;
-        channels.set(channel, handlers);
-        await call({ kind: 'rt-open', channel, clientId });
-        return {
-          send: (text) =>
-            worker.postMessage({ kind: 'rt-text', channel, text }),
-          sendBytes: (bytes) =>
-            worker.postMessage({ kind: 'rt-bytes', channel, bytes }),
-          close: () => {
-            worker.postMessage({ kind: 'rt-close', channel });
-            channels.delete(channel);
-          },
-        };
-      },
-    };
-    worker.onmessage = (event: MessageEvent) => {
-      const msg = event.data as {
-        kind: string;
-        id?: number;
-        ok?: boolean;
-        bytes?: Uint8Array;
-        status?: number;
-        body?: unknown;
-        text?: string;
-        channel?: number;
-        error?: { code: string; message: string };
-      };
-      switch (msg.kind) {
-        case 'ready':
-          resolve(api);
-          break;
-        case 'boot-error':
-          reject(
-            new ClientSyncError(
-              msg.error?.code ?? 'sync.internal',
-              msg.error?.message ?? 'embedded server failed to start',
-              false,
-            ),
-          );
-          break;
-        case 'result': {
-          if (msg.id === undefined) break;
-          const waiter = pending.get(msg.id);
-          if (waiter === undefined) break;
-          pending.delete(msg.id);
-          if (msg.ok === true) waiter.resolve(msg);
-          else
-            waiter.reject(
-              new ClientSyncError(
-                msg.error?.code ?? 'sync.transport_failed',
-                msg.error?.message ?? 'embedded server call failed',
-                false,
-              ),
-            );
-          break;
-        }
-        case 'rt-text':
-          if (msg.channel !== undefined && msg.text !== undefined) {
-            channels.get(msg.channel)?.onText(msg.text);
-          }
-          break;
-        case 'rt-bytes':
-          if (msg.channel !== undefined && msg.bytes !== undefined) {
-            channels.get(msg.channel)?.onBinary(msg.bytes);
-          }
-          break;
-        case 'rt-closed':
-          if (msg.channel !== undefined) {
-            channels.get(msg.channel)?.onClose?.();
-            channels.delete(msg.channel);
-          }
-          break;
-      }
-    };
-    worker.onerror = (event) => {
-      reject(new Error(`embedded server worker failed: ${event.message}`));
-    };
-  });
-  return embeddedServer;
-}
-
-/**
- * A pane core for the embedded mode: the same in-memory main-thread
- * `SyncClient` as the ephemeral mode, with every transport routed into the
- * server worker — sync bytes, blobs, and a real realtime channel.
- */
-async function makeEmbeddedCore(
-  paneName: string,
-  onDataMaybeChanged: () => void,
-): Promise<PaneCore> {
-  const server = await getEmbeddedServer();
-  const database = await openWasmDatabase();
-  const clientId = crypto.randomUUID();
-  let offline = false;
-  let syncScheduled = false;
-  const network = mutableConnectivitySignal();
-  const offlineError = () =>
-    new ClientSyncError(
-      'sync.transport_failed',
-      `pane ${paneName} is offline`,
-      true,
-    );
-  const client = new SyncClient({
-    database,
-    schema,
-    clientId,
-    transport: async (bytes) => {
-      if (offline) throw offlineError();
-      return server.sync(bytes);
-    },
-    blobs: {
-      upload: async (blobId, bytes, mediaType) => {
-        if (offline) throw offlineError();
-        await server.blobUpload(blobId, bytes, mediaType);
-      },
-      download: async (blobId) => {
-        if (offline) throw offlineError();
-        return { kind: 'bytes', bytes: await server.blobDownload(blobId) };
-      },
-    },
-    realtime: (handlers) => server.rtOpen(clientId, handlers),
-    limits: { limitSnapshotRows: 5000, maxSnapshotPages: 20 },
-    onSyncNeeded: () => scheduleSync(),
-    onConflict: () => onDataMaybeChanged(),
-  });
-
-  function scheduleSync(): void {
-    if (syncScheduled || offline) return;
-    syncScheduled = true;
-    window.setTimeout(() => {
-      syncScheduled = false;
-      void client
-        .syncUntilIdle()
-        .catch(() => {})
-        .then(() => onDataMaybeChanged());
-    }, 50);
-  }
-
-  await client.start();
-  const connectRealtime = async () => {
-    try {
-      await client.connectRealtime();
-    } catch {
-      // request/response sync still works without the channel
-    }
-  };
-  return {
-    backendLabel: 'sqlite-wasm ↔ in-page server worker',
-    subscribe: (input) => {
-      client.subscribe(input);
-      return Promise.resolve();
-    },
-    mutate: (mutations) => Promise.resolve(client.mutate(mutations)),
-    syncUntilIdle: () => client.syncUntilIdle(),
-    query: (sql, params) => Promise.resolve(client.query(sql, params)),
-    pendingCount: () => Promise.resolve(client.pendingCommits().length),
-    conflicts: () => Promise.resolve(client.conflicts()),
-    uploadBlob: async (bytes, options) => {
-      const ref = await client.uploadBlob(bytes, options);
-      return client.blobRefString(ref);
-    },
-    fetchBlob: async (blobIdOrRef) =>
-      (await client.fetchBlob(blobIdOrRef)).bytes,
-    connectRealtime,
-    startRealtimeSupervisor: () => {
-      installRealtimeSupervisor(client, {
-        connectivity: network.signal,
-        lifecycle: documentLifecycleSignal(),
-      });
-    },
-    setOffline: async (value) => {
-      offline = value;
-      network.set(offline ? 'offline' : 'online');
-      if (offline) {
-        client.disconnectRealtime();
-      }
-    },
-  };
-}
-
-// -- ephemeral mode (?ephemeral): explicit in-memory, main thread ------------
-
-async function makeEphemeralCore(
-  paneName: string,
-  onDataMaybeChanged: () => void,
-): Promise<PaneCore> {
-  const database = await openWasmDatabase();
-  const clientId = crypto.randomUUID();
-  let offline = false;
-  let syncScheduled = false;
-  const network = mutableConnectivitySignal();
-  const baseTransport = httpSyncTransport('/sync');
-  const client = new SyncClient({
-    database,
-    schema,
-    clientId,
-    transport: async (bytes) => {
-      if (offline) {
-        throw new ClientSyncError(
-          'sync.transport_failed',
-          `pane ${paneName} is offline`,
-          true,
-        );
-      }
-      return baseTransport(bytes);
-    },
-    segments: httpSegmentDownloader('/segments'),
-    blobs: httpBlobTransport('/blobs'),
-    realtime: webSocketRealtimeConnector(
-      `${WS_PROTO}://${location.host}/realtime?clientId=${clientId}`,
-    ),
-    limits: { limitSnapshotRows: 5000, maxSnapshotPages: 20 },
-    onSyncNeeded: () => scheduleSync(),
-    onConflict: () => onDataMaybeChanged(),
-  });
-
-  function scheduleSync(): void {
-    if (syncScheduled || offline) return;
-    syncScheduled = true;
-    window.setTimeout(() => {
-      syncScheduled = false;
-      void client
-        .syncUntilIdle()
-        .catch(() => {})
-        .then(() => onDataMaybeChanged());
-    }, 50);
-  }
-
-  await client.start();
-  const connectRealtime = async () => {
-    try {
-      await client.connectRealtime();
-    } catch {
-      // HTTP sync still works without the socket.
-    }
-  };
-  return {
-    backendLabel: 'sqlite-wasm (in-memory, ephemeral)',
-    subscribe: (input) => {
-      client.subscribe(input);
-      return Promise.resolve();
-    },
-    mutate: (mutations) => Promise.resolve(client.mutate(mutations)),
-    syncUntilIdle: () => client.syncUntilIdle(),
-    query: (sql, params) => Promise.resolve(client.query(sql, params)),
-    pendingCount: () => Promise.resolve(client.pendingCommits().length),
-    conflicts: () => Promise.resolve(client.conflicts()),
-    uploadBlob: async (bytes, options) => {
-      const ref = await client.uploadBlob(bytes, options);
-      return client.blobRefString(ref);
-    },
-    fetchBlob: async (blobIdOrRef) =>
-      (await client.fetchBlob(blobIdOrRef)).bytes,
-    connectRealtime,
-    startRealtimeSupervisor: () => {
-      installRealtimeSupervisor(client, {
-        connectivity: network.signal,
-        lifecycle: documentLifecycleSignal(),
-      });
-    },
-    setOffline: async (value) => {
-      offline = value;
-      network.set(offline ? 'offline' : 'online');
-      if (offline) {
-        client.disconnectRealtime();
-      }
-    },
-  };
-}
-
-// -- pane ---------------------------------------------------------------------
-
-function el<K extends keyof HTMLElementTagNameMap>(
-  tag: K,
-  className?: string,
-  text?: string,
-): HTMLElementTagNameMap[K] {
-  const node = document.createElement(tag);
-  if (className !== undefined) node.className = className;
-  if (text !== undefined) node.textContent = text;
-  return node;
-}
-
-class Pane {
-  readonly name: string;
-  readonly root: HTMLElement;
-  core!: PaneCore;
-  offline = false;
-  #ready = false;
-  #status = '';
-  #syncing = false;
-  #refreshQueued = false;
-
-  // last-fetched snapshot (RPC results are async; render stays sync)
-  #todos: LocalTodo[] = [];
-  #pending = 0;
-  #conflicts: readonly ConflictRecord[] = [];
-
-  // DOM
-  #badge!: HTMLElement;
-  #roleBadge?: HTMLElement;
-  #statusLine!: HTMLElement;
-  #tbody!: HTMLTableSectionElement;
-  #pendingEl!: HTMLElement;
-  #conflictsEl!: HTMLElement;
-  #offlineBtn!: HTMLButtonElement;
-
-  constructor(name: string, root: HTMLElement) {
-    this.name = name;
-    this.root = root;
-  }
-
-  async init(): Promise<void> {
-    this.#buildShell();
-    try {
-      this.core = EMBEDDED
-        ? await makeEmbeddedCore(this.name, () => this.refreshSoon())
-        : EPHEMERAL
-          ? await makeEphemeralCore(this.name, () => this.refreshSoon())
-          : await makeWorkerCore(this.name, () => this.refreshSoon());
-    } catch (error) {
-      const message =
-        error instanceof ClientSyncError
-          ? `${error.code}: ${error.message}`
-          : String(error);
-      this.setStatus(`core start failed — ${message}`);
-      throw error;
-    }
-    // Reflect promotion (follower → leader) in the badge.
-    this.core.onRoleChange?.(() => this.render());
-    await this.core.subscribe({
-      id: SUBSCRIPTION_ID,
-      table: 'todos',
-      scopes: todoListSubscription.scopes({ listId: LIST_ID }),
+  #scheduleRender(): void {
+    if (this.#renderQueued) return;
+    this.#renderQueued = true;
+    queueMicrotask(() => {
+      this.#renderQueued = false;
+      this.#render();
     });
-    this.#ready = true;
-    this.#offlineBtn.disabled = false;
-    for (const control of this.root.querySelectorAll<
-      HTMLInputElement | HTMLButtonElement
-    >('form.add input, form.add button')) {
-      control.disabled = false;
-    }
-    // Connect-then-sync (§8.7 reference boot order): the first sync
-    // round rides the socket and registers this connection's
-    // subscriptions at round end — no reconnect, no silent-no-fanout
-    // window (the old §8.1 footgun is structurally dead).
-    await this.core.connectRealtime();
-    await this.syncNow();
-    this.core.startRealtimeSupervisor();
-    this.setStatus('ready');
-    await this.refresh();
-    // Realtime deltas apply inside the core with no per-row callback — a
-    // light refresh loop keeps the table fresh on top of onSynced events.
-    setInterval(() => this.refreshSoon(), 500);
   }
 
-  setStatus(text: string): void {
-    this.#status = text;
-    if (this.#statusLine !== undefined) this.#statusLine.textContent = text;
-  }
-
-  async syncNow(): Promise<void> {
-    if (this.#syncing || this.offline) return;
-    this.#syncing = true;
-    try {
-      await this.core.syncUntilIdle();
-      this.setStatus('in sync');
-    } catch (error) {
-      const message =
-        error instanceof ClientSyncError
-          ? `${error.code}: ${error.message}`
-          : String(error);
-      this.setStatus(`sync failed — ${message}`);
-    } finally {
-      this.#syncing = false;
-      await this.refresh();
-    }
-  }
-
-  async setOffline(offline: boolean): Promise<void> {
-    if (!this.#ready || this.offline === offline) return;
-    this.offline = offline;
-    await this.core.setOffline(offline);
-    if (offline) {
-      this.setStatus('offline — edits queue in the outbox');
-    } else {
-      this.setStatus('back online — draining outbox…');
-      void this.syncNow();
-    }
-    await this.refresh();
-  }
-
-  todo(id: string): LocalTodo | undefined {
-    return this.#todos.find((row) => row.id === id);
-  }
-
-  async addTodo(title: string): Promise<void> {
-    const position = this.#todos.reduce(
-      (max, row) => Math.max(max, row.position),
-      0,
-    );
-    await this.core.mutate([
-      {
-        table: 'todos',
-        op: 'upsert',
-        values: {
-          id: crypto.randomUUID(),
-          listId: LIST_ID,
-          title,
-          done: false,
-          position: position + 1,
-          updatedAtMs: Date.now(),
-          attachment: null,
-        } satisfies TodosRow,
+  #render(): void {
+    const phone = this.device('phone');
+    this.#tour = advanceTour(this.#tour, {
+      log: this.#log,
+      intentOf: (id) => this.intentOf(id),
+      phone: {
+        online: phone.online,
+        pending: phone.pending.length,
+        sqlRuns: phone.sqlRuns,
       },
-    ]);
-    await this.afterMutation();
-  }
-
-  /** Full-row upsert (§6.1); baseVersion only when the server version is
-   * known locally (bootstrap rows carry version 0 = unknown). */
-  async updateTodo(row: LocalTodo, patch: Partial<TodosRow>): Promise<void> {
-    const values: TodosRow = {
-      id: row.id,
-      listId: row.listId,
-      title: row.title,
-      done: Boolean(row.done),
-      position: row.position,
-      updatedAtMs: Date.now(),
-      // Preserve the blob_ref across unrelated edits (§5.9): a full-row
-      // upsert that omitted it would clear the attachment.
-      attachment: row.attachment ?? null,
-      ...patch,
-    };
-    await this.core.mutate([
-      {
-        table: 'todos',
-        op: 'upsert',
-        values: { ...values },
-        ...(row.syncVersion >= 1 ? { baseVersion: row.syncVersion } : {}),
-      },
-    ]);
-    await this.afterMutation();
-  }
-
-  async deleteTodo(id: string): Promise<void> {
-    await this.core.mutate([{ table: 'todos', op: 'delete', rowId: id }]);
-    await this.afterMutation();
-  }
-
-  /**
-   * §5.9: attach a file to a todo. Stage the bytes (upload queued, B4),
-   * then upsert the row's `attachment` blob_ref — the upload flushes before
-   * the referencing push (§6.6), so the reference is always resolvable.
-   */
-  async attachFile(row: LocalTodo, file: File): Promise<void> {
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    const ref = await this.core.uploadBlob(bytes, {
-      mediaType: file.type || 'application/octet-stream',
-      name: file.name,
-    });
-    await this.updateTodo(row, { attachment: ref });
-    this.setStatus(`attached ${file.name} (${bytes.length} bytes)`);
-  }
-
-  /** §5.9.5: resolve the attachment bytes (cache hit or download) + save. */
-  async downloadAttachment(row: LocalTodo): Promise<void> {
-    if (row.attachment === null || row.attachment === undefined) return;
-    const meta = JSON.parse(row.attachment) as {
-      mediaType?: string;
-      name?: string;
-    };
-    const bytes = await this.core.fetchBlob(row.attachment);
-    const blob = new Blob([bytes.slice().buffer as ArrayBuffer], {
-      type: meta.mediaType ?? 'application/octet-stream',
-    });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = meta.name ?? 'attachment';
-    anchor.click();
-    URL.revokeObjectURL(url);
-  }
-
-  async afterMutation(): Promise<void> {
-    await this.refresh();
-    if (this.offline) {
-      this.setStatus('offline — edits queue in the outbox');
-    } else {
-      void this.syncNow();
-    }
-  }
-
-  // -- rendering --------------------------------------------------------------
-
-  refreshSoon(): void {
-    if (this.#refreshQueued) return;
-    this.#refreshQueued = true;
-    window.setTimeout(() => {
-      this.#refreshQueued = false;
-      void this.refresh();
-    }, 30);
-  }
-
-  /** Pull a fresh snapshot over the (possibly RPC) boundary, then render. */
-  async refresh(): Promise<void> {
-    if (!this.#ready) return;
-    const [todos, pending, conflicts] = await Promise.all([
-      this.core.query(
-        `SELECT id, list_id AS listId, title, done, position,
-                updated_at_ms AS updatedAtMs, attachment,
-                "${SYNC_VERSION_COLUMN}" AS syncVersion
-         FROM todos ORDER BY position ASC, id ASC`,
+      openConflicts: this.devices.reduce(
+        (sum, device) => sum + device.conflicts.length,
+        0,
       ),
-      this.core.pendingCount(),
-      this.core.conflicts(),
-    ]);
-    this.#todos = todos as unknown as LocalTodo[];
-    this.#pending = pending;
-    this.#conflicts = conflicts;
-    this.render();
-  }
-
-  #buildShell(): void {
-    const title = el('h2');
-    title.append(`Pane ${this.name}`);
-    this.#badge = el('span', 'badge online', 'online');
-    title.append(this.#badge);
-    this.#pendingEl = el('span', 'badge', 'outbox 0');
-    title.append(this.#pendingEl);
-    // Show leader/follower when ?multitab is on (populated after
-    // the core starts, in init()).
-    if (MULTITAB) {
-      this.#roleBadge = el('span', 'badge', 'role …');
-      title.append(this.#roleBadge);
-    }
-    this.#offlineBtn = el('button', undefined, 'Go offline');
-    this.#offlineBtn.disabled = true;
-    this.#offlineBtn.addEventListener('click', () => {
-      void this.setOffline(!this.offline);
     });
-    title.append(this.#offlineBtn);
-    this.root.append(title);
-
-    this.#statusLine = el('p', 'statusline', 'starting…');
-    this.root.append(this.#statusLine);
-
-    const form = el('form', 'add');
-    const input = el('input');
-    input.disabled = true;
-    input.placeholder = `Add a todo in pane ${this.name}…`;
-    const submit = el('button', undefined, 'Add');
-    submit.disabled = true;
-    form.append(input, submit);
-    form.addEventListener('submit', (event) => {
-      event.preventDefault();
-      if (!this.#ready) return;
-      const value = input.value.trim();
-      if (value.length === 0) return;
-      input.value = '';
-      void this.addTodo(value);
-    });
-    this.root.append(form);
-
-    const table = el('table');
-    this.#tbody = document.createElement('tbody');
-    table.append(this.#tbody);
-    this.root.append(table);
-
-    this.#conflictsEl = el('div', 'conflicts');
-    this.root.append(this.#conflictsEl);
-  }
-
-  render(): void {
-    if (!this.#ready) return;
-    this.root.classList.toggle('offline', this.offline);
-    this.#badge.textContent = this.offline ? 'offline' : 'online';
-    this.#badge.className = `badge ${this.offline ? 'offline' : 'online'}`;
-    this.#offlineBtn.textContent = this.offline ? 'Go online' : 'Go offline';
-    this.#pendingEl.textContent = `outbox ${this.#pending} · ${this.core.backendLabel}`;
-    if (this.#roleBadge !== undefined) {
-      const role = this.core.role?.() ?? 'leader';
-      this.#roleBadge.textContent = role;
-      this.#roleBadge.className = `badge ${role === 'leader' ? 'online' : 'offline'}`;
-    }
-    this.#statusLine.textContent = this.#status;
-
-    this.#tbody.replaceChildren(
-      ...this.#todos.map((row) => this.#renderRow(row)),
+    this.#renderTour();
+    this.#renderLog();
+    const granted = phone.subscribed.has('web');
+    const grant = part<HTMLButtonElement>(document, '#grant-btn');
+    grant.textContent = granted ? 'Revoke Web' : 'Grant Web';
+    grant.setAttribute(
+      'aria-label',
+      granted ? 'Revoke the Web board from Ben' : 'Grant Ben the Web board',
     );
-    this.#renderConflicts();
+    grant.setAttribute('aria-pressed', String(granted));
   }
 
-  #renderRow(row: LocalTodo): HTMLTableRowElement {
-    const tr = document.createElement('tr');
-    if (row.done) tr.classList.add('done');
-
-    const toggleCell = document.createElement('td');
-    const checkbox = document.createElement('input');
-    checkbox.type = 'checkbox';
-    checkbox.checked = Boolean(row.done);
-    checkbox.addEventListener('change', () => {
-      void this.updateTodo(row, { done: !row.done });
-    });
-    toggleCell.append(checkbox);
-
-    const titleCell = document.createElement('td');
-    titleCell.className = 'title';
-    titleCell.append(row.title);
-    const version = el(
-      'span',
-      'ver',
-      row.syncVersion === -1 ? 'local' : `v${row.syncVersion}`,
-    );
-    titleCell.append(version);
-
-    // §5.9 attachment cell: attach a file, or download an existing blob.
-    const attachCell = document.createElement('td');
-    attachCell.className = 'attach';
-    if (row.attachment !== null && row.attachment !== undefined) {
-      let name = 'file';
-      try {
-        name = (JSON.parse(row.attachment) as { name?: string }).name ?? 'file';
-      } catch {
-        // keep the fallback label
-      }
-      const dl = el('button', undefined, `↓ ${name}`);
-      dl.title = 'download attachment';
-      dl.addEventListener('click', () => {
-        void this.downloadAttachment(row);
-      });
-      attachCell.append(dl);
+  #renderTour(): void {
+    const current = currentStep(this.#tour);
+    document.body.dataset.tour = current ?? 'done';
+    let done = 0;
+    for (const step of TOUR_STEPS) {
+      const node = part<HTMLElement>(document, `.step[data-step="${step}"]`);
+      const state = this.#tour.done[step]
+        ? 'done'
+        : step === current
+          ? 'current'
+          : 'open';
+      if (state === 'done') done += 1;
+      node.dataset.state = state;
+      part(node, '.step-state').textContent =
+        state === 'done' ? 'Done' : state === 'current' ? 'Next' : 'Open';
+    }
+    part(document, '#tour-count').textContent = `${done}/${TOUR_STEPS.length}`;
+    const hint = part(document, '#tour-hint');
+    if (current === undefined) {
+      hint.textContent =
+        'Tour complete. Every step finished from real engine events; Reset starts it over.';
     } else {
-      const label = document.createElement('label');
-      label.className = 'attach-label';
-      label.title = 'attach a file';
-      label.append('attach');
-      const fileInput = document.createElement('input');
-      fileInput.type = 'file';
-      fileInput.style.display = 'none';
-      fileInput.addEventListener('change', () => {
-        const file = fileInput.files?.[0];
-        if (file !== undefined) void this.attachFile(row, file);
-      });
-      label.append(fileInput);
-      attachCell.append(label);
-    }
-
-    const deleteCell = document.createElement('td');
-    const deleteBtn = el('button', undefined, '×');
-    deleteBtn.title = 'delete';
-    deleteBtn.addEventListener('click', () => {
-      void this.deleteTodo(row.id);
-    });
-    deleteCell.append(deleteBtn);
-
-    tr.append(toggleCell, titleCell, attachCell, deleteCell);
-    return tr;
-  }
-
-  #renderConflicts(): void {
-    const conflicts = this.#conflicts;
-    const children: HTMLElement[] = [];
-    if (conflicts.length > 0) {
-      children.push(
-        el('strong', undefined, `conflicts surfaced (${conflicts.length})`),
+      const step = part(document, `.step[data-step="${current}"]`);
+      const label = el(
+        'b',
+        undefined,
+        `STEP ${TOUR_STEPS.indexOf(current) + 1}`,
       );
-      for (const conflict of conflicts) {
-        children.push(this.#renderConflict(conflict));
-      }
+      hint.replaceChildren(label, part(step, 'p').textContent ?? '');
     }
-    this.#conflictsEl.replaceChildren(...children);
   }
 
-  #renderConflict(conflict: ConflictRecord): HTMLElement {
-    const item = el('div', 'item');
-    const mine =
-      conflict.operation?.op === 'upsert'
-        ? String(conflict.operation.values?.title ?? '')
-        : '(delete)';
-    const theirs = String(conflict.serverRow.title ?? '');
-    item.append(el('div', undefined, `${conflict.code} on ${conflict.rowId}`));
-    const detail = el('div');
-    detail.append('yours: ');
-    detail.append(el('code', undefined, mine));
-    detail.append(` — server (v${conflict.serverVersion}): `);
-    detail.append(el('code', undefined, theirs));
-    item.append(detail);
-    return item;
+  #renderLog(): void {
+    const entries = this.#log.entries;
+    const head = entries.find((entry) => entry.commitSeq !== undefined);
+    part(document, '#server-head').textContent =
+      head?.commitSeq !== undefined ? `head c${head.commitSeq}` : 'empty log';
+    part<HTMLOListElement>(document, '#log').replaceChildren(
+      ...entries.map((entry) => this.#renderEntry(entry)),
+    );
+    this.#renderedArrivals = this.#log.arrivals;
+  }
+
+  #renderEntry(entry: LogEntry): HTMLLIElement {
+    const intent = this.intentOf(entry.clientCommitId);
+    const li = el('li', `entry st-${entry.status}`);
+    if (entry.arrival > this.#renderedArrivals) li.classList.add('fresh');
+    li.append(
+      el(
+        'span',
+        'seq',
+        entry.commitSeq !== undefined ? `c${entry.commitSeq}` : 'no seq',
+      ),
+      el(
+        'span',
+        `who who-${entry.origin}`,
+        entry.origin === 'laptop' || entry.origin === 'phone'
+          ? this.device(entry.origin).label
+          : entry.origin,
+      ),
+      el(
+        'span',
+        'what',
+        intent !== undefined
+          ? `${intent.kind} “${intent.title}”`
+          : entry.origin === 'seed'
+            ? `seed · ${entry.operations} rows`
+            : `${entry.operations} op${entry.operations === 1 ? '' : 's'}`,
+      ),
+      el('span', 'status', entry.status),
+      el('span', 'route', this.#route(entry, intent)),
+    );
+    return li;
+  }
+
+  /** Where the commit went: scope, receivers, and held deliveries. */
+  #route(entry: LogEntry, intent: WriteIntent | undefined): string {
+    const replay = entry.replay ? ' · idempotent replay' : '';
+    if (entry.status === 'conflict') {
+      return `server row kept · conflict record returned${replay}`;
+    }
+    if (entry.status === 'rejected') {
+      return `${entry.code ?? 'rejected'}${replay}`;
+    }
+    if (entry.origin === 'seed') {
+      return 'board:web, board:mobile · server operator';
+    }
+    if (intent === undefined) return `${entry.operations} rows${replay}`;
+    const routes = this.devices
+      .filter((device) => device.id !== entry.origin)
+      .map((device) =>
+        entry.deliveredTo.includes(device.id)
+          ? `→ ${device.label}`
+          : !device.subscribed.has(intent.boardId)
+            ? `${device.label} has no access`
+            : !device.online
+              ? `held for ${device.label} (offline)`
+              : `→ ${device.label} …`,
+      );
+    return [`board:${intent.boardId}`, ...routes].join(' · ') + replay;
+  }
+
+  #animate(transit: Transit): void {
+    const wire = part<HTMLElement>(
+      document,
+      `.wire[data-device="${transit.device}"]`,
+    );
+    const packet = el(
+      'span',
+      `pkt ${transit.direction} tone-${transit.tone}`,
+      transit.label,
+    );
+    packet.setAttribute('aria-hidden', 'true');
+    // Packets in flight together stack instead of covering each other.
+    packet.style.setProperty('--lane', String(wire.childElementCount % 4));
+    packet.addEventListener('animationend', () => packet.remove());
+    wire.append(packet);
   }
 }
 
-// -- conflict simulation --------------------------------------------------------
+// -- scripted scenarios -----------------------------------------------------------
+
+async function scripted(lab: Lab, run: () => Promise<void>): Promise<void> {
+  lab.scripted = true;
+  try {
+    await run();
+  } finally {
+    lab.scripted = false;
+  }
+}
 
 /**
- * The classic §6.2 base-version race: pane A goes offline and edits a row;
- * pane B edits the same row online (server version advances). Toggling
- * pane A back online replays its stale-baseVersion commit and the server
- * answers with a conflict record instead of applying it.
+ * The §6.2 base-version race on one Mobile card: both devices go offline
+ * and move it to different columns, the phone reconnects first and its
+ * move applies, then the laptop replays its move against a stale version.
+ * The server answers with a conflict record and its current row.
  */
-async function simulateConflict(
-  a: Pane,
-  b: Pane,
-  status: HTMLElement,
-): Promise<void> {
-  status.textContent = 'setting up conflict…';
-  if (a.offline) await a.setOffline(false);
-  if (b.offline) await b.setOffline(false);
-
-  // A fresh row through pane A so both panes know its server version.
-  const id = crypto.randomUUID();
-  await a.core.mutate([
-    {
-      table: 'todos',
-      op: 'upsert',
-      values: {
-        id,
-        listId: LIST_ID,
-        title: 'Conflict target',
-        done: false,
-        position: 999,
-        updatedAtMs: Date.now(),
-        attachment: null,
-      } satisfies TodosRow,
-    },
-  ]);
-  await a.syncNow();
-  await b.syncNow();
-  const inA = a.todo(id);
-  const inB = b.todo(id);
-  if (inA === undefined || inB === undefined || inA.syncVersion < 1) {
-    status.textContent = 'conflict setup failed — panes did not converge';
+async function simulateConflict(lab: Lab): Promise<void> {
+  const laptop = lab.device('laptop');
+  const phone = lab.device('phone');
+  laptop.board = 'mobile';
+  phone.board = 'mobile';
+  laptop.view = 'board';
+  phone.view = 'board';
+  await phone.setOnline(true);
+  await laptop.setOnline(true);
+  await Promise.all([laptop.syncNow(), phone.syncNow()]);
+  const target = laptop.cards.find(
+    (card) =>
+      card.boardId === 'mobile' &&
+      card.columnId !== 'done' &&
+      card.columnId !== 'review' &&
+      card.syncVersion >= 1 &&
+      (phone.card(card.id)?.syncVersion ?? 0) === card.syncVersion,
+  );
+  if (target === undefined) {
+    lab.narrate(
+      'No Mobile card is in the same version on both devices yet. Wait for the log to settle and press again.',
+    );
     return;
   }
+  lab.narrate(
+    `1/4 · Both devices go offline. Each holds “${target.title}” at v${target.syncVersion}.`,
+  );
+  await Promise.all([laptop.setOnline(false), phone.setOnline(false)]);
+  await pause(1000);
+  lab.narrate(
+    `2/4 · Offline, the laptop moves it to ${COLUMN_LABEL.review} and the phone moves it to ${COLUMN_LABEL.done}. Both writes wait in the outboxes.`,
+  );
+  await laptop.moveCard(target.id, 'review', 0);
+  await phone.moveCard(target.id, 'done', 0);
+  await pause(1400);
+  lab.narrate(
+    '3/4 · The phone reconnects first. Its move applies and the card version advances.',
+  );
+  await phone.setOnline(true);
+  await pause(1400);
+  lab.narrate(
+    '4/4 · The laptop reconnects and replays its move against the old version.',
+  );
+  await laptop.setOnline(true);
+  lab.narrate(
+    'The server returned a conflict with its row. Open the card on the laptop and keep one side.',
+  );
+}
 
-  await a.setOffline(true);
-  await a.updateTodo(inA, { title: 'Edited OFFLINE in pane A' });
-  await b.updateTodo(inB, { title: 'Edited ONLINE in pane B' });
-  await b.syncNow();
-  status.textContent =
-    'pane A holds a conflicting offline edit — toggle pane A online to surface the conflict';
+/**
+ * Grant or revoke Ben's membership of the Web board. The laptop (Ada, the
+ * lead) writes the `members` row; the server's `resolveScopes` reads
+ * memberships, so the next round of the phone either bootstraps the board
+ * (after a fresh subscription) or finds its Web subscriptions revoked and
+ * purges every Web row (SPEC §3.3).
+ */
+async function toggleWebAccess(lab: Lab): Promise<void> {
+  const laptop = lab.device('laptop');
+  const phone = lab.device('phone');
+  if (!laptop.online) {
+    lab.narrate(
+      'Ada changes memberships from the laptop. Bring the laptop online first.',
+    );
+    return;
+  }
+  const ben = person('ben');
+  const countWeb = async () =>
+    Number(
+      (
+        await phone.core.query(
+          "SELECT COUNT(*) AS n FROM cards WHERE board_id = 'web'",
+        )
+      )[0]?.n ?? 0,
+    );
+  const before = await countWeb();
+  const granting = !phone.subscribed.has('web');
+  if (granting) {
+    lab.narrate(
+      'Ada adds Ben to the Web board: one members row, written on the laptop.',
+    );
+    await laptop.write(
+      [
+        {
+          table: 'members',
+          op: 'upsert',
+          values: {
+            id: 'm-web-ben',
+            boardId: 'web',
+            userId: ben.id,
+            name: ben.name,
+            color: ben.color,
+            role: 'engineer',
+          },
+        },
+      ],
+      { kind: 'grant', title: ben.name, boardId: 'web' },
+      [],
+    );
+    await laptop.syncNow();
+    await phone.subscribeBoard('web');
+  } else {
+    lab.narrate(
+      'Ada removes Ben from the Web board: the laptop deletes his members row.',
+    );
+    await laptop.write(
+      [{ table: 'members', op: 'delete', rowId: 'm-web-ben' }],
+      { kind: 'revoke', title: ben.name, boardId: 'web' },
+      [],
+    );
+    await laptop.syncNow();
+  }
+  if (!phone.online) {
+    lab.narrate(
+      `The membership change is in the log. The phone is offline and ${granting ? 'bootstraps' : 'purges'} board:web on its next round after reconnecting.`,
+    );
+    return;
+  }
+  await phone.syncNow();
+  const after = await countWeb();
+  phone.board = 'web';
+  phone.openSql(SQL_EXAMPLES[0]?.sql);
+  lab.narrate(
+    granting
+      ? `The phone subscribed to board:web and bootstrapped ${after} cards into its SQLite. Its Local SQL lens shows them.`
+      : `The server revoked the phone's board:web subscriptions, and the phone purged ${before - after} cards with their labels and comments. Its Local SQL lens shows only board:mobile.`,
+  );
 }
 
 // -- boot ------------------------------------------------------------------------
 
-async function main(): Promise<void> {
-  const modeEl = document.getElementById('mode-hint');
-  if (modeEl !== null) {
-    modeEl.innerHTML = EMBEDDED
-      ? 'server: <strong>in this page</strong> (web worker) — nothing leaves the browser'
-      : EPHEMERAL
-        ? 'mode: <strong>ephemeral</strong> (in-memory, main thread — explicit) · <a href="/">persistent</a>'
-        : MULTITAB
-          ? 'mode: <strong>persistent + multi-tab</strong> (OPFS, worker) — open a second tab to see a follower · <a href="/">single-tab</a>'
-          : 'mode: <strong>persistent</strong> (OPFS, worker) · <a href="/?ephemeral">ephemeral</a> · <a href="/?multitab">multi-tab</a>';
-  }
-  const paneA = new Pane('A', document.getElementById('pane-a') as HTMLElement);
-  const paneB = new Pane('B', document.getElementById('pane-b') as HTMLElement);
-  const conflictBtn = document.getElementById(
-    'conflict-btn',
-  ) as HTMLButtonElement;
-  const globalStatus = document.getElementById('global-status') as HTMLElement;
-
-  await Promise.all([paneA.init(), paneB.init()]);
-  const consoleLink = document.getElementById(
-    'console-link',
-  ) as HTMLAnchorElement;
+function followServerEvents(lab: Lab): void {
   if (EMBEDDED) {
-    consoleLink.hidden = false;
-    const dialog = document.getElementById(
-      'admin-console-dialog',
-    ) as HTMLDialogElement;
-    const frame = document.getElementById(
-      'admin-console-frame',
-    ) as HTMLIFrameElement;
-    window.addEventListener('message', (event) => {
-      if (
-        event.origin !== location.origin ||
-        event.source !== frame.contentWindow
-      ) {
-        return;
-      }
-      const message = event.data as {
-        readonly kind?: unknown;
-        readonly id?: unknown;
-        readonly path?: unknown;
-      };
-      if (
-        message.kind !== 'syncular-admin-request' ||
-        typeof message.id !== 'number' ||
-        typeof message.path !== 'string'
-      ) {
-        return;
-      }
-      const requestId = message.id;
-      const path = message.path;
-      void (async () => {
-        try {
-          const response = await (await getEmbeddedServer()).admin(path);
-          frame.contentWindow?.postMessage(
-            {
-              kind: 'syncular-admin-response',
-              id: requestId,
-              ok: response.status >= 200 && response.status < 300,
-              status: response.status,
-              body: response.body,
+    void getEmbeddedServer().then((server) =>
+      server.events((event) => lab.serverEvent(event)),
+    );
+    return;
+  }
+  const source = new EventSource('events');
+  source.onmessage = (message: MessageEvent<string>) => {
+    lab.serverEvent(JSON.parse(message.data) as SyncularServerEvent);
+  };
+}
+
+function wireConsole(): void {
+  const button = part<HTMLButtonElement>(document, '#console-btn');
+  if (!EMBEDDED) return;
+  button.hidden = false;
+  const dialog = part<HTMLDialogElement>(document, '#admin-console-dialog');
+  const frame = part<HTMLIFrameElement>(document, '#admin-console-frame');
+  window.addEventListener('message', (event) => {
+    if (
+      event.origin !== location.origin ||
+      event.source !== frame.contentWindow
+    ) {
+      return;
+    }
+    const message = event.data as {
+      readonly kind?: unknown;
+      readonly id?: unknown;
+      readonly path?: unknown;
+    };
+    if (
+      message.kind !== 'syncular-admin-request' ||
+      typeof message.id !== 'number' ||
+      typeof message.path !== 'string'
+    ) {
+      return;
+    }
+    const requestId = message.id;
+    const path = message.path;
+    void (async () => {
+      try {
+        const response = await (await getEmbeddedServer()).admin(path);
+        frame.contentWindow?.postMessage(
+          {
+            kind: 'syncular-admin-response',
+            id: requestId,
+            ok: response.status >= 200 && response.status < 300,
+            status: response.status,
+            body: response.body,
+          },
+          location.origin,
+        );
+      } catch (error) {
+        frame.contentWindow?.postMessage(
+          {
+            kind: 'syncular-admin-response',
+            id: requestId,
+            ok: false,
+            status: 500,
+            body: {
+              code:
+                error instanceof ClientSyncError ? error.code : 'sync.internal',
             },
-            location.origin,
-          );
-        } catch (error) {
-          frame.contentWindow?.postMessage(
-            {
-              kind: 'syncular-admin-response',
-              id: requestId,
-              ok: false,
-              status: 500,
-              body: {
-                code:
-                  error instanceof ClientSyncError
-                    ? error.code
-                    : 'sync.internal',
-              },
-            },
-            location.origin,
-          );
-        }
-      })();
-    });
-    consoleLink.addEventListener('click', (event) => {
-      event.preventDefault();
-      if (frame.getAttribute('src') === null) {
-        frame.src = '/admin.html?transport=parent';
+          },
+          location.origin,
+        );
       }
-      dialog.showModal();
-    });
-    document.getElementById('console-close')?.addEventListener('click', () => {
-      dialog.close();
+    })();
+  });
+  button.addEventListener('click', () => {
+    if (frame.getAttribute('src') === null) {
+      frame.src = 'admin.html?transport=parent';
+    }
+    dialog.showModal();
+  });
+  part(document, '#console-close').addEventListener('click', () => {
+    dialog.close();
+  });
+}
+
+function wireLatency(): void {
+  const field = part<HTMLElement>(document, '#latency-field');
+  if (!EMBEDDED) return;
+  field.hidden = false;
+  const input = part<HTMLInputElement>(field, 'input');
+  const output = part<HTMLOutputElement>(field, 'output');
+  const stage = part<HTMLElement>(document, '#stage');
+  const apply = () => {
+    latency.ms = Number(input.value);
+    output.value = `${latency.ms} ms`;
+    // Packets cross each wire in half the round trip, never faster than
+    // the base animation.
+    stage.style.setProperty('--hop', `${Math.max(480, latency.ms / 2)}ms`);
+  };
+  input.addEventListener('input', apply);
+  apply();
+}
+
+async function main(): Promise<void> {
+  part(document, '#mode').textContent = EMBEDDED
+    ? 'The server runs in a Web Worker in this page. Nothing leaves the browser, and a reload starts over.'
+    : EPHEMERAL
+      ? 'Ephemeral mode: in-memory cores on the main thread. A reload starts over.'
+      : MULTITAB
+        ? 'Multi-tab mode: open a second tab to see a follower proxy to this leader.'
+        : 'Persistent mode: each core keeps its SQLite database in OPFS across reloads.';
+  part(document, '#server-mode').textContent = EMBEDDED
+    ? 'Web Worker in this page'
+    : 'Bun · server-hono';
+
+  const menu = part<HTMLButtonElement>(document, '#menu-btn');
+  menu.addEventListener('click', () => {
+    menu.setAttribute(
+      'aria-expanded',
+      String(menu.getAttribute('aria-expanded') !== 'true'),
+    );
+  });
+
+  const lab = new Lab();
+  const ada = person('ada');
+  const ben = person('ben');
+  lab.devices.push(
+    new Device(
+      {
+        id: 'laptop',
+        label: 'Laptop',
+        actor: ada.id,
+        person: ada.name,
+        role: 'team lead',
+        color: ada.color,
+        boards: ['mobile', 'web'],
+      },
+      part(document, '.device[data-device="laptop"]'),
+      lab,
+    ),
+    new Device(
+      {
+        id: 'phone',
+        label: 'Phone',
+        actor: ben.id,
+        person: ben.name,
+        role: 'mobile engineer',
+        color: ben.color,
+        boards: ['mobile'],
+      },
+      part(document, '.device[data-device="phone"]'),
+      lab,
+    ),
+  );
+  for (const device of lab.devices) device.render();
+  wireConsole();
+  wireLatency();
+
+  const actions = [
+    [part<HTMLButtonElement>(document, '#conflict-btn'), simulateConflict],
+    [part<HTMLButtonElement>(document, '#grant-btn'), toggleWebAccess],
+  ] as const;
+  for (const [button, run] of actions) {
+    button.addEventListener('click', () => {
+      for (const [other] of actions) other.disabled = true;
+      void scripted(lab, () => run(lab))
+        .catch((error: unknown) =>
+          lab.narrate(`The scenario failed: ${errorText(error)}`),
+        )
+        .finally(() => {
+          for (const [other] of actions) other.disabled = false;
+        });
     });
   }
+  part(document, '#tour-reset').addEventListener('click', () =>
+    lab.resetTour(),
+  );
 
-  conflictBtn.disabled = false;
-  conflictBtn.addEventListener('click', () => {
-    conflictBtn.disabled = true;
-    void simulateConflict(paneA, paneB, globalStatus).finally(() => {
-      conflictBtn.disabled = false;
-    });
-  });
+  await Promise.all(lab.devices.map((device) => device.init()));
+  followServerEvents(lab);
+  for (const [button] of actions) button.disabled = false;
+  lab.narrate(
+    'Both devices are synced. Drag a card to another column on either one.',
+  );
 }
 
 void main().catch((error: unknown) => console.error(error));
