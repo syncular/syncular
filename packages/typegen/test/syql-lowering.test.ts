@@ -367,3 +367,38 @@ describe('revision-1 SYQL lowering', () => {
     }
   });
 });
+
+describe('select aliases in dynamic sort profiles', () => {
+  test('a snake_case alias in a profile is renamed with the projection', () => {
+    const root = resolve('/virtual/syql-lowering-alias');
+    const file = resolve(root, 'aliased.syql');
+    const source = `query aliased(listId) {
+  select id, created_at + 1 as next_at from todos
+  where todos.list_id = :listId
+  order by sortBy default soon {
+    soon: next_at asc, id asc;
+  };
+}`;
+    const graph = buildSyqlModuleGraph(root, ['aliased.syql'], (candidate) =>
+      candidate === file ? source : undefined,
+    );
+    const naming = { naming: 'camel', targets: ['ts'] } as const;
+    const program = validateSyqlProgram(
+      analyzeSyqlSemantics(graph),
+      IR,
+      db,
+      naming,
+    );
+    const lowered = lowerSyqlQuery(
+      program.queries[0] as NonNullable<(typeof program.queries)[number]>,
+      IR,
+      db,
+      naming,
+    );
+    expect(
+      lowered.selected.statements.every((statement) =>
+        statement.sql.includes('order by "nextAt" asc, id asc'),
+      ),
+    ).toBe(true);
+  });
+});

@@ -58,6 +58,14 @@ naming transform without collision or target-keyword conflicts.
 SQL identifiers retain SQLite spelling and are not subject to the camel-case
 rule.
 
+Under camelCase naming the compiler renames each projected result column to its
+language name in the generated SQL. A select alias keeps its authored spelling
+in the source: an outer `ORDER BY` or `GROUP BY` term, including a sort
+profile term, names the alias as written (`as next_est ... order by next_est`)
+and the compiler follows the rename. The camel-case spelling of a snake_case
+alias is not an authored name and fails with `SYQL6002_INVALID_SQL`. `WHERE`
+and `HAVING` do not resolve select aliases; they repeat the expression.
+
 ## 3. Lexical grammar
 
 The lexer recognizes whitespace, `--` line comments, `/* ... */` block

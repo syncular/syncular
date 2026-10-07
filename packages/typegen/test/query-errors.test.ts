@@ -610,3 +610,22 @@ describe('global uniqueness (across the whole manifest)', () => {
     ).toThrow(/duplicate query name "same".*dup\.sql#1.*dup\.sql#2/);
   });
 });
+
+describe('select aliases in ORDER BY (.sql queries)', () => {
+  test('a snake_case alias is renamed in ORDER BY with the projection', () => {
+    const [query] = analyzeFile(
+      'by-length.sql',
+      'SELECT id, length(title) AS title_len FROM todos ORDER BY title_len DESC, id',
+    );
+    expect(query?.sql).toContain('ORDER BY "titleLen" DESC, id');
+  });
+
+  test('an unknown ORDER BY name is still rejected by SQLite', () => {
+    expect(() =>
+      analyzeFile(
+        'by-missing.sql',
+        'SELECT id, length(title) AS title_len FROM todos ORDER BY missing_len',
+      ),
+    ).toThrow('no such column: missing_len');
+  });
+});

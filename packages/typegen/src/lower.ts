@@ -232,6 +232,90 @@ function expandStar(
   return table.columns.map((c) => `${prefix}${c.name}`);
 }
 
+/**
+ * Rewrite bare references to renamed select aliases in the depth-0 ORDER BY
+ * and GROUP BY terms of `tail` (the SQL after the outer SELECT list). SQLite
+ * resolves an identifier in those clauses to a select alias before any column,
+ * so the rewrite preserves the authored meaning. A GROUP BY after a compound
+ * operator belongs to another SELECT and keeps its text; subqueries sit at
+ * depth ≥ 1 and cannot see the outer aliases.
+ */
+function renameAliasRefs(
+  tail: string,
+  renamed: ReadonlyMap<string, string>,
+): string {
+  if (renamed.size === 0) return tail;
+  let out = '';
+  let depth = 0;
+  let clause: 'order' | 'group' | null = null;
+  let compound = false;
+  let prevWord = '';
+  let i = 0;
+  while (i < tail.length) {
+    const ch = tail[i] as string;
+    const next = tail[i + 1];
+    let end = i + 1;
+    if (ch === '-' && next === '-') {
+      const nl = tail.indexOf('\n', i);
+      end = nl === -1 ? tail.length : nl + 1;
+    } else if (ch === '/' && next === '*') {
+      const close = tail.indexOf('*/', i + 2);
+      end = close === -1 ? tail.length : close + 2;
+    } else if (ch === "'" || ch === '"') {
+      for (;;) {
+        if (end >= tail.length) break;
+        if (tail[end] === ch) {
+          if (tail[end + 1] === ch) end += 2;
+          else {
+            end += 1;
+            break;
+          }
+        } else end += 1;
+      }
+    } else if (ch === '(') {
+      depth += 1;
+    } else if (ch === ')') {
+      depth -= 1;
+    } else if (WORD_RE.test(ch)) {
+      while (end < tail.length && /[A-Za-z0-9_]/.test(tail[end] as string)) {
+        end += 1;
+      }
+      const word = tail.slice(i, end);
+      const lower = word.toLowerCase();
+      const following = /^\s*(.?)/.exec(tail.slice(end))?.[1];
+      if (depth === 0) {
+        if (lower === 'by' && prevWord === 'order') clause = 'order';
+        else if (lower === 'by' && prevWord === 'group') clause = 'group';
+        else if (['having', 'limit', 'offset', 'window'].includes(lower)) {
+          clause = null;
+        } else if (['union', 'intersect', 'except'].includes(lower)) {
+          compound = true;
+          clause = null;
+        }
+      }
+      const alias = renamed.get(lower);
+      if (
+        alias !== undefined &&
+        depth === 0 &&
+        (clause === 'order' || (clause === 'group' && !compound)) &&
+        out.trimEnd().slice(-1) !== '.' &&
+        following !== '.' &&
+        following !== '('
+      ) {
+        out += alias;
+      } else {
+        out += word;
+      }
+      prevWord = lower;
+      i = end;
+      continue;
+    }
+    out += tail.slice(i, end);
+    i = end;
+  }
+  return out;
+}
+
 export interface LoweredProjection {
   /** The rewritten SQL (identical to the input when nothing needed
    * aliasing). */
@@ -301,6 +385,9 @@ export function lowerProjection(
   const langNames = buildMap(names);
 
   let changed = expanded;
+  // Authored aliases that were renamed; ORDER BY / GROUP BY references to them
+  // follow the rename below.
+  const renamedAliases = new Map<string, string>();
   const rewritten = flatItems.map((text, index) => {
     const resultName = names[index] as string;
     const langName = langNames[index] as string;
@@ -312,11 +399,13 @@ export function lowerProjection(
     const alias = `"${langName.replaceAll('"', '""')}"`;
     const explicit = EXPLICIT_ALIAS_RE.exec(text);
     if (explicit !== null && explicit[2] === resultName) {
+      renamedAliases.set(resultName.toLowerCase(), alias);
       return `${(explicit[1] as string).trim()} AS ${alias}`;
     }
     const implicit = TRAILING_IDENT_RE.exec(text);
     if (implicit !== null && implicit[2] === resultName) {
       // Implicit alias (`expr name`) — swap the trailing identifier.
+      renamedAliases.set(resultName.toLowerCase(), alias);
       return `${(implicit[1] as string).trim()} AS ${alias}`;
     }
     return `${text} AS ${alias}`;
@@ -327,7 +416,7 @@ export function lowerProjection(
   const span2 = expanded ? findProjection(expandedSql) : span;
   if (span2 === null) throw new Error('unreachable: projection vanished');
   return {
-    sql: `${expandedSql.slice(0, span2.start)} ${rewritten.join(', ')} ${expandedSql.slice(span2.end)}`,
+    sql: `${expandedSql.slice(0, span2.start)} ${rewritten.join(', ')} ${renameAliasRefs(expandedSql.slice(span2.end), renamedAliases)}`,
     changed: true,
     sqlNames: names,
     langNames,

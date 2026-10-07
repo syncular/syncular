@@ -1190,3 +1190,59 @@ describe('ranked materialized CTE top-N', () => {
     expect(sharedAlias.code).toBe('SYQL6005_INVALID_SYNC_QUERY');
   });
 });
+
+describe('select aliases in ORDER BY and GROUP BY under camelCase naming', () => {
+  const run = (select: string, tail: string) =>
+    validate(`query q(listId) {
+  select ${select} from todos
+  where todos.list_id = :listId
+  ${tail};
+}`).queries[0]?.analysis;
+
+  test('ORDER BY resolves a snake_case alias to the lowered alias', () => {
+    const analysis = run(
+      'id, position + 1 as next_est',
+      'order by next_est desc, id',
+    );
+    expect(analysis?.sql).toContain('order by "nextEst" desc, id');
+    expect(analysis?.sql).toContain('AS "nextEst"');
+  });
+
+  test('ORDER BY keeps camelCase aliases, qualified names, and expressions', () => {
+    expect(
+      run('id, position + 1 as nextEst', 'order by nextEst, id')?.sql,
+    ).toContain('order by nextEst, id');
+    expect(
+      run('id, position + 1 as next_est', 'order by todos.position, id')?.sql,
+    ).toContain('order by todos.position, id');
+    expect(
+      run(
+        'id, position + 1 as next_est',
+        'order by next_est * 2 desc, abs(todos.position), id',
+      )?.sql,
+    ).toContain('order by "nextEst" * 2 desc, abs(todos.position), id');
+  });
+
+  test('GROUP BY resolves a snake_case alias', () => {
+    const analysis = run(
+      'position + 1 as next_est, count(*) as total_rows',
+      'group by next_est order by next_est',
+    );
+    expect(analysis?.sql).toContain('group by "nextEst" order by "nextEst"');
+  });
+
+  test('a genuinely unknown ORDER BY name keeps the stable error code', () => {
+    const error = frontendError(() =>
+      run('id, position + 1 as next_est', 'order by missing_est, id'),
+    );
+    expect(error.code).toBe('SYQL6002_INVALID_SQL');
+    expect(error.detail).toBe('unknown column `missing_est`');
+  });
+
+  test('the camelCase spelling of a snake_case alias is not an authored name', () => {
+    const error = frontendError(() =>
+      run('id, position + 1 as next_est', 'order by nextEst, id'),
+    );
+    expect(error.code).toBe('SYQL6002_INVALID_SQL');
+  });
+});
