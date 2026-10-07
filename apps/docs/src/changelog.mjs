@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-10-06',
+    title: 'Push retry binds to the commit ID alone',
+    body: 'A push replayed under the same (partition, clientId, clientCommitId) returns the persisted result when its operations changed. Host authentication, request-envelope validation, and the clientId-actor binding run first; the server then skips buildOperations, the commit and write validators, and the apply transaction. Clients must not reuse a clientCommitId for changed intent, including after the result is pruned. Idempotency keys on the ID: client-side encryption re-encodes with a fresh nonce on every send and schema upgrades re-encode pending commits, so a payload fingerprint would reject legitimate lost-ack retries. Per-device namespacing and content binding are documented as unimplemented.',
+    links: [
+      {
+        href: '/concepts-commits/#idempotency',
+        label: 'Idempotency and retries',
+      },
+    ],
+  },
+  {
+    date: '2026-10-06',
     title: 'Neutral server bundles use explicit SQLite image builders',
     body: 'The neutral server entry no longer auto-loads bun:sqlite during bootstrap. Bun and Node hosts opt into image construction through sqliteImageBuilder. Hosts without a builder retain rows delivery and reuse of matching stored images. Unminified browser bundles and installed package exports guard runtime neutrality.',
     links: [

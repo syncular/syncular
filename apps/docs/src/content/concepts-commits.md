@@ -57,6 +57,29 @@ Exactly-once apply per client commit; at-least-once delivery of results. This
 is why the client outbox can retry freely after any network blip, and why
 [offline replay](/platform-web/#offline-replay) is safe.
 
+The key contains the commit ID and nothing about the operations. Host
+authentication, request-envelope validation, and the §1.5 clientId-actor
+binding run before the lookup.
+`clientId` is a client-supplied namespace inside the authenticated partition,
+not proof of an authenticated device. When a retained result exists for the ID,
+the server returns it and skips `buildOperations`, the commit and write
+validators, and the apply transaction: a retry that reuses the ID with
+different operations gets the persisted result, and those operations are never
+built, validated, or applied. Reuse a `clientCommitId` for one logical commit
+only, including after the result has been pruned. The ID identifies that commit
+permanently, and a later edit is a later commit with a new ID.
+
+The contract keys on the ID alone. A client with
+[encrypted columns](/concepts-encryption/) re-encrypts them at every send with
+a fresh nonce, and a schema upgrade re-encodes pending commits, so the wire
+payload of an unchanged commit differs between a lost-ack retry and the
+original send. A payload fingerprint would reject those legitimate retries.
+
+Per-device namespacing and content binding are not implemented. Each needs an
+input the ID does not carry: an authenticated device identity from the host, or
+a client-side format that binds the commit content. Neither is specified, and
+the ID check does not authenticate the client.
+
 ## Local constraint failures
 
 The client applies a new local commit to the optimistic read model inside the

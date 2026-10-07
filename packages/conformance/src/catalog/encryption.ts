@@ -7,10 +7,12 @@
  * raw-driver read asserts the stored row carries the §5.11 envelope, not
  * plaintext. A wrong-key client surfaces `client.decrypt_failed` on apply.
  */
+import { decodeMessage, type PushCommitFrame } from '@syncular/core';
 import { check, checkEqual } from '../checks';
 import type { DriverEncryptionConfig, DriverSchema } from '../driver';
+import { bytesToHex } from '../raw';
 import type { Scenario, ScenarioContext } from '../scenario';
-import { syncFails, syncIdle } from './util';
+import { syncFails, syncIdle, syncOk } from './util';
 
 const P1 = { project_id: ['p1'] } as const;
 
@@ -156,6 +158,28 @@ function utf8Hex(text: string): string {
     hex += b.toString(16).padStart(2, '0');
   }
   return hex;
+}
+
+/** The sparse push payload hex for one commit in a captured request;
+ * throws when the request or payload is absent so a missing capture cannot
+ * satisfy an inequality assertion. */
+function pushPayloadHex(request: Uint8Array, commitId: string): string {
+  const message = decodeMessage(request);
+  if (message.msgKind !== 'request') throw new Error('expected a request');
+  const frame = message.frames.find(
+    (candidate): candidate is PushCommitFrame =>
+      candidate.type === 'PUSH_COMMIT' && candidate.clientCommitId === commitId,
+  );
+  if (frame === undefined)
+    throw new Error(`request has no push commit ${commitId}`);
+  const payloads = frame.operations.map((operation) => {
+    if (operation.payload === undefined)
+      throw new Error(`push commit ${commitId} has a payload-less operation`);
+    return bytesToHex(operation.payload);
+  });
+  if (payloads.length === 0)
+    throw new Error(`push commit ${commitId} has no operations`);
+  return payloads.join(',');
 }
 
 export const encryptionScenarios: readonly Scenario[] = [
@@ -352,6 +376,134 @@ export const encryptionScenarios: readonly Scenario[] = [
         'B decrypted note to plaintext',
       );
       checkEqual(bRow?.values.amount, 42, 'B decrypted amount to plaintext');
+    },
+  },
+  {
+    // §5.11 + §2.3: the client re-encrypts on every send, so a lost-ACK
+    // retry carries different ciphertext under the same commit ID. The
+    // ID-keyed idempotency cache deduplicates it, which forbids a wire-payload
+    // fingerprint.
+    name: 'encryption/lost-ack-retry-dedupes-changed-ciphertext',
+    specRefs: ['§5.11', '§2.3', '§6.3'],
+    server: E2EE_SERVER,
+    async run(ctx: ScenarioContext) {
+      const a = await ctx.newClient({
+        actorId: 'a',
+        clientId: 'client-a',
+        schema: E2EE_SCHEMA,
+        allowed: P1,
+        encryption: goodKeys,
+      });
+      const b = await ctx.newClient({
+        actorId: 'b',
+        clientId: 'client-b',
+        schema: E2EE_SCHEMA,
+        allowed: P1,
+        encryption: goodKeys,
+      });
+      await a.api.subscribe({ id: 's', table: 'secrets', scopes: P1 });
+      await b.api.subscribe({ id: 's', table: 'secrets', scopes: P1 });
+      await syncIdle(a);
+      await syncIdle(b);
+
+      const commitId = await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'secrets',
+          values: {
+            id: 'r1',
+            project_id: 'p1',
+            note: 'top secret',
+            amount: 42,
+          },
+        },
+      ]);
+      // The server applies, but the ack response is lost on the way back.
+      a.faults.dropNextResponses = 1;
+      await syncFails(
+        a,
+        'transport.lost',
+        'lost ack after the encrypted apply',
+      );
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [commitId],
+        'the client keeps the unacked commit queued',
+      );
+      const seqAfterFirst = await ctx.server.getMaxCommitSeq();
+      check(seqAfterFirst >= 1, 'the server applied the encrypted commit');
+      const firstRequest = a.sentRequests[a.sentRequests.length - 1];
+      check(firstRequest !== undefined, 'captured the first push request');
+      const storedBeforeRetry = (await ctx.server.readRows('secrets')).find(
+        (row) => row.rowId === 'r1',
+      );
+
+      const report = await syncOk(a);
+      check(
+        report.applied.includes(commitId),
+        'the cached replay drained the outbox',
+      );
+      const retryRequest = a.sentRequests[a.sentRequests.length - 1];
+      check(retryRequest !== undefined, 'captured the retry push request');
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [],
+        'the successful retry left the outbox empty',
+      );
+      checkEqual(
+        await ctx.server.getMaxCommitSeq(),
+        seqAfterFirst,
+        'no second commitSeq: the changed ciphertext deduplicated (§2.3)',
+      );
+      check(
+        pushPayloadHex(firstRequest, commitId) !==
+          pushPayloadHex(retryRequest, commitId),
+        'the retry ciphertext changed (fresh nonce) and still deduplicated',
+      );
+
+      // The first send's ciphertext is the persisted one: the replay wrote
+      // nothing, and the observer decrypts the same plaintext the writer
+      // holds locally.
+      const storedAfterRetry = (await ctx.server.readRows('secrets')).find(
+        (row) => row.rowId === 'r1',
+      );
+      checkEqual(
+        storedAfterRetry,
+        storedBeforeRetry,
+        'the replay left the stored ciphertext unchanged',
+      );
+      checkEqual(
+        storedAfterRetry?.version,
+        1,
+        'the server applied the row exactly once',
+      );
+      check(
+        typeof storedAfterRetry?.values.note === 'object' &&
+          storedAfterRetry.values.note !== null &&
+          '$bytes' in storedAfterRetry.values.note,
+        'the server row is ciphertext',
+      );
+      await syncIdle(b);
+      const writerRow = (await a.api.readRows('secrets')).find(
+        (row) => row.values.id === 'r1',
+      );
+      const observerRow = (await b.api.readRows('secrets')).find(
+        (row) => row.values.id === 'r1',
+      );
+      check(
+        writerRow?.values.note === 'top secret',
+        'the writer holds plaintext',
+      );
+      checkEqual(
+        observerRow?.values.note,
+        'top secret',
+        'the observer decrypts the plaintext',
+      );
+      checkEqual(
+        observerRow?.values.amount,
+        42,
+        'the observer decrypts amount',
+      );
     },
   },
   {
