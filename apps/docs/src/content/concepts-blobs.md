@@ -98,6 +98,24 @@ The body row remains immutable after insertion. Cache hits perform no metadata
 write, and a completed fresh download checkpoints its body out of the WAL before
 returning bytes.
 
+## Transfer failures
+
+Client-generated HTTP, body-read, segment, blob, and realtime errors use static
+operation messages. Structured cause details use an allowlisted `causeKind` and
+optional numeric `httpStatus`. Request URLs and exception messages do
+not enter these errors. A signed capability can appear in the URL path, so the
+client omits the path as well as credentials, query parameters, and fragments.
+Browser HTTP bindings decode authenticated server catalog responses and retain
+their code, message, and retry policy. The native HTTP binding currently
+classifies HTTP status without decoding the server's JSON error body. Both
+bindings require HTTP 404 before reporting `blob.not_found`.
+
+A blob download endpoint's HTTP 404 reports `blob.not_found`. HTTP 403 reports
+`blob.forbidden`, and HTTP 401 reports `sync.auth_required`. Network, TLS, and
+body-read failures retain transport codes. Other HTTP statuses retain their
+status classification or decoded catalog error. A failed signed URL fetch
+requires a fresh grant; it does not establish that the blob is absent.
+
 ## Storage backends
 
 Blobs share the same store abstractions as segments: `MemoryBlobStore` for

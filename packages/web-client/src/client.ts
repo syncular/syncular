@@ -3829,7 +3829,7 @@ export class SyncClient {
         tagged.set(request, 1);
         try {
           socket.sendBytes(tagged);
-        } catch (error) {
+        } catch {
           this.#pendingRound = undefined;
           // The socket could not carry the round: record the same loss the
           // Rust core records when its realtime round call fails (§8.8).
@@ -3837,8 +3837,9 @@ export class SyncClient {
           reject(
             new ClientSyncError(
               'sync.transport_failed',
-              `socket round send failed: ${error instanceof Error ? error.message : String(error)}`,
+              'socket round send failed',
               true,
+              { causeKind: 'unknown' },
             ),
           );
         }
@@ -3860,8 +3861,9 @@ export class SyncClient {
         }
         throw new ClientSyncError(
           'sync.transport_failed',
-          `transport round failed: ${error instanceof Error ? error.message : String(error)}`,
+          'transport round failed',
           true,
+          { causeKind: 'unknown' },
         );
       });
   }
@@ -4025,13 +4027,9 @@ export class SyncClient {
       let done: ReturnType<MessageStreamScanner['push']>;
       try {
         done = round.scanner.push(body);
-      } catch (error) {
+      } catch {
         this.#pendingRound = undefined;
-        round.reject(
-          invalidRequest(
-            `malformed round response stream (§8.7): ${error instanceof Error ? error.message : String(error)}`,
-          ),
-        );
+        round.reject(invalidRequest('malformed round response stream (§8.7)'));
         return;
       }
       if (done === undefined) return;

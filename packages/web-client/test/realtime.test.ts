@@ -588,3 +588,53 @@ describe('realtime policy (§8.8)', () => {
     ).toThrow(/realtimePolicy 'required' needs a realtime connector/);
   });
 });
+
+for (const socket of [false, true]) {
+  test(`raw ${socket ? 'socket' : 'transport'} round failures never format their cause`, async () => {
+    const db = new BunClientDatabase();
+    const cause = {
+      toString: () => {
+        throw new Error('must never stringify a transport exception');
+      },
+    };
+    const client = new SyncClient({
+      database: db,
+      schema: CLIENT_SCHEMA,
+      clientId: 'private-round',
+      transport: async () => {
+        throw cause;
+      },
+      ...(socket
+        ? {
+            realtime: async () => ({
+              send: () => {},
+              sendBytes: () => {
+                throw new ClientSyncError(
+                  'blob.not_found',
+                  'wss://user:password@host/secret-path?secret-query#secret-fragment',
+                  false,
+                );
+              },
+              close: () => {},
+            }),
+          }
+        : {}),
+    });
+    try {
+      await client.start();
+      client.mutate([
+        { op: 'upsert', table: 'tasks', values: taskValues('private', 'p1') },
+      ]);
+      if (socket) await client.connectRealtime();
+      await expect(client.sync()).rejects.toMatchObject({
+        code: 'sync.transport_failed',
+        message: socket ? 'socket round send failed' : 'transport round failed',
+        details: { causeKind: 'unknown' },
+      });
+      expect(client.pendingCommits()).toHaveLength(1);
+    } finally {
+      await client.close();
+      db.close();
+    }
+  });
+}

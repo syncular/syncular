@@ -320,7 +320,9 @@ test('onEnqueued succeeds offline and the later rejection remains addressable af
     expect(current.client.commitOutcome(id)).toBeUndefined();
     expect(view.result.current.outcomes.outcomes).toEqual([]);
     await act(async () => {
-      await expect(current.client.sync()).rejects.toThrow('offline');
+      await expect(current.client.sync()).rejects.toThrow(
+        'transport round failed',
+      );
     });
     view.unmount();
     await current.client.close();

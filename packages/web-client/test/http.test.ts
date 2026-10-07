@@ -10,6 +10,9 @@ import { describe, expect, test } from 'bun:test';
 import {
   ClientSyncError,
   httpSegmentDownloader,
+  httpBlobTransport,
+  httpSyncTransport,
+  httpRemoteOperationTransport,
   webSocketRealtimeConnector,
   webSocketRemoteOperationConnector,
 } from '../src/index';
@@ -106,7 +109,9 @@ describe('httpSegmentDownloader', () => {
     for (const bodyFailure of [false, true]) {
       test(`segment failure has a code and structured evidence (signed=${signed}, body=${bodyFailure})`, async () => {
         let calls = 0;
-        const cause = new TypeError('Load failed');
+        const cause = new TypeError(
+          'https://user:password@cdn.example/secret-path?secret-query#secret-fragment',
+        );
         const downloader = httpSegmentDownloader('https://host/segments', {
           fetch: Object.assign(
             async () => {
@@ -137,15 +142,14 @@ describe('httpSegmentDownloader', () => {
           retryable: true,
           message: 'segment transfer failed',
           details: {
-            path: signed ? '/image' : '/segments/sha256%3Atest',
-            causeMessage: 'Load failed',
+            causeKind: bodyFailure ? 'body' : 'network',
             ...(bodyFailure ? { httpStatus: 200 } : {}),
           },
         });
         expect(calls).toBe(1);
       });
     }
-    test(`HTTP failure retains status and path (signed=${signed})`, async () => {
+    test(`HTTP failure retains only status and kind (signed=${signed})`, async () => {
       const { seen, doFetch } = fakeFetch(403);
       const downloader = httpSegmentDownloader('/segments', { fetch: doFetch });
       await expect(
@@ -160,7 +164,7 @@ describe('httpSegmentDownloader', () => {
         code: 'sync.transport_failed',
         retryable: signed,
         details: {
-          path: signed ? '/image' : '/segments/sha256%3Atest',
+          causeKind: 'status',
           httpStatus: 403,
         },
       });
@@ -191,8 +195,9 @@ describe('httpSegmentDownloader', () => {
       }),
     ).rejects.toMatchObject({
       code: 'sync.forbidden',
+      message: 'scope grant refused',
       retryable: false,
-      details: { path: '/segments/sha256%3Atest', httpStatus: 403 },
+      details: { causeKind: 'status', httpStatus: 403 },
     });
   });
 });
@@ -290,3 +295,317 @@ for (const signed of [false, true]) {
     expect(updates).toEqual([64 * 1024, 64 * 1024 + 17]);
   });
 }
+
+describe('transfer error privacy', () => {
+  const capability =
+    'https://user:password@cdn.example/secret-path?secret-query=value#secret-fragment';
+  for (const signed of [false, true]) {
+    for (const body of [false, true]) {
+      for (const kind of ['typed', 'timeout', 'abort', 'opaque'] as const) {
+        test(`segment sanitizes every injected exception (signed=${signed}, body=${body}, kind=${kind})`, async () => {
+          const cause =
+            kind === 'typed'
+              ? new ClientSyncError('blob.not_found', capability, false, {
+                  url: capability,
+                  causeMessage: capability,
+                })
+              : kind === 'timeout'
+                ? new DOMException(capability, 'TimeoutError')
+                : kind === 'abort'
+                  ? new DOMException(capability, 'AbortError')
+                  : {
+                      toString: () => {
+                        throw new Error('must never stringify a cause');
+                      },
+                    };
+          if (cause instanceof Error) cause.cause = new Error(capability);
+          const downloader = httpSegmentDownloader(capability, {
+            fetch: Object.assign(
+              async () => {
+                if (!body) throw cause;
+                return new Response(
+                  new ReadableStream({
+                    start(controller) {
+                      controller.error(cause);
+                    },
+                  }),
+                );
+              },
+              { preconnect: fetch.preconnect },
+            ),
+          });
+          const pending = signed
+            ? downloader.fetchUrl!(capability)
+            : downloader({
+                segmentId: 'sha256:test',
+                requestedScopesJson: '{}',
+                table: 'tasks',
+              });
+          let caught: unknown;
+          try {
+            await pending;
+          } catch (error) {
+            caught = error;
+          }
+          expect(caught).toBeInstanceOf(ClientSyncError);
+          if (!(caught instanceof ClientSyncError))
+            throw new Error('expected transfer error');
+          expect(caught.code).toBe('sync.transport_failed');
+          expect(caught.message).toBe('segment transfer failed');
+          expect(caught.retryable).toBe(true);
+          expect(caught.details).toEqual({
+            causeKind:
+              kind === 'timeout'
+                ? 'timeout'
+                : kind === 'abort'
+                  ? 'aborted'
+                  : body
+                    ? 'body'
+                    : 'unknown',
+            ...(body ? { httpStatus: 200 } : {}),
+          });
+          expect(caught.cause).toBeUndefined();
+          expect(JSON.stringify(caught)).not.toContain('secret');
+          expect(JSON.stringify(caught)).not.toContain('password');
+        });
+      }
+    }
+  }
+
+  for (const body of [false, true]) {
+    for (const operation of [
+      'sync',
+      'remote',
+      'blob',
+      'signed_blob',
+      'signed_put',
+      'grant',
+    ] as const) {
+      if (body && operation === 'signed_put') continue;
+      test(`${operation} sanitizes injected ${body ? 'body' : 'network'} failures`, async () => {
+        const cause = new ClientSyncError('blob.not_found', capability, false, {
+          path: '/secret-path',
+        });
+        const doFetch = Object.assign(
+          async () => {
+            if (!body) throw cause;
+            return new Response(
+              new ReadableStream({
+                start(controller) {
+                  controller.error(cause);
+                },
+              }),
+              {
+                headers:
+                  operation === 'grant'
+                    ? { 'content-type': 'application/json' }
+                    : {},
+              },
+            );
+          },
+          { preconnect: fetch.preconnect },
+        );
+        const options = { fetch: doFetch };
+        const blobs = httpBlobTransport(capability, options);
+        const pending =
+          operation === 'sync'
+            ? httpSyncTransport(capability, options)(new Uint8Array())
+            : operation === 'remote'
+              ? httpRemoteOperationTransport(
+                  capability,
+                  options,
+                )(new Uint8Array())
+              : operation === 'blob'
+                ? blobs.download('sha256:test')
+                : operation === 'signed_blob'
+                  ? blobs.fetchUrl!(capability)
+                  : operation === 'signed_put'
+                    ? blobs.uploadToUrl!(capability, new Uint8Array())
+                    : blobs.uploadGrant!('sha256:test', 0);
+        let caught: unknown;
+        try {
+          await pending;
+        } catch (error) {
+          caught = error;
+        }
+        expect(caught).toBeInstanceOf(ClientSyncError);
+        if (!(caught instanceof ClientSyncError))
+          throw new Error('expected transfer error');
+        expect(caught.code).toBe('sync.transport_failed');
+        expect(caught.details).toEqual({
+          causeKind: body ? 'body' : 'unknown',
+          ...(body ? { httpStatus: 200 } : {}),
+        });
+        expect(caught.cause).toBeUndefined();
+        expect(JSON.stringify(caught)).not.toContain('secret');
+        expect(JSON.stringify(caught)).not.toContain('password');
+      });
+    }
+  }
+
+  test('only an actual blob endpoint 404 establishes absence', async () => {
+    for (const status of [401, 403, 404, 429, 503]) {
+      const { doFetch } = fakeFetch(status);
+      const blobs = httpBlobTransport(capability, { fetch: doFetch });
+      await expect(blobs.download('sha256:test')).rejects.toMatchObject({
+        code:
+          status === 404
+            ? 'blob.not_found'
+            : status === 403
+              ? 'blob.forbidden'
+              : status === 401
+                ? 'sync.auth_required'
+                : 'sync.transport_failed',
+        details: { causeKind: 'status', httpStatus: status },
+      });
+      await expect(blobs.fetchUrl!(capability)).rejects.toMatchObject({
+        code: 'sync.transport_failed',
+        details: { causeKind: 'status', httpStatus: status },
+      });
+    }
+    const blobs = httpBlobTransport(capability, {
+      fetch: Object.assign(
+        async () => {
+          throw new TypeError(`HTTP 404 ${capability}`);
+        },
+        { preconnect: fetch.preconnect },
+      ),
+    });
+    await expect(blobs.download('sha256:test')).rejects.toMatchObject({
+      code: 'sync.transport_failed',
+      details: { causeKind: 'network' },
+    });
+  });
+});
+
+test('a non-404 catalog body cannot claim that a blob is absent', async () => {
+  for (const status of [401, 403, 500]) {
+    const blobs = httpBlobTransport('/blobs', {
+      fetch: Object.assign(
+        async () =>
+          Response.json(
+            {
+              code: 'blob.not_found',
+              message: 'misclassified response',
+              retryable: false,
+            },
+            { status },
+          ),
+        { preconnect: fetch.preconnect },
+      ),
+    });
+    await expect(blobs.download('sha256:test')).rejects.toMatchObject({
+      code:
+        status === 401
+          ? 'sync.auth_required'
+          : status === 403
+            ? 'blob.forbidden'
+            : 'sync.transport_failed',
+      message: 'HTTP request failed',
+      retryable: status >= 500 || status === 401,
+      details: { causeKind: 'status', httpStatus: status },
+    });
+  }
+});
+
+test('synchronous websocket exceptions never expose the request or their cause', async () => {
+  const capability =
+    'wss://user:password@host/secret-path?secret-query#secret-fragment';
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'WebSocket');
+  let failConstructor = true;
+  class ThrowingWebSocket {
+    binaryType = 'arraybuffer';
+    onopen: (() => void) | null = null;
+    onmessage: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    onclose: (() => void) | null = null;
+    constructor() {
+      if (failConstructor)
+        throw new ClientSyncError('blob.not_found', capability, false);
+      queueMicrotask(() => this.onopen?.());
+    }
+    send() {
+      throw new Error(capability);
+    }
+    close() {
+      throw new Error(capability);
+    }
+  }
+  Object.defineProperty(globalThis, 'WebSocket', {
+    configurable: true,
+    value: ThrowingWebSocket,
+  });
+  try {
+    for (const remote of [false, true]) {
+      failConstructor = true;
+      const pending = remote
+        ? webSocketRemoteOperationConnector(capability)({ onMessage() {} })
+        : webSocketRealtimeConnector(capability)({
+            onText() {},
+            onBinary() {},
+          });
+      await expect(pending).rejects.toMatchObject({
+        code: 'sync.transport_failed',
+        message: 'realtime socket failed to connect',
+        details: { causeKind: 'unknown' },
+      });
+      failConstructor = false;
+      if (remote) {
+        const connection = await webSocketRemoteOperationConnector(capability)({
+          onMessage() {},
+        });
+        expect(() => connection.send(new Uint8Array())).toThrow(
+          'realtime send failed',
+        );
+        expect(() => connection.close()).toThrow('realtime close failed');
+      } else {
+        const connection = await webSocketRealtimeConnector(capability)({
+          onText() {},
+          onBinary() {},
+        });
+        expect(() => connection.send('hello')).toThrow('realtime send failed');
+        expect(() => connection.sendBytes?.(new Uint8Array())).toThrow(
+          'realtime send failed',
+        );
+        expect(() => connection.close()).toThrow('realtime close failed');
+      }
+    }
+  } finally {
+    if (original === undefined) Reflect.deleteProperty(globalThis, 'WebSocket');
+    else Object.defineProperty(globalThis, 'WebSocket', original);
+  }
+});
+
+test('a 404 body establishes blob absence only on the blob download endpoint', async () => {
+  const options = {
+    fetch: Object.assign(
+      async () => Response.json({ code: 'blob.not_found' }, { status: 404 }),
+      { preconnect: fetch.preconnect },
+    ),
+  };
+  const blobs = httpBlobTransport('/blobs', options);
+  await expect(blobs.download('sha256:test')).rejects.toMatchObject({
+    code: 'blob.not_found',
+  });
+  const attempts = [
+    () => httpSyncTransport('/sync', options)(new Uint8Array()),
+    () =>
+      httpRemoteOperationTransport('/operations', options)(new Uint8Array()),
+    () =>
+      httpSegmentDownloader(
+        '/segments',
+        options,
+      )({
+        segmentId: 'sha256:test',
+        table: 'tasks',
+        requestedScopesJson: '{}',
+      }),
+    () => blobs.upload('sha256:test', new Uint8Array()),
+    () => blobs.fetchUrl!('https://signed-url'),
+  ];
+  for (const attempt of attempts) {
+    await expect(attempt()).rejects.toMatchObject({
+      code: 'sync.transport_failed',
+    });
+  }
+});

@@ -77,6 +77,10 @@ the wire ([SPEC §5.8](https://github.com/syncular/syncular/blob/main/docs/SPEC.
 Clients rely on native fetch decoding, so no decompression code ships in the
 client bundle.
 
+Segment transfer errors omit request URLs, including signed paths, and raw
+exception messages. They report a static message with `causeKind` and optional
+`httpStatus` details. See [transfer failures](./concepts-blobs.md#transfer-failures).
+
 ## Publishing images from another host
 
 A Workers host has no SQLite engine, so it cannot build images; it serves an

@@ -1,8 +1,8 @@
 /**
  * Browser transport bindings (§1.1, §5.4/§5.5, §8.1): fetch-based sync
- * transport, segment download with signed-URL preference and direct-serve
- * fallback, and a WebSocket realtime connector. Core tests never use these
- * (the loopback doctrine); the browser fixture exercises them in a real browser.
+ * transport, descriptor-selected signed-URL or direct segment delivery, and
+ * WebSocket realtime connectors. Adapter tests inject fetch and socket surfaces;
+ * protocol core conformance uses loopback.
  */
 import type { BlobTransport } from './blob';
 import { SSP2_CONTENT_TYPE } from './content-type';
@@ -15,27 +15,60 @@ import type {
   SyncTransport,
 } from './transport';
 
+async function transfer<T>(
+  message: string,
+  operation: () => Promise<T>,
+  httpStatus?: number,
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    // Classify only known exception kinds. Injected errors, including
+    // ClientSyncError, are untrusted and never become the returned cause.
+    const causeKind =
+      error instanceof DOMException && error.name === 'TimeoutError'
+        ? 'timeout'
+        : error instanceof DOMException && error.name === 'AbortError'
+          ? 'aborted'
+          : httpStatus !== undefined
+            ? 'body'
+            : error instanceof TypeError
+              ? 'network'
+              : 'unknown';
+    throw new ClientSyncError('sync.transport_failed', message, true, {
+      causeKind,
+      ...(httpStatus !== undefined ? { httpStatus } : {}),
+    });
+  }
+}
+
 async function throwHttpError(
   response: Response,
-  details?: Readonly<Record<string, unknown>>,
+  defaultCode = 'sync.transport_failed',
 ): Promise<never> {
-  let code = 'sync.transport_failed';
+  let code = defaultCode;
   let message = 'HTTP request failed';
-  let retryable = response.status >= 500 || response.status === 429;
+  let retryable =
+    response.status >= 500 ||
+    response.status === 429 ||
+    defaultCode === 'sync.auth_required';
   try {
     const body = (await response.json()) as {
       code?: string;
       message?: string;
       retryable?: boolean;
     };
-    if (typeof body.code === 'string') code = body.code;
-    if (typeof body.message === 'string') message = body.message;
-    if (typeof body.retryable === 'boolean') retryable = body.retryable;
+    // Only the blob download endpoint can establish absence.
+    if (body.code !== 'blob.not_found' || defaultCode === 'blob.not_found') {
+      if (typeof body.code === 'string') code = body.code;
+      if (typeof body.message === 'string') message = body.message;
+      if (typeof body.retryable === 'boolean') retryable = body.retryable;
+    }
   } catch {
     // non-JSON error body — keep the HTTP-status defaults
   }
   throw new ClientSyncError(code, message, retryable, {
-    ...details,
+    causeKind: 'status',
     httpStatus: response.status,
   });
 }
@@ -66,16 +99,24 @@ export function httpSyncTransport(
 ): SyncTransport {
   const doFetch = options?.fetch ?? fetch;
   return async (request) => {
-    const response = await doFetch(syncUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': SSP2_CONTENT_TYPE,
-        ...hostHeaders(options),
-      },
-      body: request.slice().buffer as ArrayBuffer,
-    });
+    const response = await transfer('sync request failed', () =>
+      doFetch(syncUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': SSP2_CONTENT_TYPE,
+          ...hostHeaders(options),
+        },
+        body: request.slice().buffer as ArrayBuffer,
+      }),
+    );
     if (!response.ok) await throwHttpError(response);
-    return new Uint8Array(await response.arrayBuffer());
+    return new Uint8Array(
+      await transfer(
+        'response body read failed',
+        () => response.arrayBuffer(),
+        response.status,
+      ),
+    );
   };
 }
 
@@ -86,17 +127,35 @@ export function httpRemoteOperationTransport(
 ): RemoteOperationTransport {
   const doFetch = options?.fetch ?? fetch;
   return async (request) => {
-    const response = await doFetch(operationsUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/vnd.syncular.operations.v1+json',
-        ...hostHeaders(options),
-      },
-      body: request.slice().buffer as ArrayBuffer,
-    });
+    const response = await transfer('remote operation request failed', () =>
+      doFetch(operationsUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/vnd.syncular.operations.v1+json',
+          ...hostHeaders(options),
+        },
+        body: request.slice().buffer as ArrayBuffer,
+      }),
+    );
     if (!response.ok) await throwHttpError(response);
-    return new Uint8Array(await response.arrayBuffer());
+    return new Uint8Array(
+      await transfer(
+        'response body read failed',
+        () => response.arrayBuffer(),
+        response.status,
+      ),
+    );
   };
+}
+
+function socketOperation<T>(message: string, operation: () => T): T {
+  try {
+    return operation();
+  } catch {
+    throw new ClientSyncError('sync.transport_failed', message, true, {
+      causeKind: 'unknown',
+    });
+  }
 }
 
 /** WebSocket connector for registered query snapshots. */
@@ -105,14 +164,21 @@ export function webSocketRemoteOperationConnector(
 ): RemoteOperationRealtimeConnector {
   return (handlers) =>
     new Promise((resolve, reject) => {
-      const socket = new WebSocket(realtimeUrl);
+      const socket = socketOperation(
+        'realtime socket failed to connect',
+        () => new WebSocket(realtimeUrl),
+      );
       let opened = false;
       socket.binaryType = 'arraybuffer';
       socket.onopen = () => {
         opened = true;
         resolve({
-          send: (bytes) => socket.send(bytes.slice().buffer as ArrayBuffer),
-          close: () => socket.close(),
+          send: (bytes) =>
+            socketOperation('realtime send failed', () =>
+              socket.send(bytes.slice().buffer as ArrayBuffer),
+            ),
+          close: () =>
+            socketOperation('realtime close failed', () => socket.close()),
         });
       };
       socket.onmessage = (event) => {
@@ -204,36 +270,23 @@ export function httpSegmentDownloader(
     onProgress?: (bytesReceived: number) => void,
     signed = false,
   ) => {
-    // A capability's query/fragment and URL credentials never enter details.
-    const path = URL.canParse(url)
-      ? new URL(url).pathname
-      : url.split(/[?#]/)[0];
-    let response: Response | undefined;
-    try {
-      response = await doFetch(url, init);
-      if (!response.ok) {
-        if (!signed) await throwHttpError(response, { path });
-        throw new ClientSyncError(
-          'sync.transport_failed',
-          'signed segment request failed; invalidate the descriptor and re-pull',
-          true,
-          { path, httpStatus: response.status },
-        );
-      }
-      return await readSegmentBody(response, onProgress);
-    } catch (error) {
-      if (error instanceof ClientSyncError) throw error;
+    const response = await transfer('segment transfer failed', () =>
+      doFetch(url, init),
+    );
+    if (!response.ok) {
+      if (!signed) await throwHttpError(response);
       throw new ClientSyncError(
         'sync.transport_failed',
-        'segment transfer failed',
+        'signed segment request failed; invalidate the descriptor and re-pull',
         true,
-        {
-          path,
-          ...(response !== undefined ? { httpStatus: response.status } : {}),
-          causeMessage: error instanceof Error ? error.message : String(error),
-        },
+        { causeKind: 'status', httpStatus: response.status },
       );
     }
+    return transfer(
+      'segment transfer failed',
+      () => readSegmentBody(response, onProgress),
+      response.status,
+    );
   };
   const direct = (request: {
     readonly segmentId: string;
@@ -273,26 +326,44 @@ export function httpBlobTransport(
     `${blobsBaseUrl}/${encodeURIComponent(blobId)}`;
   return {
     upload: async (blobId, bytes, mediaType) => {
-      const response = await doFetch(blobUrl(blobId), {
-        method: 'PUT',
-        headers: {
-          'Content-Type': mediaType ?? 'application/octet-stream',
-          ...hostHeaders(options),
-        },
-        body: bytes.slice().buffer as ArrayBuffer,
-      });
+      const response = await transfer('blob upload failed', () =>
+        doFetch(blobUrl(blobId), {
+          method: 'PUT',
+          headers: {
+            'Content-Type': mediaType ?? 'application/octet-stream',
+            ...hostHeaders(options),
+          },
+          body: bytes.slice().buffer as ArrayBuffer,
+        }),
+      );
       if (!response.ok) await throwHttpError(response);
     },
     download: async (blobId) => {
-      const response = await doFetch(blobUrl(blobId), {
-        headers: { ...hostHeaders(options) },
-      });
-      if (!response.ok) await throwHttpError(response);
+      const response = await transfer('blob download failed', () =>
+        doFetch(blobUrl(blobId), {
+          headers: { ...hostHeaders(options) },
+        }),
+      );
+      if (!response.ok)
+        await throwHttpError(
+          response,
+          response.status === 404
+            ? 'blob.not_found'
+            : response.status === 403
+              ? 'blob.forbidden'
+              : response.status === 401
+                ? 'sync.auth_required'
+                : 'sync.transport_failed',
+        );
       // §5.9.5 always-issue: a JSON body with `url` means presigned delivery;
       // an octet-stream body is inline bytes.
       const contentType = response.headers.get('content-type') ?? '';
       if (contentType.includes('application/json')) {
-        const body = (await response.json()) as {
+        const body = (await transfer(
+          'blob download body read failed',
+          () => response.json(),
+          response.status,
+        )) as {
           url?: string;
           urlExpiresAtMs?: number;
         };
@@ -308,36 +379,57 @@ export function httpBlobTransport(
       }
       return {
         kind: 'bytes',
-        bytes: new Uint8Array(await response.arrayBuffer()),
+        bytes: new Uint8Array(
+          await transfer(
+            'blob download body read failed',
+            () => response.arrayBuffer(),
+            response.status,
+          ),
+        ),
       };
     },
     // §5.9.5: bare GET of the signed URL — no host auth (the URL is the grant).
     fetchUrl: async (url) => {
-      const response = await doFetch(url);
+      const response = await transfer('signed blob download failed', () =>
+        doFetch(url),
+      );
       if (!response.ok) {
         throw new ClientSyncError(
           'sync.transport_failed',
-          `blob signed-URL fetch failed with HTTP ${response.status} (§5.9.5: re-request to recover)`,
+          'signed blob download failed; re-request to recover',
           true,
+          { causeKind: 'status', httpStatus: response.status },
         );
       }
-      return new Uint8Array(await response.arrayBuffer());
+      return new Uint8Array(
+        await transfer(
+          'response body read failed',
+          () => response.arrayBuffer(),
+          response.status,
+        ),
+      );
     },
     // §5.9.3: presigned-upload grant.
     uploadGrant: async (blobId, byteLength, mediaType) => {
-      const response = await doFetch(`${blobUrl(blobId)}/upload-grant`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...hostHeaders(options),
-        },
-        body: JSON.stringify({
-          byteLength,
-          ...(mediaType !== undefined ? { mediaType } : {}),
+      const response = await transfer('blob upload grant request failed', () =>
+        doFetch(`${blobUrl(blobId)}/upload-grant`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...hostHeaders(options),
+          },
+          body: JSON.stringify({
+            byteLength,
+            ...(mediaType !== undefined ? { mediaType } : {}),
+          }),
         }),
-      });
+      );
       if (!response.ok) await throwHttpError(response);
-      const body = (await response.json()) as {
+      const body = (await transfer(
+        'blob upload grant body read failed',
+        () => response.json(),
+        response.status,
+      )) as {
         url?: string;
         urlExpiresAtMs?: number;
         present?: boolean;
@@ -356,18 +448,21 @@ export function httpBlobTransport(
     },
     // §5.9.3: direct-to-storage PUT — no host auth (the URL is the grant).
     uploadToUrl: async (url, bytes, mediaType) => {
-      const response = await doFetch(url, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': mediaType ?? 'application/octet-stream',
-        },
-        body: bytes.slice().buffer as ArrayBuffer,
-      });
+      const response = await transfer('signed blob upload failed', () =>
+        doFetch(url, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': mediaType ?? 'application/octet-stream',
+          },
+          body: bytes.slice().buffer as ArrayBuffer,
+        }),
+      );
       if (!response.ok) {
         throw new ClientSyncError(
           'sync.transport_failed',
-          `blob presigned PUT failed with HTTP ${response.status} (§5.9.3: re-request a grant or stream direct)`,
+          'signed blob upload failed; re-request a grant or stream direct',
           true,
+          { causeKind: 'status', httpStatus: response.status },
         );
       }
     },
@@ -380,17 +475,24 @@ export function webSocketRealtimeConnector(
 ): RealtimeConnector {
   return (handlers) =>
     new Promise((resolve, reject) => {
-      const socket = new WebSocket(realtimeUrl);
+      const socket = socketOperation(
+        'realtime socket failed to connect',
+        () => new WebSocket(realtimeUrl),
+      );
       let opened = false;
       socket.binaryType = 'arraybuffer';
       socket.onopen = () => {
         opened = true;
         resolve({
-          send: (text) => socket.send(text),
+          send: (text) =>
+            socketOperation('realtime send failed', () => socket.send(text)),
           sendBytes: (bytes) => {
-            socket.send(bytes.slice().buffer as ArrayBuffer);
+            socketOperation('realtime send failed', () =>
+              socket.send(bytes.slice().buffer as ArrayBuffer),
+            );
           },
-          close: () => socket.close(),
+          close: () =>
+            socketOperation('realtime close failed', () => socket.close()),
         });
       };
       socket.onmessage = (event) => {

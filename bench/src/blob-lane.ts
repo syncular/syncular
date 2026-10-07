@@ -685,14 +685,22 @@ export async function runBlobLane(options: {
           }
         },
       );
+      const failureCode =
+        failure instanceof Error &&
+        'code' in failure &&
+        typeof failure.code === 'string'
+          ? failure.code
+          : undefined;
       if (
-        failure !== interruption ||
+        failureCode !== 'sync.transport_failed' ||
         recovery.database.query(
           'SELECT blob_id FROM _syncular_blobs WHERE blob_id = ?',
           [blobId],
         ).length !== 0
       )
-        throw new Error('Interrupted download succeeded or polluted the cache');
+        throw new Error(
+          'Interrupted download was not a typed transport failure or polluted the cache',
+        );
       const beforeRecovery = recovery.requests.length;
       const { value: recovered, ...recoveredPhase } = await measurePhase(
         recovery,

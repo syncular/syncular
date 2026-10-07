@@ -1827,6 +1827,16 @@ bit 3. Three MUSTs pin the url path:
   recovery is the next pull, which re-authorizes and mints fresh
   descriptors (§5.5 recovery contract).
 
+**Transfer error privacy.** Client-generated HTTP, body-read, segment, blob,
+and realtime transport errors MUST use static operation messages. Their
+structured cause metadata MAY contain an allowlisted `causeKind` and numeric
+`httpStatus`. They MUST NOT include a request URL, including its path, query,
+fragment, or credentials, or copy a transport exception's message, formatted
+value, debug value, or source chain. This rule applies to direct endpoints and
+signed URLs. Authenticated server catalog responses are distinct from
+client-generated transport exceptions. This privacy rule does not require a
+transport adapter to decode the server's HTTP JSON error body.
+
 A `url` on a descriptor when the client did not advertise bit 3 is a
 broken server: reject as `sync.invalid_request`, aborting per §1.4
 rule 5 (the §4.2 mask contract, applied to delivery capability).
@@ -2238,6 +2248,10 @@ test — the same machinery write authorization already runs. `'*'` in the
 actor's allowed values passes as everywhere else.
 
 - **Unknown blob** (no object stored) ⇒ HTTP 404 `blob.not_found`.
+  A client MUST classify only an actual HTTP 404 from the blob download
+  endpoint as `blob.not_found`. Network, TLS, body-read, and other HTTP failures
+  retain their transport or authorization meaning. A failed signed-URL fetch
+  invalidates that grant and MUST NOT establish that the blob is absent.
 - **Signed URLs — always-issue (no capability negotiation).** When the host
   configured signed URLs, download **is** served as a signed URL: after the
   row-derived authorization above passes, the server returns
