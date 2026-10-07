@@ -186,7 +186,7 @@ pub fn normalize_values_casing(
                 ));
             }
             return Err(format!(
-                "table {:?}: unknown column {:?} in mutation values (snake_case and camelCase keys are accepted)",
+                "sync.invalid_request: table {:?}: unknown column {:?} in mutation values (snake_case and camelCase keys are accepted)",
                 table.name, key
             ));
         }
@@ -329,7 +329,7 @@ pub fn full_row_values(
         }
         if !column.nullable {
             return Err(format!(
-                "table {:?}: column {:?} is not nullable (§6.1 full-row payloads)",
+                "sync.invalid_request: table {:?}: column {:?} is not nullable (§6.1 full-row payloads)",
                 table.name, column.name
             ));
         }
@@ -351,10 +351,14 @@ pub fn encode_row_json(
     // Build the row from the LOCAL (declared-type) columns.
     let mut row: Row = Vec::with_capacity(table.columns.len());
     for column in &table.columns {
-        let value = json_to_column_value(column, values.get(&column.name))?;
+        // §6.1/§7.1: a caller value the codec rejects is an invalid request,
+        // never an internal authoring failure; the dynamic cause stays in
+        // `details.legacyCause` at the `ClientError` boundary.
+        let value = json_to_column_value(column, values.get(&column.name))
+            .map_err(|error| format!("sync.invalid_request: {error}"))?;
         if value.is_none() && !column.nullable {
             return Err(format!(
-                "table {:?}: column {:?} is not nullable (§6.1 full-row payloads)",
+                "sync.invalid_request: table {:?}: column {:?} is not nullable (§6.1 full-row payloads)",
                 table.name, column.name
             ));
         }
@@ -387,10 +391,11 @@ pub fn encode_sparse_row_json(
             row.push(SparseSlot::Absent);
             continue;
         };
-        let value = json_to_column_value(column, Some(raw))?;
+        let value = json_to_column_value(column, Some(raw))
+            .map_err(|error| format!("sync.invalid_request: {error}"))?;
         if value.is_none() && !column.nullable {
             return Err(format!(
-                "table {:?}: column {:?} is not nullable (§6.1)",
+                "sync.invalid_request: table {:?}: column {:?} is not nullable (§6.1)",
                 table.name, column.name
             ));
         }
