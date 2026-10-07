@@ -88,6 +88,13 @@ impl RemoteClientError {
     }
 
     fn invalid(message: impl Into<String>) -> Self {
+        // The value seams already classify their own failures with the
+        // `sync.invalid_request: ` identity; retain a single code prefix.
+        let message = message.into();
+        let message = message
+            .strip_prefix("sync.invalid_request: ")
+            .unwrap_or(&message)
+            .to_owned();
         Self::new("sync.invalid_request", message, false)
     }
 
@@ -881,6 +888,46 @@ mod tests {
         assert_eq!(
             transport.requests,
             vec![prepared.bytes.clone(), prepared.bytes]
+        );
+    }
+
+    #[test]
+    fn rejects_caller_value_failures_with_one_code_identity() {
+        let client = SyncRemoteClient::new(schema(), "worker").expect("client");
+        let prepare = |values: Map<String, Value>| {
+            client.prepare_commit(RemoteCommitInput {
+                request_id: "job-invalid".to_owned(),
+                mutations: vec![Mutation::Upsert {
+                    table: "tasks".to_owned(),
+                    values,
+                    base_version: None,
+                }],
+            })
+        };
+
+        let unknown = prepare(Map::from_iter([
+            ("id".to_owned(), json!("task-1")),
+            ("project_id".to_owned(), json!("project-1")),
+            ("nope".to_owned(), json!(1)),
+        ]))
+        .expect_err("unknown column");
+        assert_eq!(unknown.code, "sync.invalid_request");
+        // The value seam already carries the identity; the remote surface adds
+        // no second prefix to its own message.
+        assert_eq!(
+            unknown.message,
+            "table \"tasks\": unknown column \"nope\" in mutation values (snake_case and camelCase keys are accepted)"
+        );
+
+        let wrong_type = prepare(Map::from_iter([
+            ("id".to_owned(), json!("task-1")),
+            ("project_id".to_owned(), json!(7)),
+        ]))
+        .expect_err("wrong value type");
+        assert_eq!(wrong_type.code, "sync.invalid_request");
+        assert_eq!(
+            wrong_type.message,
+            "column \"project_id\": expected a string, got 7"
         );
     }
 
