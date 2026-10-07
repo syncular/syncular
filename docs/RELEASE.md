@@ -29,8 +29,9 @@ Compatibility work for hosts:
 - Bun and Node server hosts opt into image construction with
   `sqliteImageBuilder: buildSqliteImage` in the server config. The neutral server
   entry no longer pulls `bun:sqlite` into Worker bundles. Import the builder
-  from `@syncular/server/sqlite-bun` or `@syncular/server/sqlite-node`. Without a
-  builder the host keeps rows delivery and reuses matching stored images.
+  from `@syncular/server/sqlite`; its runtime export conditions select the Bun
+  or Node implementation. Without a builder the host keeps rows delivery and
+  reuses matching stored images.
 - Rust `mutate` and `patch` return `ClientError { code, message, details,
   retryable }` instead of a string, and `SyncOutcome` adds
   `BudgetExhausted(SyncReport)`. `syncUntilIdle` returns the aggregate report with
