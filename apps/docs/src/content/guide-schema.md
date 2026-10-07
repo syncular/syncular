@@ -177,6 +177,47 @@ same commit, a `SET NULL` delete nulls the child column, and `RESTRICT`
 rejects the delete while a child remains. A violation rejects the commit with
 `sync.reference_violation`.
 
+### Constraints and where they are enforced
+
+The migration parser accepts a fixed constraint surface. The full table with
+the accepted syntax lives in the [typegen
+README](https://github.com/syncular/syncular/blob/main/packages/typegen/README.md#constraints-support-and-enforcement).
+
+- **`NOT NULL` and the primary key** are enforced by the row codec on the
+  server candidate commit and on every client write and apply. The TS local
+  mirror also declares `NOT NULL`; the Rust local tables carry bare column
+  names and rely on the codec. A null in a non-nullable column fails the
+  commit.
+- **A declared reference** is enforced by the server once per commit
+  (§6.11). Local SQLite does not enforce declared references.
+- **`CREATE UNIQUE INDEX`** is a physical index in both client mirrors, the
+  server relational projection, and typegen's query type-check database. A
+  local write that collides with a declared unique index fails atomically
+  with `sync.constraint_violation` and leaves no outbox entry and no revision
+  advance. The server rejects the same collision at commit.
+- **A hand-written server write-validator** (§6.7) validates each candidate row operation
+  during server commit application. It does not run on optimistic local writes, so
+  a rule that needs immediate local feedback also belongs in the
+  application's pre-write guard.
+- **A SQL `DEFAULT` literal on `CREATE TABLE`** is accepted and ignored.
+  Typegen records no default, and the server relational projection adds no
+  app-level default. The host runs the migration SQL where a default matters.
+
+Closed value sets (an `enum` or a `CHECK`-style predicate) cannot be declared
+in migration SQL today. The IR column carries no enum or check metadata, so an
+inline `CHECK`, a table-level `CHECK`, and a named `CONSTRAINT` are hard
+errors. Use the stored column type plus a §6.7 write-validator for the closed
+set, and a `CREATE UNIQUE INDEX` for uniqueness. Table-level `UNIQUE` requires a named unique index; table-level `FOREIGN KEY`
+requires a column `REFERENCES` declaration.
+
+```sql
+-- Declare uniqueness with a named index.
+CREATE UNIQUE INDEX todos_list_title ON todos (list_id, title);
+
+-- A reference stays a column constraint.
+ALTER TABLE todos ADD COLUMN parent_id TEXT REFERENCES todos(id) ON DELETE SET NULL;
+```
+
 ## Data changes and backfills
 
 Migration SQL is schema-only. `UPDATE`, `INSERT`, and `DELETE` do not modify
@@ -194,7 +235,9 @@ Roll such a change out in five explicit steps:
 4. Validate the backfill and all supported client versions against accepted
    server evidence.
 5. Retire the old column or table only in a later schema version. Keep a synced
-   appended column nullable; do not tighten its SQL nullability later.
+   appended column nullable; do not tighten its SQL nullability later. A SQL
+   `DEFAULT` on the appended column is accepted and ignored, so it does not
+   stand in for the backfill in step 2.
 
 Existing format-1 locks remain valid and are not silently rewritten by
 generation. Compact one only through the explicit, reviewable transition:
