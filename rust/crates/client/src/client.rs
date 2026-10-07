@@ -328,7 +328,7 @@ mod observation_tests {
             .expect("patch records without an author-time encrypt failure");
         assert_eq!(client.pending_commit_ids(), vec![commit_id.clone()]);
         // ...and the push seam raises a durable local rejection, not a throw.
-        assert!(client.drop_unencodable_outbox(true).unwrap());
+        assert!(client.drop_unencodable_outbox(true, None).unwrap());
         assert!(client.pending_commit_ids().is_empty());
         let rejections = client.rejections();
         assert_eq!(rejections.len(), 1);
@@ -7737,7 +7737,7 @@ mod observation_tests {
             assert_eq!(reopened.pending_commit_ids(), vec![successor.clone()]);
             assert_eq!(reopened.pending_payloads().len(), 1, "{label}");
             assert!(!reopened
-                .drop_unencodable_outbox(false)
+                .drop_unencodable_outbox(false, None)
                 .expect("idempotent prepass"));
             let mut transport = CountingRealtimeTransport::default();
             let outcome = reopened.sync(&mut transport);
@@ -7746,6 +7746,240 @@ mod observation_tests {
             let next = reopened.mutate(upsert(row("t3"))).expect("after the drop");
             assert_eq!(reopened.pending_commit_ids(), vec![successor, next]);
             assert_eq!(reopened.pending_payloads().len(), 2, "{label}");
+            drop(reopened);
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    #[test]
+    fn two_legacy_values_on_the_same_row_recover_in_fifo_order() {
+        let schema = json!({"version":1,"tables":[{"name":"tasks","primaryKey":"id","columns":[
+            {"name":"id","type":"string","nullable":false},
+            {"name":"project_id","type":"string","nullable":false},
+            {"name":"payload","type":"bytes","nullable":true}],
+            "scopes":[{"pattern":"project:{project_id}"}]}]});
+        for (label, column, planted) in [
+            ("malformed envelope", "payload", json!({"$bytes": "zz"})),
+            (
+                "stored null for a non-nullable column",
+                "project_id",
+                json!(null),
+            ),
+            ("wrong declared type", "payload", json!(7)),
+        ] {
+            let path = std::env::temp_dir().join(format!(
+                "syncular-shared-row-{}-{}.db",
+                label.replace(' ', "-"),
+                uuid::Uuid::new_v4()
+            ));
+            let open = |path: &std::path::Path| {
+                SyncClient::open_path(
+                    "shared-row".into(),
+                    &schema,
+                    ClientLimits::default(),
+                    path.to_str().unwrap(),
+                )
+                .expect("open client")
+            };
+            let row = |id: &str| {
+                Map::from_iter([
+                    ("id".to_owned(), json!(id)),
+                    ("project_id".to_owned(), json!("p1")),
+                    ("payload".to_owned(), json!({"$bytes": "0a"})),
+                ])
+            };
+            let upsert = |values| {
+                vec![Mutation::Upsert {
+                    table: "tasks".into(),
+                    values,
+                    base_version: None,
+                }]
+            };
+            let mut client = open(&path);
+            client.create_synced_tables().expect("create synced tables");
+            let older = client.mutate(upsert(row("t1"))).expect("older commit");
+            let newer = client.mutate(upsert(row("t1"))).expect("newer commit");
+            let successor = client.mutate(upsert(row("t2"))).expect("successor commit");
+            drop(client);
+
+            let connection = Connection::open(&path).expect("raw connection");
+            for commit_id in [&older, &newer] {
+                let mut values = row("t1");
+                values.insert(column.to_owned(), planted.clone());
+                let planted_ops = json!([{
+                    "op": "upsert",
+                    "table": "tasks",
+                    "rowId": "t1",
+                    "baseVersion": null,
+                    "values": values
+                }]);
+                connection
+                    .execute(
+                        "UPDATE _syncular_outbox SET ops_json=? WHERE commit_id=?",
+                        rusqlite::params![planted_ops.to_string(), commit_id],
+                    )
+                    .expect("plant legacy intent");
+            }
+            drop(connection);
+
+            // Startup recovery drops both, FIFO, and publishes one batch.
+            let mut reopened = open(&path);
+            assert_eq!(
+                reopened.pending_commit_ids(),
+                vec![successor.clone()],
+                "{label}"
+            );
+            assert_eq!(
+                reopened
+                    .rejections()
+                    .iter()
+                    .map(|rejection| rejection.client_commit_id.clone())
+                    .collect::<Vec<_>>(),
+                vec![older.clone(), newer.clone()],
+                "{label}"
+            );
+            assert!(
+                reopened
+                    .rejections()
+                    .iter()
+                    .all(|rejection| rejection.code == OUTBOX_INCOMPATIBLE_CODE
+                        && rejection.details.as_ref().and_then(|d| d.reason.as_deref())
+                            == Some(INVALID_STORED_VALUES_REASON)),
+                "{label}"
+            );
+            for commit_id in [&older, &newer] {
+                assert!(
+                    matches!(
+                        reopened
+                            .commit_outcome(commit_id)
+                            .expect("outcome")
+                            .map(|o| o.status),
+                        Some(CommitOutcomeStatus::Rejected)
+                    ),
+                    "{label}"
+                );
+            }
+            assert_eq!(
+                reopened
+                    .query("SELECT id FROM tasks ORDER BY id", &[])
+                    .unwrap(),
+                vec![Map::from_iter([("id".to_owned(), json!("t2"))])],
+                "{label}"
+            );
+            let revision = reopened.local_revision();
+            let batches = reopened.drain_change_batches();
+            assert!(
+                batches.iter().any(|batch| batch.rejections_changed
+                    && batch.outcomes_changed
+                    && batch.tables.iter().any(|change| change.table == "tasks")
+                    && batch.revision == revision.to_string()),
+                "{label}: {batches:?}"
+            );
+            drop(reopened);
+
+            // An ordinary reopen with nothing to recover publishes nothing and
+            // leaves the revision alone.
+            let mut stable = open(&path);
+            assert_eq!(stable.local_revision(), revision, "{label}");
+            assert!(stable.drain_change_batches().is_empty(), "{label}");
+            assert_eq!(stable.pending_commit_ids(), vec![successor], "{label}");
+            drop(stable);
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    #[test]
+    fn recovery_omits_a_legacy_operation_the_journal_reader_rejects() {
+        let schema = json!({"version":1,"tables":[{"name":"tasks","primaryKey":"id","columns":[
+            {"name":"id","type":"string","nullable":false},
+            {"name":"project_id","type":"string","nullable":false},
+            {"name":"payload","type":"bytes","nullable":true}],
+            "scopes":[{"pattern":"project:{project_id}"}]}]});
+        for (label, second_op) in [
+            (
+                "delete carrying values",
+                json!({"op": "delete", "table": "tasks", "rowId": "t9", "values": {}}),
+            ),
+            (
+                "baseVersion beyond the safe bound",
+                json!({"op": "upsert", "table": "tasks", "rowId": "t9",
+                    "baseVersion": MAX_JS_SAFE_INTEGER + 1,
+                    "values": {"id": "t9", "project_id": "p1", "payload": {"$bytes": "0a"}}}),
+            ),
+        ] {
+            let path = std::env::temp_dir().join(format!(
+                "syncular-journal-shape-{}-{}.db",
+                label.replace(' ', "-"),
+                uuid::Uuid::new_v4()
+            ));
+            let open = |path: &std::path::Path| {
+                SyncClient::open_path(
+                    "journal-shape".into(),
+                    &schema,
+                    ClientLimits::default(),
+                    path.to_str().unwrap(),
+                )
+                .expect("open client")
+            };
+            let values = |id: &str| {
+                Map::from_iter([
+                    ("id".to_owned(), json!(id)),
+                    ("project_id".to_owned(), json!("p1")),
+                    ("payload".to_owned(), json!({"$bytes": "0a"})),
+                ])
+            };
+            let upsert = |values| {
+                vec![Mutation::Upsert {
+                    table: "tasks".into(),
+                    values,
+                    base_version: None,
+                }]
+            };
+            let mut client = open(&path);
+            client.create_synced_tables().expect("create synced tables");
+            let stale = client.mutate(upsert(values("t1"))).expect("stale commit");
+            drop(client);
+
+            let connection = Connection::open(&path).expect("raw connection");
+            // The first operation triggers the drop with canonical cells (a
+            // stored null for a non-nullable column); the second one is the
+            // operation shape the journal reader refuses.
+            let planted = json!([
+                {
+                    "op": "upsert",
+                    "table": "tasks",
+                    "rowId": "t1",
+                    "baseVersion": null,
+                    "values": {"id": "t1", "project_id": null,
+                        "payload": {"$bytes": "0a"}}
+                },
+                second_op
+            ]);
+            connection
+                .execute(
+                    "UPDATE _syncular_outbox SET ops_json=? WHERE commit_id=?",
+                    rusqlite::params![planted.to_string(), stale],
+                )
+                .expect("plant legacy intent");
+            drop(connection);
+
+            let reopened = open(&path);
+            let journal = reopened
+                .commit_outcome(&stale)
+                .unwrap_or_else(|error| panic!("{label}: journal read: {error}"))
+                .unwrap_or_else(|| panic!("{label}: journal entry"));
+            assert!(
+                matches!(journal.status, CommitOutcomeStatus::Rejected),
+                "{label}"
+            );
+            assert!(journal.operations.is_none(), "{label}");
+            assert!(
+                reopened
+                    .commit_outcomes(CommitOutcomeQuery::default())
+                    .is_ok(),
+                "{label}: outcome list query"
+            );
+            assert!(reopened.pending_commit_ids().is_empty(), "{label}");
             drop(reopened);
             let _ = std::fs::remove_file(&path);
         }
@@ -7860,7 +8094,19 @@ mod observation_tests {
                     Vec::<Map<String, Value>>::new(),
                     "{label}"
                 );
+                // The guarded bump reset owns the publication, so its change
+                // batch carries the recovery's rejection, outcome, and table
+                // domains at the revision it advanced to.
                 let mut next = reopened;
+                let revision = next.local_revision();
+                let batches = next.drain_change_batches();
+                assert!(
+                    batches.iter().any(|batch| batch.rejections_changed
+                        && batch.outcomes_changed
+                        && batch.tables.iter().any(|change| change.table == "tasks")
+                        && batch.revision == revision.to_string()),
+                    "{label}: {batches:?}"
+                );
                 next.mutate(upsert(Map::from_iter([
                     ("id".to_owned(), json!("t3")),
                     ("project_id".to_owned(), json!("p1")),
@@ -7912,6 +8158,321 @@ mod observation_tests {
             }
             let _ = std::fs::remove_file(&path);
         }
+    }
+
+    #[test]
+    fn legacy_values_recover_over_a_synced_authoritative_row() {
+        let path = std::env::temp_dir().join(format!(
+            "syncular-authoritative-row-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let schema = json!({"version":1,"tables":[{"name":"tasks","primaryKey":"id","columns":[
+            {"name":"id","type":"string","nullable":false},
+            {"name":"project_id","type":"string","nullable":false},
+            {"name":"title","type":"string","nullable":false},
+            {"name":"payload","type":"bytes","nullable":true}],
+            "scopes":[{"pattern":"project:{project_id}"}]}]});
+        let open = |path: &std::path::Path| {
+            SyncClient::open_path(
+                "authoritative-row".into(),
+                &schema,
+                ClientLimits::default(),
+                path.to_str().unwrap(),
+            )
+            .expect("open client")
+        };
+        let row = |title: &str| {
+            Map::from_iter([
+                ("id".to_owned(), json!("t1")),
+                ("project_id".to_owned(), json!("p1")),
+                ("title".to_owned(), json!(title)),
+                ("payload".to_owned(), json!({"$bytes": "0a"})),
+            ])
+        };
+        let upsert = |values| {
+            vec![Mutation::Upsert {
+                table: "tasks".into(),
+                values,
+                base_version: None,
+            }]
+        };
+        let mut client = open(&path);
+        client.create_synced_tables().expect("create synced tables");
+        // A server-confirmed row: base and visible carry the authoritative
+        // values at version 1.
+        client
+            .conn
+            .execute_batch(
+                "INSERT INTO _syncular_base_tasks VALUES ('t1','p1','authoritative',x'0a',1);
+                 INSERT INTO tasks VALUES ('t1','p1','authoritative',x'0a',1);",
+            )
+            .expect("seed authoritative row");
+        let older = client.mutate(upsert(row("older"))).expect("older");
+        let newer = client.mutate(upsert(row("newer"))).expect("newer");
+        let successor = client.mutate(upsert(row("successor"))).expect("successor");
+        drop(client);
+
+        let connection = Connection::open(&path).expect("raw connection");
+        for commit_id in [&older, &newer] {
+            let planted = json!([{
+                "op": "upsert",
+                "table": "tasks",
+                "rowId": "t1",
+                "baseVersion": null,
+                "values": {"id": "t1", "project_id": "p1", "title": "legacy",
+                    "payload": {"$bytes": "zz"}}
+            }]);
+            connection
+                .execute(
+                    "UPDATE _syncular_outbox SET ops_json=? WHERE commit_id=?",
+                    rusqlite::params![planted.to_string(), commit_id],
+                )
+                .expect("plant legacy intent");
+        }
+        drop(connection);
+
+        let reopened = open(&path);
+        assert_eq!(reopened.pending_commit_ids(), vec![successor.clone()]);
+        assert_eq!(
+            reopened
+                .rejections()
+                .iter()
+                .map(|rejection| rejection.client_commit_id.clone())
+                .collect::<Vec<_>>(),
+            vec![older.clone(), newer.clone()]
+        );
+        // The pending successor overlays the restored authoritative row, which
+        // keeps its server version.
+        assert_eq!(
+            reopened.query("SELECT id,title,_syncular_version FROM tasks", &[]),
+            Ok(vec![Map::from_iter([
+                ("id".to_owned(), json!("t1")),
+                ("title".to_owned(), json!("successor")),
+                ("_syncular_version".to_owned(), json!(1)),
+            ])])
+        );
+
+        // A later rejection of the surviving successor restores the
+        // authoritative values and version exactly.
+        drop(reopened);
+        let connection = Connection::open(&path).expect("raw connection");
+        connection
+            .execute(
+                "UPDATE _syncular_outbox SET ops_json=? WHERE commit_id=?",
+                rusqlite::params![
+                    json!([{
+                        "op": "upsert",
+                        "table": "tasks",
+                        "rowId": "t1",
+                        "baseVersion": null,
+                        "values": {"id": "t1", "project_id": "p1", "title": "legacy",
+                            "payload": {"$bytes": "zz"}}
+                    }])
+                    .to_string(),
+                    successor
+                ],
+            )
+            .expect("plant successor intent");
+        drop(connection);
+        let late = open(&path);
+        assert!(late.pending_commit_ids().is_empty());
+        assert_eq!(
+            late.query("SELECT id,title,_syncular_version FROM tasks", &[]),
+            Ok(vec![Map::from_iter([
+                ("id".to_owned(), json!("t1")),
+                ("title".to_owned(), json!("authoritative")),
+                ("_syncular_version".to_owned(), json!(1)),
+            ])])
+        );
+        drop(late);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_failed_value_recovery_commit_restores_every_side_effect() {
+        let path = std::env::temp_dir().join(format!(
+            "syncular-value-recovery-commit-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let path_str = path.to_str().expect("path");
+        let schema = json!({"version":1,"tables":[{"name":"tasks","primaryKey":"id","columns":[
+            {"name":"id","type":"string","nullable":false},
+            {"name":"project_id","type":"string","nullable":false},
+            {"name":"payload","type":"bytes","nullable":true}],
+            "scopes":[{"pattern":"project:{project_id}"}]}]});
+        // A rollback-journal replica, so a second read connection can hold
+        // SHARED across the recovery transaction's COMMIT.
+        let conn = Connection::open(path_str).expect("replica connection");
+        let mut client = SyncClient::with_connection(
+            "value-recovery-commit".into(),
+            &schema,
+            ClientLimits::default(),
+            conn,
+        )
+        .expect("replica");
+        assert_eq!(
+            client
+                .conn
+                .query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
+                .expect("journal mode"),
+            "delete"
+        );
+        client.create_synced_tables().expect("create synced tables");
+        let stale = client
+            .mutate(vec![Mutation::Upsert {
+                table: "tasks".into(),
+                values: Map::from_iter([
+                    ("id".to_owned(), json!("t1")),
+                    ("project_id".to_owned(), json!("p1")),
+                    ("payload".to_owned(), json!({"$bytes": "0a"})),
+                ]),
+                base_version: None,
+            }])
+            .expect("queued write");
+        client.drain_change_batches();
+        client
+            .conn
+            .execute(
+                "UPDATE _syncular_outbox SET ops_json=? WHERE commit_id=?",
+                rusqlite::params![
+                    json!([{
+                        "op": "upsert",
+                        "table": "tasks",
+                        "rowId": "t1",
+                        "baseVersion": null,
+                        "values": {"id": "t1", "project_id": "p1",
+                            "payload": {"$bytes": "zz"}}
+                    }])
+                    .to_string(),
+                    stale
+                ],
+            )
+            .expect("plant legacy intent");
+        let revision = client.local_revision();
+        let rows = client.query("SELECT * FROM tasks", &[]).expect("rows");
+        let prior_outbox = client.pending_commit_ids();
+        let prior_rejections = client.rejections().len();
+        let prior_changes = client.change_queue.len();
+        let prior_intents = client.sync_intent_queue.len();
+        let prior_failed = client.failed_commits.len();
+        // The reader holds SHARED for the whole attempt: the recovery runs to
+        // its publication and the COMMIT fails.
+        let reader = Connection::open(path_str).expect("reader");
+        reader
+            .execute_batch("BEGIN; SELECT count(*) FROM _syncular_meta;")
+            .expect("reader snapshot");
+        client
+            .conn
+            .busy_timeout(std::time::Duration::ZERO)
+            .expect("busy timeout");
+        let error = client
+            .recreate_with_schema(&schema)
+            .expect_err("a blocked COMMIT must refuse the recovery");
+        assert!(error.starts_with("client.storage_busy:"), "{error}");
+        assert!(client.conn.is_autocommit(), "the transaction is released");
+        assert_eq!(client.local_revision(), revision);
+        assert_eq!(client.pending_commit_ids(), prior_outbox);
+        assert_eq!(client.rejections().len(), prior_rejections);
+        assert_eq!(client.change_queue.len(), prior_changes);
+        assert_eq!(client.sync_intent_queue.len(), prior_intents);
+        assert_eq!(client.failed_commits.len(), prior_failed);
+        assert_eq!(
+            client.query("SELECT * FROM tasks", &[]).expect("rows"),
+            rows
+        );
+        assert!(
+            client
+                .commit_outcome(&stale)
+                .expect("outcome read")
+                .is_none(),
+            "the rolled-back recovery kept no outcome"
+        );
+        // The retry runs the same publication branch to completion.
+        reader.execute_batch("ROLLBACK").expect("release reader");
+        client
+            .recreate_with_schema(&schema)
+            .expect("retry after the blocked commit");
+        assert!(client.pending_commit_ids().is_empty());
+        assert_eq!(client.rejections().len(), prior_rejections + 1);
+        assert!(client.local_revision() > revision);
+        let batches = client.drain_change_batches();
+        assert!(
+            batches.iter().any(|batch| batch.rejections_changed
+                && batch.outcomes_changed
+                && batch.tables.iter().any(|change| change.table == "tasks")),
+            "{batches:?}"
+        );
+        drop(client);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(feature = "e2ee")]
+    #[test]
+    fn a_failed_recovery_restores_retained_failed_commits() {
+        let path = std::env::temp_dir().join(format!(
+            "syncular-value-recovery-retention-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let path_str = path.to_str().expect("path");
+        let schema = json!({"version":1,"tables":[{"name":"secrets","primaryKey":"id","columns":[
+            {"name":"id","type":"string","nullable":false},
+            {"name":"project_id","type":"string","nullable":false},
+            {"name":"note","type":"bytes","nullable":true,"encrypted":true,"declaredType":"string"}],
+            "scopes":[{"pattern":"project:{project_id}"}]}]});
+        let conn = Connection::open(path_str).expect("replica connection");
+        let mut client = SyncClient::with_connection(
+            "value-recovery-retention".into(),
+            &schema,
+            ClientLimits::default(),
+            conn,
+        )
+        .expect("replica");
+        client.create_synced_tables().expect("create synced tables");
+        client.set_retain_failed_commits(true).expect("retention");
+        // No keys configured: the §5.11 seal fails, so retention is exercised.
+        client.set_encryption(crate::values::EncryptionConfig::default());
+        client
+            .mutate(vec![Mutation::Upsert {
+                table: "secrets".into(),
+                values: Map::from_iter([
+                    ("id".to_owned(), json!("s1")),
+                    ("project_id".to_owned(), json!("p1")),
+                    ("note".to_owned(), json!("secret")),
+                ]),
+                base_version: None,
+            }])
+            .expect("queued write");
+        client.drain_change_batches();
+        let revision = client.local_revision();
+        let prior_outbox = client.pending_commit_ids();
+        let prior_rejections = client.rejections().len();
+        let prior_failed = client.failed_commits.len();
+        let reader = Connection::open(path_str).expect("reader");
+        reader
+            .execute_batch("BEGIN; SELECT count(*) FROM _syncular_meta;")
+            .expect("reader snapshot");
+        client
+            .conn
+            .busy_timeout(std::time::Duration::ZERO)
+            .expect("busy timeout");
+        let error = client
+            .drop_unencodable_outbox(true, None)
+            .expect_err("a blocked COMMIT must refuse the recovery");
+        assert!(error.starts_with("client.storage_busy:"), "{error}");
+        assert_eq!(client.failed_commits.len(), prior_failed);
+        assert_eq!(client.pending_commit_ids(), prior_outbox);
+        assert_eq!(client.rejections().len(), prior_rejections);
+        assert_eq!(client.local_revision(), revision);
+        // The retry retains the failed commit and drops it from the outbox.
+        reader.execute_batch("ROLLBACK").expect("release reader");
+        client
+            .drop_unencodable_outbox(true, None)
+            .expect("retry after the blocked commit");
+        assert_eq!(client.failed_commits.len(), prior_failed + 1);
+        assert!(client.pending_commit_ids().is_empty());
+        assert_eq!(client.rejections().len(), prior_rejections + 1);
+        drop(client);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -9781,7 +10342,7 @@ impl SyncClient {
             // keeps the §7.4.4 send-time classification, and an unresolved
             // encryption key stays with the send seam because hosts configure
             // keys after open.
-            client.drop_unencodable_outbox(false)?;
+            client.drop_unencodable_outbox(false, None)?;
             if marker == Some(client.schema.version)
                 && (!client.outbox.is_empty()
                     || !client.failed_commits.is_empty()
@@ -11163,7 +11724,7 @@ impl SyncClient {
             // this guarded boundary once the schema and marker agree. A bump went
             // through `run_schema_reset`, which performs the same recovery after
             // it creates the new physical tables and before its final replay.
-            self.drop_unencodable_outbox(false)?;
+            self.drop_unencodable_outbox(false, None)?;
             if marker == Some(self.schema.version)
                 && (!self.outbox.is_empty()
                     || !self.failed_commits.is_empty()
@@ -11550,7 +12111,9 @@ impl SyncClient {
         // prepass. The reset wrapper snapshots and restores the outbox,
         // rejections, and change queues, so a failed commit rolls this recovery
         // back with the rest of the reset.
-        self.drop_unencodable_outbox(false)?;
+        // §7.4.4: the enclosing reset observation owns the publication, so the
+        // recovery contributes its rejection, outcome, and table domains to it.
+        self.drop_unencodable_outbox(false, Some(batch))?;
         // Re-apply the surviving outbox optimistically over the empty tables.
         self.rebuild_overlay()?;
         Ok(())
@@ -12083,12 +12646,11 @@ impl SyncClient {
     }
 
     /// §7.2/§7.4.4: a dropped commit keeps its operation envelope in the journal
-    /// only when every stored cell keeps its canonical shape.
+    /// only when the journal reader accepts the serialized operation, which is the
+    /// rule `outcome_from_row` applies to this same row later.
     fn outbox_op_is_journalable(operation: &OutboxOp) -> bool {
-        operation
-            .values
-            .as_ref()
-            .is_none_or(|values| values.values().all(Self::stored_cell_is_representable))
+        serde_json::to_value(CommitOperation::from(operation))
+            .is_ok_and(|value| Self::stored_operation_is_representable(&value))
     }
 
     fn outcome_from_row(row: StoredCommitOutcomeRow) -> Result<CommitOutcome, String> {
@@ -13444,7 +14006,14 @@ impl SyncClient {
     /// additionally drops commits whose §5.11 encryption cannot resolve a key;
     /// the startup boundary leaves those to the send seam, where hosts configure
     /// keys after open.
-    fn drop_unencodable_outbox(&mut self, with_encryption: bool) -> Result<bool, String> {
+    /// Recovery runs as one observation. An enclosing observation (the guarded
+    /// schema reset) passes its `batch`, so the rejection, outcome, and table
+    /// domains join that change event instead of publishing a second one.
+    fn drop_unencodable_outbox(
+        &mut self,
+        with_encryption: bool,
+        batch: Option<&mut ChangeAccumulator>,
+    ) -> Result<bool, String> {
         let failures = self
             .outbox
             .iter()
@@ -13483,43 +14052,113 @@ impl SyncClient {
         if failures.is_empty() {
             return Ok(false);
         }
-        for (commit, message, code) in failures {
-            if self.retain_failed_commits && code == ENCRYPT_FAILED_CODE {
-                self.retain_failed_commit(&commit.client_commit_id, &commit.ops)?;
-            }
-            let representable = commit.ops.iter().all(Self::outbox_op_is_journalable);
-            let rejection = RejectionRecord {
-                client_commit_id: commit.client_commit_id.clone(),
-                op_index: 0,
-                code: code.to_owned(),
-                message,
-                retryable: false,
-                details: (code == OUTBOX_INCOMPATIBLE_CODE).then(|| RejectionDetails {
-                    field_paths: None,
-                    reason: Some(INVALID_STORED_VALUES_REASON.to_owned()),
-                    required_action: None,
-                    references: None,
-                }),
-                operation: representable
-                    .then(|| commit.ops.first())
-                    .flatten()
-                    .map(CommitOperation::from),
-            };
-            self.persist_commit_outcome(
-                &commit.client_commit_id,
-                CommitOutcomeStatus::Rejected,
-                &[CommitOperationOutcome::Error {
-                    rejection: rejection.clone(),
-                }],
-                representable.then_some(commit.ops.as_slice()),
-            )?;
-            self.delete_outbox_persisted(&commit.client_commit_id)?;
-            self.outbox
-                .retain(|candidate| candidate.client_commit_id != commit.client_commit_id);
-            self.rejections.push(rejection);
+        // §7.4.4: one observation covers the durable outcome writes, the outbox
+        // removal, the in-memory drop, and the overlay rebuild, so a storage fault
+        // leaves the replica and the client unchanged, a successful recovery
+        // publishes one batch with the rejection, outcome, and table domains, and
+        // an ordinary open with nothing to recover publishes nothing.
+        let prior_outbox = self.outbox.clone();
+        let prior_rejections = self.rejections.clone();
+        // §5.11 retention and a self-published observation mutate two more
+        // in-memory fields before this transaction ends, so the rollback below
+        // restores them with the rest.
+        let prior_failed_commits = self.failed_commits.clone();
+        let prior_changes = self.change_queue.len();
+        let prior_intents = self.sync_intent_queue.len();
+        let prior_last_change = self.last_change.clone();
+        let prior_overlay_dirty = self.overlay_dirty.snapshot();
+        let owns_observation = batch.is_none();
+        let owns_transaction = self.conn.is_autocommit();
+        let mut domains = ChangeAccumulator::default();
+        if owns_observation {
+            self.begin_observation("syncular_value_recovery")?;
         }
-        self.prune_commit_outcomes()?;
-        self.rebuild_overlay_if_dirty()?;
+        let dropped = (|| -> Result<(), String> {
+            for (commit, message, code) in failures {
+                if self.retain_failed_commits && code == ENCRYPT_FAILED_CODE {
+                    self.retain_failed_commit(&commit.client_commit_id, &commit.ops)?;
+                }
+                let representable = commit.ops.iter().all(Self::outbox_op_is_journalable);
+                let rejection = RejectionRecord {
+                    client_commit_id: commit.client_commit_id.clone(),
+                    op_index: 0,
+                    code: code.to_owned(),
+                    message,
+                    retryable: false,
+                    details: (code == OUTBOX_INCOMPATIBLE_CODE).then(|| RejectionDetails {
+                        field_paths: None,
+                        reason: Some(INVALID_STORED_VALUES_REASON.to_owned()),
+                        required_action: None,
+                        references: None,
+                    }),
+                    operation: representable
+                        .then(|| commit.ops.first())
+                        .flatten()
+                        .map(CommitOperation::from),
+                };
+                self.persist_commit_outcome(
+                    &commit.client_commit_id,
+                    CommitOutcomeStatus::Rejected,
+                    &[CommitOperationOutcome::Error {
+                        rejection: rejection.clone(),
+                    }],
+                    representable.then_some(commit.ops.as_slice()),
+                )?;
+                self.delete_outbox_persisted(&commit.client_commit_id)?;
+                self.outbox
+                    .retain(|candidate| candidate.client_commit_id != commit.client_commit_id);
+                self.rejections.push(rejection);
+                for operation in &commit.ops {
+                    domains.table(operation.table.as_str());
+                }
+            }
+            domains.status = true;
+            domains.rejections = true;
+            domains.outcomes = true;
+            self.prune_commit_outcomes()?;
+            // The visible projection is re-derived from the surviving base + outbox.
+            self.overlay_dirty.set(true);
+            self.rebuild_overlay()?;
+            Ok(())
+        })();
+        let result = match batch {
+            Some(batch) => {
+                if dropped.is_ok() {
+                    for table in domains.tables.keys() {
+                        batch.table(table.as_str());
+                    }
+                    batch.status |= domains.status;
+                    batch.rejections |= domains.rejections;
+                    batch.outcomes |= domains.outcomes;
+                }
+                dropped
+            }
+            None => {
+                dropped.and_then(|()| self.finish_observation("syncular_value_recovery", domains))
+            }
+        };
+        if let Err(error) = result {
+            if owns_observation {
+                if owns_transaction {
+                    if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
+                        let mut failure = self.storage_failure.borrow_mut();
+                        let failure =
+                            failure.get_or_insert_with(|| QueryReadFailure::from(error.clone()));
+                        failure.rollback_failure = Some(Box::new(QueryReadFailure::from(rollback)));
+                    }
+                } else {
+                    self.rollback_observation("syncular_value_recovery");
+                }
+            }
+            self.outbox = prior_outbox;
+            self.rejections = prior_rejections;
+            self.failed_commits = prior_failed_commits;
+            self.change_queue.truncate(prior_changes);
+            self.sync_intent_queue.truncate(prior_intents);
+            self.last_change = prior_last_change;
+            self.overlay_dirty.restore(prior_overlay_dirty);
+            return Err(error);
+        }
         Ok(true)
     }
 
@@ -14758,7 +15397,7 @@ impl SyncClient {
             self.set_sync_needed(false, false);
             self.drain_pending_evictions()
                 .and_then(|_| self.drop_incompatible_outbox())
-                .and_then(|_| self.drop_unencodable_outbox(true))
+                .and_then(|_| self.drop_unencodable_outbox(true, None))
                 .map_err(|message| {
                     Box::new(SyncOutcome::Failed {
                         error_code: "storage.failed".into(),

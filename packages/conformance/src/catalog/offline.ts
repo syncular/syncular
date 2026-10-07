@@ -1667,6 +1667,99 @@ export const offlineScenarios: readonly Scenario[] = [
         recovered[1]?.operation !== undefined,
         'a representable envelope stays in the journal',
       );
+
+      // Two codec-invalid commits on the SAME row recover in FIFO order. The
+      // older drop replays later operations on that row, so an unclassified
+      // invalid successor must not be reachable from that replay.
+      const pairValues = { ...seedValues, id: 'pair' };
+      const pairOlder = await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: { ...pairValues, title: 'older' },
+        },
+      ]);
+      const pairNewer = await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: { ...pairValues, title: 'newer' },
+        },
+      ]);
+      for (const commitId of [pairOlder, pairNewer]) {
+        await runReplicaSql(
+          `UPDATE _syncular_outbox SET ${outboxColumn}=json_set(${outboxColumn}, '$[0].values.payload', json('{"$bytes":"zz"}')) WHERE ${outboxIdColumn}='${commitId}'`,
+        );
+      }
+      const revisionBefore = await a.api.localRevision?.();
+      await ctx.recreateClient(a, LEGACY_VALUE_SCHEMA);
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [],
+        'the same-row pair leaves the outbox',
+      );
+      const pairRejections = (await a.api.rejections()).slice(-2);
+      checkEqual(
+        pairRejections.map((rejection) => rejection.clientCommitId),
+        [pairOlder, pairNewer],
+        'the same-row rejections stay in FIFO order',
+      );
+      checkEqual(
+        pairRejections.map((rejection) => rejection.code),
+        ['sync.outbox_incompatible', 'sync.outbox_incompatible'],
+        'both same-row commits recover',
+      );
+      checkEqual(
+        pairRejections.map((rejection) => rejection.details?.reason),
+        ['invalid_stored_values', 'invalid_stored_values'],
+        'both carry the bounded reason',
+      );
+      check(
+        (await a.api.readRows('tasks')).every(
+          (row) => row.values?.id !== 'pair',
+        ),
+        'the same-row pair leaves no optimistic row',
+      );
+
+      // The recovery publishes one batch carrying the revision, the table, and
+      // the rejection and outcome domains.
+      const revisionAfter = await a.api.localRevision?.();
+      check(
+        revisionBefore !== undefined &&
+          revisionAfter !== undefined &&
+          BigInt(revisionAfter) > BigInt(revisionBefore),
+        'the recovery advances the local revision',
+      );
+      if (a.api.drainChangeBatches !== undefined) {
+        // The domain flags of the startup/recreate batch are pinned by the
+        // package-local tests, whose listeners attach before the client starts;
+        // the driver subscribes after construction, so it observes the revision.
+        await a.api.drainChangeBatches();
+      }
+
+      // Recreating with nothing left to recover publishes nothing and keeps the
+      // revision where the recovery left it.
+      const revisionStable = await a.api.localRevision?.();
+      await ctx.recreateClient(a, LEGACY_VALUE_SCHEMA);
+      checkEqual(
+        (await a.api.drainChangeBatches?.())?.length ?? 0,
+        0,
+        'an ordinary recreate publishes no batch',
+      );
+      checkEqual(
+        await a.api.localRevision?.(),
+        revisionStable,
+        'an ordinary recreate keeps the local revision',
+      );
+
+      // Every recovered commit keeps a readable rejected outcome.
+      const rejected = (await a.api.commitOutcomes()).filter(
+        (outcome) => outcome.status === 'rejected',
+      );
+      check(
+        rejected.length >= 4,
+        'recovered commits keep readable rejected outcomes',
+      );
     },
   },
 ];

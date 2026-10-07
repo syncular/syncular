@@ -238,6 +238,281 @@ test('nullable bytes accept null, an empty envelope, and uppercase digits', asyn
   await client.close();
 });
 
+test('recovery restores the synced authoritative row and keeps successor before-images', async () => {
+  for (const withSuccessor of [false, true]) {
+    const directory = mkdtempSync(join(tmpdir(), 'syncular-shared-synced-'));
+    const path = join(directory, 'replica.sqlite');
+    try {
+      const backend = server();
+      const open = () =>
+        makeClient(backend, {
+          clientId: 'shared-synced',
+          actorId: 'a',
+          schema: SCHEMA,
+          databasePath: path,
+        });
+      // One authoritative server row, synced into the replica.
+      const seeder = await open();
+      await seeder.client.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: { ...valid, id: 't1', title: 'authoritative' },
+        } as never,
+      ]);
+      await seeder.client.subscribe({
+        id: 'tasks',
+        table: 'tasks',
+        scopes: { projectId: ['p1'] },
+      });
+      await seeder.client.syncUntilIdle();
+      const authoritative = tableRows(seeder.db, 'tasks').find(
+        (row) => row.id === 't1',
+      )!;
+      expect(Number(authoritative._sync_version)).toBeGreaterThan(0);
+      await seeder.client.close();
+      seeder.db.close();
+
+      const client = await open();
+      const older = client.client.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: { ...valid, title: 'older' },
+        } as never,
+      ]);
+      const newer = client.client.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: { ...valid, title: 'newer' },
+        } as never,
+      ]);
+      const successor = withSuccessor
+        ? client.client.mutate([
+            {
+              op: 'upsert',
+              table: 'tasks',
+              values: { ...valid, title: 'successor' },
+            } as never,
+          ])
+        : undefined;
+      await client.client.close();
+      for (const commitId of [older, newer]) {
+        client.db.exec(
+          'UPDATE _syncular_outbox SET operations=? WHERE client_commit_id=?',
+          [
+            JSON.stringify([
+              {
+                table: 'tasks',
+                rowId: 't1',
+                op: 'upsert',
+                values: {
+                  ...valid,
+                  title: 'legacy',
+                  payload: { $bytes: 'zz' },
+                },
+              },
+            ]),
+            commitId,
+          ],
+        );
+      }
+      client.db.close();
+
+      const reopened = await open();
+      expect(
+        reopened.client.pendingCommits().map((commit) => commit.clientCommitId),
+      ).toEqual(successor === undefined ? [] : [successor]);
+      expect(
+        reopened.client
+          .rejections()
+          .map((rejection) => rejection.clientCommitId),
+      ).toEqual([older, newer]);
+      // Without a surviving same-row successor, the recovered row is the
+      // authoritative row again, version included. With one, the pending
+      // successor legitimately overlays the restored base, so the authoritative
+      // state lives in that successor's before-image.
+      if (successor === undefined) {
+        expect(
+          tableRows(reopened.db, 'tasks').find((row) => row.id === 't1'),
+        ).toEqual(authoritative);
+        await reopened.client.close();
+        reopened.db.close();
+        continue;
+      }
+      // The pending overlay keeps the authoritative row version.
+      expect(
+        Number(
+          tableRows(reopened.db, 'tasks').find((row) => row.id === 't1')
+            ?._sync_version,
+        ),
+      ).toBe(Number(authoritative._sync_version));
+      const images = reopened.db.query(
+        'SELECT op_index,existed,sync_version,values_json FROM _syncular_outbox_before_images WHERE client_commit_id=?',
+        [successor],
+      );
+      expect(images).toHaveLength(1);
+      expect(images[0]?.existed).toBe(1);
+      expect(Number(images[0]?.sync_version)).toBe(
+        Number(authoritative._sync_version),
+      );
+      expect(JSON.parse(String(images[0]?.values_json))).toMatchObject({
+        id: 't1',
+        project_id: 'p1',
+        title: 'authoritative',
+      });
+
+      // A later rejection of the surviving successor must still restore the
+      // authoritative row rather than legacy-undoing it.
+      await reopened.client.close();
+      reopened.db.exec(
+        'UPDATE _syncular_outbox SET operations=? WHERE client_commit_id=?',
+        [
+          JSON.stringify([
+            {
+              table: 'tasks',
+              rowId: 't1',
+              op: 'upsert',
+              values: { ...valid, title: 'legacy', payload: { $bytes: 'zz' } },
+            },
+          ]),
+          successor,
+        ],
+      );
+      reopened.db.close();
+      const late = await open();
+      expect(late.client.pendingCommits()).toEqual([]);
+      // The journal list reads newest-first, so assert membership rather than
+      // the drop pass's FIFO order here.
+      expect(
+        new Set(
+          late.client.rejections().map((rejection) => rejection.clientCommitId),
+        ),
+      ).toEqual(new Set([older, newer, successor]));
+      expect(
+        late.client
+          .rejections()
+          .every((rejection) => rejection.code === 'sync.outbox_incompatible'),
+      ).toBe(true);
+      expect(
+        tableRows(late.db, 'tasks').find((row) => row.id === 't1'),
+      ).toEqual(authoritative);
+      await late.client.close();
+      late.db.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+});
+
+for (const shared of [
+  {
+    label: 'malformed byte envelope',
+    intent: { payload: { $bytes: 'zz' } },
+  },
+  { label: 'wrong declared type', intent: { priority: 'high' } },
+  {
+    label: 'stored null for a non-nullable column',
+    intent: { project_id: null },
+  },
+] as const) {
+  test(`two legacy commits with a ${shared.label} on the same row recover in order`, async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'syncular-shared-row-'));
+    const path = join(directory, 'replica.sqlite');
+    try {
+      const backend = server();
+      const open = () =>
+        makeClient(backend, {
+          clientId: 'shared-row',
+          actorId: 'a',
+          schema: SCHEMA,
+          databasePath: path,
+        });
+      const first = await open();
+      const older = first.client.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: { ...valid, title: 'older' },
+        } as never,
+      ]);
+      const newer = first.client.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: { ...valid, title: 'newer' },
+        } as never,
+      ]);
+      const successor = first.client.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: { ...valid, id: 't2', title: 'kept' },
+        } as never,
+      ]);
+      await first.client.close();
+      // Both queued updates on the same row carry the legacy shape.
+      for (const commitId of [older, newer]) {
+        first.db.exec(
+          'UPDATE _syncular_outbox SET operations=? WHERE client_commit_id=?',
+          [
+            JSON.stringify([
+              {
+                table: 'tasks',
+                rowId: 't1',
+                op: 'upsert',
+                values: { ...valid, ...shared.intent },
+              },
+            ]),
+            commitId,
+          ],
+        );
+      }
+      first.db.close();
+
+      const reopened = await open();
+      expect(
+        reopened.client.pendingCommits().map((commit) => commit.clientCommitId),
+      ).toEqual([successor]);
+      // FIFO: the older commit's rejection is recorded first.
+      expect(
+        reopened.client
+          .rejections()
+          .map((rejection) => rejection.clientCommitId),
+      ).toEqual([older, newer]);
+      expect(
+        reopened.client.rejections().map((rejection) => rejection.code),
+      ).toEqual(['sync.outbox_incompatible', 'sync.outbox_incompatible']);
+      expect(reopened.client.rejections()[0]?.details).toEqual({
+        reason: 'invalid_stored_values',
+      });
+      expect(reopened.client.query('SELECT id FROM tasks ORDER BY id')).toEqual(
+        [{ id: 't2' }],
+      );
+      for (const commitId of [older, newer]) {
+        const delivery = reopened.client.commitDelivery(commitId);
+        expect(delivery.status).toBe('known');
+        expect(
+          delivery.status === 'known' ? delivery.outcome.status : '?',
+        ).toBe('rejected');
+      }
+      // The surviving commit still drains and lands on the server.
+      expect((await reopened.client.sync()).applied).toEqual([successor]);
+      expect(
+        await backend.storage.getRow(PARTITION, 'tasks', 't2'),
+      ).toBeDefined();
+      expect(
+        await backend.storage.getRow(PARTITION, 'tasks', 't1'),
+      ).toBeUndefined();
+      await reopened.client.close();
+      reopened.db.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+}
+
 for (const legacy of [
   {
     label: 'malformed byte envelope',

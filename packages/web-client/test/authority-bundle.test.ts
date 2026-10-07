@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 // Bun 1.4.0, minified browser graphs with SQLite external. The client
-// measures about 157445 bytes and the worker about 174408 bytes after this
+// measures about 157536 bytes and the worker about 174499 bytes after this
 // change, giving a few tens of bytes of variance from the temporary entry
 // path; the ceilings round up from the maximum observed. Independently assert
 // that ordinary imports exclude authority modules.

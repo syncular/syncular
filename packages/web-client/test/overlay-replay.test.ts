@@ -134,7 +134,20 @@ for (const failure of [
           expect(refused.query('SELECT id FROM tasks ORDER BY id')).toEqual([
             { id: 'early' },
           ]);
+          // §7.4.4: the recovery publishes one batch carrying the revision, the
+          // affected table, and the rejection and outcome domains.
+          const recovery = changes.filter(
+            (batch) => batch.rejectionsChanged || batch.outcomesChanged,
+          );
+          expect(recovery.length).toBeGreaterThanOrEqual(1);
+          expect(changes.some((batch) => batch.rejectionsChanged)).toBe(true);
           expect(changes.some((batch) => batch.outcomesChanged)).toBe(true);
+          expect(
+            recovery.every((batch) =>
+              batch.tables.some((change) => change.table === 'tasks'),
+            ),
+          ).toBe(true);
+          expect(recovery.at(-1)?.revision).toBe(refused.localRevision);
           await refused.close();
           expect(held).toBe(false);
 

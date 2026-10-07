@@ -3859,6 +3859,7 @@ export class SyncClient {
     code: string = OUTBOX_INCOMPATIBLE_CODE,
     replay = true,
     reason?: string,
+    classifiedFailures?: ReadonlySet<string>,
   ): void {
     const priorRejections = [...this.#rejections];
     this.#applyBatch(
@@ -3869,7 +3870,7 @@ export class SyncClient {
             commit,
             listOutboxBeforeImages(this.#db, commit.clientCommitId),
           );
-        this.#rollbackFailedCommit(commit, batch);
+        this.#rollbackFailedCommit(commit, batch, classifiedFailures);
         if (replay) this.#replayOutbox();
         // §7.2/§7.4.4: the journal holds the operation envelope only when its
         // stored shape is representable. A dropped legacy commit whose envelope
@@ -5740,7 +5741,11 @@ export class SyncClient {
     }
   }
 
-  #rollbackFailedCommit(commit: OutboxCommit, batch: ChangeAccumulator): void {
+  #rollbackFailedCommit(
+    commit: OutboxCommit,
+    batch: ChangeAccumulator,
+    classifiedFailures?: ReadonlySet<string>,
+  ): void {
     const images = listOutboxBeforeImages(this.#db, commit.clientCommitId);
     const imageByIndex = new Map(images.map((image) => [image.opIndex, image]));
     const complete = commit.operations.every((_, index) =>
@@ -5779,6 +5784,10 @@ export class SyncClient {
         later.clientCommitId,
         this.#captureBeforeImages(later.operations, affectedKeys),
       );
+      // §7.4.4: a later commit the recovery already classified refused never
+      // replays. Its before-image is still rebased above, so dropping it later
+      // restores the same base this rollback just restored.
+      if (classifiedFailures?.has(later.clientCommitId)) continue;
       this.#applyOperationsLocally(affectedOperations, batch);
     }
   }
@@ -5987,6 +5996,11 @@ export class SyncClient {
       });
       if (refused) failures.push(commit);
     }
+    // §7.4.4: every refused commit is classified before the FIFO drop pass, so
+    // a rollback never replays a refused successor it has not removed yet.
+    const classifiedFailures = new Set(
+      failures.map((commit) => commit.clientCommitId),
+    );
     for (const commit of failures)
       this.#dropIncompatibleCommit(
         commit,
@@ -5994,6 +6008,7 @@ export class SyncClient {
         OUTBOX_INCOMPATIBLE_CODE,
         false,
         INVALID_STORED_VALUES_REASON,
+        classifiedFailures,
       );
   }
 
