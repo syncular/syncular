@@ -60,28 +60,59 @@ public struct SyncularConfig: Sendable {
     public var headers: [String: String]
     /// Path to the on-disk SQLite database. Nil → in-memory (no persistence).
     public var dbPath: String?
+    /// End-to-end deadline for one HTTP request, in milliseconds. Nil leaves
+    /// the request unbounded.
+    public var requestTimeoutMs: UInt64?
+    /// One monotonic deadline for a whole sync round, in milliseconds. Nil
+    /// leaves the round unbounded.
+    public var roundDeadlineMs: UInt64?
+    /// Largest HTTP request body the transport sends, in bytes. Nil is unbounded.
+    public var maxRequestBytes: UInt64?
+    /// Largest decoded HTTP response body the transport accepts, in bytes. Nil is
+    /// unbounded.
+    public var maxResponseBytes: UInt64?
+    /// Redirect handling: `"deny"` (the default) refuses every redirect;
+    /// `"follow"` follows only an uncredentialed request.
+    public var redirects: String?
 
     public init(
         baseUrl: String? = nil,
         wsUrl: String? = nil,
         headers: [String: String] = [:],
-        dbPath: String? = nil
+        dbPath: String? = nil,
+        requestTimeoutMs: UInt64? = nil,
+        roundDeadlineMs: UInt64? = nil,
+        maxRequestBytes: UInt64? = nil,
+        maxResponseBytes: UInt64? = nil,
+        redirects: String? = nil
     ) {
         self.baseUrl = baseUrl
         self.wsUrl = wsUrl
         self.headers = headers
         self.dbPath = dbPath
+        self.requestTimeoutMs = requestTimeoutMs
+        self.roundDeadlineMs = roundDeadlineMs
+        self.maxRequestBytes = maxRequestBytes
+        self.maxResponseBytes = maxResponseBytes
+        self.redirects = redirects
     }
 
     /// The `syncular_client_new` config JSON. `dbPath` rides on `create`, not
-    /// here, so only transport fields belong in the constructor config.
-    fileprivate func newConfigJSON() -> JSONValue {
+    /// here, so only transport fields belong in the constructor config. Each
+    /// numeric bound is a `u64` in the core, so it is serialized as an exact
+    /// integer instead of a `Double`.
+    func newConfigJSON() -> JSONValue {
         var object: [String: JSONValue] = [:]
         if let baseUrl { object["baseUrl"] = .string(baseUrl) }
         if let wsUrl { object["wsUrl"] = .string(wsUrl) }
         if !headers.isEmpty {
             object["headers"] = .object(headers.mapValues { .string($0) })
         }
+        if let requestTimeoutMs { object["requestTimeoutMs"] = .unsigned(requestTimeoutMs) }
+        if let roundDeadlineMs { object["roundDeadlineMs"] = .unsigned(roundDeadlineMs) }
+        if let maxRequestBytes { object["maxRequestBytes"] = .unsigned(maxRequestBytes) }
+        if let maxResponseBytes { object["maxResponseBytes"] = .unsigned(maxResponseBytes) }
+        if let redirects { object["redirects"] = .string(redirects) }
         return .object(object)
     }
 }

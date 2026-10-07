@@ -45,6 +45,34 @@ void main() {
     expect(client.subscriptionState('s1'), equals('active'));
   });
 
+  test('native transport policy reaches the core config', () {
+    final client = SyncularClient.create(
+      clientId: 'dart-policy',
+      schema: todoSchema(),
+      config: const SyncularConfig(
+        requestTimeoutMs: 1000,
+        roundDeadlineMs: 2000,
+        maxRequestBytes: 1024,
+        maxResponseBytes: 2048,
+        redirects: 'deny',
+      ),
+    );
+    addTearDown(client.close);
+    client.subscribe('s1', 'todo');
+    expect(client.subscriptionState('s1'), equals('active'));
+
+    // A zero deadline is rejected by the core's config validation, proving
+    // the field is serialized into the config JSON.
+    expect(
+      () => SyncularClient.create(
+        clientId: 'dart-policy-bad',
+        schema: todoSchema(),
+        config: const SyncularConfig(requestTimeoutMs: 0),
+      ),
+      throwsA(isA<SyncularError>()),
+    );
+  });
+
   test('mutate then readRows shows the optimistic row', () {
     final client = makeClient();
     addTearDown(client.close);

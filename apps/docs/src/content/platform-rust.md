@@ -270,6 +270,64 @@ The reference implementation is the `syncular-ffi` crate's native transport
 To reuse that stack, embed `syncular-ffi`; if your host already has an HTTP
 client, the trait is small enough to implement over it.
 
+## Native transport policy
+
+The shared native transport (behind `syncular-client`'s
+`native-transport` feature, re-exported by `syncular-ffi` and
+`tauri-plugin-syncular`) bounds its network work through
+`HostTransportPolicy`. The deadline and size fields are optional; their
+defaults are unbounded. `redirects` defaults to `Deny`.
+
+```rust
+use std::time::Duration;
+use syncular_client::native_transport::{HostTransportPolicy, RedirectPolicy};
+
+let policy = HostTransportPolicy {
+    request_timeout: Some(Duration::from_secs(20)),
+    round_deadline: Some(Duration::from_secs(60)),
+    max_request_bytes: Some(32 * 1024 * 1024),
+    max_response_bytes: Some(32 * 1024 * 1024),
+    redirects: RedirectPolicy::Deny,
+};
+```
+
+- `request_timeout` bounds one HTTP request end to end. A bound that
+  elapses returns `transport.timeout`.
+- `round_deadline` bounds one sync round: uploads, continuations, the
+  main request, every segment fetch, and a realtime round's socket send
+  and wait. The client anchors it on the round's first network call and
+  keeps the anchor across continuations. A bound that elapses returns
+  `transport.timeout`.
+- `max_request_bytes` refuses a larger HTTP request body before any
+  network I/O with `transport.request_too_large`. It does not cap a
+  realtime socket buffer.
+- `max_response_bytes` refuses a larger decoded HTTP response body with
+  `transport.response_too_large`. The count applies after decompression,
+  and it does not cap a realtime socket buffer.
+- `redirects` selects `Deny` (the default) or `Follow`. `Follow` follows
+  a redirect only for a request with no configured headers, no base-URL
+  userinfo, and no signed capability URL. A credential-bearing request is
+  refused with `transport.redirect` under both policies. The WebSocket
+  handshake obeys the same policy: a handshake may follow a redirect only
+  when it carries no configured headers and its realtime URL has neither
+  userinfo nor a query.
+
+Build the transport with the policy through
+`HostTransport::from_config_with_policy`, or replace it later with
+`HostTransport::set_policy`. `SyncularCore::set_transport_policy` is the
+same seam on the plugin core. A host that supplies JSON config (the
+`new` command) sets the same fields with the keys `requestTimeoutMs`,
+`roundDeadlineMs`, `maxRequestBytes`, `maxResponseBytes`, and `redirects`.
+Each numeric bound is a `u64` integer token, so a binding that derives the
+JSON from a floating-point value must serialize the bound losslessly.
+An invalid policy is rejected with a `sync.invalid_request` message and
+leaves the current policy in force.
+
+The whole-round deadline covers network work. It does not interrupt local
+SQLite or CPU time. Local work before the round's first network call does
+not consume the budget; after the anchor the deadline is absolute, so local
+work between continuations runs against the remaining budget.
+
 ## Realtime
 
 The core has no callbacks. Connect with

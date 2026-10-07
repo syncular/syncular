@@ -184,6 +184,17 @@ pub trait Transport {
     fn realtime_connect_for_client(&mut self, _client_id: &str) -> Result<(), TransportError> {
         self.realtime_connect()
     }
+    /// The whole-round network deadline this transport would apply, as a
+    /// budget. `None` (the default) means no round deadline. The client
+    /// anchors the returned budget once per round and scopes it to each
+    /// `PreparedSyncRound::exchange`, so a reused transport never carries
+    /// stale deadline state.
+    fn round_deadline(&self) -> Option<std::time::Duration> {
+        None
+    }
+    /// Scope the transport to one absolute round deadline for the duration of
+    /// a single exchange; `None` clears it. The default ignores it.
+    fn set_round_deadline(&mut self, _deadline: Option<std::time::Instant>) {}
     /// Client → server JSON control message (acks, §8.2).
     fn realtime_send(&mut self, text: &str) -> Result<(), TransportError>;
     fn realtime_close(&mut self) -> Result<(), TransportError>;

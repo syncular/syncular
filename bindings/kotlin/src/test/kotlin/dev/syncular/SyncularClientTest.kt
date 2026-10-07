@@ -63,6 +63,59 @@ class SyncularClientTest {
     }
 
     @Test
+    fun positionalConstructionKeepsDbPathAsTheFourthArgument() {
+        // The original four-argument order (baseUrl, wsUrl, headers, dbPath)
+        // must keep compiling, so the new policy fields are appended after it.
+        val config =
+            SyncularConfig("https://api.example.com", null, emptyMap(), "/tmp/replica.db")
+        assertEquals("https://api.example.com", config.baseUrl)
+        assertEquals("/tmp/replica.db", config.dbPath)
+        assertEquals(null, config.requestTimeoutMs)
+    }
+
+    @Test
+    fun nativeTransportPolicySerializesIntoTheCoreConfig() {
+        val config = SyncularConfig(
+            baseUrl = "https://api.example.com",
+            requestTimeoutMs = 1000,
+            roundDeadlineMs = 2000,
+            maxRequestBytes = 1024,
+            maxResponseBytes = 2048,
+            redirects = "deny",
+        ).newConfigJson()
+        assertEquals(JsonValue.Num(1000.0), config["requestTimeoutMs"])
+        assertEquals(JsonValue.Num(2000.0), config["roundDeadlineMs"])
+        assertEquals(JsonValue.Num(1024.0), config["maxRequestBytes"])
+        assertEquals(JsonValue.Num(2048.0), config["maxResponseBytes"])
+        assertEquals(JsonValue.Str("deny"), config["redirects"])
+    }
+
+    @Test
+    fun policyBoundsStayExactIntegersOnTheWire() {
+        // 2^53 and 10^18 are configurable bounds; the serializer must not turn
+        // them into an exponent form the core reads as a float and refuses.
+        val config = SyncularConfig(
+            baseUrl = "https://api.example.com",
+            requestTimeoutMs = 9_007_199_254_740_992,
+            maxRequestBytes = 1_000_000_000_000_000_000,
+        ).newConfigJson()
+        val encoded = config.encode()
+        assertTrue(encoded.contains("\"requestTimeoutMs\":9007199254740992"), encoded)
+        assertTrue(encoded.contains("\"maxRequestBytes\":1000000000000000000"), encoded)
+    }
+
+    @Test
+    fun aPolicyBoundThatNeedsRoundingIsRefusedInsteadOfSerialized() {
+        val error = assertFailsWith<IllegalArgumentException> {
+            SyncularConfig(
+                baseUrl = "https://api.example.com",
+                maxResponseBytes = 9_007_199_254_740_993,
+            ).newConfigJson()
+        }
+        assertTrue(error.message!!.contains("maxResponseBytes"), error.message!!)
+    }
+
+    @Test
     fun mutateThenReadRowsShowsOptimisticRow() {
         makeClient().use { client ->
             client.subscribe(id = "s1", table = "todo")

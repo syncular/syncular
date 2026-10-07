@@ -83,11 +83,35 @@ class SyncularConfig {
   /// Path to the on-disk SQLite database. Null → in-memory (no persistence).
   final String? dbPath;
 
+  /// End-to-end deadline for one HTTP request, in milliseconds. Null leaves
+  /// the request unbounded.
+  final int? requestTimeoutMs;
+
+  /// One monotonic deadline for a whole sync round, in milliseconds. Null
+  /// leaves the round unbounded.
+  final int? roundDeadlineMs;
+
+  /// Largest HTTP request body the transport sends, in bytes. Null is unbounded.
+  final int? maxRequestBytes;
+
+  /// Largest decoded HTTP response body the transport accepts, in bytes. Null is
+  /// unbounded.
+  final int? maxResponseBytes;
+
+  /// Redirect handling: `"deny"` (the default) refuses every redirect;
+  /// `"follow"` follows only an uncredentialed request.
+  final String? redirects;
+
   const SyncularConfig({
     this.baseUrl,
     this.wsUrl,
     this.headers = const {},
     this.dbPath,
+    this.requestTimeoutMs,
+    this.roundDeadlineMs,
+    this.maxRequestBytes,
+    this.maxResponseBytes,
+    this.redirects,
   });
 
   /// The `syncular_client_new` config JSON (transport fields only; `dbPath`
@@ -97,6 +121,11 @@ class SyncularConfig {
     if (baseUrl != null) object['baseUrl'] = baseUrl;
     if (wsUrl != null) object['wsUrl'] = wsUrl;
     if (headers.isNotEmpty) object['headers'] = headers;
+    if (requestTimeoutMs != null) object['requestTimeoutMs'] = requestTimeoutMs;
+    if (roundDeadlineMs != null) object['roundDeadlineMs'] = roundDeadlineMs;
+    if (maxRequestBytes != null) object['maxRequestBytes'] = maxRequestBytes;
+    if (maxResponseBytes != null) object['maxResponseBytes'] = maxResponseBytes;
+    if (redirects != null) object['redirects'] = redirects;
     return object;
   }
 }

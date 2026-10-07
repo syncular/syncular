@@ -247,6 +247,34 @@ describe('createNativeSyncClient', () => {
     });
   });
 
+  test('forwards the native transport policy into the transport config', async () => {
+    const { nativeModule, eventEmitter, calls } = makeNative(defaultResponder);
+    await createNativeSyncClient({
+      clientId: 'native-policy',
+      schema: { version: 1, tables: [] },
+      baseUrl: 'https://api.example.com',
+      requestTimeoutMs: 1000,
+      roundDeadlineMs: 2000,
+      maxRequestBytes: 1024,
+      maxResponseBytes: 2048,
+      redirects: 'follow',
+      nativeModule,
+      eventEmitter,
+    });
+    const create = calls.find((call) => call.fn === 'create');
+    const config = JSON.parse(
+      (create?.arg as { configJson: string }).configJson,
+    );
+    expect(config).toMatchObject({
+      baseUrl: 'https://api.example.com',
+      requestTimeoutMs: 1000,
+      roundDeadlineMs: 2000,
+      maxRequestBytes: 1024,
+      maxResponseBytes: 2048,
+      redirects: 'follow',
+    });
+  });
+
   test('preflight blocks protected work and installs the portable keyring on activation', async () => {
     const { nativeModule, eventEmitter, calls, emit } =
       makeNative(defaultResponder);

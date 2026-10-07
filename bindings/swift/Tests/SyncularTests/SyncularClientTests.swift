@@ -71,6 +71,63 @@ private final class TestConnectivitySignal: SyncularConnectivitySignal {
     #expect(try client.subscriptionState(id: "s1") == "active")
 }
 
+@Test func originalConfigLabelsStillConstruct() {
+    // The original four labels keep working, so the new policy fields are
+    // appended after `dbPath` instead of displacing it.
+    let config = SyncularConfig(
+        baseUrl: "https://api.example.com",
+        wsUrl: nil,
+        headers: [:],
+        dbPath: "/tmp/replica.db"
+    )
+    #expect(config.dbPath == "/tmp/replica.db")
+    #expect(config.requestTimeoutMs == nil)
+}
+
+@Test func policyBoundsAboveDoublePrecisionReachTheCoreExactly() throws {
+    // 2^53+1 has no exact Double, and Foundation writes 10^18 as `1e+18`,
+    // which the core's u64 parser refuses. Both must travel as the caller's
+    // UInt64 instead of a Double, and the core must accept the result.
+    let config = SyncularConfig(
+        maxRequestBytes: 9_007_199_254_740_993,
+        maxResponseBytes: 1_000_000_000_000_000_000
+    )
+    let json = try config.newConfigJSON().encodedString()
+    #expect(json.contains("\"maxRequestBytes\":9007199254740993"))
+    #expect(json.contains("\"maxResponseBytes\":1000000000000000000"))
+    let client = try SyncularClient(
+        clientId: "swift-policy-large",
+        schema: todoSchema(),
+        config: config
+    )
+    client.close()
+}
+
+@Test func nativeTransportPolicyIsSerializedIntoTheCoreConfig() throws {
+    // A valid policy is accepted, and an invalid bound is rejected by the
+    // core's config validation, proving the field reaches the native config
+    // JSON.
+    let client = try SyncularClient(
+        clientId: "swift-policy",
+        schema: todoSchema(),
+        config: SyncularConfig(
+            requestTimeoutMs: 1000,
+            roundDeadlineMs: 2000,
+            maxRequestBytes: 1024,
+            maxResponseBytes: 2048,
+            redirects: "deny"
+        )
+    )
+    client.close()
+    #expect(throws: SyncularError.self) {
+        _ = try SyncularClient(
+            clientId: "swift-policy-bad",
+            schema: todoSchema(),
+            config: SyncularConfig(requestTimeoutMs: 0)
+        )
+    }
+}
+
 @Test func mutateThenReadRowsShowsOptimisticRow() throws {
     let client = try makeClient()
     defer { client.close() }

@@ -141,6 +141,16 @@ export interface NativeSyncClientConfig {
   readonly dbPath?: string;
   /** Extra transport headers (auth, tenant, …). */
   readonly headers?: Record<string, string>;
+  /** End-to-end deadline for one HTTP request, in milliseconds. */
+  readonly requestTimeoutMs?: number;
+  /** One monotonic deadline for a whole sync round, in milliseconds. */
+  readonly roundDeadlineMs?: number;
+  /** Largest HTTP request body the transport sends, in bytes. */
+  readonly maxRequestBytes?: number;
+  /** Largest decoded HTTP response body the transport accepts, in bytes. */
+  readonly maxResponseBytes?: number;
+  /** Redirect handling: `"deny"` (the default) or `"follow"`. */
+  readonly redirects?: 'deny' | 'follow';
   /** Consume explicit core sync intents on the JS event loop. Default true. */
   readonly autoSync?: boolean;
   /**
@@ -1132,6 +1142,21 @@ export async function createNativeSyncClient(
   const transportConfig: Record<string, unknown> = {};
   if (config.baseUrl !== undefined) transportConfig.baseUrl = config.baseUrl;
   if (config.headers !== undefined) transportConfig.headers = config.headers;
+  if (config.requestTimeoutMs !== undefined) {
+    transportConfig.requestTimeoutMs = config.requestTimeoutMs;
+  }
+  if (config.roundDeadlineMs !== undefined) {
+    transportConfig.roundDeadlineMs = config.roundDeadlineMs;
+  }
+  if (config.maxRequestBytes !== undefined) {
+    transportConfig.maxRequestBytes = config.maxRequestBytes;
+  }
+  if (config.maxResponseBytes !== undefined) {
+    transportConfig.maxResponseBytes = config.maxResponseBytes;
+  }
+  if (config.redirects !== undefined) {
+    transportConfig.redirects = config.redirects;
+  }
 
   const createParams: Record<string, unknown> = { schema: config.schema };
   if (config.clientId !== undefined) createParams.clientId = config.clientId;

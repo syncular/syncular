@@ -63,6 +63,11 @@ pub struct PreparedSyncRound {
     pub(crate) benchmark_phases: crate::bench::Recorder,
     pub(crate) progress: ProgressObserver,
     pub(crate) fixed_now: Option<i64>,
+    /// Absolute whole-round network deadline, anchored from the transport's
+    /// `round_deadline` budget on the round's first network call and carried
+    /// across `Continue`s. `exchange` scopes it onto the transport for the
+    /// duration of each network call.
+    pub(crate) round_deadline_at: Option<std::time::Instant>,
 }
 
 /// Network results returned to the same mutable owner that prepared the round.
@@ -98,19 +103,52 @@ pub enum AppliedSyncRound {
 }
 
 impl PreparedSyncRound {
+    /// Scope the round deadline for one network call. The round anchors its
+    /// deadline on its first network call, so local work before that call does
+    /// not consume the network budget; the anchor is absolute from then on, and
+    /// a continuation reuses the carried anchor instead of refreshing it.
+    fn scope_round_deadline(
+        &mut self,
+        transport: &mut dyn Transport,
+    ) -> Result<(), TransportError> {
+        if self.round_deadline_at.is_none() {
+            if let Some(budget) = transport.round_deadline() {
+                match std::time::Instant::now().checked_add(budget) {
+                    Some(deadline) => self.round_deadline_at = Some(deadline),
+                    // Reject an unrepresentable host budget before network I/O.
+                    None => {
+                        return Err(TransportError::new(
+                            "sync.invalid_request",
+                            "transport round deadline is out of range",
+                        ))
+                    }
+                }
+            }
+        }
+        transport.set_round_deadline(self.round_deadline_at);
+        Ok(())
+    }
+
     /// Run network I/O without accessing client state. Download errors stay at
     /// their descriptor's position so apply retains the same completed prefix.
     pub fn exchange(mut self, transport: &mut dyn Transport) -> CompletedSyncRound {
         if let Some(upload) = self.uploads.pop_front() {
-            let result = upload.bytes.and_then(|bytes| {
-                upload_one(
-                    transport,
-                    &upload.id,
-                    &bytes,
-                    upload.media_type.as_deref(),
-                    self.fixed_now,
-                )
-            });
+            // A staged body that failed to read locally performs no network
+            // I/O, so it cannot be the round's first network call and must not
+            // anchor the round deadline either.
+            let result = match upload.bytes {
+                Ok(bytes) => self.scope_round_deadline(transport).and_then(|()| {
+                    upload_one(
+                        transport,
+                        &upload.id,
+                        &bytes,
+                        upload.media_type.as_deref(),
+                        self.fixed_now,
+                    )
+                }),
+                Err(error) => Err(error),
+            };
+            transport.set_round_deadline(None);
             return CompletedSyncRound {
                 prepared: self,
                 exchange: ExchangeResult::Upload {
@@ -128,6 +166,10 @@ impl PreparedSyncRound {
             let request = encode_message(&self.message);
             #[cfg(feature = "bench-internals")]
             drop(encode_phase);
+            // The round's first network call anchors the deadline here, after
+            // the encode; a continuation's encode runs against the already
+            // anchored deadline like the rest of the round (§1.8).
+            self.scope_round_deadline(transport)?;
             let round = if self.realtime {
                 transport.realtime_sync(&request)
             } else {
@@ -238,6 +280,7 @@ impl PreparedSyncRound {
                 }
             }
         }
+        transport.set_round_deadline(None);
         CompletedSyncRound {
             prepared: self,
             exchange: ExchangeResult::Reply {
@@ -320,5 +363,81 @@ impl Transport for DownloadResults {
     }
     fn realtime_close(&mut self) -> Result<(), TransportError> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{BlobUploadGrant, SegmentRequest, TransportError};
+
+    /// Every upload call fails with the same typed timeout, modelling a round
+    /// whose deadline was spent before the signed upload. The fallback to the
+    /// direct endpoint must not replace the typed code with a generic one.
+    struct SpentDeadline;
+
+    impl Transport for SpentDeadline {
+        fn sync(&mut self, _: &[u8]) -> Result<Vec<u8>, TransportError> {
+            unreachable!()
+        }
+        fn realtime_sync(&mut self, _: &[u8]) -> Result<Vec<u8>, TransportError> {
+            unreachable!()
+        }
+        fn download_segment(
+            &mut self,
+            _: &SegmentRequest,
+            _: &mut dyn FnMut(u64),
+        ) -> Result<Vec<u8>, TransportError> {
+            unreachable!()
+        }
+        fn blob_upload_grant(
+            &mut self,
+            _: &str,
+            _: u64,
+            _: Option<&str>,
+        ) -> Result<BlobUploadGrant, TransportError> {
+            Ok(BlobUploadGrant::Url {
+                url: "https://storage.example/signed".into(),
+                url_expires_at_ms: None,
+            })
+        }
+        fn blob_put_url(
+            &mut self,
+            _: &str,
+            _: &[u8],
+            _: Option<&str>,
+        ) -> Result<(), TransportError> {
+            Err(TransportError::new(
+                "transport.timeout",
+                "signed upload timed out",
+            ))
+        }
+        fn blob_upload(
+            &mut self,
+            _: &str,
+            _: &[u8],
+            _: Option<&str>,
+        ) -> Result<(), TransportError> {
+            Err(TransportError::new(
+                "transport.timeout",
+                "direct upload timed out",
+            ))
+        }
+        fn realtime_connect(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+        fn realtime_send(&mut self, _: &str) -> Result<(), TransportError> {
+            Ok(())
+        }
+        fn realtime_close(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_spent_round_deadline_survives_the_signed_upload_fallback() {
+        let mut transport = SpentDeadline;
+        let error = upload_one(&mut transport, "sha256:test", &[0u8; 4], None, None).unwrap_err();
+        assert_eq!(error.code, "transport.timeout");
     }
 }
