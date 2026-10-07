@@ -2626,10 +2626,11 @@ Consequences, all normative:
 apply the server-merged state on delivery.** The rejected alternative was
 "push the full merged document state as the column value." Justification:
 
-- **Update-push is smaller.** A keystroke is a few-byte Yjs update; the full
-  document can be kilobytes. Pushing updates keeps the outbox and the wire
-  proportional to the edit, not the document — the reason
-  CRDTs are attractive over LWW-on-a-blob.
+- **The pushed value is a Yjs update.** A client may push a delta computed
+  against a state vector (a keystroke is then a few bytes) or the document's
+  full state as one update; the merger accepts both. The shipped helpers push
+  the full state (`Y.encodeStateAsUpdate(doc)`); a smaller delta is an
+  application choice.
 - **Server-side merge keeps the client thin and the core portable.** The
   merge (the only place a CRDT library is *required*) lives server-side in
   one pluggable function; the client only needs to *produce* updates and
@@ -2667,8 +2668,9 @@ MUST round-trip `crdt` column bytes through push / pull / segments
 byte-for-byte — a `crdt` column is a `bytes` column to the codec, so this is
 free — and expose the bytes to the app. A native app integrating a CRDT
 library (the `yrs` crate is the Rust Yjs port) applies and produces updates
-in app code exactly as the TS client's helper does; wiring `yrs` into the
-Rust core is a **follow-up**, not this rung. What this rung pins for the
+in app code exactly as the TS client's helper does; the Rust core also ships
+`yrs`-backed helpers behind the `crdt-yjs` feature of `syncular-client`
+(`crdtApplyUpdate` and the related commands). What this rung pins for the
 native side is the **wire contract**: `crdt` = tag 8 = `bytes`, merged
 server-side, exposed as opaque bytes. The conformance pairing (Appendix
 B.14) proves this by having the Rust client push **fixture Yjs updates**
