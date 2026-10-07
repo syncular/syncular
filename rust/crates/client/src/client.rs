@@ -55,8 +55,9 @@ use crate::schema::{parse_schema_json, ClientSchema, FtsIndexSchema, TableSchema
 use crate::transport::{BlobDownload, SegmentRequest, Transport, TransportError};
 use crate::values::{
     bytes_to_hex, canonical_scope_json, column_value_to_json, decode_row_bytes,
-    encode_sparse_row_json, full_row_values, json_to_column_value, json_to_scope_map,
-    normalize_values_casing, render_row_id_json, scope_map_to_json, sort_scope_map,
+    encode_sparse_row_json, full_row_values, is_canonical_bytes_envelope, json_to_column_value,
+    json_to_scope_map, normalize_values_casing, render_row_id_json, scope_map_to_json,
+    sort_scope_map,
 };
 
 /// §4.2 default: rows and SQLite images, both applied in committed chunks.
@@ -89,6 +90,12 @@ const OUTBOX_INCOMPATIBLE_CODE: &str = "sync.outbox_incompatible";
 /// §5.11 client-local code: an encode at the push seam resolved no usable key
 /// id or named an unknown key. Never a wire code (§10.3).
 const ENCRYPT_FAILED_CODE: &str = "client.encrypt_failed";
+const INVALID_REQUEST_CODE: &str = "sync.invalid_request:";
+/// §7.4.4: static text for a persisted commit the current codec refuses.
+const LEGACY_VALUE_REFUSAL_MESSAGE: &str =
+    "the persisted commit carries values the current codec refuses";
+/// §7.4.4: bounded reason on every intrinsic value drop.
+const INVALID_STORED_VALUES_REASON: &str = "invalid_stored_values";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -321,7 +328,7 @@ mod observation_tests {
             .expect("patch records without an author-time encrypt failure");
         assert_eq!(client.pending_commit_ids(), vec![commit_id.clone()]);
         // ...and the push seam raises a durable local rejection, not a throw.
-        assert!(client.drop_unencodable_outbox().unwrap());
+        assert!(client.drop_unencodable_outbox(true).unwrap());
         assert!(client.pending_commit_ids().is_empty());
         let rejections = client.rejections();
         assert_eq!(rejections.len(), 1);
@@ -7406,7 +7413,8 @@ mod observation_tests {
             {"name":"project_id","type":"string","nullable":false},
             {"name":"title","type":"string","nullable":false},
             {"name":"priority","type":"integer","nullable":false},
-            {"name":"payload","type":"bytes","nullable":false}],"scopes":[{"pattern":"project:{project_id}"}]}]});
+            {"name":"payload","type":"bytes","nullable":false},
+            {"name":"extra","type":"bytes","nullable":true}],"scopes":[{"pattern":"project:{project_id}"}]}]});
         let mut client = SyncClient::open_path(
             "caller-values".into(),
             &schema,
@@ -7450,7 +7458,27 @@ mod observation_tests {
             (
                 "malformed bytes envelope",
                 ("payload", json!({"$bytes": "zz"})),
-                "bad hex",
+                "expected exactly",
+            ),
+            (
+                "odd-length bytes envelope",
+                ("payload", json!({"$bytes": "abc"})),
+                "expected exactly",
+            ),
+            (
+                "plus-sign bytes envelope",
+                ("payload", json!({"$bytes": "+a"})),
+                "expected exactly",
+            ),
+            (
+                "bytes envelope with a second key",
+                ("payload", json!({"$bytes": "0a", "extra": 1})),
+                "expected exactly",
+            ),
+            (
+                "no bytes envelope",
+                ("payload", json!({"nested": true})),
+                "expected exactly",
             ),
         ] {
             let mut full = values("t2");
@@ -7524,6 +7552,21 @@ mod observation_tests {
         assert_eq!(client.local_revision(), 1);
         assert_eq!(client.query("SELECT * FROM tasks", &[]).unwrap(), rows);
 
+        // Nullable explicit null, an empty envelope, and uppercase digits stay
+        // accepted; the stored payload is the decoded byte sequence.
+        for (label, payload) in [
+            ("explicit null", json!(null)),
+            ("empty envelope", json!({"$bytes": ""})),
+            ("uppercase envelope", json!({"$bytes": "0AFF"})),
+        ] {
+            let mut accepted = values("t-ok");
+            accepted.insert("extra".to_owned(), payload);
+            let encoded = client.mutate(upsert(accepted)).unwrap_or_else(|error| {
+                panic!("{label} must be accepted: {error:?}");
+            });
+            assert!(!encoded.is_empty(), "{label}");
+        }
+
         // Nothing is poisoned: the next valid authoring call succeeds.
         let next = client
             .mutate(upsert(values("t5")))
@@ -7532,6 +7575,314 @@ mod observation_tests {
 
         drop(client);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_legacy_outbox_value_the_codec_refuses_is_dropped_instead_of_wedging() {
+        let schema = json!({"version":1,"tables":[{"name":"tasks","primaryKey":"id","columns":[
+            {"name":"id","type":"string","nullable":false},
+            {"name":"project_id","type":"string","nullable":false},
+            {"name":"payload","type":"bytes","nullable":true}],
+            "scopes":[{"pattern":"project:{project_id}"}]}]});
+        let open = |path: &std::path::Path| {
+            SyncClient::open_path(
+                "legacy-values".into(),
+                &schema,
+                ClientLimits::default(),
+                path.to_str().unwrap(),
+            )
+            .expect("open client")
+        };
+        let row = |id: &str| {
+            Map::from_iter([
+                ("id".to_owned(), json!(id)),
+                ("project_id".to_owned(), json!("p1")),
+                ("payload".to_owned(), json!({"$bytes": "0a"})),
+            ])
+        };
+        let upsert = |values| {
+            vec![Mutation::Upsert {
+                table: "tasks".into(),
+                values,
+                base_version: None,
+            }]
+        };
+        for (label, stored_cell, representable) in [
+            ("plus-sign envelope", json!({"$bytes": "+a"}), false),
+            ("non-hex envelope", json!({"$bytes": "zz"}), false),
+            ("odd-length envelope", json!({"$bytes": "abc"}), false),
+            ("no envelope", json!({"nested": true}), false),
+            // A wrong declared type and a stored null for a non-nullable column
+            // are journalable as stored, so their rejection keeps the operation
+            // envelope.
+            ("wrong declared type", json!("high"), true),
+            ("stored null for a non-nullable column", json!(null), true),
+        ] {
+            let path = std::env::temp_dir().join(format!(
+                "syncular-legacy-values-{}-{}.db",
+                label.replace(' ', "-"),
+                uuid::Uuid::new_v4()
+            ));
+            let mut client = open(&path);
+            client.create_synced_tables().expect("create synced tables");
+            let stale = client.mutate(upsert(row("t1"))).expect("stale commit");
+            let successor = client.mutate(upsert(row("t2"))).expect("successor commit");
+            drop(client);
+
+            // The stored intent an earlier version accepted.
+            let connection = Connection::open(&path).expect("raw connection");
+            let (column, cell) = if stored_cell.is_null() {
+                ("project_id", stored_cell.clone())
+            } else {
+                ("payload", stored_cell.clone())
+            };
+            let mut planted_values = json!({
+                "id": "t1", "project_id": "p1", "payload": {"$bytes": "0a"}
+            });
+            planted_values[column] = cell;
+            let planted = json!([{
+                "op": "upsert",
+                "table": "tasks",
+                "rowId": "t1",
+                "baseVersion": null,
+                "values": planted_values
+            }]);
+            connection
+                .execute(
+                    "UPDATE _syncular_outbox SET ops_json=? WHERE commit_id=?",
+                    rusqlite::params![planted.to_string(), stale],
+                )
+                .expect("plant legacy intent");
+            drop(connection);
+
+            // Reopen: the startup reconciliation recovers the commit before any
+            // replay, so the observable phase matches the browser core.
+            let reopened = open(&path);
+            assert_eq!(
+                reopened.pending_commit_ids(),
+                vec![successor.clone()],
+                "{label}"
+            );
+            let rejection = reopened
+                .rejections()
+                .iter()
+                .find(|rejection| rejection.client_commit_id == stale)
+                .unwrap_or_else(|| panic!("{label}: rejection"));
+            assert_eq!(rejection.code, OUTBOX_INCOMPATIBLE_CODE, "{label}");
+            assert_eq!(
+                rejection.message, "the persisted commit carries values the current codec refuses",
+                "{label}"
+            );
+            assert_eq!(rejection.operation.is_some(), representable, "{label}");
+            assert_eq!(
+                rejection
+                    .details
+                    .as_ref()
+                    .and_then(|details| details.reason.as_deref()),
+                Some(INVALID_STORED_VALUES_REASON),
+                "{label}"
+            );
+            // The rejection stays readable after a further reopen.
+            let journal = reopened
+                .commit_outcome(&stale)
+                .expect("read outcome")
+                .expect("journal entry");
+            assert!(matches!(journal.status, CommitOutcomeStatus::Rejected));
+            drop(reopened);
+            let mut reopened = open(&path);
+            let reread = reopened
+                .commit_outcome(&stale)
+                .expect("read outcome")
+                .expect("journal entry");
+            assert!(matches!(reread.status, CommitOutcomeStatus::Rejected));
+
+            // The legacy row's optimistic projection is gone, the successor
+            // survives and still encodes, and the round path keeps the queue.
+            assert_eq!(
+                reopened
+                    .query("SELECT id FROM tasks ORDER BY id", &[])
+                    .unwrap(),
+                vec![Map::from_iter([("id".to_owned(), json!("t2"))])],
+                "{label}"
+            );
+            assert_eq!(reopened.pending_commit_ids(), vec![successor.clone()]);
+            assert_eq!(reopened.pending_payloads().len(), 1, "{label}");
+            assert!(!reopened
+                .drop_unencodable_outbox(false)
+                .expect("idempotent prepass"));
+            let mut transport = CountingRealtimeTransport::default();
+            let outcome = reopened.sync(&mut transport);
+            assert!(matches!(outcome, SyncOutcome::Failed { .. }), "{outcome:?}");
+            assert_eq!(reopened.pending_commit_ids(), vec![successor.clone()]);
+            let next = reopened.mutate(upsert(row("t3"))).expect("after the drop");
+            assert_eq!(reopened.pending_commit_ids(), vec![successor, next]);
+            assert_eq!(reopened.pending_payloads().len(), 2, "{label}");
+            drop(reopened);
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    #[test]
+    fn legacy_values_recover_at_the_recreate_and_bump_reset_boundaries() {
+        let schema = |version: i32, extra: bool| {
+            let mut columns = vec![
+                json!({"name":"id","type":"string","nullable":false}),
+                json!({"name":"project_id","type":"string","nullable":false}),
+                json!({"name":"payload","type":"bytes","nullable":true}),
+            ];
+            if extra {
+                columns.push(json!({"name":"later","type":"string","nullable":true}));
+            }
+            json!({"version":version,"tables":[{"name":"tasks","primaryKey":"id","columns":columns,
+                "scopes":[{"pattern":"project:{project_id}"}]}]})
+        };
+        for (label, bump) in [
+            ("same-version recreation", false),
+            ("version-bump reset", true),
+            ("version-only bump reset", true),
+        ] {
+            let path = std::env::temp_dir().join(format!(
+                "syncular-legacy-reset-{}-{}.db",
+                label.replace(' ', "-"),
+                uuid::Uuid::new_v4()
+            ));
+            let v1 = schema(1, false);
+            let open = |schema: &Value, path: &std::path::Path| {
+                SyncClient::open_path(
+                    "legacy-reset".into(),
+                    schema,
+                    ClientLimits::default(),
+                    path.to_str().unwrap(),
+                )
+                .expect("open client")
+            };
+            let row = |id: &str| {
+                Map::from_iter([
+                    ("id".to_owned(), json!(id)),
+                    ("project_id".to_owned(), json!("p1")),
+                    ("payload".to_owned(), json!({"$bytes": "0a"})),
+                ])
+            };
+            let upsert = |values| {
+                vec![Mutation::Upsert {
+                    table: "tasks".into(),
+                    values,
+                    base_version: None,
+                }]
+            };
+            let mut client = open(&v1, &path);
+            client.create_synced_tables().expect("create synced tables");
+            let stale = client.mutate(upsert(row("t1"))).expect("stale commit");
+            let successor = client.mutate(upsert(row("t2"))).expect("successor commit");
+            drop(client);
+
+            let connection = Connection::open(&path).expect("raw connection");
+            let planted = json!([{
+                "op": "upsert",
+                "table": "tasks",
+                "rowId": "t1",
+                "baseVersion": null,
+                "values": {"id": "t1", "project_id": 7, "payload": {"$bytes": "0a"}}
+            }]);
+            connection
+                .execute(
+                    "UPDATE _syncular_outbox SET ops_json=? WHERE commit_id=?",
+                    rusqlite::params![planted.to_string(), stale],
+                )
+                .expect("plant legacy intent");
+            drop(connection);
+
+            let target = if bump {
+                schema(2, label == "version-bump reset")
+            } else {
+                v1.clone()
+            };
+            let reopened = open(&target, &path);
+            let rejection = reopened
+                .rejections()
+                .iter()
+                .find(|rejection| rejection.client_commit_id == stale)
+                .unwrap_or_else(|| panic!("{label}: rejection"));
+            assert_eq!(rejection.code, OUTBOX_INCOMPATIBLE_CODE, "{label}");
+            assert_eq!(
+                rejection
+                    .details
+                    .as_ref()
+                    .and_then(|details| details.reason.as_deref()),
+                Some(INVALID_STORED_VALUES_REASON),
+                "{label}"
+            );
+            assert!(rejection.operation.is_some(), "{label}");
+            assert_eq!(
+                reopened.pending_commit_ids(),
+                vec![successor.clone()],
+                "{label}"
+            );
+            // The successor survives and still encodes. A bump that adds a
+            // column leaves the older full-row upsert partial over the empty
+            // base, so its visible row appears when the server answers it
+            // (§7.1); the same-version recreation replays it locally.
+            assert_eq!(reopened.pending_payloads().len(), 1, "{label}");
+            if label == "version-bump reset" {
+                assert_eq!(
+                    reopened
+                        .query("SELECT id FROM tasks ORDER BY id", &[])
+                        .unwrap(),
+                    Vec::<Map<String, Value>>::new(),
+                    "{label}"
+                );
+                let mut next = reopened;
+                next.mutate(upsert(Map::from_iter([
+                    ("id".to_owned(), json!("t3")),
+                    ("project_id".to_owned(), json!("p1")),
+                    ("payload".to_owned(), json!({"$bytes": "0b"})),
+                    ("later".to_owned(), json!("v2")),
+                ])))
+                .expect("v2 authoring after the reset");
+                assert_eq!(next.pending_commit_ids().len(), 2, "{label}");
+                assert_eq!(next.pending_payloads().len(), 2, "{label}");
+                drop(next);
+            } else {
+                assert_eq!(
+                    reopened
+                        .query("SELECT id FROM tasks ORDER BY id", &[])
+                        .unwrap(),
+                    vec![Map::from_iter([("id".to_owned(), json!("t2"))])],
+                    "{label}"
+                );
+                drop(reopened);
+            }
+
+            // The same-version public recreation path reloads the durable outbox
+            // and rebuilds the overlay, so it must recover in place too. Plant the
+            // legacy shape while the client is open.
+            if !bump {
+                let mut recreated = open(&v1, &path);
+                let connection = Connection::open(&path).expect("raw connection");
+                connection
+                    .execute(
+                        "UPDATE _syncular_outbox SET ops_json=? WHERE commit_id=?",
+                        rusqlite::params![planted.to_string(), stale],
+                    )
+                    .expect("plant legacy intent");
+                drop(connection);
+                recreated
+                    .recreate_with_schema(&v1)
+                    .unwrap_or_else(|error| panic!("{label}: recreation failed: {error}"));
+                assert_eq!(recreated.pending_commit_ids(), vec![successor], "{label}");
+                assert_eq!(
+                    recreated
+                        .rejections()
+                        .iter()
+                        .filter(|rejection| rejection.client_commit_id == stale)
+                        .count(),
+                    1,
+                    "{label}"
+                );
+                drop(recreated);
+            }
+            let _ = std::fs::remove_file(&path);
+        }
     }
 
     #[test]
@@ -9388,6 +9739,15 @@ impl SyncClient {
             client.reconcile_previous_version_at_boot()?;
             client.clear_satisfied_persisted_schema_floor();
             client.prune_unknown_subscriptions(false)?;
+            // §7.1/§7.4.4: recover intrinsically codec-invalid persisted values at
+            // the full startup/reset reconciliation boundary, inside this open
+            // transaction and after the schema and identity guards, so a commit
+            // an earlier version accepted is dropped with durable rejection
+            // evidence before any replay. A table the current schema removed
+            // keeps the §7.4.4 send-time classification, and an unresolved
+            // encryption key stays with the send seam because hosts configure
+            // keys after open.
+            client.drop_unencodable_outbox(false)?;
             if marker == Some(client.schema.version)
                 && (!client.outbox.is_empty()
                     || !client.failed_commits.is_empty()
@@ -9695,6 +10055,52 @@ impl SyncClient {
         meta_delete(&self.conn, key);
     }
 
+    /// §7.1: the durable outbox in FIFO order, in schema-agnostic local form.
+    fn load_outbox(&self) -> Result<Vec<OutboxCommit>, String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT commit_id, ops_json FROM _syncular_outbox ORDER BY seq ASC")
+            .map_err(|error| error.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|error| error.to_string())?;
+        let mut commits = Vec::new();
+        for row in rows {
+            let (client_commit_id, raw) = row.map_err(|error| error.to_string())?;
+            let entries: Vec<Value> = serde_json::from_str(&raw).map_err(|error| {
+                format!("invalid persisted outbox {client_commit_id:?}: {error}")
+            })?;
+            let mut ops = Vec::with_capacity(entries.len());
+            for entry in entries {
+                let op = entry.get("op").and_then(Value::as_str).unwrap_or("delete");
+                ops.push(OutboxOp {
+                    upsert: op == "upsert",
+                    table: entry
+                        .get("table")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| "persisted outbox operation missing table".to_owned())?
+                        .to_owned(),
+                    row_id: entry
+                        .get("rowId")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| "persisted outbox operation missing rowId".to_owned())?
+                        .to_owned(),
+                    base_version: entry.get("baseVersion").and_then(Value::as_i64),
+                    // A legacy entry's `changedFields` key is ignored:
+                    // the values map is the presence set (§6.1).
+                    values: entry.get("values").and_then(Value::as_object).cloned(),
+                });
+            }
+            commits.push(OutboxCommit {
+                client_commit_id,
+                ops,
+            });
+        }
+        Ok(commits)
+    }
+
     fn restore_persisted_state(&mut self) -> Result<(), String> {
         self.subs = {
             let mut stmt = self
@@ -9756,50 +10162,7 @@ impl SyncClient {
             subscriptions
         };
 
-        self.outbox = {
-            let mut stmt = self
-                .conn
-                .prepare("SELECT commit_id, ops_json FROM _syncular_outbox ORDER BY seq ASC")
-                .map_err(|error| error.to_string())?;
-            let rows = stmt
-                .query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })
-                .map_err(|error| error.to_string())?;
-            let mut commits = Vec::new();
-            for row in rows {
-                let (client_commit_id, raw) = row.map_err(|error| error.to_string())?;
-                let entries: Vec<Value> = serde_json::from_str(&raw).map_err(|error| {
-                    format!("invalid persisted outbox {client_commit_id:?}: {error}")
-                })?;
-                let mut ops = Vec::with_capacity(entries.len());
-                for entry in entries {
-                    let op = entry.get("op").and_then(Value::as_str).unwrap_or("delete");
-                    ops.push(OutboxOp {
-                        upsert: op == "upsert",
-                        table: entry
-                            .get("table")
-                            .and_then(Value::as_str)
-                            .ok_or_else(|| "persisted outbox operation missing table".to_owned())?
-                            .to_owned(),
-                        row_id: entry
-                            .get("rowId")
-                            .and_then(Value::as_str)
-                            .ok_or_else(|| "persisted outbox operation missing rowId".to_owned())?
-                            .to_owned(),
-                        base_version: entry.get("baseVersion").and_then(Value::as_i64),
-                        // A legacy entry's `changedFields` key is ignored:
-                        // the values map is the presence set (§6.1).
-                        values: entry.get("values").and_then(Value::as_object).cloned(),
-                    });
-                }
-                commits.push(OutboxCommit {
-                    client_commit_id,
-                    ops,
-                });
-            }
-            commits
-        };
+        self.outbox = self.load_outbox()?;
 
         self.prune_commit_outcomes()?;
         let active = self.commit_outcomes(CommitOutcomeQuery {
@@ -10757,6 +11120,16 @@ impl SyncClient {
                 }
                 _ => {}
             }
+            // §7.4.2: recreation IS the boot for the in-memory core, so reload the
+            // durable outbox the same-version path is about to replay. Only the
+            // outbox is reloaded: the recovery below reads it, and the caller's
+            // rollback snapshot already covers this field.
+            self.outbox = self.load_outbox()?;
+            // §7.1/§7.4.4: recover intrinsically codec-invalid persisted values at
+            // this guarded boundary once the schema and marker agree. A bump went
+            // through `run_schema_reset`, which performs the same recovery after
+            // it creates the new physical tables and before its final replay.
+            self.drop_unencodable_outbox(false)?;
             if marker == Some(self.schema.version)
                 && (!self.outbox.is_empty()
                     || !self.failed_commits.is_empty()
@@ -10992,10 +11365,12 @@ impl SyncClient {
         self.upgrading = true;
         batch.status = true;
         // RFC 0005 D6: classify the pending outbox against the NEW compiled
-        // schema BEFORE the wipe, and record the advisory audit. It drops
-        // nothing — the §7.4.4 send-time drop stays the only path that removes
-        // a commit. The classification is shared with that drop so the two can
-        // never disagree about what is incompatible.
+        // schema BEFORE the wipe, and record the advisory audit. This pass
+        // drops nothing, so the audit sees the original pending intent; the
+        // §7.4.4 send-time drop and the intrinsic value recovery later in this
+        // reset are the paths that remove a commit. The classification is
+        // shared with the send-time drop so the two cannot disagree about what
+        // is incompatible.
         if self.previous_version.is_some_and(|config| config.enabled) {
             let previous_version = self
                 .get_meta(LOCAL_SCHEMA_VERSION_KEY)
@@ -11133,12 +11508,15 @@ impl SyncClient {
         // Rewrite the marker LAST so a crash mid-reset re-runs the reset.
         self.persist_schema_version()?;
         self.save_subscription_scope_schema();
-        // §7.4.3/§7.4.4: the reset preserves the outbox. A pending upsert that
-        // cannot re-encode under the new schema stays pending and is classified
-        // by the send-time prepass (`drop_incompatible_outbox` in
-        // `prepare_sync_round`), matching the SPEC's rule that the send-time drop
-        // is the only path that removes a commit, and the TypeScript core's
-        // timing.
+        // §7.1/§7.4.4: the previous-version capture and audit above saw the
+        // original pending intent; the synced tables now carry the new schema, so
+        // recover intrinsically codec-invalid persisted values here, before the
+        // final replay. A pending upsert that names a column the new schema
+        // removed stays pending for the send-time `drop_incompatible_outbox`
+        // prepass. The reset wrapper snapshots and restores the outbox,
+        // rejections, and change queues, so a failed commit rolls this recovery
+        // back with the rest of the reset.
+        self.drop_unencodable_outbox(false)?;
         // Re-apply the surviving outbox optimistically over the empty tables.
         self.rebuild_overlay()?;
         Ok(())
@@ -11638,6 +12016,47 @@ impl SyncClient {
             .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
     }
 
+    /// §7.2: the journal holds a stored cell only in its canonical shape. A cell
+    /// the byte-envelope rule refuses cannot be journaled verbatim.
+    fn stored_cell_is_representable(cell: &Value) -> bool {
+        cell.is_null()
+            || cell.is_string()
+            || cell.is_boolean()
+            || cell.is_number()
+            || is_canonical_bytes_envelope(cell)
+    }
+
+    fn stored_row_is_representable(value: &Value) -> bool {
+        value
+            .as_object()
+            .is_some_and(|row| row.values().all(Self::stored_cell_is_representable))
+    }
+
+    fn stored_operation_is_representable(value: &Value) -> bool {
+        value.get("table").is_some_and(Value::is_string)
+            && value.get("rowId").is_some_and(Value::is_string)
+            && value.get("baseVersion").is_none_or(|v| {
+                v.as_i64()
+                    .is_some_and(|n| n.unsigned_abs() <= MAX_JS_SAFE_INTEGER)
+            })
+            && match value.get("op").and_then(Value::as_str) {
+                Some("upsert") => value
+                    .get("values")
+                    .is_some_and(Self::stored_row_is_representable),
+                Some("delete") => value.get("values").is_none(),
+                _ => false,
+            }
+    }
+
+    /// §7.2/§7.4.4: a dropped commit keeps its operation envelope in the journal
+    /// only when every stored cell keeps its canonical shape.
+    fn outbox_op_is_journalable(operation: &OutboxOp) -> bool {
+        operation
+            .values
+            .as_ref()
+            .is_none_or(|values| values.values().all(Self::stored_cell_is_representable))
+    }
+
     fn outcome_from_row(row: StoredCommitOutcomeRow) -> Result<CommitOutcome, String> {
         let StoredCommitOutcomeRow {
             sequence,
@@ -11656,39 +12075,6 @@ impl SyncClient {
         {
             return Err("sync.local_corrupt: persisted commit outcome is invalid".to_owned());
         }
-        fn valid_row(value: &Value) -> bool {
-            value.as_object().is_some_and(|row| {
-                row.values().all(|cell| {
-                    cell.is_null()
-                        || cell.is_string()
-                        || cell.is_boolean()
-                        || cell.is_number()
-                        || cell.as_object().is_some_and(|object| {
-                            object.len() == 1
-                                && object
-                                    .get("$bytes")
-                                    .and_then(Value::as_str)
-                                    .is_some_and(|hex| {
-                                        hex.len() % 2 == 0
-                                            && hex.bytes().all(|b| b.is_ascii_hexdigit())
-                                    })
-                        })
-                })
-            })
-        }
-        fn valid_operation(value: &Value) -> bool {
-            value.get("table").is_some_and(Value::is_string)
-                && value.get("rowId").is_some_and(Value::is_string)
-                && value.get("baseVersion").is_none_or(|v| {
-                    v.as_i64()
-                        .is_some_and(|n| n.unsigned_abs() <= MAX_JS_SAFE_INTEGER)
-                })
-                && match value.get("op").and_then(Value::as_str) {
-                    Some("upsert") => value.get("values").is_some_and(valid_row),
-                    Some("delete") => value.get("values").is_none(),
-                    _ => false,
-                }
-        }
         let invalid = || "sync.local_corrupt: persisted commit outcome is invalid".to_owned();
         let stored: Vec<Value> = serde_json::from_str(&results_json).map_err(|_| invalid())?;
         for result in &stored {
@@ -11699,11 +12085,11 @@ impl SyncClient {
             };
             if nested
                 .and_then(|record| record.get("operation"))
-                .is_some_and(|op| !valid_operation(op))
+                .is_some_and(|op| !Self::stored_operation_is_representable(op))
                 || (result.get("status").and_then(Value::as_str) == Some("conflict")
                     && nested
                         .and_then(|record| record.get("serverRow"))
-                        .is_some_and(|row| !valid_row(row)))
+                        .is_some_and(|row| !Self::stored_row_is_representable(row)))
             {
                 return Err(invalid());
             }
@@ -11728,7 +12114,7 @@ impl SyncClient {
         let operations: Option<Vec<CommitOperation>> = operations_json
             .map(|raw| {
                 let stored: Vec<Value> = serde_json::from_str(&raw).map_err(|_| invalid())?;
-                if !stored.iter().all(valid_operation) {
+                if !stored.iter().all(Self::stored_operation_is_representable) {
                     return Err(invalid());
                 }
                 serde_json::from_value(Value::Array(stored)).map_err(|_| invalid())
@@ -13019,15 +13405,12 @@ impl SyncClient {
     /// raise one durable rejection per commit. `sync()` never aborts for an
     /// encode failure. Mirrors §7.4.4's `drop_incompatible_outbox`, including
     /// undoing the dropped commit's purely-optimistic rows.
-    fn drop_unencodable_outbox(&mut self) -> Result<bool, String> {
-        if !self
-            .schema
-            .tables
-            .iter()
-            .any(|table| table.has_encrypted_columns())
-        {
-            return Ok(false);
-        }
+    /// §7.1/§7.4.4: drop pending commits whose values the current codec refuses
+    /// (an envelope or a type an earlier version accepted). `with_encryption`
+    /// additionally drops commits whose §5.11 encryption cannot resolve a key;
+    /// the startup boundary leaves those to the send seam, where hosts configure
+    /// keys after open.
+    fn drop_unencodable_outbox(&mut self, with_encryption: bool) -> Result<bool, String> {
         let failures = self
             .outbox
             .iter()
@@ -13046,28 +13429,47 @@ impl SyncClient {
                             &self.encryption,
                             fallback.as_ref(),
                         ) {
-                            Err(error) if error.starts_with(ENCRYPT_FAILED_CODE) => Some(error),
+                            Err(error) if error.starts_with(ENCRYPT_FAILED_CODE) => {
+                                with_encryption.then_some((error, ENCRYPT_FAILED_CODE))
+                            }
+                            // §7.1/§7.4.4: a value the current codec refuses was
+                            // persisted by a version that accepted it; it leaves
+                            // through the incompatible-outbox path, so the FIFO
+                            // queue never wedges.
+                            Err(error) if error.starts_with(INVALID_REQUEST_CODE) => Some((
+                                LEGACY_VALUE_REFUSAL_MESSAGE.to_owned(),
+                                OUTBOX_INCOMPATIBLE_CODE,
+                            )),
                             _ => None,
                         }
                     })
-                    .map(|error| (commit.clone(), error))
+                    .map(|(error, code)| (commit.clone(), error, code))
             })
             .collect::<Vec<_>>();
         if failures.is_empty() {
             return Ok(false);
         }
-        for (commit, message) in failures {
-            if self.retain_failed_commits {
+        for (commit, message, code) in failures {
+            if self.retain_failed_commits && code == ENCRYPT_FAILED_CODE {
                 self.retain_failed_commit(&commit.client_commit_id, &commit.ops)?;
             }
+            let representable = commit.ops.iter().all(Self::outbox_op_is_journalable);
             let rejection = RejectionRecord {
                 client_commit_id: commit.client_commit_id.clone(),
                 op_index: 0,
-                code: ENCRYPT_FAILED_CODE.to_owned(),
+                code: code.to_owned(),
                 message,
                 retryable: false,
-                details: None,
-                operation: commit.ops.first().map(CommitOperation::from),
+                details: (code == OUTBOX_INCOMPATIBLE_CODE).then(|| RejectionDetails {
+                    field_paths: None,
+                    reason: Some(INVALID_STORED_VALUES_REASON.to_owned()),
+                    required_action: None,
+                    references: None,
+                }),
+                operation: representable
+                    .then(|| commit.ops.first())
+                    .flatten()
+                    .map(CommitOperation::from),
             };
             self.persist_commit_outcome(
                 &commit.client_commit_id,
@@ -13075,7 +13477,7 @@ impl SyncClient {
                 &[CommitOperationOutcome::Error {
                     rejection: rejection.clone(),
                 }],
-                Some(&commit.ops),
+                representable.then_some(commit.ops.as_slice()),
             )?;
             self.delete_outbox_persisted(&commit.client_commit_id)?;
             self.outbox
@@ -14322,7 +14724,7 @@ impl SyncClient {
             self.set_sync_needed(false, false);
             self.drain_pending_evictions()
                 .and_then(|_| self.drop_incompatible_outbox())
-                .and_then(|_| self.drop_unencodable_outbox())
+                .and_then(|_| self.drop_unencodable_outbox(true))
                 .map_err(|message| {
                     Box::new(SyncOutcome::Failed {
                         error_code: "storage.failed".into(),

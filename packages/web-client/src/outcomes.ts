@@ -18,6 +18,7 @@ import type { ClientDatabase } from './database';
 import { ClientSyncError } from './errors';
 import type { OutboxOperation } from './outbox';
 import {
+  isBytesEnvelope,
   mapRowValues,
   type JsonRowValue,
   jsonToRowValue,
@@ -173,15 +174,12 @@ function isStoredRow(value: unknown): value is Record<string, JsonRowValue> {
         typeof cell === 'string' ||
         typeof cell === 'boolean' ||
         (typeof cell === 'number' && Number.isFinite(cell)) ||
-        (isRecord(cell) &&
-          Object.keys(cell).length === 1 &&
-          typeof cell.$bytes === 'string' &&
-          /^(?:[0-9a-fA-F]{2})*$/.test(cell.$bytes)),
+        isBytesEnvelope(cell),
     )
   );
 }
 
-function isStoredOperation(value: unknown): value is OutboxOperation {
+export function isStoredOperation(value: unknown): value is OutboxOperation {
   return (
     isRecord(value) &&
     typeof value.table === 'string' &&

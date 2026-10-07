@@ -34,6 +34,7 @@ import {
   decodeRowsSegment,
   encodeMessage,
   encodeRow,
+  encodeSparseRow,
   encodePresencePublish,
   MessageStreamScanner,
   PROTOCOL_WIRE_VERSION,
@@ -53,6 +54,7 @@ import {
   type WakeReason,
 } from '@syncular/core';
 import { EncryptError } from '@syncular/core';
+import { EncodeError } from '@syncular/core';
 import {
   applyCommitFrame,
   applyRowsSegment,
@@ -167,6 +169,7 @@ import {
   type CommitOutcome,
   type CommitOutcomeQuery,
   type ConflictRecord,
+  isStoredOperation,
   listCommitOutcomes,
   persistCommitOutcomeResolution,
   persistedCommitOutcome,
@@ -657,6 +660,11 @@ const ACCEPT_SIGNED_URLS = 1 << 3;
  * Never a wire code (§10.3) — surfaced through the rejection channel.
  */
 const OUTBOX_INCOMPATIBLE_CODE = 'sync.outbox_incompatible';
+/** §7.4.4: static text for a persisted commit the current codec refuses. */
+const LEGACY_VALUE_REFUSAL_MESSAGE =
+  'the persisted commit carries values the current codec refuses';
+/** §7.4.4: bounded reason on every intrinsic value drop. */
+const INVALID_STORED_VALUES_REASON = 'invalid_stored_values';
 
 /** §6.1 per-request operation cap (matches the server's shipped default —
  * `sync.too_many_operations` above it). The push half sends whole commits in
@@ -1386,23 +1394,38 @@ export class SyncClient {
       return [];
     }
     const subscriptions = loadSubscriptions(this.#db);
-    const pending = listOutbox(this.#db);
     this.#setUpgrading(true);
     // RFC 0005 D5: the log-epoch reset is not a schema bump. It performs the
     // orphan sweep but captures no new shadow.
     this.#sweepPreviousVersionContainer();
-    this.#applyBatch((batch) => {
-      this.#db.transaction(() => {
-        this.#discardAcknowledgedRows();
-        dropAndRecreateSyncedTables(this.#db, this.#schema);
-        resetSubscriptionsForBump(this.#db);
-        setMeta(this.#db, LOG_EPOCH_META_KEY, logEpoch);
-        for (const commit of pending) {
-          this.#applyOperationsLocally(commit.operations, batch);
-        }
-      });
-      for (const table of this.#schema.tables.values()) batch.table(table.name);
-    });
+    const priorRejections = [...this.#rejections];
+    this.#applyBatch(
+      (batch) => {
+        this.#db.transaction(() => {
+          this.#discardAcknowledgedRows();
+          dropAndRecreateSyncedTables(this.#db, this.#schema);
+          resetSubscriptionsForBump(this.#db);
+          setMeta(this.#db, LOG_EPOCH_META_KEY, logEpoch);
+          // §7.1/§7.4.4: recover codec-invalid persisted values in this reset
+          // transaction before they replay, so the reset boundary never fails on
+          // a commit an earlier version accepted.
+          this.#dropUnencodableOutbox();
+          for (const commit of listOutbox(this.#db)) {
+            this.#applyOperationsLocally(commit.operations, batch);
+          }
+        });
+        for (const table of this.#schema.tables.values())
+          batch.table(table.name);
+      },
+      undefined,
+      (error) => {
+        // A failure after the recovery drop, including the reset's revision or
+        // COMMIT, rolls the database back: mirror that for the in-memory
+        // rejection cache so no dropped commit is published.
+        this.#rejections = priorRejections;
+        throw error;
+      },
+    );
     this.#localResetEpoch += 1;
     this.#setSyncNeeded(true);
     this.#emitSyncNeeded('startup');
@@ -3221,6 +3244,21 @@ export class SyncClient {
         });
       }
       const pkValue = requireRowId(json[table.primaryKey]);
+      // §7.1: declared-type validation runs before the commit is recorded, so a
+      // refused value leaves no outbox entry, no optimistic row, no revision
+      // and no observation event.
+      const refusal = this.#operationValuesError(table, json);
+      if (refusal !== undefined)
+        // §7.5: the same structured shape the native authoring APIs return — a
+        // static message, and the dynamic cause in `details.legacyCause`.
+        throw new ClientSyncError(
+          'sync.invalid_request',
+          'the authoring request is invalid',
+          false,
+          {
+            legacyCause: `sync.invalid_request: table ${table.name}: ${refusal}`,
+          },
+        );
       return definedObject({
         table: mutation.table,
         rowId: pkValue,
@@ -3726,6 +3764,23 @@ export class SyncClient {
           processed += 1;
           continue;
         }
+        // §7.1/§7.4.4: a persisted value the current codec refuses (an earlier
+        // version accepted it) is an incompatible commit, never a wedged queue.
+        if (
+          error instanceof EncodeError ||
+          (error instanceof ClientSyncError &&
+            error.code === 'sync.invalid_request')
+        ) {
+          this.#dropIncompatibleCommit(
+            commit,
+            LEGACY_VALUE_REFUSAL_MESSAGE,
+            OUTBOX_INCOMPATIBLE_CODE,
+            true,
+            INVALID_STORED_VALUES_REASON,
+          );
+          processed += 1;
+          continue;
+        }
         throw error;
       }
       // The operation cap is checked after the encode/drop so an unencodable
@@ -3802,37 +3857,55 @@ export class SyncClient {
     commit: OutboxCommit,
     message: string,
     code: string = OUTBOX_INCOMPATIBLE_CODE,
+    replay = true,
+    reason?: string,
   ): void {
-    this.#applyBatch((batch) => {
-      if (this.#retainFailedCommits && code === 'client.encrypt_failed')
-        retainFailedRows(
-          this.#db,
-          commit,
-          listOutboxBeforeImages(this.#db, commit.clientCommitId),
-        );
-      this.#rollbackFailedCommit(commit, batch);
-      this.#replayOutbox();
-      const rejection: RejectionRecord = definedObject({
-        clientCommitId: commit.clientCommitId,
-        opIndex: 0,
-        code,
-        message,
-        retryable: false,
-        operation: commit.operations[0],
-      });
-      this.#rejections.push(rejection);
-      recordCommitOutcome(this.#db, {
-        clientCommitId: commit.clientCommitId,
-        status: 'rejected',
-        recordedAtMs: this.#now(),
-        results: [{ status: 'error', rejection }],
-        operations: commit.operations,
-      });
-      pruneCommitOutcomes(this.#db, this.#outcomeRetentionMaxEntries);
-      batch.status();
-      batch.rejections();
-      batch.outcomes();
-    });
+    const priorRejections = [...this.#rejections];
+    this.#applyBatch(
+      (batch) => {
+        if (this.#retainFailedCommits && code === 'client.encrypt_failed')
+          retainFailedRows(
+            this.#db,
+            commit,
+            listOutboxBeforeImages(this.#db, commit.clientCommitId),
+          );
+        this.#rollbackFailedCommit(commit, batch);
+        if (replay) this.#replayOutbox();
+        // §7.2/§7.4.4: the journal holds the operation envelope only when its
+        // stored shape is representable. A dropped legacy commit whose envelope
+        // the journal cannot carry keeps its durable commitId, code and a bounded
+        // `details.reason` instead of an opaque rewritten value.
+        const representable = commit.operations.every(isStoredOperation);
+        const rejection: RejectionRecord = definedObject({
+          clientCommitId: commit.clientCommitId,
+          opIndex: 0,
+          code,
+          message,
+          retryable: false,
+          ...(representable ? { operation: commit.operations[0] } : {}),
+          ...(reason === undefined ? {} : { details: { reason } }),
+        });
+        this.#rejections.push(rejection);
+        recordCommitOutcome(this.#db, {
+          clientCommitId: commit.clientCommitId,
+          status: 'rejected',
+          recordedAtMs: this.#now(),
+          results: [{ status: 'error', rejection }],
+          ...(representable ? { operations: commit.operations } : {}),
+        });
+        pruneCommitOutcomes(this.#db, this.#outcomeRetentionMaxEntries);
+        batch.status();
+        batch.rejections();
+        batch.outcomes();
+      },
+      undefined,
+      (error) => {
+        // The drop's own outcome write or publication failed: mirror the
+        // rollback so no rejection the journal did not keep stays in memory.
+        this.#rejections = priorRejections;
+        throw error;
+      },
+    );
   }
 
   // -- sync -------------------------------------------------------------------
@@ -5848,6 +5921,82 @@ export class SyncClient {
     return scope;
   }
 
+  /**
+   * §7.1: the operation's values must encode under the current schema. Returns
+   * the refusal message, or `undefined` when they encode. Structural failures
+   * (a programming error, never caller data) propagate unchanged.
+   */
+  #operationValuesError(
+    table: CompiledClientTable,
+    values: Readonly<Record<string, JsonRowValue>>,
+  ): string | undefined {
+    const declared = table.columns.map((column) => ({
+      ...column,
+      type: localColumnType(column),
+    }));
+    const sparse: Array<RowValue | undefined> = [];
+    for (const column of table.columns) {
+      const raw = values[column.name];
+      if (raw === undefined) {
+        sparse.push(undefined);
+        continue;
+      }
+      // §7.1: the schema-agnostic outbox form serializes through JSON, which
+      // turns NaN and ±Infinity into null. The authoring boundary refuses them
+      // instead of recording a different value; the wire `f64` encoding itself
+      // stays IEEE-754 binary64 (§2.4).
+      if (
+        localColumnType(column) === 'float' &&
+        typeof raw === 'number' &&
+        !Number.isFinite(raw)
+      )
+        return `column ${column.name} (float) requires a finite number value`;
+      try {
+        sparse.push(jsonToRowValue(raw));
+      } catch (error) {
+        if (error instanceof ClientSyncError)
+          return `column ${column.name}: ${error.message}`;
+        throw error;
+      }
+    }
+    try {
+      encodeSparseRow(declared, table.primaryKeyIndex, sparse);
+      return undefined;
+    } catch (error) {
+      if (error instanceof EncodeError || error instanceof ClientSyncError)
+        return error.message;
+      throw error;
+    }
+  }
+
+  /**
+   * §7.4.4: a pending commit whose own values the current codec refuses (an
+   * envelope or a type an earlier version accepted) leaves the outbox as
+   * `sync.outbox_incompatible` instead of failing every replay and sync. The
+   * commit goes through the rejection channel; encryption and storage failures
+   * never reach this path.
+   */
+  #dropUnencodableOutbox(): void {
+    const failures: OutboxCommit[] = [];
+    for (const commit of listOutbox(this.#db)) {
+      const refused = commit.operations.some((op) => {
+        if (op.op !== 'upsert' || op.values === undefined) return false;
+        const table = this.#schema.tables.get(op.table);
+        if (table === undefined) return false;
+        return this.#operationValuesError(table, op.values) !== undefined;
+      });
+      if (refused) failures.push(commit);
+    }
+    for (const commit of failures)
+      this.#dropIncompatibleCommit(
+        commit,
+        LEGACY_VALUE_REFUSAL_MESSAGE,
+        OUTBOX_INCOMPATIBLE_CODE,
+        false,
+        INVALID_STORED_VALUES_REASON,
+      );
+  }
+
   #replayOutbox(
     scope?: OverlayScope,
     restoreBases = true,
@@ -5855,6 +6004,13 @@ export class SyncClient {
   ): void {
     if (scope?.length === 0) return;
     const replay = (batch?: ChangeAccumulator) => {
+      // §7.4.4: classify value-unencodable pending commits inside the
+      // reconciliation transaction, so a commit persisted by an earlier version
+      // is dropped atomically with the replay it would otherwise fail. A
+      // scoped (partial) reconciliation leaves the classification to these full
+      // boundaries and to the send-time drop, so a partial rebuild never drops
+      // a commit whose other tables are outside the scope.
+      if (scope === undefined) this.#dropUnencodableOutbox();
       if (restoreBases) restoreFailedBases(this.#db, this.#schema, scope);
       const acknowledged = failedOverlayCommits(
         this.#db,
@@ -5878,8 +6034,17 @@ export class SyncClient {
           true,
         );
     };
-    if (observe) this.#applyBatch(replay);
-    else this.#db.transaction(() => replay());
+    const priorRejections = [...this.#rejections];
+    try {
+      if (observe) this.#applyBatch(replay);
+      else this.#db.transaction(() => replay());
+    } catch (error) {
+      // SQLite rolled the reconciliation back: mirror that rollback for the
+      // in-memory rejection cache, so a later failure in the same transaction
+      // publishes no drop the durable journal did not keep.
+      this.#rejections = priorRejections;
+      throw error;
+    }
   }
 
   #deleteUnreferencedBlobs(): void {

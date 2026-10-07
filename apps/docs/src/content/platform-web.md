@@ -156,6 +156,29 @@ Schema-declared [local FTS5 projections](/tooling-local-search/) are ordinary
 local read targets too. They are built and maintained inside the worker-owned
 SQLite database and invalidate through their synced owner table.
 
+### Authoring value validation
+
+`mutate` and `patch` validate every supplied value against the declared column
+type before the call records anything, so a wrong type, an absent required
+column, a non-finite float, or a malformed byte envelope rejects with
+`sync.invalid_request`. The rejected call appends no outbox commit, writes no
+optimistic row, publishes no revision, and emits no event.
+
+Host values keep the normalizations this surface documents: a `bigint` within
+the safe-integer range for an `integer` column and `0`/`1` for a `boolean`
+column, so a row read straight off the local mirror feeds back into `mutate`. A
+`bytes` or `crdt` column takes a `Uint8Array` or the canonical
+`{"$bytes": "<hex>"}` envelope with one key and an even number of hexadecimal
+digits; uppercase digits are accepted and lowercase digits are emitted.
+
+A commit that an earlier version persisted with a value the current codec
+refuses leaves the outbox at the startup or reset reconciliation boundary,
+before any replay, with a rejection whose code is `sync.outbox_incompatible`
+and whose `details.reason` is `invalid_stored_values`. The commit's operation
+envelope stays in the journal when its stored shape is representable; a
+malformed envelope is omitted so the journal keeps a canonical shape. Commits
+behind the recovered one survive and drain.
+
 ## Ephemeral mode (explicit, in-memory)
 
 The only main-thread mode is ephemeral: `openWasmDatabase()` returns an

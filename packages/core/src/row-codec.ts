@@ -14,7 +14,7 @@
  */
 import { parseBlobRef } from './blob-ref';
 import { ByteReader, ByteWriter } from './bytes';
-import { DecodeError } from './errors';
+import { DecodeError, EncodeError } from './errors';
 
 export type ColumnType =
   | 'string'
@@ -98,7 +98,7 @@ function writeValue(
     case 'json':
     case 'blob_ref':
       if (typeof value !== 'string') {
-        throw new Error(
+        throw new EncodeError(
           `column ${column.name} (${column.type}) requires a string value`,
         );
       }
@@ -106,7 +106,7 @@ function writeValue(
       return;
     case 'integer':
       if (typeof value !== 'number' || !Number.isSafeInteger(value)) {
-        throw new Error(
+        throw new EncodeError(
           `column ${column.name} (integer) requires a safe integer value`,
         );
       }
@@ -114,7 +114,7 @@ function writeValue(
       return;
     case 'float':
       if (typeof value !== 'number') {
-        throw new Error(
+        throw new EncodeError(
           `column ${column.name} (float) requires a number value`,
         );
       }
@@ -122,7 +122,7 @@ function writeValue(
       return;
     case 'boolean':
       if (typeof value !== 'boolean') {
-        throw new Error(
+        throw new EncodeError(
           `column ${column.name} (boolean) requires a boolean value`,
         );
       }
@@ -134,7 +134,7 @@ function writeValue(
       // opaque CRDT bytes (§5.10), no structural validation. `crdtType`
       // selects the server merger and never touches the codec.
       if (!(value instanceof Uint8Array)) {
-        throw new Error(
+        throw new EncodeError(
           `column ${column.name} (${column.type}) requires a Uint8Array value`,
         );
       }
@@ -237,7 +237,7 @@ export function encodeSparseRow(
     if (column === undefined || value === undefined) continue;
     if (value === null) {
       if (!column.nullable) {
-        throw new Error(`column ${column.name} is not nullable`);
+        throw new EncodeError(`column ${column.name} is not nullable`);
       }
       nulls[present >> 3] = (nulls[present >> 3] ?? 0) | (1 << (present & 7));
     }
@@ -350,7 +350,7 @@ export function writeRow(
     if (column === undefined) continue;
     if (values[i] === null) {
       if (!column.nullable) {
-        throw new Error(`column ${column.name} is not nullable`);
+        throw new EncodeError(`column ${column.name} is not nullable`);
       }
       bitmap[i >> 3] = (bitmap[i >> 3] ?? 0) | (1 << (i & 7));
     }

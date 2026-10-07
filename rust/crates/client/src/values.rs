@@ -338,6 +338,40 @@ pub fn full_row_values(
     Ok(values)
 }
 
+/// §7.1: exactly one `$bytes` key holding an even-length hexadecimal string.
+/// Uppercase digits are accepted; encoders emit lowercase.
+pub(crate) fn is_canonical_bytes_envelope(value: &Value) -> bool {
+    value
+        .as_object()
+        .filter(|map| map.len() == 1)
+        .and_then(|map| map.get("$bytes"))
+        .and_then(Value::as_str)
+        .is_some_and(|hex| {
+            hex.len().is_multiple_of(2) && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+}
+
+/// §7.1: a `bytes`/`crdt` column crosses the authoring boundary only as exactly
+/// one `$bytes` key holding an even-length hexadecimal string. The shared
+/// decoder keeps its tolerance for persisted payloads (§7.4.4 replay), so the
+/// canonical rule is enforced at the encode seams instead. `None` for every
+/// other column type and for a canonical envelope.
+fn author_bytes_envelope_error(column: &Column, value: &Value) -> Option<String> {
+    // An explicit `null` stays with `json_to_column_value`: a nullable column
+    // accepts it and a non-nullable one is classified by the required-column
+    // check, not by the envelope rule.
+    if value.is_null() || !matches!(column.ty, ColumnType::Bytes | ColumnType::Crdt) {
+        return None;
+    }
+    if is_canonical_bytes_envelope(value) {
+        return None;
+    }
+    Some(format!(
+        "sync.invalid_request: column {:?}: expected exactly {{\"$bytes\": hex}} with an even number of hexadecimal digits, got {value}",
+        column.name
+    ))
+}
+
 /// Encode one full row (driver JSON values keyed by column name) with the
 /// generated row codec (§2.4, §6.1). §5.11: encrypted columns are encrypted
 /// here — the encode-at-send seam — before the codec serializes them as
@@ -351,6 +385,11 @@ pub fn encode_row_json(
     // Build the row from the LOCAL (declared-type) columns.
     let mut row: Row = Vec::with_capacity(table.columns.len());
     for column in &table.columns {
+        if let Some(raw) = values.get(&column.name) {
+            if let Some(error) = author_bytes_envelope_error(column, raw) {
+                return Err(error);
+            }
+        }
         // §6.1/§7.1: a caller value the codec rejects is an invalid request,
         // never an internal authoring failure; the dynamic cause stays in
         // `details.legacyCause` at the `ClientError` boundary.
@@ -391,6 +430,9 @@ pub fn encode_sparse_row_json(
             row.push(SparseSlot::Absent);
             continue;
         };
+        if let Some(error) = author_bytes_envelope_error(column, raw) {
+            return Err(error);
+        }
         let value = json_to_column_value(column, Some(raw))
             .map_err(|error| format!("sync.invalid_request: {error}"))?;
         if value.is_none() && !column.nullable {

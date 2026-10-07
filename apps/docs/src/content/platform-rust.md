@@ -423,6 +423,26 @@ is `the authoring request is invalid`; the dynamic cause stays in
 `details.legacyCause`. The rejected call preserves the outbox, optimistic rows, and local revision. `SyncRemoteClient::prepare_commit` classifies the
 same caller-value failures with the same code.
 
+Two rules decide whether a value survives the schema-agnostic outbox form. A
+`bytes` or `crdt` column accepts the canonical envelope `{"$bytes": "<hex>"}`
+with exactly one `$bytes` key holding hexadecimal digit pairs; uppercase digits
+are accepted and encoders emit lowercase. The client refuses other envelopes. A `float` column accepts a finite number, because JSON
+serialization would turn `NaN` or an infinity into `null`. An explicit `null` is
+a nullability question: a nullable column accepts it and a non-nullable column
+reports the required-column failure.
+
+A commit that an earlier version persisted with a value the current codec
+refuses (a formerly tolerated envelope or declared type) leaves the outbox at
+the startup or reset reconciliation boundary, inside that boundary's
+transaction, with a rejection whose code is `sync.outbox_incompatible`, whose
+message is the static `the persisted commit carries values the current codec
+refuses`, and whose `details.reason` is `invalid_stored_values`. The recovery
+runs before any replay, so the legacy commit reads as rejected immediately after
+open and later commits still drain. A commit naming a table the current schema
+removed keeps the send-time classification, and an unresolved encryption key is
+never this recovery: keys may be configured after open, so key resolution stays
+with the send seam.
+
 A storage failure during authoring carries `details.sqliteCode` and
 `details.sqliteMessage`, and a failed rollback adds `details.rollbackFailure`.
 SQLite `SQLITE_BUSY` (5) and `SQLITE_LOCKED` (6), including extended codes,
