@@ -12,8 +12,9 @@
  *
  * Output: bench/RESULTS.md, the curated results record.
  */
+import { cpus, loadavg } from 'node:os';
 import { join } from 'node:path';
-import { fmtKb, fmtMs, median, percentile, rowId, TABLE } from './fixture';
+import { fmtKib, fmtMs, median, percentile, rowId, TABLE } from './fixture';
 import {
   createBenchClient,
   createBenchServer,
@@ -45,6 +46,8 @@ const IMAGE_LIMITS = {
 // BUDGETS and exits nonzero on breach, and never touches RESULTS.md.
 // Every count is env-overridable for one-off experiments.
 
+const HOST_LOAD_AT_START = loadavg()[0] ?? 0;
+
 const CI_MODE =
   process.env.SYNCULAR_BENCH_CI === '1' || process.argv.includes('--ci');
 
@@ -74,39 +77,48 @@ const WORKLOAD = {
 
 /**
  * CI perf budgets (asserted only in CI mode). Each is derived from the
- * 2026-07-03 local baseline in RESULTS.md (Bun 1.3.14, darwin/arm64) —
- * regenerate the baseline with a plain `bun run bench` before retuning.
+ * 2026-10-07 local record in RESULTS.md (Bun 1.4.0, darwin/arm64, Apple M4)
+ * and from `bench:ci` runs on that host (25k rows, load ~3.3 on 10 cores);
+ * regenerate the record with a plain `bun run bench` before retuning.
  *
  * - `bootstrapRowsPerSecFloor` 90,000/s: the local 100k bootstrap runs at
- *   ~274–278k rows/s. The floor sits ~3× below that to absorb slower
- *   shared CI runners, yet still catches an apply-path regression toward
- *   a naive row-by-row rate (~125k rows/s locally ⇒ well under 90k/s on
- *   a CI runner). Rows/sec normalizes across the reduced CI row count.
- * - `imageBootstrapRowsPerSecFloor` 300,000/s: the §5.3 sqlite-image
- *   lane (warm/storm case — stored image reused per scopes+pin) runs at
- *   ~3.2M rows/s locally at 100k (31.5 ms). The floor sits ~10× below
- *   that — extra headroom because the CI workload (25k rows) makes the
- *   per-run fixed costs a larger share — and still catches the lane
- *   silently degrading to row-by-row application (the rows lane's
- *   ~275k/s local rate lands well under 300k/s on a shared runner).
- *   Asserted on the warm median: the §5.3 reuse rule is part of what
- *   the budget pins.
- * - `propagationP95CeilingMs` 20 ms: local in-process p95 is 0.2 ms. A
- *   100× allowance absorbs runner noise; breaching 20 ms in-process means
+ *   ~260-275k rows/s (CI mode ~260-277k). The floor sits ~3x below that to
+ *   absorb slower shared CI runners, yet still catches an apply-path
+ *   regression toward a naive row-by-row rate (~125k rows/s locally => well
+ *   under 90k/s on a CI runner). Rows/sec normalizes across the reduced CI
+ *   row count.
+ * - `imageBootstrapRowsPerSecFloor` 600,000/s: the §5.3 sqlite-image lane
+ *   (warm/storm case, stored image reused per scopes+pin) runs at ~2.1M
+ *   rows/s locally at 100k and 1.9-2.2M rows/s at the CI-mode 25k rows. The
+ *   floor sits ~3x below that. The regression fixed in 49f5d3c2 (image
+ *   import reading every staged row back for overlay reconciliation with an
+ *   empty outbox) measured 0.7-0.8M rows/s in CI mode on the same host, so
+ *   the old 300,000/s floor passed it; this floor catches it on a host as
+ *   fast as the baseline. Asserted on the warm median: the §5.3 reuse rule
+ *   is part of what the budget pins.
+ * - `imageToRowsRatioFloor` 5: the warm image lane must be at least 5x the
+ *   rows lane's rows/s within the same run. Locally the ratio is 7.3-8.4 in
+ *   CI mode (7.9 at 100k) and 3.1-3.4 with the 49f5d3c2 regression. Both
+ *   lanes slow down together on a slow runner, so the ratio holds where the
+ *   absolute floors cannot be calibrated.
+ * - `propagationP95CeilingMs` 20 ms: local in-process p95 is 0.8-1.2 ms. A
+ *   ~20x allowance absorbs runner noise; breaching 20 ms in-process means
  *   a sleep/poll crept into the sync/realtime loop.
- * - `ownJsRawCeilingBytes` 166 KiB: this browser bundle measures
- *   161,064 raw bytes with Bun 1.4.0 after the client correctness and
- *   public API changes. The ceiling preserves the established approximately
- *   5% headroom, rounded up to a whole KiB. The entrypoint and SQLite
- *   externalization are unchanged; the shipped gzip budget stays separate.
- * - `totalGzipCeilingBytes` 600 KB: total shipped payload (own JS +
- *   sqlite-wasm glue + sqlite3.wasm) is 492.7 KB gzip today. Also
- *   deterministic; ~25% headroom covers a vendor SQLite bump without
+ * - `ownJsRawCeilingBytes` 166 KiB: the main-thread browser bundle
+ *   (`bundle-entry.ts`) measures 159.5 KiB raw (163,348 bytes) with Bun
+ *   1.4.0. The ceiling keeps ~4% headroom, rounded up to a whole KiB. The
+ *   entrypoint and SQLite externalization are unchanged; the shipped gzip
+ *   budget stays separate. The recommended page + worker setup is reported
+ *   in RESULTS.md (195.6 KiB raw, 59.8 KiB gzip) and does not gate.
+ * - `totalGzipCeilingBytes` 600 KiB: total shipped payload (own JS +
+ *   sqlite-wasm glue + sqlite3.wasm) is 510.0 KiB gzip today. Also
+ *   deterministic; ~15% headroom covers a vendor SQLite bump without
  *   letting the payload drift unbounded.
  */
 const BUDGETS = {
   bootstrapRowsPerSecFloor: 90_000,
-  imageBootstrapRowsPerSecFloor: 300_000,
+  imageBootstrapRowsPerSecFloor: 600_000,
+  imageToRowsRatioFloor: 5,
   propagationP95CeilingMs: 20,
   ownJsRawCeilingBytes: 166 * 1024,
   totalGzipCeilingBytes: 600 * 1024,
@@ -258,6 +270,10 @@ interface BundleResult {
   readonly jsGzip: number;
   readonly ownJsRaw: number;
   readonly ownJsGzip: number;
+  readonly pageRaw: number;
+  readonly pageGzip: number;
+  readonly workerRaw: number;
+  readonly workerGzip: number;
   readonly wasmRaw: number;
   readonly wasmGzip: number;
 }
@@ -268,34 +284,33 @@ async function measureBundle(): Promise<BundleResult> {
   // bundlers code-split opt-in features (E2EE crypto is behind `await import()`
   // so it splits out in any real build); this proxy counts it anyway, on
   // purpose, as the anti-bloat tripwire.
-  const build = await Bun.build({
-    entrypoints: [join(import.meta.dir, 'bundle-entry.ts')],
-    target: 'browser',
-    // The size gate measures syncular's TS source via the `bun` condition
-    // (the published `browser` condition points at compiled dist and needs
-    // a `build:packages` first).
-    conditions: ['bun'],
-    minify: true,
-    sourcemap: 'none',
-  });
-  const js = build.outputs.find((o) => o.path.endsWith('.js'));
-  if (js === undefined) throw new Error('bundle build produced no JS output');
-  const jsBytes = new Uint8Array(await js.arrayBuffer());
+  //
+  // The size gate measures syncular's TS source via the `bun` condition
+  // (the published `browser` condition points at compiled dist and needs
+  // a `build:packages` first).
+  const build = async (entry: string, external: string[]) => {
+    const result = await Bun.build({
+      entrypoints: [join(import.meta.dir, entry)],
+      target: 'browser',
+      conditions: ['bun'],
+      minify: true,
+      sourcemap: 'none',
+      external,
+    });
+    const js = result.outputs.find((o) => o.path.endsWith('.js'));
+    if (js === undefined) throw new Error(`${entry}: build produced no JS`);
+    const bytes = new Uint8Array(await js.arrayBuffer());
+    return { raw: bytes.length, gzip: Bun.gzipSync(bytes).length };
+  };
+  const sqliteExternal = ['@sqlite.org/sqlite-wasm'];
+  const all = await build('bundle-entry.ts', []);
   // Same entry with the sqlite-wasm package external: what remains is
   // syncular's own code (client core + codec) — the bytes we own.
-  const ownBuild = await Bun.build({
-    entrypoints: [join(import.meta.dir, 'bundle-entry.ts')],
-    target: 'browser',
-    conditions: ['bun'],
-    minify: true,
-    sourcemap: 'none',
-    external: ['@sqlite.org/sqlite-wasm'],
-  });
-  const ownJs = ownBuild.outputs.find((o) => o.path.endsWith('.js'));
-  if (ownJs === undefined) {
-    throw new Error('own-code bundle build produced no JS output');
-  }
-  const ownJsBytes = new Uint8Array(await ownJs.arrayBuffer());
+  const own = await build('bundle-entry.ts', sqliteExternal);
+  // The documented web setup ships two bundles: the page calls
+  // `createSyncClientHandle`; the worker runs the client core.
+  const page = await build('bundle-page-entry.ts', sqliteExternal);
+  const worker = await build('bundle-worker-entry.ts', sqliteExternal);
   const wasmPath = join(
     Bun.resolveSync('@sqlite.org/sqlite-wasm', import.meta.dir),
     '..',
@@ -303,10 +318,14 @@ async function measureBundle(): Promise<BundleResult> {
   );
   const wasmBytes = await Bun.file(wasmPath).bytes();
   return {
-    jsRaw: jsBytes.length,
-    jsGzip: Bun.gzipSync(jsBytes).length,
-    ownJsRaw: ownJsBytes.length,
-    ownJsGzip: Bun.gzipSync(ownJsBytes).length,
+    jsRaw: all.raw,
+    jsGzip: all.gzip,
+    ownJsRaw: own.raw,
+    ownJsGzip: own.gzip,
+    pageRaw: page.raw,
+    pageGzip: page.gzip,
+    workerRaw: worker.raw,
+    workerGzip: worker.gzip,
     wasmRaw: wasmBytes.length,
     wasmGzip: Bun.gzipSync(wasmBytes).length,
   };
@@ -342,6 +361,12 @@ function checkBudgets(
       ok: image.rowsPerSec >= BUDGETS.imageBootstrapRowsPerSecFloor,
     },
     {
+      name: 'image lane / rows lane rows/sec (same run)',
+      budget: `>= ${BUDGETS.imageToRowsRatioFloor}x`,
+      measured: `${(image.rowsPerSec / big.rowsPerSec).toFixed(1)}x`,
+      ok: image.rowsPerSec / big.rowsPerSec >= BUDGETS.imageToRowsRatioFloor,
+    },
+    {
       name: 'propagation p95 (in-process loopback)',
       budget: `<= ${BUDGETS.propagationP95CeilingMs.toFixed(0)} ms`,
       measured: fmtMs(prop.propP95),
@@ -349,14 +374,14 @@ function checkBudgets(
     },
     {
       name: 'own JS bundle, raw (core + codec)',
-      budget: `<= ${fmtKb(BUDGETS.ownJsRawCeilingBytes)}`,
-      measured: fmtKb(bundle.ownJsRaw),
+      budget: `<= ${fmtKib(BUDGETS.ownJsRawCeilingBytes)}`,
+      measured: fmtKib(bundle.ownJsRaw),
       ok: bundle.ownJsRaw <= BUDGETS.ownJsRawCeilingBytes,
     },
     {
       name: 'total bundle, gzip (incl. vendor sqlite)',
-      budget: `<= ${fmtKb(BUDGETS.totalGzipCeilingBytes)}`,
-      measured: fmtKb(totalGzip),
+      budget: `<= ${fmtKib(BUDGETS.totalGzipCeilingBytes)}`,
+      measured: fmtKib(totalGzip),
       ok: totalGzip <= BUDGETS.totalGzipCeilingBytes,
     },
   ];
@@ -365,7 +390,7 @@ function checkBudgets(
 // -- report ---------------------------------------------------------------------
 
 function fmtMb(bytes: number): string {
-  return `${(bytes / 1_048_576).toFixed(1)} MB`;
+  return `${(bytes / 1_048_576).toFixed(1)} MiB`;
 }
 
 function report(
@@ -385,8 +410,10 @@ function report(
   return `# bench — curated results
 
 Generated by \`bun run bench\` on ${now} (Bun ${Bun.version},
-${process.platform}/${process.arch}). Deterministic seeded row data; timings
-vary run to run.
+${process.platform}/${process.arch}, ${cpus()[0]?.model ?? 'unknown CPU'}, ${cpus().length} cores).
+Host 1-minute load average at start: ${HOST_LOAD_AT_START.toFixed(2)}; at report: ${loadavg()[0]?.toFixed(2)}.
+Deterministic seeded row data (six small columns per row: id, project_id,
+title, done, priority, updated_at_ms); timings vary run to run.
 
 **Lane**: bun:sqlite loopback — the TS client core and the real
 server library exchange in-process SSP2 bytes (transport, segment download
@@ -473,15 +500,28 @@ binary is external (fetched at runtime), measured as shipped by
 
 | Artifact | Raw | Gzip | Whose bytes |
 |---|---|---|---|
-| syncular client code (core + codec) | ${fmtKb(bundle.ownJsRaw)} | ${fmtKb(bundle.ownJsGzip)} | **ours** |
-| sqlite-wasm JS glue | ${fmtKb(glueRaw)} | ${fmtKb(glueGzip)} | vendor (SQLite) |
-| sqlite3.wasm (external asset) | ${fmtKb(bundle.wasmRaw)} | ${fmtKb(bundle.wasmGzip)} | vendor (SQLite) |
-| **Total** | **${fmtKb(totalRaw)}** | **${fmtKb(totalGzip)}** | |
+| syncular client code (core + codec) | ${fmtKib(bundle.ownJsRaw)} | ${fmtKib(bundle.ownJsGzip)} | **ours** |
+| sqlite-wasm JS glue | ${fmtKib(glueRaw)} | ${fmtKib(glueGzip)} | vendor (SQLite) |
+| sqlite3.wasm (external asset) | ${fmtKib(bundle.wasmRaw)} | ${fmtKib(bundle.wasmGzip)} | vendor (SQLite) |
+| **Total** | **${fmtKib(totalRaw)}** | **${fmtKib(totalGzip)}** | |
 
 The size budget gates OUR bytes (decision 2026-07-03): vendor engine
 bytes don't gate — every wasm-SQLite product ships the stock SQLite
-distribution. Total reported for context: ${fmtKb(totalRaw)} raw /
-${fmtKb(totalGzip)} gzip.
+distribution. Total reported for context: ${fmtKib(totalRaw)} raw /
+${fmtKib(totalGzip)} gzip. KiB is 1024 bytes; gzip is \`Bun.gzipSync\` at
+its default level.
+
+The table above is the main-thread client (\`bundle-entry.ts\`). The web
+setup the docs recommend ships two bundles instead, each built with the same
+command and \`@sqlite.org/sqlite-wasm\` external: the page entry
+(\`createSyncClientHandle\`, \`bundle-page-entry.ts\`) and the worker entry
+(\`startSyncWorker()\`, \`bundle-worker-entry.ts\`, which runs the client core).
+
+| Artifact | Raw | Gzip | Whose bytes |
+|---|---|---|---|
+| page entry (\`createSyncClientHandle\`) | ${fmtKib(bundle.pageRaw)} | ${fmtKib(bundle.pageGzip)} | **ours** |
+| worker entry (\`startSyncWorker\`) | ${fmtKib(bundle.workerRaw)} | ${fmtKib(bundle.workerGzip)} | **ours** |
+| **Page + worker** | **${fmtKib(bundle.pageRaw + bundle.workerRaw)}** | **${fmtKib(bundle.pageGzip + bundle.workerGzip)}** | |
 `;
 }
 
@@ -527,7 +567,7 @@ async function main(): Promise<void> {
   console.log('bench: bundle size…');
   const bundle = await measureBundle();
   console.log(
-    `  js ${fmtKb(bundle.jsRaw)} (gzip ${fmtKb(bundle.jsGzip)}), wasm ${fmtKb(bundle.wasmRaw)}`,
+    `  js ${fmtKib(bundle.jsRaw)} (gzip ${fmtKib(bundle.jsGzip)}), wasm ${fmtKib(bundle.wasmRaw)}`,
   );
 
   // §4.8 value-sharding proof (cheap): replace {A,B}→{B,C} re-downloads only

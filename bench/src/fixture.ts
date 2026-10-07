@@ -374,6 +374,6 @@ export function fmtMs(value: number): string {
   return `${value.toFixed(1)} ms`;
 }
 
-export function fmtKb(bytes: number): string {
-  return `${(bytes / 1024).toFixed(1)} KB`;
+export function fmtKib(bytes: number): string {
+  return `${(bytes / 1024).toFixed(1)} KiB`;
 }
