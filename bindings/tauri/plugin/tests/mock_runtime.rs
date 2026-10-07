@@ -67,3 +67,26 @@ fn window_builds_against_the_plugin() {
         Err(e) => eprintln!("skipping window build: no windowing backend ({e})"),
     }
 }
+
+/// Compiled as a dependency (not `cfg(test)`), so the clock seam is only
+/// reachable through the public `test-clock` feature.
+#[cfg(feature = "test-clock")]
+#[test]
+fn consumer_sets_the_client_clock_through_the_public_seam() {
+    let mut core =
+        tauri_plugin_syncular::core::SyncularCore::new(&serde_json::json!({})).expect("build core");
+    assert_eq!(
+        core.set_now_ms(1_000).unwrap_err(),
+        "client.not_created: create a client before setting the clock"
+    );
+    let created = core.command(&serde_json::json!({
+        "method": "create",
+        "params": {
+            "clientId": "consumer-clock",
+            "schema": { "version": 1, "tables": [] },
+            "nowMs": 1_000
+        }
+    }));
+    assert!(created.get("error").is_none(), "{created}");
+    core.set_now_ms(2_000).expect("set the clock");
+}

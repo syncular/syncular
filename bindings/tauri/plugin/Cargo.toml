@@ -49,3 +49,8 @@ e2ee = ["syncular-client/e2ee", "syncular-command/e2ee"]
 # example enables it so the demo can show collaborative text. Forwards to the
 # shared router — the plugin adds no code (the commands ride `dispatch`).
 crdt-yjs = ["syncular-command/crdt-yjs"]
+# Test-only host seam: exposes the public `SyncularCore::set_now_ms` so a
+# consumer's integration tests can advance the client clock alongside their
+# own test clock. Off by default; the plugin's own tests see the method under
+# `cfg(test)`. No wire or client behavior changes.
+test-clock = []

@@ -212,6 +212,31 @@ designated sync path: a round while it is down then fails with
 See [Realtime](/concepts-realtime/#required-realtime) for phases and
 diagnostics.
 
+## Test clock
+
+`create` accepts an optional `nowMs` that pins the client clock. The plugin
+reads and applies it through the shared command router, so the core's
+`capturedAtMs`, lease expiry, and previous-version TTL stay deterministic in a
+test.
+
+To set the pinned clock mid-test, build the plugin with its `test-clock`
+feature and call `SyncularCore::set_now_ms`:
+
+```rust
+use tauri_plugin_syncular::core::SyncularCore;
+
+let mut core = SyncularCore::new(&serde_json::json!({}))?;
+core.command(&serde_json::json!({
+    "method": "create",
+    "params": { "clientId": "test", "schema": schema, "nowMs": 1_000 },
+}));
+core.set_now_ms(2_000)?; // set the client clock from the host test clock
+```
+
+The setter accepts an earlier or later timestamp in milliseconds since the Unix
+epoch. It returns `client.not_created` before a `create`. The feature is off
+by default. Set the host's test clock separately.
+
 ## React bindings (optional)
 
 In a React app, install the hooks and pass the shared client to `SyncProvider`:
