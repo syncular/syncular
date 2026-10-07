@@ -18,7 +18,7 @@ export const changelog = [
   {
     date: '2026-10-06',
     title: 'Storage contention and authoring errors are typed',
-    body: 'SQLite BUSY/LOCKED (5/6), including extended codes, now classify as retryable client.storage_busy in both cores, and both cores preserve the classified code, retryable flag, and SQLite details on authoring. The native Rust mutate and patch return a structured failure with a stable code, a static message, optional details, and retryable, instead of a string callers must parse. Each authoring call classifies its own failure, so a retained storage failure cannot classify a later unrelated one. The command, shim, FFI, and Tauri boundaries forward code, message, retryable, and details. Legacy cause strings with dynamic values move to details.legacyCause.',
+    body: 'SQLite BUSY/LOCKED (5/6), including extended codes, now classify as retryable client.storage_busy in both cores, and both cores preserve the classified code, retryable flag, and SQLite details on authoring. The native Rust mutate and patch return a structured failure with a stable code, a static message, optional details, and retryable, instead of a string callers must parse. Each authoring call classifies its own failure, so a retained storage failure cannot classify a later unrelated one. The command, shim, FFI, and Tauri boundaries forward code, message, retryable, and details. Legacy cause strings with dynamic values move to details.legacyCause. Caller value failures during authoring, including an unknown column, a value that does not match the column type, an absent required column, and an unrenderable primary key, report sync.invalid_request instead of client.failed.',
     links: [
       {
         href: '/platform-rust/#structured-authoring-failures',

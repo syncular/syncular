@@ -1815,6 +1815,114 @@ mod tests {
     }
 
     #[test]
+    fn mutate_and_patch_report_caller_value_failures_as_invalid_request() {
+        let path = temp_db_path("caller-values");
+        let schema = json!({
+            "version": 1,
+            "tables": [{
+                "name": "todos",
+                "columns": [
+                    { "name": "id", "type": "string", "nullable": false },
+                    { "name": "list_id", "type": "string", "nullable": false },
+                    { "name": "title", "type": "string", "nullable": false },
+                    { "name": "priority", "type": "integer", "nullable": false }
+                ],
+                "primaryKey": "id",
+                "scopes": [{ "pattern": "list:{list_id}", "column": "list_id" }]
+            }]
+        });
+        let mut transport = NoNetwork::default();
+        let mut client: Option<SyncClient> = None;
+        let mut effects = CreateEffects::default();
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({ "schema": schema, "dbPath": path }),
+        )
+        .expect("create file-backed client");
+        let seed = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "mutate",
+            &json!({ "mutations": [{ "op": "upsert", "table": "todos", "values": {
+                "id": "t1", "list_id": "l1", "title": "first", "priority": 1 } }] }),
+        )
+        .expect("seed row");
+        let seed_id = seed["clientCommitId"].clone();
+
+        // §6.1/§7.1: a caller value the authoring seam rejects is an invalid
+        // request, not the internal-failure default.
+        let unknown = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "mutate",
+            &json!({ "mutations": [{ "op": "upsert", "table": "todos", "values": {
+                "id": "t2", "list_id": "l1", "title": "second", "priority": 1,
+                "missing_column": 1 } }] }),
+        )
+        .expect_err("unknown column");
+        assert_eq!(unknown.code, "sync.invalid_request");
+        assert_eq!(unknown.message, "the authoring request is invalid");
+        assert!(!unknown.retryable);
+        assert!(unknown.details.as_ref().unwrap()["legacyCause"]
+            .as_str()
+            .unwrap()
+            .contains("unknown column"));
+
+        let bad_patch = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "patch",
+            &json!({ "table": "todos", "rowId": "t1", "partial": { "priority": "high" } }),
+        )
+        .expect_err("bad patch value");
+        assert_eq!(bad_patch.code, "sync.invalid_request");
+        assert_eq!(bad_patch.message, "the authoring request is invalid");
+        assert!(bad_patch.details.as_ref().unwrap()["legacyCause"]
+            .as_str()
+            .unwrap()
+            .contains("priority"));
+
+        // Neither rejection enqueued a commit or touched the projection.
+        let pending = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "pendingCommitIds",
+            &json!({}),
+        )
+        .expect("pending commit ids");
+        assert_eq!(pending["ids"], json!([seed_id]));
+        let rows = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "query",
+            &json!({ "sql": "SELECT id, priority FROM todos ORDER BY id" }),
+        )
+        .expect("visible rows");
+        assert_eq!(rows["rows"], json!([{ "id": "t1", "priority": 1 }]));
+
+        // The next valid call authorizes normally.
+        let accepted = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "mutate",
+            &json!({ "mutations": [{ "op": "upsert", "table": "todos", "values": {
+                "id": "t2", "list_id": "l1", "title": "second", "priority": 2 } }] }),
+        )
+        .expect("retry after rejection");
+        assert!(accepted.get("clientCommitId").is_some());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn client_err_preserves_retryable_for_storage_busy() {
         let busy = client_err("client.storage_busy: local SQLite storage is busy".to_owned());
         assert_eq!(busy.code, "client.storage_busy");
