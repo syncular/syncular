@@ -7,7 +7,7 @@ import { decodeMessage } from '@syncular/core';
 import { check, checkEqual } from '../checks';
 import { FIXTURE_SCHEMA, task } from '../fixture';
 import { responsePushResults } from '../raw';
-import type { ClientLimitsOptions, DriverSchema } from '../driver';
+import type { ClientLimitsOptions, DriverRow, DriverSchema } from '../driver';
 import type { Scenario } from '../scenario';
 import {
   expectConverged,
@@ -58,6 +58,23 @@ async function bootstrapped(
   await syncIdle(handle);
   return handle;
 }
+
+const CALLER_VALUE_SCHEMA: DriverSchema = {
+  version: 1,
+  tables: [
+    {
+      name: 'tasks',
+      columns: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'project_id', type: 'string', nullable: false },
+        { name: 'title', type: 'string', nullable: false },
+        { name: 'priority', type: 'integer', nullable: false },
+      ],
+      primaryKey: 'id',
+      scopes: [{ pattern: 'project:{project_id}' }],
+    },
+  ],
+};
 
 export const offlineScenarios: readonly Scenario[] = [
   {
@@ -1207,6 +1224,110 @@ export const offlineScenarios: readonly Scenario[] = [
         await ctx.server.getMaxCommitSeq(),
         0,
         'the server applied nothing',
+      );
+    },
+  },
+
+  {
+    // §6.1/§7.1: a caller value the authoring seam rejects reports the same
+    // stable identity in both cores, whether it names an unknown column, an
+    // internal sync column, an absent required column, or a primary key the
+    // wire cannot render. Every rejection leaves the durable outbox and the
+    // projection untouched.
+    name: 'offline/caller-values-reject-with-invalid-request',
+    specRefs: ['§6.1', '§7.1'],
+    server: { schema: CALLER_VALUE_SCHEMA },
+    async run(ctx) {
+      const client = await ctx.newClient({
+        actorId: 'actor',
+        clientId: 'caller-values',
+        schema: CALLER_VALUE_SCHEMA,
+        allowed: P1,
+      });
+      const seed = await client.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: {
+            id: 'kept',
+            project_id: 'p1',
+            title: 'seed',
+            priority: 1,
+          },
+        },
+      ]);
+      const before = await client.api.readRows('tasks');
+      const cases: ReadonlyArray<readonly [string, DriverRow]> = [
+        [
+          'unknown column',
+          { id: 't1', project_id: 'p1', title: 'x', priority: 1, nope: 1 },
+        ],
+        [
+          'internal sync column',
+          {
+            id: 't1',
+            project_id: 'p1',
+            title: 'x',
+            priority: 1,
+            _sync_version: 1,
+          },
+        ],
+        ['absent required column', { id: 't1', project_id: 'p1', priority: 1 }],
+        [
+          'byte envelope primary key',
+          {
+            id: { $bytes: '0a' },
+            project_id: 'p1',
+            title: 'x',
+            priority: 1,
+          },
+        ],
+      ];
+      for (const [label, values] of cases) {
+        let code: unknown;
+        try {
+          await client.api.mutate([{ op: 'upsert', table: 'tasks', values }]);
+        } catch (error) {
+          if (error instanceof Error && 'code' in error) code = error.code;
+        }
+        checkEqual(
+          code,
+          'sync.invalid_request',
+          `${label} reports the identity`,
+        );
+        checkEqual(
+          await client.api.pendingCommitIds(),
+          [seed],
+          `${label} queues no commit`,
+        );
+        checkEqual(
+          await client.api.readRows('tasks'),
+          before,
+          `${label} preserves the projection`,
+        );
+      }
+
+      // The sparse route classifies the same caller value failure identically.
+      let patchCode: unknown;
+      try {
+        await client.api.patch('tasks', 'kept', { nope: 1 });
+      } catch (error) {
+        if (error instanceof Error && 'code' in error) patchCode = error.code;
+      }
+      checkEqual(
+        patchCode,
+        'sync.invalid_request',
+        'patch reports the identity',
+      );
+      checkEqual(
+        await client.api.pendingCommitIds(),
+        [seed],
+        'patch queues no commit',
+      );
+      checkEqual(
+        await client.api.readRows('tasks'),
+        before,
+        'patch preserves the projection',
       );
     },
   },
