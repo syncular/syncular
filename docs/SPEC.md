@@ -3705,12 +3705,35 @@ an outbox commit. This includes a patch following an insert in the same batch.
   a client MUST NOT reorder or coalesce commits once a push containing
   them may have reached the server (the idempotency key pins their
   content).
-  Each request contains a contiguous prefix of the surviving outbox. When
-  the next whole commit exceeds the remaining operation budget, the client
-  defers that commit and the complete suffix. A smaller later commit MUST
-  NOT fill the remaining budget. Retries preserve this order and each
-  commit's identity. A first commit that alone exceeds the server cap stays
-  atomic and receives the request-level `sync.too_many_operations` error.
+  Each request contains a contiguous prefix of the surviving outbox. A
+  client MAY configure three per-request push budgets: whole commits, total
+  operations, and the encoded request byte size. The default operation budget
+  is 500; the commit and byte budgets are unbounded by default. When the next
+  whole commit exceeds the remaining operation or commit budget, the client
+  defers that commit and the complete suffix. A smaller later commit MUST NOT
+  fill the remaining budget. Retries preserve this order and each commit's
+  identity. A first commit that alone exceeds the configured operation cap is
+  a typed capacity error (`client.push_request_too_large`, `kind:
+  "operations"`) and stays queued; a client budget above the server's still
+  receives the request-level `sync.too_many_operations` rejection.
+
+  The encoded byte budget counts the complete encoded SSP2 request: the
+  8-byte envelope, every frame header and payload (request header, push
+  commits, pull header, subscriptions), and the 5-byte END frame, including
+  any §5.11 ciphertext. The byte count and the transmitted request reuse the
+  same encoded frame, so measuring a commit never re-encrypts it. The client
+  admits whole commits in FIFO order while they fit the remaining byte
+  budget. A later commit that does not fit is deferred with the complete
+  suffix, and the admitted prefix is sent. When the first commit alone does
+  not fit, the client MUST NOT send the request: it raises
+  `client.push_request_too_large` with details
+  `{ kind: "bytes", limit, size, clientCommitId? }` (non-retryable,
+  client-local), keeps the commit in the outbox, and leaves its optimistic
+  rows applied. `size` is the full projected request byte count including the
+  request header, pull header, and subscription frames. The same error
+  without `clientCommitId` reports a request whose fixed frames alone exceed
+  the byte budget; a client MUST NOT silently ignore the configured budget on
+  such a round.
 - Local reads see outbox state applied optimistically. The overlay applies
   each pending operation's **present columns** over the current local row;
   when the local row is absent and the operation is partial, the overlay
@@ -5769,6 +5792,10 @@ carried no transport code; the diagnostics reason for state `lost`],
 policy was refused because the socket is not connected; client-local,
 retryable, and never on the wire],
 `client.worker_failed` [a browser worker failed outside wire semantics],
+`client.push_request_too_large` [§7.1: the first queued commit alone
+exceeds the configured operation or encoded byte budget, or the fixed
+request frames exceed the byte budget; non-retryable, client-local, with
+structured kind/limit/size/commit details],
 `client.storage_corrupt` [§7.5 — a local snapshot read hit SQLite
 `SQLITE_CORRUPT` or `SQLITE_NOTADB`; non-retryable], `client.storage_io`
 [§7.5 — a local snapshot read hit SQLite `SQLITE_IOERR`; non-retryable],

@@ -1920,3 +1920,148 @@ test('persisted scope registrations migrate 89→90 and survive compatible 91', 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+describe('push capacity limits (§7.1)', () => {
+  test('the configured operation cap is hard for the first commit', async () => {
+    const source = makeServer();
+    const { client, db } = await makeClient(source, {
+      clientId: 'op-cap',
+      limits: { maxPushOperationsPerRequest: 1 },
+    });
+    try {
+      const id = client.mutate([
+        { op: 'upsert', table: 'tasks', values: taskValues('a', 'p1') },
+        { op: 'upsert', table: 'tasks', values: taskValues('b', 'p1') },
+      ]);
+      await expect(client.sync()).rejects.toMatchObject({
+        code: 'client.push_request_too_large',
+        details: { kind: 'operations', limit: 1, size: 2, clientCommitId: id },
+      });
+      expect(
+        client.pendingCommits().map((commit) => commit.clientCommitId),
+      ).toEqual([id]);
+      expect(client.query('SELECT id FROM tasks ORDER BY id')).toEqual([
+        { id: 'a' },
+        { id: 'b' },
+      ]);
+    } finally {
+      await client.close();
+      db.close();
+      source.storage.db.close();
+    }
+  });
+
+  test('the byte cap defers a large later commit, then reports the head with its full size', async () => {
+    const source = makeServer();
+    const { client, db } = await makeClient(source, {
+      clientId: 'byte-cap',
+      limits: { maxPushRequestBytes: 200 },
+    });
+    try {
+      const small = client.mutate([
+        { op: 'upsert', table: 'tasks', values: taskValues('small', 'p1') },
+      ]);
+      const huge = client.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: taskValues('huge', 'p1', 'x'.repeat(200_000)),
+        },
+      ]);
+      const first = await client.sync();
+      expect(first.applied).toEqual([small]);
+      expect(first.deferredCommits).toBe(1);
+      expect(
+        client.pendingCommits().map((commit) => commit.clientCommitId),
+      ).toEqual([huge]);
+
+      const failure = await client.sync().catch((error: unknown) => error);
+      expect(failure).toMatchObject({
+        code: 'client.push_request_too_large',
+        details: { kind: 'bytes', limit: 200, clientCommitId: huge },
+      });
+      expect(((failure as ClientSyncError).details?.size as number) > 200).toBe(
+        true,
+      );
+      expect(
+        client.pendingCommits().map((commit) => commit.clientCommitId),
+      ).toEqual([huge]);
+      expect(client.query('SELECT id FROM tasks ORDER BY id')).toEqual([
+        { id: 'huge' },
+        { id: 'small' },
+      ]);
+    } finally {
+      await client.close();
+      db.close();
+      source.storage.db.close();
+    }
+  });
+
+  test('the commit-count cap defers whole later commits', async () => {
+    const source = makeServer();
+    const { client, db } = await makeClient(source, {
+      clientId: 'commit-cap',
+      limits: { maxPushCommitsPerRequest: 1 },
+    });
+    try {
+      const first = client.mutate([
+        { op: 'upsert', table: 'tasks', values: taskValues('one', 'p1') },
+      ]);
+      const second = client.mutate([
+        { op: 'upsert', table: 'tasks', values: taskValues('two', 'p1') },
+      ]);
+      const report = await client.sync();
+      expect(report.applied).toEqual([first]);
+      expect(report.deferredCommits).toBe(1);
+      expect(
+        client.pendingCommits().map((commit) => commit.clientCommitId),
+      ).toEqual([second]);
+    } finally {
+      await client.close();
+      db.close();
+      source.storage.db.close();
+    }
+  });
+
+  test('a byte cap below the fixed frames reports no blocked commit', async () => {
+    const source = makeServer();
+    const { client, db } = await makeClient(source, {
+      clientId: 'fixed-cap',
+      limits: { maxPushRequestBytes: 1 },
+    });
+    try {
+      const failure = await client.sync().catch((error: unknown) => error);
+      expect(failure).toMatchObject({
+        code: 'client.push_request_too_large',
+        details: { kind: 'bytes', limit: 1 },
+      });
+      expect((failure as ClientSyncError).details).not.toHaveProperty(
+        'clientCommitId',
+      );
+    } finally {
+      await client.close();
+      db.close();
+      source.storage.db.close();
+    }
+  });
+
+  test('invalid push limits fail loudly with a static message', () => {
+    for (const limits of [
+      { maxPushOperationsPerRequest: 0 },
+      { maxPushCommitsPerRequest: -1 },
+      { maxPushRequestBytes: 1.5 },
+      { maxPushRequestBytes: 0x1_0000_0000 },
+    ]) {
+      expect(
+        () =>
+          new SyncClient({
+            database: new BunClientDatabase(),
+            schema: CLIENT_SCHEMA,
+            clientId: 'bad-limits',
+            transport: async () => new Uint8Array(),
+            limits,
+          }),
+      ).toThrow('push limit must be an integer in 1..=4294967295');
+    }
+  });
+});

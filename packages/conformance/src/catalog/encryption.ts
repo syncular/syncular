@@ -1070,4 +1070,113 @@ export const encryptionScenarios: readonly Scenario[] = [
       );
     },
   },
+  {
+    // §7.1 + §5.11: the push byte budget counts the encrypted frame. A cap one
+    // byte below the real encrypted request fails with the full encoded size,
+    // and the request on the wire carries ciphertext, never the plaintext.
+    name: 'encryption/push-byte-cap-counts-ciphertext',
+    specRefs: ['§7.1', '§5.11'],
+    server: E2EE_SERVER,
+    async run(ctx: ScenarioContext) {
+      const values = {
+        id: 'r1',
+        project_id: 'p1',
+        note: 'top secret',
+        amount: 42,
+      };
+      const measured = await ctx.newClient({
+        actorId: 'a',
+        clientId: 'client-a',
+        schema: E2EE_SCHEMA,
+        allowed: P1,
+        encryption: goodKeys,
+      });
+      await measured.api.subscribe({ id: 's', table: 'secrets', scopes: P1 });
+      await syncIdle(measured);
+      await measured.api.mutate([{ op: 'upsert', table: 'secrets', values }]);
+      measured.sentRequests.length = 0;
+      await syncOk(measured);
+      const request = measured.sentRequests.at(-1);
+      if (request === undefined) throw new Error('missing encrypted request');
+      const requestBytes = request.byteLength;
+      check(
+        !new TextDecoder().decode(request).includes('top secret'),
+        'the counted request carries ciphertext, not the plaintext',
+      );
+
+      const capped = await ctx.newClient({
+        actorId: 'a',
+        clientId: 'client-b',
+        schema: E2EE_SCHEMA,
+        allowed: P1,
+        encryption: goodKeys,
+        limits: { maxPushRequestBytes: requestBytes },
+      });
+      await capped.api.subscribe({ id: 's', table: 'secrets', scopes: P1 });
+      await syncIdle(capped);
+      await capped.api.mutate([{ op: 'upsert', table: 'secrets', values }]);
+      capped.sentRequests.length = 0;
+      const admitted = await syncOk(capped);
+      checkEqual(
+        admitted.applied.length,
+        1,
+        'a cap equal to the encrypted request admits it',
+      );
+      const cappedRequest = capped.sentRequests.at(-1);
+      if (cappedRequest === undefined)
+        throw new Error('missing capped push request');
+      checkEqual(
+        cappedRequest.byteLength,
+        requestBytes,
+        'the admitted request exactly fills the byte cap',
+      );
+      check(
+        decodeMessage(cappedRequest).frames.some(
+          (frame) => frame.type === 'PUSH_COMMIT',
+        ),
+        'the capped request carries the push commit',
+      );
+
+      const tight = await ctx.newClient({
+        actorId: 'a',
+        clientId: 'client-c',
+        schema: E2EE_SCHEMA,
+        allowed: P1,
+        encryption: goodKeys,
+        limits: { maxPushRequestBytes: requestBytes - 1 },
+      });
+      await tight.api.subscribe({ id: 's', table: 'secrets', scopes: P1 });
+      await syncIdle(tight);
+      const id = await tight.api.mutate([
+        { op: 'upsert', table: 'secrets', values },
+      ]);
+      tight.sentRequests.length = 0;
+      const failed = await tight.api.sync();
+      check(!failed.ok, 'one byte under the encrypted size fails');
+      if (!failed.ok) {
+        checkEqual(
+          failed.errorCode,
+          'client.push_request_too_large',
+          'typed capacity code',
+        );
+        checkEqual(failed.details?.kind, 'bytes', 'byte kind');
+        checkEqual(
+          failed.details?.size,
+          requestBytes,
+          'the reported size is the encrypted request',
+        );
+        checkEqual(failed.details?.clientCommitId, id, 'blocked commit id');
+      }
+      checkEqual(
+        await tight.api.pendingCommitIds(),
+        [id],
+        'intent stays queued',
+      );
+      checkEqual(
+        tight.sentRequests.length,
+        0,
+        'no request is sent for a blocked head',
+      );
+    },
+  },
 ];

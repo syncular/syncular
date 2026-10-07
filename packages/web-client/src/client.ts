@@ -363,6 +363,22 @@ export interface SyncClientLimits {
    * deleted to satisfy this cap. Defaults to 1,000.
    */
   readonly outcomeRetentionMaxEntries?: number;
+  /** §7.1: maximum whole commits in one push request. Default: unbounded. */
+  readonly maxPushCommitsPerRequest?: number;
+  /**
+   * §7.1: maximum operations across the push commits in one request. Default
+   * 500. A first commit that alone exceeds it is a typed
+   * `client.push_request_too_large` capacity error and stays queued.
+   */
+  readonly maxPushOperationsPerRequest?: number;
+  /**
+   * §7.1: maximum bytes of the complete encoded SSP2 request (8-byte
+   * envelope, request header, push commits, pull header, subscriptions,
+   * framing, and any §5.11 ciphertext). Default: unbounded. A request whose
+   * fixed frames alone exceed it, or whose first commit alone does not fit,
+   * raises `client.push_request_too_large` and stays queued.
+   */
+  readonly maxPushRequestBytes?: number;
 }
 
 export interface SyncClientConfig {
@@ -866,6 +882,26 @@ export class SyncClient {
       throw invalidRequest('transportEnabled must be a boolean');
     }
     this.#transportEnabled = config.transportEnabled !== false;
+    for (const [name, value] of [
+      ['maxPushCommitsPerRequest', config.limits?.maxPushCommitsPerRequest],
+      [
+        'maxPushOperationsPerRequest',
+        config.limits?.maxPushOperationsPerRequest,
+      ],
+      ['maxPushRequestBytes', config.limits?.maxPushRequestBytes],
+    ] as const) {
+      if (
+        value !== undefined &&
+        (!Number.isInteger(value) || value < 1 || value > 0xffffffff)
+      ) {
+        throw new ClientSyncError(
+          'sync.invalid_request',
+          'push limit must be an integer in 1..=4294967295',
+          false,
+          { limit: name },
+        );
+      }
+    }
     if (config.securityPreflight === true && config.encryption !== undefined) {
       throw invalidRequest(
         'securityPreflight and encryption are mutually exclusive; activateSecurity installs keys',
@@ -3400,9 +3436,14 @@ export class SyncClient {
    * incompatible`); its purely-optimistic rows are undone (§7.2). Returns
    * the encoded push frames index-aligned with the surviving `outbox`.
    */
-  async #encodeOutboxForPush(): Promise<{
+  async #encodeOutboxForPush(
+    header: RequestFrame,
+    pull: RequestFrame,
+    byteCap?: number,
+  ): Promise<{
     pushFrames: RequestFrame[];
     outbox: OutboxCommit[];
+    frameBytes: number[];
     deferred: number;
   }> {
     // Pin before the first encryption await: mutations can append while a
@@ -3412,26 +3453,38 @@ export class SyncClient {
     )[0]!;
     const pendingCount = bounds.count as number;
     const throughSeq = (bounds.last_seq as number | null) ?? 0;
+    const maxCommits = this.#config.limits?.maxPushCommitsPerRequest;
+    const maxOps =
+      this.#config.limits?.maxPushOperationsPerRequest ?? MAX_OPS_PER_REQUEST;
+    // A request must start with REQ_HEADER and carry PULL_HEADER; those two
+    // frames make a valid probe whose encoded size cancels out of the
+    // per-commit delta measured against the canonical encoder.
+    const baseBytes =
+      byteCap === undefined
+        ? 0
+        : encodeMessage({
+            wireVersion: PROTOCOL_WIRE_VERSION,
+            msgKind: 'request',
+            frames: [header, pull],
+          }).length;
     const pushFrames: RequestFrame[] = [];
     const outbox: OutboxCommit[] = [];
+    const frameBytes: number[] = [];
     let deferred = 0;
     let ops = 0;
+    let bytes = 0;
     let processed = 0;
     for (const commit of iterateOutbox(this.#db, throughSeq)) {
-      // §6.1 splitBatch: whole commits in commit order, stopping before the
-      // per-request operation cap. A first commit that alone exceeds the cap
-      // is sent alone — the server rejects it loudly rather than the queue
-      // wedging silently. Deferred commits stay queued for the next round.
-      if (
-        outbox.length > 0 &&
-        ops + commit.operations.length > MAX_OPS_PER_REQUEST
-      ) {
+      // §6.1/§7.1: the commit-count and operation caps are hard. A first
+      // commit that alone exceeds the operation cap is a typed capacity error
+      // and stays queued; a later one defers with the complete suffix.
+      if (maxCommits !== undefined && pushFrames.length >= maxCommits) {
         deferred = pendingCount - processed;
         break;
       }
-      processed += 1;
+      let pushFrame: RequestFrame;
       try {
-        pushFrames.push(
+        pushFrame =
           // §5.11: encrypted columns are encrypted at this encode-at-send
           // seam before the row codec serializes them. The stored local row
           // supplies an ABSENT key-id selector (§6.1 presence set first,
@@ -3453,23 +3506,82 @@ export class SyncClient {
                 ? value
                 : undefined;
             },
-          ),
-        );
-        outbox.push(commit);
-        ops += commit.operations.length;
+          );
       } catch (error) {
         if (error instanceof OutboxEncodeError) {
           this.#dropIncompatibleCommit(commit, error.message);
+          processed += 1;
           continue;
         }
         if (error instanceof EncryptError) {
           this.#dropIncompatibleCommit(commit, error.message, error.code);
+          processed += 1;
           continue;
         }
         throw error;
       }
+      // The operation cap is checked after the encode/drop so an unencodable
+      // head is dropped as a durable rejection first, matching the native
+      // prepass priority.
+      if (ops + commit.operations.length > maxOps) {
+        if (pushFrames.length === 0) {
+          throw this.#pushCapacityError(
+            'operations',
+            maxOps,
+            commit.operations.length,
+            commit.clientCommitId,
+          );
+        }
+        deferred = pendingCount - processed;
+        break;
+      }
+      const frame =
+        byteCap === undefined
+          ? 0
+          : encodeMessage({
+              wireVersion: PROTOCOL_WIRE_VERSION,
+              msgKind: 'request',
+              frames: [header, pushFrame, pull],
+            }).length - baseBytes;
+      // The head is always encoded so the caller can report the full
+      // projected request size with the final header and subscription bytes;
+      // a later commit defers once it no longer fits.
+      if (
+        byteCap !== undefined &&
+        pushFrames.length > 0 &&
+        bytes + frame > byteCap
+      ) {
+        deferred = pendingCount - processed;
+        break;
+      }
+      pushFrames.push(pushFrame);
+      outbox.push(commit);
+      frameBytes.push(frame);
+      ops += commit.operations.length;
+      bytes += frame;
+      processed += 1;
     }
-    return { pushFrames, outbox, deferred };
+    return { pushFrames, outbox, frameBytes, deferred };
+  }
+
+  /** §7.1: a configured push capacity limit cannot carry this request. */
+  #pushCapacityError(
+    kind: 'operations' | 'bytes',
+    limit: number,
+    size: number,
+    clientCommitId?: string,
+  ): ClientSyncError {
+    return new ClientSyncError(
+      'client.push_request_too_large',
+      'the push request exceeds a configured capacity limit',
+      false,
+      definedObject({
+        kind,
+        limit,
+        size,
+        ...(clientCommitId !== undefined ? { clientCommitId } : {}),
+      }),
+    );
   }
 
   /**
@@ -3649,10 +3761,29 @@ export class SyncClient {
       // is removed from the push and surfaced as a rejection, never wedging
       // the queue. `pushFrames` and `outbox` stay index-aligned for result
       // mapping.
-      const { pushFrames, outbox, deferred } =
-        logEpoch === undefined
-          ? { pushFrames: [], outbox: [], deferred: 0 }
-          : await this.#encodeOutboxForPush();
+      const limits = this.#config.limits;
+      const byteCap = limits?.maxPushRequestBytes;
+      const header: RequestFrame = definedObject({
+        type: 'REQ_HEADER',
+        clientId: this.#clientId,
+        schemaVersion: this.#schema.version,
+        logEpoch: logEpoch,
+      });
+      const pull: RequestFrame = {
+        type: 'PULL_HEADER',
+        limitCommits: limits?.limitCommits ?? 0,
+        limitSnapshotRows: limits?.limitSnapshotRows ?? 0,
+        maxSnapshotPages: limits?.maxSnapshotPages ?? 0,
+        accept: this.#acceptMask(),
+      };
+      const {
+        pushFrames,
+        outbox,
+        frameBytes,
+        deferred: encodedDeferred,
+      } = logEpoch === undefined
+        ? { pushFrames: [], outbox: [], frameBytes: [], deferred: 0 }
+        : await this.#encodeOutboxForPush(header, pull, byteCap);
       // §5.9.7 B4: upload pending blobs BEFORE pushing rows that reference
       // them, so the server-side existence check (§6.6) passes.
       if (
@@ -3662,28 +3793,16 @@ export class SyncClient {
       ) {
         await this.#flushBlobUploads();
       }
-      // Captured together with the subscription state below: the response
-      // apply persists SUB_END cursors only while this epoch is current.
+      // Captured after encoding: a subscribe/unsubscribe during the
+      // encryption await must not make the final request exceed the byte
+      // budget, and the reset epoch must be the one the response apply checks.
       const resetEpoch = this.#localResetEpoch;
       const subs = loadSubscriptions(this.#db).filter(
         (sub) => sub.status === 'active',
       );
-      const limits = this.#config.limits;
-      const frames: RequestFrame[] = [
-        definedObject({
-          type: 'REQ_HEADER',
-          clientId: this.#clientId,
-          schemaVersion: this.#schema.version,
-          logEpoch: logEpoch,
-        }),
-        ...pushFrames,
-        {
-          type: 'PULL_HEADER',
-          limitCommits: limits?.limitCommits ?? 0,
-          limitSnapshotRows: limits?.limitSnapshotRows ?? 0,
-          maxSnapshotPages: limits?.maxSnapshotPages ?? 0,
-          accept: this.#acceptMask(),
-        },
+      const fixedFrames: RequestFrame[] = [
+        header,
+        pull,
         ...subs.map(
           (sub): RequestFrame =>
             definedObject({
@@ -3696,6 +3815,42 @@ export class SyncClient {
               bootstrapState: sub.bootstrapState,
             }),
         ),
+      ];
+      let admitted = pushFrames.length;
+      let deferred = encodedDeferred;
+      if (byteCap !== undefined) {
+        // The fixed frames encode as envelope + fixed frames + END; each
+        // admitted push frame adds its own (5 + payload). Trimming the tail
+        // re-fits the request to the final subscription state.
+        const fixedBytes = encodeMessage({
+          wireVersion: PROTOCOL_WIRE_VERSION,
+          msgKind: 'request',
+          frames: fixedFrames,
+        }).length;
+        if (fixedBytes > byteCap)
+          throw this.#pushCapacityError('bytes', byteCap, fixedBytes);
+        let admittedBytes = 0;
+        for (const size of frameBytes) admittedBytes += size;
+        while (admitted > 0 && fixedBytes + admittedBytes > byteCap) {
+          admitted -= 1;
+          admittedBytes -= frameBytes[admitted]!;
+          deferred += 1;
+        }
+        if (admitted === 0 && pushFrames.length > 0) {
+          throw this.#pushCapacityError(
+            'bytes',
+            byteCap,
+            fixedBytes + frameBytes[0]!,
+            outbox[0]!.clientCommitId,
+          );
+        }
+        pushFrames.length = admitted;
+        outbox.length = admitted;
+      }
+      const frames: RequestFrame[] = [
+        fixedFrames[0]!,
+        ...pushFrames,
+        ...fixedFrames.slice(1),
       ];
       const requestBytes = encodeMessage({
         wireVersion: PROTOCOL_WIRE_VERSION,

@@ -8,7 +8,6 @@
 //! reference to the v1 Rust tree or the v2 TypeScript client.
 
 use crate::{ProgressObserver, ProgressPhase, ProgressState};
-#[cfg(test)]
 use ssp2::encode_message;
 #[cfg(test)]
 use std::cell::Cell;
@@ -844,7 +843,7 @@ mod observation_tests {
                 client.realtime_reason_code = None;
                 client.drain_change_batches();
                 let mut transport = CountingRealtimeTransport::default();
-                let (_, meta) = client.build_request(false);
+                let (_, meta) = client.build_request(false).unwrap();
                 let mut response = Message {
                     wire_version: WIRE_VERSION,
                     msg_kind: MsgKind::Response,
@@ -997,7 +996,7 @@ mod observation_tests {
                     count as usize
                 );
                 assert_eq!(reopened.subs[0].cursor, if fault == "none" { 2 } else { 0 });
-                let (_, meta) = reopened.build_request(false);
+                let (_, meta) = reopened.build_request(false).unwrap();
                 assert!(matches!(
                     reopened.process_response(&mut transport, valid, &meta),
                     SyncOutcome::Ok(_)
@@ -1047,7 +1046,7 @@ mod observation_tests {
                 let rows = client.query("SELECT * FROM tasks", &[]).unwrap();
                 let revision = client.local_revision();
                 client.drain_change_batches();
-                let (_, meta) = client.build_request(false);
+                let (_, meta) = client.build_request(false).unwrap();
                 client.conn.execute_batch(if fault == "subscription" {
                     "CREATE TRIGGER fail_control BEFORE INSERT ON _syncular_subscriptions BEGIN SELECT RAISE(FAIL, 'injected subscription failure'); END"
                 } else {
@@ -1534,6 +1533,226 @@ mod observation_tests {
             aggregate.schema_floor.is_none(),
             "a later round without a floor clears it"
         );
+    }
+
+    #[test]
+    fn push_capacity_limits_are_hard_and_keep_intent() {
+        // The configured operation cap is hard for the first commit.
+        let mut c = client();
+        c.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        c.limits.max_push_operations_per_request = Some(1);
+        let id = c
+            .mutate(vec![
+                Mutation::Upsert {
+                    table: "tasks".into(),
+                    values: Map::from_iter([
+                        ("id".into(), json!("a")),
+                        ("project_id".into(), json!("p1")),
+                    ]),
+                    base_version: None,
+                },
+                Mutation::Upsert {
+                    table: "tasks".into(),
+                    values: Map::from_iter([
+                        ("id".into(), json!("b")),
+                        ("project_id".into(), json!("p1")),
+                    ]),
+                    base_version: None,
+                },
+            ])
+            .unwrap();
+        let error = c.build_request(false).unwrap_err();
+        let SyncOutcome::Failed {
+            error_code,
+            details,
+            ..
+        } = *error
+        else {
+            panic!("expected a capacity failure");
+        };
+        assert_eq!(error_code, "client.push_request_too_large");
+        let details = details.expect("capacity details");
+        assert_eq!(details["kind"], json!("operations"));
+        assert_eq!(details["limit"], json!(1));
+        assert_eq!(details["size"], json!(2));
+        assert_eq!(details["clientCommitId"], json!(id));
+        assert_eq!(c.pending_commit_ids(), vec![id]);
+
+        // The commit-count cap defers whole later commits.
+        let mut c = client();
+        c.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        c.limits.max_push_commits_per_request = Some(1);
+        let first = c
+            .mutate(vec![Mutation::Upsert {
+                table: "tasks".into(),
+                values: Map::from_iter([
+                    ("id".into(), json!("one")),
+                    ("project_id".into(), json!("p1")),
+                ]),
+                base_version: None,
+            }])
+            .unwrap();
+        let second = c
+            .mutate(vec![Mutation::Upsert {
+                table: "tasks".into(),
+                values: Map::from_iter([
+                    ("id".into(), json!("two")),
+                    ("project_id".into(), json!("p1")),
+                ]),
+                base_version: None,
+            }])
+            .unwrap();
+        let (_, meta) = c.build_request(false).unwrap();
+        assert_eq!(meta.pushed_ids, vec![first.clone()]);
+        assert_eq!(meta.deferred_commits, 1);
+        assert_eq!(c.pending_commit_ids(), vec![first, second]);
+    }
+
+    #[test]
+    fn push_request_byte_cap_defers_the_prefix_boundary_and_errors_the_head() {
+        // Two small commits: a cap just below the full request defers the
+        // last commit and sends the fitting prefix (header + first commit).
+        let mut c = client();
+        c.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        let first = c
+            .mutate(vec![Mutation::Upsert {
+                table: "tasks".into(),
+                values: Map::from_iter([
+                    ("id".into(), json!("one")),
+                    ("project_id".into(), json!("p1")),
+                ]),
+                base_version: None,
+            }])
+            .unwrap();
+        let second = c
+            .mutate(vec![Mutation::Upsert {
+                table: "tasks".into(),
+                values: Map::from_iter([
+                    ("id".into(), json!("two")),
+                    ("project_id".into(), json!("p1")),
+                ]),
+                base_version: None,
+            }])
+            .unwrap();
+        let (message, meta) = c.build_request(false).unwrap();
+        assert_eq!(meta.pushed_ids.len(), 2);
+        let full = encode_message(&message).len();
+        c.limits.max_push_request_bytes = Some(full - 1);
+        let (_, meta) = c.build_request(false).unwrap();
+        assert_eq!(meta.pushed_ids, vec![first.clone()]);
+        assert_eq!(meta.deferred_commits, 1);
+        assert_eq!(c.pending_commit_ids(), vec![first, second]);
+
+        // A single commit larger than the budget is a typed capacity error and
+        // stays queued, reporting the full projected request size.
+        let mut c = client();
+        c.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        let huge = c
+            .mutate(vec![Mutation::Upsert {
+                table: "tasks".into(),
+                values: Map::from_iter([
+                    ("id".into(), json!("x".repeat(20_000))),
+                    ("project_id".into(), json!("p1")),
+                ]),
+                base_version: None,
+            }])
+            .unwrap();
+        let (message, meta) = c.build_request(false).unwrap();
+        assert_eq!(meta.pushed_ids, vec![huge.clone()]);
+        let with_huge = encode_message(&message).len();
+        c.limits.max_push_request_bytes = Some(with_huge - 1);
+        let error = c.build_request(false).unwrap_err();
+        let SyncOutcome::Failed {
+            error_code,
+            details,
+            ..
+        } = *error
+        else {
+            panic!("expected a capacity failure");
+        };
+        assert_eq!(error_code, "client.push_request_too_large");
+        let details = details.expect("capacity details");
+        assert_eq!(details["kind"], json!("bytes"));
+        assert_eq!(details["limit"], json!((with_huge - 1) as u64));
+        assert_eq!(details["size"], json!(with_huge as u64));
+        assert_eq!(details["clientCommitId"], json!(huge));
+        assert_eq!(c.pending_commit_ids(), vec![huge]);
+
+        // A cap smaller than the fixed frames reports no blocked commit.
+        let mut c = client();
+        c.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        c.limits.max_push_request_bytes = Some(1);
+        let error = c.build_request(false).unwrap_err();
+        let SyncOutcome::Failed { details, .. } = *error else {
+            panic!("expected a capacity failure");
+        };
+        let details = details.expect("capacity details");
+        assert_eq!(details["kind"], json!("bytes"));
+        assert!(details.get("clientCommitId").is_none(), "{details}");
+    }
+
+    #[test]
+    fn push_limits_validate_at_construction() {
+        for limits in [
+            ClientLimits {
+                max_push_commits_per_request: Some(0),
+                ..Default::default()
+            },
+            ClientLimits {
+                max_push_operations_per_request: Some(0),
+                ..Default::default()
+            },
+            ClientLimits {
+                max_push_request_bytes: Some(0),
+                ..Default::default()
+            },
+            ClientLimits {
+                max_push_request_bytes: Some(u32::MAX as usize + 1),
+                ..Default::default()
+            },
+        ] {
+            let schema = json!({"version":1,"tables":[]});
+            let error = SyncClient::with_connection(
+                "bad-limits".into(),
+                &schema,
+                limits,
+                Connection::open_in_memory().unwrap(),
+            )
+            .err();
+            assert_eq!(
+                error.as_deref(),
+                Some("sync.invalid_request: push limit must be an integer in 1..=4294967295")
+            );
+        }
+    }
+
+    #[test]
+    fn open_path_rejects_invalid_push_limits_before_storage() {
+        for identity in [false, true] {
+            let path = std::env::temp_dir().join(format!(
+                "syncular-bad-limits-{}.sqlite",
+                uuid::Uuid::new_v4()
+            ));
+            let schema = json!({"version":1,"tables":[]});
+            let limits = ClientLimits {
+                max_push_request_bytes: Some(0),
+                ..Default::default()
+            };
+            let error = if identity {
+                SyncClient::open_path_with_identity(None, &schema, limits, path.to_str().unwrap())
+            } else {
+                SyncClient::open_path("bad-limits".into(), &schema, limits, path.to_str().unwrap())
+            }
+            .err();
+            assert_eq!(
+                error.as_deref(),
+                Some("sync.invalid_request: push limit must be an integer in 1..=4294967295")
+            );
+            assert!(
+                !path.exists(),
+                "an invalid limit is rejected before the database file is created"
+            );
+        }
     }
 
     #[test]
@@ -2379,7 +2598,7 @@ mod observation_tests {
                 None,
             )
             .unwrap();
-        let (_, first_request) = client.build_request(false);
+        let (_, first_request) = client.build_request(false).unwrap();
         // This second edit happens while the first request is in flight.
         let second = client
             .patch(
@@ -2395,7 +2614,7 @@ mod observation_tests {
         let mut transport = HostTransport::new_from_config(&json!({})).unwrap();
         for (id, seq, meta) in [
             (first, 2, first_request),
-            (second, 3, client.build_request(false).1),
+            (second, 3, client.build_request(false).unwrap().1),
         ] {
             let response = Message {
                 wire_version: WIRE_VERSION,
@@ -2467,7 +2686,7 @@ mod observation_tests {
                 client.set_meta(LOG_EPOCH_KEY, epoch);
             }
             let before = serde_json::to_value(client.subscription_state("tasks")).unwrap();
-            let (_, meta) = client.build_request(false);
+            let (_, meta) = client.build_request(false).unwrap();
             client.drain_change_batches();
             client.drain_sync_intents();
             let response = Message {
@@ -2637,7 +2856,7 @@ mod observation_tests {
                     }])
                     .unwrap();
             }
-            let (_, meta) = client.build_request(false);
+            let (_, meta) = client.build_request(false).unwrap();
             let mut frames = vec![Frame::RespHeader {
                 required_schema_version: None,
                 latest_schema_version: None,
@@ -2764,7 +2983,7 @@ mod observation_tests {
                 .expect("queue commit");
         }
 
-        let (_, request_meta) = client.build_request(false);
+        let (_, request_meta) = client.build_request(false).unwrap();
         assert_eq!(request_meta.pushed_ids.len(), COMMIT_COUNT);
         let mut frames = vec![Frame::RespHeader {
             required_schema_version: None,
@@ -3869,7 +4088,7 @@ mod observation_tests {
                     }])
                     .unwrap();
             }
-            let (_, meta) = client.build_request(false);
+            let (_, meta) = client.build_request(false).unwrap();
             // A malicious or stale response must not drain an unsent local commit.
             client
                 .mutate(vec![Mutation::Upsert {
@@ -3995,7 +4214,7 @@ mod observation_tests {
                         }])
                         .unwrap();
                 }
-                let (_, meta) = client.build_request(false);
+                let (_, meta) = client.build_request(false).unwrap();
                 let ids = client.pending_commit_ids();
                 let rows = client
                     .query("SELECT * FROM tasks ORDER BY id", &[])
@@ -4113,7 +4332,7 @@ mod observation_tests {
                 .expect("queue commit");
         }
 
-        let (_, request_meta) = client.build_request(false);
+        let (_, request_meta) = client.build_request(false).unwrap();
         let ids = &request_meta.pushed_ids;
         assert_eq!(ids.len(), 4);
         let response = Message {
@@ -4275,7 +4494,7 @@ mod observation_tests {
         client.subs[0].effective = Some(vec![]);
         client.persist_sub(&client.subs[0]).unwrap();
         let revision = client.local_revision();
-        let (_, meta) = client.build_request(false);
+        let (_, meta) = client.build_request(false).unwrap();
         let mut transport = CountingRealtimeTransport::default();
         let mut report = SyncReport::default();
         assert!(client
@@ -4492,7 +4711,7 @@ mod observation_tests {
                 },
             ],
         };
-        let (_, meta) = client.build_request(false);
+        let (_, meta) = client.build_request(false).unwrap();
         let mut transport = HostTransport::new_from_config(&json!({})).unwrap();
         assert!(
             matches!(client.process_response(&mut transport,response.clone(),&meta),SyncOutcome::Failed { error_code,.. } if error_code=="client.outcome_persistence_failed")
@@ -7041,6 +7260,7 @@ enum SectionError {
     Abort(String, String),
 }
 
+#[derive(Debug)]
 pub(crate) struct RequestMeta {
     pushed_ids: Vec<String>,
     /// Subscription id → the request carried `cursor < 0` and no resume
@@ -7751,6 +7971,29 @@ fn schema_marker_read_failure(error: rusqlite::Error) -> String {
     }
 }
 
+/// §7.1: reject an invalid configured client limit before any storage is
+/// opened or written. Zero would wedge the push queue and an out-of-range
+/// value would differ per target; the TS core enforces the same bounds.
+fn validate_client_limits(limits: &crate::api::ClientLimits) -> Result<(), String> {
+    if limits.outcome_retention_max_entries == Some(0) {
+        return Err("sync.invalid_request: outcomeRetentionMaxEntries must be positive".to_owned());
+    }
+    if [
+        limits.max_push_commits_per_request,
+        limits.max_push_operations_per_request,
+        limits.max_push_request_bytes,
+    ]
+    .into_iter()
+    .flatten()
+    .any(|value| value == 0 || value > u32::MAX as usize)
+    {
+        return Err(
+            "sync.invalid_request: push limit must be an integer in 1..=4294967295".to_owned(),
+        );
+    }
+    Ok(())
+}
+
 fn read_local_schema_version(conn: &Connection, requested: i32) -> Result<Option<i32>, String> {
     let corrupt =
         || "sync.local_corrupt: persisted local schema marker is unreadable or invalid".to_owned();
@@ -7847,6 +8090,7 @@ impl SyncClient {
         limits: ClientLimits,
         path: &str,
     ) -> Result<Self, String> {
+        validate_client_limits(&limits)?;
         parse_schema_json(schema_json)?;
         let conn = Connection::open(path).map_err(|e| format!("open db {path:?}: {e}"))?;
         Self::with_connection(client_id, schema_json, limits, conn)
@@ -7858,6 +8102,7 @@ impl SyncClient {
         limits: ClientLimits,
         path: &str,
     ) -> Result<Self, String> {
+        validate_client_limits(&limits)?;
         // §7.4.2: an invalid requested version is refused before the replica is
         // even created, so a rejected constructor leaves no file behind.
         parse_schema_json(schema_json)?;
@@ -7912,11 +8157,7 @@ impl SyncClient {
         limits: ClientLimits,
         conn: Connection,
     ) -> Result<Self, String> {
-        if limits.outcome_retention_max_entries == Some(0) {
-            return Err(
-                "sync.invalid_request: outcomeRetentionMaxEntries must be positive".to_owned(),
-            );
-        }
+        validate_client_limits(&limits)?;
         let schema = parse_schema_json(schema_json)?;
         validate_authority_reads(&schema, &limits.authority_reads)?;
         // RFC 0005 D8: resolve the previous-version config before the opening
@@ -12459,39 +12700,116 @@ impl SyncClient {
 
     // -- request building ---------------------------------------------------------
 
-    fn build_request(&self, url_capable: bool) -> (Message, RequestMeta) {
+    fn build_request(&self, url_capable: bool) -> Result<(Message, RequestMeta), Box<SyncOutcome>> {
         #[cfg(feature = "bench-internals")]
         let _phase = self.benchmark_phases.start(Phase::RequestPrepare);
         let log_epoch = self.get_meta(LOG_EPOCH_KEY);
-        let mut frames = vec![Frame::ReqHeader {
+        let max_commits = self.limits.max_push_commits_per_request;
+        let max_ops = self
+            .limits
+            .max_push_operations_per_request
+            .unwrap_or(PUSH_OPS_PER_REQUEST);
+        let byte_cap = self.limits.max_push_request_bytes;
+        // §4.2/§5.4: bit 3 is advertised iff the transport can fetch a
+        // bare URL — capability negotiation, decided per transport.
+        let accept = self.limits.accept.unwrap_or(if url_capable {
+            DEFAULT_ACCEPT | ACCEPT_SIGNED_URLS
+        } else {
+            DEFAULT_ACCEPT
+        });
+        let header = Frame::ReqHeader {
             client_id: self.client_id.clone(),
             schema_version: self.schema.version,
             log_epoch: log_epoch.clone(),
-        }];
+        };
+        let pull = Frame::PullHeader {
+            limit_commits: self.limits.limit_commits.unwrap_or(0),
+            limit_snapshot_rows: self.limits.limit_snapshot_rows.unwrap_or(0),
+            max_snapshot_pages: self.limits.max_snapshot_pages.unwrap_or(0),
+            accept,
+        };
+        let mut fresh = Vec::new();
+        let mut sub_frames = Vec::new();
+        for sub in &self.subs {
+            if sub.state != SubState::Active {
+                continue;
+            }
+            let mut scopes = sub.requested.clone();
+            sort_scope_map(&mut scopes);
+            sub_frames.push(Frame::Subscription {
+                id: sub.id.clone(),
+                table: sub.table.clone(),
+                scopes,
+                params: sub.params.clone().map(RawJson),
+                cursor: sub.cursor,
+                bootstrap_state: sub.bootstrap_state.clone().map(RawJson),
+            });
+            fresh.push((
+                sub.id.clone(),
+                sub.cursor < 0 && sub.bootstrap_state.is_none(),
+            ));
+        }
+        // The fixed frames (order-independent size) and the header+pull probe
+        // both encode canonically, so the byte budget is the exact wire size.
+        let fixed_bytes = match byte_cap {
+            Some(_) => {
+                let mut frames = vec![header.clone(), pull.clone()];
+                frames.extend(sub_frames.iter().cloned());
+                encode_message(&Message {
+                    wire_version: WIRE_VERSION,
+                    msg_kind: MsgKind::Request,
+                    frames,
+                })
+                .len()
+            }
+            None => 0,
+        };
+        if let Some(cap) = byte_cap {
+            if fixed_bytes > cap {
+                return Err(Self::push_capacity_outcome("bytes", cap, fixed_bytes, None));
+            }
+        }
+        let base_bytes = match byte_cap {
+            Some(_) => encode_message(&Message {
+                wire_version: WIRE_VERSION,
+                msg_kind: MsgKind::Request,
+                frames: vec![header.clone(), pull.clone()],
+            })
+            .len(),
+            None => 0,
+        };
+        let total_outbox = if log_epoch.is_some() {
+            self.outbox.len()
+        } else {
+            0
+        };
+        let mut push_frames: Vec<Frame> = Vec::new();
         let mut pushed_ids = Vec::new();
         let mut ops_in_request = 0usize;
+        let mut bytes_in_request = 0usize;
         let mut deferred_commits = 0usize;
         #[cfg(feature = "bench-internals")]
         let outbox_phase = self.benchmark_phases.start(Phase::OutboxEncode);
-        for (index, commit) in self
-            .outbox
-            .iter()
-            .take(if log_epoch.is_some() {
-                self.outbox.len()
-            } else {
-                0
-            })
-            .enumerate()
-        {
-            // §6.1 splitBatch: stop at the operation cap — commits apply in
-            // order, so everything from the first non-fitting commit on is
-            // deferred to the next round. A single over-cap commit still goes
-            // alone (commits are atomic and cannot be split).
-            if ops_in_request > 0 && ops_in_request + commit.ops.len() > PUSH_OPS_PER_REQUEST {
-                deferred_commits = self.outbox.len() - index;
+        for (index, commit) in self.outbox.iter().take(total_outbox).enumerate() {
+            // §6.1/§7.1: the commit-count and operation caps are hard. A
+            // first commit over the operation cap is a typed capacity error
+            // and stays queued; a later one defers with the complete suffix.
+            if max_commits.is_some_and(|cap| push_frames.len() >= cap) {
+                deferred_commits = total_outbox - index;
                 break;
             }
-            ops_in_request += commit.ops.len();
+            if ops_in_request + commit.ops.len() > max_ops {
+                if push_frames.is_empty() {
+                    return Err(Self::push_capacity_outcome(
+                        "operations",
+                        max_ops,
+                        commit.ops.len(),
+                        Some(commit.client_commit_id.as_str()),
+                    ));
+                }
+                deferred_commits = total_outbox - index;
+                break;
+            }
             let operations = commit
                 .ops
                 .iter()
@@ -12525,53 +12843,65 @@ impl SyncClient {
                     }
                 })
                 .collect();
-            frames.push(Frame::PushCommit {
+            let frame = Frame::PushCommit {
                 client_commit_id: commit.client_commit_id.clone(),
                 operations,
-            });
+            };
+            let frame_bytes = match byte_cap {
+                Some(_) => {
+                    encode_message(&Message {
+                        wire_version: WIRE_VERSION,
+                        msg_kind: MsgKind::Request,
+                        frames: vec![header.clone(), frame.clone(), pull.clone()],
+                    })
+                    .len()
+                        - base_bytes
+                }
+                None => 0,
+            };
+            // The head is always encoded so the caller can report the full
+            // projected request size; a later commit defers once it no longer
+            // fits.
+            if let Some(cap) = byte_cap {
+                if !push_frames.is_empty() && fixed_bytes + bytes_in_request + frame_bytes > cap {
+                    deferred_commits = total_outbox - index;
+                    break;
+                }
+            }
+            push_frames.push(frame);
             pushed_ids.push(commit.client_commit_id.clone());
+            ops_in_request += commit.ops.len();
+            bytes_in_request += frame_bytes;
         }
         #[cfg(feature = "bench-internals")]
         drop(outbox_phase);
-        // §4.2/§5.4: bit 3 is advertised iff the transport can fetch a
-        // bare URL — capability negotiation, decided per transport.
-        let accept = self.limits.accept.unwrap_or(if url_capable {
-            DEFAULT_ACCEPT | ACCEPT_SIGNED_URLS
-        } else {
-            DEFAULT_ACCEPT
-        });
-        frames.push(Frame::PullHeader {
-            limit_commits: self.limits.limit_commits.unwrap_or(0),
-            limit_snapshot_rows: self.limits.limit_snapshot_rows.unwrap_or(0),
-            max_snapshot_pages: self.limits.max_snapshot_pages.unwrap_or(0),
-            accept,
-        });
-        let mut fresh = Vec::new();
-        for sub in &self.subs {
-            if sub.state != SubState::Active {
-                continue;
+        if let Some(cap) = byte_cap {
+            if fixed_bytes + bytes_in_request > cap {
+                // The head alone does not fit this budget; the commit stays
+                // queued and no transport round is attempted.
+                let blocked = if push_frames.is_empty() {
+                    None
+                } else {
+                    self.outbox.first().map(|c| c.client_commit_id.as_str())
+                };
+                return Err(Self::push_capacity_outcome(
+                    "bytes",
+                    cap,
+                    fixed_bytes + bytes_in_request,
+                    blocked,
+                ));
             }
-            let mut scopes = sub.requested.clone();
-            sort_scope_map(&mut scopes);
-            frames.push(Frame::Subscription {
-                id: sub.id.clone(),
-                table: sub.table.clone(),
-                scopes,
-                params: sub.params.clone().map(RawJson),
-                cursor: sub.cursor,
-                bootstrap_state: sub.bootstrap_state.clone().map(RawJson),
-            });
-            fresh.push((
-                sub.id.clone(),
-                sub.cursor < 0 && sub.bootstrap_state.is_none(),
-            ));
         }
+        let mut frames = vec![header];
+        frames.extend(push_frames);
+        frames.push(pull);
+        frames.extend(sub_frames);
         let message = Message {
             wire_version: WIRE_VERSION,
             msg_kind: MsgKind::Request,
             frames,
         };
-        (
+        Ok((
             message,
             RequestMeta {
                 pushed_ids,
@@ -12579,7 +12909,28 @@ impl SyncClient {
                 accept,
                 deferred_commits,
             },
-        )
+        ))
+    }
+
+    /// §7.1: a configured push capacity limit cannot carry this request.
+    fn push_capacity_outcome(
+        kind: &str,
+        limit: usize,
+        size: usize,
+        client_commit_id: Option<&str>,
+    ) -> Box<SyncOutcome> {
+        let mut details = Map::new();
+        details.insert("kind".to_owned(), Value::from(kind));
+        details.insert("limit".to_owned(), Value::from(limit as u64));
+        details.insert("size".to_owned(), Value::from(size as u64));
+        if let Some(id) = client_commit_id {
+            details.insert("clientCommitId".to_owned(), Value::from(id));
+        }
+        Box::new(SyncOutcome::Failed {
+            error_code: "client.push_request_too_large".into(),
+            message: "the push request exceeds a configured capacity limit".into(),
+            details: Some(Value::Object(details)),
+        })
     }
 
     // -- sync -------------------------------------------------------------------
@@ -12773,7 +13124,7 @@ impl SyncClient {
                     retry_delay_ms,
                 }));
             }
-            let (message, meta) = self.build_request(url_capable);
+            let (message, meta) = self.build_request(url_capable)?;
             let id = uuid::Uuid::new_v4();
             self.active_round = Some(id);
             Ok(crate::PreparedSyncRound {

@@ -404,6 +404,26 @@ current version and links the replacement through `superseded`. Edit can choose
 a free unique key. Take-server uses `resolved_keep_server`. Revocation and local
 security purge erase the retained aggregate's protected journal payloads.
 
+## Push batching limits
+
+`limits` carries three per-request push budgets:
+
+- `maxPushCommitsPerRequest`: whole commits per request. Default: unbounded.
+- `maxPushOperationsPerRequest`: operations across those commits. Default:
+  500.
+- `maxPushRequestBytes`: bytes of the complete encoded SSP2 request, including
+  the request header, pull header, subscriptions, framing, and E2EE ciphertext.
+  Default: unbounded.
+
+The client sends whole commits in FIFO order and never splits one. A later
+commit that does not fit defers with the complete suffix. A first commit over
+the operation or byte budget fails with `client.push_request_too_large`
+(non-retryable) and details `{ kind, limit, size, clientCommitId? }`; the
+commit stays queued with its optimistic rows. A request whose fixed frames
+alone exceed the byte budget reports the same code without `clientCommitId`.
+Push limits are integers in `1..=4294967295`; a JSON `null` at the native
+command boundary is treated as omitted.
+
 ## Application-authorized local security purge
 
 `purgeLocalData({ purgeId, targets })` is the narrow local-storage primitive

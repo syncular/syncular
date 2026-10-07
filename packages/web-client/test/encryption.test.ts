@@ -471,6 +471,58 @@ describe('sparse patch key-id fallback (SYNCULAR-SPARSE-PATCH-KEYID-001)', () =>
     // The unrelated commit in the same round still applied.
     expect(handle.client.commitOutcome(goodId)?.status).toBe('applied');
   });
+
+  test('an unencodable commit over the operation cap is dropped, not capacity-errored', async () => {
+    const server = makeServer(SERVER_SCHEMA);
+    server.allowed['actor-1'] = { project_id: ['p1'] };
+    const handle = await makeClient(server, {
+      clientId: 'unencodable-cap',
+      schema: CLIENT_SCHEMA,
+      encryption,
+      limits: { maxPushOperationsPerRequest: 1 },
+    });
+    try {
+      handle.client.subscribe({
+        id: 's1',
+        table: 'secrets',
+        scopes: { project_id: ['p1'] },
+      });
+      await handle.client.syncUntilIdle();
+      handle.client.mutate([
+        {
+          op: 'upsert',
+          table: 'secrets',
+          values: {
+            id: 'ghost',
+            project_id: 'p1',
+            encryption_key_id: null,
+            memo: null,
+            note: null,
+          },
+        },
+      ]);
+      await handle.client.syncUntilIdle();
+      // Two encrypted patches exceed the operation cap, but the commit cannot
+      // resolve a key: the durable rejection wins over a capacity error,
+      // matching the native prepass order.
+      const badId = handle.client.mutate([
+        { op: 'patch', table: 'secrets', values: { id: 'ghost', note: 'x' } },
+        { op: 'patch', table: 'secrets', values: { id: 'ghost', memo: 'y' } },
+      ]);
+      await handle.client.sync();
+      expect(handle.client.commitOutcome(badId)).toMatchObject({
+        status: 'rejected',
+        results: [
+          { status: 'error', rejection: { code: 'client.encrypt_failed' } },
+        ],
+      });
+      expect(handle.client.rejections()).toHaveLength(1);
+      expect(handle.client.pendingCommits()).toEqual([]);
+    } finally {
+      await handle.client.close();
+      handle.db.close();
+    }
+  });
 });
 
 test('atomic plain-column patches apply locally with locked keys and omit encrypted payloads', async () => {

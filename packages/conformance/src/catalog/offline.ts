@@ -7,7 +7,7 @@ import { decodeMessage } from '@syncular/core';
 import { check, checkEqual } from '../checks';
 import { FIXTURE_SCHEMA, task } from '../fixture';
 import { responsePushResults } from '../raw';
-import type { DriverRow, DriverSchema } from '../driver';
+import type { ClientLimitsOptions, DriverRow, DriverSchema } from '../driver';
 import type { Scenario } from '../scenario';
 import {
   expectConverged,
@@ -46,8 +46,14 @@ async function bootstrapped(
   ctx: Parameters<Scenario['run']>[0],
   actorId: string,
   clientId: string,
+  limits?: ClientLimitsOptions,
 ) {
-  const handle = await ctx.newClient({ actorId, clientId, allowed: P1 });
+  const handle = await ctx.newClient({
+    actorId,
+    clientId,
+    allowed: P1,
+    ...(limits !== undefined ? { limits } : {}),
+  });
   await handle.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
   await syncIdle(handle);
   return handle;
@@ -696,20 +702,25 @@ export const offlineScenarios: readonly Scenario[] = [
         ]);
         a.sentRequests.length = 0;
         if (operationCount > 500) {
-          await syncFails(
-            a,
-            'sync.too_many_operations',
-            'oversized first commit',
-          );
+          const capacity = await a.api.sync();
+          check(!capacity.ok, 'oversized first commit is a capacity error');
+          if (!capacity.ok) {
+            checkEqual(
+              capacity.errorCode,
+              'client.push_request_too_large',
+              'typed capacity code',
+            );
+            checkEqual(capacity.details?.kind, 'operations', 'operation kind');
+          }
           checkEqual(
             await a.api.pendingCommitIds(),
             [first, second, third],
-            'whole outbox survives request rejection',
+            'whole outbox survives the capacity error',
           );
           checkEqual(
             await ctx.server.getMaxCommitSeq(),
             0,
-            'oversized request applied nothing',
+            'capacity error sent no request',
           );
         } else {
           a.faults.dropNextResponses = 1;
@@ -766,9 +777,7 @@ export const offlineScenarios: readonly Scenario[] = [
           .filter((ids) => ids.length > 0);
         checkEqual(
           batches,
-          operationCount > 500
-            ? [[first]]
-            : [[first], [first], [second, third]],
+          operationCount > 500 ? [] : [[first], [first], [second, third]],
           'wire batches preserve the contiguous prefix',
         );
       },
@@ -1032,6 +1041,137 @@ export const offlineScenarios: readonly Scenario[] = [
         await a.api.pendingCommitIds(),
         [],
         'both rounds drained the outbox',
+      );
+    },
+  },
+  {
+    name: 'offline/push-request-byte-cap-defers-a-later-commit',
+    specRefs: ['§7.1'],
+    async run(ctx) {
+      const a = await bootstrapped(ctx, 'actor-a', 'client-a', {
+        maxPushRequestBytes: 10_000,
+      });
+      const small = await a.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('small', 'p1') },
+      ]);
+      const huge = await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: task('huge', 'p1', 'x'.repeat(50_000)),
+        },
+      ]);
+      const first = await syncOk(a);
+      checkEqual(first.applied, [small], 'the fitting prefix is sent');
+      checkEqual(first.deferredCommits ?? 0, 1, 'the oversized commit defers');
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [huge],
+        'the oversized commit stays queued',
+      );
+
+      const failed = await a.api.sync();
+      check(!failed.ok, 'an oversized head fails');
+      if (!failed.ok) {
+        checkEqual(
+          failed.errorCode,
+          'client.push_request_too_large',
+          'typed capacity code',
+        );
+        checkEqual(failed.details?.kind, 'bytes', 'byte kind');
+        checkEqual(failed.details?.clientCommitId, huge, 'blocked commit id');
+        check(
+          typeof failed.details?.size === 'number' &&
+            failed.details.size > 10_000,
+          'the full projected request size is reported',
+        );
+      }
+      checkEqual(await a.api.pendingCommitIds(), [huge], 'intent stays queued');
+      checkEqual(
+        (await a.api.readRows('tasks')).length,
+        2,
+        'optimistic rows remain',
+      );
+    },
+  },
+  {
+    name: 'offline/push-operation-cap-is-hard-at-the-head',
+    specRefs: ['§6.1', '§7.1'],
+    async run(ctx) {
+      const a = await bootstrapped(ctx, 'actor-a', 'client-a', {
+        maxPushOperationsPerRequest: 1,
+      });
+      const id = await a.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('a', 'p1') },
+        { op: 'upsert', table: 'tasks', values: task('b', 'p1') },
+      ]);
+      const failed = await a.api.sync();
+      check(!failed.ok, 'an oversized operation head fails');
+      if (!failed.ok) {
+        checkEqual(
+          failed.errorCode,
+          'client.push_request_too_large',
+          'typed capacity code',
+        );
+        checkEqual(failed.details?.kind, 'operations', 'operation kind');
+        checkEqual(failed.details?.size, 2, 'operation count');
+        checkEqual(failed.details?.clientCommitId, id, 'blocked commit id');
+      }
+      checkEqual(await a.api.pendingCommitIds(), [id], 'intent stays queued');
+      checkEqual(
+        (await a.api.readRows('tasks')).length,
+        2,
+        'optimistic rows remain',
+      );
+    },
+  },
+  {
+    name: 'offline/push-commit-count-cap-defers-whole-commits',
+    specRefs: ['§7.1'],
+    async run(ctx) {
+      const a = await bootstrapped(ctx, 'actor-a', 'client-a', {
+        maxPushCommitsPerRequest: 1,
+      });
+      const first = await a.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('one', 'p1') },
+      ]);
+      const second = await a.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('two', 'p1') },
+      ]);
+      const report = await syncOk(a);
+      checkEqual(report.applied, [first], 'only the first commit is sent');
+      checkEqual(report.deferredCommits ?? 0, 1, 'the later commit defers');
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [second],
+        'the later commit stays queued',
+      );
+    },
+  },
+  {
+    name: 'offline/push-server-operation-cap-still-rejects',
+    specRefs: ['§6.1', '§7.1'],
+    async run(ctx) {
+      const a = await bootstrapped(ctx, 'actor-a', 'client-a', {
+        maxPushOperationsPerRequest: 600,
+      });
+      const first = await a.api.mutate(
+        Array.from({ length: 501 }, (_, index) => ({
+          op: 'upsert' as const,
+          table: 'tasks',
+          values: task(`filler-${index}`, 'p1'),
+        })),
+      );
+      await syncFails(a, 'sync.too_many_operations', 'server operation cap');
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [first],
+        'the whole outbox survives the server rejection',
+      );
+      checkEqual(
+        await ctx.server.getMaxCommitSeq(),
+        0,
+        'the server applied nothing',
       );
     },
   },

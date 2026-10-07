@@ -1228,6 +1228,19 @@ pub struct ClientLimits {
     /// Maximum durable final outcomes. Active conflicts/rejections are never
     /// pruned to satisfy the cap. Defaults to 1,000.
     pub outcome_retention_max_entries: Option<usize>,
+    /// §7.1: maximum whole commits in one push request. `None` is unbounded.
+    pub max_push_commits_per_request: Option<usize>,
+    /// §7.1: maximum operations across the push commits in one request. `None`
+    /// uses the reference default of 500. A first commit that alone exceeds it
+    /// is a typed `client.push_request_too_large` capacity error and stays
+    /// queued.
+    pub max_push_operations_per_request: Option<usize>,
+    /// §7.1: maximum bytes of the complete encoded SSP2 request (8-byte
+    /// envelope, request header, push commits, pull header, subscriptions,
+    /// framing, and any §5.11 ciphertext). `None` is unbounded. A request whose
+    /// fixed frames alone exceed it, or whose first commit alone does not fit,
+    /// fails with `client.push_request_too_large` and keeps its intent.
+    pub max_push_request_bytes: Option<usize>,
     /// RFC 0005 D8: the previous-version capture config. Absent or
     /// `enabled: false` runs the feature off (default); the descriptor write
     /// and the container orphan sweep still happen.

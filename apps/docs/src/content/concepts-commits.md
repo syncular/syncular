@@ -30,6 +30,17 @@ the push path only: `COMMIT` delivery, rows segments, SQLite images, and a
 conflict's `serverRow` all carry full rows
 ([SPEC §2.4](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#24-schema-ir-and-the-generated-row-codec)).
 
+## Push batching
+
+A push request carries a FIFO prefix of whole commits. The client splits at
+three configurable budgets: commits per request, operations per request
+(default 500), and the encoded request byte size (including headers, framing,
+and E2EE ciphertext). It never splits a commit. A later commit that does not
+fit defers with the complete suffix; a first commit over the operation or byte
+budget fails with `client.push_request_too_large` and stays queued with its
+optimistic rows. See
+[SPEC §7.1](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#71-the-outbox).
+
 ## Cursors
 
 A subscription's cursor is the last `commitSeq` it has fully applied. Each

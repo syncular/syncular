@@ -662,6 +662,12 @@ export interface ClientLimitsOptions {
   readonly accept?: number;
   /** §5.9.7 B1 blob-cache size cap; evicts by creation timestamp, then blob ID. */
   readonly blobCacheMaxBytes?: number;
+  /** §7.1: maximum whole commits per push request (default unbounded). */
+  readonly maxPushCommitsPerRequest?: number;
+  /** §7.1: maximum operations across push commits (default 500, hard). */
+  readonly maxPushOperationsPerRequest?: number;
+  /** §7.1: maximum bytes of the complete encoded SSP2 request (default unbounded). */
+  readonly maxPushRequestBytes?: number;
 }
 
 /**
