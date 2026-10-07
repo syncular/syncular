@@ -522,13 +522,11 @@ where
                             run.spent = 0;
                         }
                         keep_running = more && core.transport_enabled();
-                        if keep_running && run.spent >= run.max_rounds.unwrap_or(20).max(1) {
+                        if keep_running && run.spent >= run.max_rounds.unwrap_or(20) {
                             keep_running = false;
-                            outcome = syncular_client::SyncOutcome::Failed {
-                                error_code: "sync.invalid_request".into(),
-                                message: "sync did not reach idle within the round budget".into(),
-                                details: None,
-                            };
+                            outcome = syncular_client::SyncOutcome::BudgetExhausted(
+                                run.aggregate.clone(),
+                            );
                         } else if !keep_running {
                             outcome = syncular_client::SyncOutcome::Ok(run.aggregate.clone());
                         }
@@ -544,13 +542,37 @@ where
             Request::Command { command, reply } => {
                 let method = command.get("method").and_then(Value::as_str);
                 if matches!(method, Some("sync" | "syncUntilIdle")) && core.transport_enabled() {
+                    let until_idle = method == Some("syncUntilIdle");
+                    // The shared router ignores `maxRounds` for `sync`; only
+                    // `syncUntilIdle` carries a round budget.
+                    let max_rounds = if until_idle {
+                        match command.pointer("/params/maxRounds") {
+                            None | Some(Value::Null) => None,
+                            Some(value) => match value
+                                .as_u64()
+                                .and_then(|n| u32::try_from(n).ok())
+                                .filter(|n| *n >= 1)
+                            {
+                                Some(n) => Some(n),
+                                None => {
+                                    let _ = reply.send(json!({
+                                        "error": {
+                                            "code": "sync.invalid_request",
+                                            "message": "maxRounds must be a positive integer",
+                                            "retryable": false
+                                        }
+                                    }));
+                                    continue;
+                                }
+                            },
+                        }
+                    } else {
+                        None
+                    };
                     queued.push_back(RoundRun {
                         reply: Some(reply),
-                        until_idle: method == Some("syncUntilIdle"),
-                        max_rounds: command
-                            .pointer("/params/maxRounds")
-                            .and_then(Value::as_u64)
-                            .map(|n| n as u32),
+                        until_idle,
+                        max_rounds,
                         spent: 0,
                         aggregate: Default::default(),
                     });
@@ -1955,6 +1977,212 @@ mod tests {
                 second_reply["result"]["clientCommitId"].as_str().unwrap()
             ]
         );
+    }
+
+    #[cfg(feature = "native-transport")]
+    #[test]
+    fn owner_thread_sync_until_idle_reports_budget_exhaustion_with_the_report() {
+        use ssp2::model::{Change, Frame, Message, MsgKind, Op, SubStatus};
+        use ssp2::segment::{encode_row, Column, ColumnType, ColumnValue};
+        use std::io::{ErrorKind, Read, Write};
+        use std::net::TcpListener;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::mpsc::channel;
+        use std::sync::Arc;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let server_requests = Arc::clone(&requests);
+        let server_stop = Arc::clone(&stop);
+        let server = std::thread::spawn(move || {
+            let columns = ["id", "title"].map(|name| Column {
+                name: name.into(),
+                ty: ColumnType::String,
+                nullable: false,
+            });
+            while !server_stop.load(Ordering::SeqCst) {
+                let (mut socket, _) = match listener.accept() {
+                    Ok(accepted) => accepted,
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        std::thread::yield_now();
+                        continue;
+                    }
+                    Err(error) => panic!("accept: {error}"),
+                };
+                socket.set_nonblocking(false).unwrap();
+                let round = server_requests.fetch_add(1, Ordering::SeqCst) + 1;
+                let mut header = Vec::new();
+                while !header.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    socket.read_exact(&mut byte).unwrap();
+                    header.push(byte[0]);
+                }
+                let header = String::from_utf8(header).unwrap();
+                let length: usize = header
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse().unwrap())
+                    })
+                    .unwrap();
+                let mut bytes = vec![0; length];
+                socket.read_exact(&mut bytes).unwrap();
+                let request = ssp2::decode_message(&bytes).unwrap();
+                let reset = matches!(
+                    &request.frames[0],
+                    Frame::ReqHeader {
+                        log_epoch: None,
+                        ..
+                    }
+                );
+                let mut frames = vec![Frame::RespHeader {
+                    required_schema_version: None,
+                    latest_schema_version: None,
+                    log_epoch: Some("epoch".into()),
+                    reset_required: Some(reset),
+                }];
+                if !reset
+                    && request
+                        .frames
+                        .iter()
+                        .any(|frame| matches!(frame, Frame::Subscription { id, .. } if id == "own"))
+                {
+                    frames.push(Frame::SubStart {
+                        id: "own".into(),
+                        status: SubStatus::Active,
+                        reason_code: String::new(),
+                        effective_scopes: vec![("id".into(), vec!["one".into()])],
+                        bootstrap: false,
+                    });
+                    let mut row = ssp2::primitives::Writer::new();
+                    encode_row(
+                        &mut row,
+                        &columns,
+                        &vec![
+                            Some(ColumnValue::String("one".into())),
+                            Some(ColumnValue::String(format!("v{round}"))),
+                        ],
+                    );
+                    frames.push(Frame::Commit {
+                        commit_seq: round as i64,
+                        created_at_ms: 0,
+                        actor_id: "actor".into(),
+                        tables: vec!["todo".into()],
+                        changes: vec![Change {
+                            table_index: 0,
+                            row_id: "one".into(),
+                            op: Op::Upsert,
+                            row_version: Some(round as i64),
+                            scopes: vec![("id".into(), "one".into())],
+                            row: Some(row.into_bytes()),
+                        }],
+                    });
+                    frames.push(Frame::SubEnd {
+                        next_cursor: round as i64,
+                        bootstrap_state: None,
+                    });
+                }
+                let response = ssp2::encode_message(&Message {
+                    wire_version: ssp2::decode::WIRE_VERSION,
+                    msg_kind: MsgKind::Response,
+                    frames,
+                });
+                write!(
+                    socket,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    response.len()
+                )
+                .unwrap();
+                socket.write_all(&response).unwrap();
+            }
+        });
+
+        let (tx, rx) = channel::<Request>();
+        let owner_tx = tx.clone();
+        let owner = std::thread::spawn(move || {
+            run_owner_thread(
+                SyncularConfig {
+                    base_url: Some(format!("http://{address}")),
+                    auto_sync: false,
+                    ..Default::default()
+                },
+                owner_tx,
+                rx,
+                |_| {},
+            )
+        });
+        let call = |command: Value| -> Value {
+            let (reply, result) = channel();
+            tx.send(Request::Command { command, reply }).unwrap();
+            result.recv().unwrap()
+        };
+
+        let created = call(json!({ "method": "create", "params": {
+            "clientId": "budget-tauri", "transportEnabled": true, "schema": { "version": 1, "tables": [{
+                "name": "todo", "primaryKey": "id",
+                "columns": [
+                    { "name": "id", "type": "string", "nullable": false },
+                    { "name": "title", "type": "string", "nullable": false }
+                ],
+                "scopes": [{ "pattern": "todo:{id}" }]
+            }] }
+        } }));
+        assert!(created.get("error").is_none(), "{created}");
+        assert!(
+            call(json!({ "method": "subscribe", "params": { "id": "own", "table": "todo", "scopes": { "id": ["one"] } } }))
+                .get("error")
+                .is_none()
+        );
+
+        // An invalid budget is refused before any network round.
+        let before = requests.load(Ordering::SeqCst);
+        let invalid = call(json!({ "method": "syncUntilIdle", "params": { "maxRounds": 0 } }));
+        assert_eq!(
+            invalid["error"]["code"], "sync.invalid_request",
+            "{invalid}"
+        );
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            before,
+            "an invalid budget performs no round"
+        );
+
+        // `sync` ignores an irrelevant maxRounds (0 would be invalid for the
+        // capped command) and performs one round.
+        let single = call(json!({ "method": "sync", "params": { "maxRounds": 0 } }));
+        assert!(single["result"].get("errorCode").is_none(), "{single}");
+
+        let before_capped = requests.load(Ordering::SeqCst);
+        let exhausted = call(json!({ "method": "syncUntilIdle", "params": { "maxRounds": 2 } }));
+        assert!(
+            exhausted["result"].get("errorCode").is_none(),
+            "{exhausted}"
+        );
+        assert_eq!(exhausted["result"]["ok"], json!(true), "{exhausted}");
+        assert_eq!(
+            exhausted["result"]["budgetExhausted"],
+            json!(true),
+            "{exhausted}"
+        );
+        assert_eq!(
+            requests.load(Ordering::SeqCst) - before_capped,
+            2,
+            "the capped run made exactly two rounds: {exhausted}"
+        );
+        assert_eq!(
+            exhausted["result"]["report"]["commitsApplied"],
+            json!(2),
+            "the aggregate retains every round's work: {exhausted}"
+        );
+
+        tx.send(Request::Shutdown).unwrap();
+        owner.join().unwrap();
+        stop.store(true, Ordering::SeqCst);
+        server.join().unwrap();
     }
 
     #[test]

@@ -170,7 +170,12 @@ function isClientSyncReport(value: unknown): value is ClientSyncReport {
       (!('latestSchemaVersion' in value.schemaFloor) ||
         value.schemaFloor.latestSchemaVersion === undefined ||
         typeof value.schemaFloor.latestSchemaVersion === 'number'));
+  const deferredValid =
+    !('deferredCommits' in value) ||
+    value.deferredCommits === undefined ||
+    typeof value.deferredCommits === 'number';
   return (
+    deferredValid &&
     'pushed' in value &&
     typeof value.pushed === 'number' &&
     'applied' in value &&
@@ -205,7 +210,13 @@ function parseClientSyncResult(value: JsonValue): ClientSyncResult {
       'report' in value &&
       isClientSyncReport(value.report)
     ) {
-      return { ok: true, report: value.report };
+      return {
+        ok: true,
+        report: value.report,
+        ...(typeof value.budgetExhausted === 'boolean'
+          ? { budgetExhausted: value.budgetExhausted }
+          : {}),
+      };
     }
     if (
       'ok' in value &&

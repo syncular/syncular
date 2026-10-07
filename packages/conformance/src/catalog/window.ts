@@ -42,16 +42,22 @@ export const windowScenarios: readonly Scenario[] = [
       });
       await a.api.setWindow?.(BASE, ['p1']);
       const capped = await a.api.syncUntilIdle(2);
-      check(
-        !capped.ok,
-        'an explicit cap cannot report an unfinished import as idle',
-      );
-      if (!capped.ok)
+      check(capped.ok, 'an explicit cap is a partial success, not an error');
+      if (capped.ok) {
         checkEqual(
-          capped.errorCode,
-          'sync.invalid_request',
-          'stable cap error',
+          capped.budgetExhausted,
+          true,
+          'the explicit cap reports budget exhaustion',
         );
+        check(
+          capped.report.segmentRowsApplied > 0,
+          'the exhausted run retains the rounds it completed',
+        );
+        check(
+          capped.report.bootstrapping.length > 0,
+          'the exhausted run is explicitly not idle',
+        );
+      }
       await syncIdle(a);
       checkEqual(
         (await readIds(a)).length,

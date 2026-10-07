@@ -786,7 +786,10 @@ pub struct SyncReport {
 }
 
 impl SyncReport {
-    /// Aggregate completed rounds without changing the final bootstrap state.
+    /// Aggregate completed rounds. Historical counters and outcome lists
+    /// accumulate; current readiness (`bootstrapping`, `deferred_commits`,
+    /// `schema_floor`) describes the latest round. A schema floor stops the
+    /// loop, so it can only arrive from the latest round.
     pub fn merge(&mut self, report: &Self) {
         self.pushed += report.pushed;
         self.applied.extend(report.applied.iter().cloned());
@@ -800,9 +803,7 @@ impl SyncReport {
         self.revoked.extend(report.revoked.iter().cloned());
         self.failed.extend(report.failed.iter().cloned());
         self.deferred_commits = report.deferred_commits;
-        if report.schema_floor.is_some() {
-            self.schema_floor = report.schema_floor.clone();
-        }
+        self.schema_floor = report.schema_floor.clone();
     }
 }
 
@@ -825,6 +826,10 @@ pub enum SyncOutcome {
         reason_code: Option<String>,
         retry_delay_ms: u64,
     },
+    /// §7.7: the round budget ran out while the client was still not idle.
+    /// The aggregate report of every round that ran is retained. This is a
+    /// partial success, not a failure, and MUST NOT be read as idle.
+    BudgetExhausted(SyncReport),
 }
 
 impl SyncOutcome {
@@ -879,6 +884,16 @@ impl SyncOutcome {
                     );
                 }
                 map.insert("retryDelayMs".to_owned(), Value::from(*retry_delay_ms));
+                Value::Object(map)
+            }
+            SyncOutcome::BudgetExhausted(report) => {
+                let mut map = Map::new();
+                map.insert("ok".to_owned(), Value::Bool(true));
+                map.insert("budgetExhausted".to_owned(), Value::Bool(true));
+                map.insert(
+                    "report".to_owned(),
+                    serde_json::to_value(report).expect("report serializes"),
+                );
                 Value::Object(map)
             }
         }

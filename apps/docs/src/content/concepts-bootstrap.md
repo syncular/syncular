@@ -46,8 +46,17 @@ Native hosts that serialize reads behind sync commands need a separate read
 connection to serve reads during sync.
 
 `syncUntilIdle()` continues through nonempty bootstrap pages that advance durable
-resume state. Rounds without that progress consume a 20-round budget; an explicit
-round limit remains a hard cap. Exhaustion reports `sync.invalid_request`.
+resume state. Rounds without that progress consume the default 20-round budget;
+an explicit round limit remains a hard cap. Exhaustion returns a partial-success
+result: it keeps the aggregate report of every round that ran and reports
+`budgetExhausted: true`. It does not claim the run is idle, and it does not raise
+`sync.invalid_request`; a transport or protocol failure still fails. An explicit
+limit must be an integer in `1..=4294967295`. The aggregate accumulates counters
+and outcomes, while readiness state (`bootstrapping`, `deferredCommits`,
+`schemaFloor`) describes the latest round, so an empty `bootstrapping` list alone
+does not establish readiness. The direct-client scheduler and worker auto-sync loop
+schedule another batch when the budget is exhausted, without waiting for a new
+write or realtime notification.
 
 ## Where segments are delivered
 

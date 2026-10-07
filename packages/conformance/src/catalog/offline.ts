@@ -978,6 +978,63 @@ export const offlineScenarios: readonly Scenario[] = [
       });
     },
   },
+
+  {
+    // §7.7: the aggregate spans every round. Round 1 defers the second commit,
+    // so the run is not idle after two rounds even though `bootstrapping` is
+    // empty; the delivered commits keep it going.
+    name: 'offline/sync-budget-aggregates-across-rounds',
+    specRefs: ['§7.7', '§6.1'],
+    async run(ctx) {
+      const a = await bootstrapped(ctx, 'actor-a', 'client-a');
+      const commits = await Promise.all([
+        a.api.mutate(
+          Array.from({ length: 300 }, (_, index) => ({
+            op: 'upsert' as const,
+            table: 'tasks',
+            values: task(`first-${index}`, 'p1'),
+          })),
+        ),
+        a.api.mutate(
+          Array.from({ length: 300 }, (_, index) => ({
+            op: 'upsert' as const,
+            table: 'tasks',
+            values: task(`second-${index}`, 'p1'),
+          })),
+        ),
+      ]);
+      const capped = await a.api.syncUntilIdle(2);
+      check(capped.ok, 'a capped run is a partial success, not an error');
+      if (capped.ok) {
+        checkEqual(capped.budgetExhausted, true, 'the cap reports exhaustion');
+        checkEqual(
+          capped.report.pushed,
+          2,
+          'the aggregate sums the commits pushed across both rounds',
+        );
+        checkEqual(
+          capped.report.applied,
+          commits,
+          'the aggregate retains every acknowledged commit in order',
+        );
+        checkEqual(
+          capped.report.bootstrapping,
+          [],
+          'the aggregate has no pending bootstrap but is still not idle',
+        );
+        checkEqual(
+          capped.report.deferredCommits ?? 0,
+          0,
+          'deferredCommits is latest-state, not a summed total',
+        );
+      }
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [],
+        'both rounds drained the outbox',
+      );
+    },
+  },
   {
     // §6.1/§7.1: a caller value the authoring seam rejects reports the same
     // stable identity in both cores, whether it names an unknown column, an
