@@ -211,7 +211,17 @@ impl Handle {
                 }
                 Value::Object(serde_json::Map::from_iter([("result".to_owned(), value)]))
             }
-            Err((code, message)) => json!({ "error": { "code": code, "message": message } }),
+            Err(error) => {
+                let mut envelope = json!({
+                    "code": error.code,
+                    "message": error.message,
+                    "retryable": error.retryable
+                });
+                if let Some(details) = error.details {
+                    envelope["details"] = details;
+                }
+                json!({ "error": envelope })
+            }
         }
     }
 

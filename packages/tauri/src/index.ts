@@ -86,6 +86,7 @@ interface CommandReply {
     readonly code: string;
     readonly message: string;
     readonly details?: Readonly<Record<string, unknown>> | null;
+    readonly retryable?: boolean;
   };
 }
 
@@ -373,6 +374,7 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
         reply.error.code,
         reply.error.message,
         reply.error.details ?? undefined,
+        reply.error.retryable ?? false,
       );
     }
     return reply.result;
@@ -600,6 +602,7 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
         reply.error.code,
         reply.error.message,
         reply.error.details ?? undefined,
+        reply.error.retryable ?? false,
       );
     }
     const rows = (reply.result as { rows?: unknown[] }).rows ?? [];
@@ -624,6 +627,7 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
         reply.error.code,
         reply.error.message,
         reply.error.details ?? undefined,
+        reply.error.retryable ?? false,
       );
     }
     const result = reply.result as {
@@ -754,6 +758,7 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
         reply.error.code,
         reply.error.message,
         reply.error.details ?? undefined,
+        reply.error.retryable ?? false,
       );
     }
   }
@@ -984,15 +989,18 @@ function decodeDiagnosticsSnapshot(
 export class TauriSyncError extends Error {
   readonly code: string;
   readonly details: Readonly<Record<string, unknown>> | undefined;
+  readonly retryable: boolean;
   constructor(
     code: string,
     message: string,
     details?: Readonly<Record<string, unknown>>,
+    retryable = false,
   ) {
     super(message);
     this.name = 'TauriSyncError';
     this.code = code;
     this.details = details;
+    this.retryable = retryable;
   }
 }
 
@@ -1168,6 +1176,7 @@ export async function createTauriSyncClient(
       reply.error.code,
       reply.error.message,
       reply.error.details ?? undefined,
+      reply.error.retryable ?? false,
     );
   }
 

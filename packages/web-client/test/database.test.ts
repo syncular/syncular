@@ -1,7 +1,34 @@
 import { expect, test } from 'bun:test';
 import { BunClientDatabase } from '../src/bun-database';
 import { runTransaction } from '../src/database';
-import { ClientSyncError } from '../src/errors';
+import { classifySqliteFailure, ClientSyncError } from '../src/errors';
+
+test('SQLITE_BUSY and SQLITE_LOCKED primary and extended codes classify as retryable busy', () => {
+  for (const errno of [5, 5 | (1 << 8), 6, 6 | (1 << 8)]) {
+    const raw = Object.assign(new Error('database is locked'), {
+      name: 'SQLiteError',
+      errno,
+    });
+    const failure = classifySqliteFailure(raw);
+    expect(failure.code).toBe('client.storage_busy');
+    expect(failure.sqliteCode).toBe(errno);
+    expect(failure.error).toBeInstanceOf(ClientSyncError);
+    const error = failure.error;
+    if (!(error instanceof ClientSyncError))
+      throw new Error('expected a classified ClientSyncError');
+    expect(error.code).toBe('client.storage_busy');
+    expect(error.retryable).toBe(true);
+    expect(error.message).toBe('local SQLite storage is busy');
+    expect(error.details).toMatchObject({ sqliteCode: errno });
+  }
+  const unrelated = Object.assign(new Error('generic SQLite prose'), {
+    name: 'SQLiteError',
+    errno: 1,
+  });
+  const result = classifySqliteFailure(unrelated);
+  expect(result.code).toBeUndefined();
+  expect(result.error).toBe(unrelated);
+});
 
 for (const atCommit of [false, true]) {
   test(`SQLITE_FULL at ${atCommit ? 'commit' : 'step'} survives failed cleanup and a later transaction`, () => {

@@ -110,6 +110,8 @@ export function ensureRustShim(options?: { build?: boolean }): string {
 interface ShimError {
   readonly code?: string;
   readonly message?: string;
+  readonly details?: JsonValue;
+  readonly retryable?: boolean;
 }
 
 interface ShimMessage {
@@ -320,6 +322,13 @@ class ShimProcess {
         const error = new Error(message.error.message ?? 'shim error');
         if (message.error.code !== undefined) {
           (error as { code?: string }).code = message.error.code;
+        }
+        if (message.error.details !== undefined) {
+          (error as { details?: JsonValue }).details = message.error.details;
+        }
+        if (message.error.retryable !== undefined) {
+          (error as { retryable?: boolean }).retryable =
+            message.error.retryable;
         }
         entry.reject(error);
       } else {

@@ -257,6 +257,36 @@ describe('createTauriSyncClient', () => {
     ]);
   });
 
+  test('a mutation reply forwards code, details, and retryable', async () => {
+    const { tauri } = makeTauri((cmd, args) => {
+      const command = args.command as { method?: string } | undefined;
+      if (command?.method === 'mutate') {
+        return {
+          error: {
+            code: 'client.storage_busy',
+            message: 'local SQLite storage is busy',
+            details: { sqliteCode: 5, sqliteMessage: 'database is locked' },
+            retryable: true,
+          },
+        };
+      }
+      return defaultResponder(cmd, args);
+    });
+    const client = await createTauriSyncClient({
+      clientId: 'typed-error',
+      schema: { version: 1, tables: [] },
+      tauri,
+    });
+    await expect(
+      client.mutate([{ op: 'upsert', table: 'tasks', values: { id: 't1' } }]),
+    ).rejects.toMatchObject({
+      code: 'client.storage_busy',
+      message: 'local SQLite storage is busy',
+      details: { sqliteCode: 5 },
+      retryable: true,
+    });
+  });
+
   test('issues create through syncular_command on construction', async () => {
     const { calls } = await build();
     const create = calls.find(

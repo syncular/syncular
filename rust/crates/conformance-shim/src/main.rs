@@ -35,7 +35,7 @@ use serde_json::{json, Map, Value};
 use syncular_client::{
     BlobDownload, BlobUploadGrant, SegmentRequest, SyncClient, Transport, TransportError,
 };
-use syncular_command::{bytes_value, dispatch, value_bytes, CreateEffects};
+use syncular_command::{bytes_value, dispatch, value_bytes, CommandError, CreateEffects};
 
 enum Incoming {
     Request {
@@ -196,11 +196,19 @@ impl HostIo {
         }
     }
 
-    fn respond(&mut self, id: &Value, result: Result<Value, (String, String)>) {
+    fn respond(&mut self, id: &Value, result: Result<Value, CommandError>) {
         let line = match result {
             Ok(value) => json!({ "id": id, "result": value }),
-            Err((code, message)) => {
-                json!({ "id": id, "error": { "code": code, "message": message } })
+            Err(error) => {
+                let mut envelope = json!({
+                    "code": error.code,
+                    "message": error.message,
+                    "retryable": error.retryable
+                });
+                if let Some(details) = error.details {
+                    envelope["details"] = details;
+                }
+                json!({ "id": id, "error": envelope })
             }
         };
         self.write_line(&line);
@@ -401,15 +409,15 @@ fn main() {
                                     prepared_round = Some(round);
                                     Ok(json!({}))
                                 }
-                                Err(outcome) => Err((
-                                    "harness.round_prepare_failed".into(),
+                                Err(outcome) => Err(CommandError::new(
+                                    "harness.round_prepare_failed",
                                     outcome.to_json().to_string(),
                                 )),
                             }
                         }
-                        None => Err((
-                            "harness.invalid_request".into(),
-                            "client is required".into(),
+                        None => Err(CommandError::new(
+                            "harness.invalid_request",
+                            "client is required",
                         )),
                     }
                 } else if method == "completeRound" {
@@ -438,9 +446,9 @@ fn main() {
                                 }
                             }
                         }
-                        _ => Err((
-                            "harness.invalid_request".into(),
-                            "captured round is required".into(),
+                        _ => Err(CommandError::new(
+                            "harness.invalid_request",
+                            "captured round is required",
                         )),
                     }
                 } else if method == "executeStorageSql" {
@@ -450,11 +458,11 @@ fn main() {
                             .execute_batch(sql)
                             .map(|()| json!({}))
                             .map_err(|error| {
-                                ("harness.storage_failed".to_owned(), error.to_string())
+                                CommandError::new("harness.storage_failed", error.to_string())
                             }),
-                        _ => Err((
-                            "harness.invalid_request".to_owned(),
-                            "client and SQL are required".to_owned(),
+                        _ => Err(CommandError::new(
+                            "harness.invalid_request",
+                            "client and SQL are required",
                         )),
                     }
                 } else {

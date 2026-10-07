@@ -170,7 +170,7 @@ pub fn normalize_values_casing(
         if let Some(value) = values.remove(&camel) {
             if values.contains_key(&column.name) {
                 return Err(format!(
-                    "table {:?}: column {:?} appears twice in mutation values (as both snake_case and camelCase) — pass it once",
+                    "sync.invalid_request: table {:?}: column {:?} appears twice in mutation values (as both snake_case and camelCase) — pass it once",
                     table.name, column.name
                 ));
             }
@@ -181,12 +181,12 @@ pub fn normalize_values_casing(
         if !table.columns.iter().any(|column| column.name == *key) {
             if key.starts_with("_sync_") {
                 return Err(format!(
-                    "table {:?}: {:?} is an internal sync column and cannot appear in mutation values",
+                    "sync.invalid_request: table {:?}: {:?} is an internal sync column and cannot appear in mutation values",
                     table.name, key
                 ));
             }
             return Err(format!(
-                "table {:?}: unknown column {:?} in mutation values (snake_case and camelCase keys are accepted)",
+                "sync.invalid_request: table {:?}: unknown column {:?} in mutation values (snake_case and camelCase keys are accepted)",
                 table.name, key
             ));
         }
@@ -324,7 +324,7 @@ pub fn full_row_values(
         }
         if !column.nullable {
             return Err(format!(
-                "table {:?}: column {:?} is not nullable (§6.1 full-row payloads)",
+                "sync.invalid_request: table {:?}: column {:?} is not nullable (§6.1 full-row payloads)",
                 table.name, column.name
             ));
         }
@@ -346,10 +346,14 @@ pub fn encode_row_json(
     // Build the row from the LOCAL (declared-type) columns.
     let mut row: Row = Vec::with_capacity(table.columns.len());
     for column in &table.columns {
-        let value = json_to_column_value(column, values.get(&column.name))?;
+        // §6.1/§7.1: a caller value the codec rejects is an invalid request,
+        // never an internal authoring failure; the dynamic cause stays in
+        // `details.legacyCause` at the `ClientError` boundary.
+        let value = json_to_column_value(column, values.get(&column.name))
+            .map_err(|error| format!("sync.invalid_request: {error}"))?;
         if value.is_none() && !column.nullable {
             return Err(format!(
-                "table {:?}: column {:?} is not nullable (§6.1 full-row payloads)",
+                "sync.invalid_request: table {:?}: column {:?} is not nullable (§6.1 full-row payloads)",
                 table.name, column.name
             ));
         }
@@ -382,10 +386,11 @@ pub fn encode_sparse_row_json(
             row.push(SparseSlot::Absent);
             continue;
         };
-        let value = json_to_column_value(column, Some(raw))?;
+        let value = json_to_column_value(column, Some(raw))
+            .map_err(|error| format!("sync.invalid_request: {error}"))?;
         if value.is_none() && !column.nullable {
             return Err(format!(
-                "table {:?}: column {:?} is not nullable (§6.1)",
+                "sync.invalid_request: table {:?}: column {:?} is not nullable (§6.1)",
                 table.name, column.name
             ));
         }
@@ -649,7 +654,7 @@ pub fn render_row_id_json(value: Option<&Value>) -> Result<String, String> {
         Some(Value::String(s)) => Ok(s.clone()),
         Some(Value::Number(n)) => Ok(n.to_string()),
         Some(Value::Bool(b)) => Ok(b.to_string()),
-        _ => Err("primary key value is missing or not renderable".to_owned()),
+        _ => Err("sync.invalid_request: primary key value is missing or not renderable".to_owned()),
     }
 }
 

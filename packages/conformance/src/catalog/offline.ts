@@ -7,7 +7,7 @@ import { decodeMessage } from '@syncular/core';
 import { check, checkEqual } from '../checks';
 import { FIXTURE_SCHEMA, task } from '../fixture';
 import { responsePushResults } from '../raw';
-import type { DriverSchema } from '../driver';
+import type { DriverRow, DriverSchema } from '../driver';
 import type { Scenario } from '../scenario';
 import {
   expectConverged,
@@ -52,6 +52,23 @@ async function bootstrapped(
   await syncIdle(handle);
   return handle;
 }
+
+const CALLER_VALUE_SCHEMA: DriverSchema = {
+  version: 1,
+  tables: [
+    {
+      name: 'tasks',
+      columns: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'project_id', type: 'string', nullable: false },
+        { name: 'title', type: 'string', nullable: false },
+        { name: 'priority', type: 'integer', nullable: false },
+      ],
+      primaryKey: 'id',
+      scopes: [{ pattern: 'project:{project_id}' }],
+    },
+  ],
+};
 
 export const offlineScenarios: readonly Scenario[] = [
   {
@@ -476,6 +493,96 @@ export const offlineScenarios: readonly Scenario[] = [
     },
   },
   {
+    // §7.1/§7.5: a storage failure during authoring surfaces a structured,
+    // non-retryable failure with its numeric SQLite evidence, leaves no
+    // orphaned outbox entry or revision, and succeeds on retry once cleared.
+    name: 'offline/authoring-storage-failure-is-typed-and-atomic',
+    specRefs: ['§7.1', '§7.5', '§6.1'],
+    async run(ctx) {
+      const client = await ctx.newClient({
+        actorId: 'actor',
+        clientId: 'storage-typed',
+        allowed: P1,
+      });
+      check(
+        client.api.executeStorageSql !== undefined,
+        'owned storage SQL is available',
+      );
+      check(
+        client.api.localRevision !== undefined,
+        'reference clients expose local revisions',
+      );
+      const revision = await client.api.localRevision();
+      await client.api.executeStorageSql('PRAGMA max_page_count = 1');
+
+      let code: unknown;
+      let retryable: unknown;
+      let details: unknown;
+      try {
+        await client.api.mutate([
+          {
+            op: 'upsert',
+            table: 'tasks',
+            values: task('typed', 'p1', 'full '.repeat(32768)),
+          },
+        ]);
+      } catch (error) {
+        if (error instanceof Error && 'code' in error) code = error.code;
+        if (typeof error === 'object' && error !== null) {
+          if ('retryable' in error) retryable = error.retryable;
+          if ('details' in error) details = error.details;
+        }
+      }
+      checkEqual(
+        code,
+        'client.storage_full',
+        'the mutation reports the storage code',
+      );
+      checkEqual(retryable, false, 'the storage failure is not retryable');
+      const sqliteCode =
+        typeof details === 'object' &&
+        details !== null &&
+        'sqliteCode' in details
+          ? details.sqliteCode
+          : undefined;
+      checkEqual(sqliteCode, 13, 'the numeric SQLite code survives');
+      checkEqual(
+        await client.api.pendingCommitIds(),
+        [],
+        'the failed authoring call leaves no outbox entry',
+      );
+      checkEqual(
+        await client.api.localRevision(),
+        revision,
+        'the failed authoring call publishes no revision',
+      );
+      checkEqual(
+        (await client.api.readRows('tasks')).length,
+        0,
+        'the failed authoring call leaves no visible row',
+      );
+
+      await client.api.executeStorageSql('PRAGMA max_page_count = 1073741823');
+      const id = await client.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: task('typed', 'p1', 'recovered'),
+        },
+      ]);
+      check(
+        typeof id === 'string' && id.length > 0,
+        'retry enqueues the commit',
+      );
+      await syncIdle(client);
+      checkEqual(
+        await client.api.pendingCommitIds(),
+        [],
+        'the retry drains after the fault clears',
+      );
+    },
+  },
+  {
     name: 'offline/first-handshake-drains-without-subscriptions',
     specRefs: ['§7.1', '§2.1', '§8.4'],
     async run(ctx) {
@@ -869,6 +976,109 @@ export const offlineScenarios: readonly Scenario[] = [
         variable: 'project_id',
         values: ['p1'],
       });
+    },
+  },
+  {
+    // §6.1/§7.1: a caller value the authoring seam rejects reports the same
+    // stable identity in both cores, whether it names an unknown column, an
+    // internal sync column, an absent required column, or a primary key the
+    // wire cannot render. Every rejection leaves the durable outbox and the
+    // projection untouched.
+    name: 'offline/caller-values-reject-with-invalid-request',
+    specRefs: ['§6.1', '§7.1'],
+    server: { schema: CALLER_VALUE_SCHEMA },
+    async run(ctx) {
+      const client = await ctx.newClient({
+        actorId: 'actor',
+        clientId: 'caller-values',
+        schema: CALLER_VALUE_SCHEMA,
+        allowed: P1,
+      });
+      const seed = await client.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: {
+            id: 'kept',
+            project_id: 'p1',
+            title: 'seed',
+            priority: 1,
+          },
+        },
+      ]);
+      const before = await client.api.readRows('tasks');
+      const cases: ReadonlyArray<readonly [string, DriverRow]> = [
+        [
+          'unknown column',
+          { id: 't1', project_id: 'p1', title: 'x', priority: 1, nope: 1 },
+        ],
+        [
+          'internal sync column',
+          {
+            id: 't1',
+            project_id: 'p1',
+            title: 'x',
+            priority: 1,
+            _sync_version: 1,
+          },
+        ],
+        ['absent required column', { id: 't1', project_id: 'p1', priority: 1 }],
+        [
+          'byte envelope primary key',
+          {
+            id: { $bytes: '0a' },
+            project_id: 'p1',
+            title: 'x',
+            priority: 1,
+          },
+        ],
+      ];
+      for (const [label, values] of cases) {
+        let code: unknown;
+        try {
+          await client.api.mutate([{ op: 'upsert', table: 'tasks', values }]);
+        } catch (error) {
+          if (error instanceof Error && 'code' in error) code = error.code;
+        }
+        checkEqual(
+          code,
+          'sync.invalid_request',
+          `${label} reports the identity`,
+        );
+        checkEqual(
+          await client.api.pendingCommitIds(),
+          [seed],
+          `${label} queues no commit`,
+        );
+        checkEqual(
+          await client.api.readRows('tasks'),
+          before,
+          `${label} preserves the projection`,
+        );
+      }
+
+      // The sparse route classifies the same caller value failure identically.
+      let patchCode: unknown;
+      try {
+        await client.api.patch('tasks', 'kept', { nope: 1 });
+      } catch (error) {
+        if (error instanceof Error && 'code' in error) patchCode = error.code;
+      }
+      checkEqual(
+        patchCode,
+        'sync.invalid_request',
+        'patch reports the identity',
+      );
+      checkEqual(
+        await client.api.pendingCommitIds(),
+        [seed],
+        'patch queues no commit',
+      );
+      checkEqual(
+        await client.api.readRows('tasks'),
+        before,
+        'patch preserves the projection',
+      );
     },
   },
 ];

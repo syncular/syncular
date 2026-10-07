@@ -479,9 +479,10 @@ pub struct QueryOwner<'a> {
     pub tables: &'a [&'a str],
 }
 
-/// §7.5: a failed snapshot read. `code` is `client.storage_corrupt` or
-/// `client.storage_io` when SQLite reported corruption or I/O failure, and
-/// `None` for every other failure, which keeps its existing message.
+/// §7.5: a failed snapshot read or a failed local authoring write. `code` is
+/// `client.storage_corrupt`, `client.storage_io`, `client.storage_full`, or
+/// `client.storage_busy` when SQLite reported that condition, and `None` for
+/// every other failure, which keeps its existing message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryReadFailure {
     pub code: Option<&'static str>,
@@ -563,6 +564,12 @@ impl From<rusqlite::Error> for QueryReadFailure {
 }
 
 impl QueryReadFailure {
+    /// The operation can be retried after lock contention is resolved.
+    /// SQLITE_LOCKED can involve another statement on the same connection.
+    pub fn retryable(&self) -> bool {
+        self.code == Some("client.storage_busy")
+    }
+
     pub fn details(&self) -> Option<Value> {
         self.sqlite_code.map(|code| {
             let mut details =
@@ -574,6 +581,120 @@ impl QueryReadFailure {
             }
             details
         })
+    }
+}
+
+/// A structured failure from a local authoring API (`mutate`/`patch`). `code`
+/// is always a stable `client.*`/`sync.*` identity, `message` is static text
+/// with no table/row/column values, `details` carries SQLite classification
+/// evidence or the preserved legacy cause, and `retryable` is true only for
+/// transient storage contention. Callers read these fields instead of parsing
+/// a `"<code>: "` prefix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientError {
+    pub code: String,
+    pub message: String,
+    pub details: Option<Value>,
+    pub retryable: bool,
+}
+
+/// The stable default for an authoring failure with no recognized code.
+const DEFAULT_CLIENT_ERROR_CODE: &str = "client.failed";
+
+/// The static text used when no specific static authoring message exists.
+const GENERIC_AUTHORING_MESSAGE: &str = "the local authoring operation failed";
+
+/// The fixed user-facing text for a known authoring code. Dynamic values from
+/// a legacy cause string move to `details.legacyCause` instead.
+fn static_authoring_message(code: &str) -> Option<&'static str> {
+    match code {
+        "sync.unknown_table" => Some("the commit targets an unknown table"),
+        "sync.invalid_request" => Some("the authoring request is invalid"),
+        "sync.row_missing" => Some("a sparse patch requires a local row"),
+        "sync.constraint_violation" => Some("local write violates a unique constraint"),
+        DEFAULT_CLIENT_ERROR_CODE => Some(GENERIC_AUTHORING_MESSAGE),
+        _ => None,
+    }
+}
+
+fn is_client_code(candidate: &str) -> bool {
+    candidate.starts_with("client.") || candidate.starts_with("sync.")
+}
+
+impl std::fmt::Display for ClientError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for ClientError {}
+
+impl From<QueryReadFailure> for ClientError {
+    fn from(failure: QueryReadFailure) -> Self {
+        match failure.code {
+            // Classified storage messages are already static.
+            Some(code) => {
+                let details = failure.details();
+                let retryable = failure.retryable();
+                Self {
+                    code: code.to_owned(),
+                    message: failure.message,
+                    details,
+                    retryable,
+                }
+            }
+            None => {
+                let mut details = failure.details().unwrap_or_else(|| serde_json::json!({}));
+                if let Some(object) = details.as_object_mut() {
+                    object.insert("legacyCause".to_owned(), Value::String(failure.message));
+                }
+                Self {
+                    code: DEFAULT_CLIENT_ERROR_CODE.to_owned(),
+                    message: GENERIC_AUTHORING_MESSAGE.to_owned(),
+                    details: Some(details),
+                    retryable: false,
+                }
+            }
+        }
+    }
+}
+
+impl From<String> for ClientError {
+    /// Split a core error into structured fields. A recognized code identity
+    /// is preserved and gets static text; any dynamic cause stays in
+    /// `details.legacyCause`. Everything else defaults to `client.failed` with
+    /// the generic message.
+    fn from(message: String) -> Self {
+        // A code-only identity, e.g. `sync.unknown_table`.
+        if !message.contains(": ") && is_client_code(&message) {
+            return Self {
+                code: message.clone(),
+                message: static_authoring_message(&message)
+                    .unwrap_or(GENERIC_AUTHORING_MESSAGE)
+                    .to_owned(),
+                details: None,
+                retryable: false,
+            };
+        }
+        let (code, rest) = match message.split_once(": ") {
+            Some((code, rest)) if is_client_code(code) => (code, Some(rest)),
+            _ => (DEFAULT_CLIENT_ERROR_CODE, None),
+        };
+        match static_authoring_message(code) {
+            Some(fixed) => Self {
+                code: code.to_owned(),
+                message: fixed.to_owned(),
+                details: (rest != Some(fixed))
+                    .then(|| serde_json::json!({ "legacyCause": message })),
+                retryable: false,
+            },
+            None => Self {
+                code: code.to_owned(),
+                message: GENERIC_AUTHORING_MESSAGE.to_owned(),
+                details: Some(serde_json::json!({ "legacyCause": message })),
+                retryable: false,
+            },
+        }
     }
 }
 

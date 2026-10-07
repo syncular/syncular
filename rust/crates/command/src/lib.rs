@@ -21,7 +21,7 @@ use ssp2::{
 };
 use syncular_client::previous_version::{PreviousVersionContextConfig, PreviousVersionReadSpec};
 use syncular_client::{
-    ClientDiagnosticsRequest, ClientLimits, CommandEffects, CommitOutcomeQuery,
+    ClientDiagnosticsRequest, ClientError, ClientLimits, CommandEffects, CommitOutcomeQuery,
     LocalDataPurgeInput, LocalDataRebootstrapInput, Mutation, QueryOwner, RealtimePolicy,
     ResolveCommitOutcomeInput, SyncClient, Transport, WindowBase, WindowCoverage,
 };
@@ -51,8 +51,48 @@ pub fn value_bytes(value: Option<&Value>) -> Result<Vec<u8>, String> {
     hex_to_bytes(hex)
 }
 
-/// The `(code, message)` pair the driver protocol carries in an `error`.
-pub type CommandError = (String, String);
+/// The structured failure the driver protocol carries in an `error`. `details`
+/// and `retryable` carry the typed mutation fields to the host; non-mutation
+/// failures leave both at their defaults.
+#[derive(Debug, Clone)]
+pub struct CommandError {
+    pub code: String,
+    pub message: String,
+    pub details: Option<Value>,
+    pub retryable: bool,
+}
+
+impl CommandError {
+    pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+            details: None,
+            retryable: false,
+        }
+    }
+
+    /// Consume a structured client authoring failure without re-parsing text.
+    pub fn from_client(error: ClientError) -> Self {
+        Self {
+            code: error.code,
+            message: error.message,
+            details: error.details,
+            retryable: error.retryable,
+        }
+    }
+}
+
+impl From<(String, String)> for CommandError {
+    fn from((code, message): (String, String)) -> Self {
+        Self {
+            code,
+            message,
+            details: None,
+            retryable: false,
+        }
+    }
+}
 
 /// Parsed side effects of a `create` command that the host must apply to its
 /// own transport/clock (the router stays transport-agnostic). The client is
@@ -86,7 +126,13 @@ fn client_err(message: String) -> CommandError {
         .map(|(candidate, _)| candidate)
         .filter(|candidate| candidate.starts_with("client.") || candidate.starts_with("sync."))
         .unwrap_or("client.failed");
-    (code.to_owned(), message)
+    let retryable = code == "client.storage_busy";
+    CommandError {
+        code: code.to_owned(),
+        message,
+        details: None,
+        retryable,
+    }
 }
 
 fn need_client(client: &mut Option<SyncClient>) -> Result<&mut SyncClient, CommandError> {
@@ -455,9 +501,9 @@ pub fn dispatch<T: Transport>(
             SyncClient::security_preflight,
         );
         if preflight_engaged && !requests_preflight {
-            return Err((
-                syncular_client::SECURITY_PREFLIGHT_REQUIRED_CODE.to_owned(),
-                "the local replica is in security preflight; a replacement create must itself request securityPreflight, and protected data opens only after activateSecurity".to_owned(),
+            return Err(CommandError::new(
+                syncular_client::SECURITY_PREFLIGHT_REQUIRED_CODE,
+                "the local replica is in security preflight; a replacement create must itself request securityPreflight, and protected data opens only after activateSecurity",
             ));
         }
     } else {
@@ -479,9 +525,9 @@ pub fn dispatch<T: Transport>(
             .is_some_and(|running| running.security_preflight())
             && !allowed_during_preflight
         {
-            return Err((
-                syncular_client::SECURITY_PREFLIGHT_REQUIRED_CODE.to_owned(),
-                "the local replica is in security preflight; complete quarantine checks and call activateSecurity before accessing protected data".to_owned(),
+            return Err(CommandError::new(
+                syncular_client::SECURITY_PREFLIGHT_REQUIRED_CODE,
+                "the local replica is in security preflight; complete quarantine checks and call activateSecurity before accessing protected data",
             ));
         }
     }
@@ -558,9 +604,9 @@ pub fn dispatch<T: Transport>(
             // securityPreflight, or an activated replica whose marker cleared,
             // proceeds.
             if instance.security_preflight() && !security_preflight {
-                return Err((
-                    syncular_client::SECURITY_PREFLIGHT_REQUIRED_CODE.to_owned(),
-                    "the local replica is in security preflight; a replacement create must itself request securityPreflight, and protected data opens only after activateSecurity".to_owned(),
+                return Err(CommandError::new(
+                    syncular_client::SECURITY_PREFLIGHT_REQUIRED_CODE,
+                    "the local replica is in security preflight; a replacement create must itself request securityPreflight, and protected data opens only after activateSecurity",
                 ));
             }
             if security_preflight && params.get("encryption").is_some() {
@@ -742,7 +788,9 @@ pub fn dispatch<T: Transport>(
         }
         "mutate" => {
             let mutations = parse_mutations(params.get("mutations")).map_err(client_err)?;
-            let id = need_client(client)?.mutate(mutations).map_err(client_err)?;
+            let id = need_client(client)?
+                .mutate(mutations)
+                .map_err(CommandError::from_client)?;
             Ok(json!({
                 "clientCommitId": id,
                 "effects": CommandEffects::interactive()
@@ -766,7 +814,7 @@ pub fn dispatch<T: Transport>(
             let base_version = params.get("baseVersion").and_then(Value::as_i64);
             let id = need_client(client)?
                 .patch(table, row_id, partial, base_version)
-                .map_err(client_err)?;
+                .map_err(CommandError::from_client)?;
             Ok(json!({
                 "clientCommitId": id,
                 "effects": CommandEffects::interactive()
@@ -1004,7 +1052,7 @@ pub fn dispatch<T: Transport>(
                 .ok_or_else(|| client_err("crdtInsertText missing value".to_owned()))?;
             let id = need_client(client)?
                 .crdt_insert_text(&table, &row_id, &column, &name, index, value)
-                .map_err(client_err)?;
+                .map_err(CommandError::from_client)?;
             Ok(json!({ "clientCommitId": id }))
         }
         #[cfg(feature = "crdt-yjs")]
@@ -1022,7 +1070,7 @@ pub fn dispatch<T: Transport>(
                 as u32;
             let id = need_client(client)?
                 .crdt_delete_text(&table, &row_id, &column, &name, index, len)
-                .map_err(client_err)?;
+                .map_err(CommandError::from_client)?;
             Ok(json!({ "clientCommitId": id }))
         }
         #[cfg(feature = "crdt-yjs")]
@@ -1031,14 +1079,16 @@ pub fn dispatch<T: Transport>(
             let update = value_bytes(params.get("update")).map_err(client_err)?;
             let id = need_client(client)?
                 .crdt_apply_update(&table, &row_id, &column, &update)
-                .map_err(client_err)?;
+                .map_err(CommandError::from_client)?;
             Ok(json!({ "clientCommitId": id }))
         }
         #[cfg(not(feature = "crdt-yjs"))]
-        "crdtText" | "crdtInsertText" | "crdtDeleteText" | "crdtApplyUpdate" => Err((
-            "client.crdt_unavailable".to_owned(),
-            "native CRDT support requires the `crdt-yjs` feature (§5.10.5)".to_owned(),
-        )),
+        "crdtText" | "crdtInsertText" | "crdtDeleteText" | "crdtApplyUpdate" => {
+            Err(CommandError::new(
+                "client.crdt_unavailable",
+                "native CRDT support requires the `crdt-yjs` feature (§5.10.5)",
+            ))
+        }
 
         "uploadBlob" => {
             let bytes = value_bytes(params.get("bytes")).map_err(client_err)?;
@@ -1259,7 +1309,8 @@ mod tests {
     };
 
     use super::{
-        dispatch, parse_encryption, parse_headers, parse_previous_version_context, CreateEffects,
+        client_err, dispatch, parse_encryption, parse_headers, parse_previous_version_context,
+        CreateEffects,
     };
 
     #[derive(Default)]
@@ -1395,9 +1446,9 @@ mod tests {
             &json!({ "schema": older }),
         )
         .expect_err("refuse recreation");
-        assert_eq!(error.0, "client.schema_downgrade");
+        assert_eq!(error.code, "client.schema_downgrade");
         assert_eq!(
-            error.1,
+            error.message,
             "client.schema_downgrade: persisted local schema is newer than the requested schema"
         );
         dispatch(
@@ -1416,7 +1467,7 @@ mod tests {
             &json!({ "schema": older, "dbPath": path }),
         )
         .expect_err("refuse open");
-        assert_eq!(error.0, "client.schema_downgrade");
+        assert_eq!(error.code, "client.schema_downgrade");
         assert!(client.is_none());
         dispatch(
             &mut transport,
@@ -1483,7 +1534,7 @@ mod tests {
             &json!({ "schema": schema(), "realtimePolicy": "always" }),
         )
         .expect_err("an unknown policy is refused");
-        assert_eq!(error.0, "sync.invalid_request");
+        assert_eq!(error.code, "sync.invalid_request");
     }
 
     #[test]
@@ -1563,7 +1614,7 @@ mod tests {
             }),
         )
         .expect_err("changed native query identity must fail");
-        assert_eq!(error.0, "client.subscription_intent_mismatch");
+        assert_eq!(error.code, "client.subscription_intent_mismatch");
 
         let state = dispatch(
             &mut transport,
@@ -1609,7 +1660,7 @@ mod tests {
             &json!({ "sql": "SELECT id FROM todos", "params": [] }),
         )
         .expect_err("protected query must fail");
-        assert_eq!(query_error.0, SECURITY_PREFLIGHT_REQUIRED_CODE);
+        assert_eq!(query_error.code, SECURITY_PREFLIGHT_REQUIRED_CODE);
         let diagnostics_error = dispatch(
             &mut transport,
             &mut client,
@@ -1618,7 +1669,7 @@ mod tests {
             &json!({}),
         )
         .expect_err("diagnostics table/subscription evidence remains protected");
-        assert_eq!(diagnostics_error.0, SECURITY_PREFLIGHT_REQUIRED_CODE);
+        assert_eq!(diagnostics_error.code, SECURITY_PREFLIGHT_REQUIRED_CODE);
 
         dispatch(
             &mut transport,
@@ -1645,7 +1696,7 @@ mod tests {
             &json!({ "input": { "rebootstrapId": "blocked-repair" } }),
         )
         .expect_err("projection repair must remain protected during preflight");
-        assert_eq!(repair_error.0, SECURITY_PREFLIGHT_REQUIRED_CODE);
+        assert_eq!(repair_error.code, SECURITY_PREFLIGHT_REQUIRED_CODE);
 
         dispatch(
             &mut transport,
@@ -1681,7 +1732,209 @@ mod tests {
             &json!({ "mutations": [] }),
         )
         .expect_err("mutation must be gated");
-        assert_eq!(blocked.0, SECURITY_PREFLIGHT_REQUIRED_CODE);
+        assert_eq!(blocked.code, SECURITY_PREFLIGHT_REQUIRED_CODE);
+    }
+
+    #[test]
+    fn mutate_and_patch_forward_typed_storage_failures() {
+        let path = temp_db_path("busy-authoring");
+        let schema = json!({
+            "version": 1,
+            "tables": [{
+                "name": "todos",
+                "columns": [
+                    { "name": "id", "type": "string", "nullable": false },
+                    { "name": "list_id", "type": "string", "nullable": false },
+                    { "name": "title", "type": "string", "nullable": false }
+                ],
+                "primaryKey": "id",
+                "scopes": [{ "pattern": "list:{list_id}", "column": "list_id" }]
+            }]
+        });
+        let mut transport = NoNetwork::default();
+        let mut client: Option<SyncClient> = None;
+        let mut effects = CreateEffects::default();
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({ "schema": schema, "dbPath": path }),
+        )
+        .expect("create file-backed client");
+        let upsert = |id: &str| {
+            json!({ "mutations": [{ "op": "upsert", "table": "todos", "values": {
+                "id": id, "list_id": "l1", "title": "first" } }] })
+        };
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "mutate",
+            &upsert("t1"),
+        )
+        .expect("seed row");
+
+        let locker = rusqlite::Connection::open(&path).expect("second connection");
+        locker.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let busy = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "mutate",
+            &upsert("t2"),
+        )
+        .expect_err("busy mutate");
+        assert_eq!(busy.code, "client.storage_busy");
+        assert!(busy.retryable);
+        assert_eq!(busy.details.as_ref().unwrap()["sqliteCode"], 5);
+
+        let busy_patch = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "patch",
+            &json!({ "table": "todos", "rowId": "t1", "partial": { "title": "second" } }),
+        )
+        .expect_err("busy patch");
+        assert_eq!(busy_patch.code, "client.storage_busy");
+        assert!(busy_patch.retryable);
+        assert_eq!(busy_patch.details.as_ref().unwrap()["sqliteCode"], 5);
+
+        locker.execute_batch("ROLLBACK").unwrap();
+        let retried = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "mutate",
+            &upsert("t2"),
+        )
+        .expect("retry after busy");
+        assert!(retried.get("clientCommitId").is_some());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn mutate_and_patch_report_caller_value_failures_as_invalid_request() {
+        let path = temp_db_path("caller-values");
+        let schema = json!({
+            "version": 1,
+            "tables": [{
+                "name": "todos",
+                "columns": [
+                    { "name": "id", "type": "string", "nullable": false },
+                    { "name": "list_id", "type": "string", "nullable": false },
+                    { "name": "title", "type": "string", "nullable": false },
+                    { "name": "priority", "type": "integer", "nullable": false }
+                ],
+                "primaryKey": "id",
+                "scopes": [{ "pattern": "list:{list_id}", "column": "list_id" }]
+            }]
+        });
+        let mut transport = NoNetwork::default();
+        let mut client: Option<SyncClient> = None;
+        let mut effects = CreateEffects::default();
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({ "schema": schema, "dbPath": path }),
+        )
+        .expect("create file-backed client");
+        let seed = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "mutate",
+            &json!({ "mutations": [{ "op": "upsert", "table": "todos", "values": {
+                "id": "t1", "list_id": "l1", "title": "first", "priority": 1 } }] }),
+        )
+        .expect("seed row");
+        let seed_id = seed["clientCommitId"].clone();
+
+        // §6.1/§7.1: a caller value the authoring seam rejects is an invalid
+        // request, not the internal-failure default.
+        let unknown = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "mutate",
+            &json!({ "mutations": [{ "op": "upsert", "table": "todos", "values": {
+                "id": "t2", "list_id": "l1", "title": "second", "priority": 1,
+                "missing_column": 1 } }] }),
+        )
+        .expect_err("unknown column");
+        assert_eq!(unknown.code, "sync.invalid_request");
+        assert_eq!(unknown.message, "the authoring request is invalid");
+        assert!(!unknown.retryable);
+        assert!(unknown.details.as_ref().unwrap()["legacyCause"]
+            .as_str()
+            .unwrap()
+            .contains("unknown column"));
+
+        let bad_patch = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "patch",
+            &json!({ "table": "todos", "rowId": "t1", "partial": { "priority": "high" } }),
+        )
+        .expect_err("bad patch value");
+        assert_eq!(bad_patch.code, "sync.invalid_request");
+        assert_eq!(bad_patch.message, "the authoring request is invalid");
+        assert!(bad_patch.details.as_ref().unwrap()["legacyCause"]
+            .as_str()
+            .unwrap()
+            .contains("priority"));
+
+        // Neither rejection enqueued a commit or touched the projection.
+        let pending = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "pendingCommitIds",
+            &json!({}),
+        )
+        .expect("pending commit ids");
+        assert_eq!(pending["ids"], json!([seed_id]));
+        let rows = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "query",
+            &json!({ "sql": "SELECT id, priority FROM todos ORDER BY id" }),
+        )
+        .expect("visible rows");
+        assert_eq!(rows["rows"], json!([{ "id": "t1", "priority": 1 }]));
+
+        // The next valid call authorizes normally.
+        let accepted = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "mutate",
+            &json!({ "mutations": [{ "op": "upsert", "table": "todos", "values": {
+                "id": "t2", "list_id": "l1", "title": "second", "priority": 2 } }] }),
+        )
+        .expect("retry after rejection");
+        assert!(accepted.get("clientCommitId").is_some());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn client_err_preserves_retryable_for_storage_busy() {
+        let busy = client_err("client.storage_busy: local SQLite storage is busy".to_owned());
+        assert_eq!(busy.code, "client.storage_busy");
+        assert!(busy.retryable);
+        // The legacy boundary keeps the full rendered message.
+        assert_eq!(
+            busy.message,
+            "client.storage_busy: local SQLite storage is busy"
+        );
+        let full = client_err("client.storage_full: local SQLite storage is full".to_owned());
+        assert_eq!(full.code, "client.storage_full");
+        assert!(!full.retryable);
     }
 
     #[test]
@@ -1708,7 +1961,7 @@ mod tests {
                 &json!({}),
             )
             .expect_err("previous-version reads stay gated during preflight");
-            assert_eq!(error.0, SECURITY_PREFLIGHT_REQUIRED_CODE);
+            assert_eq!(error.code, SECURITY_PREFLIGHT_REQUIRED_CODE);
         }
         // RFC 0006 runs the discard consumer inside the quiesced window, so the
         // command router must permit it (feature off here: a clean no-op).
@@ -1747,7 +2000,7 @@ mod tests {
             &json!({ "schema": schema() }),
         )
         .expect_err("plain create must be refused during preflight");
-        assert_eq!(escape.0, SECURITY_PREFLIGHT_REQUIRED_CODE);
+        assert_eq!(escape.code, SECURITY_PREFLIGHT_REQUIRED_CODE);
         // The refused create left the preflighted client installed and gated.
         let query_error = dispatch(
             &mut transport,
@@ -1757,7 +2010,7 @@ mod tests {
             &json!({ "sql": "SELECT id FROM todos", "params": [] }),
         )
         .expect_err("protected query stays gated");
-        assert_eq!(query_error.0, SECURITY_PREFLIGHT_REQUIRED_CODE);
+        assert_eq!(query_error.code, SECURITY_PREFLIGHT_REQUIRED_CODE);
 
         // A preflighted replacement is permitted and stays gated.
         dispatch(
@@ -1776,7 +2029,7 @@ mod tests {
             &json!({ "sql": "SELECT id FROM todos", "params": [] }),
         )
         .expect_err("replacement stays gated");
-        assert_eq!(still_gated.0, SECURITY_PREFLIGHT_REQUIRED_CODE);
+        assert_eq!(still_gated.code, SECURITY_PREFLIGHT_REQUIRED_CODE);
 
         // A legitimate activation releases the gate; creates behave as today.
         dispatch(
@@ -1920,7 +2173,7 @@ mod tests {
             &json!({ "schema": schema(), "dbPath": path }),
         )
         .expect_err("a quarantined replica must refuse a plain re-create");
-        assert_eq!(escape.0, SECURITY_PREFLIGHT_REQUIRED_CODE);
+        assert_eq!(escape.code, SECURITY_PREFLIGHT_REQUIRED_CODE);
 
         let _ = std::fs::remove_file(&path);
     }
@@ -1957,7 +2210,7 @@ mod tests {
             &json!({ "schema": schema() }),
         )
         .expect_err("shutdown + plain create must stay refused");
-        assert_eq!(escape.0, SECURITY_PREFLIGHT_REQUIRED_CODE);
+        assert_eq!(escape.code, SECURITY_PREFLIGHT_REQUIRED_CODE);
 
         dispatch(
             &mut transport,
@@ -2018,7 +2271,7 @@ mod tests {
             &json!({ "headers": { "authorization": 7 } }),
         )
         .expect_err("non-string header must fail");
-        assert_eq!(invalid.0, "sync.invalid_request");
+        assert_eq!(invalid.code, "sync.invalid_request");
         let lifecycle = dispatch(
             &mut transport,
             &mut client,
@@ -2096,7 +2349,7 @@ mod tests {
             &json!({ "headers": { "authorization": 7 } }),
         )
         .expect_err("invalid replacement");
-        assert_eq!(invalid.0, "sync.invalid_request");
+        assert_eq!(invalid.code, "sync.invalid_request");
 
         dispatch(
             &mut transport,
@@ -2114,7 +2367,7 @@ mod tests {
             &json!({ "headers": {} }),
         )
         .expect_err("direct rotation must respect preflight");
-        assert_eq!(gated.0, SECURITY_PREFLIGHT_REQUIRED_CODE);
+        assert_eq!(gated.code, SECURITY_PREFLIGHT_REQUIRED_CODE);
     }
 
     fn schema_v2() -> Value {
@@ -2197,8 +2450,12 @@ mod tests {
             ),
         ] {
             let error = parse_previous_version_context(Some(&value)).expect_err("must fail");
-            assert_eq!(error.0, "sync.invalid_request", "{value}");
-            assert!(error.1.contains(expected), "{value}: {}", error.1);
+            assert_eq!(error.code, "sync.invalid_request", "{value}");
+            assert!(
+                error.message.contains(expected),
+                "{value}: {}",
+                error.message
+            );
         }
     }
 
@@ -2215,8 +2472,8 @@ mod tests {
             &json!({ "schema": schema(), "previousVersionContext": { "enabled": true, "maxRows": 0 } }),
         )
         .expect_err("invalid config must fail the create");
-        assert_eq!(error.0, "sync.invalid_request");
-        assert!(error.1.contains("maxRows"), "{}", error.1);
+        assert_eq!(error.code, "sync.invalid_request");
+        assert!(error.message.contains("maxRows"), "{}", error.message);
         assert!(client.is_none(), "no client may be installed");
     }
 
@@ -2370,7 +2627,7 @@ mod tests {
             &json!({ "table": "absent" }),
         )
         .expect_err("unknown previous table");
-        assert_eq!(unknown.0, "sync.invalid_request");
+        assert_eq!(unknown.code, "sync.invalid_request");
         let bad_limit = dispatch(
             &mut transport,
             &mut client,
@@ -2379,7 +2636,7 @@ mod tests {
             &json!({ "table": "todos", "limit": 0 }),
         )
         .expect_err("bad limit");
-        assert_eq!(bad_limit.0, "sync.invalid_request");
+        assert_eq!(bad_limit.code, "sync.invalid_request");
 
         // D6: the audit names the pending commit's classification, with no
         // envelope and nothing dropped.
