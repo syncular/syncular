@@ -208,7 +208,24 @@ describe('§7.5 snapshot read surface', () => {
       message: 'denied',
       retryable: false,
     };
+    const invalidOperations = [
+      {},
+      { op: 'bogus', table: 'tasks', rowId: 'r' },
+      { op: 'upsert', table: 'tasks', rowId: 'r' },
+      { op: 'delete', table: 'tasks', rowId: 'r', values: {} },
+      { op: 'delete', table: 'tasks', rowId: 'r', values: null },
+      {
+        op: 'upsert',
+        table: 'tasks',
+        rowId: 'r',
+        values: { b: { $bytes: '+a' } },
+      },
+    ];
     const invalidResults = [
+      ...invalidOperations.flatMap((operation) => [
+        [{ status: 'error', rejection: { ...rejection, operation } }],
+        [{ status: 'conflict', conflict: { ...conflict, operation } }],
+      ]),
       ...[0.5, 2147483648, -2147483649, 9007199254740992].map((opIndex) => [
         { status: 'applied', opIndex },
       ]),
@@ -233,14 +250,23 @@ describe('§7.5 snapshot read surface', () => {
     ];
     for (const result of invalidResults) {
       db.exec(
-        "UPDATE _syncular_commit_outcomes SET results=? WHERE client_commit_id='c'",
-        [JSON.stringify(result)],
+        "UPDATE _syncular_commit_outcomes SET status=?,results=? WHERE client_commit_id='c'",
+        [
+          result.some((entry) => entry.status === 'conflict')
+            ? 'conflict'
+            : result.some((entry) => entry.status === 'error')
+              ? 'rejected'
+              : 'applied',
+          JSON.stringify(result),
+        ],
       );
       expect(() => client.commitDelivery('c')).toThrow(
         expect.objectContaining({ code: 'sync.local_corrupt' }),
       );
     }
-    db.exec("UPDATE _syncular_commit_outcomes SET results='[]'");
+    db.exec(
+      "UPDATE _syncular_commit_outcomes SET status='applied',results='[]'",
+    );
     for (const [column, invalid, restored] of [
       ['seq', 'bad', 1],
       ['seq', 9007199254740992, 1],
@@ -264,7 +290,8 @@ describe('§7.5 snapshot read surface', () => {
       },
       { status: 'error', rejection: { ...rejection, details: null } },
     ]) {
-      db.exec('UPDATE _syncular_commit_outcomes SET results=?', [
+      db.exec('UPDATE _syncular_commit_outcomes SET status=?,results=?', [
+        result.status === 'conflict' ? 'conflict' : 'rejected',
         JSON.stringify([result]),
       ]);
       expect(client.commitDelivery('c').status).toBe('known');

@@ -1710,6 +1710,17 @@ export class SyncClient {
         if (typeof rawScopes !== 'string') corrupt();
         try {
           effectiveScopes = JSON.parse(rawScopes);
+          if (effectiveScopes === null) effectiveScopes = undefined;
+          else if (
+            typeof effectiveScopes !== 'object' ||
+            Array.isArray(effectiveScopes) ||
+            !Object.values(effectiveScopes).every(
+              (values) =>
+                Array.isArray(values) &&
+                values.every((value) => typeof value === 'string'),
+            )
+          )
+            corrupt();
         } catch {
           corrupt();
         }

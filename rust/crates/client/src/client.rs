@@ -5787,7 +5787,17 @@ mod observation_tests {
                 .persist_commit_outcome(
                     "retained",
                     CommitOutcomeStatus::Rejected,
-                    &[],
+                    &[CommitOperationOutcome::Error {
+                        rejection: RejectionRecord {
+                            client_commit_id: "retained".into(),
+                            op_index: 0,
+                            code: "validation.denied".into(),
+                            message: "denied".into(),
+                            retryable: false,
+                            details: None,
+                            operation: None,
+                        },
+                    }],
                     Some(&[operation]),
                 )
                 .unwrap();
@@ -5889,7 +5899,10 @@ mod observation_tests {
                 row_id: "t1".to_owned(),
                 op: "upsert".to_owned(),
                 base_version: Some(1),
-                values: None,
+                values: Some(Map::from_iter([
+                    ("id".into(), json!("t1")),
+                    ("project_id".into(), json!("p1")),
+                ])),
             }),
         };
         let failed_operations = vec![
@@ -5898,14 +5911,20 @@ mod observation_tests {
                 table: "tasks".to_owned(),
                 row_id: "t1".to_owned(),
                 base_version: Some(1),
-                values: None,
+                values: Some(Map::from_iter([
+                    ("id".into(), json!("t1")),
+                    ("project_id".into(), json!("p1")),
+                ])),
             },
             OutboxOp {
                 upsert: true,
                 table: "tasks".to_owned(),
                 row_id: "status-event-1".to_owned(),
                 base_version: Some(0),
-                values: None,
+                values: Some(Map::from_iter([
+                    ("id".into(), json!("status-event-1")),
+                    ("project_id".into(), json!("p1")),
+                ])),
             },
         ];
 
@@ -6234,7 +6253,10 @@ mod observation_tests {
             table: "tasks".to_owned(),
             row_id: "t1".to_owned(),
             base_version: Some(1),
-            values: None,
+            values: Some(Map::from_iter([
+                ("id".into(), json!("t1")),
+                ("project_id".into(), json!("p1")),
+            ])),
         }];
         client
             .persist_commit_outcome(
@@ -8779,6 +8801,16 @@ fn snapshot_read_connection(
             let Some(cursor) = state.get("cursor").and_then(Value::as_i64) else {
                 return Err(corrupt("persisted subscription state is invalid"));
             };
+            if cursor.unsigned_abs() > MAX_JS_SAFE_INTEGER {
+                return Err(corrupt("persisted subscription state is invalid"));
+            }
+            let effective_scopes = state
+                .get("effectiveScopes")
+                .filter(|value| !value.is_null());
+            if let Some(scopes) = effective_scopes {
+                json_to_scope_map(scopes)
+                    .map_err(|_| corrupt("persisted subscription state is invalid"))?;
+            }
             let has_resume_token = match state.get("bootstrapState") {
                 None | Some(Value::Null) => false,
                 Some(Value::String(_)) => true,
@@ -8800,10 +8832,7 @@ fn snapshot_read_connection(
                 has_resume_token,
                 bootstrap_complete: active && cursor >= 0 && !has_resume_token,
                 known_pending_pages: active && (has_resume_token || cursor < 0),
-                effective_scopes: state
-                    .get("effectiveScopes")
-                    .cloned()
-                    .filter(|value| !value.is_null()),
+                effective_scopes: effective_scopes.cloned(),
                 reason_code,
             });
         }
@@ -11627,8 +11656,84 @@ impl SyncClient {
         {
             return Err("sync.local_corrupt: persisted commit outcome is invalid".to_owned());
         }
-        let results: Vec<CommitOperationOutcome> = serde_json::from_str(&results_json)
-            .map_err(|_| "sync.local_corrupt: persisted commit outcome is invalid".to_owned())?;
+        fn valid_row(value: &Value) -> bool {
+            value.as_object().is_some_and(|row| {
+                row.values().all(|cell| {
+                    cell.is_null()
+                        || cell.is_string()
+                        || cell.is_boolean()
+                        || cell.is_number()
+                        || cell.as_object().is_some_and(|object| {
+                            object.len() == 1
+                                && object
+                                    .get("$bytes")
+                                    .and_then(Value::as_str)
+                                    .is_some_and(|hex| {
+                                        hex.len() % 2 == 0
+                                            && hex.bytes().all(|b| b.is_ascii_hexdigit())
+                                    })
+                        })
+                })
+            })
+        }
+        fn valid_operation(value: &Value) -> bool {
+            value.get("table").is_some_and(Value::is_string)
+                && value.get("rowId").is_some_and(Value::is_string)
+                && value.get("baseVersion").is_none_or(|v| {
+                    v.as_i64()
+                        .is_some_and(|n| n.unsigned_abs() <= MAX_JS_SAFE_INTEGER)
+                })
+                && match value.get("op").and_then(Value::as_str) {
+                    Some("upsert") => value.get("values").is_some_and(valid_row),
+                    Some("delete") => value.get("values").is_none(),
+                    _ => false,
+                }
+        }
+        let invalid = || "sync.local_corrupt: persisted commit outcome is invalid".to_owned();
+        let stored: Vec<Value> = serde_json::from_str(&results_json).map_err(|_| invalid())?;
+        for result in &stored {
+            let nested = match result.get("status").and_then(Value::as_str) {
+                Some("conflict") => result.get("conflict"),
+                Some("error") => result.get("rejection"),
+                _ => None,
+            };
+            if nested
+                .and_then(|record| record.get("operation"))
+                .is_some_and(|op| !valid_operation(op))
+                || (result.get("status").and_then(Value::as_str) == Some("conflict")
+                    && nested
+                        .and_then(|record| record.get("serverRow"))
+                        .is_some_and(|row| !valid_row(row)))
+            {
+                return Err(invalid());
+            }
+        }
+        let results: Vec<CommitOperationOutcome> =
+            serde_json::from_value(Value::Array(stored)).map_err(|_| invalid())?;
+        let has_conflict = results
+            .iter()
+            .any(|result| matches!(result, CommitOperationOutcome::Conflict { .. }));
+        let has_error = results
+            .iter()
+            .any(|result| matches!(result, CommitOperationOutcome::Error { .. }));
+        let status = Self::parse_outcome_status(&status).map_err(|_| invalid())?;
+        let redacted = results.is_empty() && operations_json.is_none();
+        if match status {
+            CommitOutcomeStatus::Applied | CommitOutcomeStatus::Cached => has_conflict || has_error,
+            CommitOutcomeStatus::Conflict => !(has_conflict || redacted),
+            CommitOutcomeStatus::Rejected => has_conflict || !(has_error || redacted),
+        } {
+            return Err(invalid());
+        }
+        let operations: Option<Vec<CommitOperation>> = operations_json
+            .map(|raw| {
+                let stored: Vec<Value> = serde_json::from_str(&raw).map_err(|_| invalid())?;
+                if !stored.iter().all(valid_operation) {
+                    return Err(invalid());
+                }
+                serde_json::from_value(Value::Array(stored)).map_err(|_| invalid())
+            })
+            .transpose()?;
         for result in &results {
             match result {
                 CommitOperationOutcome::Conflict { conflict }
@@ -11652,16 +11757,10 @@ impl SyncClient {
         Ok(CommitOutcome {
             sequence,
             client_commit_id,
-            status: Self::parse_outcome_status(&status)?,
+            status,
             recorded_at_ms,
             results,
-            operations: operations_json
-                .map(|value| {
-                    serde_json::from_str(&value).map_err(|error| {
-                        format!("invalid persisted commit outcome operations: {error}")
-                    })
-                })
-                .transpose()?,
+            operations,
             retained_rows: None,
             resolution: Self::parse_outcome_resolution(&resolution)?,
             resolved_at_ms,

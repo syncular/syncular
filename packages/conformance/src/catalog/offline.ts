@@ -1227,7 +1227,6 @@ export const offlineScenarios: readonly Scenario[] = [
       );
     },
   },
-
   {
     // §6.1/§7.1: a caller value the authoring seam rejects reports the same
     // stable identity in both cores, whether it names an unknown column, an

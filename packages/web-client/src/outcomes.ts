@@ -181,6 +181,18 @@ function isStoredRow(value: unknown): value is Record<string, JsonRowValue> {
   );
 }
 
+function isStoredOperation(value: unknown): value is OutboxOperation {
+  return (
+    isRecord(value) &&
+    typeof value.table === 'string' &&
+    typeof value.rowId === 'string' &&
+    (value.baseVersion === undefined ||
+      Number.isSafeInteger(value.baseVersion)) &&
+    ((value.op === 'upsert' && isStoredRow(value.values)) ||
+      (value.op === 'delete' && value.values === undefined))
+  );
+}
+
 function decodeResults(raw: string): CommitOperationOutcome[] {
   function corrupt(): never {
     throw new ClientSyncError(
@@ -214,6 +226,8 @@ function decodeResults(raw: string): CommitOperationOutcome[] {
         typeof conflict.rowId !== 'string' ||
         typeof conflict.code !== 'string' ||
         typeof conflict.message !== 'string' ||
+        (conflict.operation !== undefined &&
+          !isStoredOperation(conflict.operation)) ||
         !Number.isSafeInteger(conflict.serverVersion) ||
         (conflict.conflictColumns !== undefined &&
           (!Array.isArray(conflict.conflictColumns) ||
@@ -243,7 +257,9 @@ function decodeResults(raw: string): CommitOperationOutcome[] {
         rejection.opIndex > 2147483647 ||
         typeof rejection.code !== 'string' ||
         typeof rejection.message !== 'string' ||
-        typeof rejection.retryable !== 'boolean'
+        typeof rejection.retryable !== 'boolean' ||
+        (rejection.operation !== undefined &&
+          !isStoredOperation(rejection.operation))
       ) {
         corrupt();
       }
@@ -402,24 +418,27 @@ export function persistedCommitOutcome(
   }
   try {
     const outcome = parseOutcome(db, row, false);
-    // `decodeResults` validates every result variant; validate the optional
-    // retained operation envelope here.
-    if (outcome.operations !== undefined) {
-      if (!Array.isArray(outcome.operations)) corrupt();
-      for (const operation of outcome.operations) {
-        if (
-          !isRecord(operation) ||
-          (operation.op !== 'upsert' && operation.op !== 'delete') ||
-          typeof operation.table !== 'string' ||
-          typeof operation.rowId !== 'string' ||
-          (operation.baseVersion !== undefined &&
-            !Number.isSafeInteger(operation.baseVersion)) ||
-          (operation.values !== undefined && !isStoredRow(operation.values))
-        ) {
-          corrupt();
-        }
-      }
-    }
+    const hasConflict = outcome.results.some(
+      (result) => result.status === 'conflict',
+    );
+    const hasError = outcome.results.some(
+      (result) => result.status === 'error',
+    );
+    const redacted =
+      outcome.results.length === 0 && outcome.operations === undefined;
+    if (
+      ((status === 'applied' || status === 'cached') &&
+        (hasConflict || hasError)) ||
+      (status === 'conflict' && !(hasConflict || redacted)) ||
+      (status === 'rejected' && (hasConflict || !(hasError || redacted)))
+    )
+      corrupt();
+    if (
+      outcome.operations !== undefined &&
+      (!Array.isArray(outcome.operations) ||
+        !outcome.operations.every(isStoredOperation))
+    )
+      corrupt();
     return outcome;
   } catch {
     corrupt();
