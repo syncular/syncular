@@ -468,7 +468,11 @@ reports the persisted outcome fields (status, every result with its conflict
 or rejection code, the retained operation envelope, and the resolution) and
 omits the owner-derived `retainedRows` images. Invalid stored field types,
 fractional indexes or versions, unsafe integer metadata, malformed conflict
-columns, and invalid rejection details fail with `sync.local_corrupt`.
+columns, invalid rejection details, contradictory outcome statuses, and
+malformed stored operations fail with `sync.local_corrupt`. Stored upserts
+require row values; stored deletes omit them. Security purges clear results and
+retained operations while keeping the outcome status readable. Subscription effective scopes
+must be absent or map scope names to arrays of strings.
 
 `local_revision` reads the durable revision without a dummy query; a
 non-canonical marker fails `sync.local_corrupt` instead of reading as zero.

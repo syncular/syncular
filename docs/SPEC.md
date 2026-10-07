@@ -4779,7 +4779,14 @@ outcome-retention policy bounds what a later read can still resolve. The owning 
 retained-row images to its own outcomes; the sidecar reports the persisted
 outcome fields. Persisted outcome readers validate SQL field types, integral
 indexes and safe-integer versions and timestamps, conflict-column arrays,
-and rejection details against their existing bounds. Malformed journal
+and rejection details against their existing bounds. Applied and cached outcomes
+contain only applied results; conflict outcomes contain at least one conflict;
+rejected outcomes contain an error and no conflicts. A security purge clears
+results and omits retained operations while preserving the outcome status; that
+redacted journal entry remains readable. Stored operations, including
+those nested in results, require row values for upserts and omit them for
+deletes. Effective catch-up scopes are absent or maps of string arrays.
+Malformed journal
 metadata fails with `sync.local_corrupt`; recognized SQLite storage errors
 retain their storage classification.
 
