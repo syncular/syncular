@@ -226,7 +226,7 @@ export function setMeta(db: ClientDatabase, key: string, value: string): void {
 export function getLocalRevision(db: ClientDatabase): LocalRevision {
   const raw = getMeta(db, LOCAL_REVISION_KEY);
   if (raw === undefined) return 0n;
-  if (!/^(0|[1-9][0-9]*)$/.test(raw)) {
+  if (typeof raw !== 'string' || !/^(0|[1-9][0-9]*)$/.test(raw)) {
     throw new ClientSyncError(
       'sync.local_corrupt',
       'persisted local revision is invalid',
