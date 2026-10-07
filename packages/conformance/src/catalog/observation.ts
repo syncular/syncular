@@ -1474,32 +1474,33 @@ export const observationScenarios: readonly Scenario[] = [
       const revision = await localRevision();
       const owner = { id: 'queries:revision', tables: ['tasks'] };
 
-      await handle.api.executeStorageSql(
-        "UPDATE _syncular_meta SET value='+1' WHERE key='localRevision'",
-      );
-      let revisionCode = '';
-      try {
-        await localRevision();
-      } catch (error) {
-        revisionCode = (error as { code?: string }).code ?? '';
+      for (const value of ["'+1'", "X'31'", "X'FF'"]) {
+        await handle.api.executeStorageSql(
+          `UPDATE _syncular_meta SET value=${value} WHERE key='localRevision'`,
+        );
+        let revisionCode = '';
+        try {
+          await localRevision();
+        } catch (error) {
+          revisionCode = (error as { code?: string }).code ?? '';
+        }
+        checkEqual(
+          revisionCode,
+          'sync.local_corrupt',
+          'the public revision read classifies corruption',
+        );
+        let readCode = '';
+        try {
+          await read({ statements: [{ sql: 'SELECT 1 AS n' }], owner });
+        } catch (error) {
+          readCode = (error as { code?: string }).code ?? '';
+        }
+        checkEqual(
+          readCode,
+          'sync.local_corrupt',
+          'the snapshot read classifies corruption',
+        );
       }
-      checkEqual(
-        revisionCode,
-        'sync.local_corrupt',
-        'the public revision read classifies corruption',
-      );
-      let readCode = '';
-      try {
-        await read({ statements: [{ sql: 'SELECT 1 AS n' }], owner });
-      } catch (error) {
-        readCode = (error as { code?: string }).code ?? '';
-      }
-      checkEqual(
-        readCode,
-        'sync.local_corrupt',
-        'the snapshot read classifies corruption',
-      );
-
       await handle.api.executeStorageSql(
         `UPDATE _syncular_meta SET value='${revision}' WHERE key='localRevision'`,
       );
@@ -1559,6 +1560,35 @@ export const observationScenarios: readonly Scenario[] = [
       await handle.api.executeStorageSql(
         "INSERT INTO _syncular_subscriptions VALUES('s','tasks','{}','active',0,NULL,NULL,NULL)",
       );
+      for (const assignment of [
+        "tbl=X'7461736b73'",
+        "state_json=X'7b7d',status=X'616374697665'",
+        "state_json=CAST(X'FF' AS TEXT),status=CAST(X'FF' AS TEXT)",
+      ]) {
+        await handle.api.executeStorageSql(
+          `UPDATE _syncular_subscriptions SET ${assignment}`,
+        );
+        let code: string | undefined;
+        try {
+          await read({ statements: [], subscriptions: ['s'] });
+        } catch (error) {
+          code = (error as { code?: string }).code;
+        }
+        checkEqual(
+          code,
+          'sync.local_corrupt',
+          `invalid SQLite subscription type: ${assignment}`,
+        );
+        await handle.api.executeStorageSql(
+          `UPDATE _syncular_subscriptions SET tbl='tasks',status='active',state_json='{"status":"active","cursor":0}'`,
+        );
+        checkEqual(
+          (await read({ statements: [], subscriptions: ['s'] }))
+            .subscriptions[0]?.state,
+          'known',
+          'valid SQL column types recover',
+        );
+      }
       for (const scopes of [
         'invalid',
         [],
