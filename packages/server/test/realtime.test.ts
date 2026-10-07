@@ -16,6 +16,7 @@ import {
   type RealtimeHub,
   SqliteServerStorage,
   type StoredCommit,
+  SyncError,
 } from '@syncular/server';
 import {
   makeContext,
@@ -1000,5 +1001,54 @@ describe('unexpected exceptions in a socket round (SYNCULAR-ERROR-CLASS-001)', (
     }
     const next = decodeMessage(joined);
     expect(next.frames.some((frame) => frame.type === 'ERROR')).toBe(false);
+  });
+
+  test('a host mapError answers the mapped catalog error and details on the socket round', async () => {
+    const t = makeContext();
+    const reported: unknown[] = [];
+    const hub = createRealtimeHub({
+      schema: t.ctx.schema,
+      storage: t.ctx.storage,
+      segments: t.segments,
+      resolveScopes: t.ctx.resolveScopes,
+      onError: (error) => {
+        reported.push(error);
+      },
+      mapError: () =>
+        new SyncError(
+          'sync.rate_limited',
+          'service paused',
+          JSON.stringify({ retryAfterMs: 2500 }),
+        ),
+    });
+    const wire = makeWire();
+    const session = await hub.connect({
+      partition: 'part-1',
+      actorId: 'actor-1',
+      clientId: 'client-1',
+      send: wire.send,
+    });
+    t.storage.scanRows = async () => {
+      throw new Error('Network connection lost. secret-7f3a');
+    };
+    const bytes = requestBytes(
+      [pullHeader(), subFrame('s1', 'tasks', { project_id: ['p1'] }, -1)],
+      'client-1',
+    );
+    const tagged = new Uint8Array(bytes.length + 1);
+    tagged[0] = REALTIME_TAG_ROUND;
+    tagged.set(bytes, 1);
+    await session.handleBinary(tagged);
+    const message = decodeMessage(wire.binaries[0]!.subarray(1));
+    const error = message.frames.find((frame) => frame.type === 'ERROR');
+    expect(error).toMatchObject({
+      code: 'sync.rate_limited',
+      category: 'rate-limited',
+      retryable: true,
+      recommendedAction: 'retryLater',
+    });
+    expect(error?.details).toBe(JSON.stringify({ retryAfterMs: 2500 }));
+    expect(JSON.stringify(message.frames)).not.toContain('secret-7f3a');
+    expect(reported).toHaveLength(1);
   });
 });

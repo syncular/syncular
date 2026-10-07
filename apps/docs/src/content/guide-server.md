@@ -136,6 +136,35 @@ createSyncularHono({ config, authenticate });
 operation that fails unexpectedly still answers its `operation.*` code and
 reports the original. A throwing `onError` does not change the response.
 
+To answer a typed catalog error instead of `sync.internal_error`, add a
+synchronous `mapError` hook. `onError` still observes the original once;
+`mapError` may return a catalog `SyncError` carrying structured `details`:
+
+```ts
+const config: SyncServerConfig = {
+  // ...
+  onError: (error, { route }) => log.warn({ route }, error),
+  mapError: (error) => {
+    if (isStorageQuota(error))
+      return new SyncError(
+        'sync.rate_limited',
+        'service paused',
+        JSON.stringify({ retryAfterMs: 30_000 }),
+      );
+    return undefined; // keep sync.internal_error
+  },
+};
+```
+
+`mapError` handles exceptions caught by the HTTP adapters and realtime errors
+before the first response chunk. Registered operation handlers retain their
+`operation.*` failure envelope. The admin routes take their own `mapError`.
+A throw, a non-`SyncError` return, a code that is not an
+own catalog entry, or `details` that is not JSON is contained as
+`sync.internal_error`. A `SyncError` itself bypasses both hooks. A mapped
+`retryAfterMs` is delivery metadata; it does not by itself change the client's
+retry schedule.
+
 ## Realtime hub wiring
 
 `createRealtimeHub` builds the transport-agnostic hub; passing it as

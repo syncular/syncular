@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-10-06',
+    title: 'Host adapter error mapping hook',
+    body: 'The synchronous mapError hook translates unexpected adapter exceptions to catalog errors with structured details, including host retry metadata. Existing onError observers keep their behavior. Invalid mapper results produce sync.internal_error; catalog errors retain their status and retryability. Registered operation handlers keep their operation.* failure envelope.',
+    links: [
+      {
+        href: '/guide-server/#reporting-server-errors',
+        label: 'Reporting server errors',
+      },
+    ],
+  },
+  {
+    date: '2026-10-06',
     title: 'Set client time in Tauri integration tests',
     body: 'Enable the plugin test-clock feature to call SyncularCore::set_now_ms from host integration tests. The setter updates the client time used by diagnostics, lease expiry, and previous-version retention. create.nowMs continues to set the initial client time.',
     links: [

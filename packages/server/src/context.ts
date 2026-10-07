@@ -7,7 +7,7 @@
 import type { ScopeMap } from '@syncular/core';
 import type { BlobStore } from './blob-store';
 import type { CrdtMergerRegistry } from './crdt-merger';
-import type { SyncularErrorHandler } from './errors';
+import type { SyncularErrorHandler, SyncularErrorMapper } from './errors';
 import type { SyncularServerEvents } from './events';
 import type { LeaseStore } from './lease-store';
 import type { AnyReactionPlanner } from './reactions';
@@ -202,6 +202,17 @@ export interface SyncServerConfig {
    * handler never changes the response.
    */
   readonly onError?: SyncularErrorHandler;
+  /**
+   * Optional synchronous adapter error mapper (§10.2). After `onError`
+   * observes an adapter exception, `mapError` may return a catalog
+   * `SyncError` (including structured `details`, e.g. `retryAfterMs`) that
+   * the adapter answers instead of `sync.internal_error`; `undefined` keeps
+   * the default. A throw, a non-`SyncError` return, or malformed `details`
+   * JSON is contained as `sync.internal_error`. Unlike `onError`, this hook
+   * may affect the response. It does not change the remote-operation
+   * `operation.*` envelope.
+   */
+  readonly mapError?: SyncularErrorMapper;
 }
 
 /** Per-request context: the config plus host-authenticated identity. */

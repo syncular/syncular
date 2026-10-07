@@ -282,10 +282,10 @@ export class SyncError extends Error {
   readonly details?: string;
 
   constructor(code: string, message?: string, details?: string) {
-    const entry = ERROR_CATALOG[code];
-    if (entry === undefined) {
+    if (!Object.hasOwn(ERROR_CATALOG, code)) {
       throw new Error(`unknown error code ${code} (not in the §10.2 catalog)`);
     }
+    const entry = ERROR_CATALOG[code]!;
     super(message ?? code);
     this.code = code;
     this.category = entry.category;
@@ -345,18 +345,58 @@ export type SyncularErrorHandler = (
 ) => void;
 
 /**
+ * Optional synchronous error mapper. After `onError` has observed the
+ * original, `mapError` may translate an adapter exception to a catalog
+ * `SyncError` (with `details` metadata such as `retryAfterMs`) that the
+ * adapter answers instead of `sync.internal_error`. Return `undefined` to
+ * keep the default. A throw, a non-`SyncError` return, or `details` that is
+ * not a JSON document is contained as `sync.internal_error`.
+ */
+export type SyncularErrorMapper = (
+  error: unknown,
+  context: { readonly route: SyncularErrorRoute },
+) => SyncError | undefined;
+
+/**
  * The protocol error for an exception an adapter caught. A `SyncError`
- * passes through unchanged. Anything else goes to `onError` and becomes
- * `sync.internal_error` (§10.2), whose message never carries the exception
- * text.
+ * passes through unchanged. Anything else goes to `onError` and answers
+ * `sync.internal_error` (§10.2) unless the optional `mapError` hook returns a
+ * catalog `SyncError` to answer instead. The default `sync.internal_error`
+ * message never carries the exception text; a mapped error's message is the
+ * host's choice.
  */
 export function adapterSyncError(
   error: unknown,
   onError: SyncularErrorHandler | undefined,
   route: SyncularErrorRoute,
+  mapError?: SyncularErrorMapper,
 ): SyncError {
   if (error instanceof SyncError) return error;
   reportError(error, onError, route);
+  try {
+    const mapped = mapError?.(error, { route });
+    if (mapped instanceof SyncError) {
+      const { code, message, details } = mapped;
+      let detailsValid = details === undefined;
+      if (!detailsValid && typeof details === 'string') {
+        JSON.parse(details);
+        detailsValid = true;
+      }
+      if (
+        typeof code === 'string' &&
+        typeof message === 'string' &&
+        Object.hasOwn(ERROR_CATALOG, code) &&
+        detailsValid
+      ) {
+        // Reconstruct from the validated fields: the catalog owns
+        // retryability and status, so a mutated `SyncError` cannot smuggle a
+        // different entry onto the wire.
+        return new SyncError(code, message, details);
+      }
+    }
+  } catch {
+    // A throwing mapper or getter, or malformed details, keeps the default.
+  }
   return new SyncError('sync.internal_error', 'internal server error');
 }
 

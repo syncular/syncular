@@ -38,6 +38,7 @@ import {
   type ServerSchema,
   SSP2_CONTENT_TYPE,
   type SyncServerConfig,
+  SyncError,
 } from '@syncular/server';
 import { D1DatabaseDouble } from '../../server/test/d1-double';
 import {
@@ -49,6 +50,10 @@ import {
   setWebSocketPair,
   writeIdentityHeaders,
 } from '../src/index';
+import {
+  SYNC_DO_REQUEST_PATH,
+  writeRequestIdentityHeaders,
+} from '../src/realtime-do';
 import {
   FakeDurableObjectNamespace,
   type FakeRealtimeDO,
@@ -330,6 +335,122 @@ describe('SyncularRealtimeDO (DO double + D1 double, reference codec)', () => {
     expect(result?.status).toBe('applied');
     expect(result?.commitSeq).toBe(1);
   });
+
+  test.each([false, true])(
+    'DO error mapping contains accessor failures: %s',
+    async (throwingGetter) => {
+      const db = await makeDb();
+      const ns = new FakeDurableObjectNamespace(db, {
+        syncConfig: (storage) => {
+          storage.scanRows = async () => {
+            throw new Error('Network connection lost. secret-7f3a');
+          };
+          return {
+            schema: SCHEMA,
+            storage,
+            segments: new MemorySegmentStore(),
+            resolveScopes: () => ({ list_id: ['*'] }),
+            get mapError() {
+              if (throwingGetter) throw new Error('mapper getter secret-7f3a');
+              return () =>
+                new SyncError(
+                  'sync.rate_limited',
+                  'service paused',
+                  JSON.stringify({ retryAfterMs: 3500 }),
+                );
+            },
+          };
+        },
+      });
+      if (throwingGetter) {
+        const do_ = ns.get(ns.idFromName(PARTITION));
+        const upgrade = new Request(
+          new URL(REALTIME_DO_UPGRADE_PATH, 'https://do'),
+          {
+            headers: { upgrade: 'websocket' },
+          },
+        );
+        writeIdentityHeaders(upgrade.headers, {
+          partition: PARTITION,
+          actorId: ACTOR_ID,
+          clientId: 'client-1',
+        });
+        const upgraded = await do_.fetch(upgrade);
+        expect(upgraded.status).toBe(500);
+        expect(await upgraded.json()).toMatchObject({
+          code: 'sync.internal_error',
+        });
+        const request = new Request(
+          new URL(SYNC_DO_REQUEST_PATH, 'https://do'),
+          {
+            method: 'POST',
+            headers: { 'content-type': SSP2_CONTENT_TYPE },
+            body: syncRequestBytes(
+              [
+                {
+                  type: 'PULL_HEADER',
+                  limitCommits: 100,
+                  limitSnapshotRows: 100,
+                  maxSnapshotPages: 4,
+                  accept: 3,
+                },
+                {
+                  type: 'SUBSCRIPTION',
+                  id: 's1',
+                  table: 'tasks',
+                  scopes: { list_id: ['L'] },
+                  cursor: -1,
+                },
+              ],
+              'client-1',
+            ).slice().buffer,
+          },
+        );
+        writeRequestIdentityHeaders(request.headers, {
+          partition: PARTITION,
+          actorId: ACTOR_ID,
+        });
+        const response = await do_.fetch(request);
+        expect(response.status).toBe(500);
+        expect(await response.json()).toMatchObject({
+          code: 'sync.internal_error',
+        });
+        return;
+      }
+      const { do_, server } = await connect(ns, 'client-1');
+      await sendRound(
+        do_,
+        server,
+        [
+          {
+            type: 'PULL_HEADER',
+            limitCommits: 100,
+            limitSnapshotRows: 100,
+            maxSnapshotPages: 4,
+            accept: 0b0011,
+          },
+          {
+            type: 'SUBSCRIPTION',
+            id: 's1',
+            table: 'tasks',
+            scopes: { list_id: ['L'] },
+            cursor: -1,
+          },
+        ],
+        'client-1',
+      );
+      const response = decodeRoundResponse(server.sent);
+      const error = response.frames.find((frame) => frame.type === 'ERROR');
+      expect(error).toMatchObject({
+        code: 'sync.rate_limited',
+        category: 'rate-limited',
+        retryable: true,
+        recommendedAction: 'retryLater',
+      });
+      expect(error?.details).toBe(JSON.stringify({ retryAfterMs: 3500 }));
+      expect(JSON.stringify(response.frames)).not.toContain('secret-7f3a');
+    },
+  );
 
   test('whole-commit validation runs under the DO partition serializer (§6.8)', async () => {
     const db = await makeDb();
