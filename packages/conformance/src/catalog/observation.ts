@@ -1538,6 +1538,93 @@ export const observationScenarios: readonly Scenario[] = [
     },
   },
   {
+    name: 'observation/snapshot-read-corrupt-subscription-classification',
+    specRefs: ['§7.5', '§7.6'],
+    requires: ['storage-fault'],
+    async run(ctx) {
+      const handle = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: { project_id: ['p1'] },
+      });
+      check(
+        handle.api.executeStorageSql !== undefined,
+        'storage fault injection exists',
+      );
+      const read = requireSnapshotRead(handle.api);
+      await handle.api.executeStorageSql('DROP TABLE _syncular_subscriptions');
+      await handle.api.executeStorageSql(
+        'CREATE TABLE _syncular_subscriptions(id,tbl,state_json,status,cursor,bootstrap_state,effective_scopes,reason_code)',
+      );
+      await handle.api.executeStorageSql(
+        "INSERT INTO _syncular_subscriptions VALUES('s','tasks','{}','active',0,NULL,NULL,NULL)",
+      );
+      for (const scopes of [
+        'invalid',
+        [],
+        { project_id: 'p1' },
+        { project_id: [7] },
+      ]) {
+        const raw = JSON.stringify(scopes).replaceAll("'", "''");
+        const state = JSON.stringify({
+          status: 'active',
+          cursor: 0,
+          effectiveScopes: scopes,
+        }).replaceAll("'", "''");
+        await handle.api.executeStorageSql(
+          `UPDATE _syncular_subscriptions SET effective_scopes='${raw}',state_json='${state}'`,
+        );
+        let code: string | undefined;
+        try {
+          await read({ statements: [], subscriptions: ['s'] });
+        } catch (error) {
+          code = (error as { code?: string }).code;
+        }
+        checkEqual(
+          code,
+          'sync.local_corrupt',
+          `invalid effective scopes: ${raw}`,
+        );
+      }
+      await handle.api.executeStorageSql(
+        `UPDATE _syncular_subscriptions SET effective_scopes=NULL,cursor=9007199254740992,state_json='{"status":"active","cursor":9007199254740992}'`,
+      );
+      let code: string | undefined;
+      try {
+        await read({ statements: [], subscriptions: ['s'] });
+      } catch (error) {
+        code = (error as { code?: string }).code;
+      }
+      checkEqual(
+        code,
+        'sync.local_corrupt',
+        'unsafe cursor fails equally on both cores',
+      );
+      for (const scopes of [null, {}, { project_id: ['p1'] }]) {
+        const raw = JSON.stringify(scopes).replaceAll("'", "''");
+        const state = JSON.stringify({
+          status: 'active',
+          cursor: 0,
+          effectiveScopes: scopes,
+        }).replaceAll("'", "''");
+        await handle.api.executeStorageSql(
+          `UPDATE _syncular_subscriptions SET cursor=0,effective_scopes='${raw}',state_json='${state}'`,
+        );
+        const snapshot = await read({ statements: [], subscriptions: ['s'] });
+        const subscription = snapshot.subscriptions[0];
+        check(
+          subscription?.state === 'known',
+          'valid catch-up metadata recovers',
+        );
+        checkEqual(
+          subscription.effectiveScopes,
+          scopes ?? undefined,
+          'scope map preserves valid values and omits null',
+        );
+      }
+    },
+  },
+  {
     name: 'observation/snapshot-read-corrupt-outcome-classification',
     specRefs: ['§7.5', '§7.6'],
     requires: ['storage-fault'],
@@ -1580,7 +1667,24 @@ export const observationScenarios: readonly Scenario[] = [
         message: 'denied',
         retryable: false,
       };
+      const invalidOperations = [
+        {},
+        { op: 'bogus', table: 'tasks', rowId: 'r' },
+        { op: 'upsert', table: 'tasks', rowId: 'r' },
+        { op: 'delete', table: 'tasks', rowId: 'r', values: {} },
+        { op: 'delete', table: 'tasks', rowId: 'r', values: null },
+        {
+          op: 'upsert',
+          table: 'tasks',
+          rowId: 'r',
+          values: { b: { $bytes: '+a' } },
+        },
+      ];
       const invalidResults = [
+        ...invalidOperations.flatMap((operation) => [
+          [{ status: 'error', rejection: { ...rejection, operation } }],
+          [{ status: 'conflict', conflict: { ...conflict, operation } }],
+        ]),
         ...[0.5, 2147483648, -2147483649].map((opIndex) => [
           { status: 'applied', opIndex },
         ]),
@@ -1606,7 +1710,7 @@ export const observationScenarios: readonly Scenario[] = [
       for (const result of invalidResults) {
         const json = JSON.stringify(result).replaceAll("'", "''");
         await handle.api.executeStorageSql(
-          `UPDATE _syncular_commit_outcomes SET results='${json}',results_json='${json}'`,
+          `UPDATE _syncular_commit_outcomes SET status='${result.some((entry) => entry.status === 'conflict') ? 'conflict' : result.some((entry) => entry.status === 'error') ? 'rejected' : 'applied'}',results='${json}',results_json='${json}'`,
         );
         let code: string | undefined;
         try {
@@ -1621,7 +1725,67 @@ export const observationScenarios: readonly Scenario[] = [
         );
       }
       await handle.api.executeStorageSql(
-        "UPDATE _syncular_commit_outcomes SET results='[]',results_json='[]'",
+        "UPDATE _syncular_commit_outcomes SET status='applied',results='[]',results_json='[]'",
+      );
+      for (const operation of invalidOperations) {
+        const json = JSON.stringify([operation]).replaceAll("'", "''");
+        await handle.api.executeStorageSql(
+          `UPDATE _syncular_commit_outcomes SET operations='${json}',operations_json='${json}'`,
+        );
+        let code: string | undefined;
+        try {
+          await read({ statements: [], commitIds: ['c'], owner });
+        } catch (error) {
+          code = (error as { code?: string }).code;
+        }
+        checkEqual(
+          code,
+          'sync.local_corrupt',
+          `invalid retained operation: ${json}`,
+        );
+      }
+      await handle.api.executeStorageSql(
+        'UPDATE _syncular_commit_outcomes SET operations=NULL,operations_json=NULL',
+      );
+      for (const [status, results] of [
+        ['applied', [{ status: 'error', rejection }]],
+        ['cached', [{ status: 'conflict', conflict }]],
+        ['conflict', [{ status: 'error', rejection }]],
+        ['rejected', [{ status: 'conflict', conflict }]],
+      ]) {
+        const json = JSON.stringify(results).replaceAll("'", "''");
+        await handle.api.executeStorageSql(
+          `UPDATE _syncular_commit_outcomes SET status='${status}',results='${json}',results_json='${json}'`,
+        );
+        let code: string | undefined;
+        try {
+          await read({ statements: [], commitIds: ['c'], owner });
+        } catch (error) {
+          code = (error as { code?: string }).code;
+        }
+        checkEqual(
+          code,
+          'sync.local_corrupt',
+          `contradictory outcome status: ${status}`,
+        );
+      }
+      for (const status of ['rejected', 'conflict']) {
+        await handle.api.executeStorageSql(
+          `UPDATE _syncular_commit_outcomes SET status='${status}',results='[]',results_json='[]'`,
+        );
+        const redacted = await read({
+          statements: [],
+          commitIds: ['c'],
+          owner,
+        });
+        checkEqual(
+          redacted.deliveries[0]?.status,
+          'known',
+          'purged outcome remains readable',
+        );
+      }
+      await handle.api.executeStorageSql(
+        "UPDATE _syncular_commit_outcomes SET status='applied',results='[]',results_json='[]'",
       );
       for (const [column, invalid, restored] of [
         ['seq', "'bad'", '1'],
@@ -1659,7 +1823,7 @@ export const observationScenarios: readonly Scenario[] = [
       ]) {
         const json = JSON.stringify([result]).replaceAll("'", "''");
         await handle.api.executeStorageSql(
-          `UPDATE _syncular_commit_outcomes SET results='${json}',results_json='${json}'`,
+          `UPDATE _syncular_commit_outcomes SET status='${result.status === 'conflict' ? 'conflict' : 'rejected'}',results='${json}',results_json='${json}'`,
         );
         const snapshot = await read({
           statements: [],
