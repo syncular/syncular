@@ -1,154 +1,164 @@
 ---
-title: 'Two Cores, One Spec: Checking Code a Model Wrote'
-description: Models write much of Syncular's production code. A normative spec, golden vectors, and a second client core in Rust held to the same conformance catalog catch the mistakes that diff review misses, and this post shows the ones they caught.
-summary: How a second implementation, built from the spec alone, catches model-written code that reads correctly and is wrong.
+title: 'Model-Written Code Needs a Repository That Checks Itself'
+description: Models write most of Syncular's code. That works because the repository can judge a change without me, through a normative spec, golden vectors, a 242-scenario conformance catalog run against two cores, and a gate that every finding feeds back into.
+summary: What a repository needs before models can write its production code, and what slipped through anyway.
 author: Benjamin Kniffler
 publishedAt: '2026-10-07'
 ---
 
-# Two Cores, One Spec: Checking Code a Model Wrote
+# Model-Written Code Needs a Repository That Checks Itself
 
-Models write a large share of Syncular's code: production code, tests,
-benchmarks, docs, and drafts of this post. The repository has about 1,650
-commits since February 2026, and most of them had model help. I read every
-diff before it lands, and the reply I type most often is "smaller".
+Models write most of Syncular's code: production code in TypeScript and Rust,
+tests, benchmarks, docs, and drafts of this post. The repository has about
+1,650 commits since February 2026, and I am the only maintainer. I read every
+diff, but reading is the weakest check I have. A model's mistake reads as well
+as its correct code, and a reviewer judges a diff with the same context the
+model had.
 
-Reading diffs catches code that looks wrong. The expensive model mistakes look
-right: the code is consistent with itself, the tests the model wrote pass, and
-the reasoning in the commit message holds up. A reviewer judges the diff
-against the same context the model had, so a wrong assumption shared by both
-goes through. What catches those mistakes in Syncular is a second
-implementation of the same protocol that never saw the first one's source.
+Model-driven development works on this project because the repository can
+decide whether a change is correct without asking me. A model runs the checks,
+reads the failures, and fixes its own work before I see it. When something
+slips through, the fix includes a new check, so the same class of mistake
+fails the gate next time. This post describes that setup, and two bugs that
+showed where it is still thin.
 
-## The setup
+## A written truth
 
-Syncular's design predates the models. I built
-[debe](https://github.com/bkniffler/debe), an offline-first datastore with CRDT
-sync, in 2019, and the study in
-[Durable Offline Writes](/blog/offline-first-writes/) is where Syncular's shape
-comes from. What the models changed is how much code one person can produce,
-and therefore how much code needs checking that one person did not type.
+[`SPEC.md`](https://github.com/syncular/syncular/blob/main/docs/SPEC.md) is
+the normative wire protocol, and
+[`SYQL.md`](https://github.com/syncular/syncular/blob/main/docs/SYQL.md)
+defines the query language. When a core disagrees with the spec, the core is
+wrong, or the spec changes in the same commit. A model told to make a client
+follow §6.1 can check its result against the text.
 
-The check has four parts:
+The same model that wrote the code also reads the text, so prose alone checks
+little. Three artifacts make the spec executable:
 
-- [`SPEC.md`](https://github.com/syncular/syncular/blob/main/docs/SPEC.md):
-  the normative protocol. When the spec and a core disagree, the core is wrong
-  or the spec gets amended in the same commit.
-- Golden vectors: 78 files in `spec/vectors/` that pin request, response,
-  push, segment, realtime, and crypto encodings byte for byte, including
-  invalid inputs a decoder must reject.
-- Two client cores: one in TypeScript, one in Rust. The Rust core exists for
-  the native platforms (Swift, Kotlin, Flutter, React Native, Tauri).
-- One conformance catalog: 242 scenarios, each citing the spec sections it
-  tests. CI runs the catalog against the TypeScript client and the Rust client,
-  both against the TypeScript server, and a merge needs both pairings green.
+- Golden vectors: 78 files in `spec/vectors/` pin request, response, push,
+  segment, realtime, and crypto encodings byte for byte, including invalid
+  inputs a decoder must reject. The TypeScript codec and the Rust `ssp2` crate
+  both run them.
+- The conformance catalog: 242 scenarios that drive a client and a server
+  through the byte-level transport. A test fails the build if any scenario
+  lacks a reference to the spec section it checks, so every behavior the
+  catalog asserts traces back to a sentence.
+- A second core. The client core exists in TypeScript and in Rust, and CI runs
+  the full catalog against both. A merge needs both pairings green.
 
-The catalog injects faults at the transport seam: dropped requests, lost acks,
-duplicated and reordered delivery, truncated bytes. The only random value is
-seeded from the scenario name, so every failure reproduces on the next run.
-The [specifications and conformance reference](/reference/#protocol--conformance)
-describes how the catalog and vectors are enforced.
+## A second, independent reader
 
-## The clean-room build
+The Rust client was written from `SPEC.md` and the `ssp2` crate alone; the
+TypeScript client source stayed closed during that work. Its first complete
+version passed all 35 scenarios the catalog had at the time. Running both
+codecs over the same inputs then found four disagreements that neither core's
+own tests could see. TypeScript decoded a `json` column holding invalid JSON
+without error, for example, and Rust accepted realtime cursor values between
+2^53 and 2^63. Each one was resolved on the side the spec supports and pinned
+with a new vector. The same build found four places where the spec was silent
+and the TypeScript core had made a choice nobody wrote down; those answers are
+now in `SPEC.md`.
 
-The Rust client was written by a model from `SPEC.md` and the Rust wire crate
-alone. The TypeScript client source was never opened during that work. The
-first complete version was about 2,100 lines, and it passed all 35 scenarios
-the catalog had at the time, with no skipped scenarios and no recorded
-discrepancies.
+The second core keeps finding disagreements as features land. A `float`
+primary key rendered to different row ids in the two cores, because
+ECMAScript's `Number.prototype.toString` switches to exponent notation at 1e21
+and Rust's `f64::to_string` never does. Each core agreed with itself, so each
+core's tests passed. `float` is now rejected as a primary key type at every
+schema compile site, and SPEC §2.4 states the rule.
 
-Running both codecs over the same inputs found four places where the
-TypeScript and Rust implementations disagreed, each one invisible to the tests
-of either core alone:
+## Results that reproduce
 
-- A `json` column that held invalid JSON decoded without error in TypeScript.
-  The spec says it must fail. TypeScript was fixed.
-- The realtime wake message carries `requiresPull`. Rust accepted `false`; the
-  spec requires the literal `true`. Rust was fixed.
-- Realtime numeric fields must be integers within ±(2^53 − 1). TypeScript
-  checked `isFinite`, which accepts fractional cursors, and Rust accepted
-  values between 2^53 and 2^63. Both were tightened.
-- The TypeScript encoder refused to emit an unknown frame under a registered
-  type, and the Rust encoder did not. Rust gained the same assertion.
+A model that sees a test fail once and pass on rerun learns to rerun. The
+checks therefore have to give the same answer every time.
 
-Each fix shipped with a golden vector, so a third implementation fails on the
-same input. The same build surfaced four gaps in the spec itself, such as when
-a client counts as having synced at least once. Those were places where the TypeScript core had made a choice
-nobody wrote down; the second reader had to ask, and the answers went into
-`SPEC.md`.
+The catalog injects transport faults (dropped requests, lost acks, duplicated
+and reordered delivery, truncated bytes) from a random source seeded with the
+scenario name. Tests contain no sleeps: they wait on explicit readiness
+helpers such as `flushQuerySchedulers`. The conformance package enforces this
+with a test that scans its own source for `setTimeout`, `setInterval`, and
+`sleep(` and fails on any match.
 
-## What the second core caught later
+One test lane retries once: the multi-tab suite, which hits a segfault in
+Bun's native Worker and SQLite combination that reproduces without any
+Syncular code. The root `package.json` records the reason next to the retry
+and names the condition for removing it.
 
-The catalog keeps finding disagreements as features land. Two examples:
+## One gate
 
-**Float primary keys.** A row id is a string, so every core has to render a
-primary key to the same string. For a `float` key they did not. ECMAScript's
-`Number.prototype.toString` switches to exponent notation at 1e21 and below
-1e-6; Rust's `f64::to_string` never does. Local lookups compared
-`CAST(key AS TEXT)`, so the bundled SQLite version also decided which rows a
-row id reached: under SQLite 3.53, a stored `1.0` did not match the row id
-`"1"`. Each core's own tests passed, because each core agreed with itself.
-`float` is now rejected as a primary key type at every schema compile site,
-and SPEC §2.4 states the rule.
+`bun run check` is the gate for every change, run by the pre-push hook and by
+CI. It runs the release version check, the TypeScript typecheck, oxlint and
+oxfmt, knip, the test suites including the TypeScript conformance pairing, and
+a Node runtime check of the client and server packages. CI adds the Rust
+conformance pairing, benchmark budgets, a browser recovery lane, a Postgres
+performance job, and the Tauri, Swift, Kotlin, React Native, and Flutter
+binding gates whenever the Rust core changes.
 
-**An unresolvable encryption key.** When a client cannot resolve the key for
-an encrypted column, TypeScript recorded a durable `client.encrypt_failed`
-rejection for that commit at the push seam. Rust returned an error at
-authoring time and sent the push with no payload. Both choices are defensible
-in isolation; the catalog scenario that pinned key resolution exposed the
-disagreement, and Rust now records the same rejection.
+knip fails the gate on unused files, exports, and dependencies. A model that
+replaces a helper often leaves the old one in place, and knip is what removes
+it.
 
-Both bugs are edges a model fills in with a reasonable default, and a reviewer
-reading one core's diff has no second default to compare it against.
+Some checks have to run against the real artifact. The schema downgrade test
+creates a detached `git worktree` of an earlier commit and opens a replica with
+that build's client, because a simulated old client still runs the new boot
+code and passes for the wrong reason.
 
-## Rules written against model habits
+## Closing the loop
 
-The project's [`AGENTS.md`](https://github.com/syncular/syncular/blob/main/AGENTS.md)
-is the instruction file every coding agent reads. Most of its rules exist
-because a model did the opposite more than once.
+The project's
+[`AGENTS.md`](https://github.com/syncular/syncular/blob/main/AGENTS.md) is the
+instruction file every coding agent reads, and it applies to human
+contributors too. Its rules are the residue of past mistakes: no fallback
+paths, errors with static codes, no timers in tests, no `as any`, no
+single-use helpers, and a semantics change touches both cores and adds a
+catalog scenario.
 
-- No fallback paths. Asked to make a failing case pass, a model wraps it in a
-  `try` and returns a default. Syncular wants a loud error with a static code
-  such as `sync.outbox_incompatible`, with dynamic values in structured
-  details.
-- No timers in tests. A flaky test invites a `sleep`. The conformance package
-  has a test that scans its own source for `setTimeout`, `setInterval`, and
-  `sleep(` and fails on any match; tests wait on explicit readiness helpers.
-- No `as any` or `as unknown`. A cast silences the type checker where the
-  underlying type is wrong.
-- No single-use helpers, wrappers, or constants. Models add indirection by
-  default, and each layer is more code to read in review.
-- A semantics change touches both cores and adds a catalog scenario. A
-  TypeScript-only change fails the Rust pairing in CI, so the rule enforces
-  itself.
+Every finding ends as an artifact the next change runs into:
 
-Rules that a test can check are tests. The rest depend on review.
+- a codec disagreement becomes a golden vector;
+- an unspecified choice becomes a spec sentence;
+- a behavior bug becomes a catalog scenario with spec references;
+- a repeated model habit becomes a rule in `AGENTS.md`, and a test when the
+  rule can be checked mechanically.
 
-## What this does not cover
+The last step matters most with models. A rule in `AGENTS.md` is a request. A
+rule in the gate is a check the model runs on its own work.
 
-The server has one implementation, in TypeScript. Server behavior is checked
-by the catalog's assertions and the package tests; no second server checks the
-first.
+## What slipped through
 
-Two cores can share a mistake. In the same encryption work, a patch that
-leaves the key id column out falls back to the key id stored on the row. The
-spec says an absent column and a present `NULL` are different things, and both
-cores treated a present `NULL` as absent: TypeScript tested for `null` or
-`undefined`, Rust tested for an empty slot. The catalog passed in both
-pairings. The bug surfaced while writing the key-resolution scenario against
-the spec text. Agreement between cores is evidence about the code; only the
-spec and the scenarios written from it are evidence about the behavior.
+On October 6, Lars Behrenberg filed 14 issues
+([#76](https://github.com/syncular/syncular/issues/76) to
+[#89](https://github.com/syncular/syncular/issues/89)) from integrating
+Syncular into a Tauri desktop app with a Cloudflare Workers and D1 backend.
+Two of them describe what the setup above is meant to prevent.
 
-Two cores cost time. Every semantics change is written twice, tested twice,
-and argued over once in the spec. For Syncular the cost lands on the protocol,
-where a disagreement between client and server corrupts someone's data on a
-device I cannot reach.
+[#76](https://github.com/syncular/syncular/issues/76): the Rust core discarded
+errors while replaying pending writes on reopen
+(`let _ = self.apply_outbox_op(op);`), and turned failed reads and value
+decodes into "row absent" with `.ok()?`. A write stayed in the outbox while
+the visible table lost it, and nothing reported the mismatch. `AGENTS.md`
+forbids fallback paths, and this code shipped anyway: the rule existed only as
+text, and no test injected a SQL failure during replay.
 
-## Applying this elsewhere
+[#77](https://github.com/syncular/syncular/issues/77): an older app build that
+opened a replica written by a newer build reset it, dropping tables and
+discarding pending writes that did not fit the older schema. Both cores did
+this, so the cross-core check agreed with itself. The catalog had no downgrade
+scenario.
 
-Most projects do not need two implementations of everything. The method
-carries over to the part of a system where a plausible mistake is expensive:
-write the contract down, pin its encodings with fixtures, and have a model
-implement it a second time from the contract alone, in a separate session
-without access to the first implementation. Then run both against the same
-inputs, and turn each disagreement into a fixture or a spec sentence.
+All 14 issues were closed about 15 hours after they were filed, through a
+dependency-ordered stack of 16 pull requests. Each behavior fix changed both
+cores, added regressions (for #76: replay faults from triggers, reads,
+decodes, FTS, and savepoints), and passed both conformance pairings. Opening a
+replica with an older schema now fails with `client.schema_downgrade` before
+the client modifies anything.
+
+Two cores catch places where implementations disagree. They miss mistakes both
+implementations share, and those surface only through a scenario written from
+the spec text or through a user. The catalog injects faults at the transport;
+#76 shows that local storage needs the same treatment.
+
+## What stays with me
+
+The checks decide whether a change is correct. I decide what correct means:
+what the spec says, which side of a disagreement wins, and whether a change
+should exist at all. I still read every diff, and the reply I type most often
+is "smaller".

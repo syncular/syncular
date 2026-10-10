@@ -304,5 +304,5 @@ straight out of a model are closed without comment.
 
 Syncular is built the same way. The [LLMs page](/llms/) lists the machine-readable
 docs entry points, and the post
-[Why a Second Implementation Is the Best Check on LLM-Written Code](/blog/two-cores-check-llm-code/)
+[Model-Written Code Needs a Repository That Checks Itself](/blog/two-cores-check-llm-code/)
 describes the checks that make model-written production code safe to merge.

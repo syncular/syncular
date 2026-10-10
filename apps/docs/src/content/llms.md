@@ -50,4 +50,4 @@ Contribution rules for model-assisted pull requests are on
 
 How Syncular's maintainer uses models, and why the project's checks make that
 safe, is the blog post
-[Why a Second Implementation Is the Best Check on LLM-Written Code](/blog/two-cores-check-llm-code/).
+[Model-Written Code Needs a Repository That Checks Itself](/blog/two-cores-check-llm-code/).
