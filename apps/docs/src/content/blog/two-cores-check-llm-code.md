@@ -126,7 +126,7 @@ Both budgets came out of a regression the old budget missed: an image import
 that read every staged row back for overlay reconciliation ran at 0.7 to 0.8
 million rows/s, and the floor was 300,000 rows/s. After the fix, the floor
 went to 600,000 rows/s and the ratio budget was added; the regressed build
-measures a ratio of 3.1 to 3.4x, so both budgets now fail it.
+measures a ratio of 3.1 to 3.4x, so the ratio budget fails it on any runner.
 
 The bundle ceiling is an anti-bloat tripwire. Models add code more readily
 than they remove it, and a feature that pushes the bundle past the ceiling
