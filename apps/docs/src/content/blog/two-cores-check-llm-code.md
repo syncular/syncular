@@ -1,6 +1,6 @@
 ---
 title: 'Model-Written Code Needs a Repository That Checks Itself'
-description: Models write most of Syncular's code. That works because the repository can judge a change without me, through a normative spec, golden vectors, a 242-scenario conformance catalog run against two cores, and a gate that every finding feeds back into.
+description: Models write most of Syncular's code. That works because the repository can judge a change without me, through a normative spec, golden vectors, a 242-scenario conformance catalog run against two cores, performance budgets, and a gate that every finding feeds back into.
 summary: What a repository needs before models can write its production code, and what slipped through anyway.
 author: Benjamin Kniffler
 publishedAt: '2026-10-07'
@@ -101,6 +101,48 @@ creates a detached `git worktree` of an earlier commit and opens a replica with
 that build's client, because a simulated old client still runs the new boot
 code and passes for the wrong reason.
 
+## Performance budgets
+
+A model optimizes for the check in front of it, and a correctness suite says
+nothing about speed. A change can pass all 242 scenarios and still apply
+bootstrap rows one at a time. The `bench-budgets` CI job runs `bun run
+bench:ci` and fails the build when a measurement crosses its budget:
+
+- bootstrap through the rows lane at 90,000 rows/s or more; the local record
+  is about 263,000 rows/s at 100k rows, and a row-by-row apply measures about
+  125,000 rows/s locally, well under the floor on a CI runner;
+- bootstrap through the SQLite image lane at 600,000 rows/s or more; the local
+  record is 46.5 ms warm for 100k rows, about 2.15 million rows/s;
+- the image lane at least 5x the rows lane within the same run;
+- realtime propagation p95 at 20 ms or less in-process, against a local 0.8 to
+  1.2 ms, so a sleep or poll in the sync loop fails the build;
+- the main-thread browser bundle at 166 KiB raw or less, and the total
+  shipped payload with SQLite at 600 KiB gzip or less.
+
+Shared CI runners are slower and noisier than my machine, so the absolute
+floors sit about 3x below the local numbers. The ratio between the two
+bootstrap lanes holds on any runner, because a slow runner slows both lanes.
+Both budgets came out of a regression the old budget missed: an image import
+that read every staged row back for overlay reconciliation ran at 0.7 to 0.8
+million rows/s, and the floor was 300,000 rows/s. After the fix, the floor
+went to 600,000 rows/s and the ratio budget was added; the regressed build
+measures a ratio of 3.1 to 3.4x, so both budgets now fail it.
+
+The bundle ceiling is an anti-bloat tripwire. Models add code more readily
+than they remove it, and a feature that pushes the bundle past the ceiling
+fails the gate until someone measures and attributes the growth. Raising the
+ceiling follows a written rule (measure, attribute, re-pin at about 5%
+headroom), and each raise is recorded in `bench/RESULTS.md`.
+
+Where a performance property can be stated as a count, the test asserts the
+count. The native client reconciles pending writes per table; the regression
+test seeds a 100,000-row table the write never touches and asserts zero
+deletes on it. The old full-table rebuild failed that test with 100,000
+deletes, independent of how fast the machine was.
+
+The full results, including the methodology and the raw samples behind each
+median, are on the [benchmarks page](/benchmarks/).
+
 ## Closing the loop
 
 The project's
@@ -116,6 +158,7 @@ Every finding ends as an artifact the next change runs into:
 - a codec disagreement becomes a golden vector;
 - an unspecified choice becomes a spec sentence;
 - a behavior bug becomes a catalog scenario with spec references;
+- a performance regression becomes a budget or a counted assertion;
 - a repeated model habit becomes a rule in `AGENTS.md`, and a test when the
   rule can be checked mechanically.
 
