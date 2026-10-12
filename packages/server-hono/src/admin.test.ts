@@ -216,6 +216,16 @@ describe('JSON endpoints mirror the read surface', () => {
     expect(body.row).toMatchObject({ exists: true, serverVersion: 1 });
   });
 
+  test('GET /admin/rows rejects a table outside the schema', async () => {
+    const { app, auth } = harness();
+    const res = await app.request('/admin/rows/nope/t1', auth);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({
+      code: 'sync.unknown_table',
+      details: { table: 'nope' },
+    });
+  });
+
   test('GET /admin/scope-activity', async () => {
     const { app, seed, auth } = harness();
     await seed();
@@ -387,6 +397,42 @@ describe('SSE event stream', () => {
     app.route('/admin', routes);
     const res = await app.request('/admin/events/stream');
     expect(res.status).toBe(400);
+  });
+});
+
+describe('partition-scoped guard', () => {
+  function tenantApp() {
+    const ring = new RingBufferEvents({ capacity: 10 });
+    for (const partition of ['part-1', 'part-2']) {
+      ring.emit({
+        type: 'lease.revoked',
+        atMs: 1,
+        partition,
+        leaseId: `lease-${partition}`,
+      });
+    }
+    const admin = new SyncularAdmin({
+      storage: new SqliteServerStorage(),
+      segments: new MemorySegmentStore(),
+      ring,
+    });
+    const routes = createSyncularAdminRoutes(admin, {
+      authorize: ({ partition }) => partition === 'part-1',
+    });
+    const app = new Hono();
+    app.route('/admin', routes);
+    return app;
+  }
+
+  test('the event tail only carries the authorized partition', async () => {
+    const res = await tenantApp().request('/admin/events?partition=part-1');
+    const body = (await res.json()) as { events: { partition: string }[] };
+    expect(body.events.map((event) => event.partition)).toEqual(['part-1']);
+  });
+
+  test('the fleet view is never granted by a partition guard', async () => {
+    const res = await tenantApp().request('/admin/partitions?partition=part-1');
+    expect(res.status).toBe(401);
   });
 });
 

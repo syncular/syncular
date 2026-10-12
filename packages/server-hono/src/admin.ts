@@ -102,12 +102,11 @@ export function createSyncularAdminRoutes(
 
   // Guard every route (page + data) up front.
   app.use('*', async (c, next) => {
-    let partition: string;
-    try {
-      partition = c.req.query('partition') ?? options.defaultPartition ?? '';
-    } catch {
-      partition = '';
-    }
+    // The fleet view spans every partition, so its guard sees none: a guard
+    // that grants single partitions never grants the whole fleet.
+    const partition = c.req.path.endsWith('/partitions')
+      ? ''
+      : (c.req.query('partition') ?? options.defaultPartition ?? '');
     const ok = await options.authorize({ partition, request: c.req.raw });
     if (!ok) return jsonError(new SyncError('sync.auth_required'));
     await next();
@@ -152,7 +151,7 @@ export function createSyncularAdminRoutes(
   });
 
   // Cross-partition fleet view: the ONE endpoint that is not partition-
-  // scoped (the guard still runs, with `partition` empty unless passed).
+  // scoped (the guard runs with `partition` empty).
   app.get('/partitions', async () => {
     try {
       const partitions = await admin.partitionsOverview();
@@ -262,6 +261,7 @@ export function createSyncularAdminRoutes(
     const clientId = c.req.query('clientId');
     const actorId = c.req.query('actorId');
     return {
+      partition: partitionOf(c),
       ...(type !== undefined ? { type } : {}),
       ...(clientId !== undefined ? { clientId } : {}),
       ...(actorId !== undefined ? { actorId } : {}),

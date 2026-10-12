@@ -18,6 +18,7 @@ import { clockOf, type SyncServerConfig } from './context';
 import type { SyncularServerEvent } from './events';
 import type { RingBufferEvents, RingEventQuery } from './events-ring';
 import type { LeaseRecord, LeaseStore } from './lease-store';
+import { SyncError } from './errors';
 import { DEFAULT_RETENTION, type RetentionPolicy } from './prune';
 import { compileSchema, type ServerSchema } from './schema';
 import type { SegmentStore, SegmentStoreStats } from './segment-store';
@@ -292,6 +293,7 @@ export class SyncularAdmin {
   ): Promise<AdminClientDetail> {
     const record = await this.#storage.getClientRecord(partition, clientId);
     const events = this.events({
+      partition,
       clientId,
       limit: options.eventLimit ?? DEFAULT_CLIENT_EVENT_LIMIT,
     });
@@ -361,10 +363,15 @@ export class SyncularAdmin {
       'storage',
     );
     if (this.#schema !== undefined) {
-      await this.#storage.ensureSchema(
-        compileSchema(this.#schema),
-        this.#checkpoints,
-      );
+      const compiled = compileSchema(this.#schema);
+      if (!compiled.tables.has(table)) {
+        throw new SyncError(
+          'sync.unknown_table',
+          'table is not in the server schema',
+          JSON.stringify({ table }),
+        );
+      }
+      await this.#storage.ensureSchema(compiled, this.#checkpoints);
     }
     const row = await read(partition, table, rowId);
     if (row === undefined) {
@@ -496,8 +503,7 @@ export class SyncularAdmin {
     let applied = 0;
     let rejected = 0;
     let conflicted = 0;
-    for (const event of this.events({ sinceMs })) {
-      if (event.partition !== partition) continue;
+    for (const event of this.events({ partition, sinceMs })) {
       if (event.type === 'push.applied') applied += 1;
       else if (event.type === 'push.rejected') rejected += 1;
       else if (event.type === 'push.conflicted') conflicted += 1;

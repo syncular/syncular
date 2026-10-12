@@ -75,7 +75,7 @@ app.route('/admin', routes);
 ```
 
 :::warning{title="Authorization is mandatory"}
-The factory throws if you omit `authorize`, and the console is never open by default. Every endpoint runs the guard first, and a falsy result answers 401.
+The factory throws if you omit `authorize`, and the console is never open by default. Every endpoint runs the guard first, and a falsy result answers 401. The guard receives the request's partition and the endpoint reads only that partition, event tail included. `GET /admin/partitions` spans every partition, so its guard receives an empty partition; a guard that grants single partitions does not grant the fleet view.
 :::
 
 `GET /admin` serves a single static HTML page, built without a framework or a build step. It polls the sibling JSON endpoints and renders horizon, store stats, clients, recent commits, and the event tail with a 2 s auto-refresh. S3-backed stats are labeled `approximate`, because S3 does not report exact counts cheaply. A storage backend that omits an optional admin method raises an error, so the console never renders a silently empty view.

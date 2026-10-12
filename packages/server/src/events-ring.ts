@@ -3,8 +3,8 @@
  * without any infrastructure dependency.
  *
  * `RingBufferEvents` is a `SyncularServerEvents` sink that retains the last
- * N events in memory and exposes a `query({type?, sinceMs?, clientId?,
- * actorId?, limit})` plus a `subscribe(listener)` hook for live tails. It
+ * N events in memory and exposes a `query({type?, partition?, sinceMs?,
+ * clientId?, actorId?, limit})` plus a `subscribe(listener)` hook for live tails. It
  * composes with any other sink through `composeEvents(...sinks)`, so a host
  * can keep `consoleJsonEvents()` (or a Sentry adapter) AND feed the console
  * event tail from the same emissions. Fire-and-forget discipline is
@@ -20,6 +20,8 @@ import {
 export interface RingEventQuery {
   /** Restrict to one event `type` (e.g. `push.applied`). */
   readonly type?: SyncularServerEvent['type'];
+  /** Restrict to one partition (every event carries one). */
+  readonly partition?: string;
   /** Only events with `atMs >= sinceMs`. */
   readonly sinceMs?: number;
   /** Restrict to events carrying this `clientId` (not every type does). */
@@ -41,6 +43,9 @@ export function matchesRingQuery(
   query: Omit<RingEventQuery, 'limit'>,
 ): boolean {
   if (query.type !== undefined && event.type !== query.type) return false;
+  if (query.partition !== undefined && event.partition !== query.partition) {
+    return false;
+  }
   if (query.sinceMs !== undefined && event.atMs < query.sinceMs) return false;
   const carrier = event as { clientId?: string; actorId?: string };
   if (query.clientId !== undefined && carrier.clientId !== query.clientId) {
