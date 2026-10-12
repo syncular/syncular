@@ -117,25 +117,30 @@ const hono = createSyncularHono({
  * only with SYNCULAR_DEMO_ADMIN=1 and, when SYNCULAR_DEMO_ADMIN_TOKEN is
  * set, gated on a matching `?token=` / `Authorization: Bearer` — a stand-in
  * for the real host guard (never default-open). Reachable at /admin.
+ * SYNCULAR_DEMO_ADMIN_WRITES=1 also enables the operator actions behind the
+ * same guard.
  */
 const adminEnabled = process.env.SYNCULAR_DEMO_ADMIN === '1';
 const adminToken = process.env.SYNCULAR_DEMO_ADMIN_TOKEN;
 const adminHono = adminEnabled
   ? (() => {
       const admin = SyncularAdmin.fromConfig(config, { ring });
+      const authorize = ({ request }: { request: Request }) => {
+        if (adminToken === undefined) return true; // dev default: open
+        const url = new URL(request.url);
+        const bearer = request.headers
+          .get('authorization')
+          ?.replace(/^Bearer\s+/i, '');
+        return (
+          url.searchParams.get('token') === adminToken || bearer === adminToken
+        );
+      };
       const routes = createSyncularAdminRoutes(admin, {
         defaultPartition: PARTITION,
-        authorize: ({ request }) => {
-          if (adminToken === undefined) return true; // dev default: open
-          const url = new URL(request.url);
-          const bearer = request.headers
-            .get('authorization')
-            ?.replace(/^Bearer\s+/i, '');
-          return (
-            url.searchParams.get('token') === adminToken ||
-            bearer === adminToken
-          );
-        },
+        authorize,
+        ...(process.env.SYNCULAR_DEMO_ADMIN_WRITES === '1'
+          ? { authorizeWrite: authorize }
+          : {}),
       });
       const mount = new Hono();
       mount.route('/admin', routes);

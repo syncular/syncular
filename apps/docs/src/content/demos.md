@@ -104,5 +104,6 @@ These switches apply to the local `apps/demo` only.
 | `SYNCULAR_DEMO_DB=path` | Persists server storage to a file. Server storage is in-memory by default, so a server restart forgets commits that the devices' persistent databases still hold. |
 | `SYNCULAR_DEMO_ADMIN=1` | Mounts the operator console at `/admin`. |
 | `SYNCULAR_DEMO_ADMIN_TOKEN=…` | Requires a matching `?token=` query parameter or `Authorization: Bearer` header on `/admin`. Unset, `/admin` is open. |
+| `SYNCULAR_DEMO_ADMIN_WRITES=1` | Enables the console's operator actions (retry a dead-lettered reaction, prune, revoke a lease) behind the same guard. |
 | `?multitab` | Open two tabs with it. Each device in the first tab becomes the leader: it spawns the worker, owns the OPFS database, and holds the socket. The second tab's devices proxy to it over a BroadcastChannel. The device label shows `leader` or `follower`, and closing the leader promotes the follower. |
 | `?ephemeral` | Runs the device cores in memory on the main thread, labeled in the UI. Nothing survives a reload. |
