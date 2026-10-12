@@ -235,6 +235,126 @@ describe('Workers fetch handler (D1 double + memory stores)', () => {
     );
   });
 
+  test('admin requests are guarded in the Worker and served by the partition DO', async () => {
+    const db = new D1DatabaseDouble();
+    const directStorage = new D1ServerStorage(db);
+    await directStorage.migrate();
+    await directStorage.touchPartition(PARTITION, 0, TEST_LOG_EPOCH);
+    const segments = new MemorySegmentStore();
+    const syncConfig = (storage: D1ServerStorage) => ({
+      schema: SCHEMA,
+      storage,
+      segments,
+      resolveScopes: () => ({ list_id: ['*'] }),
+    });
+    const handlerFor = (admin: boolean) => {
+      // One namespace per deployment: its DOs outlive requests.
+      const namespace = new FakeDurableObjectNamespace(db, {
+        syncConfig,
+        ...(admin ? { admin: {} } : {}),
+      });
+      return createWorkersFetchHandler<unknown>({
+        config: () => ({
+          config: syncConfig(directStorage),
+          authenticate: async () => ({
+            actorId: ACTOR_ID,
+            partition: PARTITION,
+          }),
+        }),
+        coordinator: () => ({ namespace }),
+        admin: () => ({
+          authorize: ({ request }) =>
+            request.headers.get('authorization') === 'Bearer ops',
+          authorizeWrite: ({ request }) =>
+            request.headers.get('x-ops-write') === 'yes',
+          defaultPartition: PARTITION,
+        }),
+      });
+    };
+    const handler = handlerFor(true);
+    const ctx = { waitUntil: () => {} };
+    const send = (path: string, init: RequestInit = {}) =>
+      handler(
+        new Request(`https://worker.example${path}`, {
+          ...init,
+          headers: {
+            authorization: 'Bearer ops',
+            ...(init.headers as Record<string, string> | undefined),
+          },
+        }),
+        {},
+        ctx,
+      );
+    await decodeSync(
+      await handler(
+        syncRequest([
+          {
+            type: 'PUSH_COMMIT',
+            clientCommitId: 'admin-seed',
+            operations: [
+              {
+                table: 'tasks',
+                rowId: 'r1',
+                op: 'upsert',
+                payload: taskRow('r1', 'L', 'seeded'),
+              },
+            ],
+          },
+        ]),
+        {},
+        ctx,
+      ),
+    );
+
+    const unauthorized = await handler(
+      new Request('https://worker.example/admin/events'),
+      {},
+      ctx,
+    );
+    expect(unauthorized.status).toBe(401);
+    expect((await send('/admin')).headers.get('content-type')).toContain(
+      'text/html',
+    );
+    expect(await (await send('/admin/info')).json()).toMatchObject({
+      hasEventStream: true,
+      writes: true,
+    });
+    const events = (await (await send('/admin/events')).json()) as {
+      events: { type: string; partition: string }[];
+    };
+    expect(events.events).toContainEqual(
+      expect.objectContaining({ type: 'push.applied', partition: PARTITION }),
+    );
+    expect(await (await send('/admin/partitions')).json()).toMatchObject({
+      partitions: [{ partition: PARTITION, maxCommitSeq: 1 }],
+      total: 1,
+    });
+    const refused = await send('/admin/prune', {
+      method: 'POST',
+      headers: { 'x-syncular-admin-writes': '1' },
+    });
+    expect(refused.status).toBe(403);
+    const pruned = await send('/admin/prune', {
+      method: 'POST',
+      headers: { 'x-ops-write': 'yes' },
+    });
+    expect(await pruned.json()).toEqual({
+      prune: { previousHorizonSeq: 0, horizonSeq: 0 },
+    });
+
+    const withoutDoAdmin = await handlerFor(false)(
+      new Request('https://worker.example/admin/events', {
+        headers: { authorization: 'Bearer ops' },
+      }),
+      {},
+      ctx,
+    );
+    expect(withoutDoAdmin.status).toBe(404);
+    expect(await withoutDoAdmin.json()).toMatchObject({
+      code: 'sync.not_found',
+    });
+  });
+
   test('a stateless D1 push fails before app-row mutation', async () => {
     const db = new D1DatabaseDouble();
     const storage = new D1ServerStorage(db);

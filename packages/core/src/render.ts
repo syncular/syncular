@@ -322,6 +322,19 @@ function renderRowValue(column: RowColumn, value: RowValue): JsonValue {
   return value;
 }
 
+/** Render a decoded full row (§11) as JSON keyed by column name. */
+export function renderRowValues(
+  columns: readonly RowColumn[],
+  values: readonly RowValue[],
+): { [column: string]: JsonValue } {
+  return Object.fromEntries(
+    columns.map((column, i) => [
+      column.name,
+      renderRowValue(column, values[i] ?? null),
+    ]),
+  );
+}
+
 function renderColumnTable(columns: readonly RowColumn[]): JsonValue {
   return columns.map((column) => ({
     name: column.name,
@@ -340,12 +353,7 @@ export function renderRowsSegmentValue(segment: RowsSegment): JsonValue {
     blocks: segment.blocks.map((block) =>
       block.map((row) => ({
         serverVersion: row.serverVersion,
-        values: Object.fromEntries(
-          segment.columns.map((column, i) => [
-            column.name,
-            renderRowValue(column, row.values[i] ?? null),
-          ]),
-        ),
+        values: renderRowValues(segment.columns, row.values),
       })),
     ),
   };

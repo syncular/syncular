@@ -49,6 +49,7 @@
     "hono": "^4.13.7"
   },
   "devDependencies": {
-    "@syncular/core": "workspace:*"
+    "@syncular/core": "workspace:*",
+    "happy-dom": "^20.0.0"
   }
 }

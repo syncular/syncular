@@ -32,13 +32,17 @@ import {
   SSP2_CONTENT_TYPE,
   type StoredCommit,
   SyncError,
+  SyncularAdmin,
   type SyncServerConfig,
 } from '@syncular/server';
 import {
+  createSyncularAdminRoutes,
   createSyncularHono,
+  type SyncularAdminRoutesOptions,
   type SyncularHonoOptions,
 } from '@syncular/server-hono';
 import {
+  adminRequestForDurableObject,
   REALTIME_DO_UPGRADE_PATH,
   REALTIME_DO_WAKE_PATH,
   type RealtimeUpgradeIdentity,
@@ -125,6 +129,28 @@ export type WorkersCoordinatorFactory<Env = unknown> = (
   ctx: ExecutionContextLike,
 ) => WorkersCoordinatorOptions | Promise<WorkersCoordinatorOptions>;
 
+/**
+ * The admin console for `createWorkersFetchHandler`. The host guards run in
+ * the Worker. With a coordinator (or realtime) namespace, every
+ * partition-scoped admin request then goes to the partition's Durable
+ * Object, which must set `RealtimeDOConfig.admin`: its event ring sees that
+ * partition's sync rounds, and actions share its FIFO. The page and the
+ * fleet view (`GET <path>/partitions`) are served by the Worker. Without a
+ * namespace the Worker serves everything and has no event ring.
+ */
+export interface WorkersAdminOptions extends Pick<
+  SyncularAdminRoutesOptions,
+  'authorize' | 'authorizeWrite' | 'defaultPartition'
+> {
+  /** The mount path; default `/admin`. */
+  readonly path?: string;
+}
+
+export type WorkersAdminFactory<Env = unknown> = (
+  env: Env,
+  ctx: ExecutionContextLike,
+) => WorkersAdminOptions | Promise<WorkersAdminOptions>;
+
 export interface WorkersFetchHandlerOptions<Env = unknown> {
   /** Build the HTTP handler config + auth per request (see the type doc). */
   readonly config: WorkersConfigFactory<Env>;
@@ -139,6 +165,8 @@ export interface WorkersFetchHandlerOptions<Env = unknown> {
    * (still fully conformant — clients sync over `POST /sync`).
    */
   readonly realtime?: WorkersRealtimeFactory<Env>;
+  /** Mount the admin console (see `WorkersAdminOptions`). */
+  readonly admin?: WorkersAdminFactory<Env>;
 }
 
 /**
@@ -213,6 +241,48 @@ export function createWorkersFetchHandler<Env = unknown>(
         return Response.json(errorBody(error), { status: error.httpStatus });
       }
       return forwardSyncRequest(request, coordinator.namespace, auth);
+    }
+    if (options.admin !== undefined) {
+      const admin = await options.admin(env, ctx);
+      const path = admin.path ?? '/admin';
+      const url = new URL(request.url);
+      if (url.pathname === path || url.pathname.startsWith(`${path}/`)) {
+        const routePath = url.pathname.slice(path.length);
+        const routes = createSyncularAdminRoutes(
+          SyncularAdmin.fromConfig(honoOptions.config),
+          {
+            authorize: admin.authorize,
+            ...(admin.authorizeWrite !== undefined
+              ? { authorizeWrite: admin.authorizeWrite }
+              : {}),
+            ...(admin.defaultPartition !== undefined
+              ? { defaultPartition: admin.defaultPartition }
+              : {}),
+            ...(honoOptions.config.onError !== undefined
+              ? { onError: honoOptions.config.onError }
+              : {}),
+            ...(honoOptions.config.mapError !== undefined
+              ? { mapError: honoOptions.config.mapError }
+              : {}),
+            ...(coordinator !== undefined
+              ? {
+                  forward: (forwarded, target) =>
+                    coordinator.namespace
+                      .get(coordinator.namespace.idFromName(target.partition))
+                      .fetch(
+                        adminRequestForDurableObject(
+                          forwarded,
+                          routePath,
+                          target,
+                        ),
+                      ),
+                }
+              : {}),
+          },
+        );
+        url.pathname = routePath === '' ? '/' : routePath;
+        return routes.fetch(new Request(url, request));
+      }
     }
     const app = createSyncularHono(honoOptions);
     return app.fetch(request);

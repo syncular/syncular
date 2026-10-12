@@ -72,6 +72,7 @@ export class RingBufferEvents implements SyncularServerEvents {
   /** Index of the oldest element in the circular buffer. */
   #head = 0;
   #size = 0;
+  #evictedThroughMs: number | undefined;
   /** Live subscribers (the SSE tail). Each notify is guarded. */
   readonly #listeners = new Set<(event: SyncularServerEvent) => void>();
 
@@ -89,6 +90,8 @@ export class RingBufferEvents implements SyncularServerEvents {
       this.#size += 1;
     } else {
       // Full: overwrite the oldest and advance the head.
+      const evicted = this.#buffer[this.#head];
+      if (evicted !== undefined) this.#markEvicted(evicted.atMs);
       this.#buffer[this.#head] = event;
       this.#head = (this.#head + 1) % this.#capacity;
     }
@@ -125,6 +128,21 @@ export class RingBufferEvents implements SyncularServerEvents {
   }
 
   /**
+   * The newest `atMs` among events the ring dropped (evicted when full, or
+   * cleared); `undefined` while nothing was dropped. A window that starts
+   * at or before it is incomplete.
+   */
+  get evictedThroughMs(): number | undefined {
+    return this.#evictedThroughMs;
+  }
+
+  #markEvicted(atMs: number): void {
+    if (this.#evictedThroughMs === undefined || atMs > this.#evictedThroughMs) {
+      this.#evictedThroughMs = atMs;
+    }
+  }
+
+  /**
    * Newest-first slice of the retained events. Filters by `type` and
    * `sinceMs`, then caps to `limit`. Returns a fresh array — the caller may
    * mutate it freely.
@@ -144,6 +162,7 @@ export class RingBufferEvents implements SyncularServerEvents {
 
   /** Drop all retained events. */
   clear(): void {
+    for (const event of this.#buffer) this.#markEvicted(event.atMs);
     this.#buffer = [];
     this.#head = 0;
     this.#size = 0;

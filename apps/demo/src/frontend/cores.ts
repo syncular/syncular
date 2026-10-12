@@ -195,6 +195,7 @@ interface EmbeddedServer {
   sync(actorId: string, bytes: Uint8Array): Promise<Uint8Array>;
   admin(
     path: string,
+    method: 'GET' | 'POST',
   ): Promise<{ readonly status: number; readonly body: unknown }>;
   /** A realtime "socket": a numbered channel into the worker's hub (§8.7). */
   rtOpen(
@@ -269,8 +270,8 @@ export function getEmbeddedServer(): Promise<EmbeddedServer> {
         await delay();
         return out;
       },
-      admin: async (path) => {
-        const result = await call({ kind: 'admin', path });
+      admin: async (path, method) => {
+        const result = await call({ kind: 'admin', path, method });
         if (result.status === undefined || result.body === undefined) {
           throw new Error('admin rpc returned no response');
         }

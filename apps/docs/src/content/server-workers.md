@@ -233,6 +233,28 @@ Retention windows, eligibility rules, and what to alert on are in [Operations an
 ::::
 :::::
 
+## Admin console
+
+Pass `admin` to `createWorkersFetchHandler` and set `admin` on the Durable Object config. The Worker runs `authorize` and `authorizeWrite`, then forwards every partition-scoped admin request to the partition's Durable Object. The object keeps an event ring of `ringCapacity` events (default 1000) composed into the sync config's `events`, so the event tail, metrics, failures, trace rejections, and client drill-down see that partition's rounds. Operator actions run in the object's write queue. The Worker serves the console page and the fleet view (`GET /admin/partitions`) itself.
+
+```ts title="src/worker.ts"
+const realtimeDOConfig = (env: Env): RealtimeDOConfig => ({
+  syncConfig: (storage) => canonicalSyncConfig(env, storage),
+  admin: { ringCapacity: 1000 },
+});
+
+const handler = createWorkersFetchHandler<Env>({
+  config: (env) => ({ /* as above */ }),
+  realtime: (env) => ({ /* as above */ }),
+  admin: (env) => ({
+    authorize: ({ request }) => isOperator(request, env),
+    authorizeWrite: ({ request }) => isOnCall(request, env),
+  }),
+});
+```
+
+The ring lives in Durable Object memory. Eviction from memory clears it, and an open event stream keeps the object awake while it runs. A Durable Object without `admin` answers forwarded admin requests with 404 `sync.not_found`. A deployment without a coordinator serves every admin route from the Worker, which has no event ring, so `GET /admin/info` reports `hasEventStream: false`. The endpoints and guards are on [Operations and maintenance](/server-operations/#admin-console).
+
 ## Advanced: D1 storage
 
 `D1ServerStorage` uses the same schema and value codecs as `SqliteServerStorage` and differs in execution shape. D1 has no interactive transaction, and its only atomic primitive is `db.batch([...])`. The storage executes reads immediately and **buffers** writes, then flushes them as one atomic batch at commit. A rejected operation rolls back by never flushing. The concurrent page reads of a pull leave as one `db.batch` round trip. Backend comparison is on [Storage reference](/server-storage-reference/#cloudflare-d1).

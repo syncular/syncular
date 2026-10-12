@@ -16,6 +16,25 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-10-13',
+    title:
+      'The admin API traces row delivery, groups failures, and runs operator actions',
+    body: "`SyncularAdmin` gains `traceRow`, which answers whether a client receives a row with a verdict built from the row's stored scopes and newest change, the client's subscriptions and cursor, and the actor's allowed scopes from `resolveScopes`. `errors` groups ring failures by code and by client; `metrics` adds per-bucket p95 and push outcomes and reports `coverage` when the ring dropped events inside the window. `inspectRow` decodes row values per SPEC §11 and lists the row's retained changes, `commitDetail` renders a commit's changes, `listCommits` pages older commits with `beforeSeq`, clients carry their wire and schema versions, and the client and fleet lists page server-side. `retryReaction`, `prune`, and `revokeLease` are operator actions behind the new `authorizeWrite` route guard. Every admin route now reads only the authorized partition, including the event tail, and the fleet view no longer passes a guard that grants single partitions. On Cloudflare, `createWorkersFetchHandler` mounts the console with `admin` and forwards partition-scoped requests to the partition's Durable Object, whose event ring sees that partition's rounds.",
+    links: [
+      { href: '/server-operations/#admin-console', label: 'Admin console' },
+      { href: '/server-workers/#admin-console', label: 'Admin on Workers' },
+    ],
+  },
+  {
+    date: '2026-10-12',
+    title:
+      'The admin console has views, charts, a delivery trace, and drill-down dialogs',
+    body: 'The page served at `GET /admin` has a sidebar with nine views: Overview, Clients, Commits, Rows, Trace, Scopes, Events, Reactions, and Storage. The overview draws request volume, error rate, p95 latency, and push outcomes per bucket, a horizon gauge with the pruned, prunable, and retained ranges, a cursor-lag histogram, and the failing error codes and clients. Trace answers why a client does or does not see a row with one verdict and the scope mismatches behind it. Commits open their row changes, rows show decoded values and recent changes, and clients show their wire version. Tables sort, keep full ids behind a copy button, and open details with a JSON view. The event tail filters by kind, client, level, and text, and pauses. The header shows whether events stream live, poll, or have no ring; figures from a partially evicted ring say so; failed reads show their stable error code. With writes enabled, the console retries dead-lettered reactions, runs a prune pass, and revokes leases after a confirmation. Keyboard shortcuts switch views and refresh, and tables become cards below 640 px. The page stays one self-contained string of about 96 KiB with no external assets.',
+    links: [
+      { href: '/server-operations/#admin-console', label: 'Admin console' },
+    ],
+  },
+  {
     date: '2026-10-07',
     title: 'The sync lab lives at syncular.dev/demo/',
     body: 'The hosted sync lab is served from the docs deployment at syncular.dev/demo/ instead of its own host. The docs build emits the lab into `dist/demo/`, every URL in the lab is relative to the page, and demo.syncular.dev answers every request with a 301 to the same path under syncular.dev/demo/. Browser storage is per origin, so a browser that used the old host starts the lab fresh.',

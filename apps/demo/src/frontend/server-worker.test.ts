@@ -8,6 +8,7 @@ interface WorkerMessage {
   readonly body?: {
     readonly row?: { readonly exists: boolean; readonly serverVersion: number };
     readonly horizon?: { readonly maxCommitSeq: number };
+    readonly prune?: { readonly horizonSeq: number };
   };
   readonly error?: { readonly code: string; readonly message: string };
 }
@@ -16,7 +17,8 @@ test('embedded server seeds before serving its admin routes', async () => {
   const worker = new Worker(new URL('./server-worker.ts', import.meta.url));
   try {
     let horizon: WorkerMessage | undefined;
-    const response = await new Promise<WorkerMessage>((resolve, reject) => {
+    let row: WorkerMessage | undefined;
+    const prune = await new Promise<WorkerMessage>((resolve, reject) => {
       worker.onerror = (event) => reject(event.error);
       worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
         const message = event.data;
@@ -36,17 +38,27 @@ test('embedded server seeds before serving its admin routes', async () => {
             path: '/rows/cards/c-web-01',
           });
         } else if (message.kind === 'result' && message.id === 2) {
+          row = message;
+          worker.postMessage({
+            kind: 'admin',
+            id: 3,
+            path: '/prune',
+            method: 'POST',
+          });
+        } else if (message.kind === 'result' && message.id === 3) {
           resolve(message);
         }
       };
     });
-    expect(response.ok).toBe(true);
-    expect(response.status).toBe(200);
+    expect(row?.ok).toBe(true);
+    expect(row?.status).toBe(200);
     expect(horizon?.body?.horizon?.maxCommitSeq).toBe(1);
-    expect(response.body?.row).toMatchObject({
+    expect(row?.body?.row).toMatchObject({
       exists: true,
       serverVersion: 1,
     });
+    expect(prune.status).toBe(200);
+    expect(prune.body?.prune?.horizonSeq).toBe(0);
   } finally {
     worker.terminate();
   }

@@ -382,11 +382,35 @@ export interface CommitMetadata {
 }
 
 export interface CommitMetadataQuery {
-  /** Window `afterSeq < commitSeq`, oldest first. */
+  /** Window lower bound, exclusive: `afterSeq < commitSeq`. */
   readonly afterSeq: number;
+  /** Window upper bound, exclusive: `commitSeq < beforeSeq` (older pages). */
+  readonly beforeSeq?: number;
+  /** Newest first, at most `limit` commits. */
   readonly limit: number;
   /** Restrict to commits that touched this table (via the change index). */
   readonly table?: string;
+}
+
+/** One retained commit with its changes, for the admin commit drill-down. */
+export interface CommitDetail extends CommitMetadata {
+  readonly changes: readonly StoredChange[];
+}
+
+/** One retained change to a single row, for the admin row history. */
+export interface RowChangeRecord {
+  readonly commitSeq: number;
+  readonly op: 'upsert' | 'delete';
+  readonly rowVersion?: number;
+  readonly actorId: string;
+  readonly clientId: string;
+  readonly createdAtMs: number;
+}
+
+export interface RowChangesQuery {
+  readonly table: string;
+  readonly rowId: string;
+  readonly limit: number;
 }
 
 /** One recent commit touching a scope key, for the admin scope activity view. */
@@ -921,8 +945,11 @@ export interface ServerStorage {
    * touched tables), the newest-oriented window an operator inspects.
    * `scopeActivity`: the recent commits touching one scope key, via the
    * change scope index (never a log scan).
-   * `getRowScopes`: the (table, rowId) row's current server_version and
-   * stored scopes without decoding its payload — the row inspector.
+   * `getCommit`: one retained commit with its changes and payloads;
+   * `undefined` when the commit does not exist or was pruned.
+   * `listRowChanges`: the retained changes to one row, newest first. It
+   * reads the partition's retained log without a dedicated index, so the
+   * write path pays nothing for it and its cost is bounded by retention.
    * `listPartitions`: the partition-only compatibility view of
    * `listPartitionRegistry`, sorted.
    */
@@ -935,13 +962,14 @@ export interface ServerStorage {
     partition: string,
     query: ScopeActivityQuery,
   ): Promise<ScopeCommitActivity[]>;
-  getRowScopes?(
+  getCommit?(
     partition: string,
-    table: string,
-    rowId: string,
-  ): Promise<
-    { serverVersion: number; scopes: Record<string, string> } | undefined
-  >;
+    commitSeq: number,
+  ): Promise<CommitDetail | undefined>;
+  listRowChanges?(
+    partition: string,
+    query: RowChangesQuery,
+  ): Promise<RowChangeRecord[]>;
   listPartitions(): Promise<string[]>;
 }
 

@@ -202,6 +202,7 @@
       },
       "devDependencies": {
         "@syncular/core": "workspace:*",
+        "happy-dom": "^20.0.0",
       },
     },
     "packages/server-workers": {

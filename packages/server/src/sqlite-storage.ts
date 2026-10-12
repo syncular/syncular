@@ -51,9 +51,11 @@ import {
   deserializePushResult,
   placeholders,
   SQLITE_DDL,
+  type SqliteChangeRecord,
   type SqliteCommitWindowRecord,
   type SqliteRowRecord,
   serializePushResult,
+  toStoredChange,
   toStoredRow,
 } from './sqlite-dialect';
 import {
@@ -68,6 +70,7 @@ import type {
   ClientCursorInfo,
   ClientRecord,
   ClientSubscription,
+  CommitDetail,
   CommitMetadata,
   CommitMetadataQuery,
   CommitWindowQuery,
@@ -82,6 +85,8 @@ import type {
   ReactionFailureUpdate,
   ReactionListQuery,
   ReactionPruneQuery,
+  RowChangeRecord,
+  RowChangesQuery,
   RowScanQuery,
   ScopeActivityQuery,
   ScopeCommitActivity,
@@ -1949,7 +1954,11 @@ END`);
     partition: string,
     query: CommitMetadataQuery,
   ): Promise<CommitMetadata[]> {
-    // Newest-first window, resumed by `afterSeq` (exclusive lower bound).
+    // Newest-first window, resumed by `afterSeq` (exclusive lower bound) and
+    // ended by `beforeSeq` (exclusive upper bound) when paging older. An
+    // omitted bound is the largest safe commitSeq, so one statement serves
+    // both the bounded and unbounded read.
+    const beforeSeq = query.beforeSeq ?? Number.MAX_SAFE_INTEGER;
     const rows = query.table
       ? this.db
           .query<
@@ -1960,16 +1969,16 @@ END`);
               actor_id: string;
               created_at_ms: number;
             },
-            [string, number, string, number]
+            [string, number, number, string, number]
           >(
             `SELECT c.commit_seq, c.client_id, c.client_commit_id, c.actor_id, c.created_at_ms
              FROM sync_commits c
-             WHERE c.partition=? AND c.commit_seq>?
+             WHERE c.partition=? AND c.commit_seq>? AND c.commit_seq<?
                AND EXISTS (SELECT 1 FROM sync_changes ch
                  WHERE ch.partition=c.partition AND ch.commit_seq=c.commit_seq AND ch.tbl=?)
              ORDER BY c.commit_seq DESC LIMIT ?`,
           )
-          .all(partition, query.afterSeq, query.table, query.limit)
+          .all(partition, query.afterSeq, beforeSeq, query.table, query.limit)
       : this.db
           .query<
             {
@@ -1979,14 +1988,14 @@ END`);
               actor_id: string;
               created_at_ms: number;
             },
-            [string, number, number]
+            [string, number, number, number]
           >(
             `SELECT commit_seq, client_id, client_commit_id, actor_id, created_at_ms
              FROM sync_commits
-             WHERE partition=? AND commit_seq>?
+             WHERE partition=? AND commit_seq>? AND commit_seq<?
              ORDER BY commit_seq DESC LIMIT ?`,
           )
-          .all(partition, query.afterSeq, query.limit);
+          .all(partition, query.afterSeq, beforeSeq, query.limit);
     return rows.map((row) => {
       const changes = this.db
         .query<{ tbl: string; n: number }, [string, number]>(
@@ -2003,6 +2012,78 @@ END`);
         tables: changes.map((c) => c.tbl),
       };
     });
+  }
+
+  async getCommit(
+    partition: string,
+    commitSeq: number,
+  ): Promise<CommitDetail | undefined> {
+    const meta = this.db
+      .query<
+        {
+          client_id: string;
+          client_commit_id: string;
+          actor_id: string;
+          created_at_ms: number;
+        },
+        [string, number]
+      >(
+        'SELECT client_id, client_commit_id, actor_id, created_at_ms FROM sync_commits WHERE partition=? AND commit_seq=?',
+      )
+      .get(partition, commitSeq);
+    if (meta === null) return undefined;
+    const changes = this.db
+      .query<SqliteChangeRecord, [string, number]>(
+        'SELECT tbl, row_id, op, row_version, scopes, payload FROM sync_changes WHERE partition=? AND commit_seq=? ORDER BY idx',
+      )
+      .all(partition, commitSeq)
+      .map(toStoredChange);
+    return {
+      commitSeq,
+      clientId: meta.client_id,
+      clientCommitId: meta.client_commit_id,
+      actorId: meta.actor_id,
+      createdAtMs: meta.created_at_ms,
+      changeCount: changes.length,
+      tables: [...new Set(changes.map((change) => change.table))].sort(),
+      changes,
+    };
+  }
+
+  async listRowChanges(
+    partition: string,
+    query: RowChangesQuery,
+  ): Promise<RowChangeRecord[]> {
+    // Retained-log read for one row: no dedicated index (the write path pays
+    // nothing for it), bounded by retention (§4.6).
+    return this.db
+      .query<
+        {
+          commit_seq: number;
+          op: number;
+          row_version: number | null;
+          actor_id: string;
+          client_id: string;
+          created_at_ms: number;
+        },
+        [string, string, string, number]
+      >(
+        `SELECT ch.commit_seq, ch.op, ch.row_version, c.actor_id, c.client_id, c.created_at_ms
+         FROM sync_changes ch
+         JOIN sync_commits c
+           ON c.partition=ch.partition AND c.commit_seq=ch.commit_seq
+         WHERE ch.partition=? AND ch.tbl=? AND ch.row_id=?
+         ORDER BY ch.commit_seq DESC, ch.idx DESC LIMIT ?`,
+      )
+      .all(partition, query.table, query.rowId, query.limit)
+      .map((row) => ({
+        commitSeq: row.commit_seq,
+        op: row.op === 1 ? 'upsert' : 'delete',
+        ...(row.row_version !== null ? { rowVersion: row.row_version } : {}),
+        actorId: row.actor_id,
+        clientId: row.client_id,
+        createdAtMs: row.created_at_ms,
+      }));
   }
 
   async scopeActivity(
@@ -2042,25 +2123,6 @@ END`);
       });
     }
     return out;
-  }
-
-  async getRowScopes(
-    partition: string,
-    table: string,
-    rowId: string,
-  ): Promise<
-    { serverVersion: number; scopes: Record<string, string> } | undefined
-  > {
-    const record = this.db
-      .query<{ server_version: number; scopes: string }, [string, string]>(
-        selectRowScopesSql(this.table(table), 'sqlite'),
-      )
-      .get(partition, rowId);
-    if (record === null) return undefined;
-    return {
-      serverVersion: record.server_version,
-      scopes: JSON.parse(record.scopes) as Record<string, string>,
-    };
   }
 
   async listPartitions(): Promise<string[]> {

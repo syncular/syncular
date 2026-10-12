@@ -106,7 +106,10 @@ const ring = new RingBufferEvents({ capacity: 500 });
 interface EmbeddedServerParts {
   readonly config: SyncServerConfig;
   readonly hub: ReturnType<typeof createRealtimeHub>;
-  readonly adminRequest: (path: string) => Promise<Response>;
+  readonly adminRequest: (
+    path: string,
+    method: 'GET' | 'POST',
+  ) => Promise<Response>;
 }
 
 async function bootServer(): Promise<EmbeddedServerParts> {
@@ -150,13 +153,21 @@ async function bootServer(): Promise<EmbeddedServerParts> {
       defaultPartition: DEMO_PARTITION,
       // This route surface is reachable only through the worker RPC. The page
       // verifies the same-origin console frame before forwarding a request.
+      // The server is the visitor's own in-browser instance, so the
+      // operator actions are open too.
       authorize: () => true,
+      authorizeWrite: () => true,
     },
   );
   return {
     config,
     hub,
-    adminRequest: async (path) => adminRoutes.request(path),
+    // Actions write the same D1 storage as sync rounds, so they enter the
+    // same FIFO.
+    adminRequest: async (path, method) =>
+      method === 'POST'
+        ? serializeSyncRound(async () => adminRoutes.request(path, { method }))
+        : adminRoutes.request(path),
   };
 }
 
@@ -220,6 +231,7 @@ scope.onmessage = (event: MessageEvent) => {
       clientId?: string;
       text?: string;
       path?: string;
+      method?: string;
     };
     // The page names the signed-in actor of each device; the worker
     // accepts only the two demo actors.
@@ -247,7 +259,11 @@ scope.onmessage = (event: MessageEvent) => {
           if (msg.path === undefined || !msg.path.startsWith('/')) {
             throw new Error('admin request requires a route path');
           }
-          const response = await adminRequest(msg.path);
+          const method = msg.method ?? 'GET';
+          if (method !== 'GET' && method !== 'POST') {
+            throw new Error('admin request method must be GET or POST');
+          }
+          const response = await adminRequest(msg.path, method);
           reply({
             kind: 'result',
             ok: true,

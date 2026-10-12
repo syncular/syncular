@@ -91,6 +91,7 @@ import type {
   ClientCursorInfo,
   ClientRecord,
   ClientSubscription,
+  CommitDetail,
   CommitMetadata,
   CommitMetadataQuery,
   CommitWindowQuery,
@@ -105,6 +106,8 @@ import type {
   ReactionFailureUpdate,
   ReactionListQuery,
   ReactionPruneQuery,
+  RowChangeRecord,
+  RowChangesQuery,
   RowScanQuery,
   ScopeActivityQuery,
   ScopeCommitActivity,
@@ -2584,6 +2587,11 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
     partition: string,
     query: CommitMetadataQuery,
   ): Promise<CommitMetadata[]> {
+    // Newest-first window, resumed by `afterSeq` (exclusive lower bound) and
+    // ended by `beforeSeq` (exclusive upper bound) when paging older. An
+    // omitted bound is the largest safe commitSeq, so one statement serves
+    // both the bounded and unbounded read.
+    const beforeSeq = query.beforeSeq ?? Number.MAX_SAFE_INTEGER;
     const { rows } = query.table
       ? await this.#exec.query<{
           commit_seq: unknown;
@@ -2594,11 +2602,11 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
         }>(
           `SELECT c.commit_seq, c.client_id, c.client_commit_id, c.actor_id, c.created_at_ms
            FROM sync_commits c
-           WHERE c.partition=$1 AND c.commit_seq>$2
+           WHERE c.partition=$1 AND c.commit_seq>$2 AND c.commit_seq<$3
              AND EXISTS (SELECT 1 FROM sync_changes ch
-               WHERE ch.partition=c.partition AND ch.commit_seq=c.commit_seq AND ch.tbl=$3)
-           ORDER BY c.commit_seq DESC LIMIT $4`,
-          [partition, query.afterSeq, query.table, query.limit],
+               WHERE ch.partition=c.partition AND ch.commit_seq=c.commit_seq AND ch.tbl=$4)
+           ORDER BY c.commit_seq DESC LIMIT $5`,
+          [partition, query.afterSeq, beforeSeq, query.table, query.limit],
         )
       : await this.#exec.query<{
           commit_seq: unknown;
@@ -2609,9 +2617,9 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
         }>(
           `SELECT commit_seq, client_id, client_commit_id, actor_id, created_at_ms
            FROM sync_commits
-           WHERE partition=$1 AND commit_seq>$2
-           ORDER BY commit_seq DESC LIMIT $3`,
-          [partition, query.afterSeq, query.limit],
+           WHERE partition=$1 AND commit_seq>$2 AND commit_seq<$3
+           ORDER BY commit_seq DESC LIMIT $4`,
+          [partition, query.afterSeq, beforeSeq, query.limit],
         );
     const out: CommitMetadata[] = [];
     for (const row of rows) {
@@ -2631,6 +2639,72 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
       });
     }
     return out;
+  }
+
+  async getCommit(
+    partition: string,
+    commitSeq: number,
+  ): Promise<CommitDetail | undefined> {
+    const { rows } = await this.#exec.query<{
+      client_id: string;
+      client_commit_id: string;
+      actor_id: string;
+      created_at_ms: unknown;
+    }>(
+      'SELECT client_id, client_commit_id, actor_id, created_at_ms FROM sync_commits WHERE partition=$1 AND commit_seq=$2',
+      [partition, commitSeq],
+    );
+    const meta = rows[0];
+    if (meta === undefined) return undefined;
+    const { rows: changeRows } = await this.#exec.query<ChangeRecord>(
+      'SELECT tbl, row_id, op, row_version, scopes, payload FROM sync_changes WHERE partition=$1 AND commit_seq=$2 ORDER BY idx',
+      [partition, commitSeq],
+    );
+    const changes = changeRows.map(toStoredChange);
+    return {
+      commitSeq,
+      clientId: meta.client_id,
+      clientCommitId: meta.client_commit_id,
+      actorId: meta.actor_id,
+      createdAtMs: asNumber(meta.created_at_ms),
+      changeCount: changes.length,
+      tables: [...new Set(changes.map((change) => change.table))].sort(),
+      changes,
+    };
+  }
+
+  async listRowChanges(
+    partition: string,
+    query: RowChangesQuery,
+  ): Promise<RowChangeRecord[]> {
+    // Retained-log read for one row: no dedicated index (the write path pays
+    // nothing for it), bounded by retention (§4.6).
+    const { rows } = await this.#exec.query<{
+      commit_seq: unknown;
+      op: unknown;
+      row_version: unknown;
+      actor_id: string;
+      client_id: string;
+      created_at_ms: unknown;
+    }>(
+      `SELECT ch.commit_seq, ch.op, ch.row_version, c.actor_id, c.client_id, c.created_at_ms
+       FROM sync_changes ch
+       JOIN sync_commits c
+         ON c.partition=ch.partition AND c.commit_seq=ch.commit_seq
+       WHERE ch.partition=$1 AND ch.tbl=$2 AND ch.row_id=$3
+       ORDER BY ch.commit_seq DESC, ch.idx DESC LIMIT $4`,
+      [partition, query.table, query.rowId, query.limit],
+    );
+    return rows.map((row) => ({
+      commitSeq: asNumber(row.commit_seq),
+      op: asNumber(row.op) === 1 ? 'upsert' : 'delete',
+      ...(row.row_version === null || row.row_version === undefined
+        ? {}
+        : { rowVersion: asNumber(row.row_version) }),
+      actorId: row.actor_id,
+      clientId: row.client_id,
+      createdAtMs: asNumber(row.created_at_ms),
+    }));
   }
 
   async scopeActivity(
@@ -2672,27 +2746,6 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
       });
     }
     return out;
-  }
-
-  async getRowScopes(
-    partition: string,
-    table: string,
-    rowId: string,
-  ): Promise<
-    { serverVersion: number; scopes: Record<string, string> } | undefined
-  > {
-    const { rows } = await this.#exec.query<{
-      server_version: unknown;
-      scopes: unknown;
-    }>(selectRowScopesSql(this.table(table), 'postgres'), [partition, rowId]);
-    const row = rows[0];
-    if (row === undefined) return undefined;
-    return {
-      serverVersion: asNumber(row.server_version),
-      scopes: (typeof row.scopes === 'string'
-        ? JSON.parse(row.scopes)
-        : row.scopes) as Record<string, string>,
-    };
   }
 
   async listPartitions(): Promise<string[]> {

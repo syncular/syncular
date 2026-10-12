@@ -475,19 +475,22 @@ function wireConsole(): void {
       readonly kind?: unknown;
       readonly id?: unknown;
       readonly path?: unknown;
+      readonly method?: unknown;
     };
     if (
       message.kind !== 'syncular-admin-request' ||
       typeof message.id !== 'number' ||
-      typeof message.path !== 'string'
+      typeof message.path !== 'string' ||
+      (message.method !== 'GET' && message.method !== 'POST')
     ) {
       return;
     }
     const requestId = message.id;
     const path = message.path;
+    const method = message.method;
     void (async () => {
       try {
-        const response = await (await getEmbeddedServer()).admin(path);
+        const response = await (await getEmbeddedServer()).admin(path, method);
         frame.contentWindow?.postMessage(
           {
             kind: 'syncular-admin-response',

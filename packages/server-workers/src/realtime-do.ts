@@ -69,6 +69,7 @@
  */
 import {
   adapterSyncError,
+  composeEvents,
   createRealtimeHub,
   D1ServerStorage,
   errorBody,
@@ -78,9 +79,12 @@ import {
   type RealtimeHub,
   type RealtimeHubConfig,
   type RealtimeSession,
+  RingBufferEvents,
   SSP2_CONTENT_TYPE,
   SyncError,
+  SyncularAdmin,
 } from '@syncular/server';
+import { createSyncularAdminRoutes } from '@syncular/server-hono';
 
 // -- The Durable Object platform surface this class uses (structural) -------
 // Declared locally so the package takes no `@cloudflare/workers-types`
@@ -108,7 +112,7 @@ export type WebSocketPairLike = { 0: WebSocketLike; 1: WebSocketLike };
  * the class constructor's second arg. `DB` is the D1 binding (the same one the
  * outer Worker config uses); `configFactory` builds the hub config from `env`.
  */
-export type RealtimeDOConfig =
+export type RealtimeDOConfig = (
   | {
       /**
        * Preferred: build the complete canonical sync config around the DO's
@@ -125,7 +129,17 @@ export type RealtimeDOConfig =
        */
       hubConfig(storage: D1ServerStorage): RealtimeHubConfigInput;
       readonly syncConfig?: never;
-    };
+    }
+) & {
+  /**
+   * Serve the admin routes the Worker forwards (`WorkersFetchHandlerOptions.
+   * admin`). The DO keeps an event ring of `ringCapacity` events (default
+   * 1000) composed into the sync config's `events`, so the admin event
+   * tail, metrics, failures and client drill-down see this partition's
+   * rounds. Omitted ⇒ forwarded admin requests answer 404.
+   */
+  readonly admin?: { readonly ringCapacity?: number };
+};
 
 /**
  * The subset of `RealtimeHubConfig` the DO host supplies (storage is wired by
@@ -161,6 +175,8 @@ export interface RealtimeUpgradeIdentity {
 export const REALTIME_DO_WAKE_PATH = '/__syncular_realtime/wake';
 export const REALTIME_DO_UPGRADE_PATH = '/__syncular_realtime/upgrade';
 export const SYNC_DO_REQUEST_PATH = '/__syncular_realtime/sync';
+/** Prefix of forwarded admin routes; the admin route path follows it. */
+export const ADMIN_DO_PATH = '/__syncular_realtime/admin';
 
 /**
  * The base `SyncularRealtimeDO`. A host subclasses (or instantiates) it with a
@@ -190,6 +206,7 @@ export class SyncularRealtimeHost {
   readonly #storage: D1ServerStorage;
   readonly #config: RealtimeDOConfig;
   #hub: RealtimeHub | undefined;
+  #admin: SyncularAdmin | undefined;
   /** Live sessions, keyed by their socket. Empty after a hibernation wake;
    * lazily rehydrated on the first message per socket (see the class doc). */
   readonly #sessions = new Map<WebSocketLike, RealtimeSession>();
@@ -227,7 +244,24 @@ export class SyncularRealtimeHost {
           'RealtimeDOConfig.syncConfig must use the coordinated storage argument',
         );
       }
-      this.#hub = createRealtimeHub(config);
+      if (this.#config.admin === undefined) {
+        this.#hub = createRealtimeHub(config);
+      } else {
+        const ring = new RingBufferEvents(
+          this.#config.admin.ringCapacity !== undefined
+            ? { capacity: this.#config.admin.ringCapacity }
+            : undefined,
+        );
+        const withRing = {
+          ...config,
+          events:
+            config.events !== undefined
+              ? composeEvents(ring, config.events)
+              : ring,
+        };
+        this.#hub = createRealtimeHub(withRing);
+        this.#admin = SyncularAdmin.fromConfig(withRing, { ring });
+      }
     }
     return this.#hub;
   }
@@ -248,6 +282,9 @@ export class SyncularRealtimeHost {
     }
     if (url.pathname === REALTIME_DO_UPGRADE_PATH) {
       return this.#handleUpgrade(request);
+    }
+    if (url.pathname.startsWith(`${ADMIN_DO_PATH}/`)) {
+      return this.#handleAdmin(request, url);
     }
     return new Response('not found', { status: 404 });
   }
@@ -305,6 +342,37 @@ export class SyncularRealtimeHost {
       );
       return Response.json(errorBody(sync), { status: sync.httpStatus });
     }
+  }
+
+  /**
+   * A Worker-authorized admin request: the Worker ran the host guards and
+   * names the partition and whether writes are granted in headers. Actions
+   * share the partition FIFO with sync rounds.
+   */
+  async #handleAdmin(request: Request, url: URL): Promise<Response> {
+    this.#getHub();
+    const partition = request.headers.get(REALTIME_ID_HEADER.partition);
+    if (this.#admin === undefined || partition === null || partition === '') {
+      const error = new SyncError(
+        'sync.not_found',
+        'admin is not enabled on this coordinator',
+      );
+      return Response.json(errorBody(error), { status: error.httpStatus });
+    }
+    const routes = createSyncularAdminRoutes(this.#admin, {
+      authorize: () => true,
+      ...(request.headers.get(ADMIN_WRITES_HEADER) === '1'
+        ? { authorizeWrite: () => true }
+        : {}),
+    });
+    url.pathname = url.pathname.slice(ADMIN_DO_PATH.length);
+    url.searchParams.set('partition', partition);
+    const routed = new Request(url, request);
+    if (request.method !== 'POST') return routes.fetch(routed);
+    return this.#serializePartition(async () => {
+      await this.#storage.migrate();
+      return routes.fetch(routed);
+    });
   }
 
   /** §8.3 wake: an external coordinated command landed; re-pull the delta. */
@@ -511,6 +579,25 @@ const REALTIME_ID_HEADER = {
   actorId: 'x-syncular-actor',
   clientId: 'x-syncular-client',
 } as const;
+
+const ADMIN_WRITES_HEADER = 'x-syncular-admin-writes';
+
+/** Address a Worker-authorized admin request to the DO (Worker side). */
+export function adminRequestForDurableObject(
+  request: Request,
+  routePath: string,
+  target: { readonly partition: string; readonly writes: boolean },
+): Request {
+  const source = new URL(request.url);
+  const forwarded = new Request(
+    new URL(`${ADMIN_DO_PATH}${routePath}${source.search}`, request.url),
+    request,
+  );
+  forwarded.headers.set(REALTIME_ID_HEADER.partition, target.partition);
+  if (target.writes) forwarded.headers.set(ADMIN_WRITES_HEADER, '1');
+  else forwarded.headers.delete(ADMIN_WRITES_HEADER);
+  return forwarded;
+}
 
 export function writeRequestIdentityHeaders(
   headers: Headers,

@@ -78,7 +78,39 @@ app.route('/admin', routes);
 The factory throws if you omit `authorize`, and the console is never open by default. Every endpoint runs the guard first, and a falsy result answers 401. The guard receives the request's partition and the endpoint reads only that partition, event tail included. `GET /admin/partitions` spans every partition, so its guard receives an empty partition; a guard that grants single partitions does not grant the fleet view.
 :::
 
-`GET /admin` serves a single static HTML page, built without a framework or a build step. It polls the sibling JSON endpoints and renders horizon, store stats, clients, recent commits, and the event tail with a 2 s auto-refresh. S3-backed stats are labeled `approximate`, because S3 does not report exact counts cheaply. A storage backend that omits an optional admin method raises an error, so the console never renders a silently empty view.
+`GET /admin` serves the console: one self-contained HTML page of about 96 KiB (27 KiB gzipped) with no framework, no build step, and no external fonts, scripts, or images. It fetches the sibling JSON endpoints relative to its own mount path, so the host's `authorize` guard covers every request the page makes. The page reads `GET /admin/info` first: whether an event ring is wired, whether writes are enabled, and the schema tables that fill the table pickers. When that read fails, every panel shows its error and refresh retries it.
+
+The header holds the partition picker (suggestions come from `GET /admin/partitions`), the event stream state, the last refresh time, an auto refresh selector (off, 2 s, 5 s, 15 s; off by default), and a refresh button. Each refresh reads only the endpoints of the open view. A sidebar switches between nine views, and the URL hash (`#/clients`) keeps the open view across reloads:
+
+- `Overview`: requests per minute, error rate, p95 latency, push outcomes, active clients, and commit-log head, each with per-bucket bars; a request-volume chart over the 5-minute metrics window with failed requests in red; a horizon gauge that marks the pruned, prunable, and retained ranges and the active cursor floor; a cursor-lag histogram with the five clients furthest behind; the failing panel, grouped by error code (with its source: request, push, reaction, or scopes) or by client; and the fleet table, where a row switches the partition.
+- `Clients`: the 500 clients furthest behind, with cursor, lag, wire version, last-seen time, and subscription count, filterable by client or actor and by activity. A line above the table counts clients per wire version.
+- `Commits`: commit metadata, newest first, filtered on the server by table, 50, 200, or 500 commits per page with older pages behind `Older`. A commit opens its row changes and the ring events of its push.
+- `Rows`: the row inspector (server version, scopes, the column values typed by the schema, and the row's recent changes) and the inspections of the session. Bytes and CRDT columns show their size and a base64 prefix.
+- `Trace`: answers why a client does or does not see a row. It takes a table, a row id, and a client id, and shows one verdict (`client-unknown`, `row-missing`, `no-subscription`, `row-deleted`, `scope-mismatch`, `scope-denied`, `pending-pull`, or `delivered`) with the row, its last change, the client's cursor and allowed scopes, each subscription's requested and allowed match with its scope mismatches, and the rejected or conflicted pushes for the row. The client dialog and the row inspector prefill it.
+- `Scopes`: scope activity for one `variable` and `value`, with the scope keys of current subscriptions as one-click queries.
+- `Events`: the event tail with filters for kind (an event family or one exact type), client id, level, and free text, plus pause and clear.
+- `Reactions`: the durable reaction queue, dead letters first, with status, attempts, and the last failure code.
+- `Storage`: segment and blob store counters and the commit-log retention state.
+
+Sortable columns toggle on their header, every id has a copy button, and a row opens a detail dialog with a summary and the raw JSON. A failing error code opens the event tail filtered to that code; a failing client opens its dialog. Below 640 px wide, tables render as one card per row. Failed reads show the stable error code, the HTTP status, and the server's recommended action in the panel that failed, and `sync.auth_required` also raises a banner. S3-backed stats are labeled `approximate`, because S3 does not report exact counts cheaply. A storage backend that omits an optional admin method raises an error, so the console never renders a silently empty view.
+
+The metrics and the failing panel derive from the event ring. When the ring has evicted events inside the window, the figures carry `partial window`, and the chart shades the range without data and states the time the data starts.
+
+The event tail streams over `GET /admin/events/stream` when an event ring is wired; the header then reads `Live`. Without a ring, the header reads `No event ring` and the metrics views say what to wire. Over the parent-frame transport (`?transport=parent`, used by static hosts that run the admin routes in a Web Worker) the header reads `Polling` and events reload with every refresh. When the stream fails, the header reads `Stream closed`, events reload with every refresh, and the Events view offers a reconnect.
+
+When `/admin/info` reports `writes: true`, the console adds three actions: retry a dead-lettered reaction, run a prune pass from the horizon panel, and revoke a client's lease from the client dialog. Each action opens a confirmation that names the request it sends, and shows the server's answer or its error code. A read-only admin shows none of them.
+
+| Key | Action |
+| --- | --- |
+| `1` to `9` | Open Overview, Clients, Commits, Rows, Trace, Scopes, Events, Reactions, or Storage |
+| `r` | Refresh the open view |
+| `a` | Cycle auto refresh: off, 2 s, 5 s, 15 s |
+| `/` | Focus the filter of the open view |
+| `p` | Focus the partition picker |
+| `Space` | Pause or resume the event tail (Events view) |
+| `Enter` | Open the focused table row |
+| `Esc` | Close a dialog or leave a field |
+| `?` | List the shortcuts |
 
 ## Seeding data
 

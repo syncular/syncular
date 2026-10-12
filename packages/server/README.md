@@ -558,20 +558,21 @@ exists) `partition` / `actorId`.
 
 ## Admin / console surface (`SyncularAdmin`)
 
-The operator-facing read surface over the server core lives in this package
-and adds **zero** wire protocol. Authorization for these reads is entirely the
-host's. It delivers the 80% operator value (who's
-connected, what's flowing,
-horizon health, the event tail) as a handful of read-only, partition-scoped,
-JSON-able queries.
+The operator-facing surface over the server core lives in this package and
+adds no wire protocol. Authorization is entirely the host's. It answers
+who is connected, what is flowing and failing, why a client does or does not
+see a row, and how far the horizon trails, through partition-scoped JSON-able
+queries plus three operator actions.
 
 ### The event ring (the "event stream")
 
 `RingBufferEvents` is a `SyncularServerEvents` sink that retains the last N
 events in memory (bounded — oldest dropped when full) with a
-`query({type?, sinceMs?, clientId?, actorId?, limit})` and a
+`query({type?, partition?, sinceMs?, clientId?, actorId?, limit})` and a
 `subscribe(listener)` hook for live tails (the SSE route below). It is the
-event stream without any infrastructure dependency. Compose it with any
+event stream without any infrastructure dependency. `evictedThroughMs` is
+the newest `atMs` the ring dropped; the admin reports a window that starts
+at or before it as incomplete. Compose it with any
 other sink so the console tail and your logs/metrics see the same
 emissions:
 
@@ -590,28 +591,43 @@ const admin = SyncularAdmin.fromConfig(config, { ring });
 
 ### Query surface
 
-Every method is read-only. All are partition-scoped except the two fleet
-reads (`listPartitions` / `partitionsOverview`), which enumerate partitions
-by design:
+All methods are partition-scoped except the two fleet reads
+(`listPartitions` / `partitionsOverview`), which enumerate partitions by
+design. Row reads need the server `schema` (`fromConfig` passes it).
 
 | Method | Returns |
 | --- | --- |
-| `listClients(partition)` | Known clients: `clientId`, `actorId`, `cursor`, `lag` (commits not yet pulled: `maxCommitSeq − max(cursor, 0)`), `updatedAtMs`, `subscriptions[]`, and an `active` flag (cursor touched within the §4.6 active window). |
-| `clientDetail(partition, clientId, {eventLimit?})` | One client's drill-down: `{exists, client?, lease?, events}` — the record (with lag), its §7.3 lease when a lease store is wired, and its slice of the event tail. Answers "why is this client stale" in one read. |
-| `listCommits(partition, {afterSeq?, limit?, table?})` | Commit-log **metadata** (never payloads), newest first: `commitSeq`, `clientId`, `clientCommitId`, `actorId`, `createdAtMs`, `changeCount`, `tables[]`. |
+| `tables()` | The schema tables with `columns[]` (`name`, `type`, `nullable`, `primaryKey`), for pickers. |
+| `listClients(partition, {limit?, sort?})` | `{clients, total}`. Each client: `clientId`, `actorId`, `wireVersion`, `schemaVersion?` (highest among its subscriptions), `cursor`, `lag` (`maxCommitSeq − max(cursor, 0)`), `updatedAtMs`, `subscriptions[]`, `active` (touched within the §4.6 active window). `sort`: `seen` (default) or `lag`; `limit` default 200. |
+| `clientDetail(partition, clientId, {eventLimit?})` | `{exists, client?, lease?, realtime?, events}`: the record, its §7.3 lease when a lease store is wired, `open`/`closed` from the newest retained realtime event, and its slice of the event tail. |
+| `listCommits(partition, {afterSeq?, beforeSeq?, limit?, table?})` | Commit metadata, newest first: `commitSeq`, `clientId`, `clientCommitId`, `actorId`, `createdAtMs`, `changeCount`, `tables[]`. Pass the oldest `commitSeq` of a page as `beforeSeq` for the next older page. |
+| `commitDetail(partition, commitSeq)` | The commit's metadata plus `changes[]` (`table`, `rowId`, `op`, `rowVersion?`, `scopes`, `values?` rendered per SPEC §11, `undecodable?` for a payload written under an older column set). Throws `sync.not_found` for a missing or pruned commit. |
 | `listReactions(partition, {statuses?, types?, limit?})` | Durable reaction lifecycle rows, newest first, including source commit, attempts, lease, completion, and bounded failure information. |
-| `inspectRow(partition, table, rowId)` | `{exists, serverVersion?, scopes?}` — current row version + stored scopes, payload **not** decoded. |
+| `inspectRow(partition, table, rowId, {historyLimit?})` | `{exists, serverVersion?, scopes?, values?, history}`: the row decoded per SPEC §11 and its retained changes, newest first (`commitSeq`, `op`, `rowVersion?`, `actorId`, `clientId`, `createdAtMs`). Throws `sync.unknown_table` for a table outside the schema. |
+| `traceRow(partition, {table, rowId, clientId})` | Whether the client receives the row: a `verdict` (`client-unknown`, `row-missing`, `no-subscription`, `row-deleted`, `scope-mismatch`, `scope-denied`, `pending-pull`, `delivered`, evaluated in that order) with the row, its newest change, the horizon, the client, the actor's `allowed` scopes from `resolveScopes` (`outage` for the §7.3.3 sentinel), each subscription on the table with `requestedMatch`, `mismatches[]` and `effectiveMatch` (requested ∩ allowed, §3.2), and the client's retained push rejections. |
 | `scopeActivity(partition, {variable, value}, {limit?})` | Recent commits touching one scope key, via the §3.1 change-scope index (never a log scan). |
-| `horizonStatus(partition)` | `{maxCommitSeq, horizonSeq, retainedCommits, activeCursorFloor, recommendedHorizonSeq, recommendation}` — the horizon a prune pass would reach now (§4.6) + a coarse `up-to-date` / `prune-recommended`. |
-| `segmentStats()` / `blobStats(partition)` / `stats(partition)` | Counts/bytes where the stores expose them (segments split rows/sqlite). `undefined` when a store omits `stats()`. |
-| `metrics(partition, {windowMs?, buckets?})` | Ring-derived request/push health over a trailing window (default 5 min): request count/rate, error share, p50/p95 duration, push applied/rejected/conflicted, and per-bucket counts for a sparkline. Zero new server state; all zeros when no ring is wired. |
-| `listPartitionRegistry()` / `partitionsOverview()` | Every authenticated partition; the registry carries log continuity and last-authenticated time, while the overview adds retained backlog, client counts, and the prune recommendation. |
-| `events({type?, sinceMs?, clientId?, actorId?, limit?})` | The ring tail, newest first. Empty when no ring is wired (`hasEventStream` reports which). |
+| `horizonStatus(partition)` | `{maxCommitSeq, horizonSeq, retainedCommits, activeCursorFloor, recommendedHorizonSeq, recommendation}`: the horizon a prune pass would reach now (§4.6) and `up-to-date` / `prune-recommended`. |
+| `stats(partition)` | `{segments?, blobs?}` counts/bytes where the stores expose them (segments split rows/sqlite). |
+| `metrics(partition, {windowMs?, buckets?})` | Ring-derived request/push health over a trailing window (default 5 min): request count/rate, error share, p50/p95 duration, push applied/rejected/conflicted, and per-bucket counts, errors, p95 and push outcomes. `coverage: {complete, fromMs}` is false when the ring dropped events inside the window. All zeros when no ring is wired. |
+| `errors(partition, {windowMs?})` | Ring failures in the window: `byCode[]` (`source` `request`/`push`/`reaction`/`scopes`, `code`, `count`, distinct `clients` and `actors`, `lastAtMs`, `sampleClientIds`) and the ten clients with the most push failures in `byClient[]`, with `coverage`. |
+| `listPartitionRegistry()` / `partitionsOverview({limit?, offset?})` | Every authenticated partition; the overview pages them (default 100) as `{partitions, total}` with retained backlog, client counts, and the prune recommendation. |
+| `events({type?, partition?, sinceMs?, clientId?, actorId?, limit?})` | The ring tail, newest first. Empty when no ring is wired (`hasEventStream` reports which). |
 | `subscribeEvents(listener)` | Live events as they land in the ring; returns the unsubscribe function, `undefined` when no ring is wired. |
 
+Operator actions:
+
+| Method | Effect |
+| --- | --- |
+| `retryReaction(partition, idempotencyKey)` | Requeues a dead-lettered reaction and returns it. Throws `sync.invalid_request` when the key names no dead-lettered reaction. |
+| `prune(partition)` | One §4.6 prune pass now; returns `{previousHorizonSeq, horizonSeq}` and emits `prune.completed`. |
+| `revokeLease(partition, clientId)` | Revokes the client's §7.3 lease (§7.3.4), emits `lease.revoked`, returns the revoked record. Throws `sync.invalid_request` when the client holds none. |
+
 The query surface leans on **additive, optional** storage/store methods
-(`ServerStorage.listClientRecords` / `listCommitMetadata` / `scopeActivity` /
-`getRowScopes` / `listPartitions`; `SegmentStore.stats`; `BlobStore.stats`)
+(`ServerStorage.listClientRecords` / `listCommitMetadata` / `getCommit` /
+`listRowChanges` / `scopeActivity` / `listPartitions`; `SegmentStore.stats`;
+`BlobStore.stats`). `listRowChanges` reads the partition's retained log
+without a dedicated index, so the write path pays nothing for it and its cost
+is bounded by retention
 — the established
 optional-method pattern. `SqliteServerStorage`, `PostgresServerStorage`,
 `D1ServerStorage`, and the memory/sqlite stores implement them; the shared
@@ -626,16 +642,19 @@ stores (memory/sqlite) omit the marker.
 ### HTTP routes + the single console page
 
 `@syncular/server-hono` exports `createSyncularAdminRoutes(admin, opts)`,
-a mountable Hono sub-app. **The auth seam is required**: the factory throws
-if you omit the `authorize` guard — there is no default-open admin. Every
-endpoint (including the page) runs the guard first; a falsy result is a 401.
+a mountable Hono sub-app. The factory throws if you omit the `authorize`
+guard, so the admin never mounts open. Every endpoint, including the page,
+runs the guard first; a falsy result is a 401. The `POST` actions also run
+`authorizeWrite`; without it, or when it returns falsy, they answer 403
+`sync.forbidden`.
 
 ```ts
 import { createSyncularAdminRoutes } from '@syncular/server-hono';
 
 const routes = createSyncularAdminRoutes(admin, {
   defaultPartition: 'main',
-  authorize: ({ request }) => isOperator(request), // YOUR check — mandatory
+  authorize: ({ request }) => isOperator(request), // YOUR check, mandatory
+  authorizeWrite: ({ request }) => isOnCall(request), // optional actions
 });
 app.route('/admin', routes);
 ```
@@ -643,35 +662,47 @@ app.route('/admin', routes);
 | Route | Mirrors |
 | --- | --- |
 | `GET /` | The console page (see below). |
-| `GET /clients` | `listClients` |
+| `GET /info` | `{hasEventStream, writes, tables}` |
+| `GET /clients?limit&sort` | `listClients` |
 | `GET /clients/:clientId?eventLimit` | `clientDetail` |
-| `GET /commits?afterSeq&limit&table` | `listCommits` |
+| `GET /commits?afterSeq&beforeSeq&limit&table` | `listCommits` |
+| `GET /commits/:commitSeq` | `commitDetail` |
 | `GET /reactions?status&type&limit` | `listReactions` |
-| `GET /rows/:table/:rowId` | `inspectRow` |
+| `GET /rows/:table/:rowId?historyLimit` | `inspectRow` |
+| `GET /trace?table&rowId&clientId` | `traceRow` |
 | `GET /scope-activity?variable&value&limit` | `scopeActivity` |
 | `GET /horizon` | `horizonStatus` |
 | `GET /stats` | `stats` |
 | `GET /metrics?windowMs` | `metrics` |
-| `GET /partitions` | `partitionsOverview` (fleet view) |
+| `GET /errors?windowMs` | `errors` |
+| `GET /partitions?limit&offset` | `partitionsOverview` (fleet view) |
 | `GET /events?type&sinceMs&clientId&actorId&limit` | `events` (ring tail) |
 | `GET /events/stream?type&clientId&actorId&limit` | live SSE tail (backlog replay, then `subscribeEvents`) |
+| `POST /reactions/:idempotencyKey/retry` | `retryReaction` |
+| `POST /prune` | `prune` |
+| `POST /clients/:clientId/revoke-lease` | `revokeLease` |
 
-`?partition=` selects the partition (falls back to `defaultPartition`).
-`GET /partitions` is the one cross-partition endpoint: the guard still runs
-on it, with an empty `partition` in its context unless the query passes one
-— a host that authorizes per partition should treat it accordingly.
+`?partition=` selects the partition (falls back to `defaultPartition`), and
+every endpoint reads only that partition, event tail included. A malformed
+integer query parameter answers 400 `sync.invalid_request`.
+`GET /partitions` is the one cross-partition endpoint: its guard receives an
+empty `partition`, so a guard that grants single partitions does not grant
+the fleet view. The `forward` option serves the partition-scoped routes
+elsewhere after the guards pass; `@syncular/server-workers` uses it to reach
+the partition's Durable Object.
 
-`GET /` (or `/admin`) serves a **single static HTML page** — zero
-framework, no build step, no React. It fetches the sibling JSON endpoints
-(relative to its own mount path, so it works under any prefix and the same
-guard covers its XHRs) and renders: a metrics statusbar (push rate,
-conflicts, error share, p95, ASCII sparkline), the fleet view (which doubles
-as the partition picker), horizon, store stats, clients with cursor lag and
-a per-client drill-down (subscriptions with full scope sets, lease status,
-the client's event slice), recent commits, the row inspector, scope
-activity, and the event tail — with an auto-refresh toggle (2 s poll).
-This is a deliberate one-file console: 5% of the code a full console app
-would cost, the 80% operator value.
+`GET /` (or `/admin`) serves a **single static HTML page**: no framework,
+no build step, no external assets (about 96 KiB, 27 KiB gzipped). It fetches
+the sibling JSON endpoints relative to its own mount path, so it works under
+any prefix and the same guard covers its requests. It reads `GET /info`
+first, then a sidebar switches between Overview (figures, request-volume
+chart, horizon gauge, cursor-lag histogram, failures, fleet), Clients,
+Commits, Rows, Trace, Scopes, Events, Reactions, and Storage; each refresh
+reads only the open view's endpoints. Tables sort, copy ids, and open detail
+dialogs with a JSON view; failed reads show their stable error code; write
+actions appear only when `/info` reports writes enabled. Keyboard shortcuts
+and the full view list are on the docs page (Operations and maintenance,
+Admin console).
 
 **Live tail over SSE.** `GET /events/stream` streams the ring as
 server-sent events: a recent backlog replays first, then events arrive as
@@ -687,10 +718,6 @@ session ids), the same as `GET /events`; the admin guard gates both.
 The demo server (`apps/demo`) mounts the admin behind a dev guard:
 `SYNCULAR_DEMO_ADMIN=1` enables `/admin` (optionally token-gated with
 `SYNCULAR_DEMO_ADMIN_TOKEN`), so the console is inspectable live.
-
-> Docs-site coverage of the console is a follow-up: the docs app is owned
-> by a concurrent workstream this round (the schema-bump page), so this
-> README is the console's documentation home for now.
 
 ## Segment storage on S3 / R2 (`S3SegmentStore`)
 
@@ -795,7 +822,7 @@ honor these conditional headers.
 
 Even so, the counters are **approximate**, and `stats()` marks them
 `approximate: true` (an additive field the admin surface carries through, so
-`admin.segmentStats()` / `admin.stats()` expose it and the console labels the
+`admin.stats()` exposes it and the console labels the
 numbers honestly). They can drift: a crash between the segment PUT and the
 accumulator CAS, lifecycle GC deleting objects the accumulator still counts,
 or enough concurrent writers to exhaust the CAS retry budget. They are a
@@ -957,7 +984,7 @@ GET/HEAD.
 object (`{keyPrefix}stats/blobs.json`) folded read-modify-write on `put` under
 the same ETag compare-and-swap as segments, and marks the result
 `approximate: true` (the marker already present on `BlobStoreStats`, carried
-through `admin.blobStats()`). A `HEAD` before the PUT detects an idempotent
+through `admin.stats()`). A `HEAD` before the PUT detects an idempotent
 re-upload so distinct blobs count once; the sweep decrements on delete. Same
 caveats as segment stats — a health gauge, not an invoice. The in-process
 stores (memory / sqlite) count on demand and omit the marker.

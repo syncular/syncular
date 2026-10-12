@@ -1574,13 +1574,14 @@ export function runStorageContract(
 
     // --- Admin/console read surface (optional methods) ---
 
-    test('listClientRecords / listCommitMetadata / scopeActivity / getRowScopes', async () => {
+    test('listClientRecords / listCommitMetadata / scopeActivity / getCommit / listRowChanges', async () => {
       const storage = await make();
       if (
         storage.listClientRecords === undefined ||
         storage.listCommitMetadata === undefined ||
         storage.scopeActivity === undefined ||
-        storage.getRowScopes === undefined
+        storage.getCommit === undefined ||
+        storage.listRowChanges === undefined
       ) {
         // A backend may legitimately omit the admin surface; skip cleanly.
         return;
@@ -1649,14 +1650,161 @@ export function runStorageContract(
       expect(activity.map((a) => a.commitSeq)).toEqual([1]);
       expect(activity[0]).toMatchObject({ table: 'tasks', changeCount: 1 });
 
-      const rowScopes = await storage.getRowScopes(PARTITION, 'tasks', 'r0');
-      expect(rowScopes).toEqual({
-        serverVersion: 1,
+      // `beforeSeq` pages the log older, exclusive on both ends; the second
+      // page must not overlap the first.
+      const firstPage = await storage.listCommitMetadata(PARTITION, {
+        afterSeq: 0,
+        limit: 1,
+      });
+      expect(firstPage.map((c) => c.commitSeq)).toEqual([2]);
+      const secondPage = await storage.listCommitMetadata(PARTITION, {
+        afterSeq: 0,
+        beforeSeq: firstPage[firstPage.length - 1]?.commitSeq ?? 0,
+        limit: 10,
+      });
+      expect(secondPage.map((c) => c.commitSeq)).toEqual([1]);
+      expect(
+        secondPage.some((older) =>
+          firstPage.some((newer) => newer.commitSeq === older.commitSeq),
+        ),
+      ).toBe(false);
+      // The same bound applies to the table-filtered query.
+      expect(
+        await storage.listCommitMetadata(PARTITION, {
+          afterSeq: 0,
+          beforeSeq: 2,
+          limit: 10,
+          table: 'tasks',
+        }),
+      ).toHaveLength(1);
+
+      // One commit with three changes across two tables, including a delete.
+      const multi = await storage.begin(PARTITION);
+      const multiSeq = await multi.appendCommit({
+        clientId: 'c2',
+        clientCommitId: 'k-multi',
+        actorId: 'a2',
+        createdAtMs: NOW + 10,
+        changes: [
+          {
+            table: 'tasks',
+            rowId: 'r0',
+            op: 'upsert',
+            rowVersion: 2,
+            scopes: { project_id: 'p1' },
+            payload: bytes(9),
+          },
+          {
+            table: 'docs',
+            rowId: 'd1',
+            op: 'upsert',
+            rowVersion: 1,
+            scopes: { project_id: 'p1' },
+            payload: bytes(7),
+          },
+          {
+            table: 'tasks',
+            rowId: 'r1',
+            op: 'delete',
+            scopes: { project_id: 'p2' },
+          },
+        ],
+      });
+      await multi.commit();
+
+      const detail = await storage.getCommit(PARTITION, multiSeq);
+      expect(detail).toMatchObject({
+        commitSeq: multiSeq,
+        clientId: 'c2',
+        clientCommitId: 'k-multi',
+        actorId: 'a2',
+        createdAtMs: NOW + 10,
+        changeCount: 3,
+        tables: ['docs', 'tasks'],
+      });
+      // Changes stay in change-index (`idx`) order, payloads and scopes decoded.
+      expect(detail?.changes.map((c) => [c.table, c.rowId, c.op])).toEqual([
+        ['tasks', 'r0', 'upsert'],
+        ['docs', 'd1', 'upsert'],
+        ['tasks', 'r1', 'delete'],
+      ]);
+      expect(detail?.changes[0]).toMatchObject({
+        rowVersion: 2,
         scopes: { project_id: 'p1' },
       });
+      expect(detail?.changes[0]?.payload).toEqual(bytes(9));
+      expect(detail?.changes[1]).toMatchObject({
+        rowVersion: 1,
+        scopes: { project_id: 'p1' },
+      });
+      expect(detail?.changes[1]?.payload).toEqual(bytes(7));
+      // A delete carries no rowVersion.
+      expect(detail?.changes[2]).toMatchObject({
+        scopes: { project_id: 'p2' },
+      });
+      expect(detail?.changes[2]?.rowVersion).toBeUndefined();
+      expect(await storage.getCommit(PARTITION, multiSeq + 1)).toBeUndefined();
+
+      // Row history: newest first, bounded by `limit`, one row only.
+      const history = await storage.listRowChanges(PARTITION, {
+        table: 'tasks',
+        rowId: 'r0',
+        limit: 10,
+      });
+      expect(history.map((h) => h.commitSeq)).toEqual([multiSeq, 1]);
+      expect(history[0]).toMatchObject({
+        op: 'upsert',
+        rowVersion: 2,
+        actorId: 'a2',
+        clientId: 'c2',
+        createdAtMs: NOW + 10,
+      });
+      expect(history[1]).toMatchObject({
+        op: 'upsert',
+        rowVersion: 1,
+        actorId: 'a1',
+        clientId: 'c1',
+        createdAtMs: NOW,
+      });
       expect(
-        await storage.getRowScopes(PARTITION, 'tasks', 'missing'),
-      ).toBeUndefined();
+        (
+          await storage.listRowChanges(PARTITION, {
+            table: 'tasks',
+            rowId: 'r0',
+            limit: 1,
+          })
+        ).map((h) => h.commitSeq),
+      ).toEqual([multiSeq]);
+
+      const deleted = await storage.listRowChanges(PARTITION, {
+        table: 'tasks',
+        rowId: 'r1',
+        limit: 10,
+      });
+      // The earlier loop upserted r1 in commit 2; the delete is newest.
+      expect(deleted.map((h) => h.commitSeq)).toEqual([multiSeq, 2]);
+      expect(deleted[0]).toMatchObject({ commitSeq: multiSeq, op: 'delete' });
+      expect(deleted[0]?.rowVersion).toBeUndefined();
+      expect(deleted[1]).toMatchObject({
+        commitSeq: 2,
+        op: 'upsert',
+        rowVersion: 1,
+      });
+      // Other rows and other tables contribute nothing.
+      expect(
+        await storage.listRowChanges(PARTITION, {
+          table: 'docs',
+          rowId: 'r0',
+          limit: 10,
+        }),
+      ).toEqual([]);
+      expect(
+        await storage.listRowChanges(PARTITION, {
+          table: 'tasks',
+          rowId: 'missing',
+          limit: 10,
+        }),
+      ).toEqual([]);
     });
 
     test('authenticated partition registry refreshes, lists, and rotates', async () => {

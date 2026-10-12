@@ -16,6 +16,7 @@ import {
   SyncularAdmin,
 } from '@syncular/server';
 import {
+  del,
   makeContext,
   pullHeader,
   pushCommit,
@@ -57,7 +58,8 @@ describe('listClients', () => {
       subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
     ]);
     const admin = adminOf(t);
-    const clients = await admin.listClients('part-1');
+    const { clients, total } = await admin.listClients('part-1');
+    expect(total).toBe(1);
     expect(clients).toHaveLength(1);
     const client = clients[0];
     expect(client?.clientId).toBe('client-1');
@@ -83,7 +85,7 @@ describe('listClients', () => {
     await seedTask(t, 'c2', 't2', 'p1');
     await seedTask(t, 'c3', 't3', 'p1');
     const admin = adminOf(t);
-    const client = (await admin.listClients('part-1'))[0];
+    const client = (await admin.listClients('part-1')).clients[0];
     expect(client?.cursor).toBe(1);
     expect(client?.lag).toBe(2);
   });
@@ -98,7 +100,7 @@ describe('listClients', () => {
     // Advance the clock past the default 14-day active window.
     t.now.ms += 15 * 24 * 60 * 60 * 1000;
     const admin = adminOf(t);
-    expect((await admin.listClients('part-1'))[0]?.active).toBe(false);
+    expect((await admin.listClients('part-1')).clients[0]?.active).toBe(false);
   });
 });
 
@@ -208,7 +210,8 @@ describe('partitions', () => {
     await tx.commit();
     await t.storage.touchPartition('part-2', t.now.ms, 'epoch-2');
     expect(await admin.listPartitions()).toEqual(['part-1', 'part-2']);
-    const overview = await admin.partitionsOverview();
+    const { partitions: overview, total } = await admin.partitionsOverview();
+    expect(total).toBe(2);
     expect(overview).toHaveLength(2);
     expect(overview[0]).toMatchObject({
       partition: 'part-1',
@@ -386,7 +389,7 @@ describe('stats + event stream', () => {
       subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
     ]);
     const admin = adminOf(t);
-    const segStats = await admin.segmentStats();
+    const segStats = (await admin.stats('part-1')).segments;
     expect(segStats?.count).toBeGreaterThanOrEqual(1);
     expect(segStats?.rowsSegments).toBeGreaterThanOrEqual(1);
   });
@@ -396,9 +399,11 @@ describe('stats + event stream', () => {
     const blobs = new SqliteBlobStore();
     await blobs.put('part-1', 'sha256:aa', new Uint8Array(64), t.now.ms);
     const admin = adminOf(t, { blobs });
-    const blobStats = await admin.blobStats('part-1');
-    expect(blobStats).toEqual({ count: 1, bytes: 64 });
-    expect(await admin.blobStats('other')).toEqual({ count: 0, bytes: 0 });
+    expect((await admin.stats('part-1')).blobs).toEqual({
+      count: 1,
+      bytes: 64,
+    });
+    expect((await admin.stats('other')).blobs).toEqual({ count: 0, bytes: 0 });
   });
 
   test('S3 segment stats carry the approximate marker through the admin surface', async () => {
@@ -438,10 +443,8 @@ describe('stats + event stream', () => {
         segments: s3,
         clock: () => t.now.ms,
       });
-      const segStats = await admin.segmentStats();
-      expect(segStats).toMatchObject({ count: 1, approximate: true });
       const combined = await admin.stats('p');
-      expect(combined.segments?.approximate).toBe(true);
+      expect(combined.segments).toMatchObject({ count: 1, approximate: true });
     } finally {
       stub.stop();
     }
@@ -484,5 +487,225 @@ describe('fromConfig + unsupported storage', () => {
       clock: () => 0,
     });
     await expect(admin.listClients('p')).rejects.toThrow(/does not implement/);
+  });
+});
+
+describe('traceRow', () => {
+  function tracingAdmin(t: TestContext): SyncularAdmin {
+    return new SyncularAdmin({
+      storage: t.storage,
+      schema: t.ctx.schema,
+      resolveScopes: t.ctx.resolveScopes,
+      clock: () => t.now.ms,
+    });
+  }
+
+  async function subscribed(t: TestContext): Promise<void> {
+    await sync(t, [
+      pullHeader(),
+      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
+    ]);
+  }
+
+  test('delivered, scope-mismatch, then pending-pull after a new change', async () => {
+    const t = makeContext();
+    t.scopes.value = { project_id: ['p1', 'p2'] };
+    await seedTask(t, 'c1', 't1', 'p1');
+    await seedTask(t, 'c2', 't2', 'p2');
+    await subscribed(t);
+    const admin = tracingAdmin(t);
+    const trace = (rowId: string) =>
+      admin.traceRow('part-1', { table: 'tasks', rowId, clientId: 'client-1' });
+
+    expect((await trace('t1')).verdict).toBe('delivered');
+    const mismatch = await trace('t2');
+    expect(mismatch.verdict).toBe('scope-mismatch');
+    expect(mismatch.subscriptions[0]?.mismatches).toEqual([
+      { variable: 'project_id', rowValue: 'p2', requested: ['p1'] },
+    ]);
+
+    await sync(
+      t,
+      [pushCommit('c3', [upsert('tasks', 't1', taskRow('t1', 'p1', 'again'))])],
+      { clientId: 'writer' },
+    );
+    const pending = await trace('t1');
+    expect(pending.verdict).toBe('pending-pull');
+    expect(pending.lastChange?.commitSeq).toBe(3);
+    expect(pending.client?.cursor).toBe(2);
+  });
+
+  test('scope-denied when the actor lost the scope the subscription requests', async () => {
+    const t = makeContext();
+    await seedTask(t, 'c1', 't1', 'p1');
+    await subscribed(t);
+    t.scopes.value = { project_id: ['p2'] };
+    const trace = await tracingAdmin(t).traceRow('part-1', {
+      table: 'tasks',
+      rowId: 't1',
+      clientId: 'client-1',
+    });
+    expect(trace.verdict).toBe('scope-denied');
+    expect(trace.allowed).toEqual({ project_id: ['p2'] });
+    expect(trace.subscriptions[0]).toMatchObject({
+      requestedMatch: true,
+      effectiveMatch: false,
+    });
+  });
+
+  test('row-deleted once the client pulled the delete', async () => {
+    const t = makeContext();
+    await seedTask(t, 'c1', 't1', 'p1');
+    await sync(t, [pushCommit('c2', [del('tasks', 't1')])], {
+      clientId: 'writer',
+    });
+    await subscribed(t);
+    const trace = await tracingAdmin(t).traceRow('part-1', {
+      table: 'tasks',
+      rowId: 't1',
+      clientId: 'client-1',
+    });
+    expect(trace.verdict).toBe('row-deleted');
+    expect(trace.lastChange).toMatchObject({ commitSeq: 2, op: 'delete' });
+  });
+});
+
+describe('errors + coverage', () => {
+  const push = {
+    atMs: 1_000,
+    partition: 'part-1',
+    actorId: 'actor-1',
+    clientCommitId: 'k',
+    operations: 1,
+  };
+
+  test('groups failures by code and client, newest first', () => {
+    const ring = new RingBufferEvents({ capacity: 10 });
+    ring.emit({
+      ...push,
+      type: 'push.rejected',
+      clientId: 'client-a',
+      code: 'sync.constraint_violation',
+      opIndex: 0,
+      replay: false,
+    });
+    ring.emit({
+      ...push,
+      atMs: 2_000,
+      type: 'push.rejected',
+      clientId: 'client-a',
+      code: 'sync.constraint_violation',
+      opIndex: 0,
+      replay: false,
+    });
+    ring.emit({
+      ...push,
+      type: 'push.conflicted',
+      clientId: 'client-b',
+      opIndex: 0,
+      replay: false,
+    });
+    ring.emit({
+      type: 'push.rejected',
+      ...push,
+      partition: 'part-2',
+      clientId: 'client-c',
+      code: 'sync.forbidden',
+      opIndex: 0,
+      replay: false,
+    });
+    const t = makeContext();
+    t.now.ms = 10_000;
+    const summary = adminOf(t, { ring }).errors('part-1');
+    expect(summary.coverage).toEqual({
+      complete: true,
+      fromMs: 10_000 - 300_000,
+    });
+    expect(summary.byCode).toEqual([
+      {
+        source: 'push',
+        code: 'sync.constraint_violation',
+        count: 2,
+        clients: 1,
+        actors: 1,
+        lastAtMs: 2_000,
+        sampleClientIds: ['client-a'],
+      },
+      {
+        source: 'push',
+        code: 'sync.version_conflict',
+        count: 1,
+        clients: 1,
+        actors: 1,
+        lastAtMs: 1_000,
+        sampleClientIds: ['client-b'],
+      },
+    ]);
+    expect(summary.byClient[0]).toEqual({
+      clientId: 'client-a',
+      actorId: 'actor-1',
+      count: 2,
+      lastCode: 'sync.constraint_violation',
+      lastAtMs: 2_000,
+    });
+  });
+
+  test('a ring that evicted events inside the window reports partial coverage', () => {
+    const ring = new RingBufferEvents({ capacity: 2 });
+    for (const atMs of [1_000, 2_000, 3_000]) {
+      ring.emit({
+        ...push,
+        atMs,
+        type: 'push.applied',
+        clientId: 'c',
+        replay: false,
+      });
+    }
+    const t = makeContext();
+    t.now.ms = 10_000;
+    const metrics = adminOf(t, { ring }).metrics('part-1');
+    expect(metrics.coverage).toEqual({ complete: false, fromMs: 1_000 });
+    expect(metrics.pushes.applied).toBe(2);
+    expect(
+      metrics.buckets.pushes.reduce((sum, bucket) => sum + bucket.applied, 0),
+    ).toBe(2);
+  });
+});
+
+describe('operator actions', () => {
+  test('revokeLease revokes the stored lease and emits lease.revoked', async () => {
+    const t = makeContext();
+    const leases = new MemoryLeaseStore();
+    await leases.issue('part-1', 'client-1', 'actor-1', {}, t.now.ms, 60_000);
+    const ring = new RingBufferEvents({ capacity: 10 });
+    const admin = new SyncularAdmin({
+      storage: t.storage,
+      leases,
+      events: ring,
+      clock: () => t.now.ms,
+    });
+    const lease = await admin.revokeLease('part-1', 'client-1');
+    expect(lease.revoked).toBe(true);
+    expect((await leases.get('part-1', 'client-1'))?.revoked).toBe(true);
+    expect(ring.query({ type: 'lease.revoked' })).toHaveLength(1);
+    await expect(admin.revokeLease('part-1', 'ghost')).rejects.toMatchObject({
+      code: 'sync.invalid_request',
+    });
+  });
+
+  test('prune advances the horizon and reports both values', async () => {
+    const t = makeContext();
+    for (const n of [1, 2, 3]) await seedTask(t, `c${n}`, `t${n}`, 'p1');
+    t.now.ms += 1;
+    // Age-forced: every commit is past the force age; one stays retained.
+    const admin = new SyncularAdmin({
+      storage: t.storage,
+      retention: { minRetainedCommits: 1, ageForceMs: 0 },
+      clock: () => t.now.ms,
+    });
+    expect(await admin.prune('part-1')).toEqual({
+      previousHorizonSeq: 0,
+      horizonSeq: 2,
+    });
   });
 });
