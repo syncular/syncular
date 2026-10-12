@@ -197,10 +197,11 @@ const wasmDir = dirname(
   Bun.resolveSync('@sqlite.org/sqlite-wasm', import.meta.dir),
 );
 /** Only the files the sqlite-wasm ESM entry actually references. */
-/** The docs site's self-hosted fonts and mark, shared with the static build. */
+/** The docs site's self-hosted fonts, mark and analytics script, shared with the static build. */
 const docsPublicDir = join(import.meta.dir, '..', '..', 'docs', 'public');
 const BRAND_FILES: Record<string, string> = {
   'favicon.svg': 'image/svg+xml',
+  'engagement.js': 'text/javascript',
   'fonts/plex-mono-400.woff2': 'font/woff2',
   'fonts/plex-mono-500.woff2': 'font/woff2',
   'fonts/plex-mono-600.woff2': 'font/woff2',

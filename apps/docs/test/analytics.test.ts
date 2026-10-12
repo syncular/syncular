@@ -175,4 +175,44 @@ describe('docs analytics', () => {
       }),
     ).toBeNull();
   });
+
+  describe('engagement script', () => {
+    const run = async (hostname: string, globalPrivacyControl: boolean) => {
+      const appended: { src: string; defer: boolean; dataset: DOMStringMap }[] =
+        [];
+      const script = await Bun.file(
+        new URL('../public/engagement.js', import.meta.url),
+      ).text();
+      new Function('navigator', 'location', 'document', script)(
+        { globalPrivacyControl },
+        { hostname, pathname: '/' },
+        {
+          referrer: '',
+          head: {
+            append: (element: (typeof appended)[number]) =>
+              appended.push(element),
+          },
+          createElement: () => ({ src: '', defer: false, dataset: {} }),
+          addEventListener: () => {},
+        },
+      );
+      return appended;
+    };
+
+    test('loads the Cloudflare Web Analytics beacon on syncular.dev', async () => {
+      const [beacon] = await run('syncular.dev', false);
+      expect(beacon?.src).toBe(
+        'https://static.cloudflareinsights.com/beacon.min.js',
+      );
+      expect(beacon?.defer).toBe(true);
+      expect(JSON.parse(beacon?.dataset.cfBeacon ?? '{}').token).toMatch(
+        /^[0-9a-f]{32}$/,
+      );
+    });
+
+    test('skips the beacon under Global Privacy Control and off production', async () => {
+      expect(await run('syncular.dev', true)).toEqual([]);
+      expect(await run('localhost', false)).toEqual([]);
+    });
+  });
 });

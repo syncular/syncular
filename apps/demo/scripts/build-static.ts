@@ -2,8 +2,8 @@
  * Static demo build: the backend-free bundle served at syncular.dev/demo/.
  * Every URL in the bundle is relative to the page, so it works under any
  * base path. Emits `dist/` (or the directory given as the first argument; the
- * docs build passes `../docs/dist/demo`): index.html, admin.html, the docs site's favicon, social card
- * and self-hosted IBM Plex fonts,
+ * docs build passes `../docs/dist/demo`): index.html, admin.html, the docs site's favicon, social card,
+ * analytics script and self-hosted IBM Plex fonts,
  * app.js (the page, with the embedded flag baked in), server-worker.js (the
  * WHOLE sync server, running in a Web Worker over sqlite-wasm wearing the D1
  * shape), and the sqlite-wasm vendor files. Cloudflare serves it as plain
@@ -102,6 +102,7 @@ const WASM_FILES = [
 ];
 const BRAND_ASSETS = [
   'favicon.svg',
+  'engagement.js',
   'social-card.png',
   'fonts/plex-mono-400.woff2',
   'fonts/plex-mono-500.woff2',

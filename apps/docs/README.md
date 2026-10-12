@@ -116,6 +116,14 @@ binding in `wrangler.jsonc` creates the dataset on first write; no JavaScript is
 needed for page views. Individual blog articles load `public/engagement.js`,
 which records one `article_read` after 30 visible seconds and 60% scroll depth.
 
+The same script loads the Cloudflare Web Analytics beacon on `syncular.dev`
+(every docs page and the sync lab, which copies the script into `dist/demo/`).
+The beacon counts only browsers that run JavaScript, so its visit numbers
+exclude the scanners that dominate the Worker's raw 404 page views, and it adds
+Core Web Vitals. It reports client-router navigations itself. Results are in
+the Cloudflare dashboard under Web Analytics; the site token in
+`public/engagement.js` is public by design.
+
 The schema is deliberately stable and non-identifying:
 
 - `blob1..11`: event, path, referrer hostname, country, broad device class,
@@ -125,7 +133,8 @@ The schema is deliberately stable and non-identifying:
 
 No IP address, cookie, full referrer, full user agent, or stable visitor ID is
 written. Requests with Global Privacy Control or Do Not Track enabled are
-excluded. The public disclosure is at `/privacy/`.
+excluded, and those browsers never load the beacon. The public disclosure is
+at `/privacy/`.
 
 Query the last seven days using the locally authenticated Wrangler identity
 (it needs Account Analytics Read), or pass a token explicitly:
@@ -136,8 +145,9 @@ bun run analytics -- --days 30
 bun run analytics -- --days 7 --json
 ```
 
-The report shows page views, qualified article reads and read rate, acquisition
-sources/campaigns, and countries. Analytics Engine also appears in Cloudflare's
-Analytics dashboard; data retention is three months. Requests tagged with
-`utm_medium=verification` are retained for deployment diagnostics but omitted
-from the CLI report.
+The report counts only served pages (status 200) and reads (204); scanner
+requests that hit the 404 page are left out. It shows page views, qualified
+article reads and read rate, acquisition sources/campaigns, and countries.
+Analytics Engine also appears in Cloudflare's Analytics dashboard; data
+retention is three months. Requests tagged with `utm_medium=verification` are
+retained for deployment diagnostics but omitted from the CLI report.

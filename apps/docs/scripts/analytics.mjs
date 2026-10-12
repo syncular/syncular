@@ -54,7 +54,10 @@ const query = async (sql) => {
 };
 
 const timeFilter = `timestamp >= NOW() - INTERVAL '${days}' DAY`;
-const reportFilter = "blob5 != 'bot' AND blob9 != 'verification'";
+// Scanners probing paths like /wp-admin/ or /.env land on the 404 page and
+// outnumber real page views, so only served pages (200) and reads (204) count.
+const reportFilter =
+  "blob5 != 'bot' AND blob9 != 'verification' AND blob6 IN ('200', '204')";
 
 const [content, acquisition, countries] = await Promise.all([
   query(`
@@ -68,7 +71,7 @@ const [content, acquisition, countries] = await Promise.all([
     WHERE ${timeFilter} AND ${reportFilter}
     GROUP BY event, path
     ORDER BY events DESC
-    LIMIT 100
+    LIMIT 500
   `),
   query(`
     SELECT
