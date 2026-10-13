@@ -1,8 +1,64 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.31.0** (`v0.31.0`). All artifacts use Apache-2.0, except
+current release is **0.32.0** (`v0.32.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.32.0 release notes
+
+The admin console mounts with one option. Pass `admin: { authorize,
+authorizeActions? }` to `createSyncularHono` or `createWorkersFetchHandler`.
+On Hono the option creates the console's event ring (`ringCapacity`, default
+1000) and composes it into `config.events` and, through the new
+`RealtimeHub.addEventSink`, into the realtime hub, so socket rounds reach the
+console. Every Workers Durable Object keeps the ring, sized by
+`RealtimeDOConfig.adminRingCapacity`, and serves the admin requests the Worker
+forwards. A request without `?partition=` uses the deployment's only
+partition; with several it answers `sync.invalid_request` with
+`details.parameter: 'partition'` after the fleet guard ran.
+
+Breaking changes for hosts that mounted the console by hand:
+
+- `createSyncularAdminRoutes` is internal to the adapters. Use the `admin`
+  option.
+- `authorizeWrite` is `authorizeActions`, and `GET /admin/info` reports
+  `actions` instead of `writes`. `/info` also reports the resolved
+  `partition`.
+- `defaultPartition` and the Durable Object's `admin` setting are removed.
+- Admin errors go to `config.onError` and `config.mapError`.
+- `SyncularAdmin.segmentStats` and `blobStats` are replaced by `stats`, and
+  the optional `ServerStorage.getRowScopes` is removed; `inspectRow` reads
+  the whole row. `listClients` and `partitionsOverview` return pages with
+  totals.
+
+The console is a delivery and failure debugger. `SyncularAdmin` adds
+`search` (one pasted client, actor, row, commit, or client commit id),
+`actors` (devices grouped by person with open sockets), `tableCounts`,
+`listRows`, `rowDelivery` (the trace verdict of every client for one row),
+`findWrite` (stored outcomes of a client commit id), `traceRow`, `errors`,
+`commitDetail`, and the operator actions `retryReaction`, `prune`, and
+`revokeLease`. Storage gains the optional reads `getCommit`,
+`listRowChanges`, `listRows`, `countRows`, and `listPushResults` on SQLite,
+PostgreSQL, and D1; a custom storage without them makes the corresponding
+admin read fail loudly.
+
+Admin reads are scoped to the authorized partition, including the event tail,
+the SSE stream, and client pages, and the fleet list calls the guard with an
+empty partition. The row inspector answers `sync.unknown_table` for a table
+outside the schema.
+
+Server events: request failures carry the client id and count toward it, and
+`errors().byClient` lists every failing client. A first sync round without a
+`logEpoch` reports the request outcome `epoch_acquired`; `reset` remains for
+a real epoch mismatch.
+
+SYQL lowering rewrites bare select-alias references in the outer `ORDER BY`
+and `GROUP BY` under camelCase naming, so `next_est` resolves to the renamed
+`nextEst`.
+
+SSP2 stays at wire version 3, and the Rust crates have no code changes.
+Upgrade all 12 npm packages and 6 crates together. No schema bump or wire
+change is required.
 
 ## 0.31.0 release notes
 
