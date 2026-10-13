@@ -533,7 +533,7 @@ context). The demo server wires it behind `SYNCULAR_DEMO_EVENTS=1`.
 
 | Event | When | Key fields |
 | --- | --- | --- |
-| `request.handled` | Once per `POST /sync`, after the response bytes are fully produced (or the request was rejected up front) | `kind` (`sync`), `partition`, `actorId`, `durationMs`, `bytesIn`, `bytesOut`, `outcome` (`ok` \| `schema_floor` \| `rejected` \| `error`), `errorCode?`, `clientId?` (absent when the request did not decode), `pushCommits`, `pulled`, `subscriptions` |
+| `request.handled` | Once per `POST /sync`, after the response bytes are fully produced (or the request was rejected up front) | `kind` (`sync`), `partition`, `actorId`, `durationMs`, `bytesIn`, `bytesOut`, `outcome` (`ok` \| `schema_floor` \| `epoch_acquired` \| `reset` \| `rejected` \| `error`; `epoch_acquired` answers a first round without `logEpoch`, `reset` a `logEpoch` the log no longer matches), `errorCode?`, `clientId?` (absent when the request did not decode), `pushCommits`, `pulled`, `subscriptions` |
 | `push.applied` | A `PUSH_COMMIT` applied, or replayed from the idempotency cache (§2.3) | `clientId`, `clientCommitId`, `operations`, `commitSeq?`, `replay` |
 | `push.rejected` | A commit rejected (§6.3) | `clientId`, `clientCommitId`, `operations`, `code` (§10.2), `opIndex`, `table?` and `rowId?` of the terminating operation |
 | `push.conflicted` | A commit terminated by a version conflict (§6.2) | `clientId`, `clientCommitId`, `operations`, `opIndex`, `table?` and `rowId?` of the conflicting operation |
@@ -602,7 +602,7 @@ design. Row reads need the server `schema` (`fromConfig` passes it).
 | --- | --- |
 | `tables()` / `schemaVersion` | The schema tables with `columns[]` (`name`, `type`, `nullable`, `primaryKey`), and the server schema version. |
 | `search(partition, query)` | Resolves one pasted id: clients whose id contains it or whose actor equals it, actors containing it, rows with that rowId in any table, the commit with that seq, and write outcomes with that clientCommitId. |
-| `actors(partition)` | Each actor with its devices (clients), open sockets, worst lag, and push failures in the last 5 minutes. |
+| `actors(partition)` | Each actor with its devices (clients), open sockets, worst lag, and failures in the last 5 minutes (the `errors().byClient` counts summed per actor). |
 | `tableCounts(partition)` | Row count per schema table. |
 | `listRows(partition, table, {afterRowId?, limit?, scope?})` | One page of decoded rows ordered by rowId, optionally only rows whose stored `scope` (`{variable, value}`) matches, read through the scope index; `nextAfterRowId` continues. |
 | `rowDelivery(partition, table, rowId)` | The trace verdict for every known client on one row, sorted by verdict then last seen: who has the row and who does not. |
@@ -618,7 +618,7 @@ design. Row reads need the server `schema` (`fromConfig` passes it).
 | `horizonStatus(partition)` | `{maxCommitSeq, horizonSeq, retainedCommits, activeCursorFloor, recommendedHorizonSeq, recommendation}`: the horizon a prune pass would reach now (§4.6) and `up-to-date` / `prune-recommended`. |
 | `stats(partition)` | `{segments?, blobs?}` counts/bytes where the stores expose them (segments split rows/sqlite). |
 | `metrics(partition, {windowMs?, buckets?})` | Ring-derived request/push health over a trailing window (default 5 min): request count/rate, error share, p50/p95 duration, push applied/rejected/conflicted, and per-bucket counts, errors, p95 and push outcomes. `coverage: {complete, fromMs}` is false when the ring dropped events inside the window. All zeros when no ring is wired. |
-| `errors(partition, {windowMs?})` | Ring failures in the window: `byCode[]` (`source` `request`/`push`/`reaction`/`scopes`, `code`, `count`, distinct `clients` and `actors`, `lastAtMs`, `sampleClientIds`, `sampleRows`) and the ten clients with the most push failures in `byClient[]`, with `coverage`. |
+| `errors(partition, {windowMs?})` | Ring failures in the window: `byCode[]` (`source` `request`/`push`/`reaction`/`scopes`, `code`, `count`, distinct `clients` and `actors`, `lastAtMs`, `sampleClientIds`, `sampleRows`) and every client with a request or push failure in `byClient[]`, most failures first, with `coverage`. |
 | `listPartitionRegistry()` / `partitionsOverview({limit?, offset?})` | Every authenticated partition; the overview pages them (default 100) as `{partitions, total}` with retained backlog, client counts, and the prune recommendation. |
 | `events({type?, partition?, requestId?, sinceMs?, clientId?, actorId?, limit?})` | The ring tail, newest first. Empty when no ring is wired (`hasEventStream` reports which). |
 | `subscribeEvents(listener)` | Live events as they land in the ring; returns the unsubscribe function, `undefined` when no ring is wired. |

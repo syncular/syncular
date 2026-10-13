@@ -653,6 +653,42 @@ describe('errors + coverage', () => {
     });
   });
 
+  test('request failures count toward their client and actor', async () => {
+    const ring = new RingBufferEvents({ capacity: 50 });
+    const t = makeContext({ events: ring });
+    await seedTask(t, 'c1', 't1', 'p1');
+    ring.emit({
+      type: 'request.handled',
+      kind: 'sync',
+      atMs: t.now.ms,
+      partition: 'part-1',
+      actorId: 'actor-1',
+      clientId: 'client-1',
+      durationMs: 1,
+      bytesIn: 10,
+      bytesOut: 0,
+      outcome: 'rejected',
+      errorCode: 'sync.invalid_request',
+      pushCommits: 0,
+      pulled: false,
+      subscriptions: 0,
+    });
+    const admin = adminOf(t, { ring });
+    expect(admin.errors('part-1').byClient).toEqual([
+      {
+        clientId: 'client-1',
+        actorId: 'actor-1',
+        count: 1,
+        lastCode: 'sync.invalid_request',
+        lastAtMs: t.now.ms,
+      },
+    ]);
+    const actors = await admin.actors('part-1');
+    expect(actors.map((a) => [a.actorId, a.recentFailures])).toEqual([
+      ['actor-1', 1],
+    ]);
+  });
+
   test('a ring that evicted events inside the window reports partial coverage', () => {
     const ring = new RingBufferEvents({ capacity: 2 });
     for (const atMs of [1_000, 2_000, 3_000]) {

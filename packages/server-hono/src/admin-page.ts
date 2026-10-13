@@ -244,7 +244,7 @@ button.tag:hover{border-color:var(--amber);color:var(--amber)}
 .kicker .lnk{color:var(--amber)}
 a.tag{color:var(--ink);text-decoration:none}
 a.tag:hover{border-color:var(--amber);color:var(--amber)}
-.tag.on{background:var(--amber);border-color:var(--amber);color:#000}
+.tag.on,.tag.on:hover{background:var(--amber);border-color:var(--amber);color:#000}
 .dev::before{content:'';display:inline-block;width:6px;height:6px;margin-right:6px;background:var(--faint)}
 .dev.on::before{background:var(--phos)}
 .pager{margin:0;padding:10px 14px;border-top:1px solid var(--line)}
@@ -356,13 +356,14 @@ main{overflow:visible;padding:16px}
     </section>
 
     <section id="view-people" class="view" aria-labelledby="h-people" hidden>
-      <div class="vh"><p class="kicker">02 · People</p><h1 id="h-people">People and devices<span class="dot">.</span></h1><p class="lede">Every actor in this partition with the devices it syncs from. A device opens its client page: subscriptions, lease, recent events, and a delivery trace.</p></div>
+      <div class="vh"><p class="kicker">02 · People</p><h1 id="h-people">People and devices<span class="dot">.</span></h1><p class="lede">Every actor in this partition with the devices it syncs from. An actor opens its failed and warned requests; a device opens its client page: subscriptions, lease, failures, recent events, and a delivery trace.</p></div>
       <div id="people-rt"></div>
       <div class="cols"><div class="panel"><div class="ph"><h2>Schema rollout</h2><span class="meta" id="rollout-meta"></span></div><div class="pb" id="people-rollout" data-skel></div></div></div>
       <div class="panel">
         <div class="tb"><input id="people-q" data-focus class="inp grow" type="search" placeholder="Filter by actor or client id" aria-label="Filter actors by actor or client id" /><span class="count" id="people-count"></span></div>
         <div id="people-table" data-skel></div>
       </div>
+      <div class="panel" id="people-fail-panel" hidden><div class="ph"><h2 id="people-fail-h">Failures and warnings</h2><span class="meta" id="people-fail-meta"></span></div><div id="people-fail"></div></div>
     </section>
 
     <section id="view-client" class="view" aria-labelledby="h-client" hidden>
@@ -878,7 +879,7 @@ main{overflow:visible;padding:16px}
         numCol('Count', 'count'),
         { l: 'Last code', v: x => x.lastCode, h: x => '<span class="ty err">' + esc(x.lastCode) + '</span>' },
         { l: 'Last', c: 'num fill', d: -1, v: x => x.lastAtMs, h: x => when(x.lastAtMs) }
-      ], r.byClient, none, x => { nav('client', [x.clientId]); });
+      ], r.byClient.slice(0, 10), none, x => { nav('client', [x.clientId]); });
     }
   }
 
@@ -938,6 +939,8 @@ main{overflow:visible;padding:16px}
   // -- people --------------------------------------------------------------
   function loadPeople(args) {
     if (args[0] !== undefined) $('people-q').value = args[0];
+    $('people-fail-panel').hidden = args[0] === undefined;
+    if (args[0] !== undefined) txt('people-fail-h', 'Failures and warnings · ' + args[0]);
     html('people-rt', INFO.realtime ? '' : '<div class="banner"><b>No realtime hub</b><span>This admin has no realtime hub wired, so it cannot see open sockets. Each device shows when it last synced instead.</span></div>');
     return get('/actors').then(r => {
       S.actors = r.actors;
@@ -970,9 +973,9 @@ main{overflow:visible;padding:16px}
       { l: 'Actor', c: 'w-sm', v: a => a.actorId, h: a => idCell(a.actorId) },
       { l: INFO.realtime ? 'Connected' : 'Last seen', c: 'num', d: -1, v: a => INFO.realtime ? a.connected : a.lastSeenMs, h: a => INFO.realtime ? (a.connected ? st('ok', a.connected + ' of ' + a.clients.length) : '<span class="dim">none</span>') : when(a.lastSeenMs) },
       { l: 'Max lag', c: 'num', d: -1, v: a => a.maxLag, h: a => fmt(a.maxLag) },
-      { l: 'Failures', c: 'num', d: -1, v: a => a.recentFailures, h: a => a.recentFailures ? '<span class="ty err">' + fmt(a.recentFailures) + '</span>' : '<span class="dim">0</span>' },
+      { l: 'Failures', c: 'num', d: -1, v: a => a.recentFailures, h: a => a.recentFailures ? link(route('people', [a.actorId]), fmt(a.recentFailures), 'ty err') : '<span class="dim">0</span>' },
       { l: 'Devices', c: 'fill', ns: true, h: a => '<span class="tags">' + a.clients.map(c => '<a class="tag dev' + (online(c) ? ' on' : '') + '" href="' + esc(route('client', [c.clientId])) + '" title="' + esc(c.clientId + ' · ' + (INFO.realtime && c.connected ? 'connected' : 'seen ' + ago(c.updatedAtMs)) + ' · lag ' + c.lag) + '">' + esc(c.clientId.length > 14 ? c.clientId.slice(0, 13) + '…' : c.clientId) + (c.schemaVersion != null && INFO.schemaVersion != null && c.schemaVersion < INFO.schemaVersion ? ' · v' + c.schemaVersion : '') + '</a>').join('') + '</span>' }
-    ], list, S.actors.length ? empty('No match', 'No actor or device matches the filter.') : empty('No actors', 'No client has synced this partition yet.'));
+    ], list, S.actors.length ? empty('No match', 'No actor or device matches the filter.') : empty('No actors', 'No client has synced this partition yet.'), a => { nav('people', [a.actorId]); });
   }
   function loadClientPage(args) {
     var id = args[0];
@@ -996,6 +999,7 @@ main{overflow:visible;padding:16px}
         '<p class="verdict" style="margin:0 0 12px">Shows whether this client receives a row, and why not.</p><div class="tb" style="padding:0;border:0">' +
         '<select class="inp" name="t" aria-label="Table">' + INFO.tables.map(t => '<option>' + esc(t.name) + '</option>').join('') + '</select>' +
         '<input class="inp grow" name="r" placeholder="Row id" aria-label="Row id" spellcheck="false" /><button class="btn amber" type="submit">Trace</button></div></form></div></div>' +
+        '<div class="panel"><div class="ph"><h2>Failures and warnings</h2><span class="meta" id="client-fail-meta"></span></div><div id="client-fail"></div></div>' +
         '<div class="panel"><div class="ph"><h2>Subscriptions</h2><span class="meta">' + c.subscriptions.length + '</span></div><div id="client-subs"></div></div>' +
         '<div class="panel"><div class="ph"><h2>Recent events</h2><span class="meta">' + d.events.length + '</span></div><div id="client-events"></div></div>');
       table('client-subs', [
@@ -1004,7 +1008,7 @@ main{overflow:visible;padding:16px}
         { l: 'Scopes', c: 'fill', h: s => '<span class="tags">' + Object.keys(s.scopes).map(k => s.scopes[k].map(v => link(route('table', [s.table, k + ':' + v]), k + ': ' + v, 'tag')).join('')).join('') + '</span>' }
       ], c.subscriptions, empty('No subscriptions', 'The client has no active subscriptions.', true));
       table('client-events', EV_COLS, d.events, empty('No events', 'The ring holds no events for this client.', true), openEvent);
-      return null;
+      return loadFailures('client-fail', { clientId: id });
     }, fail(['client-body']));
   }
 
@@ -1442,6 +1446,17 @@ main{overflow:visible;padding:16px}
       return null;
     }, err => { if (token === modalToken && err !== STALE) fillModal(errBox(err), { code: err.code, message: err.message }); });
   }
+  // Requests with an error or warning in the ring for one client or actor,
+  // one row per request; a row opens the request with all its events.
+  function loadFailures(id, params) {
+    if (!INFO.hasEventStream) { html(id, ringOff('Failures come from the event ring.')); return null; }
+    return get('/events', Object.assign({ limit: 1000 }, params)).then(r => {
+      var rows = groups(r.events).filter(g => g.level !== 'info');
+      txt(id + '-meta', fmt(rows.length) + ' in the ring');
+      table(id, GROUP_COLS, rows, empty('No failures', 'The event ring holds no failed, rejected, or conflicted request for this ' + (params.clientId ? 'client' : 'actor') + '.', true), g => { if (g.id) openRequest(g); else openEvent(g.events[0]); });
+      return null;
+    }, fail([id]));
+  }
   function openRequest(g) {
     var token = openModal('Sync request', g.id, true, SKEL);
     get('/events', { requestId: g.id, limit: MAX_TAIL }).then(r => {
@@ -1464,7 +1479,7 @@ main{overflow:visible;padding:16px}
   // -- routing and refresh -------------------------------------------------
   var LOADERS = {
     overview: () => [loadMetrics(), loadErrors(), loadHorizon(['ov-horizon']), loadClients(), loadFleet()],
-    people: args => [loadPeople(args)],
+    people: args => [loadPeople(args), args[0] === undefined ? null : loadFailures('people-fail', { actorId: args[0] })],
     client: args => [loadClientPage(args), S.horizon ? null : loadHorizon([])],
     data: () => [loadTables()],
     table: args => [loadTablePage(args)],

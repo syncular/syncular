@@ -880,6 +880,41 @@ describe('people and clients', () => {
     expect(c.text('#people-table')).not.toContain('Connected');
   });
 
+  test('an actor and a client open their failed requests', async () => {
+    const failing = {
+      '/events': (url: URL) => ({
+        body: {
+          events: url.searchParams.get('requestId')
+            ? [CONFLICT]
+            : [CONFLICT, ...RING_EVENTS],
+        },
+      }),
+    };
+    const c = openConsole({ hash: '#/people', routes: failing });
+    await flush();
+    expect(c.$('#people-fail-panel').hasAttribute('hidden')).toBe(true);
+    expect(c.$('#people-table a[href="#/people/ben"]').textContent).toBe('3');
+    c.click('#people-table tr[data-i="1"]');
+    await flush();
+    expect(c.window.location.hash).toBe('#/people/ben');
+    expect(c.requests).toContain('/admin/events?limit=1000&actorId=ben');
+    expect(c.$('#people-fail-panel').hasAttribute('hidden')).toBe(false);
+    expect(c.text('#people-fail-h')).toBe('Failures and warnings · ben');
+    const rows = c.rows('#people-fail');
+    expect(rows.length).toBe(1);
+    expect(rows[0]).toContain('cards / r1');
+
+    const page = openConsole({ hash: '#/client/c-ben', routes: failing });
+    await flush();
+    expect(page.requests).toContain('/admin/events?limit=1000&clientId=c-ben');
+    expect(page.text('#client-fail-meta')).toBe('1 in the ring');
+    page.click('#client-fail tr[data-i="0"]');
+    await flush();
+    expect(page.requests).toContain('/admin/events?requestId=req-c&limit=200');
+    expect(page.open('#modal')).toBe(true);
+    expect(page.text('#m-events')).toContain('push.conflicted');
+  });
+
   test('the client page shows presence, lease, subscriptions, events, and traces a row', async () => {
     const c = openConsole({ hash: '#/client/c-ben' });
     await flush();

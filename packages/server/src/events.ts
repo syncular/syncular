@@ -29,11 +29,19 @@ export interface RequestHandledEvent {
   /**
    * `ok` — response streamed to END;
    * `schema_floor` — §2.4 required-schema answer;
-   * `reset` — §2.1 log-epoch reset answer;
+   * `epoch_acquired` — §2.1 answer to a request without `logEpoch` (a new
+   *   or wiped replica's first round);
+   * `reset` — §2.1 answer to a `logEpoch` that no longer matches the log;
    * `rejected` — request validation failed before any bytes (§1.7);
    * `error` — in-band ERROR frame (§1.6) or a thrown host failure.
    */
-  readonly outcome: 'ok' | 'schema_floor' | 'reset' | 'rejected' | 'error';
+  readonly outcome:
+    | 'ok'
+    | 'schema_floor'
+    | 'epoch_acquired'
+    | 'reset'
+    | 'rejected'
+    | 'error';
   /** The REQ_HEADER clientId; absent when the request failed to decode. */
   readonly clientId?: string;
   /** §10.2 code for `rejected`/`error`; `"internal"` for non-SyncErrors. */

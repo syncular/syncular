@@ -373,7 +373,7 @@ async function planRequest(
 
 /** Mutable outcome box shared with the instrumented stream wrapper. */
 interface RequestReport {
-  outcome: 'ok' | 'schema_floor' | 'reset' | 'error';
+  outcome: 'ok' | 'schema_floor' | 'epoch_acquired' | 'reset' | 'error';
   errorCode?: string;
 }
 
@@ -495,7 +495,10 @@ async function* streamResponse(
     plan.wireVersion,
   );
   if (plan.epochReset) {
-    if (report !== undefined) report.outcome = 'reset';
+    if (report !== undefined) {
+      report.outcome =
+        plan.header.logEpoch === undefined ? 'epoch_acquired' : 'reset';
+    }
     yield END_FRAME_BYTES;
     return;
   }

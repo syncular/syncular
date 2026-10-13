@@ -4,6 +4,7 @@
  * processing), and zero-cost silence when no sink is configured.
  */
 import { describe, expect, test } from 'bun:test';
+import { encodeMessage, PROTOCOL_WIRE_VERSION } from '@syncular/core';
 import {
   createRealtimeHub,
   handleSegmentDownload,
@@ -61,6 +62,31 @@ function ofType<T extends SyncularServerEvent['type']>(
     (e): e is Extract<SyncularServerEvent, { type: T }> => e.type === type,
   );
 }
+
+describe('request outcomes', () => {
+  test('a round without logEpoch is epoch_acquired; a stale logEpoch is reset', async () => {
+    const t = eventsContext();
+    await handleSyncRequest(
+      encodeMessage({
+        wireVersion: PROTOCOL_WIRE_VERSION,
+        msgKind: 'request',
+        frames: [
+          { type: 'REQ_HEADER', clientId: 'client-1', schemaVersion: 1 },
+          pullHeader(),
+        ],
+      }),
+      t.ctx,
+    );
+    await handleSyncRequest(
+      requestBytes([pullHeader()], 'client-1', 1, 'stale-epoch'),
+      t.ctx,
+    );
+    expect(ofType(t.events, 'request.handled').map((e) => e.outcome)).toEqual([
+      'epoch_acquired',
+      'reset',
+    ]);
+  });
+});
 
 describe('push events', () => {
   test('applied commit emits push.applied then request.handled ok', async () => {

@@ -201,7 +201,7 @@ export interface AdminErrorSummary {
   readonly coverage: AdminEventCoverage;
   /** Largest count first. */
   readonly byCode: readonly AdminErrorGroup[];
-  /** The ten clients with the most push failures, largest count first. */
+  /** Every client with a request or push failure, largest count first. */
   readonly byClient: readonly AdminClientErrors[];
 }
 
@@ -344,7 +344,7 @@ export interface AdminActor {
   readonly connected?: number;
   readonly lastSeenMs: number;
   readonly maxLag: number;
-  /** The actor's push rejections and conflicts in the last 5 minutes. */
+  /** The actor's failures in the last 5 minutes, as `errors().byClient` counts them. */
   readonly recentFailures: number;
 }
 
@@ -960,21 +960,21 @@ export class SyncularAdmin {
 
   /**
    * The partition's actors with their devices (clients), open sockets,
-   * worst lag, and push failures in the last 5 minutes; most recently seen
+   * worst lag, and failures in the last 5 minutes; most recently seen
    * first.
    */
   async actors(partition: string): Promise<AdminActor[]> {
     const { clients } = await this.listClients(partition, {
       limit: Number.MAX_SAFE_INTEGER,
     });
+    // The same per-client tally as `errors()`, so People and the overview's
+    // failure panel agree.
     const failures = new Map<string, number>();
-    for (const event of this.events({
-      partition,
-      sinceMs: this.#clock() - DEFAULT_WINDOW_MS,
-    })) {
-      if (event.type === 'push.rejected' || event.type === 'push.conflicted') {
-        failures.set(event.actorId, (failures.get(event.actorId) ?? 0) + 1);
-      }
+    for (const client of this.errors(partition).byClient) {
+      failures.set(
+        client.actorId,
+        (failures.get(client.actorId) ?? 0) + client.count,
+      );
     }
     const byActor = new Map<string, AdminClient[]>();
     for (const client of clients) {
@@ -1384,6 +1384,7 @@ export class SyncularAdmin {
         if (event.outcome !== 'rejected' && event.outcome !== 'error') continue;
         source = 'request';
         code = event.errorCode ?? 'sync.internal_error';
+        clientId = event.clientId;
         actorId = event.actorId;
       } else if (event.type === 'push.rejected') {
         source = 'push';
@@ -1462,9 +1463,7 @@ export class SyncularAdmin {
           sampleClientIds: [...group.clients].slice(0, 5),
           sampleRows: [...group.rows.values()].slice(0, 5),
         })),
-      byClient: [...byClient.values()]
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 10),
+      byClient: [...byClient.values()].sort((a, b) => b.count - a.count),
     };
   }
 
