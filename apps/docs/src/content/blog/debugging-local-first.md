@@ -8,6 +8,11 @@ publishedAt: '2026-10-13'
 
 # Local-First Is Great for Users and Blind for Developers
 
+<figure class="shot">
+  <img src="/blog/admin-console-overview.webp" width="1280" height="800" alt="The overview of the Syncular admin console for the demo partition: 8.2 requests per minute, 0% error rate, p95 latency 3 ms, one push applied and one conflicted, two of three clients connected, commit log head at 2, and a request-volume chart over the last five minutes." />
+  <figcaption>The overview of Syncular's admin console in the sync lab, seconds after a simulated conflict: one push applied, one conflicted.</figcaption>
+</figure>
+
 Ada writes to support: "I moved the photo-upload card to Review on my laptop on the train. When I got home it was in Done." She attached a screenshot of the board. There's no request id or device id in her message, because a local-first app never shows the user either of those.
 
 Syncular is an open-source sync engine that keeps local SQLite databases in sync with a server. Over the last weeks I built an admin console for it, and this post walks through how it answers a ticket like Ada's. The ticket is staged in Syncular's demo, so you can reproduce it yourself at the end.
