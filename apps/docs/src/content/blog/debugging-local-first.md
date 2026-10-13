@@ -48,15 +48,11 @@ Request logs and tracing assume that the request is the unit of work and that th
 ::caption[The developer has access to the middle column only. Both devices were offline when the cards moved.]
 :::
 
-## Workflow engines hit the same wall
-
-Durable execution engines have this problem in another form. A workflow runs across retries, process crashes, and waits that last days, so a stack trace from any one process explains nothing. Engines such as Temporal record every step of every workflow as a durable event history, and their web UI renders that history per workflow. Teams operate those systems through that history as much as through the SDK.
-
-A sync engine needs the same thing. Its history is keyed by different ids: the person, the device, the row, and the write, which are the ids that appear in a support ticket.
+Durable execution engines such as Temporal ran into the same gap. A workflow runs across retries, process crashes, and waits that last days, so no single process log explains it. Those engines became operable by recording every step of every workflow as a durable history and showing that history per workflow. A sync engine needs the same history, keyed by the ids a support ticket contains: the person, the device, the row, and the write.
 
 ## The server is the only witness
 
-The devices are out of reach, and every one of them eventually talks to the server. The server already stores, for its own correctness, most of what an operator needs:
+That history cannot come from the devices, which are out of reach. It can come from the server: every device eventually talks to it, and it already stores, for its own correctness, most of what an operator needs:
 
 - each device's cursor, the last commit it has pulled, and its subscriptions, the tables and scope values it asked for
 - each write's outcome, stored under its `clientCommitId` so a retried write gets the same answer
