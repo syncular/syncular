@@ -272,9 +272,10 @@ dialog::backdrop{background:rgba(0,0,0,.82)}
 .keys dt{white-space:nowrap}
 #toast{position:fixed;left:50%;bottom:18px;z-index:60;transform:translateX(-50%);max-width:calc(100vw - 32px);padding:8px 14px;border:1px solid var(--amber);background:var(--panel);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
-@media (max-width:1180px){.top{gap:8px 10px;padding:8px 16px}.field input{width:9rem}#updated{display:none}}
+@media (max-width:1400px){.top{gap:8px 10px;padding:8px 16px}.field{flex:1 1 0;min-width:9rem}.field input{flex:1;width:auto}#updated{display:none}}
 @media (max-width:1300px){.kpis{grid-template-columns:repeat(3,minmax(0,1fr))}.ov{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (max-width:900px){
+.field{order:9;flex:1 1 40%}
 body{display:block;height:auto}
 .shell{display:block}
 .side{position:sticky;top:0;z-index:15;display:flex;overflow-x:auto;padding:0;border-right:0;border-bottom:1px solid var(--line);background:var(--void);scrollbar-width:none}
