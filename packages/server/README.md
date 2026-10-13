@@ -142,7 +142,7 @@ adapter answers instead. Return `undefined` to keep `sync.internal_error`. A
 throw, a non-`SyncError` return, a code that is not an own catalog entry, or
 `details` that is not a JSON document is contained as `sync.internal_error`.
 The hook covers the sync, operations, segments, blobs, admin, and realtime
-surfaces; `createSyncularAdminRoutes` takes its own `mapError`. It does not
+surfaces. It does not
 change a remote operation's `operation.*` envelope, and a mapped `retryAfterMs`
 is delivery metadata. Client retry scheduling remains unchanged.
 
@@ -575,9 +575,10 @@ events in memory (bounded — oldest dropped when full) with a
 `subscribe(listener)` hook for live tails (the SSE route below). It is the
 event stream without any infrastructure dependency. `evictedThroughMs` is
 the newest `atMs` the ring dropped; the admin reports a window that starts
-at or before it as incomplete. Compose it with any
-other sink so the console tail and your logs/metrics see the same
-emissions:
+at or before it as incomplete. The `admin` option of `createSyncularHono`
+and the Workers Durable Object create and compose the ring themselves. A
+script that queries `SyncularAdmin` directly composes it with any other sink
+so the ring and your logs/metrics see the same emissions:
 
 ```ts
 import {
@@ -652,28 +653,38 @@ stores (memory/sqlite) omit the marker.
 
 ### HTTP routes + the single console page
 
-`@syncular/server-hono` exports `createSyncularAdminRoutes(admin, opts)`,
-a mountable Hono sub-app. The factory throws if you omit the `authorize`
-guard, so the admin never mounts open. Every endpoint, including the page,
-runs the guard first; a falsy result is a 401. The `POST` actions also run
-`authorizeWrite`; without it, or when it returns falsy, they answer 403
-`sync.forbidden`.
+`createSyncularHono` mounts the console with its `admin` option, and
+`createWorkersFetchHandler` takes the same guards (see the
+`@syncular/server-workers` README). The option throws without the
+`authorize` guard, so the admin never mounts open. Every endpoint, including
+the page, runs the guard first; a falsy result is a 401. The `POST` actions
+also run `authorizeActions`; without it, or when it returns falsy, they
+answer 403 `sync.forbidden`.
 
 ```ts
-import { createSyncularAdminRoutes } from '@syncular/server-hono';
+import { createSyncularHono } from '@syncular/server-hono';
 
-const routes = createSyncularAdminRoutes(admin, {
-  defaultPartition: 'main',
-  authorize: ({ request }) => isOperator(request), // YOUR check, mandatory
-  authorizeWrite: ({ request }) => isOnCall(request), // optional actions
+const app = createSyncularHono({
+  config,
+  authenticate,
+  admin: {
+    authorize: ({ request }) => isOperator(request), // YOUR check, mandatory
+    authorizeActions: ({ request }) => isOnCall(request), // optional actions
+    // path: '/admin', ringCapacity: 1000 (the defaults)
+  },
 });
-app.route('/admin', routes);
 ```
+
+The option creates a `RingBufferEvents` of `ringCapacity` events and
+composes it into `config.events` and, when `config.realtime` is a
+`RealtimeHub`, into the hub's events (`RealtimeHub.addEventSink`), so the
+console sees HTTP and socket rounds. Admin errors go to `config.onError` and
+`config.mapError`.
 
 | Route | Mirrors |
 | --- | --- |
 | `GET /` | The console page (see below). |
-| `GET /info` | `{hasEventStream, writes, realtime, schemaVersion?, tables}` |
+| `GET /info` | `{partition, hasEventStream, actions, realtime, schemaVersion?, tables}` |
 | `GET /search?q` | `search` |
 | `GET /actors` | `actors` |
 | `GET /tables` | `tables()` with each table's `rowCount` |
@@ -699,42 +710,37 @@ app.route('/admin', routes);
 | `POST /prune` | `prune` |
 | `POST /clients/:clientId/revoke-lease` | `revokeLease` |
 
-`?partition=` selects the partition (falls back to `defaultPartition`), and
-every endpoint reads only that partition, event tail included. A malformed
-integer query parameter answers 400 `sync.invalid_request`.
-`GET /partitions` is the one cross-partition endpoint: its guard receives an
-empty `partition`, so a guard that grants single partitions does not grant
-the fleet view. The `forward` option serves the partition-scoped routes
-elsewhere after the guards pass; `@syncular/server-workers` uses it to reach
-the partition's Durable Object.
+`?partition=` selects the partition. Without it, a deployment with exactly
+one partition in its registry uses that one; any other count answers 400
+`sync.invalid_request` with `details.parameter: 'partition'`, after the
+guard ran with an empty partition. Every endpoint reads only the resolved
+partition, event tail included. A malformed integer query parameter answers
+400 `sync.invalid_request`. `GET /partitions` is the one cross-partition
+endpoint: its guard receives an empty `partition`, so a guard that grants
+single partitions does not grant the fleet view.
 
-`GET /` (or `/admin`) serves a **single static HTML page**: no framework,
-no build step, no external assets (about 96 KiB, 27 KiB gzipped). It fetches
-the sibling JSON endpoints relative to its own mount path, so it works under
-any prefix and the same guard covers its requests. It reads `GET /info`
-first, then a sidebar switches between Overview (figures, request-volume
-chart, horizon gauge, cursor-lag histogram, failures, fleet), Clients,
-Commits, Rows, Trace, Scopes, Events, Reactions, and Storage; each refresh
-reads only the open view's endpoints. Tables sort, copy ids, and open detail
-dialogs with a JSON view; failed reads show their stable error code; write
-actions appear only when `/info` reports writes enabled. Keyboard shortcuts
-and the full view list are on the docs page (Operations and maintenance,
-Admin console).
+`GET /` serves a **single static HTML page**: no framework, no build step,
+no external assets (about 110 KiB, 31 KiB gzipped). It fetches the sibling
+JSON endpoints relative to its own mount path, so it works under any prefix
+and the same guard covers its requests. Operator actions appear only when
+`/info` reports `actions: true`. The views and the debugging workflows are
+on the docs page [Admin console](https://syncular.dev/server-admin-console/).
 
 **Live tail over SSE.** `GET /events/stream` streams the ring as
 server-sent events: a recent backlog replays first, then events arrive as
 they land (a `subscribe` hook on the ring), with a comment ping every 5 s
 (under Bun.serve's 10 s default idle timeout, so a quiet stream survives).
 It is plain web-streams, so it serves identically on Bun, Node, and
-Workers. The page upgrades its event panel to the stream automatically and
-falls back to the 2-second poll when the stream is unavailable (no ring, or
-`EventSource` cannot pass the host's auth headers — cookie-authorized
-setups stream fine). The tail can carry sensitive identifiers (actorIds,
+Workers. The page opens the stream when `/info` reports `hasEventStream`;
+when the stream fails (for example, `EventSource` cannot send the host's
+auth headers, while cookie-authorized setups stream fine), events reload
+with every refresh. The tail can carry sensitive identifiers (actorIds,
 session ids), the same as `GET /events`; the admin guard gates both.
 
 The demo server (`apps/demo`) mounts the admin behind a dev guard:
 `SYNCULAR_DEMO_ADMIN=1` enables `/admin` (optionally token-gated with
-`SYNCULAR_DEMO_ADMIN_TOKEN`), so the console is inspectable live.
+`SYNCULAR_DEMO_ADMIN_TOKEN`; `SYNCULAR_DEMO_ADMIN_WRITES=1` adds the
+operator actions), so the console is inspectable live.
 
 ## Segment storage on S3 / R2 (`S3SegmentStore`)
 

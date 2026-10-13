@@ -7,6 +7,7 @@
 import { describe, expect, test } from 'bun:test';
 import { encodeMessage, encodeSparseRow, type RowColumn } from '@syncular/core';
 import {
+  createRealtimeHub,
   MemorySegmentStore,
   RingBufferEvents,
   type ServerSchema,
@@ -43,10 +44,12 @@ const SCHEMA: ServerSchema = {
 };
 
 /** A configured server + admin over shared storage, plus a seed helper. */
-function harness(options: { writes?: boolean } = {}) {
+async function harness(options: { actions?: boolean } = {}) {
   const storage = new SqliteServerStorage();
   const segments = new MemorySegmentStore();
-  const ring = new RingBufferEvents({ capacity: 100 });
+  // Pin the partition log epoch so the seed push lands in one round (§2.1),
+  // and so admin requests without `?partition=` resolve the only partition.
+  await storage.touchPartition('part-1', 0, TEST_LOG_EPOCH);
   const config: SyncServerConfig = {
     schema: SCHEMA,
     storage,
@@ -59,25 +62,18 @@ function harness(options: { writes?: boolean } = {}) {
         version: 1,
         payload: { taskId: operation.rowId },
       })),
-    events: ring,
   };
-  const sync = createSyncularHono({
+  const app = createSyncularHono({
     config,
     authenticate: async () => ({ actorId: 'actor-1', partition: 'part-1' }),
+    admin: {
+      authorize: ({ request }) =>
+        request.headers.get('authorization') === 'Bearer admin',
+      ...(options.actions === true ? { authorizeActions: () => true } : {}),
+    },
   });
-  const admin = SyncularAdmin.fromConfig(config, { ring });
-  const routes = createSyncularAdminRoutes(admin, {
-    defaultPartition: 'part-1',
-    authorize: ({ request }) =>
-      request.headers.get('authorization') === 'Bearer admin',
-    ...(options.writes === true ? { authorizeWrite: () => true } : {}),
-  });
-  const app = new Hono();
-  app.route('/admin', routes);
 
   async function seed(): Promise<void> {
-    // Pin the partition log epoch so the seed push lands in one round (§2.1).
-    await storage.touchPartition('part-1', 0, TEST_LOG_EPOCH);
     const bytes = encodeMessage({
       wireVersion: 3,
       msgKind: 'request',
@@ -116,7 +112,7 @@ function harness(options: { writes?: boolean } = {}) {
         },
       ],
     });
-    await sync.request('/sync', {
+    await app.request('/sync', {
       method: 'POST',
       headers: {
         'content-type': SSP2_CONTENT_TYPE,
@@ -127,7 +123,7 @@ function harness(options: { writes?: boolean } = {}) {
   }
 
   const auth = { headers: { authorization: 'Bearer admin' } };
-  return { app, admin, seed, auth };
+  return { app, seed, auth };
 }
 
 describe('mount refusal (no default-open admin)', () => {
@@ -148,7 +144,7 @@ describe('mount refusal (no default-open admin)', () => {
 
 describe('auth guard (401 path)', () => {
   test('data endpoints are 401 without the guard passing', async () => {
-    const { app } = harness();
+    const { app } = await harness();
     const res = await app.request('/admin/clients');
     expect(res.status).toBe(401);
     const body = (await res.json()) as { code: string };
@@ -156,13 +152,13 @@ describe('auth guard (401 path)', () => {
   });
 
   test('the page itself is guarded', async () => {
-    const { app } = harness();
+    const { app } = await harness();
     const res = await app.request('/admin');
     expect(res.status).toBe(401);
   });
 
   test('authorized requests pass', async () => {
-    const { app, auth } = harness();
+    const { app, auth } = await harness();
     const res = await app.request('/admin/clients', auth);
     expect(res.status).toBe(200);
   });
@@ -170,7 +166,7 @@ describe('auth guard (401 path)', () => {
 
 describe('JSON endpoints mirror the read surface', () => {
   test('GET /admin/clients', async () => {
-    const { app, seed, auth } = harness();
+    const { app, seed, auth } = await harness();
     await seed();
     const res = await app.request('/admin/clients', auth);
     const body = (await res.json()) as {
@@ -180,7 +176,7 @@ describe('JSON endpoints mirror the read surface', () => {
   });
 
   test('GET /admin/commits', async () => {
-    const { app, seed, auth } = harness();
+    const { app, seed, auth } = await harness();
     await seed();
     const res = await app.request('/admin/commits?limit=10', auth);
     const body = (await res.json()) as {
@@ -190,7 +186,7 @@ describe('JSON endpoints mirror the read surface', () => {
   });
 
   test('GET /admin/reactions', async () => {
-    const { app, seed, auth } = harness();
+    const { app, seed, auth } = await harness();
     await seed();
     const res = await app.request(
       '/admin/reactions?status=pending&type=email.send',
@@ -209,7 +205,7 @@ describe('JSON endpoints mirror the read surface', () => {
   });
 
   test('GET /admin/rows/:table/:rowId', async () => {
-    const { app, seed, auth } = harness();
+    const { app, seed, auth } = await harness();
     await seed();
     const res = await app.request('/admin/rows/tasks/t1', auth);
     const body = (await res.json()) as {
@@ -219,7 +215,7 @@ describe('JSON endpoints mirror the read surface', () => {
   });
 
   test('GET /admin/rows rejects a table outside the schema', async () => {
-    const { app, auth } = harness();
+    const { app, auth } = await harness();
     const res = await app.request('/admin/rows/nope/t1', auth);
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({
@@ -229,7 +225,7 @@ describe('JSON endpoints mirror the read surface', () => {
   });
 
   test('GET /admin/scope-activity', async () => {
-    const { app, seed, auth } = harness();
+    const { app, seed, auth } = await harness();
     await seed();
     const res = await app.request(
       '/admin/scope-activity?variable=project_id&value=p1',
@@ -240,13 +236,13 @@ describe('JSON endpoints mirror the read surface', () => {
   });
 
   test('GET /admin/scope-activity requires variable+value', async () => {
-    const { app, auth } = harness();
+    const { app, auth } = await harness();
     const res = await app.request('/admin/scope-activity', auth);
     expect(res.status).toBe(400);
   });
 
   test('GET /admin/horizon', async () => {
-    const { app, seed, auth } = harness();
+    const { app, seed, auth } = await harness();
     await seed();
     const res = await app.request('/admin/horizon', auth);
     const body = (await res.json()) as {
@@ -257,7 +253,7 @@ describe('JSON endpoints mirror the read surface', () => {
   });
 
   test('GET /admin/stats', async () => {
-    const { app, seed, auth } = harness();
+    const { app, seed, auth } = await harness();
     await seed();
     const res = await app.request('/admin/stats', auth);
     const body = (await res.json()) as {
@@ -267,7 +263,7 @@ describe('JSON endpoints mirror the read surface', () => {
   });
 
   test('GET /admin/events returns the ring tail', async () => {
-    const { app, seed, auth } = harness();
+    const { app, seed, auth } = await harness();
     await seed();
     const res = await app.request('/admin/events?limit=50', auth);
     const body = (await res.json()) as {
@@ -277,7 +273,7 @@ describe('JSON endpoints mirror the read surface', () => {
   });
 
   test('GET /admin/events filters by type', async () => {
-    const { app, seed, auth } = harness();
+    const { app, seed, auth } = await harness();
     await seed();
     const res = await app.request('/admin/events?type=pull.served', auth);
     const body = (await res.json()) as { events: { type: string }[] };
@@ -286,7 +282,7 @@ describe('JSON endpoints mirror the read surface', () => {
   });
 
   test('GET /admin/events filters by clientId', async () => {
-    const { app, seed, auth } = harness();
+    const { app, seed, auth } = await harness();
     await seed();
     const res = await app.request('/admin/events?clientId=client-1', auth);
     const body = (await res.json()) as { events: { clientId?: string }[] };
@@ -297,7 +293,7 @@ describe('JSON endpoints mirror the read surface', () => {
   });
 
   test('GET /admin/clients/:clientId returns the drill-down', async () => {
-    const { app, seed, auth } = harness();
+    const { app, seed, auth } = await harness();
     await seed();
     const res = await app.request('/admin/clients/client-1', auth);
     const body = (await res.json()) as {
@@ -319,7 +315,7 @@ describe('JSON endpoints mirror the read surface', () => {
   });
 
   test('GET /admin/metrics aggregates the ring', async () => {
-    const { app, seed, auth } = harness();
+    const { app, seed, auth } = await harness();
     await seed();
     const res = await app.request('/admin/metrics?windowMs=60000', auth);
     const body = (await res.json()) as {
@@ -340,7 +336,7 @@ describe('JSON endpoints mirror the read surface', () => {
   });
 
   test('GET /admin/partitions returns the fleet overview', async () => {
-    const { app, seed, auth } = harness();
+    const { app, seed, auth } = await harness();
     await seed();
     const res = await app.request('/admin/partitions', auth);
     const body = (await res.json()) as {
@@ -358,7 +354,7 @@ describe('JSON endpoints mirror the read surface', () => {
 
 describe('SSE event stream', () => {
   test('GET /admin/events/stream replays the backlog as SSE frames', async () => {
-    const { app, seed, auth } = harness();
+    const { app, seed, auth } = await harness();
     await seed();
     const res = await app.request('/admin/events/stream?type=push.applied', {
       ...auth,
@@ -383,7 +379,7 @@ describe('SSE event stream', () => {
   });
 
   test('the stream is guarded like every other route', async () => {
-    const { app } = harness();
+    const { app } = await harness();
     const res = await app.request('/admin/events/stream');
     expect(res.status).toBe(401);
   });
@@ -405,11 +401,12 @@ describe('SSE event stream', () => {
 
 describe('drill-downs, trace, failures', () => {
   test('GET /admin/info describes the console surface', async () => {
-    const { app, auth } = harness();
+    const { app, auth } = await harness();
     const res = await app.request('/admin/info', auth);
     expect(await res.json()).toMatchObject({
+      partition: 'part-1',
       hasEventStream: true,
-      writes: false,
+      actions: false,
       tables: [
         {
           name: 'tasks',
@@ -424,7 +421,7 @@ describe('drill-downs, trace, failures', () => {
   });
 
   test('GET /admin/rows decodes values and lists the row history', async () => {
-    const { app, seed, auth } = harness();
+    const { app, seed, auth } = await harness();
     await seed();
     const res = await app.request('/admin/rows/tasks/t1', auth);
     expect(await res.json()).toMatchObject({
@@ -437,7 +434,7 @@ describe('drill-downs, trace, failures', () => {
   });
 
   test('GET /admin/commits/:seq renders the changes; a missing seq is 404', async () => {
-    const { app, seed, auth } = harness();
+    const { app, seed, auth } = await harness();
     await seed();
     const res = await app.request('/admin/commits/1', auth);
     expect(await res.json()).toMatchObject({
@@ -463,7 +460,7 @@ describe('drill-downs, trace, failures', () => {
   });
 
   test('GET /admin/trace explains delivery per client and row', async () => {
-    const { app, seed, auth } = harness();
+    const { app, seed, auth } = await harness();
     await seed();
     const trace = async (query: string) =>
       (
@@ -488,7 +485,7 @@ describe('drill-downs, trace, failures', () => {
   });
 
   test('GET /admin/errors groups failures with window coverage', async () => {
-    const { app, seed, auth } = harness();
+    const { app, seed, auth } = await harness();
     await seed();
     const res = await app.request('/admin/errors?windowMs=60000', auth);
     expect(await res.json()).toMatchObject({
@@ -502,7 +499,7 @@ describe('drill-downs, trace, failures', () => {
   });
 
   test('malformed query parameters answer 400', async () => {
-    const { app, auth } = harness();
+    const { app, auth } = await harness();
     for (const path of ['/admin/clients?limit=ten', '/admin/clients?sort=x']) {
       const res = await app.request(path, auth);
       expect(res.status).toBe(400);
@@ -513,7 +510,7 @@ describe('drill-downs, trace, failures', () => {
 
 describe('navigation routes', () => {
   test('GET /admin/actors, /search, /tables, /rows/:table, delivery and writes', async () => {
-    const { app, seed, auth } = harness();
+    const { app, seed, auth } = await harness();
     await seed();
     const json = async (path: string) =>
       (await app.request(`/admin${path}`, auth)).json();
@@ -567,7 +564,7 @@ describe('navigation routes', () => {
   });
 
   test("GET /admin/events?requestId returns one request's events", async () => {
-    const { app, seed, auth } = harness();
+    const { app, seed, auth } = await harness();
     await seed();
     const all = (await (await app.request('/admin/events', auth)).json()) as {
       events: { type: string; requestId?: string }[];
@@ -587,18 +584,18 @@ describe('navigation routes', () => {
 });
 
 describe('operator actions', () => {
-  test('without authorizeWrite every action answers 403', async () => {
-    const { app, auth } = harness();
+  test('without authorizeActions every action answers 403', async () => {
+    const { app, auth } = await harness();
     const res = await app.request('/admin/prune', { ...auth, method: 'POST' });
     expect(res.status).toBe(403);
     expect(await res.json()).toMatchObject({ code: 'sync.forbidden' });
   });
 
   test('POST /admin/prune runs one prune pass', async () => {
-    const { app, seed, auth } = harness({ writes: true });
+    const { app, seed, auth } = await harness({ actions: true });
     await seed();
     const info = await app.request('/admin/info', auth);
-    expect(await info.json()).toMatchObject({ writes: true });
+    expect(await info.json()).toMatchObject({ actions: true });
     const res = await app.request('/admin/prune', { ...auth, method: 'POST' });
     expect(await res.json()).toEqual({
       prune: { previousHorizonSeq: 0, horizonSeq: 0 },
@@ -606,7 +603,7 @@ describe('operator actions', () => {
   });
 
   test('retrying a reaction that is not dead-lettered answers 400', async () => {
-    const { app, seed, auth } = harness({ writes: true });
+    const { app, seed, auth } = await harness({ actions: true });
     await seed();
     const res = await app.request('/admin/reactions/task:t1/retry', {
       ...auth,
@@ -617,6 +614,67 @@ describe('operator actions', () => {
       code: 'sync.invalid_request',
       details: { idempotencyKey: 'task:t1' },
     });
+  });
+});
+
+describe('createSyncularHono admin option', () => {
+  test('the console ring sees socket sessions of the realtime hub', async () => {
+    const storage = new SqliteServerStorage();
+    await storage.touchPartition('part-1', 0, TEST_LOG_EPOCH);
+    const capabilities = {
+      schema: SCHEMA,
+      storage,
+      segments: new MemorySegmentStore(),
+      resolveScopes: () => ({ project_id: ['p1'] }),
+    };
+    const hub = createRealtimeHub(capabilities);
+    const app = createSyncularHono({
+      config: { ...capabilities, realtime: hub },
+      authenticate: async () => null,
+      admin: { authorize: () => true },
+    });
+    await hub.connect({
+      partition: 'part-1',
+      actorId: 'actor-1',
+      clientId: 'client-1',
+      send: () => {},
+    });
+    const res = await app.request('/admin/events?type=realtime.opened');
+    expect(await res.json()).toMatchObject({
+      events: [{ type: 'realtime.opened', clientId: 'client-1' }],
+    });
+  });
+
+  test('a request without ?partition= needs one when several exist', async () => {
+    const storage = new SqliteServerStorage();
+    await storage.touchPartition('part-1', 0, TEST_LOG_EPOCH);
+    await storage.touchPartition('part-2', 0, TEST_LOG_EPOCH);
+    const app = createSyncularHono({
+      config: {
+        schema: SCHEMA,
+        storage,
+        segments: new MemorySegmentStore(),
+        resolveScopes: () => ({ project_id: ['p1'] }),
+      },
+      authenticate: async () => null,
+      admin: {
+        path: '/ops',
+        authorize: ({ request }) =>
+          request.headers.get('authorization') === 'Bearer admin',
+      },
+    });
+    const auth = { headers: { authorization: 'Bearer admin' } };
+    const ambiguous = await app.request('/ops/clients', auth);
+    expect(ambiguous.status).toBe(400);
+    expect(await ambiguous.json()).toMatchObject({
+      code: 'sync.invalid_request',
+      details: { parameter: 'partition' },
+    });
+    // The partition count is fleet knowledge; an unauthorized caller only
+    // learns that it is unauthorized.
+    expect((await app.request('/ops/clients')).status).toBe(401);
+    const picked = await app.request('/ops/info?partition=part-2', auth);
+    expect(await picked.json()).toMatchObject({ partition: 'part-2' });
   });
 });
 
@@ -658,7 +716,7 @@ describe('partition-scoped guard', () => {
 
 describe('static console page', () => {
   test('GET /admin serves HTML 200 with a content-type', async () => {
-    const { app, auth } = harness();
+    const { app, auth } = await harness();
     const res = await app.request('/admin', auth);
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('text/html');
@@ -685,7 +743,7 @@ describe('static console page', () => {
   });
 
   test('the page renders the seeded partition from the real endpoints', async () => {
-    const { app, seed } = harness();
+    const { app, seed } = await harness();
     await seed();
     const window = new Window({
       url: 'http://admin.test/admin#/people',
@@ -776,7 +834,6 @@ describe('adapter error mapping (§10.2)', () => {
     const admin = new SyncularAdmin({ storage, segments });
     const observed: unknown[] = [];
     const routes = createSyncularAdminRoutes(admin, {
-      defaultPartition: 'part-1',
       authorize: () => {
         throw new Error('quota exhausted');
       },

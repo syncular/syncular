@@ -38,7 +38,7 @@ import {
 import {
   createSyncularAdminRoutes,
   createSyncularHono,
-  type SyncularAdminRoutesOptions,
+  type SyncularAdminGuards,
   type SyncularHonoOptions,
 } from '@syncular/server-hono';
 import {
@@ -133,15 +133,12 @@ export type WorkersCoordinatorFactory<Env = unknown> = (
  * The admin console for `createWorkersFetchHandler`. The host guards run in
  * the Worker. With a coordinator (or realtime) namespace, every
  * partition-scoped admin request then goes to the partition's Durable
- * Object, which must set `RealtimeDOConfig.admin`: its event ring sees that
- * partition's sync rounds, and actions share its FIFO. The page and the
- * fleet view (`GET <path>/partitions`) are served by the Worker. Without a
- * namespace the Worker serves everything and has no event ring.
+ * Object: its event ring sees that partition's sync rounds, and actions
+ * share its FIFO. The page and the fleet view (`GET <path>/partitions`) are
+ * served by the Worker. Without a namespace the Worker serves everything
+ * and has no event ring.
  */
-export interface WorkersAdminOptions extends Pick<
-  SyncularAdminRoutesOptions,
-  'authorize' | 'authorizeWrite' | 'defaultPartition'
-> {
+export interface WorkersAdminOptions extends SyncularAdminGuards {
   /** The mount path; default `/admin`. */
   readonly path?: string;
 }
@@ -252,11 +249,8 @@ export function createWorkersFetchHandler<Env = unknown>(
           SyncularAdmin.fromConfig(honoOptions.config),
           {
             authorize: admin.authorize,
-            ...(admin.authorizeWrite !== undefined
-              ? { authorizeWrite: admin.authorizeWrite }
-              : {}),
-            ...(admin.defaultPartition !== undefined
-              ? { defaultPartition: admin.defaultPartition }
+            ...(admin.authorizeActions !== undefined
+              ? { authorizeActions: admin.authorizeActions }
               : {}),
             ...(honoOptions.config.onError !== undefined
               ? { onError: honoOptions.config.onError }

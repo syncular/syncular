@@ -30,16 +30,14 @@ import {
   SqliteBlobStore,
   SqliteServerStorage,
   type SyncServerConfig,
-  SyncularAdmin,
   type SyncularServerEvent,
   type SyncularServerEvents,
   seedMutations,
 } from '@syncular/server';
 import {
-  createSyncularAdminRoutes,
   createSyncularHono,
+  type SyncularHonoAdminOptions,
 } from '@syncular/server-hono';
-import { Hono } from 'hono';
 import rootPackage from '../../../package.json';
 import {
   DEMO_PARTITION as PARTITION,
@@ -72,9 +70,8 @@ const resolveScopes = (args: ResolveScopesArgs) =>
   resolveBoardScopes(storage, args);
 
 /**
- * Ops events. The in-memory ring always feeds the admin console;
- * SYNCULAR_DEMO_EVENTS=1 additionally logs one JSON line per event. The two
- * sinks compose so the console tail and the log see the same emissions.
+ * Ops events. The in-memory ring feeds the lab's commit log (`/events`);
+ * SYNCULAR_DEMO_EVENTS=1 additionally logs one JSON line per event.
  */
 const ring = new RingBufferEvents({ capacity: 500 });
 const events: SyncularServerEvents =
@@ -102,8 +99,35 @@ const config: SyncServerConfig = {
   realtime: hub,
   events,
 };
+/**
+ * Admin console at /admin, behind a trivial dev guard: enabled only with
+ * SYNCULAR_DEMO_ADMIN=1 and, when SYNCULAR_DEMO_ADMIN_TOKEN is set, gated on
+ * a matching `?token=` / `Authorization: Bearer`, a stand-in for the real
+ * host guard. SYNCULAR_DEMO_ADMIN_WRITES=1 also enables the operator actions
+ * behind the same guard.
+ */
+const adminToken = process.env.SYNCULAR_DEMO_ADMIN_TOKEN;
+const authorizeAdmin = ({ request }: { request: Request }) => {
+  if (adminToken === undefined) return true; // dev default: open
+  const url = new URL(request.url);
+  const bearer = request.headers
+    .get('authorization')
+    ?.replace(/^Bearer\s+/i, '');
+  return url.searchParams.get('token') === adminToken || bearer === adminToken;
+};
+const admin: SyncularHonoAdminOptions | undefined =
+  process.env.SYNCULAR_DEMO_ADMIN === '1'
+    ? {
+        authorize: authorizeAdmin,
+        ...(process.env.SYNCULAR_DEMO_ADMIN_WRITES === '1'
+          ? { authorizeActions: authorizeAdmin }
+          : {}),
+      }
+    : undefined;
+
 const hono = createSyncularHono({
   config,
+  ...(admin !== undefined ? { admin } : {}),
   // Demo sign-in: each device names its actor in a header. Anything else
   // is unauthenticated.
   authenticate: async (request) => {
@@ -111,42 +135,6 @@ const hono = createSyncularHono({
     return isDemoActor(actorId) ? { actorId, partition: PARTITION } : null;
   },
 });
-
-/**
- * Admin console, mounted behind a trivial dev guard: enabled
- * only with SYNCULAR_DEMO_ADMIN=1 and, when SYNCULAR_DEMO_ADMIN_TOKEN is
- * set, gated on a matching `?token=` / `Authorization: Bearer` — a stand-in
- * for the real host guard (never default-open). Reachable at /admin.
- * SYNCULAR_DEMO_ADMIN_WRITES=1 also enables the operator actions behind the
- * same guard.
- */
-const adminEnabled = process.env.SYNCULAR_DEMO_ADMIN === '1';
-const adminToken = process.env.SYNCULAR_DEMO_ADMIN_TOKEN;
-const adminHono = adminEnabled
-  ? (() => {
-      const admin = SyncularAdmin.fromConfig(config, { ring });
-      const authorize = ({ request }: { request: Request }) => {
-        if (adminToken === undefined) return true; // dev default: open
-        const url = new URL(request.url);
-        const bearer = request.headers
-          .get('authorization')
-          ?.replace(/^Bearer\s+/i, '');
-        return (
-          url.searchParams.get('token') === adminToken || bearer === adminToken
-        );
-      };
-      const routes = createSyncularAdminRoutes(admin, {
-        defaultPartition: PARTITION,
-        authorize,
-        ...(process.env.SYNCULAR_DEMO_ADMIN_WRITES === '1'
-          ? { authorizeWrite: authorize }
-          : {}),
-      });
-      const mount = new Hono();
-      mount.route('/admin', routes);
-      return mount;
-    })()
-  : undefined;
 
 /** Seed the two demo lists through the real §6 pipeline (idempotent per
  * commit id; skipped once the log holds commits). */
@@ -265,12 +253,10 @@ const server = Bun.serve<SocketData, never>({
     if (
       path === '/sync' ||
       path.startsWith('/segments/') ||
-      path.startsWith('/blobs/')
+      path.startsWith('/blobs/') ||
+      (admin !== undefined && path.startsWith('/admin'))
     ) {
       return hono.fetch(request);
-    }
-    if (adminHono !== undefined && path.startsWith('/admin')) {
-      return adminHono.fetch(request);
     }
     if (path === '/' || path === '/index.html') {
       return staticResponse(indexHtml, 'text/html; charset=utf-8');

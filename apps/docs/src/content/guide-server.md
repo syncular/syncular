@@ -136,7 +136,7 @@ Give a client `httpSyncTransport('http://localhost:8787/sync')` and a subscripti
 | `/blobs/:blobId` | GET | Blob download, re-authorized against referencing rows |
 | `/blobs/:blobId/upload-grant` | POST | Presigned direct-to-storage upload grant, only when configured |
 
-Two surfaces attach outside the adapter. `GET /realtime` is a WebSocket upgrade that depends on the runtime, so your host owns it ([below](#advanced-wire-the-realtime-hub)). `GET /admin` is the optional operator console, mounted separately and never open by default ([Operations and maintenance](/server-operations/#admin-console)).
+`GET /realtime` is a WebSocket upgrade that depends on the runtime, so your host owns it ([below](#advanced-wire-the-realtime-hub)). `GET /admin` is the optional operator console, which the `admin` option mounts behind your guard ([Admin console](/server-admin-console/)).
 
 A deployment without the realtime socket conforms to the protocol. Clients that never open it sync over `POST /sync` with identical semantics.
 
@@ -166,7 +166,7 @@ const config: SyncServerConfig = {
 };
 ```
 
-`route` names the surface that caught the exception: `sync`, `operations`, `segments`, `blobs`, `realtime` (a socket round, answered in-band with the same code), or `admin` (`createSyncularAdminRoutes` takes its own `onError`). A remote operation that fails unexpectedly still answers its `operation.*` code and reports the original. A throwing `onError` does not change the response.
+`route` names the surface that caught the exception: `sync`, `operations`, `segments`, `blobs`, `realtime` (a socket round, answered in-band with the same code), or `admin` (the console's JSON routes). A remote operation that fails unexpectedly still answers its `operation.*` code and reports the original. A throwing `onError` does not change the response.
 
 To answer a typed catalog error instead of `sync.internal_error`, add a synchronous `mapError` hook. `onError` still observes the original once. `mapError` may return a catalog `SyncError` that carries structured `details`:
 
@@ -186,7 +186,7 @@ const config: SyncServerConfig = {
 };
 ```
 
-`mapError` handles exceptions the HTTP adapters catch and realtime errors raised before the first response chunk. Registered operation handlers keep their `operation.*` failure envelope, and the admin routes take their own `mapError`. A throw, a non-`SyncError` return, a code outside the catalog, or `details` that are not JSON is contained as `sync.internal_error`. A `SyncError` raised by the server bypasses both hooks. A mapped `retryAfterMs` is delivery metadata and does not change the client's retry schedule.
+`mapError` handles exceptions the HTTP adapters catch and realtime errors raised before the first response chunk. Registered operation handlers keep their `operation.*` failure envelope. A throw, a non-`SyncError` return, a code outside the catalog, or `details` that are not JSON is contained as `sync.internal_error`. A `SyncError` raised by the server bypasses both hooks. A mapped `retryAfterMs` is delivery metadata and does not change the client's retry schedule.
 
 ## Advanced: wire the realtime hub
 

@@ -17,12 +17,19 @@
 export const changelog = [
   {
     date: '2026-10-13',
+    title: 'The admin console mounts with one option',
+    body: "`createSyncularHono` and `createWorkersFetchHandler` take an `admin` option with the `authorize` guard and the optional `authorizeActions` guard. On Hono the option creates the console's event ring and composes it into `config.events` and the realtime hub (`RealtimeHub.addEventSink`), so socket rounds reach the console. On Workers every Durable Object keeps the ring, sized by `RealtimeDOConfig.adminRingCapacity`. Without `?partition=`, a deployment with one partition uses it and the console asks for a partition when there are several. This replaces mounting `createSyncularAdminRoutes` by hand, renames `authorizeWrite` to `authorizeActions` and `GET /admin/info` `writes` to `actions`, and removes `defaultPartition` and the Durable Object's `admin` setting. The new Admin console page walks through finding a write, tracing a row, and following a person's failed requests.",
+    links: [
+      { href: '/server-admin-console/', label: 'Admin console' },
+      { href: '/server-workers/#admin-console', label: 'Admin on Workers' },
+    ],
+  },
+  {
+    date: '2026-10-13',
     title:
       'The admin API resolves pasted ids, groups devices by person, and shows who has a row',
     body: "`SyncularAdmin.search` resolves one pasted id to the matching clients, actors, rows in any table, commit, and write outcomes. `actors` groups each actor's devices, and clients report `connected` from the realtime hub's open sockets. `listRows` browses a table by rowId or by one stored scope, `tableCounts` counts rows, and `rowDelivery` gives every known client's trace verdict for one row. `findWrite` looks up a write by the clientCommitId a client logged and returns its stored outcome, including per-operation rejection and conflict results. Commit lists carry their first changes with `changeSample`. Every event of one sync request shares a `requestId`, `request.handled` carries the `clientId`, and `push.rejected` and `push.conflicted` name the operation's table and rowId.",
-    links: [
-      { href: '/server-operations/#admin-console', label: 'Admin console' },
-    ],
+    links: [{ href: '/server-admin-console/', label: 'Admin console' }],
   },
   {
     date: '2026-10-13',
@@ -30,7 +37,7 @@ export const changelog = [
       'The admin API traces row delivery, groups failures, and runs operator actions',
     body: "`SyncularAdmin` gains `traceRow`, which answers whether a client receives a row with a verdict built from the row's stored scopes and newest change, the client's subscriptions and cursor, and the actor's allowed scopes from `resolveScopes`. `errors` groups ring failures by code and by client; `metrics` adds per-bucket p95 and push outcomes and reports `coverage` when the ring dropped events inside the window. `inspectRow` decodes row values per SPEC §11 and lists the row's retained changes, `commitDetail` renders a commit's changes, `listCommits` pages older commits with `beforeSeq`, clients carry their wire and schema versions, and the client and fleet lists page server-side. `retryReaction`, `prune`, and `revokeLease` are operator actions behind the new `authorizeWrite` route guard. Every admin route now reads only the authorized partition, including the event tail, and the fleet view no longer passes a guard that grants single partitions. On Cloudflare, `createWorkersFetchHandler` mounts the console with `admin` and forwards partition-scoped requests to the partition's Durable Object, whose event ring sees that partition's rounds.",
     links: [
-      { href: '/server-operations/#admin-console', label: 'Admin console' },
+      { href: '/server-admin-console/', label: 'Admin console' },
       { href: '/server-workers/#admin-console', label: 'Admin on Workers' },
     ],
   },
@@ -39,9 +46,7 @@ export const changelog = [
     title:
       'The admin console has views, charts, a delivery trace, and drill-down dialogs',
     body: 'The page served at `GET /admin` has a sidebar with nine views: Overview, Clients, Commits, Rows, Trace, Scopes, Events, Reactions, and Storage. The overview draws request volume, error rate, p95 latency, and push outcomes per bucket, a horizon gauge with the pruned, prunable, and retained ranges, a cursor-lag histogram, and the failing error codes and clients. Trace answers why a client does or does not see a row with one verdict and the scope mismatches behind it. Commits open their row changes, rows show decoded values and recent changes, and clients show their wire version. Tables sort, keep full ids behind a copy button, and open details with a JSON view. The event tail filters by kind, client, level, and text, and pauses. The header shows whether events stream live, poll, or have no ring; figures from a partially evicted ring say so; failed reads show their stable error code. With writes enabled, the console retries dead-lettered reactions, runs a prune pass, and revokes leases after a confirmation. Keyboard shortcuts switch views and refresh, and tables become cards below 640 px. The page stays one self-contained string of about 96 KiB with no external assets.',
-    links: [
-      { href: '/server-operations/#admin-console', label: 'Admin console' },
-    ],
+    links: [{ href: '/server-admin-console/', label: 'Admin console' }],
   },
   {
     date: '2026-10-07',

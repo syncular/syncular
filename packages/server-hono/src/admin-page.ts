@@ -317,7 +317,7 @@ main{overflow:visible;padding:16px}
 <a class="skip" href="#main">Skip to content</a>
 <header class="top">
   <div class="brand"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="2.6" fill="#ffb000"/><circle cx="10" cy="10" r="5.6" fill="none" stroke="#ffb000" stroke-width="1.2"/><circle cx="10" cy="10" r="8.6" fill="none" stroke="#9a948a" stroke-width="1" stroke-dasharray="2 2"/></svg>SYNCULAR <span class="sl">/</span> <span class="sub">CONSOLE</span></div>
-  <div class="field"><label for="partition">Partition</label><input id="partition" type="text" list="partitions-list" placeholder="server default" autocomplete="off" spellcheck="false" /></div>
+  <div class="field"><label for="partition">Partition</label><input id="partition" type="text" list="partitions-list" placeholder="only partition" autocomplete="off" spellcheck="false" /></div>
   <form id="search-form" class="field search" role="search"><label for="q">Find</label><input id="q" type="search" placeholder="Client, actor, row, commit or write id" autocomplete="off" spellcheck="false" /></form>
   <datalist id="partitions-list"></datalist>
   <span class="grow"></span>
@@ -468,7 +468,7 @@ main{overflow:visible;padding:16px}
   </dl></div>
 </dialog>
 <dialog id="confirm" aria-labelledby="c-title">
-  <div class="mh"><div class="tt"><p class="kicker">Write</p><h2 id="c-title"><span id="c-text"></span></h2></div></div>
+  <div class="mh"><div class="tt"><p class="kicker">Action</p><h2 id="c-title"><span id="c-text"></span></h2></div></div>
   <div class="mb"><div id="c-body"></div><div class="acts"><button id="c-cancel" class="btn sm" type="button">Cancel</button><button id="c-ok" class="btn sm amber" type="button">Confirm</button></div></div>
 </dialog>
 <div id="toast" role="status" hidden></div>
@@ -517,6 +517,7 @@ main{overflow:visible;padding:16px}
     err.code = typeof b.code === 'string' ? b.code : 'console.unexpected_response';
     err.status = status;
     err.action = typeof b.recommendedAction === 'string' ? b.recommendedAction : '';
+    err.details = b.details && typeof b.details === 'object' ? b.details : {};
     return err;
   }
   function qs(params) {
@@ -735,7 +736,7 @@ main{overflow:visible;padding:16px}
     renderKpis();
   }
   function ringOff(text) {
-    return empty('No event ring wired', text + ' Pass <code>ring</code> to <code>SyncularAdmin.fromConfig</code> to record them.', true);
+    return empty('No event ring', text + ' A Workers deployment without a Durable Object namespace serves the console from the Worker, which keeps no events. Add a <code>coordinator</code> to record them.', true);
   }
   function partial(m) { return m.coverage && !m.coverage.complete; }
   // Clients a person would call "online": an open socket with a realtime
@@ -827,7 +828,7 @@ main{overflow:visible;padding:16px}
       '<i class="g-pruned" style="width:' + hz + '%"></i><i class="g-prunable" style="width:' + (rec - hz) + '%"></i><i class="g-retained" style="width:' + (100 - rec) + '%"></i>' + marker + '</div>' +
       '<div class="gscale"><span>0</span><span>head ' + fmt(max) + '</span></div>' +
       '<div class="legend"><span><i class="g-pruned" style="border:1px solid var(--line-strong)"></i>pruned</span><span><i class="g-prunable"></i>prunable now</span><span><i class="g-retained"></i>retained</span></div>' +
-      (INFO.writes ? '<div class="acts" style="margin:0 0 -6px"><button type="button" class="btn sm' + (prune ? ' amber' : '') + '" data-act="prune">Prune now</button></div>' : '') +
+      (INFO.actions ? '<div class="acts" style="margin:0 0 -6px"><button type="button" class="btn sm' + (prune ? ' amber' : '') + '" data-act="prune">Prune now</button></div>' : '') +
       '<p class="verdict"><b class="' + (prune ? 'ty' : 'dim') + '">' + (prune ? 'Prune recommended' : 'Up to date') + '</b>' +
       (prune ? 'A prune pass would advance the horizon from ' + fmt(h.horizonSeq) + ' to ' + fmt(h.recommendedHorizonSeq) + ' and drop ' + fmt(h.recommendedHorizonSeq - h.horizonSeq) + ' commits.'
         : 'A prune pass now would leave the horizon at ' + fmt(h.horizonSeq) + '.') + '</p>' +
@@ -905,7 +906,7 @@ main{overflow:visible;padding:16px}
       var h = r.horizon;
       S.horizon = h;
       txt('ov-part', h.partition);
-      $('partition').placeholder = h.partition + ' (default)';
+      $('partition').placeholder = h.partition;
       hosts.forEach(id => { renderHorizon(id, h); });
       renderKpis();
       return null;
@@ -986,7 +987,7 @@ main{overflow:visible;padding:16px}
       $('client-line').innerHTML = presence(c) + ' · actor ' + link(route('people', [c.actorId]), c.actorId) + ' · ' + fmt(c.lag) + ' commits behind';
       var lease = d.lease
         ? esc(d.lease.leaseId) + ' · ' + (d.lease.revoked ? st('err', 'revoked') : d.lease.expiresAtMs > Date.now() ? st('ok', 'expires ' + rel(d.lease.expiresAtMs)) : st('warn', 'expired')) +
-          (INFO.writes && !d.lease.revoked ? ' <button type="button" class="btn sm amber" data-act="revoke" data-cid="' + esc(id) + '">Revoke lease</button>' : '')
+          (INFO.actions && !d.lease.revoked ? ' <button type="button" class="btn sm amber" data-act="revoke" data-cid="' + esc(id) + '">Revoke lease</button>' : '')
         : '<span class="dim">none</span>';
       var head = S.horizon ? ' <span class="dim">head ' + fmt(S.horizon.maxCommitSeq) + '</span>' : '';
       html('client-body', '<div class="cols"><div class="panel"><div class="ph"><h2>Client</h2></div><div class="pb">' +
@@ -1237,7 +1238,7 @@ main{overflow:visible;padding:16px}
           ['Source', 'commit ' + seqBtn(x.sourceCommitSeq) + ' · client ' + clientLink(x.sourceClientId)],
           ['Lease', x.leaseOwner ? esc(x.leaseOwner) + ' until ' + esc(stamp(x.leaseExpiresAtMs)) : 'none'],
           ['Last failure', x.lastFailure ? '<code>' + esc(x.lastFailure.code) + '</code> ' + ago(x.lastFailure.atMs) : 'none']]) +
-          (INFO.writes && x.status === 'dead-letter' ? '<div class="acts"><button type="button" class="btn sm amber" data-act="retry" data-key="' + esc(x.idempotencyKey) + '">Retry reaction</button></div>' : '') +
+          (INFO.actions && x.status === 'dead-letter' ? '<div class="acts"><button type="button" class="btn sm amber" data-act="retry" data-key="' + esc(x.idempotencyKey) + '">Retry reaction</button></div>' : '') +
           '<h3>Payload</h3>' + json(x.payload), x);
       });
       return null;
@@ -1274,7 +1275,7 @@ main{overflow:visible;padding:16px}
     if (tail.paused) b = '<div class="banner"><b>Paused</b><span>' + fmt(tail.held.length) + ' new events held. The list stays still until you resume.</span><button class="btn sm" type="button" data-act="pause">Resume</button></div>';
     else if (mode === 'poll') b = '<div class="banner"><b>Polling</b><span>The parent-frame transport carries no event stream. Events reload with every refresh (<kbd>r</kbd>) and with auto refresh.</span></div>';
     else if (mode === 'closed') b = '<div class="banner err"><b>Stream closed</b><span>The live event stream failed (authorization, network, or the server closed it). Events now reload with every refresh.</span><button class="btn sm" type="button" data-act="reconnect">Reconnect</button></div>';
-    else if (mode === 'off') b = '<div class="banner"><b>No event ring</b><span>This admin has no <code>RingBufferEvents</code> wired, so there is no event tail and no metrics. Pass <code>ring</code> to <code>SyncularAdmin.fromConfig</code>.</span></div>';
+    else if (mode === 'off') b = '<div class="banner"><b>No event ring</b><span>This deployment keeps no events, so there is no event tail and no metrics. A Workers deployment without a Durable Object namespace serves the console from the Worker; add a <code>coordinator</code> to record events.</span></div>';
     html('ev-banner', b);
     txt('ev-pause', tail.paused ? 'Resume' + (tail.held.length ? ' (' + tail.held.length + ')' : '') : 'Pause');
     $('ev-pause').className = 'btn sm' + (tail.paused ? ' on' : '');
@@ -1504,11 +1505,20 @@ main{overflow:visible;padding:16px}
     return get('/info').then(r => {
       INFO = r;
       html('tables-list', r.tables.map(t => '<option value="' + esc(t.name) + '"></option>').join(''));
-      txt('side-mode', r.writes ? 'Writes enabled: retry, prune, revoke.' : 'Read-only: the host passed no authorizeWrite.');
+      txt('side-mode', r.actions ? 'Operator actions enabled: retry, prune, revoke.' : 'Read-only: the host passed no authorizeActions.');
       startTail();
       return show();
     }, err => {
       if (err === STALE) return;
+      if (err.details.parameter === 'partition') {
+        // Several partitions and none picked: offer the picker.
+        document.querySelectorAll('[data-skel]').forEach(h => { h.innerHTML = empty('Pick a partition', 'This deployment has several partitions. Choose one in the partition picker (<kbd>p</kbd>).'); });
+        // A partition-scoped guard denies the fleet list; the picker still
+        // takes a typed partition then.
+        get('/partitions').then(r => { html('partitions-list', r.partitions.map(p => '<option value="' + esc(p.partition) + '"></option>').join('')); }, () => {});
+        $('partition').focus();
+        return;
+      }
       document.querySelectorAll('[data-skel]').forEach(h => { h.innerHTML = errBox(err); });
       setMode('error');
       report([err]);

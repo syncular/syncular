@@ -378,6 +378,7 @@ export const nav: readonly NavGroup[] = [
         title: 'Operations and maintenance',
         kind: 'how-to',
       },
+      { slug: 'server-admin-console', title: 'Admin console', kind: 'how-to' },
       {
         slug: 'server-reactions',
         title: 'Durable reactions',

@@ -21,7 +21,6 @@
         "@syncular/client": "workspace:*",
         "@syncular/server": "workspace:*",
         "@syncular/server-hono": "workspace:*",
-        "hono": "^4.13.7",
       },
       "devDependencies": {
         "@syncular/typegen": "workspace:*",

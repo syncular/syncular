@@ -132,13 +132,13 @@ export type RealtimeDOConfig = (
     }
 ) & {
   /**
-   * Serve the admin routes the Worker forwards (`WorkersFetchHandlerOptions.
-   * admin`). The DO keeps an event ring of `ringCapacity` events (default
-   * 1000) composed into the sync config's `events`, so the admin event
-   * tail, metrics, failures and client drill-down see this partition's
-   * rounds. Omitted ⇒ forwarded admin requests answer 404.
+   * Events the admin console keeps for this partition; default 1000. The DO
+   * composes its event ring into the sync config's `events` and serves the
+   * admin routes the Worker forwards (`WorkersFetchHandlerOptions.admin`),
+   * so the event tail, metrics, failures and client drill-down see this
+   * partition's rounds.
    */
-  readonly admin?: { readonly ringCapacity?: number };
+  readonly adminRingCapacity?: number;
 };
 
 /**
@@ -244,28 +244,24 @@ export class SyncularRealtimeHost {
           'RealtimeDOConfig.syncConfig must use the coordinated storage argument',
         );
       }
-      if (this.#config.admin === undefined) {
-        this.#hub = createRealtimeHub(config);
-      } else {
-        const ring = new RingBufferEvents(
-          this.#config.admin.ringCapacity !== undefined
-            ? { capacity: this.#config.admin.ringCapacity }
-            : undefined,
-        );
-        const withRing = {
-          ...config,
-          events:
-            config.events !== undefined
-              ? composeEvents(ring, config.events)
-              : ring,
-        };
-        const hub = createRealtimeHub(withRing);
-        this.#hub = hub;
-        this.#admin = SyncularAdmin.fromConfig(
-          { ...withRing, realtime: hub },
-          { ring },
-        );
-      }
+      const ring = new RingBufferEvents(
+        this.#config.adminRingCapacity !== undefined
+          ? { capacity: this.#config.adminRingCapacity }
+          : undefined,
+      );
+      const withRing = {
+        ...config,
+        events:
+          config.events !== undefined
+            ? composeEvents(ring, config.events)
+            : ring,
+      };
+      const hub = createRealtimeHub(withRing);
+      this.#hub = hub;
+      this.#admin = SyncularAdmin.fromConfig(
+        { ...withRing, realtime: hub },
+        { ring },
+      );
     }
     return this.#hub;
   }
@@ -350,23 +346,23 @@ export class SyncularRealtimeHost {
 
   /**
    * A Worker-authorized admin request: the Worker ran the host guards and
-   * names the partition and whether writes are granted in headers. Actions
-   * share the partition FIFO with sync rounds.
+   * names the partition and whether actions are granted in headers.
+   * Actions share the partition FIFO with sync rounds.
    */
   async #handleAdmin(request: Request, url: URL): Promise<Response> {
     this.#getHub();
     const partition = request.headers.get(REALTIME_ID_HEADER.partition);
     if (this.#admin === undefined || partition === null || partition === '') {
       const error = new SyncError(
-        'sync.not_found',
-        'admin is not enabled on this coordinator',
+        'sync.invalid_request',
+        'forwarded admin request names no partition',
       );
       return Response.json(errorBody(error), { status: error.httpStatus });
     }
     const routes = createSyncularAdminRoutes(this.#admin, {
       authorize: () => true,
-      ...(request.headers.get(ADMIN_WRITES_HEADER) === '1'
-        ? { authorizeWrite: () => true }
+      ...(request.headers.get(ADMIN_ACTIONS_HEADER) === '1'
+        ? { authorizeActions: () => true }
         : {}),
     });
     url.pathname = url.pathname.slice(ADMIN_DO_PATH.length);
@@ -584,13 +580,13 @@ const REALTIME_ID_HEADER = {
   clientId: 'x-syncular-client',
 } as const;
 
-const ADMIN_WRITES_HEADER = 'x-syncular-admin-writes';
+const ADMIN_ACTIONS_HEADER = 'x-syncular-admin-actions';
 
 /** Address a Worker-authorized admin request to the DO (Worker side). */
 export function adminRequestForDurableObject(
   request: Request,
   routePath: string,
-  target: { readonly partition: string; readonly writes: boolean },
+  target: { readonly partition: string; readonly actions: boolean },
 ): Request {
   const source = new URL(request.url);
   const forwarded = new Request(
@@ -598,8 +594,8 @@ export function adminRequestForDurableObject(
     request,
   );
   forwarded.headers.set(REALTIME_ID_HEADER.partition, target.partition);
-  if (target.writes) forwarded.headers.set(ADMIN_WRITES_HEADER, '1');
-  else forwarded.headers.delete(ADMIN_WRITES_HEADER);
+  if (target.actions) forwarded.headers.set(ADMIN_ACTIONS_HEADER, '1');
+  else forwarded.headers.delete(ADMIN_ACTIONS_HEADER);
   return forwarded;
 }
 

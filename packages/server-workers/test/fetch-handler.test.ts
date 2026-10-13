@@ -247,31 +247,24 @@ describe('Workers fetch handler (D1 double + memory stores)', () => {
       segments,
       resolveScopes: () => ({ list_id: ['*'] }),
     });
-    const handlerFor = (admin: boolean) => {
-      // One namespace per deployment: its DOs outlive requests.
-      const namespace = new FakeDurableObjectNamespace(db, {
-        syncConfig,
-        ...(admin ? { admin: {} } : {}),
-      });
-      return createWorkersFetchHandler<unknown>({
-        config: () => ({
-          config: syncConfig(directStorage),
-          authenticate: async () => ({
-            actorId: ACTOR_ID,
-            partition: PARTITION,
-          }),
+    // One namespace per deployment: its DOs outlive requests.
+    const namespace = new FakeDurableObjectNamespace(db, { syncConfig });
+    const handler = createWorkersFetchHandler<unknown>({
+      config: () => ({
+        config: syncConfig(directStorage),
+        authenticate: async () => ({
+          actorId: ACTOR_ID,
+          partition: PARTITION,
         }),
-        coordinator: () => ({ namespace }),
-        admin: () => ({
-          authorize: ({ request }) =>
-            request.headers.get('authorization') === 'Bearer ops',
-          authorizeWrite: ({ request }) =>
-            request.headers.get('x-ops-write') === 'yes',
-          defaultPartition: PARTITION,
-        }),
-      });
-    };
-    const handler = handlerFor(true);
+      }),
+      coordinator: () => ({ namespace }),
+      admin: () => ({
+        authorize: ({ request }) =>
+          request.headers.get('authorization') === 'Bearer ops',
+        authorizeActions: ({ request }) =>
+          request.headers.get('x-ops-action') === 'yes',
+      }),
+    });
     const ctx = { waitUntil: () => {} };
     const send = (path: string, init: RequestInit = {}) =>
       handler(
@@ -315,9 +308,11 @@ describe('Workers fetch handler (D1 double + memory stores)', () => {
     expect((await send('/admin')).headers.get('content-type')).toContain(
       'text/html',
     );
+    // One partition in the registry: requests without `?partition=` use it.
     expect(await (await send('/admin/info')).json()).toMatchObject({
+      partition: PARTITION,
       hasEventStream: true,
-      writes: true,
+      actions: true,
       realtime: true,
     });
     const events = (await (await send('/admin/events')).json()) as {
@@ -332,27 +327,15 @@ describe('Workers fetch handler (D1 double + memory stores)', () => {
     });
     const refused = await send('/admin/prune', {
       method: 'POST',
-      headers: { 'x-syncular-admin-writes': '1' },
+      headers: { 'x-syncular-admin-actions': '1' },
     });
     expect(refused.status).toBe(403);
     const pruned = await send('/admin/prune', {
       method: 'POST',
-      headers: { 'x-ops-write': 'yes' },
+      headers: { 'x-ops-action': 'yes' },
     });
     expect(await pruned.json()).toEqual({
       prune: { previousHorizonSeq: 0, horizonSeq: 0 },
-    });
-
-    const withoutDoAdmin = await handlerFor(false)(
-      new Request('https://worker.example/admin/events', {
-        headers: { authorization: 'Bearer ops' },
-      }),
-      {},
-      ctx,
-    );
-    expect(withoutDoAdmin.status).toBe(404);
-    expect(await withoutDoAdmin.json()).toMatchObject({
-      code: 'sync.not_found',
     });
   });
 

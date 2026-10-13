@@ -48,6 +48,7 @@ import {
   syncError,
 } from './errors';
 import { emitEvent, type SyncularServerEvents } from './events';
+import { composeEvents } from './events-ring';
 import { createSyncResponseStream } from './handler';
 import {
   type CompiledSchema,
@@ -916,7 +917,7 @@ export interface RealtimeConnection {
 }
 
 export class RealtimeHub {
-  readonly #config: RealtimeHubConfig;
+  #config: RealtimeHubConfig;
   readonly #schema: CompiledSchema;
   readonly #sessions = new Set<RealtimeSession>();
   /** §8.6 presence registry — ephemeral, in-memory, never persisted. */
@@ -934,6 +935,19 @@ export class RealtimeHub {
       registration.codec,
       payload,
     );
+  }
+
+  /**
+   * Compose `sink` into the hub's `events`, so socket rounds and sessions
+   * opened afterwards report to it as well. `createSyncularHono` uses it to
+   * feed the admin console's event ring.
+   */
+  addEventSink(sink: SyncularServerEvents): void {
+    const events = this.#config.events;
+    this.#config = {
+      ...this.#config,
+      events: events === undefined ? sink : composeEvents(events, sink),
+    };
   }
 
   get sessionCount(): number {

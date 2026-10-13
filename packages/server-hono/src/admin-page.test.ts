@@ -183,8 +183,9 @@ const COLUMNS = [
   { name: 'cover', type: 'bytes', nullable: true, primaryKey: false },
 ];
 const INFO = {
+  partition: 'main',
   hasEventStream: true,
-  writes: false,
+  actions: false,
   realtime: true,
   schemaVersion: 3,
   tables: [{ name: 'cards', columns: COLUMNS }],
@@ -748,7 +749,7 @@ describe('overview', () => {
     );
     expect(c.rows('#ov-fleet').length).toBe(2);
     expect(c.text('#side-mode')).toBe(
-      'Read-only: the host passed no authorizeWrite.',
+      'Read-only: the host passed no authorizeActions.',
     );
     expect(c.text('#updated')).toStartWith('Updated');
   });
@@ -796,8 +797,8 @@ describe('overview', () => {
       },
     });
     await flush();
-    expect(c.text('#ov-volume')).toContain('No event ring wired');
-    expect(c.text('#ov-errors')).toContain('No event ring wired');
+    expect(c.text('#ov-volume')).toContain('No event ring');
+    expect(c.text('#ov-errors')).toContain('No event ring');
     expect(c.text('#live')).toBe('No event ring');
     expect(c.text('#kpis')).toContain('seen in the last hour');
     expect(c.requests).not.toContain('/admin/metrics');
@@ -1173,8 +1174,8 @@ describe('event stream', () => {
   });
 });
 
-describe('writes', () => {
-  const writable = { '/info': { body: { ...INFO, writes: true } } };
+describe('operator actions', () => {
+  const writable = { '/info': { body: { ...INFO, actions: true } } };
 
   test('retrying a dead letter confirms, posts, and shows the answer', async () => {
     const c = openConsole({
@@ -1187,7 +1188,9 @@ describe('writes', () => {
       },
     });
     await flush();
-    expect(c.text('#side-mode')).toBe('Writes enabled: retry, prune, revoke.');
+    expect(c.text('#side-mode')).toBe(
+      'Operator actions enabled: retry, prune, revoke.',
+    );
     expect(c.rows('#rx-table')[0]).toContain('mail.bounced');
     c.click('#rx-table tr[data-i="0"]');
     c.click('#m-sum [data-act="retry"]');
@@ -1199,7 +1202,7 @@ describe('writes', () => {
     expect(c.text('#c-body')).toContain('"status": "pending"');
   });
 
-  test('a refused write shows its stable code', async () => {
+  test('a refused action shows its stable code', async () => {
     const c = openConsole({
       routes: {
         ...writable,
@@ -1207,7 +1210,7 @@ describe('writes', () => {
           status: 403,
           body: {
             code: 'sync.forbidden',
-            message: 'writes are not authorized',
+            message: 'admin actions are not authorized',
           },
         },
       },
@@ -1220,11 +1223,31 @@ describe('writes', () => {
     expect(c.text('#c-body')).toContain('HTTP 403');
   });
 
-  test('the client page offers lease revocation when writes are on', async () => {
+  test('the client page offers lease revocation when actions are on', async () => {
     const c = openConsole({ hash: '#/client/c-ben', routes: writable });
     await flush();
     c.click('[data-act="revoke"]');
     expect(c.text('#c-body')).toContain('POST /clients/c-ben/revoke-lease');
+  });
+});
+
+describe('partition picker', () => {
+  test('several partitions and none picked ask for a partition', async () => {
+    const c = openConsole({
+      routes: {
+        '/info': {
+          status: 400,
+          body: {
+            code: 'sync.invalid_request',
+            message: 'partition is required',
+            details: { parameter: 'partition' },
+          },
+        },
+      },
+    });
+    await flush();
+    expect(c.text('#ov-horizon')).toContain('Pick a partition');
+    expect(c.requests).toContain('/admin/partitions');
   });
 });
 

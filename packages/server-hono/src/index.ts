@@ -6,6 +6,7 @@
  */
 import {
   adapterSyncError,
+  composeEvents,
   encodeSegmentBody,
   encodeSegmentStream,
   errorBody,
@@ -16,13 +17,17 @@ import {
   handleRemoteOperation,
   type RemoteOperationRegistry,
   handleSyncRequest,
+  RealtimeHub,
+  RingBufferEvents,
   SEGMENT_STREAM_THRESHOLD_BYTES,
   SSP2_CONTENT_TYPE,
   SyncError,
+  SyncularAdmin,
   type SyncularErrorRoute,
   type SyncServerConfig,
 } from '@syncular/server';
 import { Hono, type Context } from 'hono';
+import { createSyncularAdminRoutes, type SyncularAdminGuards } from './admin';
 
 export * from './admin';
 
@@ -33,10 +38,53 @@ export interface SyncularHonoOptions {
   readonly authenticate: (
     request: Request,
   ) => Promise<{ actorId: string; partition: string } | null>;
+  /** Mount the admin console (see `SyncularHonoAdminOptions`). */
+  readonly admin?: SyncularHonoAdminOptions;
+}
+
+/**
+ * The admin console. The app mounts it at `path` and keeps an event ring of
+ * `ringCapacity` events, composed into `config.events` and into the
+ * realtime hub of `config.realtime`, so the console sees HTTP and socket
+ * rounds.
+ */
+export interface SyncularHonoAdminOptions extends SyncularAdminGuards {
+  /** The mount path; default `/admin`. */
+  readonly path?: string;
+  /** Events the console keeps in memory; default 1000. */
+  readonly ringCapacity?: number;
 }
 
 export function createSyncularHono(options: SyncularHonoOptions): Hono {
   const app = new Hono();
+  let config = options.config;
+  const admin = options.admin;
+  if (admin !== undefined) {
+    const ring = new RingBufferEvents(
+      admin.ringCapacity !== undefined
+        ? { capacity: admin.ringCapacity }
+        : undefined,
+    );
+    config = {
+      ...config,
+      events:
+        config.events === undefined ? ring : composeEvents(config.events, ring),
+    };
+    if (config.realtime instanceof RealtimeHub) {
+      config.realtime.addEventSink(ring);
+    }
+    app.route(
+      admin.path ?? '/admin',
+      createSyncularAdminRoutes(SyncularAdmin.fromConfig(config, { ring }), {
+        authorize: admin.authorize,
+        ...(admin.authorizeActions !== undefined
+          ? { authorizeActions: admin.authorizeActions }
+          : {}),
+        ...(config.onError !== undefined ? { onError: config.onError } : {}),
+        ...(config.mapError !== undefined ? { mapError: config.mapError } : {}),
+      }),
+    );
+  }
   // A `SyncError` answers with its catalog status. Any other exception goes
   // to `config.onError` and answers 500 `sync.internal_error` (§10.2).
   const errorResponse = (
@@ -46,9 +94,9 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
   ): Response => {
     const sync = adapterSyncError(
       error,
-      (error, context) => options.config.onError?.(error, context),
+      (error, context) => config.onError?.(error, context),
       route,
-      (error, context) => options.config.mapError?.(error, context),
+      (error, context) => config.mapError?.(error, context),
     );
     const response = Response.json(errorBody(sync), {
       status: sync.httpStatus,
@@ -84,7 +132,7 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
     try {
       const bytes = new Uint8Array(await c.req.arrayBuffer());
       const out = await handleSyncRequest(bytes, {
-        ...options.config,
+        ...config,
         ...auth,
       });
       return c.body(out.slice().buffer as ArrayBuffer, 200, {
@@ -110,7 +158,7 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
       const bytes = new Uint8Array(await c.req.arrayBuffer());
       const out = await handleRemoteOperation(
         bytes,
-        { ...options.config, ...auth },
+        { ...config, ...auth },
         options.operations,
       );
       return c.body(out.slice().buffer as ArrayBuffer, 200, {
@@ -127,7 +175,7 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
       return errorResponse(c, new SyncError('sync.auth_required'));
     try {
       const result = await openSegmentDownload(
-        { ...options.config, ...auth },
+        { ...config, ...auth },
         {
           segmentId: c.req.param('segmentId'),
           scopesHeader: c.req.header('x-syncular-scopes') ?? '{}',
@@ -185,7 +233,7 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
       const bytes = new Uint8Array(await c.req.arrayBuffer());
       const contentType = c.req.header('content-type')?.split(';')[0]?.trim();
       await handleBlobUpload(
-        { ...options.config, ...auth },
+        { ...config, ...auth },
         {
           blobId: c.req.param('blobId'),
           bytes,
@@ -212,7 +260,7 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
         mediaType?: string;
       };
       const grant = await handleBlobUploadGrant(
-        { ...options.config, ...auth },
+        { ...config, ...auth },
         {
           blobId: c.req.param('blobId'),
           byteLength: Number(body.byteLength ?? 0),
@@ -236,7 +284,7 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
       return errorResponse(c, new SyncError('sync.auth_required'));
     try {
       const result = await handleBlobDownload(
-        { ...options.config, ...auth },
+        { ...config, ...auth },
         c.req.param('blobId'),
       );
       if (result.url !== undefined) {

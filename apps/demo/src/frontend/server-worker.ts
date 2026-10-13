@@ -150,13 +150,12 @@ async function bootServer(): Promise<EmbeddedServerParts> {
   const adminRoutes = createSyncularAdminRoutes(
     SyncularAdmin.fromConfig(config, { ring }),
     {
-      defaultPartition: DEMO_PARTITION,
       // This route surface is reachable only through the worker RPC. The page
       // verifies the same-origin console frame before forwarding a request.
       // The server is the visitor's own in-browser instance, so the
       // operator actions are open too.
       authorize: () => true,
-      authorizeWrite: () => true,
+      authorizeActions: () => true,
     },
   );
   return {

@@ -12,8 +12,7 @@
     "@sqlite.org/sqlite-wasm": "^3.53.0-build1",
     "@syncular/server": "workspace:*",
     "@syncular/server-hono": "workspace:*",
-    "@syncular/client": "workspace:*",
-    "hono": "^4.13.7"
+    "@syncular/client": "workspace:*"
   },
   "devDependencies": {
     "@syncular/typegen": "workspace:*",
