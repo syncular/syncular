@@ -259,8 +259,12 @@ export class SyncularRealtimeHost {
               ? composeEvents(ring, config.events)
               : ring,
         };
-        this.#hub = createRealtimeHub(withRing);
-        this.#admin = SyncularAdmin.fromConfig(withRing, { ring });
+        const hub = createRealtimeHub(withRing);
+        this.#hub = hub;
+        this.#admin = SyncularAdmin.fromConfig(
+          { ...withRing, realtime: hub },
+          { ring },
+        );
       }
     }
     return this.#hub;

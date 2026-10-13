@@ -66,11 +66,18 @@ import {
   layoutsOf,
   migratePayload,
   parseLayouts,
+  quoteIdent,
   retiredTableNames,
   rewritePlan,
   rewriteRowSql,
   rewriteValues,
   SCHEMA_META_DDL_POSTGRES,
+  SYNC_COLUMN_VERSIONS_COLUMN,
+  SYNC_PARTITION_COLUMN,
+  SYNC_PAYLOAD_COLUMN,
+  SYNC_ROW_ID_COLUMN,
+  SYNC_SCOPES_COLUMN,
+  SYNC_VERSION_COLUMN,
   type StoredColumnLayout,
   scanRowBatchSql,
   scanRowPageSql,
@@ -89,8 +96,10 @@ import type {
   AuthoritativeQueryResult,
   CheckpointDeclaration,
   ClientCursorInfo,
+  ClientPushResult,
   ClientRecord,
   ClientSubscription,
+  CommitChangeSummary,
   CommitDetail,
   CommitMetadata,
   CommitMetadataQuery,
@@ -108,6 +117,7 @@ import type {
   ReactionPruneQuery,
   RowChangeRecord,
   RowChangesQuery,
+  RowListQuery,
   RowScanQuery,
   ScopeActivityQuery,
   ScopeCommitActivity,
@@ -2621,6 +2631,38 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
            ORDER BY commit_seq DESC LIMIT $4`,
           [partition, query.afterSeq, beforeSeq, query.limit],
         );
+    // `changeSample`: one extra statement for the whole page — the first
+    // `sample` changes (change-index order) of every listed commit.
+    const sampleCount =
+      query.changeSample !== undefined &&
+      Number.isInteger(query.changeSample) &&
+      query.changeSample > 0
+        ? query.changeSample
+        : 0;
+    const samples = new Map<number, CommitChangeSummary[]>();
+    if (sampleCount > 0 && rows.length > 0) {
+      const seqs = rows.map((row) => asNumber(row.commit_seq));
+      const { rows: changeRows } = await this.#exec.query<{
+        commit_seq: unknown;
+        tbl: string;
+        row_id: string;
+        op: unknown;
+      }>(
+        `SELECT commit_seq, tbl, row_id, op FROM sync_changes
+         WHERE partition=$1 AND commit_seq IN (${seqs.map((_, index) => `$${index + 2}`).join(',')}) AND idx<$${seqs.length + 2}
+         ORDER BY commit_seq, idx`,
+        [partition, ...seqs, sampleCount],
+      );
+      for (const change of changeRows) {
+        const sample = samples.get(asNumber(change.commit_seq)) ?? [];
+        sample.push({
+          table: change.tbl,
+          rowId: change.row_id,
+          op: asNumber(change.op) === 1 ? 'upsert' : 'delete',
+        });
+        samples.set(asNumber(change.commit_seq), sample);
+      }
+    }
     const out: CommitMetadata[] = [];
     for (const row of rows) {
       const commitSeq = asNumber(row.commit_seq);
@@ -2636,6 +2678,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
         createdAtMs: asNumber(row.created_at_ms),
         changeCount: changes.rows.reduce((sum, c) => sum + asNumber(c.n), 0),
         tables: changes.rows.map((c) => c.tbl),
+        ...(sampleCount > 0 ? { sample: samples.get(commitSeq) ?? [] } : {}),
       });
     }
     return out;
@@ -2705,6 +2748,55 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
       clientId: row.client_id,
       createdAtMs: asNumber(row.created_at_ms),
     }));
+  }
+
+  async listRows(partition: string, query: RowListQuery): Promise<StoredRow[]> {
+    // Keyset page over the row table's (partition, rowId) primary key: an
+    // index range read, no scope filter, no per-row lookup.
+    const { rows } = await this.#exec.query<RowRecord>(
+      `SELECT ${quoteIdent(SYNC_ROW_ID_COLUMN)} AS row_id, ${quoteIdent(SYNC_VERSION_COLUMN)} AS server_version, ${quoteIdent(SYNC_SCOPES_COLUMN)} AS scopes, ${quoteIdent(SYNC_PAYLOAD_COLUMN)} AS payload, ${quoteIdent(SYNC_COLUMN_VERSIONS_COLUMN)} AS column_versions
+       FROM ${quoteIdent(this.table(query.table).name)}
+       WHERE ${quoteIdent(SYNC_PARTITION_COLUMN)}=$1 AND ${quoteIdent(SYNC_ROW_ID_COLUMN)}>$2
+       ORDER BY ${quoteIdent(SYNC_ROW_ID_COLUMN)} LIMIT $3`,
+      [partition, query.afterRowId ?? '', query.limit],
+    );
+    return rows.map(toStoredRow);
+  }
+
+  async countRows(partition: string, table: string): Promise<number> {
+    const { rows } = await this.#exec.query<{ n: unknown }>(
+      `SELECT count(*) AS n FROM ${quoteIdent(this.table(table).name)} WHERE ${quoteIdent(SYNC_PARTITION_COLUMN)}=$1`,
+      [partition],
+    );
+    return rows[0] === undefined ? 0 : asNumber(rows[0].n);
+  }
+
+  async listPushResults(
+    partition: string,
+    clientCommitId: string,
+  ): Promise<ClientPushResult[]> {
+    // Retained outcomes for one clientCommitId: no dedicated index, ordered
+    // by client so the read is deterministic.
+    const { rows } = await this.#exec.query<{
+      client_id: string;
+      result: unknown;
+    }>(
+      'SELECT client_id, result FROM sync_push_results WHERE partition=$1 AND client_commit_id=$2 ORDER BY client_id',
+      [partition, clientCommitId],
+    );
+    return rows.map((row) => {
+      try {
+        return {
+          clientId: row.client_id,
+          result: deserializePushResult(asJson(row.result)),
+        };
+      } catch {
+        throw syncError(
+          'sync.idempotency_cache_miss',
+          'persisted push result unreadable (§6.3)',
+        );
+      }
+    });
   }
 
   async scopeActivity(

@@ -18,6 +18,15 @@ export const changelog = [
   {
     date: '2026-10-13',
     title:
+      'The admin API resolves pasted ids, groups devices by person, and shows who has a row',
+    body: "`SyncularAdmin.search` resolves one pasted id to the matching clients, actors, rows in any table, commit, and write outcomes. `actors` groups each actor's devices, and clients report `connected` from the realtime hub's open sockets. `listRows` browses a table by rowId or by one stored scope, `tableCounts` counts rows, and `rowDelivery` gives every known client's trace verdict for one row. `findWrite` looks up a write by the clientCommitId a client logged and returns its stored outcome, including per-operation rejection and conflict results. Commit lists carry their first changes with `changeSample`. Every event of one sync request shares a `requestId`, `request.handled` carries the `clientId`, and `push.rejected` and `push.conflicted` name the operation's table and rowId.",
+    links: [
+      { href: '/server-operations/#admin-console', label: 'Admin console' },
+    ],
+  },
+  {
+    date: '2026-10-13',
+    title:
       'The admin API traces row delivery, groups failures, and runs operator actions',
     body: "`SyncularAdmin` gains `traceRow`, which answers whether a client receives a row with a verdict built from the row's stored scopes and newest change, the client's subscriptions and cursor, and the actor's allowed scopes from `resolveScopes`. `errors` groups ring failures by code and by client; `metrics` adds per-bucket p95 and push outcomes and reports `coverage` when the ring dropped events inside the window. `inspectRow` decodes row values per SPEC §11 and lists the row's retained changes, `commitDetail` renders a commit's changes, `listCommits` pages older commits with `beforeSeq`, clients carry their wire and schema versions, and the client and fleet lists page server-side. `retryReaction`, `prune`, and `revokeLease` are operator actions behind the new `authorizeWrite` route guard. Every admin route now reads only the authorized partition, including the event tail, and the fleet view no longer passes a guard that grants single partitions. On Cloudflare, `createWorkersFetchHandler` mounts the console with `admin` and forwards partition-scoped requests to the partition's Durable Object, whose event ring sees that partition's rounds.",
     links: [

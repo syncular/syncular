@@ -318,6 +318,7 @@ describe('Workers fetch handler (D1 double + memory stores)', () => {
     expect(await (await send('/admin/info')).json()).toMatchObject({
       hasEventStream: true,
       writes: true,
+      realtime: true,
     });
     const events = (await (await send('/admin/events')).json()) as {
       events: { type: string; partition: string }[];

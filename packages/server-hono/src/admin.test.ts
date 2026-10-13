@@ -511,6 +511,81 @@ describe('drill-downs, trace, failures', () => {
   });
 });
 
+describe('navigation routes', () => {
+  test('GET /admin/actors, /search, /tables, /rows/:table, delivery and writes', async () => {
+    const { app, seed, auth } = harness();
+    await seed();
+    const json = async (path: string) =>
+      (await app.request(`/admin${path}`, auth)).json();
+
+    expect(await json('/actors')).toMatchObject({
+      actors: [{ actorId: 'actor-1', maxLag: 0 }],
+    });
+    expect(await json('/search?q=t1')).toMatchObject({
+      search: { rows: [{ table: 'tasks', rowId: 't1' }] },
+    });
+    expect(await json('/tables')).toMatchObject({
+      tables: [{ name: 'tasks', rowCount: 1 }],
+    });
+    expect(await json('/rows/tasks?scope=project_id:p1')).toMatchObject({
+      page: {
+        table: 'tasks',
+        rows: [{ rowId: 't1', values: { title: 'hello' } }],
+      },
+    });
+    expect((await app.request('/admin/rows/tasks?scope=p1', auth)).status).toBe(
+      400,
+    );
+    expect(await json('/rows/tasks/t1/delivery')).toMatchObject({
+      delivery: {
+        clients: [{ client: { clientId: 'client-1' }, verdict: 'delivered' }],
+      },
+    });
+    expect(await json('/writes/c1')).toMatchObject({
+      write: {
+        outcomes: [{ clientId: 'client-1', status: 'applied', commitSeq: 1 }],
+        events: expect.arrayContaining([
+          expect.objectContaining({
+            type: 'push.applied',
+            clientCommitId: 'c1',
+          }),
+          expect.objectContaining({
+            type: 'reaction.queued',
+            clientCommitId: 'c1',
+          }),
+        ]),
+      },
+    });
+    expect(await json('/commits?sample=5')).toMatchObject({
+      commits: [
+        {
+          commitSeq: 1,
+          sample: [{ table: 'tasks', rowId: 't1', op: 'upsert' }],
+        },
+      ],
+    });
+  });
+
+  test("GET /admin/events?requestId returns one request's events", async () => {
+    const { app, seed, auth } = harness();
+    await seed();
+    const all = (await (await app.request('/admin/events', auth)).json()) as {
+      events: { type: string; requestId?: string }[];
+    };
+    const requestId = all.events.find(
+      (event) => event.type === 'request.handled',
+    )?.requestId;
+    expect(requestId).toBeString();
+    const one = (await (
+      await app.request(`/admin/events?requestId=${requestId}`, auth)
+    ).json()) as { events: { requestId?: string }[] };
+    expect(one.events.length).toBeGreaterThan(1);
+    expect(one.events.every((event) => event.requestId === requestId)).toBe(
+      true,
+    );
+  });
+});
+
 describe('operator actions', () => {
   test('without authorizeWrite every action answers 403', async () => {
     const { app, auth } = harness();
@@ -598,14 +673,14 @@ describe('static console page', () => {
     expect(ADMIN_CONSOLE_HTML).toContain('syncular-admin-response');
   });
 
-  test('the page is self-contained and stays under 100 KiB', () => {
+  test('the page is self-contained and stays under 120 KiB', () => {
     // No stylesheet, script, font, or image fetch: one string serves Bun,
     // Node, and Workers identically.
     expect(ADMIN_CONSOLE_HTML).not.toMatch(
       /<link(?! rel="icon" href="data:)|\bsrc=|url\(|@import|https?:\/\//,
     );
     expect(new TextEncoder().encode(ADMIN_CONSOLE_HTML).length).toBeLessThan(
-      100 * 1024,
+      120 * 1024,
     );
   });
 
@@ -613,7 +688,7 @@ describe('static console page', () => {
     const { app, seed } = harness();
     await seed();
     const window = new Window({
-      url: 'http://admin.test/admin#/clients',
+      url: 'http://admin.test/admin#/people',
       settings: {
         enableJavaScriptEvaluation: true,
         suppressInsecureJavaScriptEnvironmentWarning: true,
@@ -654,16 +729,35 @@ describe('static console page', () => {
       await settle();
       const text = (selector: string) =>
         window.document.querySelector(selector)?.textContent ?? '';
-      expect(text('#clients-table')).toContain('client-1');
-      expect(text('#clients-table')).toContain('actor-1');
-      expect(text('#n-clients')).toBe('1');
+      const visit = async (hash: string): Promise<void> => {
+        window.history.pushState(null, '', hash);
+        window.dispatchEvent(new window.PopStateEvent('popstate'));
+        await settle();
+      };
+      expect(text('#people-table')).toContain('actor-1');
+      expect(text('#people-table')).toContain('client-1');
+      expect(text('#n-people')).toBe('1');
       expect(streams).toEqual(['/admin/events/stream?limit=200']);
       expect(text('#updated')).toStartWith('Updated');
 
-      window.document
-        .querySelector('#nav-overview')
-        ?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
-      await settle();
+      await visit('#/client/client-1');
+      expect(text('#client-subs')).toContain('tasks');
+      expect(text('#updated')).toStartWith('Updated');
+
+      await visit('#/table/tasks');
+      expect(text('#table-rows')).toContain('t1');
+      expect(text('#table-rows')).toContain('hello');
+
+      await visit('#/row/tasks/t1');
+      expect(text('#row-values')).toContain('hello');
+      expect(text('#row-history')).toContain('upsert');
+      expect(text('#row-delivery')).toContain('client-1');
+      expect(text('#updated')).toStartWith('Updated');
+
+      await visit('#/commits');
+      expect(text('#commits-list')).toContain('tasks / t1');
+
+      await visit('#/overview');
       expect(text('#ov-part')).toBe('part-1');
       expect(text('#kpis')).toContain('1 in the last 5 min');
       expect(text('#ov-horizon')).toContain('head 1');

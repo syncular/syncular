@@ -34,6 +34,8 @@ export interface RequestHandledEvent {
    * `error` — in-band ERROR frame (§1.6) or a thrown host failure.
    */
   readonly outcome: 'ok' | 'schema_floor' | 'reset' | 'rejected' | 'error';
+  /** The REQ_HEADER clientId; absent when the request failed to decode. */
+  readonly clientId?: string;
   /** §10.2 code for `rejected`/`error`; `"internal"` for non-SyncErrors. */
   readonly errorCode?: string;
   readonly pushCommits: number;
@@ -64,6 +66,9 @@ export interface PushRejectedEvent extends PushEventBase {
   readonly type: 'push.rejected';
   readonly code: string;
   readonly opIndex: number;
+  /** The terminating operation's table and rowId. */
+  readonly table?: string;
+  readonly rowId?: string;
   /** True when the rejection was replayed from the idempotency cache. */
   readonly replay: boolean;
   /** Original host time for outcomes recorded by a metadata-aware server. */
@@ -76,6 +81,9 @@ export interface PushRejectedEvent extends PushEventBase {
 export interface PushConflictedEvent extends PushEventBase {
   readonly type: 'push.conflicted';
   readonly opIndex: number;
+  /** The conflicting operation's table and rowId. */
+  readonly table?: string;
+  readonly rowId?: string;
   /** True when the conflict was replayed from the idempotency cache. */
   readonly replay: boolean;
   readonly recordedAtMs?: number;
@@ -306,7 +314,13 @@ export interface LeaseRevokedEvent {
   readonly leaseId: string;
 }
 
-export type SyncularServerEvent =
+/**
+ * Every event. `requestId` is present on the events emitted while serving
+ * one sync request (`request.handled`, `push.*`, `pull.served`,
+ * `lease.issued`, `reaction.queued`, `scopes.resolve_failed`) and shared by
+ * all of them, so a sink can group one request's events.
+ */
+export type SyncularServerEvent = (
   | RequestHandledEvent
   | PushAppliedEvent
   | PushRejectedEvent
@@ -329,7 +343,8 @@ export type SyncularServerEvent =
   | PruneCompletedEvent
   | ScopesResolveFailedEvent
   | LeaseIssuedEvent
-  | LeaseRevokedEvent;
+  | LeaseRevokedEvent
+) & { readonly requestId?: string };
 
 /**
  * The seam. Optional on the server config — when absent, no event object

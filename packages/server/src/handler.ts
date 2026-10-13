@@ -421,11 +421,14 @@ function emitPushEvent(
   }
   // Rejected (§6.3): exactly one terminating operation record.
   const record = frame.results[0];
+  const op = record !== undefined ? push.operations[record.opIndex] : undefined;
+  const target = op !== undefined ? { table: op.table, rowId: op.rowId } : {};
   if (record?.status === 'conflict') {
     emitEvent(events, {
       type: 'push.conflicted',
       ...base,
       opIndex: record.opIndex,
+      ...target,
       replay: processed.replayed,
       ...(processed.recordedAtMs !== undefined
         ? { recordedAtMs: processed.recordedAtMs }
@@ -444,6 +447,7 @@ function emitPushEvent(
         ? record.code
         : 'sync.invalid_request',
     opIndex: record?.opIndex ?? 0,
+    ...target,
     replay: processed.replayed,
     ...(processed.recordedAtMs !== undefined
       ? { recordedAtMs: processed.recordedAtMs }
@@ -729,14 +733,20 @@ export async function createSyncResponseStream(
   bytes: Uint8Array,
   ctx: SyncRequestContext,
 ): Promise<AsyncIterable<Uint8Array>> {
-  const events = ctx.events;
-  if (events === undefined) return createStreamCore(bytes, ctx, undefined);
+  const sink = ctx.events;
+  if (sink === undefined) return createStreamCore(bytes, ctx, undefined);
   // Instrumented path: measure with the ctx clock, count bytes at the
-  // seam, emit exactly one `request.handled` per request.
+  // seam, emit exactly one `request.handled` per request. Every event of
+  // this request carries one `requestId`.
+  const requestId = crypto.randomUUID();
+  const events: SyncularServerEvents = {
+    emit: (event) => sink.emit({ ...event, requestId }),
+  };
+  const requestCtx = { ...ctx, events };
   const clock = clockOf(ctx);
   const startedAtMs = clock();
   try {
-    return await createStreamCore(bytes, ctx, events, startedAtMs);
+    return await createStreamCore(bytes, requestCtx, events, startedAtMs);
   } catch (error) {
     emitEvent(events, {
       type: 'request.handled',
@@ -878,6 +888,7 @@ async function* instrumentedStream(
       bytesIn,
       bytesOut,
       outcome: report.outcome,
+      clientId: plan.header.clientId,
       ...(report.errorCode !== undefined
         ? { errorCode: report.errorCode }
         : {}),

@@ -533,10 +533,10 @@ context). The demo server wires it behind `SYNCULAR_DEMO_EVENTS=1`.
 
 | Event | When | Key fields |
 | --- | --- | --- |
-| `request.handled` | Once per `POST /sync`, after the response bytes are fully produced (or the request was rejected up front) | `kind` (`sync`), `partition`, `actorId`, `durationMs`, `bytesIn`, `bytesOut`, `outcome` (`ok` \| `schema_floor` \| `rejected` \| `error`), `errorCode?`, `pushCommits`, `pulled`, `subscriptions` |
+| `request.handled` | Once per `POST /sync`, after the response bytes are fully produced (or the request was rejected up front) | `kind` (`sync`), `partition`, `actorId`, `durationMs`, `bytesIn`, `bytesOut`, `outcome` (`ok` \| `schema_floor` \| `rejected` \| `error`), `errorCode?`, `clientId?` (absent when the request did not decode), `pushCommits`, `pulled`, `subscriptions` |
 | `push.applied` | A `PUSH_COMMIT` applied, or replayed from the idempotency cache (§2.3) | `clientId`, `clientCommitId`, `operations`, `commitSeq?`, `replay` |
-| `push.rejected` | A commit rejected (§6.3) | `clientId`, `clientCommitId`, `operations`, `code` (§10.2), `opIndex` |
-| `push.conflicted` | A commit terminated by a version conflict (§6.2) | `clientId`, `clientCommitId`, `operations`, `opIndex` |
+| `push.rejected` | A commit rejected (§6.3) | `clientId`, `clientCommitId`, `operations`, `code` (§10.2), `opIndex`, `table?` and `rowId?` of the terminating operation |
+| `push.conflicted` | A commit terminated by a version conflict (§6.2) | `clientId`, `clientCommitId`, `operations`, `opIndex`, `table?` and `rowId?` of the conflicting operation |
 | `reaction.queued` | A planned reaction committed with its source push | `clientId`, `clientCommitId`, `commitSeq`, `idempotencyKey`, `reactionType`, `version` |
 | `reaction.started` | A worker claimed and began one attempt | `workerId`, `idempotencyKey`, `reactionType`, `version`, `attempt` |
 | `reaction.retried` | A retryable attempt failed and was rescheduled | started fields plus `nextAttemptAtMs`, `errorCode` |
@@ -554,7 +554,10 @@ context). The demo server wires it behind `SYNCULAR_DEMO_EVENTS=1`.
 | `scopes.resolve_failed` | The host `resolveScopes` callback threw — the §3.2/§3.4 fail-loud path | `phase` (`request` \| `realtime` \| `segment-download`), `message` |
 
 All events also carry `type`, `atMs`, and (where a request identity
-exists) `partition` / `actorId`.
+exists) `partition` / `actorId`. The events emitted while serving one sync
+request (`request.handled`, `push.*`, `pull.served`, `lease.issued`,
+`reaction.queued`, `scopes.resolve_failed`) share one `requestId`, so a sink
+can group a request's events.
 
 ## Admin / console surface (`SyncularAdmin`)
 
@@ -597,10 +600,16 @@ design. Row reads need the server `schema` (`fromConfig` passes it).
 
 | Method | Returns |
 | --- | --- |
-| `tables()` | The schema tables with `columns[]` (`name`, `type`, `nullable`, `primaryKey`), for pickers. |
-| `listClients(partition, {limit?, sort?})` | `{clients, total}`. Each client: `clientId`, `actorId`, `wireVersion`, `schemaVersion?` (highest among its subscriptions), `cursor`, `lag` (`maxCommitSeq − max(cursor, 0)`), `updatedAtMs`, `subscriptions[]`, `active` (touched within the §4.6 active window). `sort`: `seen` (default) or `lag`; `limit` default 200. |
-| `clientDetail(partition, clientId, {eventLimit?})` | `{exists, client?, lease?, realtime?, events}`: the record, its §7.3 lease when a lease store is wired, `open`/`closed` from the newest retained realtime event, and its slice of the event tail. |
-| `listCommits(partition, {afterSeq?, beforeSeq?, limit?, table?})` | Commit metadata, newest first: `commitSeq`, `clientId`, `clientCommitId`, `actorId`, `createdAtMs`, `changeCount`, `tables[]`. Pass the oldest `commitSeq` of a page as `beforeSeq` for the next older page. |
+| `tables()` / `schemaVersion` | The schema tables with `columns[]` (`name`, `type`, `nullable`, `primaryKey`), and the server schema version. |
+| `search(partition, query)` | Resolves one pasted id: clients whose id contains it or whose actor equals it, actors containing it, rows with that rowId in any table, the commit with that seq, and write outcomes with that clientCommitId. |
+| `actors(partition)` | Each actor with its devices (clients), open sockets, worst lag, and push failures in the last 5 minutes. |
+| `tableCounts(partition)` | Row count per schema table. |
+| `listRows(partition, table, {afterRowId?, limit?, scope?})` | One page of decoded rows ordered by rowId, optionally only rows whose stored `scope` (`{variable, value}`) matches, read through the scope index; `nextAfterRowId` continues. |
+| `rowDelivery(partition, table, rowId)` | The trace verdict for every known client on one row, sorted by verdict then last seen: who has the row and who does not. |
+| `findWrite(partition, clientCommitId)` | Every stored idempotency outcome for that clientCommitId (applied with `commitSeq`, or rejected with per-operation results; conflict bytes as base64) and the ring events that carry it. |
+| `listClients(partition, {limit?, sort?})` | `{clients, total}`. Each client: `clientId`, `actorId`, `wireVersion`, `schemaVersion?` (highest among its subscriptions), `cursor`, `lag` (`maxCommitSeq − max(cursor, 0)`), `updatedAtMs`, `subscriptions[]`, `active` (touched within the §4.6 active window), `connected?` and `connectedSinceMs?` (open realtime sockets on this process; present when a hub is wired, which `fromConfig` does when `config.realtime` is a `RealtimeHub`). `sort`: `seen` (default) or `lag`; `limit` default 200. |
+| `clientDetail(partition, clientId, {eventLimit?})` | `{exists, client?, lease?, events}`: the record, its §7.3 lease when a lease store is wired, and its slice of the event tail. |
+| `listCommits(partition, {afterSeq?, beforeSeq?, limit?, table?, changeSample?})` | Commit metadata, newest first: `commitSeq`, `clientId`, `clientCommitId`, `actorId`, `createdAtMs`, `changeCount`, `tables[]`, and with `changeSample` the first N changes as `sample[]` (`table`, `rowId`, `op`). Pass the oldest `commitSeq` of a page as `beforeSeq` for the next older page. |
 | `commitDetail(partition, commitSeq)` | The commit's metadata plus `changes[]` (`table`, `rowId`, `op`, `rowVersion?`, `scopes`, `values?` rendered per SPEC §11, `undecodable?` for a payload written under an older column set). Throws `sync.not_found` for a missing or pruned commit. |
 | `listReactions(partition, {statuses?, types?, limit?})` | Durable reaction lifecycle rows, newest first, including source commit, attempts, lease, completion, and bounded failure information. |
 | `inspectRow(partition, table, rowId, {historyLimit?})` | `{exists, serverVersion?, scopes?, values?, history}`: the row decoded per SPEC §11 and its retained changes, newest first (`commitSeq`, `op`, `rowVersion?`, `actorId`, `clientId`, `createdAtMs`). Throws `sync.unknown_table` for a table outside the schema. |
@@ -609,9 +618,9 @@ design. Row reads need the server `schema` (`fromConfig` passes it).
 | `horizonStatus(partition)` | `{maxCommitSeq, horizonSeq, retainedCommits, activeCursorFloor, recommendedHorizonSeq, recommendation}`: the horizon a prune pass would reach now (§4.6) and `up-to-date` / `prune-recommended`. |
 | `stats(partition)` | `{segments?, blobs?}` counts/bytes where the stores expose them (segments split rows/sqlite). |
 | `metrics(partition, {windowMs?, buckets?})` | Ring-derived request/push health over a trailing window (default 5 min): request count/rate, error share, p50/p95 duration, push applied/rejected/conflicted, and per-bucket counts, errors, p95 and push outcomes. `coverage: {complete, fromMs}` is false when the ring dropped events inside the window. All zeros when no ring is wired. |
-| `errors(partition, {windowMs?})` | Ring failures in the window: `byCode[]` (`source` `request`/`push`/`reaction`/`scopes`, `code`, `count`, distinct `clients` and `actors`, `lastAtMs`, `sampleClientIds`) and the ten clients with the most push failures in `byClient[]`, with `coverage`. |
+| `errors(partition, {windowMs?})` | Ring failures in the window: `byCode[]` (`source` `request`/`push`/`reaction`/`scopes`, `code`, `count`, distinct `clients` and `actors`, `lastAtMs`, `sampleClientIds`, `sampleRows`) and the ten clients with the most push failures in `byClient[]`, with `coverage`. |
 | `listPartitionRegistry()` / `partitionsOverview({limit?, offset?})` | Every authenticated partition; the overview pages them (default 100) as `{partitions, total}` with retained backlog, client counts, and the prune recommendation. |
-| `events({type?, partition?, sinceMs?, clientId?, actorId?, limit?})` | The ring tail, newest first. Empty when no ring is wired (`hasEventStream` reports which). |
+| `events({type?, partition?, requestId?, sinceMs?, clientId?, actorId?, limit?})` | The ring tail, newest first. Empty when no ring is wired (`hasEventStream` reports which). |
 | `subscribeEvents(listener)` | Live events as they land in the ring; returns the unsubscribe function, `undefined` when no ring is wired. |
 
 Operator actions:
@@ -624,10 +633,12 @@ Operator actions:
 
 The query surface leans on **additive, optional** storage/store methods
 (`ServerStorage.listClientRecords` / `listCommitMetadata` / `getCommit` /
-`listRowChanges` / `scopeActivity` / `listPartitions`; `SegmentStore.stats`;
+`listRowChanges` / `listRows` / `countRows` / `listPushResults` /
+`scopeActivity` / `listPartitions`; `SegmentStore.stats`;
 `BlobStore.stats`). `listRowChanges` reads the partition's retained log
-without a dedicated index, so the write path pays nothing for it and its cost
-is bounded by retention
+and `listPushResults` reads the stored idempotency outcomes, both without a
+dedicated index, so the write path pays nothing for them and their cost is
+bounded by retention
 — the established
 optional-method pattern. `SqliteServerStorage`, `PostgresServerStorage`,
 `D1ServerStorage`, and the memory/sqlite stores implement them; the shared
@@ -662,10 +673,16 @@ app.route('/admin', routes);
 | Route | Mirrors |
 | --- | --- |
 | `GET /` | The console page (see below). |
-| `GET /info` | `{hasEventStream, writes, tables}` |
+| `GET /info` | `{hasEventStream, writes, realtime, schemaVersion?, tables}` |
+| `GET /search?q` | `search` |
+| `GET /actors` | `actors` |
+| `GET /tables` | `tables()` with each table's `rowCount` |
+| `GET /rows/:table?afterRowId&limit&scope=variable:value` | `listRows` |
+| `GET /rows/:table/:rowId/delivery` | `rowDelivery` |
+| `GET /writes/:clientCommitId` | `findWrite` |
 | `GET /clients?limit&sort` | `listClients` |
 | `GET /clients/:clientId?eventLimit` | `clientDetail` |
-| `GET /commits?afterSeq&beforeSeq&limit&table` | `listCommits` |
+| `GET /commits?afterSeq&beforeSeq&limit&table&sample` | `listCommits` (`sample` is `changeSample`) |
 | `GET /commits/:commitSeq` | `commitDetail` |
 | `GET /reactions?status&type&limit` | `listReactions` |
 | `GET /rows/:table/:rowId?historyLimit` | `inspectRow` |
@@ -676,8 +693,8 @@ app.route('/admin', routes);
 | `GET /metrics?windowMs` | `metrics` |
 | `GET /errors?windowMs` | `errors` |
 | `GET /partitions?limit&offset` | `partitionsOverview` (fleet view) |
-| `GET /events?type&sinceMs&clientId&actorId&limit` | `events` (ring tail) |
-| `GET /events/stream?type&clientId&actorId&limit` | live SSE tail (backlog replay, then `subscribeEvents`) |
+| `GET /events?type&requestId&sinceMs&clientId&actorId&limit` | `events` (ring tail) |
+| `GET /events/stream?type&requestId&clientId&actorId&limit` | live SSE tail (backlog replay, then `subscribeEvents`) |
 | `POST /reactions/:idempotencyKey/retry` | `retryReaction` |
 | `POST /prune` | `prune` |
 | `POST /clients/:clientId/revoke-lease` | `revokeLease` |

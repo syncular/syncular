@@ -22,6 +22,8 @@ export interface RingEventQuery {
   readonly type?: SyncularServerEvent['type'];
   /** Restrict to one partition (every event carries one). */
   readonly partition?: string;
+  /** Restrict to the events of one sync request. */
+  readonly requestId?: string;
   /** Only events with `atMs >= sinceMs`. */
   readonly sinceMs?: number;
   /** Restrict to events carrying this `clientId` (not every type does). */
@@ -44,6 +46,9 @@ export function matchesRingQuery(
 ): boolean {
   if (query.type !== undefined && event.type !== query.type) return false;
   if (query.partition !== undefined && event.partition !== query.partition) {
+    return false;
+  }
+  if (query.requestId !== undefined && event.requestId !== query.requestId) {
     return false;
   }
   if (query.sinceMs !== undefined && event.atMs < query.sinceMs) return false;

@@ -12,9 +12,11 @@
  * store learns immediately rather than getting a silently-empty console.
  */
 import {
+  bytesToBase64,
   type ColumnType,
   decodeRow,
   type JsonValue,
+  type PushOperationResult,
   renderRowValues,
   type ScopeMap,
 } from '@syncular/core';
@@ -33,6 +35,7 @@ import {
 } from './events';
 import type { RingBufferEvents, RingEventQuery } from './events-ring';
 import type { LeaseRecord, LeaseStore } from './lease-store';
+import { RealtimeHub } from './realtime';
 import {
   DEFAULT_RETENTION,
   pruneCommitLog,
@@ -50,6 +53,8 @@ import type {
   ClientRecord,
   CommitMetadata,
   ReactionStatus,
+  StoredPushResult,
+  StoredRow,
   RowChangeRecord,
   ScopeCommitActivity,
   ServerStorage,
@@ -78,6 +83,13 @@ export interface AdminClient {
   }[];
   /** True when the cursor record was touched within the active window. */
   readonly active: boolean;
+  /**
+   * True while the client holds an open realtime socket on this process.
+   * Absent when the admin has no realtime hub.
+   */
+  readonly connected?: boolean;
+  /** When the client's oldest open socket opened. */
+  readonly connectedSinceMs?: number;
 }
 
 export interface AdminListClientsOptions {
@@ -101,13 +113,6 @@ export interface AdminClientDetail {
   readonly client?: AdminClient;
   /** The client's §7.3 lease, when a lease store is wired and one exists. */
   readonly lease?: LeaseRecord;
-  /**
-   * The client's realtime socket state from the newest retained
-   * `realtime.opened`/`realtime.closed` event; absent when the ring holds
-   * neither. The ring is per process, so a multi-instance host sees only
-   * sockets this instance served.
-   */
-  readonly realtime?: 'open' | 'closed';
   /** Recent ring events carrying this clientId (newest first). */
   readonly events: readonly SyncularServerEvent[];
 }
@@ -172,6 +177,11 @@ export interface AdminErrorGroup {
   readonly lastAtMs: number;
   /** Up to five client ids, most recent first. */
   readonly sampleClientIds: readonly string[];
+  /** Up to five rows the failing pushes targeted, most recent first. */
+  readonly sampleRows: readonly {
+    readonly table: string;
+    readonly rowId: string;
+  }[];
 }
 
 /** One client's push failures within the window. */
@@ -309,6 +319,92 @@ export interface AdminRowTrace {
   readonly rejections: readonly SyncularServerEvent[];
 }
 
+/** One client's verdict in a row's delivery matrix. */
+export interface AdminRowDeliveryClient {
+  readonly client: AdminClient;
+  readonly verdict: AdminTraceVerdict;
+}
+
+/** Who has one row and who does not: every known client's verdict. */
+export interface AdminRowDelivery {
+  readonly table: string;
+  readonly rowId: string;
+  readonly row: AdminRowInspection;
+  readonly lastChange?: RowChangeRecord;
+  readonly horizonSeq: number;
+  /** Every known client, sorted by verdict then most recently seen. */
+  readonly clients: readonly AdminRowDeliveryClient[];
+}
+
+/** One actor and its devices (clients). */
+export interface AdminActor {
+  readonly actorId: string;
+  readonly clients: readonly AdminClient[];
+  /** Devices with an open socket; absent without a realtime hub. */
+  readonly connected?: number;
+  readonly lastSeenMs: number;
+  readonly maxLag: number;
+  /** The actor's push rejections and conflicts in the last 5 minutes. */
+  readonly recentFailures: number;
+}
+
+/** A page of decoded rows from one table. */
+export interface AdminRowPage {
+  readonly table: string;
+  readonly rows: readonly {
+    readonly rowId: string;
+    readonly serverVersion: number;
+    readonly scopes: Record<string, string>;
+    readonly values: Record<string, JsonValue>;
+  }[];
+  /** Pass as `afterRowId` for the next page; absent on the last page. */
+  readonly nextAfterRowId?: string;
+}
+
+/**
+ * One per-operation result of a stored write, JSON-safe: a conflict's
+ * `serverRow` and `conflictColumns` bytes are standard base64 (§11).
+ */
+export type AdminWriteResult =
+  | Exclude<PushOperationResult, { status: 'conflict' }>
+  | (Omit<
+      Extract<PushOperationResult, { status: 'conflict' }>,
+      'serverRow' | 'conflictColumns'
+    > & { readonly serverRow: string; readonly conflictColumns: string });
+
+/** One stored outcome of a client write (§2.3 idempotency record). */
+export interface AdminWriteOutcome {
+  readonly clientId: string;
+  readonly status: StoredPushResult['status'];
+  readonly commitSeq?: number;
+  readonly recordedAtMs?: number;
+  readonly results: readonly AdminWriteResult[];
+}
+
+/** What happened to the write a client logged as `clientCommitId`. */
+export interface AdminWriteLookup {
+  readonly clientCommitId: string;
+  /** One outcome per client that sent this clientCommitId. */
+  readonly outcomes: readonly AdminWriteOutcome[];
+  /** Retained ring events carrying this clientCommitId, newest first. */
+  readonly events: readonly SyncularServerEvent[];
+}
+
+/** Everything an id pasted into the console search matches. */
+export interface AdminSearchResult {
+  readonly query: string;
+  /** Clients whose id contains the query, or whose actor equals it. */
+  readonly clients: readonly AdminClient[];
+  /** Actors whose id contains the query. */
+  readonly actors: readonly string[];
+  /** Rows whose id equals the query, one per table that holds it. */
+  readonly rows: readonly { readonly table: string; readonly rowId: string }[];
+  /** The commit whose seq equals the query. */
+  readonly commit?: CommitMetadata;
+  /** Outcomes of writes whose clientCommitId equals the query. */
+  readonly writes: readonly AdminWriteOutcome[];
+}
+
 export interface AdminHorizonStatus {
   readonly partition: string;
   readonly maxCommitSeq: number;
@@ -344,6 +440,8 @@ export interface AdminListCommitsOptions {
   readonly beforeSeq?: number;
   readonly limit?: number;
   readonly table?: string;
+  /** Attach each commit's first N changes as `sample`. */
+  readonly changeSample?: number;
 }
 
 export interface AdminScopeActivityOptions {
@@ -377,6 +475,8 @@ export interface SyncularAdminOptions {
   readonly events?: SyncularServerEvents;
   /** The host resolver: `traceRow` checks the actor's allowed scopes. */
   readonly resolveScopes?: ResolveScopes;
+  /** The realtime hub: which clients hold an open socket right now. */
+  readonly realtime?: RealtimeHub;
   readonly segments?: SegmentStore;
   readonly blobs?: BlobStore;
   /** The §7.3 lease store — the client drill-down and `revokeLease`. */
@@ -394,6 +494,7 @@ const DEFAULT_SCOPE_LIMIT = 50;
 const DEFAULT_REACTION_LIMIT = 100;
 const DEFAULT_CLIENT_EVENT_LIMIT = 100;
 const DEFAULT_ROW_HISTORY_LIMIT = 20;
+const DEFAULT_ROW_PAGE_LIMIT = 50;
 const DEFAULT_WINDOW_MS = 5 * 60 * 1000;
 const DEFAULT_METRICS_BUCKETS = 30;
 
@@ -414,36 +515,78 @@ function required<T>(value: T | undefined, what: string): T {
   return value;
 }
 
-function toAdminClient(
+/** Verdicts in evaluation order; `rowDelivery` sorts by it. */
+const VERDICT_ORDER: readonly AdminTraceVerdict[] = [
+  'client-unknown',
+  'row-missing',
+  'no-subscription',
+  'row-deleted',
+  'scope-mismatch',
+  'scope-denied',
+  'pending-pull',
+  'delivered',
+];
+
+/** One known client's subscriptions on the row's table and its verdict. */
+function traceVerdict(
   record: ClientRecord,
-  active: boolean,
-  maxCommitSeq: number,
-): AdminClient {
-  let schemaVersion: number | undefined;
-  for (const sub of record.subscriptions) {
-    if (
-      sub.schemaVersion !== undefined &&
-      (schemaVersion === undefined || sub.schemaVersion > schemaVersion)
-    ) {
-      schemaVersion = sub.schemaVersion;
-    }
-  }
-  return {
-    clientId: record.clientId,
-    actorId: record.actorId,
-    wireVersion: record.wireVersion,
-    ...(schemaVersion !== undefined ? { schemaVersion } : {}),
-    cursor: record.cursor,
-    // A never-pulled cursor (-1) has seen nothing: it lags the whole log.
-    lag: Math.max(0, maxCommitSeq - Math.max(0, record.cursor)),
-    updatedAtMs: record.updatedAtMs,
-    subscriptions: record.subscriptions.map((sub) => ({
-      id: sub.id,
-      table: sub.table,
-      scopes: sub.scopes,
-    })),
-    active,
-  };
+  row: AdminRowInspection,
+  lastChange: RowChangeRecord | undefined,
+  horizonSeq: number,
+  allowed: ScopeMap | 'outage' | undefined,
+): {
+  readonly subscriptions: AdminTraceSubscription[];
+  readonly verdict: AdminTraceVerdict;
+} {
+  const rowScopes = row.scopes ?? {};
+  const subscriptions = record.subscriptions
+    .filter((sub) => sub.table === row.table)
+    .map((sub): AdminTraceSubscription => {
+      const mismatches = Object.entries(sub.scopes)
+        .filter(([variable, values]) => {
+          const value = rowScopes[variable];
+          return value === undefined || !values.includes(value);
+        })
+        .map(([variable, values]) => ({
+          variable,
+          rowValue: rowScopes[variable] ?? null,
+          requested: values,
+        }));
+      const traced = {
+        id: sub.id,
+        scopes: sub.scopes,
+        requestedMatch: mismatches.length === 0,
+        mismatches,
+      };
+      if (allowed === undefined || allowed === 'outage') return traced;
+      const effective = computeEffective(sub.scopes, { ok: true, allowed });
+      return {
+        ...traced,
+        effectiveMatch:
+          effective.status === 'active' &&
+          matchesEffective(rowScopes, effective.effective),
+      };
+    });
+  // With no retained change left, the newest one sits at or below the
+  // horizon, so a cursor at the horizon has pulled it.
+  const pulled = record.cursor >= (lastChange?.commitSeq ?? horizonSeq);
+  const verdict: AdminTraceVerdict =
+    !row.exists && lastChange === undefined
+      ? 'row-missing'
+      : subscriptions.length === 0
+        ? 'no-subscription'
+        : !row.exists
+          ? pulled
+            ? 'row-deleted'
+            : 'pending-pull'
+          : !subscriptions.some((sub) => sub.requestedMatch)
+            ? 'scope-mismatch'
+            : subscriptions.every((sub) => sub.effectiveMatch === false)
+              ? 'scope-denied'
+              : pulled
+                ? 'delivered'
+                : 'pending-pull';
+  return { subscriptions, verdict };
 }
 
 /** The console query surface plus its operator actions. One per process. */
@@ -454,6 +597,7 @@ export class SyncularAdmin {
   readonly #ring?: RingBufferEvents;
   readonly #events?: SyncularServerEvents;
   readonly #resolveScopes?: ResolveScopes;
+  readonly #realtime?: RealtimeHub;
   readonly #segments?: SegmentStore;
   readonly #blobs?: BlobStore;
   readonly #leases?: LeaseStore;
@@ -472,6 +616,7 @@ export class SyncularAdmin {
     if (options.resolveScopes !== undefined) {
       this.#resolveScopes = options.resolveScopes;
     }
+    if (options.realtime !== undefined) this.#realtime = options.realtime;
     if (options.segments !== undefined) this.#segments = options.segments;
     if (options.blobs !== undefined) this.#blobs = options.blobs;
     if (options.leases !== undefined) this.#leases = options.leases;
@@ -496,6 +641,9 @@ export class SyncularAdmin {
         ? { checkpoints: config.checkpoints }
         : {}),
       resolveScopes: config.resolveScopes,
+      ...(config.realtime instanceof RealtimeHub
+        ? { realtime: config.realtime }
+        : {}),
       ...(config.events !== undefined ? { events: config.events } : {}),
       segments: config.segments,
       ...(config.blobs !== undefined ? { blobs: config.blobs } : {}),
@@ -504,6 +652,11 @@ export class SyncularAdmin {
       ...(extra?.retention !== undefined ? { retention: extra.retention } : {}),
       clock: clockOf(config),
     });
+  }
+
+  /** The server schema version; `undefined` without a schema. */
+  get schemaVersion(): number | undefined {
+    return this.#schema?.version;
   }
 
   /** The schema tables and columns, for row and commit pickers. */
@@ -528,12 +681,8 @@ export class SyncularAdmin {
       this.#storage.listClientRecords?.bind(this.#storage),
       'storage',
     );
-    const records = await list(partition);
-    const maxCommitSeq = await this.#storage.getMaxCommitSeq(partition);
-    const activeFloorMs = this.#clock() - this.#retention.activeWindowMs;
-    const clients = records.map((record) =>
-      toAdminClient(record, record.updatedAtMs >= activeFloorMs, maxCommitSeq),
-    );
+    const view = await this.#clientView(partition);
+    const clients = (await list(partition)).map(view);
     clients.sort((a, b) =>
       options.sort === 'lag' ? b.lag - a.lag : b.updatedAtMs - a.updatedAtMs,
     );
@@ -562,25 +711,12 @@ export class SyncularAdmin {
     if (record === undefined) {
       return { clientId, exists: false, events };
     }
-    const maxCommitSeq = await this.#storage.getMaxCommitSeq(partition);
-    const activeFloorMs = this.#clock() - this.#retention.activeWindowMs;
     const lease = await this.#leases?.get(partition, clientId);
-    const socket = this.events({ partition, clientId }).find(
-      (event) =>
-        event.type === 'realtime.opened' || event.type === 'realtime.closed',
-    );
     return {
       clientId,
       exists: true,
-      client: toAdminClient(
-        record,
-        record.updatedAtMs >= activeFloorMs,
-        maxCommitSeq,
-      ),
+      client: (await this.#clientView(partition))(record),
       ...(lease !== undefined ? { lease } : {}),
-      ...(socket !== undefined
-        ? { realtime: socket.type === 'realtime.opened' ? 'open' : 'closed' }
-        : {}),
       events,
     };
   }
@@ -601,6 +737,9 @@ export class SyncularAdmin {
         : {}),
       limit: options.limit ?? DEFAULT_COMMIT_LIMIT,
       ...(options.table !== undefined ? { table: options.table } : {}),
+      ...(options.changeSample !== undefined
+        ? { changeSample: options.changeSample }
+        : {}),
     });
   }
 
@@ -756,75 +895,287 @@ export class SyncularAdmin {
     if (record === undefined) {
       return { ...base, verdict: 'client-unknown', subscriptions: [] };
     }
-    const maxCommitSeq = await this.#storage.getMaxCommitSeq(partition);
-    const activeFloorMs = this.#clock() - this.#retention.activeWindowMs;
-    let allowed: ScopeMap | 'outage' | undefined;
-    if (this.#resolveScopes !== undefined) {
-      const resolved = await this.#resolveScopes({
-        partition,
-        actorId: record.actorId,
-        clientId,
-      });
-      allowed = resolved === RESOLVER_OUTAGE ? 'outage' : resolved;
-    }
-    const rowScopes = row.scopes ?? {};
-    const subscriptions = record.subscriptions
-      .filter((sub) => sub.table === table)
-      .map((sub): AdminTraceSubscription => {
-        const mismatches = Object.entries(sub.scopes)
-          .filter(([variable, values]) => {
-            const value = rowScopes[variable];
-            return value === undefined || !values.includes(value);
-          })
-          .map(([variable, values]) => ({
-            variable,
-            rowValue: rowScopes[variable] ?? null,
-            requested: values,
-          }));
-        const traced = {
-          id: sub.id,
-          scopes: sub.scopes,
-          requestedMatch: mismatches.length === 0,
-          mismatches,
-        };
-        if (allowed === undefined || allowed === 'outage') return traced;
-        const effective = computeEffective(sub.scopes, { ok: true, allowed });
-        return {
-          ...traced,
-          effectiveMatch:
-            effective.status === 'active' &&
-            matchesEffective(rowScopes, effective.effective),
-        };
-      });
-    const traced = {
+    const allowed = await this.#allowedScopes(partition, record);
+    return {
       ...base,
-      client: toAdminClient(
-        record,
-        record.updatedAtMs >= activeFloorMs,
-        maxCommitSeq,
-      ),
+      client: (await this.#clientView(partition))(record),
       ...(allowed !== undefined ? { allowed } : {}),
-      subscriptions,
+      ...traceVerdict(record, row, lastChange, horizonSeq, allowed),
     };
-    // With no retained change left, the newest one sits at or below the
-    // horizon, so a cursor at the horizon has pulled it.
-    const pulled = record.cursor >= (lastChange?.commitSeq ?? horizonSeq);
-    if (!row.exists && lastChange === undefined) {
-      return { ...traced, verdict: 'row-missing' };
+  }
+
+  /**
+   * Who has one row and who does not: the trace verdict for every known
+   * client in the partition, resolving each actor's allowed scopes once.
+   */
+  async rowDelivery(
+    partition: string,
+    table: string,
+    rowId: string,
+  ): Promise<AdminRowDelivery> {
+    const list = required(
+      this.#storage.listClientRecords?.bind(this.#storage),
+      'storage',
+    );
+    const row = await this.inspectRow(partition, table, rowId, {
+      historyLimit: 1,
+    });
+    const lastChange = row.history[0];
+    const horizonSeq = await this.#storage.getHorizonSeq(partition);
+    const view = await this.#clientView(partition);
+    const allowedByActor = new Map<string, ScopeMap | 'outage' | undefined>();
+    const clients: AdminRowDeliveryClient[] = [];
+    for (const record of await list(partition)) {
+      if (!allowedByActor.has(record.actorId)) {
+        allowedByActor.set(
+          record.actorId,
+          await this.#allowedScopes(partition, record),
+        );
+      }
+      clients.push({
+        client: view(record),
+        verdict: traceVerdict(
+          record,
+          row,
+          lastChange,
+          horizonSeq,
+          allowedByActor.get(record.actorId),
+        ).verdict,
+      });
     }
-    if (subscriptions.length === 0) {
-      return { ...traced, verdict: 'no-subscription' };
+    clients.sort(
+      (a, b) =>
+        VERDICT_ORDER.indexOf(a.verdict) - VERDICT_ORDER.indexOf(b.verdict) ||
+        b.client.updatedAtMs - a.client.updatedAtMs,
+    );
+    return {
+      table,
+      rowId,
+      row,
+      ...(lastChange !== undefined ? { lastChange } : {}),
+      horizonSeq,
+      clients,
+    };
+  }
+
+  /**
+   * The partition's actors with their devices (clients), open sockets,
+   * worst lag, and push failures in the last 5 minutes; most recently seen
+   * first.
+   */
+  async actors(partition: string): Promise<AdminActor[]> {
+    const { clients } = await this.listClients(partition, {
+      limit: Number.MAX_SAFE_INTEGER,
+    });
+    const failures = new Map<string, number>();
+    for (const event of this.events({
+      partition,
+      sinceMs: this.#clock() - DEFAULT_WINDOW_MS,
+    })) {
+      if (event.type === 'push.rejected' || event.type === 'push.conflicted') {
+        failures.set(event.actorId, (failures.get(event.actorId) ?? 0) + 1);
+      }
     }
-    if (!row.exists) {
-      return { ...traced, verdict: pulled ? 'row-deleted' : 'pending-pull' };
+    const byActor = new Map<string, AdminClient[]>();
+    for (const client of clients) {
+      byActor.set(client.actorId, [
+        ...(byActor.get(client.actorId) ?? []),
+        client,
+      ]);
     }
-    if (!subscriptions.some((sub) => sub.requestedMatch)) {
-      return { ...traced, verdict: 'scope-mismatch' };
+    return [...byActor].map(([actorId, devices]) => ({
+      actorId,
+      clients: devices,
+      ...(this.#realtime !== undefined
+        ? { connected: devices.filter((device) => device.connected).length }
+        : {}),
+      lastSeenMs: Math.max(...devices.map((device) => device.updatedAtMs)),
+      maxLag: Math.max(...devices.map((device) => device.lag)),
+      recentFailures: failures.get(actorId) ?? 0,
+    }));
+  }
+
+  /** Row counts per schema table for the partition. */
+  async tableCounts(partition: string): Promise<Record<string, number>> {
+    const count = required(
+      this.#storage.countRows?.bind(this.#storage),
+      'storage',
+    );
+    const schema = this.#requireSchema();
+    await this.#storage.ensureSchema(schema, this.#checkpoints);
+    const counts: Record<string, number> = {};
+    for (const table of schema.tables.keys()) {
+      counts[table] = await count(partition, table);
     }
-    if (subscriptions.every((sub) => sub.effectiveMatch === false)) {
-      return { ...traced, verdict: 'scope-denied' };
+    return counts;
+  }
+
+  /**
+   * One page of a table's rows decoded per §11, ordered by rowId. With a
+   * `scope`, only rows whose stored scope matches, read through the scope
+   * index.
+   */
+  async listRows(
+    partition: string,
+    table: string,
+    options: {
+      readonly afterRowId?: string;
+      readonly limit?: number;
+      readonly scope?: { readonly variable: string; readonly value: string };
+    } = {},
+  ): Promise<AdminRowPage> {
+    const schema = this.#requireSchema();
+    const compiled = schema.tables.get(table);
+    if (compiled === undefined) {
+      throw new SyncError(
+        'sync.unknown_table',
+        'table is not in the server schema',
+        JSON.stringify({ table }),
+      );
     }
-    return { ...traced, verdict: pulled ? 'delivered' : 'pending-pull' };
+    await this.#storage.ensureSchema(schema, this.#checkpoints);
+    const limit = options.limit ?? DEFAULT_ROW_PAGE_LIMIT;
+    const afterRowId = options.afterRowId ?? null;
+    let rows: StoredRow[];
+    if (options.scope !== undefined) {
+      if (!compiled.declaredVariables.has(options.scope.variable)) {
+        throw new SyncError(
+          'sync.invalid_request',
+          'the table declares no such scope variable',
+          JSON.stringify({ table, variable: options.scope.variable }),
+        );
+      }
+      rows = await this.#storage.scanRows(partition, {
+        table,
+        scopeFilter: { [options.scope.variable]: [options.scope.value] },
+        afterRowId,
+        limit,
+      });
+    } else {
+      const list = required(
+        this.#storage.listRows?.bind(this.#storage),
+        'storage',
+      );
+      rows = await list(partition, { table, afterRowId, limit });
+    }
+    const last = rows.at(-1);
+    return {
+      table,
+      rows: rows.map((row) => ({
+        rowId: row.rowId,
+        serverVersion: row.serverVersion,
+        scopes: row.scopes,
+        values: renderRowValues(
+          compiled.columns,
+          decodeRow(compiled.columns, row.payload),
+        ),
+      })),
+      ...(rows.length === limit && last !== undefined
+        ? { nextAfterRowId: last.rowId }
+        : {}),
+    };
+  }
+
+  /**
+   * What happened to a write: every stored idempotency outcome for the
+   * clientCommitId (applied with its commitSeq, or rejected with the
+   * per-operation results), plus the retained ring events that carry it.
+   */
+  async findWrite(
+    partition: string,
+    clientCommitId: string,
+  ): Promise<AdminWriteLookup> {
+    const list = required(
+      this.#storage.listPushResults?.bind(this.#storage),
+      'storage',
+    );
+    const outcomes = (await list(partition, clientCommitId)).map(
+      ({ clientId, result }): AdminWriteOutcome => ({
+        clientId,
+        status: result.status,
+        ...(result.commitSeq !== undefined
+          ? { commitSeq: result.commitSeq }
+          : {}),
+        ...(result.recordedAtMs !== undefined
+          ? { recordedAtMs: result.recordedAtMs }
+          : {}),
+        results: result.results.map((entry) =>
+          entry.status === 'conflict'
+            ? {
+                ...entry,
+                serverRow: bytesToBase64(entry.serverRow),
+                conflictColumns: bytesToBase64(entry.conflictColumns),
+              }
+            : entry,
+        ),
+      }),
+    );
+    const events = this.events({ partition }).filter(
+      (event) =>
+        'clientCommitId' in event && event.clientCommitId === clientCommitId,
+    );
+    return { clientCommitId, outcomes, events };
+  }
+
+  /**
+   * Resolve an id pasted from a bug report: clients and actors containing
+   * it, rows with that rowId in any table, the commit with that seq, and
+   * writes with that clientCommitId.
+   */
+  async search(partition: string, query: string): Promise<AdminSearchResult> {
+    const needle = query.trim();
+    if (needle.length === 0) {
+      throw new SyncError('sync.invalid_request', 'search query is empty');
+    }
+    const { clients } = await this.listClients(partition, {
+      limit: Number.MAX_SAFE_INTEGER,
+    });
+    const schema = this.#requireSchema();
+    await this.#storage.ensureSchema(schema, this.#checkpoints);
+    const rows: { table: string; rowId: string }[] = [];
+    for (const table of schema.tables.keys()) {
+      if (
+        (await this.#storage.getRow(partition, table, needle)) !== undefined
+      ) {
+        rows.push({ table, rowId: needle });
+      }
+    }
+    const read = required(
+      this.#storage.getCommit?.bind(this.#storage),
+      'storage',
+    );
+    const commit = /^\d+$/.test(needle)
+      ? await read(partition, Number.parseInt(needle, 10))
+      : undefined;
+    return {
+      query: needle,
+      clients: clients.filter(
+        (client) =>
+          client.clientId.includes(needle) || client.actorId === needle,
+      ),
+      actors: [
+        ...new Set(
+          clients
+            .map((client) => client.actorId)
+            .filter((actorId) => actorId.includes(needle)),
+        ),
+      ],
+      rows,
+      ...(commit !== undefined
+        ? {
+            commit: {
+              commitSeq: commit.commitSeq,
+              clientId: commit.clientId,
+              clientCommitId: commit.clientCommitId,
+              actorId: commit.actorId,
+              createdAtMs: commit.createdAtMs,
+              changeCount: commit.changeCount,
+              tables: commit.tables,
+            },
+          }
+        : {}),
+      writes: (await this.findWrite(partition, needle)).outcomes,
+    };
   }
 
   /**
@@ -888,6 +1239,11 @@ export class SyncularAdmin {
       ...(segments !== undefined ? { segments } : {}),
       ...(blobs !== undefined ? { blobs } : {}),
     };
+  }
+
+  /** True when a realtime hub is wired: clients report `connected`. */
+  get hasRealtime(): boolean {
+    return this.#realtime !== undefined;
   }
 
   /** True when this admin has an event ring wired (the event tail is live). */
@@ -1013,6 +1369,7 @@ export class SyncularAdmin {
         count: number;
         readonly clients: Set<string>;
         readonly actors: Set<string>;
+        readonly rows: Map<string, { table: string; rowId: string }>;
         readonly lastAtMs: number;
       }
     >();
@@ -1055,9 +1412,20 @@ export class SyncularAdmin {
         count: 0,
         clients: new Set<string>(),
         actors: new Set<string>(),
+        rows: new Map<string, { table: string; rowId: string }>(),
         lastAtMs: event.atMs,
       };
       group.count += 1;
+      if (
+        (event.type === 'push.rejected' || event.type === 'push.conflicted') &&
+        event.table !== undefined &&
+        event.rowId !== undefined
+      ) {
+        group.rows.set(`${event.table} ${event.rowId}`, {
+          table: event.table,
+          rowId: event.rowId,
+        });
+      }
       if (clientId !== undefined) group.clients.add(clientId);
       if (actorId !== undefined) group.actors.add(actorId);
       groups.set(key, group);
@@ -1092,6 +1460,7 @@ export class SyncularAdmin {
           actors: group.actors.size,
           lastAtMs: group.lastAtMs,
           sampleClientIds: [...group.clients].slice(0, 5),
+          sampleRows: [...group.rows.values()].slice(0, 5),
         })),
       byClient: [...byClient.values()]
         .sort((a, b) => b.count - a.count)
@@ -1216,6 +1585,71 @@ export class SyncularAdmin {
       throw new Error('SyncularAdmin: row reads require the server schema');
     }
     return this.#schema;
+  }
+
+  /**
+   * Map client records to `AdminClient` with one read of the head, the
+   * active floor, and the hub's open sockets for the partition.
+   */
+  async #clientView(
+    partition: string,
+  ): Promise<(record: ClientRecord) => AdminClient> {
+    const maxCommitSeq = await this.#storage.getMaxCommitSeq(partition);
+    const activeFloorMs = this.#clock() - this.#retention.activeWindowMs;
+    const sockets = this.#realtime?.connections(partition);
+    const connectedSince = new Map<string, number>();
+    for (const socket of sockets ?? []) {
+      const since = connectedSince.get(socket.clientId);
+      if (since === undefined || socket.openedAtMs < since) {
+        connectedSince.set(socket.clientId, socket.openedAtMs);
+      }
+    }
+    return (record) => {
+      let schemaVersion: number | undefined;
+      for (const sub of record.subscriptions) {
+        if (
+          sub.schemaVersion !== undefined &&
+          (schemaVersion === undefined || sub.schemaVersion > schemaVersion)
+        ) {
+          schemaVersion = sub.schemaVersion;
+        }
+      }
+      const connectedSinceMs = connectedSince.get(record.clientId);
+      return {
+        clientId: record.clientId,
+        actorId: record.actorId,
+        wireVersion: record.wireVersion,
+        ...(schemaVersion !== undefined ? { schemaVersion } : {}),
+        cursor: record.cursor,
+        // A never-pulled cursor (-1) has seen nothing: it lags the whole log.
+        lag: Math.max(0, maxCommitSeq - Math.max(0, record.cursor)),
+        updatedAtMs: record.updatedAtMs,
+        subscriptions: record.subscriptions.map((sub) => ({
+          id: sub.id,
+          table: sub.table,
+          scopes: sub.scopes,
+        })),
+        active: record.updatedAtMs >= activeFloorMs,
+        ...(sockets !== undefined
+          ? { connected: connectedSinceMs !== undefined }
+          : {}),
+        ...(connectedSinceMs !== undefined ? { connectedSinceMs } : {}),
+      };
+    };
+  }
+
+  /** The actor's allowed scopes from the host resolver, if one is wired. */
+  async #allowedScopes(
+    partition: string,
+    record: ClientRecord,
+  ): Promise<ScopeMap | 'outage' | undefined> {
+    if (this.#resolveScopes === undefined) return undefined;
+    const resolved = await this.#resolveScopes({
+      partition,
+      actorId: record.actorId,
+      clientId: record.clientId,
+    });
+    return resolved === RESOLVER_OUTAGE ? 'outage' : resolved;
   }
 
   #coverage(sinceMs: number): AdminEventCoverage {

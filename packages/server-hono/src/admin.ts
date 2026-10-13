@@ -184,6 +184,10 @@ export function createSyncularAdminRoutes(
     Response.json({
       hasEventStream: admin.hasEventStream,
       writes: options.authorizeWrite !== undefined,
+      realtime: admin.hasRealtime,
+      ...(admin.schemaVersion !== undefined
+        ? { schemaVersion: admin.schemaVersion }
+        : {}),
       tables: admin.tables(),
     }),
   );
@@ -204,6 +208,34 @@ export function createSyncularAdminRoutes(
         ...(sort !== undefined ? { sort } : {}),
       }),
     );
+  });
+
+  app.get('/actors', async (c) =>
+    Response.json({ actors: await admin.actors(partitionOf(c)) }),
+  );
+
+  app.get('/search', async (c) =>
+    Response.json({
+      search: await admin.search(partitionOf(c), c.req.query('q') ?? ''),
+    }),
+  );
+
+  app.get('/writes/:clientCommitId', async (c) =>
+    Response.json({
+      write: await admin.findWrite(
+        partitionOf(c),
+        c.req.param('clientCommitId'),
+      ),
+    }),
+  );
+
+  app.get('/tables', async (c) => {
+    const counts = await admin.tableCounts(partitionOf(c));
+    return Response.json({
+      tables: admin
+        .tables()
+        .map((table) => ({ ...table, rowCount: counts[table.name] ?? 0 })),
+    });
   });
 
   app.get('/clients/:clientId', async (c) => {
@@ -239,7 +271,9 @@ export function createSyncularAdminRoutes(
     const afterSeq = intParam(c, 'afterSeq');
     const beforeSeq = intParam(c, 'beforeSeq');
     const limit = intParam(c, 'limit');
+    const changeSample = intParam(c, 'sample');
     const commits = await admin.listCommits(partitionOf(c), {
+      ...(changeSample !== undefined ? { changeSample } : {}),
       ...(afterSeq !== undefined ? { afterSeq } : {}),
       ...(beforeSeq !== undefined ? { beforeSeq } : {}),
       ...(limit !== undefined ? { limit } : {}),
@@ -276,6 +310,43 @@ export function createSyncularAdminRoutes(
     });
     return Response.json({ reactions });
   });
+
+  app.get('/rows/:table', async (c) => {
+    const scope = c.req.query('scope');
+    const separator = scope?.indexOf(':') ?? -1;
+    if (scope !== undefined && separator <= 0) {
+      throw new SyncError(
+        'sync.invalid_request',
+        'scope must be variable:value',
+        JSON.stringify({ scope }),
+      );
+    }
+    const afterRowId = c.req.query('afterRowId');
+    const limit = intParam(c, 'limit');
+    const page = await admin.listRows(partitionOf(c), c.req.param('table'), {
+      ...(afterRowId !== undefined ? { afterRowId } : {}),
+      ...(limit !== undefined ? { limit } : {}),
+      ...(scope !== undefined
+        ? {
+            scope: {
+              variable: scope.slice(0, separator),
+              value: scope.slice(separator + 1),
+            },
+          }
+        : {}),
+    });
+    return Response.json({ page });
+  });
+
+  app.get('/rows/:table/:rowId/delivery', async (c) =>
+    Response.json({
+      delivery: await admin.rowDelivery(
+        partitionOf(c),
+        c.req.param('table'),
+        c.req.param('rowId'),
+      ),
+    }),
+  );
 
   app.get('/rows/:table/:rowId', async (c) => {
     const historyLimit = intParam(c, 'historyLimit');
@@ -339,8 +410,10 @@ export function createSyncularAdminRoutes(
     const type = c.req.query('type') as RingEventQuery['type'];
     const clientId = c.req.query('clientId');
     const actorId = c.req.query('actorId');
+    const requestId = c.req.query('requestId');
     return {
       partition: partitionOf(c),
+      ...(requestId !== undefined ? { requestId } : {}),
       ...(type !== undefined ? { type } : {}),
       ...(clientId !== undefined ? { clientId } : {}),
       ...(actorId !== undefined ? { actorId } : {}),

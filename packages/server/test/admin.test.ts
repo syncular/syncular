@@ -5,6 +5,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import {
+  createRealtimeHub,
   type LeaseStore,
   type MemoryBlobStore,
   MemoryLeaseStore,
@@ -630,6 +631,7 @@ describe('errors + coverage', () => {
         actors: 1,
         lastAtMs: 2_000,
         sampleClientIds: ['client-a'],
+        sampleRows: [],
       },
       {
         source: 'push',
@@ -639,6 +641,7 @@ describe('errors + coverage', () => {
         actors: 1,
         lastAtMs: 1_000,
         sampleClientIds: ['client-b'],
+        sampleRows: [],
       },
     ]);
     expect(summary.byClient[0]).toEqual({
@@ -706,6 +709,131 @@ describe('operator actions', () => {
     expect(await admin.prune('part-1')).toEqual({
       previousHorizonSeq: 0,
       horizonSeq: 2,
+    });
+  });
+});
+
+describe('people, delivery, search', () => {
+  async function twoDevices(t: TestContext) {
+    t.scopes.value = { project_id: ['p1', 'p2'] };
+    await seedTask(t, 'c1', 't1', 'p1');
+    await seedTask(t, 'c2', 't2', 'p2');
+    // client-1 subscribes to p1 and holds a socket; client-2 to p2, offline.
+    await sync(t, [
+      pullHeader(),
+      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
+    ]);
+    await sync(
+      t,
+      [pullHeader(), subFrame('s1', 'tasks', { project_id: ['p2'] }, -1)],
+      { clientId: 'client-2' },
+    );
+    const hub = createRealtimeHub({
+      schema: t.ctx.schema,
+      storage: t.storage,
+      segments: t.segments,
+      resolveScopes: t.ctx.resolveScopes,
+      clock: () => t.now.ms,
+    });
+    await hub.connect({
+      partition: 'part-1',
+      actorId: 'actor-1',
+      clientId: 'client-1',
+      send: () => {},
+    });
+    return SyncularAdmin.fromConfig({ ...t.ctx, realtime: hub });
+  }
+
+  test('clients report open sockets and actors group their devices', async () => {
+    const t = makeContext();
+    const admin = await twoDevices(t);
+    const { clients } = await admin.listClients('part-1');
+    expect(
+      Object.fromEntries(clients.map((c) => [c.clientId, c.connected])),
+    ).toEqual({ 'client-1': true, 'client-2': false });
+    expect(clients.find((c) => c.clientId === 'client-1')).toMatchObject({
+      connectedSinceMs: t.now.ms,
+    });
+    const actors = await admin.actors('part-1');
+    expect(actors).toHaveLength(1);
+    expect(actors[0]).toMatchObject({
+      actorId: 'actor-1',
+      connected: 1,
+      maxLag: 0,
+      recentFailures: 0,
+    });
+    expect(actors[0]?.clients).toHaveLength(2);
+  });
+
+  test('rowDelivery gives every client a verdict for one row', async () => {
+    const t = makeContext();
+    const admin = await twoDevices(t);
+    const delivery = await admin.rowDelivery('part-1', 'tasks', 't1');
+    expect(
+      delivery.clients.map(({ client, verdict }) => [client.clientId, verdict]),
+    ).toEqual([
+      ['client-2', 'scope-mismatch'],
+      ['client-1', 'delivered'],
+    ]);
+  });
+
+  test('search resolves clients, actors, rows and commits from one id', async () => {
+    const t = makeContext();
+    const admin = await twoDevices(t);
+    const byRow = await admin.search('part-1', 't2');
+    expect(byRow.rows).toEqual([{ table: 'tasks', rowId: 't2' }]);
+    const byActor = await admin.search('part-1', 'actor-1');
+    expect(byActor.actors).toEqual(['actor-1']);
+    expect(byActor.clients).toHaveLength(2);
+    const bySeq = await admin.search('part-1', '2');
+    expect(bySeq.commit).toMatchObject({ commitSeq: 2, clientCommitId: 'c2' });
+    const byWrite = await admin.search('part-1', 'c2');
+    expect(byWrite.writes).toEqual([
+      expect.objectContaining({
+        clientId: 'client-1',
+        status: 'applied',
+        commitSeq: 2,
+      }),
+    ]);
+    await expect(admin.search('part-1', '  ')).rejects.toMatchObject({
+      code: 'sync.invalid_request',
+    });
+  });
+
+  test('listRows pages a table and filters by scope; tableCounts counts rows', async () => {
+    const t = makeContext();
+    const admin = await twoDevices(t);
+    const first = await admin.listRows('part-1', 'tasks', { limit: 1 });
+    expect(first.rows.map((row) => row.rowId)).toEqual(['t1']);
+    expect(first.rows[0]?.values).toMatchObject({ id: 't1', project_id: 'p1' });
+    expect(first.nextAfterRowId).toBe('t1');
+    const second = await admin.listRows('part-1', 'tasks', {
+      afterRowId: 't1',
+      limit: 1,
+    });
+    expect(second.rows.map((row) => row.rowId)).toEqual(['t2']);
+    const scoped = await admin.listRows('part-1', 'tasks', {
+      scope: { variable: 'project_id', value: 'p2' },
+    });
+    expect(scoped.rows.map((row) => row.rowId)).toEqual(['t2']);
+    expect(scoped.nextAfterRowId).toBeUndefined();
+    expect((await admin.tableCounts('part-1')).tasks).toBe(2);
+  });
+
+  test('findWrite returns a rejected outcome with its per-operation code', async () => {
+    const t = makeContext();
+    await seedTask(t, 'c1', 't1', 'p1');
+    await sync(t, [
+      pushCommit('c-bad', [upsert('tasks', 't9', taskRow('t9', 'p-denied'))]),
+    ]);
+    const admin = SyncularAdmin.fromConfig(t.ctx);
+    const write = await admin.findWrite('part-1', 'c-bad');
+    expect(write.outcomes).toEqual([
+      expect.objectContaining({ clientId: 'client-1', status: 'rejected' }),
+    ]);
+    expect(write.outcomes[0]?.results[0]).toMatchObject({
+      status: 'error',
+      code: 'sync.forbidden',
     });
   });
 });

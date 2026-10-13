@@ -379,6 +379,15 @@ export interface CommitMetadata {
   readonly createdAtMs: number;
   readonly changeCount: number;
   readonly tables: readonly string[];
+  /** The first `changeSample` changes in commit order, when requested. */
+  readonly sample?: readonly CommitChangeSummary[];
+}
+
+/** One change without its payload, for commit lists. */
+export interface CommitChangeSummary {
+  readonly table: string;
+  readonly rowId: string;
+  readonly op: 'upsert' | 'delete';
 }
 
 export interface CommitMetadataQuery {
@@ -390,6 +399,21 @@ export interface CommitMetadataQuery {
   readonly limit: number;
   /** Restrict to commits that touched this table (via the change index). */
   readonly table?: string;
+  /** Attach the first N changes of each commit as `sample`. */
+  readonly changeSample?: number;
+}
+
+export interface RowListQuery {
+  readonly table: string;
+  /** Resume after this rowId (exclusive); `null` = start of table. */
+  readonly afterRowId: string | null;
+  readonly limit: number;
+}
+
+/** A stored push outcome with the client that sent it. */
+export interface ClientPushResult {
+  readonly clientId: string;
+  readonly result: StoredPushResult;
 }
 
 /** One retained commit with its changes, for the admin commit drill-down. */
@@ -950,6 +974,11 @@ export interface ServerStorage {
    * `listRowChanges`: the retained changes to one row, newest first. It
    * reads the partition's retained log without a dedicated index, so the
    * write path pays nothing for it and its cost is bounded by retention.
+   * `listRows`: one table's rows ordered by rowId, without a scope filter.
+   * `countRows`: one table's row count.
+   * `listPushResults`: every stored idempotency outcome for one
+   * clientCommitId across the partition's clients, scanning the retained
+   * outcomes without a dedicated index.
    * `listPartitions`: the partition-only compatibility view of
    * `listPartitionRegistry`, sorted.
    */
@@ -970,6 +999,12 @@ export interface ServerStorage {
     partition: string,
     query: RowChangesQuery,
   ): Promise<RowChangeRecord[]>;
+  listRows?(partition: string, query: RowListQuery): Promise<StoredRow[]>;
+  countRows?(partition: string, table: string): Promise<number>;
+  listPushResults?(
+    partition: string,
+    clientCommitId: string,
+  ): Promise<ClientPushResult[]>;
   listPartitions(): Promise<string[]>;
 }
 

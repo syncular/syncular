@@ -907,6 +907,14 @@ export class RealtimeSession {
   }
 }
 
+/** One open realtime socket. */
+export interface RealtimeConnection {
+  readonly sessionId: string;
+  readonly clientId: string;
+  readonly actorId: string;
+  readonly openedAtMs: number;
+}
+
 export class RealtimeHub {
   readonly #config: RealtimeHubConfig;
   readonly #schema: CompiledSchema;
@@ -930,6 +938,18 @@ export class RealtimeHub {
 
   get sessionCount(): number {
     return this.#sessions.size;
+  }
+
+  /** The partition's open sockets, for the admin console. */
+  connections(partition: string): RealtimeConnection[] {
+    return [...this.#sessions]
+      .filter((session) => session.partition === partition)
+      .map((session) => ({
+        sessionId: session.sessionId,
+        clientId: session.clientId,
+        actorId: session.actorId,
+        openedAtMs: session.openedAtMs,
+      }));
   }
 
   /** §8.6.2 published-document size cap (bytes). */

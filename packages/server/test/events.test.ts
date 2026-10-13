@@ -82,6 +82,7 @@ describe('push events', () => {
       operations: 1,
       commitSeq: 1,
       replay: false,
+      requestId: expect.any(String),
     });
 
     const handled = ofType(t.events, 'request.handled');
@@ -96,10 +97,14 @@ describe('push events', () => {
       bytesIn: bytes.length,
       bytesOut: out.length,
       outcome: 'ok',
+      clientId: 'client-1',
       pushCommits: 1,
       pulled: false,
       subscriptions: 0,
+      requestId: expect.any(String),
     });
+    // One request: every event carries the same requestId.
+    expect(handled[0]?.requestId).toBe(applied[0]?.requestId ?? 'missing');
     // push.applied precedes request.handled (streaming order).
     expect(t.events.indexOf(applied[0] as SyncularServerEvent)).toBeLessThan(
       t.events.indexOf(handled[0] as SyncularServerEvent),
@@ -127,6 +132,7 @@ describe('push events', () => {
     expect(conflicted).toHaveLength(1);
     expect(conflicted[0]?.clientCommitId).toBe('c2');
     expect(conflicted[0]?.opIndex).toBe(0);
+    expect(conflicted[0]).toMatchObject({ table: 'tasks', rowId: 't1' });
     expect(conflicted[0]?.replay).toBe(false);
     expect(typeof conflicted[0]?.cacheIdentity).toBe('string');
     expect(ofType(t.events, 'push.rejected')).toHaveLength(0);

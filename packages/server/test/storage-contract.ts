@@ -1807,6 +1807,178 @@ export function runStorageContract(
       ).toEqual([]);
     });
 
+    test('changeSample / listRows / countRows / listPushResults', async () => {
+      const storage = await make();
+      if (
+        storage.listCommitMetadata === undefined ||
+        storage.listRows === undefined ||
+        storage.countRows === undefined ||
+        storage.listPushResults === undefined
+      ) {
+        // A backend may legitimately omit the admin surface; skip cleanly.
+        return;
+      }
+      // One commit whose three changes interleave two tables and end in a
+      // delete, so a sample ordered by anything but `idx` is visibly wrong.
+      const tx = await storage.begin(PARTITION);
+      const multiSeq = await tx.appendCommit({
+        clientId: 'c1',
+        clientCommitId: 'k-multi',
+        actorId: 'a1',
+        createdAtMs: NOW,
+        changes: [
+          {
+            table: 'tasks',
+            rowId: 'r0',
+            op: 'upsert',
+            rowVersion: 1,
+            scopes: { project_id: 'p1' },
+            payload: bytes(0),
+          },
+          {
+            table: 'docs',
+            rowId: 'd1',
+            op: 'upsert',
+            rowVersion: 1,
+            scopes: { project_id: 'p1' },
+            payload: bytes(1),
+          },
+          {
+            table: 'tasks',
+            rowId: 'r1',
+            op: 'delete',
+            scopes: { project_id: 'p1' },
+          },
+        ],
+      });
+      await tx.commit();
+
+      // Without `changeSample` the metadata carries no sample key at all.
+      const plain = await storage.listCommitMetadata(PARTITION, {
+        afterSeq: 0,
+        limit: 10,
+      });
+      expect(plain.map((c) => c.commitSeq)).toEqual([multiSeq]);
+      expect(Object.keys(plain[0] ?? {})).not.toContain('sample');
+
+      // With it, the first N changes in `idx` order, per commit.
+      const sampled = await storage.listCommitMetadata(PARTITION, {
+        afterSeq: 0,
+        limit: 10,
+        changeSample: 2,
+      });
+      expect(sampled[0]).toMatchObject({
+        commitSeq: multiSeq,
+        changeCount: 3,
+        sample: [
+          { table: 'tasks', rowId: 'r0', op: 'upsert' },
+          { table: 'docs', rowId: 'd1', op: 'upsert' },
+        ],
+      });
+      // A sample wider than the commit returns every change, deletes included.
+      const full = await storage.listCommitMetadata(PARTITION, {
+        afterSeq: 0,
+        limit: 10,
+        changeSample: 10,
+      });
+      expect(full[0]?.sample).toEqual([
+        { table: 'tasks', rowId: 'r0', op: 'upsert' },
+        { table: 'docs', rowId: 'd1', op: 'upsert' },
+        { table: 'tasks', rowId: 'r1', op: 'delete' },
+      ]);
+
+      // Rows: paging is rowId-ordered and exclusive on `afterRowId`.
+      const rowsTx = await storage.begin(PARTITION);
+      await rowsTx.upsertRow('tasks', taskRow('r3', 'p1', 3, bytes(3)));
+      await rowsTx.upsertRow('tasks', taskRow('r1', 'p1', 1, bytes(1)));
+      await rowsTx.upsertRow('tasks', taskRow('r2', 'p2', 2, bytes(2)));
+      await rowsTx.commit();
+
+      const firstPage = await storage.listRows(PARTITION, {
+        table: 'tasks',
+        afterRowId: null,
+        limit: 2,
+      });
+      expect(firstPage.map((row) => row.rowId)).toEqual(['r1', 'r2']);
+      expect(firstPage[0]).toMatchObject({
+        serverVersion: 1,
+        scopes: { project_id: 'p1' },
+      });
+      expect(firstPage[0]?.payload).toEqual(
+        taskRow('r1', 'p1', 1, bytes(1)).payload,
+      );
+      expect(firstPage[1]).toMatchObject({
+        serverVersion: 2,
+        scopes: { project_id: 'p2' },
+      });
+
+      const secondPage = await storage.listRows(PARTITION, {
+        table: 'tasks',
+        afterRowId: firstPage[firstPage.length - 1]?.rowId ?? null,
+        limit: 2,
+      });
+      expect(secondPage.map((row) => row.rowId)).toEqual(['r3']);
+      expect(
+        secondPage.some((row) =>
+          firstPage.some((prev) => prev.rowId === row.rowId),
+        ),
+      ).toBe(false);
+      // The page is partition- and table-bound.
+      expect(
+        await storage.listRows('other', {
+          table: 'tasks',
+          afterRowId: null,
+          limit: 10,
+        }),
+      ).toEqual([]);
+      expect(
+        await storage.listRows(PARTITION, {
+          table: 'docs',
+          afterRowId: null,
+          limit: 10,
+        }),
+      ).toEqual([]);
+
+      expect(await storage.countRows(PARTITION, 'tasks')).toBe(3);
+      expect(await storage.countRows(PARTITION, 'docs')).toBe(0);
+      expect(await storage.countRows('other', 'tasks')).toBe(0);
+
+      // Push outcomes: every client's stored result for one clientCommitId.
+      const applied: StoredPushResult = {
+        status: 'applied',
+        commitSeq: 1,
+        results: [{ opIndex: 0, status: 'applied' }],
+      };
+      const rejected: StoredPushResult = {
+        status: 'rejected',
+        results: [
+          {
+            opIndex: 0,
+            status: 'error',
+            code: 'app.conflict',
+            message: 'rejected by policy',
+            retryable: false,
+          },
+        ],
+      };
+      const pushTx = await storage.begin(PARTITION);
+      // Inserted newest-client-last to prove the client_id ordering.
+      await pushTx.putPushResult('c2', 'k-multi', rejected);
+      await pushTx.putPushResult('c1', 'k-multi', applied);
+      await pushTx.putPushResult('c1', 'k-other', applied);
+      await pushTx.commit();
+
+      expect(await storage.listPushResults(PARTITION, 'k-multi')).toEqual([
+        { clientId: 'c1', result: applied },
+        { clientId: 'c2', result: rejected },
+      ]);
+      expect(await storage.listPushResults(PARTITION, 'k-other')).toEqual([
+        { clientId: 'c1', result: applied },
+      ]);
+      expect(await storage.listPushResults(PARTITION, 'k-missing')).toEqual([]);
+      expect(await storage.listPushResults('other', 'k-multi')).toEqual([]);
+    });
+
     test('authenticated partition registry refreshes, lists, and rotates', async () => {
       const storage = await make();
       expect(await storage.listPartitions()).toEqual([]);

@@ -68,6 +68,12 @@ import {
   rewriteRowSql,
   rewriteValues,
   SCHEMA_META_DDL_SQLITE,
+  SYNC_COLUMN_VERSIONS_COLUMN,
+  SYNC_PARTITION_COLUMN,
+  SYNC_PAYLOAD_COLUMN,
+  SYNC_ROW_ID_COLUMN,
+  SYNC_SCOPES_COLUMN,
+  SYNC_VERSION_COLUMN,
   type StoredColumnLayout,
   scanRowPageSql,
   schemaDdl,
@@ -99,8 +105,10 @@ import type {
   AuthoritativeQueryResult,
   CheckpointDeclaration,
   ClientCursorInfo,
+  ClientPushResult,
   ClientRecord,
   ClientSubscription,
+  CommitChangeSummary,
   CommitDetail,
   CommitMetadata,
   CommitMetadataQuery,
@@ -118,6 +126,7 @@ import type {
   ReactionPruneQuery,
   RowChangeRecord,
   RowChangesQuery,
+  RowListQuery,
   RowScanQuery,
   ScopeActivityQuery,
   ScopeCommitActivity,
@@ -2523,6 +2532,46 @@ export class D1ServerStorage implements ServerStorage {
             created_at_ms: number;
           }>();
     const out: CommitMetadata[] = [];
+    // `changeSample`: extra statement(s) for the whole page — the first
+    // `sample` changes (change-index order) of every listed commit.
+    const sampleCount =
+      query.changeSample !== undefined &&
+      Number.isInteger(query.changeSample) &&
+      query.changeSample > 0
+        ? query.changeSample
+        : 0;
+    const samples = new Map<number, CommitChangeSummary[]>();
+    if (sampleCount > 0 && rows.length > 0) {
+      const seqs = rows.map((row) => row.commit_seq);
+      // D1 caps the bound parameters of one statement, so a page larger than
+      // that cap splits into a few chunk statements, never one per commit.
+      const chunkSize = D1_MAX_BIND_PARAMS - 2;
+      for (let offset = 0; offset < seqs.length; offset += chunkSize) {
+        const chunk = seqs.slice(offset, offset + chunkSize);
+        const { results: changes } = await this.#db
+          .prepare(
+            `SELECT commit_seq, tbl, row_id, op FROM sync_changes
+             WHERE partition=? AND commit_seq IN (${placeholders(chunk.length)}) AND idx<?
+             ORDER BY commit_seq, idx`,
+          )
+          .bind(partition, ...chunk, sampleCount)
+          .all<{
+            commit_seq: number;
+            tbl: string;
+            row_id: string;
+            op: number;
+          }>();
+        for (const change of changes) {
+          const sample = samples.get(change.commit_seq) ?? [];
+          sample.push({
+            table: change.tbl,
+            rowId: change.row_id,
+            op: change.op === 1 ? 'upsert' : 'delete',
+          });
+          samples.set(change.commit_seq, sample);
+        }
+      }
+    }
     for (const row of rows) {
       const { results: changes } = await this.#db
         .prepare(
@@ -2538,6 +2587,9 @@ export class D1ServerStorage implements ServerStorage {
         createdAtMs: row.created_at_ms,
         changeCount: changes.reduce((sum, c) => sum + c.n, 0),
         tables: changes.map((c) => c.tbl),
+        ...(sampleCount > 0
+          ? { sample: samples.get(row.commit_seq) ?? [] }
+          : {}),
       });
     }
     return out;
@@ -2610,6 +2662,58 @@ export class D1ServerStorage implements ServerStorage {
       clientId: row.client_id,
       createdAtMs: row.created_at_ms,
     }));
+  }
+
+  async listRows(partition: string, query: RowListQuery): Promise<StoredRow[]> {
+    // Keyset page over the row table's (partition, rowId) primary key: an
+    // index range read, no scope filter, no per-row lookup.
+    const { results } = await this.#schemaDatabase()
+      .prepare(
+        `SELECT ${quoteIdent(SYNC_ROW_ID_COLUMN)} AS row_id, ${quoteIdent(SYNC_VERSION_COLUMN)} AS server_version, ${quoteIdent(SYNC_SCOPES_COLUMN)} AS scopes, ${quoteIdent(SYNC_PAYLOAD_COLUMN)} AS payload, ${quoteIdent(SYNC_COLUMN_VERSIONS_COLUMN)} AS column_versions
+         FROM ${quoteIdent(this.table(query.table).name)}
+         WHERE ${quoteIdent(SYNC_PARTITION_COLUMN)}=? AND ${quoteIdent(SYNC_ROW_ID_COLUMN)}>?
+         ORDER BY ${quoteIdent(SYNC_ROW_ID_COLUMN)} LIMIT ?`,
+      )
+      .bind(partition, query.afterRowId ?? '', query.limit)
+      .all<SqliteRowRecord>();
+    return results.map(toStoredRow);
+  }
+
+  async countRows(partition: string, table: string): Promise<number> {
+    const record = await this.#schemaDatabase()
+      .prepare(
+        `SELECT count(*) AS n FROM ${quoteIdent(this.table(table).name)} WHERE ${quoteIdent(SYNC_PARTITION_COLUMN)}=?`,
+      )
+      .bind(partition)
+      .first<{ n: number }>();
+    return record?.n ?? 0;
+  }
+
+  async listPushResults(
+    partition: string,
+    clientCommitId: string,
+  ): Promise<ClientPushResult[]> {
+    // Retained outcomes for one clientCommitId: no dedicated index, ordered
+    // by client so the read is deterministic.
+    const { results } = await this.#schemaDatabase()
+      .prepare(
+        'SELECT client_id, result FROM sync_push_results WHERE partition=? AND client_commit_id=? ORDER BY client_id',
+      )
+      .bind(partition, clientCommitId)
+      .all<{ client_id: string; result: string }>();
+    return results.map((record) => {
+      try {
+        return {
+          clientId: record.client_id,
+          result: deserializePushResult(record.result),
+        };
+      } catch {
+        throw syncError(
+          'sync.idempotency_cache_miss',
+          'persisted push result unreadable (§6.3)',
+        );
+      }
+    });
   }
 
   async scopeActivity(

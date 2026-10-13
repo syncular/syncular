@@ -190,10 +190,10 @@ select.inp{padding-right:4px}
 .dt .num{text-align:right}
 .dt td.fill{width:100%;max-width:0}
 .trunc{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.id{display:inline-flex;align-items:center;gap:4px;max-width:100%;min-width:0;vertical-align:middle}
-.id>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.id{text-transform:none;display:inline-flex;align-items:center;gap:4px;max-width:100%;min-width:0;vertical-align:middle}
+.id>span,.id>a{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .w-id .id>span{max-width:38ch}
-.w-sm .id>span{max-width:20ch}
+.w-sm .id>span,.w-sm .id>a{max-width:20ch}
 .cp{flex:none;display:inline-grid;place-items:center;width:20px;height:20px;padding:0;border:1px solid transparent;background:none;color:var(--faint);opacity:0}
 .cp svg{width:12px;height:12px}
 tr:hover .cp,.cp:focus-visible,.kv .cp,.mh .cp{opacity:1}
@@ -238,7 +238,19 @@ button.tag:hover{border-color:var(--amber);color:var(--amber)}
 .vbox{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 14px;margin:14px;padding:14px 16px;border:1px solid var(--line-strong);border-left:3px solid currentColor}
 .vbox b{font:600 15px var(--mono);letter-spacing:.06em}
 .vbox span{flex:1 1 22rem;font:13px/1.55 var(--sans);color:var(--dim)}
-.vbox.ok{color:var(--phos)}.vbox.warn{color:var(--amber)}.vbox.err{color:var(--red)}
+.vbox.ok{color:var(--phos)}.vbox.warn{color:var(--amber)}.vbox.err{color:var(--red)}.vbox.idle{color:var(--dim)}
+.lnk{color:var(--ink);text-decoration:underline;text-decoration-color:rgba(255,176,0,.5);text-underline-offset:3px}
+.lnk:hover{color:var(--amber)}
+.kicker .lnk{color:var(--amber)}
+a.tag{color:var(--ink);text-decoration:none}
+a.tag:hover{border-color:var(--amber);color:var(--amber)}
+.tag.on{background:var(--amber);border-color:var(--amber);color:#000}
+.dev::before{content:'';display:inline-block;width:6px;height:6px;margin-right:6px;background:var(--faint)}
+.dev.on::before{background:var(--phos)}
+.pager{margin:0;padding:10px 14px;border-top:1px solid var(--line)}
+.search input{width:16rem}
+h1 .cp{opacity:1;vertical-align:middle;margin-left:6px}
+.view>.panel,.view>.cols{margin-top:14px}
 .row-card .ph h2{text-transform:none;letter-spacing:.02em;color:var(--ink);font-size:12px;overflow:hidden;text-overflow:ellipsis}
 
 pre.json{margin:0;padding:12px 14px;border:1px solid var(--line);background:var(--void);font:12px/1.6 var(--mono);overflow:auto;white-space:pre;max-height:60vh}
@@ -260,7 +272,7 @@ dialog::backdrop{background:rgba(0,0,0,.82)}
 .keys dt{white-space:nowrap}
 #toast{position:fixed;left:50%;bottom:18px;z-index:60;transform:translateX(-50%);max-width:calc(100vw - 32px);padding:8px 14px;border:1px solid var(--amber);background:var(--panel);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
-@media (max-width:1180px){.top{gap:8px 10px;padding:8px 16px}.field input{width:9rem}}
+@media (max-width:1180px){.top{gap:8px 10px;padding:8px 16px}.field input{width:9rem}#updated{display:none}}
 @media (max-width:1300px){.kpis{grid-template-columns:repeat(3,minmax(0,1fr))}.ov{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (max-width:900px){
 body{display:block;height:auto}
@@ -295,7 +307,7 @@ main{overflow:visible;padding:16px}
 .dt td.fill{width:auto;max-width:none}
 .dt td .trunc{min-width:0}
 .dt .tags{justify-content:flex-end}
-.w-id .id>span,.w-sm .id>span{max-width:58vw}
+.w-id .id>span,.w-id .id>a,.w-sm .id>span,.w-sm .id>a{max-width:58vw}
 .mb{padding:12px}
 }
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
@@ -306,7 +318,8 @@ main{overflow:visible;padding:16px}
 <header class="top">
   <div class="brand"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="2.6" fill="#ffb000"/><circle cx="10" cy="10" r="5.6" fill="none" stroke="#ffb000" stroke-width="1.2"/><circle cx="10" cy="10" r="8.6" fill="none" stroke="#9a948a" stroke-width="1" stroke-dasharray="2 2"/></svg>SYNCULAR <span class="sl">/</span> <span class="sub">CONSOLE</span></div>
   <div class="field"><label for="partition">Partition</label><input id="partition" type="text" list="partitions-list" placeholder="server default" autocomplete="off" spellcheck="false" /></div>
-  <datalist id="partitions-list"></datalist><datalist id="tables-list"></datalist><datalist id="clients-list"></datalist>
+  <form id="search-form" class="field search" role="search"><label for="q">Find</label><input id="q" type="search" placeholder="Client, actor, row, commit or write id" autocomplete="off" spellcheck="false" /></form>
+  <datalist id="partitions-list"></datalist>
   <span class="grow"></span>
   <span id="live" class="pill" title="Event stream state"><i></i><span>Connecting</span></span>
   <span id="updated"></span>
@@ -319,15 +332,13 @@ main{overflow:visible;padding:16px}
 <div class="shell">
   <nav class="side" aria-label="Console views">
     <a id="nav-overview" href="#/overview"><b>01</b>Overview</a>
-    <a id="nav-clients" href="#/clients"><b>02</b>Clients<span class="n" id="n-clients"></span></a>
-    <a id="nav-commits" href="#/commits"><b>03</b>Commits<span class="n" id="n-commits"></span></a>
-    <a id="nav-rows" href="#/rows"><b>04</b>Rows</a>
-    <a id="nav-trace" href="#/trace"><b>05</b>Trace</a>
-    <a id="nav-scopes" href="#/scopes"><b>06</b>Scopes</a>
-    <a id="nav-events" href="#/events"><b>07</b>Events<span class="n" id="n-events"></span></a>
-    <a id="nav-reactions" href="#/reactions"><b>08</b>Reactions<span class="n" id="n-reactions"></span></a>
-    <a id="nav-storage" href="#/storage"><b>09</b>Storage</a>
-    <div class="foot">Read-only view of one partition.<br/><kbd>?</kbd> shortcuts</div>
+    <a id="nav-people" href="#/people"><b>02</b>People<span class="n" id="n-people"></span></a>
+    <a id="nav-data" href="#/data"><b>03</b>Data<span class="n" id="n-data"></span></a>
+    <a id="nav-commits" href="#/commits"><b>04</b>Commits<span class="n" id="n-commits"></span></a>
+    <a id="nav-events" href="#/events"><b>05</b>Events<span class="n" id="n-events"></span></a>
+    <a id="nav-reactions" href="#/reactions"><b>06</b>Reactions<span class="n" id="n-reactions"></span></a>
+    <a id="nav-storage" href="#/storage"><b>07</b>Storage</a>
+    <div class="foot"><span id="side-mode">Loading the admin capabilities.</span><br/><kbd>?</kbd> shortcuts</div>
   </nav>
   <main id="main" tabindex="-1">
     <div id="alert" class="banner err" role="alert" hidden></div>
@@ -344,51 +355,56 @@ main{overflow:visible;padding:16px}
       </div>
     </section>
 
-    <section id="view-clients" class="view" aria-labelledby="h-clients" hidden>
-      <div class="vh"><p class="kicker">02 · Clients</p><h1 id="h-clients">Clients<span class="dot">.</span></h1><p class="lede">Every client with a cursor record in this partition. Lag counts the commits a client has not pulled yet. Select a row for its subscriptions, lease, and recent events.</p></div>
+    <section id="view-people" class="view" aria-labelledby="h-people" hidden>
+      <div class="vh"><p class="kicker">02 · People</p><h1 id="h-people">People and devices<span class="dot">.</span></h1><p class="lede">Every actor in this partition with the devices it syncs from. A device opens its client page: subscriptions, lease, recent events, and a delivery trace.</p></div>
+      <div id="people-rt"></div>
+      <div class="cols"><div class="panel"><div class="ph"><h2>Schema rollout</h2><span class="meta" id="rollout-meta"></span></div><div class="pb" id="people-rollout" data-skel></div></div></div>
       <div class="panel">
-        <div class="tb"><input id="clients-q" data-focus class="inp grow" type="search" placeholder="Filter by client or actor" aria-label="Filter clients by client or actor" /><label class="chk"><input id="clients-active" type="checkbox" /> Active only</label><span class="count" id="clients-count"></span></div>
-        <div id="clients-wire" class="sugg"></div>
-        <div id="clients-table" data-skel></div>
+        <div class="tb"><input id="people-q" data-focus class="inp grow" type="search" placeholder="Filter by actor or client id" aria-label="Filter actors by actor or client id" /><span class="count" id="people-count"></span></div>
+        <div id="people-table" data-skel></div>
       </div>
+    </section>
+
+    <section id="view-client" class="view" aria-labelledby="h-client" hidden>
+      <div class="vh"><p class="kicker"><a class="lnk" href="#/people">People</a> · Client</p><h1 id="h-client"></h1><p class="lede" id="client-line"></p></div>
+      <div id="client-body" data-skel></div>
+    </section>
+
+    <section id="view-data" class="view" aria-labelledby="h-data" hidden>
+      <div class="vh"><p class="kicker">03 · Data</p><h1 id="h-data">Tables<span class="dot">.</span></h1><p class="lede">The server's authoritative rows, table by table. A table opens a row browser filtered by scope; a row shows its values, its history, and which clients hold it.</p></div>
+      <div class="panel"><div id="data-tables" data-skel></div></div>
+    </section>
+
+    <section id="view-table" class="view" aria-labelledby="h-table" hidden>
+      <div class="vh"><p class="kicker"><a class="lnk" href="#/data">Data</a> · Table</p><h1 id="h-table"></h1><p class="lede" id="table-line"></p></div>
+      <div class="panel">
+        <div id="table-scopes" class="sugg"></div>
+        <div id="table-rows" data-skel></div>
+      </div>
+      <div class="panel" id="table-activity-panel" hidden><div class="ph"><h2>Recent commits in this scope</h2><span class="meta" id="table-activity-meta"></span></div><div id="table-activity"></div></div>
+    </section>
+
+    <section id="view-row" class="view" aria-labelledby="h-row" hidden>
+      <div class="vh"><p class="kicker"><a class="lnk" href="#/data">Data</a> · <a class="lnk" id="row-table-link" href="#/data">table</a> · Row</p><h1 id="h-row"></h1><p class="lede" id="row-line"></p></div>
+      <div class="cols">
+        <div class="panel"><div class="ph"><h2>Values</h2><span class="meta" id="row-meta"></span></div><div id="row-values" data-skel></div></div>
+        <div class="panel"><div class="ph"><h2>History</h2><span class="meta" id="row-history-meta"></span></div><div id="row-history" data-skel></div></div>
+      </div>
+      <div class="panel"><div class="ph"><h2>Who has this row</h2><span class="meta" id="delivery-meta"></span></div><div id="row-delivery" data-skel></div></div>
     </section>
 
     <section id="view-commits" class="view" aria-labelledby="h-commits" hidden>
-      <div class="vh"><p class="kicker">03 · Commits</p><h1 id="h-commits">Commits<span class="dot">.</span></h1><p class="lede">Commit metadata from the log, newest first. The console never reads payloads. Select a commit for the ring events of its push.</p></div>
+      <div class="vh"><p class="kicker">04 · Commits</p><h1 id="h-commits">Commits<span class="dot">.</span></h1><p class="lede">The commit log, newest first, with the first changes of each commit. A commit opens every row change with its values. A client commit id from a bug report opens what happened to that write.</p></div>
       <div class="panel">
-        <div class="tb"><input id="commits-table" data-focus class="inp grow" type="search" list="tables-list" placeholder="Filter by table" aria-label="Filter commits by table" /><select id="commits-limit" class="inp" aria-label="Commits to load"><option value="50">Newest 50</option><option value="200">Newest 200</option><option value="500">Newest 500</option></select><span class="count" id="commits-count"></span></div>
+        <div class="tb"><input id="commits-table" data-focus class="inp grow" type="search" list="tables-list" placeholder="Filter by table" aria-label="Filter commits by table" /><select id="commits-limit" class="inp" aria-label="Commits per page"><option value="50">50 per page</option><option value="200">200 per page</option><option value="500">500 per page</option></select>
+          <form id="write-form" class="field"><label for="write-id">Write</label><input id="write-id" placeholder="Client commit id" spellcheck="false" /></form><span class="count" id="commits-count"></span></div>
         <div id="commits-list" data-skel></div>
       </div>
-    </section>
-
-    <section id="view-rows" class="view" aria-labelledby="h-rows" hidden>
-      <div class="vh"><p class="kicker">04 · Rows</p><h1 id="h-rows">Row inspector<span class="dot">.</span></h1><p class="lede">Reads one row's server version, stored scopes, and referenced blobs. Payload bytes stay unread.</p></div>
-      <div class="panel">
-        <form id="rows-form" class="tb"><input id="rows-table" data-focus class="inp" list="tables-list" placeholder="Table" aria-label="Table" spellcheck="false" /><input id="rows-id" class="inp grow" placeholder="Row id" aria-label="Row id" spellcheck="false" /><button class="btn amber" type="submit">Inspect</button></form>
-        <div id="rows-result"><div class="empty"><b>No row inspected</b>Enter a table and a row id. Tables seen in commits and subscriptions appear as suggestions.</div></div>
-      </div>
-      <div class="panel"><div class="ph"><h2>Recent inspections</h2></div><div id="rows-recent"><div class="empty sm">Inspections from this session appear here.</div></div></div>
-    </section>
-
-    <section id="view-trace" class="view" aria-labelledby="h-trace" hidden>
-      <div class="vh"><p class="kicker">05 · Trace</p><h1 id="h-trace">Delivery trace<span class="dot">.</span></h1><p class="lede">Answers why a client does or does not see a row: the row and its last change, the client's cursor, and how each of its subscriptions matches the row's scopes.</p></div>
-      <div class="panel">
-        <form id="trace-form" class="tb"><input id="trace-table" data-focus class="inp" list="tables-list" placeholder="Table" aria-label="Table" spellcheck="false" /><input id="trace-row" class="inp grow" placeholder="Row id" aria-label="Row id" spellcheck="false" /><input id="trace-client" class="inp grow" list="clients-list" placeholder="Client id" aria-label="Client id" spellcheck="false" /><button class="btn amber" type="submit">Trace</button></form>
-        <div id="trace-result"><div class="empty"><b>No trace yet</b>Enter a table, a row id, and a client id. The client drill-down and the row inspector prefill these fields.</div></div>
-      </div>
-    </section>
-
-    <section id="view-scopes" class="view" aria-labelledby="h-scopes" hidden>
-      <div class="vh"><p class="kicker">06 · Scopes</p><h1 id="h-scopes">Scope activity<span class="dot">.</span></h1><p class="lede">Recent commits that touched one scope key, read through the change-scope index.</p></div>
-      <div class="panel">
-        <form id="scopes-form" class="tb"><input id="scopes-var" data-focus class="inp" placeholder="Variable, e.g. project_id" aria-label="Scope variable" spellcheck="false" /><input id="scopes-val" class="inp grow" placeholder="Value, e.g. p1" aria-label="Scope value" spellcheck="false" /><button class="btn amber" type="submit">Query</button><span class="count" id="scopes-count"></span></form>
-        <div id="scopes-suggest" class="sugg"></div>
-        <div id="scopes-table"><div class="empty"><b>No scope queried</b>Enter a scope variable and a value, or pick a scope from the client subscriptions above.</div></div>
-      </div>
+      <datalist id="tables-list"></datalist>
     </section>
 
     <section id="view-events" class="view" aria-labelledby="h-events" hidden>
-      <div class="vh"><p class="kicker">07 · Events</p><h1 id="h-events">Event stream<span class="dot">.</span></h1><p class="lede">Structured server events from the in-memory ring, newest first. Kind and client filter on the server; family, level, and text filter the buffered tail.</p></div>
+      <div class="vh"><p class="kicker">05 · Events</p><h1 id="h-events">Event stream<span class="dot">.</span></h1><p class="lede">Server events from the in-memory ring, newest first, one row per sync request. A request opens all of its events. Kind and client filter on the server; family, level, and text filter the buffered tail.</p></div>
       <div id="ev-banner"></div>
       <div class="panel">
         <div class="tb">
@@ -396,6 +412,7 @@ main{overflow:visible;padding:16px}
           <input id="ev-client" class="inp" type="search" placeholder="Client id" aria-label="Filter events by client id" spellcheck="false" />
           <select id="ev-level" class="inp" aria-label="Level"><option value="">All levels</option><option value="warn">Warnings and errors</option><option value="err">Errors only</option></select>
           <input id="ev-q" data-focus class="inp grow" type="search" placeholder="Search event fields" aria-label="Search event fields" />
+          <label class="chk"><input id="ev-idle" type="checkbox" /> <span id="ev-idle-label">Show idle rounds</span></label>
           <button id="ev-pause" class="btn sm" type="button" title="Pause (space)">Pause</button>
           <button id="ev-clear" class="btn sm" type="button">Clear</button>
           <span class="count" id="ev-count"></span>
@@ -405,7 +422,7 @@ main{overflow:visible;padding:16px}
     </section>
 
     <section id="view-reactions" class="view" aria-labelledby="h-reactions" hidden>
-      <div class="vh"><p class="kicker">08 · Reactions</p><h1 id="h-reactions">Durable reactions<span class="dot">.</span></h1><p class="lede">The reaction queue of this partition: pending, leased, completed, and dead-lettered work with attempts and the last failure code. Reaction rows carry application payloads.</p></div>
+      <div class="vh"><p class="kicker">06 · Reactions</p><h1 id="h-reactions">Durable reactions<span class="dot">.</span></h1><p class="lede">The reaction queue of this partition, dead letters first, with attempts and the last failure code. Reaction rows carry application payloads.</p></div>
       <div class="panel">
         <div class="tb"><select id="rx-status" class="inp" aria-label="Reaction status"><option value="">All statuses</option><option value="pending">Pending</option><option value="leased">Leased</option><option value="completed">Completed</option><option value="dead-letter">Dead letter</option></select><input id="rx-type" data-focus class="inp grow" type="search" placeholder="Reaction type" aria-label="Filter by reaction type" spellcheck="false" /><span class="count" id="rx-count"></span></div>
         <div id="rx-table" data-skel></div>
@@ -413,12 +430,17 @@ main{overflow:visible;padding:16px}
     </section>
 
     <section id="view-storage" class="view" aria-labelledby="h-storage" hidden>
-      <div class="vh"><p class="kicker">09 · Storage</p><h1 id="h-storage">Storage<span class="dot">.</span></h1><p class="lede">Segment and blob store counters, and the commit log's retention state.</p></div>
+      <div class="vh"><p class="kicker">07 · Storage</p><h1 id="h-storage">Storage<span class="dot">.</span></h1><p class="lede">Segment and blob store counters, and the commit log's retention state.</p></div>
       <div class="cols">
         <div class="panel"><div class="ph"><h2>Segments</h2><span class="meta" id="seg-meta"></span></div><div class="pb" id="st-seg" data-skel></div></div>
         <div class="panel"><div class="ph"><h2>Blobs</h2><span class="meta" id="blob-meta"></span></div><div class="pb" id="st-blob" data-skel></div></div>
         <div class="panel fig"><div class="ph"><h2>Commit log</h2></div><div class="pb" id="st-horizon" data-skel></div></div>
       </div>
+    </section>
+
+    <section id="view-search" class="view" aria-labelledby="h-search" hidden>
+      <div class="vh"><p class="kicker">Find</p><h1 id="h-search"></h1><p class="lede">Clients and actors whose id contains the text, rows whose id equals it in any table, the commit with that sequence number, and the writes logged under that client commit id.</p></div>
+      <div id="search-body" data-skel></div>
     </section>
   </main>
 </div>
@@ -432,10 +454,11 @@ main{overflow:visible;padding:16px}
 <dialog id="help" aria-labelledby="help-title">
   <div class="mh"><div class="tt"><p class="kicker">Console</p><h2 id="help-title"><span>Keyboard shortcuts</span></h2></div><button id="help-close" class="btn sm" type="button">Close</button></div>
   <div class="mb"><dl class="keys">
-    <dt><kbd>1</kbd> to <kbd>9</kbd></dt><dd>Open Overview, Clients, Commits, Rows, Trace, Scopes, Events, Reactions, Storage</dd>
+    <dt><kbd>1</kbd> to <kbd>7</kbd></dt><dd>Open Overview, People, Data, Commits, Events, Reactions, Storage</dd>
+    <dt><kbd>/</kbd></dt><dd>Find a client, actor, row, commit, or write by id</dd>
+    <dt><kbd>f</kbd></dt><dd>Focus the filter of the current view</dd>
     <dt><kbd>r</kbd></dt><dd>Refresh the current view</dd>
     <dt><kbd>a</kbd></dt><dd>Cycle auto refresh: off, 2 s, 5 s, 15 s</dd>
-    <dt><kbd>/</kbd></dt><dd>Focus the filter of the current view</dd>
     <dt><kbd>p</kbd></dt><dd>Focus the partition picker</dd>
     <dt><kbd>space</kbd></dt><dd>Pause or resume the event stream (Events view)</dd>
     <dt><kbd>Enter</kbd></dt><dd>Open the focused table row</dd>
@@ -455,13 +478,15 @@ main{overflow:visible;padding:16px}
   var html = (id, v) => { $(id).innerHTML = v; };
   var txt = (id, v) => { $(id).textContent = v; };
   var NL = String.fromCharCode(10);
-  var VIEWS = ['overview', 'clients', 'commits', 'rows', 'trace', 'scopes', 'events', 'reactions', 'storage'];
+  var NAV = ['overview', 'people', 'data', 'commits', 'events', 'reactions', 'storage'];
+  // Pages without a sidebar entry highlight the section they belong to.
+  var SECTION = { client: 'people', table: 'data', row: 'data' };
   var EVENT_TYPES = ['request.handled', 'push.applied', 'push.rejected', 'push.conflicted', 'pull.served',
     'realtime.opened', 'realtime.closed', 'realtime.delta', 'realtime.wake', 'reaction.queued', 'reaction.started',
     'reaction.retried', 'reaction.completed', 'reaction.dead_lettered', 'reaction.prune_completed',
     'segment.downloaded', 'blob.uploaded', 'blob.downloaded', 'blob.swept', 'prune.completed',
     'scopes.resolve_failed', 'lease.issued', 'lease.revoked'];
-  var MAX_TAIL = 200;
+  var MAX_TAIL = 200, PAGE_ROWS = 50, FLEET_PAGE = 25;
   var SKEL = '<div class="skel" aria-label="Loading"><i></i><i></i><i></i></div>';
   var COPY_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 5.5h8v8h-8zM2.5 10.5v-8h8" fill="none" stroke="currentColor"/></svg>';
 
@@ -536,6 +561,8 @@ main{overflow:visible;padding:16px}
       throw apiError({ code: 'console.network_error', message: 'The request did not reach the admin routes.' }, 0);
     });
   }
+  var enc = encodeURIComponent;
+  function route(view, args) { return '#/' + [view].concat(args || []).map(enc).join('/'); }
 
   // -- formatting ----------------------------------------------------------
   function esc(v) {
@@ -569,25 +596,23 @@ main{overflow:visible;padding:16px}
   }
   function pct(n) { return (n * 100).toFixed(n > 0 && n < 0.1 ? 1 : 0) + '%'; }
   function st(cls, text) { return '<span class="st ' + cls + '">' + esc(text) + '</span>'; }
-  function idCell(v) {
-    return '<span class="id"><span title="' + esc(v) + '">' + esc(v) + '</span><button type="button" class="cp" data-copy="' + esc(v) + '" aria-label="Copy ' + esc(v) + '" title="Copy">' + COPY_SVG + '</button></span>';
-  }
+  function copyBtn(v) { return '<button type="button" class="cp" data-copy="' + esc(v) + '" aria-label="Copy ' + esc(v) + '" title="Copy">' + COPY_SVG + '</button>'; }
+  function idCell(v) { return '<span class="id"><span title="' + esc(v) + '">' + esc(v) + '</span>' + copyBtn(v) + '</span>'; }
   function idText(v) { return '<span class="id"><span title="' + esc(v) + '">' + esc(v) + '</span></span>'; }
+  function link(href, text, cls) { return '<a class="lnk ' + (cls || '') + '" href="' + esc(href) + '" title="' + esc(text) + '">' + esc(text) + '</a>'; }
+  function clientLink(id) { return '<span class="id">' + link(route('client', [id]), id) + copyBtn(id) + '</span>'; }
+  function rowLink(t, id, text) { return link(route('row', [t, id]), text || t + ' / ' + id); }
+  function seqBtn(seq) { return '<button type="button" class="tag" data-seq="' + seq + '">' + fmt(seq) + '</button>'; }
   function trunc(text) { return '<span class="trunc" title="' + esc(text) + '">' + esc(text) + '</span>'; }
-  function tags(list) {
-    return '<span class="tags">' + list.map(t => '<span class="tag">' + esc(t) + '</span>').join('') + '</span>';
-  }
-  function empty(title, text, small) {
-    return '<div class="empty' + (small ? ' sm' : '') + '"><b>' + esc(title) + '</b>' + text + '</div>';
-  }
+  function tags(list) { return '<span class="tags">' + list.map(t => '<span class="tag">' + esc(t) + '</span>').join('') + '</span>'; }
+  function scopeTags(scopes) { return tags(Object.keys(scopes || {}).map(k => k + ': ' + [].concat(scopes[k]).join(', '))); }
+  function empty(title, text, small) { return '<div class="empty' + (small ? ' sm' : '') + '"><b>' + esc(title) + '</b>' + text + '</div>'; }
   function errBox(err) {
     return '<div class="errbox" role="alert"><code>' + esc(err.code || 'console.render_failed') + '</code>' +
       (err.status ? '<span class="hs">HTTP ' + esc(err.status) + '</span>' : '') +
       '<p>' + esc(err.message) + (err.action ? ' Recommended action: ' + esc(err.action) + '.' : '') + '</p></div>';
   }
-  function kv(pairs) {
-    return '<dl class="kv">' + pairs.map(p => '<dt>' + esc(p[0]) + '</dt><dd>' + p[1] + '</dd>').join('') + '</dl>';
-  }
+  function kv(pairs) { return '<dl class="kv">' + pairs.map(p => '<dt>' + esc(p[0]) + '</dt><dd>' + p[1] + '</dd>').join('') + '</dl>'; }
   function jhtml(v, ind) {
     ind = ind || '';
     if (v === null || v === undefined) return '<span class="jz">null</span>';
@@ -603,6 +628,23 @@ main{overflow:visible;padding:16px}
     }).join(',' + NL) + NL + ind + (arr ? ']' : '}');
   }
   function json(v) { return '<pre class="json">' + jhtml(v) + '</pre>'; }
+  // Values follow SPEC §11 rendering: bytes and crdt columns arrive as
+  // base64 strings, json and blob_ref columns as parsed JSON.
+  function cell(v, type) {
+    if (v === null || v === undefined) return '<span class="dim">null</span>';
+    if ((type === 'bytes' || type === 'crdt') && typeof v === 'string') {
+      var n = Math.floor(v.length * 3 / 4) - (v.slice(-2) === '==' ? 2 : v.slice(-1) === '=' ? 1 : 0);
+      return '<span class="trunc" title="' + esc(v) + '">' + type + ' · ' + bytes(n) + ' <span class="dim">base64 ' + esc(v.slice(0, 24)) + (v.length > 24 ? '…' : '') + '</span></span>';
+    }
+    return trunc(typeof v === 'string' ? v : JSON.stringify(v));
+  }
+  function schemaOf(t) { return INFO.tables.filter(x => x.name === t)[0]; }
+  // Connection state comes from the realtime hub; without one the console
+  // shows when a client last synced and never guesses a connection.
+  function presence(c) {
+    if (INFO.realtime && c.connected) return st('ok', 'connected') + (c.connectedSinceMs ? ' <span class="dim">' + span(Date.now() - c.connectedSinceMs) + '</span>' : '');
+    return '<span class="dim" title="' + esc(stamp(c.updatedAtMs)) + '">seen ' + ago(c.updatedAtMs) + '</span>';
+  }
 
   // -- events: level, summary ----------------------------------------------
   function level(e) {
@@ -616,7 +658,7 @@ main{overflow:visible;padding:16px}
       (t === 'pull.served' && e.subscriptions.some(s => s.status !== 'active'))) return 'warn';
     return 'info';
   }
-  var LEVEL_LABEL = { err: 'error', warn: 'warn', info: 'info' };
+  var RANK = { err: 0, warn: 1, info: 2 }, LEVEL_LABEL = { err: 'error', warn: 'warn', info: 'info' };
   var SUMMARY_KEYS = ['outcome', 'errorCode', 'code', 'commitSeq', 'operations', 'opIndex', 'reason', 'reactionType',
     'attempt', 'phase', 'message', 'previousHorizonSeq', 'horizonSeq', 'removedCommits', 'swept', 'changes', 'bytes',
     'durationMs', 'segmentId', 'blobId', 'leaseId', 'registrations'];
@@ -630,9 +672,12 @@ main{overflow:visible;padding:16px}
       e.subscriptions.forEach(s => { var k = s.status === 'active' ? s.mode : s.status; modes[k] = (modes[k] || 0) + 1; commits += s.commits; });
       return Object.keys(modes).map(k => modes[k] + ' ' + k).join(', ') + ' · ' + commits + ' commits · through ' + e.acceptedThrough;
     }
-    return SUMMARY_KEYS.filter(k => e[k] !== undefined).map(k => {
+    return (e.table && e.rowId ? e.table + ' / ' + e.rowId + ' · ' : '') + SUMMARY_KEYS.filter(k => e[k] !== undefined).map(k => {
       return k + ' ' + (typeof e[k] === 'string' ? e[k] : JSON.stringify(e[k]));
     }).join(' · ') + (e.replay ? ' · replay' : '');
+  }
+  function detailCell(e) {
+    return e.table && e.rowId ? '<span class="tags">' + rowLink(e.table, e.rowId) + '</span>' + trunc(summary(e).slice(e.table.length + e.rowId.length + 6)) : trunc(summary(e));
   }
 
   // -- tables: sortable, pickable ------------------------------------------
@@ -673,24 +718,30 @@ main{overflow:visible;padding:16px}
     var b = $(id).querySelector('[data-sort="' + ci + '"]');
     if (b) b.focus();
   }
+  function pager(host, acts) {
+    $(host).insertAdjacentHTML('beforeend', '<div class="acts pager">' + acts.map(a => '<button type="button" class="btn sm" data-act="' + a[0] + '"' + (a[2] ? '' : ' disabled') + '>' + a[1] + '</button>').join('') + '</div>');
+  }
 
   // -- state ---------------------------------------------------------------
   // INFO is the admin's capability record from GET /info; it outlives
   // partition switches. S holds the current partition's reads.
-  var INFO = null, S = {}, ERR_TAB = 'code', FLEET_PAGE = 25;
+  var INFO = null, S = {}, ERR_TAB = 'code', at = { view: 'overview', args: [] };
   var tail = { mode: 'idle', src: null, list: [], held: [], paused: false };
   function reset() {
-    S = { view: S.view || 'overview', recentRows: S.recentRows || [], errs: {}, fleetOffset: 0 };
+    S = { errs: {}, fleetOffset: 0 };
     document.querySelectorAll('[data-skel]').forEach(h => { h.innerHTML = SKEL; });
-    ['n-clients', 'n-commits', 'n-events', 'n-reactions'].forEach(id => { $(id).textContent = ''; });
+    ['n-people', 'n-data', 'n-commits', 'n-events', 'n-reactions'].forEach(id => { $(id).textContent = ''; });
     renderKpis();
   }
   function ringOff(text) {
     return empty('No event ring wired', text + ' Pass <code>ring</code> to <code>SyncularAdmin.fromConfig</code> to record them.', true);
   }
-  function partial(m) {
-    return m.coverage && !m.coverage.complete;
-  }
+  function partial(m) { return m.coverage && !m.coverage.complete; }
+  // Clients a person would call "online": an open socket with a realtime
+  // hub, else a sync round within the last hour.
+  function online(c) { return INFO.realtime ? !!c.connected : Date.now() - c.updatedAtMs < 3600000; }
+  function onlineWord() { return INFO.realtime ? 'connected' : 'seen in the last hour'; }
+  function behindSchema(list) { return INFO.schemaVersion == null ? [] : list.filter(c => c.schemaVersion != null && c.schemaVersion < INFO.schemaVersion); }
 
   // -- overview ------------------------------------------------------------
   function sparkBars(vals, errs, red) {
@@ -703,9 +754,7 @@ main{overflow:visible;padding:16px}
   }
   function stack(parts) {
     var total = parts.reduce((s, p) => s + p[0], 0);
-    return '<div class="stack">' + (total ? parts.map(p => {
-      return p[0] ? '<b class="' + p[1] + '" style="width:' + (p[0] / total * 100) + '%"></b>' : '';
-    }).join('') : '') + '</div>';
+    return '<div class="stack">' + (total ? parts.map(p => p[0] ? '<b class="' + p[1] + '" style="width:' + (p[0] / total * 100) + '%"></b>' : '').join('') : '') + '</div>';
   }
   function kpi(label, value, unit, sub, viz, cls) {
     return '<div class="kpi ' + (cls || '') + '"><div class="l">' + label + '</div><div class="v">' + value +
@@ -729,9 +778,10 @@ main{overflow:visible;padding:16px}
       ['Requests', 'Error rate', 'Latency p95', 'Pushes'].forEach(l => { out += kpi(l, '–', '', why, '', ''); });
     }
     if (c) {
-      var active = c.filter(x => x.active).length, behind = c.filter(x => x.lag > 0).length;
-      out += kpi('Clients', fmt(active), '/ ' + fmt(S.clientTotal) + ' active', fmt(behind) + ' behind the head' + (S.clientTotal > c.length ? ' among ' + fmt(c.length) + ' loaded' : ''),
-        stack([[active, 'c-ok'], [c.length - active, 'c-dim']]), '');
+      var on = c.filter(online).length, old = behindSchema(c).length;
+      out += kpi('Clients', fmt(on), '/ ' + fmt(S.clientTotal) + ' ' + onlineWord(),
+        old ? fmt(old) + ' below server schema v' + INFO.schemaVersion : fmt(c.filter(x => x.lag > 0).length) + ' behind the head',
+        stack([[on, 'c-ok'], [c.length - on, 'c-dim']]), old ? 'warn' : '');
     } else out += kpi('Clients', '–', '', e.clients ? e.clients.code : 'loading', '', '');
     if (h) {
       out += kpi('Commit log', fmt(h.maxCommitSeq), 'head', fmt(h.retainedCommits) + ' retained · horizon ' + fmt(h.horizonSeq),
@@ -764,15 +814,11 @@ main{overflow:visible;padding:16px}
   }
   function renderHorizon(id, h) {
     var host = $(id);
-    if (h.maxCommitSeq === 0) {
-      host.innerHTML = empty('Empty commit log', 'The partition has no commits yet, so there is nothing to retain or prune.', true);
-      return;
-    }
-    var max = h.maxCommitSeq, at = n => Math.max(0, Math.min(100, n / max * 100));
-    var hz = at(h.horizonSeq), rec = at(h.recommendedHorizonSeq), floor = h.activeCursorFloor;
-    var marker = '';
+    if (h.maxCommitSeq === 0) { host.innerHTML = empty('Empty commit log', 'The partition has no commits yet, so there is nothing to retain or prune.', true); return; }
+    var max = h.maxCommitSeq, pos = n => Math.max(0, Math.min(100, n / max * 100));
+    var hz = pos(h.horizonSeq), rec = pos(h.recommendedHorizonSeq), floor = h.activeCursorFloor, marker = '';
     if (floor !== null) {
-      var fp = at(Math.max(floor, 0));
+      var fp = pos(Math.max(floor, 0));
       marker = '<span class="mark' + (fp < 15 ? ' l' : fp > 85 ? ' e' : '') + '" style="left:' + fp + '%"><span>cursor floor ' + fmt(floor) + '</span></span>';
     }
     var prune = h.recommendation === 'prune-recommended';
@@ -786,34 +832,33 @@ main{overflow:visible;padding:16px}
         : 'A prune pass now would leave the horizon at ' + fmt(h.horizonSeq) + '.') + '</p>' +
       kv([['Head', fmt(h.maxCommitSeq)], ['Horizon', fmt(h.horizonSeq)], ['Prune target', fmt(h.recommendedHorizonSeq)],
         ['Retained', fmt(h.retainedCommits) + ' commits'],
-        ['Cursor floor', floor === null ? '<span class="dim">no active clients</span>' : fmt(floor) + (floor < 0 ? ' <span class="dim">(an active client has not pulled yet)</span>' : '')]]);
+        ['Cursor floor', floor === null ? '<span class="dim">no active clients</span>' : fmt(floor) + (floor < 0 ? ' <span class="dim">(a client has not pulled yet)</span>' : '')]]);
   }
   var LAG_BUCKETS = [[0, 0, 'in sync'], [1, 9, '1 to 9'], [10, 99, '10 to 99'], [100, 999, '100 to 999'], [1000, Infinity, '1000 +']];
   function renderLag() {
     var c = S.clients;
     txt('lag-meta', c.length ? 'commits behind head' : '');
-    if (!c.length) { $('ov-lag').innerHTML = empty('No clients', 'No client has synced this partition. Clients appear after their first request.', true); return; }
+    if (!c.length) { html('ov-lag', empty('No clients', 'No client has synced this partition. Clients appear after their first request.', true)); return; }
     var rows = LAG_BUCKETS.map(b => {
-      var inB = c.filter(x => x.lag >= b[0] && x.lag <= b[1]);
-      var a = inB.filter(x => x.active).length;
+      var inB = c.filter(x => x.lag >= b[0] && x.lag <= b[1]), a = inB.filter(online).length;
       return [b[2], a, inB.length - a];
     });
     var max = Math.max.apply(null, rows.map(r => r[1] + r[2]).concat([1]));
     html('ov-lag', '<div class="pb"><div class="hist">' + rows.map(r => {
-      return '<span class="lb">' + r[0] + '</span><span class="tr" title="' + r[1] + ' active, ' + r[2] + ' idle" aria-hidden="true"><b class="c-am" style="width:' + (r[1] / max * 100) + '%"></b><b class="c-dim" style="width:' + (r[2] / max * 100) + '%"></b></span><span class="ct">' + (r[1] + r[2]) + '<span class="sr"> clients, ' + r[1] + ' active</span></span>';
-    }).join('') + '</div><div class="legend"><span><i class="c-am"></i>active</span><span><i class="c-dim"></i>idle</span></div></div><div id="ov-lagtop"></div>');
+      return '<span class="lb">' + r[0] + '</span><span class="tr" title="' + r[1] + ' ' + onlineWord() + ', ' + r[2] + ' other" aria-hidden="true"><b class="c-am" style="width:' + (r[1] / max * 100) + '%"></b><b class="c-dim" style="width:' + (r[2] / max * 100) + '%"></b></span><span class="ct">' + (r[1] + r[2]) + '<span class="sr"> clients, ' + r[1] + ' ' + onlineWord() + '</span></span>';
+    }).join('') + '</div><div class="legend"><span><i class="c-am"></i>' + onlineWord() + '</span><span><i class="c-dim"></i>other</span></div></div><div id="ov-lagtop"></div>');
     var top = c.filter(x => x.lag > 0).sort((a, b) => b.lag - a.lag).slice(0, 5);
     if (top.length) {
       table('ov-lagtop', [
-        { l: 'Most behind', c: 'w-sm fill', h: x => idCell(x.clientId) },
+        { l: 'Most behind', c: 'w-sm fill', h: x => clientLink(x.clientId) },
         { l: 'Lag', c: 'num', h: x => fmt(x.lag) },
         { l: 'Seen', c: 'num', h: x => when(x.updatedAtMs) }
-      ], top, '', x => { openClient(x.clientId); });
+      ], top, '', x => { nav('client', [x.clientId]); });
     }
   }
   function renderErrors() {
     var r = S.errors;
-    $('ov-errors').parentElement.querySelectorAll('[data-tab]').forEach(b => { b.setAttribute('aria-pressed', String(b.getAttribute('data-tab') === ERR_TAB)); });
+    document.querySelectorAll('[data-act="err-tab"]').forEach(b => { b.setAttribute('aria-pressed', String(b.getAttribute('data-tab') === ERR_TAB)); });
     if (!INFO.hasEventStream) { txt('err-meta', ''); html('ov-errors', ringOff('Failures come from the event ring.')); return; }
     var cut = r.coverage && !r.coverage.complete;
     txt('err-meta', cut ? 'since ' + clock(r.coverage.fromMs) + ' (partial)' : 'last ' + span(r.windowMs));
@@ -822,18 +867,18 @@ main{overflow:visible;padding:16px}
       table('ov-errors', [
         { l: 'Code', v: x => x.code, h: x => '<span class="ty err">' + esc(x.code) + '</span>' },
         { l: 'Source', v: x => x.source, h: x => esc(x.source) },
-        numCol('Count', 'count'), numCol('Clients', 'clients'), numCol('Actors', 'actors'),
+        numCol('Count', 'count'), numCol('Clients', 'clients'),
         { l: 'Last', c: 'num', d: -1, v: x => x.lastAtMs, h: x => when(x.lastAtMs) },
-        { l: 'Sample clients', c: 'fill', ns: true, h: x => '<span class="tags">' + x.sampleClientIds.map(id => '<button type="button" class="tag" data-client="' + esc(id) + '">' + esc(id) + '</button>').join('') + '</span>' }
-      ], r.byCode, none, x => { $('ev-q').value = x.code; $('ev-level').value = ''; go('events'); renderTail(); });
+        { l: 'Rows and clients', c: 'fill', ns: true, h: x => '<span class="tags">' + x.sampleRows.map(w => rowLink(w.table, w.rowId)).concat(x.sampleClientIds.map(id => link(route('client', [id]), id, 'tag'))).join('') + '</span>' }
+      ], r.byCode, none, x => { $('ev-q').value = x.code; nav('events'); renderTail(); });
     } else {
       table('ov-errors', [
-        { l: 'Client', c: 'w-sm', v: x => x.clientId, h: x => idCell(x.clientId) },
+        { l: 'Client', c: 'w-sm', v: x => x.clientId, h: x => clientLink(x.clientId) },
         { l: 'Actor', c: 'w-sm', v: x => x.actorId, h: x => idText(x.actorId) },
         numCol('Count', 'count'),
         { l: 'Last code', v: x => x.lastCode, h: x => '<span class="ty err">' + esc(x.lastCode) + '</span>' },
         { l: 'Last', c: 'num fill', d: -1, v: x => x.lastAtMs, h: x => when(x.lastAtMs) }
-      ], r.byClient, none, x => { openClient(x.clientId); });
+      ], r.byClient, none, x => { nav('client', [x.clientId]); });
     }
   }
 
@@ -865,61 +910,13 @@ main{overflow:visible;padding:16px}
       return null;
     }).catch(fail(hosts, 'horizon'));
   }
-  var CLIENT_COLS = [
-    { l: 'Client', c: 'w-id', v: x => x.clientId, h: x => idCell(x.clientId) },
-    { l: 'Actor', c: 'w-sm', v: x => x.actorId, h: x => idText(x.actorId) },
-    { l: 'Status', v: x => x.active ? 0 : 1, h: x => x.active ? st('ok', 'active') : st('idle', 'idle') },
-    { l: 'Wire', c: 'num', v: x => x.wireVersion, h: x => x.wireVersion == null ? '<span class="dim">–</span>' : 'v' + x.wireVersion },
-    numCol('Cursor', 'cursor'),
-    { l: 'Lag', c: 'num', d: -1, v: x => x.lag, h: x => {
-      var max = Math.max.apply(null, S.clients.map(y => y.lag).concat([1]));
-      return '<span class="lag' + (x.lag ? '' : ' z') + '">' + fmt(x.lag) + '<i><b style="width:' + (x.lag / max * 100) + '%"></b></i></span>';
-    } },
-    { l: 'Last seen', c: 'num', d: -1, v: x => x.updatedAtMs, h: x => when(x.updatedAtMs) },
-    { l: 'Subs', c: 'num', d: -1, v: x => x.subscriptions.length, h: x => {
-      return '<span title="' + esc(x.subscriptions.map(s => s.table).join(', ')) + '">' + x.subscriptions.length + '</span>';
-    } }
-  ];
-  function wireSpread() {
-    var by = {};
-    S.clients.forEach(x => { var k = x.wireVersion == null ? 'unknown' : 'v' + x.wireVersion; by[k] = (by[k] || 0) + 1; });
-    return Object.keys(by).sort().map(k => k + ' · ' + by[k]);
-  }
-  function renderClients() {
-    var c = S.clients, q = $('clients-q').value.trim().toLowerCase(), act = $('clients-active').checked;
-    var rows = c.filter(x => {
-      return (!act || x.active) && (!q || x.clientId.toLowerCase().indexOf(q) >= 0 || x.actorId.toLowerCase().indexOf(q) >= 0);
-    });
-    txt('clients-count', (rows.length === c.length ? fmt(c.length) : fmt(rows.length) + ' of ' + fmt(c.length)) + ' clients' +
-      (S.clientTotal > c.length ? ' · ' + fmt(S.clientTotal) + ' known, the ' + fmt(c.length) + ' furthest behind loaded' : ''));
-    html('clients-wire', c.length ? 'Wire versions ' + tags(wireSpread()) : '');
-    table('clients-table', CLIENT_COLS, rows, c.length
-      ? empty('No match', 'No client matches the filter.')
-      : empty('No clients', 'No client has a cursor record in this partition. A client appears after its first sync request.'),
-      x => { openClient(x.clientId); });
-  }
-  function renderSuggest() {
-    var seen = {}, out = [];
-    S.clients.forEach(x => {
-      x.subscriptions.forEach(s => {
-        Object.keys(s.scopes).forEach(k => {
-          s.scopes[k].forEach(v => { var key = k + ':' + v; if (!seen[key]) { seen[key] = 1; out.push([k, v]); } });
-        });
-      });
-    });
-    $('scopes-suggest').innerHTML = out.length ? 'Subscribed scopes' + out.slice(0, 24).map(p => {
-      return '<button type="button" class="tag" data-sv="' + esc(p[0]) + '" data-sval="' + esc(p[1]) + '">' + esc(p[0]) + ': ' + esc(p[1]) + '</button>';
-    }).join('') : '';
-  }
   function loadClients() {
     return get('/clients', { sort: 'lag', limit: 500 }).then(r => {
       S.clients = r.clients;
       S.clientTotal = r.total;
-      txt('n-clients', fmt(r.total));
-      html('clients-list', r.clients.map(x => '<option value="' + esc(x.clientId) + '"></option>').join(''));
-      renderClients(); renderLag(); renderSuggest(); renderKpis();
+      renderLag(); renderKpis();
       return null;
-    }).catch(fail(['clients-table', 'ov-lag', 'scopes-suggest'], 'clients'));
+    }).catch(fail(['ov-lag'], 'clients'));
   }
   function loadFleet() {
     return get('/partitions', { limit: FLEET_PAGE, offset: S.fleetOffset }).then(r => {
@@ -929,84 +926,311 @@ main{overflow:visible;padding:16px}
       txt('fleet-meta', fmt(r.total) + ' partitions' + (r.total > list.length ? ' · ' + fmt(off + 1) + ' to ' + fmt(off + list.length) + ' shown' : '') + (prune ? ' · ' + prune + ' to prune' : ''));
       table('ov-fleet', [
         { l: 'Partition', c: 'w-sm', v: p => p.partition, h: p => idCell(p.partition) },
-        numCol('Head', 'maxCommitSeq'),
-        numCol('Horizon', 'horizonSeq'),
-        numCol('Retained', 'retainedCommits'),
-        { l: 'Clients', c: 'num', d: -1, v: p => p.activeClients, h: p => fmt(p.activeClients) + ' / ' + fmt(p.knownClients) },
+        numCol('Head', 'maxCommitSeq'), numCol('Horizon', 'horizonSeq'), numCol('Retained', 'retainedCommits'),
+        { l: 'Clients', c: 'num', d: -1, v: p => p.knownClients, h: p => fmt(p.knownClients) },
         { l: 'State', c: 'fill', v: p => p.recommendation, h: p => p.recommendation === 'prune-recommended' ? st('warn', 'prune recommended') : st('ok', 'up to date') }
-      ], list, empty('No partitions', 'The partition registry is empty.', true),
-      p => { setPartition(p.partition); }, p => p.partition === cur);
-      if (r.total > FLEET_PAGE) {
-        $('ov-fleet').insertAdjacentHTML('beforeend', '<div class="acts" style="margin:0;padding:10px 14px;border-top:1px solid var(--line)">' +
-          '<button type="button" class="btn sm" data-act="fleet-prev"' + (off ? '' : ' disabled') + '>Previous</button>' +
-          '<button type="button" class="btn sm" data-act="fleet-next"' + (off + list.length < r.total ? '' : ' disabled') + '>Next</button></div>');
-      }
+      ], list, empty('No partitions', 'The partition registry is empty.', true), p => { setPartition(p.partition); }, p => p.partition === cur);
+      if (r.total > FLEET_PAGE) pager('ov-fleet', [['fleet-prev', 'Previous', off > 0], ['fleet-next', 'Next', off + list.length < r.total]]);
       return null;
     }).catch(err => { txt('fleet-meta', ''); return fail(['ov-fleet'])(err); });
   }
-  function loadStats() {
-    return get('/stats').then(r => {
-      var s = r.stats.segments, b = r.stats.blobs;
-      html('seg-meta', s && s.approximate ? st('warn', 'approximate') : '');
-      html('blob-meta', b && b.approximate ? st('warn', 'approximate') : '');
-      var approx = '<p class="verdict">The S3 store counts through a pointer accumulator; the numbers drift under concurrent writers and after lifecycle GC.</p>';
-      $('st-seg').innerHTML = s
-        ? '<div class="big">' + fmt(s.count) + '<small>segments · ' + bytes(s.bytes) + '</small></div><div style="margin:14px 0 12px">' +
-          stack([[s.rowsSegments, 'c-am'], [s.sqliteSegments, 'c-cy']]) + '</div>' +
-          kv([['Rows segments', fmt(s.rowsSegments)], ['SQLite images', fmt(s.sqliteSegments)], ['Bytes', bytes(s.bytes)]]) + (s.approximate ? approx : '')
-        : empty('No segment stats', 'No segment store is wired on this admin, or the store does not report stats.', true);
-      $('st-blob').innerHTML = b
-        ? '<div class="big">' + fmt(b.count) + '<small>blobs · ' + bytes(b.bytes) + '</small></div>' +
-          '<div style="margin-top:14px">' + kv([['Blobs', fmt(b.count)], ['Bytes', bytes(b.bytes)], ['Average', b.count ? bytes(Math.round(b.bytes / b.count)) : '–']]) + '</div>' + (b.approximate ? approx : '')
-        : empty('No blob stats', 'No blob store is wired on this admin, or the store does not report stats.', true);
+
+  // -- people --------------------------------------------------------------
+  function loadPeople(args) {
+    if (args[0] !== undefined) $('people-q').value = args[0];
+    html('people-rt', INFO.realtime ? '' : '<div class="banner"><b>No realtime hub</b><span>This admin has no realtime hub wired, so it cannot see open sockets. Each device shows when it last synced instead.</span></div>');
+    return get('/actors').then(r => {
+      S.actors = r.actors;
+      var all = [];
+      r.actors.forEach(a => { all = all.concat(a.clients); });
+      S.devices = all;
+      txt('n-people', fmt(r.actors.length));
+      renderRollout(); renderPeople();
       return null;
-    }).catch(fail(['st-seg', 'st-blob']));
+    }).catch(fail(['people-table', 'people-rollout']));
   }
+  function renderRollout() {
+    var by = {}, c = S.devices, server = INFO.schemaVersion;
+    c.forEach(x => { var k = x.schemaVersion == null ? 'unknown' : x.schemaVersion; by[k] = (by[k] || 0) + 1; });
+    var keys = Object.keys(by).sort((a, b) => (a === 'unknown' ? -1 : Number(a)) - (b === 'unknown' ? -1 : Number(b)));
+    var max = Math.max.apply(null, keys.map(k => by[k]).concat([1])), old = behindSchema(c);
+    txt('rollout-meta', server == null ? 'server schema unknown' : 'server schema v' + server);
+    if (!c.length) { html('people-rollout', empty('No devices', 'No client has synced this partition yet.', true)); return; }
+    html('people-rollout', '<div class="hist">' + keys.map(k => {
+      var below = server != null && k !== 'unknown' && Number(k) < server;
+      return '<span class="lb">' + (k === 'unknown' ? 'unknown' : 'schema v' + k) + '</span><span class="tr" aria-hidden="true"><b class="' + (below ? 'c-err' : k === 'unknown' ? 'c-dim' : 'c-ok') + '" style="width:' + (by[k] / max * 100) + '%"></b></span><span class="ct">' + by[k] + '</span>';
+    }).join('') + '</div><p class="verdict">' + (old.length
+      ? '<b class="ty err">' + old.length + ' behind</b>' + old.length + ' devices run a schema below the server\\'s v' + server + ': ' + old.slice(0, 6).map(x => link(route('client', [x.clientId]), x.clientId)).join(', ') + (old.length > 6 ? ' and ' + (old.length - 6) + ' more' : '') + '.'
+      : server == null ? 'The server reports no schema version.' : '<b class="dim">Rolled out</b>Every device that reports a schema runs v' + server + ' or newer.') + '</p>');
+  }
+  function renderPeople() {
+    var q = $('people-q').value.trim().toLowerCase(), list = S.actors.filter(a => !q || a.actorId.toLowerCase().indexOf(q) >= 0 || a.clients.some(c => c.clientId.toLowerCase().indexOf(q) >= 0));
+    txt('people-count', fmt(list.length) + ' of ' + fmt(S.actors.length) + ' actors · ' + fmt(S.devices.length) + ' devices');
+    table('people-table', [
+      { l: 'Actor', c: 'w-sm', v: a => a.actorId, h: a => idCell(a.actorId) },
+      { l: INFO.realtime ? 'Connected' : 'Last seen', c: 'num', d: -1, v: a => INFO.realtime ? a.connected : a.lastSeenMs, h: a => INFO.realtime ? (a.connected ? st('ok', a.connected + ' of ' + a.clients.length) : '<span class="dim">none</span>') : when(a.lastSeenMs) },
+      { l: 'Max lag', c: 'num', d: -1, v: a => a.maxLag, h: a => fmt(a.maxLag) },
+      { l: 'Failures', c: 'num', d: -1, v: a => a.recentFailures, h: a => a.recentFailures ? '<span class="ty err">' + fmt(a.recentFailures) + '</span>' : '<span class="dim">0</span>' },
+      { l: 'Devices', c: 'fill', ns: true, h: a => '<span class="tags">' + a.clients.map(c => '<a class="tag dev' + (online(c) ? ' on' : '') + '" href="' + esc(route('client', [c.clientId])) + '" title="' + esc(c.clientId + ' · ' + (INFO.realtime && c.connected ? 'connected' : 'seen ' + ago(c.updatedAtMs)) + ' · lag ' + c.lag) + '">' + esc(c.clientId.length > 14 ? c.clientId.slice(0, 13) + '…' : c.clientId) + (c.schemaVersion != null && INFO.schemaVersion != null && c.schemaVersion < INFO.schemaVersion ? ' · v' + c.schemaVersion : '') + '</a>').join('') + '</span>' }
+    ], list, S.actors.length ? empty('No match', 'No actor or device matches the filter.') : empty('No actors', 'No client has synced this partition yet.'));
+  }
+  function loadClientPage(args) {
+    var id = args[0];
+    html('h-client', esc(id) + copyBtn(id));
+    return get('/clients/' + enc(id), { eventLimit: 50 }).then(r => {
+      var d = r.detail, c = d.client;
+      if (!d.exists) { txt('client-line', ''); html('client-body', empty('No record', 'This partition has no cursor record for client ' + esc(id) + '.')); return null; }
+      $('client-line').innerHTML = presence(c) + ' · actor ' + link(route('people', [c.actorId]), c.actorId) + ' · ' + fmt(c.lag) + ' commits behind';
+      var lease = d.lease
+        ? esc(d.lease.leaseId) + ' · ' + (d.lease.revoked ? st('err', 'revoked') : d.lease.expiresAtMs > Date.now() ? st('ok', 'expires ' + rel(d.lease.expiresAtMs)) : st('warn', 'expired')) +
+          (INFO.writes && !d.lease.revoked ? ' <button type="button" class="btn sm amber" data-act="revoke" data-cid="' + esc(id) + '">Revoke lease</button>' : '')
+        : '<span class="dim">none</span>';
+      var head = S.horizon ? ' <span class="dim">head ' + fmt(S.horizon.maxCommitSeq) + '</span>' : '';
+      html('client-body', '<div class="cols"><div class="panel"><div class="ph"><h2>Client</h2></div><div class="pb">' +
+        kv([['Connection', INFO.realtime ? (c.connected ? st('ok', 'connected') + (c.connectedSinceMs ? ' since ' + clock(c.connectedSinceMs) : '') : st('idle', 'no open socket')) : '<span class="dim">no realtime hub</span>'],
+          ['Last sync', esc(ago(c.updatedAtMs)) + ' <span class="dim">' + esc(stamp(c.updatedAtMs)) + '</span>'],
+          ['Cursor', fmt(c.cursor) + head], ['Lag', fmt(c.lag) + ' commits'],
+          ['Schema', c.schemaVersion == null ? '–' : 'v' + c.schemaVersion + (INFO.schemaVersion != null && c.schemaVersion < INFO.schemaVersion ? ' ' + st('err', 'below server v' + INFO.schemaVersion) : '')],
+          ['Wire', c.wireVersion == null ? '–' : 'v' + c.wireVersion], ['Lease', lease]]) + '</div></div>' +
+        '<div class="panel"><div class="ph"><h2>Trace a row for this client</h2></div><form class="pb" id="client-trace" data-cid="' + esc(id) + '">' +
+        '<p class="verdict" style="margin:0 0 12px">Shows whether this client receives a row, and why not.</p><div class="tb" style="padding:0;border:0">' +
+        '<select class="inp" name="t" aria-label="Table">' + INFO.tables.map(t => '<option>' + esc(t.name) + '</option>').join('') + '</select>' +
+        '<input class="inp grow" name="r" placeholder="Row id" aria-label="Row id" spellcheck="false" /><button class="btn amber" type="submit">Trace</button></div></form></div></div>' +
+        '<div class="panel"><div class="ph"><h2>Subscriptions</h2><span class="meta">' + c.subscriptions.length + '</span></div><div id="client-subs"></div></div>' +
+        '<div class="panel"><div class="ph"><h2>Recent events</h2><span class="meta">' + d.events.length + '</span></div><div id="client-events"></div></div>');
+      table('client-subs', [
+        { l: 'Id', c: 'w-sm', h: s => idCell(s.id) },
+        { l: 'Table', h: s => link(route('table', [s.table]), s.table) },
+        { l: 'Scopes', c: 'fill', h: s => '<span class="tags">' + Object.keys(s.scopes).map(k => s.scopes[k].map(v => link(route('table', [s.table, k + ':' + v]), k + ': ' + v, 'tag')).join('')).join('') + '</span>' }
+      ], c.subscriptions, empty('No subscriptions', 'The client has no active subscriptions.', true));
+      table('client-events', EV_COLS, d.events, empty('No events', 'The ring holds no events for this client.', true), openEvent);
+      return null;
+    }, fail(['client-body']));
+  }
+
+  // -- data browser --------------------------------------------------------
+  function loadTables() {
+    return get('/tables').then(r => {
+      txt('n-data', fmt(r.tables.length));
+      table('data-tables', [
+        { l: 'Table', v: t => t.name, h: t => link(route('table', [t.name]), t.name) },
+        numCol('Rows', 'rowCount'),
+        { l: 'Columns', c: 'fill', ns: true, h: t => '<span class="dim">' + esc(t.columns.map(c => c.name + (c.primaryKey ? ' (key)' : '')).join(', ')) + '</span>' }
+      ], r.tables, empty('No tables', 'The server schema declares no tables.'), t => { nav('table', [t.name]); });
+      return null;
+    }, fail(['data-tables']));
+  }
+  function loadTablePage(args) {
+    var t = args[0], scope = args[1], key = t + '|' + (scope || '');
+    if (S.pageKey !== key) { S.pageKey = key; S.pageStack = []; }
+    var after = S.pageStack[S.pageStack.length - 1], schema = schemaOf(t);
+    html('h-table', esc(t) + '<span class="dot">.</span>');
+    txt('table-line', scope ? 'Rows whose scope ' + scope.replace(':', ' is ') + '.' : 'All rows, ordered by row id.');
+    var sv = scope ? scope.split(':') : null;
+    $('table-activity-panel').hidden = !sv;
+    var jobs = [(S.clients ? Promise.resolve() : loadClients()).then(() => get('/rows/' + enc(t), { limit: PAGE_ROWS, afterRowId: after, scope: scope })).then(r => {
+      var p = r.page, cols = schema ? schema.columns.filter(c => !c.primaryKey).slice(0, 4) : [];
+      var seen = {}, chips = [];
+      (S.clients || []).forEach(c => c.subscriptions.forEach(s => {
+        if (s.table === t) Object.keys(s.scopes).forEach(k => s.scopes[k].forEach(v => { seen[k + ':' + v] = 1; }));
+      }));
+      p.rows.forEach(row => Object.keys(row.scopes || {}).forEach(k => { seen[k + ':' + row.scopes[k]] = 1; }));
+      chips = Object.keys(seen).sort().slice(0, 30);
+      html('table-scopes', 'Scope ' + link(route('table', [t]), 'all rows', 'tag' + (scope ? '' : ' on')) +
+        chips.map(k => link(route('table', [t, k]), k.replace(':', ': '), 'tag' + (k === scope ? ' on' : ''))).join(''));
+      table('table-rows', [
+        { l: 'Row id', c: 'w-sm', v: x => x.rowId, h: x => rowLink(t, x.rowId, x.rowId) },
+        numCol('Version', 'serverVersion'),
+        { l: 'Scopes', ns: true, h: x => scopeTags(x.scopes) }
+      ].concat(cols.map((c, i) => ({ l: c.name, ns: true, c: i === cols.length - 1 ? 'fill' : '', h: x => cell(x.values[c.name], c.type) }))),
+      p.rows, empty('No rows', scope ? 'No row in ' + esc(t) + ' carries scope ' + esc(scope) + '.' : 'The table holds no rows in this partition.'), x => { nav('row', [t, x.rowId]); });
+      if (after !== undefined || p.nextAfterRowId) {
+        S.pageNext = p.nextAfterRowId;
+        pager('table-rows', [['rows-first', 'First', after !== undefined], ['rows-prev', 'Previous', after !== undefined], ['rows-next', 'Next', !!p.nextAfterRowId]]);
+      }
+      return null;
+    }, fail(['table-rows']))];
+    if (sv) {
+      jobs.push(get('/scope-activity', { variable: sv[0], value: sv.slice(1).join(':') }).then(r => {
+        txt('table-activity-meta', fmt(r.activity.length) + ' commits');
+        table('table-activity', [
+          { l: 'Seq', c: 'num', d: -1, v: a => a.commitSeq, h: a => '<span class="ty">' + fmt(a.commitSeq) + '</span>' },
+          { l: 'Table', v: a => a.table, h: a => esc(a.table) },
+          { l: 'Actor', c: 'w-sm', v: a => a.actorId, h: a => idText(a.actorId) },
+          numCol('Changes', 'changeCount'),
+          { l: 'When', c: 'num fill', d: -1, v: a => a.createdAtMs, h: a => when(a.createdAtMs) }
+        ], r.activity, empty('No activity', 'No recent commit touched ' + esc(scope) + '.', true), a => { openCommit(a.commitSeq); });
+        return null;
+      }, fail(['table-activity'])));
+    }
+    return Promise.all(jobs).then(list => list.filter(Boolean)[0] || null);
+  }
+  var VERDICT = {
+    delivered: ['ok', 'Delivered', 'The client has pulled the row\\'s last change.'],
+    'pending-pull': ['warn', 'Pending pull', 'A subscription covers the row, and the client\\'s cursor is behind the row\\'s last change. The next pull delivers it.'],
+    'row-deleted': ['warn', 'Row deleted', 'The row\\'s last change is a delete. A client that held the row drops it on its next pull.'],
+    'scope-mismatch': ['err', 'Scope mismatch', 'The client subscribes to the table, but no subscription requests the row\\'s scope values.'],
+    'scope-denied': ['err', 'Scope denied', 'A subscription requests the row\\'s scopes, but the actor\\'s allowed scopes from resolveScopes exclude them, so the server never delivers the row.'],
+    'no-subscription': ['idle', 'No subscription', 'The client has no subscription on this table.'],
+    'client-unknown': ['err', 'Client unknown', 'This partition has no cursor record for the client.'],
+    'row-missing': ['err', 'Row missing', 'The partition holds no row with this id in this table.']
+  };
+  var VORDER = ['row-missing', 'client-unknown', 'no-subscription', 'scope-denied', 'scope-mismatch', 'row-deleted', 'pending-pull', 'delivered'];
+  function verdictOf(v) { return VERDICT[v] || ['err', v, 'The console does not know this verdict.']; }
+  var HISTORY_COLS = [
+    { l: 'Seq', c: 'num', d: -1, v: x => x.commitSeq, h: x => '<span class="ty">' + fmt(x.commitSeq) + '</span>' },
+    { l: 'Op', v: x => x.op, h: x => esc(x.op) },
+    numCol('Version', 'rowVersion'),
+    { l: 'Client', c: 'w-sm', v: x => x.clientId, h: x => clientLink(x.clientId) },
+    { l: 'When', c: 'num fill', d: -1, v: x => x.createdAtMs, h: x => when(x.createdAtMs) }
+  ];
+  function loadRowPage(args) {
+    var t = args[0], id = args[1], schema = schemaOf(t);
+    html('h-row', esc(id) + copyBtn(id));
+    $('row-table-link').href = route('table', [t]);
+    txt('row-table-link', t);
+    return Promise.all([get('/rows/' + enc(t) + '/' + enc(id)).then(r => {
+      var row = r.row;
+      $('row-line').innerHTML = row.exists ? 'Version ' + fmt(row.serverVersion) + scopeTags(row.scopes) : st('idle', 'not in the table') + ' The partition holds no live row with this id.';
+      txt('row-meta', row.exists ? 'version ' + fmt(row.serverVersion) : '');
+      if (!row.exists) html('row-values', empty('No row', 'There are no current values to show.', true));
+      else if (!row.values) html('row-values', empty('No decoded values', 'The server returned no column values for this row.', true));
+      else {
+        var cols = schema ? schema.columns : Object.keys(row.values).map(k => ({ name: k, type: '' }));
+        table('row-values', [
+          { l: 'Column', v: x => x.name, h: x => esc(x.name) + (x.primaryKey ? ' <span class="st warn">key</span>' : '') },
+          { l: 'Type', v: x => x.type, h: x => '<span class="dim">' + esc(x.type) + (x.nullable ? '?' : '') + '</span>' },
+          { l: 'Value', c: 'fill', ns: true, h: x => cell(row.values[x.name], x.type) }
+        ], cols, empty('No columns', 'The schema declares no columns.', true));
+      }
+      txt('row-history-meta', row.history.length + ' changes');
+      table('row-history', HISTORY_COLS, row.history, empty('No history', 'The retained commit log holds no change to this row.', true), x => { openCommit(x.commitSeq); });
+      return null;
+    }, fail(['row-values', 'row-history'])), get('/rows/' + enc(t) + '/' + enc(id) + '/delivery').then(r => {
+      var d = r.delivery, counts = {};
+      d.clients.forEach(x => { counts[x.verdict] = (counts[x.verdict] || 0) + 1; });
+      txt('delivery-meta', VORDER.filter(v => counts[v]).map(v => counts[v] + ' ' + v).join(' · ') + (d.lastChange ? ' · last change at ' + fmt(d.lastChange.commitSeq) : ''));
+      table('row-delivery', [
+        { l: 'Client', c: 'w-sm', v: x => x.client.clientId, h: x => clientLink(x.client.clientId) },
+        { l: 'Actor', c: 'w-sm', v: x => x.client.actorId, h: x => idText(x.client.actorId) },
+        { l: INFO.realtime ? 'Connection' : 'Last sync', v: x => x.client.updatedAtMs, h: x => presence(x.client) },
+        { l: 'Cursor', c: 'num', d: -1, v: x => x.client.cursor, h: x => fmt(x.client.cursor) },
+        { l: 'Verdict', c: 'fill', v: x => VORDER.indexOf(x.verdict), h: x => { var v = verdictOf(x.verdict); return st(v[0], v[1]); } }
+      ], d.clients, empty('No clients', 'No client has a cursor record in this partition.', true), x => { openTrace(t, id, x.client.clientId); });
+      return null;
+    }, fail(['row-delivery']))]).then(list => list.filter(Boolean)[0] || null);
+  }
+  function openTrace(t, id, client) {
+    var token = openModal('Delivery trace', client, true, SKEL);
+    get('/trace', { table: t, rowId: id, clientId: client }).then(r => {
+      if (token !== modalToken) return;
+      var x = r.trace, v = verdictOf(x.verdict), lc = x.lastChange, c = x.client;
+      var detail = x.verdict === 'pending-pull' && c && lc ? ' Cursor ' + fmt(c.cursor) + ', last change at ' + fmt(lc.commitSeq) + '.' : '';
+      fillModal('<div class="vbox ' + v[0] + '" style="margin:0 0 16px"><b>' + esc(v[1]) + '</b><span>' + esc(v[2] + detail) + '</span></div>' +
+        kv([['Row', rowLink(t, id) + (x.row.exists ? ' · version ' + fmt(x.row.serverVersion) + ' ' + scopeTags(x.row.scopes) : ' ' + st('idle', 'missing'))],
+          ['Last change', lc ? seqBtn(lc.commitSeq) + ' ' + esc(lc.op) + ' by ' + esc(lc.actorId) + ' ' + ago(lc.createdAtMs) : '<span class="dim">none retained; horizon ' + fmt(x.horizonSeq) + '</span>'],
+          ['Client', c ? clientLink(client) + ' · cursor ' + fmt(c.cursor) + ' · ' + presence(c) : st('err', 'unknown')],
+          ['Allowed', x.allowed === undefined ? '<span class="dim">no resolver</span>' : x.allowed === 'outage' ? st('err', 'resolveScopes outage') : scopeTags(x.allowed)]]) +
+        '<h3>Subscriptions on ' + esc(t) + ' · ' + x.subscriptions.length + '</h3><div id="m-subs"></div><h3>Rejected pushes · ' + x.rejections.length + '</h3><div id="m-events"></div>', x);
+      table('m-subs', [
+        { l: 'Id', c: 'w-sm', h: s => idCell(s.id) },
+        { l: 'Requested scopes', h: s => scopeTags(s.scopes) },
+        { l: 'Requested', h: s => s.requestedMatch ? st('ok', 'covers row') : st('err', 'mismatch') },
+        { l: 'Allowed', h: s => s.effectiveMatch === undefined ? '<span class="dim">not checked</span>' : s.effectiveMatch ? st('ok', 'covers row') : st('err', 'denied') },
+        { l: 'Mismatches', c: 'fill', h: s => s.mismatches.length ? tags(s.mismatches.map(m => m.variable + ': row ' + m.rowValue + ', requested ' + (m.requested.join(', ') || 'none'))) : '<span class="dim">none</span>' }
+      ], x.subscriptions, empty('No subscriptions', 'The client has no subscription on ' + esc(t) + '.', true));
+      table('m-events', EV_COLS, x.rejections, empty('No rejections', 'The ring holds no rejected or conflicted push for this row.', true), openEvent);
+    }, err => { if (token === modalToken && err !== STALE) fillModal(errBox(err), { code: err.code, message: err.message }); });
+  }
+
+  // -- commits, writes, search ---------------------------------------------
   function loadCommits() {
-    var before = S.commitPages ? S.commitPages[S.commitPages.length - 1] : undefined;
-    return get('/commits', { table: $('commits-table').value.trim(), limit: $('commits-limit').value, beforeSeq: before }).then(r => {
+    var before = S.commitPages ? S.commitPages[S.commitPages.length - 1] : undefined, limit = Number($('commits-limit').value);
+    return get('/commits', { table: $('commits-table').value.trim(), limit: limit, beforeSeq: before, sample: 5 }).then(r => {
       var list = r.commits, f = $('commits-table').value.trim();
       S.commitOldest = list.length ? list[list.length - 1].commitSeq : null;
-      txt('n-commits', before === undefined ? fmt(list.length) : '');
+      if (before === undefined) txt('n-commits', list.length ? fmt(list[0].commitSeq) : '0');
       txt('commits-count', fmt(list.length) + ' commits' + (f ? ' touching ' + f : '') + (before === undefined ? '' : ' before seq ' + fmt(before)));
       table('commits-list', [
         { l: 'Seq', c: 'num', d: -1, v: c => c.commitSeq, h: c => '<span class="ty">' + fmt(c.commitSeq) + '</span>' },
-        { l: 'Client', c: 'w-sm', v: c => c.clientId, h: c => idCell(c.clientId) },
+        { l: 'Client', c: 'w-sm', v: c => c.clientId, h: c => clientLink(c.clientId) },
         { l: 'Actor', c: 'w-sm', v: c => c.actorId, h: c => idText(c.actorId) },
-        numCol('Changes', 'changeCount'),
-        { l: 'Tables', c: 'fill', ns: true, h: c => tags(c.tables) },
+        { l: 'Changes', c: 'fill', ns: true, h: c => '<span class="tags">' + c.sample.map(s => link(route('row', [s.table, s.rowId]), s.op + ' ' + s.table + ' / ' + s.rowId, 'tag')).join('') +
+          (c.changeCount > c.sample.length ? '<span class="dim">+' + fmt(c.changeCount - c.sample.length) + ' more</span>' : '') + '</span>' },
         { l: 'When', c: 'num', d: -1, v: c => c.createdAtMs, h: c => when(c.createdAtMs) }
-      ], list, f ? empty('No commits', 'No commit in the newest ' + $('commits-limit').value + ' touched table ' + esc(f) + '.')
+      ], list, f ? empty('No commits', 'No commit on this page touched table ' + esc(f) + '.')
         : empty('No commits', before === undefined ? 'The commit log of this partition is empty.' : 'No retained commit is older than seq ' + fmt(before) + '.'), c => { openCommit(c.commitSeq); });
-      if (before !== undefined || list.length >= Number($('commits-limit').value)) {
-        $('commits-list').insertAdjacentHTML('beforeend', '<div class="acts" style="margin:0;padding:10px 14px;border-top:1px solid var(--line)">' +
-          '<button type="button" class="btn sm" data-act="commits-newest"' + (before === undefined ? ' disabled' : '') + '>Newest</button>' +
-          '<button type="button" class="btn sm" data-act="commits-newer"' + (before === undefined ? ' disabled' : '') + '>Newer</button>' +
-          '<button type="button" class="btn sm" data-act="commits-older"' + (list.length < Number($('commits-limit').value) ? ' disabled' : '') + '>Older</button></div>');
-      }
+      if (before !== undefined || list.length >= limit) pager('commits-list', [['commits-newest', 'Newest', before !== undefined], ['commits-newer', 'Newer', before !== undefined], ['commits-older', 'Older', list.length >= limit]]);
       return null;
     }).catch(fail(['commits-list']));
   }
-  var RX_STATE = { pending: 'warn', leased: 'ok', completed: 'idle', 'dead-letter': 'err' };
+  var RESULT_COLS = [
+    { l: 'Op', c: 'num', h: x => fmt(x.opIndex) },
+    { l: 'Status', h: x => st(x.status === 'applied' ? 'ok' : x.status === 'conflict' ? 'warn' : 'err', x.status) },
+    { l: 'Code', h: x => x.code ? '<span class="ty err">' + esc(x.code) + '</span>' : '<span class="dim">–</span>' },
+    { l: 'Server version', c: 'num', h: x => fmt(x.serverVersion) },
+    { l: 'Message', c: 'fill', h: x => x.message ? trunc(x.message) : '' }
+  ];
+  function openWrite(id) {
+    var token = openModal('Write', id, true, SKEL);
+    get('/writes/' + enc(id)).then(r => {
+      if (token !== modalToken) return;
+      var w = r.write;
+      fillModal((w.outcomes.length ? '' : empty('No recorded outcome', 'No client has a stored outcome for this client commit id. The server never received it, or its idempotency record expired.', true)) +
+        w.outcomes.map((o, i) => '<h3>' + (o.status === 'applied' ? st('ok', 'applied') : st('err', 'rejected')) + ' · client ' + clientLink(o.clientId) +
+          (o.commitSeq !== undefined ? ' · commit ' + seqBtn(o.commitSeq) : '') + (o.recordedAtMs ? ' · ' + ago(o.recordedAtMs) : '') + '</h3><div id="m-res-' + i + '"></div>').join('') +
+        '<h3>Ring events · ' + w.events.length + '</h3><div id="m-events"></div>', w);
+      w.outcomes.forEach((o, i) => { table('m-res-' + i, RESULT_COLS, o.results, empty('No results', 'The outcome carries no per-operation results.', true)); });
+      table('m-events', EV_COLS, w.events, empty('No events', 'The ring holds no events for this write.', true), openEvent);
+    }, err => { if (token === modalToken && err !== STALE) fillModal(errBox(err), { code: err.code, message: err.message }); });
+  }
+  function loadSearch(args) {
+    var q = args[0] || '';
+    $('q').value = q;
+    html('h-search', 'Results for <span class="ty">' + esc(q) + '</span>');
+    return get('/search', { q: q }).then(r => {
+      var x = r.search, hits = [];
+      x.clients.forEach(c => hits.push(['client', [c.clientId]]));
+      x.actors.forEach(a => hits.push(['people', [a]]));
+      x.rows.forEach(w => hits.push(['row', [w.table, w.rowId]]));
+      if (hits.length === 1 && !x.commit && !x.writes.length) { history.replaceState(null, '', route(hits[0][0], hits[0][1])); show(); return null; }
+      html('search-body', (hits.length || x.commit || x.writes.length ? '' : empty('Nothing found', 'No client, actor, row, commit, or write in this partition matches ' + esc(q) + '.')) +
+        (x.clients.length ? '<div class="panel"><div class="ph"><h2>Clients</h2><span class="meta">' + x.clients.length + '</span></div><div id="s-clients"></div></div>' : '') +
+        (x.actors.length ? '<div class="panel"><div class="ph"><h2>Actors</h2></div><div class="sugg">' + x.actors.map(a => link(route('people', [a]), a, 'tag')).join('') + '</div></div>' : '') +
+        (x.rows.length ? '<div class="panel"><div class="ph"><h2>Rows</h2></div><div class="sugg">' + x.rows.map(w => link(route('row', [w.table, w.rowId]), w.table + ' / ' + w.rowId, 'tag')).join('') + '</div></div>' : '') +
+        (x.commit ? '<div class="panel"><div class="ph"><h2>Commit</h2></div><div class="sugg">' + seqBtn(x.commit.commitSeq) + ' by ' + esc(x.commit.actorId) + ' · ' + fmt(x.commit.changeCount) + ' changes · ' + ago(x.commit.createdAtMs) + '</div></div>' : '') +
+        (x.writes.length ? '<div class="panel"><div class="ph"><h2>Writes</h2></div><div class="sugg"><button type="button" class="tag" data-write="' + esc(q) + '">' + esc(q) + '</button> ' + x.writes.map(o => o.status + ' from ' + esc(o.clientId)).join(', ') + '</div></div>' : ''));
+      if (x.clients.length) {
+        table('s-clients', [
+          { l: 'Client', c: 'w-id', h: c => clientLink(c.clientId) },
+          { l: 'Actor', h: c => idText(c.actorId) },
+          { l: 'Connection', h: c => presence(c) },
+          { l: 'Lag', c: 'num fill', h: c => fmt(c.lag) }
+        ], x.clients, '', c => { nav('client', [c.clientId]); });
+      }
+      return null;
+    }, fail(['search-body']));
+  }
+
+  var RX_STATE = { pending: 'warn', leased: 'ok', completed: 'idle', 'dead-letter': 'err' }, RX_ORDER = { 'dead-letter': 0, leased: 1, pending: 2, completed: 3 };
   function loadReactions() {
     return get('/reactions', { status: $('rx-status').value, type: $('rx-type').value.trim(), limit: 100 }).then(r => {
       var list = r.reactions, counts = {};
       list.forEach(x => { counts[x.status] = (counts[x.status] || 0) + 1; });
       txt('n-reactions', counts['dead-letter'] ? counts['dead-letter'] + ' dead' : fmt(list.length));
       txt('rx-count', Object.keys(counts).map(k => fmt(counts[k]) + ' ' + k).join(' · ') || '0 reactions');
-      var order = { 'dead-letter': 0, leased: 1, pending: 2, completed: 3 };
       table('rx-table', [
         { l: 'Key', c: 'w-id', v: x => x.idempotencyKey, h: x => idCell(x.idempotencyKey) },
         { l: 'Type', v: x => x.type, h: x => esc(x.type) + ' <span class="dim">v' + x.version + '</span>' },
-        { l: 'Status', v: x => order[x.status], h: x => st(RX_STATE[x.status], x.status) },
+        { l: 'Status', v: x => RX_ORDER[x.status], h: x => st(RX_STATE[x.status], x.status) },
         { l: 'Attempts', c: 'num', d: -1, v: x => x.attempts, h: x => x.attempts + ' / ' + x.maxAttempts },
         { l: 'Available', c: 'num', v: x => x.availableAtMs, h: x => '<span title="' + esc(stamp(x.availableAtMs)) + '">' + rel(x.availableAtMs) + '</span>' },
         { l: 'Source', c: 'num', d: -1, v: x => x.sourceCommitSeq, h: x => 'seq ' + fmt(x.sourceCommitSeq) },
         { l: 'Last failure', c: 'fill', v: x => x.lastFailure ? x.lastFailure.code : '', h: x => x.lastFailure ? '<span class="ty err">' + esc(x.lastFailure.code) + '</span>' : '<span class="dim">none</span>' }
-      ], list.slice().sort((a, b) => order[a.status] - order[b.status]), empty('No reactions', 'No durable reaction matches. A reaction planner queues reactions atomically with accepted commits.'), x => {
+      ], list.slice().sort((a, b) => RX_ORDER[a.status] - RX_ORDER[b.status]), empty('No reactions', 'No durable reaction matches. A reaction planner queues reactions atomically with accepted commits.'), x => {
         openModal('Reaction', x.idempotencyKey, true, kv([['Type', esc(x.type) + ' v' + x.version], ['Status', st(RX_STATE[x.status], x.status)],
           ['Attempts', x.attempts + ' of ' + x.maxAttempts], ['Available', esc(stamp(x.availableAtMs))],
-          ['Source', '<button type="button" class="tag" data-seq="' + x.sourceCommitSeq + '">commit ' + fmt(x.sourceCommitSeq) + '</button> client ' + idCell(x.sourceClientId)],
+          ['Source', 'commit ' + seqBtn(x.sourceCommitSeq) + ' · client ' + clientLink(x.sourceClientId)],
           ['Lease', x.leaseOwner ? esc(x.leaseOwner) + ' until ' + esc(stamp(x.leaseExpiresAtMs)) : 'none'],
           ['Last failure', x.lastFailure ? '<code>' + esc(x.lastFailure.code) + '</code> ' + ago(x.lastFailure.atMs) : 'none']]) +
           (INFO.writes && x.status === 'dead-letter' ? '<div class="acts"><button type="button" class="btn sm amber" data-act="retry" data-key="' + esc(x.idempotencyKey) + '">Retry reaction</button></div>' : '') +
@@ -1015,119 +1239,21 @@ main{overflow:visible;padding:16px}
       return null;
     }).catch(err => { txt('rx-count', ''); return fail(['rx-table'])(err); });
   }
-
-  // -- rows, trace, scopes -------------------------------------------------
-  // Values follow SPEC §11 rendering: bytes and crdt columns arrive as
-  // base64 strings, json and blob_ref columns as parsed JSON.
-  function cell(v, type) {
-    if (v === null || v === undefined) return '<span class="dim">null</span>';
-    if ((type === 'bytes' || type === 'crdt') && typeof v === 'string') {
-      var n = Math.floor(v.length * 3 / 4) - (v.slice(-2) === '==' ? 2 : v.slice(-1) === '=' ? 1 : 0);
-      return '<span class="trunc" title="' + esc(v) + '">' + type + ' · ' + bytes(n) + ' <span class="dim">base64 ' + esc(v.slice(0, 24)) + (v.length > 24 ? '…' : '') + '</span></span>';
-    }
-    return trunc(typeof v === 'string' ? v : JSON.stringify(v));
-  }
-  function schemaOf(t) { return INFO.tables.filter(x => x.name === t)[0]; }
-  var HISTORY_COLS = [
-    { l: 'Seq', c: 'num', d: -1, v: x => x.commitSeq, h: x => '<span class="ty">' + fmt(x.commitSeq) + '</span>' },
-    { l: 'Op', v: x => x.op, h: x => esc(x.op) },
-    numCol('Version', 'rowVersion'),
-    { l: 'Actor', c: 'w-sm', v: x => x.actorId, h: x => idText(x.actorId) },
-    { l: 'Client', c: 'w-sm', v: x => x.clientId, h: x => idCell(x.clientId) },
-    { l: 'When', c: 'num fill', d: -1, v: x => x.createdAtMs, h: x => when(x.createdAtMs) }
-  ];
-  function inspect(t, id) {
-    if (!t || !id) { html('rows-result', empty('Table and row id required', 'Enter both a table name and a row id.')); return Promise.resolve(null); }
-    $('rows-table').value = t; $('rows-id').value = id;
-    html('rows-result', SKEL);
-    return get('/rows/' + encodeURIComponent(t) + '/' + encodeURIComponent(id)).then(r => {
-      var row = r.row, schema = schemaOf(t);
-      S.lastRow = [t, id];
-      S.recentRows = [[t, id, row.exists]].concat(S.recentRows.filter(x => x[0] !== t || x[1] !== id)).slice(0, 8);
-      html('rows-recent', '<div class="sugg">' + S.recentRows.map(x => {
-        return '<button type="button" class="tag" data-rt="' + esc(x[0]) + '" data-rid="' + esc(x[1]) + '">' + esc(x[0]) + ' / ' + esc(x[1]) + (x[2] ? '' : ' (missing)') + '</button>';
-      }).join('') + '</div>');
-      var scopes = row.scopes ? Object.keys(row.scopes).map(k => k + ': ' + row.scopes[k]) : [];
-      html('rows-result', '<div class="row-card"><div class="ph"><h2>' + esc(t) + ' / ' + esc(id) + '</h2><span class="meta">' + (row.exists ? st('ok', 'exists') : st('idle', 'not found')) + '</span>' +
-        '<button type="button" class="btn sm" data-act="trace-row" data-t="' + esc(t) + '" data-rid="' + esc(id) + '">Trace for a client</button></div><div class="pb">' +
-        (row.exists
-          ? kv([['Server version', '<span class="ty">' + fmt(row.serverVersion) + '</span>'], ['Scopes', scopes.length ? tags(scopes) : '<span class="dim">none</span>']]) +
-            '<h3>Values</h3><div id="row-values"></div>'
-          : empty('No such row', 'The partition holds no row ' + esc(id) + ' in table ' + esc(t) + '.', true)) +
-        '<h3>History · ' + row.history.length + '</h3><div id="row-history"></div><h3>Response</h3>' + json(row) + '</div></div>');
-      if (row.exists && !row.values) html('row-values', empty('No decoded values', 'The server returned no column values for this row.', true));
-      else if (row.exists) {
-        var cols = schema ? schema.columns : Object.keys(row.values).map(k => ({ name: k, type: '' }));
-        table('row-values', [
-          { l: 'Column', v: x => x.name, h: x => esc(x.name) + (x.primaryKey ? ' <span class="st warn">key</span>' : '') },
-          { l: 'Type', v: x => x.type, h: x => '<span class="dim">' + esc(x.type) + (x.nullable ? '?' : '') + '</span>' },
-          { l: 'Value', c: 'fill', ns: true, h: x => cell(row.values[x.name], x.type) }
-        ], cols, empty('No columns', 'The row carries no decoded values.', true));
-      }
-      table('row-history', HISTORY_COLS, row.history, empty('No history', 'The retained commit log holds no change to this row.', true), x => { openCommit(x.commitSeq); });
+  function loadStats() {
+    return get('/stats').then(r => {
+      var s = r.stats.segments, b = r.stats.blobs;
+      html('seg-meta', s && s.approximate ? st('warn', 'approximate') : '');
+      html('blob-meta', b && b.approximate ? st('warn', 'approximate') : '');
+      var approx = '<p class="verdict">The S3 store counts through a pointer accumulator; the numbers drift under concurrent writers and after lifecycle GC.</p>';
+      html('st-seg', s
+        ? '<div class="big">' + fmt(s.count) + '<small>segments · ' + bytes(s.bytes) + '</small></div><div style="margin:14px 0 12px">' + stack([[s.rowsSegments, 'c-am'], [s.sqliteSegments, 'c-cy']]) + '</div>' +
+          kv([['Rows segments', fmt(s.rowsSegments)], ['SQLite images', fmt(s.sqliteSegments)], ['Bytes', bytes(s.bytes)]]) + (s.approximate ? approx : '')
+        : empty('No segment stats', 'No segment store is wired on this admin, or the store does not report stats.', true));
+      html('st-blob', b
+        ? '<div class="big">' + fmt(b.count) + '<small>blobs · ' + bytes(b.bytes) + '</small></div><div style="margin-top:14px">' + kv([['Blobs', fmt(b.count)], ['Bytes', bytes(b.bytes)], ['Average', b.count ? bytes(Math.round(b.bytes / b.count)) : '–']]) + '</div>' + (b.approximate ? approx : '')
+        : empty('No blob stats', 'No blob store is wired on this admin, or the store does not report stats.', true));
       return null;
-    }, fail(['rows-result']));
-  }
-  var VERDICT = {
-    delivered: ['ok', 'Delivered', 'The client has pulled the row\\'s last change.'],
-    'pending-pull': ['warn', 'Pending pull', 'A subscription covers the row, and the client\\'s cursor is behind the row\\'s last change. The next pull delivers it.'],
-    'row-deleted': ['warn', 'Row deleted', 'The row\\'s last change is a delete. A client that held the row drops it on its next pull.'],
-    'scope-mismatch': ['err', 'Scope mismatch', 'The client subscribes to the table, but no subscription requests the row\\'s scope values. The mismatches are listed below.'],
-    'scope-denied': ['err', 'Scope denied', 'A subscription requests the row\\'s scopes, but the actor\\'s allowed scopes from resolveScopes exclude them, so the server never delivers the row.'],
-    'no-subscription': ['err', 'No subscription', 'The client has no subscription on this table.'],
-    'client-unknown': ['err', 'Client unknown', 'This partition has no cursor record for the client.'],
-    'row-missing': ['err', 'Row missing', 'The partition holds no row with this id in this table.']
-  };
-  function trace(t, id, client) {
-    if (!t || !id || !client) { html('trace-result', empty('Table, row id, and client id required', 'Enter all three fields.')); return Promise.resolve(null); }
-    $('trace-table').value = t; $('trace-row').value = id; $('trace-client').value = client;
-    html('trace-result', SKEL);
-    return get('/trace', { table: t, rowId: id, clientId: client }).then(r => {
-      var x = r.trace, v = VERDICT[x.verdict] || ['err', x.verdict, 'The console does not know this verdict.'], lc = x.lastChange, c = x.client;
-      S.lastTrace = [t, id, client];
-      var detail = x.verdict === 'pending-pull' && c && lc ? ' Cursor ' + fmt(c.cursor) + ', last change at ' + fmt(lc.commitSeq) + '.' : '';
-      html('trace-result', '<div class="vbox ' + v[0] + '"><b>' + esc(v[1]) + '</b><span>' + esc(v[2] + detail) + '</span></div>' +
-        '<div class="cols" style="padding:0 14px 14px">' +
-        '<div class="panel"><div class="ph"><h2>Row</h2></div><div class="pb">' + (x.row && x.row.exists
-          ? kv([['Version', fmt(x.row.serverVersion)], ['Scopes', tags(Object.keys(x.row.scopes || {}).map(k => k + ': ' + x.row.scopes[k]))]])
-          : empty('Row missing', esc(t) + ' / ' + esc(id), true)) + '</div></div>' +
-        '<div class="panel"><div class="ph"><h2>Last change</h2></div><div class="pb">' + (lc
-          ? kv([['Commit', '<button type="button" class="tag" data-seq="' + lc.commitSeq + '">' + fmt(lc.commitSeq) + '</button>'], ['Op', esc(lc.op)], ['By', esc(lc.actorId) + ' · ' + idCell(lc.clientId)], ['When', when(lc.createdAtMs)], ['Horizon', fmt(x.horizonSeq)]])
-          : empty('No change', 'The retained log holds no change to this row; the horizon is at ' + fmt(x.horizonSeq) + '.', true)) + '</div></div>' +
-        '<div class="panel"><div class="ph"><h2>Client</h2></div><div class="pb">' + (c
-          ? kv([['Client', '<button type="button" class="tag" data-client="' + esc(client) + '">' + esc(client) + '</button>'], ['Cursor', fmt(c.cursor)], ['Lag', fmt(c.lag)], ['Status', c.active ? st('ok', 'active') : st('idle', 'idle')],
-            ['Allowed', x.allowed === undefined ? '<span class="dim">no resolver</span>' : x.allowed === 'outage' ? st('err', 'resolveScopes outage') : tags(Object.keys(x.allowed).map(k => k + ': ' + x.allowed[k].join(', ')))]])
-          : empty('Client unknown', esc(client), true)) + '</div></div></div>' +
-        '<div class="pb" style="padding-top:0"><h3>Subscriptions · ' + x.subscriptions.length + '</h3><div id="trace-subs"></div>' +
-        '<h3>Rejections · ' + x.rejections.length + '</h3><div id="trace-rej"></div>' +
-        '<h3>Response</h3>' + json(x) + '</div>');
-      table('trace-subs', [
-        { l: 'Id', c: 'w-sm', h: s => idCell(s.id) },
-        { l: 'Requested scopes', h: s => tags(Object.keys(s.scopes).map(k => k + ': ' + s.scopes[k].join(', '))) },
-        { l: 'Requested', h: s => s.requestedMatch ? st('ok', 'covers row') : st('err', 'mismatch') },
-        { l: 'Allowed', h: s => s.effectiveMatch === undefined ? '<span class="dim">not checked</span>' : s.effectiveMatch ? st('ok', 'covers row') : st('err', 'denied') },
-        { l: 'Mismatches', c: 'fill', h: s => s.mismatches.length ? tags(s.mismatches.map(m => m.variable + ': row ' + m.rowValue + ', requested ' + (m.requested.join(', ') || 'none'))) : '<span class="dim">none</span>' }
-      ], x.subscriptions, empty('No subscriptions', 'The client has no subscription on ' + esc(t) + '.', true));
-      table('trace-rej', EV_COLS.slice(0, 3).concat([EV_COLS[4]]), x.rejections, empty('No rejections', 'The ring holds no rejected or conflicted push for this row.', true), openEvent);
-      return null;
-    }, fail(['trace-result']));
-  }
-  function scopeQuery(variable, value) {
-    if (!variable || !value) { html('scopes-table', empty('Variable and value required', 'Enter both a scope variable and a value.')); return Promise.resolve(null); }
-    $('scopes-var').value = variable; $('scopes-val').value = value;
-    html('scopes-table', SKEL);
-    return get('/scope-activity', { variable: variable, value: value }).then(r => {
-      S.lastScope = [variable, value];
-      txt('scopes-count', fmt(r.activity.length) + ' commits');
-      table('scopes-table', [
-        { l: 'Seq', c: 'num', d: -1, v: a => a.commitSeq, h: a => '<span class="ty">' + fmt(a.commitSeq) + '</span>' },
-        { l: 'Table', v: a => a.table, h: a => esc(a.table) },
-        { l: 'Actor', c: 'w-sm', v: a => a.actorId, h: a => idText(a.actorId) },
-        numCol('Changes', 'changeCount'),
-        { l: 'When', c: 'num fill', d: -1, v: a => a.createdAtMs, h: a => when(a.createdAtMs) }
-      ], r.activity, empty('No activity', 'No recent commit touched ' + esc(variable) + ': ' + esc(value) + '.'), a => { openCommit(a.commitSeq); });
-      return null;
-    }, err => { txt('scopes-count', ''); return fail(['scopes-table'])(err); });
+    }).catch(fail(['st-seg', 'st-blob']));
   }
 
   // -- event tail: SSE when the ring is wired, polled otherwise -------------
@@ -1158,28 +1284,60 @@ main{overflow:visible;padding:16px}
   }
   var EV_COLS = [
     { l: 'Time', d: -1, v: e => e.atMs, h: e => '<span title="' + esc(stamp(e.atMs)) + '">' + clock(e.atMs, true) + '</span>' },
-    { l: 'Level', v: e => { return { err: 0, warn: 1, info: 2 }[level(e)]; }, h: e => { var l = level(e); return st(l === 'info' ? 'idle' : l, LEVEL_LABEL[l]); } },
+    { l: 'Level', v: e => RANK[level(e)], h: e => { var l = level(e); return st(l === 'info' ? 'idle' : l, LEVEL_LABEL[l]); } },
     { l: 'Type', v: e => e.type, h: e => '<span class="ty ' + level(e) + '">' + esc(e.type) + '</span>' },
-    { l: 'Client', c: 'w-sm', v: e => e.clientId || e.actorId || '', h: e => {
-      return e.clientId ? idCell(e.clientId) : '<span class="dim">' + esc(e.actorId || e.workerId || '') + '</span>';
-    } },
-    { l: 'Detail', c: 'fill', ns: true, h: e => trunc(summary(e)) }
+    { l: 'Detail', c: 'fill', ns: true, h: detailCell }
+  ];
+  // One row per sync request: every event of a request shares requestId.
+  // An idle round pushed nothing and pulled no commit on any subscription.
+  function groups(list) {
+    var by = {}, out = [];
+    list.forEach(e => {
+      if (!e.requestId) { out.push({ events: [e], atMs: e.atMs }); return; }
+      var g = by[e.requestId];
+      if (!g) { g = by[e.requestId] = { id: e.requestId, events: [], atMs: e.atMs }; out.push(g); }
+      g.events.push(e);
+      if (e.type === 'request.handled') g.rh = e;
+    });
+    out.forEach(g => {
+      g.level = g.events.reduce((l, e) => RANK[level(e)] < RANK[l] ? level(e) : l, 'info');
+      g.clientId = g.events.map(e => e.clientId).filter(Boolean)[0];
+      g.actorId = g.events.map(e => e.actorId).filter(Boolean)[0];
+      g.idle = !!g.rh && g.level === 'info' && g.rh.pushCommits === 0 && g.events.every(e => e.type !== 'pull.served' || e.subscriptions.every(s => !s.commits));
+    });
+    return out;
+  }
+  function groupSummary(g) {
+    if (!g.id) return summary(g.events[0]);
+    var pulled = 0, rh = g.rh;
+    g.events.forEach(e => { if (e.type === 'pull.served') e.subscriptions.forEach(s => { pulled += s.commits; }); });
+    var bad = g.events.filter(e => e.type === 'push.rejected' || e.type === 'push.conflicted');
+    return (rh ? rh.outcome + (rh.errorCode ? ' ' + rh.errorCode : '') + ' · ' + dur(rh.durationMs) + ' ms · ' + rh.pushCommits + ' pushed · ' : 'in flight · ') +
+      pulled + ' commits pulled' + (bad.length ? ' · ' + bad.map(e => e.type.slice(5) + (e.table ? ' ' + e.table + ' / ' + e.rowId : '')).join(', ') : '') + ' · ' + g.events.length + ' events';
+  }
+  var GROUP_COLS = [
+    { l: 'Time', d: -1, v: g => g.atMs, h: g => '<span title="' + esc(stamp(g.atMs)) + '">' + clock(g.atMs, true) + '</span>' },
+    { l: 'Level', v: g => RANK[g.level], h: g => st(g.level === 'info' ? 'idle' : g.level, LEVEL_LABEL[g.level]) },
+    { l: 'Kind', v: g => g.id ? 'request' : g.events[0].type, h: g => '<span class="ty ' + g.level + '">' + (g.id ? 'sync request' : esc(g.events[0].type)) + '</span>' },
+    { l: 'Client', c: 'w-sm', v: g => g.clientId || g.actorId || '', h: g => g.clientId ? clientLink(g.clientId) : '<span class="dim">' + esc(g.actorId || g.events[0].workerId || '') + '</span>' },
+    { l: 'Detail', c: 'fill', ns: true, h: g => {
+      if (!g.id) return detailCell(g.events[0]);
+      var hit = g.events.filter(e => e.table && e.rowId);
+      return (hit.length ? '<span class="tags">' + hit.map(e => rowLink(e.table, e.rowId)).join('') + '</span>' : '') + trunc(groupSummary(g));
+    } }
   ];
   function renderTail() {
-    var kind = $('ev-kind').value, lv = $('ev-level').value, q = $('ev-q').value.trim().toLowerCase();
-    var rows = tail.list.filter(e => {
-      if (kind && kind.indexOf('.') < 0 && e.type.indexOf(kind + '.') !== 0) return false;
-      var l = level(e);
-      if (lv === 'err' && l !== 'err') return false;
-      if (lv === 'warn' && l === 'info') return false;
-      return !q || JSON.stringify(e).toLowerCase().indexOf(q) >= 0;
-    });
+    var kind = $('ev-kind').value, lv = $('ev-level').value, q = $('ev-q').value.trim().toLowerCase(), showIdle = $('ev-idle').checked;
+    var all = groups(tail.list.filter(e => !kind || kind.indexOf('.') > 0 || e.type.indexOf(kind + '.') === 0));
+    var idle = all.filter(g => g.idle).length;
+    var rows = all.filter(g => (showIdle || !g.idle) && (lv !== 'err' || g.level === 'err') && (lv !== 'warn' || g.level !== 'info') && (!q || JSON.stringify(g.events).toLowerCase().indexOf(q) >= 0));
+    txt('ev-idle-label', showIdle ? 'Show idle rounds' : 'Show idle rounds (' + idle + ' hidden)');
     txt('n-events', tail.mode === 'off' ? '' : fmt(tail.list.length));
-    txt('ev-count', rows.length === tail.list.length ? fmt(rows.length) + ' events' : fmt(rows.length) + ' of ' + fmt(tail.list.length) + ' events');
-    table('ev-table', EV_COLS, rows, tail.mode === 'off'
+    txt('ev-count', fmt(rows.length) + ' of ' + fmt(all.length) + ' rows · ' + fmt(tail.list.length) + ' events');
+    table('ev-table', GROUP_COLS, rows, tail.mode === 'off'
       ? empty('No event ring', 'The event tail needs a <code>RingBufferEvents</code> passed to the admin.')
-      : tail.list.length ? empty('No match', fmt(tail.list.length) + ' buffered events, none match the filters.')
-        : empty('No events yet', 'The tail fills as clients push, pull, and connect.'), openEvent);
+      : tail.list.length ? empty('No match', fmt(all.length) + ' buffered rows, none match the filters' + (idle && !showIdle ? ' or they are idle rounds' : '') + '.')
+        : empty('No events yet', 'The tail fills as clients push, pull, and connect.'), g => { if (g.id) openRequest(g); else openEvent(g.events[0]); });
   }
   function stopStream() { if (tail.src) { tail.src.close(); tail.src = null; } }
   function connectStream() {
@@ -1237,7 +1395,7 @@ main{overflow:visible;padding:16px}
     renderTail();
   }
 
-  // -- drill-down modal ----------------------------------------------------
+  // -- dialogs -------------------------------------------------------------
   var modal = $('modal'), help = $('help'), modalToken = 0;
   function modalTab(which) {
     $('m-sum').hidden = which !== 'sum';
@@ -1262,31 +1420,6 @@ main{overflow:visible;padding:16px}
     html('m-sum', sumHtml);
     html('m-json', data === undefined ? SKEL : json(data));
   }
-  function openClient(id) {
-    var token = openModal('Client', id, true, SKEL);
-    get('/clients/' + encodeURIComponent(id), { eventLimit: 50 }).then(r => {
-      if (token !== modalToken) return;
-      var d = r.detail, c = d.client;
-      if (!d.exists) { fillModal(empty('No record', 'This partition has no cursor record for client ' + esc(id) + '.'), d); return; }
-      var lease = d.lease
-        ? esc(d.lease.leaseId) + ' · ' + (d.lease.revoked ? st('err', 'revoked') : d.lease.expiresAtMs > Date.now() ? st('ok', 'expires ' + rel(d.lease.expiresAtMs)) : st('warn', 'expired'))
-        : '<span class="dim">none</span>';
-      var head = S.horizon ? S.horizon.maxCommitSeq : null;
-      var acts = '<div class="acts" style="margin:0 0 14px"><button type="button" class="btn sm" data-act="trace-client" data-cid="' + esc(id) + '">Trace a row for this client</button>' +
-        (INFO.writes && d.lease && !d.lease.revoked ? '<button type="button" class="btn sm amber" data-act="revoke" data-cid="' + esc(id) + '">Revoke lease</button>' : '') + '</div>';
-      fillModal(acts + kv([['Actor', esc(c.actorId)], ['Status', c.active ? st('ok', 'active') : st('idle', 'idle')], ['Wire version', c.wireVersion == null ? '–' : 'v' + c.wireVersion + (c.schemaVersion == null ? '' : ' <span class="dim">schema ' + c.schemaVersion + '</span>')],
-        ['Realtime', d.realtime === undefined ? '<span class="dim">no realtime hub</span>' : d.realtime === 'open' ? st('ok', 'socket open') : st('idle', 'closed')],
-        ['Cursor', fmt(c.cursor)], ['Lag', fmt(c.lag) + ' commits' + (head !== null ? ' <span class="dim">behind head ' + fmt(head) + '</span>' : '')],
-        ['Last seen', esc(ago(c.updatedAtMs)) + ' <span class="dim">' + esc(stamp(c.updatedAtMs)) + '</span>'], ['Lease', lease]]) +
-        '<h3>Subscriptions · ' + c.subscriptions.length + '</h3><div id="m-subs"></div><h3>Recent events · ' + d.events.length + '</h3><div id="m-events"></div>', d);
-      table('m-subs', [
-        { l: 'Id', c: 'w-sm', h: s => idCell(s.id) },
-        { l: 'Table', h: s => esc(s.table) },
-        { l: 'Scopes', c: 'fill', h: s => tags(Object.keys(s.scopes).map(k => k + ': ' + s.scopes[k].join(', '))) }
-      ], c.subscriptions, empty('No subscriptions', 'The client has no active subscriptions.', true));
-      table('m-events', EV_COLS.slice(0, 3).concat([EV_COLS[4]]), d.events, empty('No events', 'The ring holds no events for this client.', true));
-    }, err => { if (token === modalToken && err !== STALE) fillModal(errBox(err), { code: err.code, message: err.message }); });
-  }
   function openCommit(seq) {
     var token = openModal('Commit ' + fmt(seq), '…', false, SKEL);
     get('/commits/' + seq).then(r => {
@@ -1295,46 +1428,53 @@ main{overflow:visible;padding:16px}
       txt('m-title', c.clientCommitId);
       $('m-copy').hidden = false;
       $('m-copy').setAttribute('data-copy', c.clientCommitId);
-      fillModal(kv([['Seq', '<span class="ty">' + fmt(c.commitSeq) + '</span>'],
-        ['Client', '<button type="button" class="tag" data-client="' + esc(c.clientId) + '">' + esc(c.clientId) + '</button>'],
-        ['Actor', esc(c.actorId)], ['Created', esc(stamp(c.createdAtMs)) + ' <span class="dim">' + ago(c.createdAtMs) + '</span>']]) +
-        '<h3>Changes · ' + c.changes.length + '</h3><div id="m-changes"></div><h3>Ring events</h3><div id="m-events">' + SKEL + '</div>', r);
+      fillModal(kv([['Seq', '<span class="ty">' + fmt(c.commitSeq) + '</span>'], ['Client', clientLink(c.clientId)],
+        ['Actor', esc(c.actorId)], ['Created', esc(stamp(c.createdAtMs)) + ' <span class="dim">' + ago(c.createdAtMs) + '</span>'],
+        ['Write', '<button type="button" class="tag" data-write="' + esc(c.clientCommitId) + '">look up ' + esc(c.clientCommitId) + '</button>']]) +
+        '<h3>Changes · ' + c.changes.length + '</h3><div id="m-changes"></div>', r);
       table('m-changes', [
-        { l: 'Table', v: x => x.table, h: x => esc(x.table) },
-        { l: 'Row', c: 'w-sm', v: x => x.rowId, h: x => idCell(x.rowId) },
+        { l: 'Row', c: 'w-sm', v: x => x.table + x.rowId, h: x => rowLink(x.table, x.rowId) },
         { l: 'Op', v: x => x.op, h: x => esc(x.op) + (x.undecodable ? ' ' + st('err', 'undecodable') : '') },
         numCol('Version', 'rowVersion'),
-        { l: 'Scopes', c: 'fill', ns: true, h: x => tags(Object.keys(x.scopes || {}).map(k => k + ': ' + x.scopes[k])) }
-      ], c.changes, empty('No changes', 'The commit carries no row changes.', true), x => { modal.close(); go('rows'); inspect(x.table, x.rowId); });
-      if (!INFO.hasEventStream) { html('m-events', ringOff('Push events come from the event ring.')); return null; }
-      return get('/events', { clientId: c.clientId, limit: MAX_TAIL }).then(e => {
-        if (token !== modalToken) return;
-        var related = e.events.filter(x => x.clientCommitId === c.clientCommitId || (x.commitSeq === c.commitSeq && !x.clientCommitId));
-        table('m-events', EV_COLS.slice(0, 3).concat([EV_COLS[4]]), related, empty('No events', 'The ring no longer holds events for this commit.', true));
-      }, fail(['m-events']));
+        { l: 'Scopes', ns: true, h: x => scopeTags(x.scopes) },
+        { l: 'Values', c: 'fill', ns: true, h: x => x.values ? trunc(JSON.stringify(x.values)) : '<span class="dim">–</span>' }
+      ], c.changes, empty('No changes', 'The commit carries no row changes.', true), x => { nav('row', [x.table, x.rowId]); });
+      return null;
     }, err => { if (token === modalToken && err !== STALE) fillModal(errBox(err), { code: err.code, message: err.message }); });
+  }
+  function openRequest(g) {
+    var token = openModal('Sync request', g.id, true, SKEL);
+    get('/events', { requestId: g.id, limit: MAX_TAIL }).then(r => {
+      if (token !== modalToken) return;
+      fillModal('<p class="verdict" style="margin:0 0 14px">' + esc(groupSummary(groups(r.events)[0] || g)) + '</p>' + (g.clientId ? kv([['Client', clientLink(g.clientId)]]) : '') + '<h3>Events · ' + r.events.length + '</h3><div id="m-events"></div>', r.events);
+      table('m-events', EV_COLS, r.events, empty('No events', 'The ring no longer holds events for this request.', true), openEvent);
+    }, err => { if (token === modalToken && err !== STALE) fillModal(errBox(err), g.events); });
   }
   function openEvent(e) {
     var keys = Object.keys(e).filter(k => k !== 'type' && k !== 'atMs');
-    openModal(LEVEL_LABEL[level(e)] + ' event', e.type, false, kv([['Time', esc(stamp(e.atMs))], ['Summary', esc(summary(e))]].concat(keys.map(k => {
-      var v = e[k];
-      return [k, typeof v === 'string' ? (k.slice(-2) === 'Id' ? idCell(v) : esc(v)) : typeof v === 'object' ? '<code>' + esc(JSON.stringify(v)) + '</code>' : esc(String(v))];
-    }))), e);
+    openModal(LEVEL_LABEL[level(e)] + ' event', e.type, false, kv([['Time', esc(stamp(e.atMs))], ['Summary', esc(summary(e))]]
+      .concat(e.table && e.rowId ? [['Row', rowLink(e.table, e.rowId)]] : [])
+      .concat(e.clientCommitId ? [['Write', '<button type="button" class="tag" data-write="' + esc(e.clientCommitId) + '">look up ' + esc(e.clientCommitId) + '</button>']] : [])
+      .concat(keys.map(k => {
+        var v = e[k];
+        return [k, k === 'clientId' ? clientLink(v) : typeof v === 'string' ? (k.slice(-2) === 'Id' ? idCell(v) : esc(v)) : typeof v === 'object' ? '<code>' + esc(JSON.stringify(v)) + '</code>' : esc(String(v))];
+      }))), e);
   }
 
-  // -- view routing and refresh --------------------------------------------
+  // -- routing and refresh -------------------------------------------------
   var LOADERS = {
     overview: () => [loadMetrics(), loadErrors(), loadHorizon(['ov-horizon']), loadClients(), loadFleet()],
-    clients: () => [loadClients(), S.horizon ? null : loadHorizon([])],
+    people: args => [loadPeople(args)],
+    client: args => [loadClientPage(args), S.horizon ? null : loadHorizon([])],
+    data: () => [loadTables()],
+    table: args => [loadTablePage(args)],
+    row: args => [loadRowPage(args)],
     commits: () => [loadCommits()],
-    rows: () => [S.lastRow ? inspect(S.lastRow[0], S.lastRow[1]) : null],
-    trace: () => [S.lastTrace ? trace(S.lastTrace[0], S.lastTrace[1], S.lastTrace[2]) : null, S.clients ? null : loadClients()],
-    scopes: () => [S.lastScope ? scopeQuery(S.lastScope[0], S.lastScope[1]) : null, loadClients()],
     events: () => [loadTail()],
     reactions: () => [loadReactions()],
-    storage: () => [loadStats(), loadHorizon(['st-horizon'])]
+    storage: () => [loadStats(), loadHorizon(['st-horizon'])],
+    search: args => [loadSearch(args)]
   };
-  var busy = {};
   function report(errs) {
     var auth = errs.filter(e => e.code === 'sync.auth_required')[0];
     $('alert').hidden = !auth;
@@ -1349,8 +1489,9 @@ main{overflow:visible;padding:16px}
     return get('/info').then(r => {
       INFO = r;
       html('tables-list', r.tables.map(t => '<option value="' + esc(t.name) + '"></option>').join(''));
+      txt('side-mode', r.writes ? 'Writes enabled: retry, prune, revoke.' : 'Read-only: the host passed no authorizeWrite.');
       startTail();
-      return show(location.hash.slice(2));
+      return show();
     }, err => {
       if (err === STALE) return;
       document.querySelectorAll('[data-skel]').forEach(h => { h.innerHTML = errBox(err); });
@@ -1358,29 +1499,36 @@ main{overflow:visible;padding:16px}
       report([err]);
     });
   }
+  var busy = {};
   function load() {
-    var view = S.view;
     if (!INFO) return boot();
-    if (busy[view]) return busy[view];
+    var key = location.hash;
+    if (busy[key]) return busy[key];
     $('updated').className = '';
     txt('updated', 'Loading…');
-    busy[view] = Promise.all(LOADERS[view]()).then(results => {
-      busy[view] = null;
+    busy[key] = Promise.all(LOADERS[at.view](at.args)).then(results => {
+      busy[key] = null;
       report(results.filter(Boolean));
     });
-    return busy[view];
+    return busy[key];
   }
-  function show(view) {
-    if (VIEWS.indexOf(view) < 0) view = 'overview';
-    S.view = view;
-    VIEWS.forEach(v => {
-      $('view-' + v).hidden = v !== view;
-      if (v === view) $('nav-' + v).setAttribute('aria-current', 'page'); else $('nav-' + v).removeAttribute('aria-current');
-    });
-    if (location.hash !== '#/' + view) history.replaceState(null, '', '#/' + view);
+  function show() {
+    var parts = location.hash.replace(/^#\\/?/, '').split('/').filter(Boolean).map(decodeURIComponent);
+    var view = LOADERS[parts[0]] ? parts[0] : 'overview';
+    at = { view: view, args: parts.slice(1) };
+    if (!parts.length || !LOADERS[parts[0]]) history.replaceState(null, '', route(view));
+    document.querySelectorAll('section.view').forEach(s => { s.hidden = s.id !== 'view-' + view; });
+    var section = SECTION[view] || view;
+    NAV.forEach(v => { if (v === section) $('nav-' + v).setAttribute('aria-current', 'page'); else $('nav-' + v).removeAttribute('aria-current'); });
+    if (modal.open) modal.close();
+    $('main').scrollTop = 0;
     return load();
   }
-  function go(view) { if (view !== S.view) history.pushState(null, '', '#/' + view); return show(view); }
+  function nav(view, args) {
+    var h = route(view, args);
+    if (location.hash !== h) history.pushState(null, '', h);
+    return show();
+  }
   function setPartition(p) {
     $('partition').value = p;
     partitionChanged();
@@ -1392,7 +1540,7 @@ main{overflow:visible;padding:16px}
     reset();
     if (!INFO) { boot(); return; }
     startTail();
-    show(S.view);
+    show();
   }
   var timer = null;
   function setAuto(ms) {
@@ -1435,16 +1583,17 @@ main{overflow:visible;padding:16px}
     pause: () => togglePause(),
     reconnect: () => connectStream(),
     'err-tab': el => { ERR_TAB = el.getAttribute('data-tab'); if (S.errors) renderErrors(); },
+    'fleet-prev': () => { S.fleetOffset = Math.max(0, S.fleetOffset - FLEET_PAGE); loadFleet(); },
+    'fleet-next': () => { S.fleetOffset += FLEET_PAGE; loadFleet(); },
     'commits-older': () => { S.commitPages = (S.commitPages || []).concat([S.commitOldest]); loadCommits(); },
     'commits-newer': () => { S.commitPages = S.commitPages.slice(0, -1); if (!S.commitPages.length) S.commitPages = null; loadCommits(); },
     'commits-newest': () => { S.commitPages = null; loadCommits(); },
-    'fleet-prev': () => { S.fleetOffset = Math.max(0, S.fleetOffset - FLEET_PAGE); loadFleet(); },
-    'fleet-next': () => { S.fleetOffset += FLEET_PAGE; loadFleet(); },
-    'trace-row': el => { $('trace-table').value = el.getAttribute('data-t'); $('trace-row').value = el.getAttribute('data-rid'); go('trace'); $('trace-client').focus(); },
-    'trace-client': el => { modal.close(); $('trace-client').value = el.getAttribute('data-cid'); go('trace'); $('trace-table').focus(); },
+    'rows-next': () => { S.pageStack.push(S.pageNext); load(); },
+    'rows-prev': () => { S.pageStack.pop(); load(); },
+    'rows-first': () => { S.pageStack = []; load(); },
     retry: el => {
       var k = el.getAttribute('data-key');
-      confirmWrite('Retry reaction ' + k, 'The reaction returns to pending with its attempts reset, and a worker claims it again.', '/reactions/' + encodeURIComponent(k) + '/retry', () => { modal.close(); loadReactions(); });
+      confirmWrite('Retry reaction ' + k, 'The reaction returns to pending with its attempts reset, and a worker claims it again.', '/reactions/' + enc(k) + '/retry', () => { modal.close(); loadReactions(); });
     },
     prune: () => {
       var h = S.horizon;
@@ -1453,7 +1602,7 @@ main{overflow:visible;padding:16px}
     },
     revoke: el => {
       var id = el.getAttribute('data-cid');
-      confirmWrite('Revoke the lease of ' + id, 'The client loses its lease at once; its next request needs a fresh authorized round.', '/clients/' + encodeURIComponent(id) + '/revoke-lease', () => { openClient(id); });
+      confirmWrite('Revoke the lease of ' + id, 'The client loses its lease at once; its next request needs a fresh authorized round.', '/clients/' + enc(id) + '/revoke-lease', load);
     }
   };
   function pickRow(tr) {
@@ -1462,21 +1611,25 @@ main{overflow:visible;padding:16px}
   }
 
   // -- wiring --------------------------------------------------------------
-  $('ev-kind').innerHTML = '<option value="">All kinds</option><optgroup label="Families">' +
+  html('ev-kind', '<option value="">All kinds</option><optgroup label="Families">' +
     ['request', 'push', 'pull', 'realtime', 'reaction', 'segment', 'blob', 'prune', 'scopes', 'lease'].map(f => '<option value="' + f + '">' + f + '.*</option>').join('') +
-    '</optgroup><optgroup label="Types">' + EVENT_TYPES.map(t => '<option value="' + t + '">' + t + '</option>').join('') + '</optgroup>';
+    '</optgroup><optgroup label="Types">' + EVENT_TYPES.map(t => '<option value="' + t + '">' + t + '</option>').join('') + '</optgroup>');
   document.addEventListener('click', e => {
     var t = e.target, el;
     if (!t || !t.closest) return;
-    if ((el = t.closest('[data-copy]'))) { e.stopPropagation(); copy(el.getAttribute('data-copy')); return; }
+    if ((el = t.closest('[data-copy]'))) { e.preventDefault(); e.stopPropagation(); copy(el.getAttribute('data-copy')); return; }
     if ((el = t.closest('[data-sort]'))) { sortBy(el.closest('[data-tbl]').getAttribute('data-tbl'), Number(el.getAttribute('data-sort'))); return; }
-    if ((el = t.closest('[data-client]'))) { openClient(el.getAttribute('data-client')); return; }
-    if ((el = t.closest('[data-sv]'))) { scopeQuery(el.getAttribute('data-sv'), el.getAttribute('data-sval')); return; }
-    if ((el = t.closest('[data-rt]'))) { inspect(el.getAttribute('data-rt'), el.getAttribute('data-rid')); return; }
     if ((el = t.closest('[data-act]'))) { ACTS[el.getAttribute('data-act')](el); return; }
     if ((el = t.closest('[data-seq]'))) { openCommit(Number(el.getAttribute('data-seq'))); return; }
-    if ((el = t.closest('tr[data-i]'))) { pickRow(el); return; }
-    if ((el = t.closest('.side a'))) { e.preventDefault(); go(el.id.slice(4)); }
+    if ((el = t.closest('[data-write]'))) { openWrite(el.getAttribute('data-write')); return; }
+    if ((el = t.closest('a[href^="#/"]'))) {
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.button) return;
+      e.preventDefault();
+      if (location.hash !== el.getAttribute('href')) history.pushState(null, '', el.getAttribute('href'));
+      show();
+      return;
+    }
+    if ((el = t.closest('tr[data-i]'))) pickRow(el);
   });
   document.addEventListener('keydown', e => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -1485,18 +1638,26 @@ main{overflow:visible;padding:16px}
     if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') { if (e.key === 'Escape') t.blur(); return; }
     if (modal.open || help.open || confirmBox.open) return;
     var n = Number(e.key);
-    if (n >= 1 && n <= VIEWS.length) go(VIEWS[n - 1]);
+    if (n >= 1 && n <= NAV.length) nav(NAV[n - 1]);
+    else if (e.key === '/') $('q').focus();
+    else if (e.key === 'f') { var f = document.querySelector('#view-' + at.view + ' [data-focus]'); if (f) f.focus(); }
     else if (e.key === 'r') load();
     else if (e.key === 'a') { var o = [0, 2000, 5000, 15000]; setAuto(o[(o.indexOf(Number($('auto').value)) + 1) % o.length]); }
-    else if (e.key === '/') { var f = document.querySelector('#view-' + S.view + ' [data-focus]'); if (f) f.focus(); }
     else if (e.key === 'p') $('partition').focus();
-    else if (e.key === ' ' && S.view === 'events' && tag !== 'BUTTON') togglePause();
+    else if (e.key === ' ' && at.view === 'events' && tag !== 'BUTTON') togglePause();
     else if (e.key === '?') help.showModal();
     else return;
     e.preventDefault();
   });
-  window.addEventListener('hashchange', () => { var v = location.hash.slice(2); if (v !== S.view) show(v); });
-  window.addEventListener('popstate', () => { var v = location.hash.slice(2); if (v !== S.view) show(v); });
+  window.addEventListener('hashchange', () => { show(); });
+  window.addEventListener('popstate', () => { show(); });
+  document.addEventListener('submit', e => {
+    var f = e.target;
+    e.preventDefault();
+    if (f.id === 'search-form') { var q = $('q').value.trim(); if (q) nav('search', [q]); }
+    else if (f.id === 'write-form') { var w = $('write-id').value.trim(); if (w) openWrite(w); }
+    else if (f.id === 'client-trace') { var r = f.querySelector('[name=r]').value.trim(); if (r) openTrace(f.querySelector('[name=t]').value, r, f.getAttribute('data-cid')); }
+  });
   $('refresh').addEventListener('click', () => { load(); });
   $('auto').addEventListener('change', () => setAuto(Number($('auto').value)));
   $('help-btn').addEventListener('click', () => { help.showModal(); });
@@ -1508,17 +1669,14 @@ main{overflow:visible;padding:16px}
   $('c-cancel').addEventListener('click', () => { confirmBox.close(); });
   [modal, help, confirmBox].forEach(d => { d.addEventListener('click', e => { if (e.target === d) d.close(); }); });
   $('partition').addEventListener('change', partitionChanged);
-  $('clients-q').addEventListener('input', () => { if (S.clients) renderClients(); });
-  $('clients-active').addEventListener('change', () => { if (S.clients) renderClients(); });
+  $('people-q').addEventListener('input', () => { if (S.actors) renderPeople(); });
   $('commits-table').addEventListener('change', () => { S.commitPages = null; loadCommits(); });
   $('commits-limit').addEventListener('change', () => { S.commitPages = null; loadCommits(); });
-  $('rows-form').addEventListener('submit', e => { e.preventDefault(); inspect($('rows-table').value.trim(), $('rows-id').value.trim()); });
-  $('trace-form').addEventListener('submit', e => { e.preventDefault(); trace($('trace-table').value.trim(), $('trace-row').value.trim(), $('trace-client').value.trim()); });
-  $('scopes-form').addEventListener('submit', e => { e.preventDefault(); scopeQuery($('scopes-var').value.trim(), $('scopes-val').value.trim()); });
   function refilter() { if (tail.mode === 'live' || tail.mode === 'connecting') connectStream(); else loadTail(); }
   $('ev-kind').addEventListener('change', refilter);
   $('ev-client').addEventListener('change', refilter);
   $('ev-level').addEventListener('change', renderTail);
+  $('ev-idle').addEventListener('change', renderTail);
   $('ev-q').addEventListener('input', renderTail);
   $('ev-pause').addEventListener('click', togglePause);
   $('ev-clear').addEventListener('click', () => { tail.list = []; tail.held = []; setMode(tail.mode); renderTail(); });
