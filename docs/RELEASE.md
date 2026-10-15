@@ -1,8 +1,75 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.32.0** (`v0.32.0`). All artifacts use Apache-2.0, except
+current release is **0.32.1** (`v0.32.1`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.32.1 release notes
+
+The browser client, `registerRemoteCommand`, and `seedMutations` accept
+`integer` and `boolean` primary keys (SPEC §2.4). `mutate`, `patch`, delete,
+and remote upserts render the key as its rowId, and local lookups bind the
+typed value. An integer or boolean rowId that is not the key's canonical
+string form names no row in both cores, so `patch('counters', '042', …)`
+fails with `sync.row_missing`. The Rust core types the primary key of a patch
+from its rowId.
+
+React Native dispatches core events. The iOS and Android modules deliver each
+FFI event as a JSON string, which the bridge now parses before dispatch;
+change, progress, sync-intent, diagnostics, and presence listeners previously
+never fired. Presence events from the FFI and the Tauri plugin carry the
+`scopeKey` of the fanout, so `onPresence` listeners receive the key.
+
+Server fixes:
+
+- The column-version conflict check never marks the primary key (§6.2), so a
+  crdt-only patch against a row without column versions merges cleanly.
+- Reference enforcement judges each row by its final write in the commit
+  (§6.11). A row inserted and deleted in one commit is not checked for a
+  missing parent, a parent deleted and re-inserted keeps its children,
+  `SET NULL` children no longer cascade into their own children, and integer
+  parent keys find their children.
+- A replay of a reused `clientCommitId` from a client on an older schema that
+  no longer carries the conflicting operation answers `sync.invalid_request`
+  with `details.clientCommitId` and `details.opIndex` instead of an internal
+  error.
+- Socket sync rounds keep wire version 3, an ack persists the acknowledged
+  cursor instead of a delta cursor the client has not acknowledged, and a
+  catch-up wake clears once the ack reaches the woken sequence. WebSocket and
+  Durable Object rounds run the configured `reactionPlanner`, `checkpoints`,
+  and `mapError`. The Durable Object forwards `onError` and `mapError` to
+  admin requests and does not rehydrate a socket that already closed.
+- The D1 adapter reads no stale tombstone when one commit deletes and
+  re-inserts a row, and its scans order rowIds by UTF-16 code unit instead of
+  the runtime locale.
+
+Codec and crypto: both cores require `PUSH_RESULT_DETAILS` to follow its
+`PUSH_RESULT` directly, and the Rust decoder validates the details object as
+the TypeScript decoder does. Both cores refuse a presence error outside
+`presence.too_large` and `presence.forbidden`, a leave fanout whose `doc` is
+not null, and a client publish without `doc`; three new realtime vectors pin
+these cases. Key wrap refuses keys and nonces of the wrong length and, in
+Rust, a non-contributory X25519 shared secret. A decrypted `blob_ref` must
+parse as JSON, and the Rust core keeps encrypted integers and
+`blob_ref.byteLength` within the safe-integer range.
+
+Client fixes: `activateSecurity` raises the startup sync intent for retained
+rows and pending evictions as construction does, the client no longer retains
+every settled protected task, the worker transfers `querySnapshot` byte
+columns, and the Rust core ignores realtime frames during security preflight.
+`useWindow` releases the previous base's claims when its base changes, and
+`useDiagnostics` never returns the snapshot of a previous request.
+
+Typegen: SYQL scope proofs treat an identifier ending in `or` as an identifier
+and match scope columns only as whole identifiers. The Swift, Kotlin, and Dart
+row accessors and the Swift memberwise initializer use the declared type of
+encrypted columns.
+
+The repository lockfiles pin rustls 0.23.46, which fixes RUSTSEC-2026-0346
+through RUSTSEC-2026-0349. Applications that depend on the crates run
+`cargo update -p rustls` to pick up the same version. The browser bundle caps
+rise to 158,400 bytes for the client and 175,400 bytes for the worker. Upgrade all 12 npm packages and 6 crates together and rebuild
+native applications. No schema bump or wire change is required.
 
 ## 0.32.0 release notes
 
