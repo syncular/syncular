@@ -50,9 +50,15 @@ pub fn wrap_key_with(
     ephemeral_secret: [u8; 32],
     nonce: [u8; NONCE_LENGTH],
 ) -> Result<Vec<u8>, String> {
+    if k.len() != 32 {
+        return Err("wrap_key_with requires a 32-byte key".to_owned());
+    }
     let e = StaticSecret::from(ephemeral_secret);
     let e_pub = PublicKey::from(&e);
     let shared = e.diffie_hellman(&PublicKey::from(*recipient_public));
+    if !shared.was_contributory() {
+        return Err("non-contributory X25519 shared secret".to_owned());
+    }
     let wrap_key = derive_wrap_key(shared.as_bytes());
     let cipher = Aes256Gcm::new_from_slice(&wrap_key).map_err(|e| format!("bad key: {e}"))?;
     let wrapped = cipher
@@ -94,6 +100,11 @@ pub fn unwrap_key(envelope: &[u8], recipient_private: &[u8; 32]) -> Result<Vec<u
     let wrapped = &envelope[33 + NONCE_LENGTH..];
     let recipient = StaticSecret::from(*recipient_private);
     let shared = recipient.diffie_hellman(&PublicKey::from(e_pub));
+    if !shared.was_contributory() {
+        return Err(DecryptError(
+            "non-contributory X25519 shared secret".to_owned(),
+        ));
+    }
     let wrap_key = derive_wrap_key(shared.as_bytes());
     let cipher =
         Aes256Gcm::new_from_slice(&wrap_key).map_err(|e| DecryptError(format!("bad key: {e}")))?;
@@ -119,6 +130,24 @@ mod tests {
         let env = wrap_key(&key, &pub_k).unwrap();
         let back = unwrap_key(&env, &priv_k).unwrap();
         assert_eq!(back, key.to_vec());
+    }
+
+    #[test]
+    fn low_order_public_keys_are_refused() {
+        let (priv_k, _) = generate_keypair();
+        let wrap_error =
+            wrap_key_with(&[1u8; 32], &[0u8; 32], [9u8; 32], [0u8; NONCE_LENGTH]).unwrap_err();
+        assert!(wrap_error.contains("non-contributory"), "{wrap_error}");
+        let mut envelope = vec![ENVELOPE_VERSION];
+        envelope.extend_from_slice(&[0u8; 32]);
+        envelope.extend_from_slice(&[0u8; NONCE_LENGTH]);
+        envelope.extend_from_slice(&[0u8; 48]);
+        let unwrap_error = unwrap_key(&envelope, &priv_k).unwrap_err();
+        assert!(
+            unwrap_error.0.contains("non-contributory"),
+            "{}",
+            unwrap_error.0
+        );
     }
 
     #[test]

@@ -257,7 +257,10 @@ export function parseRealtimeServerEvent(text: string): ParsedRealtimeEvent {
     if ('error' in data) {
       // The publisher-directed error variant (`presence.too_large` /
       // `presence.forbidden`, §8.6.2) — a string code, no `kind`/`doc`.
-      requireString(data.error, 'presence.data.error');
+      const error = requireString(data.error, 'presence.data.error');
+      if (error !== 'presence.too_large' && error !== 'presence.forbidden') {
+        malformed(`unknown presence error code ${JSON.stringify(error)}`);
+      }
     } else if ('kind' in data) {
       validatePresenceKind(data.kind);
       requireString(data.actorId, 'presence.data.actorId');

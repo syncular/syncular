@@ -326,9 +326,16 @@ export class SyncRemoteClient {
                 : undefined,
             )
           : recordToRowValues(table, mutation.values);
-      const rowId = values[table.primaryKeyIndex];
-      if (typeof rowId !== 'string' || rowId.length === 0) {
-        throw invalid('remote upsert requires a non-empty string primary key');
+      const rawRowId = values[table.primaryKeyIndex];
+      const rowId =
+        typeof rawRowId === 'string' && rawRowId.length > 0
+          ? rawRowId
+          : (typeof rawRowId === 'number' && Number.isSafeInteger(rawRowId)) ||
+              typeof rawRowId === 'boolean'
+            ? String(rawRowId)
+            : undefined;
+      if (rowId === undefined) {
+        throw invalid('remote upsert requires a non-empty primary key');
       }
       if (this.#encryption !== undefined && table.hasEncryptedColumns) {
         values = await encryptRowValues(this.#encryption, table, rowId, values);

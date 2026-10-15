@@ -24,6 +24,7 @@ import { SyncError } from './errors';
 import type { SyncularServerEvent, SyncularServerEvents } from './events';
 import { composeEvents } from './events-ring';
 import { handleSyncRequest } from './handler';
+import { renderScopeValue } from './scopes';
 
 /** One app-shaped seed mutation — the same vocabulary as client mutations. */
 export type SeedMutation =
@@ -171,11 +172,11 @@ export async function seedMutations(
       (column) => (byColumn.get(column.name) ?? null) as RowValue,
     );
     const pkIndex = table.columns.findIndex((c) => c.name === table.primaryKey);
-    const rowId = values[pkIndex];
-    if (typeof rowId !== 'string' || rowId.length === 0) {
+    const rowId = renderScopeValue(values[pkIndex]);
+    if (rowId === undefined) {
       throw new SyncError(
         'sync.invalid_request',
-        `seedMutations: table ${table.name}: upsert requires a non-empty string primary key`,
+        `seedMutations: table ${table.name}: upsert requires a non-empty primary key`,
       );
     }
     return {

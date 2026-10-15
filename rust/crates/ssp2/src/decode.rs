@@ -215,6 +215,7 @@ fn decode_response_frames(r: &mut Reader<'_>, wire_version: u16) -> Result<Vec<F
                 payload: payload.to_vec(),
             });
             seen_body = true;
+            last_push_result = None;
             continue;
         }
         if !seen_header {
@@ -672,6 +673,116 @@ fn decode_push_result(payload: &[u8]) -> Result<Frame> {
     })
 }
 
+fn valid_detail_identifier(segment: &str) -> bool {
+    let mut chars = segment.chars();
+    matches!(chars.next(), Some(first) if first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+}
+
+fn valid_detail_token(token: &str, max: usize) -> bool {
+    if token.is_empty() || token.len() > max || !token.starts_with(|c: char| c.is_ascii_lowercase())
+    {
+        return false;
+    }
+    let mut prev_sep = false;
+    for c in token.chars() {
+        if c.is_ascii_lowercase() || c.is_ascii_digit() {
+            prev_sep = false;
+        } else if matches!(c, '.' | '_' | '-') && !prev_sep {
+            prev_sep = true;
+        } else {
+            return false;
+        }
+    }
+    !prev_sep
+}
+
+fn validate_rejection_details(raw: &str) -> Result<()> {
+    if raw.len() > 4_096 {
+        return Err(DecodeError::invalid(
+            "PUSH_RESULT_DETAILS.details exceeds 4096 encoded bytes",
+        ));
+    }
+    let val: serde_json::Value = serde_json::from_str(raw)
+        .map_err(|e| DecodeError::invalid(format!("invalid PUSH_RESULT_DETAILS.details: {e}")))?;
+    let Some(obj) = val.as_object() else {
+        return Err(DecodeError::invalid(
+            "PUSH_RESULT_DETAILS.details must be a JSON object",
+        ));
+    };
+    if obj.is_empty() {
+        return Err(DecodeError::invalid(
+            "PUSH_RESULT_DETAILS.details must not be empty",
+        ));
+    }
+    for (k, v) in obj {
+        match k.as_str() {
+            "fieldPaths" => {
+                let Some(arr) = v.as_array() else {
+                    return Err(DecodeError::invalid("fieldPaths must be an array"));
+                };
+                if arr.is_empty() || arr.len() > 32 {
+                    return Err(DecodeError::invalid("fieldPaths must contain 1-32 paths"));
+                }
+                let mut seen = std::collections::BTreeSet::new();
+                for item in arr {
+                    let Some(s) = item.as_str() else {
+                        return Err(DecodeError::invalid("fieldPaths entries must be strings"));
+                    };
+                    if s.is_empty()
+                        || s.len() > 160
+                        || !s.split('.').all(valid_detail_identifier)
+                        || !seen.insert(s)
+                    {
+                        return Err(DecodeError::invalid(
+                            "fieldPaths contains an invalid or duplicate path",
+                        ));
+                    }
+                }
+            }
+            "reason" | "requiredAction" => {
+                let Some(s) = v.as_str() else {
+                    return Err(DecodeError::invalid(format!("{k} must be a string")));
+                };
+                if !valid_detail_token(s, 96) {
+                    return Err(DecodeError::invalid(format!(
+                        "{k} must be a lowercase stable token"
+                    )));
+                }
+            }
+            "references" => {
+                let Some(refs) = v.as_object() else {
+                    return Err(DecodeError::invalid("references must be a JSON object"));
+                };
+                if refs.is_empty() || refs.len() > 16 {
+                    return Err(DecodeError::invalid("references must contain 1-16 entries"));
+                }
+                for (rk, rv) in refs {
+                    let Some(rvs) = rv.as_str() else {
+                        return Err(DecodeError::invalid("references values must be strings"));
+                    };
+                    if !valid_detail_token(rk, 64)
+                        || rvs.is_empty()
+                        || rvs.len() > 256
+                        || rvs.trim() != rvs
+                        || rvs.chars().any(char::is_control)
+                    {
+                        return Err(DecodeError::invalid(
+                            "references contains an invalid key or value",
+                        ));
+                    }
+                }
+            }
+            other => {
+                return Err(DecodeError::invalid(format!(
+                    "unknown rejection details member {other:?}"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn decode_push_result_details(payload: &[u8]) -> Result<Frame> {
     frame_payload(payload, "PUSH_RESULT_DETAILS", |r| {
         let client_commit_id = r.str("clientCommitId")?;
@@ -695,10 +806,9 @@ fn decode_push_result_details(payload: &[u8]) -> Result<Frame> {
                     "PUSH_RESULT_DETAILS opIndex values must be unique and non-negative",
                 ));
             }
-            entries.push(crate::model::PushResultDetail {
-                op_index,
-                details: r.json("details")?,
-            });
+            let details = r.json("details")?;
+            validate_rejection_details(&details.0)?;
+            entries.push(crate::model::PushResultDetail { op_index, details });
         }
         Ok(Frame::PushResultDetails {
             client_commit_id,

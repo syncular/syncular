@@ -87,7 +87,12 @@ impl MessageStreamScanner {
                 self.buffer[offset + 3],
                 self.buffer[offset + 4],
             ]) as usize;
-            let frame_end = offset + 5 + frame_length;
+            let Some(frame_end) = offset
+                .checked_add(5)
+                .and_then(|v| v.checked_add(frame_length))
+            else {
+                return Err(DecodeError::invalid("frame length overflow"));
+            };
             if self.buffer.len() < frame_end {
                 self.offset = Some(offset);
                 return Ok(None);

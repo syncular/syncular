@@ -761,3 +761,22 @@ fn baseurl_without_native_feature_is_rejected() {
         syncular_client_close(handle);
     }
 }
+
+#[test]
+fn presence_scope_key_reads_the_fanout_data() {
+    assert_eq!(
+        crate::presence_scope_key(
+            r#"{"event":"presence","data":{"scopeKey":"room:42","kind":"join","actorId":"a","clientId":"c","doc":{},"timestamp":1}}"#
+        )
+        .as_deref(),
+        Some("room:42")
+    );
+    assert_eq!(
+        crate::presence_scope_key(r#"{"event":"presence","data":{}}"#),
+        None
+    );
+    assert_eq!(
+        crate::presence_scope_key(r#"{"event":"sync","data":{}}"#),
+        None
+    );
+}

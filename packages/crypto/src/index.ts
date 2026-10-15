@@ -201,6 +201,15 @@ export async function wrapKeyWith(
   nonce: Uint8Array,
   backend: X25519Backend = webCryptoX25519,
 ): Promise<Uint8Array> {
+  if (k.byteLength !== 32) {
+    throw new Error('wrapKeyWith requires a 32-byte key');
+  }
+  if (recipientPublic.byteLength !== 32 || ephemeralPrivate.byteLength !== 32) {
+    throw new Error('wrapKeyWith requires 32-byte X25519 keys');
+  }
+  if (nonce.byteLength !== NONCE_LENGTH) {
+    throw new Error(`wrapKeyWith requires a ${NONCE_LENGTH}-byte nonce`);
+  }
   const ephemeralPublic = await backend.publicFromPrivate(ephemeralPrivate);
   const shared = await backend.sharedSecret(ephemeralPrivate, recipientPublic);
   const wrapKey = await deriveWrapKey(shared);
@@ -248,9 +257,12 @@ export async function unwrapKey(
   const ephemeralPublic = envelope.subarray(1, 33);
   const nonce = envelope.subarray(33, 33 + NONCE_LENGTH);
   const wrapped = envelope.subarray(33 + NONCE_LENGTH);
-  const shared = await backend.sharedSecret(recipientPrivate, ephemeralPublic);
-  const wrapKey = await deriveWrapKey(shared);
   try {
+    const shared = await backend.sharedSecret(
+      recipientPrivate,
+      ephemeralPublic,
+    );
+    const wrapKey = await deriveWrapKey(shared);
     return new Uint8Array(
       await crypto.subtle.decrypt(
         { name: 'AES-GCM', iv: toBuffer(nonce), tagLength: 128 },

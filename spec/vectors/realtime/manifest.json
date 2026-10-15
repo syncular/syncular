@@ -47,6 +47,24 @@
       "json": "invalid/presence-scalar-doc.json",
       "error": "sync.invalid_request",
       "covers": "Client→server presence publish with a non-object non-null doc is malformed (SPEC.md §8.6.2)"
+    },
+    {
+      "name": "presence-unknown-error",
+      "json": "invalid/presence-unknown-error.json",
+      "error": "sync.invalid_request",
+      "covers": "Presence error outside the closed set presence.too_large|presence.forbidden is malformed (SPEC.md §8.6.2)"
+    },
+    {
+      "name": "presence-leave-doc",
+      "json": "invalid/presence-leave-doc.json",
+      "error": "sync.invalid_request",
+      "covers": "Presence leave fanout whose doc is not null is malformed (SPEC.md §8.6.2)"
+    },
+    {
+      "name": "presence-publish-missing-doc",
+      "json": "invalid/presence-publish-missing-doc.json",
+      "error": "sync.invalid_request",
+      "covers": "Client→server presence publish without a doc member is malformed (SPEC.md §8.6.2)"
     }
   ]
 }

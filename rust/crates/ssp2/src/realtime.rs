@@ -224,15 +224,19 @@ pub fn parse_control_value(value: &Value) -> Result<ControlMessage> {
                 // §8.6.2 publisher-directed error variant.
                 let error = error
                     .as_str()
-                    .ok_or_else(|| DecodeError::invalid("presence.data.error must be a string"))?
-                    .to_owned();
+                    .ok_or_else(|| DecodeError::invalid("presence.data.error must be a string"))?;
+                if error != "presence.too_large" && error != "presence.forbidden" {
+                    return Err(DecodeError::invalid(format!(
+                        "unknown presence error code {error:?}"
+                    )));
+                }
                 return Ok(ControlMessage::Presence {
                     scope_key,
                     kind: None,
                     actor_id: None,
                     client_id: None,
                     doc: None,
-                    error: Some(error),
+                    error: Some(error.to_owned()),
                     timestamp,
                 });
             }
@@ -251,7 +255,7 @@ pub fn parse_control_value(value: &Value) -> Result<ControlMessage> {
                     // §8.6.2 doc-present-iff-not-leave.
                     match kind {
                         PresenceKind::Leave => {
-                            if matches!(doc, Some(Value::Object(_))) {
+                            if !matches!(doc, None | Some(Value::Null)) {
                                 return Err(DecodeError::invalid(
                                     "presence leave must carry doc: null",
                                 ));
@@ -278,7 +282,7 @@ pub fn parse_control_value(value: &Value) -> Result<ControlMessage> {
                 None => {
                     // Client→server publish/leave: scopeKey + doc (object or null).
                     let doc = d.get("doc").cloned();
-                    if !matches!(doc, None | Some(Value::Null) | Some(Value::Object(_))) {
+                    if !matches!(doc, Some(Value::Null) | Some(Value::Object(_))) {
                         return Err(DecodeError::invalid(
                             "presence.data.doc must be a JSON object or null",
                         ));

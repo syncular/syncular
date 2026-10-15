@@ -503,6 +503,7 @@ async function applyOperation(
         if (
           present[i] &&
           !crdtIndexes.has(i) &&
+          i !== table.primaryKeyIndex &&
           effectiveVersion(i) > op.baseVersion
         ) {
           marked.push(i);
@@ -978,7 +979,20 @@ async function enforceReferences(
   const operations: ValidateCommitOperation[] = [];
   const originByIndex: number[] = [];
 
+  const finalByRow = new Map<
+    string,
+    { readonly first: StagedWrite; readonly last: StagedWrite }
+  >();
   for (const write of staged) {
+    const rowKey = `${write.table.name}\u0000${write.rowId}`;
+    const existing = finalByRow.get(rowKey);
+    finalByRow.set(rowKey, {
+      first: existing?.first ?? write,
+      last: write,
+    });
+  }
+
+  for (const { last: write } of finalByRow.values()) {
     if (write.op !== 'upsert' || write.values === undefined) continue;
     for (const reference of write.table.references) {
       const value = write.values[reference.columnIndex];
@@ -1028,9 +1042,9 @@ async function enforceReferences(
     readonly rowId: string;
     readonly originOpIndex: number;
   }> = [];
-  for (const write of staged) {
-    if (write.op === 'delete' && write.stored !== undefined) {
-      schedule(write.table, write.rowId, write.opIndex, scheduled, queue);
+  for (const { first, last } of finalByRow.values()) {
+    if (last.op === 'delete' && first.stored !== undefined) {
+      schedule(last.table, last.rowId, last.opIndex, scheduled, queue);
     }
   }
 
@@ -1040,6 +1054,13 @@ async function enforceReferences(
     const key = `${item.table.name}\u0000${item.rowId}`;
     if (processed.has(key)) continue;
     processed.add(key);
+    const parentPkColumn = item.table.columns[item.table.primaryKeyIndex];
+    const parentKeyValue: RowValue =
+      parentPkColumn?.type === 'integer'
+        ? Number(item.rowId)
+        : parentPkColumn?.type === 'boolean'
+          ? item.rowId === 'true'
+          : item.rowId;
     for (const reference of item.table.referencedBy) {
       if (tx.scanRowsByIndex === undefined) {
         throw new Error(
@@ -1052,7 +1073,7 @@ async function enforceReferences(
         const page = await tx.scanRowsByIndex({
           table: reference.table,
           index: reference.index,
-          values: [item.rowId],
+          values: [parentKeyValue],
           afterRowId,
           limit: 1_000,
         });
@@ -1081,6 +1102,21 @@ async function enforceReferences(
         );
       }
       for (const childRow of children) {
+        if (reference.onDelete === 'CASCADE') {
+          if (
+            !schedule(
+              child,
+              childRow.rowId,
+              item.originOpIndex,
+              scheduled,
+              queue,
+            )
+          ) {
+            continue;
+          }
+        } else if (scheduled.has(`${child.name}\u0000${childRow.rowId}`)) {
+          continue;
+        }
         if (originByIndex.length >= cascadeLimit) {
           return {
             kind: 'terminate',
@@ -1090,11 +1126,6 @@ async function enforceReferences(
               { reason: 'cascade_limit' },
             ),
           };
-        }
-        if (
-          !schedule(child, childRow.rowId, item.originOpIndex, scheduled, queue)
-        ) {
-          continue;
         }
         const syntheticIndex = clientOpCount + originByIndex.length;
         const storedValues = decodeRow(child.columns, childRow.payload);

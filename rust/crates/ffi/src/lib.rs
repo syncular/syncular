@@ -237,9 +237,9 @@ impl Handle {
                     // A presence fanout is the client-observable event a native
                     // host wants pushed; detect it on the wire (the core has no
                     // presence callback) before handing the control frame off.
-                    if is_presence_control(&text) {
+                    if let Some(scope_key) = presence_scope_key(&text) {
                         self.queue.push(Event {
-                            json: json!({ "type": "presence" }),
+                            json: json!({ "type": "presence", "scopeKey": scope_key }),
                         });
                     }
                     client.on_realtime_text(&text);
@@ -298,15 +298,16 @@ impl Handle {
 
 /// A presence fanout control frame (§8.6.2) — `{"event":"presence",...}`, the
 /// one inbound realtime event a native host surfaces as an event.
-fn is_presence_control(text: &str) -> bool {
-    serde_json::from_str::<Value>(text)
-        .ok()
-        .and_then(|v| {
-            v.get("event")
-                .and_then(Value::as_str)
-                .map(|e| e == "presence")
-        })
-        .unwrap_or(false)
+fn presence_scope_key(text: &str) -> Option<String> {
+    serde_json::from_str::<Value>(text).ok().and_then(|v| {
+        if v.get("event").and_then(Value::as_str) != Some("presence") {
+            return None;
+        }
+        v.get("data")?
+            .get("scopeKey")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    })
 }
 
 // -- C-ABI surface (the 5 functions kept exactly in sync with rust/ffi.h) ----

@@ -398,8 +398,8 @@ impl SyncularCore {
         for frame in frames {
             match frame {
                 transport::Inbound::Text(text) => {
-                    if is_presence_control(&text) {
-                        self.push(json!({ "type": "presence" }));
+                    if let Some(scope_key) = presence_scope_key(&text) {
+                        self.push(json!({ "type": "presence", "scopeKey": scope_key }));
                     }
                     if let Some(client) = self.client.as_mut() {
                         client.on_realtime_text(&text);
@@ -477,20 +477,37 @@ impl SyncularCore {
 
 /// A presence fanout control frame (§8.6.2) — `{"event":"presence",...}`, the
 /// one inbound realtime event a native host surfaces directly.
-fn is_presence_control(text: &str) -> bool {
-    serde_json::from_str::<Value>(text)
-        .ok()
-        .and_then(|v| {
-            v.get("event")
-                .and_then(Value::as_str)
-                .map(|e| e == "presence")
-        })
-        .unwrap_or(false)
+fn presence_scope_key(text: &str) -> Option<String> {
+    serde_json::from_str::<Value>(text).ok().and_then(|v| {
+        if v.get("event").and_then(Value::as_str) != Some("presence") {
+            return None;
+        }
+        v.get("data")?
+            .get("scopeKey")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn presence_scope_key_reads_the_fanout_data() {
+        assert_eq!(
+            presence_scope_key(
+                r#"{"event":"presence","data":{"scopeKey":"room:42","kind":"leave","actorId":"a","clientId":"c","doc":null,"timestamp":1}}"#
+            )
+            .as_deref(),
+            Some("room:42")
+        );
+        assert_eq!(
+            presence_scope_key(r#"{"event":"presence","data":{}}"#),
+            None
+        );
+        assert_eq!(presence_scope_key(r#"{"event":"sync","data":{}}"#), None);
+    }
 
     fn simple_schema() -> Value {
         json!({

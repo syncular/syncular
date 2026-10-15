@@ -238,6 +238,15 @@ describe('SYQL schema/SQL validation', () => {
     expect(parenthesized.code).toBe('SYQL6001_INVALID_PLACEMENT');
   });
 
+  test('an identifier ending in "or" is not an OR keyword', () => {
+    const query = validate(`query q(listId, floor) {
+       select id from todos where list_id = :listId and position > :floor ;
+    }`).queries[0];
+    expect(query?.reactive.dependencies[0]?.scopes[0]?.params).toEqual([
+      'listId',
+    ]);
+  });
+
   test('infers exact dependencies from ordinary scope predicates', () => {
     const fallback = validate(`query q(listId) {
        select id from todos where list_id = :listId ;

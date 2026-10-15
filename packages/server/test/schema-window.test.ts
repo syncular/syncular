@@ -360,3 +360,31 @@ test('N-1 SQLite images use only their columns and conflict rows retain their co
     Math.ceil(TASK_COLUMNS.length / 8),
   );
 });
+
+test('an N-1 replay that no longer carries the conflicting operation fails loudly', async () => {
+  const { round } = fixture();
+  await round([
+    pushCommit('seed', [upsert('tasks', 't1', taskRow('t1', 'p1', 'v1'))]),
+  ]);
+  const first = await round([
+    pushCommit('reused', [
+      upsert('tasks', 't2', taskRow('t2', 'p1', 'fresh')),
+      upsert('tasks', 't1', taskRow('t1', 'p1', 'stale'), 0),
+    ]),
+  ]);
+  const result = first.frames.find((frame) => frame.type === 'PUSH_RESULT');
+  if (result?.type !== 'PUSH_RESULT') throw new Error('missing push result');
+  expect(result.results[0]?.status).toBe('conflict');
+  expect(result.results[0]?.opIndex).toBe(1);
+
+  const replay = await round([
+    pushCommit('reused', [upsert('tasks', 't2', taskRow('t2', 'p1', 'fresh'))]),
+  ]);
+  const error = replay.frames.find((frame) => frame.type === 'ERROR');
+  if (error?.type !== 'ERROR') throw new Error('missing error frame');
+  expect(error.code).toBe('sync.invalid_request');
+  expect(JSON.parse(error.details ?? '{}')).toEqual({
+    clientCommitId: 'reused',
+    opIndex: 1,
+  });
+});

@@ -564,4 +564,29 @@ describe('push request validation (§1.7, §6.1)', () => {
     // Whole batch unapplied.
     expect(await t.storage.getRow('part-1', 'tasks', 't1')).toBeUndefined();
   });
+
+  test('replaying a conflicted clientCommitId with fewer operations returns cached conflict without throwing', async () => {
+    const t = makeContext();
+    await seedTask(t, 'seed-1', 't1', 'p1', 'v1');
+    await sync(t, [
+      pushCommit('seed-2', [upsert('tasks', 't1', taskRow('t1', 'p1', 'v2'))]),
+    ]);
+    const first = await sync(t, [
+      pushCommit('conflict-replay', [
+        upsert('tasks', 't2', taskRow('t2', 'p1', 'ok')),
+        upsert('tasks', 't1', taskRow('t1', 'p1', 'stale'), 1),
+      ]),
+    ]);
+    expect(pushResults(first)[0]?.status).toBe('rejected');
+    expect(pushResults(first)[0]?.results[0]?.status).toBe('conflict');
+    expect(pushResults(first)[0]?.results[0]?.opIndex).toBe(1);
+    const replay = await sync(t, [
+      pushCommit('conflict-replay', [
+        upsert('tasks', 't2', taskRow('t2', 'p1', 'ok')),
+      ]),
+    ]);
+    expect(pushResults(replay)[0]?.status).toBe('rejected');
+    expect(pushResults(replay)[0]?.results[0]?.status).toBe('conflict');
+    expect(pushResults(replay)[0]?.results[0]?.opIndex).toBe(1);
+  });
 });

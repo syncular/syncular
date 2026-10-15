@@ -81,7 +81,12 @@ pub fn serialize_plain(value: &PlainValue) -> Result<Vec<u8>, String> {
         PlainValue::String(s) | PlainValue::Json(s) | PlainValue::BlobRef(s) => {
             s.as_bytes().to_vec()
         }
-        PlainValue::Integer(i) => i.to_le_bytes().to_vec(),
+        PlainValue::Integer(i) => {
+            if !(-crate::primitives::I64_SAFE_MAX..=crate::primitives::I64_SAFE_MAX).contains(i) {
+                return Err("encrypted integer column requires a safe integer".to_owned());
+            }
+            i.to_le_bytes().to_vec()
+        }
         PlainValue::Float(f) => f.to_le_bytes().to_vec(),
         PlainValue::Boolean(b) => vec![if *b { 1 } else { 0 }],
         PlainValue::Bytes(b) => b.clone(),
@@ -100,6 +105,8 @@ pub fn deserialize_plain(declared: DeclaredType, bytes: &[u8]) -> Result<PlainVa
                     .map_err(|_| DecryptError("decrypted json does not parse".to_owned()))?;
                 Ok(PlainValue::Json(text))
             } else if declared == DeclaredType::BlobRef {
+                serde_json::from_str::<serde_json::Value>(&text)
+                    .map_err(|_| DecryptError("decrypted blob_ref does not parse".to_owned()))?;
                 Ok(PlainValue::BlobRef(text))
             } else {
                 Ok(PlainValue::String(text))
@@ -111,7 +118,13 @@ pub fn deserialize_plain(declared: DeclaredType, bytes: &[u8]) -> Result<PlainVa
             }
             let mut a = [0u8; 8];
             a.copy_from_slice(bytes);
-            Ok(PlainValue::Integer(i64::from_le_bytes(a)))
+            let v = i64::from_le_bytes(a);
+            if !(-crate::primitives::I64_SAFE_MAX..=crate::primitives::I64_SAFE_MAX).contains(&v) {
+                return Err(DecryptError(
+                    "decrypted integer outside safe range".to_owned(),
+                ));
+            }
+            Ok(PlainValue::Integer(v))
         }
         DeclaredType::Float => {
             if bytes.len() != 8 {
@@ -260,6 +273,14 @@ mod tests {
         } else {
             None
         }
+    }
+
+    #[test]
+    fn integers_outside_the_safe_range_are_refused() {
+        let unsafe_value = crate::primitives::I64_SAFE_MAX + 1;
+        assert!(serialize_plain(&PlainValue::Integer(unsafe_value)).is_err());
+        assert!(deserialize_plain(DeclaredType::Integer, &unsafe_value.to_le_bytes()).is_err());
+        assert!(deserialize_plain(DeclaredType::BlobRef, b"not json").is_err());
     }
 
     #[test]

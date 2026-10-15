@@ -3721,6 +3721,13 @@ never holds a row on account of one.
 **Enforcement runs once per commit**, after every client operation is staged
 and before whole-commit validation (the §6.8 pipeline). It reads candidate
 state, so a commit that deletes a parent and its children together passes.
+Enforcement folds the staged operations per row and judges each row by its
+final write. An upsert that a later operation of the same commit deletes is
+not checked for a missing parent. A staged delete is a row that existed
+before the commit and ends the commit deleted; a parent deleted and
+re-inserted in one commit, or inserted and deleted in one commit, triggers no
+`RESTRICT`, `CASCADE`, or `SET NULL` action. A `SET NULL` child stays in
+place, so enforcement does not visit the references of that child.
 
 | Situation | Outcome |
 |---|---|

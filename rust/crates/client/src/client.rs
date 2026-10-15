@@ -573,6 +573,59 @@ mod observation_tests {
     }
 
     #[test]
+    fn patch_types_an_integer_primary_key_from_its_canonical_row_id() {
+        let schema = json!({
+            "version": 1,
+            "tables": [{
+                "name": "counters",
+                "primaryKey": "id",
+                "columns": [
+                    { "name": "id", "type": "integer", "nullable": false },
+                    { "name": "title", "type": "string", "nullable": false }
+                ],
+                "scopes": []
+            }]
+        });
+        let mut client = SyncClient::new("int-patch".into(), &schema, ClientLimits::default())
+            .expect("test client");
+        client
+            .write_base_row(
+                "counters",
+                &vec![
+                    Some(ColumnValue::Integer(42)),
+                    Some(ColumnValue::String("before".into())),
+                ],
+                1,
+            )
+            .unwrap();
+        client.rebuild_overlay().expect("rebuild overlay");
+        client
+            .patch(
+                "counters",
+                "42",
+                Map::from_iter([
+                    ("id".to_owned(), json!(42)),
+                    ("title".to_owned(), json!("after")),
+                ]),
+                None,
+            )
+            .expect("an integer key that renders as the rowId is not a change");
+        let rows = client.query("SELECT id, title FROM counters", &[]).unwrap();
+        assert_eq!(Value::from(rows), json!([{"id": 42, "title": "after"}]));
+        for row_id in ["042", "+42", "42.0"] {
+            let error = client
+                .patch(
+                    "counters",
+                    row_id,
+                    Map::from_iter([("title".to_owned(), json!("x"))]),
+                    None,
+                )
+                .expect_err("a non-canonical integer rowId names no row");
+            assert_eq!(error.code, "sync.row_missing", "{row_id}");
+        }
+    }
+
+    #[test]
     fn blob_staging_failures_preserve_durable_state_and_allow_retry() {
         let schema = json!({"version":1,"tables":[{"name":"attachments","primaryKey":"id","columns":[
             {"name":"id","type":"string","nullable":false},
@@ -13903,7 +13956,7 @@ impl SyncClient {
             .ok_or_else(|| format!("sync.unknown_table: unknown table {table:?}"))?;
         let partial = normalize_values_casing(schema_table, partial)?;
         if let Some(pk) = partial.get(&schema_table.primary_key) {
-            if pk.as_str() != Some(row_id) {
+            if render_row_id_json(Some(pk)).ok().as_deref() != Some(row_id) {
                 return Err(format!(
                     "sync.invalid_request: table {table:?}: patch cannot change the primary key"
                 ));
@@ -13986,10 +14039,34 @@ impl SyncClient {
         for scope in &schema_table.scope_variables {
             values.remove(&scope.column);
         }
-        values.insert(
-            schema_table.primary_key.clone(),
-            Value::from(row_id.to_owned()),
-        );
+        let pk_value = match schema_table.columns[schema_table.pk_index].ty {
+            // §2.4: the rowId of an integer key is its canonical decimal form.
+            ColumnType::Integer => match row_id.parse::<i64>() {
+                Ok(v)
+                    if v.to_string() == row_id
+                        && (-ssp2::primitives::I64_SAFE_MAX..=ssp2::primitives::I64_SAFE_MAX)
+                            .contains(&v) =>
+                {
+                    Value::from(v)
+                }
+                _ => {
+                    return Err(format!(
+                    "sync.invalid_request: table {table:?}: invalid integer primary key {row_id:?}"
+                ))
+                }
+            },
+            ColumnType::Boolean => match row_id {
+                "true" => Value::Bool(true),
+                "false" => Value::Bool(false),
+                _ => {
+                    return Err(format!(
+                    "sync.invalid_request: table {table:?}: invalid boolean primary key {row_id:?}"
+                ))
+                }
+            },
+            _ => Value::from(row_id.to_owned()),
+        };
+        values.insert(schema_table.primary_key.clone(), pk_value);
         // §5.11: structural validation only; an absent key-id selector is
         // resolved at the push seam from the stored local row, and a
         // key-selection or unknown-key failure becomes a durable
@@ -18132,6 +18209,7 @@ impl SyncClient {
                                 .all(|(column, allowed)| match values.get(*column) {
                                     Some(Value::String(s)) => allowed.contains(s),
                                     Some(Value::Number(n)) => allowed.contains(&n.to_string()),
+                                    Some(Value::Bool(b)) => allowed.contains(&b.to_string()),
                                     _ => false,
                                 })
                         })
@@ -19234,6 +19312,9 @@ impl SyncClient {
 
     /// Inbound JSON control message (§8.1). Unknown events are tolerated.
     pub fn on_realtime_text(&mut self, text: &str) {
+        if self.stopped || !self.transport_enabled || self.security_preflight {
+            return;
+        }
         match parse_control(text) {
             Ok(ControlMessage::Hello { requires_sync, .. }) => {
                 if requires_sync {
@@ -19270,7 +19351,7 @@ impl SyncClient {
     }
 
     pub fn on_realtime_binary(&mut self, transport: &mut dyn Transport, bytes: &[u8]) {
-        if self.stopped || !self.transport_enabled {
+        if self.stopped || !self.transport_enabled || self.security_preflight {
             return;
         }
         #[cfg(feature = "bench-internals")]

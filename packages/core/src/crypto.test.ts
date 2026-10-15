@@ -43,6 +43,12 @@ describe('§5.11 value serializer round-trip', () => {
   }
 });
 
+test('a decrypted blob_ref that does not parse as JSON fails', () => {
+  expect(() =>
+    deserializePlain('blob_ref', new TextEncoder().encode('not json')),
+  ).toThrow(DecryptError);
+});
+
 describe('§5.11 envelope byte structure', () => {
   test('encode/decode round-trips fields', () => {
     const env = {

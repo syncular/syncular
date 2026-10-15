@@ -78,3 +78,57 @@ fn rejects_orphan_and_mismatched_companions() {
         .to_string()
         .contains("does not match an error result"));
 }
+
+#[test]
+fn rejects_details_that_break_the_host_safe_shape() {
+    for raw in [
+        r#"{"bogus":1}"#,
+        r#"{}"#,
+        r#"{"reason":"Not_A_Token"}"#,
+        r#"{"reason":"trailing-"}"#,
+        r#"{"fieldPaths":["a","a"]}"#,
+        r#"{"fieldPaths":["1bad"]}"#,
+        r#"{"references":{"parent":" padded"}}"#,
+    ] {
+        let message = Message {
+            wire_version: ssp2::decode::WIRE_VERSION,
+            msg_kind: MsgKind::Response,
+            frames: vec![
+                header(),
+                rejected(),
+                Frame::PushResultDetails {
+                    client_commit_id: "commit-1".to_owned(),
+                    entries: vec![PushResultDetail {
+                        op_index: 0,
+                        details: RawJson(raw.to_owned()),
+                    }],
+                },
+            ],
+        };
+        assert!(
+            decode_message(&encode_message(&message)).is_err(),
+            "details {raw} must fail to decode"
+        );
+    }
+}
+
+#[test]
+fn details_must_directly_follow_their_push_result() {
+    let message = Message {
+        wire_version: ssp2::decode::WIRE_VERSION,
+        msg_kind: MsgKind::Response,
+        frames: vec![
+            header(),
+            rejected(),
+            Frame::Unknown {
+                frame_type: 0xfe,
+                payload: vec![1],
+            },
+            details("commit-1", 0),
+        ],
+    };
+    assert!(decode_message(&encode_message(&message))
+        .expect_err("separated details must fail")
+        .to_string()
+        .contains("without a preceding PUSH_RESULT"));
+}

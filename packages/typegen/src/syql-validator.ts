@@ -1372,6 +1372,7 @@ class Validator {
         if (char === '(') stack.push(cursor);
         else if (char === ')') stack.pop();
         if (
+          (cursor === 0 || !/[A-Za-z0-9_:]/.test(cleaned[cursor - 1] ?? '')) &&
           /^OR\b/i.test(cleaned.slice(cursor)) &&
           stack.length <= matchStack.length &&
           stack.every((open, stackIndex) => matchStack[stackIndex] === open)
@@ -1585,8 +1586,8 @@ class Validator {
         }).length;
         const subject =
           unqualifiedMatches === 1
-            ? `(?:${alias}\\.)?${column}`
-            : `${alias}\\.${column}`;
+            ? `(?<![A-Za-z0-9_.:])(?:${alias}\\.)?${column}\\b`
+            : `(?<![A-Za-z0-9_.:])${alias}\\.${column}\\b`;
         const found: Array<{ name: string; operator: 'equal' | 'in' }> = [];
         const equality = new RegExp(
           `${subject}\\s*(?:=|==|\\bIS\\b)\\s*:([A-Za-z_][A-Za-z0-9_]*)\\b|:([A-Za-z_][A-Za-z0-9_]*)\\b\\s*(?:=|==)\\s*${subject}`,

@@ -24,6 +24,7 @@ import {
   quoteIdent,
   matchesLocalScopes,
   type JsonRowValue,
+  pkSqlValue,
   SYNC_VERSION_COLUMN,
   toSqlValue,
   rowValueToJson,
@@ -77,7 +78,7 @@ export function deleteLocalRow(
   if (serverWrite) retainedBaseWrite(db, table, rowId);
   db.exec(
     `DELETE FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)}=?`,
-    [rowId],
+    [pkSqlValue(table, rowId)],
   );
 }
 

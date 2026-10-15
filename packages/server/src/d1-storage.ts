@@ -302,6 +302,7 @@ class D1Transaction implements StorageTransaction {
    * `tbl\u0000rowId` → the pending state, consulted by `getRow` before D1.
    */
   readonly #pending = new Map<string, PendingRow>();
+  readonly #clearedTombstones = new Set<string>();
 
   constructor(
     db: Pick<D1Database, 'prepare' | 'batch'>,
@@ -347,6 +348,9 @@ class D1Transaction implements StorageTransaction {
     rowId: string,
   ): Promise<number | undefined> {
     this.#assertOpen();
+    if (this.#clearedTombstones.has(D1Transaction.#key(table, rowId))) {
+      return undefined;
+    }
     // Persisted read, no #pending overlay: a delete buffered by this commit
     // records its tombstone at appendCommit, matching the SQLite/Postgres
     // adapters where the tombstone insert also runs at commit append.
@@ -361,6 +365,7 @@ class D1Transaction implements StorageTransaction {
 
   async clearTombstone(table: string, rowId: string): Promise<void> {
     this.#assertOpen();
+    this.#clearedTombstones.add(D1Transaction.#key(table, rowId));
     this.#buffer_(
       'DELETE FROM sync_tombstones WHERE partition=? AND tbl=? AND row_id=?',
       [this.#partition, table, rowId],
@@ -448,7 +453,9 @@ class D1Transaction implements StorageTransaction {
       }
     }
     return [...rows.values()]
-      .sort((left, right) => left.rowId.localeCompare(right.rowId))
+      .sort((left, right) =>
+        left.rowId < right.rowId ? -1 : left.rowId > right.rowId ? 1 : 0,
+      )
       .slice(0, query.limit);
   }
 
@@ -502,7 +509,9 @@ class D1Transaction implements StorageTransaction {
       if (matches) rows.set(rowId, pending.row);
     }
     return [...rows.values()]
-      .sort((left, right) => left.rowId.localeCompare(right.rowId))
+      .sort((left, right) =>
+        left.rowId < right.rowId ? -1 : left.rowId > right.rowId ? 1 : 0,
+      )
       .slice(0, query.limit);
   }
 
@@ -574,6 +583,7 @@ class D1Transaction implements StorageTransaction {
     }
     this.#buffer.length = checkpoint;
     this.#pending.clear();
+    this.#clearedTombstones.clear();
     this.#maxCommitSeq = undefined;
     this.#applicationOpIndexes.clear();
     await this.putPushResult(clientId, clientCommitId, result);

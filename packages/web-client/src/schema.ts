@@ -298,9 +298,35 @@ export function matchesLocalScopes(
     entries.length > 0 &&
     entries.every(([variable, allowed]) => {
       const column = table.scopeColumnByVariable.get(variable);
-      return column !== undefined && allowed.includes(String(values[column]));
+      if (column === undefined) return false;
+      const value = values[column];
+      return (
+        value !== undefined && value !== null && allowed.includes(String(value))
+      );
     })
   );
+}
+
+/**
+ * §2.4: bind a rowId against the local primary-key column. An integer or
+ * boolean key matches only its canonical string form; any other rowId names
+ * no row, so it binds NULL instead of letting SQLite affinity coerce `042`.
+ */
+export function pkSqlValue(
+  table: CompiledClientTable,
+  rowId: string,
+): SqlValue {
+  const pkType = localColumnType(table.columns[table.primaryKeyIndex]!);
+  if (pkType === 'boolean') {
+    return rowId === 'true' ? 1 : rowId === 'false' ? 0 : null;
+  }
+  if (pkType === 'integer') {
+    const parsed = Number(rowId);
+    return Number.isSafeInteger(parsed) && String(parsed) === rowId
+      ? parsed
+      : null;
+  }
+  return rowId;
 }
 
 export function quoteIdent(name: string): string {

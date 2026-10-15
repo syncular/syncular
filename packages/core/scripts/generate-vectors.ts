@@ -1142,6 +1142,35 @@ const invalidPresenceScalarDoc = {
   },
 };
 
+// §8.6.2: the publisher-directed error codes are a closed set of two.
+const invalidPresenceUnknownError = {
+  event: 'presence',
+  data: {
+    scopeKey: 'project:p1',
+    error: 'presence.rate_limited', // not presence.too_large|forbidden
+    timestamp: FIXED_TIME_MS,
+  },
+};
+
+// §8.6.2: a leave fanout carries `doc: null`, never a document value.
+const invalidPresenceLeaveDoc = {
+  event: 'presence',
+  data: {
+    scopeKey: 'project:p1',
+    kind: 'leave',
+    actorId: 'actor-1',
+    clientId: 'client-a',
+    doc: 'gone', // must be null (§8.6.2)
+    timestamp: FIXED_TIME_MS,
+  },
+};
+
+// §8.6.2: a client→server publish states its doc; leave is `doc: null`.
+const invalidPresencePublishMissingDoc = {
+  event: 'presence',
+  data: { scopeKey: 'project:p1' },
+};
+
 // ---------------------------------------------------------------------------
 // File emission
 // ---------------------------------------------------------------------------
@@ -1620,6 +1649,27 @@ total += emitKind(
       error: 'sync.invalid_request',
       covers:
         'Client→server presence publish with a non-object non-null doc is malformed (SPEC.md §8.6.2)',
+    },
+    {
+      name: 'presence-unknown-error',
+      value: invalidPresenceUnknownError,
+      error: 'sync.invalid_request',
+      covers:
+        'Presence error outside the closed set presence.too_large|presence.forbidden is malformed (SPEC.md §8.6.2)',
+    },
+    {
+      name: 'presence-leave-doc',
+      value: invalidPresenceLeaveDoc,
+      error: 'sync.invalid_request',
+      covers:
+        'Presence leave fanout whose doc is not null is malformed (SPEC.md §8.6.2)',
+    },
+    {
+      name: 'presence-publish-missing-doc',
+      value: invalidPresencePublishMissingDoc,
+      error: 'sync.invalid_request',
+      covers:
+        'Client→server presence publish without a doc member is malformed (SPEC.md §8.6.2)',
     },
   ],
 );

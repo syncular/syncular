@@ -33,11 +33,11 @@ function makeNative(
   nativeModule: SyncularNativeModule;
   eventEmitter: SyncularEventEmitter;
   calls: Array<{ fn: string; arg: unknown }>;
-  emit: (payload: SyncularEvent) => void;
+  emit: (payload: string | SyncularEvent) => void;
   pump: { started: number; stopped: number; closed: number };
 } {
   const calls: Array<{ fn: string; arg: unknown }> = [];
-  const handlers = new Set<(payload: SyncularEvent) => void>();
+  const handlers = new Set<(payload: string | SyncularEvent) => void>();
   const pump = { started: 0, stopped: 0, closed: 0 };
 
   const nativeModule: SyncularNativeModule = {
@@ -76,7 +76,7 @@ function makeNative(
     },
   };
 
-  const emit = (payload: SyncularEvent) => {
+  const emit = (payload: string | SyncularEvent) => {
     for (const h of handlers) h(payload);
   };
   return { nativeModule, eventEmitter, calls, emit, pump };
@@ -935,6 +935,14 @@ describe('createNativeSyncClient', () => {
     client.onPresence((key) => scopeKeys.push(key));
     emit({ type: 'presence', scopeKey: 'room:42' });
     expect(scopeKeys).toEqual(['room:42']);
+  });
+
+  test('native modules deliver events as JSON strings', async () => {
+    const { client, emit } = await build();
+    const scopeKeys: string[] = [];
+    client.onPresence((key) => scopeKeys.push(key));
+    emit(JSON.stringify({ type: 'presence', scopeKey: 'room:7' }));
+    expect(scopeKeys).toEqual(['room:7']);
   });
 
   test('diagnostics commands and events preserve evidence and mark the React Native host', async () => {

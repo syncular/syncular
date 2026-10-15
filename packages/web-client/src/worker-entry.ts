@@ -584,7 +584,12 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
         () => dispatch(message),
         message.method === 'query'
           ? (value) => queryTransferables(value as readonly unknown[])
-          : undefined,
+          : message.method === 'querySnapshot'
+            ? (value) =>
+                queryTransferables(
+                  (value as { readonly rows: readonly unknown[] }).rows,
+                )
+            : undefined,
       );
     }
   });

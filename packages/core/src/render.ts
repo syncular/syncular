@@ -312,6 +312,7 @@ export function renderMessage(bytes: Uint8Array): JsonValue {
 function renderRowValue(column: RowColumn, value: RowValue): JsonValue {
   if (value === null) return null;
   if (value instanceof Uint8Array) return bytesToBase64(value);
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
   if (
     (column.type === 'json' || column.type === 'blob_ref') &&
     typeof value === 'string'

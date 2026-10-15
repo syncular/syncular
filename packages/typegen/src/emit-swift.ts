@@ -33,13 +33,15 @@ const SWIFT_TYPE: Readonly<Record<IrColumnType, string>> = {
   crdt: '[UInt8]',
 };
 
+function appColumnType(column: IrTable['columns'][number]): IrColumnType {
+  return column.encrypted === true && column.declaredType !== undefined
+    ? column.declaredType
+    : column.type;
+}
+
 /** §5.11: app-side Swift type — declaredType for an encrypted column. */
 function appSwiftType(column: IrTable['columns'][number]): string {
-  const type =
-    column.encrypted === true && column.declaredType !== undefined
-      ? column.declaredType
-      : column.type;
-  return SWIFT_TYPE[type];
+  return SWIFT_TYPE[appColumnType(column)];
 }
 
 function pascalCase(name: string): string {
@@ -116,13 +118,9 @@ function emitSchemaValue(ir: IrDocument, indent: string): string[] {
 }
 
 /** The accessor that lifts a §2.4 value out of a `[String: JSONValue]` row. */
-function rowAccessor(column: {
-  type: IrColumnType;
-  name: string;
-  nullable: boolean;
-}): string {
+function rowAccessor(column: IrTable['columns'][number]): string {
   const key = `row[${quote(column.name)}]`;
-  switch (column.type) {
+  switch (appColumnType(column)) {
     case 'string':
     case 'json':
     case 'blob_ref':
@@ -157,7 +155,7 @@ function emitStruct(table: IrTable): string[] {
   // Memberwise init (public, so app code can build rows too).
   const params = table.columns
     .map((c) => {
-      const swift = SWIFT_TYPE[c.type];
+      const swift = appSwiftType(c);
       const opt = c.nullable ? '? = nil' : '';
       return `${camelCase(c.name)}: ${swift}${opt}`;
     })

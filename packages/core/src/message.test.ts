@@ -321,6 +321,45 @@ describe('PUSH_RESULT_DETAILS additive companion', () => {
         ],
       }),
     ).toThrow('does not match an error result');
+    expect(() =>
+      encodeMessage({
+        wireVersion: 3,
+        msgKind: 'response',
+        frames: [
+          { type: 'RESP_HEADER', logEpoch: 'epoch-test', resetRequired: false },
+          result,
+          {
+            type: 'SUB_START',
+            id: 'sub-1',
+            status: 'active',
+            reasonCode: '',
+            bootstrap: false,
+            effectiveScopes: {},
+          },
+          {
+            type: 'SUB_END',
+            nextCursor: 0,
+          },
+          details,
+        ],
+      }),
+    ).toThrow('PUSH_RESULT_DETAILS frame after SUB_START');
+    expect(() =>
+      encodeMessage({
+        wireVersion: 3,
+        msgKind: 'response',
+        frames: [
+          { type: 'RESP_HEADER', logEpoch: 'epoch-test', resetRequired: false },
+          result,
+          {
+            type: 'UNKNOWN',
+            frameType: 0xfe,
+            payload: new Uint8Array([1]),
+          },
+          details,
+        ],
+      }),
+    ).toThrow('without a preceding PUSH_RESULT');
   });
 });
 

@@ -526,11 +526,12 @@ async function* streamResponse(
   }
   try {
     // Push half (§6): one PUSH_RESULT per PUSH_COMMIT, in request order.
+    const currentSchema = compileSchema(ctx.schema);
     let acceptedThrough = 0;
     for (const push of plan.pushes) {
       const processed = await processPushCommitWithTrace(
         ctx,
-        compileSchema(ctx.schema),
+        currentSchema,
         plan.resolved,
         plan.header.clientId,
         push,
@@ -543,20 +544,36 @@ async function* streamResponse(
       const frame = {
         ...processed.frame,
         results: processed.frame.results.map((result) => {
-          if (result.status !== 'conflict') return result;
-          const operation = push.operations[result.opIndex]!;
+          if (result.status !== 'conflict' || schema === currentSchema) {
+            return result;
+          }
+          const operation = push.operations[result.opIndex];
+          // §2.3: a replay returns the persisted result without rebuilding
+          // operations, so a reused clientCommitId with changed operations
+          // leaves no table to project the stored conflict row through.
+          if (operation === undefined) {
+            throw syncError(
+              'sync.invalid_request',
+              'replayed clientCommitId carries changed operations',
+              JSON.stringify({
+                clientCommitId: push.clientCommitId,
+                opIndex: result.opIndex,
+              }),
+            );
+          }
           const target = schema.tables.get(operation.table)!;
-          const current = compileSchema(ctx.schema).tables.get(
-            operation.table,
-          )!;
+          const bitmapBytes = Math.ceil(target.columns.length / 8);
           return {
             ...result,
-            serverRow: projectRowPayload(current, target, result.serverRow),
+            serverRow: projectRowPayload(
+              currentSchema.tables.get(operation.table)!,
+              target,
+              result.serverRow,
+            ),
             conflictColumns: result.conflictColumns
-              .slice(0, Math.ceil(target.columns.length / 8))
+              .slice(0, bitmapBytes)
               .map((byte, i) =>
-                i === Math.ceil(target.columns.length / 8) - 1 &&
-                target.columns.length % 8 !== 0
+                i === bitmapBytes - 1 && target.columns.length % 8 !== 0
                   ? byte & ((1 << (target.columns.length % 8)) - 1)
                   : byte,
               ),

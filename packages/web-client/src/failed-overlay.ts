@@ -13,6 +13,7 @@ import {
   mapRowValues,
   fromSqlValue,
   jsonToRowValue,
+  pkSqlValue,
   quoteIdent,
   rowValueToJson,
   SYNC_VERSION_COLUMN,
@@ -245,7 +246,7 @@ export function failedOverlayCommits(
         if (
           !db.query(
             `SELECT 1 FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)}=?`,
-            [operation.rowId],
+            [pkSqlValue(table, operation.rowId)],
           ).length
         )
           operation = {

@@ -21,7 +21,11 @@ import {
 import { reportError, SyncError, syncError } from './errors';
 import { processPushOperationsWithTrace } from './push';
 import { compileSchema } from './schema';
-import { authorizeWrite, type ResolvedScopes } from './scopes';
+import {
+  authorizeWrite,
+  renderScopeValue,
+  type ResolvedScopes,
+} from './scopes';
 import type {
   AuthoritativeQueryRequest,
   AuthoritativeQueryResult,
@@ -534,11 +538,11 @@ function commandOperations(
       }
       return mutation.values[column.name] ?? null;
     });
-    const rowId = values[table.primaryKeyIndex];
-    if (typeof rowId !== 'string' || rowId.length === 0) {
+    const rowId = renderScopeValue(values[table.primaryKeyIndex]);
+    if (rowId === undefined) {
       throw syncError(
         'operation.invalid_request',
-        'command upsert requires a non-empty string primary key',
+        'command upsert requires a non-empty primary key',
       );
     }
     return {

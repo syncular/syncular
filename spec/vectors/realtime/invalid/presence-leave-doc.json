@@ -1,0 +1,11 @@
+{
+  "event": "presence",
+  "data": {
+    "scopeKey": "project:p1",
+    "kind": "leave",
+    "actorId": "actor-1",
+    "clientId": "client-a",
+    "doc": "gone",
+    "timestamp": 1782993600000
+  }
+}

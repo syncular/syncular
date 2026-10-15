@@ -1,0 +1,6 @@
+{
+  "event": "presence",
+  "data": {
+    "scopeKey": "project:p1"
+  }
+}

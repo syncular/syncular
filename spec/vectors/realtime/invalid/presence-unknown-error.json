@@ -1,0 +1,8 @@
+{
+  "event": "presence",
+  "data": {
+    "scopeKey": "project:p1",
+    "error": "presence.rate_limited",
+    "timestamp": 1782993600000
+  }
+}

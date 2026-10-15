@@ -1432,14 +1432,19 @@ function inferReactiveMetadata(
       const char = cleaned[cursor];
       if (char === '(') stack.push(cursor);
       else if (char === ')') stack.pop();
+      const atBoundary =
+        cursor === 0 || !/[A-Za-z0-9_:]/.test(cleaned[cursor - 1] ?? '');
       if (
         cursor > index &&
+        atBoundary &&
         /^(?:GROUP\s+BY|ORDER\s+BY|LIMIT|HAVING)\b/i.test(cleaned.slice(cursor))
       ) {
         break;
       }
       if (
+        atBoundary &&
         /^OR\b/i.test(cleaned.slice(cursor)) &&
+        stack.length <= matchStack.length &&
         stack.every((open, stackIndex) => matchStack[stackIndex] === open)
       ) {
         return false;
@@ -1471,8 +1476,8 @@ function inferReactiveMetadata(
         const column = scope.column.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const qualified =
           qualifier === undefined
-            ? `(?:${IDENT}\\.)?${column}`
-            : `(?:${qualifier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.)?${column}`;
+            ? `(?<![A-Za-z0-9_.:])(?:${IDENT}\\.)?${column}\\b`
+            : `(?<![A-Za-z0-9_.:])(?:${qualifier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.)?${column}\\b`;
         const found: string[] = [];
         const equality = new RegExp(
           `${qualified}\\s*(?:=|==|\\bIS\\b)\\s*:(${IDENT})\\b|:(${IDENT})\\b\\s*(?:=|==)\\s*${qualified}`,

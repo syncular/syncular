@@ -38,33 +38,51 @@ export function useDiagnostics(
     return expectedSubscriptions.length === 0 ? {} : { expectedSubscriptions };
   }, [requestKey]);
   const generation = useRef(0);
-  const [snapshot, setSnapshot] = useState<
-    ClientDiagnosticsSnapshot | undefined
-  >();
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<Error | undefined>();
+  const [state, setState] = useState<{
+    readonly client: typeof client;
+    readonly requestKey: string;
+    readonly snapshot: ClientDiagnosticsSnapshot | undefined;
+    readonly error: Error | undefined;
+    readonly settled: boolean;
+  }>({
+    client,
+    requestKey,
+    snapshot: undefined,
+    error: undefined,
+    settled: false,
+  });
 
   const refresh = useCallback(() => {
     const current = ++generation.current;
-    setIsLoading(true);
+    setState((prev) => (prev.settled ? { ...prev, settled: false } : prev));
     void Promise.resolve()
       .then(() => client.diagnosticsSnapshot(request))
       .then(
         (next) => {
           if (generation.current !== current) return;
-          setSnapshot(next);
-          setError(undefined);
-          setIsLoading(false);
+          setState({
+            client,
+            requestKey,
+            snapshot: next,
+            error: undefined,
+            settled: true,
+          });
         },
         (reason: unknown) => {
           if (generation.current !== current) return;
-          setError(
-            reason instanceof Error ? reason : new Error(String(reason)),
-          );
-          setIsLoading(false);
+          setState((prev) => ({
+            client,
+            requestKey,
+            snapshot:
+              prev.client === client && prev.requestKey === requestKey
+                ? prev.snapshot
+                : undefined,
+            error: reason instanceof Error ? reason : new Error(String(reason)),
+            settled: true,
+          }));
         },
       );
-  }, [client, request]);
+  }, [client, request, requestKey]);
 
   useEffect(() => {
     const unsubscribe = client.onDiagnostics(refresh);
@@ -75,5 +93,11 @@ export function useDiagnostics(
     };
   }, [client, refresh]);
 
-  return { snapshot, isLoading, error, refresh };
+  const current = state.client === client && state.requestKey === requestKey;
+  return {
+    snapshot: current ? state.snapshot : undefined,
+    isLoading: !current || !state.settled,
+    error: current ? state.error : undefined,
+    refresh,
+  };
 }

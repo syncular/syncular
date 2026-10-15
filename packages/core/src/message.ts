@@ -824,6 +824,7 @@ function validateResponseSequence(frames: readonly ResponseFrame[]): void {
         inSubscription = true;
         sawSubscription = true;
         sawBody = true;
+        lastPushResult = undefined;
         subscriptionHasCommits = false;
         subscriptionHasSegments = false;
         break;
@@ -853,9 +854,11 @@ function validateResponseSequence(frames: readonly ResponseFrame[]): void {
       case 'ERROR':
         errorSeen = true;
         sawBody = true;
+        lastPushResult = undefined;
         break;
       case 'UNKNOWN':
         sawBody = true;
+        lastPushResult = undefined;
         break;
     }
   }

@@ -59,11 +59,11 @@ pub fn validate_blob_ref(raw: &str) -> Result<()> {
             ))
         }
     }
-    match obj.get("byteLength") {
-        Some(Value::Number(n)) if n.is_u64() || (n.is_i64() && n.as_i64().unwrap_or(-1) >= 0) => {}
+    match obj.get("byteLength").and_then(Value::as_i64) {
+        Some(v) if (0..=crate::primitives::I64_SAFE_MAX).contains(&v) => {}
         _ => {
             return Err(DecodeError::invalid(
-                "blob_ref.byteLength must be a non-negative integer (§5.9.1)",
+                "blob_ref.byteLength must be a non-negative integer within the safe-integer range (§5.9.1)",
             ))
         }
     }

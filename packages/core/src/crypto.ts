@@ -148,11 +148,13 @@ export function deserializePlain(
           `decrypted ${declaredType} value is not valid UTF-8`,
         );
       }
-      if (declaredType === 'json') {
+      if (declaredType === 'json' || declaredType === 'blob_ref') {
         try {
           JSON.parse(text);
         } catch {
-          throw new DecryptError('decrypted json value does not parse');
+          throw new DecryptError(
+            `decrypted ${declaredType} value does not parse`,
+          );
         }
       }
       return text;

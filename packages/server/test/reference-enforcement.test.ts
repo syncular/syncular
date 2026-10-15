@@ -381,4 +381,81 @@ describe('reference schema compilation (§6.11)', () => {
       }),
     ).toThrow(/MUST NOT cross an authorization boundary/);
   });
+
+  test('same-commit staged insert then delete evaluates final candidate state without false FK violation or phantom cascade', async () => {
+    const t = referenceContext();
+    await seed(t, 'c1', 'projects', 'p1', projectRow('p1'));
+    await seed(t, 'c2', 'items', 'i1', itemRow('i1', 'p1', { cascade: 'p1' }));
+    // Insert i-temp with a missing restrict_parent and then delete i-temp in the same commit;
+    // also insert and delete a transient parent p1 in a fresh partition without cascading existing children.
+    const message = await sync(t, [
+      pushCommit('c3', [
+        upsert(
+          'items',
+          'i-temp',
+          itemRow('i-temp', 'p1', { restrict: 'missing-parent' }),
+        ),
+        del('items', 'i-temp'),
+      ]),
+    ]);
+    expect(pushResults(message)[0]?.status).toBe('applied');
+    expect(await t.storage.getRow('part-1', 'items', 'i-temp')).toBeUndefined();
+    expect(await t.storage.getRow('part-1', 'items', 'i1')).toBeDefined();
+  });
+
+  test('enforces CASCADE and RESTRICT against integer parent primary keys', async () => {
+    const intParentCols: readonly RowColumn[] = [
+      { name: 'id', type: 'integer', nullable: false },
+      { name: 'project_id', type: 'string', nullable: false },
+    ];
+    const intChildCols: readonly RowColumn[] = [
+      { name: 'id', type: 'string', nullable: false },
+      { name: 'project_id', type: 'string', nullable: false },
+      { name: 'parent_id', type: 'integer', nullable: true },
+    ];
+    const schema: ServerSchema = {
+      version: 1,
+      tables: [
+        {
+          name: 'folders',
+          columns: intParentCols,
+          primaryKey: 'id',
+          scopes: ['project:{project_id}'],
+        },
+        {
+          name: 'docs',
+          columns: intChildCols,
+          primaryKey: 'id',
+          scopes: ['project:{project_id}'],
+          references: [
+            {
+              column: 'parent_id',
+              parentTable: 'folders',
+              onDelete: 'CASCADE',
+            },
+          ],
+          indexes: [{ name: 'idx_docs_parent_id', columns: ['parent_id'] }],
+        },
+      ],
+    };
+    const t = referenceContext({ schema });
+    await seed(
+      t,
+      'c1',
+      'folders',
+      '42',
+      encodeSparseRow(intParentCols, 0, [42, 'p1']),
+    );
+    await seed(
+      t,
+      'c2',
+      'docs',
+      'd1',
+      encodeSparseRow(intChildCols, 0, ['d1', 'p1', 42]),
+    );
+    const message = await sync(t, [pushCommit('c3', [del('folders', '42')])]);
+    expect(pushResults(message)[0]?.status).toBe('applied');
+    expect(await t.storage.getRow('part-1', 'folders', '42')).toBeUndefined();
+    expect(await t.storage.getRow('part-1', 'docs', 'd1')).toBeUndefined();
+  });
 });

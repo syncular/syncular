@@ -108,7 +108,8 @@ export interface SyncularNativeModule {
 export interface SyncularEventEmitter {
   addListener(
     eventName: string,
-    handler: (payload: SyncularEvent) => void,
+    /** The native modules deliver the FFI event as its JSON string. */
+    handler: (payload: string | SyncularEvent) => void,
   ): { remove(): void };
 }
 
@@ -1254,7 +1255,11 @@ export async function createNativeSyncClient(
     client: undefined,
   };
   const subscription = eventEmitter.addListener(SYNCULAR_EVENT, (payload) => {
-    clientRef.client?.__dispatchEvent(payload);
+    clientRef.client?.__dispatchEvent(
+      typeof payload === 'string'
+        ? (JSON.parse(payload) as SyncularEvent)
+        : payload,
+    );
   });
 
   const client = new NativeSyncClient(

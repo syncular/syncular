@@ -23,6 +23,7 @@ import {
   encodeMessage,
   encodePresenceError,
   encodePresenceFanout,
+  isSupportedProtocolWireVersion,
   MessageStreamScanner,
   PROTOCOL_WIRE_VERSION,
   type PresenceKind,
@@ -278,6 +279,8 @@ export class RealtimeSession {
   #registrationGeneration = 0;
   /** Generation of the most recent refresh whose result was applied. */
   #registrationApplied = 0;
+  /** Highest sequence that required a catch-up wake for this session. */
+  #wakeRequiredThroughSeq: number;
 
   constructor(
     hub: RealtimeHub,
@@ -301,6 +304,7 @@ export class RealtimeSession {
     this.cursor = cursor;
     this.lastKnownSeq = latestSeq;
     this.wakePending = cursor < latestSeq;
+    this.#wakeRequiredThroughSeq = cursor < latestSeq ? latestSeq : 0;
     this.registrations = registrations;
     this.openedAtMs = clock();
     this.#send = options.send;
@@ -336,9 +340,9 @@ export class RealtimeSession {
     // proves those commits no longer need socket notifications, so the next
     // notification must be adjacent to the acknowledged cursor.
     this.lastKnownSeq = Math.max(this.lastKnownSeq, this.cursor);
-    if (this.cursor >= this.lastKnownSeq) this.wakePending = false;
+    if (this.cursor >= this.#wakeRequiredThroughSeq) this.wakePending = false;
     // §8.2: acks update the client cursor record without an HTTP pull.
-    this.#persistCursor();
+    this.#persistCursor(cursor);
   }
 
   /**
@@ -571,7 +575,7 @@ export class RealtimeSession {
     try {
       const requestedWireVersion =
         (requestBytes[4] ?? 0) | ((requestBytes[5] ?? 0) << 8);
-      if (requestedWireVersion === 1 || requestedWireVersion === 2) {
+      if (isSupportedProtocolWireVersion(requestedWireVersion)) {
         this.wireVersion = requestedWireVersion;
       }
       let stream: AsyncIterable<Uint8Array> | undefined;
@@ -721,7 +725,7 @@ export class RealtimeSession {
     this.#hub.disconnect(this);
   }
 
-  #persistCursor(): void {
+  #persistCursor(cursor: number): void {
     // §8.2: start the write now and keep it on the control tail so `drain()`
     // can await it. Two acks may write concurrently: storage folds them with
     // `MAX(cursor, ?)`, so neither order loses the later cursor.
@@ -731,7 +735,7 @@ export class RealtimeSession {
         this.clientId,
         this.actorId,
         this.logEpoch,
-        this.cursor,
+        cursor,
         this.#clock(),
       );
     })();
@@ -767,6 +771,10 @@ export class RealtimeSession {
 
   sendWake(reason: WakeReason): void {
     this.wakePending = true;
+    this.#wakeRequiredThroughSeq = Math.max(
+      this.#wakeRequiredThroughSeq,
+      this.lastKnownSeq,
+    );
     this.#sendSafe(
       JSON.stringify({
         event: 'sync',
@@ -1121,6 +1129,12 @@ export class RealtimeHub {
       ...(this.#config.commitValidator !== undefined
         ? { commitValidator: this.#config.commitValidator }
         : {}),
+      ...(this.#config.reactionPlanner !== undefined
+        ? { reactionPlanner: this.#config.reactionPlanner }
+        : {}),
+      ...(this.#config.checkpoints !== undefined
+        ? { checkpoints: this.#config.checkpoints }
+        : {}),
       ...(this.#config.clock !== undefined
         ? { clock: this.#config.clock }
         : {}),
@@ -1147,6 +1161,9 @@ export class RealtimeHub {
         : {}),
       ...(this.#config.onError !== undefined
         ? { onError: this.#config.onError }
+        : {}),
+      ...(this.#config.mapError !== undefined
+        ? { mapError: this.#config.mapError }
         : {}),
       realtime: this,
     };
@@ -1211,7 +1228,9 @@ export class RealtimeHub {
       this.#config.maxDeltaBytes ?? DEFAULT_MAX_DELTA_BYTES,
       storage,
       registry.logEpoch,
-      record?.wireVersion ?? PROTOCOL_WIRE_VERSION,
+      record !== undefined && isSupportedProtocolWireVersion(record.wireVersion)
+        ? record.wireVersion
+        : PROTOCOL_WIRE_VERSION,
       this.#config.events,
     );
     this.#sessions.add(session);

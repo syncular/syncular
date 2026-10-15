@@ -347,6 +347,25 @@ describe('useDiagnostics', () => {
       'membership-security',
     );
   });
+
+  test('a changed request never shows the previous request snapshot', async () => {
+    const client = new FakeClient();
+    const { result, rerender } = renderHook(
+      ({ id }) =>
+        useDiagnostics({ expectedSubscriptions: [{ id, table: 'tasks' }] }),
+      { initialProps: { id: 'first' }, wrapper: wrapper(client) },
+    );
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.snapshot?.subscriptions[0]?.id).toBe('first');
+
+    rerender({ id: 'second' });
+    expect(result.current.snapshot).toBeUndefined();
+    expect(result.current.isLoading).toBe(true);
+    await waitFor(() =>
+      expect(result.current.snapshot?.subscriptions[0]?.id).toBe('second'),
+    );
+    expect(result.current.isLoading).toBe(false);
+  });
 });
 
 describe('useConflicts', () => {
@@ -627,6 +646,24 @@ describe('useWindow (§4.8 completeness oracle, I3)', () => {
     await waitFor(() => expect(result.current.units).toEqual(['p2']));
     expect(result.current.isComplete('p1')).toBe(false);
     expect(result.current.isComplete('p2')).toBe(true);
+  });
+
+  test('changing base while mounted releases the previous base claim', async () => {
+    const client = new FakeClient();
+    const baseB = {
+      table: 'tasks',
+      variable: 'org_id',
+    } as const;
+    const { result, rerender } = renderHook(({ b }) => useWindow(b), {
+      initialProps: { b: base as typeof base | typeof baseB },
+      wrapper: wrapper(client),
+    });
+    await act(async () => {
+      await result.current.setWindow(['p1']);
+    });
+    expect(client.windowState(base).units).toEqual(['p1']);
+    rerender({ b: baseB });
+    await waitFor(() => expect(client.windowState(base).units).toEqual([]));
   });
 
   test('a generated window query reads rows and completeness atomically', async () => {

@@ -268,8 +268,12 @@ state the commit produces (SPEC §6.11):
 
 - A commit that deletes a parent and its children together passes.
 - A `CASCADE` delete emits the child deletes in the same commit.
-- A `SET NULL` delete nulls the child column.
+- A `SET NULL` delete nulls the child column and leaves the child's own
+  children untouched.
 - `RESTRICT` rejects the delete while a child remains.
+- Each row counts by its final write in the commit. A row inserted and
+  deleted in one commit is never checked, and a parent deleted and
+  re-inserted in one commit keeps its children.
 
 A violation rejects the commit with `sync.reference_violation`.
 

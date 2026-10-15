@@ -28,13 +28,15 @@ const KOTLIN_TYPE: Readonly<Record<IrColumnType, string>> = {
   crdt: 'ByteArray',
 };
 
+function appColumnType(column: IrTable['columns'][number]): IrColumnType {
+  return column.encrypted === true && column.declaredType !== undefined
+    ? column.declaredType
+    : column.type;
+}
+
 /** §5.11: app-side Kotlin type — declaredType for an encrypted column. */
 function appKotlinType(column: IrTable['columns'][number]): string {
-  const type =
-    column.encrypted === true && column.declaredType !== undefined
-      ? column.declaredType
-      : column.type;
-  return KOTLIN_TYPE[type];
+  return KOTLIN_TYPE[appColumnType(column)];
 }
 
 function pascalCase(name: string): string {
@@ -112,9 +114,9 @@ function emitSchemaValue(ir: IrDocument, indent: string): string[] {
 }
 
 /** The accessor lifting a §2.4 value out of a row `JsonValue`. */
-function rowAccessor(column: { type: IrColumnType; name: string }): string {
+function rowAccessor(column: IrTable['columns'][number]): string {
   const key = `row[${quote(column.name)}]`;
-  switch (column.type) {
+  switch (appColumnType(column)) {
     case 'string':
     case 'json':
     case 'blob_ref':
@@ -247,7 +249,9 @@ export function emitKotlinModule(
   // query emitter is unaffected — it declares its own queryRowBool/
   // queryRowBytes copies under distinct names.
   const columnTypes = new Set(
-    ir.tables.flatMap((table) => table.columns.map((column) => column.type)),
+    ir.tables.flatMap((table) =>
+      table.columns.map((column) => appColumnType(column)),
+    ),
   );
   if (columnTypes.has('boolean')) {
     parts.push(

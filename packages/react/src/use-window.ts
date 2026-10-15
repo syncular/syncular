@@ -97,7 +97,10 @@ export function useWindow(base: WindowBase): UseWindowResult {
     entry.getSnapshot,
   );
 
-  useEffect(() => () => store.releaseWindowClaims(owner.current), [store]);
+  useEffect(
+    () => () => store.releaseWindowClaims(owner.current),
+    [stableBase, store],
+  );
 
   const setWindow = useCallback(
     (units: readonly string[]) =>

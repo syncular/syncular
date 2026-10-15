@@ -29,13 +29,15 @@ const DART_TYPE: Readonly<Record<IrColumnType, string>> = {
   crdt: 'List<int>',
 };
 
+function appColumnType(column: IrTable['columns'][number]): IrColumnType {
+  return column.encrypted === true && column.declaredType !== undefined
+    ? column.declaredType
+    : column.type;
+}
+
 /** §5.11: app-side Dart type — declaredType for an encrypted column. */
 function appDartType(column: IrTable['columns'][number]): string {
-  const type =
-    column.encrypted === true && column.declaredType !== undefined
-      ? column.declaredType
-      : column.type;
-  return DART_TYPE[type];
+  return DART_TYPE[appColumnType(column)];
 }
 
 function pascalCase(name: string): string {
@@ -109,9 +111,9 @@ function emitSchemaValue(ir: IrDocument, indent: string): string[] {
 }
 
 /** The accessor lifting a §2.4 value out of a `Map<String, Object?>` row. */
-function rowAccessor(column: { type: IrColumnType; name: string }): string {
+function rowAccessor(column: IrTable['columns'][number]): string {
   const key = `row[${quote(column.name)}]`;
-  switch (column.type) {
+  switch (appColumnType(column)) {
     case 'string':
     case 'json':
     case 'blob_ref':
@@ -227,7 +229,9 @@ export function emitDartModule(ir: IrDocument, hash: string): string {
   // which the `type=lint` ignore above does not cover, so a schema without
   // boolean or bytes/crdt columns would fail a fatal-warnings `dart analyze`.
   const columnTypes = new Set(
-    ir.tables.flatMap((table) => table.columns.map((column) => column.type)),
+    ir.tables.flatMap((table) =>
+      table.columns.map((column) => appColumnType(column)),
+    ),
   );
   if (columnTypes.has('boolean')) {
     parts.push(

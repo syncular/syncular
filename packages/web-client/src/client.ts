@@ -1,6 +1,6 @@
 import { BLOB_COMMIT_REFS } from './blob';
 import type { AuthorityReadPolicy, AuthoritySnapshot } from './authority';
-import { hasUniqueIndex } from './schema';
+import { hasUniqueIndex, pkSqlValue } from './schema';
 import { OUTCOMES_TABLE } from './outcomes';
 import { OUTBOX_TABLE } from './outbox';
 import { RETAINED_ROWS } from './failed-overlay';
@@ -1579,6 +1579,10 @@ export class SyncClient {
     const startupWork =
       this.#schemaFloor === undefined &&
       (countOutbox(this.#db) > 0 ||
+        this.#db.query(
+          `SELECT 1 FROM ${RETAINED_ROWS} WHERE commit_seq IS NOT NULL LIMIT 1`,
+        ).length > 0 ||
+        loadPendingEvictions(this.#db).length > 0 ||
         loadSubscriptions(this.#db).some((sub) => sub.status === 'active'));
     if (startupWork) {
       this.#setSyncNeeded(true);
@@ -2470,6 +2474,7 @@ export class SyncClient {
     const task = Promise.resolve().then(fn);
     this.#protectedAsync.add(task);
     const settled = () => {
+      this.#protectedAsync.delete(task);
       if (this.#realtimeConnectPromise === task)
         this.#realtimeConnectPromise = undefined;
     };
@@ -3184,7 +3189,7 @@ export class SyncClient {
         const pkValue = requireRowId(normalized.get(pkColumn.name));
         const local = this.#db.query(
           `SELECT * FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)}=?`,
-          [pkValue],
+          [pkSqlValue(table, pkValue)],
         )[0];
         if (!local)
           throw new ClientSyncError(
@@ -3351,18 +3356,27 @@ export class SyncClient {
     const pkColumn = compiled.columns[compiled.primaryKeyIndex] as RowColumn;
     const normalized = normalizeRecordKeys(compiled, partial);
     const pkOverride = normalized.get(pkColumn.name);
-    if (pkOverride !== undefined && pkOverride !== rowId) {
+    if (pkOverride !== undefined && String(pkOverride) !== rowId) {
       throw invalidRequest(
         `table ${compiled.name}: patch cannot change the primary key`,
       );
     }
+    const pkType = localColumnType(pkColumn);
+    const typedPk =
+      pkType === 'integer' &&
+      Number.isSafeInteger(Number(rowId)) &&
+      String(Number(rowId)) === rowId
+        ? Number(rowId)
+        : pkType === 'boolean' && (rowId === 'true' || rowId === 'false')
+          ? rowId === 'true'
+          : rowId;
     return this.#recordMutations([
       definedObject({
         table,
         op: 'patch',
         values: {
           ...Object.fromEntries(normalized),
-          [pkColumn.name]: rowId,
+          [pkColumn.name]: typedPk,
         },
         baseVersion: options?.baseVersion,
       }),
@@ -3745,7 +3759,7 @@ export class SyncClient {
               if (selector === undefined) return undefined;
               const row = this.#db.query(
                 `SELECT ${quoteIdent(selector)} AS value FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)}=?`,
-                [rowId],
+                [pkSqlValue(table, rowId)],
               )[0];
               const value = row?.value;
               return typeof value === 'string' && value.length > 0
@@ -4428,18 +4442,6 @@ export class SyncClient {
       this.#connectRealtime(generation),
     );
     this.#realtimeConnectPromise = task;
-    void task.then(
-      () => {
-        if (this.#realtimeConnectPromise === task) {
-          this.#realtimeConnectPromise = undefined;
-        }
-      },
-      () => {
-        if (this.#realtimeConnectPromise === task) {
-          this.#realtimeConnectPromise = undefined;
-        }
-      },
-    );
     return task;
   }
 
@@ -5273,7 +5275,7 @@ export class SyncClient {
     if (mappings.length === 0) return false;
     const row = this.#db.query(
       `SELECT ${mappings.map(([, column]) => quoteIdent(column)).join(', ')} FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)}=?`,
-      [rowId],
+      [pkSqlValue(table, rowId)],
     )[0];
     if (row === undefined) return false;
     let recorded = false;
@@ -5668,7 +5670,7 @@ export class SyncClient {
     ];
     const row = this.#db.query(
       `SELECT ${columns.join(', ')} FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)}=?`,
-      [operation.rowId],
+      [pkSqlValue(table, operation.rowId)],
     )[0];
     if (row === undefined) return { opIndex, existed: false };
     const values: Record<string, ReturnType<typeof rowValueToJson>> = {};
@@ -5732,7 +5734,7 @@ export class SyncClient {
       if (table === undefined) continue;
       const row = this.#db.query(
         `SELECT ${quoteIdent(SYNC_VERSION_COLUMN)} AS v FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)}=?`,
-        [operation.rowId],
+        [pkSqlValue(table, operation.rowId)],
       )[0];
       if (row !== undefined && row.v === OPTIMISTIC_VERSION) {
         batch.table(table.name);
@@ -5826,7 +5828,7 @@ export class SyncClient {
       const full = table.columns.every((column) => column.name in opValues);
       const local = this.#db.query(
         `SELECT * FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)}=?`,
-        [op.rowId],
+        [pkSqlValue(table, op.rowId)],
       )[0];
       if (local === undefined && !full) {
         if (batch !== undefined && !precise) batch.table(op.table);
@@ -6110,7 +6112,10 @@ function definedObject<const T extends object>(record: T): DefinedObject<T> {
 }
 
 function requireRowId(value: unknown): string {
-  if (typeof value !== 'string' || !value.length)
-    throw invalidRequest('a mutation requires a non-empty string primary key');
-  return value;
+  if (typeof value === 'string' && value.length > 0) return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value)) {
+    return String(value);
+  }
+  if (typeof value === 'boolean') return String(value);
+  throw invalidRequest('a mutation requires a non-empty primary key');
 }

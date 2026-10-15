@@ -213,6 +213,7 @@ export class SyncularRealtimeHost {
   /** Sockets whose rehydration `hello` must be swallowed (already greeted at
    * the real upgrade — rehydration is transparent to the client). */
   readonly #swallowHello = new Set<WebSocketLike>();
+  readonly #closedSockets = new WeakSet<WebSocketLike>();
   /** Explicit FIFO: Durable Object events may interleave at `await`. */
   #partitionTail: Promise<void> = Promise.resolve();
 
@@ -350,7 +351,7 @@ export class SyncularRealtimeHost {
    * Actions share the partition FIFO with sync rounds.
    */
   async #handleAdmin(request: Request, url: URL): Promise<Response> {
-    this.#getHub();
+    const hub = this.#getHub();
     const partition = request.headers.get(REALTIME_ID_HEADER.partition);
     if (this.#admin === undefined || partition === null || partition === '') {
       const error = new SyncError(
@@ -364,6 +365,8 @@ export class SyncularRealtimeHost {
       ...(request.headers.get(ADMIN_ACTIONS_HEADER) === '1'
         ? { authorizeActions: () => true }
         : {}),
+      ...(hub.onError !== undefined ? { onError: hub.onError } : {}),
+      ...(hub.mapError !== undefined ? { mapError: hub.mapError } : {}),
     });
     url.pathname = url.pathname.slice(ADMIN_DO_PATH.length);
     url.searchParams.set('partition', partition);
@@ -460,11 +463,17 @@ export class SyncularRealtimeHost {
    * the DO woke from hibernation and lost its in-memory map.
    */
   async #sessionFor(ws: WebSocketLike): Promise<RealtimeSession | undefined> {
+    if (this.#closedSockets.has(ws)) return undefined;
     const existing = this.#sessions.get(ws);
     if (existing !== undefined) return existing;
     const attachment = ws.deserializeAttachment();
     if (!isAttachment(attachment)) return undefined;
     const session = await this.#connectSession(ws, attachment, true);
+    if (this.#closedSockets.has(ws)) {
+      session.close();
+      this.#swallowHello.delete(ws);
+      return undefined;
+    }
     this.#sessions.set(ws, session);
     return session;
   }
@@ -492,6 +501,7 @@ export class SyncularRealtimeHost {
 
   /** Hibernation callback: the socket closed. */
   async webSocketClose(ws: WebSocketLike): Promise<void> {
+    this.#closedSockets.add(ws);
     const session = this.#sessions.get(ws);
     if (session !== undefined) {
       try {
