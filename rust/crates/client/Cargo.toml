@@ -55,6 +55,20 @@ optional = true
 version = "3"
 optional = true
 
+# `wasm32-unknown-unknown` runs inside a JS host: the wall clock comes from
+# `Date.now()`, uuid's v4 source is the host CSPRNG, and the `getrandom`
+# versions behind `e2ee` need their JS backend switched on (getrandom 0.2 wants
+# the `js` feature, 0.4 the `wasm_js` feature; the cfg flag getrandom 0.3 asks
+# for does not exist in either). Without them those crates refuse to compile on
+# this target, and `std::time::SystemTime` panics at runtime. The getrandom
+# entries are feature-unification shims for crates this crate does not call
+# directly.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom_js = { package = "getrandom", version = "0.2", features = ["js"] }
+getrandom_wasm_js = { package = "getrandom", version = "0.4", features = ["wasm_js"] }
+js-sys = "0.3"
+uuid = { version = "1", features = ["v4", "js"] }
+
 [features]
 default = []
 # Internal repository measurements and conformance only. Exposes the owned

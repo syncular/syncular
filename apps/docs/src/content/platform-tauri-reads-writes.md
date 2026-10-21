@@ -98,6 +98,15 @@ With the plugin's `crdt-yjs` feature, the bridge exposes `crdtText`,
 byte-compatible with the web `@syncular/crdt-yjs` helper, so a Tauri app and a
 browser can edit the same document. See [CRDT columns](/concepts-crdt/).
 
+## Blobs
+
+The bridge exposes `uploadBlob(bytes, { mediaType?, name? })` and `fetchBlob(ref)`. `uploadBlob` returns the canonical BlobRef string to store
+in a `blob_ref` column; `fetchBlob` accepts that string or a bare `blobId` and
+returns `{ blobId, byteLength, bytes, mediaType? }`. Both cross the command
+bridge with the `{$bytes: hex}` envelope, and the native core owns the upload
+queue, the local cache, and content-address verification. Write the referencing
+row after `uploadBlob` resolves. See [Blobs](/concepts-blobs/).
+
 ## Windows and local purge
 
 `setWindow(base, units)` holds a partial replica; see

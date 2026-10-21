@@ -166,6 +166,72 @@ export const scopeScenarios: readonly Scenario[] = [
   },
 
   {
+    name: 'scopes/re-subscribe-rearms-a-revoked-subscription',
+    specRefs: ['§3.3', '§4.1'],
+    async run(ctx) {
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: { project_id: ['p2'] },
+      });
+      await seedTasks(ctx, [task('t1', 'p1', 'granted later')]);
+      // The app subscribes before the grant exists.
+      await a.api.subscribe({
+        id: 'sub-p1',
+        table: 'tasks',
+        scopes: { project_id: ['p1'] },
+      });
+      const revoked = await syncIdle(a);
+      check(revoked.revoked.includes('sub-p1'), 'sub-p1 was revoked');
+      checkEqual(
+        (await a.api.subscriptionState('sub-p1'))?.status,
+        'revoked',
+        'the client stopped pulling the subscription',
+      );
+      checkEqual(
+        (await a.api.readRows('tasks')).length,
+        0,
+        'nothing was delivered before the grant',
+      );
+
+      // The grant arrives; the app subscribes with the same id and intent.
+      await ctx.server.setAllowedScopes('actor-a', {
+        project_id: ['p1'],
+      });
+      await a.api.subscribe({
+        id: 'sub-p1',
+        table: 'tasks',
+        scopes: { project_id: ['p1'] },
+      });
+      const rearmed = await a.api.subscriptionState('sub-p1');
+      checkEqual(rearmed?.status, 'active', 'the registration was re-armed');
+      checkEqual(rearmed?.cursor, -1, 'its cursor starts over');
+      checkEqual(
+        rearmed?.effectiveScopes,
+        undefined,
+        'no effective scopes are carried into the new attempt',
+      );
+      checkEqual(
+        rearmed?.reasonCode,
+        undefined,
+        'the revocation reason is cleared',
+      );
+
+      await syncIdle(a);
+      checkEqual(
+        (await a.api.readRows('tasks')).map((row) => row.rowId),
+        ['t1'],
+        'the rows arrive once the grant exists',
+      );
+      checkEqual(
+        (await a.api.subscriptionState('sub-p1'))?.effectiveScopes,
+        { project_id: ['p1'] },
+        'the next pull resolved the scopes again',
+      );
+    },
+  },
+
+  {
     name: 'scopes/fail-closed-without-local-mapping',
     specRefs: ['§3.3', '§5.6'],
     async run(ctx) {
@@ -205,6 +271,18 @@ export const scopeScenarios: readonly Scenario[] = [
         (await a.api.readRows('docs')).length,
         0,
         'nothing was applied or cleared by approximation',
+      );
+      // A failed registration is a configuration error, not a revocation:
+      // subscribing again with the same intent leaves it failed.
+      await a.api.subscribe({
+        id: 'docs',
+        table: 'docs',
+        scopes: { projectId: ['p1'] },
+      });
+      checkEqual(
+        (await a.api.subscriptionState('docs'))?.status,
+        'failed',
+        'a failed subscription is not re-armed',
       );
     },
   },

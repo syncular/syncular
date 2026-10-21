@@ -164,17 +164,23 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
   let backgroundDue = Number.POSITIVE_INFINITY;
 
   function runAutoSync(): void {
-    autoSyncScheduled = false;
     if (
       closed ||
       client === undefined ||
       offline ||
       client.securityLifecycle() === 'preflight'
     ) {
+      autoSyncScheduled = false;
       return;
     }
     const running = client;
-    void serializedSync(() => running.syncUntilIdle())
+    void serializedSync(() => {
+      // The queued round owns the flag from here. Clearing it at entry would
+      // let every wake-up that arrives while this round waits behind the
+      // running one queue its own full drive (§8.4 coalescing).
+      autoSyncScheduled = false;
+      return running.syncUntilIdle();
+    })
       .then((summary) => {
         if (!closed) post({ t: 'event', event: { kind: 'synced', summary } });
         if (summary.budgetExhausted) consumeSyncIntent({ kind: 'interactive' });

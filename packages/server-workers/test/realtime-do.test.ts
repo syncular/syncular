@@ -14,7 +14,9 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import {
   decodeMessage,
+  decodeRemoteOperationResponse,
   encodeMessage,
+  encodeRemoteOperationRequest,
   encodeSparseRow,
   MessageStreamScanner,
   type PushCommitFrame,
@@ -35,6 +37,8 @@ import {
   MemoryBlobStore,
   MemorySegmentStore,
   RealtimeSession,
+  RemoteOperationRegistry,
+  registerRemoteCommand,
   type ServerSchema,
   SSP2_CONTENT_TYPE,
   type SyncServerConfig,
@@ -115,9 +119,13 @@ function realtimeConfig(
   capabilities: {
     readonly blobs?: BlobStore;
     readonly crdtMergers?: CrdtMergerRegistry;
+    readonly operations?: RemoteOperationRegistry;
   } = {},
 ): RealtimeDOConfig {
   return {
+    ...(capabilities.operations !== undefined
+      ? { operations: capabilities.operations }
+      : {}),
     syncConfig: (storage) => ({
       schema: SCHEMA,
       storage,
@@ -673,6 +681,154 @@ describe('SyncularRealtimeDO (DO double + D1 double, reference codec)', () => {
     const wake = textFrames(reader.sent).find((m) => m.event === 'sync');
     expect(wake).toBeDefined();
     expect((wake?.data as { reason?: string }).reason).toBe('catchup-required');
+  });
+
+  test('after hibernation a commit fans out to sockets that stayed quiet', async () => {
+    const db = await makeDb();
+    const ns = new FakeDurableObjectNamespace(db, realtimeConfig());
+    const { do_, server: reader } = await connect(ns, 'reader');
+    await sendRound(
+      do_,
+      reader,
+      [
+        {
+          type: 'PULL_HEADER',
+          limitCommits: 100,
+          limitSnapshotRows: 100,
+          maxSnapshotPages: 4,
+          accept: 0b0011,
+        },
+        {
+          type: 'SUBSCRIPTION',
+          id: 's1',
+          table: 'tasks',
+          scopes: { list_id: ['L'] },
+          cursor: -1,
+        },
+      ],
+      'reader',
+    );
+    await do_.deliver(reader, JSON.stringify({ type: 'ack', cursor: 0 }));
+    await settle();
+    do_.simulateHibernation();
+    reader.sent.length = 0;
+    // The reader sends nothing after the wake; an HTTP push from another
+    // client must still reach it as a delta, without a re-sent hello.
+    const http = makeHttpHandler(db, ns);
+    const pushResp = await http(
+      httpSyncRequest(
+        [
+          {
+            type: 'PUSH_COMMIT',
+            clientCommitId: 'after-wake',
+            operations: [
+              {
+                table: 'tasks',
+                rowId: 't5',
+                op: 'upsert',
+                payload: taskRow('t5', 'L', 'quiet reader'),
+              },
+            ],
+          },
+        ],
+        'http-writer',
+      ),
+    );
+    expect(pushResp.status).toBe(200);
+    const delta = reader.sent.find(
+      (f): f is Uint8Array =>
+        f instanceof Uint8Array && f[0] === REALTIME_TAG_DELTA,
+    );
+    expect(delta).toBeDefined();
+    expect(textFrames(reader.sent).find((m) => m.event === 'hello')).toBe(
+      undefined,
+    );
+  });
+
+  test('POST /operations runs the command on the partition DO and fans out', async () => {
+    const db = await makeDb();
+    const operations = new RemoteOperationRegistry([
+      registerRemoteCommand<{ readonly title: string }>(
+        { id: 'tasks.create' },
+        {
+          authorize: () => true,
+          run: (_context, input) => [
+            {
+              table: 'tasks',
+              op: 'upsert',
+              values: {
+                id: 't6',
+                list_id: 'L',
+                title: input.title,
+                doc: null,
+                attachment: null,
+              },
+            },
+          ],
+        },
+      ),
+    ]);
+    const ns = new FakeDurableObjectNamespace(
+      db,
+      realtimeConfig(undefined, { operations }),
+    );
+    const { do_, server: reader } = await connect(ns, 'reader');
+    await sendRound(
+      do_,
+      reader,
+      [
+        {
+          type: 'PULL_HEADER',
+          limitCommits: 100,
+          limitSnapshotRows: 100,
+          maxSnapshotPages: 4,
+          accept: 0b0011,
+        },
+        {
+          type: 'SUBSCRIPTION',
+          id: 's1',
+          table: 'tasks',
+          scopes: { list_id: ['L'] },
+          cursor: -1,
+        },
+      ],
+      'reader',
+    );
+    await do_.deliver(reader, JSON.stringify({ type: 'ack', cursor: 0 }));
+    await settle();
+    reader.sent.length = 0;
+    const http = makeHttpHandler(db, ns);
+    const response = await http(
+      new Request('https://worker.test/operations', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/vnd.syncular.operations.v1+json',
+        },
+        body: encodeRemoteOperationRequest({
+          revision: 1,
+          kind: 'command',
+          clientId: 'commander',
+          operationId: 'tasks.create',
+          requestId: 'r1',
+          params: { title: 'from a command' },
+        }).slice().buffer as ArrayBuffer,
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(
+      decodeRemoteOperationResponse(
+        new Uint8Array(await response.arrayBuffer()),
+      ),
+    ).toMatchObject({ kind: 'command', status: 'applied' });
+    // The command commit reached the socket as a delta, no wake-up.
+    expect(
+      reader.sent.some(
+        (f) => f instanceof Uint8Array && f[0] === REALTIME_TAG_DELTA,
+      ),
+    ).toBe(true);
+    expect(textFrames(reader.sent).find((m) => m.event === 'sync')).toBe(
+      undefined,
+    );
   });
 
   test('scheduled pruning waits for the existing partition write queue', async () => {

@@ -723,6 +723,62 @@ describe('createNativeSyncClient', () => {
     ).rejects.toMatchObject({ code: INVALID_HOST_RESPONSE_CODE });
   });
 
+  test('blob commands encode bytes and decode the fetched envelope', async () => {
+    const { nativeModule, eventEmitter, calls } = makeNative(
+      (method, params) => {
+        if (method === 'uploadBlob')
+          return OK({ ref: '{"blobId":"sha256:ab"}' });
+        if (method === 'fetchBlob') {
+          return OK({
+            blob: {
+              blobId: 'sha256:ab',
+              byteLength: 3,
+              bytes: { $bytes: '0102ff' },
+              mediaType: 'image/png',
+            },
+          });
+        }
+        return defaultResponder(method, params);
+      },
+    );
+    const client = await createNativeSyncClient({
+      clientId: 'blob-bridge',
+      schema: { version: 1, tables: [] },
+      nativeModule,
+      eventEmitter,
+    });
+    const command = (name: string) =>
+      calls.findLast(
+        (call) =>
+          call.fn === 'command' &&
+          (call.arg as { method: string }).method === name,
+      )?.arg;
+    await expect(
+      client.uploadBlob(new Uint8Array([1, 2]), {
+        mediaType: 'image/png',
+        name: 'photo.png',
+      }),
+    ).resolves.toBe('{"blobId":"sha256:ab"}');
+    expect(command('uploadBlob')).toEqual({
+      method: 'uploadBlob',
+      params: {
+        bytes: { $bytes: '0102' },
+        mediaType: 'image/png',
+        name: 'photo.png',
+      },
+    });
+    await expect(client.fetchBlob('{"blobId":"sha256:ab"}')).resolves.toEqual({
+      blobId: 'sha256:ab',
+      byteLength: 3,
+      bytes: new Uint8Array([1, 2, 0xff]),
+      mediaType: 'image/png',
+    });
+    expect(command('fetchBlob')).toEqual({
+      method: 'fetchBlob',
+      params: { blob: '{"blobId":"sha256:ab"}' },
+    });
+  });
+
   test('previous-version commands forward their exact envelopes and decode replies', async () => {
     const { client, calls } = await build();
     expect(await client.previousVersionSnapshot({ table: 'todo' })).toEqual({

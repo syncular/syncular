@@ -23,18 +23,21 @@ binding = "DB"                       # env.DB -> D1ServerStorage
 database_name = "syncular"
 database_id = "00000000-0000-0000-0000-000000000000"
 
-# --- R2: durable segment + blob bytes (optional) ---------------------------
-# R2 speaks the S3 API, so segments/blobs use S3SegmentStore + s3PresignedUrls
-# (§5.4 delegated presign). The bucket binding is available as env.BUCKET if
-# you prefer the native R2 binding for a custom store; the reference wiring
-# uses the S3-compatible endpoint + an R2 access key (secrets below).
+# --- R2: durable segment + blob bytes --------------------------------------
+# The Worker reads and writes segments and blobs through this binding
+# (R2SegmentStore / R2BlobStore in @syncular/server-workers): no S3 credentials
+# and no presign. Both stores write the same object keys as S3SegmentStore /
+# S3BlobStore, so a Bun or Node host can fill the bucket through R2's S3 API
+# and the Worker reads those objects here. Switch to the S3 stores when clients
+# should download from presigned URLs.
 [[r2_buckets]]
 binding = "BUCKET"
 bucket_name = "syncular-segments"
 
 # --- Secrets (set with `wrangler secret put NAME`) -------------------------
-# R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY  -> S3SegmentStore
-# SYNC_HMAC_KEY                                          -> native signed URLs (§5.4)
+# SYNC_HMAC_KEY                     -> native signed URLs (§5.4)
+# R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY -> only for the S3
+#                                     stores over R2's S3 endpoint
 # plus whatever your authenticate() needs (JWT secret, etc.)
 
 # --- Realtime (§8): the Durable Object host --------------------------------

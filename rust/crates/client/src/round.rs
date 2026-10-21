@@ -11,12 +11,7 @@ use crate::{
 };
 
 pub(crate) fn now_ms(fixed: Option<i64>) -> i64 {
-    fixed.unwrap_or_else(|| {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system clock predates Unix epoch")
-            .as_millis() as i64
-    })
+    fixed.unwrap_or_else(crate::wall_clock_ms)
 }
 
 pub(crate) struct PendingUpload {
@@ -113,6 +108,18 @@ impl PreparedSyncRound {
     ) -> Result<(), TransportError> {
         if self.round_deadline_at.is_none() {
             if let Some(budget) = transport.round_deadline() {
+                // A wasm32-unknown-unknown host has no `Instant`, so there is
+                // nothing to anchor the budget to. Report that instead of
+                // panicking inside `Instant::now()`.
+                #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+                {
+                    let _ = budget;
+                    return Err(TransportError::new(
+                        "sync.invalid_request",
+                        "transport round deadline is unsupported on wasm32-unknown-unknown",
+                    ));
+                }
+                #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
                 match std::time::Instant::now().checked_add(budget) {
                     Some(deadline) => self.round_deadline_at = Some(deadline),
                     // Reject an unrepresentable host budget before network I/O.

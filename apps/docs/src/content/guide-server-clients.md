@@ -103,6 +103,8 @@ A batch job skips this step. A `SyncClient` never starts a round itself, and a l
 
 `installSyncScheduler` is the shared scheduler. It coalesces duplicate wake-ups, runs one round at a time, replaces an older retry deadline with the newest intent, and removes its listeners on stop.
 
+`syncUntilIdle()` is safe to call concurrently. A call that arrives while one drive is running waits for it and then runs one follow-up drive, and every call that arrives during the same drive shares that follow-up. The follow-up runs because a caller may have written to the outbox after the running drive captured it. Only `sync()` rejects a concurrent `sync()` with `sync.invalid_request`.
+
 ```ts title="src/worker.ts"
 import {
   installSyncScheduler,

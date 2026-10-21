@@ -42,6 +42,25 @@ pub mod schema;
 pub mod transport;
 pub mod values;
 
+/// Wall-clock milliseconds since the Unix epoch, the one clock this crate
+/// reads for every timestamp it records. `wasm32-unknown-unknown` runs in a JS
+/// host where `SystemTime::now()` panics, so that target reads the host clock.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) fn wall_clock_ms() -> i64 {
+    js_sys::Date::now() as i64
+}
+
+/// Wall-clock milliseconds since the Unix epoch, the one clock this crate
+/// reads for every timestamp it records. A host clock set before 1970 is a
+/// broken host, not a value to clamp.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub(crate) fn wall_clock_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock predates Unix epoch")
+        .as_millis() as i64
+}
+
 pub use api::{
     creation_time_bucket, last, AuthorityReadDeclaration, ClientChangeBatch, ClientDiagnosticsHost,
     ClientDiagnosticsLease, ClientDiagnosticsReplica, ClientDiagnosticsRequest,

@@ -717,6 +717,17 @@ async function* streamResponse(
       updatedAtMs: clockOf(ctx)(),
       subscriptions,
     });
+    if (
+      ctx.realtime?.notifySubscriptions !== undefined &&
+      JSON.stringify(
+        (previous?.subscriptions ?? []).map((s) => [s.id, s.table, s.scopes]),
+      ) !== JSON.stringify(subscriptions.map((s) => [s.id, s.table, s.scopes]))
+    ) {
+      await ctx.realtime.notifySubscriptions(
+        ctx.partition,
+        plan.header.clientId,
+      );
+    }
   } catch (error) {
     if (error instanceof SyncError) {
       if (report !== undefined) {

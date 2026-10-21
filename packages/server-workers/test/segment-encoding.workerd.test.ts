@@ -51,6 +51,7 @@ beforeAll(async () => {
     compatibilityDate: '2026-07-01',
     compatibilityFlags: ['nodejs_compat'],
     d1Databases: ['DB'],
+    r2Buckets: ['BUCKET'],
   });
 }, 60_000);
 
@@ -77,4 +78,17 @@ test('a streamed gzip segment decodes once to its content address', async () => 
   expect(`sha256:${createHash('sha256').update(bytes).digest('hex')}`).toBe(
     seeded.segmentId,
   );
+}, 60_000);
+
+test('the R2 stores hold their preconditions over the workerd binding', async () => {
+  const url = await mf.ready;
+  const response = await fetch(new URL('/r2', url), { method: 'POST' });
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({
+    segmentText: 'rows segment bytes',
+    scopeDigests: 2,
+    openedText: 'rows segment bytes',
+    blobText: '{"inline":"json"}',
+    blobCount: 1,
+  });
 }, 60_000);

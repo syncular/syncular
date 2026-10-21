@@ -28,6 +28,18 @@ Three features exist, all off by default so the core's dependency tree stays sma
 ::checkpoint[`cargo check` resolves `syncular-client` and its dependencies.]
 :::::
 
+:::::step{title="Build for wasm32 (optional)" time="2 min"}
+`wasm32-unknown-unknown` is a supported target. `cargo check -p syncular-client --target wasm32-unknown-unknown` passes with and without `e2ee`, and rusqlite builds the replica on `sqlite-wasm-rs` for that target.
+
+The host supplies three things the target cannot:
+
+- A clock. Every timestamp the core reads comes from one function, and on this target it reads `Date.now()` through `js-sys` because `std::time::SystemTime::now()` panics there.
+- A CSPRNG. The crate enables uuid's `js` feature and getrandom's JS backends (`0.2` under `js`, `0.4` under `wasm_js`), so the host must expose `crypto.getRandomValues`: a browser, a worker, or Node 19 and later. getrandom `0.3` is the one version that wants a `getrandom_backend` cfg flag instead; the crate does not depend on it, so no `RUSTFLAGS` are needed.
+- A `Transport`. `native-transport` (`ureq`, `tungstenite`) does not build for this target, so implement the trait over `fetch` and a WebSocket. Leave `round_deadline` at its default `None`: the core anchors that budget on `std::time::Instant`, which this target does not have, and a transport that returns a budget fails the round with `sync.invalid_request` instead of panicking.
+
+A wasm build is untested against a real server in this repository; the native gate is `cargo test`.
+:::::
+
 :::::step{title="Get the schema" time="2 min"}
 `SyncClient` takes the client IR as `serde_json::Value`. Run `syncular generate` to write `syncular.ir.json`, then load it ([Schema & typegen](/guide-schema/)). A Rust client and a TypeScript client can share one generated schema. A hand-written IR looks like this:
 

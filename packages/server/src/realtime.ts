@@ -692,6 +692,15 @@ export class RealtimeSession {
    * deltas immediately; it also survives a newer round-end refresh that
    * failed, because that round applied nothing.
    */
+  /**
+   * A pull outside this connection changed the client's subscriptions. A
+   * round in flight on the connection reloads them at its end anyway.
+   */
+  async refreshAfterPull(): Promise<void> {
+    if (this.#activeRound !== undefined) return;
+    await this.refreshRegistrations(false);
+  }
+
   async refreshRegistrations(failClosed: boolean): Promise<void> {
     const generation = ++this.#registrationGeneration;
     let registrations: Registration[];
@@ -1104,67 +1113,13 @@ export class RealtimeHub {
         'socket sync rounds require a segment store on the realtime hub (§8.7)',
       );
     }
+    // The whole config, so a new `SyncServerConfig` field reaches socket and
+    // hub-served HTTP rounds without being listed here.
     return {
+      ...this.#config,
+      segments,
       partition: identity.partition,
       actorId: identity.actorId,
-      schema: this.#config.schema,
-      ...(this.#config.schemaWindow !== undefined
-        ? { schemaWindow: this.#config.schemaWindow }
-        : {}),
-      storage: this.#config.storage,
-      segments,
-      resolveScopes: this.#config.resolveScopes,
-      ...(this.#config.blobs !== undefined
-        ? { blobs: this.#config.blobs }
-        : {}),
-      ...(this.#config.maxBlobBytes !== undefined
-        ? { maxBlobBytes: this.#config.maxBlobBytes }
-        : {}),
-      ...(this.#config.crdtMergers !== undefined
-        ? { crdtMergers: this.#config.crdtMergers }
-        : {}),
-      ...(this.#config.validators !== undefined
-        ? { validators: this.#config.validators }
-        : {}),
-      ...(this.#config.commitValidator !== undefined
-        ? { commitValidator: this.#config.commitValidator }
-        : {}),
-      ...(this.#config.reactionPlanner !== undefined
-        ? { reactionPlanner: this.#config.reactionPlanner }
-        : {}),
-      ...(this.#config.checkpoints !== undefined
-        ? { checkpoints: this.#config.checkpoints }
-        : {}),
-      ...(this.#config.clock !== undefined
-        ? { clock: this.#config.clock }
-        : {}),
-      ...(this.#config.limits !== undefined
-        ? { limits: this.#config.limits }
-        : {}),
-      ...(this.#config.signedUrls !== undefined
-        ? { signedUrls: this.#config.signedUrls }
-        : {}),
-      ...(this.#config.blobSignedUrls !== undefined
-        ? { blobSignedUrls: this.#config.blobSignedUrls }
-        : {}),
-      ...(this.#config.blobUploadUrls !== undefined
-        ? { blobUploadUrls: this.#config.blobUploadUrls }
-        : {}),
-      ...(this.#config.sqliteImageBuilder !== undefined
-        ? { sqliteImageBuilder: this.#config.sqliteImageBuilder }
-        : {}),
-      ...(this.#config.leases !== undefined
-        ? { leases: this.#config.leases }
-        : {}),
-      ...(this.#config.events !== undefined
-        ? { events: this.#config.events }
-        : {}),
-      ...(this.#config.onError !== undefined
-        ? { onError: this.#config.onError }
-        : {}),
-      ...(this.#config.mapError !== undefined
-        ? { mapError: this.#config.mapError }
-        : {}),
       realtime: this,
     };
   }
@@ -1308,6 +1263,22 @@ export class RealtimeHub {
     for (const session of this.#sessions) {
       if (session.partition !== partition) continue;
       session.deliverCommit(commit);
+    }
+  }
+
+  /**
+   * RealtimeNotifier: a pull changed a client's subscription list (§8.7).
+   * Its sockets reload their registrations with the round-end semantics, so
+   * an unreadable record keeps the previous registrations.
+   */
+  async notifySubscriptions(
+    partition: string,
+    clientId: string,
+  ): Promise<void> {
+    for (const session of [...this.#sessions]) {
+      if (session.partition !== partition || session.clientId !== clientId)
+        continue;
+      await session.refreshAfterPull();
     }
   }
 

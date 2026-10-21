@@ -16,6 +16,43 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-10-21',
+    title:
+      'Workers get R2 binding stores, commands on the Durable Object, and fan-out after hibernation',
+    body: "`R2SegmentStore(env.BUCKET)` and `R2BlobStore(env.BUCKET)` store segments and blobs over an R2 binding with the key layout of the S3 stores, so a Worker needs no S3 credentials and runs under `wrangler dev --local`. Both stores run one bucket-generic implementation with `S3SegmentStore` and `S3BlobStore`, and two concurrent uploads of one blob now store it once and count it once on either transport. `RealtimeDOConfig.operations` registers remote queries and commands on the partition's Durable Object; the adapter forwards `POST /operations` there, so a command applies on the partition FIFO and reaches the partition's sockets as a delta. After a hibernation wake the Durable Object rebuilds the session of every open socket before its first event, so sockets that stayed quiet keep receiving deltas instead of falling back to their poll. An HTTP pull that changes a client's subscriptions re-registers that client's open sockets on the same hub, and inline blob downloads answer `application/octet-stream` whatever media type the upload declared.",
+    links: [
+      { href: '/server-workers/', label: 'Cloudflare Workers' },
+      { href: '/guide-remote-operations/', label: 'Remote operations' },
+    ],
+  },
+  {
+    date: '2026-10-21',
+    title: 'Host loops coalesce, and the native bridges expose blobs',
+    body: "`installSyncScheduler` is typed against the methods a `SyncClient` has (`statusSnapshot().syncNeeded` and `securityLifecycle()`), so it installs without a cast and its install-time catch-up runs. Concurrent `syncUntilIdle()` calls no longer fail with `sync.invalid_request`: a call that arrives during a drive waits and runs one shared follow-up drive, which is why the scheduler, the realtime supervisor's connect-time catch-up, and app code can drive the same client. The worker host keeps its scheduled flag until the queued auto-sync round starts, so a burst of wake-ups during startup queues one round instead of one per wake-up. A blob download whose body is `application/json` without a `url` returns its bytes instead of failing with `Body already used`. The Tauri and React Native bridges expose `uploadBlob(bytes, { mediaType?, name? })` and `fetchBlob(ref)` over the native `{$bytes: hex}` envelope, and the typegen type table lists `blob_ref` and `crdt`.",
+    links: [
+      { href: '/guide-server-clients/', label: 'Server clients' },
+      { href: '/concepts-blobs/', label: 'Blobs' },
+    ],
+  },
+  {
+    date: '2026-10-21',
+    title: 'Subscribing again re-arms a revoked subscription',
+    body: '`subscribe` with an id that already exists as `revoked` and the same table, scopes, and params starts that registration over: cursor back to `-1`, no bootstrap state, no persisted effective scopes, no reason code, and a sync request. An app that subscribes before its grant exists, is revoked, and subscribes again once the grant arrives receives its rows instead of waiting silently. A `failed` registration, the fail-closed answer to a schema without the matching local scope column, stays failed. SPEC §3.3 states the rule, both client cores implement it, and a conformance scenario runs it against each core.',
+    links: [{ href: '/concepts-subscriptions/', label: 'Subscriptions' }],
+  },
+  {
+    date: '2026-10-21',
+    title: 'The Rust client builds for wasm32-unknown-unknown',
+    body: "`cargo check -p syncular-client --target wasm32-unknown-unknown` passes with and without `e2ee`, and rusqlite builds the replica on SQLite-WASM there, so the Rust core runs in a browser worker. Every timestamp reads one clock function that calls `Date.now()` on that target, because `SystemTime::now()` panics on it, and the crate enables uuid's `js` feature and getrandom's JS backends so a host with `crypto.getRandomValues` needs no `RUSTFLAGS`. A wasm host implements `Transport` over `fetch` and a socket and leaves `round_deadline` unset: the core anchors that budget on `Instant`, which the target does not have, and fails the round with `sync.invalid_request`. The Rust conformance CI job checks the target.",
+    links: [{ href: '/platform-rust-install/', label: 'Rust install' }],
+  },
+  {
+    date: '2026-10-21',
+    title: 'The Rust remote client sends safe-range integers as numbers',
+    body: 'The Rust remote client encoded every integer as `{"t":"integer"}`, which a TypeScript command callback decodes to a bigint, so `JSON.stringify` threw on the value. Integers inside ±(2^53−1) now encode as `{"t":"number"}`, the form the TypeScript client always sent, and only larger magnitudes stay integers. The encoding rule for a host whose value model has no integer type of its own is stated in REMOTE.md §4.',
+    links: [{ href: '/guide-remote-operations/', label: 'Remote operations' }],
+  },
+  {
     date: '2026-10-13',
     title: 'The admin console mounts with one option',
     body: "`createSyncularHono` and `createWorkersFetchHandler` take an `admin` option with the `authorize` guard and the optional `authorizeActions` guard. On Hono the option creates the console's event ring and composes it into `config.events` and the realtime hub (`RealtimeHub.addEventSink`), so socket rounds reach the console. On Workers every Durable Object keeps the ring, sized by `RealtimeDOConfig.adminRingCapacity`. Without `?partition=`, a deployment with one partition uses it and the console asks for a partition when there are several. This replaces mounting `createSyncularAdminRoutes` by hand, renames `authorizeWrite` to `authorizeActions` and `GET /admin/info` `writes` to `actions`, and removes `defaultPartition` and the Durable Object's `admin` setting. The new Admin console page walks through finding a write, tracing a row, and following a person's failed requests.",

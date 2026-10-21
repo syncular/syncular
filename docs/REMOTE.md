@@ -140,7 +140,7 @@ collisions with application object keys.
 | boolean | `{"t":"boolean","v":true}` |
 | finite number | `{"t":"number","v":1.5}` |
 | string | `{"t":"string","v":"x"}` |
-| signed 64-bit integer / bigint | `{"t":"integer","v":"42"}` |
+| signed 64-bit integer / bigint outside the safe range | `{"t":"integer","v":"42"}` |
 | bytes | `{"t":"bytes","v":"AAE="}` using standard padded base64 |
 | array | `{"t":"array","v":[...]}` |
 | object | `{"t":"object","v":[["key",...],...]}` |
@@ -148,6 +148,12 @@ collisions with application object keys.
 The complete request or response object is itself encoded as an object value.
 Integer text uses canonical decimal form and the range -2^63 through 2^63-1.
 Base64 must use its canonical padded form.
+
+A host whose value model has no integer type of its own, such as JSON, encodes
+every integer in the range -(2^53-1) through 2^53-1 as `number` and only larger
+magnitudes as `integer`. That split keeps a number the sender wrote as a number
+on arrival: a receiver with a separate integer type decodes `number` to its
+numeric value and `integer` to its integer value.
 
 ## 5. HTTP binding
 

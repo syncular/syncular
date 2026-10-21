@@ -815,6 +815,86 @@ describe('createTauriSyncClient', () => {
     expect(id).toBe('commit-1');
   });
 
+  test('blob commands encode bytes and decode the fetched envelope', async () => {
+    const { tauri, calls } = makeTauri((_cmd, args) => {
+      const method = (args.command as { method?: string } | undefined)?.method;
+      if (method === 'create') return OK({});
+      if (method === 'uploadBlob') return OK({ ref: '{"blobId":"sha256:ab"}' });
+      if (method === 'fetchBlob') {
+        return OK({
+          blob: {
+            blobId: 'sha256:ab',
+            byteLength: 3,
+            bytes: { $bytes: '0102ff' },
+            mediaType: 'image/png',
+          },
+        });
+      }
+      return OK({});
+    });
+    const client = await createTauriSyncClient({
+      clientId: 'blob-bridge',
+      schema: {},
+      tauri,
+    });
+    const command = (name: string) =>
+      calls
+        .map(
+          (call) => call.args.command as { method?: string; params?: unknown },
+        )
+        .find((candidate) => candidate.method === name);
+    try {
+      await expect(
+        client.uploadBlob(new Uint8Array([1, 2]), {
+          mediaType: 'image/png',
+          name: 'photo.png',
+        }),
+      ).resolves.toBe('{"blobId":"sha256:ab"}');
+      expect(command('uploadBlob')?.params).toEqual({
+        bytes: { $bytes: '0102' },
+        mediaType: 'image/png',
+        name: 'photo.png',
+      });
+      await expect(client.fetchBlob('{"blobId":"sha256:ab"}')).resolves.toEqual(
+        {
+          blobId: 'sha256:ab',
+          byteLength: 3,
+          bytes: new Uint8Array([1, 2, 0xff]),
+          mediaType: 'image/png',
+        },
+      );
+      expect(command('fetchBlob')?.params).toEqual({
+        blob: '{"blobId":"sha256:ab"}',
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  test('a fetchBlob reply without a $bytes envelope is refused', async () => {
+    const { tauri } = makeTauri((_cmd, args) => {
+      const method = (args.command as { method?: string } | undefined)?.method;
+      if (method === 'create') return OK({});
+      if (method === 'fetchBlob')
+        return OK({
+          blob: { blobId: 'sha256:ab', byteLength: 3, bytes: 'not-bytes' },
+        });
+      return OK({});
+    });
+    const client = await createTauriSyncClient({
+      clientId: 'blob-bridge-invalid',
+      schema: {},
+      tauri,
+    });
+    try {
+      await expect(
+        client.fetchBlob('{"blobId":"sha256:ab"}'),
+      ).rejects.toMatchObject({ code: 'sync.invalid_request' });
+    } finally {
+      await client.close();
+    }
+  });
+
   test('purgeLocalData forwards the exact bounded plan over the command bridge', async () => {
     const { client, calls } = await build();
     const input = {

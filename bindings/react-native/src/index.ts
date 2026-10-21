@@ -964,6 +964,60 @@ export class NativeSyncClient implements PromiseMethods<ClientSnapshotMethods> {
     return result.clientCommitId;
   }
 
+  /**
+   * Stage a blob for attachment (§5.9.7) and return the canonical `BlobRef`
+   * string to store in a `blob_ref` column. The native core owns the upload
+   * queue; write the referencing row after this resolves (§5.9.3).
+   */
+  async uploadBlob(
+    bytes: Uint8Array,
+    options?: { readonly mediaType?: string; readonly name?: string },
+  ): Promise<string> {
+    const result = (await this.#command('uploadBlob', {
+      bytes: { $bytes: bytesToHex(bytes) },
+      ...(options?.mediaType !== undefined
+        ? { mediaType: options.mediaType }
+        : {}),
+      ...(options?.name !== undefined ? { name: options.name } : {}),
+    })) as { ref: string };
+    return result.ref;
+  }
+
+  /**
+   * Resolve blob bytes for a `blob_ref` column value or a bare `blobId`
+   * (§5.9.7): the native core serves a local cache hit and otherwise
+   * downloads and verifies the content address.
+   */
+  async fetchBlob(ref: string): Promise<{
+    readonly blobId: string;
+    readonly byteLength: number;
+    readonly bytes: Uint8Array;
+    readonly mediaType?: string;
+  }> {
+    const result = (await this.#command('fetchBlob', { blob: ref })) as {
+      blob: {
+        blobId: string;
+        byteLength: number;
+        bytes: unknown;
+        mediaType?: string;
+      };
+    };
+    const bytes = result.blob.bytes;
+    if (!isBytesEnvelope(bytes))
+      throw new NativeSyncError(
+        'sync.invalid_request',
+        'fetchBlob reply carried no $bytes envelope',
+      );
+    return {
+      blobId: result.blob.blobId,
+      byteLength: result.blob.byteLength,
+      bytes: hexToBytes(bytes.$bytes),
+      ...(result.blob.mediaType !== undefined
+        ? { mediaType: result.blob.mediaType }
+        : {}),
+    };
+  }
+
   async subscribe(input: {
     readonly id: string;
     readonly table: string;

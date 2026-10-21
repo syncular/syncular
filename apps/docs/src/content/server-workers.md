@@ -7,7 +7,7 @@ Deploy the sync server on Cloudflare: D1 for storage, R2 for segment and blob by
 :::terms
 - **D1**: Cloudflare's SQLite database. It has no interactive transaction, only atomic `db.batch([...])`.
 - **Coordinator**: The Durable Object that serializes one partition's pushes and hosts its realtime sockets.
-- **R2**: Cloudflare's S3-compatible object store, used through `S3SegmentStore` and `S3BlobStore`.
+- **R2**: Cloudflare's S3-compatible object store, used through `R2SegmentStore` and `R2BlobStore` over the bucket binding, or through `S3SegmentStore` and `S3BlobStore` over its S3 endpoint.
 :::
 
 :::figure{title="What the Worker runs" note="One Durable Object per partition" ticks}
@@ -35,49 +35,39 @@ When PostgreSQL runs behind Hyperdrive instead of D1, disable query caching on t
 
 :::::steps
 ::::step{title="Write the sync config" time="5 min"}
-One factory builds the canonical sync capabilities for HTTP-forwarded rounds and socket rounds. Presigned URLs take segment and blob bytes out of the Worker.
+One factory builds the canonical sync capabilities for HTTP-forwarded rounds and socket rounds. Segment and blob bytes live in R2 through the bucket binding, so the Worker holds no S3 credentials.
 
 ```ts title="src/worker.ts"
-import {
-  D1ServerStorage,
-  S3BlobStore,
-  S3SegmentStore,
-  s3PresignedBlobUrls,
-  s3PresignedUrls,
-  type RealtimeHubConfig,
-} from '@syncular/server';
+import { D1ServerStorage, type RealtimeHubConfig } from '@syncular/server';
+import { R2BlobStore, R2SegmentStore } from '@syncular/server-workers';
 import { schema } from './syncular.generated';
 
 interface Env {
   DB: D1Database; // wrangler [[d1_databases]] binding = "DB"
+  BUCKET: R2Bucket; // wrangler [[r2_buckets]] binding = "BUCKET"
   REALTIME: DurableObjectNamespace<SyncularRealtimeDO>;
-  R2_ACCOUNT_ID: string;
-  R2_ACCESS_KEY_ID: string;
-  R2_SECRET_ACCESS_KEY: string;
 }
 
 const canonicalSyncConfig = (env: Env, storage: D1ServerStorage) => {
-  const r2 = {
-    endpoint: `https://${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
-    region: 'auto' as const,
-    accessKeyId: env.R2_ACCESS_KEY_ID,
-    secretAccessKey: env.R2_SECRET_ACCESS_KEY,
-  };
-  const segments = new S3SegmentStore({ ...r2, bucket: 'syncular-segments' });
-  const blobs = new S3BlobStore({ ...r2, bucket: 'syncular-blobs' });
+  const segments = new R2SegmentStore(env.BUCKET);
+  // Durable attachment bytes (§5.9) in R2: no TTL, no lifecycle rule; the
+  // cron trigger runs `sweepOrphanBlobs` for GC (see step 5).
+  const blobs = new R2BlobStore(env.BUCKET);
   return {
     schema,
     storage,
     segments,
     blobs,
-    signedUrls: s3PresignedUrls(segments, { ttlSeconds: 900 }),
-    blobSignedUrls: s3PresignedBlobUrls(blobs, { ttlSeconds: 900 }),
     resolveScopes: (args) => resolveScopes(args, env),
   } satisfies RealtimeHubConfig;
 };
 ```
 
-Workers has no SQLite engine, so the config sets no `sqliteImageBuilder`. A client that advertises the image lane receives a stored image when one exists for its scope and rows otherwise. Store images for large tables from a Bun process with `publishSqliteImage` ([Bootstrap & segments](/concepts-bootstrap/#publishing-images-from-another-host)). `GET /segments/:id` streams them out of an `S3SegmentStore` without buffering them in the isolate.
+A binding cannot mint a presigned URL, so leave `signedUrls` and `blobSignedUrls` unset. The Worker then serves the bytes itself: `GET /segments/:id` streams the R2 object through `open` without buffering it in the isolate, and `GET /blobs/:id` re-authorizes the row references before it reads ([Blobs](/concepts-blobs/)).
+
+Both stores write the same object keys as `S3SegmentStore` and `S3BlobStore`. One bucket therefore serves both access paths: a Bun or Node host that holds R2 S3 credentials publishes through the S3 endpoint, and the Worker reads the same objects through the binding. To get presigned URLs, use `S3SegmentStore` and `S3BlobStore` with `s3PresignedUrls` and `s3PresignedBlobUrls` on the Workers host as well, and set the R2 endpoint and access key secrets listed in step 4.
+
+Workers has no SQLite engine, so the config sets no `sqliteImageBuilder`. A client that advertises the image lane receives a stored image when one exists for its scope and rows otherwise. Store images for large tables from a Bun process with `publishSqliteImage` ([Bootstrap & segments](/concepts-bootstrap/#publishing-images-from-another-host)).
 
 ::checkpoint[`canonicalSyncConfig` typechecks against `RealtimeHubConfig`.]
 ::::
@@ -157,7 +147,16 @@ const handler = createWorkersFetchHandler<Env>({
 
 `createWorkersFetchHandler(factory)` builds the Hono app per request from your factory. That keeps it stateless, which Workers requires because each invocation may run on a fresh isolate.
 
-The Durable Object is hibernation-aware. Idle sockets do not pin it in memory or bill wall time. On the first message after a wake, the host rebuilds the session from a minimal serialized attachment plus the client record in D1, the durable source of truth. Nothing in flight can hibernate. Because a partition's sockets, sync FIFO, and commit fan-out sit in one object, a round that lands over the socket fans its delta out to the partition's other sockets directly. The protocol it hosts is on [Realtime & the WebSocket-native loop](/concepts-realtime/).
+The Durable Object is hibernation-aware. Idle sockets do not pin it in memory or bill wall time. On the first event after a wake (a socket message, a forwarded `/sync` or `/operations` request, a wake), the host rebuilds the session of every open socket from a minimal serialized attachment plus the client record in D1, the durable source of truth. A socket that stayed quiet through the hibernation therefore still receives the next delta. Nothing in flight can hibernate. Because a partition's sockets, sync FIFO, and commit fan-out sit in one object, a round that lands over the socket fans its delta out to the partition's other sockets directly. The protocol it hosts is on [Realtime & the WebSocket-native loop](/concepts-realtime/).
+
+Register [remote operations](/guide-remote-operations/) on the Durable Object with `operations` in `RealtimeDOConfig`. The adapter forwards `POST /operations` to the partition's object, so a command applies on the same FIFO as pushes and its commit reaches the partition's sockets as a delta. A Worker config that passes `operations` beside a `realtime` or `coordinator` namespace fails each `/operations` request, because the command would run outside the FIFO.
+
+```ts
+const realtimeDOConfig = (env: Env): RealtimeDOConfig => ({
+  syncConfig: (storage) => canonicalSyncConfig(env, storage),
+  operations: new RemoteOperationRegistry([createCampaign, joinCampaign]),
+});
+```
 
 For an HTTP-only deployment, keep the Durable Object binding and migration, and pass `coordinator: (env) => ({ namespace: env.REALTIME })` in place of `realtime`. Only the WebSocket route goes away; the FIFO stays mandatory for D1 pushes.
 
@@ -179,6 +178,10 @@ binding = "DB"                # env.DB -> D1ServerStorage
 database_name = "syncular"
 database_id = "..."
 
+[[r2_buckets]]
+binding = "BUCKET"            # env.BUCKET -> R2SegmentStore, R2BlobStore
+bucket_name = "syncular"
+
 [[durable_objects.bindings]]
 name = "REALTIME"
 class_name = "SyncularRealtimeDO"
@@ -188,7 +191,7 @@ tag = "v1"
 new_classes = ["SyncularRealtimeDO"]
 ```
 
-Set the secrets with `wrangler secret put`: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, plus whatever `authenticate()` needs.
+Set the secrets with `wrangler secret put`: whatever `authenticate()` needs. The bucket binding path needs no R2 secrets. If you use `S3SegmentStore` and `S3BlobStore` over the R2 S3 endpoint instead (presigned URLs), also set `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY`.
 
 ::checkpoint[`wrangler deploy` completes and lists the `SyncularRealtimeDO` class.]
 ::::

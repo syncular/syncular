@@ -62,6 +62,57 @@ describe('effective-scope echo persistence (§3.2, §3.3)', () => {
   });
 });
 
+describe('re-arming a revoked subscription (§3.3)', () => {
+  test('the same id and intent re-arms it and the rows arrive', async () => {
+    const server = makeServer();
+    server.allowed['actor-1'] = {
+      project_id: ['p2'],
+      projectId: ['p2'],
+      org_id: ['o1'],
+    };
+    const a = await makeClient(server, { clientId: 'client-a' });
+    a.client.subscribe({
+      id: 's1',
+      table: 'tasks',
+      scopes: { project_id: ['p1'] },
+    });
+    const revoked = await a.client.syncUntilIdle();
+    expect(revoked.revoked).toEqual(['s1']);
+    expect(a.client.subscription('s1')?.status).toBe('revoked');
+
+    // The grant arrives after the first subscribe; the app subscribes again
+    // with the same id and intent.
+    server.allowed['actor-1'] = {
+      project_id: ['p1'],
+      projectId: ['p1'],
+      org_id: ['o1'],
+    };
+    a.intents.length = 0;
+    a.client.subscribe({
+      id: 's1',
+      table: 'tasks',
+      scopes: { project_id: ['p1'] },
+    });
+    expect(a.client.subscription('s1')).toEqual({
+      id: 's1',
+      table: 'tasks',
+      scopes: { project_id: ['p1'] },
+      cursor: -1,
+      status: 'active',
+    });
+    expect(a.intents).toEqual([{ kind: 'interactive' }]);
+
+    a.client.mutate([
+      { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1') },
+    ]);
+    await a.client.syncUntilIdle();
+    expect(tableRows(a.db, 'tasks').map((row) => row.id)).toEqual(['t1']);
+    expect(a.client.subscription('s1')?.effectiveScopes).toEqual({
+      project_id: ['p1'],
+    });
+  });
+});
+
 describe('revocation purge (§3.3)', () => {
   test('purges exactly the last-effective rows and stops pulling', async () => {
     const server = makeServer();
@@ -217,6 +268,15 @@ describe('revocation purge (§3.3)', () => {
     // The table is no longer synced.
     const next = await a.client.sync();
     expect(next.failed).toHaveLength(0);
+    expect(a.client.subscription('s1')?.status).toBe('failed');
+
+    // A failed registration is a configuration error, not a revocation:
+    // subscribing again with the same intent leaves it failed.
+    a.client.subscribe({
+      id: 's1',
+      table: 'tasks',
+      scopes: { project_id: ['p1'] },
+    });
     expect(a.client.subscription('s1')?.status).toBe('failed');
   });
 });

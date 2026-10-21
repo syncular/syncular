@@ -17,19 +17,19 @@ test('ordinary client, worker and native graphs exclude authority; only explicit
         'client',
         `export { SyncClient } from '${root}/packages/web-client/src/client.ts';`,
         false,
-        158400,
+        158800,
       ],
       [
         'client-root',
         `export { SyncClient } from '${root}/packages/web-client/src/index.ts';`,
         false,
-        158400,
+        158800,
       ],
       [
         'worker',
         `import { startSyncWorker } from '${root}/packages/web-client/src/worker-entry.ts'; startSyncWorker();`,
         false,
-        175400,
+        176000,
       ],
       [
         'authority-worker',

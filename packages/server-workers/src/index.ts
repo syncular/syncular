@@ -9,9 +9,13 @@
  *
  *   - **D1** → `D1ServerStorage` (the sqlite-family storage over the D1
  *     binding, §4.2);
- *   - **R2 / secrets** → the segment store, blob store, and signed-URL
- *     config the host assembles from `env` (R2-as-S3 via `S3SegmentStore` +
- *     `s3PresignedUrls`, or a memory store for tests);
+ *   - **R2 / segments and blobs** → the segment store, blob store, and
+ *     signed-URL config the host assembles from `env`. With a bucket binding
+ *     (`env.BUCKET`), `R2SegmentStore` and `R2BlobStore` (`r2-stores.ts`) put
+ *     the durable bytes in the same key layout as the S3 stores, with no S3
+ *     credentials and no presign (bytes are served inline). With R2's S3
+ *     endpoint, the S3 stores plus `s3PresignedUrls` give delegated presign
+ *     (§5.4); a memory store serves tests;
  *   - **secrets** → whatever `authenticate` needs.
  *
  * ## Realtime (§8): the Durable Object
@@ -43,6 +47,7 @@ import {
 } from '@syncular/server-hono';
 import {
   adminRequestForDurableObject,
+  OPERATIONS_DO_REQUEST_PATH,
   REALTIME_DO_UPGRADE_PATH,
   REALTIME_DO_WAKE_PATH,
   type RealtimeUpgradeIdentity,
@@ -52,6 +57,7 @@ import {
 } from './realtime-do';
 
 export { type D1Database, D1ServerStorage } from '@syncular/server';
+export * from './r2-stores';
 export * from './realtime-do';
 
 /**
@@ -231,13 +237,30 @@ export function createWorkersFetchHandler<Env = unknown>(
       options.coordinator !== undefined
         ? await options.coordinator(env, ctx)
         : realtime;
-    if (coordinator !== undefined && isSyncPost(request)) {
+    const partitionPath =
+      coordinator !== undefined ? partitionRequestPath(request) : undefined;
+    if (coordinator !== undefined && partitionPath !== undefined) {
+      if (
+        partitionPath === OPERATIONS_DO_REQUEST_PATH &&
+        honoOptions.operations !== undefined
+      ) {
+        // Commands must apply on the partition FIFO; a registry in the
+        // Worker would run them beside it.
+        throw new Error(
+          'createWorkersFetchHandler: pass operations to the Durable Object config (RealtimeDOConfig.operations), not to the Worker config',
+        );
+      }
       const auth = await honoOptions.authenticate(request);
       if (auth === null) {
         const error = new SyncError('sync.auth_required');
         return Response.json(errorBody(error), { status: error.httpStatus });
       }
-      return forwardSyncRequest(request, coordinator.namespace, auth);
+      return forwardSyncRequest(
+        request,
+        coordinator.namespace,
+        auth,
+        partitionPath,
+      );
     }
     if (options.admin !== undefined) {
       const admin = await options.admin(env, ctx);
@@ -283,34 +306,41 @@ export function createWorkersFetchHandler<Env = unknown>(
   };
 }
 
-function isSyncPost(request: Request): boolean {
-  if (request.method !== 'POST') return false;
+/**
+ * The Durable Object path for a request that must run on the partition FIFO:
+ * `POST /sync` with the SSP2 content type and `POST /operations` (the DO
+ * checks the operations content type). Exactly the routes
+ * `createSyncularHono` mounts at the app root; any other path, such as
+ * `/admin/sync`, stays with Hono routing.
+ */
+function partitionRequestPath(request: Request): string | undefined {
+  if (request.method !== 'POST') return undefined;
+  const pathname = new URL(request.url).pathname;
+  if (pathname === '/operations') return OPERATIONS_DO_REQUEST_PATH;
   const contentType = request.headers
     .get('content-type')
     ?.split(';')[0]
     ?.trim();
-  if (contentType !== SSP2_CONTENT_TYPE) return false;
-  // Exactly the route `createSyncularHono` mounts (`POST /sync` at the app
-  // root, which is where this handler serves the Hono app). Any other path —
-  // e.g. `/admin/sync` — stays with Hono routing.
-  return new URL(request.url).pathname === '/sync';
+  if (pathname === '/sync' && contentType === SSP2_CONTENT_TYPE)
+    return SYNC_DO_REQUEST_PATH;
+  return undefined;
 }
 
 /**
- * Forward an authenticated HTTP sync round to the partition's Durable Object.
- * Pulls and pushes share this path so client-record updates and push apply use
- * one ordered partition boundary. Other HTTP routes remain direct.
+ * Forward an authenticated HTTP sync round (or, with
+ * `OPERATIONS_DO_REQUEST_PATH`, a remote operation) to the partition's
+ * Durable Object. Pulls, pushes and commands share this boundary so
+ * client-record updates and commit apply use one ordered partition FIFO.
+ * Other HTTP routes remain direct.
  */
 export function forwardSyncRequest(
   request: Request,
   namespace: DurableObjectNamespaceLike,
   identity: { readonly partition: string; readonly actorId: string },
+  path: string = SYNC_DO_REQUEST_PATH,
 ): Promise<Response> {
   const stub = namespace.get(namespace.idFromName(identity.partition));
-  const forwarded = new Request(
-    new URL(SYNC_DO_REQUEST_PATH, request.url),
-    request,
-  );
+  const forwarded = new Request(new URL(path, request.url), request);
   writeRequestIdentityHeaders(forwarded.headers, identity);
   return stub.fetch(forwarded);
 }

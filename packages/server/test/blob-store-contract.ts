@@ -47,6 +47,22 @@ export function runBlobStoreContract(
       expect(got.record.createdAtMs).toBe(CONTRACT_NOW);
     });
 
+    test('concurrent puts of one blob store it once with one createdAt', async () => {
+      const store = await makeStore();
+      const bytes = new Uint8Array([7, 7, 7]);
+      const blobId = await blobIdFor(bytes);
+      await Promise.all([
+        store.put(PARTITION, blobId, bytes, CONTRACT_NOW),
+        store.put(PARTITION, blobId, bytes, CONTRACT_NOW + 1),
+      ]);
+      const got = await store.get(PARTITION, blobId);
+      expect([CONTRACT_NOW, CONTRACT_NOW + 1]).toContain(
+        got?.record.createdAtMs ?? -1,
+      );
+      if (store.stats !== undefined)
+        expect((await store.stats(PARTITION)).count).toBe(1);
+    });
+
     test('put without a mediaType omits it', async () => {
       const store = await makeStore();
       const bytes = new Uint8Array([1, 2, 3]);

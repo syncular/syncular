@@ -6,7 +6,7 @@
 
 | Property | Value |
 |---|---|
-| **Runs on** | Any target rusqlite (bundled SQLite) builds for |
+| **Runs on** | Any target rusqlite (bundled SQLite) builds for, including `wasm32-unknown-unknown` through SQLite-WASM |
 | **Package** | `syncular-client = "0.0.0"` on crates.io; the wire codec arrives as `syncular-ssp2` |
 | **Core** | This crate is the core; there is no FFI layer |
 | **Threading** | Synchronous and thread-affine: `SyncClient` is not `Sync`. Drive it from one thread |

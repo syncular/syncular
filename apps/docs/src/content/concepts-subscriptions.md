@@ -104,8 +104,19 @@ window change into including or omitting subscriptions.
 :::warning{title="An id is bound to its query"}
 Within one client, the table, requested scopes, and params of a registered id
 cannot change. Declaring the same id again with the same values keeps the
-cursor and bootstrap state. The same id with different values fails with
+cursor and bootstrap state, unless the registration was revoked (next rule).
+The same id with different values fails with
 `client.subscription_intent_mismatch`; use a new id, or unsubscribe first.
+:::
+
+:::rule{title="Re-subscribing re-arms a revoked subscription"}
+Declaring the same id with the same table, scopes, and params again starts a
+`revoked` registration over: cursor back to `-1`, no bootstrap state, no
+persisted effective scopes, no reason code, and the client asks for a sync.
+The next round resolves its scopes again. That is how an app whose grant
+arrived after the first subscribe picks up its rows. A registration the client
+marked `failed` because the schema has no local scope column stays `failed`;
+fix the schema and subscribe again.
 :::
 
 ## What a subscription receives

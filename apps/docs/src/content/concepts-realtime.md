@@ -102,7 +102,7 @@ The protocol has one delta kind and one wake-up kind. The wake-up tells the clie
 
 ## The host supervisor
 
-`installRealtimeSupervisor()` owns the socket lifecycle: one connection attempt at a time, a `syncUntilIdle()` catch-up before it reports `connected`, reconnection with bounded exponential backoff plus jitter, and cancellation before `client.close()`. Hosts feed it connectivity, lifecycle, and (for protected apps) protection signals. The wiring per host, the observable state snapshot, and the lower-level `connectRealtime()` and `disconnectRealtime()` calls are in [Web (browser)](/platform-web-realtime/#install-the-supervisor). Without the supervisor or an equivalent host trigger, remote changes do not converge continuously.
+`installRealtimeSupervisor()` owns the socket lifecycle: one connection attempt at a time, a `syncUntilIdle()` catch-up before it reports `connected`, reconnection with bounded exponential backoff plus jitter, and cancellation before `client.close()`. Hosts feed it connectivity, lifecycle, and (for protected apps) protection signals. The supervisor's catch-up can land while the scheduler or app code is already driving the client. `syncUntilIdle()` coalesces those calls: the later caller waits, then runs one shared follow-up drive. The wiring per host, the observable state snapshot, and the lower-level `connectRealtime()` and `disconnectRealtime()` calls are in [Web (browser)](/platform-web-realtime/#install-the-supervisor). Without the supervisor or an equivalent host trigger, remote changes do not converge continuously.
 
 ## Presence
 

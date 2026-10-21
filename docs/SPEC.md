@@ -1127,6 +1127,17 @@ than before) purges nothing: the purge contract fires only on
 stop receiving changes; they are cleaned up by the §5.6 first-page rule
 on the next fresh bootstrap, or by an eventual revocation.
 
+**Re-arming a revoked subscription.** Registering a subscription again
+with the same `id` and the same intent (table, requested scopes, params)
+on a registration whose status is `revoked` starts it fresh: the client
+sets the registration back to `active` with cursor `-1`, no bootstrap
+state, no persisted effective scopes, and no reason code, and raises
+sync-needed so the next pull resolves its scopes again. An app that
+subscribes before a grant exists, gets revoked, and subscribes again
+once the grant arrives receives its rows. A registration whose status
+is `failed` is a configuration error: the client leaves it in place,
+and the app fixes the schema before subscribing again.
+
 **Eviction is not purge.** A client MAY *voluntarily* delete local rows
 it still holds authorization for — the windowed-sync retention policy of
 §4.8. This is distinct from the revocation purge above along every axis:
@@ -2340,6 +2351,12 @@ lookup (candidate rows for the blob) followed by the existing per-row scope
 test — the same machinery write authorization already runs. `'*'` in the
 actor's allowed values passes as everywhere else.
 
+- **Inline delivery.** Without signed URLs the server answers the bytes
+  with `Content-Type: application/octet-stream`, whatever media type the
+  upload declared. The stored media type is advisory metadata carried by
+  the `BLOB_REF` (§5.9.1); a JSON content type on a download response is
+  reserved for the signed-URL envelope below. A client reads the body once
+  and treats it as the envelope only when it is JSON with a string `url`.
 - **Unknown blob** (no object stored) ⇒ HTTP 404 `blob.not_found`.
   A client MUST classify only an actual HTTP 404 from the blob download
   endpoint as `blob.not_found`. Network, TLS, body-read, and other HTTP failures
@@ -5169,10 +5186,13 @@ connection (§8.7), so connect-then-sync is the reference boot order.
 Before the first socket sync round, the server encodes deltas with the wire
 version stored by the client's most recent HTTP round. A completed socket
 round replaces that version for later deltas.
-Registrations are fixed for the life of the connection **under the HTTP
-binding alone**: a pull over `POST /sync` takes effect at the next
-connect, not mid-session. A sync round completed **on the connection
-itself** replaces them at round end (§8.7) — the reference client path.
+A sync round completed **on the connection itself** replaces the
+registrations at round end (§8.7), the reference client path. A pull over
+`POST /sync` that changes the persisted subscription list re-registers the
+client's connections on the hub that served the pull, with the round-end
+rule's semantics (§8.7). A deployment whose sockets live on a different
+node than the pull applies the change at that connection's next round or
+connect.
 This is what lets a **window change** (§4.8) take effect immediately: the
 socket round whose subscription list added a widened unit and dropped a
 shrunk one re-registers on that same round, so a widened unit begins
@@ -5327,6 +5347,13 @@ pinned, never interpreted.
   13 ms server fanout, ~2 s client-side wake-contention tail at
   250+ clients).
 - Multiple wake-ups and local triggers MUST coalesce into one pull.
+- An asynchronous host helper that drives rounds until idle MUST NOT fail
+  because another such drive is in flight. The later call waits for the
+  in-flight drive, then runs one follow-up drive; every call that arrives
+  during the same drive shares that single follow-up. The follow-up is
+  required, not defensive: the caller may have written to the outbox after the
+  in-flight drive captured it. This applies to the aggregate drive-to-idle
+  helper only. A single-round `sync()` keeps rejecting a concurrent `sync()`.
 - A mailbox-driven client host MUST keep serving local mutations and reads
   while a sync response or segment download is pending. The mutable owner
   captures the request, an I/O executor performs uploads, the round exchange

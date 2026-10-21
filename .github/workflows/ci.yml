@@ -253,6 +253,13 @@ jobs:
         working-directory: rust
         run: cargo test
 
+      - name: wasm32-unknown-unknown client check
+        working-directory: rust
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo check -p syncular-client --target wasm32-unknown-unknown
+          cargo check -p syncular-client --target wasm32-unknown-unknown --features e2ee
+
       - name: Native transport socket rounds
         working-directory: rust
         run: cargo test -p syncular-ffi --features native-transport round_tests

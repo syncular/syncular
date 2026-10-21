@@ -45,10 +45,13 @@
  *     an async generator draining over `ws.send`; while it is pending it holds
  *     the DO's event loop, so the DO cannot be evicted mid-round. (This is the
  *     same property the §8.7 "one round in flight" rule relies on.)
- *   - **On the first message after a wake**, the socket has a serialized
- *     attachment (`ws.serializeAttachment` — `{clientId, actorId, partition}`,
- *     written at accept time) but no live session. We reconstruct the session
- *     via `hub.connect(...)`, which reloads the registration list from the
+ *   - **On the first serialized operation after a wake** (a socket frame, an
+ *     HTTP sync round, a command, a wake), every accepted socket has a
+ *     serialized attachment (`ws.serializeAttachment`, `{clientId, actorId,
+ *     partition}`, written at accept time) but no live session. The host
+ *     reconstructs the session of every socket in `getWebSockets()`, so
+ *     sockets that stayed quiet through the hibernation keep receiving
+ *     deltas. Each session is rebuilt via `hub.connect(...)`, which reloads the registration list from the
  *     client record in D1 (the §8.1 load-at-upgrade rule — exactly what a
  *     fresh upgrade does), then dispatch the message into it. Rehydration is
  *     transparent to the client: it saw `hello` once at the real upgrade, so
@@ -62,7 +65,8 @@
  *
  * ## The wake path (external-command fan-out)
  *
- * Ordinary HTTP `/sync` is forwarded into this DO and fans out in-process. An
+ * Ordinary HTTP `/sync` and `/operations` (with `RealtimeDOConfig.operations`)
+ * are forwarded into this DO and fan out in-process. An
  * external authoritative command host that already provides equivalent D1
  * partition serialization may call `/__wake` after its own commit so sockets
  * re-pull. See `durableObjectRealtimeNotifier` for that caller side.
@@ -73,16 +77,19 @@ import {
   createRealtimeHub,
   D1ServerStorage,
   errorBody,
+  handleRemoteOperation,
   handleSyncRequest,
   pruneCommitLog,
   type PruneOptions,
   type RealtimeHub,
   type RealtimeHubConfig,
   type RealtimeSession,
+  type RemoteOperationRegistry,
   RingBufferEvents,
   SSP2_CONTENT_TYPE,
   SyncError,
   SyncularAdmin,
+  type SyncularErrorRoute,
 } from '@syncular/server';
 import { createSyncularAdminRoutes } from '@syncular/server-hono';
 
@@ -139,6 +146,12 @@ export type RealtimeDOConfig = (
    * partition's rounds.
    */
   readonly adminRingCapacity?: number;
+  /**
+   * Registered remote queries and commands (REMOTE.md). The Worker forwards
+   * `POST <mount>/operations` here, so a command applies on the partition
+   * FIFO and fans out to the partition's sockets like a pushed commit.
+   */
+  readonly operations?: RemoteOperationRegistry;
 };
 
 /**
@@ -175,6 +188,10 @@ export interface RealtimeUpgradeIdentity {
 export const REALTIME_DO_WAKE_PATH = '/__syncular_realtime/wake';
 export const REALTIME_DO_UPGRADE_PATH = '/__syncular_realtime/upgrade';
 export const SYNC_DO_REQUEST_PATH = '/__syncular_realtime/sync';
+export const OPERATIONS_DO_REQUEST_PATH = '/__syncular_realtime/operations';
+/** The remote operation protocol content type (REMOTE.md §5). */
+export const OPERATIONS_CONTENT_TYPE =
+  'application/vnd.syncular.operations.v1+json';
 /** Prefix of forwarded admin routes; the admin route path follows it. */
 export const ADMIN_DO_PATH = '/__syncular_realtime/admin';
 
@@ -208,12 +225,17 @@ export class SyncularRealtimeHost {
   #hub: RealtimeHub | undefined;
   #admin: SyncularAdmin | undefined;
   /** Live sessions, keyed by their socket. Empty after a hibernation wake;
-   * lazily rehydrated on the first message per socket (see the class doc). */
+   * rehydrated for every socket before the first serialized operation (see
+   * the class doc). */
   readonly #sessions = new Map<WebSocketLike, RealtimeSession>();
   /** Sockets whose rehydration `hello` must be swallowed (already greeted at
    * the real upgrade — rehydration is transparent to the client). */
   readonly #swallowHello = new Set<WebSocketLike>();
   readonly #closedSockets = new WeakSet<WebSocketLike>();
+  /** Accepted sockets whose upgrade is still building their session. */
+  readonly #upgrading = new WeakSet<WebSocketLike>();
+  /** Set once this instance rebuilt the sessions of hibernated sockets. */
+  #rehydrated = false;
   /** Explicit FIFO: Durable Object events may interleave at `await`. */
   #partitionTail: Promise<void> = Promise.resolve();
 
@@ -278,8 +300,11 @@ export class SyncularRealtimeHost {
     if (url.pathname === SYNC_DO_REQUEST_PATH) {
       return this.#serializePartition(() => this.#handleSync(request));
     }
+    if (url.pathname === OPERATIONS_DO_REQUEST_PATH) {
+      return this.#serializePartition(() => this.#handleOperation(request));
+    }
     if (url.pathname === REALTIME_DO_WAKE_PATH) {
-      return this.#handleWake(request);
+      return this.#serializePartition(() => this.#handleWake(request));
     }
     if (url.pathname === REALTIME_DO_UPGRADE_PATH) {
       return this.#handleUpgrade(request);
@@ -299,12 +324,86 @@ export class SyncularRealtimeHost {
   }
 
   #serializePartition<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.#partitionTail.then(operation, operation);
+    const run = async (): Promise<T> => {
+      await this.#rehydrateSockets();
+      return operation();
+    };
+    const result = this.#partitionTail.then(run, run);
     this.#partitionTail = result.then(
       () => undefined,
       () => undefined,
     );
     return result;
+  }
+
+  /**
+   * After a hibernation wake the session map is empty while sockets stay
+   * open. Rebuild every socket's session before the first serialized
+   * operation, so a commit fans out to sockets that stayed quiet through
+   * the hibernation. A socket whose session cannot be rebuilt is closed;
+   * its client reconnects and catches up (§8.4).
+   */
+  async #rehydrateSockets(): Promise<void> {
+    if (this.#rehydrated) return;
+    this.#rehydrated = true;
+    for (const ws of this.#state.getWebSockets()) {
+      if (this.#upgrading.has(ws)) continue;
+      try {
+        await this.#sessionFor(ws);
+      } catch (error) {
+        ws.close(1011, 'realtime rehydration failed');
+        this.#syncError(error, 'realtime');
+      }
+    }
+  }
+
+  /**
+   * Map a host failure to its catalog error. The reporters are read inside
+   * the callbacks so a failing accessor stays inside `adapterSyncError`.
+   */
+  #syncError(error: unknown, route: SyncularErrorRoute): SyncError {
+    return adapterSyncError(
+      error,
+      (error, context) => this.#getHub().onError?.(error, context),
+      route,
+      (error, context) => this.#getHub().mapError?.(error, context),
+    );
+  }
+
+  async #handleOperation(request: Request): Promise<Response> {
+    const contentType = request.headers
+      .get('content-type')
+      ?.split(';')[0]
+      ?.trim();
+    if (contentType !== OPERATIONS_CONTENT_TYPE) {
+      const error = new SyncError('operation.invalid_request');
+      return Response.json(errorBody(error), { status: 415 });
+    }
+    const registry = this.#config.operations;
+    if (registry === undefined) {
+      const error = new SyncError('operation.unknown');
+      return Response.json(errorBody(error), { status: error.httpStatus });
+    }
+    const identity = readRequestIdentityHeaders(request);
+    if (identity === undefined) {
+      const error = new SyncError('sync.auth_required');
+      return Response.json(errorBody(error), { status: error.httpStatus });
+    }
+    try {
+      const bytes = new Uint8Array(await request.arrayBuffer());
+      const out = await handleRemoteOperation(
+        bytes,
+        this.#getHub().requestContextFor(identity),
+        registry,
+      );
+      return new Response(out.slice().buffer as ArrayBuffer, {
+        status: 200,
+        headers: { 'content-type': OPERATIONS_CONTENT_TYPE },
+      });
+    } catch (error) {
+      const sync = this.#syncError(error, 'operations');
+      return Response.json(errorBody(sync), { status: sync.httpStatus });
+    }
   }
 
   async #handleSync(request: Request): Promise<Response> {
@@ -335,12 +434,7 @@ export class SyncularRealtimeHost {
         headers: { 'content-type': SSP2_CONTENT_TYPE },
       });
     } catch (error) {
-      const sync = adapterSyncError(
-        error,
-        (error, context) => this.#getHub().onError?.(error, context),
-        'sync',
-        (error, context) => this.#getHub().mapError?.(error, context),
-      );
+      const sync = this.#syncError(error, 'sync');
       return Response.json(errorBody(sync), { status: sync.httpStatus });
     }
   }
@@ -411,20 +505,18 @@ export class SyncularRealtimeHost {
       clientId: identity.clientId,
     };
     server.serializeAttachment(attachment);
+    this.#upgrading.add(server);
     this.#state.acceptWebSocket(server);
     // Build the session now (first connect: hello IS delivered). Any failure
     // closes the socket loudly — never a half-open realtime connection.
     try {
       const session = await this.#connectSession(server, attachment, false);
       this.#sessions.set(server, session);
+      this.#upgrading.delete(server);
     } catch (error) {
+      this.#upgrading.delete(server);
       server.close(1011, 'realtime connect failed');
-      const sync = adapterSyncError(
-        error,
-        (error, context) => this.#getHub().onError?.(error, context),
-        'realtime',
-        (error, context) => this.#getHub().mapError?.(error, context),
-      );
+      const sync = this.#syncError(error, 'realtime');
       return Response.json(errorBody(sync), { status: sync.httpStatus });
     }
     // `webSocket` is a workerd-only ResponseInit field (the 101 upgrade

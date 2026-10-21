@@ -486,17 +486,29 @@ fn encode_tagged(value: &Value) -> Result<Value, RemoteClientError> {
     Ok(match value {
         Value::Null => json!({ "t": "null" }),
         Value::Bool(value) => json!({ "t": "boolean", "v": value }),
-        Value::Number(value) if value.is_i64() => {
-            json!({ "t": "integer", "v": value.to_string() })
-        }
-        Value::Number(value) if value.is_u64() => {
-            let integer = value.as_u64().expect("guarded above");
-            if integer > i64::MAX as u64 {
-                return Err(RemoteClientError::invalid(
-                    "remote operation integer exceeds signed 64-bit range",
-                ));
+        // A JSON value model has no integer type of its own, so an integer a JS
+        // number represents exactly encodes as a number (REMOTE.md §4). Only
+        // magnitudes a JS number cannot hold stay integers.
+        Value::Number(value) if value.is_i64() || value.is_u64() => {
+            let integer = value.as_i64().or_else(|| {
+                value
+                    .as_u64()
+                    .filter(|integer| *integer <= i64::MAX as u64)
+                    .map(|integer| integer as i64)
+            });
+            match integer {
+                Some(integer)
+                    if (-9_007_199_254_740_991..=9_007_199_254_740_991).contains(&integer) =>
+                {
+                    json!({ "t": "number", "v": integer })
+                }
+                Some(_) => json!({ "t": "integer", "v": value.to_string() }),
+                None => {
+                    return Err(RemoteClientError::invalid(
+                        "remote operation integer exceeds signed 64-bit range",
+                    ))
+                }
             }
-            json!({ "t": "integer", "v": value.to_string() })
         }
         Value::Number(value) => json!({ "t": "number", "v": value }),
         Value::String(value) => json!({ "t": "string", "v": value }),
@@ -987,6 +999,48 @@ mod tests {
         assert!(String::from_utf8(transport.requests[0].clone())
             .expect("utf8")
             .contains("\"t\":\"bytes\""));
+    }
+
+    #[test]
+    fn encodes_integers_inside_the_safe_range_as_numbers() {
+        let tagged = |value: Value| {
+            let bytes = encode_operation_value(&value).expect("encode");
+            serde_json::from_slice::<Value>(&bytes).expect("json")
+        };
+        assert_eq!(tagged(json!(3)), json!({ "t": "number", "v": 3 }));
+        assert_eq!(
+            tagged(json!(9_007_199_254_740_991_i64)),
+            json!({ "t": "number", "v": 9_007_199_254_740_991_i64 })
+        );
+        assert_eq!(
+            tagged(json!(-9_007_199_254_740_991_i64)),
+            json!({ "t": "number", "v": -9_007_199_254_740_991_i64 })
+        );
+        assert_eq!(
+            tagged(json!(9_007_199_254_740_992_i64)),
+            json!({ "t": "integer", "v": "9007199254740992" })
+        );
+        assert_eq!(
+            tagged(json!(-9_007_199_254_740_992_i64)),
+            json!({ "t": "integer", "v": "-9007199254740992" })
+        );
+        assert_eq!(
+            tagged(json!(i64::MAX)),
+            json!({ "t": "integer", "v": "9223372036854775807" })
+        );
+        assert_eq!(
+            tagged(json!({ "count": 3 })),
+            json!({ "t": "object", "v": [["count", { "t": "number", "v": 3 }]] })
+        );
+        assert!(encode_operation_value(&json!(u64::MAX)).is_err());
+        // Decoding is unchanged: both tags decode to the same host value.
+        assert_eq!(
+            decode_operation_value(
+                &serde_json::to_vec(&json!({ "t": "integer", "v": "3" })).expect("bytes")
+            )
+            .expect("decode"),
+            json!(3)
+        );
     }
 
     #[test]

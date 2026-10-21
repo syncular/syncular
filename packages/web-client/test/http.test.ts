@@ -609,3 +609,40 @@ test('a 404 body establishes blob absence only on the blob download endpoint', a
     });
   }
 });
+
+test('a JSON blob body without a url returns its bytes', async () => {
+  const inline = new TextEncoder().encode('{"note":"inline, no url"}');
+  const blobs = httpBlobTransport('/blobs', {
+    fetch: Object.assign(
+      async () =>
+        new Response(inline, {
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      { preconnect: fetch.preconnect },
+    ),
+  });
+  const response = await blobs.download('sha256:test');
+  expect(response.kind).toBe('bytes');
+  if (response.kind !== 'bytes') throw new Error('expected inline bytes');
+  expect(new TextDecoder().decode(response.bytes)).toBe(
+    '{"note":"inline, no url"}',
+  );
+});
+
+test('a presigned blob envelope still returns its url', async () => {
+  const blobs = httpBlobTransport('/blobs', {
+    fetch: Object.assign(
+      async () =>
+        Response.json({
+          url: 'https://cdn.test/blob?sig=1',
+          urlExpiresAtMs: 1_750_000_000_500,
+        }),
+      { preconnect: fetch.preconnect },
+    ),
+  });
+  expect(await blobs.download('sha256:test')).toEqual({
+    kind: 'url',
+    url: 'https://cdn.test/blob?sig=1',
+    urlExpiresAtMs: 1_750_000_000_500,
+  });
+});

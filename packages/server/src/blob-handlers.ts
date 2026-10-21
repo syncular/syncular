@@ -180,8 +180,7 @@ async function downloadBlob(
   // egress path — it only needs to know the object EXISTS (a HEAD/`has`), not
   // the bytes. Inline delivery loads the bytes; presigned delivery does not.
   const presignConfigured = ctx.blobSignedUrls !== undefined;
-  let entry: { record: { mediaType?: string }; bytes: Uint8Array } | undefined;
-  let mediaType: string | undefined;
+  let entry: { bytes: Uint8Array } | undefined;
   if (presignConfigured) {
     if (!(await store.has(ctx.partition, blobId))) {
       throw syncError('blob.not_found', 'unknown blob (§5.9.5)');
@@ -191,7 +190,6 @@ async function downloadBlob(
     if (entry === undefined) {
       throw syncError('blob.not_found', 'unknown blob (§5.9.5)');
     }
-    mediaType = entry.record.mediaType;
   }
 
   // §5.9.5 authorization: resolve once, then test referencing rows.
@@ -279,10 +277,12 @@ async function downloadBlob(
     // Unreachable: presign not configured ⇒ `entry` was loaded above.
     throw syncError('blob.not_found', 'blob bytes unavailable (§5.9.5)');
   }
+  // §5.9.5: inline bytes are always octet-stream. The stored media type
+  // would make a JSON blob indistinguishable from the signed-URL envelope.
   return {
     bytes,
     headers: {
-      'Content-Type': mediaType ?? 'application/octet-stream',
+      'Content-Type': 'application/octet-stream',
       ETag: `"${blobId}"`,
       'Cache-Control': 'private, max-age=0',
       Vary: 'Authorization, Accept-Encoding',

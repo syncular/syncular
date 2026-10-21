@@ -25,6 +25,7 @@ import {
   makeClient,
   makeServer,
   PARTITION,
+  responseGate,
   TASK_COLUMNS,
   tableRows,
   taskValues,
@@ -1327,6 +1328,57 @@ describe('sync loop discipline', () => {
     const first = a.client.sync();
     await expect(a.client.sync()).rejects.toBeInstanceOf(ClientSyncError);
     await first;
+  });
+
+  test('concurrent syncUntilIdle calls coalesce into one follow-up drive', async () => {
+    const server = makeServer();
+    const { client, db, faults, httpRounds } = await makeClient(server, {
+      clientId: 'idle-coalescing',
+      realtimePolicy: 'off',
+    });
+    try {
+      client.mutate([
+        { table: 'tasks', op: 'upsert', values: taskValues('first', 'p1') },
+      ]);
+      // Park the first drive mid-round so the later calls arrive while its
+      // push payload (and therefore its outbox snapshot) is frozen.
+      const gate = responseGate();
+      faults.holdResponseOnce = gate.fault;
+      const owner = client.syncUntilIdle();
+      await gate.held;
+      const secondId = client.mutate([
+        { table: 'tasks', op: 'upsert', values: taskValues('second', 'p1') },
+      ]);
+      const joinedA = client.syncUntilIdle();
+      const joinedB = client.syncUntilIdle();
+      // A different budget queues behind the shared follow-up instead of
+      // racing it into `sync() is already running`.
+      const budgeted = client.syncUntilIdle(3);
+      gate.release();
+      const owned = await owner;
+      // The owner round pushed the frozen snapshot, then saw the wake-up the
+      // mid-drive mutation raised and pushed that too.
+      expect(owned.pushed).toBe(2);
+      const afterOwner = httpRounds.count;
+      const [a, b] = await Promise.all([joinedA, joinedB]);
+      // Both joined callers cost exactly one round: they share one follow-up
+      // drive instead of queueing a drive each.
+      expect(a).toEqual(b);
+      expect(a.pushed).toBe(0);
+      expect(httpRounds.count).toBe(afterOwner + 1);
+      expect((await budgeted).pushed).toBe(0);
+      expect(httpRounds.count).toBe(afterOwner + 2);
+      expect(client.statusSnapshot().outbox).toBe(0);
+      expect(client.commitOutcome(secondId)?.status).toBe('applied');
+      expect(tableRows(db, 'tasks').map((row) => row.id)).toEqual([
+        'first',
+        'second',
+      ]);
+    } finally {
+      await client.close();
+      db.close();
+      server.storage.db.close();
+    }
   });
 });
 

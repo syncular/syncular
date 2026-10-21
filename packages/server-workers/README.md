@@ -37,47 +37,37 @@ writer fails closed before app-row mutation.
 
 ```ts
 // src/worker.ts
+import { D1ServerStorage, type SyncServerConfig } from '@syncular/server';
 import {
-  D1ServerStorage,
-  S3BlobStore,
-  S3SegmentStore,
-  s3PresignedBlobUrls,
-  s3PresignedUrls,
-  type SyncServerConfig,
-} from '@syncular/server';
-import { createWorkersFetchHandler } from '@syncular/server-workers';
+  createWorkersFetchHandler,
+  R2BlobStore,
+  R2SegmentStore,
+} from '@syncular/server-workers';
 import { schema } from './syncular.generated'; // typegen output
 
 interface Env {
   DB: D1Database; // wrangler.toml [[d1_databases]] binding = "DB"
+  BUCKET: R2Bucket; // wrangler.toml [[r2_buckets]] binding = "BUCKET"
   SYNC_COORDINATOR: DurableObjectNamespace<SyncularRealtimeDO>;
-  R2_ACCOUNT_ID: string;
-  R2_ACCESS_KEY_ID: string;
-  R2_SECRET_ACCESS_KEY: string;
   SYNC_JWT_SECRET: string;
 }
 
 function syncConfig(env: Env): SyncServerConfig {
-  const endpoint = `https://${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`;
-  const r2 = {
-    endpoint,
-    region: 'auto' as const,
-    accessKeyId: env.R2_ACCESS_KEY_ID,
-    secretAccessKey: env.R2_SECRET_ACCESS_KEY,
-  };
-  const segments = new S3SegmentStore({ ...r2, bucket: 'syncular-segments' });
-  // Durable attachment bytes (§5.9) in R2 — no TTL, no lifecycle rule; the
+  // Segment and blob bytes live in R2 through the binding: no S3
+  // credentials, no SigV4 signing. The stores run the same logic as the S3
+  // stores over a bucket binding, so `wrangler dev --local` works too.
+  const segments = new R2SegmentStore(env.BUCKET);
+  // Durable attachment bytes (§5.9) in R2: no TTL, no lifecycle rule; the
   // host schedules `sweepOrphanBlobs` for GC (see the server README runbook).
-  const blobs = new S3BlobStore({ ...r2, bucket: 'syncular-blobs' });
+  const blobs = new R2BlobStore(env.BUCKET);
   return {
     schema,
     storage: new D1ServerStorage(env.DB),
     segments,
     blobs,
-    // §5.4 delegated presign: R2 mints the segment URL directly.
-    signedUrls: s3PresignedUrls(segments, { ttlSeconds: 900 }),
-    // §5.9.5 delegated presign for blob downloads (issued post-authz).
-    blobSignedUrls: s3PresignedBlobUrls(blobs, { ttlSeconds: 900 }),
+    // No `signedUrls` / `blobSignedUrls`: a binding cannot presign, so the
+    // Worker serves the bytes inline through GET /segments/:id and
+    // GET /blobs/:id.
     resolveScopes: (args) => resolveScopes(args, env),
     // No `sqliteImageBuilder`: Workers has no SQLite engine, so bit-2
     // clients are served the rows lane (§5.3 support floor).
@@ -94,6 +84,21 @@ export default {
   }),
 };
 ```
+
+`R2SegmentStore` and `R2BlobStore` take the bucket binding (`R2BucketLike`,
+declared structurally in `src/r2-stores.ts`). They write the same object keys as
+`S3SegmentStore` and `S3BlobStore`, so one bucket serves both access paths: a Bun
+or Node host that holds R2 S3 credentials publishes through the S3 endpoint, and
+the Worker reads those objects through the binding. The keys are
+`{prefix}seg/sha256/{hex}` with its `rec/` and `find/` companions, and
+`{prefix}blob/{partition}/sha256/{hex}`.
+
+Segments and blobs are served inline on the binding path. `GET /segments/:id`
+streams the object without buffering it in the isolate, and `GET /blobs/:id`
+re-authorizes the referencing rows before it reads the bytes. Choose
+`S3SegmentStore` and `S3BlobStore` with `s3PresignedUrls` and
+`s3PresignedBlobUrls` when clients should download from R2 directly; that path
+needs the R2 endpoint plus an access key as secrets.
 
 `createWorkersFetchHandler(factory)` builds the Hono app once per request from
 the factory and delegates. Building per request keeps the handler stateless

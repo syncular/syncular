@@ -93,6 +93,16 @@ export const DEFAULT_LIMITS: ServerLimits = {
 /** Receives applied commits for realtime fanout (§8.2). */
 export interface RealtimeNotifier {
   notifyCommit(partition: string, commit: StoredCommit): void | Promise<void>;
+  /**
+   * A pull changed the client's persisted subscription list (§8.7). A hub
+   * re-registers that client's live sockets, so a client that runs its
+   * rounds over HTTP while a socket is open receives deltas for the new
+   * subscriptions.
+   */
+  notifySubscriptions?(
+    partition: string,
+    clientId: string,
+  ): void | Promise<void>;
 }
 
 export interface SyncServerConfig {

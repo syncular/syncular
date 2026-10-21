@@ -3,8 +3,8 @@ import type { SecurityLifecycle } from './client';
 import type { SyncIntent } from './invalidation';
 
 export interface SyncSchedulerClient {
-  readonly syncNeeded: boolean;
-  readonly securityLifecycle: SecurityLifecycle;
+  statusSnapshot(): { readonly syncNeeded: boolean };
+  securityLifecycle(): SecurityLifecycle;
   syncUntilIdle(maxRounds?: number): Promise<unknown>;
   onSyncNeeded(
     listener: (reason: 'startup' | 'hello' | WakeReason) => void,
@@ -79,7 +79,7 @@ export function installSyncScheduler(
 
   const run = (): void => {
     if (stopped || running) return;
-    if (client.securityLifecycle === 'preflight') {
+    if (client.securityLifecycle() === 'preflight') {
       immediatePending = false;
       return;
     }
@@ -144,7 +144,10 @@ export function installSyncScheduler(
     consume({ kind: 'interactive' });
   });
   const unsubscribeIntent = client.onSyncIntent(consume);
-  if (client.syncNeeded && client.securityLifecycle === 'active') {
+  if (
+    client.statusSnapshot().syncNeeded &&
+    client.securityLifecycle() === 'active'
+  ) {
     consume({ kind: 'interactive' });
   }
 

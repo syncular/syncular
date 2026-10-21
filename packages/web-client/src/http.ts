@@ -355,38 +355,35 @@ export function httpBlobTransport(
                 ? 'sync.auth_required'
                 : 'sync.transport_failed',
         );
-      // §5.9.5 always-issue: a JSON body with `url` means presigned delivery;
-      // an octet-stream body is inline bytes.
+      // §5.9.5 always-issue: a JSON body with a `url` means presigned delivery;
+      // any other body is inline bytes. The body is read exactly once as bytes,
+      // so an inline blob stored as `application/json` stays readable.
       const contentType = response.headers.get('content-type') ?? '';
-      if (contentType.includes('application/json')) {
-        const body = (await transfer(
+      const bytes = new Uint8Array(
+        await transfer(
           'blob download body read failed',
-          () => response.json(),
+          () => response.arrayBuffer(),
           response.status,
-        )) as {
-          url?: string;
-          urlExpiresAtMs?: number;
-        };
-        if (typeof body.url === 'string') {
+        ),
+      );
+      if (contentType.includes('application/json')) {
+        let envelope: { url?: unknown; urlExpiresAtMs?: unknown } | null = null;
+        try {
+          envelope = JSON.parse(new TextDecoder().decode(bytes));
+        } catch {
+          // Not JSON: inline bytes.
+        }
+        if (typeof envelope?.url === 'string') {
           return {
             kind: 'url',
-            url: body.url,
-            ...(typeof body.urlExpiresAtMs === 'number'
-              ? { urlExpiresAtMs: body.urlExpiresAtMs }
+            url: envelope.url,
+            ...(typeof envelope.urlExpiresAtMs === 'number'
+              ? { urlExpiresAtMs: envelope.urlExpiresAtMs }
               : {}),
           };
         }
       }
-      return {
-        kind: 'bytes',
-        bytes: new Uint8Array(
-          await transfer(
-            'blob download body read failed',
-            () => response.arrayBuffer(),
-            response.status,
-          ),
-        ),
-      };
+      return { kind: 'bytes', bytes };
     },
     // §5.9.5: bare GET of the signed URL — no host auth (the URL is the grant).
     fetchUrl: async (url) => {

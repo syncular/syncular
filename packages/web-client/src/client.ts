@@ -894,6 +894,17 @@ export class SyncClient {
    */
   #syncOutstanding = false;
   /**
+   * Idle drives run one after another (§8.4): `#syncIdleTail` settles when
+   * the last scheduled drive settles, and `#syncIdlePending` holds the
+   * scheduled drives that have not started, keyed by round budget, so a
+   * caller joins a waiting drive with its budget instead of queueing another.
+   */
+  #syncIdleTail: Promise<void> | undefined;
+  readonly #syncIdlePending = new Map<
+    number | undefined,
+    Promise<SyncIdleResult>
+  >();
+  /**
    * Bumped by every local projection reset (`rebootstrapLocalData`). A sync
    * round captures this epoch together with its subscription state; a
    * mismatch at SUB_END means a reset landed while the round was in flight,
@@ -2903,7 +2914,11 @@ export class SyncClient {
           'subscription id already names different table, scopes, or params',
         );
       }
-      return;
+      // §3.3: a revoked registration keeps its id and intent but no progress.
+      // Subscribing again with the same intent re-arms it, so the next pull
+      // resolves its scopes from scratch. A `failed` registration is a
+      // configuration error and stays put.
+      if (existing.status !== 'revoked') return;
     }
     saveSubscription(
       this.#db,
@@ -4227,6 +4242,14 @@ export class SyncClient {
   /**
    * Pull repeatedly until quiescent: no commits delivered, no bootstrap
    * pages pending, no resets to recover (§4.5 "pull again" SHOULD).
+   *
+   * §8.4: every host trigger drives this same client — the scheduler, the
+   * realtime supervisor's connect-time catch-up, and app code — so a call
+   * that arrives while a drive is in flight waits for that drive and then
+   * runs one follow-up drive. The follow-up is required, not defensive: the
+   * caller may have mutated the outbox after the in-flight drive captured it.
+   * Callers that arrive during the same drive with the same budget share that
+   * single follow-up. `sync()` keeps rejecting a concurrent `sync()`.
    */
   async syncUntilIdle(maxRounds?: number): Promise<SyncIdleResult> {
     // §7.7: an explicit budget is a strict positive round count. Zero,
@@ -4236,6 +4259,34 @@ export class SyncClient {
       (!Number.isInteger(maxRounds) || maxRounds < 1 || maxRounds > 0xffffffff)
     )
       throw invalidRequest('maxRounds must be a positive integer');
+    const pending = this.#syncIdlePending.get(maxRounds);
+    if (pending !== undefined) return pending;
+    const previous = this.#syncIdleTail;
+    let drive: Promise<SyncIdleResult>;
+    if (previous === undefined) {
+      drive = this.#syncIdleRounds(maxRounds);
+    } else {
+      drive = previous.then(() => {
+        this.#syncIdlePending.delete(maxRounds);
+        return this.#syncIdleRounds(maxRounds);
+      });
+      this.#syncIdlePending.set(maxRounds, drive);
+    }
+    const tail = drive.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.#syncIdleTail = tail;
+    void tail.then(() => {
+      if (this.#syncIdleTail === tail) this.#syncIdleTail = undefined;
+    });
+    return drive;
+  }
+
+  /** The rounds loop of one idle drive; `syncUntilIdle` owns coalescing. */
+  async #syncIdleRounds(
+    maxRounds: number | undefined,
+  ): Promise<SyncIdleResult> {
     const budget = maxRounds ?? 20;
     const aggregate = {
       pushed: 0,

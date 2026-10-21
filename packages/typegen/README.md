@@ -262,7 +262,8 @@ duplicate ordinals are errors). The parser accepts exactly:
 - column-def: `name TYPE [PRIMARY KEY] [NOT NULL] [NULL] [DEFAULT literal] [REFERENCES parent(pk) [ON DELETE RESTRICT | CASCADE | SET NULL]]`
 - `--` line comments and `/* … */` block comments
 
-Type map (case-insensitive) to the six §2.4 types:
+Type map (case-insensitive) to the six §2.4 types plus the two semantic
+types:
 
 | SQL keyword | IR type |
 |---|---|
@@ -272,6 +273,8 @@ Type map (case-insensitive) to the six §2.4 types:
 | `BOOLEAN`, `BOOL` | `boolean` |
 | `JSON`, `JSONB` | `json` |
 | `BLOB`, `BYTEA` | `bytes` |
+| `BLOB_REF`, `BLOBREF` | `blob_ref`: a nullable blob reference string holding the canonical BlobRef document (§5.9) |
+| `CRDT` | `crdt`: opaque server-merged CRDT bytes, `crdtType` defaults to `yjs-doc` (§5.10) |
 
 Nullability: `NOT NULL` (or being the primary key) → non-nullable;
 otherwise nullable. Exactly one single-column primary key per table,

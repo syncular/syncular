@@ -73,6 +73,15 @@ Outside React, call the client directly. Each method returns a promise:
 journal: `commitOutcome`, `commitOutcomes`, and `resolveCommitOutcome` survive
 process restarts, and `useCommitOutcomes()` observes the journal.
 
+## Blobs
+
+`uploadBlob(bytes, { mediaType?, name? })` returns the canonical BlobRef string
+to store in a `blob_ref` column, and `fetchBlob(ref)` accepts that string or a
+bare `blobId` and returns `{ blobId, byteLength, bytes, mediaType? }`. Bytes
+cross the bridge as `{$bytes: hex}`. The native core owns the upload queue, the
+local cache, and content-address verification. Write the referencing row after
+`uploadBlob` resolves. See [Blobs](/concepts-blobs/).
+
 ## Collaborative text
 
 The client exposes native CRDT text as typed methods: `crdtText`,

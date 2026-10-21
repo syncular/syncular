@@ -60,9 +60,20 @@ fourth.
 ::::step{title="Write the first migration" time="2 min"}
 Create `migrations/0001_initial/up.sql`. Typegen parses a strict SQL subset:
 `CREATE TABLE`, `ALTER TABLE ADD COLUMN`, `CREATE INDEX`, `DROP INDEX`, and
-`DROP TABLE`, with the supported column types and one single-column primary
-key per table. It reads only the head table shape. Your host runs the
-migration SQL; the server manages its own internal tables.
+`DROP TABLE`, with one single-column primary key per table. It reads only the
+head table shape. Your host runs the migration SQL; the server manages its own
+internal tables. Column types map case-insensitively:
+
+| SQL keyword | Column type |
+|---|---|
+| `TEXT` | `string` |
+| `INTEGER`, `INT`, `BIGINT`, `SMALLINT` | `integer` |
+| `REAL`, `FLOAT`, `DOUBLE` | `float` |
+| `BOOLEAN`, `BOOL` | `boolean` |
+| `JSON`, `JSONB` | `json` |
+| `BLOB`, `BYTEA` | `bytes` |
+| `BLOB_REF`, `BLOBREF` | `blob_ref`: a nullable blob reference string holding the canonical BlobRef document ([Blobs](/concepts-blobs/)) |
+| `CRDT` | `crdt`: opaque server-merged CRDT bytes ([CRDT](/concepts-crdt/)) |
 
 ```sql title="migrations/0001_initial/up.sql"
 CREATE TABLE todos (

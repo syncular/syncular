@@ -485,6 +485,36 @@ describe('delta delivery (§8.2)', () => {
     }
   });
 
+  test('an HTTP pull that adds a subscription re-registers the live socket', async () => {
+    const t = makeContext();
+    const hub = makeHub(t);
+    const wire = makeWire();
+    const session = await hub.connect({
+      partition: 'part-1',
+      actorId: 'actor-1',
+      clientId: 'client-1',
+      send: wire.send,
+    });
+    await sync(t, [
+      pullHeader(),
+      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
+    ]);
+    session.handleMessage(JSON.stringify({ type: 'ack', cursor: 0 }));
+    await sync(
+      t,
+      [pushCommit('c1', [upsert('tasks', 't1', taskRow('t1', 'p1'))])],
+      { clientId: 'client-2' },
+    );
+    expect(wire.binaries).toHaveLength(1);
+    const delta = decodeMessage(
+      (wire.binaries[0] ?? new Uint8Array()).subarray(1),
+    );
+    const start = delta.frames.find(
+      (f): f is SubStartFrame => f.type === 'SUB_START',
+    );
+    expect(start?.id).toBe('s1');
+  });
+
   test('closed sessions receive nothing', async () => {
     const t = makeContext();
     const hub = makeHub(t);

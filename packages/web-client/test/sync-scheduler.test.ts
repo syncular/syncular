@@ -6,16 +6,31 @@ import {
   type SyncSchedulerClient,
 } from '@syncular/client';
 import type { WakeReason } from '@syncular/core';
+import {
+  makeClient,
+  makeServer,
+  tableRows,
+  taskValues,
+  waitFor,
+} from './helpers';
 
 class FakeSchedulerClient implements SyncSchedulerClient {
   syncNeeded = false;
-  securityLifecycle: SecurityLifecycle = 'active';
+  lifecycle: SecurityLifecycle = 'active';
   readonly needed = new Set<
     (reason: 'startup' | 'hello' | WakeReason) => void
   >();
   readonly intents = new Set<(intent: SyncIntent) => void>();
   runs = 0;
   run: () => Promise<unknown> = async () => undefined;
+
+  statusSnapshot(): { readonly syncNeeded: boolean } {
+    return { syncNeeded: this.syncNeeded };
+  }
+
+  securityLifecycle(): SecurityLifecycle {
+    return this.lifecycle;
+  }
 
   syncUntilIdle(): Promise<unknown> {
     this.runs += 1;
@@ -155,4 +170,45 @@ test('budget exhaustion schedules another batch without an external wake', async
   scheduler.stop();
   await flushPromises();
   expect(queued).toHaveLength(0);
+});
+
+test('installs on a real SyncClient and runs the startup catch-up round', async () => {
+  const server = makeServer();
+  const { client, db } = await makeClient(server, {
+    clientId: 'scheduler-startup',
+  });
+  try {
+    client.mutate([
+      { table: 'tasks', op: 'upsert', values: taskValues('scheduled', 'p1') },
+    ]);
+    expect(client.statusSnapshot().syncNeeded).toBe(true);
+    const queued: Array<() => void> = [];
+    // No `SyncSchedulerClient` cast: the real client satisfies the interface.
+    const scheduler = installSyncScheduler(client, {
+      queueMicrotask: (callback) => queued.push(callback),
+    });
+    try {
+      // Install-time catch-up: queued work is the startup wake-up.
+      expect(queued).toHaveLength(1);
+      expect(client.statusSnapshot().outbox).toBe(1);
+      queued.shift()?.();
+      await waitFor(
+        () =>
+          client.statusSnapshot().syncNeeded === false &&
+          client.statusSnapshot().outbox === 0,
+        (notify) => client.onChange(notify),
+        'startup catch-up round',
+      );
+      // The round pushed the queued commit and cleared the wake-up.
+      expect(client.statusSnapshot().syncNeeded).toBe(false);
+      expect(client.commitOutcomes()[0]?.status).toBe('applied');
+      expect(tableRows(db, 'tasks')).toHaveLength(1);
+    } finally {
+      scheduler.stop();
+    }
+  } finally {
+    await client.close();
+    db.close();
+    server.storage.db.close();
+  }
 });

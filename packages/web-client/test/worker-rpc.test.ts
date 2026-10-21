@@ -25,6 +25,7 @@ import {
   workerStartupError,
 } from '@syncular/client';
 import { decodeMessage } from '@syncular/core';
+import { handleSyncRequest } from '@syncular/server';
 import { hostBoolean } from '../../typegen/test/fixtures/basic/syncular.queries';
 import {
   CLIENT_SCHEMA,
@@ -1358,4 +1359,105 @@ test('worker auto-sync continues after exhausting its round budget', async () =>
     },
     'worker drains commits beyond its default round budget',
   );
+});
+
+test('wake-ups during a queued round share one follow-up drive', async () => {
+  const worker = new Worker(
+    new URL('./autosync-rounds-worker.ts', import.meta.url).href,
+  );
+  const rounds: Array<{ id: string; bytes: Uint8Array }> = [];
+  const synced: number[] = [];
+  let notify: () => void = () => {};
+  worker.addEventListener('message', (event) => {
+    const message = event.data as {
+      readonly t?: string;
+      readonly id?: string;
+      readonly bytes?: Uint8Array;
+    };
+    if (
+      message.t !== 'round' ||
+      message.id === undefined ||
+      message.bytes === undefined
+    )
+      return;
+    rounds.push({ id: message.id, bytes: message.bytes });
+    notify();
+    // The first round stays parked: the test answers it by hand.
+    if (rounds.length > 1) {
+      void handleSyncRequest(message.bytes, server.ctxFor('actor-1')).then(
+        (bytes) =>
+          worker.postMessage({ t: 'round-reply', id: message.id, bytes }),
+      );
+    }
+  });
+  const handle = await createSyncClientHandle({
+    worker: () => worker,
+    schema: CLIENT_SCHEMA,
+    database: { mode: 'custom' },
+    endpoints: { syncUrl: 'https://invalid.test/sync' },
+    autoSync: true,
+    multiTab: false,
+    realtimePolicy: 'off',
+    lockName: 'rpc-autosync-rounds',
+    onSynced: () => {
+      synced.push(rounds.length);
+      notify();
+    },
+  });
+  handles.push(handle);
+  try {
+    await handle.mutate([
+      { table: 'tasks', op: 'upsert', values: taskValues('held', 'p1') },
+    ]);
+    await waitFor(
+      () => rounds.length === 1,
+      (next) => {
+        notify = next;
+        return () => {
+          notify = () => {};
+        };
+      },
+      'first auto-sync round in flight',
+    );
+    // Local writes wake the host while the round is parked. Every one of them
+    // must coalesce into the same single follow-up drive.
+    for (let i = 0; i < 3; i++) {
+      await handle.mutate([
+        {
+          table: 'tasks',
+          op: 'upsert',
+          values: taskValues(`queued-${i}`, 'p1'),
+        },
+      ]);
+    }
+    const [parked] = rounds;
+    if (parked === undefined) throw new Error('no parked round');
+    worker.postMessage({
+      t: 'round-reply',
+      id: parked.id,
+      bytes: await handleSyncRequest(parked.bytes, server.ctxFor('actor-1')),
+    });
+    // `sync()` runs on the host's serialized queue, so it starts after every
+    // drive the wake-ups queued. One parked drive plus one follow-up drive.
+    await handle.sync();
+    expect(synced).toHaveLength(2);
+    expect(await handle.pendingCommits()).toHaveLength(0);
+    // A later independent wake-up still starts a drive of its own.
+    await handle.mutate([
+      { table: 'tasks', op: 'upsert', values: taskValues('later', 'p1') },
+    ]);
+    await waitFor(
+      () => synced.length === 3,
+      (next) => {
+        notify = next;
+        return () => {
+          notify = () => {};
+        };
+      },
+      'later independent drive',
+    );
+    expect(synced).toHaveLength(3);
+  } finally {
+    await handle.close();
+  }
 });

@@ -90,7 +90,8 @@ describe('handleBlobDownload authorization (§5.9.5)', () => {
 
     const result = await handleBlobDownload(baseCtx(storage, blobs), blobId);
     expect(result.bytes).toEqual(bytes);
-    expect(result.headers['Content-Type']).toBe('image/png');
+    // §5.9.5: inline bytes are octet-stream whatever the stored media type.
+    expect(result.headers['Content-Type']).toBe('application/octet-stream');
     // No presign configured ⇒ no url on the result.
     expect(result.url).toBeUndefined();
     expect(await storage.listPartitionRegistry()).toEqual([

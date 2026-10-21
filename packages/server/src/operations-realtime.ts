@@ -271,5 +271,12 @@ export function composeRealtimeNotifiers(
         notifiers.map((notifier) => notifier.notifyCommit(partition, commit)),
       );
     },
+    notifySubscriptions: async (partition, clientId) => {
+      await Promise.all(
+        notifiers.map((notifier) =>
+          notifier.notifySubscriptions?.(partition, clientId),
+        ),
+      );
+    },
   };
 }

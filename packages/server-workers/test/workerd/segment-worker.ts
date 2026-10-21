@@ -2,6 +2,8 @@
  * A Worker that serves Syncular's real segment route under workerd for
  * `segment-encoding.workerd.test.ts`. `POST /seed` stores one segment above
  * SEGMENT_STREAM_THRESHOLD_BYTES and answers its content address.
+ * `POST /r2` runs the R2 segment and blob stores over the workerd R2 binding
+ * and answers what it read back.
  */
 import {
   MemorySegmentStore,
@@ -14,6 +16,9 @@ import {
   type D1Database,
   D1ServerStorage,
   type ExecutionContextLike,
+  R2BlobStore,
+  type R2BucketLike,
+  R2SegmentStore,
 } from '../../src/index';
 
 const SCHEMA: ServerSchema = {
@@ -36,6 +41,68 @@ const segments = new MemorySegmentStore();
 
 interface Env {
   readonly DB: D1Database;
+  readonly BUCKET: R2BucketLike;
+}
+
+/**
+ * Two concurrent publications of identical bytes under two scopes exercise
+ * the create-only bytes write and the record compare-and-swap; two
+ * concurrent blob puts exercise the create-only blob write and the stats CAS.
+ */
+async function runR2Stores(bucket: R2BucketLike): Promise<Response> {
+  const store = new R2SegmentStore(bucket);
+  const bytes = new TextEncoder().encode('rows segment bytes');
+  const metadata = {
+    partition: PARTITION,
+    logEpoch: LOG_EPOCH,
+    table: 'tasks',
+    schemaVersion: 1,
+    mediaType: 'rows' as const,
+    asOfCommitSeq: 3,
+    rowCount: 1,
+    rowCursor: null,
+    nextRowCursor: null,
+  };
+  const now = Date.now();
+  const [first] = await Promise.all([
+    store.put(
+      { ...metadata, scopeDigest: await scopeDigest({ project_id: ['p1'] }) },
+      bytes,
+      now,
+    ),
+    store.put(
+      { ...metadata, scopeDigest: await scopeDigest({ project_id: ['p2'] }) },
+      bytes,
+      now,
+    ),
+  ]);
+  const stored = await store.get(first.segmentId);
+  const opened = await store.open(first.segmentId);
+  const openedText =
+    opened === undefined ? null : await new Response(opened.body).text();
+  const blobs = new R2BlobStore(bucket);
+  const blob = new TextEncoder().encode('{"inline":"json"}');
+  const blobId = `sha256:${[
+    ...new Uint8Array(await crypto.subtle.digest('SHA-256', blob)),
+  ]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('')}`;
+  await Promise.all([
+    blobs.put(PARTITION, blobId, blob, now, 'application/json'),
+    blobs.put(PARTITION, blobId, blob, now + 1, 'application/json'),
+  ]);
+  const storedBlob = await blobs.get(PARTITION, blobId);
+  return Response.json({
+    segmentText:
+      stored === undefined ? null : new TextDecoder().decode(stored.bytes),
+    scopeDigests: stored?.record.scopeDigests.length ?? 0,
+    openedText,
+    blobText:
+      storedBlob === undefined
+        ? null
+        : new TextDecoder().decode(storedBlob.bytes),
+    blobCount: (await blobs.stats(PARTITION)).count,
+  });
 }
 
 const handler = createWorkersFetchHandler<Env>((env) => ({
@@ -50,8 +117,9 @@ const handler = createWorkersFetchHandler<Env>((env) => ({
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContextLike) {
-    if (new URL(request.url).pathname !== '/seed')
-      return handler(request, env, ctx);
+    const pathname = new URL(request.url).pathname;
+    if (pathname === '/r2') return runR2Stores(env.BUCKET);
+    if (pathname !== '/seed') return handler(request, env, ctx);
     const storage = new D1ServerStorage(env.DB);
     await storage.migrate();
     await storage.touchPartition(PARTITION, 0, LOG_EPOCH);
