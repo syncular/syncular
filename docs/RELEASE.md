@@ -1,8 +1,103 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.32.1** (`v0.32.1`). All artifacts use Apache-2.0, except
+current release is **0.33.0** (`v0.33.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.33.0 release notes
+
+0.33.0 adds public API to the Workers adapter, the native bridges, and the
+Rust client's target list, so a patch number would hide the surface. SSP2
+stays at wire version 3, the server storage layout does not change, and
+every package and crate ships together.
+
+Cloudflare Workers:
+
+- `R2SegmentStore(env.BUCKET)` and `R2BlobStore(env.BUCKET)` (from
+  `@syncular/server-workers`) store segments and blobs over an R2 binding.
+  They use the key layout of `S3SegmentStore` and `S3BlobStore`, need no S3
+  credentials, and run under `wrangler dev --local`. They have no presign
+  methods; the sync route serves their objects inline. The S3 and R2 stores
+  share one bucket-generic implementation (`BucketSegmentStore`,
+  `BucketBlobStore` over the `ObjectBucket` seam).
+- Two concurrent uploads of one blob store it once and count it once in
+  `stats()` on S3 and R2. Each upload previously overwrote the object and
+  its first `createdAtMs` and bumped the counters.
+- `RealtimeDOConfig.operations` registers remote queries and commands on the
+  partition's Durable Object, and `createWorkersFetchHandler` forwards
+  `POST /operations` there whenever a `realtime` or `coordinator` namespace
+  is configured. A command applies on the partition FIFO and its commit
+  reaches the partition's sockets as a delta. Commands previously ran in the
+  Worker beside the FIFO. A Worker config that still passes `operations`
+  next to a namespace fails each `/operations` request with an error naming
+  `RealtimeDOConfig.operations`.
+- After a hibernation wake the Durable Object rebuilds the session of every
+  socket in `getWebSockets()` before its first serialized event. A socket
+  that stayed quiet through the hibernation had no session, received no
+  deltas, and fell back to its poll. The `/__syncular_realtime/wake` path
+  now runs on the partition FIFO.
+
+Server:
+
+- An HTTP pull that changes a client's persisted subscription list
+  re-registers that client's open sockets on the hub that served the pull
+  (SPEC §8.1). `RealtimeNotifier` gains the optional
+  `notifySubscriptions(partition, clientId)`, and
+  `composeRealtimeNotifiers` forwards it.
+- Inline blob downloads answer `Content-Type: application/octet-stream`
+  whatever media type the upload declared (SPEC §5.9.5). A blob stored as
+  `application/json` was indistinguishable from the signed-URL envelope.
+- `RealtimeHub.requestContextFor` builds the round context from the whole
+  hub config, so a config field cannot be dropped from socket and
+  hub-served HTTP rounds.
+
+Clients:
+
+- `subscribe` with the id and intent of a `revoked` subscription re-arms
+  it: cursor `-1`, no bootstrap state, no effective scopes, and a sync
+  request (SPEC §3.3). A `failed` subscription stays failed. Both cores
+  implement it; the conformance scenario
+  `scopes/re-subscribe-rearms-a-revoked-subscription` runs it on each.
+- Concurrent `syncUntilIdle()` calls on a direct `SyncClient` no longer
+  fail with `sync.invalid_request`. A call during a drive waits for it and
+  runs one follow-up drive that every caller arriving during the same drive
+  with the same budget shares (SPEC §8.4). `sync()` still rejects a
+  concurrent `sync()`.
+- `installSyncScheduler` is typed against `statusSnapshot()` and
+  `securityLifecycle()` and accepts a `SyncClient` without a cast; its
+  install-time catch-up runs.
+- The worker host keeps its auto-sync flag set until the queued round
+  starts, so a burst of subscription wake-ups queues one round.
+- The browser blob transport reads a download body once. An inline blob
+  served as JSON without a `url` returns its bytes instead of failing with
+  `Body already used`.
+- `@syncular/tauri` and the React Native bridge add `uploadBlob(bytes,
+  { mediaType?, name? })` and `fetchBlob(ref)`.
+
+Rust:
+
+- `syncular-client` builds for `wasm32-unknown-unknown`, with and without
+  `e2ee` and `crdt-yjs`. Wall-clock reads go through `Date.now()` on that
+  target, and the crate enables the JS backends of uuid and getrandom. A
+  transport `round_deadline` fails the round with `sync.invalid_request`
+  there, because the target has no `Instant`. CI checks the target.
+- The remote client encodes integers inside ±(2^53−1) as
+  `{"t":"number"}` and only larger magnitudes as `{"t":"integer"}`
+  (REMOTE.md §4), so a TypeScript command callback receives a number.
+
+`@syncular/server-hono` requires hono `^4.13.11` (GHSA-5r4p-p66f-jhc7), and the
+repository's Vite toolchain moves to 8.1.6 for the reported launch-editor and
+dev-server advisories. The repository lockfiles pin rustls-webpki 0.103.16 and
+webpki-roots 1.0.10 (RUSTSEC-2026-0382, RUSTSEC-2026-0381); applications that
+depend on the crates run `cargo update -p rustls-webpki -p webpki-roots`.
+
+**Upgrade notes.** Move a `RemoteOperationRegistry` from the Worker's
+`createWorkersFetchHandler` config to `RealtimeDOConfig.operations`. Code
+that relied on the stored media type in a blob download's `Content-Type`
+reads it from the `BLOB_REF` instead. The browser bundle caps rise to
+158,800 bytes for the client and 176,000 bytes for the worker. Upgrade all 12
+npm packages and 6 crates together and rebuild native applications. No schema bump, storage
+migration, or wire change is required.
 
 ## 0.32.1 release notes
 
