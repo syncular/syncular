@@ -1,8 +1,37 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.36.0** (`v0.36.0`). All artifacts use Apache-2.0, except
+current release is **0.37.0** (`v0.37.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.37.0 release notes
+
+0.37.0 adds public API on the Workers host, so a patch number would hide the
+surface. SSP2 stays at wire version 3, the server storage layout does not
+change, and every package and crate ships together; the Rust crates carry no
+code change.
+
+Server:
+
+- `SyncularRealtimeHost` runs an HTTP `/sync` round without `PUSH_COMMIT`
+  frames beside the partition FIFO, after socket rehydration. Such a round
+  writes only its own client record. Pushes, socket rounds, `/operations`,
+  wakes, admin actions, pruning, and erasure keep the FIFO. A deployment with
+  one partition for all accounts no longer queues every pull behind every
+  other round.
+- `SyncularRealtimeHost.serialized((contextFor) => work)` runs host work on
+  the partition FIFO, so a host's own commands and reaction drains need no
+  second queue. `contextFor({ partition, actorId })` returns the hub's sync
+  context; a commit made through it reaches the matching sockets as a delta,
+  where a wake would make every socket of the partition pull.
+- `@syncular/server-workers` lists `@syncular/core` as a runtime dependency.
+
+**Upgrade notes.** A host that wraps `host.fetch` for `/sync` in its own queue
+loses the concurrency; queue only its own work, through `host.serialized`.
+Never call `host.fetch` or `host.webSocketMessage` inside `serialized`: both
+enter the same FIFO and would wait for the work that awaits them.
+Upgrade all 12 npm packages and 6 crates together. No schema bump, storage
+migration, or wire change is required.
 
 ## 0.36.0 release notes
 
