@@ -690,7 +690,11 @@ if (import.meta.main) {
           request.method === 'GET' &&
           decodeURIComponent(url.pathname) === `/blobs/${interruptBlob}`
         ) {
-          const response = await hono.fetch(request);
+          // The fault server re-serves the plain bytes, so it asks the
+          // adapter for an identity body (the adapter compresses per §1.3).
+          const identity = new Request(request);
+          identity.headers.delete('accept-encoding');
+          const response = await hono.fetch(identity);
           const clientId = request.headers.get('x-bench-client-id');
           if (clientId)
             requests.push({
