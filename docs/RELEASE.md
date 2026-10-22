@@ -1,8 +1,48 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.35.0** (`v0.35.0`). All artifacts use Apache-2.0, except
+current release is **0.36.0** (`v0.36.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.36.0 release notes
+
+0.36.0 adds public API on the Workers host and both clients, so a patch number
+would hide the surface. SSP2 stays at wire version 3, no server schema bump is
+required, and every package and crate ships together.
+
+Server:
+
+- `SyncularRealtimeHost` takes a storage in place of the D1 binding, such as
+  a `PostgresServerStorage` behind Hyperdrive. `RealtimeDOConfig<S>` and
+  `SyncularRealtimeHost<S>` carry the storage type, so `syncConfig` receives
+  that storage. A D1 binding still builds the coordinated
+  `D1ServerStorage` with `pushApplySerialized`. `RealtimeHostStorage` names
+  the accepted shape: a `ServerStorage` with `migrate()`.
+- `PostgresServerStorage` sends the commit-window reads (and latest scoped
+  change reads) of all subscriptions of a pull as one statement across
+  tables; the batch specs carry `tbl`. A quiet pull over 30 tables issued 39
+  statements and now issues 10. Snapshot pages keep one statement per table.
+- `PostgresServerStorage.migrate()` records a fingerprint of its core DDL as
+  the comment of `sync_schema_meta` and skips the DDL when the fingerprint
+  matches and every core table exists. `ensureSchema` reads the marker, the
+  incomplete checkpoints, and the catalog columns of every synced table in
+  one statement. A new storage instance on a ready database costs two
+  statements instead of 32 plus one per synced table. The first start after
+  the upgrade runs the DDL once and writes the fingerprint.
+
+Clients:
+
+- `SyncClient.subscribeMany(inputs)` (TypeScript, worker handle, Tauri and
+  React Native bridges) and `SyncClient::subscribe_many` (Rust, command
+  `subscribeMany`) register a list of subscriptions in one local transaction.
+  Each entry follows the `subscribe` rules; an error in any entry registers
+  none.
+
+**Upgrade notes.** Workers hosts on PostgreSQL drop any vendored copy of
+`SyncularRealtimeHost` and construct the packaged one with their storage.
+Hosts that register many subscriptions in a loop call `subscribeMany` /
+`subscribe_many` once. Upgrade all 12 npm packages and 6 crates together. No
+schema bump, storage migration, or wire change is required.
 
 ## 0.35.0 release notes
 
