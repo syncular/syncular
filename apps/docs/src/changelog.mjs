@@ -17,6 +17,12 @@
 export const changelog = [
   {
     date: '2026-10-22',
+    title: "Do's and Don'ts: pitfalls from real integrations",
+    body: 'A new reference page lists the rules integrators broke in real deployments, grouped by area: transport and rounds, subscriptions, scopes, writes, schema bumps, blobs, Workers hosting with Hyperdrive and Neon, service workers, and upgrades. Each entry gives the failure, the measured cost where one exists, the release that fixed a cause, and the page that owns the rule. Entries whose cause has no fix yet carry an **Open** mark.',
+    links: [{ href: '/pitfalls/', label: "Do's and Don'ts" }],
+  },
+  {
+    date: '2026-10-22',
     title: 'The Postgres fanout recovers from a dropped listener',
     body: 'Postgres delivers a notification only to sessions listening when it commits, and `PostgresFanout` had no signal for a listener that dropped and reconnected, so sessions on that instance missed every cross-instance commit of the gap. `PgNotificationConnection.listen` now takes an `onListen` callback that the driver calls each time LISTEN takes effect; every call after the first wakes all local sessions with `catchup-required` through the new `RealtimeHub.wakeAll`. Bun.sql and postgres.js call it on reconnect. The storage reference now covers Neon: the fanout needs the direct connection string, and its listener keeps a scale-to-zero compute from staying suspended.',
     links: [

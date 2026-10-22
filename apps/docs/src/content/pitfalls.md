@@ -17,7 +17,7 @@ The page grows from integrator feedback. Add an entry once the failure is unders
 
 ### Don't run a round on a blocking transport while the UI has events pending
 
-A transport that blocks its thread for the whole request freezes everything else on that thread. The Rust client's `Transport` is synchronous, and a browser host answers it with a synchronous `XMLHttpRequest` in a worker. While a round is on the wire the worker handles no events, so a screen's first events queue behind the round. In one app, a reload with a fully populated replica showed its first screen after 0.97 to 1.69 s (4.2 s with `/sync` delayed by 3 s), against 0.2 s when no round was in the way. With a large replica and a slow link the wait grows to the length of a round.
+A transport that blocks its thread for the whole request freezes everything else on that thread. The Rust client's `Transport` is synchronous, and a host that answers it with a blocking request on the thread that also serves the UI handles no events while a round is on the wire. In one app (a Rust core in a browser worker), a reload with a fully populated replica showed its first screen after 0.97 to 1.69 s (4.2 s with `/sync` delayed by 3 s), against 0.2 s when no round was in the way. With a large replica and a slow link the wait grows to the length of a round.
 
 Hold the first round until the UI has been quiet for a short interval (200 ms, capped at 1.5 s, worked), and keep rounds short with few subscriptions (see [below](#dont-subscribe-every-table-of-every-scope-up-front)). A transport that yields between request and response removes the cause. **Open:** the `Transport` trait has no asynchronous form.
 
@@ -31,15 +31,9 @@ Check `report.schema_floor` on every outcome and surface it as a blocked state w
 
 See [Schema upgrades](/concepts-schema-upgrades/#what-triggers-the-reset).
 
-### Don't add subscriptions over HTTP while a live socket is connected
-
-The server reads a connection's registrations when the socket connects and replaces them at the end of every round that runs on that socket. A round over `POST /sync` persists the new list but leaves the live socket registered for the old one, so the new subscription gets no deltas until the next reconnect or socket round. Run rounds over the socket once it is connected, and reconnect after an HTTP round that added subscriptions.
-
-See [SPEC §8.7](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#87-sync-rounds-over-the-socket).
-
 ### Don't let a wake-up trigger a full pull when a one-request round is enough
 
-Every wake-up tells the client to pull. A user write that makes the server commit twice in a row delivers the first commit as a delta and the second as a `catchup-required` wake-up, and `sync_until_idle` then spends a further request confirming idle. On a blocking transport that is about 0.8 s during which the next frame waits. Run one request per wake-up (`max_rounds = 1`) and continue only when the pull reports more work. **Open** for the wake-after-own-write case.
+A wake-up carries no data and tells the client to pull, and `sync_until_idle` ends only after a round that finds nothing to do. In one app a user write made the server commit twice in a row: the first commit arrived as a delta, the second as a `catchup-required` wake-up, and the confirming round added about 0.8 s on a blocking transport, during which the next frame waited. `sync_until_idle` takes `max_rounds`; pass `Some(1)` for a wake-up and continue only when the report shows more work.
 
 See [Realtime & the WebSocket-native loop](/concepts-realtime/#deltas-and-wake-ups).
 
@@ -49,7 +43,7 @@ See [Realtime & the WebSocket-native loop](/concepts-realtime/#deltas-and-wake-u
 
 SPEC §4.1 requires a steady-state pull to carry the client's complete subscription list, and a subscription covers one table. One scope unit (a campaign, a workspace, a project) therefore costs one subscription per table it has rows in, in every round, whether or not anything changed.
 
-Measured on a dev API: 223 subscriptions per round for an account with 6 campaigns and 7 rulesets, 33.8 KB in the request (3.0 KB gzipped) and 32 KB decoded in the answer, about 150 bytes each way per subscription. Server time grew about 0.4 ms per subscription. An app with 40 tables and 6 campaigns reached 160 to 300 subscriptions, and an earlier schema reached roughly 400 with 38 to 59 KB each way. A wake-up that brings one row costs the same as a confirming round.
+Measured in one app on a dev API: 223 subscriptions per round for an account with 6 campaigns and 7 rulesets, 33.8 KB in the request (3.0 KB gzipped) and 32 KB decoded in the answer, about 150 bytes each way per subscription. Server time grew about 0.4 ms per subscription. An app with 40 tables and 6 campaigns reached 160 to 300 subscriptions, and an earlier schema reached roughly 400 with 38 to 59 KB each way. A wake-up that brings one row costs the same as a confirming round.
 
 Subscribe lazily. Open a unit's subscriptions when its screen or campaign is open, close them when it is not, and leave out tables no screen reads. A [window](/concepts-windowing/) manages one subscription per unit and turns a change of the set into including or omitting ids. **Open:** the protocol has no multi-table subscription, no subset pull, and no registration by reference, so the list stays proportional to tables times open units.
 
@@ -115,9 +109,9 @@ See [SPEC §8.7](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#87-
 
 ### Don't make `resolveScopes` a chain of queries
 
-The server resolves scopes on every request, every socket connect, and every registration refresh. One app ran 5 to 8 queries one after another in its resolver. Behind Hyperdrive each query is a network round trip (8 to 10 ms from a Durable Object in one region to Neon), so the resolver set the floor for every round. Fold the lookups into one statement that returns one array per scope variable. The same holds for `authenticate`.
+The server resolves scopes once per request, on every socket connect, and on every registration refresh (SPEC §3.2). One app ran 5 to 8 queries one after another in its resolver. Behind Hyperdrive each query is a network round trip (8 to 10 ms from a Durable Object in one region to Neon), so the resolver set the floor for every round. Fold the lookups into one statement that returns one array per scope variable. The same holds for `authenticate`.
 
-See [Scopes & authorization](/concepts-scopes/).
+See [Scopes & authorization](/concepts-scopes/) and [SPEC §3.2](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#32-requested-allowed-effective).
 
 ## Writes and the outbox
 
@@ -137,7 +131,7 @@ See [SPEC §6.7](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#67-
 
 ### Don't match errors by message text
 
-Errors carry stable codes, and the HTTP transport types its failures. `sync.transport_failed` carries `details.causeKind` (`network`, `timeout`). A host that matched `/Failed to fetch|ECONNREFUSED/` fell through to its generic error after 0.33.0 changed the wording. Read `code` and `details`.
+Errors carry stable codes, and the HTTP transport types its failures. `sync.transport_failed` carries `details.causeKind` (`network`, `timeout`). A host that matched `/Failed to fetch|ECONNREFUSED/` fell through to its generic error when the wording changed. Read `code` and `details`.
 
 See [Troubleshooting](/troubleshooting/#error-code-index).
 
@@ -195,7 +189,7 @@ See [Blobs](/concepts-blobs/) and [SPEC §5.9.6](https://github.com/syncular/syn
 
 ### Do size the inline segment limit for your row size
 
-`inlineSegmentMaxBytes` defaults to 256 KiB. A page of 1000 rows of a log table can weigh 0.4 to 1.1 MB, and every such page becomes a `SEGMENT_REF` with its own object-store put on the server and its own download on the client: 245 to 340 ms per page, 1.4 s for four pages on staging. Since 0.39.0 both clients overlap the downloads of one response (a blocking browser transport cannot overlap them). **Open:** the server still puts segments one after the other. An app that raised the inline limit to 2 MiB had no segments in a cold start, at the cost of larger responses, which compression offsets (rows segments compress 6 to 8 times).
+`inlineSegmentMaxBytes` defaults to 256 KiB. A page of 1000 rows of a log table can weigh 0.4 to 1.1 MB, and every such page becomes a `SEGMENT_REF` with its own object-store put on the server and its own download on the client: 245 to 340 ms per page, 1.4 s for four pages on staging. Since 0.39.0 the TypeScript client issues every download of a response before it applies the first page, and the Rust `HostTransport` runs four at a time; a custom `Transport` that keeps the default `download_segments` fetches them in order. An app that raised the inline limit to 2 MiB had no segments in a cold start, at the cost of larger responses, which compression offsets (an app measured 6 to 8 times on rows segments).
 
 See [Bootstrap & segments](/concepts-bootstrap/).
 
@@ -203,7 +197,7 @@ See [Bootstrap & segments](/concepts-bootstrap/).
 
 ### Do disable query caching on the Hyperdrive binding that Syncular reads
 
-Hyperdrive caches SELECT results by default and a write does not invalidate them. The default cache can serve an older result for 60 s plus a 15 s revalidation window. A cached commit maximum below an accepted sequence fails with `sync.storage_stale_read` (the push stays committed). Pass a cache-disabled binding to `PostgresServerStorage`, `authenticate`, and scope resolution. Point the binding at the direct database hostname, because Hyperdrive pools connections itself.
+Hyperdrive caches SELECT results by default and a write does not invalidate them. The default cache can serve an older result for 60 s plus a 15 s revalidation window. A cached commit maximum below an accepted sequence fails with `sync.storage_stale_read` (the push stays committed). Pass a cache-disabled binding to `PostgresServerStorage`, `authenticate`, and scope resolution. Point the binding at the direct database hostname (for Neon, the one without `-pooler`), because Hyperdrive pools connections itself; both [Neon](https://neon.com/docs/guides/cloudflare-workers) and [Cloudflare](https://developers.cloudflare.com/hyperdrive/examples/connect-to-postgres/neon) tell you to clear the pooled option.
 
 See [Read freshness](/server-storage-reference/#read-freshness) and [PostgreSQL behind Hyperdrive](/server-workers/#postgresql-behind-hyperdrive).
 
@@ -221,7 +215,7 @@ See [Multi-instance fanout](/server-storage-reference/#multi-instance-fanout).
 
 ### Don't commit outside the hub context
 
-A commit made through `contextFor({ partition, actorId })` reaches the matching sockets as a delta. A commit made without it needs a wake-up, and a wake-up makes every socket of the partition pull. In one analysis of an app with about 400 subscriptions per account, each server-written history commit woke every online client, at about 15 statements and 50 KB each way per client. Run server-side commits, reaction drains, and imports through `host.serialized((contextFor) => ...)`. Available since 0.37.0.
+A commit made through `contextFor({ partition, actorId })` reaches the matching sockets as a delta. A commit made without it needs a wake-up, and a wake-up makes every socket of the partition pull. In one app with about 400 subscriptions per account, each server-written history commit woke every online client, and the app estimated the pull at about 15 statements and 50 KB each way per client. Run server-side commits, reaction drains, and imports through `host.serialized((contextFor) => ...)`. Available since 0.37.0.
 
 See [Add the Durable Object](/server-workers/#add-the-durable-object).
 
@@ -253,17 +247,13 @@ See [Storage reference](/server-storage-reference/#postgres).
 
 ### Don't cache private responses in a service worker or CDN
 
-Blob downloads answer `Cache-Control: private, max-age=0` with `Vary: Authorization`, and a segment download authorizes per request. A cache keyed on the URL alone serves one user's authorized bytes to another, or serves bytes after a revocation. Keep `/sync`, `/realtime`, `/operations`, and `/blobs` out of the worker's cache. Segment bytes are content-addressed and cacheable by path, and the authorization decision is never cacheable.
+Blob and segment downloads answer `Cache-Control: private, max-age=0` with `Vary: Authorization`, and each authorizes per request. A cache keyed on the URL alone serves one user's authorized bytes to another, or serves bytes after a revocation. Keep `/sync`, `/operations`, `/blobs`, and segment downloads out of the worker's cache. Segment bytes are content-addressed and cacheable by path, and the authorization decision is never cacheable.
 
 See [Segment stores](/server-storage-reference/#segment-stores) and [SPEC §1.1](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#11-endpoints).
 
-### Do serve HTML network-first and keep the previous build's assets for one generation
-
-A tab that stays open runs the previous build and requests that build's hashed assets lazily. A worker that deletes the old cache at activation turns those requests into 404s or HTML, and the old tab fails mid-session with a module error instead of reaching its update prompt. Keep the previous build's caches for one generation, and fetch the HTML shell from the network first.
-
 ### Don't let an SPA fallback answer HTML for paths that are not pages
 
-A fallback that answers `index.html` for every unknown path hands HTML to clients that expect JavaScript, JSON, or an SSP2 envelope. `/sw.js` returning HTML means the browser never installs a service worker update. `/.well-known/*` returning HTML breaks OAuth discovery without an error. A missing hashed asset returning HTML fails the module import with a syntax error. Route the sync, auth, and OAuth paths to the server first, answer 404 for missing assets and well-known files, and apply the fallback to navigations only.
+A fallback that answers `index.html` for every unknown path hands HTML to clients that expect JavaScript, JSON, or an SSP2 envelope. `/sw.js` returning HTML means the browser never installs a service worker update. A missing hashed asset returning HTML fails the module import with a syntax error. Route the sync paths and your auth paths to the server first, answer 404 for missing assets and well-known files, and apply the fallback to navigations only.
 
 See [SPEC §1.1](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#11-endpoints): `/sync` requires `application/vnd.syncular.sync.v2` and answers other content types with HTTP 415.
 
@@ -271,13 +261,13 @@ See [SPEC §1.1](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#11-
 
 ### Do upgrade every `@syncular/*` package and `syncular-client` crate together
 
-Syncular publishes every package and crate in lockstep, and the two cores are locked against each other by conformance scenarios. Pin exact versions and move npm packages, crates, and the Tauri plugin in one change. Read the release notes for regressions: 0.39.0 made large PostgreSQL commits cost quadratic time in their row count, and 0.39.1 fixed it.
+Syncular publishes every package and crate in lockstep, and the two cores are locked against each other by conformance scenarios. Pin exact versions and move npm packages, crates, and the Tauri plugin in one change. Read the release notes for regressions: 0.39.0 made the row statement of a PostgreSQL commit grow with the square of its rows (3,000 rows took 1,588 ms, a 72,016-change commit 320 s), and 0.39.1 fixed it.
 
 See [Release process](https://github.com/syncular/syncular/blob/main/docs/RELEASE.md).
 
 ### Do remove host-side compression when you move to 0.39
 
-Since 0.39.0 the adapter negotiates zstd or gzip for `/sync`, `/operations`, segments, and blob downloads, and the Workers handler declares `Content-Encoding: gzip` for the Durable Object's answer so that workerd encodes it once. A host wrapper that adds its own `Content-Encoding` on top sends gzip inside gzip: the client removes one layer and reads gzip bytes as an SSP2 envelope. Before 0.39 a Workers cold start moved 3.0 MB that gzip reduces to 0.38 MB, so the wrapper had a reason to exist; delete it when you upgrade.
+Since 0.39.0 the adapter negotiates zstd or gzip for `/sync`, `/operations`, segments, and blob downloads, and the Workers handler declares `Content-Encoding: gzip` for the Durable Object's answer so that workerd encodes it once. A host wrapper that adds its own `Content-Encoding` on top sends gzip inside gzip. Before 0.39 the Workers handler left bodies uncompressed, so the wrapper had a reason to exist; delete it when you upgrade.
 
 See [Transport compression](/server-workers/#transport-compression) and [SPEC §1.3](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#13-transport-compression).
 
