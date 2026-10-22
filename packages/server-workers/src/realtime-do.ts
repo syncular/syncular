@@ -77,6 +77,9 @@ import {
   createRealtimeHub,
   D1ServerStorage,
   errorBody,
+  eraseScopeValue,
+  type EraseScopeValueOptions,
+  type EraseScopeValueResult,
   handleRemoteOperation,
   handleSyncRequest,
   pruneCommitLog,
@@ -323,6 +326,25 @@ export class SyncularRealtimeHost {
     return this.#serializePartition(async () => {
       await this.#storage.migrate();
       return pruneCommitLog({ ...options, storage: this.#storage });
+    });
+  }
+
+  /**
+   * §4.6.1 scope-value erasure on the partition FIFO: one budgeted step per
+   * call, its delete commit fanned out to connected sockets.
+   */
+  eraseScopeValue(
+    options: EraseScopeValueOptions,
+  ): Promise<EraseScopeValueResult> {
+    return this.#serializePartition(async () => {
+      await this.#storage.migrate();
+      return eraseScopeValue(
+        this.#getHub().requestContextFor({
+          partition: options.partition,
+          actorId: options.actorId ?? 'syncular.erase',
+        }),
+        options,
+      );
     });
   }
 

@@ -12,6 +12,7 @@ import { conflictScenarios } from './conflict';
 import { convergenceScenarios } from './convergence';
 import { crdtScenarios } from './crdt';
 import { encryptionScenarios } from './encryption';
+import { erasureScenarios } from './erasure';
 import { errorScenarios } from './errors';
 import { leaseScenarios } from './leases';
 import { lifecycleScenarios } from './lifecycle';
@@ -48,6 +49,7 @@ export const CATALOG: readonly Scenario[] = [
   ...crdtScenarios,
   ...encryptionScenarios,
   ...leaseScenarios,
+  ...erasureScenarios,
   ...lifecycleScenarios,
   ...schemaBumpScenarios,
   ...previousVersionScenarios,

@@ -18,6 +18,7 @@
 import type { PushOperationResult, ScopeMap } from '@syncular/core';
 import { matchesEffective } from './scopes';
 import type {
+  ScopeValueHistoryQuery,
   StoredChange,
   StoredCommit,
   StoredPushResult,
@@ -149,6 +150,48 @@ export function sqliteDdlStatements(): string[] {
   return SQLITE_DDL.split(';')
     .map((statement) => statement.trim())
     .filter((statement) => statement.length > 0);
+}
+
+/** §4.6.1: rowIds of one table bound to one scope value, budgeted. */
+export const LIST_SCOPE_VALUE_ROWS_SQLITE_SQL =
+  'SELECT row_id FROM sync_row_scopes WHERE partition=? AND tbl=? AND var=? AND value=? ORDER BY row_id LIMIT ?';
+
+/**
+ * §4.6.1 history scrub, bound by `eraseScopeValueHistoryParams`: upsert change
+ * records of the binding first, then the change scope entries whose commit
+ * no longer holds a change of the binding. Each returns one row per removed
+ * record (D1 batch results carry no reliable change count).
+ */
+export const ERASE_SCOPE_VALUE_HISTORY_SQLITE_SQL = [
+  `DELETE FROM sync_changes WHERE rowid IN (
+     SELECT c.rowid FROM sync_change_scopes s JOIN sync_changes c
+       ON c.partition=s.partition AND c.commit_seq=s.commit_seq AND c.tbl=s.tbl
+     WHERE s.partition=?1 AND s.tbl=?2 AND s.var=?3 AND s.value=?4
+       AND s.commit_seq<=?5 AND c.op=1 AND json_extract(c.scopes, ?6)=s.value
+     LIMIT ?7) RETURNING 1 AS removed`,
+  `DELETE FROM sync_change_scopes WHERE rowid IN (
+     SELECT s.rowid FROM sync_change_scopes s
+     WHERE s.partition=?1 AND s.tbl=?2 AND s.var=?3 AND s.value=?4
+       AND s.commit_seq<=?5 AND NOT EXISTS (
+         SELECT 1 FROM sync_changes c
+         WHERE c.partition=s.partition AND c.commit_seq=s.commit_seq
+           AND c.tbl=s.tbl AND json_extract(c.scopes, ?6)=s.value)
+     LIMIT ?7) RETURNING 1 AS removed`,
+] as const;
+
+export function eraseScopeValueHistoryParams(
+  partition: string,
+  query: ScopeValueHistoryQuery,
+): [string, string, string, string, number, string, number] {
+  return [
+    partition,
+    query.table,
+    query.variable,
+    query.value,
+    query.throughSeq,
+    `$.${JSON.stringify(query.variable)}`,
+    query.limit,
+  ];
 }
 
 /** `?,?,…` for an `IN (…)` clause of `count` positional parameters. */

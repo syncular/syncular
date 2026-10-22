@@ -958,6 +958,29 @@ export interface ServerStorage {
   listReferencedBlobIds?(partition: string): Promise<string[]>;
 
   /**
+   * §4.6.1 scope-value erasure — ADDITIVE, optional; `eraseScopeValue`
+   * requires both.
+   *
+   * `listScopeValueRows`: up to `limit` rowIds of `table` whose stored scope
+   * binds `variable` to `value`, ordered by rowId (the row scope index).
+   *
+   * `eraseScopeValueHistory`: under the partition write lock, removes up to
+   * `limit` upsert change records of `table` at or below `throughSeq` whose
+   * scopes bind `variable` to `value`, then up to `limit` change scope index
+   * entries of that binding whose commit holds no such change any more.
+   * Delete change records stay: clients behind the erasure still need them.
+   * Returns the number of records removed.
+   */
+  listScopeValueRows?(
+    partition: string,
+    query: ScopeValueQuery,
+  ): Promise<string[]>;
+  eraseScopeValueHistory?(
+    partition: string,
+    query: ScopeValueHistoryQuery,
+  ): Promise<number>;
+
+  /**
    * Admin/console read surface (`SyncularAdmin`): ADDITIVE,
    * optional. All read-only, partition-scoped, and JSON-able. A backend
    * that omits these simply cannot serve the console; the sync path never
@@ -1006,6 +1029,18 @@ export interface ServerStorage {
     clientCommitId: string,
   ): Promise<ClientPushResult[]>;
   listPartitions(): Promise<string[]>;
+}
+
+/** One scope binding of one table, budgeted (§4.6.1). */
+export interface ScopeValueQuery {
+  readonly table: string;
+  readonly variable: string;
+  readonly value: string;
+  readonly limit: number;
+}
+
+export interface ScopeValueHistoryQuery extends ScopeValueQuery {
+  readonly throughSeq: number;
 }
 
 /** A row referencing a blob, with the scopes needed to authorize download. */

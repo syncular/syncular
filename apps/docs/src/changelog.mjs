@@ -17,6 +17,23 @@
 export const changelog = [
   {
     date: '2026-10-22',
+    title: 'Erase a scope value',
+    body: '`eraseScopeValue(config, { partition, variable, value })` removes one scope binding in budgeted steps: rows leave through delete commits on the push path (clients drop them on their next pull, realtime sockets are woken, no older segment is reused), then the upsert change records and change-scope index entries of the binding leave the log, and blob bytes go with their last reference. It runs on SQLite, PostgreSQL, and D1; on Workers, `SyncularRealtimeHost.eraseScopeValue` runs it in the partition write queue. `BlobStore` gains a required `delete`. SPEC §4.6.1 and conformance scenario 23 pin it for the TypeScript and Rust clients.',
+    links: [
+      {
+        href: '/server-operations/#erasing-a-scope-value',
+        label: 'Operations and maintenance',
+      },
+    ],
+  },
+  {
+    date: '2026-10-22',
+    title: 'Inline blob downloads carry the stored media type',
+    body: 'An inline `GET /blobs/{blobId}` answered every blob as `application/octet-stream`, so an `<img>` behind `X-Content-Type-Options: nosniff` refused a picture. The route now answers with the media type the upload declared, adds `nosniff` and a sandbox CSP, and keeps `application/octet-stream` for untyped blobs and JSON types (a JSON body is reserved for the presigned-URL envelope). A re-upload that declares a media type records it on a blob stored without one, on every blob store including R2.',
+    links: [{ href: '/concepts-blobs/#media-type', label: 'Blobs' }],
+  },
+  {
+    date: '2026-10-22',
     title: 'The Rust client commits a response once',
     body: 'The Rust client applied every COMMIT frame and segment block of a pull response in its own transaction, so a response with 70 one-row sections committed 70 times, about 5 ms each on sqlite-wasm over OPFS. It now runs consecutive frames and blocks as savepoints of one transaction of at most 1,024 rows (SPEC §1.4 rule 4). Each frame keeps its own savepoint and revision, change batches and the realtime ack follow the COMMIT, and a failed COMMIT rolls the coalesced frames back and fails the round with `storage.failed`.',
     links: [{ href: '/concepts-bootstrap/', label: 'Bootstrap' }],

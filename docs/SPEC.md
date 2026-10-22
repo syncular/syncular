@@ -1447,6 +1447,46 @@ steps in one atomic batch under the existing partition coordinator. A failure
 rolls back both the horizon and deletions. A lost reply after commit leaves a
 safe, repeatable cleanup operation.
 
+#### 4.6.1 Scope-value erasure
+
+Erasure removes one scope binding (`variable`, `value`) from one partition:
+every row whose stored scope binds `variable` to `value`, the upsert change
+records whose scopes carry that binding, and the blob bytes those rows were
+the last to reference. It is a host operation (`eraseScopeValue` in the
+reference server), never a wire request. The host revokes the binding from
+every actor before it erases; an actor still authorized for the binding can
+write new rows into it, and a later erasure step removes them again.
+
+Erasure runs in budgeted steps; the host repeats the step until it reports
+`done`. A step does exactly one of the following:
+
+1. **Live rows.** While rows of the binding exist, the step deletes up to
+   `maxRows` of them in one commit applied through the ordinary push path
+   (§6.4): partition lock, delete records, tombstones (§2.2), blob
+   reference index (§5.9.4), and realtime notification (§8.2). The step
+   re-reads each row under the partition lock and skips a row that no
+   longer carries the binding. The commit carries no scope check and no host
+   validators (§6.7). Its delete changes carry the binding, so clients
+   holding the rows delete them on their next pull, and the binding's latest
+   scoped change, which pins the sqlite-lane bootstrap (§4.7), moves past
+   every segment built before the erasure.
+   After the commit the step deletes every blob that a deleted row referenced
+   and no row references any more.
+2. **History.** Once no row of the binding is left, the step removes, under
+   the partition write lock, up to `maxRows` upsert change records per table
+   at or below the current `maxCommitSeq` whose scopes bind `variable` to
+   `value`, and then the change scope index entries (§3.1) of the binding
+   whose commit holds no change of the binding any more. Delete change
+   records stay: a client whose cursor precedes the erasure needs them to
+   drop its rows. The step reports `done` when it removed nothing.
+
+An incremental pull from any cursor at or above the horizon after a finished
+erasure returns no upsert payload of the binding, and a bootstrap of the
+binding returns no rows. Delete change records, tombstones, commit metadata
+(actor id, client id, timestamps), and idempotency results carry row ids and
+actor ids, no row payload; they leave with the §4.6 pruning horizon. On D1,
+erasure runs on the partition's coordinator, like pruning.
+
 ### 4.7 Bootstrap state machine
 
 A subscription **bootstraps** when any of: the request carries a
@@ -2251,6 +2291,10 @@ the *decoded* bytes).
 - A blob that already exists (same `blobId`) is an **idempotent success**
   (HTTP 200) — content addressing makes re-upload a no-op; the server MAY
   skip re-storing identical bytes.
+- The upload's `Content-Type` is the blob's media type; the server records
+  it unless it is `application/octet-stream`. A re-upload that declares a
+  media type for a blob stored without one records it. A recorded media
+  type never changes.
 - The server MAY enforce a **maximum blob size** (host-configured); an
   over-limit body is HTTP 413 `blob.too_large` (non-retryable). Enforced
   by declared `Content-Length` where present and again on the streamed
@@ -2379,11 +2423,16 @@ test — the same machinery write authorization already runs. `'*'` in the
 actor's allowed values passes as everywhere else.
 
 - **Inline delivery.** Without signed URLs the server answers the bytes
-  with `Content-Type: application/octet-stream`, whatever media type the
-  upload declared. The stored media type is advisory metadata carried by
-  the `BLOB_REF` (§5.9.1); a JSON content type on a download response is
-  reserved for the signed-URL envelope below. A client reads the body once
-  and treats it as the envelope only when it is JSON with a string `url`.
+  with the media type the blob store recorded for the blob (§5.9.3), so a
+  browser element that points at the route (`<img src>`) renders them.
+  The response always carries `X-Content-Type-Options: nosniff` and
+  `Content-Security-Policy: sandbox; default-src 'none'`: the media type
+  is uploader-declared, and a blob never runs as a page of the server's
+  origin. A blob stored without a media type, or with one that contains
+  `application/json`, is answered as `application/octet-stream`, because a
+  JSON content type on a download response is reserved for the signed-URL
+  envelope below. A client reads the body once and treats it as the
+  envelope only when it is JSON with a string `url`.
 - **Unknown blob** (no object stored) ⇒ HTTP 404 `blob.not_found`.
   A client MUST classify only an actual HTTP 404 from the blob download
   endpoint as `blob.not_found`. Network, TLS, body-read, and other HTTP failures
@@ -2439,9 +2488,8 @@ descriptor with exactly one delivery attempt. A client that received
   unpersisted; the cache stays a miss until a fetch succeeds. This is the
   §5.4 rule 5 discipline reduced to its blob shape: failure ⇒ re-request,
   never fall-through.
-- Response headers on the direct path: `Content-Type` from the stored
-  `mediaType` if the host chose to persist it, else
-  `application/octet-stream`; `ETag: "<blobId>"`;
+- Response headers on the direct path: `Content-Type` per the inline
+  delivery rule above; `ETag: "<blobId>"`;
   `Cache-Control: private, max-age=0`;
   `Vary: Authorization, Accept-Encoding`. `If-None-Match` with a matching
   ETag returns 304. Blobs are opaque bytes; the server MUST NOT
@@ -6543,3 +6591,10 @@ Each is a driver-interface script, not a prose test.
    only the first commit and preserves the later intent. The next round drains
    it. The Tauri owner and web worker additionally verify mailbox responses
    before releasing a delayed network barrier.
+
+23. **Scope-value erasure (§4.6.1).** A client holds rows of two bindings;
+    the host erases one binding with one row per erasure commit. The client
+    deletes exactly the erased rows on its next sync, a fresh bootstrap of
+    both bindings returns only the other binding's rows, and an incremental
+    pull of the erased binding from cursor 0 returns only the erasure
+    deletes. Both pairings (TS×TS, Rust×TS).

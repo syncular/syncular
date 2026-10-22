@@ -56,6 +56,9 @@ import { matchesEffective } from './scopes';
 import {
   collectCommitWindowPage,
   deserializePushResult,
+  ERASE_SCOPE_VALUE_HISTORY_SQLITE_SQL,
+  eraseScopeValueHistoryParams,
+  LIST_SCOPE_VALUE_ROWS_SQLITE_SQL,
   placeholders,
   SQLITE_DDL,
   type SqliteChangeRecord,
@@ -100,6 +103,8 @@ import type {
   RowScanQuery,
   ScopeActivityQuery,
   ScopeCommitActivity,
+  ScopeValueHistoryQuery,
+  ScopeValueQuery,
   ServerStorage,
   ServeGate,
   StorageTransaction,
@@ -1923,6 +1928,40 @@ END`);
       )
       .all(partition);
     return rows.map((r) => r.blob_id);
+  }
+
+  async listScopeValueRows(
+    partition: string,
+    query: ScopeValueQuery,
+  ): Promise<string[]> {
+    return this.db
+      .query<{ row_id: string }, [string, string, string, string, number]>(
+        LIST_SCOPE_VALUE_ROWS_SQLITE_SQL,
+      )
+      .all(partition, query.table, query.variable, query.value, query.limit)
+      .map((row) => row.row_id);
+  }
+
+  async eraseScopeValueHistory(
+    partition: string,
+    query: ScopeValueHistoryQuery,
+  ): Promise<number> {
+    const params = eraseScopeValueHistoryParams(partition, query);
+    return this.#serializeWrite(() => {
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        let removed = 0;
+        for (const sql of ERASE_SCOPE_VALUE_HISTORY_SQLITE_SQL) {
+          removed += this.db.query(sql).all(...params).length;
+        }
+        this.db.exec('COMMIT');
+        return removed;
+      } catch (error) {
+        rollbackAfterError(() => {
+          this.db.exec('ROLLBACK');
+        }, error);
+      }
+    });
   }
 
   // -- admin/console read surface --------------------------------------------

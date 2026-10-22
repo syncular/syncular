@@ -92,6 +92,9 @@ import {
   collectCommitWindowPage,
   deserializePushResult,
   placeholders,
+  ERASE_SCOPE_VALUE_HISTORY_SQLITE_SQL,
+  eraseScopeValueHistoryParams,
+  LIST_SCOPE_VALUE_ROWS_SQLITE_SQL,
   type SqliteChangeRecord,
   type SqliteCommitWindowRecord,
   type SqliteRowRecord,
@@ -130,6 +133,8 @@ import type {
   RowScanQuery,
   ScopeActivityQuery,
   ScopeCommitActivity,
+  ScopeValueHistoryQuery,
+  ScopeValueQuery,
   ServerStorage,
   ServeGate,
   StorageTransaction,
@@ -2471,6 +2476,46 @@ export class D1ServerStorage implements ServerStorage {
       .bind(partition)
       .all<{ blob_id: string }>();
     return results.map((r) => r.blob_id);
+  }
+
+  async listScopeValueRows(
+    partition: string,
+    query: ScopeValueQuery,
+  ): Promise<string[]> {
+    const { results } = await this.#db
+      .prepare(LIST_SCOPE_VALUE_ROWS_SQLITE_SQL)
+      .bind(partition, query.table, query.variable, query.value, query.limit)
+      .all<{ row_id: string }>();
+    return results.map((row) => row.row_id);
+  }
+
+  async eraseScopeValueHistory(
+    partition: string,
+    query: ScopeValueHistoryQuery,
+  ): Promise<number> {
+    if (!this.#pushApplySerialized)
+      throw new Error(
+        'D1 erasure requires externally serialized partition writes',
+      );
+    const params = eraseScopeValueHistoryParams(partition, query);
+    const results = await this.#db.batch(
+      ERASE_SCOPE_VALUE_HISTORY_SQLITE_SQL.map((sql) =>
+        this.#db.prepare(sql).bind(...params),
+      ),
+    );
+    let removed = 0;
+    for (const result of results) {
+      if (
+        typeof result !== 'object' ||
+        result === null ||
+        !('results' in result) ||
+        !Array.isArray(result.results)
+      ) {
+        throw new Error('D1 erasure returned an invalid batch result');
+      }
+      removed += result.results.length;
+    }
+    return removed;
   }
 
   // -- admin/console read surface --------------------------------------------

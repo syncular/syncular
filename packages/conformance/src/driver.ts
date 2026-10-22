@@ -235,7 +235,8 @@ export type ServerCapability =
   | 'leases'
   | 'validators'
   | 'commit-validators'
-  | 'backfill-checkpoints';
+  | 'backfill-checkpoints'
+  | 'erasure';
 
 /**
  * §6.7 declarative write-validation rule (JSON-able so it crosses the
@@ -414,6 +415,15 @@ export interface ServerInstance {
 
   /** Run §4.6 pruning; returns the resulting horizonSeq. */
   prune(retention?: RetentionOptions): Promise<number>;
+  /**
+   * `erasure`: erase one scope binding (§4.6.1) with `maxRows` rows per
+   * erasure commit, calling the step until it reports `done`.
+   */
+  eraseScopeValue?(
+    variable: string,
+    value: string,
+    maxRows: number,
+  ): Promise<void>;
 
   // -- introspection (assertion surface) -------------------------------------
 

@@ -90,8 +90,9 @@ describe('handleBlobDownload authorization (§5.9.5)', () => {
 
     const result = await handleBlobDownload(baseCtx(storage, blobs), blobId);
     expect(result.bytes).toEqual(bytes);
-    // §5.9.5: inline bytes are octet-stream whatever the stored media type.
-    expect(result.headers['Content-Type']).toBe('application/octet-stream');
+    // §5.9.5: inline bytes carry the stored media type, never sniffed.
+    expect(result.headers['Content-Type']).toBe('image/png');
+    expect(result.headers['X-Content-Type-Options']).toBe('nosniff');
     // No presign configured ⇒ no url on the result.
     expect(result.url).toBeUndefined();
     expect(await storage.listPartitionRegistry()).toEqual([
@@ -102,6 +103,20 @@ describe('handleBlobDownload authorization (§5.9.5)', () => {
         lastAuthenticatedAtMs: NOW,
       },
     ]);
+  });
+
+  test('serves JSON and untyped blobs as octet-stream', async () => {
+    for (const mediaType of ['application/json; charset=utf-8', undefined]) {
+      const storage = new SqliteServerStorage();
+      const blobs = new MemoryBlobStore();
+      const bytes = new TextEncoder().encode('{"url":"https://x.test/"}');
+      const blobId = await blobIdFor(bytes);
+      await blobs.put(PARTITION, blobId, bytes, NOW, mediaType);
+      await seedReferencedBlob(storage, blobId, 'p1');
+      const result = await handleBlobDownload(baseCtx(storage, blobs), blobId);
+      // A JSON body is reserved for the signed-URL envelope (§5.9.5).
+      expect(result.headers['Content-Type']).toBe('application/octet-stream');
+    }
   });
 
   test('denies (403) when no referencing row is authorized', async () => {

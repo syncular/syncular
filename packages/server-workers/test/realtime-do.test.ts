@@ -898,6 +898,73 @@ describe('SyncularRealtimeDO (DO double + D1 double, reference codec)', () => {
     expect(await new D1ServerStorage(db).getHorizonSeq(PARTITION)).toBe(1);
   });
 
+  test('erasure waits for the partition write queue and deletes the row', async () => {
+    let entered!: () => void;
+    let release!: () => void;
+    const reached = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const db = await makeDb();
+    const ns = new FakeDurableObjectNamespace(
+      db,
+      realtimeConfig(async () => {
+        entered();
+        await gate;
+      }),
+    );
+    const http = makeHttpHandler(db, ns);
+    const pushed = decodeHttpSync(
+      http(
+        httpSyncRequest(
+          [
+            {
+              type: 'PUSH_COMMIT',
+              clientCommitId: 'before-erasure',
+              operations: [
+                {
+                  table: 'tasks',
+                  rowId: 'erased',
+                  op: 'upsert',
+                  payload: taskRow('erased', 'L', 'personal'),
+                },
+              ],
+            },
+          ],
+          'erasure-client',
+        ),
+      ),
+    );
+    await reached;
+    const host = ns.get(ns.idFromName(PARTITION)).host;
+    const erase = () =>
+      host.eraseScopeValue({
+        partition: PARTITION,
+        variable: 'list_id',
+        value: 'L',
+      });
+    let erased = false;
+    const pending = erase().then((result) => {
+      erased = true;
+      return result;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(erased).toBe(false);
+    release();
+    await pushed;
+    // The push applied first, so the erasure found and deleted its row.
+    expect(await pending).toMatchObject({ rowsErased: 1, done: false });
+    while (!(await erase()).done) {}
+    const storage = new D1ServerStorage(db);
+    await storage.ensureSchema(compileSchema(SCHEMA));
+    expect(await storage.getRow(PARTITION, 'tasks', 'erased')).toBeUndefined();
+    const upsert = await storage.getCommit(PARTITION, 1);
+    expect(upsert?.changes).toEqual([]);
+  });
+
   test('overlapping HTTP duplicates are serialized by the partition DO', async () => {
     let validatorCalls = 0;
     const db = await makeDb();

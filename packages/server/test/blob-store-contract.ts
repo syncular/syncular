@@ -100,6 +100,39 @@ export function runBlobStoreContract(
       expect(got?.record.createdAtMs).toBe(CONTRACT_NOW);
     });
 
+    test('a re-put records a missing media type and never replaces one', async () => {
+      const store = await makeStore();
+      const bytes = new Uint8Array([8, 9]);
+      const blobId = await blobIdFor(bytes);
+      await store.put(PARTITION, blobId, bytes, CONTRACT_NOW);
+      const named = await store.put(
+        PARTITION,
+        blobId,
+        bytes,
+        CONTRACT_NOW + 5,
+        'image/jpeg',
+      );
+      expect(named.mediaType).toBe('image/jpeg');
+      expect(named.createdAtMs).toBe(CONTRACT_NOW);
+      await store.put(PARTITION, blobId, bytes, CONTRACT_NOW + 6, 'text/html');
+      const got = await store.get(PARTITION, blobId);
+      expect(got?.record.mediaType).toBe('image/jpeg');
+      expect(got?.record.createdAtMs).toBe(CONTRACT_NOW);
+      expect(got?.bytes).toEqual(bytes);
+    });
+
+    test('delete removes one blob of one partition; a missing blob is a no-op', async () => {
+      const store = await makeStore();
+      const bytes = new Uint8Array([6, 6]);
+      const blobId = await blobIdFor(bytes);
+      await store.put(PARTITION, blobId, bytes, CONTRACT_NOW);
+      await store.put(OTHER_PARTITION, blobId, bytes, CONTRACT_NOW);
+      await store.delete(PARTITION, blobId);
+      await store.delete(PARTITION, blobId);
+      expect(await store.has(PARTITION, blobId)).toBe(false);
+      expect(await store.has(OTHER_PARTITION, blobId)).toBe(true);
+    });
+
     test('blobs are partition-scoped — one partition cannot read another', async () => {
       const store = await makeStore();
       const bytes = new Uint8Array([5, 5, 5]);

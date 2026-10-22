@@ -31,6 +31,7 @@ import {
   MemoryBlobStore,
   MemoryLeaseStore,
   MemorySegmentStore,
+  eraseScopeValue,
   pruneCommitLog,
   RESOLVER_OUTAGE,
   type RealtimeHub,
@@ -465,6 +466,10 @@ class TsServerInstance implements ServerInstance {
       listRowsReferencingBlob: (p, b) =>
         this.#storage.listRowsReferencingBlob(p, b),
       listReferencedBlobIds: (p) => this.#storage.listReferencedBlobIds(p),
+      // §4.7 scope-value erasure.
+      listScopeValueRows: (p, q) => this.#storage.listScopeValueRows(p, q),
+      eraseScopeValueHistory: (p, q) =>
+        this.#storage.eraseScopeValueHistory(p, q),
     };
   }
 
@@ -889,6 +894,16 @@ class TsServerInstance implements ServerInstance {
     });
   }
 
+  async eraseScopeValue(
+    variable: string,
+    value: string,
+    maxRows: number,
+  ): Promise<void> {
+    const ctx = this.#ctx('syncular.erase');
+    const options = { partition: this.#partition, variable, value, maxRows };
+    while (!(await eraseScopeValue(ctx, options)).done) {}
+  }
+
   async getMaxCommitSeq(): Promise<number> {
     return this.#storage.getMaxCommitSeq(this.#partition);
   }
@@ -972,6 +987,7 @@ export const tsServerDriver: ServerDriver = {
     'validators',
     'commit-validators',
     'backfill-checkpoints',
+    'erasure',
   ],
   async create(options: ServerCreateOptions): Promise<ServerInstance> {
     return new TsServerInstance(options);

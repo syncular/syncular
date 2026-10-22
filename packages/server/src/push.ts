@@ -75,7 +75,7 @@ import {
  * columns (§5.9.4), skipping NULLs. Malformed BlobRefs already failed at
  * row-codec decode (§5.9.1), so `parseBlobRef` here is total.
  */
-function blobIdsInRow(
+export function blobIdsInRow(
   table: CompiledTable,
   values: readonly RowValue[],
 ): string[] {

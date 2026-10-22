@@ -114,6 +114,12 @@ A push that references a blob the server has never received fails with `blob.not
 
 Every blob download re-authorizes against the rows that reference the blob, on every request. The server keeps a commit-to-blob reference index, and it denies a download with `blob.forbidden` when the actor holds no referencing row ([SPEC §5.9.5](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#5-bootstrap-segments-and-the-download-endpoint)).
 
+### Media type
+
+The upload's `Content-Type` is the blob's media type. `uploadBlob(bytes, { mediaType })` sends it, and the blob store records it unless it is `application/octet-stream`. A re-upload of the same bytes with a media type records it on a blob stored without one; a recorded media type never changes.
+
+An inline download answers with the recorded media type, so an `img` element whose `src` is the blob route renders the bytes when a cookie or header authenticates the request. Every inline download carries `X-Content-Type-Options: nosniff` and `Content-Security-Policy: sandbox; default-src 'none'`, because the uploader declares the media type and a blob must not run as a page of the API origin. A blob without a media type, or with one that contains `application/json`, is answered as `application/octet-stream`: a JSON response body is reserved for the presigned-URL envelope ([SPEC §5.9.5](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#595-download--get-mountblobsblobid-and-authorization)).
+
 ## The local blob cache
 
 The client caches bodies in its SQLite database, keyed by `blobId`. A body row is immutable after insertion, and a cache hit performs no metadata write. A completed fresh download checkpoints its body out of the WAL before it returns bytes.

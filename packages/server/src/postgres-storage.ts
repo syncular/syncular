@@ -121,6 +121,8 @@ import type {
   RowScanQuery,
   ScopeActivityQuery,
   ScopeCommitActivity,
+  ScopeValueHistoryQuery,
+  ScopeValueQuery,
   ServerStorage,
   ServeGate,
   StorageTransaction,
@@ -2565,6 +2567,63 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
       [partition],
     );
     return rows.map((r) => r.blob_id);
+  }
+
+  async listScopeValueRows(
+    partition: string,
+    query: ScopeValueQuery,
+  ): Promise<string[]> {
+    const { rows } = await this.#exec.query<{ row_id: string }>(
+      `SELECT row_id FROM sync_row_scopes
+        WHERE partition=$1 AND tbl=$2 AND var=$3 AND value=$4
+        ORDER BY row_id LIMIT $5`,
+      [partition, query.table, query.variable, query.value, query.limit],
+    );
+    return rows.map((row) => row.row_id);
+  }
+
+  async eraseScopeValueHistory(
+    partition: string,
+    query: ScopeValueHistoryQuery,
+  ): Promise<number> {
+    const params = [
+      partition,
+      query.table,
+      query.variable,
+      query.value,
+      query.throughSeq,
+      query.limit,
+    ];
+    return this.#exec.transaction(async (client) => {
+      await lockPartitionOn(client, partition);
+      // Upsert change records of the binding, then the change scope entries
+      // whose commit no longer holds a change of the binding.
+      const changes = await client.query(
+        `DELETE FROM sync_changes c USING (
+           SELECT c2.commit_seq, c2.idx FROM sync_change_scopes s
+             JOIN sync_changes c2 ON c2.partition=s.partition
+              AND c2.commit_seq=s.commit_seq AND c2.tbl=s.tbl
+            WHERE s.partition=$1 AND s.tbl=$2 AND s.var=$3 AND s.value=$4
+              AND s.commit_seq<=$5 AND c2.op=1 AND c2.scopes->>$3=s.value
+            LIMIT $6) d
+         WHERE c.partition=$1 AND c.commit_seq=d.commit_seq AND c.idx=d.idx`,
+        params,
+      );
+      const scopes = await client.query(
+        `DELETE FROM sync_change_scopes cs USING (
+           SELECT s.commit_seq FROM sync_change_scopes s
+            WHERE s.partition=$1 AND s.tbl=$2 AND s.var=$3 AND s.value=$4
+              AND s.commit_seq<=$5 AND NOT EXISTS (
+                SELECT 1 FROM sync_changes c
+                 WHERE c.partition=s.partition AND c.commit_seq=s.commit_seq
+                   AND c.tbl=s.tbl AND c.scopes->>$3=s.value)
+            LIMIT $6) d
+         WHERE cs.partition=$1 AND cs.tbl=$2 AND cs.var=$3 AND cs.value=$4
+           AND cs.commit_seq=d.commit_seq`,
+        params,
+      );
+      return changes.rowCount + scopes.rowCount;
+    });
   }
 
   // -- admin/console read surface --------------------------------------------

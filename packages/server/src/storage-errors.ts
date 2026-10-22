@@ -34,7 +34,9 @@ export type StorageQueryErrorCode =
   | 'sync.storage.stored_layout_mismatch'
   | 'sync.storage.physical_layout_mismatch'
   | 'sync.storage.transaction_query_unsupported'
-  | 'sync.storage.query_over_staged_writes';
+  | 'sync.storage.query_over_staged_writes'
+  | 'sync.storage.erase_unsupported'
+  | 'sync.storage.invalid_erase_query';
 
 const STORAGE_QUERY_MESSAGES: Readonly<Record<StorageQueryErrorCode, string>> =
   {
@@ -78,6 +80,10 @@ const STORAGE_QUERY_MESSAGES: Readonly<Record<StorageQueryErrorCode, string>> =
       'trusted row lookup requires one exact value per index column',
     'sync.storage.invalid_limit':
       'trusted row lookup limit must be an integer from 1 through 1,000',
+    'sync.storage.erase_unsupported':
+      'this storage backend cannot erase a scope value',
+    'sync.storage.invalid_erase_query':
+      'erasure requires a declared scope variable, a non-empty value, and a row budget within the operation cap',
   };
 
 /**

@@ -17,6 +17,7 @@ export * from './content-encoding';
 export * from './context';
 export * from './crdt-merger';
 export * from './d1-storage';
+export * from './erase';
 export * from './errors';
 export * from './events';
 export * from './events-ring';

@@ -6,7 +6,7 @@
  * `blobId` is never a bearer capability. Framework-free; the hono/runtime
  * adapters map these onto `PUT/GET <mount>/blobs/{blobId}`.
  */
-import { blobIdFor, isBlobId } from './blob-store';
+import { type BlobRecord, blobIdFor, isBlobId } from './blob-store';
 import type { SyncRequestContext } from './context';
 import {
   clockOf,
@@ -180,7 +180,7 @@ async function downloadBlob(
   // egress path — it only needs to know the object EXISTS (a HEAD/`has`), not
   // the bytes. Inline delivery loads the bytes; presigned delivery does not.
   const presignConfigured = ctx.blobSignedUrls !== undefined;
-  let entry: { bytes: Uint8Array } | undefined;
+  let entry: { record: BlobRecord; bytes: Uint8Array } | undefined;
   if (presignConfigured) {
     if (!(await store.has(ctx.partition, blobId))) {
       throw syncError('blob.not_found', 'unknown blob (§5.9.5)');
@@ -277,12 +277,20 @@ async function downloadBlob(
     // Unreachable: presign not configured ⇒ `entry` was loaded above.
     throw syncError('blob.not_found', 'blob bytes unavailable (§5.9.5)');
   }
-  // §5.9.5: inline bytes are always octet-stream. The stored media type
-  // would make a JSON blob indistinguishable from the signed-URL envelope.
+  // §5.9.5: inline bytes carry the stored media type, so an <img> or <a>
+  // pointed at the route renders them. A JSON type stays octet-stream: a
+  // JSON body is reserved for the signed-URL envelope.
+  const mediaType = entry?.record.mediaType;
   return {
     bytes,
     headers: {
-      'Content-Type': 'application/octet-stream',
+      'Content-Type':
+        mediaType === undefined ||
+        mediaType.toLowerCase().includes('application/json')
+          ? 'application/octet-stream'
+          : mediaType,
+      'X-Content-Type-Options': 'nosniff',
+      'Content-Security-Policy': "sandbox; default-src 'none'",
       ETag: `"${blobId}"`,
       'Cache-Control': 'private, max-age=0',
       Vary: 'Authorization, Accept-Encoding',

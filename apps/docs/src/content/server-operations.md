@@ -201,6 +201,48 @@ const { swept } = await sweepOrphanBlobs(storage, blobs, partition, {
 
 The sweep reads the live keep-set from the storage reference index and deletes only blobs that are both unreferenced and older than the grace period. Clients upload bytes before they push the row that references them, so a fresh upload is unreferenced until its push lands, and the grace period covers that gap. The 24 h default sits far above any push window. Lower it only when you know your clients' outbox latency, because a grace period that is too tight deletes blobs that are still needed. The helper throws against a storage without the reference index instead of sweeping with an empty keep-set.
 
+## Erasing a scope value
+
+`eraseScopeValue` removes one scope binding from a partition: every row whose stored scope binds the variable to the value, the change-log payloads of the binding, and the blob bytes those rows were the last to reference. Use it for account deletion and other erasure requests that map to a scope, such as `user:{user_id}` ([SPEC §4.6.1](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#461-scope-value-erasure)).
+
+```ts title="src/account-delete.ts"
+import { eraseScopeValue } from '@syncular/server';
+
+let step;
+do {
+  step = await eraseScopeValue(config, {
+    partition,
+    variable: 'user_id',
+    value: userId,
+    maxRows: 200, // default; at most the push operation cap
+  });
+} while (!step.done);
+```
+
+Revoke the binding from every actor before you erase: `resolveScopes` must stop granting it, or an authorized client can write new rows into it. Each call is one bounded step. While rows of the binding exist, a step deletes up to `maxRows` of them in one commit on the ordinary push path, under the partition lock, with actor `syncular.erase`. Host validators and commit validators do not run on that commit. Clients that hold the rows delete them on their next pull, realtime sockets are woken, and no segment built before the erasure is served again. After the commit the step deletes every blob that an erased row referenced and no remaining row references; `step.blobsErased` lists them. Once no row is left, each step removes up to `maxRows` upsert change records per table, then the change-scope index entries left without a change. The step reports `done: true` when it removed nothing.
+
+The commit log keeps the erasure's delete records, because a client whose cursor precedes the erasure needs them to drop its rows. Delete records, tombstones, commit metadata, and idempotency results hold row ids and actor ids and no row payload; they leave with [commit-log pruning](#commit-log-pruning). Rows outside the binding stay, even when an erased account wrote them; end those with an ordinary commit before you erase. Client records keyed by actor (`sync_clients`) belong to your account cleanup. Bootstrap segments in the segment store expire with their TTL.
+
+The step throws `sync.storage.invalid_erase_query` for a variable no table declares, an empty value, or a `maxRows` outside 1 through the push operation cap, and `sync.storage.erase_unsupported` for a storage without the erasure methods. All in-tree storages implement them. On D1, call the step through the partition Durable Object, which runs it in the same write queue as HTTP and socket rounds:
+
+```ts title="src/worker.ts"
+export class SyncularRealtimeDO extends DurableObject<Env> {
+  // … the methods from Add the Durable Object …
+  eraseScopeValue(options: EraseScopeValueOptions) {
+    return this.#host.eraseScopeValue(options);
+  }
+}
+
+let step;
+do {
+  step = await env.REALTIME.getByName(partition).eraseScopeValue({
+    partition,
+    variable: 'user_id',
+    value: userId,
+  });
+} while (!step.done);
+```
+
 ## Backup and restore
 
 A backup preserves one authoritative recovery point. Include the row tables, commit log, partition registry, client records, reactions, leases, and every backend table that `@syncular/server` owns. Include the external segment and blob objects that the database recovery point references, because a snapshot that references missing objects fails during bootstrap or blob read.

@@ -218,29 +218,31 @@ export class BucketBlobStore implements BlobStore {
     // blob once, and preserve the FIRST createdAtMs so the sweep's grace clock
     // is not reset by a re-upload (§5.9.2 upload age).
     const preexisting = await this.#bucket.head(objectKey);
-    if (preexisting !== undefined) {
-      const meta = preexisting.metadata[BLOB_META_KEY];
-      if (meta !== undefined) {
-        const existing = parseMetaJson(
-          base64urlToUtf8(meta),
-          blobId,
-          this.#label,
-        );
-        return {
-          blobId,
-          partition,
-          byteLength: existing.byteLength,
-          ...(existing.mediaType !== undefined
-            ? { mediaType: existing.mediaType }
-            : {}),
-          createdAtMs: existing.createdAtMs,
-        };
-      }
+    const storedMeta = preexisting?.metadata[BLOB_META_KEY];
+    const existing =
+      storedMeta === undefined
+        ? undefined
+        : parseMetaJson(base64urlToUtf8(storedMeta), blobId, this.#label);
+    if (
+      existing !== undefined &&
+      (existing.mediaType !== undefined || mediaType === undefined)
+    ) {
+      return {
+        blobId,
+        partition,
+        byteLength: existing.byteLength,
+        ...(existing.mediaType !== undefined
+          ? { mediaType: existing.mediaType }
+          : {}),
+        createdAtMs: existing.createdAtMs,
+      };
     }
+    // A re-upload that names the media type an earlier upload left out
+    // rewrites the object under the same precondition, keeping its age.
     const meta: BlobMeta = {
       byteLength: bytes.length,
       ...(mediaType !== undefined ? { mediaType } : {}),
-      createdAtMs: nowMs,
+      createdAtMs: existing?.createdAtMs ?? nowMs,
     };
     // Conditional write: of two concurrent uploads of the same blob exactly
     // one lands, so the first createdAtMs survives and the blob counts once.
@@ -256,7 +258,11 @@ export class BucketBlobStore implements BlobStore {
     if (!written) return this.put(partition, blobId, bytes, nowMs, mediaType);
     if (preexisting === undefined)
       await this.#bumpStats({ count: 1, bytes: bytes.length });
-    return record;
+    return { ...record, createdAtMs: meta.createdAtMs };
+  }
+
+  async delete(partition: string, blobId: string): Promise<void> {
+    await this.#bucket.delete(this.objectKeyFor(partition, blobId));
   }
 
   async has(partition: string, blobId: string): Promise<boolean> {

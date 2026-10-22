@@ -1,5 +1,7 @@
 /**
- * SYNCULAR-WORKERS-SEGMENT-ENCODING-001 under workerd: the segment route
+ * Segment and blob routes under workerd with real D1 and R2 bindings.
+ *
+ * SYNCULAR-WORKERS-SEGMENT-ENCODING-001: the segment route
  * gzips a segment above SEGMENT_STREAM_THRESHOLD_BYTES itself (§5.8), and
  * workerd encodes a response that declares Content-Encoding again unless the
  * body is marked `encodeBody: 'manual'`. A client that decodes the response
@@ -91,4 +93,62 @@ test('the R2 stores hold their preconditions over the workerd binding', async ()
     blobText: '{"inline":"json"}',
     blobCount: 1,
   });
+}, 60_000);
+
+test('a small blob PUT keeps its media type on R2 and the GET serves it', async () => {
+  const url = await mf.ready;
+  const bytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2]);
+  const blobId = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+  const put = (contentType: string) =>
+    fetch(new URL(`/blobs/${encodeURIComponent(blobId)}`, url), {
+      method: 'PUT',
+      headers: { 'content-type': contentType },
+      body: bytes,
+    });
+  // The first upload names no media type; the second one records it.
+  expect((await put('application/octet-stream')).status).toBe(200);
+  expect((await put('image/jpeg')).status).toBe(200);
+  const object = await fetch(new URL(`/object?blobId=${blobId}`, url));
+  expect(await object.json()).toEqual({ contentType: 'image/jpeg' });
+  const referenced = await fetch(new URL(`/reference?blobId=${blobId}`, url), {
+    method: 'POST',
+  });
+  expect(referenced.status).toBe(204);
+  const response = await fetch(
+    new URL(`/blobs/${encodeURIComponent(blobId)}`, url),
+  );
+  expect(response.status).toBe(200);
+  expect(response.headers.get('content-type')).toBe('image/jpeg');
+  expect(response.headers.get('x-content-type-options')).toBe('nosniff');
+  expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes);
+}, 60_000);
+
+test('erasing a scope value removes its rows on D1 and its blob on R2', async () => {
+  const url = await mf.ready;
+  // The previous test stored the blob and the `files` row f1 referencing it.
+  const bytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2]);
+  const blobId = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+  const response = await fetch(new URL(`/erase?blobId=${blobId}`, url), {
+    method: 'POST',
+  });
+  expect(response.status).toBe(200);
+  const result = (await response.json()) as {
+    steps: {
+      rowsErased: number;
+      historyErased: number;
+      blobsErased: string[];
+      done: boolean;
+    }[];
+    rows: number;
+    blob: boolean;
+  };
+  expect(result.steps[0]).toMatchObject({
+    rowsErased: 3,
+    blobsErased: [blobId],
+  });
+  // The seed commit's upserts leave the log; the erasure deletes stay.
+  expect(result.steps[1]?.historyErased).toBe(4);
+  expect(result.steps.at(-1)?.done).toBe(true);
+  expect(result.rows).toBe(0);
+  expect(result.blob).toBe(false);
 }, 60_000);

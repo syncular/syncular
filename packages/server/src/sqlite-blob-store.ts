@@ -33,7 +33,17 @@ export class SqliteBlobStore implements BlobStore {
     mediaType?: string,
   ): Promise<BlobRecord> {
     const existing = await this.get(partition, blobId);
-    if (existing !== undefined) return existing.record;
+    if (existing !== undefined) {
+      if (existing.record.mediaType !== undefined || mediaType === undefined)
+        return existing.record;
+      // A re-upload names the media type an earlier upload left out.
+      this.db
+        .query(
+          'UPDATE sync_blobs SET media_type=? WHERE partition=? AND blob_id=? AND media_type IS NULL',
+        )
+        .run(mediaType, partition, blobId);
+      return { ...existing.record, mediaType };
+    }
     const record: BlobRecord = {
       blobId,
       partition,
@@ -49,6 +59,12 @@ export class SqliteBlobStore implements BlobStore {
       )
       .run(partition, blobId, bytes.length, mediaType ?? null, nowMs, bytes);
     return record;
+  }
+
+  async delete(partition: string, blobId: string): Promise<void> {
+    this.db
+      .query('DELETE FROM sync_blobs WHERE partition=? AND blob_id=?')
+      .run(partition, blobId);
   }
 
   async has(partition: string, blobId: string): Promise<boolean> {
