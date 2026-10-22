@@ -1,8 +1,29 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.39.1** (`v0.39.1`). All artifacts use Apache-2.0, except
+current release is **0.39.2** (`v0.39.2`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.39.2 release notes
+
+0.39.2 fixes a silent gap in `PostgresFanout`. Postgres delivers a
+notification only to sessions listening when it commits, and the fanout had
+no signal for a listener that dropped and reconnected (server restart,
+failover, a Neon compute suspending after 5 minutes without queries).
+Sessions on that instance missed every cross-instance commit of the gap until
+their next sync round. `PgNotificationConnection.listen(channel, handler,
+onListen)` now receives a callback that the driver calls each time LISTEN
+takes effect; every call after the first wakes all local sessions with
+`catchup-required` through the new `RealtimeHub.wakeAll`. Bun.sql and
+postgres.js reconnect a dropped listener and call it again. The storage
+reference gains a Neon section: the fanout needs the direct connection
+string, because Neon's `-pooler` endpoint runs PgBouncer in transaction mode.
+SSP2, the storage layout, and the Rust crates are unchanged.
+
+**Upgrade notes.** Pass the third `listen` argument to your driver's
+`onlisten` (Bun.sql, postgres.js), or call it after each `LISTEN` your
+node-postgres adapter issues. A custom `FanoutWakeTarget` implements
+`wakeAll(reason)`. Upgrade all 12 npm packages and 6 crates together.
 
 ## 0.39.1 release notes
 
