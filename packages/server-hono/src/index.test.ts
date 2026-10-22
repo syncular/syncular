@@ -407,6 +407,323 @@ describe('hono adapter', () => {
   });
 });
 
+describe('transport compression (§1.3)', () => {
+  /** A pull-only round: deterministic bytes, so every encoding of the same
+   * request must decode to the same SSP2 response. */
+  function pullBytes(): Uint8Array {
+    return encodeMessage({
+      wireVersion: 3,
+      msgKind: 'request',
+      frames: [
+        {
+          type: 'REQ_HEADER',
+          clientId: 'client-1',
+          schemaVersion: 1,
+          logEpoch: TEST_LOG_EPOCH,
+        },
+        {
+          type: 'PULL_HEADER',
+          limitCommits: 0,
+          limitSnapshotRows: 0,
+          maxSnapshotPages: 0,
+          accept: 0b0011,
+        },
+        {
+          type: 'SUBSCRIPTION',
+          id: 's1',
+          table: 'tasks',
+          scopes: { project_id: ['p1'] },
+          cursor: -1,
+        },
+      ],
+    });
+  }
+
+  /** Default limits keep the pushed row inline, so a round's body clears the
+   * identity floor of 1 KiB. */
+  async function makeInlineApp() {
+    const storage = new SqliteServerStorage();
+    await storage.touchPartition('part-1', 0, TEST_LOG_EPOCH);
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      c.header('X-Host-Policy', 'retained');
+      await next();
+    });
+    app.route(
+      '/',
+      createSyncularHono({
+        config: {
+          schema: SCHEMA,
+          storage,
+          segments: new MemorySegmentStore(),
+          resolveScopes: () => ({ project_id: ['p1'] }),
+        },
+        authenticate: async () => ({ actorId: 'actor-1', partition: 'part-1' }),
+      }),
+    );
+    // One pushed row with a large title, read back by every pull below.
+    const pushed = await app.request('/sync', {
+      method: 'POST',
+      headers: { 'content-type': SSP2_CONTENT_TYPE },
+      body: requestBytes('x'.repeat(4096)).slice().buffer as ArrayBuffer,
+    });
+    expect(pushed.status).toBe(200);
+    await pushed.arrayBuffer();
+    return app;
+  }
+
+  test('POST /sync negotiates zstd, gzip and identity', async () => {
+    const app = await makeInlineApp();
+    const sync = (acceptEncoding: string) =>
+      app.request('/sync', {
+        method: 'POST',
+        headers: {
+          'content-type': SSP2_CONTENT_TYPE,
+          'accept-encoding': acceptEncoding,
+        },
+        body: pullBytes().slice().buffer as ArrayBuffer,
+      });
+
+    const identity = await sync('identity');
+    expect(identity.status).toBe(200);
+    expect(identity.headers.get('content-encoding')).toBeNull();
+    expect(identity.headers.get('vary')).toContain('Accept-Encoding');
+    const identityBytes = new Uint8Array(await identity.arrayBuffer());
+    expect(identityBytes.length).toBeGreaterThan(1024);
+
+    const zstd = await sync('zstd, gzip');
+    expect(zstd.headers.get('content-encoding')).toBe('zstd');
+    expect(zstd.headers.get('x-host-policy')).toBe('retained');
+    expect(
+      new Uint8Array(
+        Bun.zstdDecompressSync(new Uint8Array(await zstd.arrayBuffer())),
+      ),
+    ).toEqual(identityBytes);
+
+    const gzip = await sync('gzip');
+    expect(gzip.headers.get('content-encoding')).toBe('gzip');
+    expect(gzip.headers.get('x-host-policy')).toBe('retained');
+    expect(
+      new Uint8Array(Bun.gunzipSync(new Uint8Array(await gzip.arrayBuffer()))),
+    ).toEqual(identityBytes);
+
+    // A q=0 refusal is not acceptance (§1.3): identity, decoded as sent.
+    const refused = await sync('gzip;q=0');
+    expect(refused.headers.get('content-encoding')).toBeNull();
+    expect(new Uint8Array(await refused.arrayBuffer())).toEqual(identityBytes);
+  });
+
+  test('POST /operations negotiates zstd, gzip and identity', async () => {
+    const descriptor = {
+      id: 'sha256:test/allTasks',
+      hasParams: false,
+      sql: 'SELECT id, title FROM tasks ORDER BY id',
+      relationPlans: [
+        {
+          sql: 'SELECT id, title FROM tasks ORDER BY id',
+          relations: [{ table: 'tasks', start: 22, end: 27 }],
+        },
+      ],
+      tables: ['tasks'],
+      resultColumns: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'title', type: 'string', nullable: false },
+      ] as const,
+      bind: () => [],
+      dependencies: () => [{ table: 'tasks' }],
+      coverage: () => [],
+    };
+    const storage = new SqliteServerStorage();
+    const app = await makeApp(
+      undefined,
+      new RemoteOperationRegistry([
+        registerRemoteQuery(descriptor, {
+          maxRows: 10,
+          auth: { access: 'privileged', authorize: () => true },
+        }),
+      ]),
+      storage,
+    );
+    const pushed = await app.request('/sync', {
+      method: 'POST',
+      headers: {
+        'content-type': SSP2_CONTENT_TYPE,
+        authorization: 'Bearer good',
+      },
+      body: requestBytes('x'.repeat(4096)).slice().buffer as ArrayBuffer,
+    });
+    expect(pushed.status).toBe(200);
+    await pushed.arrayBuffer();
+
+    const query = encodeRemoteOperationRequest({
+      revision: 1,
+      kind: 'query',
+      clientId: 'admin-worker',
+      operationId: descriptor.id,
+      params: null,
+    });
+    const operate = (acceptEncoding: string) =>
+      app.request('/operations', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/vnd.syncular.operations.v1+json',
+          authorization: 'Bearer good',
+          'accept-encoding': acceptEncoding,
+        },
+        body: query.slice().buffer as ArrayBuffer,
+      });
+
+    const identity = await operate('identity');
+    expect(identity.status).toBe(200);
+    expect(identity.headers.get('content-encoding')).toBeNull();
+    expect(identity.headers.get('vary')).toContain('Accept-Encoding');
+    const identityBytes = new Uint8Array(await identity.arrayBuffer());
+    expect(identityBytes.length).toBeGreaterThan(1024);
+
+    const zstd = await operate('zstd, gzip');
+    expect(zstd.headers.get('content-encoding')).toBe('zstd');
+    expect(
+      new Uint8Array(
+        Bun.zstdDecompressSync(new Uint8Array(await zstd.arrayBuffer())),
+      ),
+    ).toEqual(identityBytes);
+
+    const gzip = await operate('gzip');
+    expect(gzip.headers.get('content-encoding')).toBe('gzip');
+    expect(
+      new Uint8Array(Bun.gunzipSync(new Uint8Array(await gzip.arrayBuffer()))),
+    ).toEqual(identityBytes);
+    const decoded = decodeRemoteOperationResponse(identityBytes);
+    if (decoded.kind !== 'query') throw new Error('expected a query response');
+    expect(decoded.rows.length).toBeGreaterThan(0);
+  });
+
+  test('a gzip request body is accepted on /sync and /operations', async () => {
+    const app = await makeApp();
+    const sync = await app.request('/sync', {
+      method: 'POST',
+      headers: {
+        'content-type': SSP2_CONTENT_TYPE,
+        authorization: 'Bearer good',
+        'content-encoding': 'gzip',
+      },
+      body: Bun.gzipSync(requestBytes().slice()).slice().buffer as ArrayBuffer,
+    });
+    expect(sync.status).toBe(200);
+    const message = decodeMessage(new Uint8Array(await sync.arrayBuffer()));
+    expect(message.frames.map((frame) => frame.type)).toContain('PUSH_RESULT');
+
+    const descriptor = {
+      id: 'sha256:test/allTasks',
+      hasParams: false,
+      sql: 'SELECT id, title FROM tasks ORDER BY id',
+      relationPlans: [
+        {
+          sql: 'SELECT id, title FROM tasks ORDER BY id',
+          relations: [{ table: 'tasks', start: 22, end: 27 }],
+        },
+      ],
+      tables: ['tasks'],
+      resultColumns: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'title', type: 'string', nullable: false },
+      ] as const,
+      bind: () => [],
+      dependencies: () => [{ table: 'tasks' }],
+      coverage: () => [],
+    };
+    const withOperations = await makeApp(
+      undefined,
+      new RemoteOperationRegistry([
+        registerRemoteQuery(descriptor, {
+          maxRows: 10,
+          auth: { access: 'privileged', authorize: () => true },
+        }),
+      ]),
+    );
+    const operation = await withOperations.request('/operations', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/vnd.syncular.operations.v1+json',
+        authorization: 'Bearer good',
+        'content-encoding': 'gzip',
+      },
+      body: Bun.gzipSync(
+        encodeRemoteOperationRequest({
+          revision: 1,
+          kind: 'query',
+          clientId: 'admin-worker',
+          operationId: descriptor.id,
+          params: null,
+        }).slice(),
+      ).slice().buffer as ArrayBuffer,
+    });
+    expect(operation.status).toBe(200);
+    const decoded = decodeRemoteOperationResponse(
+      new Uint8Array(await operation.arrayBuffer()),
+    );
+    if (decoded.kind !== 'query') throw new Error('expected a query response');
+    expect(decoded.rows).toEqual([]);
+  });
+
+  test('an unsupported request Content-Encoding is HTTP 415', async () => {
+    const app = await makeApp();
+    const sync = await app.request('/sync', {
+      method: 'POST',
+      headers: {
+        'content-type': SSP2_CONTENT_TYPE,
+        authorization: 'Bearer good',
+        'content-encoding': 'br',
+      },
+      body: requestBytes().slice().buffer as ArrayBuffer,
+    });
+    expect(sync.status).toBe(415);
+    expect(sync.headers.get('x-host-policy')).toBe('retained');
+    expect(await sync.json()).toMatchObject({
+      code: 'sync.invalid_request',
+      retryable: false,
+    });
+
+    const operations = await makeApp(
+      undefined,
+      new RemoteOperationRegistry([]),
+    ).then((registryApp) =>
+      registryApp.request('/operations', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/vnd.syncular.operations.v1+json',
+          authorization: 'Bearer good',
+          'content-encoding': 'zstd',
+        },
+        body: '{}',
+      }),
+    );
+    expect(operations.status).toBe(415);
+    expect(operations.headers.get('x-host-policy')).toBe('retained');
+    expect(await operations.json()).toMatchObject({
+      code: 'operation.invalid_request',
+      retryable: false,
+    });
+  });
+
+  test('a malformed gzip request body is HTTP 400', async () => {
+    const app = await makeApp();
+    const response = await app.request('/sync', {
+      method: 'POST',
+      headers: {
+        'content-type': SSP2_CONTENT_TYPE,
+        authorization: 'Bearer good',
+        'content-encoding': 'gzip',
+      },
+      body: new Uint8Array([1, 2, 3, 4]).slice().buffer as ArrayBuffer,
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      code: 'sync.invalid_request',
+    });
+  });
+});
+
 describe('unexpected exceptions (SYNCULAR-ERROR-CLASS-001)', () => {
   const SECRET = 'Network connection lost. secret-7f3a';
 

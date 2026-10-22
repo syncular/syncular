@@ -84,7 +84,9 @@ pub use client::{
     SECURITY_PREFLIGHT_REQUIRED_CODE,
 };
 pub use schema::{compile_schema, parse_schema_json, ClientSchema};
-pub use transport::{BlobDownload, BlobUploadGrant, SegmentRequest, Transport, TransportError};
+pub use transport::{
+    BlobDownload, BlobUploadGrant, SegmentFetch, SegmentRequest, Transport, TransportError,
+};
 
 // Re-export the SSP2 stream scanner (§8.7 round-response reassembly) so the
 // native transports (FFI + Tauri plugin) reach it through their existing

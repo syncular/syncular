@@ -77,7 +77,7 @@ import {
   composeEvents,
   createRealtimeHub,
   D1ServerStorage,
-  type ServerStorage,
+  decodeRequestBody,
   errorBody,
   eraseScopeValue,
   type EraseScopeValueOptions,
@@ -92,6 +92,7 @@ import {
   type RemoteOperationRegistry,
   type RemoteOperationResolver,
   RingBufferEvents,
+  type ServerStorage,
   SSP2_CONTENT_TYPE,
   SyncError,
   SyncularAdmin,
@@ -216,6 +217,19 @@ export const OPERATIONS_CONTENT_TYPE =
 export const ADMIN_DO_PATH = '/__syncular_realtime/admin';
 
 /**
+ * §1.3: a forwarded round may carry a gzip body (`decodeRequestBody` accepts
+ * it); any other declared `Content-Encoding` is refused with 415 instead of
+ * being parsed as SSP2 bytes.
+ */
+function unsupportedEncoding(route: 'sync' | 'operations'): Response {
+  const error = new SyncError(
+    route === 'sync' ? 'sync.invalid_request' : 'operation.invalid_request',
+    'unsupported content encoding',
+  );
+  return Response.json(errorBody(error), { status: 415 });
+}
+
+/**
  * The base `SyncularRealtimeDO`. A host subclasses (or instantiates) it with a
  * `RealtimeDOConfig`. The class is platform-shaped: `state.acceptWebSocket` +
  * `webSocket*` handlers are the Cloudflare Durable Object hibernation contract.
@@ -338,7 +352,8 @@ export class SyncularRealtimeHost<
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === SYNC_DO_REQUEST_PATH) {
-      const bytes = new Uint8Array(await request.arrayBuffer());
+      const bytes = await decodeRequestBody(request);
+      if (bytes === undefined) return unsupportedEncoding('sync');
       // A round without PUSH_COMMIT frames writes only its own client
       // record, so it runs beside the FIFO instead of queueing behind every
       // other client's round. An undecodable request takes the FIFO and
@@ -484,7 +499,8 @@ export class SyncularRealtimeHost<
       return Response.json(errorBody(error), { status: error.httpStatus });
     }
     try {
-      const bytes = new Uint8Array(await request.arrayBuffer());
+      const bytes = await decodeRequestBody(request);
+      if (bytes === undefined) return unsupportedEncoding('operations');
       const out = await handleRemoteOperation(
         bytes,
         this.#getHub().requestContextFor(identity),

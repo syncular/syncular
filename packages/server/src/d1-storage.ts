@@ -1425,7 +1425,7 @@ export class D1ServerStorage implements ServerStorage {
               ? migratePayload(plan.oldLayout, table, bytes)
               : bytes;
           return this.#db
-            .prepare(rewriteRowSql(table, 'sqlite'))
+            .prepare(rewriteRowSql(table))
             .bind(
               ...rewriteValues(
                 table,

@@ -237,6 +237,14 @@ The reference server drops the retired relational current-row table and its live
 scope index during the schema bump. Historical commit-log rows stay subject to
 normal retention, so table retirement does not erase data for compliance.
 
+The rows of a retired table are gone once the bump commits, so a merge or split
+of tables carries the rows over before the version that retires the source.
+Create the successor table in one schema version and write the rows into it as
+server-authoritative commits, so they reach the change log and clients. Retire
+the source table in a later version, after the counts match. A bump that both
+creates the successor and drops the source leaves no committed source rows to
+copy from.
+
 `DROP INDEX [IF EXISTS] name` removes a previously declared secondary index
 from the head schema. You may recreate the same name later with a new column or
 uniqueness definition. On a server schema bump, Syncular drops the indexes of

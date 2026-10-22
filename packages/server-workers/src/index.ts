@@ -30,6 +30,7 @@
  * WebSockets are optional, the per-partition push queue is not.
  */
 import {
+  acceptsEncoding,
   type D1Database,
   D1ServerStorage,
   errorBody,
@@ -38,6 +39,7 @@ import {
   SyncError,
   SyncularAdmin,
   type SyncServerConfig,
+  varyOnAcceptEncoding,
 } from '@syncular/server';
 import {
   createSyncularAdminRoutes,
@@ -255,12 +257,13 @@ export function createWorkersFetchHandler<Env = unknown>(
         const error = new SyncError('sync.auth_required');
         return Response.json(errorBody(error), { status: error.httpStatus });
       }
-      return forwardSyncRequest(
+      const forwarded = await forwardSyncRequest(
         request,
         coordinator.namespace,
         auth,
         partitionPath,
       );
+      return withTransportEncoding(request, forwarded);
     }
     if (options.admin !== undefined) {
       const admin = await options.admin(env, ctx);
@@ -304,6 +307,35 @@ export function createWorkersFetchHandler<Env = unknown>(
     const app = createSyncularHono(honoOptions);
     return app.fetch(request);
   };
+}
+
+/**
+ * §1.3: the Durable Object answers `/sync` and `/operations` with identity
+ * bodies. The Worker is the outermost hop and the last place the client's
+ * `Accept-Encoding` is visible, so it declares `Content-Encoding: gzip` and
+ * leaves `encodeBody` at its default (`automatic`): workerd gzips the body
+ * natively as it leaves the edge, and these content types get no compression
+ * from the edge otherwise. A response that already carries an encoding was
+ * encoded by the DO, so it passes through untouched — re-encoding it would
+ * gzip the gzip.
+ */
+function withTransportEncoding(request: Request, response: Response): Response {
+  if (
+    response.status !== 200 ||
+    response.body === null ||
+    response.headers.has('content-encoding')
+  ) {
+    return response;
+  }
+  const headers = new Headers(response.headers);
+  // Both branches are negotiated per request, so caches must key on it.
+  varyOnAcceptEncoding(headers);
+  if (acceptsEncoding(request.headers.get('accept-encoding') ?? '', 'gzip')) {
+    // The encoded length is unknown until the edge writes it.
+    headers.delete('content-length');
+    headers.set('content-encoding', 'gzip');
+  }
+  return new Response(response.body, { status: 200, headers });
 }
 
 /**

@@ -17,6 +17,7 @@ Most Rust hosts use `HostTransport` and never touch this page. Read it when you 
 | `sync(&mut self, request: &[u8])` | yes | One combined push and pull round (`POST /sync`, or loopback) |
 | `realtime_sync(&mut self, request: &[u8])` | yes | The same round over the connected socket (SPEC §8.7); the host owns WebSocket framing |
 | `download_segment(&mut self, request, on_progress)` | yes | Bootstrap segment fetch (SPEC §5.5) |
+| `download_segments(&mut self, fetches, on_progress)` | no | Every eligible segment body of one response, in wire order; the default calls the single fetches in order and stops after the first error |
 | `realtime_connect`, `realtime_send`, `realtime_close` | yes | Socket lifecycle and client-to-server control messages |
 | `supports_url_fetch`, `fetch_url(url, on_progress)` | no | Signed-URL fetches; the default returns an error |
 | `blob_upload`, `blob_download`, `blob_upload_grant`, `blob_put_url`, `fetch_blob_url` | no | Blob endpoints; the defaults return an error |
@@ -24,6 +25,10 @@ Most Rust hosts use `HostTransport` and never touch this page. Read it when you 
 | `realtime_connect_for_client`, `round_deadline`, `set_round_deadline` | no | Per-client connect and the round deadline hooks |
 
 `download_segment` and `fetch_url` receive `&mut dyn FnMut(u64)` as their last argument. Report cumulative decoded body bytes through it. A buffered transport can leave it unused; the core then reports the final count. `HostTransport` reports intermediate download bytes.
+
+A response can carry several `SEGMENT_REF` frames: a paged bootstrap sends one per page. The core collects every eligible descriptor of the response first and calls `download_segments` once with `fetches` in wire order, so a host can overlap the fetches instead of paying one blocking round trip per page. The callback receives the fetch index and that fetch's cumulative bytes, and must be `Send` because a host may report from worker threads. Return one result per attempted fetch, in the same order. A shorter result list means the remaining fetches were not attempted, and the core stops consuming at the first error. All descriptors of one response start together, so the batch start is the fetch start for the §5.4 expiry check.
+
+The default `download_segments` runs `download_segment` and `fetch_url` in order and stops after the first error, which keeps every transport correct without an override. `HostTransport` overrides it: four fetches at a time on scoped threads, each on a `fork_round` clone that carries the round deadline, so four pages cost about one round trip. It attempts every fetch of the batch, and the core still stops at the first error in wire order. The conformance shim keeps the default because its host bridge answers one request at a time.
 
 `HostTransport` (behind `native-transport`) is the reference implementation: blocking HTTP through `ureq` and a `tungstenite` realtime socket with a reader thread. See [`native_transport.rs`](https://github.com/syncular/syncular/blob/main/rust/crates/client/src/native_transport.rs). The FFI and the Tauri plugin share it. If your host already owns an HTTP client, implement the trait over it.
 

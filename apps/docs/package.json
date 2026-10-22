@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@astrojs/markdown-satteri": "0.3.8",
-    "astro": "^7.1.1"
+    "astro": "^7.4.1"
   },
   "devDependencies": {
     "@shikijs/langs": "^4.3.1",

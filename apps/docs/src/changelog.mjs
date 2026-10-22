@@ -17,6 +17,47 @@
 export const changelog = [
   {
     date: '2026-10-22',
+    title: 'Sync rounds are compressed on every runtime',
+    body: 'SPEC §1.3 requires gzip on `/sync` responses, but the Hono adapter served `/sync`, `/operations`, and blob downloads uncompressed on every runtime, and segments compressed only on Bun. Cloudflare does not compress `application/vnd.syncular.*` bodies, so a Workers cold start moved 3.0 MB that gzip makes 0.38 MB. The adapter now negotiates zstd or gzip for all of them, with gzip through `CompressionStream` outside Bun. The Workers fetch handler declares `Content-Encoding: gzip` on the Durable Object round it forwards and workerd encodes it once. Both accept gzip request bodies and answer HTTP 415 for any other request encoding. `encodeSegmentBody` and `encodeSegmentStream` are now `encodeBody` (async) and `encodeStream`.',
+    links: [
+      {
+        href: '/server-workers/#transport-compression',
+        label: 'Cloudflare Workers',
+      },
+    ],
+  },
+  {
+    date: '2026-10-22',
+    title: 'Bootstrap page downloads overlap instead of queueing',
+    body: 'A response that carried four `SEGMENT_REF` pages made both clients fetch them one after the other, each a blocking round trip: 245-340 ms per page, 1.4 s for four. `Transport::download_segments` now takes every eligible descriptor of one response in wire order, and `HostTransport` runs four of them at a time on scoped threads, so four pages cost about one round trip. The TS client issues every page download of a response before it applies the first page. Apply order, content-address verification and the expiry rule are unchanged. When a page fails, the pages applied before it stay applied and the cursor stays unpersisted, so the re-pull recovers. A transport that does not override the batch keeps one fetch at a time with a stop at the first error.',
+    links: [
+      {
+        href: '/platform-rust-specifics/#the-transport-trait',
+        label: 'The Transport trait',
+      },
+      { href: '/concepts-bootstrap/', label: 'Bootstrap' },
+    ],
+  },
+  {
+    date: '2026-10-22',
+    title: 'PostgreSQL commits write their rows in one statement per table',
+    body: 'A PostgreSQL push transaction wrote each upserted row with its own statement, so a 50-row server command cost 59 statements, about 0.5 s behind Hyperdrive. The transaction now stages upserts and writes them before its next statement, one statement per table, and the same command costs 10. A table with a unique index still writes each upsert at once, so a violation names its operation. A schema bump re-encodes stored payloads with one `UPDATE` per 500 rows instead of one per row, deletes the scope-index entries of all retired tables in one statement, and re-reads the schema marker after taking the migration lock: a second process that observed the old version no longer rewrites payloads that the first bump already re-encoded (SQLite included).',
+    links: [
+      {
+        href: '/server-storage-reference/#postgres',
+        label: 'Server storage reference',
+      },
+    ],
+  },
+  {
+    date: '2026-10-22',
+    title:
+      'Bootstrap rounds read first pages in one statement and skip needless image lookups',
+    body: '`PostgresServerStorage` answered the first snapshot pages of a pull with one statement per table, so a bootstrap over 40 tables waited for 40 sequential round trips. The pages of all tables now leave as one statement. A client that accepts sqlite images (`accept` bit 2) made the server look up a stored image for every fresh subscription, one object-store read each on Workers; the lookup now runs only when the first rows page shows the table exceeds one page, the only case where an image can match.',
+    links: [{ href: '/concepts-bootstrap/', label: 'Bootstrap' }],
+  },
+  {
+    date: '2026-10-22',
     title:
       'Schema bumps keep unchanged indexes, and readers stop taking the write lock',
     body: 'A schema bump dropped and rebuilt every declared index of a projection table, which cost 5.3 s for three indexes on 3,000,000 rows. It now compares each Syncular-owned index with its declaration and rebuilds only changed or new ones (11 ms when nothing changed). `touchPartition` wrote the partition registry on every request, so a read-only request took the SQLite write lock; it now writes at most once per 60 seconds (`PARTITION_TOUCH_INTERVAL_MS`). `TableSchema.serverIndexes` adds server-only indexes that lead with any column, or with `_sync_partition`, and may be partial, for application queries that cannot name the partition. `NodeSqliteDatabase` and `BunSqliteDatabase.run` reuse prepared statements.',

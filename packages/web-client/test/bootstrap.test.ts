@@ -6,9 +6,12 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { compileSchema, type SqliteValue } from '@syncular/server';
-import { encodeRow } from '@syncular/core';
+import { SyncClient, type SegmentFetchRequest } from '@syncular/client';
+import { BunClientDatabase } from '@syncular/client/bun';
+import { encodeMessage, encodeRow, encodeRowsSegment } from '@syncular/core';
 import { upsertSql, upsertValues } from '../../server/src/relational-rows';
 import {
+  CLIENT_SCHEMA,
   makeClient,
   TASK_COLUMNS,
   makeServer,
@@ -135,6 +138,165 @@ describe('fresh bootstrap', () => {
 });
 
 describe('external segments (SEGMENT_REF)', () => {
+  /**
+   * A response whose frames are the only authority: N rows pages, one row
+   * each, content-addressed so a misordered apply fails §5.1 verification.
+   */
+  async function pageResponse(ids: readonly string[]): Promise<{
+    response: Uint8Array;
+    pages: { segmentId: string; bytes: Uint8Array }[];
+  }> {
+    const pages = await Promise.all(
+      ids.map(async (id) => {
+        const bytes = encodeRowsSegment({
+          table: 'tasks',
+          schemaVersion: 1,
+          columns: TASK_COLUMNS,
+          blocks: [
+            [
+              {
+                serverVersion: 1,
+                values: [id, 'p1', `row ${id}`, false, null, null],
+              },
+            ],
+          ],
+        });
+        const digest = await crypto.subtle.digest(
+          'SHA-256',
+          bytes.slice().buffer as ArrayBuffer,
+        );
+        const hex = [...new Uint8Array(digest)]
+          .map((byte) => byte.toString(16).padStart(2, '0'))
+          .join('');
+        return { segmentId: `sha256:${hex}`, bytes };
+      }),
+    );
+    return {
+      pages,
+      response: encodeMessage({
+        wireVersion: 3,
+        msgKind: 'response',
+        frames: [
+          { type: 'RESP_HEADER', logEpoch: 'epoch-1', resetRequired: false },
+          {
+            type: 'SUB_START',
+            id: 's1',
+            status: 'active',
+            reasonCode: '',
+            effectiveScopes: { project_id: ['p1'] },
+            bootstrap: true,
+          },
+          ...pages.map((page) => ({
+            type: 'SEGMENT_REF' as const,
+            segmentId: page.segmentId,
+            mediaType: 'rows' as const,
+            table: 'tasks',
+            byteLength: page.bytes.byteLength,
+            rowCount: 1,
+            asOfCommitSeq: 1,
+            scopeDigest: 'digest',
+          })),
+          { type: 'SUB_END', nextCursor: 1 },
+        ],
+      }),
+    };
+  }
+
+  /** One client whose segment downloads park on manual gates. */
+  async function gatedClient(ids: readonly string[]): Promise<{
+    client: SyncClient;
+    pages: { segmentId: string; bytes: Uint8Array }[];
+    started: string[];
+    gates: Map<string, { resolve: () => void; reject: (error: Error) => void }>;
+    allIssued: Promise<void>;
+  }> {
+    const db = new BunClientDatabase();
+    const { response, pages } = await pageResponse(ids);
+    const started: string[] = [];
+    const gates = new Map<
+      string,
+      { resolve: () => void; reject: (error: Error) => void }
+    >();
+    let markIssued!: () => void;
+    const allIssued = new Promise<void>((resolve) => {
+      markIssued = resolve;
+    });
+    const segments = (request: SegmentFetchRequest): Promise<Uint8Array> => {
+      started.push(request.segmentId);
+      const bytes = pages.find(
+        (page) => page.segmentId === request.segmentId,
+      )!.bytes;
+      return new Promise<Uint8Array>((resolve, reject) => {
+        gates.set(request.segmentId, { resolve: () => resolve(bytes), reject });
+        if (gates.size === pages.length) markIssued();
+      });
+    };
+    const client = new SyncClient({
+      database: db,
+      schema: CLIENT_SCHEMA,
+      clientId: 'segment-batch',
+      transport: async () => response,
+      segments,
+    });
+    await client.start();
+    db.exec(
+      "INSERT OR REPLACE INTO _syncular_meta(key, value) VALUES ('logEpoch', 'epoch-1')",
+    );
+    client.subscribe({
+      id: 's1',
+      table: 'tasks',
+      scopes: { project_id: ['p1'] },
+    });
+    return { client, pages, started, gates, allIssued };
+  }
+
+  test('every page download of one response is in flight before the first applies', async () => {
+    const ids = ['a', 'b', 'c'] as const;
+    const { client, pages, started, gates, allIssued } = await gatedClient(ids);
+    try {
+      const round = client.sync();
+      await allIssued;
+      expect(started).toEqual(pages.map((page) => page.segmentId));
+      // No page has resolved, so the apply loop is still parked on the first
+      // one and nothing has applied yet.
+      expect(client.query('SELECT id FROM tasks ORDER BY id')).toEqual([]);
+      // Resolve out of order: apply still runs in frame order.
+      for (const page of [...pages].reverse())
+        gates.get(page.segmentId)!.resolve();
+      const summary = await round;
+      expect(summary.segmentRowsApplied).toBe(3);
+      expect(client.query('SELECT id FROM tasks ORDER BY id')).toEqual([
+        { id: 'a' },
+        { id: 'b' },
+        { id: 'c' },
+      ]);
+      expect(started).toHaveLength(3);
+    } finally {
+      await client.close();
+    }
+  });
+
+  test('a page fetch apply never awaits cannot surface as an unhandled rejection', async () => {
+    const { client, pages, gates, allIssued } = await gatedClient([
+      'a',
+      'b',
+      'c',
+    ]);
+    try {
+      const round = client.sync();
+      await allIssued;
+      // The first page fails, so the apply loop aborts before the others are
+      // awaited; their rejections must stay handled.
+      gates.get(pages[0]!.segmentId)!.reject(new Error('segment fetch failed'));
+      await expect(round).rejects.toThrow('segment fetch failed');
+      for (const page of pages.slice(1))
+        gates.get(page.segmentId)!.reject(new Error('late failure'));
+      expect(client.subscription('s1')?.cursor).toBe(-1);
+    } finally {
+      await client.close();
+    }
+  });
+
   test('referenced segments download, verify, and apply', async () => {
     const server = makeServer();
     server.limits.inlineSegmentMaxBytes = 0; // force SEGMENT_REF

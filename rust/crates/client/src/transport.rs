@@ -32,6 +32,17 @@ pub struct SegmentRequest {
     pub requested_scopes_json: String,
 }
 
+/// One segment body fetch of a response's batch: the direct endpoint (§5.5) or
+/// a signed URL (§5.4). The client resolves §5.4 descriptor routing before the
+/// batch, so a URL arm here is always fetchable (never at/past expiry).
+#[derive(Debug, Clone)]
+pub enum SegmentFetch {
+    /// Direct-endpoint request (§5.5).
+    Direct(SegmentRequest),
+    /// Plain GET of a signed URL; the URL is the entire grant (§5.4).
+    Url(String),
+}
+
 /// A §5.9.5 blob download result: inline bytes, or a presigned url the client
 /// fetches directly (always-issue). `url_expires_at_ms` is present iff `url`.
 #[derive(Debug, Clone)]
@@ -83,6 +94,36 @@ pub trait Transport {
         request: &SegmentRequest,
         _on_progress: &mut dyn FnMut(u64),
     ) -> Result<Vec<u8>, TransportError>;
+    /// Every eligible segment body of one response, in wire order (§5.4 / §5.5).
+    /// `on_progress` receives the fetch index and that fetch's cumulative
+    /// decoded bytes.
+    ///
+    /// Returns one result per attempted fetch, in the same order. The default
+    /// runs the single `download_segment` / `fetch_url` calls in order and
+    /// stops after the first error, so a shorter result list means the
+    /// remaining fetches were not attempted. A host that overlaps the fetches
+    /// may attempt all of them; the client still stops consuming at the first
+    /// error, at that descriptor's position in the wire order.
+    fn download_segments(
+        &mut self,
+        fetches: &[SegmentFetch],
+        on_progress: &mut (dyn FnMut(usize, u64) + Send),
+    ) -> Vec<Result<Vec<u8>, TransportError>> {
+        let mut results = Vec::new();
+        for (index, fetch) in fetches.iter().enumerate() {
+            let mut report = |bytes| on_progress(index, bytes);
+            let result = match fetch {
+                SegmentFetch::Direct(request) => self.download_segment(request, &mut report),
+                SegmentFetch::Url(url) => self.fetch_url(url, &mut report),
+            };
+            let failed = result.is_err();
+            results.push(result);
+            if failed {
+                break;
+            }
+        }
+        results
+    }
     /// §5.4 direct URL fetch capability: `true` makes the client
     /// advertise accept bit 3 (capability negotiation, §4.2). Default:
     /// not capable.

@@ -1,8 +1,85 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.38.0** (`v0.38.0`). All artifacts use Apache-2.0, except
+current release is **0.39.0** (`v0.39.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.39.0 release notes
+
+0.39.0 answers the cold-start and migration feedback of a Workers deployment
+on Durable Objects, Hyperdrive, and Neon (8 to 10 ms per statement). It
+renames public server exports and adds a `Transport` method, so a patch number
+would hide the surface. SSP2 stays at wire version 3, the server storage
+layout does not change, and every package and crate ships together.
+
+Server:
+
+- `PostgresServerStorage` stages the upserts of a push transaction and writes
+  them before the transaction's next statement, one statement per table with
+  the rows' scope-index entries. A 50-row server command costs 10 statements
+  instead of 59; the count no longer grows with the rows. A table with a
+  unique index writes each upsert at once, so a violation names its
+  operation.
+- A PostgreSQL schema bump re-encodes stored payloads with one `UPDATE` per
+  500 rows instead of one per row, deletes the scope-index and blob-reference
+  entries of all retired tables in one statement each, and re-reads the
+  schema marker after it takes the migration lock. A second process that
+  observed the old version before the lock leaves the database unchanged; in
+  0.38.0 it re-ran the rewrite with the stale layouts. `SqliteServerStorage`
+  re-reads the marker under its writer lock the same way (SPEC "Schema
+  upgrade writer fence").
+- A pull's first snapshot pages leave as one statement for all tables (a
+  `UNION ALL` branch per table) instead of one per table.
+- A fresh bootstrap of a client that accepts sqlite images looks up a stored
+  image only when the first rows page shows the table exceeds one page (SPEC
+  §5.3). A 213-subscription bootstrap made 154 to 164 object-store reads that
+  found nothing; small tables now make none.
+- Transport compression (SPEC §1.3): `createSyncularHono` negotiates zstd or
+  gzip for `/sync`, `/operations`, blob downloads, and segments on every
+  runtime (gzip through `CompressionStream` outside Bun), and accepts gzip
+  request bodies. `createWorkersFetchHandler` declares `Content-Encoding:
+  gzip` on the Durable Object round it forwards, and workerd encodes it once.
+  `encodeSegmentBody`/`encodeSegmentStream` are renamed `encodeBody` (now
+  async) and `encodeStream`; `acceptsEncoding`, `varyOnAcceptEncoding`, and
+  `decodeRequestBody` are exported.
+
+Clients:
+
+- `Transport::download_segments(fetches, on_progress)` (Rust) receives every
+  eligible `SEGMENT_REF` of a response in wire order. The default fetches them
+  one after the other; `HostTransport` runs four at a time. The TypeScript
+  client issues all downloads of a response before it applies the first page.
+  Apply order, content-address verification, and the expiry rule are
+  unchanged.
+
+Not changed, with reasons:
+
+- Carrying rows between tables inside a bump: the bump is one transaction
+  under the migration lock, so a copy there blocks every push for its
+  duration and repeats the unbudgeted per-row cost this release removes. The
+  documented route stays: create the successor in one version, write the
+  rows as server commits, retire the source later
+  ([Retire tables and indexes](/guide-schema/#retire-tables-and-indexes)).
+- First-contact bootstrap without epoch acquisition: both clients reject a
+  non-reset response to an epoch-less request, so serving rows there needs a
+  wire version; it saves one request once per replica.
+- An "until bootstrapped" idle mode: SPEC §4.5 has no completeness flag, a
+  window can stop below `limitCommits`, so the confirming round stays. Hosts
+  that render between rounds drive `syncUntilIdle(1)` and read the round's
+  `bootstrapping` list ([Bootstrap](/concepts-bootstrap/#running-rounds-until-idle)).
+- `inlineSegmentMaxBytes` keeps its 256 KiB default: `handleSyncRequest`
+  buffers the whole response, so the inline limit bounds response memory.
+  With compressed rounds a host may raise it.
+
+**Upgrade notes.** Replace `encodeSegmentBody` with `await encodeBody` and
+`encodeSegmentStream` with `encodeStream`. A Workers host that wraps
+`createWorkersFetchHandler` to add `Content-Encoding` removes the wrapper:
+the forwarded rounds, segments, and blobs now arrive encoded, and a wrapper
+that sets the header again without checking for it sends gzip inside gzip. A
+custom `Transport` keeps compiling; override `download_segments` to overlap
+fetches (its progress callback is `Send`). Upgrade all 12 npm packages and 6
+crates together. No schema bump, storage migration, or wire change is
+required.
 
 ## 0.38.0 release notes
 

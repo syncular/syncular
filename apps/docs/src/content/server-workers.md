@@ -269,6 +269,14 @@ Retention windows, eligibility rules, and what to alert on are in [Operations an
 ::::
 :::::
 
+## Transport compression
+
+Cloudflare's edge does not compress `application/vnd.syncular.*` or `application/octet-stream` bodies, so the Worker compresses them (SPEC §1.3). `POST /sync` and `POST /operations` are answered by the partition's Durable Object as identity bodies. The Worker is the outermost hop, so it declares `Content-Encoding: gzip` on a 200 response whose body declares no encoding when the request accepts gzip, and leaves `encodeBody` at its default: workerd gzips the body once as it leaves the edge. A response that already declares an encoding passes through unchanged, so no body is encoded twice.
+
+Segment and blob routes run inside `createSyncularHono`, which encodes its own bodies from `Accept-Encoding` and marks them `encodeBody: 'manual'`. On Workers the only codec is gzip through `CompressionStream`; a Bun deployment of the same adapter prefers zstd. Every response whose body was negotiated carries `Vary: Accept-Encoding`.
+
+Clients may gzip a request body. The forwarded `/sync` and `/operations` requests keep the client's `Content-Encoding` header, and the Durable Object decodes gzip before it parses SSP2. Any other request encoding is answered with HTTP 415.
+
 ## Admin console
 
 Pass `admin` to `createWorkersFetchHandler`. The Worker runs `authorize` and `authorizeActions`, serves the console page and the fleet list (`GET /admin/partitions`), and forwards every partition-scoped admin request to the partition's Durable Object. The object keeps an event ring composed into the sync config's `events`, so the event tail, metrics, failures, and client pages see that partition's rounds, and it runs operator actions in its write queue.

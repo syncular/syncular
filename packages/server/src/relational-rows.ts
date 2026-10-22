@@ -566,26 +566,31 @@ export function upsertValues(
   ];
 }
 
-function placeholderList(count: number, dialect: RelationalDialect): string {
-  if (dialect === 'sqlite') return new Array(count).fill('?').join(',');
-  const out: string[] = [];
-  for (let i = 1; i <= count; i++) out.push(`$${i}`);
-  return out.join(',');
-}
-
-/** Upsert statement text (bind with `upsertValues`). */
+/**
+ * Upsert statement text (bind with `upsertValues`). PostgreSQL takes `rows`
+ * rows in one statement, bound as consecutive `upsertValues` lists; their
+ * row ids must be distinct.
+ */
 export function upsertSql(
   table: CompiledTable,
   dialect: RelationalDialect,
+  rows = 1,
 ): string {
   const names = tableColumnNames(table);
   const quoted = names.map((name) => quoteIdent(name)).join(', ');
-  const values = placeholderList(names.length, dialect);
+  const values =
+    dialect === 'sqlite'
+      ? `(${new Array(names.length).fill('?').join(',')})`
+      : Array.from(
+          { length: rows },
+          (_, row) =>
+            `(${names.map((_, column) => `$${row * names.length + column + 1}`).join(',')})`,
+        ).join(',');
   const updates = names
     .slice(2) // partition + row id are the conflict key
     .map((name) => `${quoteIdent(name)}=excluded.${quoteIdent(name)}`)
     .join(', ');
-  return `INSERT INTO ${quoteIdent(table.name)} (${quoted}) VALUES (${values})
+  return `INSERT INTO ${quoteIdent(table.name)} (${quoted}) VALUES ${values}
      ON CONFLICT (${quoteIdent(SYNC_PARTITION_COLUMN)}, ${quoteIdent(SYNC_ROW_ID_COLUMN)}) DO UPDATE SET ${updates}`;
 }
 
@@ -742,26 +747,40 @@ export function commitWindowPageSql(
 
 /**
  * PostgreSQL set-based form of `scanRowPageSql`: one statement answers the
- * page of every subscription scanning `table` in a pull. `$2` is a JSON array
- * of `{i, tbl, var, vals, after, lim}` records; each record runs the same
- * index-first candidate subquery through a LATERAL join, so every
- * subscription keeps its own keyset cursor and LIMIT. Rows arrive ordered
- * by (i, row_id).
+ * page of every subscription scanning any table in a pull. `$2` is a JSON
+ * array of `{i, tbl, var, vals, after, lim}` records; each record runs the
+ * same index-first candidate subquery through a LATERAL join, so every
+ * subscription keeps its own keyset cursor and LIMIT. The candidate side is
+ * table-agnostic (a spec names its table), so the statement joins the row
+ * table once per table present in the batch through a UNION ALL branch that
+ * keeps only its own candidates. Rows arrive ordered by (i, row_id).
  *
  * Params: [partition, specs (JSON text)]. The specs bind as text before
  * the JSONB cast, so a driver that JSON-encodes a string bound to a `jsonb`
  * parameter (Bun.sql) cannot turn the array into a JSON string.
  */
-export function scanRowBatchSql(table: CompiledTable): string {
-  return `SELECT s.i AS sub, c.row_id AS row_id, r.${quoteIdent(SYNC_VERSION_COLUMN)} AS server_version, r.${quoteIdent(SYNC_SCOPES_COLUMN)} AS scopes, r.${quoteIdent(SYNC_PAYLOAD_COLUMN)} AS payload, r.${quoteIdent(SYNC_COLUMN_VERSIONS_COLUMN)} AS column_versions
-     FROM jsonb_to_recordset($2::text::jsonb) AS s(i int, tbl text, var text, vals text[], after text, lim int)
-     CROSS JOIN LATERAL (SELECT DISTINCT row_id FROM sync_row_scopes
-       WHERE partition=$1 AND tbl=s.tbl AND var=s.var AND value=ANY(s.vals)
-         AND row_id>s.after
-       ORDER BY row_id LIMIT s.lim) c
-     LEFT JOIN ${quoteIdent(table.name)} r
-       ON r.${quoteIdent(SYNC_PARTITION_COLUMN)}=$1 AND r.${quoteIdent(SYNC_ROW_ID_COLUMN)}=c.row_id
-     ORDER BY s.i, c.row_id`;
+export function scanRowBatchSql(tables: readonly CompiledTable[]): string {
+  // One branch per table, each keeping only its own candidates and selecting
+  // the same meta columns so the caller decodes one row shape.
+  const projection = tables
+    .map((table) => {
+      const quoted = quoteIdent(table.name);
+      return `SELECT c.sub AS sub, c.row_id AS row_id, r.${quoteIdent(SYNC_VERSION_COLUMN)} AS server_version, r.${quoteIdent(SYNC_SCOPES_COLUMN)} AS scopes, r.${quoteIdent(SYNC_PAYLOAD_COLUMN)} AS payload, r.${quoteIdent(SYNC_COLUMN_VERSIONS_COLUMN)} AS column_versions
+       FROM cand c
+       LEFT JOIN ${quoted} r
+         ON r.${quoteIdent(SYNC_PARTITION_COLUMN)}=$1 AND r.${quoteIdent(SYNC_ROW_ID_COLUMN)}=c.row_id
+      WHERE c.tbl='${table.name.replaceAll("'", "''")}'`;
+    })
+    .join('\n     UNION ALL ');
+  return `WITH cand AS (
+       SELECT s.i AS sub, c.row_id AS row_id, s.tbl AS tbl
+         FROM jsonb_to_recordset($2::text::jsonb) AS s(i int, tbl text, var text, vals text[], after text, lim int)
+         CROSS JOIN LATERAL (SELECT DISTINCT row_id FROM sync_row_scopes
+           WHERE partition=$1 AND tbl=s.tbl AND var=s.var AND value=ANY(s.vals)
+             AND row_id>s.after
+           ORDER BY row_id LIMIT s.lim) c)
+     ${projection}
+     ORDER BY sub, row_id`;
 }
 
 /**
@@ -1054,30 +1073,17 @@ export function selectRowsForRewriteSql(
 }
 
 /**
- * Rewrite one row during a migration: refresh the projection columns (when
+ * SQLite/D1: rewrite one row during a migration: refresh the projection columns (when
  * materialized) and the payload. Bind with `rewriteValues`.
  */
-export function rewriteRowSql(
-  table: CompiledTable,
-  dialect: RelationalDialect,
-): string {
-  const sets: string[] = [];
-  let i = 1;
-  if (table.materialize) {
-    for (const column of table.columns) {
-      sets.push(
-        `${quoteIdent(column.name)}=${dialect === 'sqlite' ? '?' : `$${i}`}`,
-      );
-      i++;
-    }
-  }
-  sets.push(
-    `${quoteIdent(SYNC_PAYLOAD_COLUMN)}=${dialect === 'sqlite' ? '?' : `$${i}`}`,
-  );
-  i++;
-  const wherePartition = dialect === 'sqlite' ? '?' : `$${i}`;
-  const whereRowId = dialect === 'sqlite' ? '?' : `$${i + 1}`;
-  return `UPDATE ${quoteIdent(table.name)} SET ${sets.join(', ')} WHERE ${quoteIdent(SYNC_PARTITION_COLUMN)}=${wherePartition} AND ${quoteIdent(SYNC_ROW_ID_COLUMN)}=${whereRowId}`;
+export function rewriteRowSql(table: CompiledTable): string {
+  const sets = [
+    ...(table.materialize
+      ? table.columns.map((column) => `${quoteIdent(column.name)}=?`)
+      : []),
+    `${quoteIdent(SYNC_PAYLOAD_COLUMN)}=?`,
+  ];
+  return `UPDATE ${quoteIdent(table.name)} SET ${sets.join(', ')} WHERE ${quoteIdent(SYNC_PARTITION_COLUMN)}=? AND ${quoteIdent(SYNC_ROW_ID_COLUMN)}=?`;
 }
 
 /** Bind values for `rewriteRowSql` from the (already migrated) payload. */

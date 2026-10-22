@@ -656,8 +656,6 @@ END`);
       // rewrite stored rows (payload re-encode for layout changes, and/or
       // projection backfill for flipped-on materialization). One
       // transaction: a failed bump leaves no half-state.
-      const layouts = parseLayouts(marker?.layouts);
-      const retiredTables = retiredTableNames(schema, layouts);
       const existing = new Map<string, ReadonlySet<string>>();
       const existingIndexes = new Map<string, ReadonlyMap<string, string>>();
       for (const table of schema.tables.values()) {
@@ -693,6 +691,25 @@ END`);
       await this.#serializeWrite(() => {
         this.db.exec('BEGIN IMMEDIATE');
         try {
+          // Another process sharing the database may have bumped between the
+          // marker read above and the writer lock; the locked marker decides
+          // (SPEC "Schema upgrade writer fence").
+          const locked = this.db
+            .query<{ schema_version: number; layouts: string }, []>(
+              'SELECT schema_version, layouts FROM sync_schema_meta WHERE id=1',
+            )
+            .get();
+          if (locked !== null && locked.schema_version > schema.version) {
+            throw new Error(
+              `stored schema version ${locked.schema_version} is newer than the configured schema (${schema.version}) — refusing to run an older server against a migrated database`,
+            );
+          }
+          if (locked !== null && locked.schema_version === schema.version) {
+            this.db.exec('COMMIT');
+            return;
+          }
+          const layouts = parseLayouts(locked?.layouts);
+          const retiredTables = retiredTableNames(schema, layouts);
           for (const tableName of retiredTables) {
             this.db
               .query('DELETE FROM sync_row_scopes WHERE tbl=?')
@@ -880,7 +897,7 @@ END`);
     oldLayout: readonly StoredColumnLayout[] | undefined,
   ): void {
     const select = selectRowsForRewriteSql(table, 'sqlite');
-    const update = this.db.query(rewriteRowSql(table, 'sqlite'));
+    const update = this.db.query(rewriteRowSql(table));
     const BATCH = 500;
     let afterPartition = '';
     let afterRowId = '';

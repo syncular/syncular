@@ -416,6 +416,10 @@ describe('segment delivery negotiation (§4.2, §5.4, §5.7)', () => {
       },
     });
     const callerDigest = await scopeDigest({ project_id: ['p1'] });
+    // Two rows in scope put the snapshot past one rows page, which is the
+    // §5.3 condition for consulting the store at all.
+    await seedTask(t, 'seed-1', 't1', 'p1', 'one');
+    const pin = await seedTask(t, 'seed-2', 't2', 'p1', 'two');
     // Two byte-identical sqlite publications merge into one entry under
     // different digests; the second digest becomes the record's primary.
     const bytes = new Uint8Array([1, 2, 3]);
@@ -425,8 +429,8 @@ describe('segment delivery negotiation (§4.2, §5.4, §5.7)', () => {
       table: 'tasks',
       schemaVersion: 1,
       mediaType: 'sqlite' as const,
-      asOfCommitSeq: 0,
-      rowCount: 0,
+      asOfCommitSeq: pin,
+      rowCount: 2,
       rowCursor: null,
       nextRowCursor: null,
     };
@@ -444,7 +448,7 @@ describe('segment delivery negotiation (§4.2, §5.4, §5.7)', () => {
     expect(record.scopeDigests).toEqual(['other-digest', callerDigest]);
 
     const message = await sync(t, [
-      pullHeader({ accept: 0b1101 }),
+      pullHeader({ accept: 0b1101, limitSnapshotRows: 1 }),
       subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
     ]);
     const ref = refSegments(section(message, 's1').body)[0];

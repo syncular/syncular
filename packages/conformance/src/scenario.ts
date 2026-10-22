@@ -522,13 +522,13 @@ export class ScenarioContext {
                 'newClient({ signedUrls: true }) needs a signed-urls server',
               );
             }
+            // Claimed when the fetch is issued: a client that overlaps a
+            // response's fetches still has its first issued one corrupted.
+            const corrupt = faults.corruptNextUrlFetch;
+            faults.corruptNextUrlFetch = false;
             const result = await serve(url);
             if (!result.ok) throw new EndpointError(result.error);
-            if (faults.corruptNextUrlFetch) {
-              faults.corruptNextUrlFetch = false;
-              return faults.corrupt(result.bytes);
-            }
-            return result.bytes;
+            return corrupt ? faults.corrupt(result.bytes) : result.bytes;
           }
         : undefined;
 

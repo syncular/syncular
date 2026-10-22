@@ -72,6 +72,8 @@ When the budget runs out, the call returns a partial-success result. The result 
 
 The aggregate accumulates counters and outcomes, while readiness state (`bootstrapping`, `deferredCommits`, `schemaFloor`) describes the latest round, so an empty `bootstrapping` list alone does not establish readiness. The direct-client scheduler and the worker auto-sync loop schedule another batch when the budget runs out, without waiting for a new write or realtime notification.
 
+A round that applied commits or segment rows is followed by another round, because the protocol carries no "more" flag: a window cut at `limitCommits` is visible only to the next pull, and the cut can fall below the limit when the next commit would exceed it (SPEC §4.5). The last round of a run therefore usually confirms that nothing is left. A host that renders between rounds drives `syncUntilIdle(1)` (Rust: `sync_until_idle(Some(1))`) in a loop: after the round whose report has an empty `bootstrapping` list and no `resets`, every subscription holds its snapshot, so the host renders and runs the confirming round afterwards.
+
 ## Advanced: server image construction and publishing
 
 The sqlite-image path and signed URLs are opt-in on the server. They need a segment store (`MemorySegmentStore`, `SqliteSegmentStore`, or `S3SegmentStore`) and, for signed URLs, a signer. [Server setup](/guide-server/) covers the stores and the CDN setup.
@@ -85,6 +87,8 @@ Without a builder, the server can reuse a matching stored SQLite image. Cold boo
 ### Publishing images from another host
 
 A Workers host has no SQLite engine and cannot build images. It serves an image only when one is already stored under the key its pull looks up: table, schema version, scope digest, log epoch, and pin. A bootstrap on the sqlite lane pins at its **scope pin**: the newest commit that changed a row in its scope, capped at the round's `maxCommitSeq` and raised to the pruning horizon ([SPEC §4.7](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#47-bootstrap-state-machine)). Commits to other tables or other scopes leave the pin, and so the stored image, current.
+
+The pull reads the store only when the table's snapshot exceeds one rows page. A smaller snapshot arrives as rows, so the reuse lookup costs nothing on small tables.
 
 `publishSqliteImage` stores that image from a host that has an engine, such as a Bun process with the production PostgreSQL storage and the segment store the serving host reads.
 

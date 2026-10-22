@@ -67,9 +67,10 @@ import {
   migratePayload,
   parseLayouts,
   quoteIdent,
+  tableColumnNames,
   retiredTableNames,
   rewritePlan,
-  rewriteRowSql,
+  columnSqlType,
   rewriteValues,
   SCHEMA_META_DDL_POSTGRES,
   SYNC_COLUMN_VERSIONS_COLUMN,
@@ -153,7 +154,7 @@ import { assertScopeIndexedScan, resolveIndexRowScan } from './storage-query';
  * their table.
  *
  * `sync_row_scopes_by_row (partition, tbl, row_id)` is the one secondary
- * scope index: `writeRowOn` and `deleteRow` replace a row's scope entries
+ * scope index: `writeRowsOn` and `deleteRow` replace a row's scope entries
  * with a `(partition, tbl, row_id)` predicate, and `row_id` is the LAST
  * column of the inverted PRIMARY KEY, so without this index that predicate
  * scans the table's whole scope range on every row written (a bulk import
@@ -645,8 +646,30 @@ async function rewriteRowsOn(
   oldLayout: readonly StoredColumnLayout[] | undefined,
 ): Promise<void> {
   const select = selectRowsForRewriteSql(table, 'postgres');
-  const update = rewriteRowSql(table, 'postgres');
-  const BATCH = 500;
+  // One UPDATE per page: behind a network hop (Hyperdrive, a managed
+  // database) every statement is a round trip, and the bump holds the
+  // migration lock for its whole duration. The page's rows bind as one
+  // VALUES list with typed placeholders (`rewriteValues` order: projection
+  // columns, payload, partition, row id).
+  const types = [
+    ...(table.materialize
+      ? table.columns.map((column) => columnSqlType(column, 'postgres'))
+      : []),
+    'BYTEA',
+    'TEXT',
+    'TEXT',
+  ];
+  const projected = table.materialize ? table.columns : [];
+  const sets = [
+    ...projected.map((column, i) => `${quoteIdent(column.name)}=v.c${i}`),
+    `${quoteIdent(SYNC_PAYLOAD_COLUMN)}=v.c${projected.length}`,
+  ].join(', ');
+  const aliases = types.map((_, i) => `c${i}`).join(', ');
+  const partitionAlias = `c${projected.length + 1}`;
+  const rowIdAlias = `c${projected.length + 2}`;
+  // A page binds types.length parameters per row; PGlite corrupts its state
+  // above 32,767 bound parameters (see PG_CHANGES_PER_STATEMENT).
+  const batch = Math.max(1, Math.min(500, Math.floor(30_000 / types.length)));
   let afterPartition = '';
   let afterRowId = '';
   for (;;) {
@@ -654,21 +677,30 @@ async function rewriteRowsOn(
       partition: string;
       row_id: string;
       payload: unknown;
-    }>(select, [afterPartition, afterRowId, BATCH]);
+    }>(select, [afterPartition, afterRowId, batch]);
     if (rows.length === 0) break;
-    for (const row of rows) {
+    const params: unknown[] = [];
+    const values = rows.map((row) => {
       const bytes = asBytes(row.payload);
       const payload =
         oldLayout !== undefined
           ? migratePayload(oldLayout, table, bytes)
           : bytes;
-      await q.query(
-        update,
-        rewriteValues(table, row.partition, row.row_id, payload, 'postgres'),
+      const base = params.length;
+      params.push(
+        ...rewriteValues(table, row.partition, row.row_id, payload, 'postgres'),
       );
-    }
+      return `(${types.map((type, i) => `$${base + i + 1}::${type}`).join(',')})`;
+    });
+    await q.query(
+      `UPDATE ${quoteIdent(table.name)} AS t SET ${sets}
+         FROM (VALUES ${values.join(',')}) AS v(${aliases})
+        WHERE t.${quoteIdent(SYNC_PARTITION_COLUMN)}=v.${partitionAlias}
+          AND t.${quoteIdent(SYNC_ROW_ID_COLUMN)}=v.${rowIdAlias}`,
+      params,
+    );
     const last = rows[rows.length - 1];
-    if (last === undefined || rows.length < BATCH) break;
+    if (last === undefined || rows.length < batch) break;
     afterPartition = last.partition;
     afterRowId = last.row_id;
   }
@@ -709,37 +741,70 @@ async function scanRowsByIndexOn(
   return rows.map(toStoredRow);
 }
 
-async function writeRowOn(
+/**
+ * Write rows of one table in one statement per chunk: the upsert, and the
+ * scope index synced to each row's scope map (entries outside it deleted,
+ * missing ones inserted). Row ids are distinct, so no index entry is touched
+ * twice and the writable CTEs cannot conflict. The scopes bind as text
+ * before the JSONB cast (see `appendCommit`). Every chunk is handed to `q`
+ * before the first one settles, so a statement issued after this call
+ * queues behind all of them on the transaction FIFO.
+ */
+function writeRowsOn(
   q: PgQueryable,
   compiled: CompiledTable,
   partition: string,
-  row: StoredRow,
-): Promise<void> {
-  // One statement per row write: the upsert, and the scope index synced to
-  // the row's scope map (entries outside it deleted, missing ones inserted).
-  // No index entry is touched twice, so the writable CTEs cannot conflict.
-  // The scopes bind as text before the JSONB cast (see `appendCommit`).
-  const params = upsertValues(compiled, partition, row, 'postgres');
-  const n = params.length;
-  await q.query(
-    `WITH upserted AS (${upsertSql(compiled, 'postgres')}),
-     scope AS (SELECT key, value FROM jsonb_each_text($${n + 1}::text::jsonb)),
-     removed AS (
-       DELETE FROM sync_row_scopes
-        WHERE partition=$${n + 2} AND tbl=$${n + 3} AND row_id=$${n + 4}
-          AND (var, value) NOT IN (SELECT key, value FROM scope)
-     )
-     INSERT INTO sync_row_scopes(partition, tbl, var, value, row_id)
-     SELECT $${n + 2}, $${n + 3}, key, value, $${n + 4} FROM scope
-     ON CONFLICT DO NOTHING`,
-    [
-      ...params,
-      JSON.stringify(row.scopes),
-      partition,
-      compiled.name,
-      row.rowId,
-    ],
-  );
+  rows: readonly {
+    readonly row: StoredRow;
+    /** `upsertValues` of the row, computed when it was staged. */
+    readonly values: readonly unknown[];
+  }[],
+): Promise<unknown> {
+  const width = tableColumnNames(compiled).length;
+  // PGlite corrupts its state above 32,767 bound parameters (see
+  // PG_CHANGES_PER_STATEMENT).
+  const chunk = Math.max(1, Math.floor(30_000 / width));
+  const writes: Promise<unknown>[] = [];
+  for (let first = 0; first < rows.length; first += chunk) {
+    const slice = rows.slice(first, first + chunk);
+    const params = slice.flatMap((entry) => entry.values);
+    const n = params.length;
+    writes.push(
+      q.query(
+        `WITH upserted AS (${upsertSql(compiled, 'postgres', slice.length)}),
+         batch AS (
+           SELECT row_id, scopes
+             FROM jsonb_to_recordset($${n + 1}::text::jsonb) AS r(row_id text, scopes jsonb)
+         ),
+         scope AS (
+           SELECT batch.row_id, entry.key, entry.value
+             FROM batch CROSS JOIN LATERAL jsonb_each_text(batch.scopes) AS entry
+         ),
+         removed AS (
+           DELETE FROM sync_row_scopes existing
+            USING batch
+            WHERE existing.partition=$${n + 2} AND existing.tbl=$${n + 3}
+              AND existing.row_id=batch.row_id
+              AND NOT EXISTS (
+                SELECT 1 FROM scope
+                 WHERE scope.row_id=existing.row_id
+                   AND scope.key=existing.var AND scope.value=existing.value)
+         )
+         INSERT INTO sync_row_scopes(partition, tbl, var, value, row_id)
+         SELECT $${n + 2}, $${n + 3}, key, value, row_id FROM scope
+         ON CONFLICT DO NOTHING`,
+        [
+          ...params,
+          JSON.stringify(
+            slice.map(({ row }) => ({ row_id: row.rowId, scopes: row.scopes })),
+          ),
+          partition,
+          compiled.name,
+        ],
+      ),
+    );
+  }
+  return Promise.all(writes);
 }
 
 async function getPushResultOn(
@@ -788,6 +853,8 @@ async function queryAuthoritativeOn(
 
 class PostgresTransaction implements StorageTransaction {
   #client: PgQueryable;
+  /** The FIFO without the staged-write prelude (see the constructor). */
+  #serial: PgQueryable;
   #partition: string;
   /** Storage-owned relation rewrite, bound to this transaction's partition. */
   readonly #prepareQuery: (
@@ -805,6 +872,25 @@ class PostgresTransaction implements StorageTransaction {
    */
   readonly #prefetchedRows = new Map<string, StoredRow | null>();
   readonly #prefetchedTombstones = new Map<string, number | null>();
+  /**
+   * Upserts staged per table (row id → row and its push operation index).
+   * Every statement of this transaction writes them first (see the
+   * constructor), so reads and later writes observe them; a commit's rows
+   * reach the database as one statement per table instead of one per row.
+   * Tables with a unique index write immediately: a violation must name its
+   * operation.
+   */
+  readonly #staged = new Map<
+    CompiledTable,
+    Map<
+      string,
+      {
+        readonly row: StoredRow;
+        readonly values: readonly unknown[];
+        readonly opIndex?: number;
+      }
+    >
+  >();
   /** Resolves/rejects the `transaction(fn)` wrapper (see `begin`). */
   #resolve: () => void;
   #reject: (error: unknown) => void;
@@ -825,13 +911,30 @@ class PostgresTransaction implements StorageTransaction {
     // issued through this transaction is chained on one FIFO — the same
     // shape as `SqliteServerStorage.queryAuthoritative`.
     let tail: Promise<void> = Promise.resolve();
-    this.#client = {
+    const serial: PgQueryable = {
       query: <Row>(text: string, params?: readonly unknown[]) => {
         const run = tail.then(() => client.query<Row>(text, params));
         tail = run.then(
           () => undefined,
           () => undefined,
         );
+        return run;
+      },
+    };
+    this.#serial = serial;
+    this.#client = {
+      query: async <Row>(text: string, params?: readonly unknown[]) => {
+        // Queue the staged writes ahead of this statement synchronously, so
+        // a concurrently issued statement cannot overtake them.
+        const staged = this.#writeStaged();
+        const run = serial.query<Row>(text, params);
+        try {
+          await staged;
+        } catch (error) {
+          // The aborted transaction fails the queued statement too.
+          run.catch(() => undefined);
+          throw error;
+        }
         return run;
       },
     };
@@ -845,6 +948,27 @@ class PostgresTransaction implements StorageTransaction {
 
   #assertOpen(): void {
     if (!this.#open) throw new Error('transaction already finished');
+  }
+
+  #writeStaged(): Promise<unknown> {
+    if (this.#staged.size === 0) return Promise.resolve();
+    const staged = [...this.#staged];
+    this.#staged.clear();
+    return Promise.all(
+      staged.map(([table, rows]) => {
+        const entries = [...rows.values()];
+        return writeRowsOn(this.#serial, table, this.#partition, entries).catch(
+          (error: unknown) => {
+            // Staged tables have no unique index, so a violation is a column
+            // constraint; it names the first staged operation of the table.
+            if (isPostgresConstraintError(error)) {
+              throw new StorageConstraintError(error, entries[0]?.opIndex);
+            }
+            throw error;
+          },
+        );
+      }),
+    );
   }
 
   getRow(table: string, rowId: string): Promise<StoredRow | undefined> {
@@ -1039,6 +1163,7 @@ class PostgresTransaction implements StorageTransaction {
     if (!this.#pushApplySavepoint) {
       throw new Error('push rejection requires its apply savepoint');
     }
+    this.#staged.clear();
     await this.#client.query('ROLLBACK TO SAVEPOINT syncular_push_candidate');
     await this.#client.query('RELEASE SAVEPOINT syncular_push_candidate');
     this.#pushApplySavepoint = false;
@@ -1053,13 +1178,28 @@ class PostgresTransaction implements StorageTransaction {
   ): Promise<void> {
     this.#assertOpen();
     this.#prefetchedRows.delete(`${table}\u0000${row.rowId}`);
-    try {
-      await writeRowOn(
-        this.#client,
-        this.#resolveTable(table),
-        this.#partition,
+    const compiled = this.#resolveTable(table);
+    // Decodes the payload: an undecodable row fails here, at its operation.
+    const values = upsertValues(compiled, this.#partition, row, 'postgres');
+    if (!compiled.indexes.some((index) => index.unique === true)) {
+      let rows = this.#staged.get(compiled);
+      if (rows === undefined) {
+        rows = new Map();
+        this.#staged.set(compiled, rows);
+      }
+      // A later upsert of the same row in this transaction replaces it.
+      rows.delete(row.rowId);
+      rows.set(row.rowId, {
         row,
-      );
+        values,
+        ...(context === undefined ? {} : { opIndex: context.opIndex }),
+      });
+      return;
+    }
+    try {
+      await writeRowsOn(this.#client, compiled, this.#partition, [
+        { row, values },
+      ]);
     } catch (error) {
       if (isPostgresConstraintError(error)) {
         throw new StorageConstraintError(error, context?.opIndex);
@@ -1232,6 +1372,7 @@ class PostgresTransaction implements StorageTransaction {
 
   async commit(): Promise<void> {
     this.#assertOpen();
+    await this.#writeStaged();
     this.#open = false;
     // Signal the transaction wrapper to COMMIT; wait for it to actually land.
     this.#resolve();
@@ -1240,6 +1381,7 @@ class PostgresTransaction implements StorageTransaction {
 
   async rollback(): Promise<void> {
     if (!this.#open) return;
+    this.#staged.clear();
     this.#open = false;
     this.#reject(new RollbackSignal());
     // Swallow — a rollback is a normal outcome, not an error to the caller.
@@ -1280,11 +1422,11 @@ export class PostgresServerStorage implements ServerStorage {
   #schemaVersion: number | undefined;
   /**
    * Page reads waiting for the end of the current microtask turn, keyed by
-   * statement and partition. A pull starts the window read (or first
+   * batch stream and partition. A pull starts the window read (or first
    * snapshot page) of every subscription before awaiting any of them, so the
-   * window reads of all tables leave as ONE set-based statement (snapshot
-   * pages as one per table, whose SQL names the table) instead of one round
-   * trip per subscription or table (SYNCULAR-PULL-ROUNDTRIPS-001).
+   * reads of all tables leave as ONE set-based statement per stream instead
+   * of one round trip per subscription or table
+   * (SYNCULAR-PULL-ROUNDTRIPS-001).
    */
   readonly #pageBatches = new Map<string, PendingPage[]>();
 
@@ -1293,37 +1435,42 @@ export class PostgresServerStorage implements ServerStorage {
   }
 
   /**
-   * Queue one page read into the batch for (`sql`, `partition`). The batch
-   * runs as a single statement with the queued specs bound as a JSON array
-   * (`$2`); each spec gets its position as `i`, and the result rows are
-   * split back by their `sub` column.
+   * Queue one page read into the batch for (`key`, `partition`). `sql` is the
+   * statement every batch of that stream shares, or a builder over the queued
+   * specs when the statement names what the batch contains (the snapshot scan
+   * joins one branch per table present). The batch runs as a single statement
+   * with the queued specs bound as a JSON array (`$2`); each spec gets its
+   * position as `i`, and the result rows are split back by their `sub`
+   * column.
    */
   #batchedPage<Row>(
-    sql: string,
+    key: string,
+    sql: string | ((specs: readonly Record<string, unknown>[]) => string),
     partition: string,
     spec: Record<string, unknown>,
   ): Promise<Row[]> {
-    const key = `${sql}\u0000${partition}`;
-    let batch = this.#pageBatches.get(key);
+    const batchKey = `${key}\u0000${partition}`;
+    let batch = this.#pageBatches.get(batchKey);
     if (batch === undefined) {
       const queued: PendingPage[] = [];
       batch = queued;
-      this.#pageBatches.set(key, queued);
+      this.#pageBatches.set(batchKey, queued);
       queueMicrotask(() => {
-        this.#pageBatches.delete(key);
-        const specs = JSON.stringify(
-          queued.map((entry, i) => ({ ...entry.spec, i })),
-        );
-        this.#exec.query<PgRow>(sql, [partition, specs]).then(
-          ({ rows }) => {
-            const grouped = queued.map((): PgRow[] => []);
-            for (const row of rows) grouped[asNumber(row.sub)]?.push(row);
-            queued.forEach((entry, i) => entry.resolve(grouped[i] ?? []));
-          },
-          (error: unknown) => {
-            for (const entry of queued) entry.reject(error);
-          },
-        );
+        this.#pageBatches.delete(batchKey);
+        const specs = queued.map((entry, i) => ({ ...entry.spec, i }));
+        const statement = typeof sql === 'string' ? sql : sql(specs);
+        this.#exec
+          .query<PgRow>(statement, [partition, JSON.stringify(specs)])
+          .then(
+            ({ rows }) => {
+              const grouped = queued.map((): PgRow[] => []);
+              for (const row of rows) grouped[asNumber(row.sub)]?.push(row);
+              queued.forEach((entry, i) => entry.resolve(grouped[i] ?? []));
+            },
+            (error: unknown) => {
+              for (const entry of queued) entry.reject(error);
+            },
+          );
       });
     }
     const target = batch;
@@ -1538,10 +1685,6 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
       // backfill for flipped-on materialization) — all inside one
       // transaction (Postgres DDL is transactional — a failed bump leaves
       // no half-state).
-      const layouts = parseLayouts(
-        typeof marker.layouts === 'string' ? marker.layouts : undefined,
-      );
-      const retiredTables = retiredTableNames(schema, layouts);
       await this.#exec.transaction(async (client) => {
         // RFC 0007 migration barrier: `LOCK TABLE ... EXCLUSIVE` is the FIRST
         // statement, before any read, DDL, rewrite, marker or checkpoint
@@ -1554,6 +1697,31 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
         // when it takes this lock, so a writer already inside completes while
         // the migration waits.
         await client.query('LOCK TABLE sync_partitions IN EXCLUSIVE MODE');
+        // The probe ran before the lock. A concurrent `ensureSchema` (another
+        // isolate, the Durable Object's first request) may have bumped while
+        // this one waited; re-running the rewrite would decode its new-layout
+        // payloads with the old layout. The locked marker decides.
+        const { rows: lockedMarker } = await client.query<{
+          schema_version: unknown;
+          layouts: unknown;
+        }>('SELECT schema_version, layouts FROM sync_schema_meta WHERE id=1');
+        const lockedVersion =
+          lockedMarker[0]?.schema_version === null ||
+          lockedMarker[0]?.schema_version === undefined
+            ? undefined
+            : asNumber(lockedMarker[0].schema_version);
+        if (lockedVersion !== undefined && lockedVersion > schema.version) {
+          throw new Error(
+            `stored schema version ${lockedVersion} is newer than the configured schema (${schema.version}) — refusing to run an older server against a migrated database`,
+          );
+        }
+        if (lockedVersion === schema.version) return;
+        const layouts = parseLayouts(
+          typeof lockedMarker[0]?.layouts === 'string'
+            ? lockedMarker[0].layouts
+            : undefined,
+        );
+        const retiredTables = retiredTableNames(schema, layouts);
         const existing = new Map<string, ReadonlySet<string>>();
         const existingIndexes = new Map<string, ReadonlyMap<string, string>>();
         for (const table of schema.tables.values()) {
@@ -1620,13 +1788,21 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
             );
           }
         }
+        if (retiredTables.length > 0) {
+          // Neither index leads with `tbl`: one scan per table, not one per
+          // retired table.
+          await client.query(
+            `DELETE FROM sync_row_scopes
+              WHERE tbl IN (SELECT jsonb_array_elements_text($1::text::jsonb))`,
+            [JSON.stringify(retiredTables)],
+          );
+          await client.query(
+            `DELETE FROM sync_blob_refs
+              WHERE tbl IN (SELECT jsonb_array_elements_text($1::text::jsonb))`,
+            [JSON.stringify(retiredTables)],
+          );
+        }
         for (const tableName of retiredTables) {
-          await client.query('DELETE FROM sync_row_scopes WHERE tbl=$1', [
-            tableName,
-          ]);
-          await client.query('DELETE FROM sync_blob_refs WHERE tbl=$1', [
-            tableName,
-          ]);
           await client.query(dropTableDdl(tableName));
         }
         for (const statement of schemaDdl(
@@ -2359,6 +2535,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
     if (firstVariable === undefined || values.length === 0) return 0;
     // Concurrent reads of a pull share one statement across tables.
     const [row] = await this.#batchedPage<{ seq: unknown }>(
+      'latestScopedChange',
       LATEST_SCOPED_CHANGE_BATCH_SQL,
       partition,
       { tbl: query.table, var: firstVariable, vals: values },
@@ -2388,6 +2565,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
     const batchSize = Math.max(64, query.limitChanges);
     while (deliveredChanges < query.limitChanges) {
       const records = await this.#batchedPage<CommitWindowRecord>(
+        'commitWindow',
         COMMIT_WINDOW_BATCH_SQL,
         partition,
         {
@@ -2456,21 +2634,30 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
     if (firstValues.length === 0) return [];
     // Candidates via the inverted index (ordered + LIMITed at the covering
     // PK) LEFT JOINed to the row table — one round trip per page, never one
-    // per row, and pages of concurrent scans on the same table share one
-    // statement (see `scanRowBatchSql`). Exact multi-variable verification
-    // against the stored scope map happens below.
-    const sql = scanRowBatchSql(this.table(query.table));
+    // per row, and concurrent scans across tables share one statement (see
+    // `scanRowBatchSql`). Exact multi-variable verification against the
+    // stored scope map happens below.
     const rows: StoredRow[] = [];
     let afterRowId = query.afterRowId ?? '';
     const batchSize = Math.max(64, query.limit);
     while (rows.length < query.limit) {
-      const records = await this.#batchedPage<RowRecord>(sql, partition, {
-        tbl: query.table,
-        var: firstVariable,
-        vals: firstValues,
-        after: afterRowId,
-        lim: batchSize,
-      });
+      const records = await this.#batchedPage<RowRecord>(
+        'scanRows',
+        (specs) =>
+          scanRowBatchSql(
+            [...new Set(specs.map((spec) => String(spec.tbl)))].map((table) =>
+              this.table(table),
+            ),
+          ),
+        partition,
+        {
+          tbl: query.table,
+          var: firstVariable,
+          vals: firstValues,
+          after: afterRowId,
+          lim: batchSize,
+        },
+      );
       if (records.length === 0) break;
       for (const record of records) {
         afterRowId = record.row_id;

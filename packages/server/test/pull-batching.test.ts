@@ -53,16 +53,20 @@ const PROJECTS = 34;
 function countingExecutor(inner: PgExecutor): {
   executor: PgExecutor;
   count: { statements: number; transactions: number };
+  texts: string[];
 } {
   const count = { statements: 0, transactions: 0 };
+  const texts: string[] = [];
   const counted = (client: PgQueryable): PgQueryable => ({
     query: (text, params) => {
       count.statements += 1;
+      texts.push(text);
       return client.query(text, params);
     },
   });
   return {
     count,
+    texts,
     executor: {
       query: counted(inner).query,
       transaction: (fn) => {
@@ -403,8 +407,9 @@ describe('first realtime socket round (SYNCULAR-PULL-ROUNDTRIPS-001)', () => {
     // Per commit: 8 fixed statements (idempotency lookup and locked
     // re-check, partition lock, serve gate, savepoint, commit allocation,
     // change log, push result), one read-ahead per table, one write per
-    // row; the pull half adds 11 for the round.
-    expect(large.counts.statements).toBe(10 * (8 + 2 + 3) + 11);
+    // table; the pull half adds 10 for the round (the snapshot pages of both
+    // tables share one statement).
+    expect(large.counts.statements).toBe(10 * (8 + 2 + 2) + 10);
   }, 60_000);
 });
 
@@ -525,6 +530,40 @@ describe('statements per table (SYNCULAR-PULL-ROUNDTRIPS-001)', () => {
     // One catalog probe (the DDL fingerprint) and one marker read.
     expect(small.warmStart).toBe(2);
     expect(large.warmStart).toBe(2);
+  }, 60_000);
+
+  test('PostgreSQL: a bootstrap over several tables issues one snapshot statement', async () => {
+    const db = await PGlite.create();
+    const counting = countingExecutor(pgliteExecutor(db));
+    const postgres = await context(
+      new PostgresServerStorage(counting.executor),
+    );
+    await seed(postgres, 'a');
+    const sqlite = await context(new SqliteServerStorage());
+    await seed(sqlite, 'a');
+    const frames: RequestFrame[] = [
+      pullHeader({ limitSnapshotRows: 64, maxSnapshotPages: 2 }),
+      subFrame('tasks-p1', 'tasks', { project_id: ['p1'] }, -1),
+      subFrame('tasks-p2', 'tasks', { project_id: ['p2'] }, -1),
+      subFrame('docs-p1', 'docs', { projectId: ['p1'] }, -1),
+    ];
+    counting.count.statements = 0;
+    counting.texts.length = 0;
+    const pulled = await sync(postgres, frames);
+    const reference = await sync(sqlite, frames);
+    // Two tables in one batch: the candidate side of the statement names no
+    // table, and every table present joins its payload columns through its
+    // own UNION ALL branch.
+    const snapshots = counting.texts.filter((text) =>
+      text.includes('FROM cand'),
+    );
+    expect(snapshots).toHaveLength(1);
+    const [snapshot] = snapshots;
+    expect(snapshot?.match(/UNION ALL/g)).toHaveLength(1);
+    expect(snapshot).toContain('LEFT JOIN "tasks"');
+    expect(snapshot).toContain('LEFT JOIN "docs"');
+    expect(pulled.frames).toEqual(reference.frames);
+    await db.close();
   }, 60_000);
 
   test('PostgreSQL: a database without the current DDL fingerprint migrates again', async () => {

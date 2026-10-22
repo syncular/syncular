@@ -1439,6 +1439,192 @@ mod observation_tests {
         assert_eq!(client.drain_change_batches().len(), 2);
     }
 
+    /// Serves one response and records the segment batch it causes. A single
+    /// `download_segment` call means the core fell back to per-descriptor
+    /// fetches.
+    struct SegmentBatchTransport {
+        response: Message,
+        bodies: BTreeMap<String, Vec<u8>>,
+        batches: Vec<Vec<String>>,
+        single_fetches: usize,
+    }
+
+    impl Transport for SegmentBatchTransport {
+        fn sync(&mut self, _request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            Ok(encode_message(&self.response))
+        }
+
+        fn realtime_sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            self.sync(request)
+        }
+
+        fn download_segment(
+            &mut self,
+            _request: &SegmentRequest,
+            _on_progress: &mut dyn FnMut(u64),
+        ) -> Result<Vec<u8>, TransportError> {
+            self.single_fetches += 1;
+            Err(TransportError::new(
+                "sync.transport_failed",
+                "per-descriptor fetch",
+            ))
+        }
+
+        fn download_segments(
+            &mut self,
+            fetches: &[crate::SegmentFetch],
+            on_progress: &mut (dyn FnMut(usize, u64) + Send),
+        ) -> Vec<Result<Vec<u8>, TransportError>> {
+            self.batches.push(
+                fetches
+                    .iter()
+                    .map(|fetch| match fetch {
+                        crate::SegmentFetch::Direct(request) => request.segment_id.clone(),
+                        crate::SegmentFetch::Url(url) => url.clone(),
+                    })
+                    .collect(),
+            );
+            fetches
+                .iter()
+                .enumerate()
+                .map(|(index, fetch)| {
+                    let crate::SegmentFetch::Direct(request) = fetch else {
+                        panic!("the descriptors are direct-endpoint requests")
+                    };
+                    let bytes = self.bodies[&request.segment_id].clone();
+                    on_progress(index, bytes.len() as u64);
+                    Ok(bytes)
+                })
+                .collect()
+        }
+
+        fn realtime_connect(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+
+        fn realtime_send(&mut self, _text: &str) -> Result<(), TransportError> {
+            Ok(())
+        }
+
+        fn realtime_close(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_response_fetches_all_its_segment_pages_in_one_ordered_batch() {
+        let mut client = client();
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        client
+            .subscribe(
+                "tasks".into(),
+                "tasks".into(),
+                vec![("project_id".into(), vec!["p1".into()])],
+                None,
+            )
+            .unwrap();
+        client.subs[0].cursor = 0;
+        client.subs[0].synced_once = true;
+        client.subs[0].effective = Some(vec![("project_id".into(), vec!["p1".into()])]);
+        client.persist_sub(&client.subs[0]).unwrap();
+        client.drain_change_batches();
+        let columns = client.schema.table("tasks").unwrap().wire_columns.clone();
+
+        // Four pages, one row each. Applying a page under another page's
+        // descriptor fails §5.1 content-address verification, so a green round
+        // proves the results kept the wire order.
+        let pages = ["one", "two", "three", "four"].map(|id| {
+            let bytes = ssp2::segment::encode_rows_segment(&RowsSegment {
+                table: "tasks".into(),
+                schema_version: 1,
+                columns: columns.clone(),
+                blocks: vec![vec![ssp2::segment::SegmentRow {
+                    server_version: 1,
+                    values: vec![
+                        Some(ColumnValue::String(id.into())),
+                        Some(ColumnValue::String("p1".into())),
+                    ],
+                }]],
+            });
+            (
+                format!("sha256:{}", bytes_to_hex(&Sha256::digest(&bytes))),
+                bytes,
+            )
+        });
+
+        let mut frames = vec![
+            Frame::RespHeader {
+                required_schema_version: None,
+                latest_schema_version: None,
+                log_epoch: Some("epoch-1".into()),
+                reset_required: Some(false),
+            },
+            Frame::SubStart {
+                id: "tasks".into(),
+                status: SubStatus::Active,
+                reason_code: String::new(),
+                effective_scopes: vec![("project_id".into(), vec!["p1".into()])],
+                bootstrap: false,
+            },
+        ];
+        for (segment_id, bytes) in &pages {
+            frames.push(Frame::SegmentRef {
+                segment_id: segment_id.clone(),
+                media_type: MediaType::Rows,
+                table: "tasks".into(),
+                byte_length: bytes.len() as i64,
+                row_count: 1,
+                as_of_commit_seq: 1,
+                scope_digest: "digest".into(),
+                row_cursor: None,
+                next_row_cursor: None,
+                url: None,
+                url_expires_at_ms: None,
+            });
+        }
+        frames.push(Frame::SubEnd {
+            next_cursor: 1,
+            bootstrap_state: None,
+        });
+        let mut transport = SegmentBatchTransport {
+            response: Message {
+                wire_version: WIRE_VERSION,
+                msg_kind: MsgKind::Response,
+                frames,
+            },
+            bodies: pages
+                .iter()
+                .map(|(segment_id, bytes)| (segment_id.clone(), bytes.clone()))
+                .collect(),
+            batches: Vec::new(),
+            single_fetches: 0,
+        };
+
+        let outcome = client.sync(&mut transport);
+        assert!(matches!(outcome, SyncOutcome::Ok(_)), "{outcome:?}");
+        assert_eq!(
+            transport.batches,
+            vec![pages
+                .iter()
+                .map(|(segment_id, _)| segment_id.clone())
+                .collect::<Vec<_>>()],
+            "one batch per response, in wire order"
+        );
+        assert_eq!(
+            transport.single_fetches, 0,
+            "the batch seam replaces the per-descriptor calls"
+        );
+        assert_eq!(
+            client
+                .query("SELECT id FROM tasks ORDER BY id", &[])
+                .unwrap(),
+            ["four", "one", "three", "two"]
+                .map(|id| Map::from_iter([("id".to_owned(), Value::from(id))]))
+                .to_vec()
+        );
+        assert_eq!(client.subs[0].cursor, 1);
+    }
+
     #[test]
     fn diagnostic_storage_reads_fresh_aggregates_after_writes_rollback_and_schema_changes() {
         assert_eq!(

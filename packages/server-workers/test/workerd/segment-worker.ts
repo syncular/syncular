@@ -1,13 +1,17 @@
 /**
- * A Worker that serves Syncular's real segment route under workerd for
- * `segment-encoding.workerd.test.ts`. `POST /seed` stores one segment above
+ * A Worker that serves Syncular's real routes under workerd for
+ * `segment-encoding.workerd.test.ts`. `POST /setup` migrates the D1 schema and
+ * pins the partition log epoch. `POST /seed` stores one segment above
  * SEGMENT_STREAM_THRESHOLD_BYTES and answers its content address.
  * `POST /r2` runs the R2 segment and blob stores over the workerd R2 binding
  * and answers what it read back. `POST /reference?blobId=` stores a `files`
  * row that references the blob, and `GET /object?blobId=` answers the R2
  * object's `httpMetadata.contentType`. `POST /erase?blobId=` seeds two rows
  * of project p1 (one referencing the blob), erases the binding on D1 and R2,
- * and answers what is left.
+ * and answers what is left. Everything else (including `POST /sync`) reaches
+ * `createWorkersFetchHandler`; `/sync` is forwarded to `RealtimeDO`, so the
+ * gzip assertion in the test lane covers the real DO hop plus the Worker's
+ * own `Content-Encoding`.
  */
 import { encodeRow } from '@syncular/core';
 import {
@@ -23,11 +27,14 @@ import {
   createWorkersFetchHandler,
   type D1Database,
   D1ServerStorage,
+  type DurableObjectNamespaceLike,
+  type DurableObjectStateLike,
   type ExecutionContextLike,
   R2BlobStore,
   type R2BucketLike,
   type R2ObjectLike,
   R2SegmentStore,
+  SyncularRealtimeHost,
 } from '../../src/index';
 
 const SCHEMA: ServerSchema = {
@@ -60,6 +67,7 @@ const segments = new MemorySegmentStore();
 
 interface Env {
   readonly DB: D1Database;
+  readonly REALTIME: DurableObjectNamespaceLike;
   readonly BUCKET: {
     head(key: string): Promise<
       | (R2ObjectLike & {
@@ -68,6 +76,28 @@ interface Env {
       | null
     >;
   } & R2BucketLike;
+}
+
+/** The partition's D1-backed sync/realtime host (§8), reached through the
+ * Worker's `coordinator` wiring: `/sync` forwards here. */
+export class RealtimeDO {
+  readonly #host: SyncularRealtimeHost;
+
+  constructor(state: DurableObjectStateLike, env: Env) {
+    this.#host = new SyncularRealtimeHost(state, env.DB, {
+      syncConfig: (storage) => ({
+        schema: SCHEMA,
+        storage,
+        segments: new MemorySegmentStore(),
+        blobs: new R2BlobStore(env.BUCKET),
+        resolveScopes: () => ({ project_id: ['p1'] }),
+      }),
+    });
+  }
+
+  fetch(request: Request): Promise<Response> {
+    return this.#host.fetch(request);
+  }
 }
 
 /**
@@ -131,19 +161,37 @@ async function runR2Stores(bucket: R2BucketLike): Promise<Response> {
   });
 }
 
-const handler = createWorkersFetchHandler<Env>((env) => ({
-  config: {
-    schema: SCHEMA,
-    storage: new D1ServerStorage(env.DB),
-    segments,
-    blobs: new R2BlobStore(env.BUCKET),
-    resolveScopes: () => ({ project_id: ['p1'] }),
-  },
-  authenticate: async () => ({ actorId: 'actor-1', partition: PARTITION }),
-}));
+const handler = createWorkersFetchHandler<Env>({
+  config: (env) => ({
+    config: {
+      schema: SCHEMA,
+      storage: new D1ServerStorage(env.DB),
+      segments,
+      blobs: new R2BlobStore(env.BUCKET),
+      resolveScopes: () => ({ project_id: ['p1'] }),
+    },
+    authenticate: async (request) => ({
+      actorId: 'actor-1',
+      // The gzip round runs in a partition of its own so its rows do not
+      // disturb the p1 fixtures the other routes share.
+      partition: request.headers.get('x-test-partition') ?? PARTITION,
+    }),
+  }),
+  coordinator: (env) => ({ namespace: env.REALTIME }),
+});
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContextLike) {
+    // Bun's `fetch` and its `node:http` both force `accept-encoding: br, gzip`
+    // onto every request, so the identity branch is only reachable from the
+    // test process by naming the encoding on a header the Worker applies.
+    const testAcceptEncoding = request.headers.get('x-test-accept-encoding');
+    if (testAcceptEncoding !== null) {
+      const headers = new Headers(request.headers);
+      headers.set('accept-encoding', testAcceptEncoding);
+      headers.delete('x-test-accept-encoding');
+      request = new Request(request, { headers });
+    }
     const pathname = new URL(request.url).pathname;
     if (pathname === '/r2') return runR2Stores(env.BUCKET);
     const blobId = new URL(request.url).searchParams.get('blobId') ?? '';
@@ -203,6 +251,15 @@ export default {
         ].filter((row) => row !== undefined).length,
         blob: await blobs.has(PARTITION, blobId),
       });
+    }
+    if (pathname === '/setup') {
+      const storage = new D1ServerStorage(env.DB);
+      await storage.migrate();
+      for (const partition of [PARTITION, 'part-sync']) {
+        await storage.touchPartition(partition, 0, LOG_EPOCH);
+      }
+      while (!(await storage.migrateSchema(compileSchema(SCHEMA))).complete) {}
+      return new Response(null, { status: 204 });
     }
     if (pathname === '/reference') {
       const storage = new D1ServerStorage(env.DB);

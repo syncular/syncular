@@ -6,8 +6,8 @@ use ssp2::{decode_message, encode_message};
 
 use crate::client::RequestMeta;
 use crate::{
-    BlobUploadGrant, ProgressObserver, ProgressPhase, SegmentRequest, SyncOutcome, Transport,
-    TransportError,
+    BlobUploadGrant, ProgressObserver, ProgressPhase, SegmentFetch, SegmentRequest, SyncOutcome,
+    Transport, TransportError,
 };
 
 pub(crate) fn now_ms(fixed: Option<i64>) -> i64 {
@@ -204,6 +204,11 @@ impl PreparedSyncRound {
             if matches!(response.frames.first(), Some(Frame::RespHeader { required_schema_version: None, reset_required: Some(false), log_epoch: Some(epoch), .. }) if self.message.frames.first().is_some_and(|f| matches!(f, Frame::ReqHeader { log_epoch: Some(request_epoch), .. } if request_epoch == epoch)))
             {
                 let mut scope: Option<(&str, &str)> = None;
+                // §5.4 / §5.5: collect every eligible descriptor first so the
+                // transport can overlap the fetches. One batch start is the
+                // fetch start for the expiry rule.
+                let batch_started_at = now_ms(self.fixed_now);
+                let mut planned: Vec<PlannedFetch> = Vec::new();
                 for frame in &response.frames {
                     match frame {
                         Frame::SubStart {
@@ -236,53 +241,93 @@ impl PreparedSyncRound {
                             if !advertised || (url.is_some() && self.meta.accept & 8 == 0) {
                                 break;
                             }
-                            let started_at = now_ms(self.fixed_now);
-                            let key = match url {
-                                Some(url) => DownloadKey::Url(url.clone()),
-                                None => DownloadKey::Segment(
-                                    segment_id.clone(),
-                                    table.clone(),
-                                    scopes.to_owned(),
+                            let expired = url.is_some()
+                                && url_expires_at_ms
+                                    .is_some_and(|expiry| expiry <= batch_started_at);
+                            let (key, fetch) = match url {
+                                Some(url) => (
+                                    DownloadKey::Url(url.clone()),
+                                    if expired {
+                                        None
+                                    } else {
+                                        Some(SegmentFetch::Url(url.clone()))
+                                    },
                                 ),
-                            };
-                            self.progress.update(|p| {
-                                p.phase = ProgressPhase::Download;
-                                p.subscription_id = Some(id.to_owned());
-                                p.table = Some(table.clone());
-                                p.segment_id = Some(segment_id.clone());
-                                p.bytes_received = 0;
-                                p.bytes_total = u64::try_from(*byte_length).ok();
-                                p.rows_processed = 0;
-                                p.rows_total = u64::try_from(*row_count).ok();
-                            });
-                            let mut on_progress =
-                                |bytes| self.progress.update(|p| p.bytes_received = bytes);
-                            let bytes = if let Some(url) = url {
-                                if url_expires_at_ms.is_some_and(|expiry| expiry <= started_at) {
-                                    Err(TransportError::new(
-                                        "sync.segment_expired",
-                                        "signed segment URL expired before fetch",
-                                    ))
-                                } else {
-                                    transport.fetch_url(url, &mut on_progress)
-                                }
-                            } else {
-                                transport.download_segment(
-                                    &SegmentRequest {
+                                None => (
+                                    DownloadKey::Segment(
+                                        segment_id.clone(),
+                                        table.clone(),
+                                        scopes.to_owned(),
+                                    ),
+                                    Some(SegmentFetch::Direct(SegmentRequest {
                                         segment_id: segment_id.clone(),
                                         table: table.clone(),
                                         requested_scopes_json: scopes.to_owned(),
-                                    },
-                                    &mut on_progress,
-                                )
+                                    })),
+                                ),
                             };
-                            let failed = bytes.is_err();
-                            downloads.entries.push_back((key, started_at, bytes));
-                            if failed {
+                            planned.push(PlannedFetch {
+                                key,
+                                subscription_id: id.to_owned(),
+                                table: table.clone(),
+                                segment_id: segment_id.clone(),
+                                bytes_total: u64::try_from(*byte_length).ok(),
+                                rows_total: u64::try_from(*row_count).ok(),
+                                fetch,
+                            });
+                            if expired {
                                 break;
                             }
                         }
                         _ => {}
+                    }
+                }
+                if !planned.is_empty() {
+                    let progress = self.progress.clone();
+                    let mut on_progress = |index: usize, bytes: u64| {
+                        let Some(planned_fetch) = planned.get(index) else {
+                            return;
+                        };
+                        progress.update(|p| {
+                            p.phase = ProgressPhase::Download;
+                            p.subscription_id = Some(planned_fetch.subscription_id.clone());
+                            p.table = Some(planned_fetch.table.clone());
+                            p.segment_id = Some(planned_fetch.segment_id.clone());
+                            p.bytes_received = bytes;
+                            p.bytes_total = planned_fetch.bytes_total;
+                            p.rows_processed = 0;
+                            p.rows_total = planned_fetch.rows_total;
+                        });
+                    };
+                    // Announce the download phase before the first byte lands.
+                    on_progress(0, 0);
+                    let fetches: Vec<SegmentFetch> = planned
+                        .iter()
+                        .filter_map(|planned_fetch| planned_fetch.fetch.clone())
+                        .collect();
+                    let mut results = transport
+                        .download_segments(&fetches, &mut on_progress)
+                        .into_iter();
+                    for planned_fetch in planned {
+                        let result = match planned_fetch.fetch {
+                            None => Err(TransportError::new(
+                                "sync.segment_expired",
+                                "signed segment URL expired before fetch",
+                            )),
+                            // A shorter result list means the batch stopped
+                            // after an earlier error, and apply aborts there.
+                            Some(_) => match results.next() {
+                                Some(result) => result,
+                                None => break,
+                            },
+                        };
+                        let failed = result.is_err();
+                        downloads
+                            .entries
+                            .push_back((planned_fetch.key, batch_started_at, result));
+                        if failed {
+                            break;
+                        }
                     }
                 }
             }
@@ -303,6 +348,22 @@ impl PreparedSyncRound {
 enum DownloadKey {
     Url(String),
     Segment(String, String, String),
+}
+
+/// One eligible `SEGMENT_REF` of the response, collected before the batch
+/// fetch so `download_segments` sees the whole page list at once.
+struct PlannedFetch {
+    key: DownloadKey,
+    subscription_id: String,
+    table: String,
+    segment_id: String,
+    bytes_total: Option<u64>,
+    rows_total: Option<u64>,
+    /// `None` when the signed URL had already expired at the batch start: the
+    /// fetch is never attempted and its descriptor fails with
+    /// `sync.segment_expired`. Collection stops there, so only the last
+    /// collected fetch can be `None`.
+    fetch: Option<SegmentFetch>,
 }
 
 #[derive(Default)]
@@ -446,5 +507,73 @@ mod tests {
         let mut transport = SpentDeadline;
         let error = upload_one(&mut transport, "sha256:test", &[0u8; 4], None, None).unwrap_err();
         assert_eq!(error.code, "transport.timeout");
+    }
+
+    /// Records each single fetch the default batch runs and fails the second.
+    #[derive(Default)]
+    struct CountingFetches {
+        calls: Vec<String>,
+    }
+
+    impl Transport for CountingFetches {
+        fn sync(&mut self, _: &[u8]) -> Result<Vec<u8>, TransportError> {
+            unreachable!()
+        }
+        fn realtime_sync(&mut self, _: &[u8]) -> Result<Vec<u8>, TransportError> {
+            unreachable!()
+        }
+        fn download_segment(
+            &mut self,
+            request: &SegmentRequest,
+            on_progress: &mut dyn FnMut(u64),
+        ) -> Result<Vec<u8>, TransportError> {
+            self.calls.push(request.segment_id.clone());
+            on_progress(4);
+            if request.segment_id == "sha256:b" {
+                Err(TransportError::new(
+                    "transport.timeout",
+                    "second fetch failed",
+                ))
+            } else {
+                Ok(request.segment_id.clone().into_bytes())
+            }
+        }
+        fn realtime_connect(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+        fn realtime_send(&mut self, _: &str) -> Result<(), TransportError> {
+            Ok(())
+        }
+        fn realtime_close(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn the_default_batch_runs_the_single_fetches_in_order_and_stops_at_the_first_error() {
+        let mut transport = CountingFetches::default();
+        let fetches: Vec<SegmentFetch> = ["a", "b", "c"]
+            .into_iter()
+            .map(|id| {
+                SegmentFetch::Direct(SegmentRequest {
+                    segment_id: format!("sha256:{id}"),
+                    table: "tasks".to_owned(),
+                    requested_scopes_json: "{}".to_owned(),
+                })
+            })
+            .collect();
+        let mut reported = Vec::new();
+        let results = transport.download_segments(&fetches, &mut |index, bytes| {
+            reported.push((index, bytes));
+        });
+        assert_eq!(
+            transport.calls,
+            vec!["sha256:a", "sha256:b"],
+            "the third fetch was never attempted"
+        );
+        assert_eq!(results.len(), 2, "one result per attempted fetch");
+        assert_eq!(results[0].as_ref().unwrap(), b"sha256:a");
+        assert_eq!(results[1].as_ref().unwrap_err().code, "transport.timeout");
+        assert_eq!(reported, vec![(0, 4), (1, 4)]);
     }
 }

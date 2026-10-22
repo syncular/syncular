@@ -19,7 +19,9 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::{BlobDownload, BlobUploadGrant, SegmentRequest, Transport, TransportError};
+use crate::{
+    BlobDownload, BlobUploadGrant, SegmentFetch, SegmentRequest, Transport, TransportError,
+};
 
 /// Redirect handling for native HTTP requests and the WebSocket handshake.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -378,6 +380,22 @@ impl Transport for HostTransport {
         }
     }
 
+    fn download_segments(
+        &mut self,
+        fetches: &[SegmentFetch],
+        on_progress: &mut (dyn FnMut(usize, u64) + Send),
+    ) -> Vec<Result<Vec<u8>, TransportError>> {
+        match self {
+            HostTransport::Null { .. } => fetches
+                .first()
+                .map(|_| Err(unavailable("downloadSegments")))
+                .into_iter()
+                .collect(),
+            #[cfg(feature = "native-transport")]
+            HostTransport::Native(t) => t.download_segments(fetches, on_progress),
+        }
+    }
+
     fn fetch_url(
         &mut self,
         url: &str,
@@ -527,8 +545,8 @@ mod native {
 
     use super::{HostTransportPolicy, Inbound, InboundBuffer, RedirectPolicy};
     use crate::{
-        BlobDownload, BlobUploadGrant, RealtimeRound, RoundInbound, SegmentRequest, Transport,
-        TransportError,
+        BlobDownload, BlobUploadGrant, RealtimeRound, RoundInbound, SegmentFetch, SegmentRequest,
+        Transport, TransportError,
     };
 
     // Unregister before the cloned socket handle is closed, including on unwind.
@@ -1291,6 +1309,60 @@ mod native {
 
         fn supports_url_fetch(&self) -> bool {
             self.signed_urls
+        }
+
+        fn download_segments(
+            &mut self,
+            fetches: &[SegmentFetch],
+            on_progress: &mut (dyn FnMut(usize, u64) + Send),
+        ) -> Vec<Result<Vec<u8>, TransportError>> {
+            // A segment GET is pure network I/O over immutable transport
+            // state, so a page list downloads on a bounded pool instead of one
+            // blocking request after the other: four pages of a paged
+            // bootstrap overlap (§5.2). `fork_round` hands each worker the same
+            // agent (a cheap clone) and headers; the round's anchored deadline
+            // is copied over explicitly, because a fork starts without one.
+            // Every fetch is attempted; the client stops consuming at the
+            // first error in wire order.
+            let workers = (0..fetches.len().min(4))
+                .map(|_| {
+                    let mut worker = self.fork_round();
+                    worker.round_deadline_at = self.round_deadline_at;
+                    worker
+                })
+                .collect::<Vec<_>>();
+            let slots = fetches.iter().map(|_| Mutex::new(None)).collect::<Vec<_>>();
+            let progress = Mutex::new(on_progress);
+            let next = std::sync::atomic::AtomicUsize::new(0);
+            std::thread::scope(|scope| {
+                for worker in workers {
+                    let (slots, progress, next) = (&slots, &progress, &next);
+                    scope.spawn(move || {
+                        let mut worker = worker;
+                        loop {
+                            let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let Some(fetch) = fetches.get(index) else {
+                                break;
+                            };
+                            let mut report = |bytes: u64| {
+                                (*progress.lock().expect("segment progress lock"))(index, bytes);
+                            };
+                            let result = match fetch {
+                                SegmentFetch::Direct(request) => {
+                                    worker.download_segment(request, &mut report)
+                                }
+                                SegmentFetch::Url(url) => worker.fetch_url(url, &mut report),
+                            };
+                            *slots[index].lock().expect("segment result slot") = Some(result);
+                        }
+                    });
+                }
+            });
+            slots
+                .into_iter()
+                .map(|slot| slot.into_inner().expect("segment result slot"))
+                .map(|result| result.expect("every fetch is attempted"))
+                .collect()
         }
 
         fn fetch_url(

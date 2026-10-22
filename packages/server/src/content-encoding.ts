@@ -1,24 +1,29 @@
 /**
- * §5.8 shipped compression posture for the direct segment endpoint:
- * negotiate `Content-Encoding` from the request's `Accept-Encoding`
- * (zstd preferred, gzip fallback, identity when the client offers
- * neither), feature-detecting the runtime's codecs — zero dependencies.
+ * §1.3 transport compression for every buffered HTTP body the adapters
+ * serve — `<mount>/sync`, `<mount>/operations`, blob GETs and segment
+ * downloads: negotiate `Content-Encoding` from the request's
+ * `Accept-Encoding` (zstd preferred, gzip fallback, identity when the client
+ * offers neither), feature-detecting the runtime's codecs, zero
+ * dependencies. Bun supplies zstd + gzip natively; every other runtime
+ * (workerd, Node, Deno) gets gzip through the standard `CompressionStream`.
  *
- * Segment bytes are stored and content-addressed UNCOMPRESSED (§5.1);
- * this is a per-response serving concern only. It is never applied to
- * stored objects or the signed-URL path (§5.8: presigned GETs serve the
- * addressed bytes verbatim; edge compression is a deployment concern).
+ * Body bytes are stored and content-addressed UNCOMPRESSED (§5.1); this is a
+ * per-response serving concern only. It is never applied to stored objects or
+ * the signed-URL path (§5.8: presigned GETs serve the addressed bytes
+ * verbatim; edge compression is a deployment concern). Clients MAY gzip a
+ * request body (§1.3) — `decodeRequestBody` is the accepting half.
  *
  * Decision data (2026-07-03, 100k-row bench table, Bun 1.3): rows
  * segments 6.2× in 8 ms (zstd) / 7.7× in 42 ms (gzip); sqlite images
  * 3.4× in 14 ms (zstd) / 51 ms (gzip); client decompression ≤ 8 ms.
  */
+import { syncError } from './errors';
 
-export type SegmentContentEncoding = 'zstd' | 'gzip';
+export type ContentEncoding = 'zstd' | 'gzip';
 
 interface Codec {
-  readonly encoding: SegmentContentEncoding;
-  readonly compress: (bytes: Uint8Array) => Uint8Array;
+  readonly encoding: ContentEncoding;
+  readonly compress: (bytes: Uint8Array) => Uint8Array | Promise<Uint8Array>;
 }
 
 interface BunCompressors {
@@ -26,8 +31,22 @@ interface BunCompressors {
   readonly gzipSync?: (bytes: Uint8Array) => Uint8Array;
 }
 
-/** Preference order is zstd, gzip (§5.8). Non-Bun runtimes without these
- * codecs serve identity — negotiation, never a hard requirement here. */
+/** Bodies below this size are served identity (headers outweigh gains). */
+const MIN_COMPRESS_BYTES = 1024;
+
+async function gzipWithCompressionStream(
+  bytes: Uint8Array,
+): Promise<Uint8Array> {
+  const compressed = await new Response(
+    new Blob([bytes.slice().buffer as ArrayBuffer])
+      .stream()
+      .pipeThrough(new CompressionStream('gzip')),
+  ).arrayBuffer();
+  return new Uint8Array(compressed);
+}
+
+/** Preference order is zstd, gzip (§1.3). A runtime with neither codec
+ * serves identity: negotiation, never a hard requirement here. */
 function detectCodecs(): readonly Codec[] {
   const bun = (globalThis as { Bun?: BunCompressors }).Bun;
   const codecs: Codec[] = [];
@@ -38,17 +57,19 @@ function detectCodecs(): readonly Codec[] {
   const gzip = bun?.gzipSync;
   if (typeof gzip === 'function') {
     codecs.push({ encoding: 'gzip', compress: (bytes) => gzip(bytes) });
+  } else if (typeof CompressionStream === 'function') {
+    codecs.push({ encoding: 'gzip', compress: gzipWithCompressionStream });
   }
   return codecs;
 }
 
 const CODECS = detectCodecs();
 
-/** Bodies below this size are served identity (headers outweigh gains). */
-const MIN_COMPRESS_BYTES = 1024;
-
 /** Does the `Accept-Encoding` header value accept `encoding` (q > 0)? */
-function accepts(header: string, encoding: SegmentContentEncoding): boolean {
+export function acceptsEncoding(
+  header: string,
+  encoding: ContentEncoding,
+): boolean {
   for (const entry of header.split(',')) {
     const [rawName, ...params] = entry.trim().split(';');
     const name = rawName?.trim().toLowerCase();
@@ -64,28 +85,41 @@ function accepts(header: string, encoding: SegmentContentEncoding): boolean {
   return false;
 }
 
-export interface EncodedSegmentBody {
+/**
+ * Add `Accept-Encoding` to a response's `Vary` header. Every response whose
+ * body was negotiated carries it, so a cache never serves one encoding to a
+ * client that asked for another.
+ */
+export function varyOnAcceptEncoding(headers: Headers): void {
+  const vary = headers.get('vary');
+  if (vary === null) headers.set('vary', 'Accept-Encoding');
+  else if (!/\baccept-encoding\b/i.test(vary)) {
+    headers.set('vary', `${vary}, Accept-Encoding`);
+  }
+}
+
+export interface EncodedBody {
   readonly bytes: Uint8Array;
   /** Absent ⇒ identity (no `Content-Encoding` header). */
-  readonly contentEncoding?: SegmentContentEncoding;
+  readonly contentEncoding?: ContentEncoding;
 }
 
 /**
- * Compress a buffered segment body per §5.8. Returns the original bytes
+ * Compress a buffered response body per §1.3. Returns the original bytes
  * (identity) when the client offered no supported encoding, the body is
  * tiny, or the runtime has no codec.
  */
-export function encodeSegmentBody(
+export async function encodeBody(
   bytes: Uint8Array,
   acceptEncoding: string | undefined,
-): EncodedSegmentBody {
+): Promise<EncodedBody> {
   if (acceptEncoding === undefined || bytes.length < MIN_COMPRESS_BYTES) {
     return { bytes };
   }
   for (const codec of CODECS) {
-    if (accepts(acceptEncoding, codec.encoding)) {
+    if (acceptsEncoding(acceptEncoding, codec.encoding)) {
       return {
-        bytes: codec.compress(bytes),
+        bytes: await codec.compress(bytes),
         contentEncoding: codec.encoding,
       };
     }
@@ -100,24 +134,24 @@ export function encodeSegmentBody(
  */
 export const SEGMENT_STREAM_THRESHOLD_BYTES = 16 * 1024 * 1024;
 
-export interface EncodedSegmentStream {
+export interface EncodedStreamBody {
   readonly body: ReadableStream<Uint8Array<ArrayBuffer>>;
   /** Absent ⇒ identity (no `Content-Encoding` header). */
   readonly contentEncoding?: 'gzip';
 }
 
 /**
- * Compress a streamed segment body per §5.8 with the runtime's
- * `CompressionStream`: gzip when the client accepts it, identity otherwise
- * (zstd has no standard streaming codec).
+ * Compress a streamed body per §1.3 with the runtime's `CompressionStream`:
+ * gzip when the client accepts it, identity otherwise (zstd has no standard
+ * streaming codec).
  */
-export function encodeSegmentStream(
+export function encodeStream(
   body: ReadableStream<Uint8Array<ArrayBuffer>>,
   acceptEncoding: string | undefined,
-): EncodedSegmentStream {
+): EncodedStreamBody {
   if (
     acceptEncoding === undefined ||
-    !accepts(acceptEncoding, 'gzip') ||
+    !acceptsEncoding(acceptEncoding, 'gzip') ||
     typeof CompressionStream !== 'function'
   ) {
     return { body };
@@ -126,4 +160,38 @@ export function encodeSegmentStream(
     body: body.pipeThrough(new CompressionStream('gzip')),
     contentEncoding: 'gzip',
   };
+}
+
+/**
+ * The bytes of a request body, decompressed when the client sent
+ * `Content-Encoding: gzip` (§1.3: clients MAY compress a request body and
+ * servers MUST accept it). Returns `undefined` for any other declared
+ * encoding — the adapter answers 415 rather than parse bytes it cannot read.
+ * A gzip body that does not decompress is a `sync.invalid_request`.
+ */
+export async function decodeRequestBody(
+  request: Request,
+): Promise<Uint8Array | undefined> {
+  const encoding = request.headers
+    .get('content-encoding')
+    ?.trim()
+    .toLowerCase();
+  if (encoding === undefined || encoding === '' || encoding === 'identity') {
+    return new Uint8Array(await request.arrayBuffer());
+  }
+  if (encoding !== 'gzip' || typeof DecompressionStream !== 'function') {
+    return undefined;
+  }
+  if (request.body === null) {
+    throw syncError('sync.invalid_request', 'malformed gzip request body');
+  }
+  try {
+    return new Uint8Array(
+      await new Response(
+        request.body.pipeThrough(new DecompressionStream('gzip')),
+      ).arrayBuffer(),
+    );
+  } catch {
+    throw syncError('sync.invalid_request', 'malformed gzip request body');
+  }
 }

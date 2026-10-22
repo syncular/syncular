@@ -4832,6 +4832,52 @@ export class SyncClient {
     let errorFrame: ClientSyncError | undefined;
     let deltaCursor = -1;
 
+    // §5.4/§5.5: issue every segment download of this response before the
+    // apply loop reaches the first one, so a paged bootstrap overlaps its page
+    // fetches instead of paying one blocking round trip per page. Eligibility
+    // mirrors the loop: a descriptor outside an applied section, inside a
+    // skipped delta section, or from an unconfigured downloader is never
+    // fetched, and a prefetched failure is only observed where the loop awaits
+    // it. A promise left over because an earlier frame ended apply is handled
+    // at creation, never unhandled.
+    const prefetched = new Map<SegmentRefFrame, Promise<Uint8Array>>();
+    let reporting: SegmentRefFrame | undefined;
+    {
+      let openSub: SubscriptionRecord | undefined;
+      for (const frame of message.frames) {
+        if (frame.type === 'SUB_START') {
+          const sub = subsById.get(frame.id);
+          openSub =
+            sub === undefined ||
+            (mode === 'delta' &&
+              (sub.status !== 'active' || sub.bootstrapState !== undefined))
+              ? undefined
+              : sub;
+        } else if (frame.type === 'SUB_END') {
+          openSub = undefined;
+        } else if (frame.type === 'ERROR') {
+          break; // the round fails at this frame: later refs are not fetched
+        } else if (
+          frame.type === 'SEGMENT_REF' &&
+          openSub !== undefined &&
+          this.#config.segments !== undefined &&
+          !(
+            frame.mediaType === 'sqlite' &&
+            (this.#acceptMask() & ACCEPT_SQLITE) === 0
+          )
+        ) {
+          const pending = this.#downloadSegment(frame, openSub, (bytes) => {
+            // Only the descriptor the loop is applying reports bytes; a
+            // sibling still in flight would overwrite its progress.
+            if (reporting === frame)
+              this.#progress.update({ bytesReceived: bytes });
+          });
+          pending.catch(() => {});
+          prefetched.set(frame, pending);
+        }
+      }
+    }
+
     // Each durable observer transaction emits its own revisioned batch.
     // Async decrypt/download work happens outside SQLite transactions.
     this.#beginDiagnosticsDeferral();
@@ -4949,10 +4995,27 @@ export class SyncClient {
                 'SEGMENT_REF mediaType sqlite was not advertised in accept (§4.2)',
               );
             }
-            const bytes =
-              frame.type === 'SEGMENT_REF'
-                ? await this.#downloadSegment(frame, section.sub)
-                : frame.payload;
+            let bytes: Uint8Array;
+            if (frame.type === 'SEGMENT_REF') {
+              this.#progress.update({
+                phase: 'download',
+                subscriptionId: section.sub.id,
+                table: frame.table,
+                segmentId: frame.segmentId,
+                bytesReceived: 0,
+                bytesTotal: frame.byteLength,
+                rowsProcessed: 0,
+                rowsTotal: frame.rowCount,
+              });
+              const prefetch = prefetched.get(frame);
+              if (prefetch !== undefined) reporting = frame;
+              bytes = await (prefetch ??
+                this.#downloadSegment(frame, section.sub, (bytesReceived) =>
+                  this.#progress.update({ bytesReceived }),
+                ));
+            } else {
+              bytes = frame.payload;
+            }
             if (frame.type === 'SEGMENT_REF')
               this.#progress.update({ phase: 'import' });
             if (frame.type === 'SEGMENT_REF' && frame.mediaType === 'sqlite') {
@@ -5458,6 +5521,7 @@ export class SyncClient {
   async #downloadSegment(
     frame: SegmentRefFrame,
     sub: SubscriptionRecord,
+    onProgress: (bytesReceived: number) => void,
   ): Promise<Uint8Array> {
     const downloader = this.#config.segments;
     if (downloader === undefined) {
@@ -5465,19 +5529,6 @@ export class SyncClient {
         'received SEGMENT_REF but no segment downloader is configured',
       );
     }
-    this.#progress.update({
-      phase: 'download',
-      subscriptionId: sub.id,
-      table: frame.table,
-      segmentId: frame.segmentId,
-      bytesReceived: 0,
-      bytesTotal: frame.byteLength,
-      rowsProcessed: 0,
-      rowsTotal: frame.rowCount,
-    });
-    const onProgress = (bytesReceived: number): void => {
-      this.#progress.update({ bytesReceived });
-    };
     let bytes: Uint8Array;
     if (frame.url !== undefined) {
       // §5.4: a url-carrying descriptor MUST be fetched from that URL —

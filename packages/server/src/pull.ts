@@ -484,8 +484,8 @@ async function* bootstrapSegments(
 /**
  * The storage reads a section needs before its first frame. A pull starts
  * them for every subscription before awaiting any, so a storage that batches
- * concurrent page reads (PostgreSQL, D1) answers all subscriptions of one
- * table with one statement, and the horizon re-check runs once per pull.
+ * concurrent page reads (PostgreSQL, D1) answers the first pages of every
+ * subscription in one statement, and the horizon re-check runs once per pull.
  */
 export interface PreparedSection {
   /** §4.5 window read for an incremental cursor; empty when none was read. */
@@ -499,7 +499,11 @@ export interface PreparedSection {
   readonly firstPage: StoredRow[] | undefined;
   /** §4.7 pin of a fresh bootstrap; absent ⇒ `maxCommitSeq`. */
   readonly pin: number | undefined;
-  /** §5.3 stored image for a sqlite-lane bootstrap's reuse key, if any. */
+  /**
+   * §5.3 stored image for a sqlite-lane bootstrap's reuse key. Read only when
+   * the eligibility probe shows a snapshot larger than one rows page, since a
+   * smaller table can never match a stored image.
+   */
   readonly image: SegmentRecord | undefined;
 }
 
@@ -574,21 +578,30 @@ export async function prepareSections(
               const pin = Math.min(maxSeq, Math.max(latest, horizonSeq));
               return { asOf: pin, pin };
             });
-    const lane = pinned.then(async ({ asOf, pin }) => ({
-      pin,
-      image: await ctx.segments.find(
-        {
-          partition: ctx.partition,
-          logEpoch,
-          table: plan.table.name,
-          schemaVersion: schema.version,
-          mediaType: 'sqlite',
-          scopeDigest: await scopeDigest(plan.effective),
-          asOfCommitSeq: asOf,
-        },
-        clockOf(ctx)(),
-      ),
-    }));
+    const lane = pinned.then(async ({ asOf, pin }) => {
+      // §5.3 eligibility: a stored image only matches a snapshot larger than
+      // one rows page, so the probe decides before the reuse lookup; a remote
+      // `find` on a small table would be a wasted round trip.
+      const probe = await firstPage;
+      if (probe.length <= limits.limitSnapshotRows) {
+        return { pin, image: undefined };
+      }
+      return {
+        pin,
+        image: await ctx.segments.find(
+          {
+            partition: ctx.partition,
+            logEpoch,
+            table: plan.table.name,
+            schemaVersion: schema.version,
+            mediaType: 'sqlite',
+            scopeDigest: await scopeDigest(plan.effective),
+            asOfCommitSeq: asOf,
+          },
+          clockOf(ctx)(),
+        ),
+      };
+    });
     return { firstPage, lane };
   });
   const settled = await Promise.all(

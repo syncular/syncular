@@ -724,6 +724,149 @@ describe('server-side schema migration (the subset)', () => {
     expect(projected.rows).toEqual([{ assignee: null }]);
   });
 
+  test('Postgres writes the upserts of a transaction as one statement', async () => {
+    const db = await PGlite.create();
+    const log: string[] = [];
+    const storage = new PostgresServerStorage(
+      pgliteExecutor({
+        query: <Row>(query: string, params?: unknown[]) => {
+          log.push(query);
+          return db.query<Row>(query, params);
+        },
+        exec: (query: string) => db.exec(query),
+        close: () => db.close(),
+      }),
+    );
+    // A unique index makes every upsert write at once (a violation names
+    // its operation); without one, upserts are staged.
+    await storage.ensureSchema(
+      compileSchema({
+        ...SCHEMA,
+        tables: SCHEMA.tables.map((table) => ({
+          ...table,
+          indexes: (table.indexes ?? []).filter(
+            (index) => index.unique !== true,
+          ),
+        })),
+      }),
+    );
+    log.length = 0;
+    const tx = await storage.begin(PARTITION);
+    for (let i = 0; i < 50; i++) {
+      await tx.upsertRow(
+        'tasks',
+        taskRow(`t${i}`, i < 25 ? 'p1' : 'p2', `row ${i}`),
+      );
+    }
+    // The same row again replaces its staged write.
+    await tx.upsertRow('tasks', taskRow('t0', 'p2', 'moved'));
+    expect(
+      log.filter((sql) => sql.includes('INSERT INTO "tasks"')),
+    ).toHaveLength(0);
+    // A read in the transaction sees the staged rows.
+    expect((await tx.getRow('tasks', 't0'))?.scopes).toEqual({
+      project_id: 'p2',
+    });
+    expect(
+      log.filter((sql) => sql.includes('INSERT INTO "tasks"')),
+    ).toHaveLength(1);
+    await tx.upsertRow('tasks', taskRow('t1', 'p1', 'second write'));
+    await tx.deleteRow('tasks', 't2');
+    await tx.commit();
+    expect(
+      log.filter((sql) => sql.includes('INSERT INTO "tasks"')),
+    ).toHaveLength(2);
+    const rows = await db.query<{ id: string; title: string }>(
+      "SELECT id, title FROM tasks WHERE id IN ('t0','t1','t2') ORDER BY id",
+    );
+    expect(rows.rows).toEqual([
+      { id: 't0', title: 'moved' },
+      { id: 't1', title: 'second write' },
+    ]);
+    const scopes = await db.query<{ row_id: string; value: string }>(
+      "SELECT row_id, value FROM sync_row_scopes WHERE row_id IN ('t0','t1','t2') ORDER BY row_id",
+    );
+    expect(scopes.rows).toEqual([
+      { row_id: 't0', value: 'p2' },
+      { row_id: 't1', value: 'p1' },
+    ]);
+    const rolledBack = await storage.begin(PARTITION);
+    await rolledBack.upsertRow('tasks', taskRow('t9', 'p1', 'never stored'));
+    await rolledBack.rollback();
+    expect((await storage.getRow(PARTITION, 'tasks', 't9'))?.payload).toEqual(
+      taskRow('t9', 'p1', 'row 9').payload,
+    );
+  });
+
+  test('Postgres rewrites a page of rows with one UPDATE', async () => {
+    const db = await PGlite.create();
+    const log: string[] = [];
+    const storage = new PostgresServerStorage(
+      pgliteExecutor({
+        query: <Row>(query: string, params?: unknown[]) => {
+          log.push(query);
+          return db.query<Row>(query, params);
+        },
+        exec: (query: string) => db.exec(query),
+        close: () => db.close(),
+      }),
+    );
+    await storage.ensureSchema(compileSchema(SCHEMA));
+    for (let i = 0; i < 1_200; i++) {
+      await upsert(
+        storage,
+        PARTITION,
+        'tasks',
+        taskRow(`t${i}`, 'p1', `row ${i}`),
+      );
+    }
+    log.length = 0;
+    const v2 = nullableAppendSchema();
+    await storage.ensureSchema(compileSchema(v2));
+    // 500 rows per statement: 1,200 rows are three UPDATEs, not 1,200.
+    expect(log.filter((sql) => sql.startsWith('UPDATE "tasks"'))).toHaveLength(
+      3,
+    );
+    const stored = await storage.getRow(PARTITION, 'tasks', 't1199');
+    const decoded = decodeRow(v2.tables[0]!.columns, stored!.payload);
+    expect(decoded[2]).toBe('row 1199');
+    expect(decoded.at(-1)).toBeNull();
+    const projected = await db.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM tasks WHERE title LIKE 'row %' AND assignee IS NULL",
+    );
+    expect(projected.rows).toEqual([{ n: 1_200 }]);
+  });
+
+  test('Postgres: a bump that waited for a concurrent bump rewrites nothing', async () => {
+    const db = await PGlite.create();
+    const log: string[] = [];
+    const exec = pgliteExecutor({
+      query: <Row>(query: string, params?: unknown[]) => {
+        log.push(query);
+        return db.query<Row>(query, params);
+      },
+      exec: (query: string) => db.exec(query),
+      close: () => db.close(),
+    });
+    const first = new PostgresServerStorage(exec);
+    await first.ensureSchema(compileSchema(SCHEMA));
+    await upsert(first, PARTITION, 'tasks', taskRow('t1', 'p1', 'v1 row'));
+    log.length = 0;
+    const v2 = compileSchema(nullableAppendSchema());
+    // Both probe version 1 before either takes the migration lock.
+    await Promise.all([
+      new PostgresServerStorage(exec).ensureSchema(v2),
+      new PostgresServerStorage(exec).ensureSchema(v2),
+    ]);
+    expect(log.filter((sql) => sql.startsWith('UPDATE "tasks"'))).toHaveLength(
+      1,
+    );
+    const stored = await first.getRow(PARTITION, 'tasks', 't1');
+    expect(decodeRow(v2.tables.get('tasks')!.columns, stored!.payload)[2]).toBe(
+      'v1 row',
+    );
+  });
+
   test('D1 preserves existing rows across a nullable column append', async () => {
     const db = new D1DatabaseDouble();
     const storage = new D1ServerStorage(db);

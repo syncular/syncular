@@ -191,7 +191,7 @@ test('batched scanRows pages stay index-driven per subscription', async () => {
   const { db } = await seededStorage();
   const table = compileSchema(SCHEMA).tables.get('tasks');
   if (table === undefined) throw new Error('tasks not compiled');
-  const plan = await explain(db, scanRowBatchSql(table), [
+  const plan = await explain(db, scanRowBatchSql([table]), [
     PARTITION,
     JSON.stringify([
       {

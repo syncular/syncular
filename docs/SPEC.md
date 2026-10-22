@@ -1022,6 +1022,14 @@ read no gate, with `sync.storage.writer_fence_rejected`. Without it such an
 append would store payloads in the previous layout. D1 checks the published
 schema in the batch of every commit instead.
 
+The upgrade transaction MUST re-read the stored marker after it holds the
+migration lock and before any DDL or rewrite. A marker that already carries
+the running version ends the upgrade without changes; the stored layouts the
+rewrite decodes with come from that locked read. Two processes that both
+observed the old version before the lock would otherwise rewrite twice, and
+the second rewrite would decode current-layout payloads with the previous
+layout.
+
 #### D1 schema readiness
 
 A D1 schema upgrade MUST save row-rewrite progress in the same atomic batch as
@@ -1967,7 +1975,10 @@ at the pin — the reference server's rule); below that, inline rows
 segments already avoid the extra round-trip. A client that does not
 advertise bit 2 is served the rows lane (§5.2) by capability
 negotiation — rows segments remain mandatory-to-implement, so this is
-version-skew tolerance, not a second implementation path.
+version-skew tolerance, not a second implementation path. The reference
+server reads the stored-image lookup only after its eligibility probe shows a
+snapshot past one rows page, because a smaller snapshot cannot match a stored
+image; a table that stays on the rows lane therefore costs no lookup.
 
 **Error codes.** No new codes: structural/metadata failures are
 `sync.invalid_request`, the column check is `sync.schema_mismatch`,

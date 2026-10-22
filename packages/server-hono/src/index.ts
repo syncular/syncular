@@ -7,8 +7,9 @@
 import {
   adapterSyncError,
   composeEvents,
-  encodeSegmentBody,
-  encodeSegmentStream,
+  decodeRequestBody,
+  encodeBody,
+  encodeStream,
   errorBody,
   handleBlobDownload,
   handleBlobUpload,
@@ -26,6 +27,7 @@ import {
   SyncularAdmin,
   type SyncularErrorRoute,
   type SyncServerConfig,
+  varyOnAcceptEncoding,
 } from '@syncular/server';
 import { Hono, type Context } from 'hono';
 import { createSyncularAdminRoutes, type SyncularAdminGuards } from './admin';
@@ -104,6 +106,48 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
     });
     return c.newResponse(response.body, response);
   };
+  // §1.3: a client MAY gzip its request body; any other declared
+  // `Content-Encoding` is refused with 415 instead of being misread.
+  const unsupportedEncoding = (
+    c: Context,
+    route: 'sync' | 'operations',
+  ): Response =>
+    c.json(
+      errorBody(
+        new SyncError(
+          route === 'sync'
+            ? 'sync.invalid_request'
+            : 'operation.invalid_request',
+          'unsupported content encoding',
+        ),
+      ),
+      415,
+    );
+  // §1.3: every buffered body — a sync round, an operation result, a blob, a
+  // segment — is encoded per the request's `Accept-Encoding` (zstd preferred,
+  // gzip fallback, identity otherwise) and carries `Vary: Accept-Encoding`.
+  // Headers are built through the Hono context so host middleware headers
+  // survive; `encodeBody: 'manual'` marks the body as already encoded, so
+  // workerd does not encode it a second time (see ALREADY_ENCODED).
+  const encodedResponse = async (
+    c: Context,
+    bytes: Uint8Array,
+    headers: Record<string, string>,
+  ): Promise<Response> => {
+    const encoded = await encodeBody(bytes, c.req.header('accept-encoding'));
+    const out = c.newResponse(null, 200, {
+      ...headers,
+      ...(encoded.contentEncoding !== undefined
+        ? { 'Content-Encoding': encoded.contentEncoding }
+        : {}),
+    }).headers;
+    varyOnAcceptEncoding(out);
+    return new Response(encoded.bytes.slice().buffer as ArrayBuffer, {
+      status: 200,
+      headers: out,
+      ...ALREADY_ENCODED,
+    });
+  };
   // Throws outside a route's own try, such as from `authenticate`.
   app.onError((error, c) => {
     const segment = c.req.path.split('/')[1];
@@ -131,12 +175,13 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
     if (auth === null)
       return errorResponse(c, new SyncError('sync.auth_required'));
     try {
-      const bytes = new Uint8Array(await c.req.arrayBuffer());
+      const bytes = await decodeRequestBody(c.req.raw);
+      if (bytes === undefined) return unsupportedEncoding(c, 'sync');
       const out = await handleSyncRequest(bytes, {
         ...config,
         ...auth,
       });
-      return c.body(out.slice().buffer as ArrayBuffer, 200, {
+      return await encodedResponse(c, out, {
         'Content-Type': SSP2_CONTENT_TYPE,
       });
     } catch (error) {
@@ -156,13 +201,14 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
     if (auth === null)
       return errorResponse(c, new SyncError('sync.auth_required'));
     try {
-      const bytes = new Uint8Array(await c.req.arrayBuffer());
+      const bytes = await decodeRequestBody(c.req.raw);
+      if (bytes === undefined) return unsupportedEncoding(c, 'operations');
       const out = await handleRemoteOperation(
         bytes,
         { ...config, ...auth },
         options.operations,
       );
-      return c.body(out.slice().buffer as ArrayBuffer, 200, {
+      return await encodedResponse(c, out, {
         'Content-Type': 'application/vnd.syncular.operations.v1+json',
       });
     } catch (error) {
@@ -189,8 +235,8 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
       const acceptEncoding = c.req.header('accept-encoding');
       if (result.byteLength > SEGMENT_STREAM_THRESHOLD_BYTES) {
         // A large segment (a sqlite image) is relayed without buffering;
-        // only a streaming codec applies (§5.8).
-        const encoded = encodeSegmentStream(result.body, acceptEncoding);
+        // only a streaming codec applies (§1.3).
+        const encoded = encodeStream(result.body, acceptEncoding);
         return new Response(encoded.body, {
           status: 200,
           headers: c.newResponse(null, 200, {
@@ -202,24 +248,14 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
           ...ALREADY_ENCODED,
         });
       }
-      // §5.8 shipped default: compress the body per Accept-Encoding
-      // (zstd preferred, gzip fallback, identity otherwise). Content
-      // addresses are over the uncompressed bytes (§5.1) — fetch
-      // decodes transparently on the client.
+      // §1.3: compress the body per Accept-Encoding (zstd preferred, gzip
+      // fallback, identity otherwise). Content addresses are over the
+      // uncompressed bytes (§5.1) — fetch decodes transparently on the
+      // client.
       const bytes = new Uint8Array(
         await new Response(result.body).arrayBuffer(),
       );
-      const encoded = encodeSegmentBody(bytes, acceptEncoding);
-      return new Response(encoded.bytes.slice().buffer as ArrayBuffer, {
-        status: 200,
-        headers: c.newResponse(null, 200, {
-          ...result.headers,
-          ...(encoded.contentEncoding !== undefined
-            ? { 'Content-Encoding': encoded.contentEncoding }
-            : {}),
-        }).headers,
-        ...ALREADY_ENCODED,
-      });
+      return await encodedResponse(c, bytes, result.headers);
     } catch (error) {
       return errorResponse(c, error, 'segments');
     }
@@ -297,10 +333,11 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
       if (c.req.header('if-none-match') === result.headers.ETag) {
         return c.body(null, 304, result.headers);
       }
-      const bytes = result.bytes ?? new Uint8Array(0);
-      return c.body(bytes.slice().buffer as ArrayBuffer, 200, {
-        ...result.headers,
-      });
+      return await encodedResponse(
+        c,
+        result.bytes ?? new Uint8Array(0),
+        result.headers,
+      );
     } catch (error) {
       return errorResponse(c, error, 'blobs');
     }
@@ -309,13 +346,14 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
   return app;
 }
 /**
- * The segment route encodes its own body (§5.8) and declares
- * `Content-Encoding`. workerd encodes every response that declares one again
- * unless `encodeBody: 'manual'` marks the body as encoded, so a Workers client
- * would decode gzip inside gzip and fail §5.1 verification
- * (SYNCULAR-WORKERS-SEGMENT-ENCODING-001). Other runtimes ignore the member.
+ * Every buffered route — sync, operations, blobs and segments — encodes its
+ * own body (§1.3) and declares `Content-Encoding`. workerd encodes every
+ * response that declares one again unless `encodeBody: 'manual'` marks the
+ * body as encoded, so a Workers client would decode gzip inside gzip and fail
+ * §5.1 verification (SYNCULAR-WORKERS-SEGMENT-ENCODING-001). Other runtimes
+ * ignore the member.
  */
-// Build segment headers through the Hono context, then keep this runtime-specific
+// Build response headers through the Hono context, then keep this runtime-specific
 // Response init. Hono newResponse/body discard encodeBody from their init.
 const ALREADY_ENCODED: { readonly encodeBody: 'manual' } = {
   encodeBody: 'manual',
