@@ -53,7 +53,12 @@ import {
   type RowColumn,
   type RowValue,
 } from '@syncular/core';
-import type { CompiledSchema, CompiledTable, IndexSchema } from './schema';
+import type {
+  CompiledSchema,
+  CompiledTable,
+  IndexSchema,
+  ServerIndexSchema,
+} from './schema';
 import type { StoredRow } from './storage';
 import { StorageQueryError } from './storage-errors';
 
@@ -356,8 +361,8 @@ export function addColumnDdl(
 
 /**
  * Ownership marker for server-created projection indexes. A version bump
- * rebuilds declared indexes by dropping every index Syncular owns and
- * re-creating the declared set; this prefix is what marks an index as
+ * drops every index Syncular owns whose definition changed or was removed
+ * and creates the missing ones; this prefix is what marks an index as
  * Syncular-owned, so operator-added tuning indexes survive bumps. Portable
  * identifier validation reserves the `sync_` prefix for the server storage
  * namespace, which keeps user and operator index names out of it.
@@ -388,22 +393,113 @@ export function physicalIndexName(declaredName: string): string {
 }
 
 /**
- * CREATE INDEX IF NOT EXISTS for the table's user-declared indexes. These use
- * the declared columns with a leading server partition column. Cross-table
+ * Physical name of one server-only index. The name carries a fingerprint of
+ * the definition, so a changed definition is a different index and the bump
+ * diff needs no catalog comparison of predicates.
+ */
+export function physicalServerIndexName(index: ServerIndexSchema): string {
+  const fingerprint = fnv1a64Hex(
+    JSON.stringify([index.columns, index.where ?? null]),
+  ).slice(0, 8);
+  const readable = `${SYNC_INDEX_PREFIX}${index.name}_${fingerprint}`;
+  if (new TextEncoder().encode(readable).length <= 63) return readable;
+  return `${SYNC_INDEX_PREFIX}${fnv1a64Hex(index.name)}_${fingerprint}`;
+}
+
+/**
+ * Canonical shape of one physical index, as read from the catalog and as
+ * declared: kind, then the key columns in order (`null` for an expression).
+ * Two indexes with one signature are interchangeable.
+ */
+export function indexSignature(
+  columns: readonly (string | null)[],
+  unique: boolean,
+  partial: boolean,
+): string {
+  return `${unique ? 'unique' : 'index'}${partial ? ' partial' : ''}(${columns.map((column) => column ?? '?').join(',')})`;
+}
+
+/**
+ * One statement that lists a table's free-standing SQLite indexes with their
+ * key columns in order (bind the table name). `origin='c'` excludes
+ * constraint-owned indexes, which only their constraint can remove. Feed the
+ * rows to {@link sqliteIndexSignatures}.
+ */
+export const SQLITE_TABLE_INDEXES_SQL = `SELECT il.name AS name, il."unique" AS is_unique, il.partial AS is_partial, ii.name AS column_name
+  FROM pragma_index_list(?) AS il
+  JOIN pragma_index_info(il.name) AS ii
+ WHERE il.origin='c'
+ ORDER BY il.name, ii.seqno`;
+
+export interface SqliteTableIndexRow {
+  readonly name: string;
+  readonly is_unique: number;
+  readonly is_partial: number;
+  readonly column_name: string | null;
+}
+
+/** Index name to {@link indexSignature} for the rows of one table. */
+export function sqliteIndexSignatures(
+  rows: readonly SqliteTableIndexRow[],
+): Record<string, string> {
+  const shapes = new Map<
+    string,
+    { unique: boolean; partial: boolean; columns: (string | null)[] }
+  >();
+  for (const row of rows) {
+    const shape = shapes.get(row.name) ?? {
+      unique: row.is_unique === 1,
+      partial: row.is_partial === 1,
+      columns: [],
+    };
+    shape.columns.push(row.column_name);
+    shapes.set(row.name, shape);
+  }
+  return Object.fromEntries(
+    [...shapes].map(([name, shape]) => [
+      name,
+      indexSignature(shape.columns, shape.unique, shape.partial),
+    ]),
+  );
+}
+
+interface DesiredIndex {
+  readonly name: string;
+  /** Absent when the physical name already fingerprints the definition. */
+  readonly signature: string | undefined;
+  readonly ddl: string;
+}
+
+/**
+ * The table's declared and server-only indexes. Declared indexes use the
+ * declared columns with a leading server partition column. Cross-table
  * index-name uniqueness is the user's schema concern, as it is client-side.
  * Server-side the physical name carries the {@link SYNC_INDEX_PREFIX}
  * ownership marker.
  */
-export function createIndexDdl(table: CompiledTable): string[] {
+function desiredIndexes(table: CompiledTable): DesiredIndex[] {
   // User indexes name app columns — nothing to index without the projection.
   if (!table.materialize) return [];
-  return table.indexes.map((index) => {
-    const unique = index.unique ? 'UNIQUE ' : '';
-    const columns = [SYNC_PARTITION_COLUMN, ...index.columns]
-      .map((column) => quoteIdent(column))
-      .join(', ');
-    return `CREATE ${unique}INDEX IF NOT EXISTS ${quoteIdent(physicalIndexName(index.name))} ON ${quoteIdent(table.name)} (${columns})`;
-  });
+  return [
+    ...table.indexes.map((index) => {
+      const unique = index.unique === true;
+      const columns = [SYNC_PARTITION_COLUMN, ...index.columns];
+      const name = physicalIndexName(index.name);
+      return {
+        name,
+        signature: indexSignature(columns, unique, false),
+        ddl: `CREATE ${unique ? 'UNIQUE ' : ''}INDEX IF NOT EXISTS ${quoteIdent(name)} ON ${quoteIdent(table.name)} (${columns.map((column) => quoteIdent(column)).join(', ')})`,
+      };
+    }),
+    ...table.serverIndexes.map((index) => {
+      const name = physicalServerIndexName(index);
+      return {
+        name,
+        signature: undefined,
+        ddl: `CREATE INDEX IF NOT EXISTS ${quoteIdent(name)} ON ${quoteIdent(table.name)} (${index.columns.map((column) => quoteIdent(column)).join(', ')})${index.where === undefined ? '' : ` WHERE ${index.where}`}`,
+      };
+    }),
+  ];
 }
 
 /** Idempotent removal of one Syncular-owned relational projection index. */
@@ -1039,9 +1135,10 @@ export function rewritePlan(
 /**
  * Every DDL statement to bring a database from the introspected relational
  * projections to `schema`: CREATE TABLE for absent tables, ADD COLUMN for
- * missing columns, and rebuild declared secondary indexes. Rebuilding during
- * a version bump supports DROP INDEX and same-name index replacement without
- * requiring historical index definitions in the stored column-layout marker.
+ * missing columns, and the secondary-index diff. An existing Syncular-owned
+ * index stays when the declaration still wants its physical name with the
+ * same {@link indexSignature}; every other owned index is dropped and every
+ * missing one is created, so a bump rebuilds only changed or new indexes.
  *
  * The drop set is limited to Syncular-owned indexes: physical names carrying
  * {@link SYNC_INDEX_PREFIX}, plus bare declared names (databases whose
@@ -1053,17 +1150,30 @@ export function schemaDdl(
   schema: CompiledSchema,
   existingColumnsByTable: ReadonlyMap<string, ReadonlySet<string>>,
   dialect: RelationalDialect,
-  existingIndexesByTable: ReadonlyMap<string, ReadonlySet<string>> = new Map(),
+  existingIndexesByTable: ReadonlyMap<
+    string,
+    ReadonlyMap<string, string>
+  > = new Map(),
 ): string[] {
   const drops: string[] = [];
   const creates: string[] = [];
   for (const table of schema.tables.values()) {
     const existing = existingColumnsByTable.get(table.name);
+    const desired = desiredIndexes(table);
     if (existing === undefined) {
       creates.push(createTableDdl(table, dialect));
     } else {
       const declared = new Set(table.indexes.map((index) => index.name));
-      for (const indexName of existingIndexesByTable.get(table.name) ?? []) {
+      for (const [indexName, signature] of existingIndexesByTable.get(
+        table.name,
+      ) ?? []) {
+        const want = desired.find((index) => index.name === indexName);
+        if (
+          want !== undefined &&
+          (want.signature === undefined || want.signature === signature)
+        ) {
+          continue;
+        }
         if (
           indexName.startsWith(SYNC_INDEX_PREFIX) ||
           declared.has(indexName)
@@ -1073,7 +1183,7 @@ export function schemaDdl(
       }
       creates.push(...addColumnDdl(table, existing, dialect));
     }
-    creates.push(...createIndexDdl(table));
+    creates.push(...desired.map((index) => index.ddl));
   }
   // Every drop precedes every create: an index name moving between tables in
   // one bump must release the global (SQLite) index namespace before the

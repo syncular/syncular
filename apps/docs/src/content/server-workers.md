@@ -294,10 +294,10 @@ const handler = createWorkersFetchHandler<Env>({
 
 D1 bills `rows_written` per statement, and that count includes the index entries a write touches as well as the table rows ([D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/)).
 
-Two writes dominate a caught-up client that polls on a fixed interval, and each refreshes a different timestamp:
+Two timestamps refresh on a caught-up client that polls on a fixed interval, and they have different cadences:
 
-- The partition registry refreshes `last_authenticated_at_ms`, the partition's activity time. Hosts can use it to exclude long-inactive partitions from maintenance.
-- The client record refreshes `updated_at_ms`, the per-client liveness time that the active-client retention floor reads. Both timestamps keep their existing refresh cadence.
+- The partition registry refreshes `last_authenticated_at_ms`, the partition's activity time, at most once per `PARTITION_TOUCH_INTERVAL_MS` (60 seconds). Hosts can use it to exclude long-inactive partitions from maintenance.
+- The client record refreshes `updated_at_ms`, the per-client liveness time that the active-client retention floor reads, on every round.
 
 The client record updates in place instead of deleting and reinserting, so an established round writes one client row. The actor comes from the authenticated context, the wire version and subscription list from the request, the cursor from the read, and `updated_at_ms` from the server clock.
 
@@ -307,8 +307,8 @@ Rows written on one two-column `tasks` table with one scope and no declared seco
 
 | Path | Rows written |
 |---|---|
-| Established idle round | 2 |
-| First write, warm client | 19 |
-| Same-value commit | 14 |
+| Established idle round | 1 |
+| First write, warm client | 18 |
+| Same-value commit | 13 |
 
 The numbers are a regression baseline for that schema and not a billing estimate.

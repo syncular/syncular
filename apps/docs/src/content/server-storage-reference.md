@@ -34,6 +34,35 @@ The typed columns are a queryable projection: run live SQL, joins, and analytics
 
 `ensureSyncServerReady(config)` creates and migrates these tables before the server binds a port ([Server setup](/guide-server/)). The low-level `storage.ensureSchema` accepts a compiled schema directly.
 
+### Query the projection
+
+Every row of a synced table carries `_sync_partition`, and the primary key is `(_sync_partition, _sync_row_id)`. A server-side query over the typed columns must name the partition: `WHERE _sync_partition = ? AND owner_id = ? AND id = ?`. A query that omits it cannot use the primary key or any declared index, because each of them leads with `_sync_partition`. SQLite then scans the table or builds an automatic index for the statement. On 3,000,000 rows the lookup `WHERE owner_id = ? AND id = ?` scans at about 100 to 165 ms, and the same lookup with the partition named uses `sync_ix_by_owner_title` at about 0.6 ms ([bench lane](https://github.com/syncular/syncular/blob/main/bench/src/server-sqlite-lane.ts)).
+
+A query that must run across partitions, or that filters by a column that is not covered by a declared index, needs an index that does not lead with the partition. Declare it on the server schema as `serverIndexes`:
+
+```ts
+const schema = {
+  ...generated,
+  tables: generated.tables.map((table) =>
+    table.name === 'assertions'
+      ? {
+          ...table,
+          serverIndexes: [
+            { name: 'assertions_by_owner_id', columns: ['owner_id', 'id'] },
+            {
+              name: 'assertions_pending',
+              columns: ['_sync_partition', 'owner_id'],
+              where: "status = 'pending'",
+            },
+          ],
+        }
+      : table,
+  ),
+};
+```
+
+A `serverIndexes` entry never reaches a client and is never unique, because uniqueness is enforced per partition. Its `columns` are the physical columns in the order written; name `_sync_partition` or `_sync_row_id` where the index should lead with them. `where` is the predicate of a partial index, written in SQL that the server's dialect accepts. The physical name is `sync_ix_<name>_<fingerprint>`, where the fingerprint covers the columns and the predicate, so a changed definition drops the old index and creates the new one in the next version bump. The names share one namespace with the declared `indexes` of the table. Creating or changing a server index requires a schema-version bump, like every index, and a table with `materialize: false` skips it.
+
 ### Layout check
 
 When the stored schema version equals the running one, `ensureSchema` still checks the database before serving, on all three backends. It compares the stored column layouts with the configured schema, then reads each synced table from the catalog (`PRAGMA table_info` on SQLite and D1, `pg_attribute` on Postgres). A missing table or column, a `_sync_*` column whose type or nullability differs from the declaration above, or a primary key other than `(_sync_partition, _sync_row_id)` fails the open with `StorageQueryError`:
@@ -168,7 +197,7 @@ Two independent presign switches take the server out of the blob byte path. `blo
 
 ## Upgrading a server database
 
-- **Increment the schema version.** Declared server indexes lead with `_sync_partition`, and unique values are enforced within each partition. The generated client index columns are unchanged. When upgrading an existing server database, increment the application schema version and regenerate the schema before starting the server. The schema migration rebuilds Syncular-owned indexes with the partition column. Reopening the same schema version does not rebuild old indexes. Operator indexes and constraint-owned indexes stay outside the rebuild set.
+- **Increment the schema version.** Declared server indexes lead with `_sync_partition`, and unique values are enforced within each partition. The generated client index columns are unchanged. When upgrading an existing server database, increment the application schema version and regenerate the schema before starting the server. The schema migration compares each Syncular-owned index (physical name prefix `sync_ix_`) with its declaration. An index with the declared name, uniqueness, and key columns (partition first) stays in place. Every other owned index is dropped and re-created, and a missing one is created, so a bump over a multi-gigabyte table pays only for changed or new indexes. Reopening the same schema version does not rebuild old indexes. Operator indexes and constraint-owned indexes stay outside the diff.
 - **Fence old processes.** A schema migration on SQLite or Postgres raises the writer fence of every existing partition to the new schema version inside the migration transaction. A process still running the previous schema then fails any commit it appends, including server-side writes through `storage.begin()`, with `sync.storage.writer_fence_rejected`, so it never stores payloads in the previous layout. Migrate the database, then replace the old processes; their requests fail until you replace them.
 - **Table removal.** Removing a table in a schema migration also deletes its blob references. References from retained tables keep protecting their blobs from garbage collection.
 - **D1.** D1 upgrades save progress between Worker invocations. Run `D1ServerStorage.migrateSchema` until it returns `complete: true` before admitting traffic ([D1 schema migration](/server-workers/#schema-migration)).

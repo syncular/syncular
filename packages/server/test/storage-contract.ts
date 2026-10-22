@@ -17,6 +17,7 @@ import {
   type ClientRecord,
   compileSchema,
   type NewReaction,
+  PARTITION_TOUCH_INTERVAL_MS,
   type ServerSchema,
   type ServerStorage,
   StorageQueryError,
@@ -1984,16 +1985,30 @@ export function runStorageContract(
       expect(await storage.listPartitions()).toEqual([]);
       await storage.touchPartition('part-b', NOW, 'epoch-b');
       await storage.touchPartition('part-a', NOW + 1, 'epoch-a');
+      // A touch less than the interval after the stored timestamp reads the
+      // row back without writing it.
+      expect(
+        await storage.touchPartition(
+          'part-a',
+          NOW + PARTITION_TOUCH_INTERVAL_MS,
+          'ignored-racing-epoch',
+        ),
+      ).toEqual({
+        partition: 'part-a',
+        logEpoch: 'epoch-a',
+        epochRequired: false,
+        lastAuthenticatedAtMs: NOW + 1,
+      });
       const refreshed = await storage.touchPartition(
         'part-a',
-        NOW + 2,
+        NOW + 1 + PARTITION_TOUCH_INTERVAL_MS,
         'ignored-racing-epoch',
       );
       expect(refreshed).toEqual({
         partition: 'part-a',
         logEpoch: 'epoch-a',
         epochRequired: false,
-        lastAuthenticatedAtMs: NOW + 2,
+        lastAuthenticatedAtMs: NOW + 1 + PARTITION_TOUCH_INTERVAL_MS,
       });
       expect(await storage.listPartitions()).toEqual(['part-a', 'part-b']);
       expect(await storage.listPartitionRegistry()).toEqual([

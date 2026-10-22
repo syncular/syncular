@@ -1,4 +1,8 @@
-import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
+import {
+  DatabaseSync,
+  type SQLInputValue,
+  type StatementSync,
+} from 'node:sqlite';
 import type {
   SqliteDatabase,
   SqliteRunResult,
@@ -16,6 +20,8 @@ function row<Row>(value: Record<string, unknown> | undefined): Row | null {
 
 export class NodeSqliteDatabase implements SqliteDatabase {
   readonly native: DatabaseSync;
+  /** Prepared statements by SQL text, as `bun:sqlite`'s `query` keeps them. */
+  readonly #statements = new Map<string, StatementSync>();
 
   constructor(path = ':memory:') {
     this.native = new DatabaseSync(path);
@@ -26,13 +32,22 @@ export class NodeSqliteDatabase implements SqliteDatabase {
   }
 
   run(sql: string, bindings: readonly SqliteValue[] = []): SqliteRunResult {
-    return this.native.prepare(sql).run(...bindings.map(bind));
+    return this.#prepare(sql).run(...bindings.map(bind));
+  }
+
+  #prepare(sql: string): StatementSync {
+    let statement = this.#statements.get(sql);
+    if (statement === undefined) {
+      statement = this.native.prepare(sql);
+      this.#statements.set(sql, statement);
+    }
+    return statement;
   }
 
   query<Row, Params extends readonly SqliteValue[]>(
     sql: string,
   ): SqliteStatement<Row, Params> {
-    const statement = this.native.prepare(sql);
+    const statement = this.#prepare(sql);
     return {
       run: (...params) => statement.run(...params.map(bind)),
       get: (...params) => row<Row>(statement.get(...params.map(bind))),

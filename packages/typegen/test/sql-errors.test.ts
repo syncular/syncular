@@ -452,7 +452,7 @@ describe('CREATE INDEX subset — hard errors naming the construct', () => {
   test('partial (WHERE) indexes are rejected', () => {
     expectError(
       `${base}CREATE INDEX idx ON t (a) WHERE a IS NOT NULL`,
-      /index idx: partial indexes \(WHERE …\) are unsupported/,
+      /index idx: partial indexes \(WHERE …\) are unsupported in migrations; declare a server-only partial index as serverIndexes/,
     );
   });
   test('quoted index/table identifiers are rejected', () => {

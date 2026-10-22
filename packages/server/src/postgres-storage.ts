@@ -1,7 +1,7 @@
 import { validateCommitPruneQuery } from './prune';
 import { StorageQueryError } from './storage-errors';
 import type { CommitPruneQuery, CommitPruneResult } from './storage';
-import { serveGateRefusal } from './storage';
+import { PARTITION_TOUCH_INTERVAL_MS, serveGateRefusal } from './storage';
 import { serveNotReadyError } from './readiness';
 /**
  * Postgres server storage: the production database path.
@@ -81,6 +81,7 @@ import {
   type StoredColumnLayout,
   scanRowBatchSql,
   scanRowPageSql,
+  indexSignature,
   schemaDdl,
   selectRowScopesSql,
   selectRowSql,
@@ -1554,7 +1555,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
         // the migration waits.
         await client.query('LOCK TABLE sync_partitions IN EXCLUSIVE MODE');
         const existing = new Map<string, ReadonlySet<string>>();
-        const existingIndexes = new Map<string, ReadonlySet<string>>();
+        const existingIndexes = new Map<string, ReadonlyMap<string, string>>();
         for (const table of schema.tables.values()) {
           const { rows } = await client.query<{ column_name: string }>(
             `SELECT column_name FROM information_schema.columns
@@ -1568,8 +1569,25 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
             // indexes (PRIMARY KEY, UNIQUE constraints) can only be removed
             // through their constraint, so DROP INDEX on them would abort
             // the migration transaction.
-            const indexes = await client.query<{ index_name: string }>(
-              `SELECT index_class.relname AS index_name
+            const indexes = await client.query<{
+              index_name: string;
+              is_unique: boolean;
+              is_partial: boolean;
+              columns: (string | null)[];
+            }>(
+              `SELECT index_class.relname AS index_name,
+                      index_meta.indisunique AS is_unique,
+                      index_meta.indpred IS NOT NULL AS is_partial,
+                      ARRAY(
+                        SELECT attribute.attname::text
+                          FROM unnest(index_meta.indkey::int2[])
+                               WITH ORDINALITY AS key(attnum, ord)
+                          LEFT JOIN pg_catalog.pg_attribute AS attribute
+                            ON attribute.attrelid = table_class.oid
+                           AND attribute.attnum = key.attnum
+                         WHERE key.ord <= index_meta.indnkeyatts
+                         ORDER BY key.ord
+                      ) AS columns
                  FROM pg_catalog.pg_class AS table_class
                  JOIN pg_catalog.pg_namespace AS namespace
                    ON namespace.oid = table_class.relnamespace
@@ -1589,7 +1607,16 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
             );
             existingIndexes.set(
               table.name,
-              new Set(indexes.rows.map((index) => index.index_name)),
+              new Map(
+                indexes.rows.map((index) => [
+                  index.index_name,
+                  indexSignature(
+                    index.columns,
+                    index.is_unique,
+                    index.is_partial,
+                  ),
+                ]),
+              ),
             );
           }
         }
@@ -1667,20 +1694,35 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
     if (initialLogEpoch.length === 0) {
       throw new Error('initial log epoch must be non-empty');
     }
-    const { rows } = await this.#exec.query<{
+    type Registry = {
       log_epoch: string;
       epoch_required: boolean;
       last_authenticated_at_ms: unknown;
-    }>(
-      `INSERT INTO sync_partition_registry(
-         partition, log_epoch, last_authenticated_at_ms
-       ) VALUES ($1,$2,$3)
-       ON CONFLICT(partition) DO UPDATE SET
-         last_authenticated_at_ms=EXCLUDED.last_authenticated_at_ms
-       RETURNING log_epoch, epoch_required, last_authenticated_at_ms`,
-      [partition, initialLogEpoch, authenticatedAtMs],
-    );
-    const row = rows[0];
+    };
+    let row = (
+      await this.#exec.query<Registry>(
+        `SELECT log_epoch, epoch_required, last_authenticated_at_ms
+           FROM sync_partition_registry WHERE partition=$1`,
+        [partition],
+      )
+    ).rows[0];
+    if (
+      row === undefined ||
+      authenticatedAtMs - asNumber(row.last_authenticated_at_ms) >=
+        PARTITION_TOUCH_INTERVAL_MS
+    ) {
+      row = (
+        await this.#exec.query<Registry>(
+          `INSERT INTO sync_partition_registry(
+             partition, log_epoch, last_authenticated_at_ms
+           ) VALUES ($1,$2,$3)
+           ON CONFLICT(partition) DO UPDATE SET
+             last_authenticated_at_ms=EXCLUDED.last_authenticated_at_ms
+           RETURNING log_epoch, epoch_required, last_authenticated_at_ms`,
+          [partition, initialLogEpoch, authenticatedAtMs],
+        )
+      ).rows[0];
+    }
     if (row === undefined)
       throw new Error('partition registry write did not persist');
     return {

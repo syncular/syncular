@@ -65,7 +65,7 @@ Make the partition the largest set of actors who share synced rows and no larger
 
 ## Enumerate partitions
 
-The storage backend keeps a partition registry. Every authenticated sync, operation, segment, blob, and realtime request refreshes `lastAuthenticatedAtMs`, and the first request creates the partition's log epoch. Authentication stays the source of the partition value, so a client cannot write the registry.
+The storage backend keeps a partition registry. Every authenticated sync, operation, segment, blob, and realtime request reads the partition's registry row, and the first request creates the row with the partition's log epoch. A request writes `lastAuthenticatedAtMs` only when the stored value is at least 60 seconds (`PARTITION_TOUCH_INTERVAL_MS`) older than the request's clock, so a read-only request takes no write lock and a partition under steady traffic costs one registry write per minute. Treat `lastAuthenticatedAtMs` as accurate to that interval. Authentication stays the source of the partition value, so a client cannot write the registry.
 
 Use the registry for maintenance loops:
 

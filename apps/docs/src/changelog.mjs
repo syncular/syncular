@@ -17,6 +17,18 @@
 export const changelog = [
   {
     date: '2026-10-22',
+    title:
+      'Schema bumps keep unchanged indexes, and readers stop taking the write lock',
+    body: 'A schema bump dropped and rebuilt every declared index of a projection table, which cost 5.3 s for three indexes on 3,000,000 rows. It now compares each Syncular-owned index with its declaration and rebuilds only changed or new ones (11 ms when nothing changed). `touchPartition` wrote the partition registry on every request, so a read-only request took the SQLite write lock; it now writes at most once per 60 seconds (`PARTITION_TOUCH_INTERVAL_MS`). `TableSchema.serverIndexes` adds server-only indexes that lead with any column, or with `_sync_partition`, and may be partial, for application queries that cannot name the partition. `NodeSqliteDatabase` and `BunSqliteDatabase.run` reuse prepared statements.',
+    links: [
+      {
+        href: '/server-storage-reference/#query-the-projection',
+        label: 'Query the projection',
+      },
+    ],
+  },
+  {
+    date: '2026-10-22',
     title: 'Pull-only rounds skip the Durable Object queue',
     body: 'The Workers Durable Object host queued every `/sync` round of a partition, so with one partition for all accounts each pull waited for every earlier round and its database round trips. An HTTP round without `PUSH_COMMIT` frames now runs beside the partition FIFO; pushes, socket rounds, operations and maintenance keep it. `SyncularRealtimeHost.serialized((contextFor) => work)` runs host work on the FIFO, and a commit made through `contextFor` reaches the matching sockets as a delta instead of a wake that makes every socket pull.',
     links: [

@@ -22,7 +22,7 @@ export class BunSqliteDatabase implements SqliteDatabase {
   }
 
   run(sql: string, bindings: readonly SqliteValue[] = []): SqliteRunResult {
-    return this.native.run(sql, [...bindings]);
+    return this.native.query<unknown, SQLQueryBindings[]>(sql).run(...bindings);
   }
 
   query<Row, Params extends readonly SqliteValue[]>(

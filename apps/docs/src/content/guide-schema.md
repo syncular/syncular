@@ -215,6 +215,13 @@ Changes to existing tables follow three rules:
 - A synced appended column stays nullable. Do not tighten its SQL nullability
   later.
 
+A required column cannot become nullable in place. The server's current-row
+tables carry `NOT NULL` for it, and SQLite offers no `ALTER COLUMN`. Add a
+trailing nullable column, backfill it, move readers and writers to it, and retire
+the old column in a later version (the five steps under
+[Data changes and backfills](#data-changes-and-backfills)). A table whose key
+or scope column changes follows the same path through a successor table.
+
 There is no client-side migration engine. On a version change a client keeps its
 outbox, wipes its local tables, re-bootstraps at the new version, and replays the
 outbox on top. The triggers, what the reset preserves, dropped-column handling,
@@ -232,9 +239,19 @@ normal retention, so table retirement does not erase data for compliance.
 
 `DROP INDEX [IF EXISTS] name` removes a previously declared secondary index
 from the head schema. You may recreate the same name later with a new column or
-uniqueness definition. On a server schema bump, Syncular rebuilds the declared
-secondary indexes on its relational projection tables; clients recreate their
-application tables during their normal re-bootstrap.
+uniqueness definition. On a server schema bump, Syncular drops the indexes of
+its relational projection tables that the schema no longer declares or whose
+columns or uniqueness changed, and builds the missing ones; an unchanged index
+is left in place. Clients recreate their application tables during their normal
+re-bootstrap.
+
+A `CREATE INDEX` with a `WHERE` clause is a hard error, because both client
+mirrors and the server would have to agree on the predicate, and a partial
+unique index would also change how the client detects local collisions. A
+partial index that only serves server-side queries goes on the server schema as
+`serverIndexes` ([Query the projection](/server-storage-reference/#query-the-projection)).
+A rule such as "one active row per key while soft-deleted rows stay" belongs in
+a §6.7 write-validator, backed by a `serverIndexes` lookup index over the key.
 
 ### Data changes and backfills
 

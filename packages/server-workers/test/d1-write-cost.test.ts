@@ -18,6 +18,7 @@ import {
   D1ServerStorage,
   handleSyncRequest,
   MemorySegmentStore,
+  PARTITION_TOUCH_INTERVAL_MS,
   type D1Database,
   type D1PreparedStatement,
   type ServerSchema,
@@ -288,14 +289,16 @@ test('an established idle round stops paying for a client replace', async () => 
       );
       authenticated.push(registry?.lastAuthenticatedAtMs ?? Number.NaN);
     }
-    // Round 0 inserts the client row; rounds 1 and 2 update it in place. The
-    // baseline delete-and-insert replace cost one more row write.
-    expect(totals).toEqual([3, 2, 2]);
+    // Round 0 inserts the registry row and the client row; rounds 1 and 2
+    // update the client row in place and leave the registry row alone,
+    // because the clock moved less than PARTITION_TOUCH_INTERVAL_MS.
+    expect(totals).toEqual([2, 1, 1]);
     // The update kept every field and one row: the cursor never moves on a
-    // caught-up round, and the liveness timestamps advance with the clock.
+    // caught-up round, and the client record advances with the clock while the
+    // registry timestamp stays at its first write.
     expect(cursors[0]).toBe(cursors[1]);
     expect(cursors[1]).toBe(cursors[2]);
-    expect(authenticated).toEqual([2_100, 2_200, 2_300]);
+    expect(authenticated).toEqual([1_000, 1_000, 1_000]);
     expect(now()).toBe(2_300);
     const record = await storage.getClientRecord(PARTITION, 'client-1');
     expect(record).toMatchObject({
@@ -305,6 +308,16 @@ test('an established idle round stops paying for a client replace', async () => 
       updatedAtMs: 2_300,
     });
     expect((await storage.listClientCursors(PARTITION)).length).toBe(1);
+    // A round a full interval later pays one more row for the registry.
+    measure.reset();
+    advance(PARTITION_TOUCH_INTERVAL_MS);
+    decodeResponse(await handleSyncRequest(bytes, ctx));
+    expect(measure.rowsWritten).toBe(2);
+    expect(
+      (await storage.listPartitionRegistry()).find(
+        (entry) => entry.partition === PARTITION,
+      )?.lastAuthenticatedAtMs,
+    ).toBe(now());
   });
 });
 
@@ -321,7 +334,7 @@ test('a same-value commit leaves the scope index untouched and still advances', 
     expect(pushResult(first.frames)?.status).toBe('applied');
     // Pinned for this explicit schema and warmed client. D1 counts index
     // rows, so the totals include the scope-index work.
-    expect(measure.rowsWritten).toBe(19);
+    expect(measure.rowsWritten).toBe(18);
     expect(
       measure.writes.some((write) => write.sql.includes('sync_row_scopes')),
     ).toBe(true);
@@ -342,7 +355,7 @@ test('a same-value commit leaves the scope index untouched and still advances', 
     expect(
       measure.writes.some((write) => write.sql.includes('sync_row_scopes')),
     ).toBe(false);
-    expect(measure.rowsWritten).toBe(14);
+    expect(measure.rowsWritten).toBe(13);
   });
 });
 

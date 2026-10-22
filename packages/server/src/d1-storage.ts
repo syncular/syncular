@@ -1,6 +1,7 @@
 import { validateCommitPruneQuery } from './prune';
 import { StorageQueryError } from './storage-errors';
 import type { CommitPruneQuery, CommitPruneResult } from './storage';
+import { PARTITION_TOUCH_INTERVAL_MS } from './storage';
 /**
  * Cloudflare D1 server storage for Workers deployments.
  *
@@ -77,6 +78,9 @@ import {
   type StoredColumnLayout,
   scanRowPageSql,
   schemaDdl,
+  SQLITE_TABLE_INDEXES_SQL,
+  type SqliteTableIndexRow,
+  sqliteIndexSignatures,
   selectRowScopesSql,
   selectRowSql,
   selectRowsForRewriteSql,
@@ -938,7 +942,7 @@ interface D1MigrationState {
   phase: 'core' | 'prepare' | 'ddl' | 'rewrite';
   offset: number;
   columns: Record<string, string[]>;
-  indexes: Record<string, string[]>;
+  indexes: Record<string, Record<string, string>>;
   ddl: string[];
   rewrites: Array<{ table: string; oldLayout?: readonly StoredColumnLayout[] }>;
   afterPartition: string;
@@ -1269,8 +1273,9 @@ export class D1ServerStorage implements ServerStorage {
             .prepare(`PRAGMA table_info(${quoteIdent(table.name)})`)
             .all<{ name: string }>();
           const indexes = await this.#db
-            .prepare(`PRAGMA index_list(${quoteIdent(table.name)})`)
-            .all<{ name: string; origin: string }>();
+            .prepare(SQLITE_TABLE_INDEXES_SQL)
+            .bind(table.name)
+            .all<SqliteTableIndexRow>();
           // Validate the old codec before any application DDL or row rewrite.
           rewritePlan(
             table,
@@ -1296,9 +1301,7 @@ export class D1ServerStorage implements ServerStorage {
                 },
                 indexes: {
                   ...state.indexes,
-                  [table.name]: indexes.results
-                    .filter((index) => index.origin === 'c')
-                    .map((index) => index.name),
+                  [table.name]: sqliteIndexSignatures(indexes.results),
                 },
               },
               [],
@@ -1314,9 +1317,9 @@ export class D1ServerStorage implements ServerStorage {
           ]),
         );
         const indexes = new Map(
-          Object.entries(state.indexes).map(([name, names]) => [
+          Object.entries(state.indexes).map(([name, signatures]) => [
             name,
-            new Set(names),
+            new Map(Object.entries(signatures)),
           ]),
         );
         const rewrites = tables.flatMap((table) => {
@@ -1581,27 +1584,38 @@ export class D1ServerStorage implements ServerStorage {
     if (initialLogEpoch.length === 0) {
       throw new Error('initial log epoch must be non-empty');
     }
-    await this.#db
-      .prepare(
-        `INSERT INTO sync_partition_registry(
-           partition, log_epoch, last_authenticated_at_ms
-         ) VALUES (?,?,?)
-         ON CONFLICT(partition) DO UPDATE SET
-           last_authenticated_at_ms=excluded.last_authenticated_at_ms`,
-      )
-      .bind(partition, initialLogEpoch, authenticatedAtMs)
-      .run();
-    const row = await this.#db
+    const select = this.#db
       .prepare(
         `SELECT log_epoch, epoch_required, last_authenticated_at_ms
            FROM sync_partition_registry WHERE partition=?`,
       )
-      .bind(partition)
-      .first<{
+      .bind(partition);
+    let row = await select.first<{
+      log_epoch: string;
+      epoch_required: number;
+      last_authenticated_at_ms: number;
+    }>();
+    if (
+      row === null ||
+      authenticatedAtMs - row.last_authenticated_at_ms >=
+        PARTITION_TOUCH_INTERVAL_MS
+    ) {
+      await this.#db
+        .prepare(
+          `INSERT INTO sync_partition_registry(
+             partition, log_epoch, last_authenticated_at_ms
+           ) VALUES (?,?,?)
+           ON CONFLICT(partition) DO UPDATE SET
+             last_authenticated_at_ms=excluded.last_authenticated_at_ms`,
+        )
+        .bind(partition, initialLogEpoch, authenticatedAtMs)
+        .run();
+      row = await select.first<{
         log_epoch: string;
         epoch_required: number;
         last_authenticated_at_ms: number;
       }>();
+    }
     if (row === null)
       throw new Error('partition registry write did not persist');
     return {

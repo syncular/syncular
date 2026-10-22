@@ -2,7 +2,7 @@ import { retainRollbackFailure, rollbackAfterError } from './storage-errors';
 import { validateCommitPruneQuery } from './prune';
 import { StorageQueryError } from './storage-errors';
 import type { CommitPruneQuery, CommitPruneResult } from './storage';
-import { serveGateRefusal } from './storage';
+import { PARTITION_TOUCH_INTERVAL_MS, serveGateRefusal } from './storage';
 import { serveNotReadyError } from './readiness';
 /**
  * SQLite server storage over the shared synchronous driver.
@@ -45,6 +45,9 @@ import {
   type StoredColumnLayout,
   scanRowPageSql,
   schemaDdl,
+  SQLITE_TABLE_INDEXES_SQL,
+  type SqliteTableIndexRow,
+  sqliteIndexSignatures,
   selectRowScopesSql,
   selectRowSql,
   selectRowsForRewriteSql,
@@ -656,7 +659,7 @@ END`);
       const layouts = parseLayouts(marker?.layouts);
       const retiredTables = retiredTableNames(schema, layouts);
       const existing = new Map<string, ReadonlySet<string>>();
-      const existingIndexes = new Map<string, ReadonlySet<string>>();
+      const existingIndexes = new Map<string, ReadonlyMap<string, string>>();
       for (const table of schema.tables.values()) {
         const escapedTableName = table.name.replaceAll('"', '""');
         const columns = this.db
@@ -666,15 +669,19 @@ END`);
           .all();
         if (columns.length > 0) {
           existing.set(table.name, new Set(columns.map((c) => c.name)));
-          const indexes = this.db
-            .query<{ name: string; origin: string }, []>(
-              `PRAGMA index_list("${escapedTableName}")`,
-            )
-            .all()
-            .filter((index) => index.origin === 'c');
           existingIndexes.set(
             table.name,
-            new Set(indexes.map((index) => index.name)),
+            new Map(
+              Object.entries(
+                sqliteIndexSignatures(
+                  this.db
+                    .query<SqliteTableIndexRow, [string]>(
+                      SQLITE_TABLE_INDEXES_SQL,
+                    )
+                    .all(table.name),
+                ),
+              ),
+            ),
           );
         }
       }
@@ -763,28 +770,34 @@ END`);
     if (initialLogEpoch.length === 0) {
       throw new Error('initial log epoch must be non-empty');
     }
-    this.db
-      .query(
-        `INSERT INTO sync_partition_registry(
-           partition, log_epoch, last_authenticated_at_ms
-         ) VALUES (?,?,?)
-         ON CONFLICT(partition) DO UPDATE SET
-           last_authenticated_at_ms=excluded.last_authenticated_at_ms`,
-      )
-      .run(partition, initialLogEpoch, authenticatedAtMs);
-    const row = this.db
-      .query<
-        {
-          log_epoch: string;
-          epoch_required: number;
-          last_authenticated_at_ms: number;
-        },
-        [string]
-      >(
-        `SELECT log_epoch, epoch_required, last_authenticated_at_ms
-           FROM sync_partition_registry WHERE partition=?`,
-      )
-      .get(partition);
+    const select = this.db.query<
+      {
+        log_epoch: string;
+        epoch_required: number;
+        last_authenticated_at_ms: number;
+      },
+      [string]
+    >(
+      `SELECT log_epoch, epoch_required, last_authenticated_at_ms
+         FROM sync_partition_registry WHERE partition=?`,
+    );
+    let row = select.get(partition);
+    if (
+      row === null ||
+      authenticatedAtMs - row.last_authenticated_at_ms >=
+        PARTITION_TOUCH_INTERVAL_MS
+    ) {
+      this.db
+        .query(
+          `INSERT INTO sync_partition_registry(
+             partition, log_epoch, last_authenticated_at_ms
+           ) VALUES (?,?,?)
+           ON CONFLICT(partition) DO UPDATE SET
+             last_authenticated_at_ms=excluded.last_authenticated_at_ms`,
+        )
+        .run(partition, initialLogEpoch, authenticatedAtMs);
+      row = select.get(partition);
+    }
     if (row === null)
       throw new Error('partition registry write did not persist');
     return {

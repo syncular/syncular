@@ -1,8 +1,125 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.37.0** (`v0.37.0`). All artifacts use Apache-2.0, except
+current release is **0.38.0** (`v0.38.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.38.0 release notes
+
+0.38.0 answers the integration feedback of a Bun server on `@syncular/server`
+0.26.0 with `bun:sqlite` stores of 5 GB and 2 GB, and it adds public server
+API (`serverIndexes`, `PARTITION_TOUCH_INTERVAL_MS`), so a patch number would
+hide the surface. SSP2 stays at wire version 3, the server storage layout does
+not change, and every package and crate ships together; the Rust crates carry
+no code change.
+
+Findings, each checked against 0.37.0:
+
+1. **Declared indexes lead with `_sync_partition`.** Every server read of
+   Syncular names the partition, so the declared indexes serve them. An
+   application query that omits `_sync_partition` cannot use the primary key
+   or any declared index: on 3,000,000 rows `WHERE owner_id = ? AND id = ?`
+   scans at 103 to 165 ms and takes 0.6 ms once it names the partition.
+   `TableSchema.serverIndexes` (new) creates server-only indexes with the
+   columns as written, so an index can lead with `owner_id` or with
+   `_sync_partition`, optionally with a partial-index `where` predicate. Such
+   an index never reaches a client. The lookup above takes 0.09 ms through
+   it. SPEC §2.4 (server index maintenance) and the server storage reference
+   ([Query the projection](/server-storage-reference/#query-the-projection))
+   document the partition rule.
+2. **`touchPartition` wrote on every request.** The three storages read the
+   registry row first and write `last_authenticated_at_ms` only when the
+   stored value is at least `PARTITION_TOUCH_INTERVAL_MS` (60,000 ms) behind
+   the request's clock; a missing row is still created. 20,000 calls within
+   one minute wrote 20,000 rows in 0.37.0 and write 1. A read-only request
+   takes no write lock, and an idle D1 round writes one row (the client
+   record) where it wrote two. `lastAuthenticatedAtMs` is accurate to 60
+   seconds (SPEC §2.1).
+3. **A schema bump dropped and rebuilt every declared index.** The bump now
+   reads each Syncular-owned index from the catalog (`pragma_index_list` and
+   `pragma_index_info` on SQLite and D1, `pg_index` on PostgreSQL) and keeps
+   it when its uniqueness and ordered key columns still match the
+   declaration. It drops the rest and creates the missing ones. A bump with 3
+   unchanged indexes on 3,000,000 rows took 5,339 ms in 0.37.0 and takes
+   11 ms; a bump that changes 1 of 3 rebuilds that one index (1,693 ms
+   against 4,913 ms). Databases created by 0.26.0 keep their indexes, which
+   already carry the declared shape.
+4. **Migrations only append nullable columns.** Valid limitation, not
+   changed. Relaxing `NOT NULL` needs a physical change of the server
+   projection (a table rebuild on SQLite and D1, where D1 would also need the
+   chunked migration to rebuild), and typegen has no grammar for it. Clients
+   need no change because they rebuild their tables on a version change. The
+   documented path stays a trailing nullable column with a backfill
+   ([Schema bumps](/guide-schema/#schema-bumps)).
+5. **Partial indexes are rejected.** Rejected in migrations, and now
+   available server-only through `serverIndexes[].where`. A client-visible
+   partial index stays unsupported: both client mirrors would have to agree
+   on the predicate, and a partial unique index changes how a client
+   detects local collisions. The typegen error names `serverIndexes`.
+6. **Prepared statements.** `SqliteServerStorage` on `bun:sqlite` already
+   runs its statements through `db.query`, which Bun caches per SQL text. A
+   push and a pull round issue 42 cached statements over 21 distinct texts and
+   3 uncached `exec` statements (`BEGIN IMMEDIATE`, `SAVEPOINT`, `COMMIT`;
+   a microbenchmark runs four such statements in 2.5 microseconds). The remaining parse
+   cost in such a profile comes from application statements. Two adapter gaps
+   are fixed: `BunSqliteDatabase.run(sql, bindings)` parsed on every call
+   and now uses the cached statement, and `NodeSqliteDatabase.query` and
+   `run` called `prepare` on every call and now cache by SQL text.
+
+Tests and benchmarks: `packages/server/test/index-diff.test.ts` (15 tests over
+SQLite, PGlite, and the D1 double), the storage contract's registry test,
+`d1-write-cost.test.ts` (Miniflare, real D1 `rows_written`), and the Node
+adapter check in `verify:node`. `bench/src/server-sqlite-lane.ts` and
+`bench/src/server-prepare-lane.ts` hold the multi-million-row measurements
+(`bench/README.md`). No behavior changes on the wire, so no conformance
+scenario applies.
+
+**Upgrade notes.** `ServerSchema` tables accept `serverIndexes`; adding or
+changing one requires a schema-version bump. `touchPartition` callers and
+custom `ServerStorage` implementations that mirror the registry contract skip
+the write inside `PARTITION_TOUCH_INTERVAL_MS`. `schemaDdl` (exported from
+`@syncular/server`) takes a map of index name to `indexSignature` as its
+fourth argument in place of a set of names. Upgrade all 12 npm packages and 6
+crates together. No schema bump, storage migration, or wire change is
+required.
+
+**Upgrading a `bun:sqlite` server from 0.26.0.** The changes that matter, by
+release:
+
+- 0.26.6: an unexpected exception answers HTTP 500 `sync.internal_error`
+  (retryable) in place of 400 `sync.invalid_request`. Pass `onError` to
+  observe the original exception, and treat 500 as retryable in custom
+  clients. A custom `ServerStorage` implements `latestScopedChangeSeq`
+  (0.34.0 changed its statement to one JSON array; drop any local patch).
+- 0.30.4: a schema migration raises the writer fence of every partition. A
+  process on the previous schema fails its commits, including
+  `storage.begin()` writes, with `sync.storage.writer_fence_rejected`; replace
+  old processes right after the migration.
+- 0.30.6: `schemaWindow` is optional and adds nothing unless passed.
+- 0.30.12: a pull that finds the maximum commit behind the server's own
+  accepted push answers `sync.storage_stale_read`; sync storage needs
+  uncached reads.
+- 0.31.0: the SQLite image lane is explicit. Pass
+  `sqliteImageBuilder: buildSqliteImage` (import it from
+  `@syncular/server/sqlite`) in the server config; without it the server
+  serves matching stored images or the rows lane, so a server that relied on
+  the implicit builder in 0.26.0 loses image bootstraps silently.
+- 0.32.0, only for hosts that mounted the admin console by hand: use the
+  `admin` option; `authorizeWrite` is `authorizeActions`, and `defaultPartition`
+  is removed.
+- 0.35.0: a custom `BlobStore` implements `delete(partition, blobId)`; inline
+  blob downloads answer the upload's declared media type with `nosniff` and a
+  sandbox CSP; erase accounts through `eraseScopeValue`, not by deleting from
+  `sync_*` tables; a custom `ServerStorage` adds `listScopeValueRows` and
+  `eraseScopeValueHistory`.
+- `@syncular/server-hono` requires hono `^4.13.11` (0.33.0).
+- 0.38.0: the fourth argument of the exported `schemaDdl` changed shape (see
+  above); applications that query projection tables name `_sync_partition`
+  or declare `serverIndexes`.
+
+No release between 0.26.0 and 0.38.0 requires a schema-version bump, a storage
+migration, or a wire change for a SQLite server; the storage layout is
+unchanged, and the next bump after the upgrade keeps the existing indexes.
 
 ## 0.37.0 release notes
 

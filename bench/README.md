@@ -22,6 +22,32 @@ clock. It measures 30 single-task base/ACK/rebuild rounds at 0, 100,000 and
 FTS counts and the task's final server version are checked after every size.
 JSON output records median/min/max nanoseconds and zero unchanged deletes.
 
+## Server SQLite lanes
+
+Two standalone scripts measure `SqliteServerStorage` on `bun:sqlite`:
+
+```sh
+bun run --cwd bench bench:server-sqlite -- --rows 3000000
+bun bench/src/server-prepare-lane.ts --rounds 2000
+```
+
+`server-sqlite-lane.ts` seeds a file-backed projection table and times schema
+bumps (unchanged, partly changed, and new indexes), an `owner_id, id` lookup
+without the partition before and after a `serverIndexes` entry, and 20,000
+`touchPartition` calls. On 3,000,000 rows (Bun 1.4.0, macOS arm64, one run each):
+
+| Measurement | 0.37.0 | 0.38.0 |
+| --- | --- | --- |
+| Bump with 3 unchanged indexes | 5,339 ms | 11 ms |
+| Bump with 1 of 3 indexes changed | 4,913 ms | 1,693 ms |
+| Lookup `owner_id, id` without the partition | 165 ms (scan) | 0.09 ms (`serverIndexes`) |
+| 20,000 `touchPartition` calls within one minute | 20,000 rows written | 1 row written |
+
+`server-prepare-lane.ts` counts statements through `db.query` (cached by Bun per
+SQL text), `db.exec`, and `db.run` over a push and a pull per round. The steady
+state issues 42 cached statements and 3 `exec` statements (`BEGIN IMMEDIATE`,
+`SAVEPOINT`, `COMMIT`) per round, over 21 distinct SQL texts.
+
 ## Diagnostic workloads
 
 Select a workload to write a separate JSON artifact. Diagnostic runs leave

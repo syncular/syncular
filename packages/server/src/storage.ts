@@ -358,6 +358,9 @@ export interface ClientCursorInfo {
 }
 
 /** Durable partition identity refreshed after host authentication (§2.1). */
+/** Longest age of `lastAuthenticatedAtMs` that `touchPartition` leaves unwritten. */
+export const PARTITION_TOUCH_INTERVAL_MS = 60_000;
+
 export interface PartitionRegistryEntry {
   readonly partition: string;
   readonly logEpoch: string;
@@ -651,7 +654,12 @@ export interface ServerStorage {
     checkpoints?: readonly CheckpointDeclaration[],
   ): Promise<void>;
 
-  /** Create or refresh the authenticated partition registry row (§2.1). */
+  /**
+   * Create or refresh the authenticated partition registry row (§2.1). A
+   * row whose `lastAuthenticatedAtMs` is less than
+   * {@link PARTITION_TOUCH_INTERVAL_MS} behind `authenticatedAtMs` is read
+   * back without a write, so a request that only reads takes no write lock.
+   */
   touchPartition(
     partition: string,
     authenticatedAtMs: number,

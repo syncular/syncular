@@ -23,6 +23,22 @@ export interface IndexSchema {
   readonly unique?: boolean;
 }
 
+/**
+ * A server-only index on a table's relational projection. Unlike a declared
+ * {@link IndexSchema}, it never reaches a client, and its `columns` are the
+ * physical columns as written: Syncular does not prepend `_sync_partition`.
+ * Name `_sync_partition` and `_sync_row_id` explicitly where an index should
+ * lead with them. The index is never unique, because uniqueness is enforced
+ * per partition. `where` is the predicate of a partial index, in SQL that
+ * the server's dialect accepts. Creating or changing one requires a schema
+ * version bump, like every index.
+ */
+export interface ServerIndexSchema {
+  readonly name: string;
+  readonly columns: readonly string[];
+  readonly where?: string;
+}
+
 /** One declared reference (§6.11). Absent `onDelete` means `RESTRICT`. */
 export interface ReferenceSchema {
   readonly column: string;
@@ -61,6 +77,8 @@ export interface TableSchema {
   readonly scopes: readonly ScopePatternSpec[];
   /** User indexes (optional) — created on the server's relational tables. */
   readonly indexes?: readonly IndexSchema[];
+  /** Server-only indexes (optional); names share the namespace of `indexes`. */
+  readonly serverIndexes?: readonly ServerIndexSchema[];
   /** Declared references (§6.11). Optional so pre-reference schemas stay
    * valid; the reference index over each child column is declared in
    * `indexes` (typegen emits it). */
@@ -104,6 +122,8 @@ export interface CompiledTable {
   readonly scopePatterns: readonly CompiledScopePattern[];
   /** User indexes (validated: unique names, existing columns). */
   readonly indexes: readonly IndexSchema[];
+  /** Server-only indexes (validated like `indexes`). */
+  readonly serverIndexes: readonly ServerIndexSchema[];
   /** Outgoing declared references (§6.11), resolved to column indices. */
   readonly references: readonly CompiledReference[];
   /** Incoming declared references: child rows to reach on a parent delete. */
@@ -222,6 +242,40 @@ export function compileSchema(schema: ServerSchema): CompiledSchema {
         }
       }
     }
+    const serverIndexes = table.serverIndexes ?? [];
+    for (const index of serverIndexes) {
+      validatePortableRelationalIdentifier(
+        `table ${table.name}: server index`,
+        index.name,
+      );
+      if (indexNames.has(index.name)) {
+        throw new Error(
+          `table ${table.name}: duplicate index ${JSON.stringify(index.name)}`,
+        );
+      }
+      indexNames.add(index.name);
+      if (index.columns.length === 0) {
+        throw new Error(
+          `table ${table.name}: server index ${JSON.stringify(index.name)} must name at least one column`,
+        );
+      }
+      for (const column of index.columns) {
+        if (
+          !columnIndex.has(column) &&
+          column !== '_sync_partition' &&
+          column !== '_sync_row_id'
+        ) {
+          throw new Error(
+            `table ${table.name}: server index ${JSON.stringify(index.name)} names unknown column ${JSON.stringify(column)}`,
+          );
+        }
+      }
+      if (index.where !== undefined && index.where.trim().length === 0) {
+        throw new Error(
+          `table ${table.name}: server index ${JSON.stringify(index.name)} has an empty where predicate`,
+        );
+      }
+    }
     const primaryKeyIndex = columnIndex.get(table.primaryKey);
     if (primaryKeyIndex === undefined) {
       throw new Error(
@@ -319,6 +373,7 @@ export function compileSchema(schema: ServerSchema): CompiledSchema {
       primaryKeyIndex,
       scopePatterns,
       indexes,
+      serverIndexes,
       references,
       referencedBy: [],
       materialize,

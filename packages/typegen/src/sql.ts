@@ -916,7 +916,9 @@ function parseCreateIndex(
   const trailing = cursor.peek();
   if (trailing !== undefined) {
     if (trailing.kind === 'word' && trailing.text.toUpperCase() === 'WHERE') {
-      cursor.fail(`index ${name}: partial indexes (WHERE …) are unsupported`);
+      cursor.fail(
+        `index ${name}: partial indexes (WHERE …) are unsupported in migrations; declare a server-only partial index as serverIndexes on the server schema`,
+      );
     }
     cursor.fail(
       `index ${name}: unsupported trailing SQL ${JSON.stringify(trailing.text)}`,

@@ -691,7 +691,11 @@ records. It is independent of `commitSeq`, schema version, and database
 instance identity. The server creates the first `logEpoch` when
 authentication first names the partition and stores it in the partition
 registry. Authentication also refreshes the registry's last-seen timestamp,
-including requests that do not create a commit or client cursor.
+including requests that do not create a commit or client cursor. A storage
+MUST NOT write the registry row when the stored timestamp is less than
+`PARTITION_TOUCH_INTERVAL_MS` (60,000 ms) behind the request's clock: it reads
+the row and returns it unchanged, so a request that only reads takes no write
+lock. A missing row is always created.
 
 A version 2 client persists the accepted `logEpoch` in the same durable
 database as its cursors and outbox. It sends that value in every later
@@ -946,6 +950,26 @@ query-only column never enters schema IR, mutation values, wire rows, or
 application-table star projections.
 
 ---
+
+#### Server index maintenance on a schema bump
+
+A server storage MUST derive its secondary indexes on a materialized table from
+two declarations: each declared index (`indexes`) over `_sync_partition`
+followed by the declared columns, with the declared uniqueness, and each
+server-only index (`serverIndexes`) over exactly its listed columns, never
+unique, with an optional partial-index predicate. Server-only indexes never
+reach a client and do not affect scope evaluation or any wire behavior. Index
+names, declared and server-only together, MUST be unique per table.
+
+A schema-version bump MUST create the missing indexes, drop the Syncular-owned
+indexes that no declaration wants, and keep every owned index whose physical
+shape still matches its declaration. The shape of a declared index is its
+uniqueness and its ordered key columns, and the catalog read MUST treat a
+partial or expression index as different. The physical name of a server-only
+index carries a fingerprint of its columns and predicate, so a changed
+definition is a different index. An index outside the Syncular namespace
+(operator-added or constraint-owned) MUST survive every bump. A bump therefore
+costs index builds only for changed or new indexes.
 
 #### Same-version storage readiness
 
