@@ -447,6 +447,7 @@ export const nav: readonly NavGroup[] = [
         advanced: true,
       },
       { slug: 'troubleshooting', title: 'Troubleshooting', kind: 'reference' },
+      { slug: 'pitfalls', title: "Do's and Don'ts", kind: 'reference' },
     ],
   },
   {
