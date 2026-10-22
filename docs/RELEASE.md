@@ -1,8 +1,20 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.39.0** (`v0.39.0`). All artifacts use Apache-2.0, except
+current release is **0.39.1** (`v0.39.1`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.39.1 release notes
+
+0.39.1 fixes a regression of 0.39.0 in `PostgresServerStorage`. The staged
+upserts of a table leave as one statement, and that statement replaced the
+rows' scope-index entries through a `NOT EXISTS` over the whole batch, so its
+cost grew with the square of the rows: 3,000 rows took 1,588 ms on PGlite and
+a 72,016-change commit 320 s. The statement now compares each existing entry
+with its own row's scope map; 3,000 rows take 61 ms and the 72,016-change
+commit 3.5 s. Commits of tens of rows were not measurably affected. SSP2,
+the storage layout, and every public API are unchanged. Upgrade all 12 npm
+packages and 6 crates together.
 
 ## 0.39.0 release notes
 

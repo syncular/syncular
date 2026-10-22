@@ -785,10 +785,7 @@ function writeRowsOn(
             USING batch
             WHERE existing.partition=$${n + 2} AND existing.tbl=$${n + 3}
               AND existing.row_id=batch.row_id
-              AND NOT EXISTS (
-                SELECT 1 FROM scope
-                 WHERE scope.row_id=existing.row_id
-                   AND scope.key=existing.var AND scope.value=existing.value)
+              AND batch.scopes->>existing.var IS DISTINCT FROM existing.value
          )
          INSERT INTO sync_row_scopes(partition, tbl, var, value, row_id)
          SELECT $${n + 2}, $${n + 3}, key, value, row_id FROM scope
