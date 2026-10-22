@@ -1,8 +1,53 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.34.0** (`v0.34.0`). All artifacts use Apache-2.0, except
+current release is **0.35.0** (`v0.35.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.35.0 release notes
+
+0.35.0 adds public server API for erasure and a required `BlobStore` method,
+so a patch number would hide the surface. SSP2 stays at wire version 3, the
+server storage layout does not change, and every package and crate ships
+together.
+
+Server:
+
+- `eraseScopeValue(config, { partition, variable, value, maxRows? })`
+  erases one scope binding in budgeted steps (SPEC §4.6.1). While rows of the
+  binding exist, a step deletes up to `maxRows` of them (default 200) in one
+  commit on the push path, under the partition lock and without host
+  validators; clients drop the rows on their next pull, sockets are woken, and
+  the binding's latest scoped change moves past every older segment. Blobs
+  whose last reference went are deleted from the blob store. Once no row is
+  left, each step removes upsert change records and orphaned change-scope
+  index entries of the binding. Hosts repeat the step until `done`.
+  `SqliteServerStorage`, `PostgresServerStorage`, and `D1ServerStorage`
+  implement the two new storage methods, `listScopeValueRows` and
+  `eraseScopeValueHistory`; D1 requires `pushApplySerialized`.
+- `SyncularRealtimeHost.eraseScopeValue(options)` runs one step on the
+  partition Durable Object's write queue.
+- `BlobStore` gains a required `delete(partition, blobId)`; the memory,
+  SQLite, S3, and R2 stores implement it.
+- Inline blob downloads answer with the media type the upload declared and
+  carry `X-Content-Type-Options: nosniff` and
+  `Content-Security-Policy: sandbox; default-src 'none'` (SPEC §5.9.5). A
+  blob without a media type, or with a type that contains
+  `application/json`, stays `application/octet-stream`, because a JSON body
+  is reserved for the signed-URL envelope. 0.33.0 answered every inline blob
+  as `application/octet-stream`, so an `<img>` behind `nosniff` refused it.
+- A re-upload that declares a media type records it on a blob stored without
+  one, on every blob store. A recorded media type never changes. A Miniflare
+  test runs the small `PUT` and the `GET` over a real R2 binding.
+
+Conformance: scenario 23 (`erasure/scope-value-leaves-clients-bootstrap-and-log`)
+runs on the TypeScript and Rust clients.
+
+**Upgrade notes.** A custom `BlobStore` implements `delete`. Apps that erased
+accounts by deleting from `sync_*` tables call `eraseScopeValue` instead.
+Apps that sniffed image types on their own blob route read the stored type.
+Upgrade all 12 npm packages and 6 crates together. No schema bump, storage
+migration, or wire change is required.
 
 ## 0.34.0 release notes
 
