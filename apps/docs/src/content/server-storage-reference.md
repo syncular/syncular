@@ -159,11 +159,27 @@ Behind a load balancer, a commit applied on instance A reaches A's local realtim
 ```ts title="src/storage.ts"
 import { PostgresFanout, type PgNotificationConnection } from '@syncular/server';
 
-const fanout = new PostgresFanout(conn); // conn: your driver's LISTEN + NOTIFY
-await fanout.install(hub);               // start the LISTEN loop
+const sql = new Bun.SQL(process.env.DATABASE_URL_DIRECT!); // unpooled
+const conn: PgNotificationConnection = {
+  listen: (channel, handler, onListen) =>
+    sql.listen(channel, handler, onListen).then(() => {}),
+  notify: (channel, payload) => sql.notify(channel, payload).then(() => {}),
+};
+const fanout = new PostgresFanout(conn);
+await fanout.install(hub); // start the LISTEN loop
 // after a push commit lands:
 await fanout.notifyCommit(partition, commitSeq);
 ```
+
+Postgres delivers a notification only to sessions listening when it commits. A listener session that drops (server restart, failover, a suspended serverless compute) misses every commit until it listens again. The connection calls `onListen` each time LISTEN takes effect, and every call after the first wakes all local sessions with `catchup-required`, so they re-pull what the gap hid. Bun.sql and postgres.js reconnect a dropped listener with backoff, re-subscribe, and call `onListen` again. With node-postgres, reconnect the dedicated `Client` on `end` and call `onListen` after each `LISTEN`. A connection that never calls `onListen` again leaves its instance's sessions without wake-ups until their next sync round.
+
+LISTEN needs a session-mode connection. A pooler in transaction mode (PgBouncer with `pool_mode=transaction`) does not support it, so give the fanout the direct connection string. Storage can keep the pooled one.
+
+### Neon
+
+Neon serves its pooled endpoint, the hostname with the `-pooler` suffix, through PgBouncer in transaction mode and lists LISTEN/NOTIFY as unsupported there ([Neon connection pooling](https://neon.com/docs/connect/connection-pooling)). Build the fanout connection from the direct connection string, the same hostname without `-pooler`.
+
+A Neon compute with scale-to-zero suspends after 5 minutes without queries and closes every session, the fanout listener included ([Neon scale to zero](https://neon.com/docs/introduction/scale-to-zero)). Bun.sql reconnects the listener, which starts the compute again, and Neon counts every new connection as activity. A compute therefore does not stay suspended while an instance runs `PostgresFanout`. A single instance installs no fanout and opens no listener.
 
 ## Cloudflare D1
 

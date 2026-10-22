@@ -47,6 +47,9 @@ test('install wakes the hub on a received notification', async () => {
     wake(partition, reason) {
       wakes.push({ partition, reason });
     },
+    wakeAll() {
+      throw new Error('no listener gap in this test');
+    },
   };
   let registered: ((payload: string) => void) | undefined;
   const notified: Array<{ channel: string; payload: string }> = [];
@@ -80,6 +83,7 @@ test('a malformed notification is ignored (no wake)', async () => {
     wake(partition) {
       wakes.push(partition);
     },
+    wakeAll() {},
   };
   let registered: ((payload: string) => void) | undefined;
   const conn: PgNotificationConnection = {
@@ -99,8 +103,33 @@ test('install twice throws', async () => {
     async notify() {},
   };
   const fanout = new PostgresFanout(conn);
-  await fanout.install({ wake() {} });
-  await expect(fanout.install({ wake() {} })).rejects.toThrow(
+  await fanout.install({ wake() {}, wakeAll() {} });
+  await expect(fanout.install({ wake() {}, wakeAll() {} })).rejects.toThrow(
     'already installed',
   );
+});
+
+test('a repeated LISTEN wakes every local session to catch up', async () => {
+  const wakeAlls: WakeReason[] = [];
+  const hub: FanoutWakeTarget = {
+    wake() {},
+    wakeAll(reason) {
+      wakeAlls.push(reason);
+    },
+  };
+  let onListen: (() => void) | undefined;
+  const conn: PgNotificationConnection = {
+    listen(_channel, _handler, listened) {
+      onListen = listened;
+      listened();
+    },
+    async notify() {},
+  };
+  await new PostgresFanout(conn).install(hub);
+  expect(wakeAlls).toEqual([]);
+
+  // The driver re-established a dropped listener: notifications sent while
+  // it was down are lost, so every session re-pulls.
+  onListen?.();
+  expect(wakeAlls).toEqual(['catchup-required']);
 });

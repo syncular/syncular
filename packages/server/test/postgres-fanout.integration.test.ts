@@ -411,14 +411,13 @@ gate('Postgres fanout integration (SYNCULAR_PG_URL)', () => {
       wake(partition, reason) {
         delivered.resolve({ partition, reason });
       },
+      wakeAll() {},
     };
 
     const conn: PgNotificationConnection = {
-      async listen(channel, handler) {
+      async listen(channel, handler, onListen) {
         // oxlint-disable-next-line typescript/no-explicit-any -- Bun.sql listen shape.
-        await (listenSql as any).listen(channel, (payload: string) =>
-          handler(payload),
-        );
+        await (listenSql as any).listen(channel, handler, onListen);
       },
       async notify(channel, payload) {
         // oxlint-disable-next-line typescript/no-explicit-any -- unsafe param call.
@@ -438,6 +437,52 @@ gate('Postgres fanout integration (SYNCULAR_PG_URL)', () => {
       reason: 'catchup-required',
     });
     expect(FANOUT_CHANNEL).toBe('syncular_commit');
+  });
+
+  test('a terminated listener reconnects and wakes every session to catch up', async () => {
+    const listenSql = new (BunSQL as new (url: string) => unknown)(
+      PG_URL as string,
+    );
+    const adminSql = new (BunSQL as new (url: string) => unknown)(
+      PG_URL as string,
+    );
+    handles.push(listenSql, adminSql);
+    const run = (sql: string, params: unknown[] = []) =>
+      // oxlint-disable-next-line typescript/no-explicit-any -- Bun.sql unsafe.
+      (adminSql as any).unsafe(sql, params);
+
+    const caughtUp = Promise.withResolvers<WakeReason>();
+    const delivered = Promise.withResolvers<string>();
+    const hub: FanoutWakeTarget = {
+      wake(partition) {
+        delivered.resolve(partition);
+      },
+      wakeAll(reason) {
+        caughtUp.resolve(reason);
+      },
+    };
+    const conn: PgNotificationConnection = {
+      async listen(channel, handler, onListen) {
+        // oxlint-disable-next-line typescript/no-explicit-any -- Bun.sql listen shape.
+        await (listenSql as any).listen(channel, handler, onListen);
+      },
+      async notify(channel, payload) {
+        await run('SELECT pg_notify($1, $2)', [channel, payload]);
+      },
+    };
+    const fanout = new PostgresFanout(conn);
+    await fanout.install(hub);
+
+    // What a suspending serverless compute or a failover does to the session.
+    await run(
+      `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+        WHERE query = 'LISTEN "${FANOUT_CHANNEL}"'`,
+    );
+    expect(await caughtUp.promise).toBe('catchup-required');
+
+    const partition = `it-${crypto.randomUUID()}`;
+    await fanout.notifyCommit(partition, 1);
+    expect(await delivered.promise).toBe(partition);
   });
 });
 

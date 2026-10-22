@@ -1313,6 +1313,11 @@ export class RealtimeHub {
       session.sendWake(reason);
     }
   }
+
+  /** Wake every session on every partition (fanout listener gap, §8.3). */
+  wakeAll(reason: WakeReason): void {
+    for (const session of this.#sessions) session.sendWake(reason);
+  }
 }
 
 export function createRealtimeHub(config: RealtimeHubConfig): RealtimeHub {

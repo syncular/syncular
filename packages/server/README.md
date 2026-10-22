@@ -1292,15 +1292,13 @@ install no fanout at all.
 ```ts
 import { PostgresFanout, type PgNotificationConnection } from '@syncular/server';
 
-// node-postgres: a dedicated Client for LISTEN + the pool for NOTIFY.
+// Bun.sql over the direct (unpooled) URL: LISTEN needs a session-mode
+// connection, and Bun.sql reconnects a dropped listener and re-runs onListen.
+const sql = new Bun.SQL(process.env.DATABASE_URL_DIRECT!);
 const conn: PgNotificationConnection = {
-  async listen(channel, handler) {
-    const client = await pool.connect(); // long-lived, NOT released
-    client.on('notification', (m) => m.payload && handler(m.payload));
-    await client.query(`LISTEN ${channel}`);
-  },
-  notify: (channel, payload) =>
-    pool.query('SELECT pg_notify($1, $2)', [channel, payload]).then(() => {}),
+  listen: (channel, handler, onListen) =>
+    sql.listen(channel, handler, onListen).then(() => {}),
+  notify: (channel, payload) => sql.notify(channel, payload).then(() => {}),
 };
 const fanout = new PostgresFanout(conn);
 await fanout.install(hub); // start the LISTEN loop
@@ -1308,10 +1306,16 @@ await fanout.install(hub); // start the LISTEN loop
 await fanout.notifyCommit(partition, commitSeq);
 ```
 
+Notifications sent while a listener session is down are lost. Every
+`onListen` after the first therefore wakes all local sessions with
+`catchup-required` (`hub.wakeAll`). A node-postgres adapter reconnects its
+dedicated `Client` on `end` and calls `onListen` after each `LISTEN`.
+
 pglite is single-connection and cannot exercise cross-connection NOTIFY,
 so the fanout integration test is env-gated on `SYNCULAR_PG_URL` (it wires
-Bun.sql as a worked example) and skips cleanly; the payload encode/parse
-and wake wiring are unit-tested hermetically.
+Bun.sql as a worked example and terminates the listener backend to cover the
+reconnect path) and skips cleanly; the payload encode/parse and wake wiring
+are unit-tested hermetically.
 
 ### Bench lane
 

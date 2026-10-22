@@ -17,6 +17,18 @@
 export const changelog = [
   {
     date: '2026-10-22',
+    title: 'The Postgres fanout recovers from a dropped listener',
+    body: 'Postgres delivers a notification only to sessions listening when it commits, and `PostgresFanout` had no signal for a listener that dropped and reconnected, so sessions on that instance missed every cross-instance commit of the gap. `PgNotificationConnection.listen` now takes an `onListen` callback that the driver calls each time LISTEN takes effect; every call after the first wakes all local sessions with `catchup-required` through the new `RealtimeHub.wakeAll`. Bun.sql and postgres.js call it on reconnect. The storage reference now covers Neon: the fanout needs the direct connection string, and its listener keeps a scale-to-zero compute from staying suspended.',
+    links: [
+      {
+        href: '/server-storage-reference/#multi-instance-fanout',
+        label: 'Multi-instance fanout',
+      },
+      { href: '/server-storage-reference/#neon', label: 'Neon' },
+    ],
+  },
+  {
+    date: '2026-10-22',
     title: 'Sync rounds are compressed on every runtime',
     body: 'SPEC §1.3 requires gzip on `/sync` responses, but the Hono adapter served `/sync`, `/operations`, and blob downloads uncompressed on every runtime, and segments compressed only on Bun. Cloudflare does not compress `application/vnd.syncular.*` bodies, so a Workers cold start moved 3.0 MB that gzip makes 0.38 MB. The adapter now negotiates zstd or gzip for all of them, with gzip through `CompressionStream` outside Bun. The Workers fetch handler declares `Content-Encoding: gzip` on the Durable Object round it forwards and workerd encodes it once. Both accept gzip request bodies and answer HTTP 415 for any other request encoding. `encodeSegmentBody` and `encodeSegmentStream` are now `encodeBody` (async) and `encodeStream`.',
     links: [

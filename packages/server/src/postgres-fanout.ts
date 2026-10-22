@@ -29,6 +29,14 @@
  * The payload carries `commitSeq` purely for observability/ordering in logs;
  * the wake itself is seq-agnostic (a session pulls whatever it is behind).
  *
+ * ## Listener gaps
+ *
+ * Postgres drops notifications for a session that is not listening, so a
+ * LISTEN connection that dies and reconnects (server restart, failover, a
+ * serverless compute suspending) misses every commit in between. The
+ * connection reports each LISTEN that takes effect through `onListen`; every
+ * report after the first wakes all local sessions with `catchup-required`.
+ *
  * pglite cannot exercise cross-connection NOTIFY, so the integration
  * (`postgres-fanout.integration.test.ts`) is env-gated on `SYNCULAR_PG_URL`
  * and skips cleanly; the payload encode/parse is unit-tested hermetically.
@@ -84,21 +92,27 @@ export function parseFanoutPayload(text: string): FanoutPayload | undefined {
 /** The hub surface the fanout wakes (a `RealtimeHub` satisfies this). */
 export interface FanoutWakeTarget {
   wake(partition: string, reason: WakeReason): void;
+  wakeAll(reason: WakeReason): void;
 }
 
 /**
  * A raw notification connection. Production wires a driver's LISTEN support:
+ *   - Bun.sql and postgres.js: `sql.listen(channel, handler, onListen)`; both
+ *     reconnect a dropped listener and call `onListen` again;
  *   - node-postgres: a dedicated `Client` with `client.on('notification', …)`
- *     after `LISTEN syncular_commit`;
- *   - Bun.sql: `sql.listen(channel, handler)`.
+ *     after `LISTEN syncular_commit`, reconnected by the host.
  * The `notify` side can reuse the main pool (`SELECT pg_notify($1,$2)`), but
- * LISTEN needs its own long-lived connection.
+ * LISTEN needs its own long-lived, unpooled connection.
  */
 export interface PgNotificationConnection {
-  /** Register a payload handler for the channel and begin listening. */
+  /**
+   * Register a payload handler for the channel and begin listening. Call
+   * `onListen` every time LISTEN takes effect, including after a reconnect.
+   */
   listen(
     channel: string,
     handler: (payload: string) => void,
+    onListen: () => void,
   ): Promise<void> | void;
   /** Send a notification on the channel. */
   notify(channel: string, payload: string): Promise<void>;
@@ -122,11 +136,20 @@ export class PostgresFanout {
   async install(hub: FanoutWakeTarget): Promise<void> {
     if (this.#installed) throw new Error('fanout already installed');
     this.#installed = true;
-    await this.#conn.listen(FANOUT_CHANNEL, (payload) => {
-      const parsed = parseFanoutPayload(payload);
-      if (parsed === undefined) return; // ignore malformed frames
-      hub.wake(parsed.partition, FANOUT_WAKE_REASON);
-    });
+    let listening = false;
+    await this.#conn.listen(
+      FANOUT_CHANNEL,
+      (payload) => {
+        const parsed = parseFanoutPayload(payload);
+        if (parsed === undefined) return; // ignore malformed frames
+        hub.wake(parsed.partition, FANOUT_WAKE_REASON);
+      },
+      () => {
+        // A repeated LISTEN follows a gap whose notifications are lost.
+        if (listening) hub.wakeAll(FANOUT_WAKE_REASON);
+        listening = true;
+      },
+    );
   }
 
   /** Fan an applied commit out to the other instances. */

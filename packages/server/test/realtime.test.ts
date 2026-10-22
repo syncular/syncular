@@ -787,6 +787,27 @@ describe('control plane (§8.3, §8.5)', () => {
     expect(wake.event.data.reason).toBe('reset-required');
   });
 
+  test('hub.wakeAll wakes sessions on every partition', async () => {
+    const t = makeContext();
+    const hub = makeHub(t);
+    const wires = [makeWire(), makeWire()];
+    for (const [i, partition] of ['part-1', 'part-2'].entries()) {
+      await hub.connect({
+        partition,
+        actorId: 'actor-1',
+        clientId: `client-${i}`,
+        send: wires[i]!.send,
+      });
+    }
+    hub.wakeAll('catchup-required');
+    for (const wire of wires) {
+      const wake = parseRealtimeServerEvent(wire.texts.at(-1) ?? '');
+      if (!wake.known || wake.event.event !== 'sync')
+        throw new Error('expected wake');
+      expect(wake.event.data.reason).toBe('catchup-required');
+    }
+  });
+
   test('heartbeats parse as §8.5 events; garbage inbound is tolerated', async () => {
     const t = makeContext();
     const hub = makeHub(t);
