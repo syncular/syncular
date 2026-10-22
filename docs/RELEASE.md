@@ -1,8 +1,58 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.33.0** (`v0.33.0`). All artifacts use Apache-2.0, except
+current release is **0.34.0** (`v0.34.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.34.0 release notes
+
+0.34.0 adds public server API for remote operations, so a patch number would
+hide the surface. SSP2 stays at wire version 3, the server storage layout does
+not change, and every package and crate ships together.
+
+Server:
+
+- `D1ServerStorage.latestScopedChangeSeq` passes the scope values as one JSON
+  array through `json_each`. The 0.33.0 statement built one compound SELECT
+  term per value, and D1 allows 5, so a sqlite-lane bootstrap over 6 or more
+  values of a subscription's first scope variable answered
+  `500 sync.internal_error`. `SqliteServerStorage` uses the same statement. A
+  Miniflare test bootstraps over 9 values.
+- `handleRemoteOperation`, `createSyncularHono({ operations })`, and
+  `RealtimeDOConfig.operations` accept a `RemoteOperationResolver` beside a
+  `RemoteOperationRegistry` (REMOTE.md §5.1). The resolver runs once per
+  request after the client-ID checks and returns the registry, the commit
+  actor, and the scope resolver the request runs with. On Workers it runs on
+  the partition FIFO, so the command's commit fans out without a manual wake.
+- A `ValidationRejection` thrown by a command's `authorize` or `run`, or by
+  the resolver, reaches the client as a non-retryable error with its host code
+  and message (REMOTE.md §3, §7). No command outcome is stored. Any other
+  exception stays `operation.execution_failed`.
+
+Clients:
+
+- SPEC §1.8 lists the closed `causeKind` vocabulary of the browser and native
+  transports. A browser app detects a missing connection from
+  `sync.transport_failed` with `details.causeKind` `network` or `timeout`; a
+  native app from `transport.failed` with `connect` or `tls`, or from
+  `transport.timeout`. The browser troubleshooting page no longer documents the
+  removed `path` and `causeMessage` details.
+
+Rust:
+
+- `syncular-client` applies the frames and blocks of one response as
+  savepoints of one coalesced apply transaction of at most 1,024 rows (SPEC
+  §1.4 rule 4, now a MAY). A response with 70 one-row sections commits once
+  instead of 70 times; on sqlite-wasm over OPFS each commit cost about 5 ms.
+  Every frame keeps its own savepoint and revision, change batches and the
+  realtime ack follow the COMMIT, and a failed COMMIT rolls the coalesced
+  frames back, restores the in-memory state, publishes nothing, and fails the
+  round with `storage.failed`. The TypeScript client keeps one transaction
+  per frame; observers see the same change batches from both cores.
+
+**Upgrade notes.** Apps that patched `latestScopedChangeSeq` drop the patch.
+Upgrade all 12 npm packages and 6 crates together and rebuild native
+applications. No schema bump, storage migration, or wire change is required.
 
 ## 0.33.0 release notes
 
