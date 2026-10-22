@@ -2,7 +2,7 @@
 
 Match a browser symptom or error code to its cause and fix. Failures that apply
 to every SDK live in [Troubleshooting](/troubleshooting/); this page holds the
-segment-transport and local-storage failures, and routes the browser startup
+transport and local-storage failures, and routes the browser startup
 and tab failures to their entries there.
 
 ::meta{for="Web developers debugging a failing client" time="5 minutes" first="platform-web-specifics"}
@@ -18,20 +18,45 @@ and tab failures to their entries there.
 | Pending outbox on best-effort storage | The browser has not granted persistence. | [Troubleshooting](/troubleshooting/#pending-outbox-on-best-effort-browser-storage) |
 | `client.worker_restart_required` | A dev server worker graph refers to a retired chunk. | [Troubleshooting](/troubleshooting/#clientworker_restart_required-after-a-package-upgrade) |
 | Build errors naming `sqlite-wasm` or the worker | The Vite config lacks the optimizer exclusions or `worker.format: 'es'`. | [Install & first sync](/platform-web-install/#configure-vite) |
-| `sync.transport_failed` while downloading a segment | The fetch failed or the response body was interrupted. | [below](#segment-transport-failures) |
+| `sync.transport_failed` | The fetch failed or the response body was interrupted. | [below](#transport-failures) |
 | `client.storage_full` | SQLite ran out of capacity. | [below](#local-storage-failures) |
 
-## Segment transport failures
+## Transport failures
 
-`httpSegmentDownloader` reports a rejected fetch or an interrupted response body
-as retryable `sync.transport_failed`. `ClientSyncError.details` holds `path`,
-`causeMessage`, and `httpStatus` when a response arrived. The path omits URL
-credentials, query parameters, and fragments. Worker and follower RPC preserve
-these details. Treat `causeMessage` as operator evidence: it comes from the
-runtime and sits outside the redacted diagnostics contract.
+`httpSyncTransport`, `httpRemoteOperationTransport`, `httpSegmentDownloader`,
+and the blob transport report a rejected fetch or an interrupted response body
+as retryable `sync.transport_failed`. The message is static. Branch on
+`ClientSyncError.details.causeKind`, which holds one of these values:
+
+- `network`: the fetch rejected. The browser reports a missing connection, a
+  DNS failure, a TLS failure, and a CORS refusal alike.
+- `timeout`: an `AbortSignal.timeout` deadline elapsed.
+- `aborted`: the request's signal aborted.
+- `body`: the response body failed after the headers arrived; `httpStatus`
+  holds the status.
+- `status`: the server answered an error status without a JSON error code;
+  `httpStatus` holds the status.
+- `unknown`: any other exception.
+
+Detect a missing connection with `code` and `causeKind`, and leave the
+message out of the decision:
+
+```ts
+import { ClientSyncError } from '@syncular/client';
+
+const offline =
+  error instanceof ClientSyncError &&
+  error.code === 'sync.transport_failed' &&
+  (error.details?.causeKind === 'network' ||
+    error.details?.causeKind === 'timeout');
+```
+
+Worker and follower RPC preserve the code and details. The native transport
+uses its own codes and `causeKind` values
+([Rust troubleshooting](/platform-rust-troubleshooting/)).
 
 A direct endpoint's JSON error keeps the server's code and retry policy, plus
-the request path and HTTP status. A failed signed URL carries
+the HTTP status. A failed signed URL carries
 `sync.transport_failed` and invalidates the descriptor. The client aborts that
 transfer, and the next pull obtains a fresh grant.
 

@@ -121,7 +121,10 @@ constraints, commit log, idempotency record, and realtime notifier.
 
 An applied retry returns `cached` without running the callback again. A normal
 push rejection is stored and replays as `rejected`. A callback exception is a
-request failure and is not a stored command outcome. Empty mutation lists fail
+request failure and is not a stored command outcome. A `ValidationRejection` thrown by
+`authorize` or `run` fails the request with its host code and message
+(§7); like every callback exception it is not stored, so a retry runs the
+command again. Empty mutation lists fail
 with `operation.invalid_request`.
 
 The callback MUST NOT perform external side effects. It may insert a domain
@@ -208,6 +211,25 @@ stable `code`, `message`, and `retryable`. Host authentication failures may use
 the normal HTTP JSON error response before operation decoding. A request with
 another content type fails with HTTP 415.
 
+### 5.1 Per-request binding
+
+The host passes either a `RemoteOperationRegistry` or a
+`RemoteOperationResolver`. The server calls the resolver once per request,
+after decoding, the reserved client-ID check, and the client-ID actor
+binding check, with the decoded request and the authenticated context. It
+returns the binding the request runs with:
+
+- `registry`: the registry that resolves `operationId`.
+- `actorId`: the commit actor, which defaults to the authenticated actor. It
+  enters the command idempotency identity of §3 and the commit's `actorId`;
+  the client-ID binding stays with the authenticated actor.
+- `resolveScopes`: replaces the configured scope resolver for this request,
+  for query authorization and command write scopes.
+
+The resolver is trusted host code inside the server's trust boundary. A
+`SyncError` or `ValidationRejection` it throws fails the request like a
+callback failure.
+
 ## 6. Live query watches
 
 `<mount>/operations/realtime` is the conventional WebSocket path. The runtime
@@ -254,6 +276,9 @@ fresh snapshot.
 | `operation.storage_unsupported` | no | Storage lacks authoritative query support |
 | `operation.query_failed` | no | Registered SQL execution fails |
 | `operation.execution_failed` | no | Registered operation code or infrastructure fails unexpectedly |
+
+A `ValidationRejection` from host code produces its own host code
+(SPEC.md §6.7 prefix rules), non-retryable.
 
 Identity binding can also produce `sync.invalid_client_id`. Normal command
 commit validation can produce the `sync.*` result codes defined by `SPEC.md`.

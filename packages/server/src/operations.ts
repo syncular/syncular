@@ -8,11 +8,12 @@ import {
   encodeRemoteOperationResponse,
   encodeSparseRow,
   type PushOperation,
+  type RemoteOperationRequest,
   type RemoteOperationResponse,
   type RowValue,
   type ScopeMap,
 } from '@syncular/core';
-import type { SyncRequestContext } from './context';
+import type { ResolveScopes, SyncRequestContext } from './context';
 import {
   REMOTE_COMMAND_CLIENT_ID_PREFIX,
   RESOLVER_OUTAGE,
@@ -33,7 +34,11 @@ import type {
 } from './storage';
 import type { StorageTransaction } from './storage';
 import { transactionQuery } from './storage-query';
-import { toValidateRow, type ValidateRow } from './validate';
+import {
+  toValidateRow,
+  ValidationRejection,
+  type ValidateRow,
+} from './validate';
 
 export interface RemoteQueryDependency {
   readonly table: string;
@@ -683,10 +688,41 @@ export class RemoteOperationRegistry {
   }
 }
 
+/**
+ * The registry and identity one remote operation request runs with
+ * (REMOTE.md §5.1). `actorId` is the commit's actor and defaults to the
+ * authenticated actor; `resolveScopes` replaces the configured resolver for
+ * this request.
+ */
+export interface RemoteOperationBinding {
+  readonly registry: RemoteOperationRegistry;
+  readonly actorId?: string;
+  readonly resolveScopes?: ResolveScopes;
+}
+
+/**
+ * Chooses the binding of one decoded request (REMOTE.md §5.1). `ctx` carries
+ * the authenticated actor; the resolver runs after the client-id binding
+ * check and may throw a `SyncError` or a `ValidationRejection`.
+ */
+export type RemoteOperationResolver = (
+  request: RemoteOperationRequest,
+  ctx: SyncRequestContext,
+) => RemoteOperationBinding | Promise<RemoteOperationBinding>;
+
 function encodeRemoteOperationError(
   error: unknown,
   fallbackCode: 'operation.invalid_request' | 'operation.execution_failed',
 ): Uint8Array {
+  if (error instanceof ValidationRejection) {
+    return encodeRemoteOperationResponse({
+      revision: 1,
+      kind: 'error',
+      code: error.code,
+      message: error.message,
+      retryable: false,
+    });
+  }
   const sync =
     error instanceof SyncError
       ? error
@@ -707,8 +743,8 @@ function encodeRemoteOperationError(
 
 export async function handleRemoteOperation(
   bytes: Uint8Array,
-  ctx: SyncRequestContext,
-  registry: RemoteOperationRegistry,
+  authenticated: SyncRequestContext,
+  operations: RemoteOperationRegistry | RemoteOperationResolver,
 ): Promise<Uint8Array> {
   let request;
   try {
@@ -728,6 +764,7 @@ export async function handleRemoteOperation(
   } catch (error) {
     return encodeRemoteOperationError(error, 'operation.invalid_request');
   }
+  let ctx = authenticated;
   try {
     await touchAuthenticatedPartition(ctx);
     if (request.clientId.startsWith(REMOTE_COMMAND_CLIENT_ID_PREFIX)) {
@@ -752,6 +789,16 @@ export async function handleRemoteOperation(
     ) {
       throw syncError('operation.invalid_request');
     }
+    let registry = operations;
+    if (typeof registry === 'function') {
+      const binding = await registry(request, ctx);
+      registry = binding.registry;
+      ctx = {
+        ...ctx,
+        actorId: binding.actorId ?? ctx.actorId,
+        resolveScopes: binding.resolveScopes ?? ctx.resolveScopes,
+      };
+    }
     const operation = registry.get(request.operationId);
     if (operation === undefined) {
       throw syncError('operation.unknown');
@@ -772,7 +819,7 @@ export async function handleRemoteOperation(
       ),
     );
   } catch (error) {
-    if (!(error instanceof SyncError)) {
+    if (!(error instanceof SyncError || error instanceof ValidationRejection)) {
       reportError(error, ctx.onError, 'operations');
     }
     return encodeRemoteOperationError(error, 'operation.execution_failed');

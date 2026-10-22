@@ -345,3 +345,78 @@ test('a same-value commit leaves the scope index untouched and still advances', 
     expect(measure.rowsWritten).toBe(14);
   });
 });
+
+test('a bootstrap over more scope values than a D1 compound SELECT holds pins its sqlite image', async () => {
+  await withMiniflare(async ({ storage, ctx }) => {
+    // D1 caps a compound SELECT at 5 terms; 9 values exceed it.
+    const projects = Array.from({ length: 9 }, (_, i) => `p${i + 1}`);
+    const scoped: SyncRequestContext = {
+      ...ctx,
+      resolveScopes: () => ({ project_id: projects }),
+    };
+    for (const [index, project] of projects.entries()) {
+      const pushed = decodeResponse(
+        await handleSyncRequest(
+          request([
+            {
+              type: 'PUSH_COMMIT',
+              clientCommitId: `write-${project}`,
+              operations: [
+                {
+                  table: 'tasks',
+                  rowId: `task-${project}`,
+                  op: 'upsert',
+                  payload: encodeSparseRow(SCHEMA.tables[0]!.columns, 0, [
+                    `task-${project}`,
+                    project,
+                  ]),
+                },
+              ],
+            },
+          ]),
+          scoped,
+        ),
+      );
+      expect(pushResult(pushed.frames)?.commitSeq).toBe(index + 1);
+    }
+    expect(
+      await storage.latestScopedChangeSeq(PARTITION, {
+        table: 'tasks',
+        scopeFilter: { project_id: projects },
+      }),
+    ).toBe(9);
+    expect(
+      await storage.latestScopedChangeSeq(PARTITION, {
+        table: 'tasks',
+        scopeFilter: { project_id: ['p2', 'p4', 'missing'] },
+      }),
+    ).toBe(4);
+    expect(
+      await storage.latestScopedChangeSeq(PARTITION, {
+        table: 'tasks',
+        scopeFilter: { project_id: ['missing'] },
+      }),
+    ).toBe(0);
+
+    const pulled = decodeResponse(
+      await handleSyncRequest(
+        request([
+          PULL_HEADER,
+          {
+            type: 'SUBSCRIPTION',
+            id: 'tasks/all',
+            table: 'tasks',
+            scopes: { project_id: projects },
+            cursor: -1,
+          },
+        ]),
+        scoped,
+      ),
+    );
+    expect(pulled.frames.some((frame) => frame.type === 'ERROR')).toBe(false);
+    expect(
+      pulled.frames.find((frame) => frame.type === 'SUB_START'),
+    ).toMatchObject({ id: 'tasks/all', status: 'active', bootstrap: true });
+    expect(pulled.frames.some((frame) => frame.type === 'SUB_END')).toBe(true);
+  });
+});

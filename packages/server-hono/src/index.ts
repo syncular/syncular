@@ -16,6 +16,7 @@ import {
   openSegmentDownload,
   handleRemoteOperation,
   type RemoteOperationRegistry,
+  type RemoteOperationResolver,
   handleSyncRequest,
   RealtimeHub,
   RingBufferEvents,
@@ -33,7 +34,7 @@ export * from './admin';
 
 export interface SyncularHonoOptions {
   readonly config: SyncServerConfig;
-  readonly operations?: RemoteOperationRegistry;
+  readonly operations?: RemoteOperationRegistry | RemoteOperationResolver;
   /** Host authentication (§1.1); `null` ⇒ 401 `sync.auth_required`. */
   readonly authenticate: (
     request: Request,

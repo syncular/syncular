@@ -248,6 +248,57 @@ The command context exposes the request's identity-checked `clientId`, its
 keys.
 The authorizer can run again on a retry, so it must not have side effects.
 
+### Refuse a command with a domain code
+
+Throw a `ValidationRejection` from `authorize` or `run` to refuse with a code
+the client can branch on. The client receives a non-retryable
+`ClientSyncError` with that `code` and `message`, and the server stores no
+command outcome, so a later retry with the same request ID runs again. The code
+must not start with `sync.`, `blob.`, `operation.`, `presence.`, or `client.`.
+
+```ts
+import { ValidationRejection } from '@syncular/server';
+
+registerRemoteCommand(endTurn, {
+  authorize: () => true,
+  run: async (command, input) => {
+    const combat = await command.getRow('combats', input.combatId);
+    if (combat?.active_actor !== command.actorId) {
+      throw new ValidationRejection('play.not_your_turn', 'wait for your turn');
+    }
+    return [/* … */];
+  },
+});
+```
+
+Any other exception from the callback reaches the client as
+`operation.execution_failed`.
+
+### Bind the registry per request
+
+Pass a `RemoteOperationResolver` in place of the registry when the registry,
+the commit actor, or the scopes depend on the request. The server calls it
+after the client-ID checks with the decoded request and the authenticated
+context:
+
+```ts
+import type { RemoteOperationResolver } from '@syncular/server';
+
+const operations: RemoteOperationResolver = async (request, ctx) => ({
+  registry: registryFor(ctx.actorId),
+  // A game master acting for a player commits as that player.
+  actorId: await actingActor(ctx.actorId, request.params),
+  // This command alone may write the visited campaign.
+  resolveScopes: async (args) => withVisit(await ctx.resolveScopes(args), request.params),
+});
+```
+
+`actorId` becomes the commit's actor and part of the command idempotency key;
+the client ID stays bound to the authenticated actor. `resolveScopes` replaces
+the configured resolver for this request only. `createSyncularHono` and
+`RealtimeDOConfig.operations` accept the resolver wherever they accept a
+registry.
+
 ## Live query watches
 
 `RemoteOperationWatchHub` reruns affected registered queries and sends full

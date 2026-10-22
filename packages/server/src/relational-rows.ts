@@ -709,20 +709,17 @@ export function prefetchRowsSql(table: CompiledTable): string {
  * SQLite/D1: the newest `commit_seq` in the inverted change-scope index for
  * one variable's values, as one index-only max per value (a `(partition,
  * tbl, var, value)` prefix), so the cost is independent of the table's
- * history. Bind order: [partition, tbl, var, value] per value.
+ * history. The values arrive as one JSON array, so the statement has no
+ * compound SELECT and four bound parameters for any value count (D1 caps a
+ * compound SELECT at 5 terms and a statement at 100 parameters).
+ * Params: [partition, tbl, var, values as JSON array text].
  */
-export function latestScopedChangeSeqSql(valueCount: number): string {
-  const perValue: string[] = [];
-  for (let i = 0; i < valueCount; i++) {
-    perValue.push(
-      'SELECT (SELECT max(commit_seq) FROM sync_change_scopes WHERE partition=? AND tbl=? AND var=? AND value=?) AS seq',
-    );
-  }
-  return `SELECT max(seq) AS seq FROM (${perValue.join(' UNION ALL ')})`;
-}
+export const LATEST_SCOPED_CHANGE_SEQ_SQLITE_SQL = `SELECT max((SELECT max(commit_seq) FROM sync_change_scopes
+           WHERE partition=? AND tbl=? AND var=? AND value=v.value)) AS seq
+     FROM json_each(?) AS v`;
 
 /**
- * PostgreSQL set-based form of `latestScopedChangeSeqSql` for the
+ * PostgreSQL set-based form of `LATEST_SCOPED_CHANGE_SEQ_SQLITE_SQL` for the
  * subscriptions of one table in a pull. `$2` is a JSON array of
  * `{i, var, vals}` records. Params: [partition, specs (JSON text), tbl].
  */

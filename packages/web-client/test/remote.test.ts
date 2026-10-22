@@ -15,6 +15,8 @@ import {
   remoteCommand,
   RemoteOperationRegistry,
   RemoteOperationWatchHub,
+  ValidationRejection,
+  type RemoteOperationResolver,
 } from '@syncular/server';
 import {
   SyncRemoteClient,
@@ -735,6 +737,107 @@ describe('SyncRemoteClient', () => {
         message: 'registered remote operation failed',
       },
     );
+    server.storage.db.close();
+  });
+
+  test('binds the registry, commit actor, and scopes per request', async () => {
+    const server = makeServer();
+    const descriptor = remoteCommand<{ actor: string; project: string }>(
+      'commands/act-for',
+    );
+    const runs: string[] = [];
+    const operations: RemoteOperationResolver = (request, ctx) => {
+      const input = request.params as { actor: string; project: string };
+      const caller = ctx.actorId;
+      return {
+        registry: new RemoteOperationRegistry([
+          registerRemoteCommand(descriptor, {
+            authorize: () => caller === 'gm',
+            run: ({ actorId }, { project }) => {
+              runs.push(`${caller}->${actorId}`);
+              return [
+                {
+                  table: 'tasks',
+                  op: 'upsert',
+                  values: {
+                    id: `task-${project}`,
+                    project_id: project,
+                    title: actorId,
+                    done: false,
+                    priority: null,
+                    meta: null,
+                  },
+                },
+              ];
+            },
+          }),
+        ]),
+        actorId: input.actor,
+        resolveScopes: () => ({ project_id: ['project-1'] }),
+      };
+    };
+    const context = { ...server.ctxFor('gm'), storage: server.storage };
+    const client = new SyncRemoteClient({
+      clientId: 'gm-device',
+      operations: (bytes) => handleRemoteOperation(bytes, context, operations),
+    });
+
+    const applied = await client.command(descriptor, 'request-1', {
+      actor: 'player',
+      project: 'project-1',
+    });
+    // The binding's resolver replaces the actor's `*` scopes, so a row
+    // outside project-1 is a scope rejection.
+    const outside = await client.command(descriptor, 'request-2', {
+      actor: 'player',
+      project: 'project-2',
+    });
+
+    expect(applied.status).toBe('applied');
+    expect(outside.status).toBe('rejected');
+    expect(runs).toEqual(['gm->player', 'gm->player']);
+    const commit = await server.storage.getCommit?.(PARTITION, 1);
+    expect(commit?.actorId).toBe('player');
+    server.storage.db.close();
+  });
+
+  test('carries a ValidationRejection code to the caller', async () => {
+    const server = makeServer();
+    const descriptor = remoteCommand<{ phase: string }>('commands/refuses');
+    const registry = new RemoteOperationRegistry([
+      registerRemoteCommand(descriptor, {
+        authorize: ({ actorId }, { phase }) => {
+          if (phase === 'authorize') {
+            throw new ValidationRejection('play.not_your_turn', 'wait');
+          }
+          return actorId === 'worker';
+        },
+        run: () => {
+          throw new ValidationRejection('play.needs_target', 'pick a target');
+        },
+      }),
+    ]);
+    const context = { ...server.ctxFor('worker'), storage: server.storage };
+    const client = new SyncRemoteClient({
+      clientId: 'command-worker',
+      operations: (bytes) => handleRemoteOperation(bytes, context, registry),
+    });
+
+    await expect(
+      client.command(descriptor, 'request-1', { phase: 'authorize' }),
+    ).rejects.toMatchObject({
+      code: 'play.not_your_turn',
+      message: 'wait',
+      retryable: false,
+    });
+    await expect(
+      client.command(descriptor, 'request-2', { phase: 'run' }),
+    ).rejects.toMatchObject({
+      code: 'play.needs_target',
+      message: 'pick a target',
+      retryable: false,
+    });
+    expect(await server.storage.getMaxCommitSeq(PARTITION)).toBe(0);
     server.storage.db.close();
   });
 

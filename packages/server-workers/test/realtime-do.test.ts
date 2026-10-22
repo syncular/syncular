@@ -38,6 +38,7 @@ import {
   MemorySegmentStore,
   RealtimeSession,
   RemoteOperationRegistry,
+  type RemoteOperationResolver,
   registerRemoteCommand,
   type ServerSchema,
   SSP2_CONTENT_TYPE,
@@ -119,7 +120,7 @@ function realtimeConfig(
   capabilities: {
     readonly blobs?: BlobStore;
     readonly crdtMergers?: CrdtMergerRegistry;
-    readonly operations?: RemoteOperationRegistry;
+    readonly operations?: RemoteOperationRegistry | RemoteOperationResolver;
   } = {},
 ): RealtimeDOConfig {
   return {
@@ -745,91 +746,96 @@ describe('SyncularRealtimeDO (DO double + D1 double, reference codec)', () => {
     );
   });
 
-  test('POST /operations runs the command on the partition DO and fans out', async () => {
-    const db = await makeDb();
-    const operations = new RemoteOperationRegistry([
-      registerRemoteCommand<{ readonly title: string }>(
-        { id: 'tasks.create' },
-        {
-          authorize: () => true,
-          run: (_context, input) => [
-            {
-              table: 'tasks',
-              op: 'upsert',
-              values: {
-                id: 't6',
-                list_id: 'L',
-                title: input.title,
-                doc: null,
-                attachment: null,
+  test.each(['registry', 'resolver'] as const)(
+    'POST /operations runs the command on the partition DO and fans out (%s)',
+    async (shape) => {
+      const db = await makeDb();
+      const registry = new RemoteOperationRegistry([
+        registerRemoteCommand<{ readonly title: string }>(
+          { id: 'tasks.create' },
+          {
+            authorize: () => true,
+            run: (_context, input) => [
+              {
+                table: 'tasks',
+                op: 'upsert',
+                values: {
+                  id: 't6',
+                  list_id: 'L',
+                  title: input.title,
+                  doc: null,
+                  attachment: null,
+                },
               },
-            },
-          ],
-        },
-      ),
-    ]);
-    const ns = new FakeDurableObjectNamespace(
-      db,
-      realtimeConfig(undefined, { operations }),
-    );
-    const { do_, server: reader } = await connect(ns, 'reader');
-    await sendRound(
-      do_,
-      reader,
-      [
-        {
-          type: 'PULL_HEADER',
-          limitCommits: 100,
-          limitSnapshotRows: 100,
-          maxSnapshotPages: 4,
-          accept: 0b0011,
-        },
-        {
-          type: 'SUBSCRIPTION',
-          id: 's1',
-          table: 'tasks',
-          scopes: { list_id: ['L'] },
-          cursor: -1,
-        },
-      ],
-      'reader',
-    );
-    await do_.deliver(reader, JSON.stringify({ type: 'ack', cursor: 0 }));
-    await settle();
-    reader.sent.length = 0;
-    const http = makeHttpHandler(db, ns);
-    const response = await http(
-      new Request('https://worker.test/operations', {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/vnd.syncular.operations.v1+json',
-        },
-        body: encodeRemoteOperationRequest({
-          revision: 1,
-          kind: 'command',
-          clientId: 'commander',
-          operationId: 'tasks.create',
-          requestId: 'r1',
-          params: { title: 'from a command' },
-        }).slice().buffer as ArrayBuffer,
-      }),
-    );
-    expect(response.status).toBe(200);
-    expect(
-      decodeRemoteOperationResponse(
-        new Uint8Array(await response.arrayBuffer()),
-      ),
-    ).toMatchObject({ kind: 'command', status: 'applied' });
-    // The command commit reached the socket as a delta, no wake-up.
-    expect(
-      reader.sent.some(
-        (f) => f instanceof Uint8Array && f[0] === REALTIME_TAG_DELTA,
-      ),
-    ).toBe(true);
-    expect(textFrames(reader.sent).find((m) => m.event === 'sync')).toBe(
-      undefined,
-    );
-  });
+            ],
+          },
+        ),
+      ]);
+      const operations: RemoteOperationRegistry | RemoteOperationResolver =
+        shape === 'registry' ? registry : () => ({ registry });
+      const ns = new FakeDurableObjectNamespace(
+        db,
+        realtimeConfig(undefined, { operations }),
+      );
+      const { do_, server: reader } = await connect(ns, 'reader');
+      await sendRound(
+        do_,
+        reader,
+        [
+          {
+            type: 'PULL_HEADER',
+            limitCommits: 100,
+            limitSnapshotRows: 100,
+            maxSnapshotPages: 4,
+            accept: 0b0011,
+          },
+          {
+            type: 'SUBSCRIPTION',
+            id: 's1',
+            table: 'tasks',
+            scopes: { list_id: ['L'] },
+            cursor: -1,
+          },
+        ],
+        'reader',
+      );
+      await do_.deliver(reader, JSON.stringify({ type: 'ack', cursor: 0 }));
+      await settle();
+      reader.sent.length = 0;
+      const http = makeHttpHandler(db, ns);
+      const response = await http(
+        new Request('https://worker.test/operations', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/vnd.syncular.operations.v1+json',
+          },
+          body: encodeRemoteOperationRequest({
+            revision: 1,
+            kind: 'command',
+            clientId: 'commander',
+            operationId: 'tasks.create',
+            requestId: 'r1',
+            params: { title: 'from a command' },
+          }).slice().buffer as ArrayBuffer,
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(
+        decodeRemoteOperationResponse(
+          new Uint8Array(await response.arrayBuffer()),
+        ),
+      ).toMatchObject({ kind: 'command', status: 'applied' });
+      // The command commit reached the socket as a delta, no wake-up.
+      expect(
+        reader.sent.some(
+          (f) => f instanceof Uint8Array && f[0] === REALTIME_TAG_DELTA,
+        ),
+      ).toBe(true);
+      expect(textFrames(reader.sent).find((m) => m.event === 'sync')).toBe(
+        undefined,
+      );
+    },
+  );
 
   test('scheduled pruning waits for the existing partition write queue', async () => {
     let entered!: () => void;

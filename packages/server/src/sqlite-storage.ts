@@ -22,7 +22,7 @@ import {
   assertPhysicalColumns,
   assertStoredLayouts,
   commitWindowPageSql,
-  latestScopedChangeSeqSql,
+  LATEST_SCOPED_CHANGE_SEQ_SQLITE_SQL,
   deleteRowSql,
   deleteSqliteRowScopesSql,
   dropTableDdl,
@@ -1639,16 +1639,9 @@ END`);
     if (firstVariable === undefined || values.length === 0) return 0;
     const row = this.db
       .query<{ seq: number | null }, string[]>(
-        latestScopedChangeSeqSql(values.length),
+        LATEST_SCOPED_CHANGE_SEQ_SQLITE_SQL,
       )
-      .get(
-        ...values.flatMap((value) => [
-          partition,
-          query.table,
-          firstVariable,
-          value,
-        ]),
-      );
+      .get(partition, query.table, firstVariable, JSON.stringify(values));
     return row?.seq ?? 0;
   }
 

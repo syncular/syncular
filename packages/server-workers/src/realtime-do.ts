@@ -85,6 +85,7 @@ import {
   type RealtimeHubConfig,
   type RealtimeSession,
   type RemoteOperationRegistry,
+  type RemoteOperationResolver,
   RingBufferEvents,
   SSP2_CONTENT_TYPE,
   SyncError,
@@ -149,9 +150,11 @@ export type RealtimeDOConfig = (
   /**
    * Registered remote queries and commands (REMOTE.md). The Worker forwards
    * `POST <mount>/operations` here, so a command applies on the partition
-   * FIFO and fans out to the partition's sockets like a pushed commit.
+   * FIFO and fans out to the partition's sockets like a pushed commit. A
+   * `RemoteOperationResolver` chooses the registry, the commit actor, and
+   * the scope resolver per request (REMOTE.md §5.1).
    */
-  readonly operations?: RemoteOperationRegistry;
+  readonly operations?: RemoteOperationRegistry | RemoteOperationResolver;
 };
 
 /**

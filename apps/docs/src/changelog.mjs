@@ -16,6 +16,45 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-10-22',
+    title: 'The Rust client commits a response once',
+    body: 'The Rust client applied every COMMIT frame and segment block of a pull response in its own transaction, so a response with 70 one-row sections committed 70 times, about 5 ms each on sqlite-wasm over OPFS. It now runs consecutive frames and blocks as savepoints of one transaction of at most 1,024 rows (SPEC §1.4 rule 4). Each frame keeps its own savepoint and revision, change batches and the realtime ack follow the COMMIT, and a failed COMMIT rolls the coalesced frames back and fails the round with `storage.failed`.',
+    links: [{ href: '/concepts-bootstrap/', label: 'Bootstrap' }],
+  },
+  {
+    date: '2026-10-22',
+    title: 'Remote operations bind per request and refuse with domain codes',
+    body: "`handleRemoteOperation`, `createSyncularHono`, and `RealtimeDOConfig.operations` accept a `RemoteOperationResolver` in place of a registry. The server calls it once per request, after the client-ID checks, with the decoded request and the authenticated context, and it returns the registry, the commit actor, and the scope resolver the request runs with. A Workers app whose commands need a caller-specific registry or extra scopes for one command can therefore run them on the partition Durable Object, where their commits fan out without a manual wake. A `ValidationRejection` thrown by a command's `authorize` or `run` reaches the client as a non-retryable error with its host code and message; any other exception stays `operation.execution_failed`.",
+    links: [
+      {
+        href: '/guide-remote-operations/#bind-the-registry-per-request',
+        label: 'Remote operations',
+      },
+      { href: '/server-workers/', label: 'Cloudflare Workers' },
+    ],
+  },
+  {
+    date: '2026-10-22',
+    title: 'D1 pulls over more than five scope values',
+    body: "`D1ServerStorage.latestScopedChangeSeq` built one compound SELECT term per value of a subscription's first scope variable. D1 allows 5 terms, so every sqlite-lane bootstrap over 6 or more values answered `500 sync.internal_error`. The SQLite and D1 storages now pass the values as one JSON array through `json_each`: one statement with four bound parameters for any value count. A Miniflare test bootstraps a subscription over 9 values.",
+    links: [{ href: '/server-workers/', label: 'Cloudflare Workers' }],
+  },
+  {
+    date: '2026-10-22',
+    title: 'Transport failures document their causeKind vocabulary',
+    body: "Transport errors carry a static message, so an app that detected a missing connection by matching `Failed to fetch` stopped matching. SPEC §1.8 now lists the closed `causeKind` vocabulary of both transports. A browser app detects a missing connection with `code === 'sync.transport_failed'` and `details.causeKind` of `network` or `timeout`; a native app reads `transport.failed` with `connect` or `tls`, or `transport.timeout`.",
+    links: [
+      {
+        href: '/platform-web-troubleshooting/#transport-failures',
+        label: 'Browser troubleshooting',
+      },
+      {
+        href: '/platform-rust-troubleshooting/',
+        label: 'Rust troubleshooting',
+      },
+    ],
+  },
+  {
     date: '2026-10-21',
     title:
       'Workers get R2 binding stores, commands on the Durable Object, and fan-out after hibernation',

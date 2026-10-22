@@ -49,7 +49,7 @@ Segments are the CDN and bulk path. They travel over HTTP only, so the sync sock
 </div>
 :::
 
-The client verifies every segment's content address after download and applies it in one transaction per rows block or image chunk. Bootstrap is resumable, paged, and pinned to the `commitSeq` at which it started.
+The client verifies every segment's content address after download and applies it in one transaction per rows block or image chunk. The Rust core runs consecutive frames and blocks of one response as savepoints of one transaction of at most 1,024 rows and publishes their change batches after it commits ([SPEC §1.4](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#14-streaming-contract)), so a response with many small sections pays for one SQLite commit. Bootstrap is resumable, paged, and pinned to the `commitSeq` at which it started.
 
 Segment bytes are content-addressed uncompressed. Compression is a transport and storage concern (zstd preferred, gzip fallback) and does not appear on the wire ([SPEC §5.8](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#58-compression)). Clients rely on native fetch decoding, so the client bundle ships no decompression code.
 

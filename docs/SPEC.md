@@ -399,12 +399,24 @@ a streaming reader needs:
    1,024 rows (§5.3). Durable client state (cursor,
    bootstrap resume token) is persisted only when `SUB_END` is processed.
    A client MUST finish each frame or block transaction before starting the
-   next; an outer subscription transaction MUST NOT defer those commits.
-   Each observer-visible frame or block publishes its own revision (§7.5).
+   next. A client MAY run consecutive frame and block transactions of one
+   response as savepoints of one **coalesced apply transaction** holding at
+   most 1,024 applied rows; a frame or block that would take it past the
+   bound starts after the earlier ones commit. Each frame or block keeps its
+   own savepoint and publishes its own revision (§7.5). The client publishes
+   the change batches of a coalesced apply transaction only after its
+   `COMMIT`, and sends a realtime ack (§8.2) only for cursors already
+   committed. When that `COMMIT` fails, the client rolls back every frame
+   and block it held, restores its in-memory state to the transaction's
+   start, publishes none of its change batches, applies no further frame of
+   the response, and fails the round with a storage error; the next pull
+   re-delivers the window as under rule 5.
 5. **Abort rule**: on a decode error, an in-band `ERROR` frame, or a
    truncated stream, the reader MUST abort the currently open
    subscription: roll back the *current in-progress* local transaction
-   (the open `COMMIT` frame or rows-segment block, rule 4) and MUST NOT
+   (the open `COMMIT` frame or rows-segment block, rule 4; inside a
+   coalesced apply transaction, that frame's or block's savepoint, while
+   the frames and blocks completed before it commit) and MUST NOT
    persist that subscription's `SUB_END` values (`nextCursor`,
    `bootstrapState`). Frames already committed under rule 4 stay
    committed — they are repaired by re-pull idempotency: the cursor and
@@ -639,6 +651,21 @@ allowlisted (`causeKind`, `httpStatus`, `limit`, `size`); a raw URL,
 header, or payload never reaches the message or the details. Browser
 transports (`fetch`, `WebSocket`) define their own timeout and redirect
 behavior and are not required to emulate this policy.
+
+`causeKind` is a closed vocabulary and the classification surface for
+hosts; a transport failure message is never one. The native transport
+raises `transport.failed` with `connect` (DNS resolution failed, or the
+connection was refused, reset, or aborted), `tls`, `io`, `request`,
+`protocol`, `body`, `status` (with `httpStatus`), or `unknown`;
+`transport.timeout` with `timeout` or `round_deadline`; and
+`transport.redirect` with `redirect`. The browser `fetch` transports raise
+retryable `sync.transport_failed` with `network` (the fetch rejected; a
+browser reports a missing connection, DNS, TLS, and CORS failure alike),
+`timeout`, `aborted`, `body` (the body failed after the headers arrived),
+`status` (with `httpStatus`, when the server sent no JSON error code), or
+`unknown`. A host detects a missing connection from `code` and
+`causeKind`: `network` or `timeout` from a browser transport, and
+`connect`, `tls`, or `transport.timeout` from the native transport.
 
 ---
 
@@ -4784,7 +4811,9 @@ change includes materialized or optimistic rows, subscription/window
 registration or completeness, deferred eviction, outbox/status state exposed
 by the client, conflicts/rejections/outcome-resolution state, auth-lease or schema-floor state, and
 schema-reset/upgrading state. A transaction which rolls back consumes no
-revision and emits no change. The revision survives restart and schema reset;
+revision and emits no change. A coalesced apply transaction (§1.4 rule 4)
+increases the revision once per frame or block it holds and publishes those
+revisions in order after its `COMMIT`. The revision survives restart and schema reset;
 it is destroyed only with the client database. JavaScript APIs expose it as
 `bigint`; JSON bindings encode it as a decimal string so no `u64` passes through
 an unsafe JSON number.

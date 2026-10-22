@@ -151,6 +151,8 @@ The Durable Object is hibernation-aware. Idle sockets do not pin it in memory or
 
 Register [remote operations](/guide-remote-operations/) on the Durable Object with `operations` in `RealtimeDOConfig`. The adapter forwards `POST /operations` to the partition's object, so a command applies on the same FIFO as pushes and its commit reaches the partition's sockets as a delta. A Worker config that passes `operations` beside a `realtime` or `coordinator` namespace fails each `/operations` request, because the command would run outside the FIFO.
 
+`operations` also takes a [`RemoteOperationResolver`](/guide-remote-operations/#bind-the-registry-per-request), which picks the registry, commit actor, and scope resolver per request. The resolver runs on the FIFO, and the command's commit fans out without a manual wake.
+
 ```ts
 const realtimeDOConfig = (env: Env): RealtimeDOConfig => ({
   syncConfig: (storage) => canonicalSyncConfig(env, storage),

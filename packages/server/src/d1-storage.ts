@@ -54,7 +54,7 @@ import {
   assertPhysicalColumns,
   assertStoredLayouts,
   commitWindowPageSql,
-  latestScopedChangeSeqSql,
+  LATEST_SCOPED_CHANGE_SEQ_SQLITE_SQL,
   deleteRowSql,
   deleteSqliteRowScopesSql,
   dropTableDdl,
@@ -2189,8 +2189,8 @@ export class D1ServerStorage implements ServerStorage {
     if (firstVariable === undefined || values.length === 0) return 0;
     // Concurrent reads of a pull share one `db.batch` round trip.
     const [row] = await this.#batchedAll<{ seq: number | null }>(
-      latestScopedChangeSeqSql(values.length),
-      values.flatMap((value) => [partition, query.table, firstVariable, value]),
+      LATEST_SCOPED_CHANGE_SEQ_SQLITE_SQL,
+      [partition, query.table, firstVariable, JSON.stringify(values)],
     );
     return row?.seq ?? 0;
   }

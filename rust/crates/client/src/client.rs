@@ -860,6 +860,219 @@ mod observation_tests {
         }
     }
 
+    /// §1.4 rule 4: `sections` subscriptions, each with `commits` COMMIT
+    /// frames of `rows` rows. Returns the client with its subscriptions
+    /// registered and the response.
+    fn coalesced_fixture(sections: usize, commits: usize, rows: usize) -> (SyncClient, Message) {
+        let mut client = client();
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        let mut response = Message {
+            wire_version: WIRE_VERSION,
+            msg_kind: MsgKind::Response,
+            frames: vec![Frame::RespHeader {
+                required_schema_version: None,
+                latest_schema_version: None,
+                log_epoch: Some("epoch-1".into()),
+                reset_required: Some(false),
+            }],
+        };
+        let mut seq = 0;
+        for section in 0..sections {
+            let project = format!("p{section}");
+            let scopes = vec![("project_id".to_owned(), vec![project.clone()])];
+            client
+                .subscribe(format!("s{section}"), "tasks".into(), scopes.clone(), None)
+                .unwrap();
+            let sub = client.subs.last_mut().unwrap();
+            sub.cursor = 0;
+            sub.synced_once = true;
+            sub.effective = Some(scopes.clone());
+            let sub = sub.clone();
+            client.persist_sub(&sub).unwrap();
+            response.frames.push(Frame::SubStart {
+                id: format!("s{section}"),
+                status: SubStatus::Active,
+                reason_code: "".into(),
+                effective_scopes: scopes,
+                bootstrap: false,
+            });
+            for _ in 0..commits {
+                seq += 1;
+                let changes = (0..rows)
+                    .map(|row| {
+                        let id = format!("{project}-{seq}-{row}");
+                        let values = Map::from_iter([
+                            ("id".into(), Value::from(id.clone())),
+                            ("project_id".into(), Value::from(project.clone())),
+                        ]);
+                        ssp2::model::Change {
+                            table_index: 0,
+                            row_id: id.clone(),
+                            op: Op::Upsert,
+                            row_version: Some(seq),
+                            scopes: vec![("project_id".into(), project.clone())],
+                            row: Some(
+                                encode_row_json(
+                                    client.schema.table("tasks").unwrap(),
+                                    &id,
+                                    &values,
+                                    &client.encryption,
+                                )
+                                .unwrap(),
+                            ),
+                        }
+                    })
+                    .collect();
+                response.frames.push(Frame::Commit {
+                    commit_seq: seq,
+                    actor_id: "writer".into(),
+                    created_at_ms: 1,
+                    tables: vec!["tasks".into()],
+                    changes,
+                });
+            }
+            response.frames.push(Frame::SubEnd {
+                next_cursor: seq,
+                bootstrap_state: None,
+            });
+        }
+        client.drain_change_batches();
+        (client, response)
+    }
+
+    fn count_commits(client: &SyncClient) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+        let commits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = commits.clone();
+        client
+            .conn
+            .commit_hook(Some(move || {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                false
+            }))
+            .expect("commit hook");
+        commits
+    }
+
+    #[test]
+    fn a_response_of_many_small_sections_commits_once() {
+        for realtime in [false, true] {
+            let (mut client, response) = coalesced_fixture(70, 1, 1);
+            client.realtime_state = RealtimeState::Connected;
+            client.realtime_reason_code = None;
+            let mut transport = CountingRealtimeTransport::default();
+            let (_, meta) = client.build_request(false).unwrap();
+            let commits = count_commits(&client);
+            if realtime {
+                client.on_realtime_binary(&mut transport, &encode_message(&response));
+            } else {
+                assert!(matches!(
+                    client.process_response(&mut transport, response, &meta),
+                    SyncOutcome::Ok(_)
+                ));
+            }
+            assert_eq!(
+                commits.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "{realtime}"
+            );
+            assert!(client.conn.is_autocommit());
+            assert!(client.subs.iter().all(|sub| sub.cursor > 0));
+            // Every frame keeps its own revision, published in order.
+            let revisions = client
+                .drain_change_batches()
+                .into_iter()
+                .filter(|batch| !batch.tables.is_empty())
+                .map(|batch| batch.revision)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                revisions,
+                (1..=70).map(|r: u64| r.to_string()).collect::<Vec<_>>()
+            );
+            assert_eq!(client.query("SELECT id FROM tasks", &[]).unwrap().len(), 70);
+            // The ack follows the COMMIT.
+            assert_eq!(
+                transport
+                    .messages
+                    .iter()
+                    .filter(|m| m.contains("\"ack\""))
+                    .count(),
+                1,
+                "{realtime}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_response_past_the_row_bound_commits_per_bound() {
+        // 3 frames of 600 rows: no two fit one 1,024-row transaction.
+        let (mut client, response) = coalesced_fixture(1, 3, 600);
+        let mut transport = HostTransport::new_from_config(&json!({})).unwrap();
+        let (_, meta) = client.build_request(false).unwrap();
+        let commits = count_commits(&client);
+        assert!(matches!(
+            client.process_response(&mut transport, response, &meta),
+            SyncOutcome::Ok(_)
+        ));
+        assert_eq!(commits.load(std::sync::atomic::Ordering::SeqCst), 3);
+        assert_eq!(
+            client.query("SELECT id FROM tasks", &[]).unwrap().len(),
+            1800
+        );
+        assert_eq!(client.subs[0].cursor, 3);
+    }
+
+    #[test]
+    fn a_failed_coalesced_commit_restores_memory_and_publishes_nothing() {
+        // Two sections of two frames of 600 rows: the bound commits the first
+        // frame alone, so the deferred violation it carries fails that
+        // mid-response COMMIT, and every later frame of the response fails.
+        let (mut client, response) = coalesced_fixture(2, 2, 600);
+        client
+            .conn
+            .execute_batch(
+                "PRAGMA foreign_keys = ON; CREATE TABLE fail_parent(id INTEGER PRIMARY KEY); CREATE TABLE fail_child(id INTEGER REFERENCES fail_parent(id) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER fail_commit AFTER INSERT ON _syncular_base_tasks WHEN NEW.id = 'p0-1-0' BEGIN INSERT INTO fail_child VALUES(1); END",
+            )
+            .unwrap();
+        let mut transport = HostTransport::new_from_config(&json!({})).unwrap();
+        let (_, meta) = client.build_request(false).unwrap();
+        let subs = client.subs.clone();
+        let revision = client.local_revision();
+        let outcome = client.process_response(&mut transport, response.clone(), &meta);
+        assert!(
+            matches!(&outcome, SyncOutcome::Failed { error_code, .. } if error_code == "storage.failed"),
+            "{outcome:?}"
+        );
+        assert!(client.conn.is_autocommit());
+        assert!(client.coalesced.is_none() && client.coalesced_failure.is_none());
+        assert_eq!(client.local_revision(), revision);
+        assert!(client
+            .drain_change_batches()
+            .iter()
+            .all(|batch| batch.tables.is_empty()));
+        assert!(client
+            .query("SELECT id FROM tasks", &[])
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            client.subs.iter().map(|s| s.cursor).collect::<Vec<_>>(),
+            subs.iter().map(|s| s.cursor).collect::<Vec<_>>()
+        );
+        // The next response applies in full.
+        client
+            .conn
+            .execute_batch("DROP TRIGGER fail_commit")
+            .unwrap();
+        let (_, meta) = client.build_request(false).unwrap();
+        assert!(matches!(
+            client.process_response(&mut transport, response, &meta),
+            SyncOutcome::Ok(_)
+        ));
+        assert_eq!(
+            client.query("SELECT id FROM tasks", &[]).unwrap().len(),
+            2400
+        );
+    }
+
     #[test]
     fn incoming_frame_transactions_preserve_prefix_cursor_and_revision_after_reopen() {
         let schema = json!({"version":1,"tables":[{"name":"tasks","primaryKey":"id","columns":[
@@ -985,10 +1198,13 @@ mod observation_tests {
                     client.conn.is_autocommit(),
                     "no open transaction after {realtime}/{fault}"
                 );
-                let count = if matches!(fault, "none" | "cursor") {
-                    2
-                } else {
-                    1
+                // §1.4 rule 4: the deferred foreign key of the "commit" fault
+                // fails the response's coalesced COMMIT, which rolls back both
+                // frames; the other faults roll back only the failing frame.
+                let count = match fault {
+                    "none" | "cursor" => 2,
+                    "commit" => 0,
+                    _ => 1,
                 };
                 let expected_revision = count + u64::from(realtime && fault != "none");
                 assert_eq!(
@@ -4463,8 +4679,16 @@ mod observation_tests {
             }
             let mut transport = HostTransport::new_from_config(&json!({})).unwrap();
             let outcome = client.process_response(&mut transport, response.clone(), &meta);
+            // §1.4 rule 4: the deferred foreign key of "commit" fails the
+            // response's coalesced COMMIT instead of the run's RELEASE.
+            let expected = match failure {
+                "later-frame" => "sync.invalid_request",
+                "commit" => "storage.failed",
+                _ => "client.outcome_persistence_failed",
+            };
             assert!(
-                matches!(outcome, SyncOutcome::Failed { error_code, .. } if error_code == if failure == "later-frame" { "sync.invalid_request" } else { "client.outcome_persistence_failed" })
+                matches!(&outcome, SyncOutcome::Failed { error_code, .. } if error_code == expected),
+                "{failure}: {outcome:?}"
             );
             if failure == "later-frame" {
                 assert_eq!(client.pending_commit_ids(), ids[2..]);
@@ -4619,8 +4843,15 @@ mod observation_tests {
                         .unwrap(),
                     rows
                 );
+                // §1.4 rule 4: the deferred foreign key of "commit" fails the
+                // response's coalesced COMMIT instead of the result's RELEASE.
+                let expected = if failure == "commit" {
+                    "storage.failed"
+                } else {
+                    "client.outcome_persistence_failed"
+                };
                 assert!(
-                    matches!(outcome, SyncOutcome::Failed { error_code, .. } if error_code == "client.outcome_persistence_failed"),
+                    matches!(&outcome, SyncOutcome::Failed { error_code, .. } if error_code == expected),
                     "{failure}/{status}: failed round"
                 );
                 client.conn.execute_batch("DROP TRIGGER fail_ack").unwrap();
@@ -9451,7 +9682,35 @@ pub struct SyncClient {
     last_change: Option<DiagnosticLastChange>,
     /// §7.6: latest failed owned snapshot read per owner id, oldest first.
     query_failures: Vec<DiagnosticQueryFailure>,
+    /// SPEC §1.4 rule 4: the open coalesced apply transaction of a response.
+    coalesced: Option<CoalescedApply>,
+    /// A coalesced apply transaction of the current response failed; every
+    /// later observation of that response fails until it ends.
+    coalesced_failure: Option<String>,
 }
+
+/// SPEC §1.4 rule 4: the frames and blocks of one response share one local
+/// write transaction of at most `COALESCED_APPLY_ROWS` rows. The in-memory
+/// state captured at its `BEGIN` is restored when its `COMMIT` fails.
+struct CoalescedApply {
+    rows: usize,
+    subs: Vec<Subscription>,
+    outbox: Vec<OutboxCommit>,
+    failed_commits: Vec<FailedCommit>,
+    conflicts: Vec<ConflictRecord>,
+    rejections: Vec<RejectionRecord>,
+    schema_floor: Option<SchemaFloor>,
+    lease_state: Option<LeaseState>,
+    stopped: bool,
+    upgrading: bool,
+    sync_needed: bool,
+    overlay_dirty: Option<BTreeSet<String>>,
+    change_queue: usize,
+    sync_intent_queue: usize,
+    last_change: Option<DiagnosticLastChange>,
+}
+
+const COALESCED_APPLY_ROWS: usize = 1024;
 
 pub(crate) fn quote_ident(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
@@ -10470,6 +10729,8 @@ impl SyncClient {
             last_round: None,
             last_change: None,
             query_failures: Vec::new(),
+            coalesced: None,
+            coalesced_failure: None,
         };
         // The row write path leans on the prepared-statement cache (two
         // insert statements per synced table, plus the bookkeeping
@@ -11604,9 +11865,112 @@ impl SyncClient {
     }
 
     fn begin_observation(&self, name: &str) -> Result<(), String> {
+        if let Some(failure) = &self.coalesced_failure {
+            return Err(failure.clone());
+        }
+        // SQLite rolls a whole transaction back on some I/O and capacity
+        // errors; later frames must not commit on their own after that.
+        if self.coalesced.is_some() && self.conn.is_autocommit() {
+            return Err("the coalesced apply transaction was rolled back".to_owned());
+        }
         self.conn
             .execute_batch(&format!("SAVEPOINT {name}"))
             .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
+    }
+
+    /// SPEC §1.4 rule 4: open a coalesced apply transaction unless a caller
+    /// already owns one.
+    fn begin_coalesced_apply(&mut self) -> Result<(), String> {
+        if self.coalesced.is_some() || !self.conn.is_autocommit() {
+            return Ok(());
+        }
+        self.conn
+            .execute_batch("BEGIN")
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
+        self.coalesced = Some(CoalescedApply {
+            rows: 0,
+            subs: self.subs.clone(),
+            outbox: self.outbox.clone(),
+            failed_commits: self.failed_commits.clone(),
+            conflicts: self.conflicts.clone(),
+            rejections: self.rejections.clone(),
+            schema_floor: self.schema_floor.clone(),
+            lease_state: self.lease_state.clone(),
+            stopped: self.stopped,
+            upgrading: self.upgrading,
+            sync_needed: self.sync_needed,
+            overlay_dirty: self.overlay_dirty.snapshot(),
+            change_queue: self.change_queue.len(),
+            sync_intent_queue: self.sync_intent_queue.len(),
+            last_change: self.last_change.clone(),
+        });
+        Ok(())
+    }
+
+    /// Account the rows of the next frame or block. A unit that would take the
+    /// coalesced transaction past the bound commits the earlier units first.
+    fn coalesce_unit(&mut self, rows: usize) -> Result<(), String> {
+        let Some(open) = &self.coalesced else {
+            return Ok(());
+        };
+        if open.rows > 0 && open.rows + rows > COALESCED_APPLY_ROWS {
+            self.commit_coalesced_apply()?;
+            self.begin_coalesced_apply()?;
+        }
+        if let Some(open) = &mut self.coalesced {
+            open.rows += rows;
+        }
+        Ok(())
+    }
+
+    /// COMMIT the coalesced transaction. A failed COMMIT rolls every coalesced
+    /// frame back, restores the in-memory state of its `BEGIN`, drops the
+    /// change batches and sync intents queued since, and fails the rest of the
+    /// response.
+    fn commit_coalesced_apply(&mut self) -> Result<(), String> {
+        let Some(open) = self.coalesced.take() else {
+            return Ok(());
+        };
+        let committed = if self.conn.is_autocommit() {
+            Err("the coalesced apply transaction was rolled back".to_owned())
+        } else {
+            self.conn
+                .execute_batch("COMMIT")
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
+        };
+        let Err(error) = committed else {
+            return Ok(());
+        };
+        if !self.conn.is_autocommit() {
+            if let Err(rollback) = self.conn.execute_batch("ROLLBACK") {
+                let _ = Self::sqlite_failure(&self.storage_failure, rollback);
+            }
+        }
+        self.subs = open.subs;
+        self.outbox = open.outbox;
+        self.failed_commits = open.failed_commits;
+        self.conflicts = open.conflicts;
+        self.rejections = open.rejections;
+        self.schema_floor = open.schema_floor;
+        self.lease_state = open.lease_state;
+        self.stopped = open.stopped;
+        self.upgrading = open.upgrading;
+        self.sync_needed = open.sync_needed;
+        self.overlay_dirty.restore(open.overlay_dirty);
+        self.change_queue.truncate(open.change_queue);
+        self.sync_intent_queue.truncate(open.sync_intent_queue);
+        self.last_change = open.last_change;
+        self.coalesced_failure = Some(error.clone());
+        Err(error)
+    }
+
+    /// End the response's coalescing: COMMIT what is open and clear a failure.
+    fn finish_coalesced_apply(&mut self) -> Result<(), String> {
+        let committed = self.commit_coalesced_apply();
+        match self.coalesced_failure.take() {
+            Some(failure) => Err(failure),
+            None => committed,
+        }
     }
 
     fn rollback_observation(&self, name: &str) {
@@ -16061,6 +16425,13 @@ impl SyncClient {
             }
         }
 
+        if let Err(message) = self.begin_coalesced_apply() {
+            return SyncOutcome::Failed {
+                details: None,
+                error_code: "storage.failed".into(),
+                message,
+            };
+        }
         let mut failure: Option<(String, String)> = None;
         while let Some(frame) = frames.next() {
             match frame {
@@ -16170,28 +16541,30 @@ impl SyncClient {
             }
         }
 
-        if let Some((error_code, message)) = failure {
+        let applied = match failure {
+            Some(failure) => Err(failure),
+            // Local apply boundaries already reconciled their affected overlay.
+            // Refuse round success if any remaining dirty work fails to
+            // reconcile. §4.8 E1: the push half may have drained commits that
+            // pinned rows of a shrunk window unit, so retry deferred evictions.
+            None => self
+                .rebuild_overlay_if_dirty()
+                .and_then(|()| self.drain_pending_evictions())
+                .map_err(|message| ("storage.failed".to_owned(), message)),
+        };
+        // §1.4 rule 4: frames completed before a failure stay committed; a
+        // failed COMMIT of the coalesced transaction fails the round.
+        if let Err(message) = self.finish_coalesced_apply() {
+            return SyncOutcome::Failed {
+                details: None,
+                error_code: "storage.failed".into(),
+                message,
+            };
+        }
+        if let Err((error_code, message)) = applied {
             return SyncOutcome::Failed {
                 details: None,
                 error_code,
-                message,
-            };
-        }
-        // Local apply boundaries already reconciled their affected overlay.
-        // Refuse round success if any remaining dirty work fails to reconcile.
-        if let Err(message) = self.rebuild_overlay_if_dirty() {
-            return SyncOutcome::Failed {
-                details: None,
-                error_code: "storage.failed".into(),
-                message,
-            };
-        }
-        // §4.8 E1: the push half may have drained commits that pinned rows of
-        // a shrunk window unit — retry any deferred evictions now.
-        if let Err(message) = self.drain_pending_evictions() {
-            return SyncOutcome::Failed {
-                details: None,
-                error_code: "storage.failed".into(),
                 message,
             };
         }
@@ -17091,7 +17464,8 @@ impl SyncClient {
         #[cfg(feature = "bench-internals")]
         let _phase = self.benchmark_phases.start(Phase::CommitApply);
         let was_dirty = self.overlay_dirty.snapshot();
-        self.begin_observation("syncular_commit")
+        self.coalesce_unit(changes.len())
+            .and_then(|()| self.begin_observation("syncular_commit"))
             .map_err(|message| ("storage.failed".into(), message))?;
         let applied = (|| {
             let mut batch = ChangeAccumulator::default();
@@ -17296,7 +17670,8 @@ impl SyncClient {
                     .any(|op| op.table == table.name);
             let mirror_visible = !reconcile_pending
                 && (self.failed_commits.is_empty() && !self.has_acknowledged_rows());
-            self.begin_observation("syncular_segment_block")
+            self.coalesce_unit(block.len())
+                .and_then(|()| self.begin_observation("syncular_segment_block"))
                 .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
             let outcome = (|| {
                 self.rebuild_overlay_if_dirty()
@@ -17590,7 +17965,9 @@ impl SyncClient {
                     .any(|op| op.table == table.name);
             let mirror_visible = !reconcile_pending
                 && (self.failed_commits.is_empty() && !self.has_acknowledged_rows());
-            self.begin_observation("syncular_image_chunk")
+            // A chunk holds up to 1,024 rows (§5.3).
+            self.coalesce_unit(1024)
+                .and_then(|()| self.begin_observation("syncular_image_chunk"))
                 .map_err(|message| SectionError::Abort("storage.failed".into(), message))?;
             let result = (|| {
                 self.rebuild_overlay_if_dirty()
@@ -19476,7 +19853,7 @@ impl SyncClient {
         let mut frames = message.frames.into_iter();
         let mut applied_cursor: Option<i64> = None;
         let mut any_covered = false;
-        let mut dropped = false;
+        let mut dropped = self.begin_coalesced_apply().is_err();
         while let Some(frame) = frames.next() {
             let Frame::SubStart {
                 id,
@@ -19559,6 +19936,12 @@ impl SyncClient {
                 continue;
             };
             applied_cursor = Some(applied_cursor.map_or(next_cursor, |c| c.max(next_cursor)));
+        }
+        // §1.4 rule 4: the ack follows the COMMIT. A failed COMMIT restored
+        // the cursors, so the delta counts as a wake-up.
+        if self.finish_coalesced_apply().is_err() {
+            applied_cursor = None;
+            dropped = true;
         }
         if let Some(cursor) = applied_cursor {
             // §8.2 ack point: the highest applied SUB_END.nextCursor.
