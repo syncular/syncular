@@ -162,6 +162,7 @@ test('batched readCommitWindow pages stay index-driven per subscription', async 
     JSON.stringify([
       {
         i: 0,
+        tbl: 'tasks',
         var: 'project_id',
         vals: ['p3'],
         after: 0,
@@ -170,6 +171,7 @@ test('batched readCommitWindow pages stay index-driven per subscription', async 
       },
       {
         i: 1,
+        tbl: 'tasks',
         var: 'project_id',
         vals: ['p4', 'p5'],
         after: 9,
@@ -177,7 +179,6 @@ test('batched readCommitWindow pages stay index-driven per subscription', async 
         lim: 64,
       },
     ]),
-    'tasks',
   ]);
   expect(plan).toContain('Index');
   expect(plan).not.toContain('Seq Scan on sync_change_scopes');
@@ -193,10 +194,23 @@ test('batched scanRows pages stay index-driven per subscription', async () => {
   const plan = await explain(db, scanRowBatchSql(table), [
     PARTITION,
     JSON.stringify([
-      { i: 0, var: 'project_id', vals: ['p3'], after: '', lim: 64 },
-      { i: 1, var: 'project_id', vals: ['p4', 'p5'], after: 'r0', lim: 64 },
+      {
+        i: 0,
+        tbl: 'tasks',
+        var: 'project_id',
+        vals: ['p3'],
+        after: '',
+        lim: 64,
+      },
+      {
+        i: 1,
+        tbl: 'tasks',
+        var: 'project_id',
+        vals: ['p4', 'p5'],
+        after: 'r0',
+        lim: 64,
+      },
     ]),
-    'tasks',
   ]);
   expect(plan).toContain('Index');
   expect(plan).not.toContain('Seq Scan on sync_row_scopes');

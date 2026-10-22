@@ -82,6 +82,19 @@ client.subscribe(
 ```
 :::
 
+Register many subscriptions at once with `subscribeMany` (web, React Native,
+Tauri) or `subscribe_many` (Rust). The client writes them in one local
+transaction, so a cold start that declares hundreds of subscriptions commits
+once; on OPFS a commit costs a few milliseconds. The call applies the
+`subscribe` rules to each entry, and an error in any entry registers none.
+
+```ts title="src/sync.ts"
+client.subscribeMany([
+  { id: 'todos:groceries', table: 'todos', scopes: { list_id: ['groceries'] } },
+  { id: 'todos:work', table: 'todos', scopes: { list_id: ['work'] } },
+]);
+```
+
 ### What a subscription holds
 
 | Field | Set by | Meaning |

@@ -23,7 +23,8 @@ use syncular_client::previous_version::{PreviousVersionContextConfig, PreviousVe
 use syncular_client::{
     ClientDiagnosticsRequest, ClientError, ClientLimits, CommandEffects, CommitOutcomeQuery,
     LocalDataPurgeInput, LocalDataRebootstrapInput, Mutation, QueryOwner, QueryReadFailure,
-    RealtimePolicy, ResolveCommitOutcomeInput, SyncClient, Transport, WindowBase, WindowCoverage,
+    RealtimePolicy, ResolveCommitOutcomeInput, SubscriptionRequest, SyncClient, Transport,
+    WindowBase, WindowCoverage,
 };
 
 // -- bytes <-> {"$bytes": hex} (the driver-protocol byte envelope) ----------
@@ -451,6 +452,29 @@ fn scopes_from_params(value: Option<&Value>) -> Result<Vec<(String, Vec<String>)
     }
 }
 
+/// Parse one `{ id, table, scopes?, params? }` registration.
+fn subscription_from_params(value: &Value) -> Result<SubscriptionRequest, String> {
+    let id = value
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "subscribe missing id".to_owned())?
+        .to_owned();
+    let table = value
+        .get("table")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "subscribe missing table".to_owned())?
+        .to_owned();
+    Ok(SubscriptionRequest {
+        id,
+        table,
+        scopes: scopes_from_params(value.get("scopes"))?,
+        params: value
+            .get("params")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    })
+}
+
 /// §4.8: parse a window base descriptor `{ table, variable, fixedScopes?,
 /// params? }` from a command's `base` param.
 fn window_base_from_params(value: Option<&Value>) -> Result<WindowBase, String> {
@@ -829,23 +853,22 @@ pub fn dispatch<T: Transport>(
             Ok(json!({}))
         }
         "subscribe" => {
-            let id = params
-                .get("id")
-                .and_then(Value::as_str)
-                .ok_or_else(|| client_err("subscribe missing id".to_owned()))?
-                .to_owned();
-            let table = params
-                .get("table")
-                .and_then(Value::as_str)
-                .ok_or_else(|| client_err("subscribe missing table".to_owned()))?
-                .to_owned();
-            let scopes = scopes_from_params(params.get("scopes")).map_err(client_err)?;
-            let sub_params = params
-                .get("params")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
             need_client(client)?
-                .subscribe(id, table, scopes, sub_params)
+                .subscribe_many(vec![subscription_from_params(params).map_err(client_err)?])
+                .map_err(client_err)?;
+            Ok(json!({}))
+        }
+        "subscribeMany" => {
+            let requests = params
+                .get("subscriptions")
+                .and_then(Value::as_array)
+                .ok_or_else(|| client_err("subscribeMany missing subscriptions".to_owned()))?
+                .iter()
+                .map(subscription_from_params)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(client_err)?;
+            need_client(client)?
+                .subscribe_many(requests)
                 .map_err(client_err)?;
             Ok(json!({}))
         }
@@ -1702,6 +1725,43 @@ mod tests {
         }))
         .expect_err("invalid selector must fail");
         assert!(error.contains("must be a string"), "{error}");
+    }
+
+    #[test]
+    fn subscribe_many_registers_every_subscription() {
+        let mut transport = NoNetwork::default();
+        let mut client: Option<SyncClient> = None;
+        let mut effects = CreateEffects::default();
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({ "schema": schema() }),
+        )
+        .expect("create client");
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "subscribeMany",
+            &json!({ "subscriptions": [
+                { "id": "a", "table": "todos", "scopes": { "list_id": ["list-1"] } },
+                { "id": "b", "table": "todos", "scopes": { "list_id": ["list-2"] } }
+            ] }),
+        )
+        .expect("register subscriptions");
+        for id in ["a", "b"] {
+            let state = dispatch(
+                &mut transport,
+                &mut client,
+                &mut effects,
+                "subscriptionState",
+                &json!({ "id": id }),
+            )
+            .expect("subscription state");
+            assert_eq!(state["state"]["table"], "todos");
+        }
     }
 
     #[test]

@@ -1032,6 +1032,25 @@ export class NativeSyncClient implements PromiseMethods<ClientSnapshotMethods> {
     });
   }
 
+  /** Register several subscriptions in one local transaction. */
+  async subscribeMany(
+    inputs: readonly {
+      readonly id: string;
+      readonly table: string;
+      readonly scopes?: Record<string, readonly string[]>;
+      readonly params?: string;
+    }[],
+  ): Promise<void> {
+    await this.#command('subscribeMany', {
+      subscriptions: inputs.map((input) => ({
+        id: input.id,
+        table: input.table,
+        scopes: input.scopes ?? {},
+        ...(input.params !== undefined ? { params: input.params } : {}),
+      })),
+    });
+  }
+
   async unsubscribe(id: string): Promise<void> {
     await this.#command('unsubscribe', { id });
   }

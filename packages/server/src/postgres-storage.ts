@@ -90,7 +90,7 @@ import {
   upsertValues,
 } from './relational-rows';
 import type { CompiledSchema, CompiledTable } from './schema';
-import { matchesEffective } from './scopes';
+import { matchesEffective, sha256Hex } from './scopes';
 import type {
   AuthoritativeQueryRequest,
   AuthoritativeQueryResult,
@@ -1279,10 +1279,11 @@ export class PostgresServerStorage implements ServerStorage {
   #schemaVersion: number | undefined;
   /**
    * Page reads waiting for the end of the current microtask turn, keyed by
-   * statement and fixed params. A pull starts the window read (or first
+   * statement and partition. A pull starts the window read (or first
    * snapshot page) of every subscription before awaiting any of them, so the
-   * reads of one table leave as ONE set-based statement instead of one round
-   * trip per subscription (SYNCULAR-PULL-ROUNDTRIPS-001).
+   * window reads of all tables leave as ONE set-based statement (snapshot
+   * pages as one per table, whose SQL names the table) instead of one round
+   * trip per subscription or table (SYNCULAR-PULL-ROUNDTRIPS-001).
    */
   readonly #pageBatches = new Map<string, PendingPage[]>();
 
@@ -1291,18 +1292,17 @@ export class PostgresServerStorage implements ServerStorage {
   }
 
   /**
-   * Queue one page read into the batch for (`sql`, `partition`, `table`).
-   * The batch runs as a single statement with the queued specs bound as a
-   * JSON array (`$2`); each spec gets its position as `i`, and the result
-   * rows are split back by their `sub` column.
+   * Queue one page read into the batch for (`sql`, `partition`). The batch
+   * runs as a single statement with the queued specs bound as a JSON array
+   * (`$2`); each spec gets its position as `i`, and the result rows are
+   * split back by their `sub` column.
    */
   #batchedPage<Row>(
     sql: string,
     partition: string,
-    table: string,
     spec: Record<string, unknown>,
   ): Promise<Row[]> {
-    const key = `${sql}\u0000${partition}\u0000${table}`;
+    const key = `${sql}\u0000${partition}`;
     let batch = this.#pageBatches.get(key);
     if (batch === undefined) {
       const queued: PendingPage[] = [];
@@ -1313,7 +1313,7 @@ export class PostgresServerStorage implements ServerStorage {
         const specs = JSON.stringify(
           queued.map((entry, i) => ({ ...entry.spec, i })),
         );
-        this.#exec.query<PgRow>(sql, [partition, specs, table]).then(
+        this.#exec.query<PgRow>(sql, [partition, specs]).then(
           ({ rows }) => {
             const grouped = queued.map((): PgRow[] => []);
             for (const row of rows) grouped[asNumber(row.sub)]?.push(row);
@@ -1335,24 +1335,27 @@ export class PostgresServerStorage implements ServerStorage {
     });
   }
 
-  /** Apply the schema DDL (idempotent). Call once before use. */
+  /**
+   * Apply the schema DDL (idempotent). Call once before use. The last
+   * statement records a fingerprint of the applied DDL as the comment of
+   * `sync_schema_meta`; a database that carries the current fingerprint
+   * costs one catalog read instead of the DDL round trips, so a new storage
+   * instance (a Worker isolate, a Durable Object wake) starts fast.
+   */
   async migrate(): Promise<void> {
     // Split on the statement boundary so drivers that reject multi-statement
     // query strings (node-postgres extended protocol) still apply each DDL.
-    const statements = POSTGRES_DDL.split(';')
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0);
-    for (const statement of statements) {
-      await this.#exec.query(statement);
-    }
-    await this.#exec.query(
+    // The fence function is sent whole because its dollar-quoted body
+    // contains `;`.
+    const statements = [
+      ...POSTGRES_DDL.split(';')
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0),
       'ALTER TABLE sync_commits ADD COLUMN IF NOT EXISTS writer_version BIGINT',
-    );
-    // Database-side fence: an old binary's INSERT never reaches JS. An absent
-    // `sync_writer_fence` row makes the EXISTS false, so a partition with no
-    // barrier behaves exactly as before. Sent as separate statements because
-    // the dollar-quoted body contains `;`.
-    await this.#exec.query(`CREATE OR REPLACE FUNCTION syncular_writer_fence()
+      // Database-side fence: an old binary's INSERT never reaches JS. An
+      // absent `sync_writer_fence` row makes the EXISTS false, so a partition
+      // with no barrier behaves exactly as before.
+      `CREATE OR REPLACE FUNCTION syncular_writer_fence()
 RETURNS trigger AS $$
 BEGIN
   IF EXISTS (
@@ -1365,13 +1368,45 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
-$$ LANGUAGE plpgsql`);
-    await this.#exec.query(
+$$ LANGUAGE plpgsql`,
       'DROP TRIGGER IF EXISTS sync_commits_writer_fence ON sync_commits',
-    );
-    await this.#exec.query(`CREATE TRIGGER sync_commits_writer_fence
+      `CREATE TRIGGER sync_commits_writer_fence
 BEFORE INSERT ON sync_commits
-FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
+FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
+      SCHEMA_META_DDL_POSTGRES,
+    ];
+    const fingerprint = `syncular.storage:${await sha256Hex(
+      new TextEncoder().encode(statements.join('\u0000')),
+    )}`;
+    // `obj_description` and `to_regclass` of a missing table are NULL, so
+    // the probe never fails. A core table dropped out of band reapplies the
+    // DDL even under the current fingerprint.
+    const { rows } = await this.#exec.query<{
+      storage: string | null;
+      missing: number;
+    }>(
+      `SELECT obj_description(to_regclass('sync_schema_meta'), 'pg_class') AS storage,
+              (SELECT count(*)::int
+                 FROM jsonb_array_elements_text($1::text::jsonb) AS core(name)
+                WHERE to_regclass(core.name) IS NULL) AS missing`,
+      [
+        JSON.stringify(
+          statements.flatMap(
+            (statement) =>
+              /^CREATE TABLE IF NOT EXISTS (\w+)/.exec(statement)?.[1] ?? [],
+          ),
+        ),
+      ],
+    );
+    if (rows[0]?.storage === fingerprint && rows[0].missing === 0) return;
+    for (const statement of statements) {
+      await this.#exec.query(statement);
+    }
+    // The fingerprint is lowercase hex, safe to inline (COMMENT takes no
+    // bound parameter).
+    await this.#exec.query(
+      `COMMENT ON TABLE sync_schema_meta IS '${fingerprint}'`,
+    );
   }
 
   /** Resolve a table's compiled schema; row operations require `ensureSchema`. */
@@ -1392,21 +1427,63 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
     // Memoized fast path: same instance, same schema version.
     if (this.#schemaVersion === schema.version) return;
     await this.migrate();
+    // One statement reads the marker, the incomplete checkpoints of this
+    // version and the physical columns of every app table. The aggregates
+    // leave as text so every driver hands back the same JSON strings.
+    // Columns resolve through `to_regclass`, which follows the session's
+    // `search_path` exactly as the unqualified row queries do:
+    // `current_schema()` names only the first existing schema, so it would
+    // reject a table that resolves later in the path.
+    const { rows: probe } = await this.#exec.query<{
+      schema_version: unknown;
+      layouts: unknown;
+      incomplete: string;
+      columns: string;
+    }>(
+      `SELECT meta.schema_version AS schema_version, meta.layouts AS layouts,
+              (SELECT coalesce(json_agg(json_build_object(
+                        'partition', checkpoint.partition,
+                        'name', checkpoint.name)), '[]'::json)::text
+                 FROM sync_backfill_checkpoints checkpoint
+                WHERE checkpoint.schema_version=$1
+                  AND checkpoint.state<>'activated') AS incomplete,
+              (SELECT coalesce(json_agg(json_build_object(
+                        'tbl', tables.name,
+                        'name', attribute.attname,
+                        'type', format_type(attribute.atttypid, attribute.atttypmod),
+                        'not_null', attribute.attnotnull,
+                        'pk', (SELECT key.position::int
+                                 FROM pg_index pk,
+                                      unnest(pk.indkey::int2[]) WITH ORDINALITY
+                                        AS key(attnum, position)
+                                WHERE pk.indrelid = attribute.attrelid
+                                  AND pk.indisprimary
+                                  AND key.attnum = attribute.attnum))
+                        ORDER BY tables.name, attribute.attnum), '[]'::json)::text
+                 FROM jsonb_array_elements_text($2::text::jsonb) AS tables(name)
+                 JOIN pg_attribute attribute
+                   ON attribute.attrelid = to_regclass(tables.name)
+                WHERE attribute.attnum > 0
+                  AND NOT attribute.attisdropped) AS columns
+         FROM (SELECT 1) AS one
+         LEFT JOIN sync_schema_meta meta ON meta.id=1`,
+      [schema.version, JSON.stringify([...schema.tables.keys()])],
+    );
+    const marker = probe[0];
+    if (marker === undefined) {
+      throw new Error('schema probe returned no row');
+    }
     // The barrier reads stored state: a checkpoint at this schema version that
     // is not activated and that this caller did not declare means this process
     // must not serve. An omitted or empty declaration set declares nothing and
     // is refused here, never treated as a bypass.
     const declarations = checkpoints ?? [];
-    const incomplete = await this.#exec.query<{
+    const incomplete = JSON.parse(marker.incomplete) as {
       partition: string;
       name: string;
-    }>(
-      `SELECT partition, name FROM sync_backfill_checkpoints
-        WHERE schema_version=$1 AND state<>'activated'`,
-      [schema.version],
-    );
+    }[];
     if (
-      incomplete.rows.some(
+      incomplete.some(
         (row) =>
           !declarations.some(
             (declaration) =>
@@ -1417,15 +1494,10 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
     ) {
       throw new StorageQueryError('sync.storage.checkpoint_incomplete');
     }
-    await this.#exec.query(SCHEMA_META_DDL_POSTGRES);
-    const marker = await this.#exec.query<{
-      schema_version: unknown;
-      layouts: unknown;
-    }>('SELECT schema_version, layouts FROM sync_schema_meta WHERE id=1');
     const stored =
-      marker.rows[0] === undefined
+      marker.schema_version === null || marker.schema_version === undefined
         ? undefined
-        : asNumber(marker.rows[0].schema_version);
+        : asNumber(marker.schema_version);
     if (stored !== undefined && stored > schema.version) {
       throw new Error(
         `stored schema version ${stored} is newer than the configured schema (${schema.version}) — refusing to run an older server against a migrated database`,
@@ -1434,43 +1506,26 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
     if (stored !== undefined && stored === schema.version) {
       assertStoredLayouts(
         schema,
-        typeof marker.rows[0]?.layouts === 'string'
-          ? marker.rows[0].layouts
-          : undefined,
+        typeof marker.layouts === 'string' ? marker.layouts : undefined,
       );
-      // Resolve through `to_regclass`, which follows the session's
-      // `search_path` exactly as the unqualified row queries do:
-      // `current_schema()` names only the first existing schema, so it would
-      // reject a table that resolves later in the path.
+      const columns = JSON.parse(marker.columns) as {
+        tbl: string;
+        name: string;
+        type: string;
+        not_null: boolean;
+        pk: number | null;
+      }[];
       for (const table of schema.tables.values()) {
-        const { rows } = await this.#exec.query<{
-          name: string;
-          type: string;
-          not_null: boolean;
-          pk: number | null;
-        }>(
-          `SELECT attribute.attname AS name,
-                  format_type(attribute.atttypid, attribute.atttypmod) AS type,
-                  attribute.attnotnull AS not_null,
-                  (SELECT key.position::int
-                     FROM pg_index pk,
-                          unnest(pk.indkey::int2[]) WITH ORDINALITY
-                            AS key(attnum, position)
-                    WHERE pk.indrelid = attribute.attrelid AND pk.indisprimary
-                      AND key.attnum = attribute.attnum) AS pk
-           FROM pg_attribute attribute
-           WHERE attribute.attrelid = to_regclass($1)
-             AND attribute.attnum > 0 AND NOT attribute.attisdropped`,
-          [table.name],
-        );
         assertPhysicalColumns(
           table,
-          rows.map((row) => ({
-            name: row.name,
-            type: row.type,
-            notNull: row.not_null,
-            primaryKeyPosition: row.pk ?? 0,
-          })),
+          columns
+            .filter((column) => column.tbl === table.name)
+            .map((column) => ({
+              name: column.name,
+              type: column.type,
+              notNull: column.not_null,
+              primaryKeyPosition: column.pk ?? 0,
+            })),
           'postgres',
         );
       }
@@ -1483,9 +1538,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
       // transaction (Postgres DDL is transactional — a failed bump leaves
       // no half-state).
       const layouts = parseLayouts(
-        typeof marker.rows[0]?.layouts === 'string'
-          ? marker.rows[0].layouts
-          : undefined,
+        typeof marker.layouts === 'string' ? marker.layouts : undefined,
       );
       const retiredTables = retiredTableNames(schema, layouts);
       await this.#exec.transaction(async (client) => {
@@ -2262,12 +2315,11 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
         ? []
         : (query.scopeFilter[firstVariable] ?? []);
     if (firstVariable === undefined || values.length === 0) return 0;
-    // Concurrent reads of one table in a pull share one statement.
+    // Concurrent reads of a pull share one statement across tables.
     const [row] = await this.#batchedPage<{ seq: unknown }>(
       LATEST_SCOPED_CHANGE_BATCH_SQL,
       partition,
-      query.table,
-      { var: firstVariable, vals: values },
+      { tbl: query.table, var: firstVariable, vals: values },
     );
     return row === undefined ? 0 : asNumber(row.seq);
   }
@@ -2285,7 +2337,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
     // var, value, commit_seq) PK makes the candidate subquery an index range
     // scan returning commit_seq already ascending (see postgres-explain
     // .test.ts), LEFT JOINed to the commit meta + the table's changes. Pages
-    // of concurrent window reads on the same table share one statement (see
+    // of concurrent window reads share one statement across tables (see
     // `COMMIT_WINDOW_BATCH_SQL`). Exact multi-variable verification against
     // the stored scope map happens below.
     const commits: StoredCommit[] = [];
@@ -2296,8 +2348,8 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
       const records = await this.#batchedPage<CommitWindowRecord>(
         COMMIT_WINDOW_BATCH_SQL,
         partition,
-        query.table,
         {
+          tbl: query.table,
           var: firstVariable,
           vals: firstValues,
           after: afterSeq,
@@ -2370,17 +2422,13 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`);
     let afterRowId = query.afterRowId ?? '';
     const batchSize = Math.max(64, query.limit);
     while (rows.length < query.limit) {
-      const records = await this.#batchedPage<RowRecord>(
-        sql,
-        partition,
-        query.table,
-        {
-          var: firstVariable,
-          vals: firstValues,
-          after: afterRowId,
-          lim: batchSize,
-        },
-      );
+      const records = await this.#batchedPage<RowRecord>(sql, partition, {
+        tbl: query.table,
+        var: firstVariable,
+        vals: firstValues,
+        after: afterRowId,
+        lim: batchSize,
+      });
       if (records.length === 0) break;
       for (const record of records) {
         afterRowId = record.row_id;

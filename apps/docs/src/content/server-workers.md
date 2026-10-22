@@ -29,7 +29,7 @@ Deploy the sync server on Cloudflare: D1 for storage, R2 for segment and blob by
 
 `@syncular/server-workers` is thin. The server core is runtime-neutral TypeScript (Web `Request`, `Response`, `fetch`, and Web Crypto only, enforced by a static import-graph test), so the Workers lane runs the same HTTP handler as Bun and Node, wired to `env` bindings. The routes match [Server setup](/guide-server/#the-route-surface): `POST /sync`, `GET /segments/:id`, `PUT` and `GET /blobs/:id`, plus `GET /realtime` when you enable the Durable Object.
 
-When PostgreSQL runs behind Hyperdrive instead of D1, disable query caching on the binding that sync storage, authentication, and scope resolution use. A serialized coordinator cannot make a cached SELECT fresh ([Read freshness](/server-storage-reference/#read-freshness)).
+When PostgreSQL runs behind Hyperdrive instead of D1, disable query caching on the binding that sync storage, authentication, and scope resolution use. A serialized coordinator cannot make a cached SELECT fresh ([Read freshness](/server-storage-reference/#read-freshness)). The Durable Object host takes that storage in place of the D1 binding ([PostgreSQL behind Hyperdrive](#postgresql-behind-hyperdrive)).
 
 ## Steps
 
@@ -161,6 +161,37 @@ const realtimeDOConfig = (env: Env): RealtimeDOConfig => ({
 ```
 
 For an HTTP-only deployment, keep the Durable Object binding and migration, and pass `coordinator: (env) => ({ namespace: env.REALTIME })` in place of `realtime`. Only the WebSocket route goes away; the FIFO stays mandatory for D1 pushes.
+
+### PostgreSQL behind Hyperdrive
+
+`SyncularRealtimeHost` also takes a storage the Worker built instead of a D1 binding. `RealtimeDOConfig<S>` then hands that storage to `syncConfig`. The host runs the same partition FIFO, socket hub, and maintenance methods over it. `PostgresServerStorage` locks partitions in the database, so it needs no `pushApplySerialized` flag. Enable `nodejs_compat` for `pg`, wire it through a [`PgExecutor`](/server-storage-reference/#driver-wiring), and connect through a Hyperdrive binding with query caching disabled.
+
+```ts title="src/realtime-do.ts"
+import { PostgresServerStorage } from '@syncular/server';
+import {
+  SyncularRealtimeHost,
+  type RealtimeDOConfig,
+} from '@syncular/server-workers';
+import { DurableObject } from 'cloudflare:workers';
+
+const realtimeDOConfig = (env: Env): RealtimeDOConfig<PostgresServerStorage> => ({
+  syncConfig: (storage) => canonicalSyncConfig(env, storage),
+});
+
+export class SyncularRealtimeDO extends DurableObject<Env> {
+  // `pgExecutor` is your `PgExecutor` over `pg` and the Hyperdrive
+  // connection string (see Driver wiring on the storage reference).
+  #host = new SyncularRealtimeHost(
+    this.ctx,
+    new PostgresServerStorage(pgExecutor(this.env.HYPERDRIVE.connectionString)),
+    realtimeDOConfig(this.env),
+  );
+  fetch(request: Request) { return this.#host.fetch(request); }
+  // webSocketMessage, webSocketClose, webSocketError as in the D1 example
+}
+```
+
+Every statement a round issues is a network round trip from the Durable Object to the database. A new storage instance on a ready database costs two statements, and a catch-up pull costs the same statement count for any number of subscribed tables ([Postgres storage](/server-storage-reference/#postgres)).
 
 The package declares the platform types (`DurableObjectState`, `WebSocket`, `D1Database`) structurally, so it takes no `@cloudflare/workers-types` dependency. Your Worker's own types are structurally compatible.
 

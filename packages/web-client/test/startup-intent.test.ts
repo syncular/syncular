@@ -233,3 +233,33 @@ for (const storedEpoch of [undefined, 'old-epoch']) {
     }
   });
 }
+
+test('subscribeMany registers all subscriptions or none, with one intent', async () => {
+  const db = new BunClientDatabase();
+  const intents: SyncIntent[] = [];
+  const client = new SyncClient({
+    database: db,
+    schema: CLIENT_SCHEMA,
+    transport: async () => new Uint8Array(),
+    onSyncIntent: (intent) => intents.push(intent),
+  });
+  await client.start();
+  intents.length = 0;
+  client.subscribeMany([
+    { id: 'a', table: 'tasks', scopes: { project_id: ['p1'] } },
+    { id: 'b', table: 'tasks', scopes: { project_id: ['p2'] } },
+  ]);
+  expect(client.subscriptions().map((sub) => sub.id)).toEqual(['a', 'b']);
+  expect(intents).toHaveLength(1);
+  // `b` names another project: the whole call fails, `c` stays out.
+  expect(() =>
+    client.subscribeMany([
+      { id: 'c', table: 'tasks', scopes: { project_id: ['p3'] } },
+      { id: 'b', table: 'tasks', scopes: { project_id: ['p9'] } },
+    ]),
+  ).toThrow(ClientSyncError);
+  expect(client.subscription('c')).toBeUndefined();
+  expect(intents).toHaveLength(1);
+  await client.close();
+  db.close();
+});

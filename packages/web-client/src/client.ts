@@ -2894,43 +2894,61 @@ export class SyncClient {
   // -- subscriptions ----------------------------------------------------------
 
   subscribe(input: SubscribeInput): void {
+    this.subscribeMany([input]);
+  }
+
+  /**
+   * Register several subscriptions in one local transaction: the same rules
+   * as `subscribe` for each input, and one commit for all of them (on OPFS a
+   * commit costs milliseconds, so a cold start with hundreds of
+   * registrations pays it once). An error rolls back every registration of
+   * the call.
+   */
+  subscribeMany(inputs: readonly SubscribeInput[]): void {
     this.#requireActive();
-    if (!this.#schema.tables.has(input.table)) {
-      throw new ClientSyncError(
-        'sync.unknown_table',
-        `subscribe: unknown local table ${JSON.stringify(input.table)}`,
-      );
-    }
-    const existing = getSubscription(this.#db, input.id);
-    if (existing !== undefined) {
-      const sameIntent =
-        existing.table === input.table &&
-        canonicalScopeJson(existing.scopes) ===
-          canonicalScopeJson(input.scopes) &&
-        existing.params === input.params;
-      if (!sameIntent) {
-        throw new ClientSyncError(
-          'client.subscription_intent_mismatch',
-          'subscription id already names different table, scopes, or params',
+    let registered = false;
+    this.#db.transaction(() => {
+      for (const input of inputs) {
+        if (!this.#schema.tables.has(input.table)) {
+          throw new ClientSyncError(
+            'sync.unknown_table',
+            `subscribe: unknown local table ${JSON.stringify(input.table)}`,
+          );
+        }
+        const existing = getSubscription(this.#db, input.id);
+        if (existing !== undefined) {
+          const sameIntent =
+            existing.table === input.table &&
+            canonicalScopeJson(existing.scopes) ===
+              canonicalScopeJson(input.scopes) &&
+            existing.params === input.params;
+          if (!sameIntent) {
+            throw new ClientSyncError(
+              'client.subscription_intent_mismatch',
+              'subscription id already names different table, scopes, or params',
+            );
+          }
+          // §3.3: a revoked registration keeps its id and intent but no
+          // progress. Subscribing again with the same intent re-arms it, so
+          // the next pull resolves its scopes from scratch. A `failed`
+          // registration is a configuration error and stays put.
+          if (existing.status !== 'revoked') continue;
+        }
+        saveSubscription(
+          this.#db,
+          definedObject({
+            id: input.id,
+            table: input.table,
+            scopes: input.scopes,
+            params: input.params,
+            cursor: -1,
+            status: 'active',
+          }),
         );
+        registered = true;
       }
-      // §3.3: a revoked registration keeps its id and intent but no progress.
-      // Subscribing again with the same intent re-arms it, so the next pull
-      // resolves its scopes from scratch. A `failed` registration is a
-      // configuration error and stays put.
-      if (existing.status !== 'revoked') return;
-    }
-    saveSubscription(
-      this.#db,
-      definedObject({
-        id: input.id,
-        table: input.table,
-        scopes: input.scopes,
-        params: input.params,
-        cursor: -1,
-        status: 'active',
-      }),
-    );
+    });
+    if (!registered) return;
     this.#setSyncNeeded(true);
     this.#emitSyncIntent({ kind: 'interactive' });
     this.#emitDiagnostics();

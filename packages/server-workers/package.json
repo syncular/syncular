@@ -49,6 +49,7 @@
     "@syncular/server-hono": "workspace:*"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.4",
     "@syncular/core": "workspace:*",
     "miniflare": "4.20260701.0"
   }

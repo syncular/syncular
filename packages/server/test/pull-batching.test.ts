@@ -7,10 +7,12 @@ import { describe, expect, test } from 'bun:test';
 import { PGlite } from '@electric-sql/pglite';
 import {
   decodeMessage,
+  encodeSparseRow,
   REALTIME_TAG_ROUND,
   type PushOperation,
   type RequestFrame,
   type ResponseMessage,
+  type RowColumn,
   type SubscriptionFrame,
 } from '@syncular/core';
 import {
@@ -24,6 +26,7 @@ import {
   type PgExecutor,
   type PgQueryable,
   PostgresServerStorage,
+  type ServerSchema,
   type ServerStorage,
   SqliteServerStorage,
   type SyncRequestContext,
@@ -442,4 +445,111 @@ describe('push read-ahead (SYNCULAR-PULL-ROUNDTRIPS-001)', () => {
     ]);
     await db.close();
   }, 60_000);
+});
+
+/** `tables` tables, each with one row in scope `x` and one subscription. */
+async function manyTables(tables: number) {
+  const columns: RowColumn[] = [
+    { name: 'id', type: 'string', nullable: false },
+    { name: 'project_id', type: 'string', nullable: false },
+  ];
+  const schema: ServerSchema = {
+    version: 1,
+    tables: Array.from({ length: tables }, (_, i) => ({
+      name: `t${i}`,
+      columns,
+      primaryKey: 'id',
+      scopes: ['project:{project_id}'],
+    })),
+  };
+  const db = await PGlite.create();
+  const counting = countingExecutor(pgliteExecutor(db));
+  const storage = new PostgresServerStorage(counting.executor);
+  const ctx: SyncRequestContext = {
+    partition: 'part-1',
+    actorId: 'actor-1',
+    schema,
+    storage,
+    segments: new MemorySegmentStore(),
+    resolveScopes: () => ({ project_id: ['x'] }),
+    clock: () => 1_750_000_000_000,
+  };
+  await storage.ensureSchema(compileSchema(schema));
+  await storage.touchPartition(
+    ctx.partition,
+    1_750_000_000_000,
+    TEST_LOG_EPOCH,
+  );
+  await push(
+    ctx,
+    'seed',
+    schema.tables.map((table) =>
+      upsert(table.name, 'r', encodeSparseRow(columns, 0, ['r', 'x'])),
+    ),
+  );
+  const subs = (cursors?: ReadonlyMap<string, number>) =>
+    schema.tables.map((table, i) =>
+      subFrame(
+        `s${i}`,
+        table.name,
+        { project_id: ['x'] },
+        cursors?.get(`s${i}`) ?? -1,
+      ),
+    );
+  const bootstrap = await sync(ctx, [pullHeader(), ...subs()]);
+  counting.count.statements = 0;
+  const quiet = await sync(ctx, [pullHeader(), ...subs(cursorsOf(bootstrap))]);
+  const quietPull = counting.count.statements;
+  // A second storage instance on the migrated database: a new Worker
+  // isolate or a Durable Object wake.
+  counting.count.statements = 0;
+  await new PostgresServerStorage(counting.executor).ensureSchema(
+    compileSchema(schema),
+  );
+  const warmStart = counting.count.statements;
+  await db.close();
+  return { quiet, quietPull, warmStart };
+}
+
+describe('statements per table (SYNCULAR-PULL-ROUNDTRIPS-001)', () => {
+  test('PostgreSQL: a quiet pull and a warm start cost the same for 3 and 40 tables', async () => {
+    const small = await manyTables(3);
+    const large = await manyTables(40);
+    expect(
+      large.quiet.frames.filter((frame) => frame.type === 'SUB_END'),
+    ).toHaveLength(40);
+    expect(large.quiet.frames.some((frame) => frame.type === 'ERROR')).toBe(
+      false,
+    );
+    expect(large.quietPull).toBe(small.quietPull);
+    // One catalog probe (the DDL fingerprint) and one marker read.
+    expect(small.warmStart).toBe(2);
+    expect(large.warmStart).toBe(2);
+  }, 60_000);
+
+  test('PostgreSQL: a database without the current DDL fingerprint migrates again', async () => {
+    const db = await PGlite.create();
+    const counting = countingExecutor(pgliteExecutor(db));
+    const schema = compileSchema(TEST_SCHEMA);
+    await new PostgresServerStorage(counting.executor).ensureSchema(schema);
+    await db.query('COMMENT ON TABLE sync_schema_meta IS NULL');
+    await db.query('DROP TRIGGER sync_commits_writer_fence ON sync_commits');
+    counting.count.statements = 0;
+    await new PostgresServerStorage(counting.executor).ensureSchema(schema);
+    expect(counting.count.statements).toBeGreaterThan(2);
+    const trigger = await db.query(
+      "SELECT 1 FROM pg_trigger WHERE tgname='sync_commits_writer_fence'",
+    );
+    expect(trigger.rows).toHaveLength(1);
+    counting.count.statements = 0;
+    await new PostgresServerStorage(counting.executor).ensureSchema(schema);
+    expect(counting.count.statements).toBe(2);
+    // A core table dropped out of band is recreated under the fingerprint.
+    await db.query('DROP TABLE sync_tombstones');
+    await new PostgresServerStorage(counting.executor).ensureSchema(schema);
+    expect(
+      (await db.query("SELECT to_regclass('sync_tombstones') AS t")).rows,
+    ).toEqual([{ t: 'sync_tombstones' }]);
+    await db.close();
+  });
 });

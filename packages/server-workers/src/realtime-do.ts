@@ -76,6 +76,7 @@ import {
   composeEvents,
   createRealtimeHub,
   D1ServerStorage,
+  type ServerStorage,
   errorBody,
   eraseScopeValue,
   type EraseScopeValueOptions,
@@ -119,50 +120,60 @@ export interface WebSocketLike {
 export type WebSocketPairLike = { 0: WebSocketLike; 1: WebSocketLike };
 
 /**
- * The host env a `SyncularRealtimeDO` reads. Supplied by the DO runtime via
- * the class constructor's second arg. `DB` is the D1 binding (the same one the
- * outer Worker config uses); `configFactory` builds the hub config from `env`.
+ * A storage the host coordinates: any `ServerStorage` with an idempotent
+ * `migrate()`, which the host runs before prune, erase and admin actions.
+ * `D1ServerStorage` and `PostgresServerStorage` qualify.
  */
-export type RealtimeDOConfig = (
-  | {
-      /**
-       * Preferred: build the complete canonical sync config around the DO's
-       * coordinated D1 storage. Reuse this factory for the outer HTTP adapter
-       * so HTTP-forwarded and socket rounds cannot drift by capability.
-       */
-      syncConfig(storage: D1ServerStorage): RealtimeHubConfig;
-      readonly hubConfig?: never;
-    }
-  | {
-      /**
-       * @deprecated Use `syncConfig`. This compatibility shape predates the
-       * canonical HTTP/realtime capability contract.
-       */
-      hubConfig(storage: D1ServerStorage): RealtimeHubConfigInput;
-      readonly syncConfig?: never;
-    }
-) & {
-  /**
-   * Events the admin console keeps for this partition; default 1000. The DO
-   * composes its event ring into the sync config's `events` and serves the
-   * admin routes the Worker forwards (`WorkersFetchHandlerOptions.admin`),
-   * so the event tail, metrics, failures and client drill-down see this
-   * partition's rounds.
-   */
-  readonly adminRingCapacity?: number;
-  /**
-   * Registered remote queries and commands (REMOTE.md). The Worker forwards
-   * `POST <mount>/operations` here, so a command applies on the partition
-   * FIFO and fans out to the partition's sockets like a pushed commit. A
-   * `RemoteOperationResolver` chooses the registry, the commit actor, and
-   * the scope resolver per request (REMOTE.md §5.1).
-   */
-  readonly operations?: RemoteOperationRegistry | RemoteOperationResolver;
+export type RealtimeHostStorage = ServerStorage & {
+  migrate(): Promise<void>;
 };
 
 /**
+ * The config of a `SyncularRealtimeHost`. `S` is the storage the host
+ * coordinates: `D1ServerStorage` when the host is built from a D1 binding,
+ * otherwise the storage passed to the constructor.
+ */
+export type RealtimeDOConfig<S extends RealtimeHostStorage = D1ServerStorage> =
+  (
+    | {
+        /**
+         * Preferred: build the complete canonical sync config around the DO's
+         * coordinated storage. Reuse this factory for the outer HTTP adapter
+         * so HTTP-forwarded and socket rounds cannot drift by capability.
+         */
+        syncConfig(storage: S): RealtimeHubConfig;
+        readonly hubConfig?: never;
+      }
+    | {
+        /**
+         * @deprecated Use `syncConfig`. This compatibility shape predates the
+         * canonical HTTP/realtime capability contract.
+         */
+        hubConfig(storage: S): RealtimeHubConfigInput;
+        readonly syncConfig?: never;
+      }
+  ) & {
+    /**
+     * Events the admin console keeps for this partition; default 1000. The DO
+     * composes its event ring into the sync config's `events` and serves the
+     * admin routes the Worker forwards (`WorkersFetchHandlerOptions.admin`),
+     * so the event tail, metrics, failures and client drill-down see this
+     * partition's rounds.
+     */
+    readonly adminRingCapacity?: number;
+    /**
+     * Registered remote queries and commands (REMOTE.md). The Worker forwards
+     * `POST <mount>/operations` here, so a command applies on the partition
+     * FIFO and fans out to the partition's sockets like a pushed commit. A
+     * `RemoteOperationResolver` chooses the registry, the commit actor, and
+     * the scope resolver per request (REMOTE.md §5.1).
+     */
+    readonly operations?: RemoteOperationRegistry | RemoteOperationResolver;
+  };
+
+/**
  * The subset of `RealtimeHubConfig` the DO host supplies (storage is wired by
- * the DO from its D1 binding, so it is omitted here).
+ * the DO, so it is omitted here).
  */
 export type RealtimeHubConfigInput = Omit<RealtimeHubConfig, 'storage'>;
 
@@ -211,7 +222,7 @@ export const ADMIN_DO_PATH = '/__syncular_realtime/admin';
  *
  * ```ts
  * export class SyncularRealtimeDO extends DurableObject {
- *   #impl = new SyncularRealtimeHost(this.ctx, this.env, config);
+ *   #impl = new SyncularRealtimeHost(this.ctx, this.env.DB, config);
  *   fetch(req: Request) { return this.#impl.fetch(req); }
  *   webSocketMessage(ws: WebSocket, msg: ArrayBuffer | string) {
  *     return this.#impl.webSocketMessage(ws, msg);
@@ -224,10 +235,12 @@ export const ADMIN_DO_PATH = '/__syncular_realtime/admin';
  * The reference host is `SyncularRealtimeHost` below; the tests drive it
  * directly over the DO double.
  */
-export class SyncularRealtimeHost {
+export class SyncularRealtimeHost<
+  S extends RealtimeHostStorage = D1ServerStorage,
+> {
   readonly #state: DurableObjectStateLike;
-  readonly #storage: D1ServerStorage;
-  readonly #config: RealtimeDOConfig;
+  readonly #storage: RealtimeHostStorage;
+  readonly #config: RealtimeDOConfig<RealtimeHostStorage>;
   #hub: RealtimeHub | undefined;
   #admin: SyncularAdmin | undefined;
   /** Live sessions, keyed by their socket. Empty after a hibernation wake;
@@ -245,17 +258,35 @@ export class SyncularRealtimeHost {
   /** Explicit FIFO: Durable Object events may interleave at `await`. */
   #partitionTail: Promise<void> = Promise.resolve();
 
+  /**
+   * Host a partition over a D1 binding (the host builds the coordinated
+   * `D1ServerStorage`) or over a storage the caller built, such as a
+   * `PostgresServerStorage` behind Hyperdrive. The host owns the storage's
+   * serialization: every HTTP and socket round enters the partition FIFO
+   * before the storage is used.
+   */
   constructor(
     state: DurableObjectStateLike,
     db: D1Database,
-    config: RealtimeDOConfig,
+    config: RealtimeDOConfig<D1ServerStorage>,
+  );
+  constructor(
+    state: DurableObjectStateLike,
+    storage: S,
+    config: RealtimeDOConfig<S>,
+  );
+  constructor(
+    state: DurableObjectStateLike,
+    storage: D1Database | S,
+    config: RealtimeDOConfig<D1ServerStorage> | RealtimeDOConfig<S>,
   ) {
     this.#state = state;
-    this.#storage = new D1ServerStorage(db, {
-      // Every HTTP/socket sync round enters #serializePartition before this
-      // storage is used. One DO is selected per partition.
-      pushApplySerialized: true,
-    });
+    this.#storage =
+      'prepare' in storage
+        ? // One DO is selected per partition, and every round enters
+          // #serializePartition before this storage is used.
+          new D1ServerStorage(storage, { pushApplySerialized: true })
+        : storage;
     this.#config = config;
   }
 

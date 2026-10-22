@@ -158,6 +158,7 @@ export interface WorkerApi extends Omit<
   beginSecurityPreflight(): Promise<void>;
   activateSecurity(options?: WorkerSecurityActivation): Promise<void>;
   subscribe(input: SubscribeInput): void;
+  subscribeMany(inputs: readonly SubscribeInput[]): void;
   unsubscribe(id: string): void;
   /** §4.8 windowed subscriptions: set the live units for a window base. */
   setWindow(base: WindowBase, units: readonly string[]): Promise<void>;

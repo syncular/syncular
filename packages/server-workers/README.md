@@ -318,6 +318,11 @@ compatible with the host's declared subset.
 
 Add the DO binding + migration to `wrangler.toml` (see `wrangler.toml.example`).
 
+For PostgreSQL behind Hyperdrive, pass the storage instead of the D1 binding:
+`new SyncularRealtimeHost(this.ctx, new PostgresServerStorage(executor), config)`
+with `config: RealtimeDOConfig<PostgresServerStorage>`. The host runs the same
+partition FIFO over it; `syncConfig` receives that storage.
+
 ### Real-workerd smoke: a manual recipe (why no automated lane)
 
 The hermetic tests (`test/realtime-do.test.ts`) drive the **real**

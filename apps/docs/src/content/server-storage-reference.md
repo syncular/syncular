@@ -47,6 +47,8 @@ When the stored schema version equals the running one, `ensureSchema` still chec
 
 D1 also refuses a missing core table that its request path reads or writes (`sync_tombstones`, `sync_commits`, `sync_clients`, and the rest of the `sync_*` tables except `sync_backfill_checkpoints` and `sync_writer_fence`), because D1 creates those tables only in `migrate()` or during a schema upgrade. On D1 the check costs one `sqlite_master` read plus one `PRAGMA table_info` statement per synced table the first time a storage instance opens.
 
+On PostgreSQL, `migrate()` records a fingerprint of the core DDL as the comment of `sync_schema_meta`. A new storage instance on a database that carries the current fingerprint and every core table skips the DDL, and `ensureSchema` reads the schema marker, the incomplete checkpoints, and the catalog columns of every synced table in one statement. Opening a ready database therefore costs two statements for any number of tables, which matters behind Hyperdrive, where every Worker isolate and Durable Object wake builds a new instance. A database without the fingerprint, or with a core table dropped, gets the full DDL again.
+
 ### The `materialize` flag
 
 A per-table `materialize` flag on the server schema controls the projection:
@@ -117,7 +119,7 @@ Per-partition `commitSeq` comes from an `UPDATE … RETURNING` row lock on the p
 
 ### Pull path
 
-An HTTP `POST /sync` request and a realtime socket round run the same handler. A pull starts the commit-window read or first snapshot page of every subscription before it awaits any of them, then re-reads the pruning horizon once. `PostgresServerStorage` queues the page reads issued in one microtask turn and sends one `LATERAL` statement per table, where each subscription keeps its own scope filter, cursor, and limit. The statement count therefore grows with the tables a pull reads. In the server test suite, a 68-subscription pull over two tables issues 10 statements to bootstrap and 11 to catch up, the same counts as an 8-subscription pull. The serve gate reads the schema marker, the log epoch, and incomplete checkpoints in one statement. A custom `ServerStorage` receives these `readCommitWindow` and `scanRows` calls concurrently and may batch them the same way.
+An HTTP `POST /sync` request and a realtime socket round run the same handler. A pull starts the commit-window read or first snapshot page of every subscription before it awaits any of them, then re-reads the pruning horizon once. `PostgresServerStorage` queues the page reads issued in one microtask turn and sends them as `LATERAL` statements, where each subscription keeps its own table, scope filter, cursor, and limit. The commit-window reads of all tables share one statement; snapshot pages take one statement per table, because their SQL joins the table. A catch-up pull therefore costs the same number of statements for any count of subscriptions and tables. In the server test suite, a 68-subscription pull over two tables issues 10 statements to bootstrap and 10 to catch up, the same counts as an 8-subscription pull, and a quiet pull over 40 tables issues as many as one over 3 tables. The serve gate reads the schema marker, the log epoch, and incomplete checkpoints in one statement. A custom `ServerStorage` receives these `readCommitWindow` and `scanRows` calls concurrently and may batch them the same way.
 
 ### Multi-instance fanout
 

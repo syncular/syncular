@@ -37,9 +37,9 @@ use crate::api::{
     PresencePeer, PreviousVersionStatus, QueryOwner, QueryReadFailure, QueryRow, QuerySnapshot,
     QueryValue, RejectionDetails, RejectionRecord, ResolveCommitOutcomeInput, RetainedCommitRow,
     RetainedUniqueConflict, RowState, SchemaFloor, SnapshotRead, SubscriptionCatchup,
-    SubscriptionStateView, SyncIntent, SyncOutcome, SyncReport, SyncStatusSnapshot, TableChange,
-    WindowBase, WindowChange, WindowCoverage, WindowState, WindowUnitRef,
-    CLIENT_DIAGNOSTICS_VERSION, MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
+    SubscriptionRequest, SubscriptionStateView, SyncIntent, SyncOutcome, SyncReport,
+    SyncStatusSnapshot, TableChange, WindowBase, WindowChange, WindowCoverage, WindowState,
+    WindowUnitRef, CLIENT_DIAGNOSTICS_VERSION, MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
     MAX_DIAGNOSTIC_QUERY_FAILURES,
 };
 use crate::api::{RealtimePolicy, RealtimeState, REALTIME_UNAVAILABLE_CODE};
@@ -281,6 +281,37 @@ mod observation_tests {
             ClientLimits::default(),
         )
         .expect("test client")
+    }
+
+    #[test]
+    fn subscribe_many_registers_all_or_nothing() {
+        let request = |id: &str, project: &str| SubscriptionRequest {
+            id: id.to_owned(),
+            table: "tasks".to_owned(),
+            scopes: vec![("project_id".to_owned(), vec![project.to_owned()])],
+            params: None,
+        };
+        let mut client = client();
+        client
+            .subscribe_many(vec![request("a", "p1"), request("b", "p2")])
+            .unwrap();
+        let persisted = |client: &SyncClient| -> i64 {
+            client
+                .conn
+                .query_row("SELECT count(*) FROM _syncular_subscriptions", [], |row| {
+                    row.get(0)
+                })
+                .unwrap()
+        };
+        assert_eq!(persisted(&client), 2);
+        // `b` names another project: the whole call fails, `c` stays out.
+        let error = client
+            .subscribe_many(vec![request("c", "p3"), request("b", "p9")])
+            .unwrap_err();
+        assert!(error.starts_with("client.subscription_intent_mismatch:"));
+        assert!(client.subscription_state("c").is_none());
+        assert_eq!(persisted(&client), 2);
+        assert!(client.conn.is_autocommit());
     }
 
     #[cfg(feature = "e2ee")]
@@ -13615,6 +13646,30 @@ impl SyncClient {
         // batches its own intent for the units it registers.
         if registered_at.is_some() {
             self.set_sync_needed(true, true);
+        }
+        Ok(())
+    }
+
+    /// Register several subscriptions in one local transaction: the same
+    /// rules as `subscribe` for each request, and one commit for all of them
+    /// (on OPFS a commit costs milliseconds, so a cold start with hundreds of
+    /// registrations pays it once). An error rolls back every registration
+    /// of the call.
+    pub fn subscribe_many(&mut self, requests: Vec<SubscriptionRequest>) -> Result<(), String> {
+        let prior_subs = self.subs.clone();
+        self.begin_observation("syncular_subscribe")?;
+        let registered = (|| {
+            for request in requests {
+                self.subscribe(request.id, request.table, request.scopes, request.params)?;
+            }
+            self.conn
+                .execute_batch("RELEASE syncular_subscribe")
+                .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
+        })();
+        if let Err(error) = registered {
+            self.rollback_observation("syncular_subscribe");
+            self.subs = prior_subs;
+            return Err(error);
         }
         Ok(())
     }

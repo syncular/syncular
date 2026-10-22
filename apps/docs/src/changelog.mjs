@@ -17,6 +17,34 @@
 export const changelog = [
   {
     date: '2026-10-22',
+    title: 'Register many subscriptions in one transaction',
+    body: '`subscribeMany` (web, React Native, Tauri) and `SyncClient::subscribe_many` (Rust, `subscribeMany` on the command protocol) register a list of subscriptions in one local transaction. A cold start that declared 400 subscriptions committed 400 times, about 3 ms each on OPFS; it now commits once. Each entry follows the `subscribe` rules, and an error in any entry registers none.',
+    links: [{ href: '/concepts-subscriptions/', label: 'Subscriptions' }],
+  },
+  {
+    date: '2026-10-22',
+    title: 'PostgreSQL rounds no longer scale with table count',
+    body: 'The commit-window reads of a pull leave as one statement across all subscribed tables instead of one per table, so a quiet pull over 30 tables went from 39 statements to 10. A new `PostgresServerStorage` instance on a ready database skips the core DDL when the comment of `sync_schema_meta` carries the current DDL fingerprint and reads the schema marker, checkpoints, and catalog columns of every synced table in one statement: two statements instead of 32 plus one per table. Behind Hyperdrive each statement is a round trip.',
+    links: [
+      {
+        href: '/server-storage-reference/#postgres',
+        label: 'Server storage reference',
+      },
+    ],
+  },
+  {
+    date: '2026-10-22',
+    title: 'The Workers Durable Object host runs on PostgreSQL',
+    body: '`SyncularRealtimeHost` takes a storage in place of the D1 binding, such as a `PostgresServerStorage` over Hyperdrive, and `RealtimeDOConfig<S>` hands that storage to `syncConfig`. The partition FIFO, socket hub, admin routes, pruning, and scope-value erasure run unchanged over it. A D1 binding still builds the coordinated `D1ServerStorage`.',
+    links: [
+      {
+        href: '/server-workers/#postgresql-behind-hyperdrive',
+        label: 'Cloudflare Workers',
+      },
+    ],
+  },
+  {
+    date: '2026-10-22',
     title: 'Erase a scope value',
     body: '`eraseScopeValue(config, { partition, variable, value })` removes one scope binding in budgeted steps: rows leave through delete commits on the push path (clients drop them on their next pull, realtime sockets are woken, no older segment is reused), then the upsert change records and change-scope index entries of the binding leave the log, and blob bytes go with their last reference. It runs on SQLite, PostgreSQL, and D1; on Workers, `SyncularRealtimeHost.eraseScopeValue` runs it in the partition write queue. `BlobStore` gains a required `delete`. SPEC §4.6.1 and conformance scenario 23 pin it for the TypeScript and Rust clients.',
     links: [

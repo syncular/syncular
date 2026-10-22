@@ -94,6 +94,16 @@ pub fn last(count: usize, unit: TimeBucketUnit, now_ms: i64) -> Result<Vec<Strin
     }
 }
 
+/// One registration of `SyncClient::subscribe_many`: the arguments of
+/// `SyncClient::subscribe`.
+#[derive(Debug, Clone)]
+pub struct SubscriptionRequest {
+    pub id: String,
+    pub table: String,
+    pub scopes: Vec<(String, Vec<String>)>,
+    pub params: Option<String>,
+}
+
 /// §4.8 window base: one table, the scope variable whose values are the
 /// window units, any fixed scopes shared by every unit, and host-opaque
 /// `params` carried onto each unit's subscription.

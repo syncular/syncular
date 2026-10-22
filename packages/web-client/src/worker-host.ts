@@ -576,6 +576,10 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     return this.#call('subscribe', [input]);
   }
 
+  subscribeMany(inputs: readonly SubscribeInput[]): Promise<void> {
+    return this.#call('subscribeMany', [inputs]);
+  }
+
   securityLifecycle(): Promise<SecurityLifecycle> {
     return this.#call('securityLifecycle', []);
   }

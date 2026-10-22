@@ -415,6 +415,7 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
   const coreMethods = [
     'securityLifecycle',
     'subscribe',
+    'subscribeMany',
     'unsubscribe',
     'windowState',
     'purgeLocalData',

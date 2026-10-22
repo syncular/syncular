@@ -647,20 +647,20 @@ export function commitWindowPageSql(
 /**
  * PostgreSQL set-based form of `scanRowPageSql`: one statement answers the
  * page of every subscription scanning `table` in a pull. `$2` is a JSON array
- * of `{i, var, vals, after, lim}` records; each record runs the same
+ * of `{i, tbl, var, vals, after, lim}` records; each record runs the same
  * index-first candidate subquery through a LATERAL join, so every
  * subscription keeps its own keyset cursor and LIMIT. Rows arrive ordered
  * by (i, row_id).
  *
- * Params: [partition, specs (JSON text), tbl]. The specs bind as text before
+ * Params: [partition, specs (JSON text)]. The specs bind as text before
  * the JSONB cast, so a driver that JSON-encodes a string bound to a `jsonb`
  * parameter (Bun.sql) cannot turn the array into a JSON string.
  */
 export function scanRowBatchSql(table: CompiledTable): string {
   return `SELECT s.i AS sub, c.row_id AS row_id, r.${quoteIdent(SYNC_VERSION_COLUMN)} AS server_version, r.${quoteIdent(SYNC_SCOPES_COLUMN)} AS scopes, r.${quoteIdent(SYNC_PAYLOAD_COLUMN)} AS payload, r.${quoteIdent(SYNC_COLUMN_VERSIONS_COLUMN)} AS column_versions
-     FROM jsonb_to_recordset($2::text::jsonb) AS s(i int, var text, vals text[], after text, lim int)
+     FROM jsonb_to_recordset($2::text::jsonb) AS s(i int, tbl text, var text, vals text[], after text, lim int)
      CROSS JOIN LATERAL (SELECT DISTINCT row_id FROM sync_row_scopes
-       WHERE partition=$1 AND tbl=$3 AND var=s.var AND value=ANY(s.vals)
+       WHERE partition=$1 AND tbl=s.tbl AND var=s.var AND value=ANY(s.vals)
          AND row_id>s.after
        ORDER BY row_id LIMIT s.lim) c
      LEFT JOIN ${quoteIdent(table.name)} r
@@ -670,25 +670,25 @@ export function scanRowBatchSql(table: CompiledTable): string {
 
 /**
  * PostgreSQL set-based form of `commitWindowPageSql`: one statement answers
- * the window page of every subscription reading `tbl` in a pull. `$2` is a
- * JSON array of `{i, var, vals, after, through, lim}` records, each running
- * the same index-first candidate subquery through a LATERAL join. Rows
- * arrive ordered by (i, commit_seq, idx).
+ * the window page of every subscription in a pull, across all tables. `$2`
+ * is a JSON array of `{i, tbl, var, vals, after, through, lim}` records, each
+ * running the same index-first candidate subquery through a LATERAL join.
+ * Rows arrive ordered by (i, commit_seq, idx).
  *
- * Params: [partition, specs (JSON text), tbl], the specs bound as text like
+ * Params: [partition, specs (JSON text)], the specs bound as text like
  * `scanRowBatchSql`.
  */
 export const COMMIT_WINDOW_BATCH_SQL = `SELECT s.i AS sub, c.commit_seq AS commit_seq, m.actor_id AS actor_id, m.created_at_ms AS created_at_ms,
        ch.tbl AS tbl, ch.row_id AS row_id, ch.op AS op, ch.row_version AS row_version, ch.scopes AS scopes, ch.payload AS payload
-     FROM jsonb_to_recordset($2::text::jsonb) AS s(i int, var text, vals text[], after bigint, through bigint, lim int)
+     FROM jsonb_to_recordset($2::text::jsonb) AS s(i int, tbl text, var text, vals text[], after bigint, through bigint, lim int)
      CROSS JOIN LATERAL (SELECT DISTINCT commit_seq FROM sync_change_scopes
-       WHERE partition=$1 AND tbl=$3 AND var=s.var AND value=ANY(s.vals)
+       WHERE partition=$1 AND tbl=s.tbl AND var=s.var AND value=ANY(s.vals)
          AND commit_seq>s.after AND commit_seq<=s.through
        ORDER BY commit_seq LIMIT s.lim) c
      LEFT JOIN sync_commits m
        ON m.partition=$1 AND m.commit_seq=c.commit_seq
      LEFT JOIN sync_changes ch
-       ON ch.partition=$1 AND ch.commit_seq=c.commit_seq AND ch.tbl=$3
+       ON ch.partition=$1 AND ch.commit_seq=c.commit_seq AND ch.tbl=s.tbl
      ORDER BY s.i, c.commit_seq, ch.idx`;
 
 /**
@@ -720,15 +720,15 @@ export const LATEST_SCOPED_CHANGE_SEQ_SQLITE_SQL = `SELECT max((SELECT max(commi
 
 /**
  * PostgreSQL set-based form of `LATEST_SCOPED_CHANGE_SEQ_SQLITE_SQL` for the
- * subscriptions of one table in a pull. `$2` is a JSON array of
- * `{i, var, vals}` records. Params: [partition, specs (JSON text), tbl].
+ * subscriptions of a pull, across all tables. `$2` is a JSON array of
+ * `{i, tbl, var, vals}` records. Params: [partition, specs (JSON text)].
  */
 export const LATEST_SCOPED_CHANGE_BATCH_SQL = `SELECT s.i AS sub,
        (SELECT max(latest.seq) FROM (
           SELECT (SELECT max(commit_seq) FROM sync_change_scopes
-                   WHERE partition=$1 AND tbl=$3 AND var=s.var AND value=v.value) AS seq
+                   WHERE partition=$1 AND tbl=s.tbl AND var=s.var AND value=v.value) AS seq
             FROM jsonb_array_elements_text(s.vals) AS v(value)) AS latest) AS seq
-     FROM jsonb_to_recordset($2::text::jsonb) AS s(i int, var text, vals jsonb)
+     FROM jsonb_to_recordset($2::text::jsonb) AS s(i int, tbl text, var text, vals jsonb)
     ORDER BY s.i`;
 
 /** SELECT a row's version + scope map (admin/blob authz). Params: [partition, rowId]. */
