@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-10-22',
+    title: 'Pull-only rounds skip the Durable Object queue',
+    body: 'The Workers Durable Object host queued every `/sync` round of a partition, so with one partition for all accounts each pull waited for every earlier round and its database round trips. An HTTP round without `PUSH_COMMIT` frames now runs beside the partition FIFO; pushes, socket rounds, operations and maintenance keep it. `SyncularRealtimeHost.serialized((contextFor) => work)` runs host work on the FIFO, and a commit made through `contextFor` reaches the matching sockets as a delta instead of a wake that makes every socket pull.',
+    links: [
+      {
+        href: '/server-workers/',
+        label: 'Cloudflare Workers',
+      },
+    ],
+  },
+  {
+    date: '2026-10-22',
     title: 'Register many subscriptions in one transaction',
     body: '`subscribeMany` (web, React Native, Tauri) and `SyncClient::subscribe_many` (Rust, `subscribeMany` on the command protocol) register a list of subscriptions in one local transaction. A cold start that declared 400 subscriptions committed 400 times, about 3 ms each on OPFS; it now commits once. Each entry follows the `subscribe` rules, and an error in any entry registers none.',
     links: [{ href: '/concepts-subscriptions/', label: 'Subscriptions' }],

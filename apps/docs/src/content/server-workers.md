@@ -101,7 +101,7 @@ While a migration is pending, the storage rejects application row reads and tran
 ::::
 
 ::::step{title="Add the Durable Object" time="8 min"}
-D1 writes are not stateless. Every push must serialize before row reads, validation, and CRDT merge, and must re-check idempotency under that boundary. The Workers adapter forwards `/sync` to one Durable Object per partition, and the object runs an explicit FIFO, because Durable Object events can interleave at `await`. Different partitions use different objects and stay concurrent.
+D1 writes are not stateless. Every push must serialize before row reads, validation, and CRDT merge, and must re-check idempotency under that boundary. The Workers adapter forwards `/sync` to one Durable Object per partition, and the object runs an explicit FIFO, because Durable Object events can interleave at `await`. Different partitions use different objects and stay concurrent. A `/sync` round without `PUSH_COMMIT` frames writes only its own client record, so the object runs it beside the FIFO; a partition whose clients mostly pull does not queue every round behind the others. `host.serialized((contextFor) => work)` runs host work on the same FIFO, such as a server-side command or a reaction drain. A commit made through `contextFor({ partition, actorId })`, for example with `handleRemoteOperation`, reaches the matching sockets as a delta. A commit made outside that context needs a wake, and a wake makes every socket of the partition pull.
 
 A plain `new D1ServerStorage(env.DB)` fails closed before every push, whether or not a `commitValidator` is present. A custom coordinator may pass `{ pushApplySerialized: true }`; a stateless Worker must not.
 

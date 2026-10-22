@@ -47,6 +47,38 @@ const SCHEMA: ServerSchema = {
 
 const STATE = { acceptWebSocket: () => {}, getWebSockets: () => [] };
 
+const PULL: RequestFrame[] = [
+  {
+    type: 'PULL_HEADER',
+    limitCommits: 100,
+    limitSnapshotRows: 100,
+    maxSnapshotPages: 4,
+    accept: 0b0011,
+  },
+  {
+    type: 'SUBSCRIPTION',
+    id: 's1',
+    table: 'tasks',
+    scopes: { list_id: ['L'] },
+    cursor: -1,
+  },
+];
+
+function pushFrame(id: string): RequestFrame {
+  return {
+    type: 'PUSH_COMMIT',
+    clientCommitId: id,
+    operations: [
+      {
+        table: 'tasks',
+        rowId: id,
+        op: 'upsert',
+        payload: encodeSparseRow(COLUMNS, 0, [id, 'L']),
+      },
+    ],
+  };
+}
+
 async function round(
   host: SyncularRealtimeHost<PostgresServerStorage>,
   clientId: string,
@@ -93,20 +125,7 @@ test('the host serves rounds over a PostgreSQL storage it was given', async () =
   const pushed = await round(
     new SyncularRealtimeHost(STATE, storage, config),
     'writer',
-    [
-      {
-        type: 'PUSH_COMMIT',
-        clientCommitId: 'c1',
-        operations: [
-          {
-            table: 'tasks',
-            rowId: 't1',
-            op: 'upsert',
-            payload: encodeSparseRow(COLUMNS, 0, ['t1', 'L']),
-          },
-        ],
-      },
-    ],
+    [pushFrame('t1')],
   );
   expect(pushed).toContainEqual(
     expect.objectContaining({ type: 'PUSH_RESULT', status: 'applied' }),
@@ -117,25 +136,46 @@ test('the host serves rounds over a PostgreSQL storage it was given', async () =
   const pulled = await round(
     new SyncularRealtimeHost(STATE, woken, config),
     'reader',
-    [
-      {
-        type: 'PULL_HEADER',
-        limitCommits: 100,
-        limitSnapshotRows: 100,
-        maxSnapshotPages: 4,
-        accept: 0b0011,
-      },
-      {
-        type: 'SUBSCRIPTION',
-        id: 's1',
-        table: 'tasks',
-        scopes: { list_id: ['L'] },
-        cursor: -1,
-      },
-    ],
+    PULL,
   );
   expect(received).toEqual([storage, woken]);
   expect(pulled.some((frame) => frame.type === 'ERROR')).toBe(false);
   expect(pulled).toContainEqual(expect.objectContaining({ type: 'SUB_START' }));
+  await db.close();
+});
+
+test('a pull-only round runs beside the partition FIFO; a push waits for it', async () => {
+  const db = await PGlite.create();
+  const storage = new PostgresServerStorage(pgliteExecutor(db));
+  await storage.ensureSchema(compileSchema(SCHEMA));
+  await storage.touchPartition('part-1', 0, 'epoch');
+  const host = new SyncularRealtimeHost(STATE, storage, {
+    syncConfig: (coordinated) => ({
+      schema: SCHEMA,
+      storage: coordinated,
+      resolveScopes: () => ({ list_id: ['L'] }),
+      segments: new MemorySegmentStore(),
+    }),
+  });
+  let release!: () => void;
+  const held = host.serialized(
+    async () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+  );
+  let pushed = false;
+  const push = round(host, 'writer', [pushFrame('t1')]).then((frames) => {
+    pushed = true;
+    return frames;
+  });
+  const pulled = await round(host, 'reader', PULL);
+  expect(pulled.some((frame) => frame.type === 'ERROR')).toBe(false);
+  expect(pushed).toBe(false);
+  release();
+  await held;
+  expect(await push).toContainEqual(
+    expect.objectContaining({ type: 'PUSH_RESULT', status: 'applied' }),
+  );
   await db.close();
 });

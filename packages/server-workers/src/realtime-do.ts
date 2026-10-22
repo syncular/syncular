@@ -6,9 +6,10 @@
  * ## The shape
  *
  * One DO instance hosts **one `RealtimeHub`** and serves **one partition**
- * (the DO id is `idFromName(partition)`, see `realtimeStubFor`). All of a
- * partition's sync rounds, sockets, and commit fan-out live behind its
- * explicit FIFO — the per-partition serialization point D1 requires. Because
+ * (the DO id is `idFromName(partition)`, see `realtimeStubFor`). A
+ * partition's writing rounds, socket rounds, and commit fan-out live behind
+ * its explicit FIFO — the per-partition serialization point D1 requires. An
+ * HTTP round without `PUSH_COMMIT` frames runs beside it. Because
  * the hub is the
  * `RealtimeNotifier` (§8.2) *inside* the DO, a sync round that lands over the
  * socket fans its full delta out to the partition's other sockets with no
@@ -95,8 +96,10 @@ import {
   SyncError,
   SyncularAdmin,
   type SyncularErrorRoute,
+  type SyncRequestContext,
 } from '@syncular/server';
 import { createSyncularAdminRoutes } from '@syncular/server-hono';
+import { decodeMessage } from '@syncular/core';
 
 // -- The Durable Object platform surface this class uses (structural) -------
 // Declared locally so the package takes no `@cloudflare/workers-types`
@@ -335,7 +338,22 @@ export class SyncularRealtimeHost<
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === SYNC_DO_REQUEST_PATH) {
-      return this.#serializePartition(() => this.#handleSync(request));
+      const bytes = new Uint8Array(await request.arrayBuffer());
+      // A round without PUSH_COMMIT frames writes only its own client
+      // record, so it runs beside the FIFO instead of queueing behind every
+      // other client's round. An undecodable request takes the FIFO and
+      // fails in the handler.
+      let pullOnly = false;
+      try {
+        pullOnly = decodeMessage(bytes).frames.every(
+          (frame) => frame.type !== 'PUSH_COMMIT',
+        );
+      } catch {}
+      if (pullOnly) {
+        await this.#rehydrateSockets();
+        return this.#handleSync(request, bytes);
+      }
+      return this.#serializePartition(() => this.#handleSync(request, bytes));
     }
     if (url.pathname === OPERATIONS_DO_REQUEST_PATH) {
       return this.#serializePartition(() => this.#handleOperation(request));
@@ -350,6 +368,26 @@ export class SyncularRealtimeHost<
       return this.#handleAdmin(request, url);
     }
     return new Response('not found', { status: 404 });
+  }
+
+  /**
+   * Run host work on the partition FIFO, after the sessions of hibernated
+   * sockets are rebuilt: a server-side command, a reaction drain, an import.
+   * `contextFor` returns the sync context of the hub for an actor; a commit
+   * made through it (`handleRemoteOperation`, `eraseScopeValue`, a push)
+   * reaches the matching sockets as a delta, so the host needs no wake.
+   */
+  serialized<T>(
+    work: (
+      contextFor: (identity: {
+        readonly partition: string;
+        readonly actorId: string;
+      }) => SyncRequestContext,
+    ) => Promise<T>,
+  ): Promise<T> {
+    return this.#serializePartition(() =>
+      work((identity) => this.#getHub().requestContextFor(identity)),
+    );
   }
 
   /** Trusted maintenance shares the partition FIFO with HTTP/socket writes. */
@@ -462,7 +500,7 @@ export class SyncularRealtimeHost<
     }
   }
 
-  async #handleSync(request: Request): Promise<Response> {
+  async #handleSync(request: Request, bytes: Uint8Array): Promise<Response> {
     const contentType = request.headers
       .get('content-type')
       ?.split(';')[0]
@@ -480,7 +518,6 @@ export class SyncularRealtimeHost<
       return Response.json(errorBody(error), { status: error.httpStatus });
     }
     try {
-      const bytes = new Uint8Array(await request.arrayBuffer());
       const out = await handleSyncRequest(
         bytes,
         this.#getHub().requestContextFor(identity),

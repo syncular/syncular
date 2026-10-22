@@ -208,12 +208,12 @@
       "name": "@syncular/server-workers",
       "version": "0.0.0",
       "dependencies": {
+        "@syncular/core": "workspace:*",
         "@syncular/server": "workspace:*",
         "@syncular/server-hono": "workspace:*",
       },
       "devDependencies": {
         "@electric-sql/pglite": "^0.5.4",
-        "@syncular/core": "workspace:*",
         "miniflare": "4.20260701.0",
       },
     },

@@ -34,6 +34,7 @@ import {
   type CommitValidator,
   type CrdtMergerRegistry,
   compileSchema,
+  handleSyncRequest,
   MemoryBlobStore,
   MemorySegmentStore,
   RealtimeSession,
@@ -586,6 +587,65 @@ describe('SyncularRealtimeDO (DO double + D1 double, reference codec)', () => {
       (f): f is SubStartFrame => f.type === 'SUB_START' && f.id === 's1',
     );
     expect(sub).toBeDefined();
+  });
+
+  test('host work on the FIFO commits through the hub as a delta, without a wake', async () => {
+    const db = await makeDb();
+    const ns = new FakeDurableObjectNamespace(db, realtimeConfig());
+    const { do_, server: reader } = await connect(ns, 'reader');
+    await sendRound(
+      do_,
+      reader,
+      [
+        {
+          type: 'PULL_HEADER',
+          limitCommits: 100,
+          limitSnapshotRows: 100,
+          maxSnapshotPages: 4,
+          accept: 0b0011,
+        },
+        {
+          type: 'SUBSCRIPTION',
+          id: 's1',
+          table: 'tasks',
+          scopes: { list_id: ['L'] },
+          cursor: -1,
+        },
+      ],
+      'reader',
+    );
+    await do_.deliver(reader, JSON.stringify({ type: 'ack', cursor: 0 }));
+    await settle();
+    reader.sent.length = 0;
+    await do_.host.serialized((contextFor) =>
+      handleSyncRequest(
+        syncRequestBytes(
+          [
+            {
+              type: 'PUSH_COMMIT',
+              clientCommitId: 'server-1',
+              operations: [
+                {
+                  table: 'tasks',
+                  rowId: 't3',
+                  op: 'upsert',
+                  payload: taskRow('t3', 'L', 'from the host'),
+                },
+              ],
+            },
+          ],
+          'server-writer',
+        ),
+        contextFor({ partition: PARTITION, actorId: ACTOR_ID }),
+      ),
+    );
+    await settle();
+    expect(
+      reader.sent.some(
+        (f) => f instanceof Uint8Array && f[0] === REALTIME_TAG_DELTA,
+      ),
+    ).toBe(true);
+    expect(textFrames(reader.sent).some((f) => f.event === 'sync')).toBe(false);
   });
 
   test('hibernation: rehydrate the session from attachment + D1, no re-hello', async () => {
