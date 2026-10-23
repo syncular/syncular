@@ -103,6 +103,10 @@ fn render_frame(frame: &Frame) -> Value {
             // Rule 5: bitmask fields are not enums; render numerically.
             entries.push(("accept", Value::from(*accept)));
         }
+        Frame::RoundFailure { code } => {
+            entries.push(("type", Value::from("ROUND_FAILURE")));
+            entries.push(("code", Value::from(code.clone())));
+        }
         Frame::Subscription {
             id,
             table,

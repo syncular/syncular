@@ -44,8 +44,8 @@ The core is thread-affine, which the lock satisfies. Never call the FFM function
 
 | Field | Type | Effect |
 |---|---|---|
-| `requestTimeoutMs` | `Long?` | End-to-end deadline for one HTTP request; expiry returns `transport.timeout` |
-| `roundDeadlineMs` | `Long?` | One deadline for a whole sync round; expiry returns `transport.timeout` |
+| `requestTimeoutMs` | `Long?` | Silence bound for one HTTP request: no step, and no wait between body bytes, may exceed it; expiry returns `transport.timeout` |
+| `roundDeadlineMs` | `Long?` | One deadline for the total time of a sync round, which also fails a slow transfer that is still progressing; expiry returns `transport.timeout` |
 | `maxRequestBytes` | `Long?` | Larger request bodies fail with `transport.request_too_large` before any I/O |
 | `maxResponseBytes` | `Long?` | Larger decoded responses fail with `transport.response_too_large` |
 | `redirects` | `String?` | `"deny"` (default) or `"follow"`; `"follow"` applies only to a request with no headers |

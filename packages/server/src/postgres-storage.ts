@@ -105,6 +105,7 @@ import type {
   ClientCursorInfo,
   ClientPushResult,
   ClientRecord,
+  ClientRecordWriteOptions,
   ClientSubscription,
   CommitChangeSummary,
   CommitDetail,
@@ -2778,6 +2779,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
   async putClientRecord(
     partition: string,
     record: ClientRecord,
+    options?: ClientRecordWriteOptions,
   ): Promise<void> {
     await this.#exec.query(
       `INSERT INTO sync_clients(partition, client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms, last_round_at_ms)
@@ -2787,8 +2789,11 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
              cursor=EXCLUDED.cursor,
              subscriptions=EXCLUDED.subscriptions,
              updated_at_ms=EXCLUDED.updated_at_ms,
-             last_round_at_ms=EXCLUDED.last_round_at_ms,
-             last_error_code=NULL, consecutive_failures=0`,
+             last_round_at_ms=EXCLUDED.last_round_at_ms${
+               options?.keepRoundOutcome === true
+                 ? ''
+                 : ',\n             last_error_code=NULL, consecutive_failures=0'
+             }`,
       [
         partition,
         record.clientId,

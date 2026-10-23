@@ -99,8 +99,8 @@ a persistent database path.
 | `realtimePolicy` | `optional` (default) or `required`; see [Realtime & lifecycle](/platform-react-native-realtime/). |
 | `encryption` | Portable E2EE keyring installed in the Rust core. |
 | `securityPreflight` | Opens the replica behind the fail-closed security gate. Mutually exclusive with `encryption`: the client rejects the combination with `sync.invalid_request`, and you install keys with `activateSecurity` after preflight. |
-| `requestTimeoutMs` | End-to-end deadline for one HTTP request. |
-| `roundDeadlineMs` | One monotonic deadline for a whole sync round. |
+| `requestTimeoutMs` | Silence bound for one HTTP request: no step, and no wait between body bytes, may exceed it. |
+| `roundDeadlineMs` | One monotonic deadline for the total time of a sync round; it also fails a slow transfer that is still progressing. |
 | `maxRequestBytes`, `maxResponseBytes` | Largest request body sent and largest decoded response accepted. |
 | `redirects` | `"deny"` (default) or `"follow"`. |
 | `autoSync` | Consume explicit core sync intents on the JS event loop. Default `true`. |

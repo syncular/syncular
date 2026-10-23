@@ -28,6 +28,7 @@ pub mod frame_type {
     pub const PUSH_COMMIT: u8 = 0x02;
     pub const PULL_HEADER: u8 = 0x03;
     pub const SUBSCRIPTION: u8 = 0x04;
+    pub const ROUND_FAILURE: u8 = 0x05;
     pub const RESP_HEADER: u8 = 0x10;
     pub const PUSH_RESULT: u8 = 0x11;
     pub const SUB_START: u8 = 0x12;
@@ -39,7 +40,13 @@ pub mod frame_type {
     pub const PUSH_RESULT_DETAILS: u8 = 0x1B;
     pub const ERROR: u8 = 0x1F;
 
-    pub const REQUEST_TYPES: &[u8] = &[REQ_HEADER, PUSH_COMMIT, PULL_HEADER, SUBSCRIPTION];
+    pub const REQUEST_TYPES: &[u8] = &[
+        REQ_HEADER,
+        PUSH_COMMIT,
+        PULL_HEADER,
+        SUBSCRIPTION,
+        ROUND_FAILURE,
+    ];
     pub const RESPONSE_TYPES: &[u8] = &[
         RESP_HEADER,
         PUSH_RESULT,
@@ -67,6 +74,18 @@ impl Op {
             Op::Delete => "delete",
         }
     }
+}
+
+/// §1.5 `ROUND_FAILURE.code`: `[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+`, at
+/// most 64 UTF-8 bytes. Hand-checked; the codec takes no regex dependency.
+pub fn valid_round_failure_code(code: &str) -> bool {
+    code.len() <= 64
+        && code.split('.').count() >= 2
+        && code.split('.').all(|segment| {
+            let mut chars = segment.chars();
+            matches!(chars.next(), Some(first) if first.is_ascii_lowercase())
+                && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,6 +208,9 @@ pub enum Frame {
         max_snapshot_pages: i32,
         accept: u8,
     },
+    /// §1.5: the code of the client's last round that failed where the server
+    /// could not see it. Optional, at most one, immediately after REQ_HEADER.
+    RoundFailure { code: String },
     Subscription {
         id: String,
         table: String,

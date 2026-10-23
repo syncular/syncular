@@ -35,9 +35,9 @@ data class SyncularConfig(
     val wsUrl: String? = null,
     val headers: Map<String, String> = emptyMap(),
     val dbPath: String? = null,
-    /** End-to-end deadline for one HTTP request, in milliseconds. */
+    /** Silence bound for one HTTP request, in milliseconds: no step or wait between body bytes may exceed it. */
     val requestTimeoutMs: Long? = null,
-    /** One monotonic deadline for a whole sync round, in milliseconds. */
+    /** One monotonic deadline for the total time of a sync round, in milliseconds; it also fails a slow transfer that is still progressing. */
     val roundDeadlineMs: Long? = null,
     /** Largest HTTP request body the transport sends, in bytes. */
     val maxRequestBytes: Long? = null,

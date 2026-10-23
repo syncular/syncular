@@ -30,12 +30,14 @@ import {
   type CommitFrame,
   canonicalScopeJson,
   decodeMessage,
+  DecodeError,
   decodeRow,
   decodeRowsSegment,
   encodeMessage,
   encodeRow,
   encodeSparseRow,
   encodePresencePublish,
+  isRoundFailureCode,
   MessageStreamScanner,
   PROTOCOL_WIRE_VERSION,
   type PresenceKind,
@@ -917,6 +919,12 @@ export class SyncClient {
   /** Retry policy belongs to the operation that classified the failure. */
   #retryDelayMs = 250;
   #roundRetryDelayMs: number | undefined;
+  /**
+   * §1.5: the code of the last round that ended without a complete, decodable
+   * response. It rides `ROUND_FAILURE` on every request until a round
+   * completes; a newer failure replaces it.
+   */
+  #roundFailureCode: string | undefined;
   readonly #hasBlobs: boolean;
   /** §8.6 presence: scopeKey → (peerKey `actorId clientId` → peer). */
   readonly #presence = new Map<string, Map<string, PresencePeer>>();
@@ -4129,8 +4137,14 @@ export class SyncClient {
       const subs = loadSubscriptions(this.#db).filter(
         (sub) => sub.status === 'active',
       );
+      // §1.5: a kept round-failure code rides every request until a round
+      // completes, immediately after REQ_HEADER.
+      const report = this.#roundFailureCode;
       const fixedFrames: RequestFrame[] = [
         header,
+        ...(report !== undefined
+          ? [{ type: 'ROUND_FAILURE' as const, code: report }]
+          : []),
         pull,
         ...subs.map(
           (sub): RequestFrame =>
@@ -4145,6 +4159,9 @@ export class SyncClient {
             }),
         ),
       ];
+      // The header [+ the report frame] lead the request; PUSH_COMMIT frames
+      // sit between them and the pull/subscription tail (§1.5 ordering).
+      const lead = fixedFrames.slice(0, report !== undefined ? 2 : 1);
       let admitted = pushFrames.length;
       let deferred = encodedDeferred;
       if (byteCap !== undefined) {
@@ -4177,9 +4194,9 @@ export class SyncClient {
         outbox.length = admitted;
       }
       const frames: RequestFrame[] = [
-        fixedFrames[0]!,
+        ...lead,
         ...pushFrames,
-        ...fixedFrames.slice(1),
+        ...fixedFrames.slice(lead.length),
       ];
       const requestBytes = encodeMessage({
         wireVersion: PROTOCOL_WIRE_VERSION,
@@ -4191,6 +4208,8 @@ export class SyncClient {
       if (message.msgKind !== 'response') {
         throw invalidRequest('transport returned a non-response message');
       }
+      // §1.5: a complete, decodable response ends the report obligation.
+      this.#roundFailureCode = undefined;
       const summary = await this.#processResponse(
         message,
         outbox,
@@ -4215,6 +4234,10 @@ export class SyncClient {
       }
       return summary;
     } catch (error) {
+      // §1.5: a round that ended without a complete, decodable response is a
+      // failure the server could not see — keep its code for the next request.
+      const unseen = this.#unseenRoundFailureCode(error);
+      if (unseen !== undefined) this.#roundFailureCode = unseen;
       // §7.3.5: a request-level lease code stops-and-surfaces — record it
       // in leaseState (no local-data purge, §7.3.4) and re-throw. Not a
       // silent retry: the app drives recovery to a live resolver. The
@@ -4454,6 +4477,27 @@ export class SyncClient {
       });
   }
 
+  /**
+   * §1.5: the code to report for a round that ended without a complete,
+   * decodable response — an undecodable/truncated body, a rejected fetch, a
+   * failed body read, or a socket round lost mid-flight. An HTTP-status
+   * rejection and an in-band `ERROR` frame were recorded by the server and
+   * stay unreported.
+   */
+  #unseenRoundFailureCode(error: unknown): string | undefined {
+    const code =
+      error instanceof DecodeError
+        ? error.code
+        : error instanceof ClientSyncError &&
+            error.code === 'sync.transport_failed' &&
+            error.details?.['causeKind'] !== 'status'
+          ? error.code
+          : undefined;
+    // §1.5: the frame carries only codes matching its grammar; a code that
+    // does not match would turn the whole request into a decode error.
+    return code !== undefined && isRoundFailureCode(code) ? code : undefined;
+  }
+
   /** Abort the in-flight socket round (socket closed or disconnected). */
   #abortPendingRound(reason: string): void {
     const round = this.#pendingRound;
@@ -4587,6 +4631,21 @@ export class SyncClient {
   }
 
   /**
+   * §8.7: a round that ended without its response `END` leaves the rest of
+   * that stream on the socket, and the next round would read it as its own.
+   * Close the socket and record the loss; later rounds use the configured
+   * transport until the supervisor reconnects.
+   */
+  #loseSocket(): void {
+    const socket = this.#socket;
+    this.#socket = undefined;
+    this.#presence.clear(); // §8.6.1: presence is per-connection
+    this.#setRealtimeState('lost', REALTIME_LOST_CODE);
+    socket?.close();
+    this.#emitDiagnostics();
+  }
+
+  /**
    * §8.7 channel-tag routing (synchronous, so chunk order is preserved):
    * `0x01` chunks feed the in-flight round's assembler; `0x00` messages
    * are standalone deltas; unknown tags are ignored (forward compat).
@@ -4603,12 +4662,14 @@ export class SyncClient {
         done = round.scanner.push(body);
       } catch {
         this.#pendingRound = undefined;
+        this.#loseSocket();
         round.reject(invalidRequest('malformed round response stream (§8.7)'));
         return;
       }
       if (done === undefined) return;
       this.#pendingRound = undefined;
       if (done.excess > 0) {
+        this.#loseSocket();
         round.reject(
           invalidRequest('response bytes past END of the round stream (§8.7)'),
         );

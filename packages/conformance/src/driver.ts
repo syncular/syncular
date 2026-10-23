@@ -200,6 +200,19 @@ export interface ServerRowState {
   readonly scopes: Readonly<Record<string, string>>;
 }
 
+/** One known client's §4.5 record, as the admin `listClients` view shows it. */
+export interface DriverAdminClient {
+  readonly clientId: string;
+  readonly actorId: string;
+  readonly cursor: number;
+  /** When its last sync round finished, successfully or not. */
+  readonly lastRoundAtMs?: number;
+  /** Code of its last round; present only while that round failed. */
+  readonly lastErrorCode?: string;
+  /** Rounds failed in a row since its last success; absent at zero. */
+  readonly consecutiveFailures?: number;
+}
+
 /** The two socket directions, bytes/strings only (§8.1/§8.7). Binary
  * payloads are channel-tagged (§8.7): `0x00` = standalone delta message,
  * `0x01` = sync-round byte-stream chunk. */
@@ -431,6 +444,11 @@ export interface ServerInstance {
   getHorizonSeq(): Promise<number>;
   /** All stored rows of a table, ordered by rowId. */
   readRows(table: string): Promise<ServerRowState[]>;
+  /**
+   * The §4.5 round state of the partition's known clients, as the admin
+   * console's `listClients` view reports it.
+   */
+  listClients(): Promise<readonly DriverAdminClient[]>;
 
   // -- optional capabilities --------------------------------------------------
 

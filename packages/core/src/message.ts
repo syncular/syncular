@@ -89,8 +89,18 @@ export interface UnknownFrame {
   payload: Uint8Array;
 }
 
+/**
+ * §1.5: the code of the client's last round that failed where the server
+ * could not see it. Reported once, immediately after `REQ_HEADER`.
+ */
+export interface RoundFailureFrame {
+  type: 'ROUND_FAILURE';
+  code: string;
+}
+
 export type RequestFrame =
   | ReqHeaderFrame
+  | RoundFailureFrame
   | PushCommitFrame
   | PullHeaderFrame
   | SubscriptionFrame
@@ -285,6 +295,27 @@ function requireJsonDocument(raw: string, what: string): string {
   return raw;
 }
 
+/** §1.5: a `ROUND_FAILURE` code is a lowercase dotted catalog code. */
+const ROUND_FAILURE_CODE = /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/;
+
+/** §1.5: `code` is a legal `ROUND_FAILURE` code (grammar and byte length). */
+export function isRoundFailureCode(code: string): boolean {
+  // At most 64 bytes on the wire (§1.5), so the UTF-8 length decides it.
+  return ROUND_FAILURE_CODE.test(code) && utf8Encode(code).length <= 64;
+}
+
+/** Shared by the frame decoder and encoder (§1.5 payload invariants). */
+function validateRoundFailureCode(
+  code: string,
+  fail: (message: string) => never,
+): void {
+  if (!isRoundFailureCode(code)) {
+    fail(
+      'ROUND_FAILURE.code must be a lowercase dotted code of at most 64 bytes',
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Frame payload decoders (each consumes exactly the frame payload)
 // ---------------------------------------------------------------------------
@@ -309,6 +340,12 @@ function decodeReqHeader(r: ByteReader, wireVersion: number): ReqHeaderFrame {
     schemaVersion,
     logEpoch: logEpoch,
   });
+}
+
+function decodeRoundFailure(r: ByteReader): RoundFailureFrame {
+  const code = r.str();
+  validateRoundFailureCode(code, invalid);
+  return { type: 'ROUND_FAILURE', code };
 }
 
 function decodePushCommit(r: ByteReader): PushCommitFrame {
@@ -649,6 +686,9 @@ function decodeRequestFrame(
     case FrameType.REQ_HEADER:
       frame = decodeReqHeader(r, wireVersion);
       break;
+    case FrameType.ROUND_FAILURE:
+      frame = decodeRoundFailure(r);
+      break;
     case FrameType.PUSH_COMMIT:
       frame = decodePushCommit(r);
       break;
@@ -731,10 +771,20 @@ function validateRequestSequence(frames: readonly RequestFrame[]): void {
   }
   let pushCount = 0;
   let hasPull = false;
+  let index = 1;
+  let sawRoundFailure = false;
   for (const frame of frames.slice(1)) {
     switch (frame.type) {
       case 'REQ_HEADER':
         invalid('duplicate REQ_HEADER frame');
+        break;
+      case 'ROUND_FAILURE':
+        // §1.5: at most one, immediately after REQ_HEADER.
+        if (sawRoundFailure) invalid('duplicate ROUND_FAILURE frame');
+        if (index !== 1) {
+          invalid('ROUND_FAILURE frame must immediately follow REQ_HEADER');
+        }
+        sawRoundFailure = true;
         break;
       case 'PUSH_COMMIT':
         if (hasPull) invalid('PUSH_COMMIT frame after PULL_HEADER');
@@ -750,6 +800,7 @@ function validateRequestSequence(frames: readonly RequestFrame[]): void {
       case 'UNKNOWN':
         break;
     }
+    index += 1;
   }
   if (pushCount === 0 && !hasPull) {
     invalid('request must contain PUSH_COMMIT or PULL_HEADER frames');
@@ -911,6 +962,11 @@ function encodeFrame(
       } else if (frame.logEpoch !== undefined) {
         encodeInvalid('REQ_HEADER.logEpoch requires wireVersion 2');
       }
+      break;
+    }
+    case 'ROUND_FAILURE': {
+      validateRoundFailureCode(frame.code, encodeInvalid);
+      w.str(frame.code);
       break;
     }
     case 'PUSH_COMMIT': {

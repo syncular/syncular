@@ -466,6 +466,47 @@ describe('realtime policy (§8.8)', () => {
     server.storage.db.close();
   });
 
+  test('a malformed or over-long round response closes the socket so its tail never reaches the next round', async () => {
+    for (const stream of [
+      // Bad envelope magic.
+      new Uint8Array([1, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+      // A complete empty response followed by one stray byte.
+      new Uint8Array([
+        1, 0x53, 0x53, 0x50, 0x32, 0, 3, 2, 0, 0, 0, 0, 0, 0, 0xff,
+      ]),
+    ]) {
+      const server = makeServer();
+      let closes = 0;
+      const local = await makeClient(server, {
+        clientId: 'malformed-round',
+        realtimePolicy: 'required',
+        realtime: async (handlers) => ({
+          send: () => undefined,
+          sendBytes: () => handlers.onBinary(stream),
+          close: () => {
+            closes += 1;
+            handlers.onClose?.();
+          },
+        }),
+      });
+      local.client.subscribe({
+        id: 's1',
+        table: 'tasks',
+        scopes: { project_id: ['p1'] },
+      });
+      await local.client.connectRealtime();
+      await expect(local.client.sync()).rejects.toThrow();
+      expect(closes).toBe(1);
+      expect(local.client.diagnosticsSnapshot().host.realtime).toBe('lost');
+      await expect(local.client.sync()).rejects.toMatchObject({
+        code: 'sync.realtime_unavailable',
+      });
+      await local.client.close();
+      local.db.close();
+      server.storage.db.close();
+    }
+  });
+
   test('a refused handshake is a visible state and a required round still does not fall back', async () => {
     const server = makeServer();
     const local = await makeClient(server, {

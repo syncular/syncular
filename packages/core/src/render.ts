@@ -140,6 +140,8 @@ function renderFrame(frame: RequestFrame | ResponseFrame): JsonValue {
         schemaVersion: frame.schemaVersion,
         ...(frame.logEpoch !== undefined ? { logEpoch: frame.logEpoch } : {}),
       };
+    case 'ROUND_FAILURE':
+      return { type: 'ROUND_FAILURE', code: frame.code };
     case 'PUSH_COMMIT':
       return {
         type: 'PUSH_COMMIT',

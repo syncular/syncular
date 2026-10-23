@@ -154,7 +154,7 @@ function wrapStorage(
     latestScopedChangeSeq: (p, q) => storage.latestScopedChangeSeq(p, q),
     scanRows: (p, q) => storage.scanRows(p, q),
     getClientRecord: (p, c) => storage.getClientRecord(p, c),
-    putClientRecord: (p, r) => storage.putClientRecord(p, r),
+    putClientRecord: (p, r, o) => storage.putClientRecord(p, r, o),
     recordClientRoundFailure: (...args) =>
       storage.recordClientRoundFailure(...args),
     advanceClientCursor: (...args) => storage.advanceClientCursor(...args),
@@ -251,6 +251,11 @@ export function makeServer(
 export interface ClientFaults {
   /** Deliver the request to the server, then lose the response once. */
   dropResponseOnce: boolean;
+  /**
+   * Deliver the request to the server, then return the response truncated
+   * (its END frame missing) once — an undecodable round.
+   */
+  truncateResponseOnce: boolean;
   /** Corrupt the Nth remaining segment download (1 = next). 0 = off. */
   corruptSegmentDownload: number;
   /**
@@ -266,6 +271,11 @@ export interface ClientFaults {
     | undefined;
   /** Repeat every PUSH_RESULT frame of the next response (wire duplicate). */
   duplicatePushResultOnce: boolean;
+  /**
+   * Answer the next round with a HEADER + in-band `ERROR` response once — a
+   * failure the server recorded itself (§1.5 excludes it from reporting).
+   */
+  errorFrameOnce: boolean;
 }
 
 export interface TestClient {
@@ -276,6 +286,8 @@ export interface TestClient {
   readonly intents: SyncIntent[];
   /** Rounds that used the request/response transport (§8.8 oracle). */
   readonly httpRounds: { count: number };
+  /** Request bytes of every transport round, in order. */
+  readonly requests: Uint8Array[];
 }
 
 export interface MakeClientOptions {
@@ -307,12 +319,15 @@ export async function makeClient(
   const actorId = options.actorId ?? 'actor-1';
   const faults: ClientFaults = {
     dropResponseOnce: false,
+    truncateResponseOnce: false,
     corruptSegmentDownload: 0,
     duplicatePushResultOnce: false,
+    errorFrameOnce: false,
   };
   const wakes: Array<'hello' | string> = [];
   const intents: SyncIntent[] = [];
   const httpRounds = { count: 0 };
+  const requests: Uint8Array[] = [];
   let segmentCalls = 0;
   const config: SyncClientConfig = {
     database: db,
@@ -338,10 +353,37 @@ export async function makeClient(
       : {}),
     transport: async (bytes) => {
       httpRounds.count += 1;
+      requests.push(bytes);
       const response = await handleSyncRequest(bytes, server.ctxFor(actorId));
       if (faults.dropResponseOnce) {
         faults.dropResponseOnce = false;
         throw new Error('simulated response loss');
+      }
+      if (faults.truncateResponseOnce) {
+        faults.truncateResponseOnce = false;
+        // Every SSP2 message ends with a 5-byte END frame (§1.2 rule 1).
+        return response.slice(0, response.length - 5);
+      }
+      if (faults.errorFrameOnce) {
+        faults.errorFrameOnce = false;
+        const message = decodeMessage(response);
+        if (message.msgKind === 'response') {
+          return encodeMessage({
+            wireVersion: message.wireVersion,
+            msgKind: 'response',
+            frames: [
+              message.frames[0]!,
+              {
+                type: 'ERROR',
+                code: 'sync.rate_limited',
+                message: 'slow down',
+                category: 'rate-limited',
+                retryable: true,
+                recommendedAction: 'retryLater',
+              },
+            ],
+          });
+        }
       }
       const hold = faults.holdResponseOnce;
       if (hold !== undefined) {
@@ -407,7 +449,7 @@ export async function makeClient(
     'logEpoch',
     TEST_LOG_EPOCH,
   ]);
-  return { client, db, faults, wakes, intents, httpRounds };
+  return { client, db, faults, wakes, intents, httpRounds, requests };
 }
 
 /**

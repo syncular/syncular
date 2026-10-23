@@ -1291,6 +1291,22 @@ export function runStorageContract(
       ).toBe(2);
       expect(await storage.getClientRecord(PARTITION, 'ghost')).toBeUndefined();
 
+      // A completed round that carried a ROUND_FAILURE report (§1.5) keeps the
+      // reported code and streak; the round time moves to this completion.
+      await storage.putClientRecord(
+        PARTITION,
+        { ...record, cursor: 43, updatedAtMs: NOW + 25 },
+        { keepRoundOutcome: true },
+      );
+      expect(await storage.getClientRecord(PARTITION, 'c1')).toEqual({
+        ...record,
+        cursor: 43,
+        updatedAtMs: NOW + 25,
+        lastRoundAtMs: NOW + 25,
+        lastErrorCode: 'sync.internal_error',
+        consecutiveFailures: 2,
+      });
+
       await storage.putClientRecord(PARTITION, {
         ...record,
         updatedAtMs: NOW + 30,

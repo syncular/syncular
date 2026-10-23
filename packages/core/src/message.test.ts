@@ -490,6 +490,113 @@ describe('request grammar (SPEC.md §1.5)', () => {
   });
 });
 
+describe('ROUND_FAILURE (SPEC.md §1.5)', () => {
+  const roundFailure = (code: string) => ({
+    type: FrameType.ROUND_FAILURE,
+    build: (p: ByteWriter) => p.str(code),
+  });
+
+  const requestWith = (code: string): RequestMessage => ({
+    wireVersion: 3,
+    msgKind: 'request',
+    frames: [
+      { type: 'REQ_HEADER', clientId: 'c', schemaVersion: 1 },
+      { type: 'ROUND_FAILURE', code },
+      {
+        type: 'PULL_HEADER',
+        limitCommits: 0,
+        limitSnapshotRows: 0,
+        maxSnapshotPages: 0,
+        accept: 3,
+      },
+    ],
+  });
+
+  it('round-trips the code immediately after REQ_HEADER', () => {
+    const message = requestWith('sync.transport_failed');
+    expect(decodeMessage(encodeMessage(message))).toEqual(message);
+  });
+
+  it('rejects a duplicate ROUND_FAILURE frame', () => {
+    expectDecodeError(() =>
+      decodeMessage(
+        envelope(1, [
+          reqHeader,
+          roundFailure('sync.transport_failed'),
+          roundFailure('sync.transport_failed'),
+          pullHeader,
+        ]),
+      ),
+    );
+  });
+
+  it('rejects ROUND_FAILURE after a PUSH_COMMIT', () => {
+    const push = {
+      type: FrameType.PUSH_COMMIT,
+      build: (p: ByteWriter) => {
+        p.str('c-1');
+        p.u32(1);
+        p.str('notes');
+        p.str('n-1');
+        p.u8(2); // delete
+        p.u8(0); // baseVersion absent
+        p.u8(0); // payload absent
+      },
+    };
+    expectDecodeError(() =>
+      decodeMessage(envelope(1, [reqHeader, push, roundFailure('a.b')])),
+    );
+  });
+
+  it('rejects ROUND_FAILURE after a PULL_HEADER', () => {
+    expectDecodeError(() =>
+      decodeMessage(envelope(1, [reqHeader, pullHeader, roundFailure('a.b')])),
+    );
+  });
+
+  it('rejects a request that carries only ROUND_FAILURE', () => {
+    expectDecodeError(() =>
+      decodeMessage(envelope(1, [reqHeader, roundFailure('a.b')])),
+    );
+  });
+
+  it('rejects codes outside the §1.5 grammar on decode and encode', () => {
+    for (const code of [
+      '',
+      'transport_failed',
+      'sync..failed',
+      'Sync.Failed',
+      'sync.failed-x',
+      'sync.failed.',
+      '.sync.failed',
+      `sync.${'a'.repeat(60)}`, // 65 UTF-8 bytes
+    ]) {
+      expectDecodeError(() =>
+        decodeMessage(envelope(1, [reqHeader, roundFailure(code), pullHeader])),
+      );
+      expect(() => encodeMessage(requestWith(code))).toThrow(
+        'ROUND_FAILURE.code must be a lowercase dotted code of at most 64 bytes',
+      );
+    }
+  });
+
+  it('accepts a code of exactly 64 UTF-8 bytes', () => {
+    const atLimit = `sync.${'a'.repeat(59)}`;
+    expect(utf8Encode(atLimit).length).toBe(64);
+    expect(decodeMessage(encodeMessage(requestWith(atLimit)))).toEqual(
+      requestWith(atLimit),
+    );
+  });
+
+  it('rejects ROUND_FAILURE inside a response message', () => {
+    expectDecodeError(() =>
+      decodeMessage(
+        envelope(2, [respHeader, roundFailure('sync.transport_failed')]),
+      ),
+    );
+  });
+});
+
 describe('response grammar (SPEC.md §1.6)', () => {
   const subStart = {
     type: FrameType.SUB_START,

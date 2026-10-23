@@ -113,6 +113,101 @@ test('a client that never completed a round has no record to annotate', async ()
   );
 });
 
+test('a ROUND_FAILURE report is recorded and survives the round that carried it', async () => {
+  const t = makeContext();
+  await sync(t, pull());
+  t.now.ms += 1000;
+  await sync(t, [
+    { type: 'ROUND_FAILURE', code: 'sync.transport_failed' },
+    ...pull(),
+  ]);
+  // The round completed: the cursor write happened, the reported outcome
+  // stayed (§4.5).
+  expect(await t.storage.getClientRecord(PARTITION, 'client-1')).toMatchObject({
+    lastErrorCode: 'sync.transport_failed',
+    consecutiveFailures: 1,
+    lastRoundAtMs: t.now.ms,
+    updatedAtMs: t.now.ms,
+  });
+
+  // A newer report replaces the code and increments the streak.
+  t.now.ms += 1000;
+  await sync(t, [{ type: 'ROUND_FAILURE', code: 'sync.timeout' }, ...pull()]);
+  expect(await t.storage.getClientRecord(PARTITION, 'client-1')).toMatchObject({
+    lastErrorCode: 'sync.timeout',
+    consecutiveFailures: 2,
+    lastRoundAtMs: t.now.ms,
+  });
+
+  // The next round without the frame clears the code and streak.
+  t.now.ms += 1000;
+  await sync(t, pull());
+  const recovered = await t.storage.getClientRecord(PARTITION, 'client-1');
+  expect(recovered?.lastErrorCode).toBeUndefined();
+  expect(recovered?.consecutiveFailures).toBeUndefined();
+});
+
+test('a ROUND_FAILURE report never creates a client record', async () => {
+  const t = makeContext();
+  // A schema-floor round completes without the §4.5 cursor write, so the
+  // report has no record to land on (§1.5, §4.5).
+  await sync(
+    t,
+    [{ type: 'ROUND_FAILURE', code: 'sync.transport_failed' }, ...pull()],
+    { clientId: 'ghost', schemaVersion: 2 },
+  );
+  expect(await t.storage.getClientRecord(PARTITION, 'ghost')).toBeUndefined();
+});
+
+test("a ROUND_FAILURE report never touches another actor's record", async () => {
+  const t = makeContext();
+  await sync(t, pull());
+  const other = makeContext({ storage: t.storage, actorId: 'actor-2' });
+  await expect(
+    sync(
+      other,
+      [{ type: 'ROUND_FAILURE', code: 'sync.transport_failed' }, ...pull()],
+      { clientId: 'client-1' },
+    ),
+  ).rejects.toMatchObject({ code: 'sync.invalid_client_id' });
+  const record = await t.storage.getClientRecord(PARTITION, 'client-1');
+  expect(record?.lastErrorCode).toBeUndefined();
+  expect(record?.consecutiveFailures).toBeUndefined();
+});
+
+test('a socket round carrying ROUND_FAILURE records and keeps it', async () => {
+  const t = makeContext();
+  await sync(t, pull());
+  const hub = createRealtimeHub({
+    schema: TEST_SCHEMA,
+    storage: t.storage,
+    segments: new MemorySegmentStore(),
+    resolveScopes: t.ctx.resolveScopes,
+    clock: () => t.now.ms,
+  });
+  const session = await hub.connect({
+    partition: PARTITION,
+    actorId: 'actor-1',
+    clientId: 'client-1',
+    send: () => {},
+  });
+  t.now.ms += 1000;
+  const bytes = requestBytes([
+    { type: 'ROUND_FAILURE', code: 'sync.transport_failed' },
+    ...pull(),
+  ]);
+  const tagged = new Uint8Array(bytes.length + 1);
+  tagged[0] = REALTIME_TAG_ROUND;
+  tagged.set(bytes, 1);
+  await session.handleBinary(tagged);
+  session.close();
+  expect(await t.storage.getClientRecord(PARTITION, 'client-1')).toMatchObject({
+    lastErrorCode: 'sync.transport_failed',
+    consecutiveFailures: 1,
+    updatedAtMs: t.now.ms,
+  });
+});
+
 test('an exception outside the catalog is recorded as sync.internal_error', async () => {
   const t = makeContext();
   await sync(t, pull());

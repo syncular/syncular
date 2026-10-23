@@ -354,6 +354,31 @@ const epochBound: RequestMessage = {
   ],
 };
 
+// §1.5: a request reporting the code of a round the server could not see
+// fail. The frame sits immediately after REQ_HEADER.
+const roundFailureReport: RequestMessage = {
+  wireVersion: 3,
+  msgKind: 'request',
+  frames: [
+    { type: 'REQ_HEADER', clientId: 'client-a', schemaVersion: 1 },
+    { type: 'ROUND_FAILURE', code: 'sync.transport_failed' },
+    {
+      type: 'PULL_HEADER',
+      limitCommits: 0,
+      limitSnapshotRows: 0,
+      maxSnapshotPages: 0,
+      accept: 0b0011,
+    },
+    {
+      type: 'SUBSCRIPTION',
+      id: 'sub-notes',
+      table: 'notes',
+      scopes: { project: ['p1'] },
+      cursor: 42,
+    },
+  ],
+};
+
 // ---------------------------------------------------------------------------
 // Valid response vectors
 // ---------------------------------------------------------------------------
@@ -1064,6 +1089,72 @@ const invalidServerVersionZero = (() => {
   return w.finish();
 })();
 
+// §1.5 ROUND_FAILURE grammar violations the reference encoder refuses to
+// produce (its validation mirrors the decoder's), so the bytes are built by
+// hand: the frame may appear at most once, immediately after REQ_HEADER, with
+// a lowercase dotted code.
+const invalidRoundFailureDuplicate = (() => {
+  const w = new ByteWriter();
+  envelopeHeader(w, 0x01);
+  frameInto(w, FrameType.REQ_HEADER, (p) => {
+    p.str('client-a');
+    p.i32(1);
+    p.u8(0); // logEpoch absent
+  });
+  frameInto(w, FrameType.ROUND_FAILURE, (p) => p.str('sync.transport_failed'));
+  frameInto(w, FrameType.ROUND_FAILURE, (p) => p.str('sync.transport_failed'));
+  frameInto(w, FrameType.PULL_HEADER, (p) => {
+    p.i32(0);
+    p.i32(0);
+    p.i32(0);
+    p.u8(0b0011);
+  });
+  endFrame(w);
+  return w.finish();
+})();
+
+const invalidRoundFailureAfterPush = (() => {
+  const w = new ByteWriter();
+  envelopeHeader(w, 0x01);
+  frameInto(w, FrameType.REQ_HEADER, (p) => {
+    p.str('client-a');
+    p.i32(1);
+    p.u8(0); // logEpoch absent
+  });
+  frameInto(w, FrameType.PUSH_COMMIT, (p) => {
+    p.str('c-1');
+    p.u32(1);
+    p.str('notes');
+    p.str('n-1');
+    p.u8(2); // delete
+    p.u8(0); // baseVersion absent
+    p.u8(0); // payload absent
+  });
+  frameInto(w, FrameType.ROUND_FAILURE, (p) => p.str('sync.transport_failed'));
+  endFrame(w);
+  return w.finish();
+})();
+
+// A hyphen is not a legal code segment separator (§1.5).
+const invalidRoundFailureCode = (() => {
+  const w = new ByteWriter();
+  envelopeHeader(w, 0x01);
+  frameInto(w, FrameType.REQ_HEADER, (p) => {
+    p.str('client-a');
+    p.i32(1);
+    p.u8(0); // logEpoch absent
+  });
+  frameInto(w, FrameType.ROUND_FAILURE, (p) => p.str('sync.transport-failed'));
+  frameInto(w, FrameType.PULL_HEADER, (p) => {
+    p.i32(0);
+    p.i32(0);
+    p.i32(0);
+    p.u8(0b0011);
+  });
+  endFrame(w);
+  return w.finish();
+})();
+
 // Sparse-row decode violations (RFC §6.1), one per rule. Each payload is
 // hand-built from the codec's bitmaps: the decoder rejects every one before
 // a value is read, so the payloads stop at the offending byte.
@@ -1321,6 +1412,13 @@ total += emitKind(
       render: renderMessage,
       covers: 'Request carrying the client partition log epoch (§2.1)',
     },
+    {
+      name: 'round-failure-report',
+      bytes: encodeMessage(roundFailureReport),
+      render: renderMessage,
+      covers:
+        'ROUND_FAILURE (§1.5) immediately after REQ_HEADER: the client reports the code of its last round that failed where the server could not see it',
+    },
   ],
   [],
   [
@@ -1365,6 +1463,26 @@ total += emitKind(
       bytes: invalidUpsertNoPayload,
       error: 'sync.invalid_request',
       covers: 'Upsert operation with absent payload (presence invariant)',
+    },
+    {
+      name: 'round-failure-duplicate',
+      bytes: invalidRoundFailureDuplicate,
+      error: 'sync.invalid_request',
+      covers: 'Two ROUND_FAILURE frames (§1.5: at most one)',
+    },
+    {
+      name: 'round-failure-after-push',
+      bytes: invalidRoundFailureAfterPush,
+      error: 'sync.invalid_request',
+      covers:
+        'ROUND_FAILURE after a PUSH_COMMIT (§1.5: only directly after REQ_HEADER)',
+    },
+    {
+      name: 'round-failure-bad-code',
+      bytes: invalidRoundFailureCode,
+      error: 'sync.invalid_request',
+      covers:
+        'ROUND_FAILURE code outside the §1.5 grammar (hyphen instead of a dotted segment)',
     },
   ],
 );

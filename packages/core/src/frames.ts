@@ -5,6 +5,7 @@ export const FrameType = {
   PUSH_COMMIT: 0x02,
   PULL_HEADER: 0x03,
   SUBSCRIPTION: 0x04,
+  ROUND_FAILURE: 0x05,
   RESP_HEADER: 0x10,
   PUSH_RESULT: 0x11,
   SUB_START: 0x12,
@@ -25,6 +26,7 @@ export const REQUEST_FRAME_TYPES: ReadonlySet<number> = new Set([
   FrameType.PUSH_COMMIT,
   FrameType.PULL_HEADER,
   FrameType.SUBSCRIPTION,
+  FrameType.ROUND_FAILURE,
 ]);
 
 /** Known response frame types (excluding END). */

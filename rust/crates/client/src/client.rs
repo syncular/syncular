@@ -2044,6 +2044,178 @@ mod observation_tests {
         );
     }
 
+    /// Records the decoded request of every round and answers from a script of
+    /// round results, so a test can pin what the following request carries.
+    struct FailureScriptTransport {
+        rounds: std::collections::VecDeque<Result<Vec<u8>, TransportError>>,
+        requests: Vec<Message>,
+    }
+
+    impl Transport for FailureScriptTransport {
+        fn sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            self.requests
+                .push(decode_message(request).expect("the client encodes a legal request"));
+            self.rounds.pop_front().expect("scripted round")
+        }
+
+        fn realtime_sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            self.sync(request)
+        }
+
+        fn download_segment(
+            &mut self,
+            _request: &SegmentRequest,
+            _on_progress: &mut dyn FnMut(u64),
+        ) -> Result<Vec<u8>, TransportError> {
+            Err(TransportError::new("sync.transport_failed", "offline"))
+        }
+
+        fn realtime_connect(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+
+        fn realtime_send(&mut self, _text: &str) -> Result<(), TransportError> {
+            Ok(())
+        }
+
+        fn realtime_close(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+    }
+
+    /// A complete response: RESP_HEADER for the client's epoch plus `frames`.
+    fn completed_response(frames: Vec<Frame>) -> Vec<u8> {
+        let mut all = vec![Frame::RespHeader {
+            required_schema_version: None,
+            latest_schema_version: None,
+            log_epoch: Some("epoch-1".into()),
+            reset_required: Some(false),
+        }];
+        all.extend(frames);
+        encode_message(&Message {
+            wire_version: WIRE_VERSION,
+            msg_kind: MsgKind::Response,
+            frames: all,
+        })
+    }
+
+    fn carried_round_failures(request: &Message) -> Vec<String> {
+        request
+            .frames
+            .iter()
+            .filter_map(|frame| match frame {
+                Frame::RoundFailure { code } => Some(code.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn failure_transport(
+        rounds: impl IntoIterator<Item = Result<Vec<u8>, TransportError>>,
+    ) -> FailureScriptTransport {
+        FailureScriptTransport {
+            rounds: rounds.into_iter().collect(),
+            requests: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_round_without_a_complete_response_reports_its_code_on_every_following_request() {
+        let mut client = client();
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        let mut transport = failure_transport([
+            Err(TransportError::new("transport.timeout", "round timed out")),
+            Ok(completed_response(Vec::new())),
+            Ok(completed_response(Vec::new())),
+        ]);
+        for _ in 0..3 {
+            client.sync(&mut transport);
+        }
+        assert!(carried_round_failures(&transport.requests[0]).is_empty());
+        assert_eq!(
+            carried_round_failures(&transport.requests[1]),
+            vec!["transport.timeout"]
+        );
+        assert!(
+            matches!(transport.requests[1].frames[0], Frame::ReqHeader { .. })
+                && matches!(transport.requests[1].frames[1], Frame::RoundFailure { .. }),
+            "the report sits immediately after REQ_HEADER"
+        );
+        assert!(
+            carried_round_failures(&transport.requests[2]).is_empty(),
+            "a complete response ends the report"
+        );
+    }
+
+    #[test]
+    fn a_newer_round_failure_replaces_the_kept_code() {
+        let mut client = client();
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        let mut transport = failure_transport([
+            Err(TransportError::new("transport.timeout", "round timed out")),
+            Err(TransportError::new("transport.failed", "socket closed")),
+            Ok(completed_response(Vec::new())),
+            Ok(completed_response(Vec::new())),
+        ]);
+        for _ in 0..4 {
+            client.sync(&mut transport);
+        }
+        assert_eq!(
+            carried_round_failures(&transport.requests[1]),
+            vec!["transport.timeout"]
+        );
+        assert_eq!(
+            carried_round_failures(&transport.requests[2]),
+            vec!["transport.failed"]
+        );
+        assert!(carried_round_failures(&transport.requests[3]).is_empty());
+    }
+
+    #[test]
+    fn an_in_band_error_completes_the_round_and_is_never_reported() {
+        let mut client = client();
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        let mut transport = failure_transport([
+            Err(TransportError::new("transport.timeout", "round timed out")),
+            Ok(completed_response(vec![Frame::Error {
+                code: "sync.internal_error".into(),
+                message: "server error".into(),
+                category: "internal".into(),
+                retryable: false,
+                recommended_action: "retryLater".into(),
+                details: None,
+            }])),
+            Ok(completed_response(Vec::new())),
+        ]);
+        client.sync(&mut transport);
+        assert!(matches!(
+            client.sync(&mut transport),
+            SyncOutcome::Failed { ref error_code, .. } if error_code == "sync.internal_error"
+        ));
+        client.sync(&mut transport);
+        assert_eq!(
+            carried_round_failures(&transport.requests[1]),
+            vec!["transport.timeout"]
+        );
+        assert!(
+            carried_round_failures(&transport.requests[2]).is_empty(),
+            "the server already recorded an in-band ERROR"
+        );
+    }
+
+    #[test]
+    fn a_code_the_frame_grammar_rejects_is_not_attached() {
+        let mut client = client();
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        let mut transport = failure_transport([
+            Err(TransportError::new("offline", "no dotted code")),
+            Ok(completed_response(Vec::new())),
+        ]);
+        client.sync(&mut transport);
+        client.sync(&mut transport);
+        assert!(carried_round_failures(&transport.requests[1]).is_empty());
+    }
+
     #[test]
     fn sync_report_merge_schema_floor_is_latest_state() {
         let mut aggregate = SyncReport {
@@ -9965,6 +10137,11 @@ pub struct SyncClient {
     retry_delay_ms: u64,
     /// §7.6: the background retry the current round scheduled, if any.
     round_retry_delay_ms: Option<u64>,
+    /// A round whose response never completed (§1.5): the client keeps its
+    /// code and reports it on every following request until a round receives a
+    /// complete, decodable response. The server already recorded the round, so
+    /// nothing else can tell it the round failed on this side.
+    round_failure: Option<String>,
     active_round: Option<uuid::Uuid>,
     last_round: Option<DiagnosticLastRound>,
     last_change: Option<DiagnosticLastChange>,
@@ -11013,6 +11190,7 @@ impl SyncClient {
             sync_intent_queue: VecDeque::new(),
             retry_delay_ms: 250,
             round_retry_delay_ms: None,
+            round_failure: None,
             active_round: None,
             last_round: None,
             last_change: None,
@@ -15933,6 +16111,15 @@ impl SyncClient {
             schema_version: self.schema.version,
             log_epoch: log_epoch.clone(),
         };
+        // §1.5: the lead frames are REQ_HEADER plus the optional ROUND_FAILURE,
+        // which stays ahead of every push, pull and subscription frame; the
+        // byte-capacity probes below measure this exact sequence.
+        let mut lead = vec![header];
+        lead.extend(
+            self.round_failure
+                .iter()
+                .map(|code| Frame::RoundFailure { code: code.clone() }),
+        );
         let pull = Frame::PullHeader {
             limit_commits: self.limits.limit_commits.unwrap_or(0),
             limit_snapshot_rows: self.limits.limit_snapshot_rows.unwrap_or(0),
@@ -15964,7 +16151,8 @@ impl SyncClient {
         // both encode canonically, so the byte budget is the exact wire size.
         let fixed_bytes = match byte_cap {
             Some(_) => {
-                let mut frames = vec![header.clone(), pull.clone()];
+                let mut frames = lead.clone();
+                frames.push(pull.clone());
                 frames.extend(sub_frames.iter().cloned());
                 encode_message(&Message {
                     wire_version: WIRE_VERSION,
@@ -15981,12 +16169,16 @@ impl SyncClient {
             }
         }
         let base_bytes = match byte_cap {
-            Some(_) => encode_message(&Message {
-                wire_version: WIRE_VERSION,
-                msg_kind: MsgKind::Request,
-                frames: vec![header.clone(), pull.clone()],
-            })
-            .len(),
+            Some(_) => {
+                let mut frames = lead.clone();
+                frames.push(pull.clone());
+                encode_message(&Message {
+                    wire_version: WIRE_VERSION,
+                    msg_kind: MsgKind::Request,
+                    frames,
+                })
+                .len()
+            }
             None => 0,
         };
         let total_outbox = if log_epoch.is_some() {
@@ -16060,10 +16252,13 @@ impl SyncClient {
             };
             let frame_bytes = match byte_cap {
                 Some(_) => {
+                    let mut frames = lead.clone();
+                    frames.push(frame.clone());
+                    frames.push(pull.clone());
                     encode_message(&Message {
                         wire_version: WIRE_VERSION,
                         msg_kind: MsgKind::Request,
-                        frames: vec![header.clone(), frame.clone(), pull.clone()],
+                        frames,
                     })
                     .len()
                         - base_bytes
@@ -16103,7 +16298,7 @@ impl SyncClient {
                 ));
             }
         }
-        let mut frames = vec![header];
+        let mut frames = lead;
         frames.extend(push_frames);
         frames.push(pull);
         frames.extend(sub_frames);
@@ -16448,12 +16643,24 @@ impl SyncClient {
             .collect::<Vec<_>>();
         let outcome = (|| {
             let response = match response {
-                Ok(response) => response,
+                Ok(response) => {
+                    // §1.5: a complete, decodable response ends the report, an
+                    // in-band ERROR included (the server already recorded it).
+                    self.round_failure = None;
+                    response
+                }
                 Err(TransportError {
                     code,
                     message,
                     details,
                 }) => {
+                    // §1.5: the server cannot see a round whose transport
+                    // failed or whose response never decoded, so its code rides
+                    // the following requests. A code the frame grammar rejects
+                    // is not reportable, and the previous code stays.
+                    if ssp2::model::valid_round_failure_code(&code) {
+                        self.round_failure = Some(code.clone());
+                    }
                     if transport_failed {
                         if prepared.realtime {
                             self.set_realtime_state(RealtimeState::Lost, Some(&code));

@@ -93,6 +93,14 @@ fn encode_frame(frame: &Frame, wire_version: u16) -> (u8, Vec<u8>) {
             w.u8(*accept);
             ft::PULL_HEADER
         }
+        Frame::RoundFailure { code } => {
+            assert!(
+                crate::model::valid_round_failure_code(code),
+                "ROUND_FAILURE.code {code:?} is not a lowercase dotted code of at most 64 bytes"
+            );
+            w.str(code);
+            ft::ROUND_FAILURE
+        }
         Frame::Subscription {
             id,
             table,

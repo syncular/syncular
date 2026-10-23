@@ -89,6 +89,7 @@ import type {
   ClientCursorInfo,
   ClientPushResult,
   ClientRecord,
+  ClientRecordWriteOptions,
   ClientSubscription,
   CommitChangeSummary,
   CommitDetail,
@@ -1892,10 +1893,24 @@ END`);
   async putClientRecord(
     partition: string,
     record: ClientRecord,
+    options?: ClientRecordWriteOptions,
   ): Promise<void> {
     this.db
       .query(
-        'INSERT OR REPLACE INTO sync_clients(partition, client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms, last_round_at_ms) VALUES (?,?,?,?,?,?,?,?)',
+        `INSERT INTO sync_clients(partition, client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms, last_round_at_ms) VALUES (?,?,?,?,?,?,?,?)
+         ON CONFLICT(partition, client_id) DO UPDATE SET
+           actor_id=excluded.actor_id,
+           wire_version=excluded.wire_version,
+           cursor=excluded.cursor,
+           subscriptions=excluded.subscriptions,
+           updated_at_ms=excluded.updated_at_ms,
+           last_round_at_ms=excluded.last_round_at_ms${
+             options?.keepRoundOutcome === true
+               ? ''
+               : `,
+           last_error_code=NULL,
+           consecutive_failures=0`
+           }`,
       )
       .run(
         partition,

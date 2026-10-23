@@ -19,6 +19,7 @@ import {
   type ReqHeaderFrame,
   type RequestMessage,
   type ResponseFrame,
+  type RoundFailureFrame,
   type ScopeMap,
   type SubscriptionFrame,
 } from '@syncular/core';
@@ -70,6 +71,8 @@ interface RequestPlan {
   readonly logEpoch: string;
   readonly epochReset: boolean;
   readonly header: ReqHeaderFrame;
+  /** §1.5: the code this request reports for its last unseen round failure. */
+  readonly roundFailure: RoundFailureFrame | undefined;
   readonly pushes: readonly PushCommitFrame[];
   readonly pull: PullHeaderFrame | undefined;
   readonly subscriptions: readonly SubscriptionPlan[];
@@ -212,10 +215,12 @@ async function planRequest(
     throw syncError('sync.invalid_request', 'missing REQ_HEADER');
   }
   const pushes: PushCommitFrame[] = [];
+  let roundFailure: RoundFailureFrame | undefined;
   let pull: PullHeaderFrame | undefined;
   const subFrames: SubscriptionFrame[] = [];
   for (const frame of request.frames) {
-    if (frame.type === 'PUSH_COMMIT') pushes.push(frame);
+    if (frame.type === 'ROUND_FAILURE') roundFailure = frame;
+    else if (frame.type === 'PUSH_COMMIT') pushes.push(frame);
     else if (frame.type === 'PULL_HEADER') pull = frame;
     else if (frame.type === 'SUBSCRIPTION') subFrames.push(frame);
   }
@@ -241,6 +246,7 @@ async function planRequest(
       logEpoch: registry.logEpoch,
       epochReset,
       header,
+      roundFailure,
       pushes,
       pull,
       subscriptions: [],
@@ -256,6 +262,7 @@ async function planRequest(
       logEpoch: registry.logEpoch,
       epochReset: true,
       header,
+      roundFailure,
       pushes: [],
       pull: undefined,
       subscriptions: [],
@@ -362,6 +369,7 @@ async function planRequest(
     logEpoch: registry.logEpoch,
     epochReset: false,
     header,
+    roundFailure,
     pushes,
     pull,
     subscriptions,
@@ -709,14 +717,21 @@ async function* streamResponse(
         : [...(previous?.subscriptions ?? [])];
     const cursor =
       cursors.length > 0 ? Math.min(...cursors) : (previous?.cursor ?? -1);
-    await ctx.storage.putClientRecord(ctx.partition, {
-      clientId: plan.header.clientId,
-      actorId: ctx.actorId,
-      wireVersion: plan.wireVersion,
-      cursor,
-      updatedAtMs: clockOf(ctx)(),
-      subscriptions,
-    });
+    await ctx.storage.putClientRecord(
+      ctx.partition,
+      {
+        clientId: plan.header.clientId,
+        actorId: ctx.actorId,
+        wireVersion: plan.wireVersion,
+        cursor,
+        updatedAtMs: clockOf(ctx)(),
+        subscriptions,
+      },
+      // §4.5: a round that carried a `ROUND_FAILURE` report completes without
+      // clearing the reported code and streak; the next request without the
+      // frame clears them as a plain completed round does.
+      plan.roundFailure !== undefined ? { keepRoundOutcome: true } : undefined,
+    );
     if (
       ctx.realtime?.notifySubscriptions !== undefined &&
       JSON.stringify(
@@ -832,13 +847,27 @@ async function recordRoundFailure(
   clientId: string | undefined,
   error: unknown,
 ): Promise<void> {
+  await recordRoundFailureCode(
+    ctx,
+    clientId,
+    error instanceof SyncError ? error.code : 'sync.internal_error',
+  );
+}
+
+/** As `recordRoundFailure`, for a code that is not a thrown catalog error
+ * (a `ROUND_FAILURE` report, §1.5). */
+async function recordRoundFailureCode(
+  ctx: SyncRequestContext,
+  clientId: string | undefined,
+  code: string,
+): Promise<void> {
   if (clientId === undefined) return;
   try {
     await ctx.storage.recordClientRoundFailure(
       ctx.partition,
       clientId,
       ctx.actorId,
-      error instanceof SyncError ? error.code : 'sync.internal_error',
+      code,
       clockOf(ctx)(),
     );
   } catch (failure) {
@@ -917,6 +946,16 @@ async function createStreamCore(
   );
   const served = selected ?? schema;
   const plan = await planRequest(request, ctx, served, registry);
+  // §1.5/§4.5: record the reported round failure on the existing record
+  // before the round runs (it never creates one, never touches another
+  // actor's record). The completion of this round leaves it in place.
+  if (plan.roundFailure !== undefined) {
+    await recordRoundFailureCode(
+      ctx,
+      plan.header.clientId,
+      plan.roundFailure.code,
+    );
+  }
   const report: RequestReport = { outcome: 'ok' };
   // RFC 0007 read-verify-refuse for the streamed read path: the generator
   // builds the whole response (its data reads) before yielding the first

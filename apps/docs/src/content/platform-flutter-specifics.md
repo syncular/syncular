@@ -28,8 +28,8 @@ The core is thread-affine. Commands and the poll timer both run on the isolate t
 
 | Field | Type | Effect |
 |---|---|---|
-| `requestTimeoutMs` | `int?` | End-to-end deadline for one HTTP request; expiry returns `transport.timeout` |
-| `roundDeadlineMs` | `int?` | One deadline for a whole sync round; expiry returns `transport.timeout` |
+| `requestTimeoutMs` | `int?` | Silence bound for one HTTP request: no step, and no wait between body bytes, may exceed it; expiry returns `transport.timeout` |
+| `roundDeadlineMs` | `int?` | One deadline for the total time of a sync round, which also fails a slow transfer that is still progressing; expiry returns `transport.timeout` |
 | `maxRequestBytes` | `int?` | Larger request bodies fail with `transport.request_too_large` before any I/O |
 | `maxResponseBytes` | `int?` | Larger decoded responses fail with `transport.response_too_large` |
 | `redirects` | `String?` | `"deny"` (default) or `"follow"`; `"follow"` applies only to a request with no headers |

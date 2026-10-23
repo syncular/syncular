@@ -83,12 +83,14 @@ class SyncularConfig {
   /// Path to the on-disk SQLite database. Null → in-memory (no persistence).
   final String? dbPath;
 
-  /// End-to-end deadline for one HTTP request, in milliseconds. Null leaves
-  /// the request unbounded.
+  /// Silence bound for one HTTP request, in milliseconds: the longest any
+  /// connect, request or response step, or any wait between body bytes, may
+  /// take. Null leaves the request unbounded.
   final int? requestTimeoutMs;
 
-  /// One monotonic deadline for a whole sync round, in milliseconds. Null
-  /// leaves the round unbounded.
+  /// One monotonic deadline for the total time of a sync round, in
+  /// milliseconds. It also fails a slow transfer that is still making
+  /// progress. Null leaves the round unbounded.
   final int? roundDeadlineMs;
 
   /// Largest HTTP request body the transport sends, in bytes. Null is unbounded.

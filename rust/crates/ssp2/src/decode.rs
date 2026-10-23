@@ -5,7 +5,8 @@
 use crate::error::{DecodeError, Result};
 use crate::model::frame_type as ft;
 use crate::model::{
-    Change, Frame, MediaType, Message, MsgKind, Op, OpResult, Operation, PushStatus, SubStatus,
+    valid_round_failure_code, Change, Frame, MediaType, Message, MsgKind, Op, OpResult, Operation,
+    PushStatus, SubStatus,
 };
 use crate::primitives::Reader;
 use crate::segment::decode_rows_segment;
@@ -105,12 +106,14 @@ fn classify(ty: u8, kind: MsgKind) -> Result<bool> {
     }
 }
 
-/// §1.5 grammar: REQ_HEADER, PUSH_COMMIT × N, PULL_HEADER 0|1,
-/// SUBSCRIPTION × M (only if PULL_HEADER present), END. A request with
-/// neither push nor pull frames is invalid.
+/// §1.5 grammar: REQ_HEADER, ROUND_FAILURE 0|1 immediately after it,
+/// PUSH_COMMIT × N, PULL_HEADER 0|1, SUBSCRIPTION × M (only if PULL_HEADER
+/// present), END. A request with neither push nor pull frames is invalid.
 fn decode_request_frames(r: &mut Reader<'_>, wire_version: u16) -> Result<Vec<Frame>> {
     let mut frames = Vec::new();
     let mut seen_header = false;
+    let mut seen_body = false;
+    let mut seen_failure = false;
     let mut seen_pull = false;
     let mut seen_push = false;
 
@@ -126,6 +129,7 @@ fn decode_request_frames(r: &mut Reader<'_>, wire_version: u16) -> Result<Vec<Fr
                 frame_type: ty,
                 payload: payload.to_vec(),
             });
+            seen_body = true;
             continue;
         }
         if !seen_header {
@@ -142,6 +146,19 @@ fn decode_request_frames(r: &mut Reader<'_>, wire_version: u16) -> Result<Vec<Fr
             ft::REQ_HEADER => {
                 return Err(DecodeError::invalid("duplicate REQ_HEADER frame"));
             }
+            ft::ROUND_FAILURE => {
+                if seen_failure {
+                    return Err(DecodeError::invalid("duplicate ROUND_FAILURE frame"));
+                }
+                if seen_body {
+                    return Err(DecodeError::invalid(
+                        "ROUND_FAILURE must immediately follow REQ_HEADER",
+                    ));
+                }
+                frames.push(decode_round_failure(payload)?);
+                seen_body = true;
+                seen_failure = true;
+            }
             ft::PUSH_COMMIT => {
                 if seen_pull {
                     return Err(DecodeError::invalid(
@@ -149,6 +166,7 @@ fn decode_request_frames(r: &mut Reader<'_>, wire_version: u16) -> Result<Vec<Fr
                     ));
                 }
                 frames.push(decode_push_commit(payload)?);
+                seen_body = true;
                 seen_push = true;
             }
             ft::PULL_HEADER => {
@@ -156,6 +174,7 @@ fn decode_request_frames(r: &mut Reader<'_>, wire_version: u16) -> Result<Vec<Fr
                     return Err(DecodeError::invalid("duplicate PULL_HEADER frame"));
                 }
                 frames.push(decode_pull_header(payload)?);
+                seen_body = true;
                 seen_pull = true;
             }
             ft::SUBSCRIPTION => {
@@ -165,6 +184,7 @@ fn decode_request_frames(r: &mut Reader<'_>, wire_version: u16) -> Result<Vec<Fr
                     ));
                 }
                 frames.push(decode_subscription(payload)?);
+                seen_body = true;
             }
             _ => unreachable!("classified as known request type"),
         }
@@ -444,6 +464,18 @@ fn decode_req_header(payload: &[u8], wire_version: u16) -> Result<Frame> {
             schema_version,
             log_epoch,
         })
+    })
+}
+
+fn decode_round_failure(payload: &[u8]) -> Result<Frame> {
+    frame_payload(payload, "ROUND_FAILURE", |r| {
+        let code = r.str("code")?;
+        if !valid_round_failure_code(&code) {
+            return Err(DecodeError::invalid(format!(
+                "ROUND_FAILURE.code {code:?} is not a lowercase dotted code of at most 64 bytes"
+            )));
+        }
+        Ok(Frame::RoundFailure { code })
     })
 }
 

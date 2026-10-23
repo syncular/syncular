@@ -38,6 +38,7 @@ import {
   type SegmentUrlConfig,
   type ServerSchema,
   type ServerStorage,
+  SyncularAdmin,
   BunSqliteDatabase,
   SqliteServerStorage,
   SyncError,
@@ -51,6 +52,7 @@ import type {
   BlobDownloadResult,
   BlobUploadGrantResult,
   BytesResult,
+  DriverAdminClient,
   CommitValidatorInstallSpec,
   DriverError,
   DriverRow,
@@ -453,7 +455,7 @@ class TsServerInstance implements ServerInstance {
         this.#storage.latestScopedChangeSeq(p, q),
       scanRows: (p, q) => this.#storage.scanRows(p, q),
       getClientRecord: (p, c) => this.#storage.getClientRecord(p, c),
-      putClientRecord: (p, r) => this.#storage.putClientRecord(p, r),
+      putClientRecord: (p, r, o) => this.#storage.putClientRecord(p, r, o),
       recordClientRoundFailure: (...args) =>
         this.#storage.recordClientRoundFailure(...args),
       advanceClientCursor: (...args) =>
@@ -912,6 +914,30 @@ class TsServerInstance implements ServerInstance {
 
   async getHorizonSeq(): Promise<number> {
     return this.#storage.getHorizonSeq(this.#partition);
+  }
+
+  async listClients(): Promise<readonly DriverAdminClient[]> {
+    const admin = new SyncularAdmin({
+      storage: this.#storage,
+      schema: this.#serverSchema,
+      segments: this.#segments,
+      clock: () => this.#now.ms,
+    });
+    const { clients } = await admin.listClients(this.#partition);
+    return clients.map((client) => ({
+      clientId: client.clientId,
+      actorId: client.actorId,
+      cursor: client.cursor,
+      ...(client.lastRoundAtMs !== undefined
+        ? { lastRoundAtMs: client.lastRoundAtMs }
+        : {}),
+      ...(client.lastErrorCode !== undefined
+        ? { lastErrorCode: client.lastErrorCode }
+        : {}),
+      ...(client.consecutiveFailures !== undefined
+        ? { consecutiveFailures: client.consecutiveFailures }
+        : {}),
+    }));
   }
 
   async readRows(table: string): Promise<ServerRowState[]> {

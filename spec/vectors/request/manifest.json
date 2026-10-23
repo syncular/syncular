@@ -31,6 +31,12 @@
       "bin": "epoch-bound.bin",
       "json": "epoch-bound.json",
       "covers": "Request carrying the client partition log epoch (§2.1)"
+    },
+    {
+      "name": "round-failure-report",
+      "bin": "round-failure-report.bin",
+      "json": "round-failure-report.json",
+      "covers": "ROUND_FAILURE (§1.5) immediately after REQ_HEADER: the client reports the code of its last round that failed where the server could not see it"
     }
   ],
   "invalid": [
@@ -75,6 +81,24 @@
       "bin": "invalid/upsert-without-payload.bin",
       "error": "sync.invalid_request",
       "covers": "Upsert operation with absent payload (presence invariant)"
+    },
+    {
+      "name": "round-failure-duplicate",
+      "bin": "invalid/round-failure-duplicate.bin",
+      "error": "sync.invalid_request",
+      "covers": "Two ROUND_FAILURE frames (§1.5: at most one)"
+    },
+    {
+      "name": "round-failure-after-push",
+      "bin": "invalid/round-failure-after-push.bin",
+      "error": "sync.invalid_request",
+      "covers": "ROUND_FAILURE after a PUSH_COMMIT (§1.5: only directly after REQ_HEADER)"
+    },
+    {
+      "name": "round-failure-bad-code",
+      "bin": "invalid/round-failure-bad-code.bin",
+      "error": "sync.invalid_request",
+      "covers": "ROUND_FAILURE code outside the §1.5 grammar (hyphen instead of a dotted segment)"
     }
   ]
 }

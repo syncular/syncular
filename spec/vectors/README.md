@@ -54,11 +54,12 @@ spec/vectors/
 
 ## Coverage
 
-The authoritative vector list (27 valid cases + 20 invalid cases) is
+The authoritative vector list (28 valid cases + 26 invalid cases) is
 SPEC.md Appendix A. Summary of what it covers:
 
 - requests: minimal pull, bootstrap pull (accept bits, resume token),
-  multi-commit push (payload edge cases), combined push+pull
+  multi-commit push (payload edge cases), combined push+pull, a
+  `ROUND_FAILURE` report (§1.5)
 - responses: empty pull with cursor advance, incremental commits with
   every row-codec column type (null, bytes, non-BMP unicode), bootstrap
   segments (ref + signed URL + inline), push applied/conflict/cached,
@@ -78,6 +79,8 @@ SPEC.md Appendix A. Summary of what it covers:
   wireVersion, non-zero flags, overlong frame length, bad bool byte,
   null bit on non-nullable column, rows segment without end marker,
   json column value that does not parse, row `serverVersion` 0,
+  `ROUND_FAILURE` grammar violations (duplicate frame, frame after a
+  `PUSH_COMMIT`, code outside the dotted grammar),
   sparse row violations (presence padding bit, null bit for an absent
   column, null bit for a non-nullable column, absent primary key),
   wake with `requiresPull` not the literal `true`, fractional realtime

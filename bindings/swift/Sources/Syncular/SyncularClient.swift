@@ -60,11 +60,13 @@ public struct SyncularConfig: Sendable {
     public var headers: [String: String]
     /// Path to the on-disk SQLite database. Nil → in-memory (no persistence).
     public var dbPath: String?
-    /// End-to-end deadline for one HTTP request, in milliseconds. Nil leaves
-    /// the request unbounded.
+    /// Silence bound for one HTTP request, in milliseconds: the longest any
+    /// connect, request or response step, or any wait between body bytes, may
+    /// take. Nil leaves the request unbounded.
     public var requestTimeoutMs: UInt64?
-    /// One monotonic deadline for a whole sync round, in milliseconds. Nil
-    /// leaves the round unbounded.
+    /// One monotonic deadline for the total time of a sync round, in
+    /// milliseconds. It also fails a slow transfer that is still making
+    /// progress. Nil leaves the round unbounded.
     public var roundDeadlineMs: UInt64?
     /// Largest HTTP request body the transport sends, in bytes. Nil is unbounded.
     public var maxRequestBytes: UInt64?

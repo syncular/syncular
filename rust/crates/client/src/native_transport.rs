@@ -546,6 +546,12 @@ mod native {
     use polling::{Event, Events, Poller};
     use tungstenite::stream::MaybeTlsStream;
     use tungstenite::Message;
+    use ureq::unversioned::resolver::DefaultResolver;
+    use ureq::unversioned::transport::{
+        time::Duration as UreqDuration, ConnectionDetails, Connector, DefaultConnector,
+        NextTimeout, Transport as UreqTransport,
+    };
+    use ureq::Timeout as UreqTimeout;
 
     use super::{HostTransportPolicy, Inbound, InboundBuffer, RedirectPolicy};
     use crate::{
@@ -576,10 +582,29 @@ mod native {
         completed: mpsc::Sender<Result<(), TransportError>>,
     }
 
-    /// How long a single response round waits before giving up (§8.7 rounds
-    /// are bounded — bulk rides segments over HTTP). Generous; a stuck socket
-    /// surfaces as a transport failure rather than hanging the caller forever.
-    const ROUND_TIMEOUT: Duration = Duration::from_secs(30);
+    /// How long a socket round tolerates silence: no inbound byte of the
+    /// response, or no outbound request chunk flushed, for this long fails the
+    /// round (§1.8). The bound restarts on every chunk of progress, so a slow
+    /// link that keeps delivering never trips it; the host's whole-round
+    /// deadline is the only ceiling on total transfer time.
+    const ROUND_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+    /// Largest `0x01` chunk of a request. Each chunk's flush is one unit of
+    /// outbound progress; chunk boundaries carry no meaning (§8.7).
+    const REQUEST_CHUNK_BYTES: usize = 64 * 1024;
+
+    /// When a round with `last_progress` and a silence bound `idle` expires,
+    /// and whether the host's whole-round `ceiling` is the bound that binds.
+    fn round_expiry(
+        last_progress: Instant,
+        idle: Duration,
+        ceiling: Option<Instant>,
+    ) -> (Instant, bool) {
+        let silent_at = last_progress + idle;
+        match ceiling {
+            Some(ceiling) if ceiling < silent_at => (ceiling, true),
+            _ => (silent_at, false),
+        }
+    }
     /// The §8.7 round rendezvous shared between the reader thread (which
     /// demuxes inbound `0x01` chunks into the round via [`RealtimeRound`]) and
     /// `realtime_sync` (which begins the round, sends the request, and blocks
@@ -595,6 +620,11 @@ mod native {
     #[derive(Default)]
     struct RoundState {
         round: RealtimeRound,
+        /// When the round last moved: its request was framed, a request chunk
+        /// flushed, or a response chunk arrived.
+        last_progress: Option<Instant>,
+        /// The connection ended; no round can ever complete on it.
+        lost: bool,
         /// The completed round outcome, taken by `realtime_sync` once set.
         outcome: Option<Result<Vec<u8>, TransportError>>,
     }
@@ -606,7 +636,20 @@ mod native {
         fn begin(&self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
             let mut state = self.state.lock().expect("round lock");
             state.outcome = None;
-            state.round.begin(request)
+            let framed = state.round.begin(request)?;
+            state.last_progress = Some(Instant::now());
+            Ok(framed)
+        }
+
+        /// Record that a request chunk flushed.
+        fn progressed(&self) {
+            self.state.lock().expect("round lock").last_progress = Some(Instant::now());
+        }
+
+        /// Whether the connection already ended. The reader thread publishes
+        /// `Inbound::Disconnected` itself in that case.
+        fn lost(&self) -> bool {
+            self.state.lock().expect("round lock").lost
         }
 
         /// Route one inbound binary frame from the reader thread. Returns the
@@ -616,7 +659,11 @@ mod native {
             let mut state = self.state.lock().expect("round lock");
             match state.round.route_binary(frame) {
                 Ok(RoundInbound::Delta(body)) => Some(body),
-                Ok(RoundInbound::RoundProgress) | Ok(RoundInbound::Ignored) => None,
+                Ok(RoundInbound::RoundProgress) => {
+                    state.last_progress = Some(Instant::now());
+                    None
+                }
+                Ok(RoundInbound::Ignored) => None,
                 Ok(RoundInbound::RoundComplete(bytes)) => {
                     state.outcome = Some(Ok(bytes));
                     self.ready.notify_all();
@@ -633,6 +680,7 @@ mod native {
         /// Fail any in-flight round (socket dropped) and wake the waiter.
         fn fail_in_flight(&self, error: TransportError) {
             let mut state = self.state.lock().expect("round lock");
+            state.lost = true;
             if state.round.in_flight() && state.outcome.is_none() {
                 state.round.abort();
                 state.outcome = Some(Err(error));
@@ -640,30 +688,29 @@ mod native {
             }
         }
 
-        /// Block until the round completes, fails, or the binding deadline
-        /// elapses. `round_deadline` is the transport's whole-round deadline,
-        /// intersected with the socket's own `ROUND_TIMEOUT`.
+        /// Block until the round completes, fails, goes `idle` without
+        /// progress, or reaches the host's whole-round `ceiling`.
         fn wait(
             &self,
-            round_deadline: Option<std::time::Instant>,
+            ceiling: Option<Instant>,
+            idle: Duration,
         ) -> Result<Vec<u8>, TransportError> {
             let mut state = self.state.lock().expect("round lock");
-            let hard = std::time::Instant::now() + ROUND_TIMEOUT;
-            let round_binding = round_deadline.is_some_and(|round| round < hard);
-            let deadline = match round_deadline {
-                Some(round) if round_binding => round,
-                _ => hard,
-            };
             while state.outcome.is_none() {
-                let now = std::time::Instant::now();
+                let (deadline, ceiling_binds) = round_expiry(
+                    state.last_progress.unwrap_or_else(Instant::now),
+                    idle,
+                    ceiling,
+                );
+                let now = Instant::now();
                 if now >= deadline {
                     state.round.abort();
-                    return Err(if round_binding {
+                    return Err(if ceiling_binds {
                         timeout_error("sync round deadline exceeded", "round_deadline")
                     } else {
                         TransportError::new(
                             "sync.transport_failed",
-                            "realtime sync round timed out (§8.7)",
+                            "realtime sync round made no progress (§8.7)",
                         )
                     });
                 }
@@ -1164,17 +1211,91 @@ mod native {
         realtime_client_id: Option<String>,
     }
 
+    /// Enforces `request_timeout` as a silence bound. ureq measures each
+    /// request phase from its start, so a body that keeps arriving still
+    /// expires; this connector caps every socket read and write at the bound
+    /// instead, which restarts with each byte moved. The remaining phases
+    /// (resolve, connect, request head, response head) keep ureq's own
+    /// per-phase deadlines.
+    #[derive(Debug)]
+    struct IdleConnector(Option<Duration>);
+
+    impl Connector<Box<dyn UreqTransport>> for IdleConnector {
+        type Out = Box<dyn UreqTransport>;
+
+        fn connect(
+            &self,
+            _: &ConnectionDetails,
+            chained: Option<Box<dyn UreqTransport>>,
+        ) -> Result<Option<Self::Out>, ureq::Error> {
+            Ok(chained.map(|inner| match self.0 {
+                Some(idle) => IdleTransport { inner, idle }.boxed(),
+                None => inner,
+            }))
+        }
+    }
+
+    #[derive(Debug)]
+    struct IdleTransport {
+        inner: Box<dyn UreqTransport>,
+        idle: Duration,
+    }
+
+    /// Cap a wait at `idle`: a wait with no deadline or a longer one becomes
+    /// `idle`; a shorter ceiling (the round deadline) stays.
+    fn idle_bound(timeout: NextTimeout, idle: Duration) -> NextTimeout {
+        let idle = UreqDuration::Exact(idle);
+        if timeout.after.is_not_happening() || timeout.after.as_nanos() > idle.as_nanos() {
+            NextTimeout {
+                after: idle,
+                reason: UreqTimeout::RecvBody,
+            }
+        } else {
+            timeout
+        }
+    }
+
+    impl UreqTransport for IdleTransport {
+        fn buffers(&mut self) -> &mut dyn ureq::unversioned::transport::Buffers {
+            self.inner.buffers()
+        }
+        fn transmit_output(
+            &mut self,
+            amount: usize,
+            timeout: NextTimeout,
+        ) -> Result<(), ureq::Error> {
+            self.inner
+                .transmit_output(amount, idle_bound(timeout, self.idle))
+        }
+        fn await_input(&mut self, timeout: NextTimeout) -> Result<bool, ureq::Error> {
+            self.inner.await_input(idle_bound(timeout, self.idle))
+        }
+        fn is_open(&mut self) -> bool {
+            self.inner.is_open()
+        }
+        fn is_tls(&self) -> bool {
+            self.inner.is_tls()
+        }
+    }
+
     fn build_agent(policy: &HostTransportPolicy) -> ureq::Agent {
-        ureq::Agent::config_builder()
-            .timeout_global(policy.request_timeout)
+        let config = ureq::Agent::config_builder()
+            .timeout_resolve(policy.request_timeout)
+            .timeout_connect(policy.request_timeout)
+            .timeout_send_request(policy.request_timeout)
+            .timeout_recv_response(policy.request_timeout)
             .max_redirects(match policy.redirects {
                 RedirectPolicy::Deny => 0,
                 RedirectPolicy::Follow => 10,
             })
             .max_redirects_will_error(matches!(policy.redirects, RedirectPolicy::Follow))
             .redirect_auth_headers(ureq::config::RedirectAuthHeaders::Never)
-            .build()
-            .into()
+            .build();
+        ureq::Agent::with_parts(
+            config,
+            DefaultConnector::new().chain(IdleConnector(policy.request_timeout)),
+            DefaultResolver::default(),
+        )
     }
 
     fn derive_ws_url(base_url: &str) -> String {
@@ -1284,30 +1405,18 @@ mod native {
             self.round_deadline_at = deadline;
         }
 
-        /// End-to-end timeout for the next call: the per-request bound
-        /// intersected with whatever remains of the round deadline. Fails
-        /// before any network I/O once the round deadline has passed.
-        fn effective_timeout(&self) -> Result<Option<Duration>, TransportError> {
-            let remaining = match self.round_deadline_at {
-                Some(deadline) => {
-                    match deadline.checked_duration_since(std::time::Instant::now()) {
-                        Some(remaining) => Some(remaining),
-                        None => {
-                            return Err(timeout_error(
-                                "sync round deadline exceeded",
-                                "round_deadline",
-                            ))
-                        }
-                    }
-                }
-                None => None,
-            };
-            Ok(match (self.policy.request_timeout, remaining) {
-                (Some(request), Some(round)) => Some(request.min(round)),
-                (Some(request), None) => Some(request),
-                (None, Some(round)) => Some(round),
-                (None, None) => None,
-            })
+        /// What remains of the whole-round deadline, or `None` without one.
+        /// Fails before any network I/O once the deadline has passed. The
+        /// per-request bound is not part of this: it restarts on every byte
+        /// (see [`IdleConnector`]).
+        fn round_remaining(&self) -> Result<Option<Duration>, TransportError> {
+            match self.round_deadline_at {
+                Some(deadline) => deadline
+                    .checked_duration_since(std::time::Instant::now())
+                    .map(Some)
+                    .ok_or_else(|| timeout_error("sync round deadline exceeded", "round_deadline")),
+                None => Ok(None),
+            }
         }
 
         /// Whether a request to the base URL carries credentials: configured
@@ -1316,7 +1425,7 @@ mod native {
             !self.headers.is_empty() || self.base_url_has_userinfo
         }
 
-        /// Apply the per-call bounds to a request: the effective timeout, and
+        /// Apply the per-call bounds to a request: the round's remaining time, and
         /// a redirect ceiling of zero whenever the request is credential
         /// bearing or the policy denies redirects. A credential-bearing
         /// request is refused a redirect under every policy, because ureq
@@ -1326,7 +1435,7 @@ mod native {
             req: ureq::RequestBuilder<B>,
             credentialed: bool,
         ) -> Result<ureq::RequestBuilder<B>, TransportError> {
-            let timeout = self.effective_timeout()?;
+            let timeout = self.round_remaining()?;
             let follow = self.policy.redirects == RedirectPolicy::Follow && !credentialed;
             Ok(req
                 .config()
@@ -1436,8 +1545,8 @@ mod native {
             let (wait, round_bound) = match self.round_deadline_at {
                 Some(deadline) => {
                     match deadline.checked_duration_since(std::time::Instant::now()) {
-                        Some(remaining) if remaining < ROUND_TIMEOUT => (remaining, true),
-                        Some(_) => (ROUND_TIMEOUT, false),
+                        Some(remaining) if remaining < ROUND_IDLE_TIMEOUT => (remaining, true),
+                        Some(_) => (ROUND_IDLE_TIMEOUT, false),
                         // The round is already spent: refuse before queuing the
                         // frame so a later send cannot deliver it.
                         None => {
@@ -1445,7 +1554,7 @@ mod native {
                         }
                     }
                 }
-                None => (ROUND_TIMEOUT, false),
+                None => (ROUND_IDLE_TIMEOUT, false),
             };
             let result = (|| {
                 let Some(outgoing) = &self.outgoing else {
@@ -1562,12 +1671,31 @@ mod native {
             if self.outgoing.is_none() {
                 return self.post_sync("/sync", request);
             }
-            self.effective_timeout()?;
+            self.round_remaining()?;
             let framed = self.round.begin(request)?;
-            if let Err(error) = self.send_message(Message::Binary(framed.into())) {
-                self.round.fail_in_flight(error);
+            let (tag, body) = framed.split_first().expect("framed request carries a tag");
+            for chunk in body.chunks(REQUEST_CHUNK_BYTES) {
+                let mut message = Vec::with_capacity(chunk.len() + 1);
+                message.push(*tag);
+                message.extend_from_slice(chunk);
+                if let Err(error) = self.send_message(Message::Binary(message.into())) {
+                    self.round.fail_in_flight(error);
+                    break;
+                }
+                self.round.progressed();
             }
-            self.round.wait(self.round_deadline_at)
+            let outcome = self.round.wait(self.round_deadline_at, ROUND_IDLE_TIMEOUT);
+            // A round that ends without its response END leaves the rest of
+            // that response in flight on the socket, and the next round would
+            // read it as its own (§8.7). Close the connection and report the
+            // loss; the reader thread already did both when the peer ended it.
+            if let Err(error) = &outcome {
+                if !self.round.lost() {
+                    self.shutdown();
+                    self.inbound.push(Inbound::Disconnected(error.clone()));
+                }
+            }
+            outcome
         }
 
         fn download_segment(
@@ -2199,49 +2327,6 @@ mod native {
         }
 
         #[test]
-        fn the_configured_request_timeout_is_imposed_on_each_call() {
-            #[derive(Debug)]
-            #[allow(clippy::type_complexity)]
-            struct TimeoutRecording(Arc<Mutex<Vec<(Option<Duration>, bool)>>>);
-            impl Connector for TimeoutRecording {
-                type Out = ();
-                fn connect(
-                    &self,
-                    details: &ConnectionDetails,
-                    _: Option<()>,
-                ) -> Result<Option<()>, ureq::Error> {
-                    self.0
-                        .lock()
-                        .unwrap()
-                        .push((details.config.timeouts().global, details.request_level));
-                    Err(ureq::Error::ConnectionFailed)
-                }
-            }
-            let seen = Arc::new(Mutex::new(Vec::new()));
-            let mut transport =
-                NativeTransport::new("http://127.0.0.1", &serde_json::json!({}), None).unwrap();
-            transport
-                .set_policy(HostTransportPolicy {
-                    request_timeout: Some(Duration::from_millis(1234)),
-                    ..Default::default()
-                })
-                .unwrap();
-            transport.agent = ureq::Agent::with_parts(
-                ureq::Agent::config_builder().build(),
-                TimeoutRecording(Arc::clone(&seen)),
-                DefaultResolver::default(),
-            );
-            let _ = transport.blob_upload("sha256:test", &[0u8; 4], None);
-            let seen = seen.lock().unwrap();
-            assert_eq!(seen.len(), 1);
-            assert_eq!(
-                seen[0],
-                (Some(Duration::from_millis(1234)), true),
-                "the request-level config carries the policy timeout"
-            );
-        }
-
-        #[test]
         fn body_read_wrapped_timeouts_surface_the_typed_code() {
             struct TimeoutRead(bool);
             impl std::io::Read for TimeoutRead {
@@ -2344,7 +2429,7 @@ mod native {
             );
             // Clearing the scope leaves no stale deadline for the next round.
             transport.set_round_deadline(None);
-            assert!(transport.effective_timeout().is_ok());
+            assert!(transport.round_remaining().is_ok());
         }
 
         #[test]
@@ -2369,10 +2454,186 @@ mod native {
         }
 
         #[test]
+        fn the_request_timeout_bounds_phases_and_the_round_deadline_bounds_the_call() {
+            #[derive(Debug)]
+            struct TimeoutRecording(Arc<Mutex<Vec<Option<Duration>>>>);
+            impl Connector for TimeoutRecording {
+                type Out = ();
+                fn connect(
+                    &self,
+                    details: &ConnectionDetails,
+                    _: Option<()>,
+                ) -> Result<Option<()>, ureq::Error> {
+                    self.0
+                        .lock()
+                        .unwrap()
+                        .push(details.config.timeouts().global);
+                    Err(ureq::Error::ConnectionFailed)
+                }
+            }
+            let mut transport =
+                NativeTransport::new("http://127.0.0.1", &serde_json::json!({}), None).unwrap();
+            transport
+                .set_policy(HostTransportPolicy {
+                    request_timeout: Some(Duration::from_millis(1234)),
+                    ..Default::default()
+                })
+                .unwrap();
+            let timeouts = transport.agent.config().timeouts();
+            for phase in [
+                timeouts.resolve,
+                timeouts.connect,
+                timeouts.send_request,
+                timeouts.recv_response,
+            ] {
+                assert_eq!(phase, Some(Duration::from_millis(1234)));
+            }
+            assert_eq!(timeouts.global, None, "the request bound is not end to end");
+            assert_eq!(timeouts.recv_body, None, "a body is bounded by silence");
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            transport.agent = ureq::Agent::with_parts(
+                ureq::Agent::config_builder().build(),
+                TimeoutRecording(Arc::clone(&seen)),
+                DefaultResolver::default(),
+            );
+            let _ = transport.blob_upload("sha256:test", &[0u8; 4], None);
+            transport.set_round_deadline(Some(std::time::Instant::now() + Duration::from_secs(60)));
+            let _ = transport.blob_upload("sha256:test", &[0u8; 4], None);
+            let seen = seen.lock().unwrap();
+            assert_eq!(seen[0], None, "no round deadline, no call ceiling");
+            assert!(seen[1].is_some_and(|ceiling| ceiling <= Duration::from_secs(60)));
+        }
+
+        #[test]
+        fn the_idle_bound_replaces_an_unbounded_or_longer_wait_and_keeps_a_shorter_one() {
+            let idle = Duration::from_secs(30);
+            let unbounded = NextTimeout {
+                after: UreqDuration::NotHappening,
+                reason: UreqTimeout::Global,
+            };
+            assert_eq!(idle_bound(unbounded, idle).after, UreqDuration::Exact(idle));
+            let longer = NextTimeout {
+                after: UreqDuration::from_secs(90),
+                reason: UreqTimeout::Global,
+            };
+            assert_eq!(idle_bound(longer, idle).after, UreqDuration::Exact(idle));
+            let shorter = NextTimeout {
+                after: UreqDuration::from_secs(5),
+                reason: UreqTimeout::Global,
+            };
+            assert_eq!(idle_bound(shorter, idle), shorter);
+        }
+
+        /// Arrival offsets of a response of `total` bytes in `chunk`-byte
+        /// pieces over a link with a one-way `latency`, a `rate` in bytes per
+        /// second, and `stalls` (start, length) windows in which nothing
+        /// arrives. Virtual time: nothing sleeps.
+        fn shaped_link(
+            total: u64,
+            chunk: u64,
+            latency: Duration,
+            rate: u64,
+            stalls: &[(Duration, Duration)],
+        ) -> Vec<Duration> {
+            let mut at = latency;
+            let mut arrivals = Vec::new();
+            let mut left = total;
+            while left > 0 {
+                let piece = left.min(chunk);
+                at += Duration::from_micros(piece * 1_000_000 / rate);
+                for (start, length) in stalls {
+                    if at > *start && at < *start + *length {
+                        at = *start + *length;
+                    }
+                }
+                arrivals.push(at);
+                left -= piece;
+            }
+            arrivals
+        }
+
+        /// Run `round_expiry` over a link: `Ok(finished_at)` when every chunk
+        /// arrives before the bound, `Err((expired_at, ceiling_bound))`
+        /// otherwise.
+        fn round_over(
+            arrivals: &[Duration],
+            idle: Duration,
+            ceiling: Option<Duration>,
+        ) -> Result<Duration, (Duration, bool)> {
+            let base = Instant::now();
+            let mut last = base;
+            for arrival in arrivals {
+                let (deadline, ceiling_binds) =
+                    round_expiry(last, idle, ceiling.map(|ceiling| base + ceiling));
+                if base + *arrival > deadline {
+                    return Err((deadline - base, ceiling_binds));
+                }
+                last = base + *arrival;
+            }
+            Ok(last - base)
+        }
+
+        #[test]
+        fn a_slow_link_that_keeps_delivering_never_trips_the_idle_bound() {
+            // Nori's phone behind a relay: an 8.6 MB page at 100 KB/s, 80 ms.
+            let link = shaped_link(
+                8_600_000,
+                64 * 1024,
+                Duration::from_millis(80),
+                100_000,
+                &[],
+            );
+            let finished = round_over(&link, ROUND_IDLE_TIMEOUT, None).unwrap();
+            assert!(
+                finished > ROUND_IDLE_TIMEOUT * 2,
+                "the transfer outlasts the old whole-transfer bound ({finished:?})"
+            );
+        }
+
+        #[test]
+        fn a_stall_shorter_than_the_idle_bound_is_survived_and_a_longer_one_is_not() {
+            let link = |length| {
+                shaped_link(
+                    4_000_000,
+                    64 * 1024,
+                    Duration::from_millis(80),
+                    100_000,
+                    &[(Duration::from_secs(10), length)],
+                )
+            };
+            round_over(&link(Duration::from_secs(29)), ROUND_IDLE_TIMEOUT, None).unwrap();
+            let (expired, ceiling_bound) =
+                round_over(&link(Duration::from_secs(31)), ROUND_IDLE_TIMEOUT, None).unwrap_err();
+            assert!(!ceiling_bound);
+            assert!(
+                expired >= Duration::from_secs(30) && expired < Duration::from_secs(41),
+                "the bound counts from the last chunk before the stall ({expired:?})"
+            );
+        }
+
+        #[test]
+        fn the_host_ceiling_still_bounds_a_link_that_keeps_delivering() {
+            let link = shaped_link(
+                8_600_000,
+                64 * 1024,
+                Duration::from_millis(80),
+                100_000,
+                &[],
+            );
+            let (expired, ceiling_bound) =
+                round_over(&link, ROUND_IDLE_TIMEOUT, Some(Duration::from_secs(60))).unwrap_err();
+            assert!(ceiling_bound);
+            assert_eq!(expired, Duration::from_secs(60));
+        }
+
+        #[test]
         fn an_expired_round_deadline_bounds_the_socket_wait() {
             let channel = RoundChannel::default();
             let error = channel
-                .wait(Some(std::time::Instant::now() - Duration::from_secs(1)))
+                .wait(
+                    Some(std::time::Instant::now() - Duration::from_secs(1)),
+                    ROUND_IDLE_TIMEOUT,
+                )
                 .unwrap_err();
             assert_eq!(error.code, "transport.timeout");
             assert_eq!(
@@ -2469,6 +2730,141 @@ mod tests {
             }
             server.join().unwrap();
         }
+    }
+
+    fn minimal_response() -> Vec<u8> {
+        use ssp2::model::{Frame, Message, MsgKind};
+        ssp2::encode_message(&Message {
+            wire_version: ssp2::decode::WIRE_VERSION,
+            msg_kind: MsgKind::Response,
+            frames: vec![Frame::RespHeader {
+                required_schema_version: None,
+                latest_schema_version: None,
+                log_epoch: Some("epoch".into()),
+                reset_required: Some(true),
+            }],
+        })
+    }
+
+    #[test]
+    fn a_stalled_response_body_times_out_on_silence() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(socket.try_clone().unwrap());
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n0123456789")
+                .unwrap();
+            // Withhold the rest until the client gives up and closes.
+            let mut rest = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut reader, &mut rest);
+        });
+        let mut transport = HostTransport::new_from_config(
+            &serde_json::json!({"baseUrl": base, "requestTimeoutMs": 200}),
+        )
+        .unwrap();
+        let mut received = 0;
+        let error = transport
+            .download_segment(
+                &SegmentRequest {
+                    segment_id: "sha256:test".into(),
+                    table: "tasks".into(),
+                    requested_scopes_json: "{}".into(),
+                },
+                &mut |bytes| received = bytes,
+            )
+            .unwrap_err();
+        assert_eq!(error.code, "transport.timeout");
+        assert_eq!(
+            error.details,
+            Some(serde_json::json!({ "causeKind": "timeout" }))
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn a_timed_out_socket_round_closes_the_socket_and_reports_the_loss() {
+        use std::sync::mpsc::channel;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let (closed_tx, closed_rx) = channel();
+        let server = std::thread::spawn(move || {
+            let (socket, _) = listener.accept().unwrap();
+            let mut socket = tungstenite::accept(socket).unwrap();
+            socket.read().unwrap();
+            // The head of a response that never finishes.
+            let response = minimal_response();
+            let mut chunk = vec![crate::REALTIME_TAG_ROUND];
+            chunk.extend_from_slice(&response[..response.len() / 2]);
+            socket
+                .send(tungstenite::Message::Binary(chunk.into()))
+                .unwrap();
+            // The client must close; the tail is never delivered to a round.
+            while let Ok(message) = socket.read() {
+                if matches!(message, tungstenite::Message::Close(_)) {
+                    break;
+                }
+            }
+            closed_tx.send(()).unwrap();
+        });
+        let mut transport =
+            HostTransport::new_from_config(&serde_json::json!({"baseUrl": base})).unwrap();
+        transport.realtime_connect_for_client("slow").unwrap();
+        transport.set_round_deadline(Some(
+            std::time::Instant::now() + std::time::Duration::from_millis(300),
+        ));
+        let error = transport.realtime_sync(b"request").unwrap_err();
+        assert_eq!(error.code, "transport.timeout");
+        closed_rx.recv().unwrap();
+        let lost = transport
+            .take_inbound()
+            .into_iter()
+            .filter(|inbound| matches!(inbound, Inbound::Disconnected(e) if e.code == "transport.timeout"))
+            .count();
+        assert_eq!(lost, 1, "the loss is reported once");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn a_request_larger_than_a_chunk_rides_as_several_round_chunks() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let request: Vec<u8> = (0..3 * 64 * 1024 + 5).map(|i| (i % 251) as u8).collect();
+        let expected = request.clone();
+        let server = std::thread::spawn(move || {
+            let (socket, _) = listener.accept().unwrap();
+            let mut socket = tungstenite::accept(socket).unwrap();
+            let mut body = Vec::new();
+            let mut messages = 0;
+            while body.len() < expected.len() {
+                let message = socket.read().unwrap().into_data();
+                assert_eq!(message[0], crate::REALTIME_TAG_ROUND);
+                body.extend_from_slice(&message[1..]);
+                messages += 1;
+            }
+            assert_eq!(body, expected);
+            assert_eq!(messages, 4);
+            let mut chunk = vec![crate::REALTIME_TAG_ROUND];
+            chunk.extend(minimal_response());
+            socket
+                .send(tungstenite::Message::Binary(chunk.into()))
+                .unwrap();
+        });
+        let mut transport =
+            HostTransport::new_from_config(&serde_json::json!({"baseUrl": base})).unwrap();
+        transport.realtime_connect_for_client("chunked").unwrap();
+        let response = transport.realtime_sync(&request).unwrap();
+        assert_eq!(response, minimal_response());
+        transport.shutdown();
+        server.join().unwrap();
     }
 
     #[test]

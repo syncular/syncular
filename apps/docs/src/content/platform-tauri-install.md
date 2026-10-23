@@ -97,8 +97,8 @@ tauri::Builder::default()
 | `base_url` | Server base URL for the native HTTP and WebSocket transport. Absent: client-local only. |
 | `ws_url` | Realtime WebSocket URL. Derived from `base_url` when absent. |
 | `headers` | Extra request headers (auth, actor and project ids) as name and value pairs. |
-| `request_timeout_ms` | Per-request network deadline. Absent: unbounded. |
-| `round_deadline_ms` | One monotonic deadline for a whole sync round (uploads, continuations, the main request, every segment fetch). Absent: unbounded. |
+| `request_timeout_ms` | Silence bound for one HTTP request: no step, and no wait between body bytes, may exceed it. Absent: unbounded. |
+| `round_deadline_ms` | One monotonic deadline for the total time of a sync round (uploads, continuations, the main request, every segment fetch); it also fails a slow transfer that is still progressing. Absent: unbounded. |
 | `max_request_bytes` | Largest request body the transport sends. Absent: unbounded. |
 | `max_response_bytes` | Largest decoded (post-decompression) response body. Absent: unbounded. |
 | `redirects` | `"deny"` (default) refuses every redirect, so credentials, URL userinfo, and signed capabilities never replay to another origin. `"follow"` follows a redirect only for a request with none of those. |

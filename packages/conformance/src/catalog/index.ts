@@ -25,6 +25,7 @@ import { realtimeScenarios } from './realtime';
 import { remoteProducerScenarios } from './remote-producer';
 import { reconnectStormScenarios } from './reconnect-storm';
 import { referenceScenarios } from './references';
+import { roundFailureScenarios } from './round-failure';
 import { sparseRowScenarios } from './sparse-rows';
 import { schemaBumpScenarios } from './schema-bump';
 import { scopeScenarios } from './scopes';
@@ -59,6 +60,7 @@ export const CATALOG: readonly Scenario[] = [
   ...presenceScenarios,
   ...reconnectStormScenarios,
   ...referenceScenarios,
+  ...roundFailureScenarios,
   ...deletePrecedenceScenarios,
   ...sparseRowScenarios,
   ...windowScenarios,

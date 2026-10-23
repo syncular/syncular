@@ -116,6 +116,7 @@ import type {
   ClientCursorInfo,
   ClientPushResult,
   ClientRecord,
+  ClientRecordWriteOptions,
   ClientSubscription,
   CommitChangeSummary,
   CommitDetail,
@@ -2416,10 +2417,12 @@ export class D1ServerStorage implements ServerStorage {
   async putClientRecord(
     partition: string,
     record: ClientRecord,
+    options?: ClientRecordWriteOptions,
   ): Promise<void> {
     // Update the existing record in place, so the table keeps one row per
     // (partition, client_id). Every non-key field is written from the new
     // record; a delete-and-insert would drop and recreate the row instead.
+    // `keepRoundOutcome` leaves the round-state columns alone (§1.5, §4.5).
     await this.#db
       .prepare(
         `INSERT INTO sync_clients(partition, client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms, last_round_at_ms) VALUES (?,?,?,?,?,?,?,?)
@@ -2429,9 +2432,13 @@ export class D1ServerStorage implements ServerStorage {
            cursor=excluded.cursor,
            subscriptions=excluded.subscriptions,
            updated_at_ms=excluded.updated_at_ms,
-           last_round_at_ms=excluded.last_round_at_ms,
+           last_round_at_ms=excluded.last_round_at_ms${
+             options?.keepRoundOutcome === true
+               ? ''
+               : `,
            last_error_code=NULL,
-           consecutive_failures=0`,
+           consecutive_failures=0`
+           }`,
       )
       .bind(
         partition,

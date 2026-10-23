@@ -349,6 +349,7 @@ Frame type registry (wire versions 1 and 2):
 | `0x02` | `PUSH_COMMIT` | request | 6.1 |
 | `0x03` | `PULL_HEADER` | request | 4.2 |
 | `0x04` | `SUBSCRIPTION` | request | 4.3 |
+| `0x05` | `ROUND_FAILURE` | request | 1.5 |
 | `0x10` | `RESP_HEADER` | response | 1.6 |
 | `0x11` | `PUSH_RESULT` | response | 6.3 |
 | `0x12` | `SUB_START` | response | 4.4 |
@@ -434,6 +435,7 @@ streamed the frames, and the client must not persist them earlier anyway.
 
 ```
 REQ_HEADER                      exactly once, first
+ROUND_FAILURE                   0 or 1, immediately after REQ_HEADER
 PUSH_COMMIT × N                 N ≥ 0, in client commit order
 PULL_HEADER                     0 or 1
 SUBSCRIPTION × M                M ≥ 0, only if PULL_HEADER present
@@ -453,6 +455,27 @@ envelope codec rejects a no-content request as a **decode error** under
 | `clientId` | `str` | 3 | Stable per-device identifier, non-empty. A server MUST reject a `clientId` already bound to a different actor in the same partition or beginning with the reserved `["remote-command",` server-command prefix (`sync.invalid_client_id`) |
 | `schemaVersion` | `i32` | 3 | The client's generated schema version, ≥ 1. Gates codec selection and segment reuse |
 | `logEpoch` | `opt(str)` | 3 | The partition log identity last accepted by this durable client replica (§2.1). An absent value requests epoch acquisition and MUST accompany zero `PUSH_COMMIT` frames |
+
+**`ROUND_FAILURE` payload:**
+
+| Field | Type | Semantics |
+|---|---|---|
+| `code` | `str` | The code of the client's last round that failed where the server could not see it (below). Non-empty, at most 64 bytes, lowercase dotted segments matching `[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+`; any other value is a decode error |
+
+`ROUND_FAILURE` lets a server learn about a round that failed on the client
+side. A round can fail after the server completed it: the client gave up on
+a response that arrived too slowly, lost the connection, or could not decode
+the stream. The server recorded that round as completed (§4.5), so without a
+report a stalled client looks healthy. A client that ends a round without a
+complete, decodable response (a transport failure or a timeout; not an
+in-band `ERROR` and not a request-level rejection, which the server already
+recorded) MUST keep the round's `code` and send it in `ROUND_FAILURE` on
+every following request until a round receives a complete response. A
+newer failure replaces the kept code. A request that carries `ROUND_FAILURE`
+and neither `PUSH_COMMIT` nor `PULL_HEADER` is still invalid. A
+`ROUND_FAILURE` frame that appears more than once, or after a `PUSH_COMMIT`,
+`PULL_HEADER`, or `SUBSCRIPTION` frame, is a decode error. A server that predates the frame
+skips it as an unknown frame (§1.2 rule 2).
 
 Wire version 3 reads `logEpoch` after `schemaVersion`. Versions 1 and 2 are
 rejected as unknown (§1.2, §9): wire version 3 changed the push payload to
@@ -597,10 +620,14 @@ consumed by the FFI, Tauri, and future Rust hosts) bound their network
 work through host policy. The bounds are host policy, and their
 observable behavior is contractual:
 
-- **Per-request deadline.** One HTTP request is bounded end to end,
-  from DNS resolution through the response body. A bound that elapses
-  surfaces `transport.timeout`. The default is unbounded. This bound is
-  HTTP-only; it does not become the WebSocket total policy.
+- **Per-request silence bound.** One HTTP request is bounded by silence,
+  not by total time. DNS resolution, connection, the request head, and
+  the wait for the response head each have the bound from the start of
+  their phase. Once bytes flow, no socket read or write may wait longer
+  than the bound, and every byte moved restarts it, so a response that
+  keeps arriving on a slow link completes however long it takes. A bound
+  that elapses surfaces `transport.timeout`. The default is unbounded.
+  This bound is HTTP-only; it does not become the WebSocket policy.
 - **Whole-round deadline.** One sync round may be bounded: the uploads,
   every continuation, the main request, every segment fetch, and a
   realtime round's socket send and reassembly wait share one monotonic
@@ -609,8 +636,17 @@ observable behavior is contractual:
   deadline covers network work; it does not interrupt local SQLite or CPU
   time. Local work before that first call does not consume the budget;
   after the anchor the deadline is absolute, so local work between
-  continuations runs against the remaining budget. A bound that elapses on
-  the socket path surfaces `transport.timeout`.
+  continuations runs against the remaining budget. A bound that elapses
+  on the socket path surfaces `transport.timeout`. This is the only bound
+  on total transfer time: a host that sets it fails a transfer that a slow
+  link would have finished, so a host serving slow links leaves it unset or
+  sets it to the longest transfer it will wait for.
+- **Socket round silence.** A realtime round fails when its request makes
+  no progress for 30 seconds (a `0x01` chunk of at most 64 KiB flushed to
+  the socket) or its response makes none (a `0x01` chunk received). Each
+  chunk restarts the bound. The bound is fixed and not configurable. The
+  failure surfaces `sync.transport_failed`, or `transport.timeout` with
+  `causeKind` `round_deadline` when the whole-round deadline expired first.
 - **Redirect refusal.** The `deny` default refuses every 3xx. Under the
   `follow` policy the transport follows a redirect only for a request that
   carries no configured headers, no base-URL userinfo, and no signed
@@ -630,8 +666,8 @@ observable behavior is contractual:
   cannot grow the buffer past it.
 
 The byte limits apply to HTTP requests and responses. They do not cap
-realtime socket buffers; the whole-round deadline is what bounds a
-realtime round's send and wait.
+realtime socket buffers; the socket round silence bound and the
+whole-round deadline bound a realtime round's send and wait.
 
 The defaults are unbounded deadlines and unbounded body sizes, matching
 the reference HTTP binding; a host chooses its own application policy.
@@ -1440,7 +1476,13 @@ existing record, for a thrown error and for an in-band `ERROR` alike, on HTTP
 and on a socket round. A round that completes MUST clear the streak and code in
 the same write that stores the cursor. A failed round MUST NOT change the
 cursor or the timestamp that feeds the retention watermark, MUST NOT create a
-record, and MUST NOT touch a record bound to a different actor. A failure of the
+record, and MUST NOT touch a record bound to a different actor. A request that
+carries `ROUND_FAILURE` (§1.5) records the reported code as a failed round on
+the existing record before the round runs, with the same rules, and the
+completion of that round MUST leave the reported code and streak in place; the
+next request without `ROUND_FAILURE` clears them as a completed round does. A
+streak therefore counts the reports the server received; a failed round whose
+next request never reaches the server adds nothing. A failure of the
 outcome write is reported to the host's error handler and never replaces the
 round's own outcome. A catalog error (`SyncError`) does not reach the host's
 `onError` handler, which only receives exceptions outside the catalog; this
@@ -5811,6 +5853,15 @@ connection's `clientId` (§8.1); a mismatch fails the round with
 `sync.invalid_client_id` — registration identity would otherwise be
 ambiguous.
 
+**A failed round closes the connection.** A round carries no identifier,
+so response bytes of a round the client stopped waiting for would be read
+as the response of the next one. A client whose round ends without the
+response's `END` (a timeout, a malformed or over-long stream, or a lost
+connection) MUST close the socket and treat the connection as lost; the
+next round runs on a new connection or on `POST /sync` (§8.8). The server
+needs no counterpart: it discards the response stream of a closed
+connection.
+
 **One round in flight.** A connection carries at most one sync round
 at a time: the client MUST NOT begin a new request before the current
 response's `END` (no pipelining — coalescing wake-ups into the next
@@ -6348,7 +6399,8 @@ byte-identical output):
 | 24 | `request/epoch-bound` | Wire version 2 request header with the client's stored partition `logEpoch` |
 | 25 | `response/epoch-reset` | Wire version 2 header-only response with a new `logEpoch` and `resetRequired = true` |
 | 26 | `push/sparse-row` + `push/sparse-row-full` | Sparse row push payloads (RFC §6.1), exercised at the codec level (not inside an SSP2 frame): a partial row with a present-NULL column, and the full-row case with every presence bit set. Nine columns covering every §2.4 type, so the presence bitmap spans two bytes and both bitmaps carry padding bits |
-| — | `request/invalid/*` | Truncated envelope (no END), bad magic, unsupported wireVersion, non-zero flags, overlong frame length, unknown enum byte (`op = 3`), upsert without payload |
+| 27 | `request/round-failure-report` | A request with the optional `ROUND_FAILURE` frame (§1.5) directly after `REQ_HEADER`, followed by a pull: pins the `0x05` frame and its grammar position |
+| — | `request/invalid/*` | Truncated envelope (no END), bad magic, unsupported wireVersion, non-zero flags, overlong frame length, unknown enum byte (`op = 3`), upsert without payload, `ROUND_FAILURE` duplicated, after a `PUSH_COMMIT`, or with a code outside the dotted grammar |
 | — | `response/invalid/*` | Bool byte > 1 (`SUB_START.bootstrap` = `0x02`) |
 | — | `segment/invalid/*` | Null bit on non-nullable column, rows segment without end marker, json column value that does not parse (§2.4 tag 5), row `serverVersion` 0 (must be ≥ 1) |
 | — | `realtime/invalid/*` | Malformed known events (JSON-only): `requiresPull` not the literal `true` (§8.3), fractional numeric field (§8.1), a `presence` fanout with an unknown `kind` (§8.6.2 closed set), a client→server `presence` with a non-object non-null `doc` (§8.6.2) |

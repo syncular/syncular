@@ -313,6 +313,16 @@ export interface ClientRecord {
   readonly consecutiveFailures?: number;
 }
 
+/** `putClientRecord` options. */
+export interface ClientRecordWriteOptions {
+  /**
+   * Leave the stored round outcome (`lastErrorCode`, `consecutiveFailures`)
+   * untouched. Set for a completed round that carried a `ROUND_FAILURE` report
+   * (§1.5, §4.5). `lastRoundAtMs` still moves to this round's completion.
+   */
+  readonly keepRoundOutcome?: boolean;
+}
+
 /** The round-state fields of a stored `sync_clients` row. */
 export function clientRoundState(
   lastRoundAtMs: number | null,
@@ -941,9 +951,15 @@ export interface ServerStorage {
   ): Promise<ClientRecord | undefined>;
   /**
    * Write the record for a completed round. The round-state fields reset: the
-   * stored last round is a success at `updatedAtMs` with no failures.
+   * stored last round is a success at `updatedAtMs` with no failures — unless
+   * `keepRoundOutcome` is set, which leaves the reported code and streak in
+   * place (the round carried a `ROUND_FAILURE` report, §1.5/§4.5).
    */
-  putClientRecord(partition: string, record: ClientRecord): Promise<void>;
+  putClientRecord(
+    partition: string,
+    record: ClientRecord,
+    options?: ClientRecordWriteOptions,
+  ): Promise<void>;
   /**
    * Record a failed round on an existing record: set `lastRoundAtMs` and
    * `lastErrorCode`, and increment `consecutiveFailures`. Requires a matching

@@ -33,8 +33,8 @@ The core is thread-affine, which the serial queue satisfies. Never call the C fu
 
 | Field | Type | Effect |
 |---|---|---|
-| `requestTimeoutMs` | `UInt64?` | End-to-end deadline for one HTTP request; expiry returns `transport.timeout` |
-| `roundDeadlineMs` | `UInt64?` | One deadline for a whole sync round; expiry returns `transport.timeout` |
+| `requestTimeoutMs` | `UInt64?` | Silence bound for one HTTP request: no step, and no wait between body bytes, may exceed it; expiry returns `transport.timeout` |
+| `roundDeadlineMs` | `UInt64?` | One deadline for the total time of a sync round, which also fails a slow transfer that is still progressing; expiry returns `transport.timeout` |
 | `maxRequestBytes` | `UInt64?` | Larger request bodies fail with `transport.request_too_large` before any I/O |
 | `maxResponseBytes` | `UInt64?` | Larger decoded responses fail with `transport.response_too_large` |
 | `redirects` | `String?` | `"deny"` (default) or `"follow"`; `"follow"` applies only to a request with no headers |

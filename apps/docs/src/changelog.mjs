@@ -17,6 +17,18 @@
 export const changelog = [
   {
     date: '2026-10-23',
+    title: 'Slow links finish their rounds, and failed rounds are reported',
+    body: "The native Rust transport bounded a whole transfer, so a segment or a socket round that needs longer than its deadline on a slow link (an 8.6 MB page at 100 KB/s) failed on every retry. `requestTimeoutMs` is now a silence bound: each step and each wait between body bytes may take that long, and every byte restarts the wait. A realtime round fails after 30 seconds without a chunk in either direction, and a request travels in 64 KiB chunks so an upload shows progress. `roundDeadlineMs` stays the only bound on total time. A round that ends without its response END closes the socket and reports `Inbound::Disconnected`, so the unread tail of the dropped response is no longer read as the next round; the TypeScript client does the same for a malformed response stream. A client reports a round that failed on its side in the new optional `ROUND_FAILURE` request frame, and the server stores the code as the client's `lastErrorCode` and `consecutiveFailures`, so a stalled client no longer looks healthy.",
+    links: [
+      {
+        href: '/platform-rust-specifics/#native-transport-policy',
+        label: 'Native transport policy',
+      },
+      { href: '/guide-server/', label: 'Server error handling' },
+    ],
+  },
+  {
+    date: '2026-10-23',
     title:
       'Lost sockets, retry contracts, per-client failures and server indexes',
     body: "The native Rust transport now reports an unsolicited realtime end as `Inbound::Disconnected`, and `SyncClient::realtime_lost` turns it into the `lost` state plus a Background retry intent, so an idle replica reconnects and catches up. `realtime_connect` runs under a ten-second deadline across DNS, TCP, TLS and the upgrade, with typed `transport.timeout`, `transport.failed` and `transport.redirect` errors. The Background intent is now a stated obligation to run a round after its delay whatever the socket state is. The server stores each client's last round (`lastRoundAtMs`, `lastErrorCode`, `consecutiveFailures`) on its `sync_clients` record and in the admin `listClients` view, because `onError` never receives a catalog `SyncError`. Server-only `serverIndexes` now reconcile whenever the storage opens, without a schema-version bump.",

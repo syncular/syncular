@@ -1,0 +1,34 @@
+{
+  "magic": "SSP2",
+  "wireVersion": 3,
+  "msgKind": "request",
+  "frames": [
+    {
+      "type": "REQ_HEADER",
+      "clientId": "client-a",
+      "schemaVersion": 1
+    },
+    {
+      "type": "ROUND_FAILURE",
+      "code": "sync.transport_failed"
+    },
+    {
+      "type": "PULL_HEADER",
+      "limitCommits": 0,
+      "limitSnapshotRows": 0,
+      "maxSnapshotPages": 0,
+      "accept": 3
+    },
+    {
+      "type": "SUBSCRIPTION",
+      "id": "sub-notes",
+      "table": "notes",
+      "scopes": {
+        "project": [
+          "p1"
+        ]
+      },
+      "cursor": 42
+    }
+  ]
+}

@@ -149,9 +149,9 @@ export interface NativeSyncClientConfig {
   readonly dbPath?: string;
   /** Extra transport headers (auth, tenant, …). */
   readonly headers?: Record<string, string>;
-  /** End-to-end deadline for one HTTP request, in milliseconds. */
+  /** Silence bound for one HTTP request, in milliseconds: no step or wait between body bytes may exceed it. */
   readonly requestTimeoutMs?: number;
-  /** One monotonic deadline for a whole sync round, in milliseconds. */
+  /** One monotonic deadline for the total time of a sync round, in milliseconds; it also fails a slow transfer that is still progressing. */
   readonly roundDeadlineMs?: number;
   /** Largest HTTP request body the transport sends, in bytes. */
   readonly maxRequestBytes?: number;

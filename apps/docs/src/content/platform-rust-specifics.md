@@ -39,7 +39,7 @@ The default `download_segments` runs `download_segment` and `fetch_url` in order
 :::figure{title="Which bound covers what" note="Round deadline anchors on the first network call"}
 <div class="d-stack">
 <div class="node cool"><span class="t">round_deadline</span>uploads, continuations, main request, every segment fetch, a realtime round's send and wait</div>
-<div class="node"><span class="t">request_timeout</span>one HTTP request, end to end</div>
+<div class="node"><span class="t">request_timeout</span>silence on one HTTP request: each step, and each wait between body bytes</div>
 <div class="node"><span class="t">max_request_bytes / max_response_bytes</span>one HTTP body, checked before I/O and after decompression</div>
 </div>
 :::
@@ -57,11 +57,15 @@ let policy = HostTransportPolicy {
 };
 ```
 
-- `request_timeout`: a bound that elapses returns `transport.timeout`.
-- `round_deadline`: the client anchors it on the round's first network call and keeps the anchor across continuations. A bound that elapses returns `transport.timeout`. It covers network work only; local SQLite and CPU time are not interrupted. Local work before the first network call does not consume the budget, and local work between continuations runs against the remaining budget.
+- `request_timeout`: a silence bound. DNS resolution, connection, the request head, and the wait for the response head each have this long from the start of their phase. Once bytes flow, no socket read or write may wait longer than this, and every byte restarts the wait, so a response that keeps arriving on a slow link completes however long it takes. A bound that elapses returns `transport.timeout`.
+- `round_deadline`: the only bound on total transfer time. The client anchors it on the round's first network call and keeps the anchor across continuations. A bound that elapses returns `transport.timeout`, including when the transfer was still progressing. Leave it unset for hosts on slow links, or set it to the longest transfer you will wait for. It covers network work only; local SQLite and CPU time are not interrupted. Local work before the first network call does not consume the budget, and local work between continuations runs against the remaining budget.
 - `max_request_bytes`: a larger HTTP request body is refused before any network I/O with `transport.request_too_large`. It does not cap a realtime socket buffer.
 - `max_response_bytes`: a larger decoded response body is refused with `transport.response_too_large`, counted after decompression. It does not cap a realtime socket buffer.
 - `redirects`: `Deny` or `Follow`. `Follow` follows a redirect only for a request with no configured headers, no base-URL userinfo, and no signed capability URL. A credential-bearing request is refused with `transport.redirect` under both policies. The WebSocket handshake obeys the same rule and additionally refuses a realtime URL with userinfo or a query.
+
+A realtime socket round has its own fixed silence bound of 30 seconds, which `request_timeout` does not change. The transport sends a request in `0x01` chunks of at most 64 KiB and restarts the bound on every flushed request chunk and every received response chunk. A round that ends without its response `END` (a silence timeout, a malformed response stream, or the whole-round deadline) closes the socket and queues `Inbound::Disconnected` with the round's code, so the unread tail of that response cannot reach the next round. `SyncClient::realtime_lost` handles it like any other lost socket.
+
+A request that follows a round that failed without a complete response carries a `ROUND_FAILURE` frame with that round's code (SPEC §1.5). The server records it on the client's `sync_clients` row as `lastErrorCode` and `consecutiveFailures`, so a client that stalls on a slow link is visible to an operator. The next request without the frame clears it.
 
 Build the transport with `HostTransport::from_config_with_policy`, or replace the policy with `HostTransport::set_policy`. A JSON config (the `new` command) sets the same fields with `requestTimeoutMs`, `roundDeadlineMs`, `maxRequestBytes`, `maxResponseBytes`, and `redirects`. Each numeric bound is a `u64` token of at least 1, so a binding that derives the JSON from a floating-point value must serialize the bound losslessly. An invalid policy fails with `sync.invalid_request` and leaves the current policy in force.
 
