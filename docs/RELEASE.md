@@ -1,8 +1,25 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.41.1** (`v0.41.1`). All artifacts use Apache-2.0, except
+current release is **0.41.2** (`v0.41.2`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.41.2 release notes
+
+0.41.2 fixes a gap in registered remote operations. A `ValidationRejection`
+thrown by a query or command carries its `details` (SPEC §6.3.1) on a push
+refusal, but `handleRemoteOperation` dropped them when it encoded the
+`kind: 'error'` response, and neither client read the member. The response now
+carries `details` when the rejection has them. `ClientSyncError.details`
+(TypeScript) and the new `RemoteClientError.details: Option<Box<RejectionDetails>>`
+(Rust) expose them, parsed and bounded like a push rejection's. Malformed
+details fail as `client.invalid_host_response`. A response without `details`
+parses as before, so a 0.41.2 client works against an older server and the
+reverse. SSP2, the storage layout, and the other public APIs are unchanged.
+
+**Upgrade notes.** A Rust host that builds `RemoteClientError` with a struct
+literal adds `details: None`; most hosts only read the new field. Upgrade all
+12 npm packages and 6 crates together.
 
 ## 0.41.1 release notes
 

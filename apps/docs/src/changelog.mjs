@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-10-23',
+    title: 'Remote operation errors carry rejection details',
+    body: "A `ValidationRejection` thrown by a registered query or command with `details` now sends them in the `kind: 'error'` response, as a push refusal always did. `ClientSyncError.details` (TypeScript) and `RemoteClientError.details` (Rust) expose the bounded `reason`, `requiredAction`, `fieldPaths` and `references`. A response without details parses as before.",
+    links: [
+      {
+        href: '/guide-remote-operations/#refuse-a-command-with-a-domain-code',
+        label: 'Refuse a command with a domain code',
+      },
+    ],
+  },
+  {
+    date: '2026-10-23',
     title: 'A silent transfer is retried and reported',
     body: "The Rust client classified `transport.timeout` as non-retryable, so a segment download that went silent past `requestTimeoutMs` left the client in `Failed` until a command, a realtime frame or a new subscription woke it. `transport.timeout` now schedules the same Background intent as `transport.failed`. A segment fetch that fails inside a round whose own response was complete is now kept as the round failure and sent in `ROUND_FAILURE` on the next request, so the server records the client's `lastErrorCode` as `transport.timeout` instead of showing it healthy. The TypeScript client already retried and reported both.",
     links: [
