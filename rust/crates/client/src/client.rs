@@ -2067,7 +2067,7 @@ mod observation_tests {
             _request: &SegmentRequest,
             _on_progress: &mut dyn FnMut(u64),
         ) -> Result<Vec<u8>, TransportError> {
-            Err(TransportError::new("sync.transport_failed", "offline"))
+            Err(TransportError::new("transport.timeout", "segment stalled"))
         }
 
         fn realtime_connect(&mut self) -> Result<(), TransportError> {
@@ -2200,6 +2200,80 @@ mod observation_tests {
         assert!(
             carried_round_failures(&transport.requests[2]).is_empty(),
             "the server already recorded an in-band ERROR"
+        );
+    }
+
+    #[test]
+    fn a_silent_segment_fetch_is_retryable_and_reported_on_the_next_request() {
+        let mut client = client();
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        client
+            .subscribe(
+                "tasks".into(),
+                "tasks".into(),
+                vec![("project_id".into(), vec!["p1".into()])],
+                None,
+            )
+            .unwrap();
+        client.subs[0].cursor = 0;
+        client.subs[0].synced_once = true;
+        client.subs[0].effective = Some(vec![("project_id".into(), vec!["p1".into()])]);
+        client.persist_sub(&client.subs[0]).unwrap();
+        client.drain_change_batches();
+        client.drain_sync_intents();
+        let mut transport = failure_transport([
+            Ok(completed_response(vec![
+                Frame::SubStart {
+                    id: "tasks".into(),
+                    status: SubStatus::Active,
+                    reason_code: String::new(),
+                    effective_scopes: vec![("project_id".into(), vec!["p1".into()])],
+                    bootstrap: false,
+                },
+                Frame::SegmentRef {
+                    segment_id: "sha256:stalled".into(),
+                    media_type: MediaType::Rows,
+                    table: "tasks".into(),
+                    byte_length: 1,
+                    row_count: 1,
+                    as_of_commit_seq: 1,
+                    scope_digest: "digest".into(),
+                    row_cursor: None,
+                    next_row_cursor: None,
+                    url: None,
+                    url_expires_at_ms: None,
+                },
+                Frame::SubEnd {
+                    next_cursor: 1,
+                    bootstrap_state: None,
+                },
+            ])),
+            Ok(completed_response(Vec::new())),
+            Ok(completed_response(Vec::new())),
+        ]);
+
+        assert!(matches!(
+            client.sync(&mut transport),
+            SyncOutcome::Failed { ref error_code, .. } if error_code == "transport.timeout"
+        ));
+        assert!(
+            matches!(
+                client.drain_sync_intents().as_slice(),
+                [SyncIntent::Background { delay_ms: 250 }]
+            ),
+            "a silent transfer asks the host for a Background retry"
+        );
+        client.sync(&mut transport);
+        client.sync(&mut transport);
+        assert!(carried_round_failures(&transport.requests[0]).is_empty());
+        assert_eq!(
+            carried_round_failures(&transport.requests[1]),
+            vec!["transport.timeout"],
+            "the round's own response was complete, so the fetch failure rides the next request"
+        );
+        assert!(
+            carried_round_failures(&transport.requests[2]).is_empty(),
+            "a complete response ends the report"
         );
     }
 
@@ -12250,8 +12324,20 @@ impl SyncClient {
 
     fn retryable_transport_code(code: &str) -> bool {
         code == "transport.failed"
+            || code == "transport.timeout"
             || code == "transport.unavailable"
             || code == "sync.transport_failed"
+    }
+
+    /// §1.5: a segment fetch that fails inside an otherwise complete round is
+    /// invisible to the server (the round response arrived whole), so its code
+    /// rides the following requests like a socket-round failure. A code the
+    /// frame grammar rejects is not reportable and the previous code stays.
+    fn segment_fetch_failed(&mut self, error: TransportError) -> SectionError {
+        if ssp2::model::valid_round_failure_code(&error.code) {
+            self.round_failure = Some(error.code.clone());
+        }
+        SectionError::Abort(error.code, error.message)
     }
 
     /// A failed round worth a background retry: a transport failure, or a
@@ -17897,7 +17983,7 @@ impl SyncClient {
                         }
                         transport
                             .fetch_url(&url, &mut on_progress)
-                            .map_err(|e| SectionError::Abort(e.code, e.message))?
+                            .map_err(|e| self.segment_fetch_failed(e))?
                     } else {
                         let requested_scopes_json =
                             canonical_scope_json(&self.subs[sub_index].requested);
@@ -17910,7 +17996,7 @@ impl SyncClient {
                                 },
                                 &mut on_progress,
                             )
-                            .map_err(|e| SectionError::Abort(e.code, e.message))?
+                            .map_err(|e| self.segment_fetch_failed(e))?
                     };
                     // §5.1: verify the content address before applying.
                     on_progress(bytes.len() as u64);

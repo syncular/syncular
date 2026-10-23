@@ -17,6 +17,21 @@
 export const changelog = [
   {
     date: '2026-10-23',
+    title: 'A silent transfer is retried and reported',
+    body: "The Rust client classified `transport.timeout` as non-retryable, so a segment download that went silent past `requestTimeoutMs` left the client in `Failed` until a command, a realtime frame or a new subscription woke it. `transport.timeout` now schedules the same Background intent as `transport.failed`. A segment fetch that fails inside a round whose own response was complete is now kept as the round failure and sent in `ROUND_FAILURE` on the next request, so the server records the client's `lastErrorCode` as `transport.timeout` instead of showing it healthy. The TypeScript client already retried and reported both.",
+    links: [
+      {
+        href: '/platform-rust-specifics/#native-transport-policy',
+        label: 'Native transport policy',
+      },
+      {
+        href: '/platform-rust-troubleshooting/',
+        label: 'Rust troubleshooting',
+      },
+    ],
+  },
+  {
+    date: '2026-10-23',
     title: 'Slow links finish their rounds, and failed rounds are reported',
     body: "The native Rust transport bounded a whole transfer, so a segment or a socket round that needs longer than its deadline on a slow link (an 8.6 MB page at 100 KB/s) failed on every retry. `requestTimeoutMs` is now a silence bound: each step and each wait between body bytes may take that long, and every byte restarts the wait. A realtime round fails after 30 seconds without a chunk in either direction, and a request travels in 64 KiB chunks so an upload shows progress. `roundDeadlineMs` stays the only bound on total time. A round that ends without its response END closes the socket and reports `Inbound::Disconnected`, so the unread tail of the dropped response is no longer read as the next round; the TypeScript client does the same for a malformed response stream. A client reports a round that failed on its side in the new optional `ROUND_FAILURE` request frame, and the server stores the code as the client's `lastErrorCode` and `consecutiveFailures`, so a stalled client no longer looks healthy.",
     links: [

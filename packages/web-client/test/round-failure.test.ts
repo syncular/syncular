@@ -7,7 +7,7 @@
  */
 import { expect, test } from 'bun:test';
 import { decodeMessage, type RequestMessage } from '@syncular/core';
-import { makeClient, makeServer, PARTITION } from './helpers';
+import { makeClient, makeServer, PARTITION, taskValues } from './helpers';
 
 function requestOf(bytes: Uint8Array | undefined): RequestMessage {
   if (bytes === undefined) throw new Error('no request captured');
@@ -120,4 +120,42 @@ test('a request-level rejection was recorded by the server and is not reported',
     code: 'sync.schema_not_ready',
   });
   expect(frameTypes(c.requests[2])).toEqual(['REQ_HEADER', 'PULL_HEADER']);
+});
+
+test('a segment fetch that went silent is retryable and reported on the next round', async () => {
+  const server = makeServer();
+  server.limits.inlineSegmentMaxBytes = 0;
+  const seeder = await makeClient(server, { clientId: 'seeder' });
+  seeder.client.mutate([
+    { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1', 'task') },
+  ]);
+  await seeder.client.sync();
+
+  const c = await makeClient(server, { clientId: 'client-rf' });
+  c.client.subscribe({
+    id: 's1',
+    table: 'tasks',
+    scopes: { project_id: ['p1'] },
+  });
+  c.intents.length = 0;
+  c.faults.stallSegmentDownloadOnce = true;
+  await expect(c.client.sync()).rejects.toMatchObject({
+    code: 'sync.transport_failed',
+    retryable: true,
+  });
+  expect(c.intents).toEqual([{ kind: 'background', delayMs: 250 }]);
+
+  // The round's own response arrived whole, so only the report tells the
+  // server; the next request carries it and a complete round ends it.
+  await c.client.sync();
+  expect(requestOf(c.requests[1]).frames[1]).toEqual({
+    type: 'ROUND_FAILURE',
+    code: 'sync.transport_failed',
+  });
+  expect(
+    (await server.storage.getClientRecord(PARTITION, 'client-rf'))
+      ?.lastErrorCode,
+  ).toBe('sync.transport_failed');
+  await c.client.sync();
+  expect(frameTypes(c.requests[2])).not.toContain('ROUND_FAILURE');
 });

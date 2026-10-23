@@ -1,8 +1,38 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.41.0** (`v0.41.0`). All artifacts use Apache-2.0, except
+current release is **0.41.1** (`v0.41.1`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.41.1 release notes
+
+0.41.1 fixes the 0.41.0 behavior Nori reproduced with a 40 s stall inside a
+segment download over a shaped link. SSP2, the storage layout and every public
+API are unchanged.
+
+1. **`transport.timeout` is retryable.** The Rust client listed only
+   `transport.failed`, `transport.unavailable` and `sync.transport_failed` as
+   retryable transport codes, so a segment download that went silent past
+   `requestTimeoutMs` left the client in `Failed` with no Background intent
+   until a command, a realtime frame or a new subscription started a round.
+   It now schedules the same intent as `transport.failed` (250 ms, doubling to
+   30 s). `transport.redirect`, `transport.request_too_large` and
+   `transport.response_too_large` stay non-retryable. SPEC §1.8 states the
+   classification.
+2. **A failed segment fetch is reported.** The round's own response was
+   complete, so the server recorded it as completed and the failure never
+   reached `ROUND_FAILURE`. The client now keeps the code of a failed segment
+   fetch (direct or signed URL) and sends it on the next request, like a
+   socket-round failure (§1.5). The server records it as `lastErrorCode` with
+   the streak; the next request that reports nothing clears it.
+
+The TypeScript client needed no change: its transports raise retryable
+`sync.transport_failed`, and a failed segment download propagates through the
+same path that keeps the round failure code. A new test locks both.
+
+**Upgrade notes.** A Rust host that scheduled its own retry for
+`transport.timeout` can drop it; the Background intent now covers it. Upgrade
+all 12 npm packages and 6 crates together.
 
 ## 0.41.0 release notes
 

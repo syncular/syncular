@@ -16,7 +16,7 @@ Match a symptom to its cause and fix.
 | `client.storage_full` | The disk is full (SQLite code 13) | Free space, then call `sync` again; the pending import runs on the same connection |
 | `open_path_with_identity` fails with `sync.invalid_request` | WAL is unavailable, for example an empty path or `:memory:` | Pass a persistent file path |
 | A legacy commit shows as rejected with `sync.outbox_incompatible` | The stored commit carries values the current codec refuses | Read `details.reason`; resolve it as any rejection |
-| `transport.timeout`, `transport.request_too_large`, or `transport.response_too_large` | A `HostTransportPolicy` bound fired | Raise the bound; see [Platform specifics](/platform-rust-specifics/#native-transport-policy) |
+| `transport.timeout`, `transport.request_too_large`, or `transport.response_too_large` | A `HostTransportPolicy` bound fired | Raise the bound; see [Platform specifics](/platform-rust-specifics/#native-transport-policy). A `transport.timeout` schedules a Background intent like `transport.failed`, so the host retries after `delay_ms` without a wake-up; the other two do not |
 | `transport.redirect` | The server redirected a credential-bearing request | Point `baseUrl` at the final URL |
 | `transport.failed` | The request failed without a usable response; `details.causeKind` holds `connect`, `tls`, `io`, `request`, `protocol`, `body`, `status` (with `httpStatus`), or `unknown` | Treat `connect`, `tls`, and `transport.timeout` as a missing connection; branch on the code and `causeKind`, never on the message |
 

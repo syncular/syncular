@@ -471,7 +471,10 @@ complete, decodable response (a transport failure or a timeout; not an
 in-band `ERROR` and not a request-level rejection, which the server already
 recorded) MUST keep the round's `code` and send it in `ROUND_FAILURE` on
 every following request until a round receives a complete response. A
-newer failure replaces the kept code. A request that carries `ROUND_FAILURE`
+segment fetch (§5.4, §5.5) that fails while the round's own response was
+complete counts as such a failure: the client keeps the fetch's code, because
+the server saw only the segment-bearing response. A newer failure replaces the
+kept code. A request that carries `ROUND_FAILURE`
 and neither `PUSH_COMMIT` nor `PULL_HEADER` is still invalid. A
 `ROUND_FAILURE` frame that appears more than once, or after a `PUSH_COMMIT`,
 `PULL_HEADER`, or `SUBSCRIPTION` frame, is a decode error. A server that predates the frame
@@ -702,6 +705,15 @@ browser reports a missing connection, DNS, TLS, and CORS failure alike),
 `unknown`. A host detects a missing connection from `code` and
 `causeKind`: `network` or `timeout` from a browser transport, and
 `connect`, `tls`, or `transport.timeout` from the native transport.
+
+A round that fails with `transport.failed`, `transport.timeout`,
+`transport.unavailable`, or `sync.transport_failed` is retryable: the client
+schedules one Background intent with the backoff of §7.6. `transport.redirect`,
+`transport.request_too_large`, and `transport.response_too_large` describe a
+configuration the client cannot repair by repeating the request, so they
+schedule no intent. A silence timeout of a segment fetch is retryable like any
+other timeout; the retry asks for the same page, and a page that keeps
+arriving completes under the silence bound.
 
 ---
 

@@ -19,6 +19,7 @@ import {
   type SyncIntent,
 } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
+import { ClientSyncError } from '../src/errors';
 import {
   decodeMessage,
   encodeMessage,
@@ -259,6 +260,11 @@ export interface ClientFaults {
   /** Corrupt the Nth remaining segment download (1 = next). 0 = off. */
   corruptSegmentDownload: number;
   /**
+   * Fail the next segment download the way a transfer that went silent past
+   * the transport's request timeout fails (`causeKind: 'timeout'`).
+   */
+  stallSegmentDownloadOnce: boolean;
+  /**
    * Hold the next response (already produced by the server) until `opened`
    * resolves — the mid-round window for race-injection tests. `onHeld`
    * fires once the round is parked on the gate.
@@ -321,6 +327,7 @@ export async function makeClient(
     dropResponseOnce: false,
     truncateResponseOnce: false,
     corruptSegmentDownload: 0,
+    stallSegmentDownloadOnce: false,
     duplicatePushResultOnce: false,
     errorFrameOnce: false,
   };
@@ -404,6 +411,15 @@ export async function makeClient(
       return response;
     },
     segments: async (request: SegmentFetchRequest) => {
+      if (faults.stallSegmentDownloadOnce) {
+        faults.stallSegmentDownloadOnce = false;
+        throw new ClientSyncError(
+          'sync.transport_failed',
+          'segment download timed out',
+          true,
+          { causeKind: 'timeout' },
+        );
+      }
       const result = await handleSegmentDownload(server.ctxFor(actorId), {
         segmentId: request.segmentId,
         scopesHeader: request.requestedScopesJson,
