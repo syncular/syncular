@@ -11,7 +11,7 @@ use ssp2::decode::WIRE_VERSION;
 use ssp2::model::{Frame, Message, MsgKind, Op, OpResult, Operation, PushResultDetail, PushStatus};
 use ssp2::{decode_message, encode_message};
 
-use crate::api::Mutation;
+use crate::api::{Mutation, RejectionDetails};
 use crate::schema::ClientSchema;
 use crate::transport::Transport;
 use crate::values::{
@@ -76,6 +76,11 @@ pub struct RemoteClientError {
     pub code: String,
     pub message: String,
     pub retryable: bool,
+    /// Host-approved recovery metadata of a `ValidationRejection` that refused
+    /// a registered query or command (§6.3.1 bounds). `None` when the server
+    /// attached none, as on servers that predate the member. Boxed to keep
+    /// `Result<_, RemoteClientError>` small.
+    pub details: Option<Box<RejectionDetails>>,
 }
 
 impl RemoteClientError {
@@ -84,6 +89,7 @@ impl RemoteClientError {
             code: code.into(),
             message: message.into(),
             retryable,
+            details: None,
         }
     }
 
@@ -673,7 +679,15 @@ fn operation_error(value: &Value) -> Result<RemoteClientError, RemoteClientError
         .ok_or_else(|| {
             RemoteClientError::invalid_response("remote operation error lacks retryable")
         })?;
-    Ok(RemoteClientError::new(code, message, retryable))
+    let mut error = RemoteClientError::new(code, message, retryable);
+    if let Some(details) = value.get("details") {
+        error.details = Some(Box::new(
+            RejectionDetails::parse(&details.to_string()).map_err(|_| {
+                RemoteClientError::invalid_response("remote operation error details are malformed")
+            })?,
+        ));
+    }
+    Ok(error)
 }
 
 fn base64_encode(bytes: &[u8]) -> String {
@@ -763,7 +777,7 @@ mod tests {
         decode_operation_value, encode_operation_value, RemoteBytes, RemoteCommitInput,
         SyncRemoteClient,
     };
-    use crate::api::Mutation;
+    use crate::api::{Mutation, RejectionDetails};
     use crate::schema::{compile_schema, ColumnIr, SchemaIr, ScopePatternIr, TableIr};
     use crate::transport::{SegmentRequest, Transport, TransportError};
 
@@ -940,6 +954,56 @@ mod tests {
         assert_eq!(
             wrong_type.message,
             "column \"project_id\": expected a string, got 7"
+        );
+    }
+
+    #[test]
+    fn command_error_carries_rejection_details() {
+        let client = SyncRemoteClient::new(schema(), "worker").expect("client");
+        let respond = |error: Value| {
+            let mut response = json!({
+                "revision": super::protocol_revision(),
+                "kind": "error",
+                "code": "campaign.not_gm",
+                "message": "only the game master may do this",
+                "retryable": false,
+            });
+            response
+                .as_object_mut()
+                .expect("object")
+                .extend(error.as_object().expect("object").clone());
+            let mut transport = CachedTransport {
+                requests: Vec::new(),
+                operation_response: Some(encode_operation_value(&response).expect("response")),
+            };
+            client
+                .command(&mut transport, "campaign/roll", "request-1", &json!({}))
+                .expect_err("command is refused")
+        };
+
+        let with_details = respond(json!({ "details": { "reason": "gm_only" } }));
+        assert_eq!(with_details.code, "campaign.not_gm");
+        assert_eq!(with_details.message, "only the game master may do this");
+        assert!(!with_details.retryable);
+        assert_eq!(
+            with_details.details,
+            Some(Box::new(RejectionDetails {
+                field_paths: None,
+                reason: Some("gm_only".to_owned()),
+                required_action: None,
+                references: None,
+            }))
+        );
+
+        let without_details = respond(json!({}));
+        assert_eq!(without_details.code, "campaign.not_gm");
+        assert_eq!(without_details.details, None);
+
+        let malformed = respond(json!({ "details": { "reason": "Not A Token" } }));
+        assert_eq!(malformed.code, "client.invalid_host_response");
+        assert_eq!(
+            malformed.message,
+            "remote operation error details are malformed"
         );
     }
 

@@ -19,6 +19,7 @@ import {
   type RemoteOperationResolver,
 } from '@syncular/server';
 import {
+  ClientSyncError,
   SyncRemoteClient,
   type RemoteOperationRealtimeHandlers,
 } from '../src/index';
@@ -838,6 +839,62 @@ describe('SyncRemoteClient', () => {
       retryable: false,
     });
     expect(await server.storage.getMaxCommitSeq(PARTITION)).toBe(0);
+    server.storage.db.close();
+  });
+
+  test('carries ValidationRejection details to the caller', async () => {
+    const server = makeServer();
+    const descriptor = remoteCommand<{ phase: string }>('commands/refuses');
+    const registry = new RemoteOperationRegistry([
+      registerRemoteCommand(descriptor, {
+        authorize: ({ actorId }) => actorId === 'worker',
+        run: (_context, { phase }) => {
+          if (phase === 'plain') {
+            throw new ValidationRejection('campaign.not_gm', 'no details');
+          }
+          throw new ValidationRejection('campaign.not_gm', 'gm only', {
+            reason: 'gm_only',
+            references: { campaign: 'c1' },
+          });
+        },
+      }),
+    ]);
+    const context = { ...server.ctxFor('worker'), storage: server.storage };
+    const client = new SyncRemoteClient({
+      clientId: 'command-worker',
+      operations: (bytes) => handleRemoteOperation(bytes, context, registry),
+    });
+
+    await expect(
+      client.command(descriptor, 'request-1', { phase: 'details' }),
+    ).rejects.toMatchObject({
+      code: 'campaign.not_gm',
+      message: 'gm only',
+      retryable: false,
+      details: { reason: 'gm_only', references: { campaign: 'c1' } },
+    });
+    const plain = await client
+      .command(descriptor, 'request-2', { phase: 'plain' })
+      .catch((error: unknown) => error);
+    expect(plain).toBeInstanceOf(ClientSyncError);
+    expect(plain).toMatchObject({ code: 'campaign.not_gm' });
+    expect(plain).toHaveProperty('details', undefined);
+
+    const malformed = new SyncRemoteClient({
+      clientId: 'command-worker',
+      operations: async () =>
+        encodeRemoteOperationResponse({
+          revision: 1,
+          kind: 'error',
+          code: 'campaign.not_gm',
+          message: 'gm only',
+          retryable: false,
+          details: { reason: 'Not A Token' },
+        }),
+    });
+    await expect(
+      malformed.command(descriptor, 'request-3', { phase: 'details' }),
+    ).rejects.toMatchObject({ code: 'client.invalid_host_response' });
     server.storage.db.close();
   });
 

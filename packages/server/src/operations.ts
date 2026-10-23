@@ -721,6 +721,7 @@ function encodeRemoteOperationError(
       code: error.code,
       message: error.message,
       retryable: false,
+      ...(error.details !== undefined ? { details: error.details } : {}),
     });
   }
   const sync =

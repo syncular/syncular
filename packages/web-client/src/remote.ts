@@ -10,6 +10,7 @@ import {
   encodeRemoteOperationRequest,
   encodeRemoteOperationRealtimeMessage,
   encodeSparseRow,
+  normalizeRejectionDetails,
   PROTOCOL_WIRE_VERSION,
   type PushOperation,
   type PushOperationResult,
@@ -188,6 +189,31 @@ function operationResponse(bytes: Uint8Array): RemoteOperationResponse {
     );
   }
   return response;
+}
+
+function operationError(
+  response: Extract<RemoteOperationResponse, { kind: 'error' }>,
+): ClientSyncError {
+  if (response.details === undefined) {
+    return new ClientSyncError(
+      response.code,
+      response.message,
+      response.retryable,
+    );
+  }
+  try {
+    return new ClientSyncError(
+      response.code,
+      response.message,
+      response.retryable,
+      { ...normalizeRejectionDetails(response.details) },
+    );
+  } catch {
+    return new ClientSyncError(
+      'client.invalid_host_response',
+      'remote operation error details are malformed',
+    );
+  }
 }
 
 export class SyncRemoteClient {
@@ -452,13 +478,7 @@ export class SyncRemoteClient {
         }),
       ),
     );
-    if (response.kind === 'error') {
-      throw new ClientSyncError(
-        response.code,
-        response.message,
-        response.retryable,
-      );
-    }
+    if (response.kind === 'error') throw operationError(response);
     if (response.kind !== 'query' || response.operationId !== descriptor.id) {
       throw new ClientSyncError(
         'client.invalid_host_response',
@@ -504,13 +524,7 @@ export class SyncRemoteClient {
         }),
       ),
     );
-    if (response.kind === 'error') {
-      throw new ClientSyncError(
-        response.code,
-        response.message,
-        response.retryable,
-      );
-    }
+    if (response.kind === 'error') throw operationError(response);
     if (
       response.kind !== 'command' ||
       response.operationId !== descriptor.id ||

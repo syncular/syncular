@@ -271,6 +271,14 @@ registerRemoteCommand(endTurn, {
 });
 ```
 
+A third constructor argument carries recovery metadata in the bounded shape of
+a push rejection (`fieldPaths`, `reason`, `requiredAction`, `references`; SPEC
+§6.3.1), for example `new ValidationRejection('campaign.not_gm', 'only the game
+master may roll', { reason: 'gm_only' })`. The client receives it as
+`ClientSyncError.details` (TypeScript) or `RemoteClientError.details` (Rust,
+`Option<Box<RejectionDetails>>`). `details` is `undefined` or `None` when the
+rejection carried none.
+
 Any other exception from the callback reaches the client as
 `operation.execution_failed`.
 

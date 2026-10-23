@@ -1,3 +1,4 @@
+import type { RejectionDetails } from './rejection-details';
 import { bytesToBase64 } from './render';
 
 export type RemoteOperationRequest =
@@ -40,6 +41,8 @@ export type RemoteOperationResponse =
       readonly code: string;
       readonly message: string;
       readonly retryable: boolean;
+      /** Host-approved recovery metadata of a `ValidationRejection` (§6.3.1 bounds). */
+      readonly details?: RejectionDetails;
     };
 
 export type RemoteOperationRealtimeMessage =

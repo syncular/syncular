@@ -207,9 +207,14 @@ type Success =
 is a positive safe integer.
 
 An operation-level failure uses an encoded response with `kind: 'error'`, a
-stable `code`, `message`, and `retryable`. Host authentication failures may use
-the normal HTTP JSON error response before operation decoding. A request with
-another content type fails with HTTP 415.
+stable `code`, `message`, and `retryable`. A `ValidationRejection` that carries
+details adds a `details` member in the bounded shape of SPEC §6.3.1; a response
+without it is valid. A client rejects malformed `details` as
+`client.invalid_host_response` and surfaces valid ones as
+`ClientSyncError.details` (TypeScript) and `RemoteClientError.details`
+(Rust). Host authentication failures may use the normal HTTP JSON error
+response before operation decoding. A request with another content type fails
+with HTTP 415.
 
 ### 5.1 Per-request binding
 
