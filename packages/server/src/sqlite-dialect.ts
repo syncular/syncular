@@ -115,6 +115,8 @@ CREATE TABLE IF NOT EXISTS sync_clients(
   wire_version INTEGER NOT NULL DEFAULT 1,
   cursor INTEGER NOT NULL, subscriptions TEXT NOT NULL,
   updated_at_ms INTEGER NOT NULL,
+  last_round_at_ms INTEGER, last_error_code TEXT,
+  consecutive_failures INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY(partition, client_id)
 );
 CREATE TABLE IF NOT EXISTS sync_blob_refs(
@@ -144,6 +146,13 @@ CREATE TABLE IF NOT EXISTS sync_writer_fence(
   required_writer_version INTEGER NOT NULL
 );
 `;
+
+/** Columns added to `sync_clients` after its first release, by column name. */
+export const SYNC_CLIENT_ROUND_COLUMNS = {
+  last_round_at_ms: 'INTEGER',
+  last_error_code: 'TEXT',
+  consecutive_failures: 'INTEGER NOT NULL DEFAULT 0',
+} as const;
 
 /** Split the DDL into individual statements (D1 applies them one by one). */
 export function sqliteDdlStatements(): string[] {

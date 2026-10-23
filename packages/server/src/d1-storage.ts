@@ -1,7 +1,7 @@
 import { validateCommitPruneQuery } from './prune';
 import { StorageQueryError } from './storage-errors';
 import type { CommitPruneQuery, CommitPruneResult } from './storage';
-import { PARTITION_TOUCH_INTERVAL_MS } from './storage';
+import { clientRoundState, PARTITION_TOUCH_INTERVAL_MS } from './storage';
 /**
  * Cloudflare D1 server storage for Workers deployments.
  *
@@ -78,6 +78,7 @@ import {
   type StoredColumnLayout,
   scanRowPageSql,
   schemaDdl,
+  serverIndexDdl,
   SQLITE_TABLE_INDEXES_SQL,
   type SqliteTableIndexRow,
   sqliteIndexSignatures,
@@ -104,6 +105,7 @@ import {
   type SqliteRowRecord,
   serializePushResult,
   sqliteDdlStatements,
+  SYNC_CLIENT_ROUND_COLUMNS,
   toStoredChange,
   toStoredRow,
 } from './sqlite-dialect';
@@ -999,6 +1001,15 @@ export class D1ServerStorage implements ServerStorage {
         'ALTER TABLE sync_clients ADD COLUMN wire_version INTEGER NOT NULL DEFAULT 1;',
       );
     }
+    for (const [name, definition] of Object.entries(
+      SYNC_CLIENT_ROUND_COLUMNS,
+    )) {
+      if (!results.some((column) => column.name === name)) {
+        await this.#db.exec(
+          `ALTER TABLE sync_clients ADD COLUMN ${name} ${definition};`,
+        );
+      }
+    }
   }
 
   /** Resolve a table's compiled schema; row operations require `ensureSchema`. */
@@ -1129,6 +1140,44 @@ export class D1ServerStorage implements ServerStorage {
           'sqlite',
         );
       }
+      // A database from before the round-state columns gains them in place.
+      statementsExecuted++;
+      const clientColumns = await this.#db
+        .prepare('PRAGMA table_info("sync_clients")')
+        .all<{ name: string }>();
+      const missingRoundColumns = Object.entries(
+        SYNC_CLIENT_ROUND_COLUMNS,
+      ).filter(
+        ([name]) =>
+          !clientColumns.results.some((column) => column.name === name),
+      );
+      if (missingRoundColumns.length > 0) {
+        await batch(
+          missingRoundColumns.map(([name, definition]) =>
+            this.#db.prepare(
+              `ALTER TABLE sync_clients ADD COLUMN ${name} ${definition}`,
+            ),
+          ),
+        );
+      }
+      // Server-only indexes reconcile at every open of a database already at
+      // this version: they never reach a client, so no version bump is needed.
+      const indexes = new Map<string, ReadonlyMap<string, string>>();
+      for (const table of tables) {
+        statementsExecuted++;
+        const { results } = await this.#db
+          .prepare(SQLITE_TABLE_INDEXES_SQL)
+          .bind(table.name)
+          .all<SqliteTableIndexRow>();
+        indexes.set(
+          table.name,
+          new Map(Object.entries(sqliteIndexSignatures(results))),
+        );
+      }
+      const reconcile = serverIndexDdl(schema, indexes);
+      if (reconcile.length > 0) {
+        await batch(reconcile.map((sql) => this.#db.prepare(sql)));
+      }
       this.#tables = schema.tables;
       this.#schemaVersion = schema.version;
       return { complete: true, statementsExecuted };
@@ -1248,19 +1297,20 @@ export class D1ServerStorage implements ServerStorage {
         const columns = await this.#db
           .prepare('PRAGMA table_info("sync_clients")')
           .all<{ name: string }>();
-        const needsWireVersion = !columns.results.some(
-          (column) => column.name === 'wire_version',
+        const missingColumns = Object.entries({
+          wire_version: 'INTEGER NOT NULL DEFAULT 1',
+          ...SYNC_CLIENT_ROUND_COLUMNS,
+        }).filter(
+          ([name]) => !columns.results.some((column) => column.name === name),
         );
         if (
           !(await save(
             { ...state, phase: 'prepare', offset: 0 },
-            needsWireVersion
-              ? [
-                  this.#db.prepare(
-                    'ALTER TABLE sync_clients ADD COLUMN wire_version INTEGER NOT NULL DEFAULT 1',
-                  ),
-                ]
-              : [],
+            missingColumns.map(([name, definition]) =>
+              this.#db.prepare(
+                `ALTER TABLE sync_clients ADD COLUMN ${name} ${definition}`,
+              ),
+            ),
           ))
         )
           break;
@@ -2333,7 +2383,7 @@ export class D1ServerStorage implements ServerStorage {
   ): Promise<ClientRecord | undefined> {
     const record = await this.#db
       .prepare(
-        'SELECT client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms FROM sync_clients WHERE partition=? AND client_id=?',
+        'SELECT client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms, last_round_at_ms, last_error_code, consecutive_failures FROM sync_clients WHERE partition=? AND client_id=?',
       )
       .bind(partition, clientId)
       .first<{
@@ -2343,6 +2393,9 @@ export class D1ServerStorage implements ServerStorage {
         cursor: number;
         subscriptions: string;
         updated_at_ms: number;
+        last_round_at_ms: number | null;
+        last_error_code: string | null;
+        consecutive_failures: number;
       }>();
     if (record === null) return undefined;
     return {
@@ -2352,6 +2405,11 @@ export class D1ServerStorage implements ServerStorage {
       cursor: record.cursor,
       updatedAtMs: record.updated_at_ms,
       subscriptions: JSON.parse(record.subscriptions) as ClientSubscription[],
+      ...clientRoundState(
+        record.last_round_at_ms,
+        record.last_error_code,
+        record.consecutive_failures,
+      ),
     };
   }
 
@@ -2364,13 +2422,16 @@ export class D1ServerStorage implements ServerStorage {
     // record; a delete-and-insert would drop and recreate the row instead.
     await this.#db
       .prepare(
-        `INSERT INTO sync_clients(partition, client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms) VALUES (?,?,?,?,?,?,?)
+        `INSERT INTO sync_clients(partition, client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms, last_round_at_ms) VALUES (?,?,?,?,?,?,?,?)
          ON CONFLICT(partition, client_id) DO UPDATE SET
            actor_id=excluded.actor_id,
            wire_version=excluded.wire_version,
            cursor=excluded.cursor,
            subscriptions=excluded.subscriptions,
-           updated_at_ms=excluded.updated_at_ms`,
+           updated_at_ms=excluded.updated_at_ms,
+           last_round_at_ms=excluded.last_round_at_ms,
+           last_error_code=NULL,
+           consecutive_failures=0`,
       )
       .bind(
         partition,
@@ -2380,7 +2441,26 @@ export class D1ServerStorage implements ServerStorage {
         record.cursor,
         JSON.stringify(record.subscriptions),
         record.updatedAtMs,
+        record.updatedAtMs,
       )
+      .run();
+  }
+
+  async recordClientRoundFailure(
+    partition: string,
+    clientId: string,
+    actorId: string,
+    errorCode: string,
+    atMs: number,
+  ): Promise<void> {
+    await this.#db
+      .prepare(
+        `UPDATE sync_clients
+         SET last_round_at_ms=?, last_error_code=?,
+             consecutive_failures=consecutive_failures+1
+         WHERE partition=? AND client_id=? AND actor_id=?`,
+      )
+      .bind(atMs, errorCode, partition, clientId, actorId)
       .run();
   }
 
@@ -2537,7 +2617,7 @@ export class D1ServerStorage implements ServerStorage {
   async listClientRecords(partition: string): Promise<ClientRecord[]> {
     const { results } = await this.#db
       .prepare(
-        'SELECT client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms FROM sync_clients WHERE partition=? ORDER BY updated_at_ms DESC',
+        'SELECT client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms, last_round_at_ms, last_error_code, consecutive_failures FROM sync_clients WHERE partition=? ORDER BY updated_at_ms DESC',
       )
       .bind(partition)
       .all<{
@@ -2547,6 +2627,9 @@ export class D1ServerStorage implements ServerStorage {
         cursor: number;
         subscriptions: string;
         updated_at_ms: number;
+        last_round_at_ms: number | null;
+        last_error_code: string | null;
+        consecutive_failures: number;
       }>();
     return results.map((record) => ({
       clientId: record.client_id,
@@ -2555,6 +2638,11 @@ export class D1ServerStorage implements ServerStorage {
       cursor: record.cursor,
       updatedAtMs: record.updated_at_ms,
       subscriptions: JSON.parse(record.subscriptions) as ClientSubscription[],
+      ...clientRoundState(
+        record.last_round_at_ms,
+        record.last_error_code,
+        record.consecutive_failures,
+      ),
     }));
   }
 

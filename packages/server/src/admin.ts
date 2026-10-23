@@ -90,6 +90,12 @@ export interface AdminClient {
   readonly connected?: boolean;
   /** When the client's oldest open socket opened. */
   readonly connectedSinceMs?: number;
+  /** When its last sync round finished, successfully or not. */
+  readonly lastRoundAtMs?: number;
+  /** Catalog code of its last round; present only while that round failed. */
+  readonly lastErrorCode?: string;
+  /** Rounds failed in a row since its last success; absent at zero. */
+  readonly consecutiveFailures?: number;
 }
 
 export interface AdminListClientsOptions {
@@ -1633,6 +1639,15 @@ export class SyncularAdmin {
           ? { connected: connectedSinceMs !== undefined }
           : {}),
         ...(connectedSinceMs !== undefined ? { connectedSinceMs } : {}),
+        ...(record.lastRoundAtMs !== undefined
+          ? { lastRoundAtMs: record.lastRoundAtMs }
+          : {}),
+        ...(record.lastErrorCode !== undefined
+          ? { lastErrorCode: record.lastErrorCode }
+          : {}),
+        ...(record.consecutiveFailures !== undefined
+          ? { consecutiveFailures: record.consecutiveFailures }
+          : {}),
       };
     };
   }

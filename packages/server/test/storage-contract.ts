@@ -1240,6 +1240,68 @@ export function runStorageContract(
       ).toBeNull();
     });
 
+    test('a failed round is recorded on the client and reset by the next completed round', async () => {
+      const storage = await make();
+      const record: ClientRecord = {
+        clientId: 'c1',
+        actorId: 'a1',
+        wireVersion: 3,
+        cursor: 42,
+        updatedAtMs: NOW,
+        subscriptions: [],
+      };
+      await storage.putClientRecord(PARTITION, record);
+      await storage.recordClientRoundFailure(
+        PARTITION,
+        'c1',
+        'a1',
+        'sync.schema_not_ready',
+        NOW + 10,
+      );
+      await storage.recordClientRoundFailure(
+        PARTITION,
+        'c1',
+        'a1',
+        'sync.internal_error',
+        NOW + 20,
+      );
+      expect(await storage.getClientRecord(PARTITION, 'c1')).toEqual({
+        ...record,
+        lastRoundAtMs: NOW + 20,
+        lastErrorCode: 'sync.internal_error',
+        consecutiveFailures: 2,
+      });
+      expect((await storage.listClientRecords?.(PARTITION))?.[0]).toEqual({
+        ...record,
+        lastRoundAtMs: NOW + 20,
+        lastErrorCode: 'sync.internal_error',
+        consecutiveFailures: 2,
+      });
+      // The liveness signal that pruning reads is not a round outcome.
+      expect(await storage.listClientCursors(PARTITION)).toEqual([
+        { clientId: 'c1', cursor: 42, updatedAtMs: NOW },
+      ]);
+
+      // Another actor, another partition and a missing client change nothing.
+      await storage.recordClientRoundFailure(PARTITION, 'c1', 'other', 'x', 1);
+      await storage.recordClientRoundFailure('other', 'c1', 'a1', 'x', 1);
+      await storage.recordClientRoundFailure(PARTITION, 'ghost', 'a1', 'x', 1);
+      expect(
+        (await storage.getClientRecord(PARTITION, 'c1'))?.consecutiveFailures,
+      ).toBe(2);
+      expect(await storage.getClientRecord(PARTITION, 'ghost')).toBeUndefined();
+
+      await storage.putClientRecord(PARTITION, {
+        ...record,
+        updatedAtMs: NOW + 30,
+      });
+      expect(await storage.getClientRecord(PARTITION, 'c1')).toEqual({
+        ...record,
+        updatedAtMs: NOW + 30,
+        lastRoundAtMs: NOW + 30,
+      });
+    });
+
     test('client record + cursors round-trip', async () => {
       const storage = await make();
       const record: ClientRecord = {
@@ -1254,7 +1316,7 @@ export function runStorageContract(
       };
       await storage.putClientRecord(PARTITION, record);
       const got = await storage.getClientRecord(PARTITION, 'c1');
-      expect(got).toEqual(record);
+      expect(got).toEqual({ ...record, lastRoundAtMs: NOW });
       const cursors = await storage.listClientCursors(PARTITION);
       expect(cursors).toEqual([
         { clientId: 'c1', cursor: 42, updatedAtMs: NOW },
@@ -1298,10 +1360,14 @@ export function runStorageContract(
       );
       expect(await storage.getClientRecord(PARTITION, 'c1')).toEqual({
         ...record,
+        lastRoundAtMs: record.updatedAtMs,
         cursor: 42,
         updatedAtMs: NOW + 2,
       });
-      expect(await storage.getClientRecord('other', 'c1')).toEqual(record);
+      expect(await storage.getClientRecord('other', 'c1')).toEqual({
+        ...record,
+        lastRoundAtMs: record.updatedAtMs,
+      });
       await storage.advanceClientCursor(
         PARTITION,
         'c1',
@@ -1312,6 +1378,7 @@ export function runStorageContract(
       );
       expect(await storage.getClientRecord(PARTITION, 'c1')).toEqual({
         ...record,
+        lastRoundAtMs: record.updatedAtMs,
         cursor: 42,
         updatedAtMs: NOW + 3,
       });
@@ -1353,7 +1420,10 @@ export function runStorageContract(
         42,
         NOW + 1,
       );
-      expect(await storage.getClientRecord(PARTITION, 'c1')).toEqual(record);
+      expect(await storage.getClientRecord(PARTITION, 'c1')).toEqual({
+        ...record,
+        lastRoundAtMs: record.updatedAtMs,
+      });
       expect(
         await storage.getClientRecord(PARTITION, 'missing'),
       ).toBeUndefined();
@@ -1376,7 +1446,10 @@ export function runStorageContract(
         42,
         NOW + 4,
       );
-      expect(await storage.getClientRecord(PARTITION, 'c1')).toEqual(record);
+      expect(await storage.getClientRecord(PARTITION, 'c1')).toEqual({
+        ...record,
+        lastRoundAtMs: record.updatedAtMs,
+      });
       await storage.advanceClientCursor(
         PARTITION,
         'c1',
@@ -1387,6 +1460,7 @@ export function runStorageContract(
       );
       expect(await storage.getClientRecord(PARTITION, 'c1')).toEqual({
         ...record,
+        lastRoundAtMs: record.updatedAtMs,
         cursor: 1,
         updatedAtMs: NOW + 5,
       });
@@ -1419,6 +1493,7 @@ export function runStorageContract(
           ...record,
           cursor: 9,
           updatedAtMs: NOW + 20,
+          lastRoundAtMs: NOW,
         },
       );
     });
@@ -1453,7 +1528,7 @@ export function runStorageContract(
       await storage.putClientRecord(PARTITION, replacement);
       expect(
         await storage.getClientRecord(PARTITION, original.clientId),
-      ).toEqual(replacement);
+      ).toEqual({ ...replacement, lastRoundAtMs: replacement.updatedAtMs });
     });
 
     // --- Blob reference index (§5.9.4, optional methods) ---

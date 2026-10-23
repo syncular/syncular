@@ -2,7 +2,11 @@ import { retainRollbackFailure, rollbackAfterError } from './storage-errors';
 import { validateCommitPruneQuery } from './prune';
 import { StorageQueryError } from './storage-errors';
 import type { CommitPruneQuery, CommitPruneResult } from './storage';
-import { PARTITION_TOUCH_INTERVAL_MS, serveGateRefusal } from './storage';
+import {
+  clientRoundState,
+  PARTITION_TOUCH_INTERVAL_MS,
+  serveGateRefusal,
+} from './storage';
 import { serveNotReadyError } from './readiness';
 /**
  * SQLite server storage over the shared synchronous driver.
@@ -45,6 +49,7 @@ import {
   type StoredColumnLayout,
   scanRowPageSql,
   schemaDdl,
+  serverIndexDdl,
   SQLITE_TABLE_INDEXES_SQL,
   type SqliteTableIndexRow,
   sqliteIndexSignatures,
@@ -64,6 +69,7 @@ import {
   LIST_SCOPE_VALUE_ROWS_SQLITE_SQL,
   placeholders,
   SQLITE_DDL,
+  SYNC_CLIENT_ROUND_COLUMNS,
   type SqliteChangeRecord,
   type SqliteCommitWindowRecord,
   type SqliteRowRecord,
@@ -550,6 +556,15 @@ export class SqliteServerStorage implements ServerStorage {
         'ALTER TABLE sync_clients ADD COLUMN wire_version INTEGER NOT NULL DEFAULT 1',
       );
     }
+    for (const [name, definition] of Object.entries(
+      SYNC_CLIENT_ROUND_COLUMNS,
+    )) {
+      if (!clientColumns.some((column) => column.name === name)) {
+        this.db.exec(
+          `ALTER TABLE sync_clients ADD COLUMN ${name} ${definition}`,
+        );
+      }
+    }
     const commitColumns = this.db
       .query<{ name: string }, []>('PRAGMA table_info("sync_commits")')
       .all();
@@ -648,6 +663,40 @@ END`);
           })),
           'sqlite',
         );
+      }
+      // Server-only indexes reconcile at every open of a database already at
+      // this version: they never reach a client, so no version bump is needed.
+      const reconcile = serverIndexDdl(
+        schema,
+        new Map(
+          [...schema.tables.values()].map((table) => [
+            table.name,
+            new Map(
+              Object.entries(
+                sqliteIndexSignatures(
+                  this.db
+                    .query<SqliteTableIndexRow, [string]>(
+                      SQLITE_TABLE_INDEXES_SQL,
+                    )
+                    .all(table.name),
+                ),
+              ),
+            ),
+          ]),
+        ),
+      );
+      if (reconcile.length > 0) {
+        await this.#serializeWrite(() => {
+          this.db.exec('BEGIN IMMEDIATE');
+          try {
+            for (const statement of reconcile) this.db.exec(statement);
+            this.db.exec('COMMIT');
+          } catch (error) {
+            rollbackAfterError(() => {
+              this.db.exec('ROLLBACK');
+            }, error);
+          }
+        });
       }
     }
     if (marker === null || marker.schema_version < schema.version) {
@@ -1815,10 +1864,13 @@ END`);
           cursor: number;
           subscriptions: string;
           updated_at_ms: number;
+          last_round_at_ms: number | null;
+          last_error_code: string | null;
+          consecutive_failures: number;
         },
         [string, string]
       >(
-        'SELECT client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms FROM sync_clients WHERE partition=? AND client_id=?',
+        'SELECT client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms, last_round_at_ms, last_error_code, consecutive_failures FROM sync_clients WHERE partition=? AND client_id=?',
       )
       .get(partition, clientId);
     if (record === null) return undefined;
@@ -1829,6 +1881,11 @@ END`);
       cursor: record.cursor,
       updatedAtMs: record.updated_at_ms,
       subscriptions: JSON.parse(record.subscriptions) as ClientSubscription[],
+      ...clientRoundState(
+        record.last_round_at_ms,
+        record.last_error_code,
+        record.consecutive_failures,
+      ),
     };
   }
 
@@ -1838,7 +1895,7 @@ END`);
   ): Promise<void> {
     this.db
       .query(
-        'INSERT OR REPLACE INTO sync_clients(partition, client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms) VALUES (?,?,?,?,?,?,?)',
+        'INSERT OR REPLACE INTO sync_clients(partition, client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms, last_round_at_ms) VALUES (?,?,?,?,?,?,?,?)',
       )
       .run(
         partition,
@@ -1848,7 +1905,25 @@ END`);
         record.cursor,
         JSON.stringify(record.subscriptions),
         record.updatedAtMs,
+        record.updatedAtMs,
       );
+  }
+
+  async recordClientRoundFailure(
+    partition: string,
+    clientId: string,
+    actorId: string,
+    errorCode: string,
+    atMs: number,
+  ): Promise<void> {
+    this.db
+      .query(
+        `UPDATE sync_clients
+         SET last_round_at_ms=?, last_error_code=?,
+             consecutive_failures=consecutive_failures+1
+         WHERE partition=? AND client_id=? AND actor_id=?`,
+      )
+      .run(atMs, errorCode, partition, clientId, actorId);
   }
 
   async advanceClientCursor(
@@ -2006,10 +2081,13 @@ END`);
           cursor: number;
           subscriptions: string;
           updated_at_ms: number;
+          last_round_at_ms: number | null;
+          last_error_code: string | null;
+          consecutive_failures: number;
         },
         [string]
       >(
-        'SELECT client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms FROM sync_clients WHERE partition=? ORDER BY updated_at_ms DESC',
+        'SELECT client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms, last_round_at_ms, last_error_code, consecutive_failures FROM sync_clients WHERE partition=? ORDER BY updated_at_ms DESC',
       )
       .all(partition);
     return records.map((record) => ({
@@ -2019,6 +2097,11 @@ END`);
       cursor: record.cursor,
       updatedAtMs: record.updated_at_ms,
       subscriptions: JSON.parse(record.subscriptions) as ClientSubscription[],
+      ...clientRoundState(
+        record.last_round_at_ms,
+        record.last_error_code,
+        record.consecutive_failures,
+      ),
     }));
   }
 

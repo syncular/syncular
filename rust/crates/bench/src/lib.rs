@@ -262,6 +262,7 @@ impl BenchTransport {
             self.stats.ws_in_bytes += match frame {
                 Inbound::Text(text) => text.len() as u64,
                 Inbound::Binary(bytes) => bytes.len() as u64,
+                Inbound::Disconnected(_) => 0,
             };
         }
         Ok(frames)
@@ -527,6 +528,12 @@ fn drain_inbound(
         match frame {
             Inbound::Text(text) => instance.on_realtime_text(&text),
             Inbound::Binary(bytes) => instance.on_realtime_binary(transport, &bytes),
+            Inbound::Disconnected(_) => {
+                return Err(CommandError::new(
+                    "bench.realtime_lost",
+                    "realtime connection ended during the measurement",
+                ))
+            }
         }
         transport.stats.apply_ns += started.elapsed().as_nanos() as u64;
     }

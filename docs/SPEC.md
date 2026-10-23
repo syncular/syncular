@@ -971,6 +971,14 @@ definition is a different index. An index outside the Syncular namespace
 (operator-added or constraint-owned) MUST survive every bump. A bump therefore
 costs index builds only for changed or new indexes.
 
+A server storage MUST also reconcile server-only indexes whenever it opens a
+database whose stored schema version equals the running schema version, without
+a version bump: it creates a missing server-only index and drops every
+Syncular-owned index that no declaration wants. It MUST NOT create, rebuild or
+drop a declared index there, because declared indexes change with the schema
+version. Declaring, changing or removing a `serverIndexes` entry therefore
+needs no schema-version bump and no client re-bootstrap.
+
 #### Same-version storage readiness
 
 A server storage opening a database whose stored schema version equals the
@@ -1422,6 +1430,22 @@ whenever a response contained commits.
 The server records, per (partition, clientId), the minimum `nextCursor`
 across the request's active subscriptions, with a timestamp — this feeds
 the retention watermark (§4.6).
+
+The same record carries the client's last round outcome: the time of its last
+round (`lastRoundAtMs`), the catalog code when that round failed
+(`lastErrorCode`, absent after a success), and the number of rounds failed in a
+row (`consecutiveFailures`, absent at zero). A server that fails a round after
+the request decodes MUST increment the streak and set the code and time on the
+existing record, for a thrown error and for an in-band `ERROR` alike, on HTTP
+and on a socket round. A round that completes MUST clear the streak and code in
+the same write that stores the cursor. A failed round MUST NOT change the
+cursor or the timestamp that feeds the retention watermark, MUST NOT create a
+record, and MUST NOT touch a record bound to a different actor. A failure of the
+outcome write is reported to the host's error handler and never replaces the
+round's own outcome. A catalog error (`SyncError`) does not reach the host's
+`onError` handler, which only receives exceptions outside the catalog; this
+record and the `request.handled` event (§ events seam) are where such a failure
+is visible.
 
 ### 4.6 The pruning horizon
 
@@ -5075,7 +5099,15 @@ of `none`, `interactive`, or `background(delayMs)` to its owning host loop.
 Local mutations and window widening are interactive. Retry deadlines are
 background. An automatic host consumes interactive intent through an
 event-driven, coalescing wake and consumes background intent through one real
-deadline; it does not poll a fixed interval. Realtime reconnect/catch-up jitter
+deadline; it does not poll a fixed interval. A `background(delayMs)` intent is
+an obligation to run a sync round after `delayMs`, independent of the realtime
+state. A server that answers a round with a retryable in-band error
+(`sync.schema_not_ready`, `sync.internal_error`) leaves the socket
+`connected`, so a socket reconnect never satisfies the intent; only a round
+does. The failed round's `retryDelayMs` (§7.6) carries the same delay for a host
+that reads it after the intent was drained. The cores own no timer: the host
+owns the deadline, and a host that drops the intent leaves the client idle until
+the next wake-up. Realtime reconnect/catch-up jitter
 required by §8.4 remains a background deadline. User-initiated local writes and
 window changes are not delayed by that jitter. Manual-sync hosts may expose but
 not consume the intent.
@@ -5919,6 +5951,29 @@ fails with `sync.realtime_unavailable`; under `optional` or `off` it uses
 disconnecting, which returns the state to `disconnected`; the TypeScript
 connector's close callback performs the same transition as `lost` before a
 deliberate disconnect clears it.
+
+**Unsolicited termination.** A socket that ends without a deliberate
+disconnect (a peer close while idle, a read or write error, a failed send
+including a delta acknowledgement whose result the client ignores) MUST reach
+the host, because an idle replica has no round to fail. The native Rust
+transport buffers `Inbound::Disconnected(TransportError)` in the inbound queue
+and notifies the host mailbox before it wakes any in-flight round or send
+waiter, so the host drains the termination before it can reconnect. A
+deliberate shutdown enqueues nothing. The host reports the event with
+`SyncClient::realtime_lost(transport, error)`: a `connected` state moves to
+`lost` with the transport's code as the reason, the transport is released, and
+one `background(delayMs)` intent (§7.5) asks the host to reconnect and run a
+catch-up round. The call is a no-op in any other state, so a second report of
+the same loss schedules nothing.
+
+**Establishment bounds.** The native transport establishes the socket under one
+absolute ten-second deadline that spans DNS resolution, TCP connect, TLS and
+the upgrade response; bytes arriving slowly do not renew it. A failure is
+`transport.timeout` or `transport.failed` with `causeKind`, and a 3xx upgrade
+response is `transport.redirect`. The handshake never follows a redirect, so a
+transport configured with `redirects: "follow"` fails `realtime_connect` with
+`transport.redirect` instead of ignoring the policy. The deadline adds no retry
+and no HTTP fallback.
 
 ---
 

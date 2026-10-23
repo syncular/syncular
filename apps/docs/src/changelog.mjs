@@ -16,6 +16,23 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-10-23',
+    title:
+      'Lost sockets, retry contracts, per-client failures and server indexes',
+    body: "The native Rust transport now reports an unsolicited realtime end as `Inbound::Disconnected`, and `SyncClient::realtime_lost` turns it into the `lost` state plus a Background retry intent, so an idle replica reconnects and catches up. `realtime_connect` runs under a ten-second deadline across DNS, TCP, TLS and the upgrade, with typed `transport.timeout`, `transport.failed` and `transport.redirect` errors. The Background intent is now a stated obligation to run a round after its delay whatever the socket state is. The server stores each client's last round (`lastRoundAtMs`, `lastErrorCode`, `consecutiveFailures`) on its `sync_clients` record and in the admin `listClients` view, because `onError` never receives a catalog `SyncError`. Server-only `serverIndexes` now reconcile whenever the storage opens, without a schema-version bump.",
+    links: [
+      {
+        href: '/platform-rust-realtime/',
+        label: 'Rust realtime and lifecycle',
+      },
+      { href: '/guide-server/', label: 'Server error handling' },
+      {
+        href: '/server-storage-reference/#query-the-projection',
+        label: 'Server indexes',
+      },
+    ],
+  },
+  {
     date: '2026-10-22',
     title: 'The Postgres fanout recovers from a dropped listener',
     body: 'Postgres delivers a notification only to sessions listening when it commits, and `PostgresFanout` had no signal for a listener that dropped and reconnected, so sessions on that instance missed every cross-instance commit of the gap. `PgNotificationConnection.listen` now takes an `onListen` callback that the driver calls each time LISTEN takes effect; every call after the first wakes all local sessions with `catchup-required` through the new `RealtimeHub.wakeAll`. Bun.sql and postgres.js call it on reconnect. The storage reference now covers Neon: the fanout needs the direct connection string, and its listener keeps a scale-to-zero compute from staying suspended.',

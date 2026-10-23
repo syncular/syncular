@@ -1196,3 +1196,37 @@ export function schemaDdl(
   // receiving table re-creates it.
   return [...drops, ...creates];
 }
+
+/**
+ * DDL that reconciles the server-only indexes of a database already at
+ * `schema.version`, so declaring or changing a `serverIndexes` entry needs no
+ * schema-version bump (server indexes never reach a client). It creates
+ * missing server indexes and drops every Syncular-owned index the schema no
+ * longer names. Declared `indexes` belong to the version bump and are never
+ * created or rebuilt here.
+ */
+export function serverIndexDdl(
+  schema: CompiledSchema,
+  existingIndexesByTable: ReadonlyMap<string, ReadonlyMap<string, string>>,
+): string[] {
+  const drops: string[] = [];
+  const creates: string[] = [];
+  for (const table of schema.tables.values()) {
+    const existing = existingIndexesByTable.get(table.name);
+    if (existing === undefined) continue;
+    const desired = desiredIndexes(table);
+    for (const indexName of existing.keys()) {
+      if (
+        indexName.startsWith(SYNC_INDEX_PREFIX) &&
+        !desired.some((index) => index.name === indexName)
+      ) {
+        drops.push(dropIndexDdl(indexName));
+      }
+    }
+    // `desiredIndexes` lists the declared indexes first, then the server ones.
+    for (const index of desired.slice(table.indexes.length)) {
+      if (!existing.has(index.name)) creates.push(index.ddl);
+    }
+  }
+  return [...drops, ...creates];
+}

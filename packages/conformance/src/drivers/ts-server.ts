@@ -454,6 +454,8 @@ class TsServerInstance implements ServerInstance {
       scanRows: (p, q) => this.#storage.scanRows(p, q),
       getClientRecord: (p, c) => this.#storage.getClientRecord(p, c),
       putClientRecord: (p, r) => this.#storage.putClientRecord(p, r),
+      recordClientRoundFailure: (...args) =>
+        this.#storage.recordClientRoundFailure(...args),
       advanceClientCursor: (...args) =>
         this.#storage.advanceClientCursor(...args),
       updateClientCursor: (p, c, s, t) =>

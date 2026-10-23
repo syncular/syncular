@@ -261,7 +261,7 @@ fn delta_during_round_is_queued_not_mixed_into_response() {
         .into_iter()
         .filter_map(|f| match f {
             Inbound::Binary(b) => Some(b),
-            Inbound::Text(_) => None,
+            Inbound::Text(_) | Inbound::Disconnected(_) => None,
         })
         .collect();
     assert_eq!(

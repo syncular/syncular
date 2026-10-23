@@ -247,6 +247,9 @@ impl Handle {
                 transport::Inbound::Binary(bytes) => {
                     client.on_realtime_binary(&mut self.transport, &bytes)
                 }
+                transport::Inbound::Disconnected(error) => {
+                    client.realtime_lost(&mut self.transport, &error)
+                }
             }
         }
     }

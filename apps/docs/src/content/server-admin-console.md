@@ -69,7 +69,7 @@ Search the row id, or open Data, pick the table, and open the row. The row page 
 
 ### A person's requests fail
 
-People lists every actor with its devices, open sockets, worst cursor lag, and failures in the last 5 minutes. Open an actor, or its failure count, for its failed and warned requests. A request opens its events in order: the outcome, the error code, and, for a rejected or conflicted push, the row it hit. A device opens its client page with its connection, lease, subscriptions, failures, and recent events.
+People lists every actor with its devices, open sockets, worst cursor lag, and failures in the last 5 minutes. Open an actor, or its failure count, for its failed and warned requests. A request opens its events in order: the outcome, the error code, and, for a rejected or conflicted push, the row it hit. A device opens its client page with its connection, lease, subscriptions, failures, and recent events. The client record also stores the last round per client: `lastRoundAtMs`, and, while the last round failed, `lastErrorCode` and `consecutiveFailures`. `listClients` returns them, so a client whose cursor stays fixed while the log head moves shows the code it fails with and how many rounds in a row.
 
 ### A schema rollout stalls
 

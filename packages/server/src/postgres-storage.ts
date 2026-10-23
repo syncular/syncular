@@ -1,7 +1,11 @@
 import { validateCommitPruneQuery } from './prune';
 import { StorageQueryError } from './storage-errors';
 import type { CommitPruneQuery, CommitPruneResult } from './storage';
-import { PARTITION_TOUCH_INTERVAL_MS, serveGateRefusal } from './storage';
+import {
+  clientRoundState,
+  PARTITION_TOUCH_INTERVAL_MS,
+  serveGateRefusal,
+} from './storage';
 import { serveNotReadyError } from './readiness';
 /**
  * Postgres server storage: the production database path.
@@ -84,6 +88,7 @@ import {
   scanRowPageSql,
   indexSignature,
   schemaDdl,
+  serverIndexDdl,
   selectRowScopesSql,
   selectRowSql,
   prefetchRowsSql,
@@ -241,10 +246,16 @@ CREATE TABLE IF NOT EXISTS sync_clients(
   wire_version INTEGER NOT NULL DEFAULT 1,
   cursor BIGINT NOT NULL, subscriptions JSONB NOT NULL,
   updated_at_ms BIGINT NOT NULL,
+  last_round_at_ms BIGINT, last_error_code TEXT,
+  consecutive_failures INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY(partition, client_id)
 );
 ALTER TABLE sync_clients
   ADD COLUMN IF NOT EXISTS wire_version INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE sync_clients ADD COLUMN IF NOT EXISTS last_round_at_ms BIGINT;
+ALTER TABLE sync_clients ADD COLUMN IF NOT EXISTS last_error_code TEXT;
+ALTER TABLE sync_clients
+  ADD COLUMN IF NOT EXISTS consecutive_failures INTEGER NOT NULL DEFAULT 0;
 CREATE TABLE IF NOT EXISTS sync_blob_refs(
   partition TEXT NOT NULL, tbl TEXT NOT NULL, row_id TEXT NOT NULL,
   blob_id TEXT NOT NULL,
@@ -337,6 +348,76 @@ async function installCheckpointOn(
          EXCLUDED.required_writer_version)`,
     [partition, schemaVersion],
   );
+}
+
+/**
+ * A scalar subquery over the table names in the JSON array bound to
+ * `namesParam`: the free-standing indexes of each table as a JSON array of
+ * `{tbl, name, unique, partial, columns}`. Parity with the SQLite/D1
+ * `origin === 'c'` filter: constraint-owned indexes (PRIMARY KEY, UNIQUE
+ * constraints) can only be removed through their constraint, so DROP INDEX on
+ * them would abort the transaction. Tables resolve through `to_regclass`,
+ * which follows the session's `search_path` like the row queries do.
+ */
+function indexesSubquery(namesParam: string): string {
+  return `(SELECT coalesce(json_agg(json_build_object(
+                  'tbl', tables.name,
+                  'name', index_class.relname,
+                  'unique', index_meta.indisunique,
+                  'partial', index_meta.indpred IS NOT NULL,
+                  'columns', ARRAY(
+                    SELECT attribute.attname::text
+                      FROM unnest(index_meta.indkey::int2[])
+                           WITH ORDINALITY AS key(attnum, ord)
+                      LEFT JOIN pg_catalog.pg_attribute AS attribute
+                        ON attribute.attrelid = index_meta.indrelid
+                       AND attribute.attnum = key.attnum
+                     WHERE key.ord <= index_meta.indnkeyatts
+                     ORDER BY key.ord))), '[]'::json)::text
+           FROM jsonb_array_elements_text(${namesParam}::text::jsonb) AS tables(name)
+           JOIN pg_catalog.pg_index AS index_meta
+             ON index_meta.indrelid = to_regclass(tables.name)
+           JOIN pg_catalog.pg_class AS index_class
+             ON index_class.oid = index_meta.indexrelid
+          WHERE NOT index_meta.indisprimary
+            AND NOT EXISTS (
+              SELECT 1
+                FROM pg_catalog.pg_constraint AS owning_constraint
+               WHERE owning_constraint.conindid = index_meta.indexrelid
+            ))`;
+}
+
+/** Table name to index name to {@link indexSignature}, from {@link indexesSubquery} JSON. */
+function parseIndexSignatures(
+  json: string,
+): Map<string, ReadonlyMap<string, string>> {
+  const byTable = new Map<string, Map<string, string>>();
+  for (const index of JSON.parse(json) as {
+    tbl: string;
+    name: string;
+    unique: boolean;
+    partial: boolean;
+    columns: (string | null)[];
+  }[]) {
+    const indexes = byTable.get(index.tbl) ?? new Map<string, string>();
+    indexes.set(
+      index.name,
+      indexSignature(index.columns, index.unique, index.partial),
+    );
+    byTable.set(index.tbl, indexes);
+  }
+  return byTable;
+}
+
+async function readIndexSignatures(
+  client: PgQueryable,
+  tableNames: readonly string[],
+): Promise<Map<string, ReadonlyMap<string, string>>> {
+  const { rows } = await client.query<{ indexes: string }>(
+    `SELECT ${indexesSubquery('$1')} AS indexes`,
+    [JSON.stringify(tableNames)],
+  );
+  return parseIndexSignatures(rows[0]?.indexes ?? '[]');
 }
 
 /** RFC 0007 serve gate on either the pool or a transaction's client. */
@@ -1584,6 +1665,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
       layouts: unknown;
       incomplete: string;
       columns: string;
+      indexes: string;
     }>(
       `SELECT meta.schema_version AS schema_version, meta.layouts AS layouts,
               (SELECT coalesce(json_agg(json_build_object(
@@ -1609,7 +1691,8 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
                  JOIN pg_attribute attribute
                    ON attribute.attrelid = to_regclass(tables.name)
                 WHERE attribute.attnum > 0
-                  AND NOT attribute.attisdropped) AS columns
+                  AND NOT attribute.attisdropped) AS columns,
+              ${indexesSubquery('$2')} AS indexes
          FROM (SELECT 1) AS one
          LEFT JOIN sync_schema_meta meta ON meta.id=1`,
       [schema.version, JSON.stringify([...schema.tables.keys()])],
@@ -1674,6 +1757,25 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
           'postgres',
         );
       }
+      // Server-only indexes reconcile at every open of a database already at
+      // this version: they never reach a client, so no version bump is needed.
+      // The unlocked read finds the common no-op case; the diff is recomputed
+      // under the migration barrier before any DDL runs.
+      const reconcile = serverIndexDdl(
+        schema,
+        parseIndexSignatures(marker.indexes),
+      );
+      if (reconcile.length > 0) {
+        await this.#exec.transaction(async (client) => {
+          await client.query('LOCK TABLE sync_partitions IN EXCLUSIVE MODE');
+          for (const statement of serverIndexDdl(
+            schema,
+            await readIndexSignatures(client, [...schema.tables.keys()]),
+          )) {
+            await client.query(statement);
+          }
+        });
+      }
     }
     if (stored === undefined || stored < schema.version) {
       // Introspect existing app tables, apply the migration subset
@@ -1721,6 +1823,9 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
         const retiredTables = retiredTableNames(schema, layouts);
         const existing = new Map<string, ReadonlySet<string>>();
         const existingIndexes = new Map<string, ReadonlyMap<string, string>>();
+        const tableIndexes = await readIndexSignatures(client, [
+          ...schema.tables.keys(),
+        ]);
         for (const table of schema.tables.values()) {
           const { rows } = await client.query<{ column_name: string }>(
             `SELECT column_name FROM information_schema.columns
@@ -1729,59 +1834,9 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
           );
           if (rows.length > 0) {
             existing.set(table.name, new Set(rows.map((r) => r.column_name)));
-            // Parity with the SQLite/D1 `origin === 'c'` filter: only
-            // free-standing indexes enter the rebuild set. Constraint-owned
-            // indexes (PRIMARY KEY, UNIQUE constraints) can only be removed
-            // through their constraint, so DROP INDEX on them would abort
-            // the migration transaction.
-            const indexes = await client.query<{
-              index_name: string;
-              is_unique: boolean;
-              is_partial: boolean;
-              columns: (string | null)[];
-            }>(
-              `SELECT index_class.relname AS index_name,
-                      index_meta.indisunique AS is_unique,
-                      index_meta.indpred IS NOT NULL AS is_partial,
-                      ARRAY(
-                        SELECT attribute.attname::text
-                          FROM unnest(index_meta.indkey::int2[])
-                               WITH ORDINALITY AS key(attnum, ord)
-                          LEFT JOIN pg_catalog.pg_attribute AS attribute
-                            ON attribute.attrelid = table_class.oid
-                           AND attribute.attnum = key.attnum
-                         WHERE key.ord <= index_meta.indnkeyatts
-                         ORDER BY key.ord
-                      ) AS columns
-                 FROM pg_catalog.pg_class AS table_class
-                 JOIN pg_catalog.pg_namespace AS namespace
-                   ON namespace.oid = table_class.relnamespace
-                 JOIN pg_catalog.pg_index AS index_meta
-                   ON index_meta.indrelid = table_class.oid
-                 JOIN pg_catalog.pg_class AS index_class
-                   ON index_class.oid = index_meta.indexrelid
-                WHERE namespace.nspname = current_schema()
-                  AND table_class.relname = $1
-                  AND NOT index_meta.indisprimary
-                  AND NOT EXISTS (
-                    SELECT 1
-                      FROM pg_catalog.pg_constraint AS owning_constraint
-                     WHERE owning_constraint.conindid = index_meta.indexrelid
-                  )`,
-              [table.name],
-            );
             existingIndexes.set(
               table.name,
-              new Map(
-                indexes.rows.map((index) => [
-                  index.index_name,
-                  indexSignature(
-                    index.columns,
-                    index.is_unique,
-                    index.is_partial,
-                  ),
-                ]),
-              ),
+              tableIndexes.get(table.name) ?? new Map(),
             );
           }
         }
@@ -2694,8 +2749,11 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
       cursor: unknown;
       subscriptions: unknown;
       updated_at_ms: unknown;
+      last_round_at_ms: unknown;
+      last_error_code: string | null;
+      consecutive_failures: unknown;
     }>(
-      'SELECT client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms FROM sync_clients WHERE partition=$1 AND client_id=$2',
+      'SELECT client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms, last_round_at_ms, last_error_code, consecutive_failures FROM sync_clients WHERE partition=$1 AND client_id=$2',
       [partition, clientId],
     );
     const record = rows[0];
@@ -2707,6 +2765,13 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
       cursor: asNumber(record.cursor),
       updatedAtMs: asNumber(record.updated_at_ms),
       subscriptions: asJson<ClientSubscription[]>(record.subscriptions),
+      ...clientRoundState(
+        record.last_round_at_ms === null
+          ? null
+          : asNumber(record.last_round_at_ms),
+        record.last_error_code,
+        asNumber(record.consecutive_failures),
+      ),
     };
   }
 
@@ -2715,13 +2780,15 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
     record: ClientRecord,
   ): Promise<void> {
     await this.#exec.query(
-      `INSERT INTO sync_clients(partition, client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)
+      `INSERT INTO sync_clients(partition, client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms, last_round_at_ms)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$7)
        ON CONFLICT (partition, client_id) DO UPDATE
          SET actor_id=EXCLUDED.actor_id, wire_version=EXCLUDED.wire_version,
              cursor=EXCLUDED.cursor,
              subscriptions=EXCLUDED.subscriptions,
-             updated_at_ms=EXCLUDED.updated_at_ms`,
+             updated_at_ms=EXCLUDED.updated_at_ms,
+             last_round_at_ms=EXCLUDED.last_round_at_ms,
+             last_error_code=NULL, consecutive_failures=0`,
       [
         partition,
         record.clientId,
@@ -2731,6 +2798,22 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
         JSON.stringify(record.subscriptions),
         record.updatedAtMs,
       ],
+    );
+  }
+
+  async recordClientRoundFailure(
+    partition: string,
+    clientId: string,
+    actorId: string,
+    errorCode: string,
+    atMs: number,
+  ): Promise<void> {
+    await this.#exec.query(
+      `UPDATE sync_clients
+         SET last_round_at_ms=$1, last_error_code=$2,
+             consecutive_failures=consecutive_failures+1
+       WHERE partition=$3 AND client_id=$4 AND actor_id=$5`,
+      [atMs, errorCode, partition, clientId, actorId],
     );
   }
 
@@ -2910,8 +2993,11 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
       cursor: unknown;
       subscriptions: unknown;
       updated_at_ms: unknown;
+      last_round_at_ms: unknown;
+      last_error_code: string | null;
+      consecutive_failures: unknown;
     }>(
-      'SELECT client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms FROM sync_clients WHERE partition=$1 ORDER BY updated_at_ms DESC',
+      'SELECT client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms, last_round_at_ms, last_error_code, consecutive_failures FROM sync_clients WHERE partition=$1 ORDER BY updated_at_ms DESC',
       [partition],
     );
     return rows.map((r) => ({
@@ -2923,6 +3009,11 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
       subscriptions: (typeof r.subscriptions === 'string'
         ? JSON.parse(r.subscriptions)
         : r.subscriptions) as ClientSubscription[],
+      ...clientRoundState(
+        r.last_round_at_ms === null ? null : asNumber(r.last_round_at_ms),
+        r.last_error_code,
+        asNumber(r.consecutive_failures),
+      ),
     }));
   }
 

@@ -30,7 +30,7 @@ import {
   RESOLVER_OUTAGE,
   touchAuthenticatedPartition,
 } from './context';
-import { SyncError, syncError } from './errors';
+import { reportError, SyncError, syncError } from './errors';
 import {
   emitEvent,
   type PullSubscriptionSummary,
@@ -734,6 +734,7 @@ async function* streamResponse(
         report.outcome = 'error';
         report.errorCode = error.code;
       }
+      await recordRoundFailure(ctx, plan.header.clientId, error);
       // §1.6: in-band ERROR, then END, nothing else.
       yield encodeResponseFrame(
         {
@@ -765,7 +766,14 @@ export async function createSyncResponseStream(
   ctx: SyncRequestContext,
 ): Promise<AsyncIterable<Uint8Array>> {
   const sink = ctx.events;
-  if (sink === undefined) return createStreamCore(bytes, ctx, undefined);
+  if (sink === undefined) {
+    try {
+      return await createStreamCore(bytes, ctx, undefined);
+    } catch (error) {
+      await recordRoundFailure(ctx, requestClientId(bytes), error);
+      throw error;
+    }
+  }
   // Instrumented path: measure with the ctx clock, count bytes at the
   // seam, emit exactly one `request.handled` per request. Every event of
   // this request carries one `requestId`.
@@ -779,6 +787,7 @@ export async function createSyncResponseStream(
   try {
     return await createStreamCore(bytes, requestCtx, events, startedAtMs);
   } catch (error) {
+    const clientId = requestClientId(bytes);
     emitEvent(events, {
       type: 'request.handled',
       kind: 'sync',
@@ -789,11 +798,64 @@ export async function createSyncResponseStream(
       bytesIn: bytes.length,
       bytesOut: 0,
       outcome: 'rejected',
+      ...(clientId !== undefined ? { clientId } : {}),
       errorCode: error instanceof SyncError ? error.code : 'internal',
       pushCommits: 0,
       pulled: false,
       subscriptions: 0,
     });
+    await recordRoundFailure(ctx, clientId, error);
+    throw error;
+  }
+}
+
+/** The `REQ_HEADER` clientId of a request that failed before planning. */
+function requestClientId(bytes: Uint8Array): string | undefined {
+  try {
+    const message = decodeMessage(bytes);
+    const header = message.frames[0];
+    return message.msgKind === 'request' && header?.type === 'REQ_HEADER'
+      ? header.clientId
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Record a failed round on the client's stored record so an operator can see
+ * a stuck client and why. A storage failure here is reported through
+ * `onError` and never replaces the round's own outcome.
+ */
+async function recordRoundFailure(
+  ctx: SyncRequestContext,
+  clientId: string | undefined,
+  error: unknown,
+): Promise<void> {
+  if (clientId === undefined) return;
+  try {
+    await ctx.storage.recordClientRoundFailure(
+      ctx.partition,
+      clientId,
+      ctx.actorId,
+      error instanceof SyncError ? error.code : 'sync.internal_error',
+      clockOf(ctx)(),
+    );
+  } catch (failure) {
+    reportError(failure, ctx.onError, 'sync');
+  }
+}
+
+/** Record a failure thrown while the response streams (after planning). */
+async function* recordedStream(
+  stream: AsyncIterable<Uint8Array>,
+  ctx: SyncRequestContext,
+  clientId: string,
+): AsyncGenerator<Uint8Array> {
+  try {
+    yield* stream;
+  } catch (error) {
+    await recordRoundFailure(ctx, clientId, error);
     throw error;
   }
 }
@@ -883,15 +945,21 @@ async function createStreamCore(
     if (changed !== undefined) throw serveNotReadyError(changed);
     for (const chunk of buffered) yield chunk;
   };
-  if (events === undefined) return verified();
-  return instrumentedStream(
-    verified(),
+  if (events === undefined) {
+    return recordedStream(verified(), ctx, plan.header.clientId);
+  }
+  return recordedStream(
+    instrumentedStream(
+      verified(),
+      ctx,
+      events,
+      plan,
+      report,
+      bytes.length,
+      startedAtMs,
+    ),
     ctx,
-    events,
-    plan,
-    report,
-    bytes.length,
-    startedAtMs,
+    plan.header.clientId,
   );
 }
 

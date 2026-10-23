@@ -149,6 +149,9 @@ impl HostTransportPolicy {
 pub enum Inbound {
     Text(String),
     Binary(Vec<u8>),
+    /// The realtime connection ended without the host closing it (the peer closed an idle socket, a read or write failed, or a
+    /// send was abandoned). Pushed before any round or send waiter is woken, so the host drains it before it reconnects.
+    Disconnected(TransportError),
 }
 
 /// The shared inbound buffer the WS reader thread fills and the command path
@@ -533,11 +536,12 @@ mod native {
     //! `GET {baseUrl}/segments/{id}`, `PUT/GET {baseUrl}/blobs/{id}`, and the
     //! realtime socket at `{wsUrl}` (ws(s):// derived from baseUrl).
 
-    use std::net::TcpStream;
+    use std::io::{self, Read, Write};
+    use std::net::{TcpStream, ToSocketAddrs};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{mpsc, Arc, Condvar, Mutex};
     use std::thread::JoinHandle;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use polling::{Event, Events, Poller};
     use tungstenite::stream::MaybeTlsStream;
@@ -805,6 +809,313 @@ mod native {
         }
     }
 
+    const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+    fn remaining(deadline: Instant) -> io::Result<Duration> {
+        deadline
+            .checked_duration_since(Instant::now())
+            .filter(|left| !left.is_zero())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "websocket establishment deadline exceeded",
+                )
+            })
+    }
+
+    struct EstablishingStream {
+        socket: TcpStream,
+        deadline: Option<Instant>,
+    }
+
+    impl EstablishingStream {
+        fn timeout(&self) -> io::Result<Option<Duration>> {
+            self.deadline.map(remaining).transpose()
+        }
+        fn established(&mut self) -> io::Result<TcpStream> {
+            self.deadline = None;
+            self.socket.set_read_timeout(None)?;
+            self.socket.set_write_timeout(None)?;
+            self.socket.try_clone()
+        }
+    }
+
+    fn establishment_io<T>(result: io::Result<T>, establishing: bool) -> io::Result<T> {
+        result.map_err(|error| {
+            if establishing
+                && matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                )
+            {
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "websocket establishment deadline exceeded",
+                )
+            } else {
+                error
+            }
+        })
+    }
+
+    impl Read for EstablishingStream {
+        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+            if self.deadline.is_some() {
+                self.socket.set_read_timeout(self.timeout()?)?;
+            }
+            establishment_io(self.socket.read(bytes), self.deadline.is_some())
+        }
+    }
+    impl Write for EstablishingStream {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.deadline.is_some() {
+                self.socket.set_write_timeout(self.timeout()?)?;
+            }
+            establishment_io(self.socket.write(bytes), self.deadline.is_some())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            if self.deadline.is_some() {
+                self.socket.set_write_timeout(self.timeout()?)?;
+            }
+            establishment_io(self.socket.flush(), self.deadline.is_some())
+        }
+    }
+
+    fn connect_websocket(
+        request: tungstenite::handshake::client::Request,
+        deadline: Instant,
+    ) -> Result<tungstenite::WebSocket<MaybeTlsStream<EstablishingStream>>, TransportError> {
+        let host = request
+            .uri()
+            .host()
+            .ok_or_else(|| transfer_error("realtime URL invalid", "request", None))?;
+        let host = host.trim_start_matches('[').trim_end_matches(']');
+        let port = match request.uri().scheme_str() {
+            Some("ws") => request.uri().port_u16().unwrap_or(80),
+            Some("wss") => request.uri().port_u16().unwrap_or(443),
+            _ => return Err(transfer_error("realtime URL invalid", "request", None)),
+        };
+        // System DNS has no cancellable deadline. Only resolution runs here:
+        // a late result cannot open a socket or issue an authenticated request.
+        let host = host.to_owned();
+        let (resolved, addresses) = mpsc::sync_channel(1);
+        std::thread::Builder::new()
+            .name("syncular-dns".to_owned())
+            .spawn(move || {
+                let result = (host.as_str(), port)
+                    .to_socket_addrs()
+                    .map(|items| items.collect::<Vec<_>>());
+                let _ = resolved.send(result);
+            })
+            .map_err(|e| io_err("realtime DNS failed", e))?;
+        let addresses = addresses
+            .recv_timeout(remaining(deadline).map_err(|e| io_err("realtime DNS failed", e))?)
+            .map_err(|e| match e {
+                mpsc::RecvTimeoutError::Timeout => {
+                    timeout_error("realtime DNS timed out", "timeout")
+                }
+                mpsc::RecvTimeoutError::Disconnected => {
+                    transfer_error("realtime DNS failed", "io", None)
+                }
+            })?
+            .map_err(|e| io_err("realtime DNS failed", e))?;
+        let mut last_error = io::Error::new(io::ErrorKind::NotFound, "DNS returned no addresses");
+        let mut socket = None;
+        for address in addresses {
+            match TcpStream::connect_timeout(
+                &address,
+                remaining(deadline).map_err(|e| io_err("realtime TCP connect failed", e))?,
+            ) {
+                Ok(stream) => {
+                    socket = Some(stream);
+                    break;
+                }
+                Err(error) => last_error = error,
+            }
+        }
+        let socket = socket.ok_or_else(|| io_err("realtime TCP connect failed", last_error))?;
+        socket
+            .set_nodelay(true)
+            .map_err(|e| io_err("realtime TCP connect failed", e))?;
+        let stream = EstablishingStream {
+            socket,
+            deadline: Some(deadline),
+        };
+        // Same pinned rustls / WebPKI connector, certificate and hostname checks.
+        // Redirects are errors: credentials stay bound to the configured endpoint.
+        let (ws, _) = tungstenite::client_tls_with_config(request, stream, None, None).map_err(
+            |e| match e {
+                tungstenite::HandshakeError::Failure(error) => {
+                    ws_err("realtime connection failed", error)
+                }
+                // The establishment socket is blocking with a deadline, so the
+                // handshake cannot report an interrupted (would-block) state.
+                tungstenite::HandshakeError::Interrupted(_) => {
+                    transfer_error("realtime connection failed", "protocol", None)
+                }
+            },
+        )?;
+        remaining(deadline).map_err(|e| io_err("realtime connection failed", e))?;
+        Ok(ws)
+    }
+
+    #[cfg(test)]
+    mod establishment_tests {
+        use super::*;
+        use std::net::{Shutdown, TcpListener};
+        use tungstenite::client::IntoClientRequest;
+
+        // A peer consumes the initial request/ClientHello, then withholds its
+        // upgrade/TLS response until released. Cleanup also unblocks the old path.
+        fn withheld_response(tls: bool, old: bool) {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!(
+                "{}://{}/realtime",
+                if tls { "wss" } else { "ws" },
+                listener.local_addr().unwrap()
+            );
+            let (accepted_tx, accepted_rx) = mpsc::channel();
+            let (release_tx, release_rx) = mpsc::channel();
+            let peer = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut bytes = [0; 4096];
+                assert!(stream.read(&mut bytes).unwrap() > 0);
+                accepted_tx.send(()).unwrap();
+                release_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+                let _ = stream.shutdown(Shutdown::Both);
+            });
+            let (done_tx, done_rx) = mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                let result = if old {
+                    tungstenite::connect(url)
+                        .map(|_| ())
+                        .map_err(|e| e.to_string())
+                } else {
+                    connect_websocket(
+                        url.into_client_request().unwrap(),
+                        Instant::now() + Duration::from_millis(250),
+                    )
+                    .map(|_| ())
+                    .map_err(|e| format!("{}: {}", e.code, e.message))
+                };
+                done_tx.send(result).unwrap();
+            });
+            accepted_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            if old {
+                assert!(
+                    matches!(
+                        done_rx.recv_timeout(Duration::from_millis(500)),
+                        Err(mpsc::RecvTimeoutError::Timeout)
+                    ),
+                    "original connect unexpectedly had a deadline"
+                );
+                release_tx.send(()).unwrap();
+                assert!(done_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .unwrap()
+                    .is_err());
+            } else {
+                let error = done_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("establishment remained blocked")
+                    .unwrap_err();
+                assert_eq!(error, "transport.timeout: realtime connection failed");
+                eprintln!(
+                    "withheld {} produces {error}",
+                    if tls { "TLS" } else { "upgrade" }
+                );
+                release_tx.send(()).unwrap();
+            }
+            worker.join().unwrap();
+            peer.join().unwrap();
+        }
+
+        #[test]
+        fn original_connect_blocks_on_withheld_upgrade_and_tls() {
+            withheld_response(false, true);
+            withheld_response(true, true);
+        }
+        #[test]
+        fn establishment_deadline_errors_on_withheld_upgrade_and_tls() {
+            withheld_response(false, false);
+            withheld_response(true, false);
+        }
+
+        #[test]
+        fn slow_upgrade_bytes_cannot_renew_the_absolute_deadline() {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("ws://{}", listener.local_addr().unwrap());
+            let peer = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut bytes = [0; 4096];
+                let _ = stream.read(&mut bytes).unwrap();
+                for byte in b"HTTP/1.1 101 Switching Protocols\r\n" {
+                    if stream.write_all(&[*byte]).is_err() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(40));
+                }
+            });
+            let started = Instant::now();
+            assert!(connect_websocket(
+                url.into_client_request().unwrap(),
+                started + Duration::from_millis(250)
+            )
+            .is_err());
+            assert!(started.elapsed() < Duration::from_secs(1));
+            peer.join().unwrap();
+        }
+
+        #[test]
+        fn saturated_tcp_accept_queue_returns_an_observable_error() {
+            // Fill a loopback listener's kernel accept queue without accepting.
+            // No unroutable external host or firewall mutation is needed.
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let mut queued = Vec::new();
+            loop {
+                match TcpStream::connect_timeout(&address, Duration::from_millis(50)) {
+                    Ok(stream) => queued.push(stream),
+                    Err(error) => {
+                        assert!(
+                            matches!(
+                                error.kind(),
+                                io::ErrorKind::TimedOut
+                                    | io::ErrorKind::WouldBlock
+                                    | io::ErrorKind::ConnectionRefused
+                                    | io::ErrorKind::ConnectionReset
+                            ),
+                            "{error:?}"
+                        );
+                        break;
+                    }
+                }
+                assert!(queued.len() < 4096, "listener queue did not saturate");
+            }
+            let started = Instant::now();
+            let url = format!("ws://{address}");
+            let error = match connect_websocket(
+                url.into_client_request().unwrap(),
+                started + Duration::from_millis(250),
+            ) {
+                Err(error) => error,
+                Ok(_) => panic!("full accept queue unexpectedly connected"),
+            };
+            assert!(
+                (error.code == "transport.timeout" || error.code == "transport.failed")
+                    && (error.message == "realtime TCP connect failed"
+                        || error.message == "realtime connection failed"),
+                "{}: {}",
+                error.code,
+                error.message
+            );
+            assert!(started.elapsed() < Duration::from_secs(2));
+        }
+    }
+
     /// Segment fetches keep their own generic surface (`sync.transport_failed`)
     /// but must not swallow a typed policy failure: a refused redirect or an
     /// exceeded deadline/byte budget survives to the caller.
@@ -836,10 +1147,6 @@ mod native {
         /// credentials; a request to it is credential bearing even without
         /// configured headers.
         base_url_has_userinfo: bool,
-        /// The realtime URL carries userinfo or a query. The handshake request
-        /// line carries the query (a signed capability); userinfo is refused
-        /// as a credential by policy.
-        ws_url_credentialed: bool,
         agent: ureq::Agent,
         policy: HostTransportPolicy,
         /// Absolute whole-round deadline scoped by `set_round_deadline` for
@@ -891,7 +1198,6 @@ mod native {
                 ws_url: self.ws_url.clone(),
                 headers: self.headers.clone(),
                 base_url_has_userinfo: self.base_url_has_userinfo,
-                ws_url_credentialed: self.ws_url_credentialed,
                 agent: self.agent.clone(),
                 policy: self.policy.clone(),
                 round_deadline_at: None,
@@ -939,22 +1245,11 @@ mod native {
             let base_url_has_userinfo = url::Url::parse(base_url)
                 .map(|url| !url.username().is_empty() || url.password().is_some())
                 .unwrap_or(false);
-            // The handshake request line carries the realtime URL's path and
-            // query; a query is a signed capability, and userinfo is refused
-            // as a credential by policy.
-            let ws_url_credentialed = url::Url::parse(&ws_url)
-                .map(|url| {
-                    !url.username().is_empty()
-                        || url.password().is_some()
-                        || url.query().is_some_and(|query| !query.is_empty())
-                })
-                .unwrap_or(false);
             Ok(NativeTransport {
                 base_url: base_url.trim_end_matches('/').to_owned(),
                 ws_url,
                 headers,
                 base_url_has_userinfo,
-                ws_url_credentialed,
                 agent: build_agent(&policy),
                 policy,
                 round_deadline_at: None,
@@ -1019,13 +1314,6 @@ mod native {
         /// headers, or `user:pass@` userinfo ureq replays as Basic auth.
         fn credentialed(&self) -> bool {
             !self.headers.is_empty() || self.base_url_has_userinfo
-        }
-
-        /// Whether the WebSocket handshake carries a credential: configured
-        /// headers (tungstenite replays them to a redirect target) or a
-        /// realtime URL with userinfo or a query (a signed capability).
-        fn realtime_credentialed(&self) -> bool {
-            !self.headers.is_empty() || self.ws_url_credentialed
         }
 
         /// Apply the per-call bounds to a request: the effective timeout, and
@@ -1187,8 +1475,11 @@ mod native {
             })();
             // A failed/timed-out write must not remain eligible for delivery
             // behind a later command on the same connection.
-            if result.is_err() {
+            if let Err(error) = &result {
                 self.shutdown();
+                // Some callers (delta acknowledgement) intentionally ignore a
+                // send error. It still invalidates the connection for the host.
+                self.inbound.push(Inbound::Disconnected(error.clone()));
             }
             result
         }
@@ -1575,25 +1866,18 @@ mod native {
                     }
                 }
             }
-            let (mut ws, _resp) = tungstenite::client::connect_with_config(
-                request,
-                None,
-                // The redirect policy covers the WebSocket handshake too:
-                // tungstenite replays every request header (the configured
-                // authorization and actor headers) to the redirect target,
-                // and the handshake request line carries the realtime URL's
-                // query.
-                if self.policy.redirects == RedirectPolicy::Follow && !self.realtime_credentialed()
-                {
-                    3
-                } else {
-                    0
-                },
-            )
-            .map_err(|error| ws_err("realtime connection failed", error))?;
+            // The bounded establishment never follows a redirect, so a transport configured with
+            // `RedirectPolicy::Follow` fails here instead of having the policy silently ignored.
+            if self.policy.redirects == RedirectPolicy::Follow {
+                return Err(redirect_error(
+                    "realtime establishment does not follow redirects",
+                    None,
+                ));
+            }
+            let mut ws = connect_websocket(request, Instant::now() + CONNECT_TIMEOUT)?;
             let stream = match ws.get_mut() {
-                MaybeTlsStream::Plain(stream) => stream.try_clone(),
-                MaybeTlsStream::Rustls(stream) => stream.get_ref().try_clone(),
+                MaybeTlsStream::Plain(stream) => stream.established(),
+                MaybeTlsStream::Rustls(stream) => stream.get_mut().established(),
                 _ => {
                     return Err(TransportError::new(
                         "transport.failed",
@@ -1701,6 +1985,13 @@ mod native {
                         }
                     }
                 };
+                // Publish before waking a round/send waiter: the host must
+                // drain this old connection's event before it can reconnect.
+                // An idle close has no round waiter at all. Explicit shutdown
+                // is owned by its caller and must not leave a stale close.
+                if !stop.load(Ordering::SeqCst) {
+                    inbound.push(Inbound::Disconnected(failure.clone()));
+                }
                 if let Some(completed) = pending {
                     let _ = completed.send(Err(failure.clone()));
                 }
@@ -2437,19 +2728,14 @@ mod tests {
 
     #[test]
     fn websocket_handshake_redirects_obey_the_redirect_policy() {
-        // tungstenite replays every handshake header to a redirect target and
-        // the handshake request line carries the realtime URL's query, so the
-        // policy has to gate the WebSocket handshake exactly like an HTTP
-        // request. The Location points at a second listener so the test can
-        // prove whether it was contacted at all.
-        for (credential, redirects, refused) in [
-            ("headers", "deny", true),
-            ("headers", "follow", true),
-            ("userinfo", "follow", true),
-            ("query", "follow", true),
-            ("none", "deny", true),
-            ("none", "follow", false),
-        ] {
+        // The handshake request carries the configured headers and the realtime
+        // URL's query, so a redirect response is an error and never replays
+        // them to the Location. The Location points at a second listener so
+        // the test can prove it was never contacted. A `follow` policy cannot
+        // establish at all and fails before any connection (see
+        // `tests/realtime_disconnect.rs`).
+        for credential in ["headers", "userinfo", "query", "none"] {
+            let redirects = "deny";
             let destination = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let destination_addr = destination.local_addr().unwrap();
             let location = format!("ws://{destination_addr}/realtime");
@@ -2530,47 +2816,32 @@ mod tests {
             destination_thread.join().unwrap();
             let landed = landed.lock().unwrap().clone();
             origin_thread.join().unwrap();
-            if refused {
-                let error = result.unwrap_err();
-                assert_eq!(
-                    error.code, "transport.redirect",
-                    "{credential} {redirects}: a refused handshake redirect surfaces the redirect code"
+            let error = result.unwrap_err();
+            assert_eq!(
+                error.code, "transport.redirect",
+                "{credential}: a refused handshake redirect surfaces the redirect code"
+            );
+            let details = error.details.unwrap();
+            assert_eq!(details["causeKind"], "redirect");
+            assert_eq!(details["httpStatus"], 302);
+            assert_eq!(
+                landed.len(),
+                1,
+                "{credential}: the redirect target is never contacted: {landed:?}"
+            );
+            assert!(landed[0].starts_with("GET /sentinel"), "{landed:?}");
+            let head = head_rx.recv().unwrap();
+            if credential == "userinfo" {
+                assert!(
+                    !head.contains("secret"),
+                    "the handshake request line drops URL userinfo"
                 );
-                let details = error.details.unwrap();
-                assert_eq!(details["causeKind"], "redirect");
-                assert_eq!(details["httpStatus"], 302);
-                assert_eq!(
-                    landed.len(),
-                    1,
-                    "{credential} {redirects}: the redirect target is never contacted: {landed:?}"
+            }
+            if credential == "query" {
+                assert!(
+                    head.contains("token=secret"),
+                    "the handshake request line carries the realtime query"
                 );
-                assert!(landed[0].starts_with("GET /sentinel"), "{landed:?}");
-                let head = head_rx.recv().unwrap();
-                if credential == "userinfo" {
-                    assert!(
-                        !head.contains("secret"),
-                        "the handshake request line drops URL userinfo"
-                    );
-                }
-                if credential == "query" {
-                    assert!(
-                        head.contains("token=secret"),
-                        "the handshake request line carries the realtime query"
-                    );
-                }
-            } else {
-                // An uncredentialed handshake may follow: the destination
-                // answers the replayed handshake, so the client surfaces its
-                // 400 instead of a redirect refusal.
-                let error = result.unwrap_err();
-                assert_eq!(error.code, "transport.failed", "{credential} {redirects}");
-                assert_eq!(
-                    error.details.unwrap()["httpStatus"],
-                    400,
-                    "{credential} {redirects}: the redirect target answered"
-                );
-                assert_eq!(landed.len(), 2, "{landed:?}");
-                assert!(landed[0].starts_with("GET /realtime"), "{landed:?}");
             }
         }
     }

@@ -379,6 +379,7 @@ for (const backend of ['sqlite', 'postgres', 'd1'] as const) {
         cursor: 9,
         updatedAtMs: 2_000,
         subscriptions: [],
+        lastRoundAtMs: 2_000,
       });
       expect(
         (await storage.listClientCursors('part')).sort((a, b) =>

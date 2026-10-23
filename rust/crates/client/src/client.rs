@@ -1754,6 +1754,37 @@ mod observation_tests {
     }
 
     #[test]
+    fn a_retryable_in_band_failure_keeps_the_socket_connected_and_still_asks_for_a_retry() {
+        let mut client = client();
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        let mut transport = ServerErrorTransport {
+            code: "sync.schema_not_ready",
+            retryable: true,
+        };
+        client.connect_realtime(&mut transport).expect("connect");
+        assert!(matches!(
+            client.sync(&mut transport),
+            SyncOutcome::Failed { ref error_code, .. } if error_code == "sync.schema_not_ready"
+        ));
+        assert_eq!(
+            client.realtime_state(),
+            RealtimeState::Connected,
+            "the socket delivered the answer, so it is not lost"
+        );
+        assert!(
+            matches!(
+                client.drain_sync_intents().as_slice(),
+                [SyncIntent::Background { delay_ms: 250 }]
+            ),
+            "the retry deadline is a sync round and no reconnect satisfies it"
+        );
+        assert_eq!(
+            client.progress().snapshot().unwrap().retry_delay_ms,
+            Some(250)
+        );
+    }
+
+    #[test]
     fn retryable_server_error_schedules_a_background_retry() {
         let mut client = client();
         client.set_meta(LOG_EPOCH_KEY, "epoch-1");
@@ -2679,6 +2710,46 @@ mod observation_tests {
         }
         assert_eq!(transport.sync_calls, 0);
         assert_eq!(transport.realtime_sync_calls, 0);
+    }
+
+    #[test]
+    fn an_unsolicited_socket_end_is_lost_with_the_transport_code_and_a_retry_intent() {
+        let mut client = client();
+        let mut transport = CountingRealtimeTransport::default();
+        let ended = TransportError::new("transport.failed", "realtime connection closed");
+        client.realtime_lost(&mut transport, &ended);
+        assert_eq!(
+            client.realtime_state(),
+            RealtimeState::Disconnected,
+            "a socket that was never connected has nothing to lose"
+        );
+        assert!(client.drain_sync_intents().is_empty());
+
+        client.connect_realtime(&mut transport).expect("connect");
+        client.realtime_lost(&mut transport, &ended);
+        assert_eq!(client.realtime_state(), RealtimeState::Lost);
+        assert_eq!(transport.closes, 1);
+        assert!(matches!(
+            client.drain_sync_intents().as_slice(),
+            [SyncIntent::Background { delay_ms: 250 }]
+        ));
+        let snapshot = client
+            .diagnostics_snapshot(&ClientDiagnosticsRequest::default())
+            .expect("diagnostics");
+        assert_eq!(snapshot.host.realtime, RealtimeState::Lost);
+        assert_eq!(
+            snapshot.host.realtime_reason_code.as_deref(),
+            Some("transport.failed")
+        );
+        assert_eq!(snapshot.host.realtime_retry_delay_ms, Some(250));
+
+        client.realtime_lost(&mut transport, &ended);
+        assert!(
+            client.drain_sync_intents().is_empty(),
+            "a second report for the same loss schedules nothing"
+        );
+        client.connect_realtime(&mut transport).expect("reconnect");
+        assert_eq!(client.realtime_state(), RealtimeState::Connected);
     }
 
     #[test]
@@ -19958,6 +20029,22 @@ impl SyncClient {
             None,
         );
         self.presence.clear(); // §8.6.1: presence is per-connection
+    }
+
+    /// §8.8: the host observed the socket end without disconnecting it (a
+    /// peer close, an I/O error, a failed send; the native transport reports
+    /// these as `Inbound::Disconnected`). Releases the transport, moves a
+    /// `Connected` state to `Lost` with the transport's code as the reason, and schedules
+    /// one background retry intent so the host reconnects and catches up.
+    pub fn realtime_lost(&mut self, transport: &mut dyn Transport, error: &TransportError) {
+        if self.realtime_state != RealtimeState::Connected {
+            return;
+        }
+        self.cancel_sync_round();
+        let _ = transport.realtime_close();
+        self.set_realtime_state(RealtimeState::Lost, Some(&error.code));
+        self.realtime_retry_delay_ms = Some(self.schedule_background_retry());
+        self.presence.clear();
     }
 
     /// §8.6.2: publish (or clear, `doc: None`) this client's presence

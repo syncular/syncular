@@ -135,7 +135,10 @@ the complete [backup and restore runbook](https://syncular.dev/server-operations
 A `SyncError` answers with its catalog code and status. By default, any other exception an
 adapter catches answers `sync.internal_error` and is handed to
 `SyncServerConfig.onError` exactly once; a throwing observer does not change
-the response. The same config accepts an optional synchronous `mapError` hook:
+the response. A `SyncError` never reaches `onError`: observe a catalog failure
+through the `request.handled` event (`outcome`, `errorCode`, `clientId`) or the
+client's stored `lastErrorCode` / `consecutiveFailures` / `lastRoundAtMs`, which
+`ServerStorage.recordClientRoundFailure` updates on every failed round. The same config accepts an optional synchronous `mapError` hook:
 after `onError` observes the original, `mapError` may return a catalog
 `SyncError` (with structured `details`, for example `retryAfterMs`) that the
 adapter answers instead. Return `undefined` to keep `sync.internal_error`. A

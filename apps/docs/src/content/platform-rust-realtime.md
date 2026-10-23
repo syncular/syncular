@@ -39,7 +39,9 @@ Transport and protocol failures come back as `SyncOutcome::Failed`; `sync()` doe
 
 ## Know when to sync
 
-`drain_sync_intents()` returns the coalesced `SyncIntent` values: `None`, `Interactive`, and `Background { delay_ms }`. The core classifies immediate work and transient retry backoff; the host owns the wait on the mailbox and the deadline. `drain_change_batches()` returns the exact revisioned change batches for UI refresh.
+`drain_sync_intents()` returns the coalesced `SyncIntent` values: `None`, `Interactive`, and `Background { delay_ms }`. The core classifies immediate work and transient retry backoff; the host owns the wait on the mailbox and the deadline.
+
+A `Background { delay_ms }` intent obliges the host to run a sync round after `delay_ms`, whatever the realtime state is. A retryable in-band failure (`sync.schema_not_ready`, `sync.internal_error`) leaves the socket `Connected`, so reconnecting a socket never satisfies the intent. A host loop that acts on a Background intent only when the socket is down never retries that round, and the replica waits for the next realtime wake, which can be an hour on a quiet server. The core has no timer; `progress().snapshot().retry_delay_ms` carries the same delay after the intent was drained. Take the earliest deadline among the Background intents, and clear it when a round starts. `drain_change_batches()` returns the exact revisioned change batches for UI refresh.
 
 ## Realtime
 
@@ -48,7 +50,11 @@ Connect with `client.connect_realtime(&mut transport)?`, then feed inbound frame
 - `client.on_realtime_text(&text)`: JSON control messages.
 - `client.on_realtime_binary(&mut transport, &bytes)`: binary delta frames.
 
-Applied deltas update the local tables directly, and `sync_needed()` flips when a round is warranted. `disconnect_realtime` closes the lane. While the socket is connected, the core routes rounds through `Transport::realtime_sync`. `HostTransport` runs the socket and its reader thread for you. [Realtime & the WS loop](/concepts-realtime/) explains the protocol.
+Applied deltas update the local tables directly, and `sync_needed()` flips when a round is warranted. `disconnect_realtime` closes the lane.
+
+`HostTransport::take_inbound()` also returns `Inbound::Disconnected(TransportError)` when the socket ends without your calling `disconnect_realtime`: the server closed an idle connection, a read or write failed, or a send failed, including a delta acknowledgement whose result the client ignores. The reader pushes it and notifies the mailbox before it wakes any waiting round, so an idle replica learns of the loss. Pass it to `client.realtime_lost(&mut transport, &error)`. A `Connected` client becomes `Lost` with the transport code as the reason, the transport is released, and one `Background` intent asks you to reconnect and run a round. Calling it in any other state does nothing. A deliberate `shutdown` enqueues no event.
+
+`realtime_connect` fails within 10 seconds across DNS, TCP, TLS, and the upgrade, with `transport.timeout` or `transport.failed` (`causeKind` names the stage). A 3xx upgrade response is `transport.redirect`, and so is a transport configured with `redirects: "follow"`: the handshake never follows a redirect. Connect failures are not retried; the `Refused` state and the Background intent drive the retry. While the socket is connected, the core routes rounds through `Transport::realtime_sync`. `HostTransport` runs the socket and its reader thread for you. [Realtime & the WS loop](/concepts-realtime/) explains the protocol.
 
 ## Realtime policy
 

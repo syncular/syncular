@@ -55,6 +55,8 @@ interface Harness {
   /** Every statement text the database saw. */
   readonly log: string[];
   ensure(schema: ServerSchema): Promise<void>;
+  /** A new storage instance on the same database, as after a process restart. */
+  reopen(): void;
   /** Syncular-owned index names of `assertions`, sorted. */
   owned(): Promise<string[]>;
   /** `[definition]` of one index: key columns and whether it is partial. */
@@ -76,10 +78,14 @@ async function harness(backend: Backend): Promise<Harness> {
       },
       close: () => pg.close(),
     };
-    const storage = new PostgresServerStorage(pgliteExecutor(recording));
+    const open = () => new PostgresServerStorage(pgliteExecutor(recording));
+    let storage = open();
     return {
       log,
       ensure: (next) => storage.ensureSchema(compileSchema(next)),
+      reopen: () => {
+        storage = open();
+      },
       owned: async () =>
         (
           await pg.query<{ indexname: string }>(
@@ -123,18 +129,23 @@ async function harness(backend: Backend): Promise<Harness> {
   });
   if (backend === 'd1') {
     const d1 = new D1DatabaseDouble(native.native);
-    const storage = new D1ServerStorage({
-      prepare: (sql) => {
-        log.push(sql);
-        return d1.prepare(sql);
-      },
-      batch: (statements) => d1.batch(statements),
-      exec: (sql) => d1.exec(sql),
-    });
+    const open = () =>
+      new D1ServerStorage({
+        prepare: (sql) => {
+          log.push(sql);
+          return d1.prepare(sql);
+        },
+        batch: (statements) => d1.batch(statements),
+        exec: (sql) => d1.exec(sql),
+      });
+    let storage = open();
     return {
       log,
       ensure: async (next) => {
         while (!(await storage.migrateSchema(compileSchema(next))).complete) {}
+      },
+      reopen: () => {
+        storage = open();
       },
       owned: sqliteOwned,
       definition: sqliteDefinition,
@@ -146,10 +157,14 @@ async function harness(backend: Backend): Promise<Harness> {
       native.exec(sql);
     },
   });
-  const storage = new SqliteServerStorage(recording);
+  const open = () => new SqliteServerStorage(recording);
+  let storage = open();
   return {
     log,
     ensure: (next) => storage.ensureSchema(compileSchema(next)),
+    reopen: () => {
+      storage = open();
+    },
     owned: sqliteOwned,
     definition: sqliteDefinition,
   };
@@ -237,6 +252,54 @@ describe('schema bump index diff', () => {
           physicalServerIndexName(lookup),
           physicalServerIndexName(reworked),
         ].sort(),
+      );
+    });
+  }
+
+  for (const backend of ['sqlite', 'postgres', 'd1'] as const) {
+    test(`${backend}: opening at the same version reconciles server indexes without a bump`, async () => {
+      const db = await harness(backend);
+      const lookup = { name: 'lookup', columns: ['owner_id', 'id'] };
+      const pending = {
+        name: 'pending',
+        columns: ['_sync_partition', 'owner_id'],
+        where: "status = 'pending'",
+      };
+      await db.ensure(schema(1, [BY_TITLE]));
+      expect(await db.owned()).toEqual(['sync_ix_by_title']);
+
+      // Declaring server indexes at the same version creates them on open.
+      db.reopen();
+      await db.ensure(schema(1, [BY_TITLE], [lookup, pending]));
+      expect(await db.owned()).toEqual(
+        [
+          'sync_ix_by_title',
+          physicalServerIndexName(lookup),
+          physicalServerIndexName(pending),
+        ].sort(),
+      );
+      expect(await db.definition(physicalServerIndexName(pending))).toEqual({
+        columns: ['_sync_partition', 'owner_id'],
+        partial: true,
+      });
+
+      // An unchanged declaration issues no DDL.
+      db.reopen();
+      db.log.length = 0;
+      await db.ensure(schema(1, [BY_TITLE], [lookup, pending]));
+      expect(
+        db.log.filter((sql) =>
+          /^\s*(CREATE (UNIQUE )?INDEX|DROP INDEX)/i.test(sql),
+        ),
+      ).toEqual([]);
+
+      // A changed predicate drops the old index and creates the new one; a
+      // removed server index drops; the declared index stays.
+      const reworked = { ...pending, where: "status = 'queued'" };
+      db.reopen();
+      await db.ensure(schema(1, [BY_TITLE], [reworked]));
+      expect(await db.owned()).toEqual(
+        ['sync_ix_by_title', physicalServerIndexName(reworked)].sort(),
       );
     });
   }

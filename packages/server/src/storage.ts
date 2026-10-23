@@ -305,6 +305,28 @@ export interface ClientRecord {
   readonly cursor: number;
   readonly updatedAtMs: number;
   readonly subscriptions: readonly ClientSubscription[];
+  /** When this client's last sync round finished, successfully or not. */
+  readonly lastRoundAtMs?: number;
+  /** Code of the last round when it failed; absent after a successful round. */
+  readonly lastErrorCode?: string;
+  /** Rounds that failed in a row since the last successful round. */
+  readonly consecutiveFailures?: number;
+}
+
+/** The round-state fields of a stored `sync_clients` row. */
+export function clientRoundState(
+  lastRoundAtMs: number | null,
+  lastErrorCode: string | null,
+  consecutiveFailures: number,
+): Pick<
+  ClientRecord,
+  'lastRoundAtMs' | 'lastErrorCode' | 'consecutiveFailures'
+> {
+  return {
+    ...(lastRoundAtMs !== null ? { lastRoundAtMs } : {}),
+    ...(lastErrorCode !== null ? { lastErrorCode } : {}),
+    ...(consecutiveFailures > 0 ? { consecutiveFailures } : {}),
+  };
 }
 
 export interface CommitWindowQuery {
@@ -917,7 +939,24 @@ export interface ServerStorage {
     partition: string,
     clientId: string,
   ): Promise<ClientRecord | undefined>;
+  /**
+   * Write the record for a completed round. The round-state fields reset: the
+   * stored last round is a success at `updatedAtMs` with no failures.
+   */
   putClientRecord(partition: string, record: ClientRecord): Promise<void>;
+  /**
+   * Record a failed round on an existing record: set `lastRoundAtMs` and
+   * `lastErrorCode`, and increment `consecutiveFailures`. Requires a matching
+   * actor; a missing record or another actor's record is unchanged, and
+   * `updatedAtMs` (the pruning liveness signal) is never touched.
+   */
+  recordClientRoundFailure(
+    partition: string,
+    clientId: string,
+    actorId: string,
+    errorCode: string,
+    atMs: number,
+  ): Promise<void>;
   /**
    * Atomically advance an existing record's cursor and activity timestamp.
    * Preserve registration fields; require matching actor and current log epoch.

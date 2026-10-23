@@ -413,6 +413,11 @@ impl SyncularCore {
                         }
                     }
                 }
+                transport::Inbound::Disconnected(error) => {
+                    if let Some(client) = self.client.as_mut() {
+                        client.realtime_lost(&mut self.transport, &error);
+                    }
+                }
             }
         }
     }
