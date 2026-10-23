@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Use this page when a Syncular client or server misbehaves during a first integration. It lists the shared failures in the order integrators hit them: the symptom, what it means, and the fix. Failures that belong to one SDK live on that SDK's troubleshooting page; the browser failures here are linked from the Browser, React, and React Native pages.
+Use this page when a Syncular client or server misbehaves during a first integration. It lists the shared failures in the order integrators hit them: the symptom, what it means, and the fix. [Do's and Don'ts](/pitfalls/) lists the design mistakes behind many of them. Failures that belong to one SDK live on that SDK's troubleshooting page; the browser failures here are linked from the Browser, React, and React Native pages.
 
 ::meta{for="Developers debugging a first integration on any SDK" time="Look up one entry" first="quickstart" spec="10"}
 

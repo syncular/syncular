@@ -164,7 +164,7 @@ For an HTTP-only deployment, keep the Durable Object binding and migration, and 
 
 ### PostgreSQL behind Hyperdrive
 
-`SyncularRealtimeHost` also takes a storage the Worker built instead of a D1 binding. `RealtimeDOConfig<S>` then hands that storage to `syncConfig`. The host runs the same partition FIFO, socket hub, and maintenance methods over it. `PostgresServerStorage` locks partitions in the database, so it needs no `pushApplySerialized` flag. Enable `nodejs_compat` for `pg`, wire it through a [`PgExecutor`](/server-storage-reference/#driver-wiring), and connect through a Hyperdrive binding with query caching disabled.
+`SyncularRealtimeHost` also takes a storage the Worker built instead of a D1 binding. `RealtimeDOConfig<S>` then hands that storage to `syncConfig`. The host runs the same partition FIFO, socket hub, and maintenance methods over it. `PostgresServerStorage` locks partitions in the database, so it needs no `pushApplySerialized` flag. Enable `nodejs_compat` for `pg`, wire it through a [`PgExecutor`](/server-storage-reference/#driver-wiring), and connect through a Hyperdrive binding with query caching disabled. Point the binding at the database's direct hostname: Hyperdrive pools connections itself, and Neon's pooled `-pooler` endpoint would pool them twice.
 
 ```ts title="src/realtime-do.ts"
 import { PostgresServerStorage } from '@syncular/server';
