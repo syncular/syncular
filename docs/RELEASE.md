@@ -1,8 +1,70 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.39.2** (`v0.39.2`). All artifacts use Apache-2.0, except
+current release is **0.40.0** (`v0.40.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.40.0 release notes
+
+0.40.0 answers Nori's second round of integration feedback. SSP2 and the
+storage layout of every table except `sync_clients` are unchanged.
+
+1. **The Rust realtime reader reports an unsolicited end.** An idle server
+   close, a read or write error, and a failed send (including a delta
+   acknowledgement whose result the client ignores) used to fail only an
+   in-flight round. An idle replica stayed `Connected`, never reconnected and
+   never caught up. The native transport now buffers
+   `Inbound::Disconnected(TransportError)` and notifies the host mailbox before
+   it wakes any round or send waiter; a deliberate shutdown enqueues nothing.
+   The new `SyncClient::realtime_lost(transport, error)` moves a `Connected`
+   client to `Lost` with the transport code as the reason, releases the
+   transport, and schedules one `Background` intent. The FFI and Tauri hosts
+   call it. `tests/realtime_disconnect.rs` covers graceful and abrupt closes
+   over a real loopback WebSocket.
+2. **Realtime establishment has a deadline.** `realtime_connect` runs under one
+   absolute ten-second deadline across DNS, TCP, TLS and the upgrade, and
+   fails with `transport.timeout` or `transport.failed` (`causeKind` names the
+   stage). A 3xx upgrade is `transport.redirect`; a transport configured with
+   `redirects: "follow"` fails with `transport.redirect` instead of ignoring the
+   policy. No retry and no HTTP fallback were added. The `establishment_tests`
+   cover a withheld upgrade and TLS response, slow upgrade bytes and a
+   saturated TCP accept queue.
+3. **The Background retry intent is a stated contract.** A retryable in-band
+   failure (`sync.schema_not_ready`, `sync.internal_error`) leaves the socket
+   `Connected` and asks for a round after `delay_ms`. SPEC §7.5 and the Rust
+   realtime guide now state that the host runs that round whatever the socket
+   state is, and that a reconnect never satisfies it. The cores own no timer;
+   a new unit test locks that the socket stays `Connected` and the intent is
+   scheduled. Nori's host fix (schedule the round at the client's delay while
+   connected) is the supported shape.
+4. **The server records each client's last round.** `sync_clients` gains
+   `last_round_at_ms`, `last_error_code` and `consecutive_failures`. A failed
+   round, on HTTP or on a socket, whether thrown or answered in-band, sets the
+   code and time and increments the streak on the client's existing record. A
+   completed round clears them in the same write that stores the cursor. The
+   cursor and the pruning timestamp are untouched. `ClientRecord` and the admin
+   `listClients` view carry `lastRoundAtMs`, `lastErrorCode` and
+   `consecutiveFailures`. `onError` never saw these rounds because it receives
+   only exceptions outside the catalog; a `SyncError` such as
+   `sync.schema_not_ready` bypasses it by design, and the guide now says so.
+   The `request.handled` event of a round rejected before planning now carries
+   its `clientId`. A client that never completed a round has no record to
+   annotate.
+5. **`serverIndexes` reconcile without a schema bump.** Every storage open at
+   the running schema version creates a missing server-only index and drops
+   Syncular-owned indexes that no declaration names. Declared `indexes` still
+   change with the version. The Postgres reconcile reads indexes in the
+   existing schema probe, so a warm start stays two statements, and it takes the
+   migration lock only when it has DDL to run.
+
+**Upgrade notes.** A custom `ServerStorage` implements
+`recordClientRoundFailure(partition, clientId, actorId, errorCode, atMs)` and
+stores the three round-state fields on its client record; `putClientRecord`
+resets them. The bundled SQLite, D1 and Postgres storages add the columns on
+open. A Rust host matches `Inbound::Disconnected` in its `take_inbound` loop
+(the enum gained a variant) and calls `realtime_lost`. Hosts that vendor
+the 0.39.2 transport patches drop them. Upgrade all 12 npm packages and 6
+crates together.
 
 ## 0.39.2 release notes
 
