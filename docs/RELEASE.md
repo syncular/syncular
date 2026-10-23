@@ -1,8 +1,69 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.40.0** (`v0.40.0`). All artifacts use Apache-2.0, except
+current release is **0.41.0** (`v0.41.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.41.0 release notes
+
+0.41.0 answers Nori's third round of integration feedback: on a phone behind a
+relay (about 100 KB/s, 80 ms round trip) the Rust client 0.40.0 never finished
+a bootstrap. The socket round and every segment fetch were bounded by total
+transfer time, so a page whose transfer outlasted 30 s failed on each retry,
+the retry asked for the same page, and the server recorded each round as
+completed. SSP2 stays at wire version 3 and gains one optional request frame;
+the storage layout is unchanged.
+
+1. **Deadlines follow progress.** `requestTimeoutMs` is a silence bound. DNS
+   resolution, connection, the request head and the wait for the response head
+   each have that long from the start of their phase, and once bytes flow no
+   socket read or write may wait longer than the bound; every byte restarts
+   it. A custom `ureq` connector enforces this per read and write, so a
+   segment that keeps arriving completes however long it takes. A realtime
+   round fails after 30 s without a progress event in either direction: the
+   transport now sends a request as `0x01` chunks of at most 64 KiB and
+   restarts the bound on each flushed request chunk and each received
+   response chunk. `roundDeadlineMs` keeps its meaning and is now the only
+   bound on total transfer time. SPEC §1.8 states the three bounds.
+2. **A failed round closes the socket.** A round carries no identifier, so the
+   tail of a response the client stopped waiting for was read as the next
+   round's response (`bad envelope magic (expected SSP2)`). A socket round
+   that ends without its response END (silence timeout, malformed stream,
+   whole-round deadline) now closes the socket and queues
+   `Inbound::Disconnected` with the round's code; `realtime_lost` handles it
+   like any lost socket. SPEC §8.7 makes this a client rule. The TypeScript
+   client closes the socket on a malformed or over-long response stream; it
+   has no round deadline, so a timeout cannot occur there.
+3. **The server learns about client-side round failures.** A request can carry
+   the new optional `ROUND_FAILURE` frame (type `0x05`, directly after
+   `REQ_HEADER`, payload `code`), the code of the client's last round that
+   ended without a complete response. A client keeps the code and sends it on
+   every following request until a round receives a complete response. The
+   server records it on the client's existing record before the round runs
+   (`lastErrorCode`, `consecutiveFailures`) and the round's own completion
+   leaves it in place; the next request without the frame clears it. In-band
+   `ERROR` frames and request-level rejections are not reported because the
+   server already recorded them. A server that predates the frame skips it as
+   an unknown frame (§1.2 rule 2). Both cores implement the frame and share
+   golden vectors under `spec/vectors/request/`.
+
+Not changed: the client does not size pages or tune segment concurrency from
+measured bandwidth, and `ClientLimits` stay fixed after open. With progress
+bounds a slow page finishes, so neither is needed to avoid the retry loop. A
+host that wants smaller pages for earlier cursor commits still reopens the
+client with other limits.
+
+**Upgrade notes.** Rust hosts: remove a `roundDeadlineMs` set to bound a
+single transfer (it now fails a transfer that is still progressing) or raise
+it to the longest transfer you will wait for; keep `requestTimeoutMs`, whose
+meaning moved from "whole request" to "silence". Drop any code that closes the
+socket after a round timeout. A custom `Transport` implementation is
+unaffected. A custom `ServerStorage` implements the new optional third
+argument of `putClientRecord(partition, record, options)`: with
+`options.keepRoundOutcome` it leaves `lastErrorCode` and `consecutiveFailures`
+unchanged instead of clearing them. A storage that ignores the option stores
+each report and clears it in the same round. The bundled SQLite, D1 and
+Postgres storages honor it. Upgrade all 12 npm packages and 6 crates together.
 
 ## 0.40.0 release notes
 
