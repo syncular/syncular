@@ -257,6 +257,7 @@ impl SyncularCore {
                 error_code: "client.not_created".into(),
                 message: "create a client before syncing".into(),
                 details: None,
+                recommended_action: None,
             }));
         };
         use syncular_client::Transport;
@@ -279,6 +280,7 @@ impl SyncularCore {
                     error_code: "client.round_cancelled".into(),
                     message: "sync round belongs to a released client context".into(),
                     details: None,
+                    recommended_action: None,
                 },
                 controls: Vec::new(),
                 more: false,
