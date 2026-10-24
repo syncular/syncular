@@ -16,6 +16,21 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-10-24',
+    title: 'Scope moves stay one change, and a refused client id names its fix',
+    body: "A scope move reaches a reader that holds the old and the new scope in two subscription sections. The section order decided whether the delete or the upsert applied last, so a device could silently lose a moved row. Both clients now treat one commit's delete and upsert of the same row as one change and keep the upsert's values, and a conformance scenario runs both section orders. An HTTP refusal now keeps the server error body: `ClientSyncError.recommendedAction` in TypeScript and `SyncOutcome::Failed.recommended_action` in Rust expose `resetClientId`, with the body's `details`. `resetClientId()` / `reset_client_id(&mut transport)` rotates the persisted id for the next round, and the command router and Tauri bridge expose the same call.",
+    links: [
+      {
+        href: '/concepts-scopes/#write-path-authorization',
+        label: 'Scope moves',
+      },
+      {
+        href: '/troubleshooting/#syncinvalid_client_id-after-an-account-switch',
+        label: 'Recover from a reused client id',
+      },
+    ],
+  },
+  {
     date: '2026-10-23',
     title: 'Remote operation errors carry rejection details',
     body: "A `ValidationRejection` thrown by a registered query or command with `details` now sends them in the `kind: 'error'` response, as a push refusal always did. `ClientSyncError.details` (TypeScript) and `RemoteClientError.details` (Rust) expose the bounded `reason`, `requiredAction`, `fieldPaths` and `references`. A response without details parses as before.",

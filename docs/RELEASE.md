@@ -1,8 +1,49 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.41.2** (`v0.41.2`). All artifacts use Apache-2.0, except
+current release is **0.42.0** (`v0.42.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.42.0 release notes
+
+0.42.0 closes two integration reports. SSP2, the storage layout, and the
+wire version are unchanged.
+
+1. **A scope move is one change on the reader.** The server emits a moved
+   row as a delete under the old scope and an upsert under the new one in one
+   commit. A reader that holds both scopes receives them in two subscription
+   sections, and the section order decided whether the row survived: applying
+   the insert first and the delete second removed a row the server still
+   holds. Both clients now coalesce the pair for one `(commitSeq, table,
+   rowId)` and keep the upsert's values in either section order. A section
+   that carries both changes itself keeps its change order. The new
+   conformance scenario `scopes/scope-move-keeps-the-row-in-either-section-order`
+   runs both orders against both clients. This also closes the delivery gap
+   in the reported scope move; the explicit `rescope` operation remains open.
+2. **An HTTP refusal keeps the server's error body.** A `POST /sync` refused
+   with HTTP 400 `sync.invalid_client_id` arrived as a bare transport failure.
+   The native Rust transport read the status only, and both clients dropped
+   `recommendedAction` and `details`. A transport now preserves `code`,
+   `category`, `retryable`, `recommendedAction`, `message`, and `details` from
+   an authenticated JSON error body, with `httpStatus` in the cause details.
+   `ClientSyncError.recommendedAction` (TypeScript) and
+   `SyncOutcome::Failed.recommended_action` (Rust) expose the action. An
+   in-band `ERROR` frame carries its `recommendedAction` and `details` the
+   same way. A non-JSON body keeps the previous transport classification.
+3. **A client id can be rotated.** `SyncClient::resetClientId()` (TypeScript,
+   worker host, Tauri bridge) and `SyncClient::reset_client_id(&mut transport)`
+   (Rust) persist a new id, close a live socket, and make the next round carry
+   it. The command router accepts `resetClientId` and returns `{ "clientId" }`.
+   Call it after `sync.invalid_client_id` with `recommendedAction:
+   resetClientId`. The replica and outbox stay in place; a host that switches
+   accounts still wipes data. A replica's bound id was already readable through
+   the `clientId` getter.
+
+**Upgrade notes.** A Rust host that constructs `SyncOutcome::Failed` adds
+`recommended_action: None`; a host that destructures every field adds `..` or
+reads the new member. Most hosts only match `error_code`. TypeScript callers
+read `ClientSyncError.recommendedAction`; the field is optional and absent on
+client-local failures. Upgrade all 12 npm packages and 6 crates together.
 
 ## 0.41.2 release notes
 
