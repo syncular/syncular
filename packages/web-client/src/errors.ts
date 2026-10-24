@@ -31,17 +31,21 @@ export class ClientSyncError extends Error {
   readonly code: string;
   readonly retryable: boolean;
   readonly details: Readonly<Record<string, unknown>> | undefined;
+  /** §10.1 `recommendedAction` from an authenticated HTTP error body. */
+  readonly recommendedAction: string | undefined;
 
   constructor(
     code: string,
     message: string,
     retryable = false,
     details?: Readonly<Record<string, unknown>>,
+    recommendedAction?: string,
   ) {
     super(message);
     this.code = code;
     this.retryable = retryable;
     this.details = details;
+    this.recommendedAction = recommendedAction;
   }
 }
 
@@ -144,6 +148,7 @@ export function classifySqliteFailure(error: unknown): {
             sqliteCode: classifySqliteFailure(rollback).sqliteCode,
           },
         },
+        error.recommendedAction,
       );
       Object.defineProperty(retained, 'cause', { value: error });
     }

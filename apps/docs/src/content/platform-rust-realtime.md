@@ -37,6 +37,8 @@ match client.sync_until_idle(&mut transport, None) {
 
 Transport and protocol failures come back as `SyncOutcome::Failed`; `sync()` does not panic or error out of band. `BudgetExhausted` is a partial success that retains the aggregate report of every round that ran; read it as not idle. After a round, `sync_needed()` reports whether another round is already warranted.
 
+A failed outcome from an HTTP refusal carries the server error body's `error_code`, `message`, `details`, and `recommended_action`. For `sync.invalid_client_id` the action is `resetClientId`; call `client.reset_client_id(&mut transport)` to rotate the id before the next round. The call closes a live socket and persists the new id in the replica.
+
 ## Know when to sync
 
 `drain_sync_intents()` returns the coalesced `SyncIntent` values: `None`, `Interactive`, and `Background { delay_ms }`. The core classifies immediate work and transient retry backoff; the host owns the wait on the mailbox and the deadline.

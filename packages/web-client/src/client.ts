@@ -1617,6 +1617,22 @@ export class SyncClient {
     return this.#clientId;
   }
 
+  /**
+   * Rotate the caller's client id (§1.5). Use it after a
+   * `sync.invalid_client_id` refusal (`recommendedAction: resetClientId`):
+   * the next round carries the new id. The local replica and its outbox stay
+   * in place; wipe them yourself when the stored data belongs to the account
+   * that signed out.
+   */
+  resetClientId(): string {
+    this.#requireStarted();
+    this.disconnectRealtime();
+    const clientId = crypto.randomUUID();
+    setMeta(this.#db, 'clientId', clientId);
+    this.#clientId = clientId;
+    return clientId;
+  }
+
   /** The underlying database: raw SQL is the local query API. */
   get database(): ClientDatabase {
     this.#requireActive();
@@ -4903,6 +4919,8 @@ export class SyncClient {
     // at creation, never unhandled.
     const prefetched = new Map<SegmentRefFrame, Promise<Uint8Array>>();
     let reporting: SegmentRefFrame | undefined;
+    const deleteKey = (commitSeq: number, table: string, rowId: string) =>
+      `${commitSeq}\u0000${table}\u0000${rowId}`;
     {
       let openSub: SubscriptionRecord | undefined;
       for (const frame of message.frames) {
@@ -4935,6 +4953,70 @@ export class SyncClient {
           });
           pending.catch(() => {});
           prefetched.set(frame, pending);
+        }
+      }
+    }
+
+    // §2.2 scope migration: the server emits the delete tagged with the old
+    // scope and the upsert tagged with the new one in one commit. A reader
+    // that holds both scopes receives them in two subscription sections, so
+    // the section order would otherwise decide whether the row survives. One
+    // commit's delete and upsert of the same row are one change, and the
+    // upsert wins. A frame that carries both itself keeps its own operation
+    // order; only a pair split across sections is coalesced.
+    const coalescedDeletes = new Set<string>();
+    {
+      const ops = new Map<
+        string,
+        { readonly upserts: Set<number>; readonly deletes: Set<number> }
+      >();
+      const bothInFrame = new Set<string>();
+      let openSub: SubscriptionRecord | undefined;
+      let frameIndex = -1;
+      for (const frame of message.frames) {
+        if (frame.type === 'SUB_START') {
+          const sub = subsById.get(frame.id);
+          openSub =
+            sub === undefined ||
+            (mode === 'delta' &&
+              (sub.status !== 'active' || sub.bootstrapState !== undefined))
+              ? undefined
+              : sub;
+        } else if (frame.type === 'SUB_END') {
+          openSub = undefined;
+        } else if (frame.type === 'ERROR') {
+          break;
+        } else if (frame.type === 'COMMIT' && openSub !== undefined) {
+          frameIndex += 1;
+          const local = new Map<string, number>();
+          for (const change of frame.changes) {
+            const table = frame.tables[change.tableIndex];
+            if (table === undefined) continue;
+            const key = deleteKey(frame.commitSeq, table, change.rowId);
+            const entry = ops.get(key) ?? {
+              upserts: new Set<number>(),
+              deletes: new Set<number>(),
+            };
+            if (change.op === 'upsert') entry.upserts.add(frameIndex);
+            else entry.deletes.add(frameIndex);
+            ops.set(key, entry);
+            local.set(
+              key,
+              (local.get(key) ?? 0) | (change.op === 'upsert' ? 1 : 2),
+            );
+          }
+          for (const [key, seen] of local) {
+            if (seen === 3) bothInFrame.add(key);
+          }
+        }
+      }
+      for (const [key, entry] of ops) {
+        if (
+          !bothInFrame.has(key) &&
+          entry.upserts.size > 0 &&
+          entry.deletes.size > 0
+        ) {
+          coalescedDeletes.add(key);
         }
       }
     }
@@ -5036,7 +5118,19 @@ export class SyncClient {
           }
           case 'COMMIT':
             if (section !== undefined && !section.skip) {
-              await this.#applyCommit(frame, summary);
+              const changes = frame.changes.filter((change) => {
+                if (change.op !== 'delete') return true;
+                const table = frame.tables[change.tableIndex];
+                return (
+                  table === undefined ||
+                  !coalescedDeletes.has(
+                    deleteKey(frame.commitSeq, table, change.rowId),
+                  )
+                );
+              });
+              if (changes.length > 0) {
+                await this.#applyCommit({ ...frame, changes }, summary);
+              }
             }
             break;
           case 'SEGMENT_INLINE':
@@ -5182,16 +5276,34 @@ export class SyncClient {
             section = undefined;
             break;
           }
-          case 'ERROR':
+          case 'ERROR': {
             // §1.4 rule 5 / §1.6: the request failed; the open
             // subscription's SUB_END values are never persisted.
+            let details: Readonly<Record<string, unknown>> | undefined;
+            if (frame.details !== undefined) {
+              try {
+                const parsed: unknown = JSON.parse(frame.details);
+                if (
+                  typeof parsed === 'object' &&
+                  parsed !== null &&
+                  !Array.isArray(parsed)
+                ) {
+                  details = parsed as Readonly<Record<string, unknown>>;
+                }
+              } catch {
+                // A malformed details member adds no evidence.
+              }
+            }
             errorFrame = new ClientSyncError(
               frame.code,
               frame.message,
               frame.retryable,
+              details,
+              frame.recommendedAction,
             );
             section = undefined;
             break;
+          }
           case 'UNKNOWN':
             break; // §1.2 rule 2: skipped, never interpreted
         }

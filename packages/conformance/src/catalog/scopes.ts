@@ -6,8 +6,16 @@
 import { canonicalScopeJson } from '@syncular/core';
 import { check, checkEqual } from '../checks';
 import type { DriverSchema } from '../driver';
-import { doc, FIXTURE_SCHEMA, task } from '../fixture';
-import { rawPullHeader, rawSubscription, responseSection } from '../raw';
+import { ALL_SCOPES, doc, FIXTURE_SCHEMA, task } from '../fixture';
+import {
+  rawDelete,
+  rawPullHeader,
+  rawPushCommit,
+  rawSubscription,
+  rawUpsert,
+  responsePushResults,
+  responseSection,
+} from '../raw';
 import type { Scenario } from '../scenario';
 import { seedRows, seedTasks, syncIdle, syncOk } from './util';
 
@@ -516,6 +524,94 @@ export const scopeScenarios: readonly Scenario[] = [
           'every download re-authorizes (§5.5)',
         );
       }
+    },
+  },
+
+  {
+    name: 'scopes/scope-move-keeps-the-row-in-either-section-order',
+    specRefs: ['§2.2', '§4.5', '§3.4'],
+    async run(ctx) {
+      await seedTasks(ctx, [task('t1', 'p1', 'before')]);
+      const readers = [];
+      for (const order of [
+        [
+          ['a-old', 'p1'],
+          ['b-new', 'p2'],
+        ],
+        [
+          ['a-new', 'p2'],
+          ['b-old', 'p1'],
+        ],
+      ] as const) {
+        const label = order[0]?.[0] ?? 'reader';
+        const reader = await ctx.newClient({
+          actorId: `actor-${label}`,
+          clientId: `client-${label}`,
+          allowed: { project_id: ['p1', 'p2'] },
+        });
+        for (const [id, project] of order) {
+          await reader.api.subscribe({
+            id,
+            table: 'tasks',
+            scopes: { project_id: [project] },
+          });
+        }
+        await syncIdle(reader);
+        checkEqual(
+          await reader.api.readRows('tasks'),
+          [
+            {
+              rowId: 't1',
+              version: 1,
+              values: task('t1', 'p1', 'before'),
+            },
+          ],
+          'the reader starts with the row in its old scope',
+        );
+        readers.push(reader);
+      }
+
+      // One commit, delete under p1 and insert under p2 (the §40 scope move).
+      await ctx.server.setAllowedScopes('mover', ALL_SCOPES);
+      const moved = await ctx.rawSync(
+        'mover',
+        [
+          rawPushCommit('scope-move', [
+            rawDelete('tasks', 't1'),
+            rawUpsert(ctx.serverSchema, 'tasks', task('t1', 'p2', 'after'), 0),
+          ]),
+        ],
+        { clientId: 'scope-move', schemaVersion: ctx.serverSchema.version },
+      );
+      check(moved.ok, 'the scope move applies');
+      if (!moved.ok) return;
+      checkEqual(
+        responsePushResults(moved.message)[0]?.status,
+        'applied',
+        'the move is one applied commit',
+      );
+
+      for (const reader of readers) {
+        await syncIdle(reader);
+        checkEqual(
+          await reader.api.readRows('tasks'),
+          [
+            {
+              rowId: 't1',
+              version: 1,
+              values: task('t1', 'p2', 'after'),
+            },
+          ],
+          'the upsert wins over the move delete whatever order the sections arrive in',
+        );
+      }
+      checkEqual(
+        (await ctx.server.readRows('tasks')).map(
+          (row) => row.values.project_id,
+        ),
+        ['p2'],
+        'the server holds the moved row',
+      );
     },
   },
 ];

@@ -70,6 +70,96 @@ const ACCEPT_SQLITE: u8 = 1 << 2;
 const ACCEPT_SIGNED_URLS: u8 = 1 << 3;
 const MAX_DIAGNOSTIC_DOMAINS: usize = 256;
 
+/// §10.1 `recommendedAction` carried by a server HTTP error body.
+fn recommended_action_of(details: &Option<Value>) -> Option<String> {
+    details
+        .as_ref()?
+        .get("recommendedAction")?
+        .as_str()
+        .map(str::to_owned)
+}
+
+/// §2.2 scope migration: one commit carries the delete under the old scope and
+/// the upsert under the new one. A reader that holds both scopes receives the
+/// two changes in separate subscription sections, so section order would
+/// otherwise decide whether the row survives. Collect the `(commitSeq, table,
+/// rowId)` keys whose delete must be skipped because the same commit delivers
+/// the row's upsert in another applied section. A section that carries both
+/// changes itself keeps its own operation order.
+fn coalesced_delete_keys(
+    frames: &[Frame],
+    mut applies: impl FnMut(&str, SubStatus, Option<i64>) -> bool,
+) -> HashSet<(i64, String, String)> {
+    let mut sections = Vec::new();
+    let mut open: Option<(usize, String, SubStatus)> = None;
+    for (index, frame) in frames.iter().enumerate() {
+        match frame {
+            Frame::SubStart { id, status, .. } => {
+                open = Some((index, id.clone(), *status));
+            }
+            Frame::SubEnd { next_cursor, .. } => {
+                if let Some((start, id, status)) = open.take() {
+                    sections.push((start, index, id, status, Some(*next_cursor)));
+                }
+            }
+            _ => {}
+        }
+    }
+    type Key = (i64, String, String);
+    let mut ops: HashMap<Key, (HashSet<usize>, HashSet<usize>)> = HashMap::new();
+    let mut both_in_frame: HashSet<Key> = HashSet::new();
+    let mut frame_ordinal = 0usize;
+    for (start, end, id, status, next_cursor) in sections {
+        if !applies(&id, status, next_cursor) {
+            continue;
+        }
+        for frame in &frames[start + 1..end] {
+            let Frame::Commit {
+                commit_seq,
+                tables,
+                changes,
+                ..
+            } = frame
+            else {
+                continue;
+            };
+            frame_ordinal += 1;
+            let mut local: HashMap<(String, String), (bool, bool)> = HashMap::new();
+            for change in changes {
+                let Some(table) = tables.get(change.table_index as usize) else {
+                    continue;
+                };
+                let key = (*commit_seq, table.clone(), change.row_id.clone());
+                let entry = ops.entry(key).or_default();
+                let local_entry = local
+                    .entry((table.clone(), change.row_id.clone()))
+                    .or_default();
+                match change.op {
+                    Op::Upsert => {
+                        entry.0.insert(frame_ordinal);
+                        local_entry.0 = true;
+                    }
+                    Op::Delete => {
+                        entry.1.insert(frame_ordinal);
+                        local_entry.1 = true;
+                    }
+                }
+            }
+            for ((table, row_id), (has_upsert, has_delete)) in local {
+                if has_upsert && has_delete {
+                    both_in_frame.insert((*commit_seq, table, row_id));
+                }
+            }
+        }
+    }
+    ops.into_iter()
+        .filter_map(|(key, (upserts, deletes))| {
+            (!both_in_frame.contains(&key) && !upserts.is_empty() && !deletes.is_empty())
+                .then_some(key)
+        })
+        .collect()
+}
+
 /// §7.4.1 persisted local schema-version marker (`_syncular_meta` key).
 pub(crate) const LOCAL_SCHEMA_VERSION_KEY: &str = "localSchemaVersion";
 const LOCAL_REVISION_KEY: &str = "localRevision";
@@ -1376,6 +1466,7 @@ mod observation_tests {
                     Some((42, None)),
                     &meta,
                     &mut report,
+                    &HashSet::new(),
                 );
                 assert!(result.is_err(), "{status:?}/{fault}");
                 assert!(client.conn.is_autocommit());
@@ -1991,10 +2082,16 @@ mod observation_tests {
             calls: 0,
         };
         let outcome = client.sync_until_idle(&mut transport, Some(2));
-        assert!(
-            matches!(outcome, SyncOutcome::Failed { ref error_code, .. } if error_code == "sync.internal_error"),
-            "{outcome:?}"
-        );
+        let SyncOutcome::Failed {
+            error_code,
+            recommended_action,
+            ..
+        } = outcome
+        else {
+            panic!("expected the in-band failure");
+        };
+        assert_eq!(error_code, "sync.internal_error");
+        assert_eq!(recommended_action.as_deref(), Some("retryLater"));
         assert_eq!(
             transport.calls, 2,
             "one successful round then the failing round"
@@ -5592,7 +5689,8 @@ mod observation_tests {
                 vec![],
                 Some((0, None)),
                 &meta,
-                &mut report
+                &mut report,
+                &HashSet::new()
             )
             .is_err());
         assert_eq!(client.subs[0].state, SubState::Active);
@@ -5613,7 +5711,8 @@ mod observation_tests {
                 vec![],
                 Some((0, None)),
                 &meta,
-                &mut report
+                &mut report,
+                &HashSet::new()
             )
             .is_ok());
         assert_eq!(client.subs[0].state, SubState::Revoked);
@@ -11185,6 +11284,21 @@ impl SyncClient {
         &self.client_id
     }
 
+    /// Rotate the caller's client id (§1.5) and return the new one. Use it
+    /// after a `sync.invalid_client_id` refusal (`recommendedAction:
+    /// resetClientId`): the next round carries the new id. A live realtime
+    /// socket is closed so the next connection registers with the new id.
+    /// The replica and its outbox stay in place; wipe them yourself when the
+    /// stored data belongs to the account that signed out.
+    pub fn reset_client_id(&mut self, transport: &mut dyn Transport) -> String {
+        self.disconnect_realtime(transport);
+        let client_id = uuid::Uuid::new_v4().to_string();
+        self.client_id.clone_from(&client_id);
+        self.set_meta(CLIENT_ID_KEY, &client_id);
+        self.round_failure = None;
+        client_id
+    }
+
     /// Build a client over a caller-supplied rusqlite connection — the seam a
     /// native host (Tauri plugin, FFI file-DB variant) uses to back the core
     /// with an on-disk database (`Connection::open(path)`) rather than the
@@ -16422,6 +16536,7 @@ impl SyncClient {
             error_code: "client.push_request_too_large".into(),
             message: "the push request exceeds a configured capacity limit".into(),
             details: Some(Value::Object(details)),
+            recommended_action: None,
         })
     }
 
@@ -16466,6 +16581,7 @@ impl SyncClient {
             error_code,
             message,
             details,
+            ..
         } = &mut outcome
         {
             if let Some(failure) = self.storage_failure.borrow().as_ref() {
@@ -16560,6 +16676,7 @@ impl SyncClient {
                 error_code: "sync.offline".into(),
                 message: "transport gate is closed".into(),
                 details: None,
+                recommended_action: None,
             }));
         }
         if self.active_round.is_some() {
@@ -16567,6 +16684,7 @@ impl SyncClient {
                 error_code: "client.round_in_progress".into(),
                 message: "a sync round is already in flight".into(),
                 details: None,
+                recommended_action: None,
             }));
         }
         self.storage_failure.borrow_mut().take();
@@ -16585,6 +16703,7 @@ impl SyncClient {
                     error_code: SECURITY_PREFLIGHT_REQUIRED_CODE.into(),
                     message: "security preflight must complete before syncing".into(),
                     details: None,
+                    recommended_action: None,
                 }));
             }
             self.set_sync_needed(false, false);
@@ -16596,6 +16715,7 @@ impl SyncClient {
                         error_code: "storage.failed".into(),
                         message,
                         details: None,
+                        recommended_action: None,
                     })
                 })?;
             let uploads = if self.get_meta(LOG_EPOCH_KEY).is_some() && self.schema_has_blobs() {
@@ -16604,6 +16724,7 @@ impl SyncClient {
                         error_code: e.code,
                         message: e.message,
                         details: e.details,
+                        recommended_action: None,
                     })
                 })?
             } else {
@@ -16664,6 +16785,7 @@ impl SyncClient {
                     error_code: "client.round_cancelled".into(),
                     message: "sync round belongs to a released client context".into(),
                     details: None,
+                    recommended_action: None,
                 },
                 controls: Vec::new(),
                 more: false,
@@ -16698,12 +16820,14 @@ impl SyncClient {
                         if Self::retryable_failure_code(&code) {
                             self.schedule_background_retry();
                         }
+                        let recommended_action = recommended_action_of(&details);
                         let outcome = self.finish_sync_round(
                             prepared.started_at_ms,
                             SyncOutcome::Failed {
                                 error_code: code,
                                 message,
                                 details,
+                                recommended_action,
                             },
                         );
                         return crate::AppliedSyncRound::Complete {
@@ -16759,10 +16883,12 @@ impl SyncClient {
                             self.realtime_retry_delay_ms = Some(delay);
                         }
                     }
+                    let recommended_action = recommended_action_of(&details);
                     return SyncOutcome::Failed {
                         error_code: code,
                         message,
                         details,
+                        recommended_action,
                     };
                 }
             };
@@ -16825,6 +16951,7 @@ impl SyncClient {
                 details: None,
                 error_code: "sync.invalid_request".into(),
                 message: "maxRounds must be a positive integer".into(),
+                recommended_action: None,
             };
         }
         let rounds = max_rounds.unwrap_or(20);
@@ -16842,11 +16969,13 @@ impl SyncClient {
                     error_code,
                     message,
                     details,
+                    recommended_action,
                 } => {
                     return SyncOutcome::Failed {
                         details,
                         error_code,
                         message,
+                        recommended_action,
                     };
                 }
                 outcome @ SyncOutcome::RealtimeUnavailable { .. } => return outcome,
@@ -16932,6 +17061,7 @@ impl SyncClient {
                                     details: None,
                                     error_code: "sync.invalid_request".to_owned(),
                                     message,
+                                    recommended_action: None,
                                 };
                             }
                         };
@@ -16951,14 +17081,18 @@ impl SyncClient {
                 _ => {}
             }
         }
-        let mut frames = response.frames.into_iter().peekable();
         if response.wire_version < 2 {
             return SyncOutcome::Failed {
                 details: None,
                 error_code: "client.invalid_host_response".to_owned(),
                 message: "server response does not carry wire version 2 log-epoch state".to_owned(),
+                recommended_action: None,
             };
         }
+        let coalesced_deletes = coalesced_delete_keys(&response.frames, |id, status, _| {
+            status == SubStatus::Active && self.subs.iter().any(|sub| sub.id == id)
+        });
+        let mut frames = response.frames.into_iter().peekable();
         match frames.next() {
             Some(Frame::RespHeader {
                 required_schema_version,
@@ -16971,6 +17105,7 @@ impl SyncClient {
                         details: None,
                         error_code: "client.invalid_host_response".to_owned(),
                         message: "response header omits logEpoch".to_owned(),
+                        recommended_action: None,
                     };
                 };
                 let Some(reset_required) = reset_required else {
@@ -16978,6 +17113,7 @@ impl SyncClient {
                         details: None,
                         error_code: "client.invalid_host_response".to_owned(),
                         message: "response header omits resetRequired".to_owned(),
+                        recommended_action: None,
                     };
                 };
                 if let Some(required) = required_schema_version {
@@ -16997,6 +17133,7 @@ impl SyncClient {
                             details: None,
                             error_code: "client.invalid_host_response".to_owned(),
                             message: "log-epoch reset response contains body frames".to_owned(),
+                            recommended_action: None,
                         };
                     }
                     match self.run_log_epoch_reset(&log_epoch) {
@@ -17009,6 +17146,7 @@ impl SyncClient {
                                 details: None,
                                 error_code: "sync.local_corrupt".to_owned(),
                                 message,
+                                recommended_action: None,
                             };
                         }
                     }
@@ -17018,6 +17156,7 @@ impl SyncClient {
                         details: None,
                         error_code: "client.invalid_host_response".to_owned(),
                         message: "server changed logEpoch without requiring a reset".to_owned(),
+                        recommended_action: None,
                     };
                 }
             }
@@ -17026,6 +17165,7 @@ impl SyncClient {
                     details: None,
                     error_code: "sync.invalid_request".to_owned(),
                     message: "response does not start with RESP_HEADER".to_owned(),
+                    recommended_action: None,
                 };
             }
         }
@@ -17035,9 +17175,10 @@ impl SyncClient {
                 details: None,
                 error_code: "storage.failed".into(),
                 message,
+                recommended_action: None,
             };
         }
-        let mut failure: Option<(String, String)> = None;
+        let mut failure: Option<(String, String, Option<String>, Option<Value>)> = None;
         while let Some(frame) = frames.next() {
             match frame {
                 frame @ Frame::PushResult { .. } => {
@@ -17075,6 +17216,8 @@ impl SyncClient {
                         failure = Some((
                             "client.outcome_persistence_failed".to_owned(),
                             "local commit outcome could not be persisted".to_owned(),
+                            None,
+                            None,
                         ));
                         break;
                     }
@@ -17112,8 +17255,9 @@ impl SyncClient {
                         sub_end,
                         meta,
                         &mut report,
+                        &coalesced_deletes,
                     ) {
-                        failure = Some((code, message));
+                        failure = Some((code, message, None, None));
                         break;
                     }
                 }
@@ -17129,10 +17273,21 @@ impl SyncClient {
                         error_code: None,
                     }));
                 }
-                Frame::Error { code, message, .. } => {
+                Frame::Error {
+                    code,
+                    message,
+                    recommended_action,
+                    details,
+                    ..
+                } => {
                     // §1.6: the whole request failed; already-completed
                     // subscriptions keep their applied data and cursors.
-                    failure = Some((code, message));
+                    let recommended_action =
+                        (!recommended_action.is_empty()).then_some(recommended_action);
+                    let details = details
+                        .and_then(|details| serde_json::from_str::<Value>(&details.0).ok())
+                        .filter(Value::is_object);
+                    failure = Some((code, message, recommended_action, details));
                     break;
                 }
                 Frame::Unknown { .. } => {}
@@ -17140,6 +17295,8 @@ impl SyncClient {
                     failure = Some((
                         "sync.invalid_request".to_owned(),
                         "unexpected frame in response".to_owned(),
+                        None,
+                        None,
                     ));
                     break;
                 }
@@ -17155,7 +17312,7 @@ impl SyncClient {
             None => self
                 .rebuild_overlay_if_dirty()
                 .and_then(|()| self.drain_pending_evictions())
-                .map_err(|message| ("storage.failed".to_owned(), message)),
+                .map_err(|message| ("storage.failed".to_owned(), message, None, None)),
         };
         // §1.4 rule 4: frames completed before a failure stay committed; a
         // failed COMMIT of the coalesced transaction fails the round.
@@ -17164,13 +17321,15 @@ impl SyncClient {
                 details: None,
                 error_code: "storage.failed".into(),
                 message,
+                recommended_action: None,
             };
         }
-        if let Err((error_code, message)) = applied {
+        if let Err((error_code, message, recommended_action, details)) = applied {
             return SyncOutcome::Failed {
-                details: None,
+                details,
                 error_code,
                 message,
+                recommended_action,
             };
         }
         self.ack_after_pull(transport);
@@ -17555,6 +17714,7 @@ impl SyncClient {
         sub_end: Option<(i64, Option<String>)>,
         meta: &RequestMeta,
         report: &mut SyncReport,
+        coalesced_deletes: &HashSet<(i64, String, String)>,
     ) -> Result<(), SectionError> {
         let Some(sub_index) = self.subs.iter().position(|s| s.id == id) else {
             return Ok(()); // unknown echo: ignore
@@ -17736,7 +17896,15 @@ impl SyncClient {
                 let previous = self.subs[sub_index].clone();
                 self.subs[sub_index].effective = Some(effective_scopes);
                 let outcome = self
-                    .apply_section_body(transport, sub_index, body, fresh, meta, report)
+                    .apply_section_body(
+                        transport,
+                        sub_index,
+                        body,
+                        fresh,
+                        meta,
+                        report,
+                        coalesced_deletes,
+                    )
                     .and_then(|()| {
                         let (cursor, bootstrap_state) = sub_end.ok_or_else(|| {
                             SectionError::Abort(
@@ -17871,6 +18039,7 @@ impl SyncClient {
         persisted
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn apply_section_body(
         &mut self,
         transport: &mut dyn Transport,
@@ -17879,6 +18048,7 @@ impl SyncClient {
         fresh: bool,
         meta: &RequestMeta,
         report: &mut SyncReport,
+        coalesced_deletes: &HashSet<(i64, String, String)>,
     ) -> Result<(), SectionError> {
         let mut saw_segment = false;
         for frame in body {
@@ -17889,9 +18059,17 @@ impl SyncClient {
                     commit_seq,
                     ..
                 } => {
-                    self.apply_commit_frame(&tables, &changes, Some(commit_seq))
-                        .map_err(|(c, m)| SectionError::Abort(c, m))?;
-                    report.commits_applied += 1;
+                    if self
+                        .apply_commit_frame_coalesced(
+                            &tables,
+                            changes,
+                            commit_seq,
+                            coalesced_deletes,
+                        )
+                        .map_err(|(c, m)| SectionError::Abort(c, m))?
+                    {
+                        report.commits_applied += 1;
+                    }
                 }
                 Frame::SegmentInline { payload } => {
                     let segment = decode_rows_segment(&payload)
@@ -18057,6 +18235,35 @@ impl SyncClient {
             }
         }
         Ok(())
+    }
+
+    /// Apply one commit frame after dropping a scope move's duplicate delete
+    /// when the same commit carries the row's upsert in another applied
+    /// section (§2.2). A frame that carried both itself is untouched.
+    fn apply_commit_frame_coalesced(
+        &mut self,
+        tables: &[String],
+        changes: Vec<ssp2::model::Change>,
+        commit_seq: i64,
+        coalesced_deletes: &HashSet<(i64, String, String)>,
+    ) -> Result<bool, (String, String)> {
+        let changes: Vec<ssp2::model::Change> = changes
+            .into_iter()
+            .filter(|change| {
+                if change.op != Op::Delete {
+                    return true;
+                }
+                let Some(table) = tables.get(change.table_index as usize) else {
+                    return true;
+                };
+                !coalesced_deletes.contains(&(commit_seq, table.clone(), change.row_id.clone()))
+            })
+            .collect();
+        if changes.is_empty() {
+            return Ok(false);
+        }
+        self.apply_commit_frame(tables, &changes, Some(commit_seq))?;
+        Ok(true)
     }
 
     // Both pull and realtime frames use the same durable observation boundary.
@@ -20471,6 +20678,19 @@ impl SyncClient {
         };
         #[cfg(feature = "bench-internals")]
         drop(decode_phase);
+        let coalesced_deletes =
+            coalesced_delete_keys(&message.frames, |id, status, next_cursor| {
+                if status != SubStatus::Active {
+                    return false;
+                }
+                let Some(sub) = self.subs.iter().find(|sub| sub.id == id) else {
+                    return false;
+                };
+                sub.state == SubState::Active
+                    && sub.bootstrap_state.is_none()
+                    && sub.synced_once
+                    && next_cursor.is_some_and(|cursor| cursor > sub.cursor)
+            });
         let mut frames = message.frames.into_iter();
         let mut applied_cursor: Option<i64> = None;
         let mut any_covered = false;
@@ -20532,7 +20752,12 @@ impl SyncClient {
                         ..
                     } => {
                         if self
-                            .apply_commit_frame(&tables, &changes, Some(commit_seq))
+                            .apply_commit_frame_coalesced(
+                                &tables,
+                                changes,
+                                commit_seq,
+                                &coalesced_deletes,
+                            )
                             .is_err()
                         {
                             failed = true;
@@ -21856,5 +22081,243 @@ mod previous_version_wiring_tests {
         let _ = std::fs::remove_file(&container);
         let _ = std::fs::remove_file(format!("{container}-wal"));
         let _ = std::fs::remove_file(format!("{container}-shm"));
+    }
+}
+
+#[cfg(test)]
+mod scope_move_delivery_tests {
+    use super::*;
+    use crate::native_transport::HostTransport;
+    use crate::values::encode_row_json;
+    use serde_json::json;
+
+    fn client() -> SyncClient {
+        SyncClient::new(
+            "scope-move".to_owned(),
+            &json!({
+                "version": 1,
+                "tables": [{
+                    "name": "tasks",
+                    "primaryKey": "id",
+                    "columns": [
+                        { "name": "id", "type": "string", "nullable": false },
+                        { "name": "project_id", "type": "string", "nullable": false }
+                    ],
+                    "scopes": [{ "pattern": "project:{project_id}" }]
+                }]
+            }),
+            ClientLimits::default(),
+        )
+        .expect("test client")
+    }
+
+    fn upsert(client: &SyncClient, project: &str) -> ssp2::model::Change {
+        ssp2::model::Change {
+            table_index: 0,
+            row_id: "t1".to_owned(),
+            op: Op::Upsert,
+            row_version: Some(1),
+            scopes: vec![("project_id".to_owned(), project.to_owned())],
+            row: Some(
+                encode_row_json(
+                    client.schema.table("tasks").unwrap(),
+                    "t1",
+                    &Map::from_iter([
+                        ("id".to_owned(), Value::from("t1")),
+                        ("project_id".to_owned(), Value::from(project)),
+                    ]),
+                    &client.encryption,
+                )
+                .unwrap(),
+            ),
+        }
+    }
+
+    fn delete(project: &str) -> ssp2::model::Change {
+        ssp2::model::Change {
+            table_index: 0,
+            row_id: "t1".to_owned(),
+            op: Op::Delete,
+            row_version: None,
+            scopes: vec![("project_id".to_owned(), project.to_owned())],
+            row: None,
+        }
+    }
+
+    #[test]
+    fn a_scope_move_keeps_the_row_in_either_section_order() {
+        for order in [["old", "new"], ["new", "old"]] {
+            let mut client = client();
+            client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+            client
+                .subscribe(
+                    "old".into(),
+                    "tasks".into(),
+                    vec![("project_id".to_owned(), vec!["p1".to_owned()])],
+                    None,
+                )
+                .unwrap();
+            client
+                .subscribe(
+                    "new".into(),
+                    "tasks".into(),
+                    vec![("project_id".to_owned(), vec!["p2".to_owned()])],
+                    None,
+                )
+                .unwrap();
+            let seed = upsert(&client, "p1");
+            client
+                .apply_commit_frame(&["tasks".into()], &[seed], Some(1))
+                .unwrap();
+            assert_eq!(
+                client.query("SELECT project_id FROM tasks", &[]).unwrap()[0]["project_id"],
+                json!("p1")
+            );
+
+            let mut frames = vec![Frame::RespHeader {
+                required_schema_version: None,
+                latest_schema_version: None,
+                log_epoch: Some("epoch-1".to_owned()),
+                reset_required: Some(false),
+            }];
+            for id in order {
+                let project = if id == "old" { "p1" } else { "p2" };
+                frames.push(Frame::SubStart {
+                    id: id.to_owned(),
+                    status: SubStatus::Active,
+                    reason_code: String::new(),
+                    effective_scopes: vec![("project_id".to_owned(), vec![project.to_owned()])],
+                    bootstrap: false,
+                });
+                frames.push(Frame::Commit {
+                    commit_seq: 2,
+                    created_at_ms: 0,
+                    actor_id: "actor".to_owned(),
+                    tables: vec!["tasks".to_owned()],
+                    changes: vec![if id == "old" {
+                        delete("p1")
+                    } else {
+                        upsert(&client, "p2")
+                    }],
+                });
+                frames.push(Frame::SubEnd {
+                    next_cursor: 2,
+                    bootstrap_state: None,
+                });
+            }
+            let (_, meta) = client.build_request(false).unwrap();
+            let mut transport = HostTransport::new_from_config(&json!({})).unwrap();
+            let outcome = client.process_response(
+                &mut transport,
+                Message {
+                    wire_version: WIRE_VERSION,
+                    msg_kind: MsgKind::Response,
+                    frames,
+                },
+                &meta,
+            );
+            assert!(
+                matches!(outcome, SyncOutcome::Ok(_)),
+                "{order:?}: {outcome:?}"
+            );
+            let rows = client
+                .query("SELECT id, project_id FROM tasks", &[])
+                .unwrap();
+            assert_eq!(rows.len(), 1, "{order:?}: the row was lost");
+            assert_eq!(rows[0]["project_id"], json!("p2"), "{order:?}");
+        }
+    }
+
+    struct RefusalTransport;
+
+    impl Transport for RefusalTransport {
+        fn sync(&mut self, _request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            let mut error = TransportError::new(
+                "sync.invalid_client_id",
+                "clientId is bound to a different actor in this partition",
+            );
+            error.details = Some(json!({
+                "causeKind": "status",
+                "httpStatus": 400,
+                "category": "invalid-request",
+                "retryable": false,
+                "recommendedAction": "resetClientId"
+            }));
+            Err(error)
+        }
+
+        fn realtime_sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            self.sync(request)
+        }
+
+        fn download_segment(
+            &mut self,
+            _request: &SegmentRequest,
+            _on_progress: &mut dyn FnMut(u64),
+        ) -> Result<Vec<u8>, TransportError> {
+            Err(TransportError::new("sync.transport_failed", "offline"))
+        }
+
+        fn realtime_connect(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+
+        fn realtime_send(&mut self, _text: &str) -> Result<(), TransportError> {
+            Ok(())
+        }
+
+        fn realtime_close(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn an_http_refusal_carries_its_code_and_recommended_action() {
+        let mut client = client();
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        let outcome = client.sync(&mut RefusalTransport);
+        let SyncOutcome::Failed {
+            error_code,
+            recommended_action,
+            details,
+            ..
+        } = outcome
+        else {
+            panic!("expected a failed round");
+        };
+        assert_eq!(error_code, "sync.invalid_client_id");
+        assert_eq!(recommended_action.as_deref(), Some("resetClientId"));
+        assert_eq!(
+            details
+                .as_ref()
+                .and_then(|details| details.get("httpStatus")),
+            Some(&json!(400))
+        );
+    }
+
+    #[test]
+    fn reset_client_id_persists_and_changes_the_request_identity() {
+        let mut client = client();
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        let previous = client.client_id().to_owned();
+        let mut transport = HostTransport::new_from_config(&json!({})).unwrap();
+        let next = client.reset_client_id(&mut transport);
+        assert_ne!(next, previous);
+        assert_eq!(client.client_id(), next);
+        assert_eq!(client.get_meta(CLIENT_ID_KEY), Some(next.clone()));
+
+        client
+            .subscribe(
+                "tasks".into(),
+                "tasks".into(),
+                vec![("project_id".to_owned(), vec!["p1".to_owned()])],
+                None,
+            )
+            .unwrap();
+        let (message, _) = client.build_request(false).unwrap();
+        assert!(matches!(
+            message.frames.first(),
+            Some(Frame::ReqHeader { client_id, .. }) if client_id == &next
+        ));
     }
 }

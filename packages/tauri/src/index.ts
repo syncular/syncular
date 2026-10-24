@@ -1101,6 +1101,18 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
     return this.#command('sync', {});
   }
 
+  /**
+   * Rotate the client id (§1.5) after a `sync.invalid_client_id` refusal
+   * (`recommendedAction: resetClientId`). The next round carries the new id;
+   * the replica and outbox stay in place.
+   */
+  async resetClientId(): Promise<string> {
+    const result = (await this.#command('resetClientId', {})) as {
+      clientId: string;
+    };
+    return result.clientId;
+  }
+
   async syncUntilIdle(maxRounds?: number): Promise<unknown> {
     return this.#command('syncUntilIdle', {
       ...(maxRounds !== undefined ? { maxRounds } : {}),

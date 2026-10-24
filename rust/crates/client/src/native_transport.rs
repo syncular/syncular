@@ -1290,6 +1290,11 @@ mod native {
             })
             .max_redirects_will_error(matches!(policy.redirects, RedirectPolicy::Follow))
             .redirect_auth_headers(ureq::config::RedirectAuthHeaders::Never)
+            // A 4xx/5xx carries the server's §10.1 JSON error body. Read it so
+            // the code, recommendedAction, details and HTTP status can reach
+            // the caller; read_body turns a non-2xx response into a typed
+            // TransportError before any payload is treated as data.
+            .http_status_as_error(false)
             .build();
         ureq::Agent::with_parts(
             config,
@@ -1594,6 +1599,43 @@ mod native {
         }
     }
 
+    /// A non-2xx response. Preserve the authenticated server catalog error
+    /// body (§10.1) so callers see its code, recommendedAction, details and
+    /// HTTP status; a non-JSON body keeps the transport classification.
+    fn http_status_body_error(status: u16, body: &[u8]) -> TransportError {
+        let mut error = TransportError::new("transport.failed", "HTTP request failed");
+        let mut details = serde_json::Map::new();
+        if let Ok(serde_json::Value::Object(parsed)) =
+            serde_json::from_slice::<serde_json::Value>(body)
+        {
+            if let Some(code) = parsed.get("code").and_then(serde_json::Value::as_str) {
+                if !code.is_empty() {
+                    error.code = code.to_owned();
+                }
+            }
+            if let Some(message) = parsed.get("message").and_then(serde_json::Value::as_str) {
+                error.message = message.to_owned();
+            }
+            for key in ["category", "recommendedAction"] {
+                if let Some(value) = parsed.get(key).and_then(serde_json::Value::as_str) {
+                    details.insert(key.to_owned(), serde_json::Value::from(value));
+                }
+            }
+            if let Some(retryable) = parsed.get("retryable").and_then(serde_json::Value::as_bool) {
+                details.insert("retryable".to_owned(), serde_json::Value::from(retryable));
+            }
+            if let Some(serde_json::Value::Object(inner)) = parsed.get("details") {
+                for (key, value) in inner {
+                    details.insert(key.clone(), value.clone());
+                }
+            }
+        }
+        details.insert("causeKind".to_owned(), serde_json::Value::from("status"));
+        details.insert("httpStatus".to_owned(), serde_json::Value::from(status));
+        error.details = Some(serde_json::Value::Object(details));
+        error
+    }
+
     fn read_body(
         resp: ureq::http::Response<ureq::Body>,
         mut progress: Option<&mut dyn FnMut(u64)>,
@@ -1636,6 +1678,9 @@ mod native {
             if let Some(callback) = progress {
                 callback(bytes.len() as u64);
             }
+        }
+        if status >= 400 {
+            return Err(http_status_body_error(status, &bytes));
         }
         Ok(bytes)
     }
@@ -1820,7 +1865,7 @@ mod native {
             let resp = req
                 .send(bytes)
                 .map_err(|e| http_err("blob upload failed", e))?;
-            redirect_refused(&resp)?;
+            read_body(resp, None, self.policy.max_response_bytes)?;
             Ok(())
         }
 
@@ -1864,7 +1909,41 @@ mod native {
                 .get(ureq::http::header::CONTENT_TYPE)
                 .and_then(|value| value.to_str().ok())
                 .is_some_and(|value| value.contains("application/json"));
-            let body = read_body(resp, None, self.policy.max_response_bytes)?;
+            let body =
+                read_body(resp, None, self.policy.max_response_bytes).map_err(|mut error| {
+                    // The blob endpoint keeps its status classification: an
+                    // error body supplies details, but the HTTP status decides
+                    // the code.
+                    let status = error
+                        .details
+                        .as_ref()
+                        .filter(|details| {
+                            details.get("causeKind").and_then(serde_json::Value::as_str)
+                                == Some("status")
+                        })
+                        .and_then(|details| details.get("httpStatus"))
+                        .and_then(serde_json::Value::as_u64);
+                    match status {
+                        Some(404) => {
+                            error.code = "blob.not_found".into();
+                            error.message = "blob not found".into();
+                        }
+                        Some(403) => {
+                            error.code = "blob.forbidden".into();
+                            error.message = "blob download forbidden".into();
+                        }
+                        Some(401) => {
+                            error.code = "sync.auth_required".into();
+                            error.message = "host authentication required".into();
+                        }
+                        Some(_) => {
+                            error.code = "transport.failed".into();
+                            error.message = "blob download failed".into();
+                        }
+                        None => {}
+                    }
+                    error
+                })?;
             if is_json {
                 if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&body) {
                     if let Some(u) = parsed.get("url").and_then(|v| v.as_str()) {
@@ -1943,7 +2022,7 @@ mod native {
             let resp = req
                 .send(bytes)
                 .map_err(|e| http_err("signed blob upload failed", e))?;
-            redirect_refused(&resp)?;
+            read_body(resp, None, self.policy.max_response_bytes)?;
             Ok(())
         }
 
@@ -2951,7 +3030,11 @@ mod tests {
             assert_eq!(error.code, expected);
             assert_eq!(
                 error.details,
-                Some(serde_json::json!({ "causeKind":"status", "httpStatus":status }))
+                Some(serde_json::json!({
+                    "causeKind": "status",
+                    "httpStatus": status,
+                    "retryable": false
+                }))
             );
             assert!(!error.message.contains("secret"));
             assert!(!error.message.contains("http"));
@@ -3321,5 +3404,44 @@ mod tests {
             }
             server.join().unwrap();
         }
+    }
+
+    #[test]
+    fn a_json_http_error_body_reaches_the_caller() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let body = r#"{"code":"sync.invalid_client_id","category":"invalid-request","retryable":false,"recommendedAction":"resetClientId","message":"clientId is bound to a different actor in this partition (§1.5)","details":{"actorId":"actor-b"}}"#;
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(socket.try_clone().unwrap());
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            let _ = write!(
+                socket,
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+        });
+        let mut transport =
+            HostTransport::new_from_config(&serde_json::json!({"baseUrl": base})).unwrap();
+        let error = transport.sync(&[]).unwrap_err();
+        assert_eq!(error.code, "sync.invalid_client_id");
+        assert_eq!(
+            error.message,
+            "clientId is bound to a different actor in this partition (§1.5)"
+        );
+        let details = error.details.unwrap();
+        assert_eq!(details["recommendedAction"], "resetClientId");
+        assert_eq!(details["category"], "invalid-request");
+        assert_eq!(details["retryable"], false);
+        assert_eq!(details["httpStatus"], 400);
+        assert_eq!(details["actorId"], "actor-b");
+        server.join().unwrap();
     }
 }

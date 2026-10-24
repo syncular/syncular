@@ -188,6 +188,7 @@ export interface WorkerApi extends Omit<
   previousVersionDiscard(): { present: boolean; discarded: boolean };
   sync(): Promise<SyncSummary>;
   syncUntilIdle(maxRounds?: number): Promise<SyncIdleResult>;
+  resetClientId(): string;
   query(sql: string, params?: readonly SqlValue[]): SqlRow[];
   authoritySnapshot(): import('./authority').AuthoritySnapshot;
   querySnapshot(spec: QueryReadSpec): QuerySnapshot;

@@ -646,3 +646,36 @@ test('a presigned blob envelope still returns its url', async () => {
     urlExpiresAtMs: 1_750_000_000_500,
   });
 });
+
+test('an HTTP error body keeps its code, recommendedAction and details', async () => {
+  const transport = httpSyncTransport('https://host/sync', {
+    fetch: Object.assign(
+      async () =>
+        Response.json(
+          {
+            code: 'sync.invalid_client_id',
+            category: 'invalid-request',
+            retryable: false,
+            recommendedAction: 'resetClientId',
+            message: 'clientId is bound to a different actor in this partition',
+            details: { actorId: 'actor-b' },
+          },
+          { status: 400 },
+        ),
+      { preconnect: fetch.preconnect },
+    ),
+  });
+  const caught = await transport(new Uint8Array()).catch(
+    (error: unknown) => error,
+  );
+  expect(caught).toBeInstanceOf(ClientSyncError);
+  if (!(caught instanceof ClientSyncError)) throw caught;
+  expect(caught.code).toBe('sync.invalid_client_id');
+  expect(caught.recommendedAction).toBe('resetClientId');
+  expect(caught.retryable).toBe(false);
+  expect(caught.details).toEqual({
+    actorId: 'actor-b',
+    causeKind: 'status',
+    httpStatus: 400,
+  });
+});

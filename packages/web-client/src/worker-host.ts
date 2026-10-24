@@ -661,6 +661,17 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     return this.#call('syncUntilIdle', [maxRounds]);
   }
 
+  /**
+   * Rotate the client id (§1.5) after a `sync.invalid_client_id` refusal.
+   * The worker's next round carries the new id; the replica and outbox stay
+   * in place.
+   */
+  async resetClientId(): Promise<string> {
+    const clientId = await this.#call('resetClientId', []);
+    this.#clientId = clientId;
+    return clientId;
+  }
+
   query(sql: string, params?: readonly SqlValue[]): Promise<SqlRow[]> {
     return this.#call('query', [sql, params]);
   }

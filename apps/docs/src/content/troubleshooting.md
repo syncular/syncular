@@ -33,7 +33,7 @@ Errors carry stable codes. When you arrive from a stack trace, start here:
 | `sync.unknown_table` | A subscription names a table the schema retired | [Schema upgrades](/concepts-schema-upgrades/) |
 | `sync.schema_not_ready` | The server booted without a readiness check | [Server setup](/guide-server/) |
 | `sync.internal_error` | A storage, network, or host-code exception reached the server adapter; the client retries | [Reporting server errors](/guide-server/#reporting-server-errors) |
-| `sync.invalid_client_id` | A client id was reused under a different actor | [Seeding data](/server-operations/#seeding-data) |
+| `sync.invalid_client_id` | A client id was reused under a different actor | [below](#syncinvalid_client_id-after-an-account-switch) |
 | `sync.forbidden` | A write failed the scope check | [Scopes & authorization](/concepts-scopes/) |
 | `sync.crdt_merge_failed` | A `crdt` column has no registered merger, or the merger threw | [CRDT columns](/concepts-crdt/#register-the-merger-on-the-server) |
 | `sync.storage.scan_requires_scope` | A row scan omitted its mandatory scope filter | [Storage reference](/server-storage-reference/#advanced-row-lookups-for-trusted-server-code) |
@@ -84,6 +84,42 @@ Two fixes, both worth doing:
   The scaffolded templates ship this shape; keep it when you grow the form.
 
 - **Reload open tabs after a dev-server restart.** The served bundles and the worker changed under the page, and the dev loop does not try to preserve a stale page over a fresh server.
+
+## `sync.invalid_client_id` after an account switch
+
+The server binds a client id to the first actor that uses it in a partition (§1.5). Reusing a stored id after signing in as another account returns HTTP 400 `sync.invalid_client_id` with `recommendedAction: resetClientId`.
+
+Rotate the id instead of persisting one per account. The next round carries the new id. The local replica and outbox stay in place, so wipe them too when they belong to the account that signed out.
+
+```ts title="src/client.ts"
+try {
+  await client.syncUntilIdle();
+} catch (error) {
+  if (
+    error instanceof ClientSyncError &&
+    error.code === 'sync.invalid_client_id' &&
+    error.recommendedAction === 'resetClientId'
+  ) {
+    client.resetClientId();
+    await client.syncUntilIdle();
+  }
+}
+```
+
+```rust title="src/main.rs"
+match client.sync_until_idle(&mut transport, None) {
+    SyncOutcome::Failed { error_code, recommended_action, .. }
+        if error_code == "sync.invalid_client_id"
+            && recommended_action.as_deref() == Some("resetClientId") =>
+    {
+        client.reset_client_id(&mut transport);
+        client.sync_until_idle(&mut transport, None);
+    }
+    outcome => { /* handle the round */ }
+}
+```
+
+The `sync` and `syncUntilIdle` command results carry the same `recommendedAction`, and the command `resetClientId` returns the new id.
 
 ## `client.storage_busy` while opening the app
 

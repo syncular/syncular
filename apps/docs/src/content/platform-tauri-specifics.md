@@ -70,7 +70,7 @@ the conformance shim and the C-ABI FFI use, so the surface is conformance-locked
 
 | Entry | Does |
 |---|---|
-| `syncular_command(command)` | The whole surface in one command. `command` is `{ "method": "...", "params": {...} }` (create, subscribe, mutate, sync, syncUntilIdle, conflicts, presence, setPresence, and more). The reply is `{ "result": ... }` or `{ "error": { "code", "message" } }`. |
+| `syncular_command(command)` | The whole surface in one command. `command` is `{ "method": "...", "params": {...} }` (create, subscribe, mutate, sync, syncUntilIdle, resetClientId, conflicts, presence, setPresence, and more). The reply is `{ "result": ... }` or `{ "error": { "code", "message" } }`. |
 | `syncular_query(sql, params)` | The raw read-only SQL fast path. |
 | `syncular_query_snapshot(sql, params, coverage)` | One IPC read for rows, window completeness, and the exact local revision. |
 | `syncular_snapshot_read(...)` | Several statements plus coverage, subscription progress, and delivery state in one read transaction. |

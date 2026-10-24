@@ -826,6 +826,10 @@ pub enum SyncOutcome {
         error_code: String,
         message: String,
         details: Option<Value>,
+        /// §10.1 `recommendedAction` from the server's error body, when the
+        /// transport preserved one. Client-local and storage failures carry
+        /// `None`.
+        recommended_action: Option<String>,
     },
     /// §8.8: the `required` policy refused a round because the socket is not
     /// connected. `reason_code` is present for `lost` and `refused` states,
@@ -858,6 +862,7 @@ impl SyncOutcome {
                 error_code,
                 message,
                 details,
+                recommended_action,
             } => {
                 let mut map = Map::new();
                 map.insert("ok".to_owned(), Value::Bool(false));
@@ -865,6 +870,12 @@ impl SyncOutcome {
                 map.insert("message".to_owned(), Value::from(message.clone()));
                 if let Some(details) = details {
                     map.insert("details".to_owned(), details.clone());
+                }
+                if let Some(recommended_action) = recommended_action {
+                    map.insert(
+                        "recommendedAction".to_owned(),
+                        Value::from(recommended_action.clone()),
+                    );
                 }
                 Value::Object(map)
             }

@@ -52,25 +52,44 @@ async function throwHttpError(
     response.status >= 500 ||
     response.status === 429 ||
     defaultCode === 'sync.auth_required';
+  let recommendedAction: string | undefined;
+  let serverDetails: Readonly<Record<string, unknown>> | undefined;
   try {
     const body = (await response.json()) as {
       code?: string;
       message?: string;
       retryable?: boolean;
+      recommendedAction?: string;
+      details?: unknown;
     };
     // Only the blob download endpoint can establish absence.
     if (body.code !== 'blob.not_found' || defaultCode === 'blob.not_found') {
       if (typeof body.code === 'string') code = body.code;
       if (typeof body.message === 'string') message = body.message;
       if (typeof body.retryable === 'boolean') retryable = body.retryable;
+      if (typeof body.recommendedAction === 'string')
+        recommendedAction = body.recommendedAction;
+      if (
+        typeof body.details === 'object' &&
+        body.details !== null &&
+        !Array.isArray(body.details)
+      )
+        serverDetails = body.details as Readonly<Record<string, unknown>>;
     }
   } catch {
     // non-JSON error body — keep the HTTP-status defaults
   }
-  throw new ClientSyncError(code, message, retryable, {
-    causeKind: 'status',
-    httpStatus: response.status,
-  });
+  throw new ClientSyncError(
+    code,
+    message,
+    retryable,
+    {
+      ...serverDetails,
+      causeKind: 'status',
+      httpStatus: response.status,
+    },
+    recommendedAction,
+  );
 }
 
 export interface HttpTransportOptions {

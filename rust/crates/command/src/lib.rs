@@ -1006,6 +1006,10 @@ pub fn dispatch<T: Transport>(
             let outcome = need_client(client)?.sync(transport);
             Ok(outcome.to_json())
         }
+        "resetClientId" | "reset_client_id" => {
+            let client_id = need_client(client)?.reset_client_id(transport);
+            Ok(json!({ "clientId": client_id }))
+        }
         "syncUntilIdle" => {
             let max_rounds = match params.get("maxRounds") {
                 None | Some(Value::Null) => None,

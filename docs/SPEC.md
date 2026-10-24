@@ -273,6 +273,12 @@ status. Errors detected *after* streaming has begun are delivered in-band
 via the `ERROR` frame (§1.2). Error responses
 are JSON and human-readable; only success responses are binary.
 
+A client transport that receives an authenticated JSON error response MUST
+preserve the body's `code`, `category`, `retryable`, `recommendedAction`,
+`message`, and `details` when they parse, and it MUST keep the HTTP status as
+transport cause metadata. A non-JSON body keeps the transport's own
+classification.
+
 The TypeScript encoder shares frame finalization and error construction, and
 scope-map decoders share canonical-key validation. These size reductions retain
 identical bytes, absent optional fields, validation order and error messages.
@@ -691,6 +697,13 @@ header, or payload never reaches the message or the details. Browser
 transports (`fetch`, `WebSocket`) define their own timeout and redirect
 behavior and are not required to emulate this policy.
 
+On a non-2xx HTTP response the native transport reads the authenticated
+JSON error body and returns its catalog `code`, `category`, `retryable`,
+`recommendedAction`, `message`, and `details`. `causeKind: status` and
+`httpStatus` stay in the details. A non-JSON body falls back to
+`transport.failed` with those two fields. The browser transports apply the
+same rule to their JSON error bodies.
+
 `causeKind` is a closed vocabulary and the classification surface for
 hosts; a transport failure message is never one. The native transport
 raises `transport.failed` with `connect` (DNS resolution failed, or the
@@ -825,6 +838,13 @@ insert over an absent row clears the row's tombstone.
 emit, in the same commit, a `delete` change tagged with the old scope
 values and an `upsert` tagged with the new ones, so subscribers of the
 old scope remove the row and subscribers of the new scope receive it.
+
+The delete and the upsert are one logical change. A client that receives
+both for the same `(commitSeq, table, rowId)` MUST apply the row with the
+upsert's values and MUST NOT let the delete remove it, whether the two
+changes arrive in one subscription section or split across sections in
+either order. A section that itself carries both changes keeps its change
+order; the coalescing rule applies to a pair split across sections.
 
 ### 2.3 Idempotency identity
 

@@ -492,6 +492,7 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
       const running = requireClient();
       return serializedSync(() => running.syncUntilIdle(maxRounds));
     },
+    resetClientId: () => requireClient().resetClientId(),
     localRevision: () => requireClient().localRevision,
     diagnosticsSnapshot: (request) => {
       const snapshot = requireClient().diagnosticsSnapshot(request);

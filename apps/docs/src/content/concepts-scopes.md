@@ -80,6 +80,8 @@ The server authorizes a write against the row as currently stored, or against th
 
 A client does not have to hold every row it may read. [Windowed sync](/concepts-windowing/) keeps a partial local copy by subscribing to a subset of the allowed values.
 
+A scope move is one commit with a delete under the old scopes and an upsert under the new ones. A reader that holds both scopes receives those changes in two subscription sections. Each client applies the pair as one change, so the row survives whichever section arrives first and the upsert's values win.
+
 ## Advanced: multiple variables and server lookups
 
 ### Variables are independent dimensions

@@ -96,6 +96,7 @@ test('an in-band ERROR round clears the kept code and is never reported', async 
   c.faults.errorFrameOnce = true;
   await expect(c.client.sync()).rejects.toMatchObject({
     code: 'sync.rate_limited',
+    recommendedAction: 'retryLater',
   });
   // The failed round arrived complete, so the client owes no report.
   await c.client.sync();
