@@ -11246,11 +11246,30 @@ impl SyncClient {
         Self::with_connection(client_id, schema_json, limits, conn)
     }
 
+    /// Open a file replica and resolve its client id. Native targets require
+    /// WAL for the independent snapshot reader; `wasm32-unknown-unknown`
+    /// accepts the sqlite-wasm worker journal instead.
     pub fn open_path_with_identity(
         client_id: Option<String>,
         schema_json: &Value,
         limits: ClientLimits,
         path: &str,
+    ) -> Result<Self, String> {
+        Self::open_path_with_identity_journal(
+            client_id,
+            schema_json,
+            limits,
+            path,
+            !cfg!(all(target_arch = "wasm32", target_os = "unknown")),
+        )
+    }
+
+    fn open_path_with_identity_journal(
+        client_id: Option<String>,
+        schema_json: &Value,
+        limits: ClientLimits,
+        path: &str,
+        require_wal: bool,
     ) -> Result<Self, String> {
         validate_client_limits(&limits)?;
         // §7.4.2: an invalid requested version is refused before the replica is
@@ -11267,14 +11286,19 @@ impl SyncClient {
         conn.busy_timeout(std::time::Duration::from_millis(250))
             .map_err(|error| format!("configure db {path:?} busy timeout: {error}"))?;
         let client = Self::with_connection_identity(client_id, schema_json, limits, conn)?;
-        let journal_mode: String = client
-            .conn
-            .pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))
-            .map_err(|error| Self::sqlite_failure(&client.storage_failure, error))?;
-        if journal_mode != "wal" {
-            return Err(
-                "sync.invalid_request: file-backed client requires WAL journal mode".to_owned(),
-            );
+        // A browser worker's sqlite-wasm VFS has no WAL mode, and the wasm
+        // host has no independent snapshot reader. The WAL requirement exists
+        // for native file replicas, where it is the reader/writer boundary.
+        if require_wal {
+            let journal_mode: String = client
+                .conn
+                .pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))
+                .map_err(|error| Self::sqlite_failure(&client.storage_failure, error))?;
+            if journal_mode != "wal" {
+                return Err(
+                    "sync.invalid_request: file-backed client requires WAL journal mode".to_owned(),
+                );
+            }
         }
         Ok(client)
     }
@@ -21187,6 +21211,21 @@ mod previous_version_wiring_tests {
         assert_eq!(journal_mode(&client.conn), "wal");
         drop(client);
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn non_wal_identity_open_is_accepted_when_wal_is_not_required() {
+        for path in [":memory:", ""] {
+            let client = SyncClient::open_path_with_identity_journal(
+                None,
+                &previous_version_schema(1),
+                ClientLimits::default(),
+                path,
+                false,
+            )
+            .expect("a host without WAL can still open the identity constructor");
+            assert_ne!(journal_mode(&client.conn), "wal");
+        }
     }
 
     #[test]

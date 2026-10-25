@@ -78,7 +78,7 @@ Constructors:
 
 - `SyncClient::new(client_id, schema, limits)`: in-memory.
 - `SyncClient::open_path(client_id, schema, limits, path)`: on-disk; `CREATE TABLE IF NOT EXISTS` makes a reopen reuse persisted rows.
-- `SyncClient::open_path_with_identity(Option<client_id>, schema, limits, path)`: on-disk, enables WAL after schema validation, and reuses the persisted client id when you pass `None`. It fails with `sync.invalid_request` if WAL is unavailable, so an empty path or `:memory:` fails.
+- `SyncClient::open_path_with_identity(Option<client_id>, schema, limits, path)`: on-disk, and reuses the persisted client id when you pass `None`. On native targets it enables WAL after schema validation and fails with `sync.invalid_request` if WAL is unavailable, so an empty path or `:memory:` fails. On `wasm32-unknown-unknown` it accepts the sqlite-wasm worker's journal mode instead, because that VFS has no WAL and the wasm host has no independent snapshot reader.
 - `SyncClient::with_connection(client_id, schema, limits, conn)`: your own fresh rusqlite `Connection`.
 
 Use a file path in an app. An in-memory replica loses the outbox on exit.
