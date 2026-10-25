@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-10-24',
+    title: 'The wasm identity constructor accepts the worker journal',
+    body: '`open_path_with_identity` applied WAL and refused any other journal mode on every target. A `wasm32-unknown-unknown` build runs on sqlite-wasm inside a browser worker, where the VFS has no WAL, so the constructor refused the replica and every web client stopped syncing. The WAL requirement now applies to native targets only; the wasm build accepts the journal mode the worker reports. Native file replicas still require WAL, and the repository includes a wasm identity-open test for a wasm host.',
+    links: [
+      {
+        href: '/platform-rust-install/#open-a-replica',
+        label: 'Rust constructors',
+      },
+    ],
+  },
+  {
+    date: '2026-10-24',
     title: 'Scope moves stay one change, and a refused client id names its fix',
     body: "A scope move reaches a reader that holds the old and the new scope in two subscription sections. The section order decided whether the delete or the upsert applied last, so a device could silently lose a moved row. Both clients now treat one commit's delete and upsert of the same row as one change and keep the upsert's values, and a conformance scenario runs both section orders. An HTTP refusal now keeps the server error body: `ClientSyncError.recommendedAction` in TypeScript and `SyncOutcome::Failed.recommended_action` in Rust expose `resetClientId`, with the body's `details`. `resetClientId()` / `reset_client_id(&mut transport)` rotates the persisted id for the next round, and the command router and Tauri bridge expose the same call.",
     links: [

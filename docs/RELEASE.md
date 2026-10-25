@@ -1,8 +1,31 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.42.0** (`v0.42.0`). All artifacts use Apache-2.0, except
+current release is **0.42.1** (`v0.42.1`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.42.1 release notes
+
+0.42.1 fixes the wasm identity constructor. SSP2, the storage layout, and the
+public API are unchanged.
+
+`SyncClient::open_path_with_identity` applied `PRAGMA journal_mode=WAL` and
+refused the open with `sync.invalid_request` when SQLite returned any other
+mode. A `wasm32-unknown-unknown` build runs on sqlite-wasm inside a browser
+worker, where the VFS has no WAL, so every web client that opened a replica
+through that constructor stopped syncing. The constructor now requires WAL on
+native targets only. On wasm it leaves the worker's journal mode in place and
+opens the replica. Native file replicas still require WAL because their
+independent snapshot reader depends on it, and an empty path or `:memory:`
+still fails on native.
+
+The test at `rust/crates/client/tests/wasm_identity_open.rs` exercises the
+public constructor in a wasm host. A native test executes the non-WAL branch so
+the acceptance path stays covered outside a wasm host.
+
+**Upgrade notes.** Rebuild a wasm host against `syncular-client` 0.42.1. No
+consumer code changes, and no migration. Upgrade all 12 npm packages and 6
+crates together.
 
 ## 0.42.0 release notes
 
