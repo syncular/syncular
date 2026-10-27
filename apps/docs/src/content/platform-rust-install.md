@@ -38,6 +38,10 @@ The host supplies three things the target cannot:
 - A `Transport`. `native-transport` (`ureq`, `tungstenite`) does not build for this target, so implement the trait over `fetch` and a WebSocket. Leave `round_deadline` at its default `None`: the core anchors that budget on `std::time::Instant`, which this target does not have, and a transport that returns a budget fails the round with `sync.invalid_request` instead of panicking.
 
 A wasm build is untested against a real server in this repository; the native gate is `cargo test`.
+
+`sqlite-wasm-vfs` 0.2.0's `opfs-sahpool` reports a reserved lock unconditionally (`xCheckReservedLock` writes 1), so SQLite would skip hot-journal rollback after a worker is killed mid-commit. `syncular-client` wraps the VFS's `xOpen` before the first connection opens its file and makes the file methods report 0, which lets SQLite replay the journal. Install the VFS before opening the replica.
+
+The core does not acquire a cross-context lock. A host that can have two documents or workers on one pool serializes them itself; the TypeScript binding takes a Web Lock keyed by the pool directory in `packages/web-client/src/wasm-database.ts`, and a Rust browser host needs the same guard.
 :::::
 
 :::::step{title="Get the schema" time="2 min"}
@@ -80,6 +84,7 @@ Constructors:
 - `SyncClient::open_path(client_id, schema, limits, path)`: on-disk; `CREATE TABLE IF NOT EXISTS` makes a reopen reuse persisted rows.
 - `SyncClient::open_path_with_identity(Option<client_id>, schema, limits, path)`: on-disk, and reuses the persisted client id when you pass `None`. On native targets it enables WAL after schema validation and fails with `sync.invalid_request` if WAL is unavailable, so an empty path or `:memory:` fails. On `wasm32-unknown-unknown` it accepts the sqlite-wasm worker's journal mode instead, because that VFS has no WAL and the wasm host has no independent snapshot reader.
 - `SyncClient::with_connection(client_id, schema, limits, conn)`: your own fresh rusqlite `Connection`.
+- `SyncClient::reset_replica(path)`: deletes a file replica and its `-journal`, `-wal`, and `-shm` files through the VFS. Close the client and any `FileQuerySnapshotReader` on that path first. Call it after `client.storage_corrupt`; the next open creates a fresh replica and re-bootstraps from the server. An OPFS SAH pool stores its files under opaque names, so this is the supported reset instead of deleting the pool directory.
 
 Use a file path in an app. An in-memory replica loses the outbox on exit.
 

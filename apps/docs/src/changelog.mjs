@@ -16,6 +16,21 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-10-27',
+    title: 'A killed worker keeps the OPFS replica recoverable',
+    body: "The Rust client's browser replica now wraps the installed OPFS VFS before its first connection, so SQLite replays a hot rollback journal after a worker is killed mid-commit. `sqlite-wasm-vfs` 0.2.0 reports a reserved lock unconditionally and suppressed that rollback; the patched file methods report no foreign writer, matching the TypeScript binding. File opens also pin `PRAGMA synchronous=FULL`. `SyncClient::reset_replica(path)` deletes a corrupt replica and its sidecars through the VFS, so a host no longer deletes the OPFS pool directory behind SQLite.",
+    links: [
+      {
+        href: '/platform-rust-install/#open-a-replica',
+        label: 'Rust constructors',
+      },
+      {
+        href: '/platform-rust-troubleshooting/',
+        label: 'Rust troubleshooting',
+      },
+    ],
+  },
+  {
     date: '2026-10-24',
     title: 'The wasm identity constructor accepts the worker journal',
     body: '`open_path_with_identity` applied WAL and refused any other journal mode on every target. A `wasm32-unknown-unknown` build runs on sqlite-wasm inside a browser worker, where the VFS has no WAL, so the constructor refused the replica and every web client stopped syncing. The WAL requirement now applies to native targets only; the wasm build accepts the journal mode the worker reports. Native file replicas still require WAL, and the repository includes a wasm identity-open test for a wasm host.',

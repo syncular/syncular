@@ -1,8 +1,40 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.42.1** (`v0.42.1`). All artifacts use Apache-2.0, except
+current release is **0.42.2** (`v0.42.2`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.42.2 release notes
+
+0.42.2 fixes browser-worker replica corruption after iOS terminates a worker
+mid-commit. SSP2, the storage layout, and the public API are additive only.
+
+A `wasm32-unknown-unknown` client opens its replica on the host's
+`opfs-sahpool` VFS. `sqlite-wasm-vfs` 0.2.0 reports a reserved lock
+unconditionally, so SQLite treated a hot rollback journal as owned by another
+process and skipped rollback; the next writer could commit over a
+half-rolled-back image and fail with `client.storage_corrupt`. The client now
+wraps the installed VFS's `xOpen` before the first connection opens its file
+and replaces the file method table's `xCheckReservedLock` with a callback that
+reports no foreign writer, matching the sqlite-wasm JS binding and
+`@syncular/client`. File opens also pin `PRAGMA synchronous=FULL`.
+
+The new `SyncClient::reset_replica(path)` deletes a corrupt replica and its
+`-journal`, `-wal`, and `-shm` sidecars through the SQLite VFS. A host that
+still sees `client.storage_corrupt` closes the client and any
+`FileQuerySnapshotReader`, calls it, and opens a fresh replica. It no longer
+deletes the OPFS pool directory behind SQLite.
+
+The browser OPFS harness kills a worker mid-import and reopens the database
+with `PRAGMA integrity_check` = `ok`; without the reserved-lock callback it
+reopens with a malformed FTS index. A native test covers the VFS method-table
+wrapper, and a native Rust test covers `reset_replica`. A Rust browser host
+still needs the cross-context Web Lock that its own app owns; the core does not
+acquire one.
+
+**Upgrade notes.** Rebuild a wasm host against `syncular-client` 0.42.2. No
+consumer code changes and no migration. Upgrade all 12 npm packages and 6
+crates together.
 
 ## 0.42.1 release notes
 

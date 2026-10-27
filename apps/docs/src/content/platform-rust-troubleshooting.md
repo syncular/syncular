@@ -14,6 +14,7 @@ Match a symptom to its cause and fix.
 | `mutate` returns `sync.invalid_request` | An unknown column, a value of the wrong type, an absent required column, or an unrenderable primary key | Read `details.legacyCause`; nothing was recorded |
 | `client.storage_busy` (retryable) | SQLite reported `BUSY` or `LOCKED` | Retry after the contention clears |
 | `client.storage_full` | The disk is full (SQLite code 13) | Free space, then call `sync` again; the pending import runs on the same connection |
+| `client.storage_corrupt` | SQLite reported a malformed image (code 11 or 26) | Close the client and any `FileQuerySnapshotReader`, call `SyncClient::reset_replica(path)`, then open a fresh replica. Do not delete the OPFS pool directory behind the VFS |
 | `open_path_with_identity` fails with `sync.invalid_request` on a native target | WAL is unavailable, for example an empty path or `:memory:` | Pass a persistent file path. A `wasm32-unknown-unknown` build accepts the worker VFS journal instead |
 | A legacy commit shows as rejected with `sync.outbox_incompatible` | The stored commit carries values the current codec refuses | Read `details.reason`; resolve it as any rejection |
 | `transport.timeout`, `transport.request_too_large`, or `transport.response_too_large` | A `HostTransportPolicy` bound fired | Raise the bound; see [Platform specifics](/platform-rust-specifics/#native-transport-policy). A `transport.timeout` schedules a Background intent like `transport.failed`, so the host retries after `delay_ms` without a wake-up; the other two do not |

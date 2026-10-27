@@ -42,6 +42,10 @@ pub mod schema;
 pub mod transport;
 pub mod values;
 
+/// Browser-worker crash recovery for the installed OPFS VFS.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+mod wasm_vfs;
+
 /// Wall-clock milliseconds since the Unix epoch, the one clock this crate
 /// reads for every timestamp it records. `wasm32-unknown-unknown` runs in a JS
 /// host where `SystemTime::now()` panics, so that target reads the host clock.

@@ -11209,6 +11209,22 @@ fn read_local_schema_version(conn: &Connection, requested: i32) -> Result<Option
     Ok(Some(version))
 }
 
+/// A file replica on a browser worker must recover a hot journal before any
+/// statement reads it. `wasm_vfs` replaces the installed OPFS VFS's reserved
+/// lock callback, so install it before the connection opens its file.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn prepare_wasm_replica(path: &str) -> Result<(), String> {
+    if path.is_empty() || path == ":memory:" {
+        return Ok(());
+    }
+    crate::wasm_vfs::disable_foreign_lock_check()
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+fn prepare_wasm_replica(_path: &str) -> Result<(), String> {
+    Ok(())
+}
+
 impl SyncClient {
     pub fn new_with_identity(
         client_id: Option<String>,
@@ -11242,6 +11258,7 @@ impl SyncClient {
     ) -> Result<Self, String> {
         validate_client_limits(&limits)?;
         parse_schema_json(schema_json)?;
+        prepare_wasm_replica(path)?;
         let conn = Connection::open(path).map_err(|e| format!("open db {path:?}: {e}"))?;
         Self::with_connection(client_id, schema_json, limits, conn)
     }
@@ -11275,6 +11292,7 @@ impl SyncClient {
         // §7.4.2: an invalid requested version is refused before the replica is
         // even created, so a rejected constructor leaves no file behind.
         parse_schema_json(schema_json)?;
+        prepare_wasm_replica(path)?;
         let conn = Connection::open(path).map_err(|e| format!("open db {path:?}: {e}"))?;
         // A file-backed native client uses an independent read connection for
         // latency-critical snapshots. WAL is SQLite's intended reader/writer
@@ -11285,6 +11303,12 @@ impl SyncClient {
         // journal mode and contents untouched (§7.4.2).
         conn.busy_timeout(std::time::Duration::from_millis(250))
             .map_err(|error| format!("configure db {path:?} busy timeout: {error}"))?;
+        // Durability is the caller's contract here, not the VFS default: a
+        // rollback-journal commit needs FULL before it writes the database
+        // pages, or a killed worker can leave a half-written image behind.
+        // WAL below inherits the same setting.
+        conn.pragma_update(None, "synchronous", "FULL")
+            .map_err(|error| format!("configure db {path:?} synchronous: {error}"))?;
         let client = Self::with_connection_identity(client_id, schema_json, limits, conn)?;
         // A browser worker's sqlite-wasm VFS has no WAL mode, and the wasm
         // host has no independent snapshot reader. The WAL requirement exists
@@ -11301,6 +11325,47 @@ impl SyncClient {
             }
         }
         Ok(client)
+    }
+
+    /// Delete a file replica at `path`, including its `-journal`, `-wal`, and
+    /// `-shm` sidecars, through the VFS that owns it. Use this after
+    /// `client.storage_corrupt`: an OPFS SAH pool stores those files under
+    /// opaque names, so deleting the pool directory behind SQLite bypasses the
+    /// pool's slot accounting.
+    ///
+    /// Close the client and every [`FileQuerySnapshotReader`] on `path` first;
+    /// a VFS cannot delete a file another handle still owns. The next open
+    /// creates a fresh replica (new client id) and re-bootstraps from the
+    /// server. A memory replica has nothing to delete and fails with
+    /// `sync.invalid_request`.
+    pub fn reset_replica(path: &str) -> Result<(), String> {
+        if path.is_empty() || path == ":memory:" {
+            return Err("sync.invalid_request: a memory replica has nothing to reset".to_owned());
+        }
+        // SAFETY: a null VFS name asks SQLite for its process-wide default VFS,
+        // the same one `Connection::open(path)` above selects. `xDelete` is
+        // that VFS's own function pointer, and `c_name` outlives the call.
+        let vfs = unsafe { rusqlite::ffi::sqlite3_vfs_find(std::ptr::null()) };
+        if vfs.is_null() {
+            return Err("client.storage_io: no SQLite VFS is registered".to_owned());
+        }
+        let delete = unsafe { (*vfs).xDelete }
+            .ok_or_else(|| "client.storage_io: the SQLite VFS cannot delete files".to_owned())?;
+        for suffix in ["-wal", "-shm", "-journal", ""] {
+            let file_name = format!("{path}{suffix}");
+            let c_name = std::ffi::CString::new(file_name.as_str()).map_err(|_| {
+                format!("sync.invalid_request: replica path {file_name:?} contains a NUL byte")
+            })?;
+            // SAFETY: `vfs` and its `xDelete` pointer come from the live
+            // SQLite library; `c_name` is a valid NUL-terminated path.
+            let code = unsafe { delete(vfs, c_name.as_ptr(), 1) };
+            if code != rusqlite::ffi::SQLITE_OK {
+                return Err(format!(
+                    "client.storage_io: deleting replica file {file_name:?} failed with SQLite code {code}"
+                ));
+            }
+        }
+        Ok(())
     }
 
     #[must_use]
@@ -21225,7 +21290,59 @@ mod previous_version_wiring_tests {
             )
             .expect("a host without WAL can still open the identity constructor");
             assert_ne!(journal_mode(&client.conn), "wal");
+            assert_eq!(
+                client
+                    .conn
+                    .query_row("PRAGMA synchronous", [], |row| row.get::<_, i64>(0))
+                    .expect("synchronous"),
+                2,
+                "every identity open pins FULL durability"
+            );
         }
+    }
+
+    #[test]
+    fn reset_replica_deletes_the_database_and_its_sidecars_through_the_vfs() {
+        let path = temp_replica("reset");
+        let path_str = path.to_str().expect("path");
+        let client = SyncClient::open_path(
+            "reset-replica".into(),
+            &previous_version_schema(1),
+            ClientLimits::default(),
+            path_str,
+        )
+        .expect("replica");
+        let original_id = client.client_id().to_owned();
+        drop(client);
+        for suffix in ["-journal", "-wal", "-shm"] {
+            std::fs::write(format!("{path_str}{suffix}"), b"stale sidecar").expect("sidecar");
+        }
+
+        SyncClient::reset_replica(path_str).expect("reset through the VFS");
+
+        for suffix in ["", "-journal", "-wal", "-shm"] {
+            assert!(
+                !std::path::Path::new(&format!("{path_str}{suffix}")).exists(),
+                "reset removes the replica file {suffix:?}"
+            );
+        }
+        let reopened = SyncClient::open_path_with_identity(
+            None,
+            &previous_version_schema(1),
+            ClientLimits::default(),
+            path_str,
+        )
+        .expect("fresh replica");
+        assert_ne!(reopened.client_id(), original_id);
+        assert!(reopened
+            .query("SELECT id FROM tasks", &[])
+            .expect("empty")
+            .is_empty());
+        drop(reopened);
+        assert_eq!(
+            SyncClient::reset_replica(":memory:").expect_err("memory has nothing to reset"),
+            "sync.invalid_request: a memory replica has nothing to reset"
+        );
     }
 
     #[test]
