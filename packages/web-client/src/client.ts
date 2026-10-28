@@ -354,6 +354,17 @@ export interface SyncIdleResult extends SyncSummary {
   readonly budgetExhausted: boolean;
 }
 
+export interface SyncIdleOptions {
+  /** §7.7: a strict positive round count. Default: 20. */
+  readonly maxRounds?: number;
+  /**
+   * Total wall-clock budget for one drive, across every round. When it
+   * elapses the drive rejects with `sync.idle_timeout`; a socket round in
+   * flight is aborted. Default: 60,000 ms. `Infinity` disables the bound.
+   */
+  readonly timeoutMs?: number;
+}
+
 export interface SyncClientLimits {
   readonly limitCommits?: number;
   readonly limitSnapshotRows?: number;
@@ -730,6 +741,9 @@ function emptySummary(pushed: number): MutableSummary {
 
 const LOG_EPOCH_META_KEY = 'logEpoch';
 
+/** §7.7: one `syncUntilIdle` drive's default total deadline. */
+const SYNC_IDLE_TIMEOUT_MS = 60_000;
+
 /** RFC 0005 defaults (D2/A4/D7). */
 const PREVIOUS_VERSION_DEFAULT_MAX_BYTES = 8 * 1024 * 1024;
 const PREVIOUS_VERSION_DEFAULT_MAX_ROWS = 20_000;
@@ -898,14 +912,12 @@ export class SyncClient {
   /**
    * Idle drives run one after another (§8.4): `#syncIdleTail` settles when
    * the last scheduled drive settles, and `#syncIdlePending` holds the
-   * scheduled drives that have not started, keyed by round budget, so a
-   * caller joins a waiting drive with its budget instead of queueing another.
+   * scheduled drives that have not started, keyed by round budget and
+   * deadline, so a caller joins a waiting drive with its budget instead of
+   * queueing another.
    */
   #syncIdleTail: Promise<void> | undefined;
-  readonly #syncIdlePending = new Map<
-    number | undefined,
-    Promise<SyncIdleResult>
-  >();
+  readonly #syncIdlePending = new Map<string, Promise<SyncIdleResult>>();
   /**
    * Bumped by every local projection reset (`rebootstrapLocalData`). A sync
    * round captures this epoch together with its subscription state; a
@@ -4270,7 +4282,24 @@ export class SyncClient {
       const retryable =
         explicitlyRetryable === true ||
         (explicitlyRetryable === undefined && typeof code !== 'string');
-      if (retryable) {
+      // §1.8: a refused or unreachable endpoint (`connect` from the native
+      // transport, `network` from a browser fetch) is not a round worth
+      // backing off for. Stop without scheduling an intent or growing the
+      // delay; the host's own connectivity signal re-arms the drive.
+      const details =
+        error instanceof ClientSyncError
+          ? error.details
+          : typeof error === 'object' && error !== null && 'details' in error
+            ? error.details
+            : undefined;
+      const causeKind =
+        typeof details === 'object' &&
+        details !== null &&
+        'causeKind' in details
+          ? details.causeKind
+          : undefined;
+      const unreachable = causeKind === 'connect' || causeKind === 'network';
+      if (retryable && !unreachable) {
         const realtimeUnavailable = error instanceof RealtimeUnavailableError;
         const delay = realtimeUnavailable
           ? error.retryDelayMs
@@ -4307,8 +4336,21 @@ export class SyncClient {
    * caller may have mutated the outbox after the in-flight drive captured it.
    * Callers that arrive during the same drive with the same budget share that
    * single follow-up. `sync()` keeps rejecting a concurrent `sync()`.
+   *
+   * §7.7: one drive is bounded by a total deadline (`timeoutMs`, default
+   * 60 s). A drive that reaches it rejects with `sync.idle_timeout` and
+   * aborts a socket round in flight; the round budget does not bound elapsed
+   * time, and a transport that never answers must not hang the caller.
    */
-  async syncUntilIdle(maxRounds?: number): Promise<SyncIdleResult> {
+  async syncUntilIdle(
+    options?: number | SyncIdleOptions,
+  ): Promise<SyncIdleResult> {
+    const maxRounds =
+      typeof options === 'number' ? options : options?.maxRounds;
+    const timeoutMs =
+      typeof options === 'number'
+        ? SYNC_IDLE_TIMEOUT_MS
+        : (options?.timeoutMs ?? SYNC_IDLE_TIMEOUT_MS);
     // §7.7: an explicit budget is a strict positive round count. Zero,
     // fractional, and out-of-range values are caller errors.
     if (
@@ -4316,18 +4358,24 @@ export class SyncClient {
       (!Number.isInteger(maxRounds) || maxRounds < 1 || maxRounds > 0xffffffff)
     )
       throw invalidRequest('maxRounds must be a positive integer');
-    const pending = this.#syncIdlePending.get(maxRounds);
+    if (
+      timeoutMs !== Number.POSITIVE_INFINITY &&
+      !(Number.isFinite(timeoutMs) && timeoutMs > 0)
+    )
+      throw invalidRequest('timeoutMs must be a positive number or Infinity');
+    const key = `${maxRounds ?? 'default'}:${timeoutMs}`;
+    const pending = this.#syncIdlePending.get(key);
     if (pending !== undefined) return pending;
     const previous = this.#syncIdleTail;
     let drive: Promise<SyncIdleResult>;
     if (previous === undefined) {
-      drive = this.#syncIdleRounds(maxRounds);
+      drive = this.#syncIdleRounds(maxRounds, timeoutMs);
     } else {
       drive = previous.then(() => {
-        this.#syncIdlePending.delete(maxRounds);
-        return this.#syncIdleRounds(maxRounds);
+        this.#syncIdlePending.delete(key);
+        return this.#syncIdleRounds(maxRounds, timeoutMs);
       });
-      this.#syncIdlePending.set(maxRounds, drive);
+      this.#syncIdlePending.set(key, drive);
     }
     const tail = drive.then(
       () => undefined,
@@ -4343,6 +4391,7 @@ export class SyncClient {
   /** The rounds loop of one idle drive; `syncUntilIdle` owns coalescing. */
   async #syncIdleRounds(
     maxRounds: number | undefined,
+    timeoutMs: number,
   ): Promise<SyncIdleResult> {
     const budget = maxRounds ?? 20;
     const aggregate = {
@@ -4380,54 +4429,96 @@ export class SyncClient {
         : {}),
       budgetExhausted,
     });
-    for (let round = 0; round < budget; round++) {
-      const before = JSON.stringify(
-        loadSubscriptions(this.#db).map((sub) => [sub.id, sub.bootstrapState]),
-      );
-      const last = await this.sync();
-      // Historical counters accumulate; current readiness (`bootstrapping`,
-      // `deferredCommits`, `schemaFloor`) describes the latest round.
-      aggregate.pushed += last.pushed;
-      aggregate.applied.push(...last.applied);
-      aggregate.rejected.push(...last.rejected);
-      aggregate.retryable.push(...last.retryable);
-      aggregate.conflicts.push(...last.conflicts);
-      aggregate.commitsApplied += last.commitsApplied;
-      aggregate.segmentRowsApplied += last.segmentRowsApplied;
-      aggregate.bootstrapping = [...last.bootstrapping];
-      aggregate.resets.push(...last.resets);
-      aggregate.revoked.push(...last.revoked);
-      aggregate.failed.push(...last.failed);
-      aggregate.deferredCommits = last.deferredCommits ?? 0;
-      aggregate.schemaFloor = last.schemaFloor;
-      // A disabled transport or a schema floor ends the loop, not the budget.
-      if (!this.#transportEnabled || last.schemaFloor !== undefined)
-        return result(false);
-      if (
-        maxRounds === undefined &&
-        last.segmentRowsApplied > 0 &&
-        last.bootstrapping.length > 0 &&
-        before !==
-          JSON.stringify(
-            loadSubscriptions(this.#db).map((sub) => [
-              sub.id,
-              sub.bootstrapState,
-            ]),
-          )
-      )
-        round = -1;
-      if (
-        last.commitsApplied === 0 &&
-        last.segmentRowsApplied === 0 &&
-        last.bootstrapping.length === 0 &&
-        last.resets.length === 0 &&
-        (last.deferredCommits ?? 0) === 0 &&
-        !this.#needsPull
-      ) {
-        return result(false);
+    let round = 0;
+    let expired = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline =
+      timeoutMs === Number.POSITIVE_INFINITY
+        ? undefined
+        : new Promise<never>((_, reject) => {
+            timer = setTimeout(() => {
+              expired = true;
+              // The transport may never answer; release the round so the
+              // client can run another one after the caller sees the error.
+              this.#abortPendingRound('syncUntilIdle deadline exceeded');
+              reject(
+                new ClientSyncError(
+                  'sync.idle_timeout',
+                  'syncUntilIdle exceeded its deadline',
+                  true,
+                  { timeoutMs, rounds: round },
+                ),
+              );
+            }, timeoutMs);
+          });
+    const drive = (async (): Promise<SyncIdleResult> => {
+      for (; round < budget; round++) {
+        // The race already rejected; stop spending rounds on a dead drive.
+        if (expired)
+          throw new ClientSyncError(
+            'sync.idle_timeout',
+            'syncUntilIdle exceeded its deadline',
+            true,
+            { timeoutMs, rounds: round },
+          );
+        const before = JSON.stringify(
+          loadSubscriptions(this.#db).map((sub) => [
+            sub.id,
+            sub.bootstrapState,
+          ]),
+        );
+        const last = await this.sync();
+        // Historical counters accumulate; current readiness (`bootstrapping`,
+        // `deferredCommits`, `schemaFloor`) describes the latest round.
+        aggregate.pushed += last.pushed;
+        aggregate.applied.push(...last.applied);
+        aggregate.rejected.push(...last.rejected);
+        aggregate.retryable.push(...last.retryable);
+        aggregate.conflicts.push(...last.conflicts);
+        aggregate.commitsApplied += last.commitsApplied;
+        aggregate.segmentRowsApplied += last.segmentRowsApplied;
+        aggregate.bootstrapping = [...last.bootstrapping];
+        aggregate.resets.push(...last.resets);
+        aggregate.revoked.push(...last.revoked);
+        aggregate.failed.push(...last.failed);
+        aggregate.deferredCommits = last.deferredCommits ?? 0;
+        aggregate.schemaFloor = last.schemaFloor;
+        // A disabled transport or a schema floor ends the loop, not the budget.
+        if (!this.#transportEnabled || last.schemaFloor !== undefined)
+          return result(false);
+        if (
+          maxRounds === undefined &&
+          last.segmentRowsApplied > 0 &&
+          last.bootstrapping.length > 0 &&
+          before !==
+            JSON.stringify(
+              loadSubscriptions(this.#db).map((sub) => [
+                sub.id,
+                sub.bootstrapState,
+              ]),
+            )
+        )
+          round = -1;
+        if (
+          last.commitsApplied === 0 &&
+          last.segmentRowsApplied === 0 &&
+          last.bootstrapping.length === 0 &&
+          last.resets.length === 0 &&
+          (last.deferredCommits ?? 0) === 0 &&
+          !this.#needsPull
+        ) {
+          return result(false);
+        }
       }
+      return result(true);
+    })();
+    try {
+      return await (deadline === undefined
+        ? drive
+        : Promise.race([drive, deadline]));
+    } finally {
+      clearTimeout(timer);
     }
-    return result(true);
   }
 
   /**

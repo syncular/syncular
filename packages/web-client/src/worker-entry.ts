@@ -488,9 +488,9 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
       const running = requireClient();
       return serializedSync(() => running.sync());
     },
-    syncUntilIdle: (maxRounds) => {
+    syncUntilIdle: (options) => {
       const running = requireClient();
-      return serializedSync(() => running.syncUntilIdle(maxRounds));
+      return serializedSync(() => running.syncUntilIdle(options));
     },
     resetClientId: () => requireClient().resetClientId(),
     localRevision: () => requireClient().localRevision,

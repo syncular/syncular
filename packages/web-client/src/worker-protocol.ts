@@ -31,6 +31,7 @@ import type {
   SyncClientConfig,
   SyncClientLimits,
   SyncSummary,
+  SyncIdleOptions,
   SyncIdleResult,
   WindowState,
 } from './client';
@@ -187,7 +188,7 @@ export interface WorkerApi extends Omit<
   /** RFC 0005 D9: the executable rollback step — drop the container. */
   previousVersionDiscard(): { present: boolean; discarded: boolean };
   sync(): Promise<SyncSummary>;
-  syncUntilIdle(maxRounds?: number): Promise<SyncIdleResult>;
+  syncUntilIdle(options?: number | SyncIdleOptions): Promise<SyncIdleResult>;
   resetClientId(): string;
   query(sql: string, params?: readonly SqlValue[]): SqlRow[];
   authoritySnapshot(): import('./authority').AuthoritySnapshot;

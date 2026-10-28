@@ -43,6 +43,7 @@ import type {
   SyncClientConfig,
   SyncClientLimits,
   SyncSummary,
+  SyncIdleOptions,
   SyncIdleResult,
   WindowState,
 } from './client';
@@ -657,8 +658,8 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     return this.#call('sync', []);
   }
 
-  syncUntilIdle(maxRounds?: number): Promise<SyncIdleResult> {
-    return this.#call('syncUntilIdle', [maxRounds]);
+  syncUntilIdle(options?: number | SyncIdleOptions): Promise<SyncIdleResult> {
+    return this.#call('syncUntilIdle', [options]);
   }
 
   /**

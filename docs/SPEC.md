@@ -721,10 +721,15 @@ browser reports a missing connection, DNS, TLS, and CORS failure alike),
 
 A round that fails with `transport.failed`, `transport.timeout`,
 `transport.unavailable`, or `sync.transport_failed` is retryable: the client
-schedules one Background intent with the backoff of §7.6. `transport.redirect`,
-`transport.request_too_large`, and `transport.response_too_large` describe a
-configuration the client cannot repair by repeating the request, so they
-schedule no intent. A silence timeout of a segment fetch is retryable like any
+schedules one Background intent with the backoff of §7.6. The one exception is
+a failure whose `causeKind` is `connect` (native: DNS resolution failed, or the
+connection was refused, reset, or aborted) or `network` (browser fetch: the
+fetch rejected). A refused or unreachable endpoint does not become reachable
+by repeating the request, so the client schedules no intent and does not grow
+the backoff; the host re-arms the drive on its own connectivity signal.
+`transport.redirect`, `transport.request_too_large`, and
+`transport.response_too_large` describe a configuration the client cannot
+repair by repeating the request, so they schedule no intent. A silence timeout of a segment fetch is retryable like any
 other timeout; the retry asks for the same page, and a page that keeps
 arriving completes under the silence bound.
 
@@ -5387,7 +5392,9 @@ report of every round that ran is retained, and the result explicitly indicates
 budget exhaustion. It MUST NOT report the run as idle and MUST NOT be presented
 as a protocol failure. A transport or protocol failure remains a failure. The
 round limit MUST be an integer in `1..=4294967295` (`u32::MAX`); a zero,
-fractional, negative, or larger value is `sync.invalid_request`. The aggregate
+fractional, negative, or larger value is `sync.invalid_request`.
+
+The aggregate
 report accumulates historical
 counters and outcome lists, while readiness state (`bootstrapping`,
 `deferredCommits`, `schemaFloor`) describes the latest round. An empty
@@ -5395,6 +5402,17 @@ counters and outcome lists, while readiness state (`bootstrapping`,
 pending reset, a deferred commit, or a schema floor leaves the run unfinished.
 This rule lets large paged imports finish without an application-specific round
 count while bounding stalled responses.
+
+One drive also has a total deadline across every round, because the round
+budget does not bound elapsed time. `syncUntilIdle` takes an optional
+`timeoutMs` (default 60,000 ms; `Infinity` disables the bound). When the
+deadline elapses the drive rejects with the client-local `sync.idle_timeout`,
+aborts a socket round in flight, and schedules no further rounds. A
+caller-supplied deadline MUST be a positive finite number or `Infinity`;
+anything else is `sync.invalid_request`. The Rust client exposes the same
+bound as `sync_until_idle_with_deadline` (`sync_until_idle` defaults to 60 s)
+and checks it between rounds, so one blocking transport call stays bounded by
+the transport's whole-round deadline (§1.8).
 
 Client FTS projections address deletion through an indexed source-identity to
 FTS-rowid mapping. TS and Rust maintain that mapping in the same transaction as
@@ -6268,6 +6286,8 @@ carried no transport code; the diagnostics reason for state `lost`],
 `sync.realtime_unavailable` [§8.8 — a round under the `required` realtime
 policy was refused because the socket is not connected; client-local,
 retryable, and never on the wire],
+`sync.idle_timeout` [§7.7 — one idle drive exceeded its total deadline;
+client-local, retryable, and never on the wire],
 `client.worker_failed` [a browser worker failed outside wire semantics],
 `client.push_request_too_large` [§7.1: the first queued commit alone
 exceeds the configured operation or encoded byte budget, or the fixed

@@ -22,7 +22,7 @@ The core has no timers, threads, or callbacks. The host decides when a round run
 
 ## Run rounds
 
-`sync()` runs one combined push and pull round. `sync_until_idle(&mut transport, max_rounds)` repeats rounds until nothing is pending; `None` caps it at 20 rounds, and `Some(0)` fails with `sync.invalid_request`.
+`sync()` runs one combined push and pull round. `sync_until_idle(&mut transport, max_rounds)` repeats rounds until nothing is pending; `None` caps it at 20 rounds, and `Some(0)` fails with `sync.invalid_request`. The drive also has a total deadline of 60 seconds (`SyncClient::SYNC_IDLE_TIMEOUT_MS`); an expired deadline returns `sync.idle_timeout` before the next round. `sync_until_idle_with_deadline(&mut transport, max_rounds, Some(ms))` sets another value or `None` to disable the bound. The check runs between rounds: one blocking transport call is bounded by the transport's own whole-round deadline (`roundDeadlineMs`, [native transport policy](/platform-rust-specifics/#native-transport-policy)).
 
 ```rust title="src/main.rs"
 use syncular_client::SyncOutcome;

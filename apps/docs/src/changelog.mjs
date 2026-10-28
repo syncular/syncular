@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-10-28',
+    title: 'An idle sync drive has a deadline',
+    body: '`syncUntilIdle` takes `{ maxRounds, timeoutMs }` and bounds one drive with a total deadline, 60 seconds by default. A drive that reaches it rejects with `sync.idle_timeout` and aborts a socket round in flight, so a transport that never answers fails the call instead of running the full round budget. A transport failure whose `causeKind` is `connect` (native) or `network` (browser fetch) describes a refused or unreachable endpoint and schedules no background retry. The Rust client exposes the same bound as `sync_until_idle_with_deadline`, defaults `sync_until_idle` to 60 seconds, and the command surface accepts `timeoutMs`.',
+    links: [
+      {
+        href: '/concepts-bootstrap/#running-rounds-until-idle',
+        label: 'Running rounds until idle',
+      },
+    ],
+  },
+  {
+    date: '2026-10-28',
     title: 'A browser worker syncs without blocking on the round',
     body: '`syncular-client` splits a sync round into owner-side and network phases. `PreparedSyncRound::next_operation` names one network operation (upload grant, presigned PUT, direct upload, the round message, or the segment batch), `submit` takes the reply, and `finish` yields the completed round for `apply_sync_round`; `request_bytes` returns the encoded message. A browser worker prepares and applies on its owner and awaits `fetch` between the two, so page events keep running. `exchange` keeps its signature and drives the same operation sequence for blocking hosts, including the upload PUT fallback, realtime socket loss, and retry scheduling.',
     links: [

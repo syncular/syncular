@@ -267,6 +267,11 @@ export interface ClientFaults {
   /** Deliver the request to the server, then lose the response once. */
   dropResponseOnce: boolean;
   /**
+   * Fail the next request the way a refused connection does (`causeKind:
+   * 'connect'`), before any server work.
+   */
+  refuseConnectionOnce?: boolean;
+  /**
    * Deliver the request to the server, then return the response truncated
    * (its END frame missing) once — an undecodable round.
    */
@@ -375,6 +380,15 @@ export async function makeClient(
     transport: async (bytes) => {
       httpRounds.count += 1;
       requests.push(bytes);
+      if (faults.refuseConnectionOnce) {
+        faults.refuseConnectionOnce = false;
+        throw new ClientSyncError(
+          'sync.transport_failed',
+          'connection refused',
+          true,
+          { causeKind: 'connect' },
+        );
+      }
       const response = await handleSyncRequest(bytes, server.ctxFor(actorId));
       if (faults.dropResponseOnce) {
         faults.dropResponseOnce = false;

@@ -1,8 +1,42 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.45.0** (`v0.45.0`). All artifacts use Apache-2.0, except
+current release is **0.45.1** (`v0.45.1`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.45.1 release notes
+
+0.45.1 bounds one idle sync drive and stops retrying a dead endpoint. SSP2, the
+storage layout, the wire version, and the conformance catalog are unchanged;
+the TypeScript argument and the Rust methods are additive.
+
+`syncUntilIdle` accepts `{ maxRounds, timeoutMs }` and keeps the numeric
+`maxRounds` overload. `timeoutMs` bounds the whole drive across rounds and
+defaults to 60,000 ms; `Infinity` disables it. A drive that reaches the
+deadline rejects with `sync.idle_timeout` (`{ timeoutMs, rounds }` in the
+details) and aborts a socket round in flight. Before this release the round
+budget was the only bound, so a transport that stopped answering held one
+call for as long as the rounds did.
+
+A round that fails with `causeKind` `connect` (the native transport's
+classification for DNS failure and a refused, reset, or aborted connection) or
+`network` (a browser `fetch` rejection) is a refused or unreachable endpoint:
+the client no longer schedules the background retry intent or grows the
+backoff. Nothing about repeating the request makes the endpoint reachable; a
+host re-arms the drive from its own connectivity signal.
+
+`syncular-client` adds `sync_until_idle_with_deadline(transport, max_rounds,
+timeout_ms)` and `SYNC_IDLE_TIMEOUT_MS`; `sync_until_idle` uses the 60-second
+default and checks the deadline between rounds, so one blocking transport call
+remains bounded by the transport's whole-round deadline. The `syncUntilIdle`
+command accepts `timeoutMs`, which the FFI and the native bindings forward.
+The native transport's `connect` classification now also suppresses the
+background retry, matching the TypeScript client.
+
+**Upgrade notes.** No migration and no wire change. A host that relied on a
+dead transport eventually returning through repeated background retries
+re-arms `syncUntilIdle` on its own connectivity transition. Upgrade all 12 npm
+packages and 6 crates together.
 
 ## 0.45.0 release notes
 

@@ -1026,7 +1026,21 @@ pub fn dispatch<T: Transport>(
                         })?,
                 ),
             };
-            let outcome = need_client(client)?.sync_until_idle(transport, max_rounds);
+            let timeout_ms = match params.get("timeoutMs") {
+                None | Some(Value::Null) => None,
+                Some(value) => Some(value.as_u64().filter(|ms| *ms >= 1).ok_or_else(|| {
+                    client_err(
+                        "sync.invalid_request: timeoutMs must be a positive integer".to_owned(),
+                    )
+                })?),
+            };
+            let client = need_client(client)?;
+            let outcome = match timeout_ms {
+                Some(timeout_ms) => {
+                    client.sync_until_idle_with_deadline(transport, max_rounds, Some(timeout_ms))
+                }
+                None => client.sync_until_idle(transport, max_rounds),
+            };
             Ok(outcome.to_json())
         }
         "readRows" => {
@@ -2196,6 +2210,32 @@ mod tests {
                 &json!({ "maxRounds": value }),
             )
             .expect_err("invalid budget");
+            assert_eq!(error.code, "sync.invalid_request", "{value}");
+        }
+    }
+
+    #[test]
+    fn sync_until_idle_rejects_an_invalid_timeout() {
+        for value in [json!(0), json!(-1), json!(1.5)] {
+            let mut transport = NoNetwork::default();
+            let mut client: Option<SyncClient> = None;
+            let mut effects = CreateEffects::default();
+            dispatch(
+                &mut transport,
+                &mut client,
+                &mut effects,
+                "create",
+                &json!({ "schema": schema() }),
+            )
+            .expect("create");
+            let error = dispatch(
+                &mut transport,
+                &mut client,
+                &mut effects,
+                "syncUntilIdle",
+                &json!({ "timeoutMs": value }),
+            )
+            .expect_err("invalid timeout");
             assert_eq!(error.code, "sync.invalid_request", "{value}");
         }
     }

@@ -100,7 +100,7 @@ The signal reports network availability only. If app foreground state also contr
 
 ## Sync results
 
-`sync()` runs one round and `syncUntilIdle(maxRounds)` repeats rounds until nothing is pending. Both return the outcome as a JSON value and never throw for transport failure. Offline, or on the lean core, the result is `{ok: false, errorCode: "transport.unavailable"}`. The commit stays in the outbox and `pendingCommitIds()` stays non-empty until a later round drains it. `maxRounds` is optional and must be positive when given; the core default is 20 rounds.
+`sync()` runs one round and `syncUntilIdle(maxRounds, timeoutMs)` repeats rounds until nothing is pending. Both return the outcome as a JSON value and never throw for transport failure. Offline, or on the lean core, the result is `{ok: false, errorCode: "transport.unavailable"}`. The commit stays in the outbox and `pendingCommitIds()` stays non-empty until a later round drains it. `maxRounds` is optional and must be positive when given; the core default is 20 rounds. `timeoutMs` bounds the whole drive (default 60,000 ms) and an expired deadline fails with `sync.idle_timeout`; both must be positive integers when given.
 
 An HTTP error body adds `recommendedAction` and its `details` to a failed outcome. A `sync.invalid_client_id` refusal names `resetClientId`; the `resetClientId` command rotates the persisted id and returns `{ "clientId": "..." }` for the next round.
 

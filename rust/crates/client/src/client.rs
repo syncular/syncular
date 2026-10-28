@@ -1988,6 +1988,107 @@ mod observation_tests {
         );
     }
 
+    /// A transport that fails every round with one `causeKind`.
+    struct CauseTransport(&'static str);
+
+    impl Transport for CauseTransport {
+        fn sync(&mut self, _request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            let mut error = TransportError::new("transport.failed", "no route");
+            error.details = Some(serde_json::json!({ "causeKind": self.0 }));
+            Err(error)
+        }
+
+        fn realtime_sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            self.sync(request)
+        }
+
+        fn download_segment(
+            &mut self,
+            _request: &SegmentRequest,
+            _on_progress: &mut dyn FnMut(u64),
+        ) -> Result<Vec<u8>, TransportError> {
+            Err(TransportError::new("sync.transport_failed", "offline"))
+        }
+
+        fn realtime_connect(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+
+        fn realtime_send(&mut self, _text: &str) -> Result<(), TransportError> {
+            Ok(())
+        }
+
+        fn realtime_close(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn an_unreachable_transport_schedules_no_retry() {
+        // §1.8: `connect` (native) and `network` (browser fetch) describe a
+        // refused or unreachable endpoint; neither earns another backoff.
+        for cause in ["connect", "network"] {
+            let mut client = client();
+            client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+            let mut transport = CauseTransport(cause);
+            assert!(matches!(
+                client.sync(&mut transport),
+                SyncOutcome::Failed { ref error_code, .. } if error_code == "transport.failed"
+            ));
+            assert!(
+                client.drain_sync_intents().is_empty(),
+                "{cause} scheduled a retry"
+            );
+        }
+
+        // Every other retryable transport cause keeps the background retry.
+        let mut client = client();
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        let mut transport = CauseTransport("timeout");
+        assert!(matches!(
+            client.sync(&mut transport),
+            SyncOutcome::Failed { ref error_code, .. } if error_code == "transport.failed"
+        ));
+        assert!(matches!(
+            client.drain_sync_intents().as_slice(),
+            [SyncIntent::Background { delay_ms: 250 }]
+        ));
+    }
+
+    #[test]
+    fn sync_until_idle_reports_its_total_deadline() {
+        assert_eq!(SyncClient::SYNC_IDLE_TIMEOUT_MS, 60_000);
+        let mut client = client();
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+        let mut transport = HostTransport::new_from_config(&json!({})).unwrap();
+
+        // A zero deadline is a caller error, like a zero round budget.
+        let invalid = client.sync_until_idle_with_deadline(&mut transport, None, Some(0));
+        assert!(
+            matches!(invalid, SyncOutcome::Failed { ref error_code, .. } if error_code == "sync.invalid_request"),
+            "{invalid:?}"
+        );
+
+        // The expired deadline stops before the first round and reports how
+        // many rounds ran.
+        let now = client.clock_now_ms();
+        let outcome = client.sync_until_idle_bounded(&mut transport, None, now, Some(now));
+        let SyncOutcome::Failed {
+            error_code,
+            details,
+            recommended_action,
+            ..
+        } = outcome
+        else {
+            panic!("expected the idle deadline, got {outcome:?}");
+        };
+        assert_eq!(error_code, "sync.idle_timeout");
+        assert_eq!(recommended_action.as_deref(), Some("retryLater"));
+        let details = details.expect("deadline details");
+        assert_eq!(details["timeoutMs"], json!(0));
+        assert_eq!(details["rounds"], json!(0));
+    }
+
     /// Returns one pre-built response per round so a test can pin a successful
     /// work-bearing round followed by a failure or a schema floor.
     struct ScriptedSyncTransport {
@@ -13087,6 +13188,20 @@ impl SyncClient {
             || code == "sync.transport_failed"
     }
 
+    /// §1.8: the transport reported a refused or unreachable endpoint. The
+    /// native transport says `connect` (DNS failure, connection refused,
+    /// reset, or aborted); a browser fetch transport says `network`. Repeating
+    /// the request on a backoff repairs neither, so no retry is scheduled.
+    fn unreachable_transport(details: &Option<serde_json::Value>) -> bool {
+        matches!(
+            details
+                .as_ref()
+                .and_then(|details| details.get("causeKind"))
+                .and_then(serde_json::Value::as_str),
+            Some("connect" | "network")
+        )
+    }
+
     /// §1.5: a segment fetch that fails inside an otherwise complete round is
     /// invisible to the server (the round response arrived whole), so its code
     /// rides the following requests like a socket-round failure. A code the
@@ -17470,7 +17585,9 @@ impl SyncClient {
                         details,
                     }) => {
                         self.active_round = None;
-                        if Self::retryable_failure_code(&code) {
+                        if Self::retryable_failure_code(&code)
+                            && !Self::unreachable_transport(&details)
+                        {
                             self.schedule_background_retry();
                         }
                         let recommended_action = recommended_action_of(&details);
@@ -17530,7 +17647,8 @@ impl SyncClient {
                         }
                         self.record_lease_error(&code);
                     }
-                    if Self::retryable_failure_code(&code) {
+                    if Self::retryable_failure_code(&code) && !Self::unreachable_transport(&details)
+                    {
                         let delay = self.schedule_background_retry();
                         if prepared.realtime && transport_failed {
                             self.realtime_retry_delay_ms = Some(delay);
@@ -17551,8 +17669,12 @@ impl SyncClient {
             }
             match &outcome {
                 SyncOutcome::Ok(_) => self.reset_background_retry(),
-                SyncOutcome::Failed { error_code, .. }
-                    if Self::retryable_failure_code(error_code) =>
+                SyncOutcome::Failed {
+                    error_code,
+                    details,
+                    ..
+                } if Self::retryable_failure_code(error_code)
+                    && !Self::unreachable_transport(details) =>
                 {
                     self.schedule_background_retry();
                 }
@@ -17592,10 +17714,26 @@ impl SyncClient {
         }
     }
 
+    /// §7.7: one idle drive's default total deadline, the TS client's value.
+    pub const SYNC_IDLE_TIMEOUT_MS: u64 = 60_000;
+
     pub fn sync_until_idle(
         &mut self,
         transport: &mut dyn Transport,
         max_rounds: Option<u32>,
+    ) -> SyncOutcome {
+        self.sync_until_idle_with_deadline(transport, max_rounds, Some(Self::SYNC_IDLE_TIMEOUT_MS))
+    }
+
+    /// As [`SyncClient::sync_until_idle`], with an explicit total deadline in
+    /// milliseconds (`None` disables it). The deadline is checked between
+    /// rounds; one blocking transport call is bounded by the transport's own
+    /// whole-round deadline (§1.8).
+    pub fn sync_until_idle_with_deadline(
+        &mut self,
+        transport: &mut dyn Transport,
+        max_rounds: Option<u32>,
+        timeout_ms: Option<u64>,
     ) -> SyncOutcome {
         // §7.7: an explicit budget is a strict positive round count. Zero is a
         // caller error, not an exhaustion.
@@ -17607,10 +17745,44 @@ impl SyncClient {
                 recommended_action: None,
             };
         }
+        if timeout_ms.is_some_and(|ms| ms == 0 || i64::try_from(ms).is_err()) {
+            return SyncOutcome::Failed {
+                details: None,
+                error_code: "sync.invalid_request".into(),
+                message: "timeoutMs must be a positive integer".into(),
+                recommended_action: None,
+            };
+        }
+        let started_at_ms = self.clock_now_ms();
+        let deadline_ms = timeout_ms.map(|ms| started_at_ms.saturating_add(ms as i64));
+        self.sync_until_idle_bounded(transport, max_rounds, started_at_ms, deadline_ms)
+    }
+
+    fn sync_until_idle_bounded(
+        &mut self,
+        transport: &mut dyn Transport,
+        max_rounds: Option<u32>,
+        started_at_ms: i64,
+        deadline_ms: Option<i64>,
+    ) -> SyncOutcome {
         let rounds = max_rounds.unwrap_or(20);
         let mut aggregate = SyncReport::default();
         let mut spent = 0;
         while spent < rounds {
+            if let Some(deadline_ms) = deadline_ms {
+                if self.clock_now_ms() >= deadline_ms {
+                    return SyncOutcome::Failed {
+                        error_code: "sync.idle_timeout".into(),
+                        message: "sync_until_idle exceeded its deadline".into(),
+                        details: Some(serde_json::json!({
+                            "timeoutMs": deadline_ms
+                                .saturating_sub(started_at_ms) as u64,
+                            "rounds": spent,
+                        })),
+                        recommended_action: Some("retryLater".into()),
+                    };
+                }
+            }
             spent += 1;
             let before = self
                 .subs
