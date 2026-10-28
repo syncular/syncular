@@ -4,10 +4,10 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 // Bun 1.4.0, minified browser graphs with SQLite external. The client
-// measures about 161462 bytes and the worker about 179000 bytes in a
-// materialized release checkout after the client-id reset API landed. The
-// ceilings round up from the maximum observed in source and materialized
-// builds. Independently assert that ordinary imports exclude authority modules.
+// measures 162324 bytes and the worker 179546 bytes on Bun 1.4.0 after the
+// idle deadline landed. The ceilings round up from the maximum observed in
+// source and materialized builds. Independently assert that ordinary imports
+// exclude authority modules.
 test('ordinary client, worker and native graphs exclude authority; only explicit opt-in retains it', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'syncular-authority-bundle-'));
   const root = resolve(import.meta.dir, '../../..');
@@ -17,13 +17,13 @@ test('ordinary client, worker and native graphs exclude authority; only explicit
         'client',
         `export { SyncClient } from '${root}/packages/web-client/src/client.ts';`,
         false,
-        162000,
+        163000,
       ],
       [
         'client-root',
         `export { SyncClient } from '${root}/packages/web-client/src/index.ts';`,
         false,
-        162000,
+        163000,
       ],
       [
         'worker',
