@@ -166,7 +166,7 @@ const LOCAL_REVISION_KEY: &str = "localRevision";
 const CLIENT_ID_KEY: &str = "clientId";
 const LEASE_STATE_KEY: &str = "leaseState";
 const SCHEMA_FLOOR_KEY: &str = "schemaFloor";
-const LOG_EPOCH_KEY: &str = "logEpoch";
+pub(crate) const LOG_EPOCH_KEY: &str = "logEpoch";
 /// Persisted fail-closed quarantine marker: present while a security preflight
 /// is pending and `activateSecurity` has yet to run. Storing it in the replica
 /// keeps the gate with the data it protects, so a rebuilt host handle reopening
@@ -251,6 +251,7 @@ mod observation_tests {
     use super::*;
     use crate::native_transport::HostTransport;
     use crate::values::encode_row_json;
+    use crate::BlobUploadGrant;
     use serde_json::json;
 
     #[test]
@@ -371,6 +372,53 @@ mod observation_tests {
             ClientLimits::default(),
         )
         .expect("test client")
+    }
+
+    fn round_error(outcome: SyncOutcome) -> TransportError {
+        match outcome {
+            SyncOutcome::Failed {
+                error_code,
+                message,
+                details,
+                ..
+            } => TransportError {
+                code: error_code,
+                message,
+                details,
+            },
+            other => TransportError::new(
+                "client.failed",
+                format!("unexpected round outcome: {other:?}"),
+            ),
+        }
+    }
+
+    /// Upload every pinned blob through the split round API and stop before the
+    /// metadata request.
+    fn flush_blob_uploads(
+        client: &mut SyncClient,
+        transport: &mut dyn Transport,
+    ) -> Result<(), TransportError> {
+        let mut prepared = match client.prepare_sync_round(false) {
+            Ok(prepared) => prepared,
+            Err(outcome) => return Err(round_error(*outcome)),
+        };
+        loop {
+            if prepared.uploads.is_empty() {
+                client.cancel_sync_round();
+                return Ok(());
+            }
+            let completed = crate::round::test_support::drive_round(prepared, transport);
+            prepared = match client.apply_sync_round(completed) {
+                crate::AppliedSyncRound::Continue(prepared) => prepared,
+                crate::AppliedSyncRound::Complete { outcome, .. } => {
+                    return match outcome {
+                        SyncOutcome::Ok(_) => Ok(()),
+                        other => Err(round_error(other)),
+                    };
+                }
+            };
+        }
     }
 
     #[test]
@@ -888,8 +936,9 @@ mod observation_tests {
             } else {
                 client.query("SELECT * FROM _syncular_blobs", &[]).unwrap()
             };
+            client.set_meta(LOG_EPOCH_KEY, "epoch");
             let mut transport = CountingRealtimeTransport::default();
-            let error = client.flush_blob_uploads(&mut transport).unwrap_err();
+            let error = flush_blob_uploads(&mut client, &mut transport).unwrap_err();
             assert_eq!(
                 error.code,
                 if matches!(fault, "read" | "pin-delete") {
@@ -956,7 +1005,7 @@ mod observation_tests {
                 )
                 .unwrap();
             transport.blob_uploads.clear();
-            reopened.flush_blob_uploads(&mut transport).unwrap();
+            flush_blob_uploads(&mut reopened, &mut transport).unwrap();
             assert_eq!(
                 transport.blob_uploads,
                 [(blob_id_for(bytes), bytes.to_vec())]
@@ -9912,6 +9961,512 @@ mod observation_tests {
             .expect_err("id collision must fail")
             .contains("already used with a different plan"));
     }
+
+    /// Mirror `SyncClient::sync` through the split round API.
+    fn sync_split(client: &mut SyncClient, transport: &mut dyn Transport) -> SyncOutcome {
+        let mut next = match client.prepare_sync_round(transport.supports_url_fetch()) {
+            Ok(prepared) => prepared,
+            Err(outcome) => return *outcome,
+        };
+        loop {
+            let completed = crate::round::test_support::drive_round(next, transport);
+            match client.apply_sync_round(completed) {
+                crate::AppliedSyncRound::Continue(prepared) => next = prepared,
+                crate::AppliedSyncRound::Complete {
+                    outcome, controls, ..
+                } => {
+                    if client.transport_enabled() {
+                        for text in controls {
+                            let _ = transport.realtime_send(&text);
+                        }
+                    } else {
+                        client.disconnect_realtime(transport);
+                    }
+                    return outcome;
+                }
+            }
+        }
+    }
+
+    #[derive(Clone)]
+    enum RoundReplyScript {
+        Response(Message),
+        /// Answer every pushed commit with an applied result.
+        PushAck,
+        Error(TransportError),
+    }
+
+    /// Serves one scripted reply and records every request, segment batch, and
+    /// upload the round makes.
+    struct SplitParityTransport {
+        script: RoundReplyScript,
+        segments: BTreeMap<String, Vec<u8>>,
+        requests: Vec<Message>,
+        batches: Vec<Vec<String>>,
+        uploads: Vec<String>,
+        sync_calls: usize,
+        realtime_sync_calls: usize,
+    }
+
+    impl SplitParityTransport {
+        fn new(script: RoundReplyScript) -> Self {
+            Self {
+                script,
+                segments: BTreeMap::new(),
+                requests: Vec::new(),
+                batches: Vec::new(),
+                uploads: Vec::new(),
+                sync_calls: 0,
+                realtime_sync_calls: 0,
+            }
+        }
+
+        fn with_segments(script: RoundReplyScript, segments: BTreeMap<String, Vec<u8>>) -> Self {
+            Self {
+                segments,
+                ..Self::new(script)
+            }
+        }
+
+        fn respond(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            let message =
+                decode_message(request).expect("the client encodes a legal round request");
+            self.requests.push(message.clone());
+            match &self.script {
+                RoundReplyScript::Response(response) => Ok(encode_message(response)),
+                RoundReplyScript::Error(error) => Err(error.clone()),
+                RoundReplyScript::PushAck => {
+                    let mut frames = vec![Frame::RespHeader {
+                        required_schema_version: None,
+                        latest_schema_version: None,
+                        log_epoch: Some("epoch-1".into()),
+                        reset_required: Some(false),
+                    }];
+                    let mut commit_seq = 0;
+                    for frame in &message.frames {
+                        if let Frame::PushCommit {
+                            client_commit_id,
+                            operations,
+                        } = frame
+                        {
+                            commit_seq += 1;
+                            frames.push(Frame::PushResult {
+                                client_commit_id: client_commit_id.clone(),
+                                status: PushStatus::Applied,
+                                commit_seq: Some(commit_seq),
+                                results: (0..operations.len())
+                                    .map(|op_index| OpResult::Applied {
+                                        op_index: op_index as i32,
+                                    })
+                                    .collect(),
+                            });
+                        }
+                    }
+                    frames.push(Frame::SubStart {
+                        id: "tasks".into(),
+                        status: SubStatus::Active,
+                        reason_code: String::new(),
+                        effective_scopes: vec![("project_id".into(), vec!["p1".into()])],
+                        bootstrap: false,
+                    });
+                    frames.push(Frame::SubEnd {
+                        next_cursor: 0,
+                        bootstrap_state: None,
+                    });
+                    Ok(encode_message(&Message {
+                        wire_version: WIRE_VERSION,
+                        msg_kind: MsgKind::Response,
+                        frames,
+                    }))
+                }
+            }
+        }
+    }
+
+    impl Transport for SplitParityTransport {
+        fn sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            self.sync_calls += 1;
+            self.respond(request)
+        }
+
+        fn realtime_sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            self.realtime_sync_calls += 1;
+            self.respond(request)
+        }
+        fn download_segment(
+            &mut self,
+            _request: &SegmentRequest,
+            _on_progress: &mut dyn FnMut(u64),
+        ) -> Result<Vec<u8>, TransportError> {
+            Err(TransportError::new(
+                "sync.transport_failed",
+                "per-descriptor fetch",
+            ))
+        }
+
+        fn download_segments(
+            &mut self,
+            fetches: &[crate::SegmentFetch],
+            on_progress: &mut (dyn FnMut(usize, u64) + Send),
+        ) -> Vec<Result<Vec<u8>, TransportError>> {
+            self.batches.push(
+                fetches
+                    .iter()
+                    .map(|fetch| match fetch {
+                        crate::SegmentFetch::Direct(request) => request.segment_id.clone(),
+                        crate::SegmentFetch::Url(url) => url.clone(),
+                    })
+                    .collect(),
+            );
+            fetches
+                .iter()
+                .enumerate()
+                .map(|(index, fetch)| {
+                    let crate::SegmentFetch::Direct(request) = fetch else {
+                        panic!("the descriptors are direct-endpoint requests")
+                    };
+                    let bytes =
+                        self.segments
+                            .get(&request.segment_id)
+                            .cloned()
+                            .ok_or_else(|| {
+                                TransportError::new("transport.not_found", "missing segment body")
+                            })?;
+                    on_progress(index, bytes.len() as u64);
+                    Ok(bytes)
+                })
+                .collect()
+        }
+
+        fn blob_upload_grant(
+            &mut self,
+            _blob_id: &str,
+            _byte_length: u64,
+            _media_type: Option<&str>,
+        ) -> Result<BlobUploadGrant, TransportError> {
+            Ok(BlobUploadGrant::None)
+        }
+
+        fn blob_upload(
+            &mut self,
+            blob_id: &str,
+            _bytes: &[u8],
+            _media_type: Option<&str>,
+        ) -> Result<(), TransportError> {
+            self.uploads.push(blob_id.to_owned());
+            Ok(())
+        }
+
+        fn realtime_connect(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+
+        fn realtime_send(&mut self, _text: &str) -> Result<(), TransportError> {
+            Ok(())
+        }
+
+        fn realtime_close(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+    }
+
+    fn parity_clients() -> (SyncClient, SyncClient) {
+        let schema = json!({"version":1,"tables":[{"name":"tasks","primaryKey":"id","columns":[
+            {"name":"id","type":"string","nullable":false},
+            {"name":"project_id","type":"string","nullable":false}],
+            "scopes":[{"pattern":"project:{project_id}"}]}]});
+        let [exchange, split] = ["parity-exchange", "parity-split"].map(|id| {
+            let mut client =
+                SyncClient::new(id.to_owned(), &schema, ClientLimits::default()).unwrap();
+            client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+            client
+                .subscribe(
+                    "tasks".into(),
+                    "tasks".into(),
+                    vec![("project_id".into(), vec!["p1".into()])],
+                    None,
+                )
+                .unwrap();
+            client.subs[0].cursor = 0;
+            client.subs[0].synced_once = true;
+            client.subs[0].effective = Some(vec![("project_id".into(), vec!["p1".into()])]);
+            client.persist_sub(&client.subs[0]).unwrap();
+            client.drain_change_batches();
+            client
+        });
+        (exchange, split)
+    }
+
+    fn pull_response(client: &SyncClient) -> Message {
+        let row = encode_row_json(
+            client.schema.table("tasks").unwrap(),
+            "kept",
+            &Map::from_iter([
+                ("id".into(), json!("kept")),
+                ("project_id".into(), json!("p1")),
+            ]),
+            &client.encryption,
+        )
+        .unwrap();
+        Message {
+            wire_version: WIRE_VERSION,
+            msg_kind: MsgKind::Response,
+            frames: vec![
+                Frame::RespHeader {
+                    required_schema_version: None,
+                    latest_schema_version: None,
+                    log_epoch: Some("epoch-1".into()),
+                    reset_required: Some(false),
+                },
+                Frame::SubStart {
+                    id: "tasks".into(),
+                    status: SubStatus::Active,
+                    reason_code: String::new(),
+                    effective_scopes: vec![("project_id".into(), vec!["p1".into()])],
+                    bootstrap: false,
+                },
+                Frame::Commit {
+                    commit_seq: 1,
+                    created_at_ms: 1,
+                    actor_id: "writer".into(),
+                    tables: vec!["tasks".into()],
+                    changes: vec![ssp2::model::Change {
+                        table_index: 0,
+                        row_id: "kept".into(),
+                        op: Op::Upsert,
+                        row_version: Some(1),
+                        scopes: vec![("project_id".into(), "p1".into())],
+                        row: Some(row),
+                    }],
+                },
+                Frame::SubEnd {
+                    next_cursor: 1,
+                    bootstrap_state: None,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn split_round_matches_exchange_for_a_pull() {
+        let (mut exchange, mut split) = parity_clients();
+        let response = pull_response(&exchange);
+        let mut exchange_transport =
+            SplitParityTransport::new(RoundReplyScript::Response(response.clone()));
+        let mut split_transport = SplitParityTransport::new(RoundReplyScript::Response(response));
+
+        let exchange_outcome = exchange.sync(&mut exchange_transport);
+        let split_outcome = sync_split(&mut split, &mut split_transport);
+        assert_eq!(exchange_outcome.to_json(), split_outcome.to_json());
+        assert_eq!(
+            exchange
+                .query("SELECT id, project_id FROM tasks", &[])
+                .unwrap(),
+            split
+                .query("SELECT id, project_id FROM tasks", &[])
+                .unwrap()
+        );
+        assert_eq!(exchange_transport.requests.len(), 1);
+        assert_eq!(split_transport.requests.len(), 1);
+    }
+
+    #[test]
+    fn split_round_matches_exchange_for_a_push_with_an_upload() {
+        let schema = json!({"version":1,"tables":[{"name":"attachments","primaryKey":"id","columns":[
+            {"name":"id","type":"string","nullable":false},
+            {"name":"project_id","type":"string","nullable":false},
+            {"name":"file","type":"blob_ref","nullable":true}],
+            "scopes":[{"pattern":"project:{project_id}"}]}]});
+        let [mut exchange, mut split] = ["parity-push-exchange", "parity-push-split"].map(|id| {
+            let mut client =
+                SyncClient::new(id.to_owned(), &schema, ClientLimits::default()).unwrap();
+            client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+            client
+                .subscribe(
+                    "attachments".into(),
+                    "attachments".into(),
+                    vec![("project_id".into(), vec!["p1".into()])],
+                    None,
+                )
+                .unwrap();
+            client
+        });
+        let bytes = b"split upload";
+        let mut mutations = Vec::new();
+        for client in [&mut exchange, &mut split] {
+            client
+                .upload_blob(bytes, Some("text/plain".into()), None)
+                .unwrap();
+            mutations.push(
+                client
+                    .mutate(vec![Mutation::Upsert {
+                        table: "attachments".into(),
+                        values: Map::from_iter([
+                            ("id".into(), Value::from("a1")),
+                            ("project_id".into(), Value::from("p1")),
+                            (
+                                "file".into(),
+                                Value::from(format!(
+                                    "{{\"blobId\":\"{}\",\"byteLength\":{}}}",
+                                    blob_id_for(bytes),
+                                    bytes.len()
+                                )),
+                            ),
+                        ]),
+                        base_version: None,
+                    }])
+                    .unwrap(),
+            );
+        }
+        let mut exchange_transport = SplitParityTransport::new(RoundReplyScript::PushAck);
+        let mut split_transport = SplitParityTransport::new(RoundReplyScript::PushAck);
+        let exchange_outcome = exchange.sync(&mut exchange_transport);
+        let split_outcome = sync_split(&mut split, &mut split_transport);
+        let SyncOutcome::Ok(exchange_report) = exchange_outcome else {
+            panic!("the exchange round must succeed: {exchange_outcome:?}")
+        };
+        let SyncOutcome::Ok(split_report) = split_outcome else {
+            panic!("the split round must succeed: {split_outcome:?}")
+        };
+        assert_eq!(exchange_report.pushed, 1);
+        assert_eq!(split_report.pushed, 1);
+        assert_eq!(
+            exchange_report.commits_applied,
+            split_report.commits_applied
+        );
+        assert_eq!(
+            exchange_transport.uploads,
+            [blob_id_for(bytes)],
+            "one upload before the metadata request"
+        );
+        assert_eq!(split_transport.uploads, exchange_transport.uploads);
+        assert!(exchange.pending_commit_ids().is_empty());
+        assert!(split.pending_commit_ids().is_empty());
+        assert_eq!(
+            exchange
+                .query("SELECT id, project_id FROM attachments", &[])
+                .unwrap(),
+            split
+                .query("SELECT id, project_id FROM attachments", &[])
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn split_round_matches_exchange_for_a_segment_download() {
+        let (mut exchange, mut split) = parity_clients();
+        let columns = exchange.schema.table("tasks").unwrap().wire_columns.clone();
+        let page = ssp2::segment::encode_rows_segment(&RowsSegment {
+            table: "tasks".into(),
+            schema_version: 1,
+            columns,
+            blocks: vec![vec![ssp2::segment::SegmentRow {
+                server_version: 1,
+                values: vec![
+                    Some(ColumnValue::String("page".into())),
+                    Some(ColumnValue::String("p1".into())),
+                ],
+            }]],
+        });
+        let segment_id = format!("sha256:{}", bytes_to_hex(&Sha256::digest(&page)));
+        let response = Message {
+            wire_version: WIRE_VERSION,
+            msg_kind: MsgKind::Response,
+            frames: vec![
+                Frame::RespHeader {
+                    required_schema_version: None,
+                    latest_schema_version: None,
+                    log_epoch: Some("epoch-1".into()),
+                    reset_required: Some(false),
+                },
+                Frame::SubStart {
+                    id: "tasks".into(),
+                    status: SubStatus::Active,
+                    reason_code: String::new(),
+                    effective_scopes: vec![("project_id".into(), vec!["p1".into()])],
+                    bootstrap: true,
+                },
+                Frame::SegmentRef {
+                    segment_id: segment_id.clone(),
+                    media_type: MediaType::Rows,
+                    table: "tasks".into(),
+                    byte_length: page.len() as i64,
+                    row_count: 1,
+                    as_of_commit_seq: 1,
+                    scope_digest: "digest".into(),
+                    row_cursor: None,
+                    next_row_cursor: None,
+                    url: None,
+                    url_expires_at_ms: None,
+                },
+                Frame::SubEnd {
+                    next_cursor: 1,
+                    bootstrap_state: None,
+                },
+            ],
+        };
+        let segments = BTreeMap::from([(segment_id.clone(), page)]);
+        let mut exchange_transport = SplitParityTransport::with_segments(
+            RoundReplyScript::Response(response.clone()),
+            segments.clone(),
+        );
+        let mut split_transport =
+            SplitParityTransport::with_segments(RoundReplyScript::Response(response), segments);
+        let exchange_outcome = exchange.sync(&mut exchange_transport);
+        let split_outcome = sync_split(&mut split, &mut split_transport);
+        assert_eq!(exchange_outcome.to_json(), split_outcome.to_json());
+        assert_eq!(exchange_transport.batches, [vec![segment_id.clone()]]);
+        assert_eq!(split_transport.batches, exchange_transport.batches);
+        assert_eq!(
+            exchange
+                .query("SELECT id, project_id FROM tasks", &[])
+                .unwrap(),
+            split
+                .query("SELECT id, project_id FROM tasks", &[])
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn split_round_matches_exchange_for_a_transport_failure() {
+        let (mut exchange, mut split) = parity_clients();
+        let error = TransportError::new("transport.timeout", "injected");
+        let mut exchange_transport =
+            SplitParityTransport::new(RoundReplyScript::Error(error.clone()));
+        let mut split_transport = SplitParityTransport::new(RoundReplyScript::Error(error));
+        let exchange_outcome = exchange.sync(&mut exchange_transport);
+        let split_outcome = sync_split(&mut split, &mut split_transport);
+        assert_eq!(exchange_outcome.to_json(), split_outcome.to_json());
+        assert!(matches!(
+            split_outcome,
+            SyncOutcome::Failed { ref error_code, .. } if error_code == "transport.timeout"
+        ));
+        assert_eq!(
+            exchange.query("SELECT id FROM tasks", &[]).unwrap(),
+            split.query("SELECT id FROM tasks", &[]).unwrap()
+        );
+    }
+
+    #[test]
+    fn split_round_matches_exchange_for_a_failed_realtime_round() {
+        let (mut exchange, mut split) = parity_clients();
+        let error = TransportError::new("transport.timeout", "socket round failed");
+        let mut exchange_transport = SplitParityTransport::new(RoundReplyScript::Error(error));
+        let mut split_transport = SplitParityTransport::new(RoundReplyScript::Error(
+            TransportError::new("transport.timeout", "socket round failed"),
+        ));
+        exchange.connect_realtime(&mut exchange_transport).unwrap();
+        split.connect_realtime(&mut split_transport).unwrap();
+        let exchange_outcome = exchange.sync(&mut exchange_transport);
+        let split_outcome = sync_split(&mut split, &mut split_transport);
+        assert_eq!(exchange_outcome.to_json(), split_outcome.to_json());
+        assert_eq!(exchange_transport.realtime_sync_calls, 1);
+        assert_eq!(exchange_transport.sync_calls, 0);
+        assert_eq!(split_transport.realtime_sync_calls, 1);
+        assert_eq!(split_transport.sync_calls, 0);
+        assert_eq!(exchange.realtime_state(), RealtimeState::Lost);
+        assert_eq!(split.realtime_state(), RealtimeState::Lost);
+    }
 }
 
 impl SubState {
@@ -11838,7 +12393,7 @@ impl SyncClient {
             .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
     }
 
-    fn set_meta(&self, key: &str, value: &str) {
+    pub(crate) fn set_meta(&self, key: &str, value: &str) {
         meta_set(&self.conn, key, value);
     }
 
@@ -16833,12 +17388,21 @@ impl SyncClient {
             let (message, meta) = self.build_request(url_capable)?;
             let id = uuid::Uuid::new_v4();
             self.active_round = Some(id);
+            let phase = if uploads.is_empty() {
+                crate::round::RoundPhase::Sync
+            } else {
+                crate::round::RoundPhase::UploadGrant
+            };
             Ok(crate::PreparedSyncRound {
                 id,
                 started_at_ms,
                 message,
                 meta,
                 uploads: uploads.into(),
+                phase,
+                encoded: None,
+                continuation: None,
+                completed: None,
                 realtime: self.realtime_state == RealtimeState::Connected,
                 scopes: self
                     .subs
@@ -19878,42 +20442,6 @@ impl SyncClient {
             }
         }
         Ok(uploads)
-    }
-
-    #[cfg(test)]
-    fn flush_blob_uploads(&mut self, transport: &mut dyn Transport) -> Result<(), TransportError> {
-        for upload in self.pending_blob_uploads()? {
-            self.upload_one(
-                transport,
-                &upload.id,
-                &upload.bytes?,
-                upload.media_type.as_deref(),
-            )?;
-            self.conn
-                .execute(
-                    "DELETE FROM _syncular_blob_uploads WHERE blob_id = ?",
-                    rusqlite::params![upload.id],
-                )
-                .map_err(|e| TransportError::new("client.failed", e.to_string()))?;
-        }
-        Ok(())
-    }
-
-    /// §5.9.3: upload one blob, preferring the presigned direct-to-storage
-    /// grant when the transport supports it, else streaming through the direct
-    /// host-authenticated endpoint (capability, not fallback). A `Url` grant
-    /// PUTs direct with no host auth; on a grant PUT failure the client streams
-    /// through the direct endpoint — a *different, host-authenticated
-    /// capability*, not a fall-through of the grant's authority.
-    #[cfg(test)]
-    fn upload_one(
-        &self,
-        transport: &mut dyn Transport,
-        blob_id: &str,
-        bytes: &[u8],
-        media_type: Option<&str>,
-    ) -> Result<(), TransportError> {
-        crate::round::upload_one(transport, blob_id, bytes, media_type, self.now_ms)
     }
 
     fn visible_blob_ids_sql(&self) -> String {

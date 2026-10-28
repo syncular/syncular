@@ -8,7 +8,10 @@
 //!
 //! Blocking hosts drive `sync()` / `sync_until_idle()`. Mailbox hosts prepare
 //! a round on the owner, run `PreparedSyncRound::exchange` on an I/O executor,
-//! and apply the result on the owner. An upload continuation repeats that
+//! and apply the result on the owner. A host without a blocking executor drives
+//! the same round through `PreparedSyncRound::next_operation` /
+//! `PreparedSyncRound::submit` / `PreparedSyncRound::finish`, performing every
+//! request with its own async I/O. An upload continuation repeats that
 //! exchange/apply cycle before the captured metadata request. The owner can
 //! serve local commands throughout; it queues inbound realtime traffic until
 //! the round completes. Scheduling is host policy (§8.4).
@@ -31,7 +34,9 @@ pub use progress::{
     ProgressObserver, ProgressPhase, ProgressState, ProgressSubscription, SyncProgress,
     SyncProgressListener,
 };
-pub use round::{AppliedSyncRound, CompletedSyncRound, PreparedSyncRound};
+pub use round::{
+    AppliedSyncRound, CompletedSyncRound, PreparedSyncRound, RoundOperation, RoundReply,
+};
 /// RFC 0005 previous-version context: the persisted schema descriptor, the
 /// bounded capture, and the sibling container FILE beside the replica.
 pub mod previous_version;

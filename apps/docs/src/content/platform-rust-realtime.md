@@ -39,6 +39,32 @@ Transport and protocol failures come back as `SyncOutcome::Failed`; `sync()` doe
 
 A failed outcome from an HTTP refusal carries the server error body's `error_code`, `message`, `details`, and `recommended_action`. For `sync.invalid_client_id` the action is `resetClientId`; call `client.reset_client_id(&mut transport)` to rotate the id before the next round. The call closes a live socket and persists the new id in the replica.
 
+## Async hosts
+
+A host that cannot block, such as a browser worker answering with `fetch`, drives the same round through a split API. Prepare and apply stay on the owner; the host performs each network operation itself.
+
+1. `prepare_sync_round(url_capable)` captures the request and the pending uploads. No network call happens here.
+2. `next_operation()` names the next operation: `RoundOperation::UploadGrant`, `UploadPut`, `Upload`, `Sync { request, realtime }`, or `Downloads(fetches)`. Perform it in the host, then call `submit(RoundReply::…)`. Repeat until `next_operation()` returns `None`.
+3. `finish()` returns the `CompletedSyncRound` for `apply_sync_round`.
+
+```rust
+use syncular_client::{AppliedSyncRound, RoundReply};
+
+let mut prepared = client.prepare_sync_round(false)?;
+while let Some(operation) = prepared.next_operation() {
+    let reply = host_operation(&mut io, operation).await;
+    prepared.submit(reply)?;
+}
+let outcome = match client.apply_sync_round(prepared.finish().expect("complete")) {
+    AppliedSyncRound::Continue(_) => { /* an upload continued: run the next exchange */ }
+    AppliedSyncRound::Complete { outcome, .. } => outcome,
+};
+```
+
+`RoundReply::Upload` answers both `UploadPut` and `Upload`; a failed PUT makes `submit` ask for `Upload` next, the same fallback the blocking path takes. `RoundReply::Downloads` carries one result per fetch, in order. A failed `Sync` reply behaves exactly like a failed `Transport::sync`: a realtime round marks the socket `Lost`, the failure code rides the next request, and a retryable code schedules the background retry.
+
+An upload exchange completes the round for that exchange. Apply it before the next exchange so the owner removes the blob pin, then continue from the returned `Continue` prepared round. `request_bytes()` returns the encoded round message when the host needs the bytes without a `next_operation` call. `exchange()` runs this sequence against a blocking `Transport`; both paths share every upload, segment, schema, and cursor decision.
+
 ## Know when to sync
 
 `drain_sync_intents()` returns the coalesced `SyncIntent` values: `None`, `Interactive`, and `Background { delay_ms }`. The core classifies immediate work and transient retry backoff; the host owns the wait on the mailbox and the deadline.

@@ -1,8 +1,39 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.44.0** (`v0.44.0`). All artifacts use Apache-2.0, except
+current release is **0.45.0** (`v0.45.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.45.0 release notes
+
+0.45.0 splits a sync round into owner-side and network phases for hosts that
+cannot block. SSP2, the storage layout, the wire version, and the conformance
+catalog are unchanged; the public Rust API is additive.
+
+`PreparedSyncRound` exposes `next_operation`, `submit`, and `finish`.
+`next_operation` names the one network operation the round needs:
+`UploadGrant`, `UploadPut`, `Upload`, `Sync { request, realtime }`, or
+`Downloads(fetches)`. The host performs it with its own async I/O and returns
+the result as a `RoundReply`; `finish` yields the `CompletedSyncRound` for
+`apply_sync_round`. `request_bytes` returns the encoded round message. A
+browser worker prepares on its owner, awaits `fetch`, and applies on the owner
+without blocking its event loop.
+
+`exchange` keeps its signature and now drives the same operation sequence
+internally, so a blocking host and an async host make identical upload,
+segment, schema, and cursor decisions. A failed reply behaves like a failed
+blocking transport: a realtime round marks the socket `Lost`, the failure code
+rides the next request, and a retryable code schedules the background retry.
+An upload completes one exchange; apply removes the pin before the metadata
+request.
+
+Tests compare a round driven through `next_operation`/`submit` with `exchange`
+for a pull, a push with an upload, a segment download, a transport failure, and
+a failed realtime round. The Rust client guide has an "Async hosts" section with
+the call sequence.
+
+**Upgrade notes.** No migration and no wire change. The Rust API is additive;
+upgrade all 12 npm packages and 6 crates together.
 
 ## 0.44.0 release notes
 

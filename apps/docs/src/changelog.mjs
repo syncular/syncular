@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-10-28',
+    title: 'A browser worker syncs without blocking on the round',
+    body: '`syncular-client` splits a sync round into owner-side and network phases. `PreparedSyncRound::next_operation` names one network operation (upload grant, presigned PUT, direct upload, the round message, or the segment batch), `submit` takes the reply, and `finish` yields the completed round for `apply_sync_round`; `request_bytes` returns the encoded message. A browser worker prepares and applies on its owner and awaits `fetch` between the two, so page events keep running. `exchange` keeps its signature and drives the same operation sequence for blocking hosts, including the upload PUT fallback, realtime socket loss, and retry scheduling.',
+    links: [
+      {
+        href: '/platform-rust-realtime/#async-hosts',
+        label: 'Async hosts',
+      },
+    ],
+  },
+  {
+    date: '2026-10-28',
     title: 'A push commit costs statements per table, not per row',
     body: 'A Postgres push commit now spends 7 statements on a 7-operation commit over two tables, down from 11, and 3 on a refused commit, down from 8. One statement takes the partition lock, and the next reads the serve gate, the idempotency record, and the targeted rows together. Upserts, scope entries, and blob references write in one statement per table, sequence allocation shares its statement with the commit row and change log, and a commit that writes nothing skips its savepoint. The transaction boundary, the per-partition lock, and the atomic rejection are unchanged.',
     links: [
