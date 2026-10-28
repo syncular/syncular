@@ -12,6 +12,7 @@ import { describe, expect, test } from 'bun:test';
 import { PGlite } from '@electric-sql/pglite';
 import {
   decodeMessage,
+  encodeSparseRow,
   type PushOperation,
   type RequestFrame,
   type ResponseMessage,
@@ -28,6 +29,7 @@ import {
 import { pgliteExecutor } from '@syncular/server/pglite';
 import {
   docRow,
+  pullHeader,
   pushCommit,
   pushResults,
   requestBytes,
@@ -254,6 +256,160 @@ describe('push commit statement count (SYNCULAR-PUSH-ROUNDTRIPS-001)', () => {
           ]),
         )[0]?.status,
       ).toBe('rejected');
+    } finally {
+      await db.close();
+    }
+  }, 60_000);
+});
+
+/**
+ * SYNCULAR-PUSH-ROUNDTRIPS-002: the reply a push round assembles reads the
+ * commit's changed rows per table, never per row. The pushing client's own
+ * pull half covers three tables, so a per-row read-back would cost one
+ * statement per changed row (the feedback item: 24 row reads plus 19 change
+ * joins for a 5-row commit). The reply here issues no single-row read and one
+ * batched change-window statement.
+ */
+describe('push reply row reads (SYNCULAR-PUSH-ROUNDTRIPS-002)', () => {
+  const COLUMNS = [
+    { name: 'id', type: 'string' as const, nullable: false },
+    { name: 'project_id', type: 'string' as const, nullable: false },
+    { name: 'v', type: 'string' as const, nullable: false },
+  ];
+  const TABLES = ['chronicle', 'combats', 'combatants'];
+  const REPLY_SCHEMA = {
+    version: 1,
+    tables: TABLES.map((name) => ({
+      name,
+      columns: COLUMNS,
+      primaryKey: 'id',
+      scopes: ['project:{project_id}'],
+    })),
+  };
+  const payload = (id: string): Uint8Array =>
+    encodeSparseRow(COLUMNS, 0, [id, 'p1', 'x']);
+  const fiveRows = (baseVersion?: number): PushOperation[] =>
+    [
+      ['chronicle', 'ch1'],
+      ['combats', 'co1'],
+      ['combats', 'co2'],
+      ['combatants', 'ca1'],
+      ['combatants', 'ca2'],
+    ].map(([table, rowId]) =>
+      upsert(table!, rowId!, payload(rowId!), baseVersion),
+    );
+
+  test('a 5-row commit over 3 tables replies without a single-row read', async () => {
+    const db = await PGlite.create();
+    const sql: string[] = [];
+    const inner = pgliteExecutor(db);
+    const wrap = (client: PgQueryable): PgQueryable => ({
+      query: (text, params) => {
+        sql.push(text);
+        return client.query(text, params);
+      },
+    });
+    const storage = new PostgresServerStorage({
+      query: wrap(inner).query,
+      transaction: (fn) => inner.transaction((client) => fn(wrap(client))),
+    });
+    const ctx: SyncRequestContext = {
+      partition: 'part-1',
+      actorId: 'actor-1',
+      schema: REPLY_SCHEMA,
+      storage,
+      segments: new MemorySegmentStore(),
+      resolveScopes: () => ({ project_id: ['p1'] }),
+      clock: () => 1_750_000_000_000,
+    };
+    await storage.ensureSchema(compileSchema(REPLY_SCHEMA));
+    await storage.touchPartition(
+      ctx.partition,
+      1_750_000_000_000,
+      TEST_LOG_EPOCH,
+    );
+    const round = async (
+      commitId: string,
+      operations: PushOperation[],
+      cursor: number,
+    ) => {
+      sql.length = 0;
+      const message = decodeMessage(
+        await handleSyncRequest(
+          requestBytes([
+            pushCommit(commitId, operations),
+            pullHeader({ limitCommits: 20 }),
+            /**
+             * Three subscriptions, one per table, at the cursor the client
+             * held before the push: the reply carries this commit's changes
+             * for all of them.
+             */
+            ...TABLES.map((table) => ({
+              type: 'SUBSCRIPTION' as const,
+              id: table,
+              table,
+              scopes: { project_id: ['p1'] },
+              cursor,
+            })),
+          ]),
+          ctx,
+        ),
+      );
+      if (message.msgKind !== 'response') throw new Error('expected response');
+      return message;
+    };
+
+    try {
+      const inserted = await round('insert', fiveRows(), 0);
+      expect(pushResults(inserted)[0]?.status).toBe('applied');
+      const commitSeq = pushResults(inserted)[0]?.commitSeq ?? 0;
+      const commits = inserted.frames.filter(
+        (frame) => frame.type === 'COMMIT',
+      );
+      const changes = commits.flatMap((frame) => frame.changes);
+      expect(changes.map((change) => change.rowId)).toEqual([
+        'ch1',
+        'co1',
+        'co2',
+        'ca1',
+        'ca2',
+      ]);
+      expect(commits.every((frame) => frame.commitSeq === commitSeq)).toBe(
+        true,
+      );
+
+      const singleRowReads = sql.filter(
+        (text) =>
+          text.startsWith(
+            'SELECT "_sync_row_id" AS row_id, "_sync_server_version"',
+          ) && /"_sync_row_id"=\$\d+$/.test(text),
+      );
+      const windowReads = sql.filter((text) =>
+        text.includes('LEFT JOIN sync_changes ch'),
+      );
+      expect(singleRowReads).toEqual([]);
+      expect(windowReads).toHaveLength(1);
+      expect(singleRowReads.length + windowReads.length).toBeLessThanOrEqual(6);
+
+      // A versioned update replies the same way.
+      const updated = await round('update', fiveRows(1), commitSeq);
+      expect(pushResults(updated)[0]?.status).toBe('applied');
+      expect(
+        updated.frames
+          .filter((frame) => frame.type === 'COMMIT')
+          .flatMap((frame) => frame.changes)
+          .map((change) => change.rowId),
+      ).toEqual(['ch1', 'co1', 'co2', 'ca1', 'ca2']);
+      expect(
+        sql.filter((text) =>
+          text.startsWith(
+            'SELECT "_sync_row_id" AS row_id, "_sync_server_version"',
+          ),
+        ),
+      ).toEqual([]);
+      expect(
+        sql.filter((text) => text.includes('LEFT JOIN sync_changes ch')),
+      ).toHaveLength(1);
     } finally {
       await db.close();
     }
