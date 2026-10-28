@@ -807,17 +807,38 @@ export const COMMIT_WINDOW_BATCH_SQL = `SELECT s.i AS sub, c.commit_seq AS commi
      ORDER BY s.i, c.commit_seq, ch.idx`;
 
 /**
- * PostgreSQL push read-ahead: every requested row id with its stored row
- * (NULL columns when absent, `selectRowSql` shape) and its §5 delete
- * tombstone. Params: [partition, rowIds as JSON array text, tbl].
+ * PostgreSQL push read-ahead across every table a commit targets, in one
+ * statement: each requested row id with its stored row (NULL columns when
+ * absent, `selectRowSql` shape) and its §5 delete tombstone. Params:
+ * [partition, specs as JSON text], `specs` = `{tbl, ids: string[]}` records.
  */
-export function prefetchRowsSql(table: CompiledTable): string {
-  return `SELECT ids.id AS lookup_id, r.${quoteIdent(SYNC_ROW_ID_COLUMN)} AS row_id, r.${quoteIdent(SYNC_VERSION_COLUMN)} AS server_version, r.${quoteIdent(SYNC_SCOPES_COLUMN)} AS scopes, r.${quoteIdent(SYNC_PAYLOAD_COLUMN)} AS payload, r.${quoteIdent(SYNC_COLUMN_VERSIONS_COLUMN)} AS column_versions, t.commit_seq AS tombstone_seq
-     FROM jsonb_array_elements_text($2::text::jsonb) AS ids(id)
-     LEFT JOIN ${quoteIdent(table.name)} r
-       ON r.${quoteIdent(SYNC_PARTITION_COLUMN)}=$1 AND r.${quoteIdent(SYNC_ROW_ID_COLUMN)}=ids.id
-     LEFT JOIN sync_tombstones t
-       ON t.partition=$1 AND t.tbl=$3 AND t.row_id=ids.id`;
+export function prefetchRowsBatchSql(
+  tables: readonly CompiledTable[],
+  params: { readonly partition: string; readonly specs: string } = {
+    partition: '$1',
+    specs: '$2',
+  },
+): string {
+  // One branch per table: a lateral join cannot switch its relation per
+  // record, and the union keeps the whole read-ahead one round trip.
+  const projection = tables
+    .map((table) => {
+      const quoted = quoteIdent(table.name);
+      return `SELECT ids.tbl AS tbl, ids.id AS lookup_id, r.${quoteIdent(SYNC_ROW_ID_COLUMN)} AS row_id, r.${quoteIdent(SYNC_VERSION_COLUMN)} AS server_version, r.${quoteIdent(SYNC_SCOPES_COLUMN)} AS scopes, r.${quoteIdent(SYNC_PAYLOAD_COLUMN)} AS payload, r.${quoteIdent(SYNC_COLUMN_VERSIONS_COLUMN)} AS column_versions, t.commit_seq AS tombstone_seq
+       FROM ids
+       LEFT JOIN ${quoted} r
+         ON r.${quoteIdent(SYNC_PARTITION_COLUMN)}=${params.partition} AND r.${quoteIdent(SYNC_ROW_ID_COLUMN)}=ids.id
+       LEFT JOIN sync_tombstones t
+         ON t.partition=${params.partition} AND t.tbl=ids.tbl AND t.row_id=ids.id
+      WHERE ids.tbl='${table.name.replaceAll("'", "''")}'`;
+    })
+    .join('\n     UNION ALL ');
+  return `WITH ids AS (
+       SELECT spec.tbl AS tbl, entry.id AS id
+         FROM jsonb_to_recordset(${params.specs}::text::jsonb) AS spec(tbl text, ids jsonb)
+         CROSS JOIN LATERAL jsonb_array_elements_text(spec.ids) AS entry(id)
+     )
+     ${projection}`;
 }
 
 /**

@@ -196,7 +196,7 @@ gate('Postgres fanout integration (SYNCULAR_PG_URL)', () => {
     await leftStorage.ensureSchema(compileSchema(SYNC_SCHEMA));
     await rightStorage.ensureSchema(compileSchema(SYNC_SCHEMA));
 
-    let optimisticArrivals = 0;
+    let admissionArrivals = 0;
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
@@ -204,18 +204,31 @@ gate('Postgres fanout integration (SYNCULAR_PG_URL)', () => {
     const pauseFirstLookup = (storage: ServerStorage): ServerStorage =>
       new Proxy(storage, {
         get(target, property) {
-          if (property === 'getPushResult') {
-            return async (...args: [string, string, string]) => {
-              optimisticArrivals += 1;
-              if (optimisticArrivals <= 2) {
-                if (optimisticArrivals === 2) release();
-                await gate;
-              }
-              return target.getPushResult(...args);
-            };
+          if (property !== 'begin') {
+            const value = Reflect.get(target, property, target);
+            return typeof value === 'function' ? value.bind(target) : value;
           }
-          const value = Reflect.get(target, property, target);
-          return typeof value === 'function' ? value.bind(target) : value;
+          return async (partition: string) => {
+            const tx = await target.begin(partition);
+            return new Proxy(tx, {
+              get(txTarget, txProperty) {
+                if (txProperty === 'preparePushApply') {
+                  return async (...args: [string, string, number]) => {
+                    admissionArrivals += 1;
+                    if (admissionArrivals <= 2) {
+                      if (admissionArrivals === 2) release();
+                      await gate;
+                    }
+                    return txTarget.preparePushApply(...args);
+                  };
+                }
+                const value = Reflect.get(txTarget, txProperty, txTarget);
+                return typeof value === 'function'
+                  ? value.bind(txTarget)
+                  : value;
+              },
+            });
+          };
         },
       });
 
@@ -350,10 +363,12 @@ gate('Postgres fanout integration (SYNCULAR_PG_URL)', () => {
       const first = await left.begin(partition);
       const second = await right.begin(partition);
       let secondAcquired = false;
-      const firstLock = first.lockPartitionForPush!();
-      const secondLock = second.lockPartitionForPush!().then(() => {
-        secondAcquired = true;
-      });
+      const firstLock = first.preparePushApply('client-a', 'commit-a', 1);
+      const secondLock = second
+        .preparePushApply('client-b', 'commit-b', 1)
+        .then(() => {
+          secondAcquired = true;
+        });
       try {
         await firstLock;
         firstLocked.resolve();

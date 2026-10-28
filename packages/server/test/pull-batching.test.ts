@@ -404,12 +404,12 @@ describe('first realtime socket round (SYNCULAR-PULL-ROUNDTRIPS-001)', () => {
     expect(small.counts.transactions).toBe(10);
     expect(large.counts.transactions).toBe(10);
     expect(large.counts.statements).toBe(small.counts.statements);
-    // Per commit: 8 fixed statements (idempotency lookup and locked
-    // re-check, partition lock, serve gate, savepoint, commit allocation,
-    // change log, push result), one read-ahead per table, one write per
-    // table; the pull half adds 10 for the round (the snapshot pages of both
-    // tables share one statement).
-    expect(large.counts.statements).toBe(10 * (8 + 2 + 2) + 10);
+    // Per commit: 7 fixed statements (partition lock, the admission read
+    // carrying the serve gate, the idempotency record, and the read-ahead
+    // of both tables, savepoint, one write per table, the combined
+    // allocation + change log, push result); the pull half adds 10 for the
+    // round (the snapshot pages of both tables share one statement).
+    expect(large.counts.statements).toBe(10 * 7 + 10);
   }, 60_000);
 });
 

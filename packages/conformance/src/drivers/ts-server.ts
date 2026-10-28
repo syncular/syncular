@@ -412,7 +412,29 @@ class TsServerInstance implements ServerInstance {
         this.#storage.rotatePartitionLogEpoch(p, epoch, at),
       listPartitionRegistry: () => this.#storage.listPartitionRegistry(),
       listPartitions: () => this.#storage.listPartitions(),
-      begin: (p) => this.#storage.begin(p),
+      begin: async (p) => {
+        const tx = await this.#storage.begin(p);
+        // The admission read is where the push path observes the persisted
+        // idempotency record, so that is where the fault injects.
+        return new Proxy(tx, {
+          get: (target, property) => {
+            if (property === 'preparePushApply') {
+              return async (...args: [string, string, number]) => {
+                if (this.#failNextIdempotencyLookup) {
+                  this.#failNextIdempotencyLookup = false;
+                  throw new SyncError(
+                    'sync.idempotency_cache_miss',
+                    'injected: unreadable idempotency record',
+                  );
+                }
+                return target.preparePushApply(...args);
+              };
+            }
+            const value = Reflect.get(target, property, target);
+            return typeof value === 'function' ? value.bind(target) : value;
+          },
+        });
+      },
       getMaxCommitSeq: (p) => this.#storage.getMaxCommitSeq(p),
       getHorizonSeq: (p) => this.#storage.getHorizonSeq(p),
       readCheckpoints: (p) => this.#storage.readCheckpoints(p),
@@ -432,16 +454,7 @@ class TsServerInstance implements ServerInstance {
       pruneCommitsThrough: (p, s) => this.#storage.pruneCommitsThrough(p, s),
       getCommitSeqBefore: (p, t) => this.#storage.getCommitSeqBefore(p, t),
       getRow: (p, t, r) => this.#storage.getRow(p, t, r),
-      getPushResult: (p, c, id) => {
-        if (this.#failNextIdempotencyLookup) {
-          this.#failNextIdempotencyLookup = false;
-          throw new SyncError(
-            'sync.idempotency_cache_miss',
-            'injected: unreadable idempotency record',
-          );
-        }
-        return this.#storage.getPushResult(p, c, id);
-      },
+      getPushResult: (p, c, id) => this.#storage.getPushResult(p, c, id),
       readCommitWindow: async (p, q) => {
         if (this.#failNextCommitRead) {
           this.#failNextCommitRead = false;

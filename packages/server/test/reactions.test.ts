@@ -13,7 +13,7 @@ import {
 } from '@syncular/server';
 import {
   makeContext,
-  overlapAfterTwoOptimisticMisses,
+  overlapDuplicateDeliveries,
   pushCommit,
   pushResults,
   seedTask,
@@ -193,7 +193,7 @@ describe('durable reaction planning', () => {
         return planner(input);
       },
     });
-    const storage = overlapAfterTwoOptimisticMisses(base.storage);
+    const storage = overlapDuplicateDeliveries(base.storage);
     const t = { ...base, ctx: { ...base.ctx, storage } };
     const commit = pushCommit('overlapping', [
       upsert('tasks', 'task-1', taskRow('task-1', 'p1')),

@@ -24,7 +24,7 @@ import {
 } from '@syncular/server';
 import { pgliteExecutor } from '@syncular/server/pglite';
 import { D1DatabaseDouble } from './d1-double';
-import { overlapAfterTwoOptimisticMisses } from './helpers';
+import { overlapDuplicateDeliveries } from './helpers';
 
 const COLUMNS: readonly RowColumn[] = [
   { name: 'id', type: 'string', nullable: false },
@@ -293,7 +293,7 @@ describe('durable relational constraint rejection', () => {
         ]),
       ).status,
     ).toBe('applied');
-    const overlapStorage = overlapAfterTwoOptimisticMisses(storage);
+    const overlapStorage = overlapDuplicateDeliveries(storage);
     const rejectedCommit = commit('overlap-constraint', [
       upsert(
         'overlap-sibling',

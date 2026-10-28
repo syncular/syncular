@@ -48,6 +48,7 @@ import { authorizeWrite, renderScopeValue, storedScopesForRow } from './scopes';
 import { decodeColumnVersions, encodeColumnVersions } from './relational-rows';
 import type {
   NewChange,
+  PreparedPushApply,
   StorageTransaction,
   StoredCommit,
   StoredPushResult,
@@ -1574,6 +1575,16 @@ export async function processPushCommitWithTrace(
   frame: PushCommitFrame,
   wireSchema: CompiledSchema = schema,
 ): Promise<ProcessedPushCommit> {
+  // The frame names its rows before the transaction opens, so the admission
+  // read carries the commit's read-ahead and the apply issues no separate
+  // prefetch statement.
+  const targets = new Map<string, string[]>();
+  for (const op of frame.operations) {
+    if (!schema.tables.has(op.table)) continue;
+    const ids = targets.get(op.table) ?? [];
+    ids.push(op.rowId);
+    targets.set(op.table, ids);
+  }
   return processPushOperationsWithTrace(
     ctx,
     schema,
@@ -1582,6 +1593,9 @@ export async function processPushCommitWithTrace(
     frame.clientCommitId,
     async () => frame.operations,
     wireSchema,
+    targets.size === 0
+      ? undefined
+      : [...targets].map(([table, rowIds]) => ({ table, rowIds })),
   );
 }
 
@@ -1600,86 +1614,46 @@ export async function processPushOperationsWithTrace(
     tx: StorageTransaction,
   ) => Promise<readonly ApplyOperation[]>,
   wireSchema: CompiledSchema = schema,
+  prefetchTargets?: readonly {
+    readonly table: string;
+    readonly rowIds: readonly string[];
+  }[],
 ): Promise<ProcessedPushCommit> {
-  const { storage, partition } = ctx;
-  let persisted: StoredPushResult | undefined;
-  try {
-    persisted = await storage.getPushResult(
-      partition,
-      clientId,
-      clientCommitId,
-    );
-  } catch (error) {
-    if (
-      error instanceof SyncError &&
-      error.code === 'sync.idempotency_cache_miss'
-    ) {
-      // §6.3: answer the retryable cache-miss for this commit rather than
-      // re-applying. Not persisted — a retry may find a readable record.
-      return {
-        frame: idempotencyCacheMissFrame(clientCommitId, error),
-        replayed: false,
-      };
-    }
-    throw error;
-  }
-  if (persisted !== undefined) {
-    return processedPushCommit(clientCommitId, persisted, true);
-  }
-
+  const { partition } = ctx;
   const createdAtMs = clockOf(ctx)();
   const blobCtx: BlobApplyContext = { store: ctx.blobs, partition };
   const crdtMergers = ctx.crdtMergers;
   const validators = ctx.validators;
   const commitValidator = ctx.commitValidator;
   const reactionPlanner = ctx.reactionPlanner;
-  const tx = await storage.begin(partition);
-  const lockPartitionForPush =
-    tx.lockPartitionForPush?.bind(tx) ??
-    tx.lockPartitionForCommitValidation?.bind(tx);
-  const commitRejectedPushResult = tx.commitRejectedPushResult?.bind(tx);
+  const tx = await ctx.storage.begin(partition);
   try {
-    if (
-      lockPartitionForPush === undefined ||
-      commitRejectedPushResult === undefined ||
-      (reactionPlanner !== undefined && tx.enqueueReactions === undefined)
-    ) {
+    if (reactionPlanner !== undefined && tx.enqueueReactions === undefined) {
       throw new Error(
-        'storage transaction does not support serialized push apply, atomic rejection finalization, and configured durable reactions',
+        'storage transaction does not support configured durable reactions',
       );
     }
-    await lockPartitionForPush();
-    // RFC 0007: evaluate the gate on this transaction's own connection while
-    // the partition lock is held, so the migration check and the write share
-    // one transaction and no migration can interleave in between.
-    const gate = await tx.readServeGate(schema.version);
-    const refusal = serveGateRefusal(gate, schema.version, ctx.checkpoints);
-    if (refusal !== undefined) {
-      await tx.rollback();
-      throw serveNotReadyError(refusal);
-    }
-    // The optimistic lookup above may have raced another delivery. Re-check
-    // only after acquiring partition serialization and before any operation
-    // read, validation, merge, or staged write. The re-check runs on the
-    // transaction's own connection when the backend provides one: a pooled
-    // Postgres client holding the partition lock would otherwise wait for a
-    // second pool slot and deadlock against pushes waiting on the lock. A
-    // racing duplicate's result commits before the lock releases, so the
-    // transaction-scoped read observes it.
+    // The storage takes the partition lock and then reads the admission token
+    // on the transaction's own connection: the RFC 0007 serve gate and the
+    // §2.3 idempotency record, plus any read-ahead the caller already knows.
+    // A racing duplicate's result commits before the lock releases, so the
+    // later read is exact and a duplicate never reruns an operation,
+    // validator, or merge.
+    let prepared: PreparedPushApply;
     try {
-      const serializedPersisted =
-        tx.getPushResult !== undefined
-          ? await tx.getPushResult(clientId, clientCommitId)
-          : await storage.getPushResult(partition, clientId, clientCommitId);
-      if (serializedPersisted !== undefined) {
-        await tx.rollback();
-        return processedPushCommit(clientCommitId, serializedPersisted, true);
-      }
+      prepared = await tx.preparePushApply(
+        clientId,
+        clientCommitId,
+        schema.version,
+        prefetchTargets,
+      );
     } catch (error) {
       if (
         error instanceof SyncError &&
         error.code === 'sync.idempotency_cache_miss'
       ) {
+        // §6.3: answer the retryable cache-miss for this commit rather than
+        // re-applying. Not persisted — a retry may find a readable record.
         await tx.rollback();
         return {
           frame: idempotencyCacheMissFrame(clientCommitId, error),
@@ -1687,6 +1661,22 @@ export async function processPushOperationsWithTrace(
         };
       }
       throw error;
+    }
+    // RFC 0007: the gate is evaluated while the partition lock is held, so
+    // the migration check and the write share one transaction and no
+    // migration can interleave in between.
+    const refusal = serveGateRefusal(
+      prepared.gate,
+      schema.version,
+      ctx.checkpoints,
+    );
+    if (refusal !== undefined) {
+      await tx.rollback();
+      throw serveNotReadyError(refusal);
+    }
+    if (prepared.persisted !== undefined) {
+      await tx.rollback();
+      return processedPushCommit(clientCommitId, prepared.persisted, true);
     }
     const results: PushOperationResult[] = [];
     const changes: NewChange[] = [];
@@ -1702,8 +1692,10 @@ export async function processPushOperationsWithTrace(
         ids.push(op.rowId);
         targets.set(op.table, ids);
       }
-      for (const [table, rowIds] of targets) {
-        await tx.prefetchRows(table, rowIds);
+      if (targets.size > 0) {
+        await tx.prefetchRows(
+          [...targets].map(([table, rowIds]) => ({ table, rowIds })),
+        );
       }
     }
     for (let opIndex = 0; opIndex < operations.length; opIndex++) {
@@ -1802,18 +1794,13 @@ export async function processPushOperationsWithTrace(
         results: [terminated],
       });
       // Discard candidates and persist the rejection while retaining the same
-      // partition lock. There is no unlock gap in which a duplicate can rerun.
-      await commitRejectedPushResult(clientId, clientCommitId, stored);
-      const canonical = await storage.getPushResult(
-        partition,
+      // partition lock. There is no unlock gap in which a duplicate can rerun,
+      // and the finalization returns the canonical outcome it persisted.
+      const canonical = await tx.commitRejectedPushResult(
         clientId,
         clientCommitId,
+        stored,
       );
-      if (canonical === undefined) {
-        throw new Error(
-          'push rejection finalization did not persist an outcome',
-        );
-      }
       return processedPushCommit(
         clientCommitId,
         canonical,
@@ -1895,24 +1882,12 @@ export async function processPushOperationsWithTrace(
           },
         ],
       });
-      if (commitRejectedPushResult === undefined) {
-        await tx.rollback();
-        throw new Error(
-          'storage transaction lost atomic push rejection finalization support',
-        );
-      }
       try {
-        await commitRejectedPushResult(clientId, clientCommitId, stored);
-        const canonical = await storage.getPushResult(
-          partition,
+        const canonical = await tx.commitRejectedPushResult(
           clientId,
           clientCommitId,
+          stored,
         );
-        if (canonical === undefined) {
-          throw new Error(
-            'push rejection finalization did not persist an outcome',
-          );
-        }
         return processedPushCommit(
           clientCommitId,
           canonical,

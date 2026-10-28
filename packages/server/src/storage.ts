@@ -74,6 +74,18 @@ export interface ServeGate {
   }[];
 }
 
+/**
+ * The push apply's admission token: the partition lock, the serve gate, and
+ * the idempotency record read in one round trip. A storage with per-statement
+ * network cost answers all three with one statement (see
+ * `PostgresServerStorage`); the lock is held from this call through commit.
+ */
+export interface PreparedPushApply {
+  readonly gate: ServeGate;
+  /** The already-persisted outcome for this key, or `undefined` on a miss. */
+  readonly persisted: StoredPushResult | undefined;
+}
+
 /** Why `serveGate` refuses, or `undefined` when this request may serve. */
 export type ServeGateRefusal =
   | {
@@ -547,12 +559,17 @@ export interface StorageTransaction {
   getRow(table: string, rowId: string): Promise<StoredRow | undefined>;
   /**
    * Optional read-ahead: the push layer names every row a commit's
-   * operations target, per table, before it applies them. A storage with
-   * per-statement network cost reads them in one statement and answers the
-   * following `getRow` calls from that snapshot until the row is written in
-   * this transaction.
+   * operations target, across every table, before it applies them. A storage
+   * with per-statement network cost reads them in one statement (one branch
+   * per table) and answers the following `getRow` calls from that snapshot
+   * until the row is written in this transaction.
    */
-  prefetchRows?(table: string, rowIds: readonly string[]): Promise<void>;
+  prefetchRows?(
+    targets: readonly {
+      readonly table: string;
+      readonly rowIds: readonly string[];
+    }[],
+  ): Promise<void>;
   /**
    * §5 delete-precedence tombstone read: the `commit_seq` of the newest
    * applied delete of this row still within the pruning horizon, or
@@ -567,20 +584,6 @@ export interface StorageTransaction {
    * over an absent row; a no-op when no tombstone exists.
    */
   clearTombstone(table: string, rowId: string): Promise<void>;
-  /**
-   * Optional transaction-scoped idempotency lookup (§2.3) with the same
-   * semantics as `ServerStorage.getPushResult`, including the
-   * `sync.idempotency_cache_miss` throw. The push layer prefers it for the
-   * post-serialization duplicate re-check so the read runs on the
-   * transaction's own connection — a pooled Postgres client that holds the
-   * partition lock must never wait for a second pool slot mid-push. In-tree
-   * SQLite/Postgres/D1 adapters implement it; a custom adapter that omits it
-   * keeps the pool-level read.
-   */
-  getPushResult?(
-    clientId: string,
-    clientCommitId: string,
-  ): Promise<StoredPushResult | undefined>;
   /**
    * Optional candidate-state scan used only by whole-commit validation.
    * In-tree SQLite/Postgres/D1 backends implement it with read-your-own-writes
@@ -610,28 +613,37 @@ export interface StorageTransaction {
   ): Promise<AuthoritativeQueryResult>;
   /**
    * Serialize every push apply for this partition before any operation read,
-   * validation, merge, or write. The push layer re-checks idempotency only
-   * after this resolves and retains the lock through terminal-result commit.
+   * validation, merge, or write, and read the admission token in the same
+   * round trip: the RFC 0007 serve gate and the §2.3 idempotency record for
+   * `clientCommitId`. The lock is retained through terminal-result commit,
+   * so the idempotency read is exact and a racing duplicate cannot rerun.
+   * `targets` are the rows the commit is known to touch before its operations
+   * are built; a storage with per-statement network cost folds that read-ahead
+   * into the admission read and answers the following `getRow` calls from it.
    * Missing support fails closed before an app-row mutation.
    */
-  lockPartitionForPush?(): Promise<void>;
-  /**
-   * @deprecated Implement `lockPartitionForPush`. Kept as a compatibility
-   * bridge for custom adapters whose existing implementation already locks
-   * the complete partition from before candidate reads through commit.
-   */
-  lockPartitionForCommitValidation?(): Promise<void>;
+  preparePushApply(
+    clientId: string,
+    clientCommitId: string,
+    runningSchemaVersion: number,
+    targets?: readonly {
+      readonly table: string;
+      readonly rowIds: readonly string[];
+    }[],
+  ): Promise<PreparedPushApply>;
   /**
    * Rejection finalization while the push-apply serialization lock is still
    * held: discard every candidate write, persist the rejected idempotency
-   * result, and finish the transaction atomically. Required for every push so
-   * a concurrent duplicate cannot rerun operations, validators, or merges.
+   * result, and finish the transaction atomically. Returns the persisted
+   * canonical outcome, so the caller never re-reads it. Required for every
+   * push so a concurrent duplicate cannot rerun operations, validators, or
+   * merges.
    */
-  commitRejectedPushResult?(
+  commitRejectedPushResult(
     clientId: string,
     clientCommitId: string,
     result: StoredPushResult,
-  ): Promise<void>;
+  ): Promise<StoredPushResult>;
   upsertRow(
     table: string,
     row: StoredRow,
@@ -744,10 +756,10 @@ export interface ServerStorage {
    * same command races a push on Postgres and a SQLite-only test conceals it.
    *
    * A trusted command must therefore run through `registerRemoteCommand`,
-   * which builds after `lockPartitionForPush` and the idempotency recheck and
-   * shares the committed transaction, or call `lockPartitionForPush` before
-   * its first authority, version, or replay read. SSP2 request handling does
-   * this for you; only host-authored commands choose.
+   * which builds after `preparePushApply` and shares the committed
+   * transaction, or call `preparePushApply` before its first authority,
+   * version, or replay read. SSP2 request handling does this for you; only
+   * host-authored commands choose.
    */
   begin(partition: string): Promise<StorageTransaction>;
 

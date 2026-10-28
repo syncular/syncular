@@ -13,7 +13,7 @@ import {
   del,
   expectSyncError,
   makeContext,
-  overlapAfterTwoOptimisticMisses,
+  overlapDuplicateDeliveries,
   pushCommit,
   pushResults,
   requestBytes,
@@ -320,7 +320,7 @@ describe('idempotent replay (§2.3, §6.3)', () => {
         },
       },
     });
-    const storage = overlapAfterTwoOptimisticMisses(base.storage);
+    const storage = overlapDuplicateDeliveries(base.storage);
     const t = { ...base, ctx: { ...base.ctx, storage } };
     const commit = pushCommit('overlap-applied', [
       upsert('tasks', 'overlap-row', taskRow('overlap-row', 'p1')),
@@ -348,7 +348,7 @@ describe('idempotent replay (§2.3, §6.3)', () => {
     const base = makeContext();
     await seedTask(base, 'conflict-seed', 'conflict-row', 'p1');
     let operationReads = 0;
-    const storage = overlapAfterTwoOptimisticMisses(base.storage, () => {
+    const storage = overlapDuplicateDeliveries(base.storage, () => {
       operationReads += 1;
     });
     const t = { ...base, ctx: { ...base.ctx, storage } };
@@ -383,7 +383,7 @@ describe('idempotent replay (§2.3, §6.3)', () => {
         },
       },
     });
-    const storage = overlapAfterTwoOptimisticMisses(base.storage);
+    const storage = overlapDuplicateDeliveries(base.storage);
     const t = { ...base, ctx: { ...base.ctx, storage } };
     const commit = pushCommit('overlap-row-rejection', [
       upsert('tasks', 'rejected-row', taskRow('rejected-row', 'p1')),
@@ -408,7 +408,7 @@ describe('idempotent replay (§2.3, §6.3)', () => {
         throw new CommitValidationRejection(0, 'tasks.aggregate_rejected');
       },
     });
-    const storage = overlapAfterTwoOptimisticMisses(base.storage);
+    const storage = overlapDuplicateDeliveries(base.storage);
     const t = { ...base, ctx: { ...base.ctx, storage } };
     const commit = pushCommit('overlap-aggregate-rejection', [
       upsert('tasks', 'aggregate-row', taskRow('aggregate-row', 'p1')),

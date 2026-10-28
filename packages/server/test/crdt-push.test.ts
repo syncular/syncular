@@ -22,7 +22,7 @@ import {
   SqliteServerStorage,
   type SyncRequestContext,
 } from '@syncular/server';
-import { overlapAfterTwoOptimisticMisses, TEST_LOG_EPOCH } from './helpers';
+import { overlapDuplicateDeliveries, TEST_LOG_EPOCH } from './helpers';
 
 /** A note table: an ordinary `title` (LWW) + a `doc` crdt column. */
 const NOTE_COLUMNS: readonly RowColumn[] = [
@@ -290,7 +290,7 @@ describe('CRDT column push merge (SPEC.md §5.10.3)', () => {
         return setUnionMerge(stored, incoming);
       },
     };
-    const overlapStorage = overlapAfterTwoOptimisticMisses(storage);
+    const overlapStorage = overlapDuplicateDeliveries(storage);
     const overlapContext: SyncRequestContext = {
       ...makeCtx(mergers),
       storage: overlapStorage,

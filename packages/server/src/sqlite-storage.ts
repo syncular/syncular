@@ -101,6 +101,7 @@ import type {
   IndexRowScanQuery,
   NewCommit,
   NewReaction,
+  PreparedPushApply,
   PartitionRegistryEntry,
   PrunedReactionCounts,
   ReactionClaimQuery,
@@ -255,20 +256,6 @@ class SqliteTransaction implements StorageTransaction {
       .run(this.#partition, table, rowId);
   }
 
-  getPushResult(
-    clientId: string,
-    clientCommitId: string,
-  ): Promise<StoredPushResult | undefined> {
-    this.#assertOpen();
-    // One shared SQLite connection: this read runs inside this
-    // transaction's BEGIN IMMEDIATE.
-    return this.#storage.getPushResult(
-      this.#partition,
-      clientId,
-      clientCommitId,
-    );
-  }
-
   scanRows(query: RowScanQuery): Promise<StoredRow[]> {
     this.#assertOpen();
     return this.#storage.scanRows(this.#partition, query);
@@ -288,11 +275,30 @@ class SqliteTransaction implements StorageTransaction {
     return this.#storage.runAuthoritativeQuery(this.#partition, query);
   }
 
-  async lockPartitionForPush(): Promise<void> {
+  async preparePushApply(
+    clientId: string,
+    clientCommitId: string,
+    runningSchemaVersion: number,
+    _targets: readonly {
+      readonly table: string;
+      readonly rowIds: readonly string[];
+    }[] = [],
+  ): Promise<PreparedPushApply> {
     this.#assertOpen();
     // BEGIN IMMEDIATE in the constructor already owns SQLite's writer lock.
     this.#storage.db.exec('SAVEPOINT syncular_push_candidate');
     this.#pushApplySavepoint = true;
+    return {
+      gate: await this.#storage.readServeGate(
+        this.#partition,
+        runningSchemaVersion,
+      ),
+      persisted: await this.#storage.getPushResult(
+        this.#partition,
+        clientId,
+        clientCommitId,
+      ),
+    };
   }
 
   async advanceCheckpoint(
@@ -324,7 +330,7 @@ class SqliteTransaction implements StorageTransaction {
     clientId: string,
     clientCommitId: string,
     result: StoredPushResult,
-  ): Promise<void> {
+  ): Promise<StoredPushResult> {
     this.#assertOpen();
     if (!this.#pushApplySavepoint) {
       throw new Error('push rejection requires its apply savepoint');
@@ -334,6 +340,9 @@ class SqliteTransaction implements StorageTransaction {
     this.#pushApplySavepoint = false;
     await this.putPushResult(clientId, clientCommitId, result);
     await this.commit();
+    // The idempotency re-check found no record under the writer lock, so the
+    // insert above is the canonical outcome.
+    return result;
   }
 
   async upsertRow(

@@ -154,7 +154,7 @@ for (const backend of ['sqlite', 'postgres', 'd1'] as const) {
       expect(await entries()).toEqual(before);
       for (const rejected of [false, true]) {
         const tx = await storage.begin('part');
-        await tx.lockPartitionForPush?.();
+        await tx.preparePushApply('test-client', 'test-commit', 1);
         await tx.upsertRow('docs', row('shared', 'rejected', 'rejected'));
         await tx.deleteRow('docs', 'sibling');
         if (rejected) {
@@ -412,9 +412,9 @@ test('D1 push apply fails closed without external serialization', async () => {
   const storage = new D1ServerStorage(new D1DatabaseDouble());
   await prepareD1(storage);
   const tx = await storage.begin('partition');
-  await expect(tx.lockPartitionForPush?.()).rejects.toThrow(
-    'requires externally serialized partition writes',
-  );
+  await expect(
+    tx.preparePushApply('test-client', 'test-commit', 1),
+  ).rejects.toThrow('requires externally serialized partition writes');
   await tx.rollback();
   await expect(
     storage.pruneCommitsThrough('partition', {
@@ -533,7 +533,7 @@ test('Postgres partition locking initializes once and survives an initial rollba
       statements.length = 0;
       const tx = await storage.begin('lock-partition');
       try {
-        await tx.lockPartitionForPush?.();
+        await tx.preparePushApply('test-client', 'test-commit', 1);
         const initialization = statements.filter((sql) =>
           sql.includes('INSERT INTO sync_partitions'),
         );
@@ -541,7 +541,10 @@ test('Postgres partition locking initializes once and survives an initial rollba
         expect(
           statements.filter((sql) => sql.includes('FOR UPDATE')),
         ).toHaveLength(initialization.length + 1);
-        expect(statements.at(-1)).toBe('SAVEPOINT syncular_push_candidate');
+        // The admission read (serve gate + idempotency record) follows the
+        // lock statement; the candidate savepoint is lazy and lands before
+        // the first candidate write instead.
+        expect(statements.at(-1)).toContain('sync_push_results');
         const seq = await tx.appendCommit({
           clientId: 'client',
           clientCommitId: crypto.randomUUID(),
@@ -718,8 +721,9 @@ test("Postgres appends a commit's changes and all their scopes in one statement"
             changes,
           }),
         ).toBe(1);
-        // The commit allocation, then one statement for every change.
-        expect(statements).toHaveLength(2);
+        // The allocation, the commit row, and every change share one
+        // statement.
+        expect(statements).toHaveLength(1);
         await tx[finish]();
       } catch (error) {
         await tx.rollback();
@@ -851,7 +855,7 @@ test('D1: a batch-commit constraint attributes the opIndex only when it is unamb
   // Several buffered application ops: the violating one is unknowable from
   // the batch error, so the rejection omits the opIndex.
   const ambiguous = await storage.begin('partition');
-  await ambiguous.lockPartitionForPush?.();
+  await ambiguous.preparePushApply('c', 'ambiguous', 1);
   await ambiguous.upsertRow('tasks', taskRow('t-0'), { opIndex: 0 });
   await ambiguous.upsertRow('tasks', taskRow('t-2'), { opIndex: 2 });
   db.failNextBatch = true;
@@ -865,7 +869,7 @@ test('D1: a batch-commit constraint attributes the opIndex only when it is unamb
 
   // One buffered application op: the attribution is exact.
   const exact = await storage.begin('partition');
-  await exact.lockPartitionForPush?.();
+  await exact.preparePushApply('c', 'exact', 1);
   await exact.upsertRow('tasks', taskRow('t-solo'), { opIndex: 3 });
   db.failNextBatch = true;
   const exactError = await exact.commit().then(

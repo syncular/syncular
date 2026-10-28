@@ -131,6 +131,7 @@ import type {
   IndexRowScanQuery,
   NewCommit,
   NewReaction,
+  PreparedPushApply,
   PartitionRegistryEntry,
   PrunedReactionCounts,
   ReactionClaimQuery,
@@ -550,7 +551,15 @@ class D1Transaction implements StorageTransaction {
     );
   }
 
-  async lockPartitionForPush(): Promise<void> {
+  async preparePushApply(
+    clientId: string,
+    clientCommitId: string,
+    runningSchemaVersion: number,
+    _targets: readonly {
+      readonly table: string;
+      readonly rowIds: readonly string[];
+    }[] = [],
+  ): Promise<PreparedPushApply> {
     this.#assertOpen();
     if (!this.#pushApplySerialized) {
       throw new Error(
@@ -560,6 +569,10 @@ class D1Transaction implements StorageTransaction {
     // D1 has no interactive lock. The caller explicitly asserted that every
     // write for this partition is already serialized (normally by its DO).
     this.#pushApplyCheckpoint = this.#buffer.length;
+    return {
+      gate: await this.readServeGate(runningSchemaVersion),
+      persisted: await this.getPushResult(clientId, clientCommitId),
+    };
   }
 
   advanceCheckpoint(
@@ -591,7 +604,7 @@ class D1Transaction implements StorageTransaction {
     clientId: string,
     clientCommitId: string,
     result: StoredPushResult,
-  ): Promise<void> {
+  ): Promise<StoredPushResult> {
     this.#assertOpen();
     const checkpoint = this.#pushApplyCheckpoint;
     if (checkpoint === undefined) {
@@ -604,6 +617,9 @@ class D1Transaction implements StorageTransaction {
     this.#applicationOpIndexes.clear();
     await this.putPushResult(clientId, clientCommitId, result);
     await this.commit();
+    // The idempotency re-check found no record under the serialized apply, so
+    // the insert above is the canonical outcome.
+    return result;
   }
 
   async #assertNoUniqueCollision(

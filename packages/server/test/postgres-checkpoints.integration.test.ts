@@ -152,7 +152,7 @@ gate('RFC 0007 real-Postgres receipts (SYNCULAR_PG_URL)', () => {
     // Connection 1 holds the partition lock in an open source-write
     // transaction: the source mutation is appended but not yet committed.
     const tx = await storage.begin(partition);
-    await tx.lockPartitionForPush?.();
+    await tx.preparePushApply('test-client', 'test-commit', 1);
     await tx.appendCommit({
       clientId: 'current',
       clientCommitId: 'current-11',
@@ -208,7 +208,7 @@ gate('RFC 0007 real-Postgres receipts (SYNCULAR_PG_URL)', () => {
     // Create the partition row so the activation transaction locks it on its
     // first statement (no source change, so the coverage check stays clean).
     const seed = await storage.begin(partition);
-    await seed.lockPartitionForPush?.();
+    await seed.preparePushApply('seed-client', 'seed-commit', 1);
     await seed.commit();
     await storage.declareCheckpoint(
       partition,

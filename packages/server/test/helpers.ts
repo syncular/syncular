@@ -35,10 +35,12 @@ import {
 } from '@syncular/server';
 
 /**
- * Deterministically pause two deliveries after both optimistic idempotency
- * lookups have started. Their locked rechecks then decide the one true apply.
+ * Deterministically pause two deliveries before either opens its storage
+ * transaction, so both reach the partition lock and the admission read. Whichever
+ * applies first commits; the other's admission read sees the outcome and must
+ * replay it instead of applying again.
  */
-export function overlapAfterTwoOptimisticMisses(
+export function overlapDuplicateDeliveries(
   storage: ServerStorage,
   onOperationRead?: () => void,
 ): ServerStorage {
@@ -49,19 +51,15 @@ export function overlapAfterTwoOptimisticMisses(
   });
   return new Proxy(storage, {
     get(target, property) {
-      if (property === 'getPushResult') {
-        return async (...args: [string, string, string]) => {
+      if (property === 'begin') {
+        return async (partition: string): Promise<StorageTransaction> => {
           arrivals += 1;
           if (arrivals <= 2) {
             if (arrivals === 2) release();
             await gate;
           }
-          return target.getPushResult(...args);
-        };
-      }
-      if (property === 'begin' && onOperationRead !== undefined) {
-        return async (partition: string): Promise<StorageTransaction> => {
           const tx = await target.begin(partition);
+          if (onOperationRead === undefined) return tx;
           return new Proxy(tx, {
             get(txTarget, txProperty) {
               if (txProperty === 'getRow') {

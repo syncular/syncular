@@ -92,7 +92,7 @@ import {
   serverIndexDdl,
   selectRowScopesSql,
   selectRowSql,
-  prefetchRowsSql,
+  prefetchRowsBatchSql,
   selectRowsForRewriteSql,
   upsertSql,
   upsertValues,
@@ -115,9 +115,11 @@ import type {
   CommitWindowQuery,
   DurableJsonValue,
   IndexRowScanQuery,
+  NewChange,
   NewCommit,
   NewReaction,
   PartitionRegistryEntry,
+  PreparedPushApply,
   PrunedReactionCounts,
   ReactionClaimQuery,
   ReactionFailure,
@@ -422,27 +424,25 @@ async function readIndexSignatures(
   return parseIndexSignatures(rows[0]?.indexes ?? '[]');
 }
 
-/** RFC 0007 serve gate on either the pool or a transaction's client. */
-async function readServeGateOn(
-  client: PgQueryable,
-  partition: string,
-  runningSchemaVersion: number,
-): Promise<ServeGate> {
-  // One statement: every request reads the gate twice (entry and verify),
-  // so its parts share one round trip and one snapshot.
-  const { rows } = await client.query<{
-    schema_version: unknown;
-    log_epoch: string | null;
-    pending: unknown;
-  }>(
-    `SELECT (SELECT schema_version FROM sync_schema_meta WHERE id=1) AS schema_version,
+interface ServeGateRow {
+  schema_version: unknown;
+  log_epoch: string | null;
+  pending: unknown;
+  result?: unknown;
+}
+
+/**
+ * The serve-gate projection shared by every read: the entry/verify gate and
+ * the push admission statement select exactly these columns. Params:
+ * [partition, running schema version].
+ */
+const SERVE_GATE_PROJECTION = `(SELECT schema_version FROM sync_schema_meta WHERE id=1) AS schema_version,
             (SELECT log_epoch FROM sync_partition_registry WHERE partition=$1) AS log_epoch,
             (SELECT json_agg(json_build_object('partition', partition, 'name', name))
                FROM sync_backfill_checkpoints
-              WHERE schema_version=$2 AND state<>'activated') AS pending`,
-    [partition, runningSchemaVersion],
-  );
-  const row = rows[0];
+              WHERE schema_version=$2 AND state<>'activated') AS pending`;
+
+function toServeGate(row: ServeGateRow | undefined): ServeGate {
   return {
     // asNumber maps the NULL of a missing marker row to 0.
     storedSchemaVersion: asNumber(row?.schema_version),
@@ -454,6 +454,108 @@ async function readServeGateOn(
   };
 }
 
+/** RFC 0007 serve gate on either the pool or a transaction's client. */
+async function readServeGateOn(
+  client: PgQueryable,
+  partition: string,
+  runningSchemaVersion: number,
+): Promise<ServeGate> {
+  // One statement: every request reads the gate twice (entry and verify),
+  // so its parts share one round trip and one snapshot.
+  const { rows } = await client.query<ServeGateRow>(
+    `SELECT ${SERVE_GATE_PROJECTION}`,
+    [partition, runningSchemaVersion],
+  );
+  return toServeGate(rows[0]);
+}
+
+/** One read-ahead row of the admission statement (the gate row has no `tbl`). */
+interface PrefetchRow {
+  readonly tbl: string;
+  readonly lookup_id: string;
+  readonly row_id: string | null;
+  readonly server_version: unknown;
+  readonly scopes: unknown;
+  readonly payload: unknown;
+  readonly column_versions: unknown;
+  readonly tombstone_seq: unknown;
+}
+
+type AdmissionRow = ServeGateRow & Partial<PrefetchRow>;
+
+/**
+ * The push admission read: the RFC 0007 serve gate, the §2.3 idempotency
+ * record, and (when the caller already knows the commit's row targets) the
+ * read-ahead rows, in one statement with one snapshot. The caller takes the
+ * partition lock first: under READ COMMITTED a statement's snapshot is fixed
+ * at its start, so the read must be the statement *after* the lock to observe
+ * a duplicate that committed while this transaction waited for it.
+ */
+async function readAdmissionOn(
+  client: PgQueryable,
+  partition: string,
+  clientId: string,
+  clientCommitId: string,
+  runningSchemaVersion: number,
+  prefetch:
+    | {
+        readonly tables: readonly CompiledTable[];
+        readonly specs: readonly {
+          readonly tbl: string;
+          readonly ids: string[];
+        }[];
+      }
+    | undefined,
+): Promise<{
+  gate: ServeGate;
+  persisted: StoredPushResult | undefined;
+  prefetched: readonly PrefetchRow[];
+}> {
+  const params: unknown[] = [
+    partition,
+    runningSchemaVersion,
+    clientId,
+    clientCommitId,
+  ];
+  let statement = `SELECT ${SERVE_GATE_PROJECTION},
+            (SELECT result FROM sync_push_results
+              WHERE partition=$1 AND client_id=$3 AND client_commit_id=$4) AS result`;
+  if (prefetch !== undefined && prefetch.specs.length > 0) {
+    params.push(JSON.stringify(prefetch.specs));
+    // The gate row pads the read-ahead columns with typed NULLs so both
+    // branches share one result shape; `tbl` is NULL only for the gate row.
+    statement += `,
+            NULL::text AS tbl, NULL::text AS lookup_id, NULL::text AS row_id,
+            NULL::bigint AS server_version, NULL::jsonb AS scopes,
+            NULL::bytea AS payload, NULL::bytea AS column_versions,
+            NULL::bigint AS tombstone_seq
+       UNION ALL
+       SELECT NULL::bigint, NULL::text, NULL::json, NULL::jsonb,
+              p.tbl, p.lookup_id, p.row_id, p.server_version, p.scopes,
+              p.payload, p.column_versions, p.tombstone_seq
+         FROM (${prefetchRowsBatchSql(prefetch.tables, {
+           partition: '$1',
+           specs: `$${params.length}`,
+         })}) p`;
+  }
+  const { rows } = await client.query<AdmissionRow>(statement, params);
+  const gateRow = rows.find((row) => row.tbl === null) ?? rows[0];
+  return {
+    gate: toServeGate(gateRow),
+    persisted: toPersistedPushResult(gateRow?.result),
+    prefetched: rows.filter(
+      (row): row is AdmissionRow & PrefetchRow =>
+        row.tbl !== null && row.tbl !== undefined,
+    ),
+  };
+}
+
+/**
+ * Insert the `declared` row and raise the fence, on the caller's open
+ * transaction. Shared by `declareCheckpoint` and the `ensureSchema`
+ * migration so the schema bump and the fence commit together. Never lowers a
+ * fence and never re-declares an existing row.
+ */
 async function hasSourceChangesAboveOn(
   client: PgQueryable,
   partition: string,
@@ -825,13 +927,16 @@ async function scanRowsByIndexOn(
 }
 
 /**
- * Write rows of one table in one statement per chunk: the upsert, and the
- * scope index synced to each row's scope map (entries outside it deleted,
- * missing ones inserted). Row ids are distinct, so no index entry is touched
- * twice and the writable CTEs cannot conflict. The scopes bind as text
- * before the JSONB cast (see `appendCommit`). Every chunk is handed to `q`
- * before the first one settles, so a statement issued after this call
- * queues behind all of them on the transaction FIFO.
+ * Write rows of one table in one statement per chunk: the upsert, the scope
+ * index synced to each row's scope map (entries outside it deleted, missing
+ * ones inserted), and the §5.9.4 blob-reference index synced to the ids the
+ * row now references (entries outside the new set deleted, missing ones
+ * inserted). Row ids are distinct, so no index entry is touched twice and the
+ * writable CTEs cannot conflict. The scopes and blob ids bind as text before
+ * the JSONB cast (see `appendCommit`); the refs set is part of the same
+ * statement, so a blob-referencing commit costs no extra round trip per row.
+ * Every chunk is handed to `q` before the first one settles, so a statement
+ * issued after this call queues behind all of them on the transaction FIFO.
  */
 function writeRowsOn(
   q: PgQueryable,
@@ -842,16 +947,30 @@ function writeRowsOn(
     /** `upsertValues` of the row, computed when it was staged. */
     readonly values: readonly unknown[];
   }[],
+  blobRefs: readonly {
+    readonly rowId: string;
+    readonly blobIds: readonly string[];
+  }[] = [],
 ): Promise<unknown> {
   const width = tableColumnNames(compiled).length;
   // PGlite corrupts its state above 32,767 bound parameters (see
   // PG_CHANGES_PER_STATEMENT).
   const chunk = Math.max(1, Math.floor(30_000 / width));
+  const pendingRefs = new Map(
+    blobRefs.map((entry) => [entry.rowId, entry.blobIds]),
+  );
   const writes: Promise<unknown>[] = [];
   for (let first = 0; first < rows.length; first += chunk) {
     const slice = rows.slice(first, first + chunk);
     const params = slice.flatMap((entry) => entry.values);
     const n = params.length;
+    const refs: { row_id: string; blob_ids: readonly string[] }[] = [];
+    for (const entry of slice) {
+      const blobIds = pendingRefs.get(entry.row.rowId);
+      if (blobIds === undefined) continue;
+      pendingRefs.delete(entry.row.rowId);
+      refs.push({ row_id: entry.row.rowId, blob_ids: blobIds });
+    }
     writes.push(
       q.query(
         `WITH upserted AS (${upsertSql(compiled, 'postgres', slice.length)}),
@@ -869,6 +988,28 @@ function writeRowsOn(
             WHERE existing.partition=$${n + 2} AND existing.tbl=$${n + 3}
               AND existing.row_id=batch.row_id
               AND batch.scopes->>existing.var IS DISTINCT FROM existing.value
+         ),
+         changed_refs AS (
+           SELECT DISTINCT row_id
+             FROM jsonb_to_recordset($${n + 4}::text::jsonb) AS r(row_id text, blob_ids jsonb)
+         ),
+         removed_refs AS (
+           DELETE FROM sync_blob_refs existing
+            USING changed_refs
+            WHERE existing.partition=$${n + 2} AND existing.tbl=$${n + 3}
+              AND existing.row_id=changed_refs.row_id
+              AND NOT EXISTS (
+                SELECT 1
+                  FROM jsonb_to_recordset($${n + 4}::text::jsonb) AS r(row_id text, blob_ids jsonb)
+                  CROSS JOIN LATERAL jsonb_array_elements_text(r.blob_ids) AS entry(value)
+                 WHERE r.row_id=existing.row_id AND entry.value=existing.blob_id)
+         ),
+         inserted_refs AS (
+           INSERT INTO sync_blob_refs(partition, tbl, row_id, blob_id)
+           SELECT $${n + 2}, $${n + 3}, r.row_id, entry.value
+             FROM jsonb_to_recordset($${n + 4}::text::jsonb) AS r(row_id text, blob_ids jsonb)
+             CROSS JOIN LATERAL jsonb_array_elements_text(r.blob_ids) AS entry(value)
+           ON CONFLICT DO NOTHING
          )
          INSERT INTO sync_row_scopes(partition, tbl, var, value, row_id)
          SELECT $${n + 2}, $${n + 3}, key, value, row_id FROM scope
@@ -880,6 +1021,45 @@ function writeRowsOn(
           ),
           partition,
           compiled.name,
+          JSON.stringify(refs),
+        ],
+      ),
+    );
+  }
+  if (pendingRefs.size > 0) {
+    // Refs staged for a row this call did not carry (the row was written by an
+    // earlier flush): replace the reference set in one statement of its own.
+    writes.push(
+      q.query(
+        `WITH changed_refs AS (
+           SELECT DISTINCT row_id
+             FROM jsonb_to_recordset($3::text::jsonb) AS r(row_id text, blob_ids jsonb)
+         ),
+         removed_refs AS (
+           DELETE FROM sync_blob_refs existing
+            USING changed_refs
+            WHERE existing.partition=$1 AND existing.tbl=$2
+              AND existing.row_id=changed_refs.row_id
+              AND NOT EXISTS (
+                SELECT 1
+                  FROM jsonb_to_recordset($3::text::jsonb) AS r(row_id text, blob_ids jsonb)
+                  CROSS JOIN LATERAL jsonb_array_elements_text(r.blob_ids) AS entry(value)
+                 WHERE r.row_id=existing.row_id AND entry.value=existing.blob_id)
+         )
+         INSERT INTO sync_blob_refs(partition, tbl, row_id, blob_id)
+         SELECT $1, $2, r.row_id, entry.value
+           FROM jsonb_to_recordset($3::text::jsonb) AS r(row_id text, blob_ids jsonb)
+           CROSS JOIN LATERAL jsonb_array_elements_text(r.blob_ids) AS entry(value)
+         ON CONFLICT DO NOTHING`,
+        [
+          partition,
+          compiled.name,
+          JSON.stringify(
+            [...pendingRefs].map(([row_id, blob_ids]) => ({
+              row_id,
+              blob_ids,
+            })),
+          ),
         ],
       ),
     );
@@ -897,9 +1077,14 @@ async function getPushResultOn(
     'SELECT result FROM sync_push_results WHERE partition=$1 AND client_id=$2 AND client_commit_id=$3',
     [partition, clientId, clientCommitId],
   );
-  if (rows[0] === undefined) return undefined;
+  return toPersistedPushResult(rows[0]?.result);
+}
+
+/** Decode a persisted §2.3 outcome; an unreadable record is a cache miss. */
+function toPersistedPushResult(value: unknown): StoredPushResult | undefined {
+  if (value === null || value === undefined) return undefined;
   try {
-    return deserializePushResult(asJson(rows[0].result));
+    return deserializePushResult(asJson(value));
   } catch {
     throw syncError(
       'sync.idempotency_cache_miss',
@@ -971,6 +1156,20 @@ class PostgresTransaction implements StorageTransaction {
       }
     >
   >();
+  /**
+   * §5.9.4 reference sets staged per table (row id → blob ids). They flush
+   * with the table's row statement, so a blob-referencing row costs no extra
+   * round trip; a ref set staged for an already-written row flushes on the
+   * next statement of its table.
+   */
+  readonly #stagedBlobRefs = new Map<string, Map<string, readonly string[]>>();
+  /**
+   * The partition cursor (`max_commit_seq`) read by the first registered
+   * query in this transaction. The partition lock freezes it, so later
+   * registered queries in the same transaction reuse the value instead of
+   * paying a round trip each.
+   */
+  #cursorSeq: number | undefined;
   /** Resolves/rejects the `transaction(fn)` wrapper (see `begin`). */
   #resolve: () => void;
   #reject: (error: unknown) => void;
@@ -1031,24 +1230,60 @@ class PostgresTransaction implements StorageTransaction {
   }
 
   #writeStaged(): Promise<unknown> {
-    if (this.#staged.size === 0) return Promise.resolve();
-    const staged = [...this.#staged];
-    this.#staged.clear();
-    return Promise.all(
-      staged.map(([table, rows]) => {
-        const entries = [...rows.values()];
-        return writeRowsOn(this.#serial, table, this.#partition, entries).catch(
-          (error: unknown) => {
-            // Staged tables have no unique index, so a violation is a column
-            // constraint; it names the first staged operation of the table.
-            if (isPostgresConstraintError(error)) {
-              throw new StorageConstraintError(error, entries[0]?.opIndex);
-            }
-            throw error;
-          },
-        );
-      }),
-    );
+    if (this.#staged.size === 0 && this.#stagedBlobRefs.size === 0) {
+      return Promise.resolve();
+    }
+    const tables = new Set<string>([
+      ...[...this.#staged.keys()].map((table) => table.name),
+      ...this.#stagedBlobRefs.keys(),
+    ]);
+    const batches = [...tables].map((table) => {
+      const compiled = this.#resolveTable(table);
+      const rows = [...(this.#staged.get(compiled)?.values() ?? [])];
+      const blobRefs = [
+        ...(this.#stagedBlobRefs.get(table)?.entries() ?? []),
+      ].map(([rowId, blobIds]) => ({ rowId, blobIds }));
+      this.#staged.delete(compiled);
+      this.#stagedBlobRefs.delete(table);
+      return { table, compiled, rows, blobRefs };
+    });
+    const writes: Promise<unknown>[] = [];
+    // The candidate savepoint lands before the first candidate write, and
+    // only when a write actually reaches the database: a commit refused
+    // before its first write has no candidate rows to roll back, so its
+    // rejection finalization skips the savepoint round trips.
+    const savepoint = this.#ensurePushSavepoint();
+    if (savepoint !== undefined) writes.push(savepoint);
+    for (const { compiled, rows, blobRefs } of batches) {
+      writes.push(
+        writeRowsOn(
+          this.#serial,
+          compiled,
+          this.#partition,
+          rows,
+          blobRefs,
+        ).catch((error: unknown) => {
+          // Staged tables have no unique index, so a violation is a column
+          // constraint; it names the first staged operation of the table.
+          if (isPostgresConstraintError(error)) {
+            throw new StorageConstraintError(error, rows[0]?.opIndex);
+          }
+          throw error;
+        }),
+      );
+    }
+    return Promise.all(writes);
+  }
+
+  /**
+   * The candidate savepoint, taken before the transaction's first write.
+   * Every candidate write must be undoable by `commitRejectedPushResult`, and
+   * a refused commit that wrote nothing must not pay to create one.
+   */
+  #ensurePushSavepoint(): Promise<unknown> | undefined {
+    if (this.#pushApplySavepoint) return undefined;
+    this.#pushApplySavepoint = true;
+    return this.#serial.query('SAVEPOINT syncular_push_candidate');
   }
 
   getRow(table: string, rowId: string): Promise<StoredRow | undefined> {
@@ -1065,28 +1300,38 @@ class PostgresTransaction implements StorageTransaction {
     );
   }
 
-  async prefetchRows(table: string, rowIds: readonly string[]): Promise<void> {
+  async prefetchRows(
+    targets: readonly {
+      readonly table: string;
+      readonly rowIds: readonly string[];
+    }[],
+  ): Promise<void> {
     this.#assertOpen();
-    const ids = [...new Set(rowIds)].filter(
-      (rowId) => !this.#prefetchedRows.has(`${table}\u0000${rowId}`),
+    const tables: CompiledTable[] = [];
+    const specs: { tbl: string; ids: string[] }[] = [];
+    for (const target of targets) {
+      const ids = [...new Set(target.rowIds)].filter(
+        (rowId) => !this.#prefetchedRows.has(`${target.table}\u0000${rowId}`),
+      );
+      if (ids.length === 0) continue;
+      tables.push(this.#resolveTable(target.table));
+      specs.push({ tbl: target.table, ids });
+    }
+    if (specs.length === 0) return;
+    const { rows } = await this.#client.query<PrefetchRow>(
+      prefetchRowsBatchSql(tables),
+      [this.#partition, JSON.stringify(specs)],
     );
-    if (ids.length === 0) return;
-    const { rows } = await this.#client.query<
-      Omit<RowRecord, 'row_id'> & {
-        lookup_id: string;
-        row_id: string | null;
-        tombstone_seq: unknown;
-      }
-    >(prefetchRowsSql(this.#resolveTable(table)), [
-      this.#partition,
-      JSON.stringify(ids),
-      table,
-    ]);
-    for (const record of rows) {
-      const key = `${table}\u0000${record.lookup_id}`;
+    this.#recordPrefetched(rows);
+  }
+
+  /** Answer the following `getRow`/`getTombstoneSeq` calls from a read snapshot. */
+  #recordPrefetched(records: readonly PrefetchRow[]): void {
+    for (const record of records) {
+      const key = `${record.tbl}\u0000${record.lookup_id}`;
       this.#prefetchedRows.set(
         key,
-        record.row_id === null
+        record.row_id === null || record.row_id === undefined
           ? null
           : toStoredRow({ ...record, row_id: record.row_id }),
       );
@@ -1117,25 +1362,10 @@ class PostgresTransaction implements StorageTransaction {
   async clearTombstone(table: string, rowId: string): Promise<void> {
     this.#assertOpen();
     this.#prefetchedTombstones.delete(`${table}\u0000${rowId}`);
+    await this.#ensurePushSavepoint();
     await this.#client.query(
       'DELETE FROM sync_tombstones WHERE partition=$1 AND tbl=$2 AND row_id=$3',
       [this.#partition, table, rowId],
-    );
-  }
-
-  getPushResult(
-    clientId: string,
-    clientCommitId: string,
-  ): Promise<StoredPushResult | undefined> {
-    this.#assertOpen();
-    // Runs on this transaction's pinned client: the push layer's duplicate
-    // re-check happens while the partition lock is held, and a pool-level
-    // read there would wait for a second connection.
-    return getPushResultOn(
-      this.#client,
-      this.#partition,
-      clientId,
-      clientCommitId,
     );
   }
 
@@ -1185,24 +1415,70 @@ class PostgresTransaction implements StorageTransaction {
     );
   }
 
-  queryAuthoritative(
+  async queryAuthoritative(
     query: AuthoritativeQueryRequest,
   ): Promise<AuthoritativeQueryResult> {
     this.#assertOpen();
     // Runs on this transaction's pinned client, so the read observes every
     // staged row and never waits for a second pool connection.
-    return queryAuthoritativeOn(
-      this.#client,
-      this.#partition,
-      this.#prepareQuery(query),
+    const prepared = this.#prepareQuery(query);
+    const result = await this.#client.query<Readonly<Record<string, unknown>>>(
+      postgresPlaceholders(prepared.sql),
+      prepared.params,
     );
+    // The partition lock freezes `max_commit_seq` for the whole transaction,
+    // so one read answers every registered query in it.
+    if (this.#cursorSeq === undefined) {
+      const cursor = await this.#client.query<{ max_commit_seq: unknown }>(
+        'SELECT max_commit_seq FROM sync_partitions WHERE partition=$1',
+        [this.#partition],
+      );
+      this.#cursorSeq =
+        cursor.rows[0] === undefined
+          ? 0
+          : asNumber(cursor.rows[0].max_commit_seq);
+    }
+    return { rows: result.rows, maxCommitSeq: this.#cursorSeq };
   }
 
-  async lockPartitionForPush(): Promise<void> {
+  async preparePushApply(
+    clientId: string,
+    clientCommitId: string,
+    runningSchemaVersion: number,
+    targets: readonly {
+      readonly table: string;
+      readonly rowIds: readonly string[];
+    }[] = [],
+  ): Promise<PreparedPushApply> {
     this.#assertOpen();
+    // The lock is its own statement: a READ COMMITTED statement's snapshot is
+    // fixed at its start, so the admission read must run *after* a duplicate's
+    // commit has released the partition lock to observe it. Folding the lock
+    // and the read into one statement would miss a duplicate that committed
+    // while this transaction waited.
     await lockPartitionOn(this.#client, this.#partition);
-    await this.#client.query('SAVEPOINT syncular_push_candidate');
-    this.#pushApplySavepoint = true;
+    const tables: CompiledTable[] = [];
+    const specs: { tbl: string; ids: string[] }[] = [];
+    for (const target of targets) {
+      const ids = [...new Set(target.rowIds)].filter(
+        (rowId) => !this.#prefetchedRows.has(`${target.table}\u0000${rowId}`),
+      );
+      if (ids.length === 0) continue;
+      tables.push(this.#resolveTable(target.table));
+      specs.push({ tbl: target.table, ids });
+    }
+    // One statement: the serve gate, the idempotency record, and the commit's
+    // read-ahead (when the caller already knows its targets).
+    const admission = await readAdmissionOn(
+      this.#client,
+      this.#partition,
+      clientId,
+      clientCommitId,
+      runningSchemaVersion,
+      specs.length === 0 ? undefined : { tables, specs },
+    );
+    this.#recordPrefetched(admission.prefetched);
+    return { gate: admission.gate, persisted: admission.persisted };
   }
 
   async advanceCheckpoint(
@@ -1213,6 +1489,7 @@ class PostgresTransaction implements StorageTransaction {
     nowMs: number,
   ): Promise<boolean> {
     this.#assertOpen();
+    await this.#ensurePushSavepoint();
     // `RETURNING`: the affected-row check must not depend on a driver's
     // `rowCount` for a statement with no result rows. Bun.sql's canonical
     // adapter derives `rowCount` from the returned rows, so a bare UPDATE
@@ -1238,17 +1515,59 @@ class PostgresTransaction implements StorageTransaction {
     clientId: string,
     clientCommitId: string,
     result: StoredPushResult,
-  ): Promise<void> {
+  ): Promise<StoredPushResult> {
     this.#assertOpen();
-    if (!this.#pushApplySavepoint) {
-      throw new Error('push rejection requires its apply savepoint');
-    }
+    // Candidate rows that never reached the database are discarded with the
+    // staging map; a savepoint exists only when one did.
     this.#staged.clear();
-    await this.#client.query('ROLLBACK TO SAVEPOINT syncular_push_candidate');
-    await this.#client.query('RELEASE SAVEPOINT syncular_push_candidate');
-    this.#pushApplySavepoint = false;
-    await this.putPushResult(clientId, clientCommitId, result);
+    this.#stagedBlobRefs.clear();
+    if (this.#pushApplySavepoint) {
+      await this.#client.query('ROLLBACK TO SAVEPOINT syncular_push_candidate');
+      await this.#client.query('RELEASE SAVEPOINT syncular_push_candidate');
+      this.#pushApplySavepoint = false;
+    }
+    const canonical = await this.#insertPushResult(
+      clientId,
+      clientCommitId,
+      result,
+    );
     await this.commit();
+    return canonical;
+  }
+
+  /** Insert the §2.3 outcome and return the canonical persisted value. */
+  async #insertPushResult(
+    clientId: string,
+    clientCommitId: string,
+    result: StoredPushResult,
+  ): Promise<StoredPushResult> {
+    const { rows } = await this.#client.query<{ result: unknown }>(
+      `INSERT INTO sync_push_results(partition, client_id, client_commit_id, result)
+       VALUES ($1,$2,$3,$4)
+       ON CONFLICT (partition, client_id, client_commit_id) DO NOTHING
+       RETURNING result`,
+      [
+        this.#partition,
+        clientId,
+        clientCommitId,
+        JSON.stringify(serializePushResult(result)),
+      ],
+    );
+    if (rows[0] !== undefined) {
+      return toPersistedPushResult(rows[0].result) ?? result;
+    }
+    // `ON CONFLICT DO NOTHING` means a previously committed outcome won; read
+    // it rather than claiming this caller's candidate.
+    const existing = await getPushResultOn(
+      this.#client,
+      this.#partition,
+      clientId,
+      clientCommitId,
+    );
+    if (existing === undefined) {
+      throw new Error('push result insert did not persist an outcome');
+    }
+    return existing;
   }
 
   async upsertRow(
@@ -1276,10 +1595,21 @@ class PostgresTransaction implements StorageTransaction {
       });
       return;
     }
+    const refs = this.#stagedBlobRefs.get(table);
+    const blobIds = refs?.get(row.rowId);
+    if (blobIds !== undefined && refs !== undefined) {
+      refs.delete(row.rowId);
+      if (refs.size === 0) this.#stagedBlobRefs.delete(table);
+    }
+    await this.#ensurePushSavepoint();
     try {
-      await writeRowsOn(this.#client, compiled, this.#partition, [
-        { row, values },
-      ]);
+      await writeRowsOn(
+        this.#client,
+        compiled,
+        this.#partition,
+        [{ row, values }],
+        blobIds === undefined ? [] : [{ rowId: row.rowId, blobIds }],
+      );
     } catch (error) {
       if (isPostgresConstraintError(error)) {
         throw new StorageConstraintError(error, context?.opIndex);
@@ -1291,6 +1621,10 @@ class PostgresTransaction implements StorageTransaction {
   async deleteRow(table: string, rowId: string): Promise<void> {
     this.#assertOpen();
     this.#prefetchedRows.delete(`${table}\u0000${rowId}`);
+    const refs = this.#stagedBlobRefs.get(table);
+    refs?.delete(rowId);
+    if (refs?.size === 0) this.#stagedBlobRefs.delete(table);
+    await this.#ensurePushSavepoint();
     // One statement: the row, its scope-index entries, and (§5.9.4: a
     // deleted row references no blobs) its blob references.
     await this.#client.query(
@@ -1303,125 +1637,156 @@ class PostgresTransaction implements StorageTransaction {
     );
   }
 
-  async setBlobRefs(
+  setBlobRefs(
     table: string,
     rowId: string,
     blobIds: readonly string[],
   ): Promise<void> {
     this.#assertOpen();
-    // Replace the row's reference set atomically inside the commit tx (§5.9.4).
-    await this.#client.query(
-      'DELETE FROM sync_blob_refs WHERE partition=$1 AND tbl=$2 AND row_id=$3',
-      [this.#partition, table, rowId],
-    );
-    for (const blobId of blobIds) {
-      await this.#client.query(
-        `INSERT INTO sync_blob_refs(partition, tbl, row_id, blob_id)
-         VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`,
-        [this.#partition, table, rowId, blobId],
-      );
+    // Staged with the row: the reference set is replaced in the same
+    // statement that writes the row (§5.9.4), inside the commit tx.
+    let rows = this.#stagedBlobRefs.get(table);
+    if (rows === undefined) {
+      rows = new Map();
+      this.#stagedBlobRefs.set(table, rows);
     }
+    rows.set(rowId, blobIds);
+    return Promise.resolve();
   }
 
   async appendCommit(commit: NewCommit): Promise<number> {
     this.#assertOpen();
     // The commit writes its delete tombstones below.
     this.#prefetchedTombstones.clear();
+    // The append advances the partition cursor; a registered query that runs
+    // after it must read the new value.
+    this.#cursorSeq = undefined;
     const q = this.#client;
     const p = this.#partition;
     // Allocate the next dense commitSeq under a per-partition row lock: the
     // UPDATE … RETURNING serializes concurrent pushes to this partition and
     // never leaves a gap on rollback (see the file header).
-    const { rows } = await q.query<{ commit_seq: unknown }>(
-      `WITH allocated AS (
-         INSERT INTO sync_partitions(partition, max_commit_seq) VALUES ($1, 1)
+    const allocate = `INSERT INTO sync_partitions(partition, max_commit_seq) VALUES ($1, 1)
          ON CONFLICT (partition) DO UPDATE
            SET max_commit_seq = sync_partitions.max_commit_seq + 1
-         RETURNING max_commit_seq
-       )
-       INSERT INTO sync_commits(partition, commit_seq, client_id, client_commit_id, actor_id, created_at_ms, writer_version)
-       SELECT $1, max_commit_seq, $2, $3, $4, $5, $6 FROM allocated
-       RETURNING commit_seq`,
-      [
-        p,
-        commit.clientId,
-        commit.clientCommitId,
-        commit.actorId,
-        commit.createdAtMs,
-        this.#writerVersion,
-      ],
+         RETURNING max_commit_seq`;
+    const commitRow = `INSERT INTO sync_commits(partition, commit_seq, client_id, client_commit_id, actor_id, created_at_ms, writer_version)
+         SELECT $1, allocated.max_commit_seq, $2, $3, $4, $5, $6 FROM allocated
+         RETURNING commit_seq`;
+    const head = [
+      p,
+      commit.clientId,
+      commit.clientCommitId,
+      commit.actorId,
+      commit.createdAtMs,
+      this.#writerVersion,
+    ];
+    if (commit.changes.length === 0) {
+      const { rows } = await q.query<{ commit_seq: unknown }>(
+        `WITH allocated AS (${allocate}) ${commitRow}`,
+        head,
+      );
+      return asNumber(rows[0]?.commit_seq);
+    }
+    // §2.2: a delete whose commit follows it with an upsert is a scope move.
+    // The row is live, so the tombstone insert below skips it.
+    const moved = JSON.stringify(
+      [...rowsLiveAfterDelete(commit.changes)].map((key) => {
+        const at = key.indexOf('\u0000');
+        return { tbl: key.slice(0, at), row_id: key.slice(at + 1) };
+      }),
     );
-    const commitSeq = asNumber(rows[0]?.commit_seq);
-    if (commit.changes.length === 0) return commitSeq;
     // One writable-CTE chain per chunk of changes: the changes, their
     // inverted scope entries, and the §5 delete tombstones. A statement binds
     // at most a 16-bit count of parameters, so a chunk carries
-    // PG_CHANGES_PER_STATEMENT changes; every chunk runs in the
-    // commit's transaction under the same commit_seq with its global idx.
-    // Serialized scopes bind as text before parsing JSONB; drivers that
-    // encode JSONB parameters would otherwise store the string as a scalar.
-    // A commit can delete one row twice, so a chunk's tombstone insert keeps
-    // one row per key and a later chunk updates it to the same commit_seq.
-    for (
-      let first = 0;
-      first < commit.changes.length;
-      first += PG_CHANGES_PER_STATEMENT
-    ) {
-      const params: unknown[] = [p, commitSeq];
-      const values = commit.changes
-        .slice(first, first + PG_CHANGES_PER_STATEMENT)
-        .map((change, offset) => {
-          const base = params.length;
-          params.push(
-            first + offset,
-            change.table,
-            change.rowId,
-            change.op === 'upsert' ? 1 : 2,
-            change.rowVersion ?? null,
-            JSON.stringify(change.scopes),
-            change.payload ?? null,
-          );
-          return `($1,$2::bigint,$${base + 1}::int,$${base + 2},$${base + 3},$${base + 4}::smallint,$${base + 5}::bigint,$${base + 6}::text::jsonb,$${base + 7}::bytea)`;
-        });
-      await q.query(
-        `WITH inserted AS (
-           INSERT INTO sync_changes(partition, commit_seq, idx, tbl, row_id, op, row_version, scopes, payload)
-           VALUES ${values.join(',')}
-           RETURNING partition, tbl, row_id, op, commit_seq, scopes
-         ),
-         scoped AS (
+    // PG_CHANGES_PER_STATEMENT changes. The first chunk folds the allocation,
+    // the commit row, and the change-log write into one statement; later
+    // chunks run under the same commitSeq with their global idx. Serialized
+    // scopes bind as text before parsing JSONB; drivers that encode JSONB
+    // parameters would otherwise store the string as a scalar. A commit can
+    // delete one row twice, so a chunk's tombstone insert keeps one row per
+    // key and a later chunk updates it to the same commit_seq.
+    const valuesOf = (
+      params: unknown[],
+      slice: readonly NewChange[],
+      firstIdx: number,
+    ): string[] =>
+      slice.map((change, offset) => {
+        const base = params.length;
+        params.push(
+          firstIdx + offset,
+          change.table,
+          change.rowId,
+          change.op === 'upsert' ? 1 : 2,
+          change.rowVersion ?? null,
+          JSON.stringify(change.scopes),
+          change.payload ?? null,
+        );
+        return `($${base + 1}::int,$${base + 2}::text,$${base + 3}::text,$${base + 4}::smallint,$${base + 5}::bigint,$${base + 6}::text::jsonb,$${base + 7}::bytea)`;
+      });
+    const scopesCte = `scoped AS (
            INSERT INTO sync_change_scopes(partition, tbl, var, value, commit_seq)
            SELECT inserted.partition, inserted.tbl, scope.key, scope.value, inserted.commit_seq
            FROM inserted CROSS JOIN LATERAL jsonb_each_text(inserted.scopes) AS scope
            ON CONFLICT DO NOTHING
-         )
-         INSERT INTO sync_tombstones(partition, tbl, row_id, commit_seq)
+         )`;
+    const tombstones = (
+      movedParam: string,
+    ) => `INSERT INTO sync_tombstones(partition, tbl, row_id, commit_seq)
          SELECT DISTINCT ON (tbl, row_id) partition, tbl, row_id, commit_seq
-           FROM inserted WHERE op = 2
+           FROM inserted
+          WHERE op = 2
+            AND NOT EXISTS (
+              SELECT 1
+                FROM jsonb_to_recordset(${movedParam}::text::jsonb) AS moved(tbl text, row_id text)
+               WHERE moved.tbl = inserted.tbl AND moved.row_id = inserted.row_id)
          ON CONFLICT (partition, tbl, row_id)
-         DO UPDATE SET commit_seq = excluded.commit_seq`,
-        params,
+         DO UPDATE SET commit_seq = excluded.commit_seq`;
+    const firstSlice = commit.changes.slice(0, PG_CHANGES_PER_STATEMENT);
+    const params = [...head];
+    const values = valuesOf(params, firstSlice, 0);
+    params.push(moved);
+    const movedParam = `$${params.length}`;
+    const { rows } = await q.query<{ max_commit_seq: unknown }>(
+      `WITH allocated AS (${allocate}),
+       allocated_commit AS (${commitRow}),
+       inserted AS (
+         INSERT INTO sync_changes(partition, commit_seq, idx, tbl, row_id, op, row_version, scopes, payload)
+         SELECT $1, allocated.max_commit_seq, v.idx, v.tbl, v.row_id, v.op, v.row_version, v.scopes, v.payload
+           FROM allocated
+           CROSS JOIN (VALUES ${values.join(',')}) AS v(idx, tbl, row_id, op, row_version, scopes, payload)
+         RETURNING partition, tbl, row_id, op, commit_seq, scopes
+       ),
+       ${scopesCte},
+       tombstoned AS (${tombstones(movedParam)})
+       SELECT max_commit_seq FROM allocated`,
+      params,
+    );
+    const commitSeq = asNumber(rows[0]?.max_commit_seq);
+    for (
+      let first = PG_CHANGES_PER_STATEMENT;
+      first < commit.changes.length;
+      first += PG_CHANGES_PER_STATEMENT
+    ) {
+      const chunkParams: unknown[] = [p, commitSeq];
+      const chunkValues = valuesOf(
+        chunkParams,
+        commit.changes.slice(first, first + PG_CHANGES_PER_STATEMENT),
+        first,
       );
-    }
-    // §2.2: a delete whose commit follows it with an upsert is a scope move.
-    // The row is live, so no tombstone may remain for it.
-    const liveAfterDelete = rowsLiveAfterDelete(commit.changes);
-    if (liveAfterDelete.size > 0) {
+      chunkParams.push(moved);
+      const chunkMovedParam = `$${chunkParams.length}`;
       await q.query(
-        `DELETE FROM sync_tombstones existing
-          USING jsonb_to_recordset($2::text::jsonb) AS moved(tbl text, row_id text)
-          WHERE existing.partition=$1
-            AND existing.tbl=moved.tbl
-            AND existing.row_id=moved.row_id`,
-        [
-          p,
-          JSON.stringify(
-            [...liveAfterDelete].map((key) => {
-              const at = key.indexOf('\u0000');
-              return { tbl: key.slice(0, at), row_id: key.slice(at + 1) };
-            }),
-          ),
-        ],
+        `WITH inserted AS (
+           INSERT INTO sync_changes(partition, commit_seq, idx, tbl, row_id, op, row_version, scopes, payload)
+           SELECT $1, $2, v.idx, v.tbl, v.row_id, v.op, v.row_version, v.scopes, v.payload
+             FROM (VALUES ${chunkValues.join(',')}) AS v(idx, tbl, row_id, op, row_version, scopes, payload)
+           RETURNING partition, tbl, row_id, op, commit_seq, scopes
+         ),
+         ${scopesCte},
+         tombstoned AS (${tombstones(chunkMovedParam)})
+         SELECT 1`,
+        chunkParams,
       );
     }
     return commitSeq;
@@ -2270,7 +2635,7 @@ FOR EACH ROW EXECUTE FUNCTION syncular_writer_fence()`,
   ): Promise<'activated' | 'stale' | 'unverifiable'> {
     return this.#exec.transaction(async (client) => {
       // The same `SELECT … FOR UPDATE` partition row lock that
-      // `lockPartitionForPush` takes; a bare `BEGIN` would race a push.
+      // `preparePushApply` takes; a bare `BEGIN` would race a push.
       await lockPartitionOn(client, partition);
       const fence = await client.query<{ required_writer_version: unknown }>(
         'SELECT required_writer_version FROM sync_writer_fence WHERE partition=$1',

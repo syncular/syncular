@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-10-28',
+    title: 'A push commit costs statements per table, not per row',
+    body: 'A Postgres push commit now spends 7 statements on a 7-operation commit over two tables, down from 11, and 3 on a refused commit, down from 8. One statement takes the partition lock, and the next reads the serve gate, the idempotency record, and the targeted rows together. Upserts, scope entries, and blob references write in one statement per table, sequence allocation shares its statement with the commit row and change log, and a commit that writes nothing skips its savepoint. The transaction boundary, the per-partition lock, and the atomic rejection are unchanged.',
+    links: [
+      {
+        href: '/server-storage-reference/#push-path',
+        label: 'Push path',
+      },
+    ],
+  },
+  {
+    date: '2026-10-28',
     title: 'A command moves a row between scopes',
     body: "A registered command can now return a `rescope` mutation with the complete row and its new scope values. The server authorizes the old and the new scopes, emits the delete under the old scopes and the upsert under the new ones in one commit, keeps the row's `server_version`, and writes no tombstone. The same row can move repeatedly and move back without a `baseVersion = 0` insert. Readers that hold the old and the new scope in one or two subscriptions keep the row in both clients. Only scope columns may differ from the stored row.",
     links: [

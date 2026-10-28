@@ -1,8 +1,51 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.43.0** (`v0.43.0`). All artifacts use Apache-2.0, except
+current release is **0.44.0** (`v0.44.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.44.0 release notes
+
+0.44.0 cuts the Postgres push commit to a handful of round trips. SSP2, the
+storage layout, the wire version, and the conformance catalog are unchanged.
+
+A 7-operation commit over two tables now costs 7 statements inside its
+transaction, down from 11; a refused commit costs 3, down from 8. On a remote
+Postgres behind a network hop the statement count is the commit's latency, so
+a host that measured ~45 storage statements per command sees the commit's
+share drop to single digits.
+
+The statement set changed in five ways. The partition lock is its own
+statement, and the statement after it reads the serve gate, the idempotency
+record, and the commit's targeted rows in one pass, with one UNION ALL branch
+per table. Upserts, scope-index entries, and blob references write in one
+statement per table instead of two or more per row. Sequence allocation, the
+commit row, the change rows, their scope entries, and their tombstones share
+one statement; a commit that a later upsert revives in the same statement
+leaves no tombstone, so the separate delete pass is gone. The candidate
+savepoint lands before the first candidate write, so a commit refused before
+that write skips it and its rejection insert returns the canonical outcome
+instead of reading it back. Registered queries inside the push transaction
+read the partition cursor once.
+
+`StorageTransaction` replaces the optional `lockPartitionForPush` (and its
+deprecated `lockPartitionForCommitValidation` bridge) and the optional
+transaction-scoped `getPushResult` with one required
+`preparePushApply(clientId, clientCommitId, runningSchemaVersion, targets?)`
+that returns the serve gate and the persisted outcome. `commitRejectedPushResult`
+returns the canonical `StoredPushResult` it persisted, and `prefetchRows`
+takes every table's row ids in one call. SQLite and D1 keep their local
+per-row paths and implement the same method. The push layer no longer reads
+idempotency on the pool before opening the transaction.
+
+The server contract suite, the push tests, and a new
+`packages/server/test/push-round-trips.test.ts` count the statements of an
+applied, a refused, and a replayed commit against PGlite.
+
+**Upgrade notes.** A custom storage adapter implements `preparePushApply` and
+returns the canonical rejection outcome from `commitRejectedPushResult`; the
+`prefetchRows` signature changed. No consumer code changes and no migration.
+Upgrade all 12 npm packages and 6 crates together.
 
 ## 0.43.0 release notes
 

@@ -600,16 +600,16 @@ describe('whole-commit validation (§6.8)', () => {
     });
     await seed.commit();
 
-    // The optimistic lookup misses; the serialized re-check then runs on the
-    // transaction's own connection and finds the persisted result.
-    let optimisticReads = 0;
-    let serializedRechecks = 0;
+    // The admission read takes the partition lock and the persisted outcome
+    // in one statement; a duplicate never reaches a validator.
+    let admissions = 0;
+    let poolReads = 0;
     const storage = new Proxy(base.storage, {
       get(target, property) {
         if (property === 'getPushResult') {
-          return async () => {
-            optimisticReads += 1;
-            return undefined;
+          return async (...args: [string, string, string]) => {
+            poolReads += 1;
+            return target.getPushResult(...args);
           };
         }
         if (property === 'begin') {
@@ -617,10 +617,10 @@ describe('whole-commit validation (§6.8)', () => {
             const tx = await target.begin(partition);
             return new Proxy(tx, {
               get(txTarget, txProperty) {
-                if (txProperty === 'getPushResult') {
-                  return async (...args: [string, string]) => {
-                    serializedRechecks += 1;
-                    return txTarget.getPushResult?.(...args);
+                if (txProperty === 'preparePushApply') {
+                  return async (...args: [string, string, number]) => {
+                    admissions += 1;
+                    return txTarget.preparePushApply(...args);
                   };
                 }
                 const value = Reflect.get(txTarget, txProperty, txTarget);
@@ -643,8 +643,8 @@ describe('whole-commit validation (§6.8)', () => {
     ]);
 
     expect(pushResults(message)[0]?.status).toBe('cached');
-    expect(optimisticReads).toBe(1);
-    expect(serializedRechecks).toBe(1);
+    expect(admissions).toBe(1);
+    expect(poolReads).toBe(0);
     expect(validatorCalls).toBe(0);
     expect(
       await base.storage.getRow('part-1', 'tasks', 'must-not-apply'),

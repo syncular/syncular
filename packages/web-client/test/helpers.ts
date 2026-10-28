@@ -124,7 +124,30 @@ function wrapStorage(
       storage.rotatePartitionLogEpoch(p, epoch, at),
     listPartitionRegistry: () => storage.listPartitionRegistry(),
     listPartitions: () => storage.listPartitions(),
-    begin: (p) => storage.begin(p),
+    begin: async (p) => {
+      const tx = await storage.begin(p);
+      if (!faults.cacheMissOnce) return tx;
+      // The admission read is where the push path observes the persisted
+      // idempotency record, so that is where the fault injects.
+      return new Proxy(tx, {
+        get(target, property) {
+          if (property === 'preparePushApply') {
+            return async (...args: [string, string, number]) => {
+              if (faults.cacheMissOnce) {
+                faults.cacheMissOnce = false;
+                throw new SyncError(
+                  'sync.idempotency_cache_miss',
+                  'simulated unreadable idempotency record',
+                );
+              }
+              return target.preparePushApply(...args);
+            };
+          }
+          const value = Reflect.get(target, property, target);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+    },
     getMaxCommitSeq: (p) => storage.getMaxCommitSeq(p),
     getHorizonSeq: (p) => storage.getHorizonSeq(p),
     readCheckpoints: (p) => storage.readCheckpoints(p),
@@ -141,16 +164,7 @@ function wrapStorage(
     pruneCommitsThrough: (p, s) => storage.pruneCommitsThrough(p, s),
     getCommitSeqBefore: (p, t) => storage.getCommitSeqBefore(p, t),
     getRow: (p, t, r) => storage.getRow(p, t, r),
-    getPushResult: (p, c, id) => {
-      if (faults.cacheMissOnce) {
-        faults.cacheMissOnce = false;
-        throw new SyncError(
-          'sync.idempotency_cache_miss',
-          'simulated unreadable idempotency record',
-        );
-      }
-      return storage.getPushResult(p, c, id);
-    },
+    getPushResult: (p, c, id) => storage.getPushResult(p, c, id),
     readCommitWindow: (p, q) => storage.readCommitWindow(p, q),
     latestScopedChangeSeq: (p, q) => storage.latestScopedChangeSeq(p, q),
     scanRows: (p, q) => storage.scanRows(p, q),
