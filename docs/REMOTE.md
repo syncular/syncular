@@ -115,9 +115,16 @@ idempotency recheck. It may call `getRow(table, rowId)`, which hides rows
 outside the actor's scopes, and `queryAuthoritative(request)`, the
 transaction-bound registered query of SPEC.md §6.7, which is bound to the
 partition and not to the actor's scopes. It returns one or more full-row
-upserts or deletes. The returned operations then use the ordinary
+upserts, deletes, or rescopes. The returned operations then use the ordinary
 scope authorization, row validators, whole-commit validator, relational
 constraints, commit log, idempotency record, and realtime notifier.
+
+A `rescope` mutation takes the complete row with its new scope values and
+moves one stored row between scopes (SPEC.md §2.2). The server emits one
+commit containing the delete under the old scopes and the upsert under the
+new ones, keeps the row's `server_version`, and leaves no tombstone behind
+the live row, so the row can move again. Only scope columns may differ from
+the stored row; the server authorizes both the old and the new values.
 
 An applied retry returns `cached` without running the callback again. A normal
 push rejection is stored and replays as `rejected`. A callback exception is a

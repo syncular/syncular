@@ -813,7 +813,9 @@ A commit contains one or more **changes**:
 | `scopes` | The stored scope values extracted from the row (§3.1) |
 
 Every synced row carries a **`server_version`** (`i64`, ≥ 1): starts at 1
-on insert, increments by exactly 1 on every applied upsert. It is the
+on insert, increments by exactly 1 on every applied upsert. A §2.2 scope
+move keeps the stored `server_version` unchanged: it re-homes the row, it
+does not write a new row version. `server_version` is the
 optimistic-concurrency token for `baseVersion` conflict detection (§6.2).
 
 Every stored column carries a **`column_version`**: the row's
@@ -829,15 +831,24 @@ row's current `server_version`.
 
 Every applied delete — including a §6.11 cascaded delete — records a
 **tombstone** `(partition, tbl, row_id, commit_seq)` in a server-side
-tombstone table. An upsert consults the table only when its stored row is
-absent (§6.2 delete precedence); pruning removes tombstones with
-`commit_seq ≤ horizonSeq` in the same pass as the commit log (§4.6). An
-insert over an absent row clears the row's tombstone.
+tombstone table. The delete half of a §2.2 scope move records no tombstone:
+the same commit keeps the row live. An upsert consults the table only when
+its stored row is absent (§6.2 delete precedence); pruning removes
+tombstones with `commit_seq ≤ horizonSeq` in the same pass as the commit
+log (§4.6). An insert over an absent row clears the row's tombstone.
 
 **Scope migration** (a row's scope column changes value): the server MUST
 emit, in the same commit, a `delete` change tagged with the old scope
 values and an `upsert` tagged with the new ones, so subscribers of the
 old scope remove the row and subscribers of the new scope receive it.
+A registered command emits a move with the `rescope` mutation (§3.4,
+[REMOTE.md](./REMOTE.md) §3). The server rewrites the stored row under the
+new scope values in place, emits the change pair, and keeps the row's
+`server_version`. Only scope columns may differ from the stored row; a
+different non-scope value is `sync.invalid_request`. Both the old and the
+new scope values MUST pass §3.4 authorization. The upsert half carries the
+unchanged `server_version`. The delete half leaves no tombstone, so the
+same row can move again with no `baseVersion = 0` insert.
 
 The delete and the upsert are one logical change. A client that receives
 both for the same `(commitSeq, table, rowId)` MUST apply the row with the
@@ -1320,8 +1331,11 @@ On every push operation:
    (§6.4). A present scope column equal to the stored value applies as a
    no-op, and an absent scope column leaves it unchanged (§6.2). Clients
    cannot re-home a row across scopes by push; scope migration is
-   server-emitted only (§2.2). Scope columns are written only on insert,
-   where step 2 authorized exactly those values.
+   server-emitted only (§2.2). A registered command's `rescope` mutation is
+   that server-emitted path: it authorizes both the stored and the new
+   scope values, changes only scope columns, and emits the delete/upsert
+   pair. Scope columns are written only on insert and on an explicit
+   `rescope`, where authorization covered exactly those values.
 
 Rules 2 and 5 are load-bearing together: authorizing the pushed payload
 instead of the stored row, or letting an update change a scope column,
@@ -3327,7 +3341,9 @@ insert rule applies (§4.6).
   **existing** row authorizes against the stored row per §3.4; denial
   is `sync.forbidden` — which necessarily reveals that the row exists,
   the accepted cost of fail-loud authorization. Every applied delete,
-  including a §6.11 cascaded delete, records a tombstone (§2.2).
+  including a §6.11 cascaded delete, records a tombstone (§2.2), except
+  the delete half of a §2.2 scope move: the same commit follows it with an
+  upsert for the row, so the row is live and no tombstone remains.
 
 ### 6.3 `PUSH_RESULT` frame
 

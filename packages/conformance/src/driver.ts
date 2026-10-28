@@ -388,6 +388,19 @@ export interface ServerInstance {
   setAllowedScopes(actorId: string, allowed: DriverScopeMap): Promise<void>;
 
   /**
+   * `§2.2`: move one stored row to new scope values through a registered
+   * command's `rescope` mutation. Present when the server implements the
+   * server-emitted scope move.
+   */
+  rescope?(
+    actorId: string,
+    table: string,
+    values: DriverRow,
+  ): Promise<
+    { readonly ok: true } | { readonly ok: false; readonly error: DriverError }
+  >;
+
+  /**
    * `validators`: install §6.7 per-table write-validation hooks for the
    * server under test (replacing any previously installed). Present only
    * when the server driver advertises the `validators` capability.

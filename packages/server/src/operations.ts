@@ -7,7 +7,6 @@ import {
   decodeRemoteOperationRequest,
   encodeRemoteOperationResponse,
   encodeSparseRow,
-  type PushOperation,
   type RemoteOperationRequest,
   type RemoteOperationResponse,
   type RowValue,
@@ -20,7 +19,7 @@ import {
   touchAuthenticatedPartition,
 } from './context';
 import { reportError, SyncError, syncError } from './errors';
-import { processPushOperationsWithTrace } from './push';
+import { processPushOperationsWithTrace, type ApplyOperation } from './push';
 import { compileSchema } from './schema';
 import {
   authorizeWrite,
@@ -106,6 +105,12 @@ export type CommandMutation =
   | {
       readonly table: string;
       readonly op: 'upsert';
+      readonly values: Readonly<Record<string, RowValue>>;
+    }
+  | {
+      readonly table: string;
+      readonly op: 'rescope';
+      /** Full row; only its scope columns may differ from the stored row. */
       readonly values: Readonly<Record<string, RowValue>>;
     }
   | {
@@ -501,7 +506,7 @@ export function remoteCommand<Input = undefined>(
 function commandOperations(
   mutations: readonly CommandMutation[],
   schema: ReturnType<typeof compileSchema>,
-): PushOperation[] {
+): ApplyOperation[] {
   if (mutations.length === 0) {
     throw syncError(
       'operation.invalid_request',
@@ -530,7 +535,7 @@ function commandOperations(
       if (!table.columnIndex.has(name)) {
         throw syncError(
           'operation.invalid_request',
-          'command upsert has an unknown column',
+          'command upsert or rescope has an unknown column',
         );
       }
     }
@@ -538,7 +543,7 @@ function commandOperations(
       if (!supplied.has(column.name)) {
         throw syncError(
           'operation.invalid_request',
-          'command upsert must provide a full row',
+          'command upsert or rescope must provide a full row',
         );
       }
       return mutation.values[column.name] ?? null;
@@ -547,13 +552,13 @@ function commandOperations(
     if (rowId === undefined) {
       throw syncError(
         'operation.invalid_request',
-        'command upsert requires a non-empty primary key',
+        'command upsert or rescope requires a non-empty primary key',
       );
     }
     return {
       table: table.name,
       rowId,
-      op: 'upsert',
+      op: mutation.op,
       payload: encodeSparseRow(table.columns, table.primaryKeyIndex, values),
     };
   });

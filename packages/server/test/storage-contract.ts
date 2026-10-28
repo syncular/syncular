@@ -186,6 +186,83 @@ export function runStorageContract(
       expect(await storage.getMaxCommitSeq(PARTITION)).toBe(3);
     });
 
+    test('a delete followed by an upsert in one commit leaves no tombstone', async () => {
+      const storage = await make();
+      const seed = await storage.begin(PARTITION);
+      await seed.upsertRow('tasks', taskRow('r1', 'p1'));
+      await seed.appendCommit({
+        clientId: 'c1',
+        clientCommitId: 'seed',
+        actorId: 'a1',
+        createdAtMs: NOW,
+        changes: [
+          {
+            table: 'tasks',
+            rowId: 'r1',
+            op: 'upsert',
+            rowVersion: 1,
+            scopes: { project_id: 'p1' },
+            payload: taskRow('r1', 'p1').payload,
+          },
+        ],
+      });
+      await seed.commit();
+
+      const move = await storage.begin(PARTITION);
+      await move.deleteRow('tasks', 'r1');
+      await move.upsertRow('tasks', taskRow('r1', 'p2'));
+      await move.appendCommit({
+        clientId: 'c1',
+        clientCommitId: 'move',
+        actorId: 'a1',
+        createdAtMs: NOW + 1,
+        changes: [
+          {
+            table: 'tasks',
+            rowId: 'r1',
+            op: 'delete',
+            scopes: { project_id: 'p1' },
+          },
+          {
+            table: 'tasks',
+            rowId: 'r1',
+            op: 'upsert',
+            rowVersion: 1,
+            scopes: { project_id: 'p2' },
+            payload: taskRow('r1', 'p2').payload,
+          },
+        ],
+      });
+      await move.commit();
+      const moved = await storage.begin(PARTITION);
+      expect(await moved.getTombstoneSeq('tasks', 'r1')).toBeUndefined();
+      await moved.rollback();
+      expect((await storage.getRow(PARTITION, 'tasks', 'r1'))?.scopes).toEqual({
+        project_id: 'p2',
+      });
+
+      const del = await storage.begin(PARTITION);
+      await del.deleteRow('tasks', 'r1');
+      const seq = await del.appendCommit({
+        clientId: 'c1',
+        clientCommitId: 'delete',
+        actorId: 'a1',
+        createdAtMs: NOW + 2,
+        changes: [
+          {
+            table: 'tasks',
+            rowId: 'r1',
+            op: 'delete',
+            scopes: { project_id: 'p2' },
+          },
+        ],
+      });
+      await del.commit();
+      const after = await storage.begin(PARTITION);
+      expect(await after.getTombstoneSeq('tasks', 'r1')).toBe(seq);
+      await after.rollback();
+    });
+
     test('commitSeq is per-partition (independent counters)', async () => {
       const storage = await make();
       const txA = await storage.begin('part-a');

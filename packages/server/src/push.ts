@@ -108,11 +108,27 @@ type TerminatingOutcome = {
 type OperationOutcome =
   | {
       readonly kind: 'applied';
-      readonly change: NewChange | undefined;
-      readonly operation: ValidateCommitOperation;
+      readonly changes: readonly NewChange[];
+      readonly operations: readonly ValidateCommitOperation[];
       readonly staged: StagedWrite;
     }
   | TerminatingOutcome;
+
+/**
+ * A server-authoritative scope move (§2.2). Commands emit it through
+ * `CommandMutation`; it is not an SSP2 wire operation, so a client cannot
+ * request one. Apply rewrites the stored row in place under the new scopes
+ * and emits the delete/upsert change pair in one commit.
+ */
+export interface RescopeOperation {
+  readonly table: string;
+  readonly rowId: string;
+  readonly op: 'rescope';
+  /** Full-row payload (the row's values under the new scopes). */
+  readonly payload: Uint8Array;
+}
+
+export type ApplyOperation = PushOperation | RescopeOperation;
 
 function errorRecord(
   opIndex: number,
@@ -296,7 +312,7 @@ async function applyOperation(
   schema: CompiledSchema,
   wireSchema: CompiledSchema,
   resolved: ResolvedScopes,
-  op: PushOperation,
+  op: ApplyOperation,
   opIndex: number,
   blobCtx: BlobApplyContext,
   crdtMergers: CrdtMergerRegistry | undefined,
@@ -322,20 +338,224 @@ async function applyOperation(
   }
   const stored = await tx.getRow(op.table, op.rowId);
 
-  if (op.op === 'delete') {
+  if (op.op === 'rescope') {
+    // §2.2 explicit scope move. One stored row changes its scope values;
+    // apply rewrites it in place, keeps `server_version`, and emits the
+    // delete under the old scopes plus the upsert under the new ones.
     if (stored === undefined) {
-      // Deleting an absent row is applied (idempotent, §6.2); no change.
-      return {
-        kind: 'applied',
-        change: undefined,
-        operation: {
+      return errorRecord(
+        opIndex,
+        'sync.row_missing',
+        'rescope targets an absent row (§2.2)',
+      );
+    }
+    if (!authorizeWrite(table, stored.scopes, resolved)) {
+      return errorRecord(
+        opIndex,
+        'sync.forbidden',
+        'rescope denied by scope authorization (§3.4)',
+      );
+    }
+    const missing = missingScopeVariable(table, stored.scopes);
+    if (missing !== undefined) {
+      return errorRecord(
+        opIndex,
+        'sync.missing_scopes',
+        `stored row lacks scope variable ${JSON.stringify(missing)} (§3.1)`,
+      );
+    }
+    let sparse: SparseRowValue[];
+    try {
+      sparse = decodeSparseRow(
+        wireTable.columns,
+        wireTable.primaryKeyIndex,
+        op.payload,
+      );
+    } catch (error) {
+      return errorRecord(
+        opIndex,
+        'sync.invalid_request',
+        `rescope payload failed row-codec decode (§1.7): ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    if (
+      sparse.length < table.columns.length ||
+      sparse.some((value) => value === undefined)
+    ) {
+      return errorRecord(
+        opIndex,
+        'sync.invalid_request',
+        'rescope requires a full-row payload (§2.2)',
+      );
+    }
+    const values: RowValue[] = sparse.map((value) => value ?? null);
+    const pkValue = renderScopeValue(values[table.primaryKeyIndex] ?? null);
+    if (pkValue !== op.rowId) {
+      return errorRecord(
+        opIndex,
+        'sync.invalid_request',
+        'payload primary key does not match rowId',
+      );
+    }
+    const storedValues = decodeRow(table.columns, stored.payload);
+    const scopeIndexes = new Set(
+      table.scopePatterns.map((pattern) => pattern.columnIndex),
+    );
+    const sameValue = (left: RowValue, right: RowValue): boolean => {
+      if (left instanceof Uint8Array || right instanceof Uint8Array) {
+        return (
+          left instanceof Uint8Array &&
+          right instanceof Uint8Array &&
+          left.length === right.length &&
+          left.every((byte, index) => byte === right[index])
+        );
+      }
+      return left === right;
+    };
+    for (let index = 0; index < table.columns.length; index++) {
+      if (index === table.primaryKeyIndex || scopeIndexes.has(index)) continue;
+      if (!sameValue(values[index] ?? null, storedValues[index] ?? null)) {
+        return errorRecord(
+          opIndex,
+          'sync.invalid_request',
+          'rescope may change only scope columns (§2.2)',
+        );
+      }
+    }
+    const extracted = storedScopesForRow(table, values);
+    if ('missing' in extracted) {
+      return errorRecord(
+        opIndex,
+        'sync.forbidden',
+        `rescope missing scope column value for ${JSON.stringify(extracted.missing)} (§3.4)`,
+      );
+    }
+    if (!authorizeWrite(table, extracted.scopes, resolved)) {
+      return errorRecord(
+        opIndex,
+        'sync.forbidden',
+        'rescope denied by scope authorization of the new scopes (§3.4)',
+      );
+    }
+    const deleteReject = await runValidator(
+      validators,
+      table,
+      'delete',
+      op.rowId,
+      undefined,
+      storedValues,
+      opIndex,
+      tx,
+      partition,
+      actorId,
+    );
+    if (deleteReject !== undefined) return deleteReject;
+    const upsertReject = await runValidator(
+      validators,
+      table,
+      'upsert',
+      op.rowId,
+      values,
+      storedValues,
+      opIndex,
+      tx,
+      partition,
+      actorId,
+    );
+    if (upsertReject !== undefined) return upsertReject;
+    const blobCheck = await checkAndRecordBlobs(
+      tx,
+      table,
+      op.rowId,
+      values,
+      opIndex,
+      blobCtx,
+    );
+    if (blobCheck !== undefined) return blobCheck;
+    const payload = encodeRow(table.columns, values);
+    // The move clears any tombstone from an earlier incarnation: the row is
+    // live at the end of this commit, so the next move must not hit §5.2.
+    await tx.clearTombstone(op.table, op.rowId);
+    await tx.upsertRow(
+      op.table,
+      {
+        rowId: op.rowId,
+        serverVersion: stored.serverVersion,
+        scopes: extracted.scopes,
+        payload,
+        ...(stored.columnVersions !== undefined
+          ? { columnVersions: stored.columnVersions }
+          : {}),
+      },
+      { opIndex },
+    );
+    const storedRow = toValidateRow(table.columns, storedValues);
+    return {
+      kind: 'applied',
+      changes: [
+        {
+          table: op.table,
+          rowId: op.rowId,
+          op: 'delete',
+          scopes: stored.scopes,
+        },
+        {
+          table: op.table,
+          rowId: op.rowId,
+          op: 'upsert',
+          rowVersion: stored.serverVersion,
+          scopes: extracted.scopes,
+          payload,
+        },
+      ],
+      operations: [
+        {
           opIndex,
           op: 'delete',
           table: table.name,
           rowId: op.rowId,
           row: undefined,
-          stored: undefined,
+          stored: storedRow,
+          storedServerVersion: stored.serverVersion,
         },
+        {
+          opIndex,
+          op: 'upsert',
+          table: table.name,
+          rowId: op.rowId,
+          row: toValidateRow(table.columns, values),
+          stored: storedRow,
+          storedServerVersion: stored.serverVersion,
+          nextServerVersion: stored.serverVersion,
+        },
+      ],
+      staged: {
+        table,
+        op: 'upsert',
+        rowId: op.rowId,
+        opIndex,
+        values,
+        stored,
+      },
+    };
+  }
+
+  if (op.op === 'delete') {
+    if (stored === undefined) {
+      // Deleting an absent row is applied (idempotent, §6.2); no change.
+      return {
+        kind: 'applied',
+        changes: [],
+        operations: [
+          {
+            opIndex,
+            op: 'delete',
+            table: table.name,
+            rowId: op.rowId,
+            row: undefined,
+            stored: undefined,
+          },
+        ],
         staged: {
           table,
           op: 'delete',
@@ -380,21 +600,25 @@ async function applyOperation(
     await tx.deleteRow(op.table, op.rowId);
     return {
       kind: 'applied',
-      change: {
-        table: op.table,
-        rowId: op.rowId,
-        op: 'delete',
-        scopes: stored.scopes,
-      },
-      operation: {
-        opIndex,
-        op: 'delete',
-        table: table.name,
-        rowId: op.rowId,
-        row: undefined,
-        stored: toValidateRow(table.columns, storedValues),
-        storedServerVersion: stored.serverVersion,
-      },
+      changes: [
+        {
+          table: op.table,
+          rowId: op.rowId,
+          op: 'delete',
+          scopes: stored.scopes,
+        },
+      ],
+      operations: [
+        {
+          opIndex,
+          op: 'delete',
+          table: table.name,
+          rowId: op.rowId,
+          row: undefined,
+          stored: toValidateRow(table.columns, storedValues),
+          storedServerVersion: stored.serverVersion,
+        },
+      ],
       staged: { table, op: 'delete', rowId: op.rowId, opIndex, stored },
     };
   }
@@ -586,24 +810,28 @@ async function applyOperation(
     await tx.upsertRow(op.table, newRow, { opIndex });
     return {
       kind: 'applied',
-      change: {
-        table: op.table,
-        rowId: op.rowId,
-        op: 'upsert',
-        rowVersion: newVersion,
-        scopes: stored.scopes,
-        payload: newPayload,
-      },
-      operation: {
-        opIndex,
-        op: 'upsert',
-        table: table.name,
-        rowId: op.rowId,
-        row: toValidateRow(table.columns, values),
-        stored: toValidateRow(table.columns, storedValues),
-        storedServerVersion: stored.serverVersion,
-        nextServerVersion: newVersion,
-      },
+      changes: [
+        {
+          table: op.table,
+          rowId: op.rowId,
+          op: 'upsert',
+          rowVersion: newVersion,
+          scopes: stored.scopes,
+          payload: newPayload,
+        },
+      ],
+      operations: [
+        {
+          opIndex,
+          op: 'upsert',
+          table: table.name,
+          rowId: op.rowId,
+          row: toValidateRow(table.columns, values),
+          stored: toValidateRow(table.columns, storedValues),
+          storedServerVersion: stored.serverVersion,
+          nextServerVersion: newVersion,
+        },
+      ],
       staged: { table, op: 'upsert', rowId: op.rowId, opIndex, values, stored },
     };
   }
@@ -721,23 +949,27 @@ async function applyOperation(
   await tx.upsertRow(op.table, newRow, { opIndex });
   return {
     kind: 'applied',
-    change: {
-      table: op.table,
-      rowId: op.rowId,
-      op: 'upsert',
-      rowVersion: 1,
-      scopes: extracted.scopes,
-      payload: insertPayload,
-    },
-    operation: {
-      opIndex,
-      op: 'upsert',
-      table: table.name,
-      rowId: op.rowId,
-      row: toValidateRow(table.columns, values),
-      stored: undefined,
-      nextServerVersion: 1,
-    },
+    changes: [
+      {
+        table: op.table,
+        rowId: op.rowId,
+        op: 'upsert',
+        rowVersion: 1,
+        scopes: extracted.scopes,
+        payload: insertPayload,
+      },
+    ],
+    operations: [
+      {
+        opIndex,
+        op: 'upsert',
+        table: table.name,
+        rowId: op.rowId,
+        row: toValidateRow(table.columns, values),
+        stored: undefined,
+        nextServerVersion: 1,
+      },
+    ],
     staged: {
       table,
       op: 'upsert',
@@ -1366,7 +1598,7 @@ export async function processPushOperationsWithTrace(
   clientCommitId: string,
   buildOperations: (
     tx: StorageTransaction,
-  ) => Promise<readonly PushOperation[]>,
+  ) => Promise<readonly ApplyOperation[]>,
   wireSchema: CompiledSchema = schema,
 ): Promise<ProcessedPushCommit> {
   const { storage, partition } = ctx;
@@ -1495,9 +1727,9 @@ export async function processPushOperationsWithTrace(
         break;
       }
       results.push({ opIndex, status: 'applied' });
-      validatedOperations.push(outcome.operation);
+      validatedOperations.push(...outcome.operations);
       stagedWrites.push(outcome.staged);
-      if (outcome.change !== undefined) changes.push(outcome.change);
+      changes.push(...outcome.changes);
     }
 
     // §6.11: reference enforcement runs after every client operation is

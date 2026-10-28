@@ -5,6 +5,7 @@
  */
 import { canonicalScopeJson } from '@syncular/core';
 import { check, checkEqual } from '../checks';
+import { ScenarioSkip } from '../scenario';
 import type { DriverSchema } from '../driver';
 import { ALL_SCOPES, doc, FIXTURE_SCHEMA, task } from '../fixture';
 import {
@@ -612,6 +613,88 @@ export const scopeScenarios: readonly Scenario[] = [
         ['p2'],
         'the server holds the moved row',
       );
+    },
+  },
+
+  {
+    name: 'scopes/rescope-moves-twice-and-back',
+    specRefs: ['§2.2', '§3.4', '§4.5'],
+    async run(ctx) {
+      const rescope = ctx.server.rescope?.bind(ctx.server);
+      if (rescope === undefined) {
+        throw new ScenarioSkip('server driver has no rescope operation');
+      }
+      await seedTasks(ctx, [task('t1', 'p1', 'row')]);
+      await seedTasks(ctx, [task('t1', 'p1', 'updated')]);
+
+      const oneSubscription = await ctx.newClient({
+        actorId: 'actor-one',
+        clientId: 'client-one',
+        allowed: { project_id: ['p1', 'p2'] },
+      });
+      await oneSubscription.api.subscribe({
+        id: 'both',
+        table: 'tasks',
+        scopes: { project_id: ['p1', 'p2'] },
+      });
+      const twoSubscriptions = await ctx.newClient({
+        actorId: 'actor-two',
+        clientId: 'client-two',
+        allowed: { project_id: ['p1', 'p2'] },
+      });
+      for (const [id, project] of [
+        ['old', 'p1'],
+        ['new', 'p2'],
+      ] as const) {
+        await twoSubscriptions.api.subscribe({
+          id,
+          table: 'tasks',
+          scopes: { project_id: [project] },
+        });
+      }
+      const readers = [oneSubscription, twoSubscriptions];
+      for (const reader of readers) {
+        await syncIdle(reader);
+        checkEqual(
+          (await reader.api.readRows('tasks')).map((row) => row.values),
+          [task('t1', 'p1', 'updated')],
+          'the reader starts with the row under its old scope',
+        );
+      }
+
+      await ctx.server.setAllowedScopes('mover', ALL_SCOPES);
+      for (const project of ['p2', 'p1', 'p2'] as const) {
+        const moved = await rescope(
+          'mover',
+          'tasks',
+          task('t1', project, 'updated'),
+        );
+        check(moved.ok, `the rescope to ${project} applies`);
+        if (!moved.ok) return;
+        const serverRows = await ctx.server.readRows('tasks');
+        checkEqual(serverRows.length, 1, 'the server holds exactly one row');
+        checkEqual(
+          serverRows[0]?.values,
+          task('t1', project, 'updated'),
+          'the stored row carries the new scope and values',
+        );
+        checkEqual(
+          serverRows[0]?.version,
+          2,
+          'the move keeps server_version instead of restarting at 1',
+        );
+        for (const reader of readers) {
+          await syncIdle(reader);
+          checkEqual(
+            (await reader.api.readRows('tasks')).map((row) => ({
+              rowId: row.rowId,
+              values: row.values,
+            })),
+            [{ rowId: 't1', values: task('t1', project, 'updated') }],
+            'readers on the old and the new scope keep exactly one moved row',
+          );
+        }
+      }
     },
   },
 ];

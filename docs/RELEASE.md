@@ -1,8 +1,31 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.42.2** (`v0.42.2`). All artifacts use Apache-2.0, except
+current release is **0.43.0** (`v0.43.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.43.0 release notes
+
+0.43.0 adds the explicit scope move the SPEC promises. SSP2, the storage
+layout, and the wire version are unchanged; the public API is additive.
+
+A registered command can return a `rescope` mutation with the complete row
+and its new scope values. The server authorizes the stored and the new
+scopes, emits the delete under the old scopes and the upsert under the new
+ones in one commit, keeps the row's `server_version`, and writes no
+tombstone. The same row can move repeatedly and move back without a
+`baseVersion = 0` insert. Only scope columns may differ from the stored row.
+
+Readers that hold the old and the new scope in one or two subscriptions keep
+the row. Both clients already coalesce one commit's delete and upsert pair,
+so the rescope operation needed no client change. The conformance catalog
+adds `scopes/rescope-moves-twice-and-back`, which moves the row twice, moves
+it back, and checks one- and two-subscription readers on both pairings. The
+storage contract pins the absent tombstone on SQLite, Postgres, and D1.
+
+**Upgrade notes.** No migration. A host that narrows `CommandMutation` with an
+exhaustive switch adds the `rescope` arm. Upgrade all 12 npm packages and 6
+crates together.
 
 ## 0.42.2 release notes
 

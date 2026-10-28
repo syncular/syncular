@@ -218,6 +218,29 @@ const operations = new RemoteOperationRegistry([
 ]);
 ```
 
+### Move a row between scopes
+
+A `rescope` mutation changes a row's scope values without recreating it. Pass
+the complete row; only the scope columns may differ from the stored row. The
+server authorizes both the old and the new values, emits the delete under the
+old scopes and the upsert under the new ones in one commit, keeps the row's
+`server_version`, and leaves no tombstone. The row can move again without a
+`baseVersion = 0` insert.
+
+```ts
+run: async (command, input) => {
+  const picture = await command.getRow('pictures', input.pictureId);
+  if (picture === undefined) throw new Error('picture is unavailable');
+  return [
+    {
+      table: 'pictures',
+      op: 'rescope',
+      values: { ...picture, shown_to: input.campaignId },
+    },
+  ];
+},
+```
+
 Keep the shared descriptor in an import-safe module:
 
 ```ts

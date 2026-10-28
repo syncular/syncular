@@ -80,7 +80,7 @@ The server authorizes a write against the row as currently stored, or against th
 
 A client does not have to hold every row it may read. [Windowed sync](/concepts-windowing/) keeps a partial local copy by subscribing to a subset of the allowed values.
 
-A scope move is one commit with a delete under the old scopes and an upsert under the new ones. A reader that holds both scopes receives those changes in two subscription sections. Each client applies the pair as one change, so the row survives whichever section arrives first and the upsert's values win.
+A scope move is one commit with a delete under the old scopes and an upsert under the new ones. A registered command requests one with the `rescope` mutation, passing the complete row with its new scope values; the server keeps the row's `server_version` and writes no tombstone, so the row can move again. A reader that holds both scopes receives the pair in two subscription sections. Each client applies it as one change, so the row survives whichever section arrives first and the upsert's values win ([guide](/guide-remote-operations/#move-a-row-between-scopes)).
 
 ## Advanced: multiple variables and server lookups
 

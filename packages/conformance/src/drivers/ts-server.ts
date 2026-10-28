@@ -6,7 +6,9 @@
  */
 import { buildSqliteImage } from '@syncular/server/sqlite';
 import {
+  decodeRemoteOperationResponse,
   decodeRow,
+  encodeRemoteOperationRequest,
   type RowColumn,
   type RowValue,
   type ScopeMap,
@@ -25,6 +27,7 @@ import {
   handleBlobDownload,
   handleBlobUpload,
   handleBlobUploadGrant,
+  handleRemoteOperation,
   handleSegmentDownload,
   handleSyncRequest,
   type LeaseConfig,
@@ -33,6 +36,9 @@ import {
   MemorySegmentStore,
   eraseScopeValue,
   pruneCommitLog,
+  registerRemoteCommand,
+  RemoteOperationRegistry,
+  remoteCommand,
   RESOLVER_OUTAGE,
   type RealtimeHub,
   type SegmentUrlConfig,
@@ -69,7 +75,7 @@ import type {
   ValidatorInstallSpec,
 } from '../driver';
 import { STORAGE_FAULT_SECRET } from '../driver';
-import { bytesToHex } from '../raw';
+import { bytesToHex, hexToBytes } from '../raw';
 
 function toServerSchema(schema: DriverSchema): ServerSchema {
   return {
@@ -287,6 +293,7 @@ class TsServerInstance implements ServerInstance {
   /** §7.3: the lease store + config, present iff `leases` was requested. */
   readonly #leases: LeaseConfig | undefined;
   #backup: Uint8Array | undefined;
+  #rescopeRequestId = 0;
 
   constructor(options: ServerCreateOptions) {
     this.#serverSchema = toServerSchema(options.schema);
@@ -830,6 +837,83 @@ class TsServerInstance implements ServerInstance {
   ): Promise<void> {
     this.#commitValidator =
       spec === undefined ? undefined : compileCommitValidatorRule(spec);
+  }
+
+  async rescope(
+    actorId: string,
+    table: string,
+    values: DriverRow,
+  ): Promise<
+    { readonly ok: true } | { readonly ok: false; readonly error: DriverError }
+  > {
+    const input: Record<string, RowValue> = Object.create(null);
+    for (const [column, value] of Object.entries(values)) {
+      input[column] =
+        value === null
+          ? null
+          : typeof value === 'object'
+            ? hexToBytes(value.$bytes)
+            : value;
+    }
+    const operationId = 'conformance-rescope';
+    type RescopeInput = {
+      readonly table: string;
+      readonly values: Readonly<Record<string, RowValue>>;
+    };
+    const command = registerRemoteCommand<RescopeInput>(
+      remoteCommand<RescopeInput>(operationId),
+      {
+        authorize: () => true,
+        run: (_context, commandInput) => [
+          {
+            table: commandInput.table,
+            op: 'rescope',
+            values: commandInput.values,
+          },
+        ],
+      },
+    );
+    this.#rescopeRequestId += 1;
+    try {
+      const response = decodeRemoteOperationResponse(
+        await handleRemoteOperation(
+          encodeRemoteOperationRequest({
+            revision: 1,
+            kind: 'command',
+            clientId: 'conformance-rescope',
+            operationId,
+            requestId: `rescope-${this.#rescopeRequestId}`,
+            params: { table, values: input },
+          }),
+          this.#ctx(actorId),
+          new RemoteOperationRegistry([command]),
+        ),
+      );
+      if (response.kind === 'error') {
+        return { ok: false, error: response };
+      }
+      if (response.kind !== 'command' || response.status === 'rejected') {
+        return {
+          ok: false,
+          error: {
+            code: 'operation.execution_failed',
+            message: 'rescope command did not apply',
+          },
+        };
+      }
+      return { ok: true };
+    } catch (error) {
+      if (error instanceof SyncError) {
+        return { ok: false, error: toDriverError(error) };
+      }
+      return {
+        ok: false,
+        error: {
+          code: 'operation.execution_failed',
+          message: error instanceof Error ? error.message : String(error),
+        },
+      };
+    }
   }
 
   async setResolverFailing(failing: boolean): Promise<void> {

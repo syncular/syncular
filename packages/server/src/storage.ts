@@ -182,6 +182,33 @@ export interface NewCommit {
   readonly changes: readonly NewChange[];
 }
 
+/**
+ * §2.2: rows whose final change in this commit is an upsert that followed a
+ * delete. That delete is one half of a scope move, so it MUST NOT leave a
+ * tombstone behind the live row. A row whose final change is a delete keeps
+ * its tombstone.
+ */
+export function rowsLiveAfterDelete(
+  changes: readonly NewChange[],
+): Set<string> {
+  const last = new Map<string, NewChange['op']>();
+  const deleted = new Set<string>();
+  const live = new Set<string>();
+  for (const change of changes) {
+    const key = `${change.table}\u0000${change.rowId}`;
+    if (change.op === 'delete') {
+      deleted.add(key);
+    } else if (deleted.has(key)) {
+      live.add(key);
+    }
+    last.set(key, change.op);
+  }
+  for (const key of live) {
+    if (last.get(key) !== 'upsert') live.delete(key);
+  }
+  return live;
+}
+
 export interface StoredChange {
   readonly table: string;
   readonly rowId: string;

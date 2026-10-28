@@ -4,6 +4,7 @@ import type { CommitPruneQuery, CommitPruneResult } from './storage';
 import {
   clientRoundState,
   PARTITION_TOUCH_INTERVAL_MS,
+  rowsLiveAfterDelete,
   serveGateRefusal,
 } from './storage';
 import { serveNotReadyError } from './readiness';
@@ -1400,6 +1401,27 @@ class PostgresTransaction implements StorageTransaction {
          ON CONFLICT (partition, tbl, row_id)
          DO UPDATE SET commit_seq = excluded.commit_seq`,
         params,
+      );
+    }
+    // §2.2: a delete whose commit follows it with an upsert is a scope move.
+    // The row is live, so no tombstone may remain for it.
+    const liveAfterDelete = rowsLiveAfterDelete(commit.changes);
+    if (liveAfterDelete.size > 0) {
+      await q.query(
+        `DELETE FROM sync_tombstones existing
+          USING jsonb_to_recordset($2::text::jsonb) AS moved(tbl text, row_id text)
+          WHERE existing.partition=$1
+            AND existing.tbl=moved.tbl
+            AND existing.row_id=moved.row_id`,
+        [
+          p,
+          JSON.stringify(
+            [...liveAfterDelete].map((key) => {
+              const at = key.indexOf('\u0000');
+              return { tbl: key.slice(0, at), row_id: key.slice(at + 1) };
+            }),
+          ),
+        ],
       );
     }
     return commitSeq;

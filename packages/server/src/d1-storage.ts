@@ -1,7 +1,11 @@
 import { validateCommitPruneQuery } from './prune';
 import { StorageQueryError } from './storage-errors';
 import type { CommitPruneQuery, CommitPruneResult } from './storage';
-import { clientRoundState, PARTITION_TOUCH_INTERVAL_MS } from './storage';
+import {
+  clientRoundState,
+  PARTITION_TOUCH_INTERVAL_MS,
+  rowsLiveAfterDelete,
+} from './storage';
 /**
  * Cloudflare D1 server storage for Workers deployments.
  *
@@ -790,6 +794,7 @@ class D1Transaction implements StorageTransaction {
         commit.createdAtMs,
       ],
     );
+    const liveAfterDelete = rowsLiveAfterDelete(commit.changes);
     commit.changes.forEach((change, idx) => {
       this.#buffer_(
         'INSERT INTO sync_changes(partition, commit_seq, idx, tbl, row_id, op, row_version, scopes, payload) VALUES (?,?,?,?,?,?,?,?,?)',
@@ -805,9 +810,13 @@ class D1Transaction implements StorageTransaction {
           change.payload ?? null,
         ],
       );
-      if (change.op === 'delete') {
+      if (
+        change.op === 'delete' &&
+        !liveAfterDelete.has(`${change.table}\u0000${change.rowId}`)
+      ) {
         // §5 delete precedence: every applied delete leaves a tombstone,
-        // pruned with the commit log (§4.6).
+        // pruned with the commit log (§4.6). A delete that the same commit
+        // follows with an upsert is a §2.2 scope move, not a deletion.
         this.#buffer_(
           `INSERT INTO sync_tombstones(partition, tbl, row_id, commit_seq) VALUES (?,?,?,?)
            ON CONFLICT(partition, tbl, row_id) DO UPDATE SET commit_seq=excluded.commit_seq`,

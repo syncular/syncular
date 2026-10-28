@@ -16,6 +16,21 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-10-28',
+    title: 'A command moves a row between scopes',
+    body: "A registered command can now return a `rescope` mutation with the complete row and its new scope values. The server authorizes the old and the new scopes, emits the delete under the old scopes and the upsert under the new ones in one commit, keeps the row's `server_version`, and writes no tombstone. The same row can move repeatedly and move back without a `baseVersion = 0` insert. Readers that hold the old and the new scope in one or two subscriptions keep the row in both clients. Only scope columns may differ from the stored row.",
+    links: [
+      {
+        href: '/guide-remote-operations/#move-a-row-between-scopes',
+        label: 'Move a row between scopes',
+      },
+      {
+        href: '/concepts-scopes/#write-path-authorization',
+        label: 'Scope moves',
+      },
+    ],
+  },
+  {
     date: '2026-10-27',
     title: 'A killed worker keeps the OPFS replica recoverable',
     body: "The Rust client's browser replica now wraps the installed OPFS VFS before its first connection, so SQLite replays a hot rollback journal after a worker is killed mid-commit. `sqlite-wasm-vfs` 0.2.0 reports a reserved lock unconditionally and suppressed that rollback; the patched file methods report no foreign writer, matching the TypeScript binding. File opens also pin `PRAGMA synchronous=FULL`. `SyncClient::reset_replica(path)` deletes a corrupt replica and its sidecars through the VFS, so a host no longer deletes the OPFS pool directory behind SQLite.",
