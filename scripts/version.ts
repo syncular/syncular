@@ -105,7 +105,7 @@ const internalCargoConstraintPaths = [
   'bindings/tauri/plugin/Cargo.toml',
 ] as const;
 
-const internalCargoNames = new Set(
+const internalCargoNames: ReadonlySet<string> = new Set(
   managedCargoPackages.map((entry) => entry.name),
 );
 
@@ -173,6 +173,16 @@ function internalCargoConstraintVersions(
 ): ReadonlyArray<{ readonly line: number; readonly version: string }> {
   const versions: Array<{ line: number; version: string }> = [];
   for (const [index, line] of text.split('\n').entries()) {
+    // Only an inline `name = { path, version }` entry is rewritten; a
+    // `[dependencies.name]` table would keep its 0.0.0 constraint.
+    const table = line.match(
+      /^\s*\[(?:[\w.'"()= ,-]*\.)?dependencies\.([\w-]+)\]/,
+    )?.[1];
+    if (table !== undefined && internalCargoNames.has(table)) {
+      throw new Error(
+        `internal dependency ${table} must be an inline table with path and version`,
+      );
+    }
     if (!line.includes('path =')) continue;
     if (![...internalCargoNames].some((name) => line.includes(name))) continue;
     const version = line.match(/\bversion\s*=\s*"([^"]+)"/)?.[1];
@@ -185,6 +195,8 @@ export function materializeCargoManifest(
   text: string,
   version: string,
 ): string {
+  // Rejects an internal dependency the line rewrite below cannot reach.
+  internalCargoConstraintVersions(text);
   let inPackageSection = false;
   let packageVersionSeen = false;
   const lines = text.split('\n').map((line) => {

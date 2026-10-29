@@ -3,11 +3,11 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-// Bun 1.4.0, minified browser graphs with SQLite external. The client
-// measures 162324 bytes and the worker 179546 bytes on Bun 1.4.0 after the
-// idle deadline landed; the §12 local-authority seam grew the worker to
-// 180946 bytes on Bun 1.4.4. The ceilings round up from the maximum observed in
-// source and materialized builds. Independently assert that ordinary imports
+// Bun 1.4.0, minified browser graphs with SQLite external. After the §12
+// local-authority seam and the queued-insert marker, the client measures
+// 163029 bytes and the worker 181505 bytes on Bun 1.4.0 (162385 and 181182 on
+// Bun 1.4.4). The ceilings round up from the maximum observed in source and
+// materialized builds. Independently assert that ordinary imports
 // exclude authority modules.
 test('ordinary client, worker and native graphs exclude authority; only explicit opt-in retains it', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'syncular-authority-bundle-'));
@@ -18,13 +18,13 @@ test('ordinary client, worker and native graphs exclude authority; only explicit
         'client',
         `export { SyncClient } from '${root}/packages/web-client/src/client.ts';`,
         false,
-        163000,
+        164000,
       ],
       [
         'client-root',
         `export { SyncClient } from '${root}/packages/web-client/src/index.ts';`,
         false,
-        163000,
+        164000,
       ],
       [
         'worker',

@@ -25,6 +25,13 @@ describe('root-authoritative release versioning', () => {
     );
   });
 
+  test('rejects an internal dependency written as a table', () => {
+    const source = `[package]\nname = "syncular-client"\nversion = "0.0.0"\n\n[dependencies.syncular-authority]\npath = "../authority"\nversion = "0.0.0"\n`;
+    expect(() => materializeCargoManifest(source, '2.3.4')).toThrow(
+      'internal dependency syncular-authority must be an inline table',
+    );
+  });
+
   test('materializes named Cargo.lock packages exactly once', () => {
     const source = `[[package]]\nname = "serde"\nversion = "1.0.0"\n\n[[package]]\nname = "syncular-client"\nversion = "0.0.0"\ndependencies = []\n`;
     expect(materializeCargoLock(source, ['syncular-client'], '2.3.4')).toBe(

@@ -8,6 +8,10 @@ repository = "https://github.com/syncular/syncular"
 
 [dependencies]
 ssp2 = { package = "syncular-ssp2", path = "../ssp2", version = "0.0.0" }
+# §12 local authority for native hosts: `localAuthorityPath` routes sync rounds
+# to the in-process authority until attach completes. Feature-gated so the
+# conformance and wasm builds do not link the server profile.
+syncular-authority = { path = "../authority", version = "0.0.0", optional = true }
 # The 0.40 line gates the fallible `u64`/`usize` conversions behind this
 # feature, and the client passes both as SQLite parameters. The conversions
 # error on a value SQLite cannot hold instead of truncating it.
@@ -53,14 +57,6 @@ optional = true
 
 [dependencies.polling]
 version = "3"
-optional = true
-
-# §12 local authority for native hosts: `localAuthorityPath` routes sync rounds
-# to the in-process authority until attach completes. Feature-gated so the
-# conformance and wasm builds do not link the server profile.
-[dependencies.syncular-authority]
-path = "../authority"
-version = "0.0.0"
 optional = true
 
 # `wasm32-unknown-unknown` runs inside a JS host: the wall clock comes from
