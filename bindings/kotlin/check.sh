@@ -42,6 +42,15 @@ fi
 # NOTE: macOS ships a /usr/bin/java STUB that exists but has no runtime, so we
 # must actually RUN `java -version` (not just `command -v java`) to detect a
 # real JDK.
+# When PATH only has the stub, look for a keg-only Homebrew JDK (openjdk@21 is
+# not linked onto PATH) and export JAVA_HOME so Gradle uses the same JDK.
+if ! java -version >/dev/null 2>&1 && command -v brew >/dev/null 2>&1; then
+  BREW_JDK="$(brew --prefix openjdk@21 2>/dev/null || true)"
+  if [ -n "${BREW_JDK}" ] && [ -x "${BREW_JDK}/bin/java" ]; then
+    export JAVA_HOME="${BREW_JDK}"
+    export PATH="${JAVA_HOME}/bin:${PATH}"
+  fi
+fi
 JAVA_VERSION_OUT="$(java -version 2>&1 || true)"
 if ! printf '%s' "${JAVA_VERSION_OUT}" | grep -qE 'version "[0-9]'; then
   echo "SKIP: no working JDK. The Kotlin/FFM bindings need JDK 21+."

@@ -2,7 +2,10 @@
  * The Rust pairing: the SAME catalog on (Rust client × TS server), with
  * the ssp2 codec driving the golden-vector stage — the "two cores, one
  * written protocol" proof. The §12 local-authority scenarios (Appendix B.24)
- * also run with both client cores against the Rust authority.
+ * also run with both client cores against the Rust authority, and the whole
+ * catalog runs with both client cores against the Rust authority acting as
+ * the server: every scenario inside the §12.2 profile runs, and the runner
+ * skips the ones that require a capability outside it.
  *
  * Hermetic by default: this file is inert unless SYNCULAR_RUST_CONFORMANCE=1
  * (which builds the shim via cargo if needed) or the shim binary already
@@ -21,6 +24,7 @@ import {
 } from '../src';
 import {
   ensureRustShim,
+  rustAuthorityDriver,
   rustAuthorityServerDriver,
   rustClientDriver,
   rustCodecDriver,
@@ -56,6 +60,11 @@ if (!requested && !available) {
       scenarios: CATALOG.filter((scenario) =>
         scenario.requires?.includes('local-authority'),
       ),
+    })),
+    ...[rustClientDriver, tsClientDriver].map((client) => ({
+      name: `${client.name} × rust-authority-server`,
+      pairing: { ...pairing, server: rustAuthorityDriver, client },
+      scenarios: CATALOG,
     })),
   ];
 

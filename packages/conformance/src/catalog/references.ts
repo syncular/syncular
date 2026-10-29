@@ -311,6 +311,7 @@ export const referenceScenarios: readonly Scenario[] = [
   {
     name: 'references/cascade-limit-rejects',
     specRefs: ['§6.11', 'B.19'],
+    requires: ['server-limits'],
     server: {
       schema: REFERENCE_FIXTURE_SCHEMA,
       limits: { maxCascadeOperationsPerCommit: 3 },

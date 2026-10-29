@@ -298,6 +298,7 @@ export const observationScenarios: readonly Scenario[] = [
   {
     name: 'observation/realtime-frames-commit-independent-revisions',
     specRefs: ['§1.4', '§7.5', '§8.2'],
+    requires: ['realtime'],
     async run(ctx) {
       const handle = await ctx.newClient({
         actorId: 'actor-a',

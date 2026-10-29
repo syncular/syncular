@@ -10758,10 +10758,10 @@ struct OutboxCommit {
     ops: Vec<OutboxOp>,
 }
 
-/// One commit's `(table, value keys)` per upsert operation — the classification
+/// One commit's `(table, value keys, insert intent)` per upsert operation — the classification
 /// shape the §7.4.4 send-time drop and the RFC 0005 D6 audit share, so the two
 /// can never disagree about which commits cannot re-encode.
-fn commit_audit_operations(commit: &OutboxCommit) -> Vec<(&str, Vec<&str>)> {
+fn commit_audit_operations(commit: &OutboxCommit) -> Vec<(&str, Vec<&str>, bool)> {
     commit
         .ops
         .iter()
@@ -10774,6 +10774,7 @@ fn commit_audit_operations(commit: &OutboxCommit) -> Vec<(&str, Vec<&str>)> {
                     .as_ref()
                     .map(|values| values.keys().map(String::as_str).collect())
                     .unwrap_or_default(),
+                operation.insert,
             )
         })
         .collect()
@@ -14135,7 +14136,8 @@ impl SyncClient {
     /// column the current schema lacks (or a removed table) cannot be encoded
     /// (`commit_audit_operations` inspects upserts, so a value-free delete stays
     /// encodable and is validated by the server), nor can an insert-intent
-    /// upsert that lacks a non-nullable column (§7.1). Drop the commit, undo
+    /// upsert that lacks a non-nullable column (§7.1, the audit's
+    /// `missing-required-column`). Drop the commit, undo
     /// its optimistic projection, and raise a client-local
     /// `sync.outbox_incompatible` rejection.
     fn drop_incompatible_outbox(&mut self) -> Result<bool, String> {
@@ -14144,13 +14146,6 @@ impl SyncClient {
             .iter()
             .filter(|commit| {
                 first_incompatibility(&self.schema, &commit_audit_operations(commit)).is_some()
-                    || commit.ops.iter().any(|op| {
-                        op.insert
-                            && self
-                                .schema
-                                .table(&op.table)
-                                .is_some_and(|table| op.presented_values(table).is_none())
-                    })
             })
             .cloned()
             .collect::<Vec<_>>();

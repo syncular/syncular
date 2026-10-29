@@ -36,6 +36,7 @@ export const reconnectStormScenarios: readonly Scenario[] = [
   {
     name: 'reconnect-storm/n-sessions-churn-and-converge',
     specRefs: ['§8.1', '§8.2', '§8.4', 'B.17'],
+    requires: ['realtime'],
     async run(ctx) {
       await seedTasks(ctx, [task('seed', 'p1', 'before the storm')]);
 

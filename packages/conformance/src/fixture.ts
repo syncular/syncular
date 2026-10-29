@@ -72,6 +72,25 @@ export const FIXTURE_SCHEMA_V2_DROP_META: DriverSchema = {
 };
 
 /**
+ * A version-2 bump that ADDS a non-nullable `tasks.owner` column (§7.1,
+ * §7.4.6): a pending insert-intent commit written under v1 lacks it and cannot
+ * encode, which the pre-reset audit reports as `missing-required-column`.
+ */
+export const FIXTURE_SCHEMA_V2_ADD_REQUIRED: DriverSchema = {
+  version: 2,
+  tables: [
+    {
+      ...(FIXTURE_SCHEMA.tables[0] as DriverTable),
+      columns: [
+        ...(FIXTURE_SCHEMA.tables[0] as DriverTable).columns,
+        { name: 'owner', type: 'string', nullable: false },
+      ],
+    },
+    FIXTURE_SCHEMA.tables[1] as DriverTable,
+  ],
+};
+
+/**
  * A version-2 bump that DROPS the `docs` table (§7.4.4): a pending outbox
  * commit for `docs` has no local mirror to replay into and cannot re-encode,
  * so it surfaces as `sync.outbox_incompatible` instead of failing the boot

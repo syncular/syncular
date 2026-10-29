@@ -1149,6 +1149,7 @@ pub fn stored_previous_version_refusal(
 pub enum PreviousVersionAuditReason {
     UnknownTable,
     UnknownColumn,
+    MissingRequiredColumn,
 }
 
 impl PreviousVersionAuditReason {
@@ -1157,6 +1158,7 @@ impl PreviousVersionAuditReason {
         match self {
             Self::UnknownTable => "unknown-table",
             Self::UnknownColumn => "unknown-column",
+            Self::MissingRequiredColumn => "missing-required-column",
         }
     }
 }
@@ -1191,21 +1193,21 @@ pub struct PreviousVersionAudit {
 pub const MAX_AUDIT_INCOMPATIBLE: usize = 200;
 
 /// One pending outbox commit as the audit needs it: its id, and `(table, value
-/// keys)` per operation.
+/// keys, insert intent)` per operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingCommitAudit<'a> {
     pub commit_id: &'a str,
-    pub operations: Vec<(&'a str, Vec<&'a str>)>,
+    pub operations: Vec<(&'a str, Vec<&'a str>, bool)>,
 }
 
 /// The first reason these operations cannot re-encode under `schema`, mirroring
 /// the TS `firstIncompatibility`. Shared with the §7.4.4 send-time drop so the
 /// audit and the drop never disagree about what is incompatible.
 pub fn first_incompatibility<'a>(
-    schema: &ClientSchema,
-    operations: &[(&'a str, Vec<&'a str>)],
+    schema: &'a ClientSchema,
+    operations: &[(&'a str, Vec<&'a str>, bool)],
 ) -> Option<(&'a str, PreviousVersionAuditReason, Option<&'a str>)> {
-    for (table_name, value_keys) in operations {
+    for (table_name, value_keys, insert) in operations {
         let Some(table) = schema.table(table_name) else {
             return Some((*table_name, PreviousVersionAuditReason::UnknownTable, None));
         };
@@ -1218,15 +1220,30 @@ pub fn first_incompatibility<'a>(
                 ));
             }
         }
+        // §7.1: an insert-intent operation presents every current column, so a
+        // non-nullable column it lacks leaves the commit unencodable.
+        if *insert {
+            if let Some(column) = table
+                .columns
+                .iter()
+                .find(|column| !column.nullable && !value_keys.contains(&column.name.as_str()))
+            {
+                return Some((
+                    *table_name,
+                    PreviousVersionAuditReason::MissingRequiredColumn,
+                    Some(column.name.as_str()),
+                ));
+            }
+        }
     }
     None
 }
 
 /// D6: classify pending outbox commits against the NEW compiled schema, before
 /// the wipe. Advisory only — it drops nothing.
-pub fn build_previous_version_audit(
-    schema: &ClientSchema,
-    pending: &[PendingCommitAudit<'_>],
+pub fn build_previous_version_audit<'a>(
+    schema: &'a ClientSchema,
+    pending: &[PendingCommitAudit<'a>],
     from_version: i32,
     to_version: i32,
     at_ms: i64,
@@ -1309,6 +1326,7 @@ pub fn stored_previous_version_audit(replica: &Connection) -> Option<PreviousVer
         let reason = match entry.get("reason").and_then(Value::as_str) {
             Some("unknown-table") => PreviousVersionAuditReason::UnknownTable,
             Some("unknown-column") => PreviousVersionAuditReason::UnknownColumn,
+            Some("missing-required-column") => PreviousVersionAuditReason::MissingRequiredColumn,
             _ => return None,
         };
         let column = match entry.get("column") {
@@ -1736,6 +1754,63 @@ mod tests {
     }
 
     #[test]
+    fn previous_version_audit_flags_insert_missing_required_column() {
+        let temp = TempFiles::new("audit-missing-required");
+        seed_replica(temp.replica(), 1);
+        let replica = Connection::open(temp.replica()).expect("open replica");
+        let schema = schema(2);
+
+        let pending = vec![
+            // Insert intent lacking the non-nullable `project_id`.
+            PendingCommitAudit {
+                commit_id: "c1",
+                operations: vec![("things", vec!["id", "s"], true)],
+            },
+            // A sparse patch may omit it; the server already holds the row.
+            PendingCommitAudit {
+                commit_id: "c2",
+                operations: vec![("things", vec!["id", "s"], false)],
+            },
+            // An insert presenting every non-nullable column; the rest are NULL.
+            PendingCommitAudit {
+                commit_id: "c3",
+                operations: vec![("things", vec!["id", "project_id"], true)],
+            },
+            // The unknown column is reported before the missing one.
+            PendingCommitAudit {
+                commit_id: "c4",
+                operations: vec![("things", vec!["id", "removed"], true)],
+            },
+        ];
+        let audit = build_previous_version_audit(&schema, &pending, 1, 2, 7);
+        assert_eq!(audit.pending, 4);
+        assert_eq!(audit.encodable, 2);
+        assert_eq!(
+            audit.incompatible,
+            vec![
+                PreviousVersionAuditEntry {
+                    commit_id: "c1".to_owned(),
+                    table: "things".to_owned(),
+                    reason: PreviousVersionAuditReason::MissingRequiredColumn,
+                    column: Some("project_id".to_owned()),
+                },
+                PreviousVersionAuditEntry {
+                    commit_id: "c4".to_owned(),
+                    table: "things".to_owned(),
+                    reason: PreviousVersionAuditReason::UnknownColumn,
+                    column: Some("removed".to_owned()),
+                },
+            ]
+        );
+        assert!(serde_json::to_string(&audit)
+            .expect("encode audit")
+            .contains("\"reason\":\"missing-required-column\""));
+
+        write_previous_version_audit(&replica, &audit);
+        assert_eq!(stored_previous_version_audit(&replica), Some(audit));
+    }
+
+    #[test]
     fn previous_version_audit_records_typed_reasons_and_round_trips() {
         let temp = TempFiles::new("audit");
         seed_replica(temp.replica(), 1);
@@ -1745,15 +1820,15 @@ mod tests {
         let pending = vec![
             PendingCommitAudit {
                 commit_id: "c1",
-                operations: vec![("things", vec!["id", "removed"])],
+                operations: vec![("things", vec!["id", "removed"], false)],
             },
             PendingCommitAudit {
                 commit_id: "c2",
-                operations: vec![("gone", vec![])],
+                operations: vec![("gone", vec![], false)],
             },
             PendingCommitAudit {
                 commit_id: "c3",
-                operations: vec![("things", vec!["id"])],
+                operations: vec![("things", vec!["id"], false)],
             },
         ];
         let audit = build_previous_version_audit(&schema, &pending, 1, 2, 42);
@@ -1807,7 +1882,7 @@ mod tests {
         let many = (0..MAX_AUDIT_INCOMPATIBLE + 5)
             .map(|_index| PendingCommitAudit {
                 commit_id: "c",
-                operations: vec![("gone", vec![])],
+                operations: vec![("gone", vec![], false)],
             })
             .collect::<Vec<_>>();
         let audit = build_previous_version_audit(&schema, &many, 1, 2, 0);

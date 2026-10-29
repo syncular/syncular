@@ -28,6 +28,7 @@ export const wsRoundScenarios: readonly Scenario[] = [
   {
     name: 'ws-round/socket-round-equals-transport-round',
     specRefs: ['§1.1', '§8.7', 'B.11'],
+    requires: ['realtime'],
     async run(ctx) {
       await seedTasks(ctx, [task('t1', 'p1', 'seed-1'), task('t2', 'p1')]);
 
@@ -98,6 +99,7 @@ export const wsRoundScenarios: readonly Scenario[] = [
   {
     name: 'ws-round/first-round-registers-fanout',
     specRefs: ['§8.1', '§8.7', 'B.11'],
+    requires: ['realtime'],
     async run(ctx) {
       // The dead footgun: connect realtime BEFORE the first-ever pull.
       // Under fixed-at-upgrade registration alone this connection would
@@ -135,6 +137,7 @@ export const wsRoundScenarios: readonly Scenario[] = [
   {
     name: 'ws-round/pipelined-round-drops-connection',
     specRefs: ['§8.7', 'B.11'],
+    requires: ['realtime'],
     async run(ctx) {
       // Raw socket surface: drive the server session directly.
       await ctx.server.setAllowedScopes('actor-raw', P1);
@@ -176,6 +179,7 @@ export const wsRoundScenarios: readonly Scenario[] = [
   {
     name: 'ws-round/commit-during-round-wakes-then-deltas-resume',
     specRefs: ['§8.2', '§8.7', 'B.11'],
+    requires: ['realtime'],
     async run(ctx) {
       const b = await ctx.newClient({
         actorId: 'actor-b',

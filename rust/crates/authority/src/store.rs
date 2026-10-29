@@ -25,7 +25,7 @@ use ssp2::primitives::{Reader, Writer};
 use ssp2::segment::{decode_row, encode_row, Column, ColumnType, ColumnValue, Row};
 
 use crate::schema::{Schema, Table};
-use crate::{AuthorityError, Db};
+use crate::{AuthorityError, Db, Retention};
 
 /// The one partition a local authority serves (§12.2).
 pub(crate) const PARTITION: &str = "local";
@@ -76,11 +76,11 @@ CREATE TABLE IF NOT EXISTS sync_push_results(
 CREATE TABLE IF NOT EXISTS sync_clients(
   client_id TEXT PRIMARY KEY,
   cursor INTEGER NOT NULL,
-  updated_at_ms INTEGER NOT NULL);
+  updated_at_ms INTEGER NOT NULL,
+  last_round_at_ms INTEGER NOT NULL,
+  last_error_code TEXT,
+  consecutive_failures INTEGER NOT NULL DEFAULT 0);
 ";
-
-/// §4.6 floor of the reference `pruneCommitLog`: commits always retained.
-pub(crate) const MIN_RETAINED_COMMITS: i64 = 1000;
 
 pub(crate) fn quote(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
@@ -642,45 +642,75 @@ pub(crate) fn client_cursor(
         .db()
 }
 
+/// §4.5: a completed round stores the cursor and clears the failure streak,
+/// unless the round carried a `ROUND_FAILURE` report (`keep_outcome`).
 pub(crate) fn put_client(
     conn: &Connection,
     client_id: &str,
     cursor: i64,
     now: i64,
+    keep_outcome: bool,
 ) -> Result<(), AuthorityError> {
-    conn.prepare_cached(
-        "INSERT INTO sync_clients(client_id, cursor, updated_at_ms) VALUES (?1,?2,?3)
-         ON CONFLICT(client_id) DO UPDATE SET cursor=excluded.cursor, updated_at_ms=excluded.updated_at_ms",
-    )
+    conn.prepare_cached(if keep_outcome {
+        "INSERT INTO sync_clients(client_id, cursor, updated_at_ms, last_round_at_ms) VALUES (?1,?2,?3,?3)
+         ON CONFLICT(client_id) DO UPDATE SET cursor=excluded.cursor, updated_at_ms=excluded.updated_at_ms,
+           last_round_at_ms=excluded.last_round_at_ms"
+    } else {
+        "INSERT INTO sync_clients(client_id, cursor, updated_at_ms, last_round_at_ms) VALUES (?1,?2,?3,?3)
+         ON CONFLICT(client_id) DO UPDATE SET cursor=excluded.cursor, updated_at_ms=excluded.updated_at_ms,
+           last_round_at_ms=excluded.last_round_at_ms, last_error_code=NULL, consecutive_failures=0"
+    })
     .and_then(|mut statement| statement.execute(params![client_id, cursor, now]))
     .db()?;
     Ok(())
 }
 
-/// §4.6 pruning with the reference floors: the horizon never passes the
-/// oldest cursor a client touched within the 14-day active window, except
-/// past commits older than the 30-day age-force limit, and the newest
-/// `min_retained` commits always stay. Tombstones prune with the log.
-pub(crate) fn prune(conn: &Connection, now: i64, min_retained: i64) -> Result<i64, AuthorityError> {
+/// §4.5: a failed round sets the code and time on the existing record and
+/// extends the streak; it never creates a record and leaves the cursor and
+/// the retention timestamp alone.
+pub(crate) fn record_round_failure(
+    conn: &Connection,
+    client_id: &str,
+    code: &str,
+    now: i64,
+) -> Result<(), AuthorityError> {
+    conn.prepare_cached(
+        "UPDATE sync_clients SET last_round_at_ms=?1, last_error_code=?2,
+           consecutive_failures=consecutive_failures+1 WHERE client_id=?3",
+    )
+    .and_then(|mut statement| statement.execute(params![now, code, client_id]))
+    .db()?;
+    Ok(())
+}
+
+/// The reference `pruneCommitLog`: the horizon never passes the oldest
+/// cursor a client touched within the active window, except past commits
+/// older than the age-force limit, and the newest `min_retained_commits`
+/// always stay. Tombstones prune with the log.
+pub(crate) fn prune(
+    conn: &Connection,
+    now: i64,
+    retention: &Retention,
+) -> Result<i64, AuthorityError> {
     let state = log_state(conn)?;
     let cursor_floor: Option<i64> = conn
         .query_row(
             "SELECT MIN(cursor) FROM sync_clients WHERE updated_at_ms>=?1",
-            [now - 14 * 24 * 60 * 60 * 1000],
+            [now - retention.active_window_ms],
             |row| row.get(0),
         )
         .db()?;
     let forced: i64 = conn
         .query_row(
             "SELECT COALESCE(MAX(commit_seq), 0) FROM sync_commits WHERE created_at_ms<?1",
-            [now - 30 * 24 * 60 * 60 * 1000],
+            [now - retention.age_force_ms],
             |row| row.get(0),
         )
         .db()?;
     let target = cursor_floor
         .unwrap_or(i64::MAX)
         .max(forced)
-        .min(state.max_seq - min_retained);
+        .min(state.max_seq - retention.min_retained_commits);
     let horizon = state.horizon.max(target.max(0));
     transaction(conn, || {
         conn.execute("UPDATE sync_log SET horizon_seq=?1 WHERE id=1", [horizon])

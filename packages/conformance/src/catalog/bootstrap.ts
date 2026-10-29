@@ -18,6 +18,10 @@ export const bootstrapScenarios: readonly Scenario[] = [
     (accept): Scenario => ({
       name: `bootstrap/live-progress-intermediate-import-${accept === 3 ? 'rows' : 'sqlite'}`,
       specRefs: ['§7.6', '§7.7', '§5.2', '§5.3'],
+      requires:
+        accept === 3
+          ? ['segment-refs', 'server-limits']
+          : ['segment-refs', 'server-limits', 'sqlite-image'],
       server: { limits: { inlineSegmentMaxBytes: 0 } },
       async run(ctx) {
         for (let start = 0; start < 2049; start += 500) {
@@ -84,6 +88,7 @@ export const bootstrapScenarios: readonly Scenario[] = [
   {
     name: 'bootstrap/live-progress-failure-and-retry',
     specRefs: ['§7.6', '§5.1', '§1.4'],
+    requires: ['segment-refs', 'server-limits'],
     server: { limits: { inlineSegmentMaxBytes: 0 } },
     async run(ctx) {
       await seedTasks(ctx, [
@@ -214,6 +219,7 @@ export const bootstrapScenarios: readonly Scenario[] = [
   {
     name: 'bootstrap/paged-external-resume-after-interruption',
     specRefs: ['§4.7', '§5.1', '§5.4', '§5.6', '§1.4', 'B.5'],
+    requires: ['segment-refs', 'server-limits'],
     server: { limits: { inlineSegmentMaxBytes: 0 } },
     async run(ctx) {
       await seedTasks(
@@ -280,6 +286,7 @@ export const bootstrapScenarios: readonly Scenario[] = [
   {
     name: 'bootstrap/segment-truncation-discards-and-recovers',
     specRefs: ['§5.1', '§5.6', '§1.4'],
+    requires: ['segment-refs', 'server-limits'],
     server: { limits: { inlineSegmentMaxBytes: 0 } },
     async run(ctx) {
       await seedTasks(ctx, [task('t1', 'p1'), task('t2', 'p1')]);
@@ -470,6 +477,7 @@ export const bootstrapScenarios: readonly Scenario[] = [
   {
     name: 'bootstrap/segment-expiry-recovery',
     specRefs: ['§5.1', '§5.5', '§10.2'],
+    requires: ['segment-refs', 'server-limits'],
     server: { limits: { inlineSegmentMaxBytes: 0 } },
     async run(ctx) {
       await ctx.server.setAllowedScopes('exp-actor', P1);

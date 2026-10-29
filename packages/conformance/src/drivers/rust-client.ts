@@ -48,6 +48,7 @@ import type {
   ClientSyncResult,
   CodecDriver,
   CodecRoundtrip,
+  DriverAdminClient,
   DriverChangeBatch,
   DriverCommitDelivery,
   DriverCommitOutcome,
@@ -65,6 +66,7 @@ import type {
   JsonValue,
   LocalAuthorityInstance,
   RealtimeConnectResult,
+  RetentionOptions,
   ServerDriver,
   ServerInstance,
   ServerRowState,
@@ -954,7 +956,9 @@ function parsePreviousVersionAudit(
           reason:
             entry.reason === 'unknown-table'
               ? ('unknown-table' as const)
-              : ('unknown-column' as const),
+              : entry.reason === 'missing-required-column'
+                ? ('missing-required-column' as const)
+                : ('unknown-column' as const),
           ...(typeof entry.column === 'string' ? { column: entry.column } : {}),
         };
       })
@@ -1899,19 +1903,25 @@ export const rustClientDriver: ClientDriver = {
  * One Rust local authority per shim process over a temp database file.
  * `restart` respawns the shim over the same file, a real process restart.
  * Attach and abandon reach `target` through the shim's `sync` callback.
+ * As a `ServerInstance` it is the scenario's server under the §12.2 profile;
+ * the harness owns its clock and reads its state from the database file.
  */
-class RustLocalAuthorityInstance implements LocalAuthorityInstance {
+class RustLocalAuthorityInstance
+  implements LocalAuthorityInstance, ServerInstance
+{
   readonly #dir = mkdtempSync(
     join(tmpdir(), 'syncular-conformance-authority-'),
   );
   readonly #path = join(this.#dir, 'authority.db');
   #schema: DriverSchema;
+  #nowMs: number;
   #shim: ShimProcess | undefined;
   /** The remote of the attach or abandon in flight. */
   #remote: ((request: Uint8Array) => Promise<Uint8Array>) | undefined;
 
-  constructor(schema: DriverSchema) {
+  constructor(schema: DriverSchema, nowMs: number) {
     this.#schema = schema;
+    this.#nowMs = nowMs;
   }
 
   get #open(): ShimProcess {
@@ -1938,6 +1948,7 @@ class RustLocalAuthorityInstance implements LocalAuthorityInstance {
     await this.#shim.call('localAuthorityOpen', {
       path: this.#path,
       schema: JSON.parse(JSON.stringify(withReferenceIndexes(schema))),
+      nowMs: this.#nowMs,
     });
   }
 
@@ -1990,15 +2001,100 @@ class RustLocalAuthorityInstance implements LocalAuthorityInstance {
   /** §12.2: every scope value is granted to the one local actor. */
   async setAllowedScopes(): Promise<void> {}
 
-  async readRows(table: string): Promise<ServerRowState[]> {
+  /** §12.2: the authority resolves every scope with no resolver to fail. */
+  async setResolverFailing(): Promise<void> {
+    throw new Error('a local authority has no scope resolver (§12.2)');
+  }
+
+  async advanceClock(ms: number): Promise<void> {
+    this.#nowMs += ms;
+    await this.#open.call('localAuthoritySetClock', { nowMs: this.#nowMs });
+  }
+
+  async nowMs(): Promise<number> {
+    return this.#nowMs;
+  }
+
+  async prune(retention?: RetentionOptions): Promise<number> {
+    const result = asObject(
+      await this.#open.call('localAuthorityPrune', { ...retention }),
+      'localAuthorityPrune',
+    );
+    if (typeof result.horizonSeq !== 'number') {
+      throw new Error('localAuthorityPrune: malformed conformance-shim result');
+    }
+    return result.horizonSeq;
+  }
+
+  #read<T>(read: (database: BunSqliteDatabase) => T): T {
     const database = new BunSqliteDatabase(
       new Database(this.#path, { readonly: true }),
     );
     try {
-      return readServerRows(database, this.#schema, 'local', table);
+      return read(database);
     } finally {
       database.close();
     }
+  }
+
+  async getMaxCommitSeq(): Promise<number> {
+    return this.#read(
+      (database) =>
+        database
+          .query<{ seq: number }, []>(
+            'SELECT max_commit_seq AS seq FROM sync_log WHERE id=1',
+          )
+          .all()[0]?.seq ?? 0,
+    );
+  }
+
+  async getHorizonSeq(): Promise<number> {
+    return this.#read(
+      (database) =>
+        database
+          .query<{ seq: number }, []>(
+            'SELECT horizon_seq AS seq FROM sync_log WHERE id=1',
+          )
+          .all()[0]?.seq ?? 0,
+    );
+  }
+
+  /** §4.5 client records; every request authenticates as actor `local`. */
+  async listClients(): Promise<readonly DriverAdminClient[]> {
+    return this.#read((database) =>
+      database
+        .query<
+          {
+            client_id: string;
+            cursor: number;
+            last_round_at_ms: number;
+            last_error_code: string | null;
+            consecutive_failures: number;
+          },
+          []
+        >(
+          'SELECT client_id, cursor, last_round_at_ms, last_error_code, consecutive_failures FROM sync_clients ORDER BY updated_at_ms DESC',
+        )
+        .all()
+        .map((client) => ({
+          clientId: client.client_id,
+          actorId: 'local',
+          cursor: client.cursor,
+          lastRoundAtMs: client.last_round_at_ms,
+          ...(client.last_error_code !== null
+            ? { lastErrorCode: client.last_error_code }
+            : {}),
+          ...(client.consecutive_failures > 0
+            ? { consecutiveFailures: client.consecutive_failures }
+            : {}),
+        })),
+    );
+  }
+
+  async readRows(table: string): Promise<ServerRowState[]> {
+    return this.#read((database) =>
+      readServerRows(database, this.#schema, 'local', table),
+    );
   }
 
   async attach(
@@ -2072,7 +2168,37 @@ export const rustAuthorityServerDriver: ServerDriver = {
   ...tsServerDriver,
   name: 'ts-server+rust-authority',
   async createLocalAuthority(options) {
-    const instance = new RustLocalAuthorityInstance(options.schema);
+    const instance = new RustLocalAuthorityInstance(
+      options.schema,
+      options.nowMs,
+    );
+    await instance.restart(options.schema);
+    return instance;
+  },
+};
+
+/**
+ * The Rust authority as the scenario's server under the §12.2 profile: one
+ * partition, every scope value granted, inline rows segments only, and no
+ * realtime, blobs, validators or leases. A scenario that configures a server
+ * option the authority lacks fails here instead of running unconfigured.
+ */
+export const rustAuthorityDriver: ServerDriver = {
+  name: 'rust-authority',
+  capabilities: ['crdt'],
+  async create(options) {
+    const unsupported = (
+      ['schemaWindow', 'limits', 'signedUrls', 'leases'] as const
+    ).filter((option) => options[option] !== undefined);
+    if (unsupported.length > 0) {
+      throw new Error(
+        `the local authority takes no ${unsupported.join(', ')} (§12.2)`,
+      );
+    }
+    const instance = new RustLocalAuthorityInstance(
+      options.schema,
+      options.nowMs,
+    );
     await instance.restart(options.schema);
     return instance;
   },

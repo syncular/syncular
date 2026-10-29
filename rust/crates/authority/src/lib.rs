@@ -91,11 +91,37 @@ fn unavailable(state: AuthorityState) -> AuthorityError {
 /// (`POST <mount>/sync`), used by attach and abandon.
 pub type RemoteTransport<'a> = dyn FnMut(&[u8]) -> Result<Vec<u8>, AuthorityError> + 'a;
 
+/// The authority's clock in epoch milliseconds: commit timestamps, client
+/// round times and the §4.6 retention windows read it.
+pub type Clock = Box<dyn Fn() -> i64 + Send + Sync>;
+
+/// §4.6 retention floors; the default is the reference `DEFAULT_RETENTION`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Retention {
+    /// A client cursor touched within this window holds the horizon.
+    pub active_window_ms: i64,
+    /// Commits older than this prune regardless of client cursors.
+    pub age_force_ms: i64,
+    /// The newest commits that always stay.
+    pub min_retained_commits: i64,
+}
+
+impl Default for Retention {
+    fn default() -> Self {
+        Retention {
+            active_window_ms: 14 * 24 * 60 * 60 * 1000,
+            age_force_ms: 30 * 24 * 60 * 60 * 1000,
+            min_retained_commits: 1000,
+        }
+    }
+}
+
 /// SPEC.md §12 local authority.
 pub struct LocalAuthority {
     conn: Connection,
     schema: Schema,
     state: AuthorityState,
+    clock: Clock,
 }
 
 impl LocalAuthority {
@@ -103,6 +129,15 @@ impl LocalAuthority {
     /// (`":memory:"` for tests) and migrate it to `schema_json`, the same
     /// schema JSON `SyncClient` takes (§12.2). Prunes under the §4.6 floors.
     pub fn open(path: &str, schema_json: &Value) -> Result<Self, AuthorityError> {
+        LocalAuthority::open_with_clock(path, schema_json, Box::new(store::now_ms))
+    }
+
+    /// [`LocalAuthority::open`] reading time from `clock`.
+    pub fn open_with_clock(
+        path: &str,
+        schema_json: &Value,
+        clock: Clock,
+    ) -> Result<Self, AuthorityError> {
         let schema = schema::parse_schema(schema_json)?;
         let conn = Connection::open(path).db()?;
         conn.execute_batch(&format!(
@@ -113,6 +148,7 @@ impl LocalAuthority {
             conn,
             schema,
             state: AuthorityState::Local,
+            clock,
         };
         authority.state = match authority.read_meta("state")?.as_deref() {
             None | Some("local") => AuthorityState::Local,
@@ -129,13 +165,19 @@ impl LocalAuthority {
         // §12.3: an attached authority keeps only its state.
         if authority.state != AuthorityState::Attached {
             store::migrate(&authority.conn, &authority.schema)?;
-            store::prune(
-                &authority.conn,
-                store::now_ms(),
-                store::MIN_RETAINED_COMMITS,
-            )?;
+            authority.prune(&Retention::default())?;
         }
         Ok(authority)
+    }
+
+    /// §4.6: advance the horizon under `retention` and delete the commits and
+    /// tombstones at or below it; returns the horizon. Refuses with
+    /// `sync.authority_unavailable` once attached.
+    pub fn prune(&mut self, retention: &Retention) -> Result<i64, AuthorityError> {
+        if self.state == AuthorityState::Attached {
+            return Err(unavailable(self.state));
+        }
+        store::prune(&self.conn, (self.clock)(), retention)
     }
 
     pub fn state(&self) -> AuthorityState {
@@ -150,7 +192,7 @@ impl LocalAuthority {
         if self.state != AuthorityState::Local {
             return Err(unavailable(self.state));
         }
-        sync::handle(&self.conn, &self.schema, request)
+        sync::handle(&self.conn, &self.schema, (self.clock)(), request)
     }
 
     /// §12.3 attach: upload every live row to `remote`, resumable after a

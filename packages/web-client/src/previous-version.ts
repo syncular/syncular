@@ -167,7 +167,10 @@ type PreviousVersionCaptureOutcome =
 interface PreviousVersionAuditEntry {
   readonly commitId: string;
   readonly table: string;
-  readonly reason: 'unknown-table' | 'unknown-column';
+  readonly reason:
+    | 'unknown-table'
+    | 'unknown-column'
+    | 'missing-required-column';
   /** The offending column; present for every reason except `unknown-table`. */
   readonly column?: string;
 }
@@ -761,7 +764,9 @@ interface PendingCommitLike {
   readonly clientCommitId: string;
   readonly operations: readonly {
     readonly table: string;
+    readonly op: 'upsert' | 'delete';
     readonly values?: Readonly<Record<string, JsonRowValue>>;
+    readonly insert?: true;
   }[];
 }
 
@@ -807,6 +812,9 @@ function firstIncompatibility(
   commit: PendingCommitLike,
 ): PreviousVersionAuditEntry | undefined {
   for (const operation of commit.operations) {
+    // §7.4.4: a value-free delete stays encodable and takes ordinary server
+    // validation, even against a removed table.
+    if (operation.op === 'delete') continue;
     const table = schema.tables.get(operation.table);
     if (table === undefined) {
       return {
@@ -815,14 +823,29 @@ function firstIncompatibility(
         reason: 'unknown-table',
       };
     }
-    if (operation.values === undefined) continue;
-    for (const key of Object.keys(operation.values)) {
+    for (const key of Object.keys(operation.values ?? {})) {
       if (!table.columnIndex.has(key)) {
         return {
           commitId: commit.clientCommitId,
           table: operation.table,
           reason: 'unknown-column',
           column: key,
+        };
+      }
+    }
+    // §7.1: an insert-intent operation presents every current column, so a
+    // non-nullable column it lacks leaves the commit unencodable.
+    if (operation.insert === true) {
+      const missing = table.columns.find(
+        (column) =>
+          !column.nullable && operation.values?.[column.name] === undefined,
+      );
+      if (missing !== undefined) {
+        return {
+          commitId: commit.clientCommitId,
+          table: operation.table,
+          reason: 'missing-required-column',
+          column: missing.name,
         };
       }
     }
@@ -859,7 +882,9 @@ export function storedPreviousVersionAudit(
     if (
       typeof item.commitId !== 'string' ||
       typeof item.table !== 'string' ||
-      (item.reason !== 'unknown-table' && item.reason !== 'unknown-column') ||
+      (item.reason !== 'unknown-table' &&
+        item.reason !== 'unknown-column' &&
+        item.reason !== 'missing-required-column') ||
       (item.column !== undefined && typeof item.column !== 'string')
     ) {
       return undefined;
@@ -1009,7 +1034,9 @@ export function decodePreviousVersionAuditResult(
       ) ||
       typeof item.commitId !== 'string' ||
       typeof item.table !== 'string' ||
-      (item.reason !== 'unknown-table' && item.reason !== 'unknown-column') ||
+      (item.reason !== 'unknown-table' &&
+        item.reason !== 'unknown-column' &&
+        item.reason !== 'missing-required-column') ||
       (item.column !== undefined && typeof item.column !== 'string')
     ) {
       return invalidHostResponse(method);

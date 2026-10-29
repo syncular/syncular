@@ -23,6 +23,8 @@ import {
 import type { RowColumn } from '@syncular/core';
 import { BunClientDatabase } from '@syncular/client/bun';
 import type { ServerSchema } from '@syncular/server';
+import { buildPreviousVersionAudit } from '../src/previous-version';
+import { compileClientSchema } from '../src/schema';
 import { makeClient, makeServer, type TestServer } from './helpers';
 
 const CONTAINER = 'syncular_prev_context';
@@ -481,6 +483,66 @@ describe('RFC 0005 budgets abort before materializing', () => {
 });
 
 describe('RFC 0005 compatibility audit', () => {
+  test('flags an insert-intent commit that lacks a non-nullable column', () => {
+    const operation = (
+      values: Record<string, string>,
+      insert: boolean,
+    ): {
+      table: string;
+      op: 'upsert';
+      values: Record<string, string>;
+      insert?: true;
+    } => ({
+      table: 'things',
+      op: 'upsert',
+      values,
+      ...(insert ? { insert: true as const } : {}),
+    });
+    const audit = buildPreviousVersionAudit(
+      compileClientSchema(V2_SCHEMA),
+      [
+        // Insert intent without the non-nullable `project_id`.
+        { clientCommitId: 'c1', operations: [operation({ id: 'a' }, true)] },
+        // A sparse patch may omit it.
+        { clientCommitId: 'c2', operations: [operation({ id: 'a' }, false)] },
+        // An insert presenting every non-nullable column; the rest are NULL.
+        {
+          clientCommitId: 'c3',
+          operations: [operation({ id: 'a', project_id: 'p1' }, true)],
+        },
+        // The unknown column is reported before the missing one.
+        {
+          clientCommitId: 'c4',
+          operations: [operation({ id: 'a', meta: 'x' }, true)],
+        },
+        // §7.4.4: a value-free delete stays encodable on a removed table.
+        {
+          clientCommitId: 'c5',
+          operations: [{ table: 'gone', op: 'delete' }],
+        },
+      ],
+      1,
+      2,
+      0,
+    );
+    expect(audit.pending).toBe(5);
+    expect(audit.encodable).toBe(3);
+    expect(audit.incompatible).toEqual([
+      {
+        commitId: 'c1',
+        table: 'things',
+        reason: 'missing-required-column',
+        column: 'project_id',
+      },
+      {
+        commitId: 'c4',
+        table: 'things',
+        reason: 'unknown-column',
+        column: 'meta',
+      },
+    ]);
+  });
+
   test('names the incompatible commit with a typed reason and no envelope', async () => {
     const server = v2Server();
     const path = tempPath('audit');

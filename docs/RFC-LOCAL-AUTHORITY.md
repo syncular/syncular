@@ -375,9 +375,12 @@ gains a `newServer` factory.
 
 Phase 2 adds a `rust-authority` server driver. Every catalog scenario whose
 capabilities fall inside §12.2 runs against it with both client drivers. New
-`ServerCapability` tags (`realtime`, `segment-refs`, `windows`,
-`scope-revocation`) gate the scenarios outside the profile; the reference
-server advertises all of them, so its lane keeps its current coverage.
+`ServerCapability` tags gate the scenarios outside the profile: `realtime`
+(§8), `scope-authorization` (grants narrower than every value, revocation,
+resolver faults), `multi-actor` (§1.5 clientId binding), `segment-refs` (§5.4,
+§5.5), `sqlite-image` (§5.3), `schema-window` (§9) and `server-limits`
+(host-configured limits). The reference server advertises all of them, so its
+lane keeps its current coverage.
 
 ## 6. Alternatives rejected
 
@@ -440,4 +443,4 @@ server advertises all of them, so its lane keeps its current coverage.
 | 0 | Maintainer review of this RFC | Accepted text moves into SPEC §12 |
 | 1 | Done: `openLocalAuthority` in `@syncular/server`, attach, `sync.authority_unavailable`, `sync.attach_rejected`; harness `createLocalAuthority` and `route`; scenarios 1 to 4 against both clients; measurements in §7 item 4; docs page `guide-local-authority` and changelog entry | `bun run check` |
 | 1b | Done: `clientSqliteDatabase` adapter, `startSyncWorker({ openLocalAuthority })`, `localAuthority` init flag, handle methods `localAuthorityState`, `attachLocalAuthority`, `abandonLocalAuthorityAttach`; the authority drops its rows once attached; bundle cost measured (134.6 KB minified, 36.3 KB gzipped) | `bun run check` |
-| 2 | Done: `syncular-authority` crate (storage layout of `SqliteServerStorage`, append-only migration at open, inline rows segments only); `rustAuthorityServerDriver` running B.24 with both client cores; `local-authority` client feature selected by `localAuthorityPath`, with `localAuthorityState`, `attachLocalAuthority` and `abandonLocalAuthorityAttach` in the FFI, Tauri, Swift, Kotlin, Flutter and React Native. The full-catalog server lane against the Rust authority stays open: B.24 and the crate's unit tests cover its push, pull, reference and attach rules | `bun run check`, `bun run rust test`, `bun run rust clippy --all-targets -- -D warnings`, binding `check.sh` gates |
+| 2 | Done: `syncular-authority` crate (storage layout of `SqliteServerStorage`, append-only migration at open, inline rows segments only); `rustAuthorityServerDriver` running B.24 with both client cores; `local-authority` client feature selected by `localAuthorityPath`, with `localAuthorityState`, `attachLocalAuthority` and `abandonLocalAuthorityAttach` in the FFI, Tauri, Swift, Kotlin, Flutter and React Native. `rustAuthorityDriver` runs the 131 catalog scenarios inside §12.2 with both client cores; the authority records the §4.5 round outcome, reads a host clock (`open_with_clock`) and prunes under host floors (`prune`) | `bun run check`, `bun run rust test`, `bun run rust clippy --all-targets -- -D warnings`, binding `check.sh` gates |

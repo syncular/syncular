@@ -83,6 +83,7 @@ export const conflictScenarios: readonly Scenario[] = [
   {
     name: 'conflict/retained-distinct-id-unique-insert',
     specRefs: ['§7.2', '§7.2.1', '§3.3'],
+    requires: ['scope-authorization'],
     server: { schema: UNIQUE_SCHEMA },
     async run(ctx) {
       const a = await ctx.newClient({

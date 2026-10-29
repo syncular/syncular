@@ -273,6 +273,7 @@ export const sparseRowScenarios: readonly Scenario[] = [
   {
     name: 'sparse-rows/acknowledged-intent-revocation',
     specRefs: ['§7.1', '§3.3'],
+    requires: ['scope-authorization'],
     async run(ctx) {
       const a = await bootstrapped(ctx, 'actor-a', 'client-a');
       await a.api.mutate([
@@ -339,6 +340,7 @@ export const sparseRowScenarios: readonly Scenario[] = [
   {
     name: 'sparse-rows/retained-atomic-conflict',
     specRefs: ['§7.1', '§7.2', '§7.2.1', '§3.3'],
+    requires: ['scope-authorization'],
     async run(ctx) {
       const a = await bootstrapped(ctx, 'actor-a', 'client-a');
       const b = await ctx.newClient({

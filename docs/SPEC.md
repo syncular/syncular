@@ -4961,7 +4961,17 @@ The pre-reset **compatibility audit** is one `_syncular_meta` record,
 `previousVersionAudit`, written before the wipe:
 `{ v, atMs, fromVersion, toVersion, pending, encodable, truncated,
 incompatible: [{ commitId, table, reason, column? }] }`, where `reason`
-is `unknown-table` or `unknown-column`. It records the commit id, table,
+is `unknown-table`, `unknown-column` or `missing-required-column`.
+`unknown-table` names a table the new schema lacks. `unknown-column` names
+a persisted value key the new schema lacks, with that column.
+`missing-required-column` names an insert-intent operation (§7.1) that lacks
+a column the new schema declares non-nullable, with that column: the
+operation cannot present a full row, so the §7.4.4 send-time drop removes
+the commit as `sync.outbox_incompatible`. A non-insert (sparse) upsert may
+omit any column and is not flagged. Within one operation the checks run in
+the order table, value keys, then required columns (schema order), and the
+first match names the commit, so the audit and the §7.4.4 drop classify
+every commit identically. It records the commit id, table,
 typed reason and offending column ONLY. It MUST NOT contain operations,
 row values, or any part of the commit envelope: the envelope stays in the
 outbox and, on a terminal drop, goes to the §7.2.1 journal unchanged. It

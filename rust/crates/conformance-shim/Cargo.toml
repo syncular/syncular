@@ -24,6 +24,8 @@ syncular-client = { path = "../client", features = ["bench-internals"] }
 # exercise the Rust encrypt/decrypt seam against the TS core.
 syncular-command = { path = "../command", features = ["crdt-yjs", "e2ee"] }
 # SPEC.md §12: the shim hosts one local authority per process for the
-# cross-core local-authority pairings (Appendix B.24).
-syncular-authority = { path = "../authority" }
+# cross-core local-authority pairings (Appendix B.24) and the catalog lanes
+# that run the authority as the server; crdt-yjs gives it the §5.10.2 merger
+# the reference server driver registers.
+syncular-authority = { path = "../authority", features = ["crdt-yjs"] }
 serde_json = "1"
