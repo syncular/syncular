@@ -5,10 +5,10 @@
 #   - npmjs.com: each @syncular/* package + create-syncular-app →
 #     Settings → Trusted publisher → GitHub Actions →
 #     owner `syncular`, repo `syncular`, workflow `release.yml`.
-#   - crates.io: syncular-ssp2, syncular-client, syncular-command,
-#     syncular-ffi, syncular, tauri-plugin-syncular → Settings →
-#     Trusted Publishing → GitHub repo `syncular/syncular`, workflow
-#     `release.yml`.
+#   - crates.io: syncular-ssp2, syncular-authority, syncular-client,
+#     syncular-command, syncular-ffi, syncular, tauri-plugin-syncular →
+#     Settings → Trusted Publishing → GitHub repo `syncular/syncular`,
+#     workflow `release.yml`.
 #
 # No registry tokens are stored anywhere; both jobs authenticate via the
 # GitHub OIDC token (`id-token: write`).
@@ -189,6 +189,7 @@ jobs:
           }
           cd rust
           publish syncular-ssp2
+          publish syncular-authority
           publish syncular-client
           publish syncular-command
           publish syncular-ffi

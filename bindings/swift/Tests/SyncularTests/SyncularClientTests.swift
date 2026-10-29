@@ -128,6 +128,80 @@ private final class TestConnectivitySignal: SyncularConnectivitySignal {
     }
 }
 
+@Test func localAuthorityPathIsSerializedIntoTheCoreConfig() throws {
+    let config = SyncularConfig(localAuthorityPath: "/data/authority.sqlite").newConfigJSON()
+    #expect(config["localAuthorityPath"] == .string("/data/authority.sqlite"))
+    #expect(SyncularConfig().newConfigJSON()["localAuthorityPath"] == nil)
+}
+
+@Test func emptyLocalAuthorityPathIsRejectedByTheCoreConfig() {
+    var caught: SyncularError?
+    do {
+        _ = try SyncularClient(schema: todoSchema(), config: SyncularConfig(localAuthorityPath: ""))
+    } catch let error as SyncularError { caught = error } catch {}
+    #expect(caught?.code == "client.failed")
+}
+
+@Test func localAuthorityCommandsWithoutAuthorityPathReportUnconfigured() throws {
+    let client = try makeClient()
+    defer { client.close() }
+    #expect(try client.localAuthorityState() == nil)
+    for call in [client.attachLocalAuthority, client.abandonLocalAuthorityAttach] {
+        var caught: SyncularError?
+        #expect(throws: SyncularError.self) {
+            do { try call() } catch let error as SyncularError { caught = error; throw error }
+        }
+        #expect(caught?.code == "client.local_authority_unconfigured")
+    }
+}
+
+@Test func localAuthorityServesRoundsInProcess() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("syncular-authority-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    // The authority serves only scoped tables (SPEC §3.1).
+    let column: (String) -> JSONValue = { name in
+        .object(["name": .string(name), "type": .string("string"), "nullable": .bool(false)])
+    }
+    let schema: JSONValue = .object([
+        "version": .number(1),
+        "tables": .array([
+            .object([
+                "name": .string("todo"),
+                "primaryKey": .string("id"),
+                "scopes": .array([.object(["pattern": .string("list:{list_id}"), "column": .string("list_id")])]),
+                "columns": .array([column("id"), column("list_id")]),
+            ])
+        ]),
+    ])
+    let client = try SyncularClient(
+        clientId: "swift-authority",
+        schema: schema,
+        config: SyncularConfig(localAuthorityPath: directory.appendingPathComponent("authority.sqlite").path)
+    )
+    defer { client.close() }
+    #expect(try client.localAuthorityState() == .local)
+    try client.subscribe(id: "s1", table: "todo", scopes: ["list_id": ["l1"]])
+    _ = try client.mutate([
+        .object([
+            "op": .string("upsert"),
+            "table": .string("todo"),
+            "values": .object(["id": .string("t1"), "list_id": .string("l1")]),
+        ])
+    ])
+    try client.syncUntilIdle()
+    #expect(try client.pendingCommitIds().isEmpty)
+    // The authority acknowledged the commit: the row carries a server version.
+    #expect(try client.readRows(table: "todo").first?["version"]?.numberValue == 1)
+}
+
+@Test func errorCarriesStructuredDetails() {
+    let details = JSONValue.object(["reason": .string("r")])
+    #expect(SyncularError(code: "sync.attach_rejected", message: "m", details: details).details == details)
+    #expect(SyncularError(code: "x", message: "m").details == nil)
+}
+
 @Test func mutateThenReadRowsShowsOptimisticRow() throws {
     let client = try makeClient()
     defer { client.close() }

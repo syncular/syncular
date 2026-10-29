@@ -41,9 +41,21 @@ The core is thread-affine, which the serial queue satisfies. Never call the C fu
 
 The wrapper sends each bound as an exact `UInt64` (`JSONValue.unsigned`). An invalid policy fails construction. [Rust: Platform specifics](/platform-rust-specifics/#native-transport-policy) gives the full semantics, including the WebSocket handshake rule.
 
+## Local authority
+
+Set `SyncularConfig.localAuthorityPath` to start without a server (SPEC §12). The path names the authority's own SQLite file and must differ from `dbPath`; an empty string fails construction with `client.failed`. Until the attach completes, sync rounds go to the in-process authority, `connectRealtime` fails with `sync.invalid_request`, and segment downloads fail. The attach needs `baseUrl`. See [Start without a server](/guide-local-authority/) for the model and the attach failure reasons.
+
+| Call | Returns | Effect |
+|---|---|---|
+| `localAuthorityState()` | `SyncularClient.LocalAuthorityState?` | `.local`, `.attaching` or `.attached`; `nil` without a `localAuthorityPath` |
+| `attachLocalAuthority()` | `Void` | Uploads the authority's rows to `baseUrl` with the headers set through `setHeaders`, then syncs with that server |
+| `abandonLocalAuthorityAttach()` | `Void` | Deletes the rows a stopped attach uploaded, then syncs locally |
+
+`attachLocalAuthority` throws `sync.attach_rejected` with `details["reason"]` when the server refuses an upload commit. Both attach calls throw `client.local_authority_unconfigured` without a `localAuthorityPath` or a `baseUrl`.
+
 ## Errors and results
 
-`SyncularError` carries a stable `code` and a `message`. The initializer throws `client.failed` when `syncular_client_new` returns NULL: a malformed config, or a `baseUrl` on a core built without `native-transport`. A command after `close()` throws `client.closed`. A reply the wrapper cannot decode throws `client.invalid_host_response`.
+`SyncularError` carries a stable `code`, a `message`, and the structured `details` of the reply (`nil` when the core sent none). The initializer throws `client.failed` when `syncular_client_new` returns NULL: a malformed config, or a `baseUrl` on a core built without `native-transport`. A command after `close()` throws `client.closed`. A reply the wrapper cannot decode throws `client.invalid_host_response`.
 
 ## JSON values
 

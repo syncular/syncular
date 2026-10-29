@@ -19,9 +19,10 @@ The crate is on crates.io.
 syncular-client = { version = "0.0.0", features = ["native-transport"] }
 ```
 
-Three features exist, all off by default so the core's dependency tree stays small:
+Four features exist, all off by default so the core's dependency tree stays small:
 
 - `native-transport`: `HostTransport`, a blocking HTTP client (`ureq`) and a WebSocket client (`tungstenite`) with a reader thread.
+- `local-authority`: `HostTransport` routes sync rounds to an in-process local authority (`syncular-authority`, SPEC §12) when its config names `localAuthorityPath` ([Platform specifics](/platform-rust-specifics/#local-authority)).
 - `crdt-yjs`: the native CRDT helpers `crdt_text`, `crdt_insert_text`, `crdt_delete_text`, and `crdt_apply_update` over `yrs`, wire-compatible with `@syncular/crdt-yjs`.
 - `e2ee`: client-side encryption, installed with `set_encryption`.
 

@@ -124,6 +124,9 @@ export const SYNCULAR_EVENT = 'syncular://event';
 
 const PLUGIN = 'plugin:syncular|';
 
+/** SPEC §12 local authority lifecycle state. */
+export type LocalAuthorityState = 'local' | 'attaching' | 'attached';
+
 /** Config for {@link createTauriSyncClient}. */
 export interface TauriSyncClientConfig {
   /** The generated schema JSON (the app passes `schema` from typegen). */
@@ -464,6 +467,7 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
         'previousVersionDiscard',
         'localRevision',
         'statusSnapshot',
+        'localAuthorityState',
         'shutdown',
       ].includes(method)
     ) {
@@ -1111,6 +1115,33 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
       clientId: string;
     };
     return result.clientId;
+  }
+
+  /**
+   * SPEC §12 local authority state: `local` while rounds run against the
+   * in-process authority, `attaching` during an attach, `attached` once rounds
+   * run against `base_url`, and `null` when the plugin configured no
+   * `local_authority_path`.
+   */
+  async localAuthorityState(): Promise<LocalAuthorityState | null> {
+    const result = (await this.#command('localAuthorityState', {})) as {
+      state: LocalAuthorityState | null;
+    };
+    return result.state;
+  }
+
+  /**
+   * Upload the local authority's live rows to the `base_url` server (§12.3).
+   * Rejects with `sync.attach_rejected` (`details.reason`) when the server
+   * refuses; call {@link abandonLocalAuthorityAttach} to roll back.
+   */
+  async attachLocalAuthority(): Promise<void> {
+    await this.#command('attachLocalAuthority', {});
+  }
+
+  /** Roll back an attach that did not complete and return to `local`. */
+  async abandonLocalAuthorityAttach(): Promise<void> {
+    await this.#command('abandonLocalAuthorityAttach', {});
   }
 
   async syncUntilIdle(maxRounds?: number): Promise<unknown> {

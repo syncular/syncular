@@ -9,6 +9,7 @@
 // on the lean core, event-poll (initial diagnostics, then none while idle),
 // close idempotence, and pause/resume.
 import 'dart:async';
+import 'dart:io';
 
 import 'package:syncular/syncular.dart';
 import 'package:test/test.dart';
@@ -71,6 +72,83 @@ void main() {
       ),
       throwsA(isA<SyncularError>()),
     );
+  });
+
+  test('localAuthorityPath reaches the core config', () {
+    // An empty path is rejected by the core's config validation, proving the
+    // field is serialized into the config JSON.
+    expect(
+      () => SyncularClient.create(
+        clientId: 'dart-authority-bad',
+        schema: todoSchema(),
+        config: const SyncularConfig(localAuthorityPath: ''),
+      ),
+      throwsA(isA<SyncularError>()),
+    );
+  });
+
+  test('local authority commands without a configured authority', () {
+    final client = makeClient();
+    addTearDown(client.close);
+    expect(client.localAuthorityState(), isNull);
+    for (final call in [
+      client.attachLocalAuthority,
+      client.abandonLocalAuthorityAttach,
+    ]) {
+      expect(
+        call,
+        throwsA(
+          isA<SyncularError>().having(
+            (e) => e.code,
+            'code',
+            'client.local_authority_unconfigured',
+          ),
+        ),
+      );
+    }
+  });
+
+  test('a local authority serves rounds in process', () {
+    final directory = Directory.systemTemp.createTempSync('syncular-authority');
+    addTearDown(() => directory.deleteSync(recursive: true));
+    // The authority serves only scoped tables (SPEC §3.1).
+    Map<String, Object?> column(String name) =>
+        {'name': name, 'type': 'string', 'nullable': false};
+    final client = SyncularClient.create(
+      clientId: 'dart-authority',
+      schema: {
+        'version': 1,
+        'tables': [
+          {
+            'name': 'todo',
+            'primaryKey': 'id',
+            'scopes': [
+              {'pattern': 'list:{list_id}', 'column': 'list_id'},
+            ],
+            'columns': [column('id'), column('list_id')],
+          },
+        ],
+      },
+      config: SyncularConfig(
+        localAuthorityPath: '${directory.path}/authority.sqlite',
+      ),
+    );
+    addTearDown(client.close);
+    expect(client.localAuthorityState(), equals('local'));
+    client.subscribe('s1', 'todo', scopes: {
+      'list_id': ['l1'],
+    });
+    client.mutate([
+      {
+        'op': 'upsert',
+        'table': 'todo',
+        'values': {'id': 't1', 'list_id': 'l1'},
+      },
+    ]);
+    client.syncUntilIdle();
+    expect(client.pendingCommitIds(), isEmpty);
+    // The authority acknowledged the commit: the row carries a server version.
+    expect(client.readRows('todo').first['version'], equals(1));
   });
 
   test('mutate then readRows shows the optimistic row', () {

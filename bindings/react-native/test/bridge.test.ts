@@ -21,6 +21,7 @@ import { type SyncClientLike } from '@syncular/react';
 import { hostBoolean } from '../../../packages/typegen/test/fixtures/basic/syncular.queries';
 import {
   createNativeSyncClient,
+  NativeSyncError,
   type SyncularEvent,
   type SyncularEventEmitter,
   type SyncularNativeModule,
@@ -245,6 +246,107 @@ describe('createNativeSyncClient', () => {
       enabled: true,
       maxRows: 100,
     });
+  });
+
+  test('forwards localAuthorityPath into the transport config, not the create params', async () => {
+    const { nativeModule, eventEmitter, calls } = makeNative(defaultResponder);
+    await createNativeSyncClient({
+      clientId: 'native-authority',
+      schema: { version: 1, tables: [] },
+      baseUrl: 'https://api.example.com',
+      dbPath: '/data/replica.db',
+      localAuthorityPath: '/data/authority.db',
+      nativeModule,
+      eventEmitter,
+    });
+    const create = calls.find((call) => call.fn === 'create');
+    const arg = create?.arg as { configJson: string; createJson: string };
+    expect(JSON.parse(arg.configJson)).toMatchObject({
+      baseUrl: 'https://api.example.com',
+      localAuthorityPath: '/data/authority.db',
+    });
+    expect(JSON.parse(arg.createJson)).not.toHaveProperty('localAuthorityPath');
+  });
+
+  test('local authority calls map to commands and surface error code and details', async () => {
+    const { nativeModule, eventEmitter, calls } = makeNative(
+      (method, params) => {
+        switch (method) {
+          case 'localAuthorityState':
+            return { result: { state: 'attaching' } };
+          case 'attachLocalAuthority':
+            return {
+              error: {
+                code: 'sync.attach_rejected',
+                message: 'the server refused an upload commit',
+                details: { reason: 'scope_denied' },
+              },
+            };
+          case 'abandonLocalAuthorityAttach':
+            return { result: {} };
+          default:
+            return defaultResponder(method, params);
+        }
+      },
+    );
+    const client = await createNativeSyncClient({
+      schema: { version: 1, tables: [] },
+      nativeModule,
+      eventEmitter,
+    });
+    expect(await client.localAuthorityState()).toBe('attaching');
+    let caught: unknown;
+    try {
+      await client.attachLocalAuthority();
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(NativeSyncError);
+    expect((caught as NativeSyncError).code).toBe('sync.attach_rejected');
+    expect((caught as NativeSyncError).details).toEqual({
+      reason: 'scope_denied',
+    });
+    await client.abandonLocalAuthorityAttach();
+    const methods = calls
+      .filter((call) => call.fn === 'command')
+      .map((call) => (call.arg as { method: string }).method);
+    expect(methods).toEqual([
+      'localAuthorityState',
+      'attachLocalAuthority',
+      'abandonLocalAuthorityAttach',
+    ]);
+    await client.close();
+  });
+
+  test('localAuthorityState is null when the core has no local authority', async () => {
+    const { nativeModule, eventEmitter } = makeNative((method, params) =>
+      method === 'localAuthorityState'
+        ? { result: { state: null } }
+        : defaultResponder(method, params),
+    );
+    const client = await createNativeSyncClient({
+      schema: { version: 1, tables: [] },
+      nativeModule,
+      eventEmitter,
+    });
+    expect(await client.localAuthorityState()).toBeNull();
+    await client.close();
+  });
+
+  test('localAuthorityState stays callable during security preflight', async () => {
+    const { nativeModule, eventEmitter } = makeNative((method, params) =>
+      method === 'localAuthorityState'
+        ? { result: { state: 'local' } }
+        : defaultResponder(method, params),
+    );
+    const client = await createNativeSyncClient({
+      schema: { version: 1, tables: [] },
+      securityPreflight: true,
+      nativeModule,
+      eventEmitter,
+    });
+    expect(await client.localAuthorityState()).toBe('local');
+    await client.close();
   });
 
   test('forwards the native transport policy into the transport config', async () => {

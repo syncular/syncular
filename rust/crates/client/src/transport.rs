@@ -239,4 +239,34 @@ pub trait Transport {
     /// Client → server JSON control message (acks, §8.2).
     fn realtime_send(&mut self, text: &str) -> Result<(), TransportError>;
     fn realtime_close(&mut self) -> Result<(), TransportError>;
+    /// §12: open (or reopen) the host-configured local authority with the
+    /// client's schema before the client opens its replica at `replica_path`.
+    /// A transport without a local authority has nothing to open.
+    fn open_local_authority(
+        &mut self,
+        schema: &serde_json::Value,
+        replica_path: Option<&str>,
+    ) -> Result<(), TransportError> {
+        let _ = (schema, replica_path);
+        Ok(())
+    }
+    /// §12.3 state of the opened local authority (`local`, `attaching`,
+    /// `attached`); `None` when the host configured none or it is not open.
+    fn local_authority_state(&self) -> Option<&'static str> {
+        None
+    }
+    /// §12.3 attach: upload the local authority's rows to the remote server.
+    fn attach_local_authority(&mut self) -> Result<(), TransportError> {
+        Err(TransportError::new(
+            crate::LOCAL_AUTHORITY_UNCONFIGURED_CODE,
+            "this transport has no local authority",
+        ))
+    }
+    /// §12.3 abandon: roll a stopped attach back and serve the client locally.
+    fn abandon_local_authority_attach(&mut self) -> Result<(), TransportError> {
+        Err(TransportError::new(
+            crate::LOCAL_AUTHORITY_UNCONFIGURED_CODE,
+            "this transport has no local authority",
+        ))
+    }
 }

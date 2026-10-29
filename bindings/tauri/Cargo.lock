@@ -3523,6 +3523,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "syncular-authority"
+version = "0.0.0"
+dependencies = [
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "syncular-ssp2",
+ "uuid",
+]
+
+[[package]]
 name = "syncular-client"
 version = "0.0.0"
 dependencies = [
@@ -3535,6 +3546,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "syncular-authority",
  "syncular-ssp2",
  "tungstenite",
  "ureq",

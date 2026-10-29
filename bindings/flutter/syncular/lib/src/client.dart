@@ -36,11 +36,14 @@ class SyncularEvent {
 }
 
 /// The error a `{error}` reply surfaces (mirrors the Swift `SyncularError` and
-/// the Kotlin `SyncularException`): a stable [code] plus a [message].
+/// the Kotlin `SyncularException`): a stable [code] plus a [message]. [details]
+/// carries the structured error details of an `{error}` reply (for example
+/// `{'reason': ...}` on `sync.attach_rejected`), or null when the core sent none.
 class SyncularError implements Exception {
   final String code;
   final String message;
-  const SyncularError(this.code, this.message);
+  final Object? details;
+  const SyncularError(this.code, this.message, {this.details});
 
   @override
   String toString() => 'SyncularError($code): $message';
@@ -74,6 +77,12 @@ class SyncularConfig {
   /// commands then fail with `transport.unavailable`).
   final String? baseUrl;
 
+  /// SPEC §12 local authority: path of the authority's own SQLite file, never
+  /// [dbPath]. Rounds go to the in-process authority until
+  /// [SyncularClient.attachLocalAuthority] completes, then to [baseUrl]. The
+  /// attach needs [baseUrl]. Null runs without a local authority.
+  final String? localAuthorityPath;
+
   /// Optional explicit realtime socket URL. Derived from [baseUrl] if null.
   final String? wsUrl;
 
@@ -106,6 +115,7 @@ class SyncularConfig {
 
   const SyncularConfig({
     this.baseUrl,
+    this.localAuthorityPath,
     this.wsUrl,
     this.headers = const {},
     this.dbPath,
@@ -121,6 +131,9 @@ class SyncularConfig {
   Map<String, Object?> _newConfigJson() {
     final object = <String, Object?>{};
     if (baseUrl != null) object['baseUrl'] = baseUrl;
+    if (localAuthorityPath != null) {
+      object['localAuthorityPath'] = localAuthorityPath;
+    }
     if (wsUrl != null) object['wsUrl'] = wsUrl;
     if (headers.isNotEmpty) object['headers'] = headers;
     if (requestTimeoutMs != null) object['requestTimeoutMs'] = requestTimeoutMs;
@@ -211,6 +224,7 @@ class SyncularClient {
       throw SyncularError(
         (error['code'] as String?) ?? 'client.failed',
         (error['message'] as String?) ?? 'command failed',
+        details: error['details'],
       );
     }
     final result = reply['result'];
@@ -333,6 +347,23 @@ class SyncularClient {
   /// use it immediately; reconnect realtime to apply it to the handshake.
   void setHeaders(Map<String, String> headers) =>
       command('setHeaders', {'headers': headers});
+
+  /// SPEC §12.3 local-authority state: `local`, `attaching` or `attached`, or
+  /// null when the client has no [SyncularConfig.localAuthorityPath].
+  String? localAuthorityState() =>
+      command('localAuthorityState', const {})['state'] as String?;
+
+  /// SPEC §12.3: upload the local authority's rows to [SyncularConfig.baseUrl]
+  /// with the headers set through [setHeaders], then sync with that server.
+  /// Throws [SyncularError] `sync.attach_rejected` (`details['reason']`) when
+  /// the server refuses an upload commit, and
+  /// `client.local_authority_unconfigured` without a `localAuthorityPath` or
+  /// `baseUrl`.
+  void attachLocalAuthority() => command('attachLocalAuthority', const {});
+
+  /// SPEC §12.3: delete the rows a stopped attach uploaded, then sync locally.
+  void abandonLocalAuthorityAttach() =>
+      command('abandonLocalAuthorityAttach', const {});
 
   /// Run one sync round against the server (needs `native-transport`). Never
   /// errors out-of-band; inspect `ok`/`errorCode` on the returned map.

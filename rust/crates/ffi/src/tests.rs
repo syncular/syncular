@@ -780,3 +780,44 @@ fn presence_scope_key_reads_the_fanout_data() {
         None
     );
 }
+
+#[test]
+fn local_authority_config_serves_rounds_in_process_and_reports_its_state() {
+    let invalid = CString::new(r#"{"localAuthorityPath": 7}"#).unwrap();
+    assert!(syncular_client_new(invalid.as_ptr()).is_null());
+
+    let mut handle = crate::Handle::new(&json!({ "localAuthorityPath": ":memory:" })).unwrap();
+    let state = handle.command(&json!({ "method": "localAuthorityState", "params": {} }));
+    assert_eq!(state, json!({ "result": { "state": null } }));
+    let schema = json!({"version": 1, "tables": [{"name": "todos", "primaryKey": "id",
+        "columns": [{"name": "id", "type": "string", "nullable": false},
+            {"name": "list_id", "type": "string", "nullable": false}],
+        "scopes": [{"pattern": "list:{list_id}", "column": "list_id"}]}]});
+    let created = handle.command(&json!({ "method": "create", "params": {
+        "schema": schema, "clientId": "device-1"
+    }}));
+    assert!(created.get("error").is_none(), "{created}");
+    let state = handle.command(&json!({ "method": "localAuthorityState", "params": {} }));
+    assert_eq!(state, json!({ "result": { "state": "local" } }));
+
+    let mutated = handle.command(&json!({ "method": "mutate", "params": { "mutations": [
+        { "op": "upsert", "table": "todos", "values": { "id": "t1", "list_id": "l1" } }
+    ]}}));
+    assert!(mutated.get("error").is_none(), "{mutated}");
+    let synced = handle.command(&json!({ "method": "syncUntilIdle", "params": {} }));
+    assert!(synced.get("error").is_none(), "{synced}");
+    let pending = handle.command(&json!({ "method": "pendingCommitIds", "params": {} }));
+    assert_eq!(pending["result"]["ids"], json!([]), "{pending}");
+
+    let realtime = handle.command(&json!({ "method": "connectRealtime", "params": {} }));
+    assert_eq!(
+        realtime["error"]["code"], "sync.invalid_request",
+        "{realtime}"
+    );
+    // Attach needs a baseUrl for the remote server.
+    let attach = handle.command(&json!({ "method": "attachLocalAuthority", "params": {} }));
+    assert_eq!(
+        attach["error"]["code"], "client.local_authority_unconfigured",
+        "{attach}"
+    );
+}

@@ -18,8 +18,11 @@ fun interface SyncularEventListener {
     fun onEvent(event: SyncularEvent)
 }
 
-/** The error a `{error}` reply surfaces: a stable [code] plus a [message]. */
-class SyncularException(val code: String, message: String) : RuntimeException(message)
+/**
+ * The error a `{error}` reply surfaces: a stable [code], a [message], and the
+ * structured [details] the core attaches (null when it sends none).
+ */
+class SyncularException(val code: String, message: String, val details: JsonValue? = null) : RuntimeException(message)
 
 /**
  * Configuration for a [SyncularClient]. [baseUrl] engages the native HTTP+WS
@@ -45,6 +48,8 @@ data class SyncularConfig(
     val maxResponseBytes: Long? = null,
     /** Redirect handling: `"deny"` (default) or `"follow"`. */
     val redirects: String? = null,
+    /** Path to the local authority's own SQLite file (SPEC §12), never [dbPath]. Rounds run against the in-process authority until [SyncularClient.attachLocalAuthority] completes, then against [baseUrl]. Null leaves the client server-attached from the start. */
+    val localAuthorityPath: String? = null,
 ) {
     /** The `syncular_client_new` config JSON (transport fields only). */
     internal fun newConfigJson(): JsonValue {
@@ -59,6 +64,7 @@ data class SyncularConfig(
         maxRequestBytes?.let { fields["maxRequestBytes"] = exactPolicyBound("maxRequestBytes", it) }
         maxResponseBytes?.let { fields["maxResponseBytes"] = exactPolicyBound("maxResponseBytes", it) }
         redirects?.let { fields["redirects"] = JsonValue.of(it) }
+        localAuthorityPath?.let { fields["localAuthorityPath"] = JsonValue.of(it) }
         return JsonValue.Obj(fields)
     }
 
@@ -156,7 +162,7 @@ class SyncularClient private constructor(
         reply["error"]?.let { error ->
             val code = error["code"]?.string ?: "client.failed"
             val message = error["message"]?.string ?: "command failed"
-            throw SyncularException(code, message)
+            throw SyncularException(code, message, error["details"])
         }
         return reply["result"] ?: reply
     }
@@ -276,6 +282,40 @@ class SyncularClient private constructor(
                 "headers" to JsonValue.Obj(headers.mapValues { JsonValue.of(it.value) }),
             ),
         )
+    }
+
+    // -- Local authority (SPEC.md §12; needs localAuthorityPath in the config) ---
+
+    /** Where a client configured with `localAuthorityPath` stands. */
+    enum class LocalAuthorityState(internal val wire: String) {
+        /** Rounds run against the in-process authority. */
+        LOCAL("local"),
+        /** An attach is uploading the authority's live rows to `baseUrl`. */
+        ATTACHING("attaching"),
+        /** The attach completed; rounds run against `baseUrl`. */
+        ATTACHED("attached"),
+    }
+
+    /** The local authority state, or null when the client has no local authority. */
+    fun localAuthorityState(): LocalAuthorityState? {
+        val state = command("localAuthorityState", JsonValue.Obj(emptyMap()))["state"]
+            ?: throw SyncularException("client.invalid_host_response", "local authority state missing")
+        if (state == JsonValue.Null) return null
+        return LocalAuthorityState.entries.firstOrNull { it.wire == state.string }
+            ?: throw SyncularException("client.invalid_host_response", "unknown local authority state", state)
+    }
+
+    /** Upload the local authority's live rows to `baseUrl` (with the headers set
+     *  through [setHeaders]) and switch rounds to the server. Throws
+     *  `sync.attach_rejected` (reason in `details`) when the server refuses, and
+     *  `client.local_authority_unconfigured` without `localAuthorityPath` or `baseUrl`. */
+    fun attachLocalAuthority() {
+        command("attachLocalAuthority", JsonValue.Obj(emptyMap()))
+    }
+
+    /** Roll back an attach that has not completed and return to `local`. */
+    fun abandonLocalAuthorityAttach() {
+        command("abandonLocalAuthorityAttach", JsonValue.Obj(emptyMap()))
     }
 
     /** Run one sync round against the server (needs native-transport). Never

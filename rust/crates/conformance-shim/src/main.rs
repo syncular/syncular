@@ -24,6 +24,10 @@
 //!   "realtimeSend"|"realtimeClose", "params": {...}}`
 //! - host → shim response: same response shape, echoing the "t<n>" id.
 //!
+//! A shim process hosts either a client or one §12 local authority
+//! (`localAuthority*` methods). Attach and abandon reach the remote server through
+//! the same `sync` callback the client transport uses.
+//!
 //! Nested callbacks work because ids are direction-local and the shim keeps
 //! reading (and queueing realtime notifications) while it waits for the
 //! response to its own transport request.
@@ -32,6 +36,7 @@ use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, StdinLock, Stdout, Write};
 
 use serde_json::{json, Map, Value};
+use syncular_authority::{AuthorityError, AuthorityState, LocalAuthority};
 use syncular_client::{
     BlobDownload, BlobUploadGrant, SegmentRequest, SyncClient, Transport, TransportError,
 };
@@ -355,6 +360,20 @@ impl Transport for HostIo {
     }
 }
 
+/// §12.3 attach/abandon outcome in the driver's `AttachResult` shape.
+fn attach_result(outcome: Result<(), AuthorityError>) -> Value {
+    match outcome {
+        Ok(()) => json!({ "ok": true }),
+        Err(error) => {
+            let mut result = json!({ "ok": false, "code": error.code });
+            if let Some(details) = error.details {
+                result["details"] = details;
+            }
+            result
+        }
+    }
+}
+
 fn drain_realtime(io: &mut HostIo, client: &mut Option<SyncClient>) {
     while let Some(event) = io.rt_queue.pop_front() {
         let Some(instance) = client.as_mut() else {
@@ -370,6 +389,7 @@ fn drain_realtime(io: &mut HostIo, client: &mut Option<SyncClient>) {
 fn main() {
     let mut io = HostIo::new();
     let mut client: Option<SyncClient> = None;
+    let mut authority: Option<LocalAuthority> = None;
     let mut effects = CreateEffects::default();
     let mut prepared_round: Option<syncular_client::PreparedSyncRound> = None;
     let progress_events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<
@@ -463,6 +483,68 @@ fn main() {
                         _ => Err(CommandError::new(
                             "harness.invalid_request",
                             "client and SQL are required",
+                        )),
+                    }
+                } else if method.starts_with("localAuthority") {
+                    let command_error = |error: AuthorityError| CommandError {
+                        code: error.code,
+                        message: error.message,
+                        details: error.details,
+                        retryable: false,
+                    };
+                    let mut remote = |request: &[u8]| -> Result<Vec<u8>, AuthorityError> {
+                        let result = io
+                            .call_host("sync", json!({ "request": bytes_value(request) }))
+                            .map_err(|error| AuthorityError {
+                                code: error.code,
+                                message: error.message,
+                                details: error.details,
+                            })?;
+                        value_bytes(result.get("response")).map_err(|message| AuthorityError {
+                            code: "harness.invalid_response".to_owned(),
+                            message,
+                            details: None,
+                        })
+                    };
+                    match (method.as_str(), authority.as_mut()) {
+                        ("localAuthorityOpen", None) => {
+                            match (params.get("path").and_then(Value::as_str), params.get("schema")) {
+                                (Some(path), Some(schema)) => LocalAuthority::open(path, schema)
+                                    .map(|opened| {
+                                        authority = Some(opened);
+                                        json!({})
+                                    })
+                                    .map_err(command_error),
+                                _ => Err(CommandError::new(
+                                    "harness.invalid_request",
+                                    "path and schema are required",
+                                )),
+                            }
+                        }
+                        ("localAuthorityState", Some(instance)) => Ok(json!(match instance.state() {
+                            AuthorityState::Local => "local",
+                            AuthorityState::Attaching => "attaching",
+                            AuthorityState::Attached => "attached",
+                        })),
+                        ("localAuthoritySync", Some(instance)) => value_bytes(params.get("request"))
+                            .map_err(|message| {
+                                CommandError::new("harness.invalid_request", message)
+                            })
+                            .and_then(|request| {
+                                instance
+                                    .sync(&request)
+                                    .map(|response| json!({ "response": bytes_value(&response) }))
+                                    .map_err(command_error)
+                            }),
+                        ("localAuthorityAttach", Some(instance)) => {
+                            Ok(attach_result(instance.attach(&mut remote)))
+                        }
+                        ("localAuthorityAbandonAttach", Some(instance)) => {
+                            Ok(attach_result(instance.abandon_attach(Some(&mut remote))))
+                        }
+                        _ => Err(CommandError::new(
+                            "harness.invalid_request",
+                            "localAuthorityOpen needs a fresh shim; every other authority method an open authority",
                         )),
                     }
                 } else {

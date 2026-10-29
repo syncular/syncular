@@ -24,7 +24,7 @@ use syncular_client::{
     ClientDiagnosticsRequest, ClientError, ClientLimits, CommandEffects, CommitOutcomeQuery,
     LocalDataPurgeInput, LocalDataRebootstrapInput, Mutation, QueryOwner, QueryReadFailure,
     RealtimePolicy, ResolveCommitOutcomeInput, SubscriptionRequest, SyncClient, Transport,
-    WindowBase, WindowCoverage,
+    TransportError, WindowBase, WindowCoverage, LOCAL_AUTHORITY_UNCONFIGURED_CODE,
 };
 
 // -- bytes <-> {"$bytes": hex} (the driver-protocol byte envelope) ----------
@@ -146,6 +146,17 @@ fn client_err(message: String) -> CommandError {
         message,
         details: None,
         retryable,
+    }
+}
+
+/// A transport failure keeps its code and structured details across the
+/// command boundary (`sync.attach_rejected` and its `details.reason`).
+fn transport_command_error(error: TransportError) -> CommandError {
+    CommandError {
+        code: error.code,
+        message: error.message,
+        details: error.details,
+        retryable: false,
     }
 }
 
@@ -660,6 +671,7 @@ pub fn dispatch<T: Transport>(
                 | "previousVersionDiscard"
                 | "localRevision"
                 | "statusSnapshot"
+                | "localAuthorityState"
                 | "shutdown"
         );
         if client
@@ -697,6 +709,11 @@ pub fn dispatch<T: Transport>(
                     )
                 })?;
             }
+            // §12: a host-configured local authority opens with the client's
+            // schema before the client, as the browser worker opens it.
+            transport
+                .open_local_authority(schema, params.get("dbPath").and_then(Value::as_str))
+                .map_err(transport_command_error)?;
             // §native: a `dbPath` installs a file-backed rusqlite connection so
             // native hosts (Tauri plugin, FFI file variant) persist across
             // restarts; absent it, the default in-memory core (the shim's mode).
@@ -1397,6 +1414,28 @@ pub fn dispatch<T: Transport>(
                 .map_err(client_err)?;
             Ok(json!({}))
         }
+        "localAuthorityState" => Ok(json!({ "state": transport.local_authority_state() })),
+        "attachLocalAuthority" | "abandonLocalAuthorityAttach" => {
+            let running = need_client(client)?;
+            if transport.local_authority_state().is_none() {
+                return Err(CommandError::new(
+                    LOCAL_AUTHORITY_UNCONFIGURED_CODE,
+                    "the host configured no localAuthorityPath",
+                ));
+            }
+            // §12.3: hold the client's rounds while the authority uploads or
+            // rolls back, then restore the host's transport gate.
+            let enabled = running.transport_enabled();
+            running.set_transport_enabled(transport, false);
+            let outcome = if method == "attachLocalAuthority" {
+                transport.attach_local_authority()
+            } else {
+                transport.abandon_local_authority_attach()
+            };
+            running.set_transport_enabled(transport, enabled);
+            outcome.map_err(transport_command_error)?;
+            Ok(json!({ "effects": CommandEffects::interactive() }))
+        }
         "connectRealtime" => {
             need_client(client)?
                 .connect_realtime(transport)
@@ -1604,6 +1643,191 @@ mod tests {
         )
         .expect("deliberate reconnect command");
         assert_eq!(transport.realtime_connects, 2);
+    }
+
+    #[test]
+    fn local_authority_commands_without_one_report_the_unconfigured_code() {
+        let mut transport = NoNetwork::default();
+        let mut client: Option<SyncClient> = None;
+        let mut effects = CreateEffects::default();
+        let state = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "localAuthorityState",
+            &json!({}),
+        )
+        .expect("state without a client");
+        assert_eq!(state, json!({ "state": null }));
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({ "schema": schema() }),
+        )
+        .expect("create client");
+        for method in ["attachLocalAuthority", "abandonLocalAuthorityAttach"] {
+            let error = dispatch(
+                &mut transport,
+                &mut client,
+                &mut effects,
+                method,
+                &json!({}),
+            )
+            .expect_err("no local authority");
+            assert_eq!(error.code, "client.local_authority_unconfigured");
+        }
+        let running = client.as_mut().expect("client");
+        assert!(running.transport_enabled());
+        assert!(
+            running.drain_sync_intents().is_empty(),
+            "the gate never toggled"
+        );
+    }
+
+    /// A host transport with a scripted §12 local authority.
+    struct ScriptedAuthority {
+        opened: Vec<(Value, Option<String>)>,
+        open_error: Option<TransportError>,
+        attach_error: Option<TransportError>,
+        abandons: usize,
+    }
+
+    impl Transport for ScriptedAuthority {
+        fn sync(&mut self, _request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            Err(TransportError::new("sync.transport_failed", "offline"))
+        }
+        fn realtime_sync(&mut self, _request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            Err(TransportError::new("sync.transport_failed", "offline"))
+        }
+        fn download_segment(
+            &mut self,
+            _request: &SegmentRequest,
+            _on_progress: &mut dyn FnMut(u64),
+        ) -> Result<Vec<u8>, TransportError> {
+            Err(TransportError::new("sync.transport_failed", "offline"))
+        }
+        fn realtime_connect(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+        fn realtime_send(&mut self, _text: &str) -> Result<(), TransportError> {
+            Ok(())
+        }
+        fn realtime_close(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+        fn open_local_authority(
+            &mut self,
+            schema: &Value,
+            replica_path: Option<&str>,
+        ) -> Result<(), TransportError> {
+            self.opened
+                .push((schema.clone(), replica_path.map(str::to_owned)));
+            self.open_error.take().map_or(Ok(()), Err)
+        }
+        fn local_authority_state(&self) -> Option<&'static str> {
+            (!self.opened.is_empty()).then_some("local")
+        }
+        fn attach_local_authority(&mut self) -> Result<(), TransportError> {
+            self.attach_error.take().map_or(Ok(()), Err)
+        }
+        fn abandon_local_authority_attach(&mut self) -> Result<(), TransportError> {
+            self.abandons += 1;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn local_authority_opens_at_create_and_attach_errors_keep_code_and_details() {
+        let mut transport = ScriptedAuthority {
+            opened: Vec::new(),
+            open_error: Some(TransportError::new("sync.internal_error", "open failed")),
+            attach_error: Some(TransportError {
+                code: "sync.attach_rejected".to_owned(),
+                message: "the remote server refused an attach commit".to_owned(),
+                details: Some(json!({ "reason": "commit_rejected", "opIndex": 0 })),
+            }),
+            abandons: 0,
+        };
+        let mut client: Option<SyncClient> = None;
+        let mut effects = CreateEffects::default();
+        let error = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({ "schema": schema() }),
+        )
+        .expect_err("an authority that fails to open fails create");
+        assert_eq!(error.code, "sync.internal_error");
+        assert!(client.is_none());
+
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({ "schema": schema() }),
+        )
+        .expect("create client");
+        assert_eq!(transport.opened.len(), 2);
+        assert_eq!(transport.opened[1], (schema(), None));
+        let state = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "localAuthorityState",
+            &json!({}),
+        )
+        .expect("state");
+        assert_eq!(state, json!({ "state": "local" }));
+
+        let error = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "attachLocalAuthority",
+            &json!({}),
+        )
+        .expect_err("scripted rejection");
+        assert_eq!(error.code, "sync.attach_rejected");
+        assert_eq!(
+            error.details,
+            Some(json!({ "reason": "commit_rejected", "opIndex": 0 }))
+        );
+        assert!(client.as_ref().expect("client").transport_enabled());
+
+        let abandoned = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "abandonLocalAuthorityAttach",
+            &json!({}),
+        )
+        .expect("abandon");
+        assert_eq!(abandoned["effects"]["sync"]["kind"], "interactive");
+        assert_eq!(transport.abandons, 1);
+
+        // An offline host stays offline across attach.
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "setTransportEnabled",
+            &json!({ "enabled": false }),
+        )
+        .expect("go offline");
+        let attached = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "attachLocalAuthority",
+            &json!({}),
+        )
+        .expect("attach");
+        assert!(attached["effects"].get("sync").is_none());
+        assert!(!client.as_ref().expect("client").transport_enabled());
     }
 
     #[test]

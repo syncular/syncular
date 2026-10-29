@@ -34,13 +34,16 @@ public struct SyncularEvent: Sendable {
 }
 
 /// The error a `{error}` reply surfaces (mirrors the web-client `ClientSyncError`
-/// and the Tauri bridge's `TauriSyncError`): a stable `code` plus a message.
+/// and the Tauri bridge's `TauriSyncError`): a stable `code`, a message, and
+/// the structured `details` the core attaches (nil when it sends none).
 public struct SyncularError: Error, Sendable, CustomStringConvertible {
     public let code: String
     public let message: String
-    public init(code: String, message: String) {
+    public let details: JSONValue?
+    public init(code: String, message: String, details: JSONValue? = nil) {
         self.code = code
         self.message = message
+        self.details = details
     }
     public var description: String { "SyncularError(\(code)): \(message)" }
 }
@@ -76,6 +79,11 @@ public struct SyncularConfig: Sendable {
     /// Redirect handling: `"deny"` (the default) refuses every redirect;
     /// `"follow"` follows only an uncredentialed request.
     public var redirects: String?
+    /// Path to the local authority's own SQLite file (SPEC §12), never the
+    /// replica's `dbPath`. Rounds run against the in-process authority until
+    /// `attachLocalAuthority()` completes, then against `baseUrl`. Nil leaves the
+    /// client server-attached from the start.
+    public var localAuthorityPath: String?
 
     public init(
         baseUrl: String? = nil,
@@ -86,7 +94,8 @@ public struct SyncularConfig: Sendable {
         roundDeadlineMs: UInt64? = nil,
         maxRequestBytes: UInt64? = nil,
         maxResponseBytes: UInt64? = nil,
-        redirects: String? = nil
+        redirects: String? = nil,
+        localAuthorityPath: String? = nil
     ) {
         self.baseUrl = baseUrl
         self.wsUrl = wsUrl
@@ -97,6 +106,7 @@ public struct SyncularConfig: Sendable {
         self.maxRequestBytes = maxRequestBytes
         self.maxResponseBytes = maxResponseBytes
         self.redirects = redirects
+        self.localAuthorityPath = localAuthorityPath
     }
 
     /// The `syncular_client_new` config JSON. `dbPath` rides on `create`, not
@@ -115,6 +125,7 @@ public struct SyncularConfig: Sendable {
         if let maxRequestBytes { object["maxRequestBytes"] = .unsigned(maxRequestBytes) }
         if let maxResponseBytes { object["maxResponseBytes"] = .unsigned(maxResponseBytes) }
         if let redirects { object["redirects"] = .string(redirects) }
+        if let localAuthorityPath { object["localAuthorityPath"] = .string(localAuthorityPath) }
         return .object(object)
     }
 }
@@ -219,7 +230,7 @@ public final class SyncularClient {
            case let .object(errorFields) = error {
             let code = errorFields["code"]?.stringValue ?? "client.failed"
             let message = errorFields["message"]?.stringValue ?? "command failed"
-            throw SyncularError(code: code, message: message)
+            throw SyncularError(code: code, message: message, details: errorFields["details"])
         }
         if case let .object(fields) = reply, let result = fields["result"] {
             return result
@@ -358,6 +369,48 @@ public final class SyncularClient {
             method: "setHeaders",
             params: .object(["headers": .object(headers.mapValues { .string($0) })])
         )
+    }
+
+    // MARK: - Local authority (SPEC.md §12; needs `localAuthorityPath` in the config)
+
+    /// Where a client configured with `localAuthorityPath` stands.
+    public enum LocalAuthorityState: String, Sendable {
+        /// Rounds run against the in-process authority.
+        case local
+        /// An attach is uploading the authority's live rows to `baseUrl`.
+        case attaching
+        /// The attach completed; rounds run against `baseUrl`.
+        case attached
+    }
+
+    /// The local authority state, or nil when the client has no local authority.
+    public func localAuthorityState() throws -> LocalAuthorityState? {
+        let result = try command(method: "localAuthorityState", params: .object([:]))
+        guard let state = result["state"] else {
+            throw SyncularError(code: "client.invalid_host_response", message: "local authority state missing")
+        }
+        if state == .null { return nil }
+        guard let raw = state.stringValue, let parsed = LocalAuthorityState(rawValue: raw) else {
+            throw SyncularError(
+                code: "client.invalid_host_response",
+                message: "unknown local authority state",
+                details: state
+            )
+        }
+        return parsed
+    }
+
+    /// Upload the local authority's live rows to `baseUrl` (with the headers set
+    /// through `setHeaders`) and switch rounds to the server. Throws
+    /// `sync.attach_rejected` (reason in `details`) when the server refuses, and
+    /// `client.local_authority_unconfigured` without `localAuthorityPath` or `baseUrl`.
+    public func attachLocalAuthority() throws {
+        _ = try command(method: "attachLocalAuthority", params: .object([:]))
+    }
+
+    /// Roll back an attach that has not completed and return to `local`.
+    public func abandonLocalAuthorityAttach() throws {
+        _ = try command(method: "abandonLocalAuthorityAttach", params: .object([:]))
     }
 
     /// Run one sync round against the server (needs `native-transport`).

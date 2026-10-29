@@ -86,10 +86,36 @@ import { STORAGE_FAULT_SECRET } from '../driver';
 import { TransportFault } from '../faults';
 import { bytesToHex, hexToBytes } from '../raw';
 
+/**
+ * §6.11: typegen emits one non-unique index per reference column; the
+ * hand-written conformance fixtures synthesize the same declaration for every
+ * authority they open.
+ */
+export function withReferenceIndexes(schema: DriverSchema): DriverSchema {
+  return {
+    ...schema,
+    tables: schema.tables.map((table) =>
+      table.references === undefined
+        ? table
+        : {
+            ...table,
+            indexes: [
+              ...(table.indexes ?? []),
+              ...table.references.map((reference) => ({
+                name: `idx_${table.name}_${reference.column}_ref`,
+                columns: [reference.column],
+                unique: false,
+              })),
+            ],
+          },
+    ),
+  };
+}
+
 function toServerSchema(schema: DriverSchema): ServerSchema {
   return {
     version: schema.version,
-    tables: schema.tables.map((table) => ({
+    tables: withReferenceIndexes(schema).tables.map((table) => ({
       name: table.name,
       columns: table.columns as readonly RowColumn[],
       primaryKey: table.primaryKey,
@@ -98,28 +124,15 @@ function toServerSchema(schema: DriverSchema): ServerSchema {
           ? { pattern: scope.pattern, column: scope.column }
           : scope.pattern,
       ),
-      // §6.11: typegen emits one non-unique index per reference column; the
-      // hand-written conformance fixture synthesizes the same declaration.
       ...(table.references !== undefined
         ? { references: table.references }
         : {}),
-      ...(table.indexes !== undefined || table.references !== undefined
-        ? {
-            indexes: [
-              ...(table.indexes ?? []),
-              ...(table.references ?? []).map((reference) => ({
-                name: `idx_${table.name}_${reference.column}_ref`,
-                columns: [reference.column],
-                unique: false,
-              })),
-            ],
-          }
-        : {}),
+      ...(table.indexes !== undefined ? { indexes: table.indexes } : {}),
     })),
   };
 }
 
-function toDriverError(error: SyncError): DriverError {
+export function toDriverError(error: SyncError): DriverError {
   return {
     code: error.code,
     message: error.message,
@@ -135,7 +148,7 @@ function toDriverValue(value: RowValue): DriverRowValue {
 }
 
 /** Current rows of one table in a partition, decoded for assertions. */
-function readServerRows(
+export function readServerRows(
   db: SqliteDatabase,
   schema: DriverSchema,
   partition: string,
@@ -1194,7 +1207,7 @@ class TsServerInstance implements ServerInstance {
 }
 
 /** §12.3: the attach upload reaches `target` through its request handler. */
-function remoteTransport(
+export function remoteTransport(
   target: ServerInstance,
   actorId: string,
   faults?: { readonly loseResponseOfCommit?: number },

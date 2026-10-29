@@ -979,6 +979,92 @@ mod tests {
     }
 
     #[test]
+    fn a_local_authority_serves_rounds_run_on_an_io_thread() {
+        let dir =
+            std::env::temp_dir().join(format!("syncular-tauri-authority-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut core = SyncularCore::new(&json!({
+            "localAuthorityPath": dir.join("authority.sqlite").to_str().unwrap()
+        }))
+        .unwrap();
+        // The authority serves only scoped tables (SPEC §3.1).
+        let created = core.command(&json!({
+            "method": "create",
+            "params": { "clientId": "c1", "schema": {
+                "version": 1,
+                "tables": [{
+                    "name": "todo",
+                    "primaryKey": "id",
+                    "columns": [
+                        { "name": "id", "type": "string", "nullable": false },
+                        { "name": "list_id", "type": "string", "nullable": false }
+                    ],
+                    "scopes": [{ "pattern": "list:{list_id}", "column": "list_id" }]
+                }]
+            }}
+        }));
+        assert!(created.get("error").is_none(), "{created}");
+        let state = core.command(&json!({ "method": "localAuthorityState", "params": {} }));
+        assert_eq!(state["result"]["state"], "local");
+        for command in [
+            json!({ "method": "subscribe", "params": {
+                "id": "s1", "table": "todo", "scopes": { "list_id": ["l1"] }
+            }}),
+            json!({ "method": "mutate", "params": { "mutations": [
+                { "op": "upsert", "table": "todo", "values": { "id": "t1", "list_id": "l1" } }
+            ]}}),
+        ] {
+            let reply = core.command(&command);
+            assert!(reply.get("error").is_none(), "{reply}");
+        }
+        // The production host runs each exchange on an I/O thread over a
+        // forked transport view that shares the one authority.
+        let mut more = true;
+        for _ in 0..8 {
+            if !more {
+                break;
+            }
+            let Ok((mut prepared, transport)) = core.prepare_round() else {
+                panic!("prepare a round");
+            };
+            let mut transport = Some(transport);
+            loop {
+                let mut io = transport.take().expect("round transport");
+                let (completed, io) = std::thread::spawn(move || {
+                    let completed = prepared.exchange(&mut io);
+                    (completed, io)
+                })
+                .join()
+                .unwrap();
+                transport = Some(io);
+                match core.apply_round(completed) {
+                    syncular_client::AppliedSyncRound::Continue(next) => prepared = next,
+                    syncular_client::AppliedSyncRound::Complete {
+                        outcome,
+                        more: round_more,
+                        ..
+                    } => {
+                        assert!(
+                            matches!(outcome, syncular_client::SyncOutcome::Ok(_)),
+                            "{:?}",
+                            outcome.to_json()
+                        );
+                        more = round_more;
+                        break;
+                    }
+                }
+            }
+        }
+        assert!(!more, "the authority converged within eight rounds");
+        let pending = core.command(&json!({ "method": "pendingCommitIds", "params": {} }));
+        assert_eq!(pending["result"]["ids"], json!([]), "{pending}");
+        let realtime = core.command(&json!({ "method": "connectRealtime", "params": {} }));
+        assert_eq!(realtime["error"]["code"], "sync.invalid_request");
+        core.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn config_validation_rejects_baseurl_without_native_feature() {
         let result = SyncularCore::new(&json!({ "baseUrl": "http://localhost:9/sync" }));
         #[cfg(not(feature = "native-transport"))]

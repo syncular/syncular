@@ -67,6 +67,12 @@ repeat the WebSocket handshake with them. `FlutterConnectivitySignal` and
 `SyncularConnectivityAdapter` bind a boolean reachability stream to
 `pause()`/`resume()`; close the adapter during client teardown.
 
+To start without a server (SPEC §12), set
+`SyncularConfig(localAuthorityPath: ...)` and `baseUrl`. `localAuthorityState()`
+returns `local`, `attaching`, `attached` or null; `attachLocalAuthority()` uploads
+to `baseUrl`, and `abandonLocalAuthorityAttach()` rolls a stopped attach back.
+Errors carry `code` and `details`. See `/guide-local-authority/`.
+
 Typed conveniences mirror the command surface exactly (same names as the
 Swift/Kotlin wrappers): `mutate` / `subscribe` / `unsubscribe` / `sync` /
 `syncUntilIdle` / `readRows` / `query` / `pendingCommitIds` / `statusSnapshot` /

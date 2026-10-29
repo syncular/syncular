@@ -55,6 +55,22 @@ void  syncular_free_string(char *ptr);
 
 `baseUrl` engages the native transport (requires a `native-transport` build): blocking HTTP through `ureq` against `{baseUrl}/sync`, `{baseUrl}/segments/{id}`, the blob endpoints, and bare signed-URL fetches, plus a `tungstenite` realtime socket with a reader thread. `wsUrl` is optional and derives from `baseUrl` as `{baseUrl}/realtime`. A `baseUrl` on a lean build makes `syncular_client_new` return NULL. The config also accepts the transport policy keys `requestTimeoutMs`, `roundDeadlineMs`, `maxRequestBytes`, `maxResponseBytes`, and `redirects`, documented in [Rust: Platform specifics](/platform-rust-specifics/#native-transport-policy).
 
+### Local authority
+
+`localAuthorityPath` names the SQLite file of a local authority (SPEC §12), so the client starts without a server and later moves its data to `baseUrl` ([Start without a server](/guide-local-authority/)). The FFI builds with the `local-authority` feature.
+
+```json title="local authority config"
+{ "localAuthorityPath": "/data/authority.sqlite", "baseUrl": "https://host/mount" }
+```
+
+`create` opens the authority with the create schema. Give the authority its own file: the client's schema reset drops every replica table outside `_syncular_*`, and `create` refuses a `localAuthorityPath` equal to `dbPath` with `sync.invalid_request`. Until attach completes, every sync round reaches the authority, `connectRealtime` and segment fetches fail with `sync.invalid_request`, and blob and remote-operation requests go to `baseUrl`.
+
+- `localAuthorityState`: returns `{"state": "local"}`, `"attaching"`, or `"attached"`, and `null` when the config names no authority or before `create`.
+- `attachLocalAuthority`: holds the client's rounds, uploads the authority's rows to `baseUrl` with the headers set through `setHeaders`, and then routes rounds to `baseUrl`, where the replica rebinds through the log-epoch reset. A stopped attach returns the authority's code and details, for example `sync.attach_rejected` with `details.reason`.
+- `abandonLocalAuthorityAttach`: rolls a stopped attach back and returns the client to the authority.
+
+Without a `baseUrl`, attach and abandon fail with `client.local_authority_unconfigured`. After attach the authority file holds only its state. To retire it, remove `localAuthorityPath` from the config and then delete the file; a config that names a deleted file opens an empty authority in the `local` state.
+
 ## The command envelope
 
 `syncular_client_command` takes `{"method": "...", "params": {...}}` and returns `{"result": ...}` or `{"error": {"code": "...", "message": "..."}}`, where details such as `retryable` and `details` ride on the error object. Bytes travel inside the JSON as `{"$bytes": "<lowercase-hex>"}`, so a binding marshals plain strings. A command string that is not valid UTF-8 JSON returns `client.failed`.
@@ -74,6 +90,7 @@ The methods the router executes:
 | Divergence & outcomes | `conflicts`, `rejections`, `commitOutcome`, `commitOutcomes`, `resolveCommitOutcome` |
 | Previous-version context | `previousVersionAudit`, `previousVersionSnapshot`, `previousVersionDiscard` |
 | Realtime & presence | `connectRealtime`, `disconnectRealtime`, `setPresence`, `presence` |
+| Local authority | `localAuthorityState`, `attachLocalAuthority`, `abandonLocalAuthorityAttach` |
 | Blobs | `uploadBlob`, `fetchBlob` |
 | CRDT (`crdt-yjs` feature) | `crdtText`, `crdtInsertText`, `crdtDeleteText`, `crdtApplyUpdate` |
 | Conformance helpers | `messageRoundtrip`, `segmentRoundtrip`, `realtimeKnown`, `timeWindowSugar` |

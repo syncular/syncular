@@ -10,7 +10,7 @@ A local authority runs the Syncular server inside your app's process over its ow
 - **Remote server**: The server the client syncs with after attach.
 :::
 
-The local authority ships in `@syncular/server` for Bun, Node 22.13 or newer, and the browser worker. The native cores (Tauri, Swift, Kotlin, Flutter, React Native) have no local authority yet.
+The local authority ships in `@syncular/server` for Bun, Node 22.13 or newer, and the browser worker, and in the `syncular-authority` Rust crate for the native cores (Tauri, Swift, Kotlin, Flutter, React Native, the C FFI).
 
 ## Open the authority and the client
 
@@ -83,6 +83,16 @@ export const handle = await createSyncClientHandle({
 The worker opens the authority in a sibling OPFS file beside the replica and routes every round to it. Without the override, `createSyncClientHandle` rejects with `client.local_authority_unconfigured`. While the authority serves the client, the worker connects no realtime socket. `handle.localAuthorityState()` returns `local`, `attaching`, or `attached`.
 
 `handle.attachLocalAuthority()` holds the client's rounds, uploads the rows with the headers set through `setHeaders`, and then routes rounds to `endpoints.syncUrl`, where the replica rebinds through the log-epoch reset. After attach the authority file keeps only its state, so the page keeps passing `localAuthority: true` and the worker keeps syncing with the remote server. `handle.abandonLocalAuthorityAttach()` rolls a stopped attach back ([When attach stops](#when-attach-stops)).
+
+## In a native app
+
+The native cores open the Rust authority when the client config names `localAuthorityPath`, the authority's own SQLite file beside the replica. `baseUrl` names the remote server that attach uploads to. Rounds reach the authority until attach completes, and the remote server afterwards. While the authority serves the client, realtime and segment downloads are unavailable. Every binding exposes the same three calls:
+
+- `localAuthorityState()`: `local`, `attaching`, `attached`, or none without `localAuthorityPath`.
+- `attachLocalAuthority()`: uploads the rows to `baseUrl` with the current headers, then routes rounds there.
+- `abandonLocalAuthorityAttach()`: rolls a stopped attach back.
+
+A native build without the `local-authority` feature refuses a `localAuthorityPath` config with `client.local_authority_unconfigured`. The Rust authority serves bootstrap rows inline and builds no SQLite images. The per-platform field names and call signatures are on the [Swift](/platform-swift-specifics/#local-authority), [Kotlin](/platform-kotlin-specifics/#local-authority), [Flutter](/platform-flutter-specifics/#local-authority), [React Native](/platform-react-native-specifics/#local-authority), [Tauri](/platform-tauri-specifics/#local-authority), [Rust](/platform-rust-specifics/#local-authority), and [C FFI](/platform-ffi/#local-authority) pages.
 
 ## Upgrade the schema
 

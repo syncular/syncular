@@ -2,8 +2,8 @@
 
 Reference for the native side of the Tauri SDK: threading, the command and event
 surface, the native transport, the read-path performance contract, authority
-evidence before activation, local activation with the transport closed, and the
-test clock.
+evidence before activation, local activation with the transport closed, the
+local authority, and the test clock.
 
 ::meta{for="Developers hardening or debugging a Tauri deployment" time="20 minutes" first="platform-tauri-install" spec="8.4 8.7"}
 
@@ -232,6 +232,43 @@ The gate defaults open on each new client and is never stored in SQLite. Pass
 `transportEnabled: false` on every secure offline cold start. Repeated pause or
 resume calls are idempotent. The realtime supervisor owns reconnect after
 resume, and a closed gate refuses its connect attempts without opening a socket.
+
+## Local authority
+
+Set `SyncularConfig.local_authority_path` to start without a server. The path
+names the authority's own SQLite file, never the replica's `db_path`: the
+client's schema reset drops every replica table outside `_syncular_*`. The
+plugin enables the `local-authority` feature of `syncular-client`, so no Cargo
+feature is needed.
+
+```rust title="src-tauri/src/lib.rs"
+let config = SyncularConfig {
+    db_path: Some(data_dir.join("replica.db").display().to_string()),
+    local_authority_path: Some(data_dir.join("authority.db").display().to_string()),
+    base_url: Some("https://sync.example.com".into()),
+    ..Default::default()
+};
+```
+
+`create` opens the authority with the create schema. Sync rounds run against
+the in-process authority until the attach completes, then against `base_url`.
+While the state is `local`, `connectRealtime` and segment downloads fail with
+`sync.invalid_request`. The attach commands fail with
+`client.local_authority_unconfigured` when the plugin has no
+`local_authority_path` or no `base_url`.
+
+The bridge exposes the lifecycle on the client:
+
+| Call | Does |
+|---|---|
+| `localAuthorityState()` | Resolves `'local'`, `'attaching'`, `'attached'`, or `null` when the plugin has no `local_authority_path`. Allowed during security preflight. |
+| `attachLocalAuthority()` | Uploads the authority's live rows to the `base_url` server with the current headers. Rejects with `sync.attach_rejected` and `details.reason` when the server refuses. |
+| `abandonLocalAuthorityAttach()` | Rolls back an attach that did not complete and returns the state to `local`. |
+
+All three ride `syncular_command`, so the default permission set already covers
+them. The client holds its sync rounds during an attach or rollback and restores
+the transport gate afterwards. Scope choice, the attach sequence, and the rejection
+reasons are in [Start without a server](/guide-local-authority/).
 
 ## Test clock
 

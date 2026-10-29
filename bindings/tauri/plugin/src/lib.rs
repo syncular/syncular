@@ -63,6 +63,11 @@ pub struct SyncularConfig {
     /// Server base URL for the native HTTP+WS transport (needs the
     /// `native-transport` feature). Absent → client-local only.
     pub base_url: Option<String>,
+    /// Path of the SPEC §12 local authority's own SQLite file, never the
+    /// replica's `db_path`. With it set, sync rounds run against the in-process
+    /// authority until `attachLocalAuthority` completes, then against
+    /// `base_url`. Absent → no local authority.
+    pub local_authority_path: Option<String>,
     /// Optional realtime WS URL; derived from `base_url` when absent.
     pub ws_url: Option<String>,
     /// Extra request headers (auth, actor/project ids) as (name, value).
@@ -106,6 +111,7 @@ impl Default for SyncularConfig {
     fn default() -> Self {
         Self {
             base_url: None,
+            local_authority_path: None,
             ws_url: None,
             headers: Vec::new(),
             request_timeout_ms: None,
@@ -127,6 +133,9 @@ impl SyncularConfig {
         let mut map = serde_json::Map::new();
         if let Some(base) = &self.base_url {
             map.insert("baseUrl".to_owned(), Value::from(base.clone()));
+        }
+        if let Some(path) = &self.local_authority_path {
+            map.insert("localAuthorityPath".to_owned(), Value::from(path.clone()));
         }
         if let Some(ws) = &self.ws_url {
             map.insert("wsUrl".to_owned(), Value::from(ws.clone()));
@@ -1367,6 +1376,7 @@ mod tests {
     fn config_to_transport_json_shapes_fields() {
         let config = SyncularConfig {
             base_url: Some("https://api.example.com".to_owned()),
+            local_authority_path: Some("/data/authority.db".to_owned()),
             headers: vec![("authorization".to_owned(), "Bearer x".to_owned())],
             request_timeout_ms: Some(1000),
             round_deadline_ms: Some(2000),
@@ -1377,6 +1387,7 @@ mod tests {
         };
         let json = config.to_transport_json();
         assert_eq!(json["baseUrl"], "https://api.example.com");
+        assert_eq!(json["localAuthorityPath"], "/data/authority.db");
         assert_eq!(json["headers"]["authorization"], "Bearer x");
         assert_eq!(json["requestTimeoutMs"], 1000);
         assert_eq!(json["roundDeadlineMs"], 2000);
@@ -1478,6 +1489,49 @@ mod tests {
         ))
         .expect("active reply");
         assert_eq!(active["result"], Value::Null);
+    }
+
+    #[test]
+    fn local_authority_commands_route_through_the_plugin_without_a_configured_authority() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        let app = mock_builder()
+            .plugin(init(SyncularConfig {
+                auto_sync: false,
+                ..Default::default()
+            }))
+            .build(mock_context(noop_assets()))
+            .expect("build mock app");
+        let command = |method: &str| {
+            tauri::async_runtime::block_on(syncular_command(
+                app.handle().clone(),
+                json!({ "method": method, "params": {} }),
+            ))
+            .expect("command reply")
+        };
+
+        let created = tauri::async_runtime::block_on(syncular_command(
+            app.handle().clone(),
+            json!({
+                "method": "create",
+                "params": {
+                    "clientId": "native-no-authority",
+                    "schema": { "version": 1, "tables": [] }
+                }
+            }),
+        ))
+        .expect("create reply");
+        assert!(created.get("error").is_none(), "{created}");
+
+        let state = command("localAuthorityState");
+        assert_eq!(state["result"]["state"], Value::Null, "{state}");
+        for method in ["attachLocalAuthority", "abandonLocalAuthorityAttach"] {
+            let reply = command(method);
+            assert_eq!(
+                reply["error"]["code"], "client.local_authority_unconfigured",
+                "{method}: {reply}"
+            );
+        }
     }
 
     #[test]

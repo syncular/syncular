@@ -46,6 +46,18 @@ purge, then call `activateSecurity({ encryption })`. See
 [Authorized local purge](/concepts-local-data-purge/). `securityPreflight` and
 `encryption` in the create config are mutually exclusive.
 
+## Local authority
+
+Pass `localAuthorityPath` to `createNativeSyncClient` to start without a server (SPEC §12). The path names the authority's own SQLite file and must differ from `dbPath`. The bridge sends it in the `configJson` argument of the native `create`, so the iOS and Android shims need no change. Until the attach completes, sync rounds go to the in-process authority, `connectRealtime` rejects with `sync.invalid_request`, and segment downloads fail. The attach needs `baseUrl`. See [Start without a server](/guide-local-authority/) for the model and the attach failure reasons.
+
+| Call | Resolves to | Effect |
+|---|---|---|
+| `localAuthorityState()` | `'local' \| 'attaching' \| 'attached' \| null` | `null` without a `localAuthorityPath` |
+| `attachLocalAuthority()` | `void` | Uploads the authority's rows to `baseUrl` with the headers set through `setHeaders`, then syncs with that server |
+| `abandonLocalAuthorityAttach()` | `void` | Deletes the rows a stopped attach uploaded, then syncs locally |
+
+`attachLocalAuthority` rejects with a `NativeSyncError` whose `code` is `sync.attach_rejected` and whose `details.reason` names the cause. Both attach calls reject with `client.local_authority_unconfigured` without a `localAuthorityPath` or a `baseUrl`. `localAuthorityState()` also works during security preflight.
+
 ## Related
 
 - [FFI & the native core](/platform-ffi/): the five-function C ABI beneath the TurboModule.

@@ -116,6 +116,89 @@ class SyncularClientTest {
     }
 
     @Test
+    fun localAuthorityPathSerializesIntoTheCoreConfig() {
+        val config = SyncularConfig(localAuthorityPath = "/data/authority.sqlite").newConfigJson()
+        assertEquals(JsonValue.Str("/data/authority.sqlite"), config["localAuthorityPath"])
+        assertEquals(null, SyncularConfig().newConfigJson()["localAuthorityPath"])
+    }
+
+    @Test
+    fun emptyLocalAuthorityPathIsRejectedByTheCoreConfig() {
+        val error = assertFailsWith<SyncularException> {
+            SyncularClient.create(schema = todoSchema(), config = SyncularConfig(localAuthorityPath = ""))
+        }
+        assertEquals("client.failed", error.code)
+    }
+
+    @Test
+    fun localAuthorityCommandsWithoutAuthorityPathReportUnconfigured() {
+        makeClient().use { client ->
+            assertEquals(null, client.localAuthorityState())
+            val attach = assertFailsWith<SyncularException> { client.attachLocalAuthority() }
+            assertEquals("client.local_authority_unconfigured", attach.code)
+            val abandon = assertFailsWith<SyncularException> { client.abandonLocalAuthorityAttach() }
+            assertEquals("client.local_authority_unconfigured", abandon.code)
+        }
+    }
+
+    @Test
+    fun localAuthorityServesRoundsInProcess() {
+        val directory = java.nio.file.Files.createTempDirectory("syncular-authority")
+        try {
+            // The authority serves only scoped tables (SPEC §3.1).
+            val column = { name: String ->
+                JsonValue.obj("name" to JsonValue.of(name), "type" to JsonValue.of("string"), "nullable" to JsonValue.of(false))
+            }
+            val schema = JsonValue.obj(
+                "version" to JsonValue.of(1),
+                "tables" to JsonValue.arr(
+                    listOf(
+                        JsonValue.obj(
+                            "name" to JsonValue.of("todo"),
+                            "primaryKey" to JsonValue.of("id"),
+                            "scopes" to JsonValue.arr(
+                                listOf(JsonValue.obj("pattern" to JsonValue.of("list:{list_id}"), "column" to JsonValue.of("list_id"))),
+                            ),
+                            "columns" to JsonValue.arr(listOf(column("id"), column("list_id"))),
+                        ),
+                    ),
+                ),
+            )
+            SyncularClient.create(
+                clientId = "kotlin-authority",
+                schema = schema,
+                config = SyncularConfig(localAuthorityPath = directory.resolve("authority.sqlite").toString()),
+            ).use { client ->
+                assertEquals(SyncularClient.LocalAuthorityState.LOCAL, client.localAuthorityState())
+                client.subscribe(id = "s1", table = "todo", scopes = mapOf("list_id" to listOf("l1")))
+                client.mutate(
+                    listOf(
+                        JsonValue.obj(
+                            "op" to JsonValue.of("upsert"),
+                            "table" to JsonValue.of("todo"),
+                            "values" to JsonValue.obj("id" to JsonValue.of("t1"), "list_id" to JsonValue.of("l1")),
+                        ),
+                    ),
+                )
+                client.syncUntilIdle()
+                assertEquals(emptyList<String>(), client.pendingCommitIds())
+                // The authority acknowledged the commit: the row carries a server version.
+                assertEquals(1.0, client.readRows("todo")[0]["version"]?.number)
+            }
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun exceptionCarriesStructuredDetails() {
+        val details = JsonValue.obj("reason" to JsonValue.of("r"))
+        val error = SyncularException("sync.attach_rejected", "m", details)
+        assertEquals(details, error.details)
+        assertEquals(null, SyncularException("x", "m").details)
+    }
+
+    @Test
     fun mutateThenReadRowsShowsOptimisticRow() {
         makeClient().use { client ->
             client.subscribe(id = "s1", table = "todo")

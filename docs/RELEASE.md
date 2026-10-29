@@ -3537,11 +3537,12 @@ The npm publish order is:
 The crates.io publish order is:
 
 1. `syncular-ssp2`
-2. `syncular-client`
-3. `syncular-command`
-4. `syncular-ffi`
-5. `syncular`
-6. `tauri-plugin-syncular`
+2. `syncular-authority`
+3. `syncular-client`
+4. `syncular-command`
+5. `syncular-ffi`
+6. `syncular`
+7. `tauri-plugin-syncular`
 
 The workflow skips an artifact already published at the release version, so a
 partially completed trusted-publishing run is safe to re-run.

@@ -52,9 +52,21 @@ The core is thread-affine, which the lock satisfies. Never call the FFM function
 
 The wrapper serializes each bound as an exact integer token and throws `IllegalArgumentException` for a `Long` above 2^53 that has no exact `Double` representation. [Rust: Platform specifics](/platform-rust-specifics/#native-transport-policy) gives the full semantics.
 
+## Local authority
+
+Set `SyncularConfig.localAuthorityPath` to start without a server (SPEC §12). The path names the authority's own SQLite file and must differ from `dbPath`; an empty string fails `create` with `client.failed`. Until the attach completes, sync rounds go to the in-process authority, `connectRealtime` fails with `sync.invalid_request`, and segment downloads fail. The attach needs `baseUrl`. See [Start without a server](/guide-local-authority/) for the model and the attach failure reasons.
+
+| Call | Returns | Effect |
+|---|---|---|
+| `localAuthorityState()` | `SyncularClient.LocalAuthorityState?` | `LOCAL`, `ATTACHING` or `ATTACHED`; `null` without a `localAuthorityPath` |
+| `attachLocalAuthority()` | `Unit` | Uploads the authority's rows to `baseUrl` with the headers set through `setHeaders`, then syncs with that server |
+| `abandonLocalAuthorityAttach()` | `Unit` | Deletes the rows a stopped attach uploaded, then syncs locally |
+
+`attachLocalAuthority` throws `sync.attach_rejected` with `details?["reason"]` when the server refuses an upload commit. Both attach calls throw `client.local_authority_unconfigured` without a `localAuthorityPath` or a `baseUrl`.
+
 ## Errors
 
-`SyncularException` carries a stable `code` and a message. `create` throws `client.failed` when `syncular_client_new` returns NULL: a malformed config, or a `baseUrl` on a core built without `native-transport`. A command after `close()` throws `client.closed`.
+`SyncularException` carries a stable `code`, a message, and the structured `details` of the reply (`null` when the core sent none). `create` throws `client.failed` when `syncular_client_new` returns NULL: a malformed config, or a `baseUrl` on a core built without `native-transport`. A command after `close()` throws `client.closed`.
 
 ## Example app
 

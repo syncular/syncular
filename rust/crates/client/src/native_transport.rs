@@ -11,6 +11,10 @@
 //!   transport into (unlike the conformance shim). `ureq` for blocking HTTP,
 //!   `tungstenite` for the WS socket; a reader thread buffers inbound frames.
 //!
+//! - `Local` (the `local-authority` feature, a `localAuthorityPath` config):
+//!   §12.4 routing over either shape above. Sync rounds reach the in-process
+//!   local authority until attach completes, then the remote transport.
+//!
 //! Inbound realtime frames land in a shared queue the host drains after each
 //! command. An optional wake callback lets mailbox-driven hosts react without
 //! polling. The socket implementation is deliberately singular: fairness and
@@ -201,6 +205,9 @@ pub enum HostTransport {
     },
     #[cfg(feature = "native-transport")]
     Native(native::NativeTransport),
+    /// §12 local authority in front of the `Null` or `Native` remote.
+    #[cfg(feature = "local-authority")]
+    Local(Box<LocalAuthorityTransport<HostTransport>>),
 }
 
 impl HostTransport {
@@ -228,37 +235,58 @@ impl HostTransport {
     }
 
     /// Build the transport with an explicit programmatic policy, ignoring any
-    /// policy keys the JSON config carries. `baseUrl` selection is unchanged.
+    /// policy keys the JSON config carries. `baseUrl` selection is unchanged;
+    /// a `localAuthorityPath` puts the §12 local authority in front of it.
     pub fn from_config_with_policy(
         config: &serde_json::Value,
         policy: HostTransportPolicy,
         notify: Option<Arc<dyn Fn() + Send + Sync>>,
     ) -> Result<Self, String> {
-        #[cfg(feature = "native-transport")]
-        {
-            if let Some(base_url) = config.get("baseUrl").and_then(|v| v.as_str()) {
-                return Ok(HostTransport::Native(native::NativeTransport::with_policy(
-                    base_url, config, policy, notify,
-                )?));
-            }
+        let local_authority_path = match config.get("localAuthorityPath") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::String(path)) if !path.is_empty() => Some(path.clone()),
+            Some(_) => return Err("localAuthorityPath must be a non-empty string".to_owned()),
+        };
+        #[cfg(not(feature = "local-authority"))]
+        if local_authority_path.is_some() {
+            return Err(format!(
+                "{}: this build has no local authority (rebuild with --features local-authority)",
+                crate::LOCAL_AUTHORITY_UNCONFIGURED_CODE
+            ));
         }
-        #[cfg(not(feature = "native-transport"))]
-        {
-            policy.validate()?;
-            if config.get("baseUrl").is_some() {
-                return Err(
-                    "this build has no native transport (rebuild with --features native-transport)"
-                        .to_owned(),
-                );
+        let remote = match config.get("baseUrl").and_then(|v| v.as_str()) {
+            #[cfg(feature = "native-transport")]
+            Some(base_url) => HostTransport::Native(native::NativeTransport::with_policy(
+                base_url, config, policy, notify,
+            )?),
+            _ => {
+                #[cfg(not(feature = "native-transport"))]
+                {
+                    policy.validate()?;
+                    if config.get("baseUrl").is_some() {
+                        return Err(
+                            "this build has no native transport (rebuild with --features native-transport)"
+                                .to_owned(),
+                        );
+                    }
+                }
+                HostTransport::Null {
+                    signed_urls: false,
+                    inbound: Arc::new(match notify {
+                        Some(notify) => InboundBuffer::with_notify(notify),
+                        None => InboundBuffer::default(),
+                    }),
+                }
             }
+        };
+        #[cfg(feature = "local-authority")]
+        if let Some(path) = local_authority_path {
+            let remote_configured = !matches!(remote, HostTransport::Null { .. });
+            return Ok(HostTransport::Local(Box::new(
+                LocalAuthorityTransport::new(path, remote, remote_configured),
+            )));
         }
-        Ok(HostTransport::Null {
-            signed_urls: false,
-            inbound: Arc::new(match notify {
-                Some(notify) => InboundBuffer::with_notify(notify),
-                None => InboundBuffer::default(),
-            }),
-        })
+        Ok(remote)
     }
 
     /// Network view for one I/O executor. The mutable owner keeps the reader
@@ -274,6 +302,8 @@ impl HostTransport {
             },
             #[cfg(feature = "native-transport")]
             Self::Native(t) => Self::Native(t.fork_round()),
+            #[cfg(feature = "local-authority")]
+            Self::Local(t) => Self::Local(Box::new(t.fork_round())),
         }
     }
 
@@ -282,6 +312,8 @@ impl HostTransport {
             HostTransport::Null { signed_urls, .. } => *signed_urls = value,
             #[cfg(feature = "native-transport")]
             HostTransport::Native(t) => t.signed_urls = value,
+            #[cfg(feature = "local-authority")]
+            HostTransport::Local(t) => t.remote.set_signed_urls(value),
         }
     }
 
@@ -292,6 +324,8 @@ impl HostTransport {
             HostTransport::Null { .. } => drop(headers),
             #[cfg(feature = "native-transport")]
             HostTransport::Native(t) => t.set_headers(headers),
+            #[cfg(feature = "local-authority")]
+            HostTransport::Local(t) => t.remote.set_headers(headers),
         }
     }
 
@@ -305,6 +339,8 @@ impl HostTransport {
             HostTransport::Null { .. } => {}
             #[cfg(feature = "native-transport")]
             HostTransport::Native(t) => t.set_policy(policy)?,
+            #[cfg(feature = "local-authority")]
+            HostTransport::Local(t) => t.remote.set_policy(policy)?,
         }
         Ok(())
     }
@@ -315,15 +351,20 @@ impl HostTransport {
             HostTransport::Null { inbound, .. } => inbound.take(),
             #[cfg(feature = "native-transport")]
             HostTransport::Native(t) => t.inbound.take(),
+            #[cfg(feature = "local-authority")]
+            HostTransport::Local(t) => t.remote.take_inbound(),
         }
     }
 
-    /// Release the socket/reader thread. Idempotent.
+    /// Release the socket/reader thread and close the local authority.
+    /// Idempotent.
     pub fn shutdown(&mut self) {
         match self {
             HostTransport::Null { .. } => {}
             #[cfg(feature = "native-transport")]
             HostTransport::Native(t) => t.shutdown(),
+            #[cfg(feature = "local-authority")]
+            HostTransport::Local(t) => t.shutdown(),
         }
     }
 }
@@ -344,6 +385,8 @@ impl Transport for HostTransport {
             HostTransport::Null { .. } => Err(unavailable("sync")),
             #[cfg(feature = "native-transport")]
             HostTransport::Native(t) => t.sync(request),
+            #[cfg(feature = "local-authority")]
+            HostTransport::Local(t) => t.sync(request),
         }
     }
 
@@ -352,6 +395,8 @@ impl Transport for HostTransport {
             HostTransport::Null { .. } => Err(unavailable("remoteOperation")),
             #[cfg(feature = "native-transport")]
             HostTransport::Native(t) => t.remote_operation(request),
+            #[cfg(feature = "local-authority")]
+            HostTransport::Local(t) => t.remote_operation(request),
         }
     }
 
@@ -360,6 +405,8 @@ impl Transport for HostTransport {
             HostTransport::Null { .. } => Err(unavailable("realtimeSync")),
             #[cfg(feature = "native-transport")]
             HostTransport::Native(t) => t.realtime_sync(request),
+            #[cfg(feature = "local-authority")]
+            HostTransport::Local(t) => t.realtime_sync(request),
         }
     }
 
@@ -372,6 +419,8 @@ impl Transport for HostTransport {
             HostTransport::Null { .. } => Err(unavailable("downloadSegment")),
             #[cfg(feature = "native-transport")]
             HostTransport::Native(t) => t.download_segment(request, on_progress),
+            #[cfg(feature = "local-authority")]
+            HostTransport::Local(t) => t.download_segment(request, on_progress),
         }
     }
 
@@ -380,6 +429,8 @@ impl Transport for HostTransport {
             HostTransport::Null { signed_urls, .. } => *signed_urls,
             #[cfg(feature = "native-transport")]
             HostTransport::Native(t) => t.signed_urls,
+            #[cfg(feature = "local-authority")]
+            HostTransport::Local(t) => t.supports_url_fetch(),
         }
     }
 
@@ -396,6 +447,8 @@ impl Transport for HostTransport {
                 .collect(),
             #[cfg(feature = "native-transport")]
             HostTransport::Native(t) => t.download_segments(fetches, on_progress),
+            #[cfg(feature = "local-authority")]
+            HostTransport::Local(t) => t.download_segments(fetches, on_progress),
         }
     }
 
@@ -408,6 +461,8 @@ impl Transport for HostTransport {
             HostTransport::Null { .. } => Err(unavailable("fetchUrl")),
             #[cfg(feature = "native-transport")]
             HostTransport::Native(t) => t.fetch_url(url, on_progress),
+            #[cfg(feature = "local-authority")]
+            HostTransport::Local(t) => t.fetch_url(url, on_progress),
         }
     }
 
@@ -421,6 +476,8 @@ impl Transport for HostTransport {
             HostTransport::Null { .. } => Err(unavailable("blobUpload")),
             #[cfg(feature = "native-transport")]
             HostTransport::Native(t) => t.blob_upload(blob_id, bytes, media_type),
+            #[cfg(feature = "local-authority")]
+            HostTransport::Local(t) => t.blob_upload(blob_id, bytes, media_type),
         }
     }
 
@@ -429,6 +486,8 @@ impl Transport for HostTransport {
             HostTransport::Null { .. } => Err(unavailable("blobDownload")),
             #[cfg(feature = "native-transport")]
             HostTransport::Native(t) => t.blob_download(blob_id),
+            #[cfg(feature = "local-authority")]
+            HostTransport::Local(t) => t.blob_download(blob_id),
         }
     }
 
@@ -437,6 +496,8 @@ impl Transport for HostTransport {
             HostTransport::Null { .. } => Err(unavailable("fetchBlobUrl")),
             #[cfg(feature = "native-transport")]
             HostTransport::Native(t) => t.fetch_blob_url(url),
+            #[cfg(feature = "local-authority")]
+            HostTransport::Local(t) => t.fetch_blob_url(url),
         }
     }
 
@@ -452,6 +513,8 @@ impl Transport for HostTransport {
             HostTransport::Null { .. } => Ok(BlobUploadGrant::None),
             #[cfg(feature = "native-transport")]
             HostTransport::Native(t) => t.blob_upload_grant(blob_id, byte_length, media_type),
+            #[cfg(feature = "local-authority")]
+            HostTransport::Local(t) => t.blob_upload_grant(blob_id, byte_length, media_type),
         }
     }
 
@@ -465,6 +528,8 @@ impl Transport for HostTransport {
             HostTransport::Null { .. } => Err(unavailable("blobPutUrl")),
             #[cfg(feature = "native-transport")]
             HostTransport::Native(t) => t.blob_put_url(url, bytes, media_type),
+            #[cfg(feature = "local-authority")]
+            HostTransport::Local(t) => t.blob_put_url(url, bytes, media_type),
         }
     }
 
@@ -476,6 +541,8 @@ impl Transport for HostTransport {
                 t.set_realtime_client_id(None);
                 t.realtime_connect()
             }
+            #[cfg(feature = "local-authority")]
+            HostTransport::Local(t) => t.realtime_connect(),
         }
     }
 
@@ -487,6 +554,8 @@ impl Transport for HostTransport {
                 t.set_realtime_client_id(Some(client_id));
                 t.realtime_connect()
             }
+            #[cfg(feature = "local-authority")]
+            HostTransport::Local(t) => t.realtime_connect_for_client(client_id),
         }
     }
 
@@ -495,6 +564,8 @@ impl Transport for HostTransport {
             HostTransport::Null { .. } => Err(unavailable("realtimeSend")),
             #[cfg(feature = "native-transport")]
             HostTransport::Native(t) => t.realtime_send(text),
+            #[cfg(feature = "local-authority")]
+            HostTransport::Local(t) => t.realtime_send(text),
         }
     }
 
@@ -503,6 +574,8 @@ impl Transport for HostTransport {
             HostTransport::Null { .. } => Ok(()),
             #[cfg(feature = "native-transport")]
             HostTransport::Native(t) => t.realtime_close(),
+            #[cfg(feature = "local-authority")]
+            HostTransport::Local(t) => t.realtime_close(),
         }
     }
 
@@ -511,6 +584,8 @@ impl Transport for HostTransport {
             HostTransport::Null { .. } => None,
             #[cfg(feature = "native-transport")]
             HostTransport::Native(t) => t.round_deadline(),
+            #[cfg(feature = "local-authority")]
+            HostTransport::Local(t) => t.round_deadline(),
         }
     }
 
@@ -519,6 +594,343 @@ impl Transport for HostTransport {
             HostTransport::Null { .. } => {}
             #[cfg(feature = "native-transport")]
             HostTransport::Native(t) => t.set_round_deadline(deadline),
+            #[cfg(feature = "local-authority")]
+            HostTransport::Local(t) => t.set_round_deadline(deadline),
+        }
+    }
+
+    #[cfg(feature = "local-authority")]
+    fn open_local_authority(
+        &mut self,
+        schema: &serde_json::Value,
+        replica_path: Option<&str>,
+    ) -> Result<(), TransportError> {
+        match self {
+            HostTransport::Local(t) => t.open_local_authority(schema, replica_path),
+            _ => Ok(()),
+        }
+    }
+
+    #[cfg(feature = "local-authority")]
+    fn local_authority_state(&self) -> Option<&'static str> {
+        match self {
+            HostTransport::Local(t) => t.local_authority_state(),
+            _ => None,
+        }
+    }
+
+    #[cfg(feature = "local-authority")]
+    fn attach_local_authority(&mut self) -> Result<(), TransportError> {
+        match self {
+            HostTransport::Local(t) => t.attach_local_authority(),
+            _ => Err(local::unconfigured("this transport has no local authority")),
+        }
+    }
+
+    #[cfg(feature = "local-authority")]
+    fn abandon_local_authority_attach(&mut self) -> Result<(), TransportError> {
+        match self {
+            HostTransport::Local(t) => t.abandon_local_authority_attach(),
+            _ => Err(local::unconfigured("this transport has no local authority")),
+        }
+    }
+}
+
+#[cfg(feature = "local-authority")]
+pub use local::LocalAuthorityTransport;
+
+#[cfg(feature = "local-authority")]
+mod local {
+    //! §12.4 routing: sync rounds reach the in-process local authority until
+    //! attach completes, then the remote transport. The replica rebinds to the
+    //! remote server through the §2.1 log-epoch reset, so the client core adds
+    //! no logic. While the authority serves the client there is no realtime
+    //! channel and no segment endpoint: the authority delivers bootstrap rows
+    //! inline (§5.7).
+
+    use std::sync::{Arc, Mutex};
+
+    use syncular_authority::{AuthorityError, AuthorityState, LocalAuthority};
+
+    use super::HostTransport;
+    use crate::{
+        BlobDownload, BlobUploadGrant, SegmentFetch, SegmentRequest, Transport, TransportError,
+        LOCAL_AUTHORITY_UNCONFIGURED_CODE,
+    };
+
+    pub(super) fn unconfigured(message: &'static str) -> TransportError {
+        TransportError::new(LOCAL_AUTHORITY_UNCONFIGURED_CODE, message)
+    }
+
+    fn transport_error(error: AuthorityError) -> TransportError {
+        TransportError {
+            code: error.code,
+            message: error.message,
+            details: error.details,
+        }
+    }
+
+    fn authority_error(error: TransportError) -> AuthorityError {
+        AuthorityError {
+            code: error.code,
+            message: error.message,
+            details: error.details,
+        }
+    }
+
+    fn refused(message: &'static str) -> TransportError {
+        TransportError::new("sync.invalid_request", message)
+    }
+
+    /// The §12 local authority in front of a remote transport `R`.
+    pub struct LocalAuthorityTransport<R> {
+        path: String,
+        /// Opened by `create` with the client's schema. Every round view
+        /// (`fork_round`) shares it, so attach and rounds serialize on it.
+        authority: Arc<Mutex<Option<LocalAuthority>>>,
+        pub(super) remote: R,
+        /// A remote server is configured (`baseUrl`): attach and abandon
+        /// need it.
+        remote_configured: bool,
+    }
+
+    impl<R> LocalAuthorityTransport<R> {
+        /// `path` is the authority's own SQLite file (`":memory:"` for
+        /// tests), never the replica's: the client's schema reset drops
+        /// every replica table outside `_syncular_*`.
+        pub fn new(path: impl Into<String>, remote: R, remote_configured: bool) -> Self {
+            Self {
+                path: path.into(),
+                authority: Arc::new(Mutex::new(None)),
+                remote,
+                remote_configured,
+            }
+        }
+
+        fn local_active(&self) -> bool {
+            self.authority
+                .lock()
+                .expect("local authority lock")
+                .as_ref()
+                .is_none_or(|authority| authority.state() != AuthorityState::Attached)
+        }
+    }
+
+    impl LocalAuthorityTransport<HostTransport> {
+        pub(super) fn fork_round(&self) -> Self {
+            Self {
+                path: self.path.clone(),
+                authority: self.authority.clone(),
+                remote: self.remote.fork_round(),
+                remote_configured: self.remote_configured,
+            }
+        }
+
+        pub(super) fn shutdown(&mut self) {
+            self.remote.shutdown();
+            *self.authority.lock().expect("local authority lock") = None;
+        }
+    }
+
+    impl<R: Transport> Transport for LocalAuthorityTransport<R> {
+        fn sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            let mut authority = self.authority.lock().expect("local authority lock");
+            match authority.as_mut() {
+                None => Err(unconfigured(
+                    "the local authority opens with create; create a client first",
+                )),
+                Some(local) if local.state() != AuthorityState::Attached => {
+                    local.sync(request).map_err(transport_error)
+                }
+                Some(_) => {
+                    drop(authority);
+                    self.remote.sync(request)
+                }
+            }
+        }
+
+        fn remote_operation(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            self.remote.remote_operation(request)
+        }
+
+        fn realtime_sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            if self.local_active() {
+                return Err(refused("the local authority has no realtime channel"));
+            }
+            self.remote.realtime_sync(request)
+        }
+
+        fn download_segment(
+            &mut self,
+            request: &SegmentRequest,
+            on_progress: &mut dyn FnMut(u64),
+        ) -> Result<Vec<u8>, TransportError> {
+            if self.local_active() {
+                return Err(refused("the local authority has no segment endpoint"));
+            }
+            self.remote.download_segment(request, on_progress)
+        }
+
+        fn download_segments(
+            &mut self,
+            fetches: &[SegmentFetch],
+            on_progress: &mut (dyn FnMut(usize, u64) + Send),
+        ) -> Vec<Result<Vec<u8>, TransportError>> {
+            if self.local_active() {
+                return fetches
+                    .first()
+                    .map(|_| Err(refused("the local authority has no segment endpoint")))
+                    .into_iter()
+                    .collect();
+            }
+            self.remote.download_segments(fetches, on_progress)
+        }
+
+        fn supports_url_fetch(&self) -> bool {
+            self.remote.supports_url_fetch()
+        }
+
+        fn fetch_url(
+            &mut self,
+            url: &str,
+            on_progress: &mut dyn FnMut(u64),
+        ) -> Result<Vec<u8>, TransportError> {
+            if self.local_active() {
+                return Err(refused("the local authority has no segment endpoint"));
+            }
+            self.remote.fetch_url(url, on_progress)
+        }
+
+        fn blob_upload(
+            &mut self,
+            blob_id: &str,
+            bytes: &[u8],
+            media_type: Option<&str>,
+        ) -> Result<(), TransportError> {
+            self.remote.blob_upload(blob_id, bytes, media_type)
+        }
+
+        fn blob_download(&mut self, blob_id: &str) -> Result<BlobDownload, TransportError> {
+            self.remote.blob_download(blob_id)
+        }
+
+        fn fetch_blob_url(&mut self, url: &str) -> Result<Vec<u8>, TransportError> {
+            self.remote.fetch_blob_url(url)
+        }
+
+        fn blob_upload_grant(
+            &mut self,
+            blob_id: &str,
+            byte_length: u64,
+            media_type: Option<&str>,
+        ) -> Result<BlobUploadGrant, TransportError> {
+            self.remote
+                .blob_upload_grant(blob_id, byte_length, media_type)
+        }
+
+        fn blob_put_url(
+            &mut self,
+            url: &str,
+            bytes: &[u8],
+            media_type: Option<&str>,
+        ) -> Result<(), TransportError> {
+            self.remote.blob_put_url(url, bytes, media_type)
+        }
+
+        fn realtime_connect(&mut self) -> Result<(), TransportError> {
+            if self.local_active() {
+                return Err(refused("the local authority has no realtime channel"));
+            }
+            self.remote.realtime_connect()
+        }
+
+        fn realtime_connect_for_client(&mut self, client_id: &str) -> Result<(), TransportError> {
+            if self.local_active() {
+                return Err(refused("the local authority has no realtime channel"));
+            }
+            self.remote.realtime_connect_for_client(client_id)
+        }
+
+        fn round_deadline(&self) -> Option<std::time::Duration> {
+            self.remote.round_deadline()
+        }
+
+        fn set_round_deadline(&mut self, deadline: Option<std::time::Instant>) {
+            self.remote.set_round_deadline(deadline);
+        }
+
+        fn realtime_send(&mut self, text: &str) -> Result<(), TransportError> {
+            self.remote.realtime_send(text)
+        }
+
+        fn realtime_close(&mut self) -> Result<(), TransportError> {
+            self.remote.realtime_close()
+        }
+
+        fn open_local_authority(
+            &mut self,
+            schema: &serde_json::Value,
+            replica_path: Option<&str>,
+        ) -> Result<(), TransportError> {
+            if self.path != ":memory:" && replica_path == Some(self.path.as_str()) {
+                return Err(TransportError::new(
+                    "sync.invalid_request",
+                    "localAuthorityPath must name a file other than the replica's dbPath",
+                ));
+            }
+            let mut authority = self.authority.lock().expect("local authority lock");
+            // Close the previous authority before reopening its file.
+            *authority = None;
+            *authority = Some(LocalAuthority::open(&self.path, schema).map_err(transport_error)?);
+            Ok(())
+        }
+
+        fn local_authority_state(&self) -> Option<&'static str> {
+            self.authority
+                .lock()
+                .expect("local authority lock")
+                .as_ref()
+                .map(|authority| match authority.state() {
+                    AuthorityState::Local => "local",
+                    AuthorityState::Attaching => "attaching",
+                    AuthorityState::Attached => "attached",
+                })
+        }
+
+        fn attach_local_authority(&mut self) -> Result<(), TransportError> {
+            if !self.remote_configured {
+                return Err(unconfigured(
+                    "attachLocalAuthority needs a baseUrl for the remote server",
+                ));
+            }
+            let remote = &mut self.remote;
+            let mut authority = self.authority.lock().expect("local authority lock");
+            authority
+                .as_mut()
+                .ok_or_else(|| {
+                    unconfigured("the local authority opens with create; create a client first")
+                })?
+                .attach(&mut |request: &[u8]| remote.sync(request).map_err(authority_error))
+                .map_err(transport_error)
+        }
+
+        fn abandon_local_authority_attach(&mut self) -> Result<(), TransportError> {
+            if !self.remote_configured {
+                return Err(unconfigured(
+                    "abandonLocalAuthorityAttach needs a baseUrl for the remote server",
+                ));
+            }
+            let remote = &mut self.remote;
+            let mut authority = self.authority.lock().expect("local authority lock");
+            authority
+                .as_mut()
+                .ok_or_else(|| {
+                    unconfigured("the local authority opens with create; create a client first")
+                })?
+                .abandon_attach(Some(&mut |request: &[u8]| {
+                    remote.sync(request).map_err(authority_error)
+                }))
+                .map_err(transport_error)
         }
     }
 }
@@ -3443,5 +3855,223 @@ mod tests {
         assert_eq!(details["httpStatus"], 400);
         assert_eq!(details["actorId"], "actor-b");
         server.join().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod local_authority_tests {
+    use super::HostTransport;
+    use crate::Transport;
+
+    #[cfg(not(feature = "local-authority"))]
+    #[test]
+    fn a_local_authority_path_without_the_feature_fails_with_the_unconfigured_code() {
+        let error = HostTransport::from_config(
+            &serde_json::json!({ "localAuthorityPath": "authority.sqlite" }),
+        )
+        .err()
+        .expect("a build without local-authority refuses localAuthorityPath");
+        assert!(
+            error.starts_with("client.local_authority_unconfigured:"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_config_without_a_local_authority_reports_none() {
+        let mut transport = HostTransport::from_config(&serde_json::json!({}))
+            .ok()
+            .unwrap();
+        assert_eq!(transport.local_authority_state(), None);
+        let error = transport.attach_local_authority().unwrap_err();
+        assert_eq!(error.code, "client.local_authority_unconfigured");
+        let error = transport.abandon_local_authority_attach().unwrap_err();
+        assert_eq!(error.code, "client.local_authority_unconfigured");
+    }
+
+    #[cfg(feature = "local-authority")]
+    mod with_feature {
+        use serde_json::{json, Map, Value};
+        use syncular_authority::LocalAuthority;
+
+        use super::super::{HostTransport, LocalAuthorityTransport};
+        use crate::{
+            ClientLimits, Mutation, SegmentFetch, SegmentRequest, SubscriptionRequest, SyncClient,
+            SyncOutcome, Transport, TransportError,
+        };
+
+        fn schema() -> Value {
+            json!({
+                "version": 1,
+                "tables": [{
+                    "name": "todos",
+                    "columns": [
+                        { "name": "id", "type": "string", "nullable": false },
+                        { "name": "list_id", "type": "string", "nullable": false }
+                    ],
+                    "primaryKey": "id",
+                    "scopes": [{ "pattern": "list:{list_id}", "column": "list_id" }]
+                }]
+            })
+        }
+
+        /// The remote server: a second authority that serves the requests the
+        /// first one's attach and the client's later rounds send it.
+        struct AuthorityServer {
+            server: LocalAuthority,
+            syncs: usize,
+        }
+
+        impl Transport for AuthorityServer {
+            fn sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+                self.syncs += 1;
+                self.server.sync(request).map_err(|error| TransportError {
+                    code: error.code,
+                    message: error.message,
+                    details: error.details,
+                })
+            }
+            fn realtime_sync(&mut self, _request: &[u8]) -> Result<Vec<u8>, TransportError> {
+                Err(TransportError::new("sync.transport_failed", "no socket"))
+            }
+            fn download_segment(
+                &mut self,
+                _request: &SegmentRequest,
+                _on_progress: &mut dyn FnMut(u64),
+            ) -> Result<Vec<u8>, TransportError> {
+                Err(TransportError::new("sync.transport_failed", "no segments"))
+            }
+            fn realtime_connect(&mut self) -> Result<(), TransportError> {
+                Err(TransportError::new("sync.transport_failed", "no socket"))
+            }
+            fn realtime_send(&mut self, _text: &str) -> Result<(), TransportError> {
+                Ok(())
+            }
+            fn realtime_close(&mut self) -> Result<(), TransportError> {
+                Ok(())
+            }
+        }
+
+        #[test]
+        fn a_configured_path_routes_to_the_authority_and_refuses_what_it_lacks() {
+            let mut transport =
+                HostTransport::from_config(&json!({ "localAuthorityPath": ":memory:" }))
+                    .ok()
+                    .unwrap();
+            assert!(matches!(transport, HostTransport::Local(_)));
+            // The authority opens with the client's schema at create.
+            assert_eq!(transport.local_authority_state(), None);
+            assert_eq!(
+                transport.sync(b"").unwrap_err().code,
+                "client.local_authority_unconfigured"
+            );
+            assert_eq!(
+                transport
+                    .realtime_connect_for_client("device-1")
+                    .unwrap_err()
+                    .code,
+                "sync.invalid_request"
+            );
+            let refused = transport.download_segments(
+                &[SegmentFetch::Url("https://cdn.example.com/s1".to_owned())],
+                &mut |_, _| {},
+            );
+            assert_eq!(refused.len(), 1);
+            assert_eq!(
+                refused[0].as_ref().unwrap_err().code,
+                "sync.invalid_request"
+            );
+            // Attach needs a remote server.
+            let error = transport.attach_local_authority().unwrap_err();
+            assert_eq!(error.code, "client.local_authority_unconfigured");
+        }
+
+        #[test]
+        fn the_authority_path_must_differ_from_the_replica_and_be_a_string() {
+            let mut transport =
+                HostTransport::from_config(&json!({ "localAuthorityPath": "/data/app.sqlite" }))
+                    .ok()
+                    .unwrap();
+            let error = transport
+                .open_local_authority(&schema(), Some("/data/app.sqlite"))
+                .unwrap_err();
+            assert_eq!(error.code, "sync.invalid_request");
+            for path in [json!(""), json!(7)] {
+                assert!(
+                    HostTransport::from_config(&json!({ "localAuthorityPath": path })).is_err()
+                );
+            }
+        }
+
+        #[test]
+        fn rounds_reach_the_authority_until_attach_then_the_remote_server() {
+            let schema = schema();
+            let remote = AuthorityServer {
+                server: LocalAuthority::open(":memory:", &schema).expect("open the remote"),
+                syncs: 0,
+            };
+            let mut transport = LocalAuthorityTransport::new(":memory:", remote, true);
+            transport
+                .open_local_authority(&schema, None)
+                .expect("open the local authority");
+            assert_eq!(transport.local_authority_state(), Some("local"));
+
+            let mut client = SyncClient::new_with_identity(
+                Some("device-1".to_owned()),
+                &schema,
+                ClientLimits::default(),
+            )
+            .expect("client");
+            client
+                .subscribe_many(vec![SubscriptionRequest {
+                    id: "todos".to_owned(),
+                    table: "todos".to_owned(),
+                    scopes: vec![("list_id".to_owned(), vec!["l1".to_owned()])],
+                    params: None,
+                }])
+                .expect("subscribe");
+            client
+                .mutate(vec![Mutation::Upsert {
+                    table: "todos".to_owned(),
+                    values: Map::from_iter([
+                        ("id".to_owned(), json!("t1")),
+                        ("list_id".to_owned(), json!("l1")),
+                    ]),
+                    base_version: None,
+                }])
+                .expect("mutate");
+            let outcome = client.sync_until_idle(&mut transport, None);
+            assert!(
+                matches!(outcome, SyncOutcome::Ok(_)),
+                "{:?}",
+                outcome.to_json()
+            );
+            assert!(client.pending_commit_ids().is_empty());
+            assert_eq!(
+                transport.remote.syncs, 0,
+                "the local authority served the round"
+            );
+            let error = client.connect_realtime(&mut transport).unwrap_err();
+            assert!(error.starts_with("sync.invalid_request:"), "{error}");
+
+            transport.attach_local_authority().expect("attach");
+            assert_eq!(transport.local_authority_state(), Some("attached"));
+            let uploads = transport.remote.syncs;
+            assert!(uploads > 0, "attach uploaded through the remote transport");
+
+            // The remote server's log epoch differs, so the replica resets and
+            // bootstraps the attached row from it.
+            let outcome = client.sync_until_idle(&mut transport, None);
+            assert!(
+                matches!(outcome, SyncOutcome::Ok(_)),
+                "{:?}",
+                outcome.to_json()
+            );
+            assert!(transport.remote.syncs > uploads);
+            let rows = client.read_rows("todos").expect("rows");
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].row_id, "t1");
+            assert!(rows[0].version >= 1);
+        }
     }
 }

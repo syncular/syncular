@@ -1220,6 +1220,54 @@ describe('createTauriSyncClient', () => {
     expect((await client.statusSnapshot()).schemaFloor).toBeUndefined();
   });
 
+  test('local authority calls map to commands and keep error code and details', async () => {
+    let state: string | null = 'local';
+    const { tauri, calls } = makeTauri((_cmd, args) => {
+      const method = (args.command as { method: string } | undefined)?.method;
+      if (method === 'create') return OK({});
+      if (method === 'localAuthorityState') return OK({ state });
+      if (method === 'attachLocalAuthority') {
+        return {
+          error: {
+            code: 'sync.attach_rejected',
+            message: 'the server rejected the attach',
+            details: { reason: 'authority_not_empty' },
+          },
+        };
+      }
+      if (method === 'abandonLocalAuthorityAttach') {
+        state = 'local';
+        return OK({});
+      }
+      return OK({});
+    });
+    const client = await createTauriSyncClient({
+      clientId: 'c1',
+      schema: {},
+      tauri,
+    });
+    expect(await client.localAuthorityState()).toBe('local');
+    await expect(client.attachLocalAuthority()).rejects.toMatchObject({
+      code: 'sync.attach_rejected',
+      details: { reason: 'authority_not_empty' },
+    });
+    await client.abandonLocalAuthorityAttach();
+    state = null;
+    expect(await client.localAuthorityState()).toBeNull();
+    expect(
+      calls.flatMap((call) => {
+        const method = (call.args.command as { method: string } | undefined)
+          ?.method;
+        return method !== undefined && method !== 'create' ? [method] : [];
+      }),
+    ).toEqual([
+      'localAuthorityState',
+      'attachLocalAuthority',
+      'abandonLocalAuthorityAttach',
+      'localAuthorityState',
+    ]);
+  });
+
   test('an {error} reply throws a TauriSyncError with the code', async () => {
     const { tauri } = makeTauri((_cmd, args) => {
       const method = (args.command as { method: string } | undefined)?.method;
