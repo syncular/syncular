@@ -23,4 +23,7 @@ syncular-client = { path = "../client", features = ["bench-internals"] }
 # §5.11: e2ee is on too so the cross-core encryption conformance scenarios
 # exercise the Rust encrypt/decrypt seam against the TS core.
 syncular-command = { path = "../command", features = ["crdt-yjs", "e2ee"] }
+# SPEC.md §12: the shim hosts one local authority per process for the
+# cross-core local-authority pairings (Appendix B.24).
+syncular-authority = { path = "../authority" }
 serde_json = "1"

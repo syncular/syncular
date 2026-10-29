@@ -69,6 +69,31 @@ A request that follows a round that failed without a complete response carries a
 
 Build the transport with `HostTransport::from_config_with_policy`, or replace the policy with `HostTransport::set_policy`. A JSON config (the `new` command) sets the same fields with `requestTimeoutMs`, `roundDeadlineMs`, `maxRequestBytes`, `maxResponseBytes`, and `redirects`. Each numeric bound is a `u64` token of at least 1, so a binding that derives the JSON from a floating-point value must serialize the bound losslessly. An invalid policy fails with `sync.invalid_request` and leaves the current policy in force.
 
+## Local authority
+
+With the `local-authority` feature, a `HostTransport` config that names `localAuthorityPath` puts a local authority in front of the remote transport built from `baseUrl` ([Start without a server](/guide-local-authority/)). The `Transport` trait carries the authority calls, and the command router dispatches them as `localAuthorityState`, `attachLocalAuthority`, and `abandonLocalAuthorityAttach` ([C FFI](/platform-ffi/#local-authority)).
+
+```rust title="src/main.rs"
+use serde_json::json;
+use syncular_client::{native_transport::HostTransport, Transport};
+
+let mut transport = HostTransport::from_config(&json!({
+    "localAuthorityPath": "./data/authority.sqlite",
+    "baseUrl": "https://api.example.com/sync-mount",
+}))?;
+transport.open_local_authority(&schema, Some("./data/replica.sqlite"))?;
+// ... sync rounds reach the authority ...
+transport.attach_local_authority()?;
+assert_eq!(transport.local_authority_state(), Some("attached"));
+```
+
+- `open_local_authority(schema, replica_path)`: opens or reopens the authority with the client's schema JSON. A `replica_path` equal to the authority's path fails with `sync.invalid_request`.
+- `local_authority_state()`: `Some("local")`, `Some("attaching")`, `Some("attached")`, or `None` before the authority opens.
+- `attach_local_authority()`: uploads the authority's rows through the remote transport and its current headers. After it returns, `sync` reaches the remote server and the replica rebinds through the log-epoch reset.
+- `abandon_local_authority_attach()`: rolls a stopped attach back.
+
+While the authority serves the client, `realtime_connect` and the segment fetches fail with `sync.invalid_request`. Every round view from `fork_round` shares the one authority, so a round running on an I/O executor waits for an attach on the owner thread. To route to a remote transport other than `HostTransport`, wrap it in `LocalAuthorityTransport::new(path, remote, true)`. A build without the feature refuses a `localAuthorityPath` config with `client.local_authority_unconfigured`.
+
 ## Live progress
 
 `client.progress()` returns a cloneable observer that another thread can read while the owning thread runs sync. Keep the subscription guard alive to receive updates; dropping it unsubscribes without cancelling sync.

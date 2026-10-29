@@ -79,6 +79,27 @@ Call `setHeaders(mapOf("Authorization" to "Bearer $token"))` after credential
 rotation. HTTP requests use the new headers immediately. Reconnect realtime to
 repeat the WebSocket handshake with them.
 
+## Local authority
+
+`SyncularConfig(localAuthorityPath = ...)` starts the client without a server
+(SPEC §12; [guide](https://syncular.dev/guide-local-authority/)). Rounds run
+against an in-process authority stored in that file until
+`attachLocalAuthority()` uploads its history to `baseUrl`:
+
+```kotlin
+val client = SyncularClient.create(
+    schema = schemaJson,
+    config = SyncularConfig(
+        baseUrl = "https://your.server/sync",
+        dbPath = "$dataDir/syncular.db",
+        localAuthorityPath = "$dataDir/authority.db", // not dbPath
+    ),
+)
+client.localAuthorityState()          // LOCAL, ATTACHING, ATTACHED; null without a path
+client.attachLocalAuthority()         // throws SyncularException sync.attach_rejected, details?.get("reason")
+client.abandonLocalAuthorityAttach()  // roll a stopped attach back
+```
+
 ## Lifecycle (the wrapper owns it)
 
 Background/foreground and connectivity handling lives here:

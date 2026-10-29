@@ -46,6 +46,11 @@ export const managedCargoPackages = [
     locks: ['rust/Cargo.lock', 'bindings/tauri/Cargo.lock'],
   },
   {
+    name: 'syncular-authority',
+    manifest: 'rust/crates/authority/Cargo.toml',
+    locks: ['rust/Cargo.lock', 'bindings/tauri/Cargo.lock'],
+  },
+  {
     name: 'syncular-client',
     manifest: 'rust/crates/client/Cargo.toml',
     locks: ['rust/Cargo.lock', 'bindings/tauri/Cargo.lock'],
@@ -93,6 +98,7 @@ const managedBuildTimeVersionTextPaths = [
 ] as const;
 
 const internalCargoConstraintPaths = [
+  'rust/crates/authority/Cargo.toml',
   'rust/crates/client/Cargo.toml',
   'rust/crates/command/Cargo.toml',
   'rust/crates/ffi/Cargo.toml',

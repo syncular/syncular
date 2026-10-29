@@ -78,6 +78,12 @@ await client.crdtInsertText('notes', 'n1', 'doc', 0, 'Hi ');
 await client.crdtDeleteText('notes', 'n1', 'doc', 0, 3);
 ```
 
+To start without a server (SPEC §12), pass `localAuthorityPath` and `baseUrl`.
+`client.localAuthorityState()` resolves to `'local' | 'attaching' | 'attached' | null`;
+`attachLocalAuthority()` uploads to `baseUrl`, and `abandonLocalAuthorityAttach()`
+rolls a stopped attach back. Errors are `NativeSyncError` with `code` and
+`details`. See `/guide-local-authority/`.
+
 Bytes cross as `{$bytes:hex}`; the JS layer parses/stringifies so the native
 shims marshal only strings. Lifecycle: `client.pause()` (stop the native event
 pump + disconnect realtime — call from `AppState` `'background'`) and

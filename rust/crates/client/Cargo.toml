@@ -55,6 +55,14 @@ optional = true
 version = "3"
 optional = true
 
+# §12 local authority for native hosts: `localAuthorityPath` routes sync rounds
+# to the in-process authority until attach completes. Feature-gated so the
+# conformance and wasm builds do not link the server profile.
+[dependencies.syncular-authority]
+path = "../authority"
+version = "0.0.0"
+optional = true
+
 # `wasm32-unknown-unknown` runs inside a JS host: the wall clock comes from
 # `Date.now()`, uuid's v4 source is the host CSPRNG, and the `getrandom`
 # versions behind `e2ee` need their JS backend switched on (getrandom 0.2 wants
@@ -82,3 +90,4 @@ bench-internals = ["dep:libc"]
 crdt-yjs = ["dep:yrs"]
 e2ee = ["ssp2/e2ee", "dep:rand_core"]
 native-transport = ["dep:ureq", "dep:tungstenite", "dep:url", "dep:polling"]
+local-authority = ["dep:syncular-authority"]

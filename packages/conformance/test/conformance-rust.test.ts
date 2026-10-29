@@ -1,7 +1,8 @@
 /**
  * The Rust pairing: the SAME catalog on (Rust client × TS server), with
  * the ssp2 codec driving the golden-vector stage — the "two cores, one
- * written protocol" proof.
+ * written protocol" proof. The §12 local-authority scenarios (Appendix B.24)
+ * also run with both client cores against the Rust authority.
  *
  * Hermetic by default: this file is inert unless SYNCULAR_RUST_CONFORMANCE=1
  * (which builds the shim via cargo if needed) or the shim binary already
@@ -10,9 +11,17 @@
  * Rust toolchain.
  */
 import { describe, expect, test } from 'bun:test';
-import { CATALOG, type Pairing, runScenario, tsServerDriver } from '../src';
+import {
+  CATALOG,
+  type Pairing,
+  runScenario,
+  type Scenario,
+  tsClientDriver,
+  tsServerDriver,
+} from '../src';
 import {
   ensureRustShim,
+  rustAuthorityServerDriver,
   rustClientDriver,
   rustCodecDriver,
   rustShimBinaryPath,
@@ -35,19 +44,36 @@ if (!requested && !available) {
     codec: rustCodecDriver,
   };
 
-  describe('conformance: rust-client × ts-server', () => {
-    for (const scenario of CATALOG) {
-      const label = `${scenario.name} (${scenario.specRefs.join(' ')})`;
-      test(label, async () => {
-        const result = await runScenario(scenario, pairing);
-        if (result.status === 'skipped') return;
-        if (scenario.knownDiscrepancy !== undefined) {
-          expect(result.status).toBe('expected-fail');
-          return;
-        }
-        expect(result.error ?? 'none').toBe('none');
-        expect(result.status).toBe('pass');
-      });
-    }
-  });
+  const lanes: readonly {
+    readonly name: string;
+    readonly pairing: Pairing;
+    readonly scenarios: readonly Scenario[];
+  }[] = [
+    { name: 'rust-client × ts-server', pairing, scenarios: CATALOG },
+    ...[rustClientDriver, tsClientDriver].map((client) => ({
+      name: `${client.name} × rust-authority`,
+      pairing: { ...pairing, server: rustAuthorityServerDriver, client },
+      scenarios: CATALOG.filter((scenario) =>
+        scenario.requires?.includes('local-authority'),
+      ),
+    })),
+  ];
+
+  for (const lane of lanes) {
+    describe(`conformance: ${lane.name}`, () => {
+      for (const scenario of lane.scenarios) {
+        const label = `${scenario.name} (${scenario.specRefs.join(' ')})`;
+        test(label, async () => {
+          const result = await runScenario(scenario, lane.pairing);
+          if (result.status === 'skipped') return;
+          if (scenario.knownDiscrepancy !== undefined) {
+            expect(result.status).toBe('expected-fail');
+            return;
+          }
+          expect(result.error ?? 'none').toBe('none');
+          expect(result.status).toBe('pass');
+        });
+      }
+    });
+  }
 }

@@ -18,7 +18,7 @@ links = "tauri-plugin-syncular"
 # consumes the client core DIRECTLY and dispatches through the shared router.
 # The version constraints are what a `cargo publish` resolves against the
 # crates.io index (path deps are stripped at publish time).
-syncular-client = { path = "../../../rust/crates/client", version = "0.0.0" }
+syncular-client = { path = "../../../rust/crates/client", version = "0.0.0", features = ["local-authority"] }
 syncular-command = { path = "../../../rust/crates/command", version = "0.0.0" }
 tauri = "2"
 serde = { version = "1", features = ["derive"] }

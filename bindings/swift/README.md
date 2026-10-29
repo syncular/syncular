@@ -63,6 +63,24 @@ Call `setHeaders(["Authorization": "Bearer \(token)"])` after credential
 rotation. HTTP requests use the new headers immediately. Reconnect realtime to
 repeat the WebSocket handshake with them.
 
+## Local authority
+
+`SyncularConfig(localAuthorityPath:)` starts the client without a server
+(SPEC §12; [guide](https://syncular.dev/guide-local-authority/)). Rounds run
+against an in-process authority stored in that file until
+`attachLocalAuthority()` uploads its history to `baseUrl`:
+
+```swift
+let client = try SyncularClient(schema: schemaJSON, config: SyncularConfig(
+    baseUrl: "https://your.server/sync",
+    dbPath: "\(appSupport)/syncular.db",
+    localAuthorityPath: "\(appSupport)/authority.db"   // not dbPath
+))
+try client.localAuthorityState()          // .local, .attaching, .attached; nil without a path
+try client.attachLocalAuthority()         // throws SyncularError sync.attach_rejected, details["reason"]
+try client.abandonLocalAuthorityAttach()  // roll a stopped attach back
+```
+
 ## Binary linkage — two consumption modes
 
 The wrapper links the native core; the core is built by

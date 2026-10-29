@@ -20,6 +20,7 @@ import type {
  * `rust/target/{debug,release}/conformance-shim`. `ensureRustShim`
  * builds it via cargo when asked to.
  */
+import { Database } from 'bun:sqlite';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -28,7 +29,10 @@ import {
   REALTIME_TAG_DELTA,
   REALTIME_TAG_ROUND,
 } from '@syncular/core';
+import { BunSqliteDatabase, SyncError } from '@syncular/server';
 import type {
+  AttachResult,
+  BytesResult,
   ClientCommitOutcome,
   ClientConflict,
   ClientCreateOptions,
@@ -59,8 +63,21 @@ import type {
   DriverSyncIntent,
   DriverWindowBase,
   JsonValue,
+  LocalAuthorityInstance,
+  RealtimeConnectResult,
+  ServerDriver,
+  ServerInstance,
+  ServerRowState,
 } from '../driver';
+import { TransportFault } from '../faults';
 import { bytesToHex, hexToBytes } from '../raw';
+import {
+  readServerRows,
+  remoteTransport,
+  toDriverError,
+  tsServerDriver,
+  withReferenceIndexes,
+} from './ts-server';
 
 const RUST_DIR = join(import.meta.dir, '..', '..', '..', '..', 'rust');
 
@@ -1871,6 +1888,193 @@ export const rustClientDriver: ClientDriver = {
       ...(dbPath !== undefined ? { dbPath } : {}),
     });
     return new RustClientInstance(shim, cleanup);
+  },
+};
+
+// ---------------------------------------------------------------------------
+// §12 local authority — the Rust core (`rust/crates/authority`) in the shim
+// ---------------------------------------------------------------------------
+
+/**
+ * One Rust local authority per shim process over a temp database file.
+ * `restart` respawns the shim over the same file, a real process restart.
+ * Attach and abandon reach `target` through the shim's `sync` callback.
+ */
+class RustLocalAuthorityInstance implements LocalAuthorityInstance {
+  readonly #dir = mkdtempSync(
+    join(tmpdir(), 'syncular-conformance-authority-'),
+  );
+  readonly #path = join(this.#dir, 'authority.db');
+  #schema: DriverSchema;
+  #shim: ShimProcess | undefined;
+  /** The remote of the attach or abandon in flight. */
+  #remote: ((request: Uint8Array) => Promise<Uint8Array>) | undefined;
+
+  constructor(schema: DriverSchema) {
+    this.#schema = schema;
+  }
+
+  get #open(): ShimProcess {
+    if (this.#shim === undefined) throw new Error('authority not open');
+    return this.#shim;
+  }
+
+  async restart(schema: DriverSchema): Promise<void> {
+    await this.#shim?.close();
+    this.#schema = schema;
+    const unsupported = async (): Promise<never> => {
+      throw new Error('the attach transport is the sync route only (§12.3)');
+    };
+    this.#shim = new ShimProcess(ensureRustShim(), {
+      sync: async (request) => {
+        if (this.#remote === undefined) {
+          throw new Error('no attach in flight');
+        }
+        return this.#remote(request);
+      },
+      downloadSegment: unsupported,
+      connectRealtime: unsupported,
+    });
+    await this.#shim.call('localAuthorityOpen', {
+      path: this.#path,
+      schema: JSON.parse(JSON.stringify(withReferenceIndexes(schema))),
+    });
+  }
+
+  async state(): Promise<'local' | 'attaching' | 'attached'> {
+    const state = await this.#open.call('localAuthorityState', {});
+    if (state === 'local' || state === 'attaching' || state === 'attached') {
+      return state;
+    }
+    throw new Error('localAuthorityState: malformed conformance-shim result');
+  }
+
+  async handleSyncRequest(
+    _actorId: string,
+    request: Uint8Array,
+  ): Promise<BytesResult> {
+    try {
+      const result = asObject(
+        await this.#open.call('localAuthoritySync', {
+          request: bytesParam(request),
+        }),
+        'localAuthoritySync',
+      );
+      return {
+        ok: true,
+        bytes: bytesOf(result.response, 'localAuthoritySync'),
+      };
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+      return {
+        ok: false,
+        error: toDriverError(new SyncError(errorCodeOf(error), error.message)),
+      };
+    }
+  }
+
+  /** §5.7: the Rust authority serves inline rows segments only. */
+  async downloadSegment(): Promise<BytesResult> {
+    return {
+      ok: false,
+      error: toDriverError(
+        new SyncError('sync.not_found', 'unknown segment (§5.5)'),
+      ),
+    };
+  }
+
+  async connectRealtime(): Promise<RealtimeConnectResult> {
+    throw new Error('a local authority has no realtime channel (§12.2)');
+  }
+
+  /** §12.2: every scope value is granted to the one local actor. */
+  async setAllowedScopes(): Promise<void> {}
+
+  async readRows(table: string): Promise<ServerRowState[]> {
+    const database = new BunSqliteDatabase(
+      new Database(this.#path, { readonly: true }),
+    );
+    try {
+      return readServerRows(database, this.#schema, 'local', table);
+    } finally {
+      database.close();
+    }
+  }
+
+  async attach(
+    target: ServerInstance,
+    actorId: string,
+    faults?: { readonly loseResponseOfCommit?: number },
+  ): Promise<AttachResult> {
+    return this.#attachCall(
+      'localAuthorityAttach',
+      remoteTransport(target, actorId, faults),
+    );
+  }
+
+  async abandonAttach(
+    target: ServerInstance,
+    actorId: string,
+  ): Promise<AttachResult> {
+    return this.#attachCall(
+      'localAuthorityAbandonAttach',
+      remoteTransport(target, actorId),
+    );
+  }
+
+  async #attachCall(
+    method: 'localAuthorityAttach' | 'localAuthorityAbandonAttach',
+    remote: (request: Uint8Array) => Promise<Uint8Array>,
+  ): Promise<AttachResult> {
+    // A lost response reaches the Rust core as the transport's failure code,
+    // the code the TS instance reports for it.
+    this.#remote = async (request) => {
+      try {
+        return await remote(request);
+      } catch (error) {
+        if (error instanceof TransportFault) {
+          throw Object.assign(new Error(error.message), {
+            code: 'sync.transport_failed',
+          });
+        }
+        throw error;
+      }
+    };
+    try {
+      const result = asObject(await this.#open.call(method, {}), method);
+      if (result.ok === true) return { ok: true };
+      const details = result.details;
+      if (result.ok === false && typeof result.code === 'string') {
+        return {
+          ok: false,
+          code: result.code,
+          ...(typeof details === 'object' &&
+          details !== null &&
+          !Array.isArray(details)
+            ? { details }
+            : {}),
+        };
+      }
+      throw new Error(`${method}: malformed conformance-shim result`);
+    } finally {
+      this.#remote = undefined;
+    }
+  }
+
+  async close(): Promise<void> {
+    await this.#shim?.close();
+    rmSync(this.#dir, { recursive: true, force: true });
+  }
+}
+
+/** The TS reference server as the remote, the Rust core as its §12 local authority. */
+export const rustAuthorityServerDriver: ServerDriver = {
+  ...tsServerDriver,
+  name: 'ts-server+rust-authority',
+  async createLocalAuthority(options) {
+    const instance = new RustLocalAuthorityInstance(options.schema);
+    await instance.restart(options.schema);
+    return instance;
   },
 };
 

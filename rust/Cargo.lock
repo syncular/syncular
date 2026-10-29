@@ -174,6 +174,7 @@ name = "conformance-shim"
 version = "0.1.0"
 dependencies = [
  "serde_json",
+ "syncular-authority",
  "syncular-client",
  "syncular-command",
 ]
@@ -1182,6 +1183,18 @@ name = "syncular"
 version = "0.0.0"
 
 [[package]]
+name = "syncular-authority"
+version = "0.0.0"
+dependencies = [
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "syncular-ssp2",
+ "uuid",
+ "yrs",
+]
+
+[[package]]
 name = "syncular-bench"
 version = "0.1.0"
 dependencies = [
@@ -1208,6 +1221,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "syncular-authority",
  "syncular-ssp2",
  "tungstenite",
  "ureq",

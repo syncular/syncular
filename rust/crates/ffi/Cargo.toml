@@ -13,7 +13,7 @@ name = "syncular"
 crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
-syncular-client = { path = "../client", version = "0.0.0" }
+syncular-client = { path = "../client", version = "0.0.0", features = ["local-authority"] }
 syncular-command = { path = "../command", version = "0.0.0" }
 serde_json = "1"
 

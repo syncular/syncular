@@ -1,7 +1,8 @@
 # RFC: Local authority for serverless clients
 
-- Status: accepted 2026-10-29; phases 1 and 1b implemented for Bun, Node and
-  the browser worker (SPEC §12, Appendix B.24); phase 2 open
+- Status: accepted 2026-10-29; phases 1, 1b and 2 implemented (Bun, Node,
+  browser worker, and the native cores through `syncular-authority`; SPEC
+  §12, Appendix B.24)
 - Date: 2026-10-29
 - Review baseline: `e4b4255b` (0.48.0)
 - Scope: SPEC §2.1, §6.10, §10, new §12, Appendix B; `@syncular/server`
@@ -439,4 +440,4 @@ server advertises all of them, so its lane keeps its current coverage.
 | 0 | Maintainer review of this RFC | Accepted text moves into SPEC §12 |
 | 1 | Done: `openLocalAuthority` in `@syncular/server`, attach, `sync.authority_unavailable`, `sync.attach_rejected`; harness `createLocalAuthority` and `route`; scenarios 1 to 4 against both clients; measurements in §7 item 4; docs page `guide-local-authority` and changelog entry | `bun run check` |
 | 1b | Done: `clientSqliteDatabase` adapter, `startSyncWorker({ openLocalAuthority })`, `localAuthority` init flag, handle methods `localAuthorityState`, `attachLocalAuthority`, `abandonLocalAuthorityAttach`; the authority drops its rows once attached; bundle cost measured (134.6 KB minified, 36.3 KB gzipped) | `bun run check` |
-| 2 | `syncular-authority` crate; `rust-authority` server driver and capability tags; scenarios 1 to 4 with the Rust client; binding configuration for Tauri, Swift, Kotlin, Flutter and React Native | `bun run check`, `bun run rust test`, `bun run rust clippy --all-targets -- -D warnings`, binding `check.sh` gates |
+| 2 | Done: `syncular-authority` crate (storage layout of `SqliteServerStorage`, append-only migration at open, inline rows segments only); `rustAuthorityServerDriver` running B.24 with both client cores; `local-authority` client feature selected by `localAuthorityPath`, with `localAuthorityState`, `attachLocalAuthority` and `abandonLocalAuthorityAttach` in the FFI, Tauri, Swift, Kotlin, Flutter and React Native. The full-catalog server lane against the Rust authority stays open: B.24 and the crate's unit tests cover its push, pull, reference and attach rules | `bun run check`, `bun run rust test`, `bun run rust clippy --all-targets -- -D warnings`, binding `check.sh` gates |

@@ -145,6 +145,13 @@ export interface NativeSyncClientConfig {
   readonly previousVersionContext?: SyncClientConfig['previousVersionContext'];
   /** Base URL of the sync server mount (engages the native transport). */
   readonly baseUrl?: string;
+  /**
+   * SPEC §12 local authority: path of the authority's own SQLite file (never
+   * `dbPath`). Rounds go to the in-process authority until
+   * `attachLocalAuthority()` completes, then to `baseUrl`. Requires `baseUrl`
+   * for the attach.
+   */
+  readonly localAuthorityPath?: string;
   /** On-disk SQLite path; the native side may override with an app-data path. */
   readonly dbPath?: string;
   /** Extra transport headers (auth, tenant, …). */
@@ -169,6 +176,9 @@ export interface NativeSyncClientConfig {
   readonly nativeModule?: SyncularNativeModule;
   readonly eventEmitter?: SyncularEventEmitter;
 }
+
+/** SPEC §12.3 local-authority state. */
+export type LocalAuthorityState = 'local' | 'attaching' | 'attached';
 
 /** The bytes envelope both sides share. */
 export type BytesEnvelope = { readonly $bytes: string };
@@ -462,6 +472,7 @@ export class NativeSyncClient implements PromiseMethods<ClientSnapshotMethods> {
         'previousVersionDiscard',
         'localRevision',
         'statusSnapshot',
+        'localAuthorityState',
         'shutdown',
       ].includes(method)
     ) {
@@ -699,6 +710,33 @@ export class NativeSyncClient implements PromiseMethods<ClientSnapshotMethods> {
   /** Replace the full native transport header set without recreating state. */
   async setHeaders(headers: Readonly<Record<string, string>>): Promise<void> {
     await this.#command('setHeaders', { headers });
+  }
+
+  /**
+   * SPEC §12.3 local-authority state; `null` when the client has no
+   * `localAuthorityPath`.
+   */
+  async localAuthorityState(): Promise<LocalAuthorityState | null> {
+    const result = (await this.#command('localAuthorityState', {})) as {
+      state: LocalAuthorityState | null;
+    };
+    return result.state;
+  }
+
+  /**
+   * SPEC §12.3: upload the local authority's rows to `baseUrl` with the
+   * headers set through `setHeaders`, then sync with that server. Rejects with
+   * `sync.attach_rejected` (`details.reason`) when the server refuses an upload
+   * commit, and with `client.local_authority_unconfigured` without a
+   * `localAuthorityPath` or `baseUrl`.
+   */
+  async attachLocalAuthority(): Promise<void> {
+    await this.#command('attachLocalAuthority', {});
+  }
+
+  /** SPEC §12.3: delete the rows a stopped attach uploaded, then sync locally. */
+  async abandonLocalAuthorityAttach(): Promise<void> {
+    await this.#command('abandonLocalAuthorityAttach', {});
   }
 
   onInvalidate(listener: InvalidationListener): () => void {
@@ -1345,6 +1383,9 @@ export async function createNativeSyncClient(
 
   const transportConfig: Record<string, unknown> = {};
   if (config.baseUrl !== undefined) transportConfig.baseUrl = config.baseUrl;
+  if (config.localAuthorityPath !== undefined) {
+    transportConfig.localAuthorityPath = config.localAuthorityPath;
+  }
   if (config.headers !== undefined) transportConfig.headers = config.headers;
   if (config.requestTimeoutMs !== undefined) {
     transportConfig.requestTimeoutMs = config.requestTimeoutMs;

@@ -208,6 +208,10 @@ pub const REALTIME_UNAVAILABLE_CODE: &str = "sync.realtime_unavailable";
 /// §8.8 client-local code: a connected socket ended without a deliberate
 /// disconnect and the round reported no transport code. Never a wire code.
 pub const REALTIME_LOST_CODE: &str = "client.realtime_lost";
+/// §12 client-local code: a local-authority call or config on a host that
+/// has no local authority (the build lacks the `local-authority` feature, the
+/// config names no `localAuthorityPath`, or attach has no remote server).
+pub const LOCAL_AUTHORITY_UNCONFIGURED_CODE: &str = "client.local_authority_unconfigured";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

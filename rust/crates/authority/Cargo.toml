@@ -1,0 +1,25 @@
+[package]
+name = "syncular-authority"
+version = "0.0.0"
+edition = "2021"
+description = "Syncular local authority (SPEC.md §12): the server profile a native client runs in-process before it attaches a remote server"
+license = "Apache-2.0"
+repository = "https://github.com/syncular/syncular"
+
+[dependencies]
+ssp2 = { package = "syncular-ssp2", path = "../ssp2", version = "0.0.0" }
+rusqlite = { version = "0.40", features = ["bundled", "fallible_uint"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+
+# §5.10.2 `yjs-doc` merger over the Rust Yjs port, the same version the client
+# crate uses. Without the feature a crdt push answers `sync.crdt_merge_failed`,
+# as a server with no merger registered does.
+[dependencies.yrs]
+version = "0.28"
+optional = true
+
+[features]
+default = []
+crdt-yjs = ["dep:yrs"]

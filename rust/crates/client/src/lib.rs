@@ -85,8 +85,9 @@ pub use api::{
     RetainedUniqueConflict, RowState, SchemaFloor, SnapshotRead, SubscriptionCatchup,
     SubscriptionRequest, SubscriptionStateView, SyncIntent, SyncOutcome, SyncReport,
     SyncStatusSnapshot, TableChange, TimeBucketUnit, WindowBase, WindowChange, WindowCoverage,
-    WindowState, WindowUnitRef, CLIENT_DIAGNOSTICS_VERSION, MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
-    MAX_DIAGNOSTIC_QUERY_FAILURES, REALTIME_LOST_CODE, REALTIME_UNAVAILABLE_CODE,
+    WindowState, WindowUnitRef, CLIENT_DIAGNOSTICS_VERSION, LOCAL_AUTHORITY_UNCONFIGURED_CODE,
+    MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS, MAX_DIAGNOSTIC_QUERY_FAILURES, REALTIME_LOST_CODE,
+    REALTIME_UNAVAILABLE_CODE,
 };
 pub use client::{
     FileQuerySnapshotReader, SnapshotReadRequest, SnapshotStatement, SyncClient,
