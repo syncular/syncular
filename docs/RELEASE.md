@@ -1,8 +1,29 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.46.0** (`v0.46.0`). All artifacts use Apache-2.0, except
+current release is **0.46.1** (`v0.46.1`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.46.1 release notes
+
+0.46.1 republishes 0.46.0. The packages, the crates, SSP2, the storage layout,
+the wire version, and the conformance catalog are unchanged.
+
+The 0.46.0 release workflow failed in its npm job before publishing: its gate
+stopped with `Cannot find module '@syncular/client'` in
+`packages/tauri/test/authority.test.ts`, `native-bridge.test.ts` and
+`bridge.test.ts`. The tree and the toolchain are unchanged from 0.45.1, where
+the same tests passed, so the failure came from the fresh runner's workspace
+link rather than from the packages.
+
+`check:code` builds the packages before it runs the tests (7 s). A
+cross-package import resolves through the `bun` condition to `src/` and through
+`browser`/`import` to `dist/`; with `dist/` built, a missing workspace link no
+longer turns into an unresolvable import, and the gate also proves that the
+tsconfig.build projects compile.
+
+**Upgrade notes.** Nothing changes for a host. Upgrade all 12 npm packages and
+6 crates to 0.46.1 to stay in lockstep.
 
 ## 0.46.0 release notes
 
