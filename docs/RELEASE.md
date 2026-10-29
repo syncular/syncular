@@ -1,12 +1,12 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.49.0** (`v0.49.0`). All artifacts use Apache-2.0, except
+current release is **0.49.1** (`v0.49.1`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
 
-## 0.49.0 release notes
+## 0.49.1 release notes
 
-0.49.0 adds a local authority that lets a client start without a server,
+0.49.1 adds a local authority that lets a client start without a server,
 keeps queued inserts across a schema upgrade that appends columns, and exposes
 the browser's leader/follower machinery as `createTabCoordinator` for cores
 that are not a `SyncClientHandle`. It adds the `syncular-authority` crate and
@@ -49,13 +49,22 @@ follower promotes on a higher epoch when the leader tab closes; a leader steps
 down for a tab with a higher `version`. `createSyncClientHandle` runs on the
 coordinator; its behavior is unchanged.
 
-**Upgrade notes.** `MULTI_TAB_PROTOCOL_VERSION` is 2. A 0.49.0 tab and a tab
+**Upgrade notes.** `MULTI_TAB_PROTOCOL_VERSION` is 2. A 0.49.1 tab and a tab
 of an older release on the same origin do not serve each other: the newer tab
 takes over the database and the older tab is `blocked` with reason
 `leader-incompatible` until it reloads. A custom `leaderLock` must grant locks
 per name, as Web Locks does, because each multi-tab handle also holds its tab
 lock. No storage migration. Upgrade all 12 npm packages and 7 crates together;
 `syncular-authority` is new on crates.io.
+
+## 0.49.0 unpublished tag
+
+v0.49.0 tagged, not published; superseded by 0.49.1. Its npm gate stopped on
+the client bundle ceiling (163029 bytes under the workflow's Bun 1.4.0, 29 over),
+and its crates gate could not resolve the client's `syncular-authority`
+dependency, whose table form kept the `0.0.0` constraint through
+materialization. The run published no npm packages or Rust crates. The remote
+tag remains unchanged.
 
 ## 0.48.0 release notes
 
