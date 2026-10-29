@@ -239,3 +239,5 @@ for (const event of pending) {
 ```
 
 The downstream idempotency key covers a crash after the external call and before the local receipt insert. The local receipt avoids repeated calls in normal operation.
+
+A schema version change drops `worker_receipts` with every other table outside `_syncular_*` ([Schema upgrades](/concepts-schema-upgrades/)). The next run repeats the call for every retained event, and the downstream idempotency key absorbs the repeats. Keep state that must survive an upgrade in a separate database file.
