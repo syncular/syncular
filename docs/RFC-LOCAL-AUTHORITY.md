@@ -343,11 +343,14 @@ Shipped in `packages/conformance/src/catalog/local-authority.ts` as B.24.
 The harness gained `ServerDriver.createLocalAuthority`, the
 `local-authority` capability, `ScenarioContext.newLocalAuthority`, and a
 mutable `ClientHandle.route` that rebinds a client to another server. All
-four scenarios pass with the TypeScript client and with the Rust client
-against the TypeScript authority. Differences from the draft: scenario 3 omits the
-encrypted and `crdt` columns, and scenario 4 uses a scope denial and a new
-attach instead of a validator and a resume, because a rejection is terminal
-(§3.6 step 4). `packages/server/test/local-authority.test.ts` covers commit
+six scenarios pass with both client cores against the TypeScript and the
+Rust authority. Differences from the draft: the encrypted and `crdt` columns
+of scenario 3 moved into two scenarios of their own (B.24 e and f), and
+scenario 4 uses a scope denial and a new attach instead of a validator and a
+resume, because a rejection is terminal (§3.6 step 4). A Chromium test
+(`packages/web-client/test/local-authority.browser.test.ts`, `test:browser`)
+runs the browser worker entry over OPFS through reloads, attach, a follower
+tab and a leader handover. `packages/server/test/local-authority.test.ts` covers commit
 packing at the 500-operation boundary and `cycle_too_large`.
 
 Draft list:
