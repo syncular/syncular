@@ -29,6 +29,7 @@ import {
 import { pgliteExecutor } from '@syncular/server/pglite';
 import type { PgExecutor, PgQueryable } from '../src/pg-executor';
 import {
+  del,
   makeContext,
   pushCommit,
   pushResults,
@@ -513,6 +514,114 @@ describe('whole-commit validation (§6.8)', () => {
       exact: 'two',
       scan: ['t1', 't2'],
     });
+  });
+
+  test('getRows matches N getRow calls for stored, absent, and staged rows', async () => {
+    let seen: unknown;
+    const inspect: CommitValidator = async ({ read }) => {
+      const ids = ['t-stored', 't-absent', 't-delete', 't-staged'];
+      const batch = await read.getRows('tasks', ids);
+      const mismatched: string[] = [];
+      const absentSingles: string[] = [];
+      for (const rowId of ids) {
+        const single = await read.getRow('tasks', rowId);
+        if (single === undefined) absentSingles.push(rowId);
+        if (JSON.stringify(batch.get(rowId)) !== JSON.stringify(single)) {
+          mismatched.push(rowId);
+        }
+      }
+      seen = {
+        keys: [...batch.keys()],
+        versions: Object.fromEntries(
+          [...batch].map(([rowId, row]) => [rowId, row.serverVersion]),
+        ),
+        mismatched,
+        absentSingles,
+      };
+    };
+    const t = makeContext({ commitValidator: inspect });
+    await sync(t, [
+      pushCommit('seed-batch-rows', [
+        upsert('tasks', 't-stored', taskRow('t-stored', 'p1', 'stored')),
+        upsert('tasks', 't-delete', taskRow('t-delete', 'p1', 'deleted')),
+      ]),
+    ]);
+    await sync(t, [
+      pushCommit('batch-read', [
+        del('tasks', 't-delete', 1),
+        upsert('tasks', 't-staged', taskRow('t-staged', 'p1', 'staged')),
+      ]),
+    ]);
+    expect(seen).toEqual({
+      keys: ['t-stored', 't-staged'],
+      versions: { 't-stored': 1, 't-staged': 1 },
+      mismatched: [],
+      absentSingles: ['t-absent', 't-delete'],
+    });
+  });
+
+  test('a Postgres getRows answers N ids in one statement', async () => {
+    const db = await PGlite.create();
+    const inner = pgliteExecutor(db);
+    const count = { transaction: 0 };
+    const exec: PgExecutor = {
+      query: <Row>(text: string, params?: readonly unknown[]) =>
+        inner.query<Row>(text, params),
+      transaction: <T>(fn: (client: PgQueryable) => Promise<T>) =>
+        inner.transaction((client) =>
+          fn({
+            query: <Row>(text: string, params?: readonly unknown[]) => {
+              count.transaction += 1;
+              return client.query<Row>(text, params);
+            },
+          }),
+        ),
+      close: async () => {
+        await inner.close?.();
+      },
+    };
+    const storage = new PostgresServerStorage(exec);
+    await storage.ensureSchema(compileSchema(TEST_SCHEMA));
+    const ids = ['s1', 's2', 's3', 's4', 's5'];
+    const seed = await storage.begin('part-1');
+    for (const id of ids) {
+      await seed.upsertRow('tasks', {
+        rowId: id,
+        serverVersion: 1,
+        scopes: { project_id: 'p1' },
+        payload: encodeRow(TASK_COLUMNS, [
+          id,
+          'p1',
+          `title-${id}`,
+          false,
+          null,
+          null,
+        ]),
+      });
+    }
+    await seed.commit();
+
+    let statements = 0;
+    let titles: unknown;
+    const batchRead: CommitValidator = async ({ read }) => {
+      const rows = await read.getRows('tasks', ids);
+      titles = ids.map((rowId) => rows.get(rowId)?.row.title);
+      // The first call also flushes the commit's staged upsert. Measure the
+      // next one: the batch read itself must stay one statement at any N.
+      const before = count.transaction;
+      await read.getRows('tasks', ids);
+      statements = count.transaction - before;
+    };
+    const t = makeContext({ storage, commitValidator: batchRead });
+    const message = await sync(t, [
+      pushCommit('batch-statement-count', [
+        upsert('tasks', 'fresh', taskRow('fresh', 'p1')),
+      ]),
+    ]);
+    expect(pushResults(message)[0]?.status).toBe('applied');
+    expect(statements).toBe(1);
+    expect(titles).toEqual(ids.map((id) => `title-${id}`));
+    await db.close();
   });
 
   test('serializes a Promise.all of commit reads on one pinned Postgres client', async () => {

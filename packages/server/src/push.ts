@@ -54,12 +54,13 @@ import type {
   StoredPushResult,
   StoredRow,
 } from './storage';
-import { serveGateRefusal } from './storage';
+import { readCandidateRows, serveGateRefusal } from './storage';
 import { StorageConstraintError } from './storage-errors';
 import { transactionQuery } from './storage-query';
 import { serveNotReadyError } from './readiness';
 import type {
   CommitValidationReader,
+  CommitValidationRow,
   CommitValidator,
   ValidateCommitOperation,
   ValidateOpKind,
@@ -1060,6 +1061,23 @@ function commitValidationReader(
         ),
         serverVersion: stored.serverVersion,
       };
+    },
+    getRows: async (tableName, rowIds) => {
+      const table = tableFor(tableName);
+      const storedRows = await readCandidateRows(tx, tableName, rowIds);
+      const rows = new Map<string, CommitValidationRow>();
+      for (const rowId of rowIds) {
+        const stored = storedRows.get(rowId);
+        if (stored === undefined) continue;
+        rows.set(rowId, {
+          row: toValidateRow(
+            table.columns,
+            decodeRow(table.columns, stored.payload),
+          ),
+          serverVersion: stored.serverVersion,
+        });
+      }
+      return rows;
     },
     scanRows: async ({
       table: tableName,

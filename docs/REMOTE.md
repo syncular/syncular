@@ -111,10 +111,11 @@ with the internal `["remote-command",` prefix, so an ordinary commit cannot
 occupy a command result key.
 
 The command callback runs after the partition write lock and the serialized
-idempotency recheck. It may call `getRow(table, rowId)`, which hides rows
-outside the actor's scopes, and `queryAuthoritative(request)`, the
-transaction-bound registered query of SPEC.md §6.7, which is bound to the
-partition and not to the actor's scopes. It returns one or more full-row
+idempotency recheck. It may call `getRow(table, rowId)` or the batch
+`getRows(table, rowIds)`, both of which hide rows outside the actor's scopes,
+and `queryAuthoritative(request)`, the transaction-bound registered query of
+SPEC.md §6.7, which is bound to the partition and not to the actor's scopes.
+It returns one or more full-row
 upserts, deletes, or rescopes. The returned operations then use the ordinary
 scope authorization, row validators, whole-commit validator, relational
 constraints, commit log, idempotency record, and realtime notifier.

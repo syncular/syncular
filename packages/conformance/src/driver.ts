@@ -293,7 +293,7 @@ export interface ValidatorInstallSpec {
  * this JSON-able while exercising the same transaction-scoped callback a host
  * installs in production.
  */
-export interface CommitValidatorInstallSpec {
+export interface CommitValidatorSiblingSpec {
   readonly kind: 'requireSiblingWhen';
   readonly table: string;
   readonly column: string;
@@ -301,6 +301,23 @@ export interface CommitValidatorInstallSpec {
   readonly siblingRowIdSuffix: string;
   readonly code: string;
 }
+
+/**
+ * The validator reads the commit's row ids plus one untouched stored row and
+ * one absent id through `read.getRows`, compares every entry with the
+ * same-id `read.getRow` call, and rejects with `code` on any disagreement.
+ */
+export interface CommitValidatorBatchReadSpec {
+  readonly kind: 'rowsMatchSingles';
+  readonly table: string;
+  readonly extraRowId: string;
+  readonly absentRowId: string;
+  readonly code: string;
+}
+
+export type CommitValidatorInstallSpec =
+  | CommitValidatorSiblingSpec
+  | CommitValidatorBatchReadSpec;
 
 export interface ServerInstance {
   /**

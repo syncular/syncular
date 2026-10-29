@@ -255,7 +255,8 @@ const config: SyncServerConfig = {
 };
 ```
 
-The callback also receives `read.getRow()`, bounded `read.scanRows()`, and
+The callback also receives `read.getRow()` and its batch form
+`read.getRows(table, rowIds)`, bounded `read.scanRows()`, and
 `read.queryAuthoritative()` APIs. Those reads see the final candidate state, including staged sibling upserts and
 deletes. Syncular serializes the partition before any operation read so two
 aggregate validators cannot both accept mutually invalid candidates. It also

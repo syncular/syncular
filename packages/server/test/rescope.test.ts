@@ -122,6 +122,63 @@ describe('explicit rescope (§2.2)', () => {
     expect(await t.storage.getMaxCommitSeq('part-1')).toBe(5);
   });
 
+  test('a command batch read applies getRow scope authorization', async () => {
+    const t = makeContext();
+    t.scopes.value = { project_id: ['p1', 'p2'] };
+    await sync(t, [
+      pushCommit('seed-batch-read', [
+        upsert('tasks', 't1', taskRow('t1', 'p1', 'visible')),
+        upsert('tasks', 't2', taskRow('t2', 'p2', 'hidden')),
+      ]),
+    ]);
+    t.scopes.value = { project_id: ['p1'] };
+
+    let seen:
+      | ReadonlyMap<string, Readonly<Record<string, RowValue>>>
+      | undefined;
+    type EmptyInput = Readonly<Record<string, never>>;
+    const read = registerRemoteCommand<EmptyInput>(
+      remoteCommand<EmptyInput>('test-batch-read'),
+      {
+        authorize: () => true,
+        run: async (context) => {
+          seen = await context.getRows('tasks', ['t1', 't2', 'absent', 't1']);
+          return [
+            {
+              table: 'tasks',
+              op: 'upsert',
+              values: {
+                id: 't3',
+                project_id: 'p1',
+                title: 'written',
+                done: false,
+                priority: null,
+                meta: null,
+              },
+            },
+          ];
+        },
+      },
+    );
+    const response = decodeRemoteOperationResponse(
+      await handleRemoteOperation(
+        encodeRemoteOperationRequest({
+          revision: 1,
+          kind: 'command',
+          clientId: 'batch-read-test',
+          operationId: 'test-batch-read',
+          requestId: 'batch',
+          params: {},
+        }),
+        { ...t.ctx, actorId: 'actor-1' },
+        new RemoteOperationRegistry([read]),
+      ),
+    );
+    expect(response).toMatchObject({ kind: 'command', status: 'applied' });
+    expect([...(seen?.keys() ?? [])]).toEqual(['t1']);
+    expect(seen?.get('t1')?.title).toBe('visible');
+  });
+
   test('refuses a move to a scope the actor does not hold', async () => {
     const t = makeContext();
     t.scopes.value = { project_id: ['p1', 'p2'] };

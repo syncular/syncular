@@ -92,6 +92,7 @@ import {
   serverIndexDdl,
   selectRowScopesSql,
   selectRowSql,
+  selectRowsSql,
   prefetchRowsBatchSql,
   selectRowsForRewriteSql,
   upsertSql,
@@ -1298,6 +1299,30 @@ class PostgresTransaction implements StorageTransaction {
       this.#partition,
       rowId,
     );
+  }
+
+  async getRows(
+    table: string,
+    rowIds: readonly string[],
+  ): Promise<ReadonlyMap<string, StoredRow>> {
+    this.#assertOpen();
+    const rows = new Map<string, StoredRow>();
+    const missing: string[] = [];
+    for (const rowId of new Set(rowIds)) {
+      const prefetched = this.#prefetchedRows.get(`${table}\u0000${rowId}`);
+      if (prefetched === undefined) missing.push(rowId);
+      else if (prefetched !== null) rows.set(rowId, prefetched);
+    }
+    if (missing.length === 0) return rows;
+    // One statement for every id the admission read did not already answer.
+    // `#client` flushes this transaction's staged upserts first, so the rows
+    // are the final candidate state.
+    const { rows: records } = await this.#client.query<RowRecord>(
+      selectRowsSql(this.#resolveTable(table)),
+      [this.#partition, missing],
+    );
+    for (const record of records) rows.set(record.row_id, toStoredRow(record));
+    return rows;
   }
 
   async prefetchRows(

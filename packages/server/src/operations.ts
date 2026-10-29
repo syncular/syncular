@@ -32,6 +32,7 @@ import type {
   AuthoritativeQueryValue,
 } from './storage';
 import type { StorageTransaction } from './storage';
+import { readCandidateRows } from './storage';
 import { transactionQuery } from './storage-query';
 import {
   toValidateRow,
@@ -126,6 +127,17 @@ export interface RemoteCommandContext {
   readonly operationId: string;
   readonly requestId: string;
   getRow(table: string, rowId: string): Promise<ValidateRow | undefined>;
+  /**
+   * Batch form of `getRow` with the same scope authorization: a row outside
+   * the actor's resolved scopes is missing from the map, exactly as `getRow`
+   * returns `undefined` for it. Reads observe this commit's staged writes and
+   * deletes. Postgres answers any number of ids in one statement; SQLite and
+   * D1 issue one lookup per id.
+   */
+  getRows(
+    table: string,
+    rowIds: readonly string[],
+  ): Promise<ReadonlyMap<string, ValidateRow>>;
   /**
    * Run a generated registered query on the command's push transaction
    * (§6.7). The storage binds every relation to the partition; unlike
@@ -598,6 +610,34 @@ function commandContext(
         table.columns,
         decodeRow(table.columns, stored.payload),
       );
+    },
+    getRows: async (tableName, rowIds) => {
+      const table = schema.tables.get(tableName);
+      if (table === undefined) {
+        throw syncError(
+          'operation.invalid_request',
+          'command read targets an unknown table',
+        );
+      }
+      const storedRows = await readCandidateRows(tx, tableName, rowIds);
+      const rows = new Map<string, ValidateRow>();
+      for (const rowId of rowIds) {
+        const stored = storedRows.get(rowId);
+        if (
+          stored === undefined ||
+          !authorizeWrite(table, stored.scopes, resolved)
+        ) {
+          continue;
+        }
+        rows.set(
+          rowId,
+          toValidateRow(
+            table.columns,
+            decodeRow(table.columns, stored.payload),
+          ),
+        );
+      }
+      return rows;
     },
     queryAuthoritative: (query) => transactionQuery(tx, query),
   };

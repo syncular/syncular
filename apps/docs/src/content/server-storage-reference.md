@@ -233,9 +233,12 @@ Syncular has four lookup shapes. Do not turn a server search need into a client 
 | Need | API or pattern | Authorization meaning |
 |---|---|---|
 | One known row | `getRow(table, rowId)` | Trusted partition-local primary-key read |
+| N known rows by primary key | `getRows(table, rowIds)` | Trusted partition-local batch read; absent ids are missing |
 | Rows in a client delivery scope | `scanRows({ scopeFilter, ... })` | Syncular scope-index scan; at least one variable is mandatory |
 | Exact authoritative lookup by app columns | `scanRowsByIndex({ index, values, ... })` | Trusted server-host relational-index scan; never a client scope |
 | Ordered or range work queue, or derived topology | Atomically maintained reverse-index or queue rows | Explicit application projection with its own completeness invariant |
+
+`getRows` is the batch form of `getRow`, exposed as `read.getRows` on the whole-commit reader and as `command.getRows` on a registered command. It takes no scope filter and no page bound, because the caller already holds partition authority. An absent id is missing from the map, a repeated id reads once, and a staged sibling upsert or delete is visible exactly as with `getRow`. Postgres binds the ids as one array and issues one statement for any count; SQLite and D1 issue one lookup per id. A custom transaction without the capability answers with one `getRow` per id.
 
 An empty or omitted `scopeFilter` never means "all rows". Every shipped adapter throws `StorageQueryError` with `code: 'sync.storage.scan_requires_scope'`, so an empty result cannot hide an unsupported administrative scan. A relational index does not make its columns available to `scanRows`; scope indexes and SQL indexes solve different problems.
 

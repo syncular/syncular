@@ -3710,6 +3710,11 @@ reader:
 
 - `getRow(table, rowId)` returns the final candidate row and server version,
   including a sibling's staged upsert or delete.
+- `getRows(table, rowIds)` returns the candidate rows for the requested ids,
+  keyed by `rowId`. An absent id is missing from the map and a repeated id
+  reads once. It is the batch form of `getRow`: no scope declaration, no
+  paging, and the same staged sibling upserts and deletes. Postgres answers
+  any number of ids in one statement; SQLite and D1 issue one lookup per id.
 - `scanRows({ table, scopeFilter, afterRowId?, limit? })` returns final
   candidate rows in ascending `rowId` order. `scopeFilter` is required;
   `afterRowId` is an exclusive keyset cursor; `limit` defaults to 100 and MUST

@@ -360,6 +360,21 @@ class D1Transaction implements StorageTransaction {
     return record === null ? undefined : toStoredRow(record);
   }
 
+  async getRows(
+    table: string,
+    rowIds: readonly string[],
+  ): Promise<ReadonlyMap<string, StoredRow>> {
+    this.#assertOpen();
+    // One lookup per id: `getRow` owns the buffered-write overlay, and a
+    // mutable id list cannot share one bound statement across D1's limit.
+    const rows = new Map<string, StoredRow>();
+    for (const rowId of new Set(rowIds)) {
+      const row = await this.getRow(table, rowId);
+      if (row !== undefined) rows.set(rowId, row);
+    }
+    return rows;
+  }
+
   async getTombstoneSeq(
     table: string,
     rowId: string,

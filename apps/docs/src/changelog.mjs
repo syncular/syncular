@@ -16,6 +16,17 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-10-29',
+    title: 'A commit read fetches many rows in one statement',
+    body: '`CommitValidationReader.getRows(table, rowIds)` and `RemoteCommandContext.getRows(table, rowIds)` read N rows by primary key in one call. Postgres binds the ids as one `text[]` and issues one statement, so a host behind Hyperdrive no longer pays a round trip per row; SQLite and D1 issue one lookup per id. The batch read sees the final candidate state: a staged sibling upsert is present and a staged delete is absent. Absent ids are missing from the map, repeated ids read once, and the call takes no scope filter or page bound. The command reader applies the same actor-scope authorization as `getRow`.',
+    links: [
+      {
+        href: '/server-storage-reference/#advanced-row-lookups-for-trusted-server-code',
+        label: 'Row lookups for trusted server code',
+      },
+    ],
+  },
+  {
     date: '2026-10-28',
     title: 'An idle sync drive has a deadline',
     body: '`syncUntilIdle` takes `{ maxRounds, timeoutMs }` and bounds one drive with a total deadline, 60 seconds by default. A drive that reaches it rejects with `sync.idle_timeout` and aborts a socket round in flight, so a transport that never answers fails the call instead of running the full round budget. A transport failure whose `causeKind` is `connect` (native) or `network` (browser fetch) describes a refused or unreachable endpoint and schedules no background retry. The Rust client exposes the same bound as `sync_until_idle_with_deadline`, defaults `sync_until_idle` to 60 seconds, and the command surface accepts `timeoutMs`.',

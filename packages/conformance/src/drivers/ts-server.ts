@@ -177,6 +177,37 @@ function compileValidatorRule(spec: ValidatorInstallSpec): Validator {
 function compileCommitValidatorRule(
   spec: CommitValidatorInstallSpec,
 ): CommitValidator {
+  if (spec.kind === 'rowsMatchSingles') {
+    return async ({ operations, read }) => {
+      const ids = [
+        ...new Set([
+          ...operations.map((operation) => operation.rowId),
+          spec.extraRowId,
+          spec.absentRowId,
+        ]),
+      ];
+      const batch = await read.getRows(spec.table, ids);
+      let present = 0;
+      for (const rowId of ids) {
+        const single = await read.getRow(spec.table, rowId);
+        if (single !== undefined) present += 1;
+        if (JSON.stringify(batch.get(rowId)) !== JSON.stringify(single)) {
+          throw new CommitValidationRejection(
+            0,
+            spec.code,
+            `batch read disagrees with getRow for ${rowId}`,
+          );
+        }
+      }
+      if (batch.size !== present) {
+        throw new CommitValidationRejection(
+          0,
+          spec.code,
+          'batch read returned an unexpected row',
+        );
+      }
+    };
+  }
   return ({ operations }) => {
     const trigger = operations.find(
       (operation) =>

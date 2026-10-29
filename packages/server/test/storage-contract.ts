@@ -1035,6 +1035,28 @@ export function runStorageContract(
       await tx.rollback();
     });
 
+    test('transaction getRows matches N getRow calls for stored, absent, and staged rows', async () => {
+      const storage = await make();
+      const seed = await storage.begin(PARTITION);
+      await seed.upsertRow('tasks', taskRow('stored', 'p1'));
+      await seed.upsertRow('tasks', taskRow('deleted', 'p1'));
+      await seed.commit();
+
+      const tx = await storage.begin(PARTITION);
+      expect(tx.getRows).toBeDefined();
+      await tx.deleteRow('tasks', 'deleted');
+      await tx.upsertRow('tasks', taskRow('written', 'p1', 7));
+      const ids = ['stored', 'absent', 'deleted', 'written', 'stored'];
+      const batch = await tx.getRows?.('tasks', ids);
+      for (const rowId of ['stored', 'absent', 'deleted', 'written']) {
+        expect(batch?.get(rowId)).toEqual(await tx.getRow('tasks', rowId));
+      }
+      expect([...(batch?.keys() ?? [])].sort()).toEqual(['stored', 'written']);
+      expect(batch?.get('written')?.serverVersion).toBe(7);
+      expect((await tx.getRows?.('tasks', []))?.size).toBe(0);
+      await tx.rollback();
+    });
+
     test('scanRowsByIndex rejects undeclared, malformed, and unbounded lookups', async () => {
       const storage = await make();
       expect(storage.scanRowsByIndex).toBeDefined();

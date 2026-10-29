@@ -107,6 +107,18 @@ export interface CommitValidationReader {
     table: string,
     rowId: string,
   ): Promise<CommitValidationRow | undefined>;
+  /**
+   * Batch candidate-state read by primary key, with the same read-your-own-
+   * writes guarantee as `getRow`: staged sibling upserts are present and
+   * staged deletes are absent. An absent id is missing from the map and a
+   * repeated id reads once. There is no scope declaration and no paging: the
+   * caller already holds partition authority. Postgres answers any number of
+   * ids in one statement; SQLite and D1 issue one lookup per id.
+   */
+  getRows(
+    table: string,
+    rowIds: readonly string[],
+  ): Promise<ReadonlyMap<string, CommitValidationRow>>;
   scanRows(input: CommitValidationScanInput): Promise<CommitValidationRow[]>;
   /**
    * Run a generated registered query on the commit transaction (§6.8). The

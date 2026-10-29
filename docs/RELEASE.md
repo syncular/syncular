@@ -1,8 +1,31 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.45.1** (`v0.45.1`). All artifacts use Apache-2.0, except
+current release is **0.46.0** (`v0.46.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.46.0 release notes
+
+0.46.0 adds a batch primary-key read to both commit readers. SSP2, the storage
+layout, the wire version, and the conformance catalog are unchanged; the
+TypeScript API is additive.
+
+`CommitValidationReader.getRows(table, rowIds)` returns a map of
+`CommitValidationRow` keyed by row id. `RemoteCommandContext.getRows(table,
+rowIds)` returns the same batch of decoded rows for a command. Both observe the
+final candidate state inside the push transaction: a staged sibling upsert is
+present and a staged delete is absent, exactly as with `getRow`. Absent ids are
+missing from the map, repeated ids read once, and the call takes no scope
+filter or page bound. A command read applies the same actor-scope
+authorization as `getRow`, so a row outside the actor's scopes is missing.
+
+`PostgresServerStorage` binds the ids as one `text[]` and issues one statement
+for any number of ids, where each `getRow` cost a round trip. SQLite and D1
+issue one primary-key lookup per id. A custom storage transaction that omits
+the `getRows` capability answers with one `getRow` per id.
+
+**Upgrade notes.** No migration and no wire change. Upgrade all 12 npm
+packages and 6 crates together.
 
 ## 0.45.1 release notes
 

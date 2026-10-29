@@ -234,6 +234,20 @@ class SqliteTransaction implements StorageTransaction {
     return this.#storage.getRow(this.#partition, table, rowId);
   }
 
+  async getRows(
+    table: string,
+    rowIds: readonly string[],
+  ): Promise<ReadonlyMap<string, StoredRow>> {
+    this.#assertOpen();
+    // SQLite is in-process: one indexed lookup per id costs no round trip.
+    const rows = new Map<string, StoredRow>();
+    for (const rowId of new Set(rowIds)) {
+      const row = await this.#storage.getRow(this.#partition, table, rowId);
+      if (row !== undefined) rows.set(rowId, row);
+    }
+    return rows;
+  }
+
   async getTombstoneSeq(
     table: string,
     rowId: string,

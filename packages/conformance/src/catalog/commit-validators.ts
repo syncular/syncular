@@ -119,4 +119,54 @@ export const commitValidatorScenarios: readonly Scenario[] = [
       );
     },
   },
+  {
+    // Batch reads answer the same candidate state as single reads: a staged
+    // upsert is present, a staged delete and an absent id are missing, and an
+    // untouched stored row is present. Any disagreement rejects the commit.
+    name: 'commit-validators/batch-read-matches-single-reads',
+    specRefs: ['§6.3', '§6.8'],
+    requires: ['commit-validators'],
+    async run(ctx) {
+      await install(ctx, {
+        kind: 'rowsMatchSingles',
+        table: 'tasks',
+        extraRowId: 'stored-untouched',
+        absentRowId: 'conformance-absent-row',
+        code: 'app.get_rows_mismatch',
+      });
+      const a = await bootstrapped(ctx);
+      await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: task('stored-untouched', 'p1', 'untouched'),
+        },
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: task('stored-deleted', 'p1', 'deleted'),
+        },
+      ]);
+      await syncOk(a);
+
+      const commit = await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: task('staged', 'p1', 'staged'),
+        },
+        { op: 'delete', table: 'tasks', rowId: 'stored-deleted' },
+      ]);
+      const report = await syncOk(a);
+      check(
+        report.applied.includes(commit),
+        'a batch read that matches single reads applies the commit',
+      );
+      checkEqual(
+        (await ctx.server.readRows('tasks')).map((row) => row.rowId),
+        ['staged', 'stored-untouched'],
+        'the staged upsert lands and the staged delete stays absent',
+      );
+    },
+  },
 ];

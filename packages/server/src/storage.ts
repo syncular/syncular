@@ -558,6 +558,19 @@ export interface AuthoritativeQueryResult {
 export interface StorageTransaction {
   getRow(table: string, rowId: string): Promise<StoredRow | undefined>;
   /**
+   * Optional candidate-state batch read by primary key. A storage with
+   * per-statement network cost answers any number of ids in one statement
+   * (Postgres binds the ids as one array); SQLite and D1 issue one lookup per
+   * id. Absent ids are missing from the map and repeated ids read once. The
+   * result observes this transaction's staged writes and deletes, exactly as
+   * `getRow` does. Both commit readers fall back to one `getRow` per id when
+   * a custom transaction omits the capability.
+   */
+  getRows?(
+    table: string,
+    rowIds: readonly string[],
+  ): Promise<ReadonlyMap<string, StoredRow>>;
+  /**
    * Optional read-ahead: the push layer names every row a commit's
    * operations target, across every table, before it applies them. A storage
    * with per-statement network cost reads them in one statement (one branch
@@ -702,6 +715,27 @@ export interface StorageTransaction {
   ): Promise<void>;
   commit(): Promise<void>;
   rollback(): Promise<void>;
+}
+
+/**
+ * The commit readers' batch read: delegate to the transaction's `getRows`
+ * when it implements the capability, otherwise issue one `getRow` per id.
+ * Both paths read the same candidate state; only the statement count differs.
+ */
+export async function readCandidateRows(
+  tx: StorageTransaction,
+  table: string,
+  rowIds: readonly string[],
+): Promise<ReadonlyMap<string, StoredRow>> {
+  const ids = [...new Set(rowIds)];
+  if (ids.length === 0) return new Map();
+  if (tx.getRows !== undefined) return tx.getRows(table, ids);
+  const rows = new Map<string, StoredRow>();
+  for (const rowId of ids) {
+    const row = await tx.getRow(table, rowId);
+    if (row !== undefined) rows.set(rowId, row);
+  }
+  return rows;
 }
 
 export interface ServerStorage {
