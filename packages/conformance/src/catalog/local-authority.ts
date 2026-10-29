@@ -4,6 +4,7 @@
  * and moves its data to a remote server with attach (§12.3) followed by the
  * ordinary log-epoch reset (§2.1, §12.4).
  */
+import { YjsColumn } from '@syncular/crdt-yjs';
 import { check, checkEqual } from '../checks';
 import type {
   DriverRow,
@@ -12,6 +13,16 @@ import type {
   LocalAuthorityInstance,
 } from '../driver';
 import type { ClientHandle, Scenario, ScenarioContext } from '../scenario';
+import {
+  CRDT_SCHEMA,
+  CRDT_SERVER,
+  docBytesOf,
+  noteRow,
+  readText,
+  textUpdate,
+  valueBytes,
+} from './crdt';
+import { E2EE_SCHEMA, goodKeys, utf8Hex } from './encryption';
 import { expectConverged, syncFails, syncIdle } from './util';
 
 const P1 = { project_id: ['p1'] } as const;
@@ -365,6 +376,231 @@ export const localAuthorityScenarios: readonly Scenario[] = [
         (await ctx.server.readRows('nodes')).length,
         500,
         'the remote holds the 500 rows once',
+      );
+    },
+  },
+
+  {
+    // §12.3: the authority stores the client's §5.11 ciphertext and uploads
+    // it as stored; neither the authority nor the remote holds a key.
+    name: 'local-authority/attach-carries-ciphertext',
+    specRefs: ['§12.3', '§5.11', 'B.24'],
+    requires: ['local-authority'],
+    server: { schema: E2EE_SCHEMA },
+    async run(ctx) {
+      const authority = await ctx.newLocalAuthority(E2EE_SCHEMA);
+      const a = await ctx.newClient({
+        actorId: 'owner',
+        clientId: 'device',
+        server: authority,
+        schema: E2EE_SCHEMA,
+        encryption: goodKeys,
+      });
+      await a.api.subscribe({ id: 's', table: 'secrets', scopes: P1 });
+      await syncIdle(a);
+      await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'secrets',
+          values: {
+            id: 'r1',
+            project_id: 'p1',
+            note: 'top secret',
+            amount: 42,
+          },
+        },
+        {
+          op: 'upsert',
+          table: 'secrets',
+          values: { id: 'r2', project_id: 'p1', note: 'second', amount: null },
+        },
+      ]);
+      await syncIdle(a);
+      const local = (await authority.readRows('secrets')).map((row) => [
+        row.rowId,
+        row.values,
+      ]);
+
+      await ctx.server.setAllowedScopes('owner', P1);
+      checkEqual(
+        await authority.attach(ctx.server, 'owner'),
+        { ok: true },
+        'attach uploads the encrypted rows',
+      );
+      const remote = await ctx.server.readRows('secrets');
+      checkEqual(
+        remote.map((row) => [row.rowId, row.values]),
+        local,
+        'the remote stores the authority ciphertext byte for byte',
+      );
+      for (const [row, plaintext] of [
+        [remote[0], 'top secret'],
+        [remote[1], 'second'],
+      ] as const) {
+        const note = row?.values.note;
+        check(
+          typeof note === 'object' &&
+            note !== null &&
+            note.$bytes.startsWith('01') &&
+            !note.$bytes.includes(utf8Hex(plaintext)),
+          'the remote note is a §5.11 envelope without the plaintext',
+        );
+      }
+
+      a.route.server = ctx.server;
+      await syncIdle(a);
+      checkEqual(
+        (await a.api.readRows('secrets')).map((row) => row.values),
+        [
+          { id: 'r1', project_id: 'p1', note: 'top secret', amount: 42 },
+          { id: 'r2', project_id: 'p1', note: 'second', amount: null },
+        ],
+        'the rebound client decrypts the remote rows',
+      );
+
+      const b = await ctx.newClient({
+        actorId: 'b',
+        clientId: 'client-b',
+        schema: E2EE_SCHEMA,
+        allowed: P1,
+        encryption: goodKeys,
+      });
+      await b.api.subscribe({ id: 's', table: 'secrets', scopes: P1 });
+      await syncIdle(b);
+      checkEqual(
+        (await b.api.readRows('secrets')).map((row) => row.values),
+        (await a.api.readRows('secrets')).map((row) => row.values),
+        'a client holding the key bootstraps the plaintext from the remote',
+      );
+
+      const locked = await ctx.newClient({
+        actorId: 'locked',
+        clientId: 'client-locked',
+        schema: E2EE_SCHEMA,
+        allowed: P1,
+        encryption: { keys: {} },
+      });
+      await locked.api.subscribe({ id: 's', table: 'secrets', scopes: P1 });
+      await syncFails(
+        locked,
+        'client.decrypt_failed',
+        'a client without the key',
+      );
+      checkEqual(
+        await locked.api.readRows('secrets'),
+        [],
+        'the undecryptable rows are not applied',
+      );
+    },
+  },
+
+  {
+    // §12.3: attach uploads a `crdt` column as its stored state, which
+    // `merge(null, state)` stores unchanged on the remote (§5.10.2).
+    name: 'local-authority/attach-carries-crdt-state',
+    specRefs: ['§12.3', '§5.10.2', '§5.10.3', 'B.24'],
+    requires: ['local-authority', 'crdt'],
+    server: CRDT_SERVER,
+    async run(ctx) {
+      const authority = await ctx.newLocalAuthority(CRDT_SCHEMA);
+      const a = await ctx.newClient({
+        actorId: 'owner',
+        clientId: 'device',
+        server: authority,
+        schema: CRDT_SCHEMA,
+      });
+      await a.api.subscribe({ id: 's', table: 'notes', scopes: P1 });
+      await syncIdle(a);
+      await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'notes',
+          values: noteRow('n1', 't', textUpdate('hello')),
+        },
+      ]);
+      await syncIdle(a);
+      const localEdit = new YjsColumn(await docBytesOf(a, 'n1'));
+      localEdit.text().insert(localEdit.text().length, ' local');
+      await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'notes',
+          values: noteRow('n1', 't', localEdit.columnBytes()),
+        },
+      ]);
+      localEdit.destroy();
+      await syncIdle(a);
+      const local = (await authority.readRows('notes'))[0]?.values.doc;
+      checkEqual(
+        readText(valueBytes(local)),
+        'hello local',
+        'the authority merged both local edits',
+      );
+
+      await ctx.server.setAllowedScopes('owner', P1);
+      checkEqual(
+        await authority.attach(ctx.server, 'owner'),
+        { ok: true },
+        'attach uploads the crdt row',
+      );
+      checkEqual(
+        (await ctx.server.readRows('notes'))[0]?.values.doc,
+        local,
+        'the remote stores the authority state unchanged',
+      );
+
+      a.route.server = ctx.server;
+      await syncIdle(a);
+      const b = await ctx.newClient({
+        actorId: 'b',
+        clientId: 'client-b',
+        schema: CRDT_SCHEMA,
+        allowed: P1,
+      });
+      await b.api.subscribe({ id: 's', table: 'notes', scopes: P1 });
+      await syncIdle(b);
+
+      // Concurrent baseVersion-less edits on top of the attached state.
+      const aDoc = new YjsColumn(await docBytesOf(a, 'n1'));
+      aDoc.text().insert(aDoc.text().length, ' A');
+      const bDoc = new YjsColumn(await docBytesOf(b, 'n1'));
+      bDoc.text().insert(0, 'B ');
+      await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'notes',
+          values: noteRow('n1', 't', aDoc.columnBytes()),
+        },
+      ]);
+      await b.api.mutate([
+        {
+          op: 'upsert',
+          table: 'notes',
+          values: noteRow('n1', 't', bDoc.columnBytes()),
+        },
+      ]);
+      aDoc.destroy();
+      bDoc.destroy();
+      for (let i = 0; i < 2; i++) {
+        await syncIdle(a);
+        await syncIdle(b);
+      }
+
+      checkEqual(
+        await a.api.conflicts(),
+        [],
+        'the rebound client saw no conflict',
+      );
+      checkEqual(
+        await b.api.conflicts(),
+        [],
+        'the remote client saw no conflict',
+      );
+      await expectConverged(ctx, 'notes', [a, b]);
+      checkEqual(
+        readText(await docBytesOf(a, 'n1')),
+        'B hello local A',
+        'the remote merges both edits into the attached state',
       );
     },
   },

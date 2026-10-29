@@ -17,7 +17,7 @@ import { syncFails, syncIdle, syncOk } from './util';
 const P1 = { project_id: ['p1'] } as const;
 
 /** A table with two encrypted columns: a string `note` and an integer `amount`. */
-const E2EE_SCHEMA: DriverSchema = {
+export const E2EE_SCHEMA: DriverSchema = {
   version: 1,
   tables: [
     {
@@ -51,7 +51,7 @@ const E2EE_SERVER = { schema: E2EE_SCHEMA } as const;
 // Shared fixture key (`keyId = table` per the §5.11 per-table default).
 const KEY_HEX = '2a'.repeat(32);
 const WRONG_KEY_HEX = '99'.repeat(32);
-const goodKeys: DriverEncryptionConfig = {
+export const goodKeys: DriverEncryptionConfig = {
   keys: { secrets: { $bytes: KEY_HEX } },
 };
 const wrongKeys: DriverEncryptionConfig = {
@@ -152,7 +152,7 @@ const writerKeys: DriverEncryptionConfig = {
   keys: { record_details: { $bytes: KEY_HEX } },
 };
 
-function utf8Hex(text: string): string {
+export function utf8Hex(text: string): string {
   let hex = '';
   for (const b of new TextEncoder().encode(text)) {
     hex += b.toString(16).padStart(2, '0');

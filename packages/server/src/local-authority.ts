@@ -178,32 +178,6 @@ export async function openLocalAuthority(
         'SELECT value FROM sync_local_authority WHERE key=?',
       )
       .get(key)?.value;
-  const storage = new SqliteServerStorage(database);
-  const compiled = compileSchema(schema);
-  // §12.2: the authority reaches the running schema before it serves.
-  await storage.ensureSchema(compiled);
-  if ((await storage.getPartitionLogEpoch(LOCAL)) !== undefined) {
-    await pruneCommitLog({ storage, partition: LOCAL, nowMs: clock() });
-  }
-  const allowed = Object.fromEntries(
-    [...compiled.declaredVariables].map((variable) => [variable, ['*']]),
-  );
-  const ctx: SyncRequestContext = {
-    partition: LOCAL,
-    actorId: LOCAL,
-    schema,
-    storage,
-    segments: new MemorySegmentStore(),
-    resolveScopes: () => allowed,
-    clock,
-    ...(options.crdtMergers !== undefined
-      ? { crdtMergers: options.crdtMergers }
-      : {}),
-    ...(options.sqliteImageBuilder !== undefined
-      ? { sqliteImageBuilder: options.sqliteImageBuilder }
-      : {}),
-  };
-
   const stored = readMeta('state') ?? 'local';
   if (stored !== 'local' && stored !== 'attaching' && stored !== 'attached') {
     throw new SyncError(
@@ -213,6 +187,39 @@ export async function openLocalAuthority(
     );
   }
   let state: LocalAuthorityState = stored;
+  const compiled = compileSchema(schema);
+  // §12.3: an attached authority keeps only its state across reopens, so it
+  // opens no server storage; the storage constructor creates the server tables.
+  const storage =
+    stored === 'attached' ? undefined : new SqliteServerStorage(database);
+  if (storage !== undefined) {
+    // §12.2: the authority reaches the running schema before it serves.
+    await storage.ensureSchema(compiled);
+    if ((await storage.getPartitionLogEpoch(LOCAL)) !== undefined) {
+      await pruneCommitLog({ storage, partition: LOCAL, nowMs: clock() });
+    }
+  }
+  const allowed = Object.fromEntries(
+    [...compiled.declaredVariables].map((variable) => [variable, ['*']]),
+  );
+  const ctx: SyncRequestContext | undefined =
+    storage === undefined
+      ? undefined
+      : {
+          partition: LOCAL,
+          actorId: LOCAL,
+          schema,
+          storage,
+          segments: new MemorySegmentStore(),
+          resolveScopes: () => allowed,
+          clock,
+          ...(options.crdtMergers !== undefined
+            ? { crdtMergers: options.crdtMergers }
+            : {}),
+          ...(options.sqliteImageBuilder !== undefined
+            ? { sqliteImageBuilder: options.sqliteImageBuilder }
+            : {}),
+        };
   let uploading = false;
   const refuseDuringUpload = () => {
     if (uploading) {
@@ -223,8 +230,10 @@ export async function openLocalAuthority(
     }
   };
   const inflight = new Set<Promise<unknown>>();
-  const admit = <T>(work: () => Promise<T>): Promise<T> => {
-    if (state !== 'local') {
+  const admit = <T>(
+    work: (ctx: SyncRequestContext) => Promise<T>,
+  ): Promise<T> => {
+    if (state !== 'local' || ctx === undefined) {
       return Promise.reject(
         new SyncError(
           'sync.authority_unavailable',
@@ -233,7 +242,7 @@ export async function openLocalAuthority(
         ),
       );
     }
-    const promise = work();
+    const promise = work(ctx);
     const settle = () => inflight.delete(promise);
     inflight.add(promise);
     promise.then(settle, settle);
@@ -379,9 +388,9 @@ export async function openLocalAuthority(
     get state() {
       return state;
     },
-    sync: (request) => admit(() => handleSyncRequest(request, ctx)),
+    sync: (request) => admit((ctx) => handleSyncRequest(request, ctx)),
     downloadSegment: (request) =>
-      admit(async () => {
+      admit(async (ctx) => {
         const result = await handleSegmentDownload(ctx, {
           segmentId: request.segmentId,
           scopesHeader: request.requestedScopesJson,

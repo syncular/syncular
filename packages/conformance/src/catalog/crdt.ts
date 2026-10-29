@@ -89,7 +89,7 @@ export function noteRow(
   };
 }
 
-async function docBytesOf(
+export async function docBytesOf(
   client: {
     api: { readRows: (t: string) => Promise<{ values: DriverRow }[]> };
   },
