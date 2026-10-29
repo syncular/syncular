@@ -1,8 +1,61 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.48.0** (`v0.48.0`). All artifacts use Apache-2.0, except
+current release is **0.49.0** (`v0.49.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.49.0 release notes
+
+0.49.0 adds a local authority that lets a client start without a server,
+keeps queued inserts across a schema upgrade that appends columns, and exposes
+the browser's leader/follower machinery as `createTabCoordinator` for cores
+that are not a `SyncClientHandle`. It adds the `syncular-authority` crate and
+SPEC §12; the conformance catalog gains eight scenarios.
+
+`openLocalAuthority({ database, schema })` from `@syncular/server` runs the
+reference server inside the app's process over its own SQLite file, on Bun,
+Node 22.13 or newer, and in the browser worker through
+`startSyncWorker({ openLocalAuthority })` with `localAuthority: true` on the
+handle. Its `sync` and `downloadSegment` functions plug into `SyncClient` as
+`transport` and `segments`. `authority.attach(transport)` uploads every live
+row to a remote server as inserts, parents first, under stable commit IDs that
+make a crashed upload resumable; the client then reopens against the remote
+server over the same replica. A refused upload commit stops attach with
+`sync.attach_rejected`, and `abandonAttach(transport)` deletes the rows the
+remote server already applied; a client that reaches an attaching or attached
+authority receives `sync.authority_unavailable`. The native cores get the same
+through `syncular-authority`: a client config with `localAuthorityPath` syncs
+against it, and every binding exposes `localAuthorityState`,
+`attachLocalAuthority`, and `abandonLocalAuthorityAttach`. The catalog's six
+`local-authority/*` scenarios pass with both client cores against the
+TypeScript and the Rust authority.
+
+`mutate` marks an upsert of a row the replica does not show as an insert. After
+a schema bump that appends nullable columns, replay shows that row with the new
+columns NULL and the push sends them as NULL, so the server inserts the row
+where it refused the partial insert with `sync.row_missing` before. Both cores;
+covered by `schema-bump/queued-insert-survives-appended-column`.
+`previous-version/audit-names-missing-required-column` covers the audit of an
+insert that lacks a required column.
+
+`createTabCoordinator({ name, version, lead })` from `@syncular/client` elects
+one leader tab per Web Lock name and runs the core that `lead` starts there.
+Every other tab forwards `call(method, args)` to that core and receives its
+events. The core receives each call with the calling tab's id,
+`send(tabId, event)` targets one tab, `broadcast(event)` reaches every tab, and
+a core that defines `tabClosed` learns when a tab that called it closes through
+a `<name>:tab:<tabId>` Web Lock that every tab holds for its lifetime. A
+follower promotes on a higher epoch when the leader tab closes; a leader steps
+down for a tab with a higher `version`. `createSyncClientHandle` runs on the
+coordinator; its behavior is unchanged.
+
+**Upgrade notes.** `MULTI_TAB_PROTOCOL_VERSION` is 2. A 0.49.0 tab and a tab
+of an older release on the same origin do not serve each other: the newer tab
+takes over the database and the older tab is `blocked` with reason
+`leader-incompatible` until it reloads. A custom `leaderLock` must grant locks
+per name, as Web Locks does, because each multi-tab handle also holds its tab
+lock. No storage migration. Upgrade all 12 npm packages and 7 crates together;
+`syncular-authority` is new on crates.io.
 
 ## 0.48.0 release notes
 
