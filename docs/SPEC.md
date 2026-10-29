@@ -3975,6 +3975,8 @@ state, rollback journal, or offline queue. It receives the terminal
 and version exactly as it does for a replica client. The caller decides
 whether to issue a corrected commit under a new `clientCommitId`.
 
+A local authority's attach upload (§12.3) is a database-less producer.
+
 The application-facing remote operation protocol for authoritative queries,
 commands, and live query watches is defined separately in
 [`docs/REMOTE.md`](./REMOTE.md). Ordinary commits continue to use SSP2 so
@@ -6251,6 +6253,7 @@ Recommended actions: `refreshAuth`, `checkPermissions`, `fixRequest`,
 | `sync.internal_error` | internal | yes | retryLater | An exception outside this catalog (host code, storage, network) ended the request or socket round (HTTP 500 or an in-band `ERROR` before the first response byte). The message never carries the exception text; the host receives the original through its error hook |
 | `sync.storage_stale_read` | internal | no | inspectServer | Storage maximum precedes a push accepted in the same request; disable query caching for sync storage |
 | `sync.schema_not_ready` | internal | yes | retryLater | The server refuses a request while a declared backfill checkpoint for the running schema version is not activated, or the stored schema version is newer than the running build (§2.4) — *new in SSP2*; request-level. Structure in `details` names the projection; the message never interpolates it |
+| `sync.authority_unavailable` | internal | no | inspectServer | A local authority is attaching or attached (§12.3) and serves no sync or segment request; `details.state` is `attaching` or `attached` |
 | `sync.too_many_operations` | invalid-request | no | splitBatch | Push exceeds the operation cap (§6.1) |
 | `sync.not_found` | not-found | no | forceResync | Unknown segment id (§5.5) or sync resource |
 | `sync.segment_expired` | not-found | yes | retryLater | Segment TTL elapsed (§5.1); re-pull mints fresh descriptors — *new in SSP2* |
@@ -6300,7 +6303,10 @@ Outside the wire catalog: all client-local codes
 [§7.2.1 — an explicit resolution named no retained journal entry],
 `sync.outbox_incompatible`
 [§7.4.4 — a pending commit cannot re-encode under the new schema after a
-bump], `client.encrypt_failed` [§5.11 — an encrypted column failed to
+bump], `sync.attach_rejected` [§12.3 — the remote server did not apply an
+attach commit, answered with a schema floor, an `ERROR` frame or a log reset,
+or a reference cycle exceeds one commit; non-retryable, with the structured
+`reason` in details], `client.encrypt_failed` [§5.11 — an encrypted column failed to
 encode at the push seam: the key id resolved to no usable value or the
 selected key is unknown; category `crypto`, non-retryable, raised at the
 encode seam as a durable per-commit rejection, never on the wire], `client.decrypt_failed` [§5.11 — an encrypted column failed to
@@ -6448,6 +6454,92 @@ Where this spec hashes JSON (scope digest §3.5, `X-Syncular-Scopes`
 code-unit, scope value lists sorted and deduplicated, numbers in
 shortest-round-trip form. This sub-format IS contractual (digests must
 match across implementations).
+
+---
+
+## 12. Local authority
+
+### 12.1 Definition
+
+A **local authority** is a server that runs in the client's process over its
+own database, serves exactly one partition, and is reached through the
+client's transport seam. No client rule in this specification distinguishes a
+local authority from a remote server. The authority's database MUST be
+separate from the client replica: it holds server tables named like the
+replica's synced tables, and the §7.4.3 reset drops every replica table
+outside `_syncular_*`.
+
+### 12.2 Profile
+
+A local authority follows every server rule of §2.1 to §2.3, §4.1 to §4.7,
+§5.1, §5.2, §5.6 to §5.8, §5.10, §6.1 to §6.4 and §6.11 for its partition. It
+MAY produce SQLite segments (§5.3). It authenticates every request to
+partition `local` and actor `local`, resolves every declared scope variable to
+all values, and issues no lease. It has no realtime channel (§8), blob routes
+(§5.9), write or commit validators (§6.7, §6.8), reactions (§6.9) or remote
+operations.
+
+Before it serves, the authority migrates its own tables to the running schema
+version: added tables and appended nullable columns (§9). A client's §7.4
+reset then bootstraps from the authority, and every acknowledged row survives
+the bump. At open the authority prunes its commit log under the §4.6 floors.
+
+### 12.3 Attach
+
+Attach moves the authority's rows to a remote server. The authority's state
+is `local`, `attaching` or `attached`, persisted in the authority database.
+
+1. Entering `attaching`, the authority stops admitting requests, waits for
+   admitted requests to finish, and persists the state with a random
+   `attachId` in one transaction. From then on it answers every sync and
+   segment request with `sync.authority_unavailable` and MUST NOT change its
+   rows.
+2. The authority uploads every live row as a §6.10 database-less producer
+   with `clientId = "authority-" + attachId`. It acquires the remote
+   `logEpoch` (§2.1), then sends one `PUSH_COMMIT` per request. Every
+   operation is an upsert with `baseVersion = 0` and every column present, so
+   the remote inserts it (§6.2) and refuses an existing row ID with
+   `sync.version_conflict`. Attach never overwrites a remote row.
+3. The authority visits rows in (table name, row ID) binary order and builds
+   the graph whose edges lead from a row to each parent row named by its
+   non-null declared references (§6.11), in declaration order. It computes
+   strongly connected components with Tarjan's algorithm over rows and edges
+   in that order and emits them in completion order, which places every
+   parent before its children; members of a component keep visit order.
+   Consecutive components share a commit up to 500 operations, the reference
+   server's request cap (§6.1). A component is never split, because §6.11
+   judges a commit's candidate state. A component larger than 500 operations
+   stops attach before any upload with `sync.attach_rejected`,
+   `reason = cycle_too_large`.
+4. Commit `n` (0-based) carries `clientCommitId = attachId + ":" + n`. The
+   frozen rows make the plan reproducible, so a restarted attach resends
+   byte-equivalent commits and receives `cached` for every commit the remote
+   applied (§2.3).
+5. A transport failure stops attach with the transport's error; the state
+   stays `attaching`, and the next attach resumes. A schema-floor response, an
+   `ERROR` frame, a `resetRequired` response, or a commit result other than
+   `applied` or `cached` stops attach with `sync.attach_rejected`. A rejected
+   commit is terminal for its `attachId`: the remote retains the rejection
+   under the idempotency key (§2.3) and replays it on resume. The app then
+   abandons the attach, which returns the authority to `local`; the host
+   discards any commits the remote applied for that `attachId` before the
+   next attach, which uses a new `attachId`.
+6. When every commit is `applied` or `cached`, the authority persists
+   `attached` and serves no further request.
+
+The remote's scope resolver MUST grant the attaching actor every scope value
+the rows carry; a denied row rejects its commit with `sync.forbidden`.
+
+### 12.4 Rebinding the client
+
+The app reopens its client against the remote server over the same replica.
+The remote `logEpoch` differs from the stored value, so the first round runs
+the §2.1 reset: the client discards synced rows, cursors and acknowledged
+intent, keeps `clientId`, the outbox and outcomes, and bootstraps from the
+remote. Commits queued while attaching push after the reset. A queued
+commit's `baseVersion` names an authority version, and every attached row
+starts at version 1, so a `baseVersion` above 1 is refused with
+`sync.invalid_request`. Apps queue only unversioned writes while attaching.
 
 ---
 
@@ -6848,3 +6940,17 @@ Each is a driver-interface script, not a prose test.
     both bindings returns only the other binding's rows, and an incremental
     pull of the erased binding from cursor 0 returns only the erasure
     deletes. Both pairings (TS×TS, Rust×TS).
+
+24. **Local authority (§12).** (a) A client syncs against a local authority:
+    the outbox drains, rows carry authority versions, and deleting a parent
+    cascades and nullifies through declared references. (b) The authority and
+    the client reopen at a version that appends a nullable column and a
+    table; every row survives with the column NULL and a queued update
+    replays. (c) An authority holding a reference chain and a two-row cycle
+    attaches to the reference server; a lost response stops attach, the
+    client's round fails with `sync.authority_unavailable`, a restarted
+    attach completes with the applied commit `cached`, and the client
+    rebinds through the §2.1 reset and converges, including a write queued
+    during attach. (d) A remote scope denial stops attach with
+    `sync.attach_rejected`; abandoning serves the client again, and a new
+    attach completes. Both pairings (TS×TS, Rust×TS).

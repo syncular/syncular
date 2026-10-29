@@ -249,7 +249,8 @@ export type ServerCapability =
   | 'validators'
   | 'commit-validators'
   | 'backfill-checkpoints'
-  | 'erasure';
+  | 'erasure'
+  | 'local-authority';
 
 /**
  * §6.7 declarative write-validation rule (JSON-able so it crosses the
@@ -527,10 +528,59 @@ export interface ServerInstance {
   close(): Promise<void>;
 }
 
+/** The server surface a client's transport seam reaches (§1.1, §5.5, §8). */
+export type SyncEndpoint = Pick<
+  ServerInstance,
+  | 'handleSyncRequest'
+  | 'downloadSegment'
+  | 'connectRealtime'
+  | 'setAllowedScopes'
+  | 'uploadBlob'
+  | 'downloadBlob'
+  | 'fetchBlobUrl'
+  | 'uploadBlobGrant'
+  | 'putBlobUrl'
+  | 'fetchSegmentUrl'
+>;
+
+/** §12.3 attach outcome; `code` is `sync.attach_rejected` or a transport code. */
+export type AttachResult =
+  | { readonly ok: true }
+  | {
+      readonly ok: false;
+      readonly code: string;
+      readonly details?: Readonly<Record<string, unknown>>;
+    };
+
+/** `local-authority`: a §12 local authority a client reaches as its server. */
+export interface LocalAuthorityInstance extends SyncEndpoint {
+  state(): Promise<'local' | 'attaching' | 'attached'>;
+  readRows(table: string): Promise<ServerRowState[]>;
+  /**
+   * §12.3: upload every live row to `target` on behalf of `actorId`.
+   * `loseResponseOfCommit` drops the response of that upload commit (0-based)
+   * after `target` processed it.
+   */
+  attach(
+    target: ServerInstance,
+    actorId: string,
+    faults?: { readonly loseResponseOfCommit?: number },
+  ): Promise<AttachResult>;
+  abandonAttach(): Promise<void>;
+  /** A process restart: reopen over the same database at `schema`. */
+  restart(schema: DriverSchema): Promise<void>;
+  close(): Promise<void>;
+}
+
 export interface ServerDriver {
   readonly name: string;
   readonly capabilities: readonly ServerCapability[];
   create(options: ServerCreateOptions): Promise<ServerInstance>;
+  /** Present iff `capabilities` includes `local-authority`. */
+  createLocalAuthority?(options: {
+    readonly schema: DriverSchema;
+    readonly nowMs: number;
+  }): Promise<LocalAuthorityInstance>;
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,7 @@
 # RFC: Local authority for serverless clients
 
-- Status: draft, awaiting maintainer review
+- Status: accepted 2026-10-29; phase 1 implemented for Bun and Node (SPEC
+  §12, Appendix B.24); browser worker and phase 2 open
 - Date: 2026-10-29
 - Review baseline: `e4b4255b` (0.48.0)
 - Scope: SPEC §2.1, §6.10, §10, new §12, Appendix B; `@syncular/server`
@@ -27,11 +28,13 @@ distinguish a local authority from a remote server.
 
 | Platform | Authority |
 |---|---|
-| TypeScript (Bun, Node, browser worker) | The shipped `@syncular/server` handler over `SqliteServerStorage`, packaged as `@syncular/server/local` |
+| TypeScript (Bun, Node) | `openLocalAuthority` in `@syncular/server`: the shipped handler over `SqliteServerStorage` |
 | Rust core (Tauri, Swift, Kotlin, Flutter, React Native) | New crate `syncular-authority` implementing the §12 authority profile, conformance-locked against the reference server |
 
-Phase 1 ships the TypeScript authority and attach. Phase 2 ships the Rust
-crate and the binding configuration.
+Phase 1 ships the TypeScript authority and attach for Bun and Node. The
+browser worker needs a sqlite-wasm `SqliteDatabase` adapter and a worker
+configuration field; it follows as phase 1b. Phase 2 ships the Rust crate and
+the binding configuration.
 
 ## 2. Evidence
 
@@ -162,9 +165,10 @@ overhead is unmeasured; phase 1 records it for a 100k-row fixture.
 1. The app runs a round that leaves the client outbox empty, then closes the
    transport gate (`setTransportEnabled(false)`, §8.8).
 2. The app calls `attach` on the authority with an authenticated cloud
-   `SyncTransport` and a producer `clientId`. The authority persists
-   `attaching`, a random `attachId`, and the operation budget. From then on
-   it refuses every request with `sync.authority_unavailable`.
+   `SyncTransport`. The authority persists `attaching` and a random
+   `attachId`; the producer `clientId` is `authority-<attachId>` and the
+   operation budget is fixed at 500, so neither needs persisting. From then
+   on it refuses every request with `sync.authority_unavailable`.
 3. The authority uploads its live rows as a §6.10 producer: push-only
    requests of `PUSH_COMMIT` frames in which every operation is an insert
    (`baseVersion = 0`, every column present).
@@ -185,9 +189,14 @@ overhead is unmeasured; phase 1 records it for a 100k-row fixture.
      stores it unchanged.
    - A schema-floor response (§1.6) stops attach with the floor details.
 4. A result other than `applied` or `cached` stops attach with
-   `sync.attach_rejected` and details `{ clientCommitId, code, opIndex }`.
-   The authority stays `attaching`; the next `attach` call resumes, and
-   commits the cloud already applied return `cached`.
+   `sync.attach_rejected` and details `{ reason: "commit_rejected",
+   clientCommitId, code, opIndex }`. The cloud retains a rejected result
+   under its idempotency key (§2.3), so resuming replays the rejection: a
+   rejected commit is terminal for its `attachId`. `abandonAttach()` returns
+   the authority to `local`; the host discards any commits the cloud applied
+   for that `attachId`, and the next `attach` uses a new `attachId`. A
+   transport failure leaves the state `attaching`, and the next `attach`
+   resumes with the applied commits returned as `cached`.
 5. When every commit is applied, the authority records `attached` and keeps
    refusing requests. The app reopens the client against the cloud over the
    same replica file. The first round meets a different `logEpoch` and takes
@@ -242,30 +251,41 @@ of the reference server, and the conformance lane in §5 enforces that.
 TypeScript:
 
 ```ts
-import { openLocalAuthority } from '@syncular/server/local';
+import { BunSqliteDatabase, openLocalAuthority } from '@syncular/server';
 
-const authority = await openLocalAuthority({ database, schema });
-const client = createSyncClient({
-  database,
+const authority = await openLocalAuthority({
+  database: new BunSqliteDatabase('./data/authority.sqlite'),
   schema,
-  transport: authority.transport,
-  segments: authority.segments,
+});
+const client = new SyncClient({
+  database: replica,
+  schema,
+  clientId,
+  transport: authority.sync,
+  segments: authority.downloadSegment,
 });
 
 // Later, with the client's transport gate closed:
-await authority.attach({ transport: cloudTransport, clientId: 'device-upload' });
+await authority.attach(cloudTransport);
 ```
 
-`database` is the replica's `ClientDatabase`; the authority opens its own
-sibling file through `openSibling`. The browser build of the server entry
-point and its bundle size are verified in phase 1.
+The host passes the authority's own `SqliteDatabase` (`BunSqliteDatabase` or
+`NodeSqliteDatabase`); the server package keeps no dependency on the client
+package. The browser adapter and its bundle size belong to phase 1b.
 
 Rust and bindings: `Authority::open(sibling_path, &schema)` returns a value
 that implements `Transport`. Each binding gains one configuration field for
 the authority path, mutually exclusive with `base_url`, plus an `attach`
 call.
 
-## 4. Proposed SPEC changes
+## 4. SPEC changes
+
+Shipped as SPEC §12, the `sync.authority_unavailable` row in §10.2, the
+client-local `sync.attach_rejected` in §10.3, one sentence in §6.10, and
+Appendix B.24. The shipped §12.3 adds what phase 1 settled: the Tarjan
+ordering rule, the derived producer `clientId`, the fixed 500-operation
+budget, and the terminal rejection with abandon. The draft text below is
+kept for review history.
 
 ### 4.1 New §12 Local authority
 
@@ -317,7 +337,19 @@ database-less producer.
 
 ## 5. Conformance
 
-New Appendix B scenarios, parameterized over the authority implementation:
+Shipped in `packages/conformance/src/catalog/local-authority.ts` as B.24.
+The harness gained `ServerDriver.createLocalAuthority`, the
+`local-authority` capability, `ScenarioContext.newLocalAuthority`, and a
+mutable `ClientHandle.route` that rebinds a client to another server. All
+four scenarios pass with the TypeScript client and with the Rust client
+against the TypeScript authority. Differences from the draft: scenario 2
+queues an update instead of an insert (§7 item 6), scenario 3 omits the
+encrypted and `crdt` columns, and scenario 4 uses a scope denial and a new
+attach instead of a validator and a resume, because a rejection is terminal
+(§3.6 step 4). `packages/server/test/local-authority.test.ts` covers commit
+packing at the 500-operation boundary and `cycle_too_large`.
+
+Draft list:
 
 1. **Local round trip.** A client writes through a local authority. After
    `syncUntilIdle` the outbox is empty, the rows sit in the replica's base
@@ -368,24 +400,37 @@ server advertises all of them, so its lane keeps its current coverage.
 
 ## 7. Open questions
 
-1. **Abandoning a failed attach.** The cloud keeps the applied prefix. The
-   proposed default: `abandonAttach()` returns the authority to local
-   operation, and the host discards the partial target partition before the
-   next attach, which uses a new `attachId`.
+1. **Abandoning a failed attach.** Resolved as proposed: `abandonAttach()`
+   returns the authority to local operation, and the host discards the
+   partial target partition before the next attach, which uses a new
+   `attachId`. Syncular ships no partition-discard tool yet.
 2. **Attaching into a non-empty partition**, including a second device's
    upload. Insert semantics turn every overlap into a conflict; merging two
    serverless histories is out of scope.
 3. **Several devices without a server.** Out of scope.
-4. **Costs.** Browser bundle size of the server entry point, in-process
-   write latency, and storage overhead are unmeasured; phase 1 measures all
-   three before the API is documented.
+4. **Costs.** Measured on macOS arm64, Bun 1.4.4, file-backed databases:
+   `mutate` plus `syncUntilIdle` with the row delivered took 2.05 ms at p50
+   and 2.97 ms at p95 over 500 writes. After 100,500 rows in 700 commits the
+   replica held 11.1 MB and the authority 51.0 MB; the §4.6 floor of 1,000
+   retained commits kept every change. A fresh client bootstrapped the
+   100,500 rows from the authority in 161 ms. The browser bundle size is
+   unmeasured until phase 1b.
 5. **Platform priority.** Hamukko's platform decides whether phase 2 is on
    its critical path.
+6. **Queued inserts across an appended column.** Found while writing
+   scenario 2, and independent of the local authority: a queued insert
+   recorded before a bump that appends a nullable column re-encodes without
+   that column, and §6.2 refuses a partial payload for an absent row with
+   `sync.row_missing`. §7.4.4 classifies only commits that cannot encode, so
+   the insert reaches the server and is lost. Every remote server shows the
+   same behavior. A fix needs the outbox to record full-row intent and a
+   SPEC change in both cores.
 
 ## 8. Plan
 
 | Phase | Work | Gate |
 |---|---|---|
 | 0 | Maintainer review of this RFC | Accepted text moves into SPEC §12 |
-| 1 | `@syncular/server/local`: authority over a sibling file, attach, `sync.authority_unavailable`, `sync.attach_rejected`; harness `newServer`; scenarios 1 to 4 against the TS client; measurements from §7 item 4; docs page and changelog entry | `bun run check` |
+| 1 | Done: `openLocalAuthority` in `@syncular/server`, attach, `sync.authority_unavailable`, `sync.attach_rejected`; harness `createLocalAuthority` and `route`; scenarios 1 to 4 against both clients; measurements in §7 item 4; docs page `guide-local-authority` and changelog entry | `bun run check` |
+| 1b | Browser worker: sqlite-wasm `SqliteDatabase` adapter, worker configuration field, bundle-size measurement | `bun run check` |
 | 2 | `syncular-authority` crate; `rust-authority` server driver and capability tags; scenarios 1 to 4 with the Rust client; binding configuration for Tauri, Swift, Kotlin, Flutter and React Native | `bun run check`, `bun run rust test`, `bun run rust clippy --all-targets -- -D warnings`, binding `check.sh` gates |

@@ -194,6 +194,12 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorCatalogEntry>> = {
     recommendedAction: 'inspectServer',
     httpStatus: 503,
   },
+  'sync.authority_unavailable': {
+    category: 'internal',
+    retryable: false,
+    recommendedAction: 'inspectServer',
+    httpStatus: 503,
+  },
   'sync.schema_not_ready': {
     category: 'internal',
     retryable: true,
