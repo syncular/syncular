@@ -1,8 +1,23 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.46.1** (`v0.46.1`). All artifacts use Apache-2.0, except
+current release is **0.46.2** (`v0.46.2`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.46.2 release notes
+
+0.46.2 republishes 0.46.1. The packages, the crates, SSP2, the storage layout,
+the wire version, and the conformance catalog are unchanged.
+
+The 0.46.1 workflow published the crates and then failed in its npm job:
+`server-side schema migration (the subset) > Postgres rewrites a page of rows
+with one UPDATE` exceeded bun's 5 s per-test default on the runner (5401 ms,
+with 2740 other tests passing). The test drives PGlite and needs no 5 s budget;
+`test:main` runs with `--timeout 20000`, so a WebAssembly Postgres instance and
+a real-database scenario have room on a loaded runner.
+
+**Upgrade notes.** Nothing changes for a host. Upgrade all 12 npm packages and
+6 crates to 0.46.2 to stay in lockstep.
 
 ## 0.46.1 release notes
 
