@@ -19,7 +19,7 @@ import {
   task,
 } from '../fixture';
 import { rawPullHeader, rawSubscription, responseSection } from '../raw';
-import type { DriverSchema } from '../driver';
+import type { DriverSchema, DriverTable } from '../driver';
 import type { Scenario } from '../scenario';
 import { expectConverged, seedTasks, syncIdle, syncOk } from './util';
 
@@ -28,7 +28,66 @@ const P1 = { project_id: ['p1'] } as const;
 /** Rows baseline + sqlite images (§5.3). */
 const WITH_SQLITE = 0b0111;
 
+/** Version 2 appends a nullable `tasks.note` (§7.4.4 insert intent). */
+const TASKS_WITH_NOTE: DriverSchema = {
+  version: 2,
+  tables: [
+    {
+      ...(FIXTURE_SCHEMA.tables[0] as DriverTable),
+      columns: [
+        ...(FIXTURE_SCHEMA.tables[0] as DriverTable).columns,
+        { name: 'note', type: 'string', nullable: true },
+      ],
+    },
+    FIXTURE_SCHEMA.tables[1] as DriverTable,
+  ],
+};
+
 export const schemaBumpScenarios: readonly Scenario[] = [
+  {
+    name: 'schema-bump/queued-insert-survives-appended-column',
+    specRefs: ['§7.1', '§7.4.4', '§6.2'],
+    server: {
+      schema: TASKS_WITH_NOTE,
+      schemaWindow: [TASKS_WITH_NOTE, FIXTURE_SCHEMA],
+    },
+    async run(ctx) {
+      await seedTasks(ctx, [{ ...task('kept', 'p1', 'kept'), note: 'server' }]);
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: P1,
+      });
+      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await syncIdle(a);
+      // Queued at version 1: an insert of a new row and an update of a row
+      // whose appended column the server already holds.
+      await a.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('queued', 'p1', 'new') },
+        { op: 'upsert', table: 'tasks', values: task('kept', 'p1', 'edited') },
+      ]);
+
+      await ctx.recreateClient(a, TASKS_WITH_NOTE);
+      checkEqual(
+        (await a.api.readRows('tasks')).map((row) => row.values),
+        [{ ...task('queued', 'p1', 'new'), note: null }],
+        'the replayed insert is visible with the appended column NULL',
+      );
+      await syncIdle(a);
+
+      checkEqual(await a.api.rejections(), [], 'both queued writes apply');
+      checkEqual(
+        (await ctx.server.readRows('tasks')).map((row) => row.values),
+        [
+          { ...task('kept', 'p1', 'edited'), note: 'server' },
+          { ...task('queued', 'p1', 'new'), note: null },
+        ],
+        'the insert stores NULL and the update keeps the appended value',
+      );
+      await expectConverged(ctx, 'tasks', [a]);
+    },
+  },
+
   {
     name: 'schema-bump/missing-paired-marker-refuses-recreation',
     specRefs: ['§7.4.1', '§7.4.2'],

@@ -10,7 +10,7 @@ A local authority runs the Syncular server inside your app's process over its ow
 - **Remote server**: The server the client syncs with after attach.
 :::
 
-The local authority ships in `@syncular/server` for Bun and Node 22.13 or newer. The browser worker and the native cores (Tauri, Swift, Kotlin, Flutter, React Native) have no local authority yet.
+The local authority ships in `@syncular/server` for Bun, Node 22.13 or newer, and the browser worker. The native cores (Tauri, Swift, Kotlin, Flutter, React Native) have no local authority yet.
 
 ## Open the authority and the client
 
@@ -50,11 +50,45 @@ The authority grants every scope value to its one local actor and has no realtim
 
 Measured on an Apple M-series laptop with Bun 1.4.4 and file-backed databases: one `mutate` followed by `syncUntilIdle()` returned with the row delivered in 2.05 ms at p50 and 2.97 ms at p95 over 500 writes. After 100,500 rows in 700 commits, the replica held 11.1 MB and the authority 51.0 MB, because the authority keeps at least 1,000 commits of change log (SPEC §4.6). A fresh client bootstrapped all 100,500 rows from the authority in 161 ms.
 
+## In the browser
+
+The browser client runs in a worker, so the worker entry opens the authority. Pass `openLocalAuthority` to `startSyncWorker`:
+
+```ts title="src/worker.ts"
+import { startSyncWorker } from '@syncular/client/worker';
+import { clientSqliteDatabase, openLocalAuthority } from '@syncular/server';
+
+startSyncWorker({
+  openLocalAuthority: (database, schema) =>
+    openLocalAuthority({ database: clientSqliteDatabase(database), schema }),
+});
+```
+
+Only a worker entry that imports `openLocalAuthority` bundles the server code. Measured with `bun build --target=browser --minify`, the authority adds 134.6 KB minified and 36.3 KB gzipped to a bundle that already holds the client core.
+
+Create the handle with `localAuthority: true`. `endpoints.syncUrl` names the remote server that attach uploads to:
+
+```ts title="src/sync.ts"
+export const handle = await createSyncClientHandle({
+  worker: () =>
+    new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }),
+  schema,
+  database: { mode: 'persistent', name: 'my-app' },
+  endpoints: { syncUrl: '/sync', segmentsUrl: '/segments' },
+  localAuthority: true,
+  autoSync: true,
+});
+```
+
+The worker opens the authority in a sibling OPFS file beside the replica and routes every round to it. Without the override, `createSyncClientHandle` rejects with `client.local_authority_unconfigured`. While the authority serves the client, the worker connects no realtime socket. `handle.localAuthorityState()` returns `local`, `attaching`, or `attached`.
+
+`handle.attachLocalAuthority()` holds the client's rounds, uploads the rows with the headers set through `setHeaders`, and then routes rounds to `endpoints.syncUrl`, where the replica rebinds through the log-epoch reset. After attach the authority file keeps only its state, so the page keeps passing `localAuthority: true` and the worker keeps syncing with the remote server. `handle.abandonLocalAuthorityAttach()` rolls a stopped attach back ([When attach stops](#when-attach-stops)).
+
 ## Upgrade the schema
 
 Ship the new generated schema and open both components with it. `openLocalAuthority` migrates the authority's tables in place (added tables and appended nullable columns), and the client runs its ordinary reset and bootstraps from the authority. Every acknowledged row survives.
 
-A queued insert that the client recorded before an upgrade that appends a column does not survive: it re-encodes without the new column, and the authority refuses it as a partial insert with `sync.row_missing`. Run `syncUntilIdle()` before closing the app so the outbox is empty when the next version opens.
+A write still queued at the upgrade replays after it. A queued insert stores NULL in the appended columns, and a queued update leaves them unchanged ([Appended columns](/concepts-schema-upgrades/#appended-columns)).
 
 ## Choose scope values the remote server will grant
 
@@ -91,7 +125,7 @@ await remote.start();
 await remote.syncUntilIdle();
 ```
 
-The remote server's log epoch differs from the authority's, so the first round resets the replica: the client discards its synced rows, keeps its client ID and outbox, and bootstraps from the remote server. Delete `./data/authority.sqlite` afterwards.
+The remote server's log epoch differs from the authority's, so the first round resets the replica: the client discards its synced rows, keeps its client ID and outbox, and bootstraps from the remote server. After attach the authority file keeps only its state; delete `./data/authority.sqlite` once the client runs against the remote server.
 
 Writes made while attaching wait in the outbox and push after the reset. A write that carries `baseVersion` names an authority version, and every attached row starts at version 1 on the remote server, so a `baseVersion` above 1 is refused with `sync.invalid_request`. Queue only unversioned writes while attaching.
 
@@ -101,10 +135,12 @@ Writes made while attaching wait in the outbox and push after the reset. A write
 
 | `reason` | Cause | Next step |
 |---|---|---|
-| `commit_rejected` | The remote server refused a commit; `details.code` and `details.opIndex` name the operation | Abandon, fix the data or the server, discard the partial remote data, attach again |
+| `commit_rejected` | The remote server refused a commit; `details.code` and `details.opIndex` name the operation | Abandon with the transport, fix the data or the server, attach again |
 | `cycle_too_large` | More than 500 rows reference each other in one cycle | Break the cycle locally, then attach |
 | `schema_floor` | The remote server does not serve this schema version | Deploy the matching server version, then call `attach` again |
 | `request_failed` | The remote server answered with an error frame; `details.code` names it | Fix the cause, then call `attach` again |
-| `log_epoch_changed` | The remote partition's log was reset during the upload | Abandon, discard the partial remote data, attach again |
+| `log_epoch_changed` | The remote partition's log was reset during the upload | Abandon with the transport, attach again |
 
-A transport failure rejects with the transport's own error and leaves the attach resumable. A refused commit is final for that attach: the remote server stores the rejection under the commit's idempotency key and returns it again on every retry. `authority.abandonAttach()` returns the authority to serving the client, and the next `attach` starts a new upload with new commit IDs. Rows a remote server already applied stay there, so discard that partition before the next attach, or the new inserts conflict with them.
+A transport failure rejects with the transport's own error and leaves the attach resumable. A refused commit is final for that attach: the remote server stores the rejection under the commit's idempotency key and returns it again on every retry.
+
+`authority.abandonAttach(transport)` ends a stopped attach. Pass the same remote transport: the authority deletes every row the remote server applied from this attach, children before parents, and then serves the client again. The remote server keeps a tombstone per deleted row, and the next `attach` recreates the rows under new commit IDs. When no upload request reached the remote server, `abandonAttach()` needs no transport. A rollback delete the remote server refuses, for example a `RESTRICT` reference from a row another client added, stops `abandonAttach` with `sync.attach_rejected` and leaves the attach in place.

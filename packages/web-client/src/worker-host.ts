@@ -110,6 +110,7 @@ import type { ClientSchema } from './schema';
 import type { SubscriptionRecord } from './state';
 import type { WindowBase } from './window';
 import {
+  type LocalAuthorityState,
   type MainToWorkerMessage,
   NOT_LEADER_CODE,
   type SyncWorkerEvent,
@@ -201,6 +202,8 @@ export interface SyncClientHandleConfig {
   /** Open the worker-owned replica behind the fail-closed security gate. */
   readonly securityPreflight?: boolean;
   readonly transportEnabled?: boolean;
+  /** SPEC §12: start against the worker's local authority (`WorkerInitConfig`). */
+  readonly localAuthority?: boolean;
   readonly clientId?: string;
   readonly limits?: SyncClientLimits;
   readonly retainFailedCommits?: boolean;
@@ -804,6 +807,25 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     return this.#call('setOffline', [offline]);
   }
 
+  /** SPEC §12.3 local-authority state; `undefined` without `localAuthority`. */
+  localAuthorityState(): Promise<LocalAuthorityState | undefined> {
+    return this.#call('localAuthorityState', []);
+  }
+
+  /**
+   * SPEC §12.3: upload the local authority's rows to `endpoints.syncUrl`,
+   * then sync with that server. Rejects with `sync.attach_rejected` when the
+   * server refuses an upload commit.
+   */
+  attachLocalAuthority(): Promise<void> {
+    return this.#call('attachLocalAuthority', []);
+  }
+
+  /** SPEC §12.3: delete the rows a stopped attach uploaded, then sync locally. */
+  abandonLocalAuthorityAttach(): Promise<void> {
+    return this.#call('abandonLocalAuthorityAttach', []);
+  }
+
   /** Close the core (leader) or unbind the link (follower), release leadership. */
   async close(): Promise<void> {
     if (this.#closed) return;
@@ -986,6 +1008,9 @@ function buildInitConfig(
       : {}),
     ...(config.transportEnabled !== undefined
       ? { transportEnabled: config.transportEnabled }
+      : {}),
+    ...(config.localAuthority !== undefined
+      ? { localAuthority: config.localAuthority }
       : {}),
     ...(config.authorityReads !== undefined
       ? { authorityReads: config.authorityReads.declarations }

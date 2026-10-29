@@ -64,6 +64,12 @@ export const NOT_LEADER_CODE = 'client.not_leader';
 export const WORKER_FAILED_CODE = 'client.worker_failed';
 /** A page/worker bundle identity changed and a full host reload is required. */
 export const WORKER_RESTART_REQUIRED_CODE = 'client.worker_restart_required';
+/** SPEC §12: local-authority use without `startSyncWorker({ openLocalAuthority })`. */
+export const LOCAL_AUTHORITY_UNCONFIGURED_CODE =
+  'client.local_authority_unconfigured';
+
+/** SPEC §12.3 local-authority state. */
+export type LocalAuthorityState = 'local' | 'attaching' | 'attached';
 
 // ---------------------------------------------------------------------------
 // Init configuration (structured-clone safe)
@@ -116,6 +122,12 @@ export interface WorkerInitConfig {
   readonly authorityReads?: readonly import('./authority').AuthorityReadDeclaration[];
   readonly securityPreflight?: boolean;
   readonly transportEnabled?: boolean;
+  /**
+   * SPEC §12: sync against a local authority in a sibling file until
+   * `attachLocalAuthority` moves its rows to `endpoints.syncUrl`. Requires
+   * `startSyncWorker({ openLocalAuthority })`.
+   */
+  readonly localAuthority?: boolean;
   readonly clientId?: string;
   readonly limits?: SyncClientLimits;
   readonly retainFailedCommits?: boolean;
@@ -213,6 +225,12 @@ export interface WorkerApi extends Omit<
   setHeaders(headers: Readonly<Record<string, string>>): void;
   /** Sever/restore the transport + realtime (offline simulation, demos). */
   setOffline(offline: boolean): void;
+  /** SPEC §12.3 state; `undefined` when init did not enable the local authority. */
+  localAuthorityState(): LocalAuthorityState | undefined;
+  /** SPEC §12.3: upload the local authority's rows to `endpoints.syncUrl`. */
+  attachLocalAuthority(): Promise<void>;
+  /** SPEC §12.3: roll back a stopped attach and sync locally again. */
+  abandonLocalAuthorityAttach(): Promise<void>;
   close(): Promise<void>;
 }
 

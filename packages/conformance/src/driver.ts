@@ -566,7 +566,8 @@ export interface LocalAuthorityInstance extends SyncEndpoint {
     actorId: string,
     faults?: { readonly loseResponseOfCommit?: number },
   ): Promise<AttachResult>;
-  abandonAttach(): Promise<void>;
+  /** §12.3: delete the rows `target` applied from this attach, then serve again. */
+  abandonAttach(target: ServerInstance, actorId: string): Promise<AttachResult>;
   /** A process restart: reopen over the same database at `schema`. */
   restart(schema: DriverSchema): Promise<void>;
   close(): Promise<void>;

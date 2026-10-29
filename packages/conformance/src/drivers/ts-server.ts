@@ -1193,6 +1193,46 @@ class TsServerInstance implements ServerInstance {
   }
 }
 
+/** §12.3: the attach upload reaches `target` through its request handler. */
+function remoteTransport(
+  target: ServerInstance,
+  actorId: string,
+  faults?: { readonly loseResponseOfCommit?: number },
+): (request: Uint8Array) => Promise<Uint8Array> {
+  let commits = 0;
+  return async (request) => {
+    const commit = decodeMessage(request).frames.some(
+      (frame) => frame.type === 'PUSH_COMMIT',
+    )
+      ? commits++
+      : -1;
+    const result = await target.handleSyncRequest(actorId, request);
+    if (!result.ok) {
+      throw new SyncError(result.error.code, result.error.message);
+    }
+    if (commit !== -1 && commit === faults?.loseResponseOfCommit) {
+      throw new TransportFault('injected: attach response lost');
+    }
+    return result.bytes;
+  };
+}
+
+async function attachOutcome(run: () => Promise<void>): Promise<AttachResult> {
+  try {
+    await run();
+    return { ok: true };
+  } catch (error) {
+    if (error instanceof LocalAuthorityAttachError) {
+      return { ok: false, code: error.code, details: error.details };
+    }
+    if (error instanceof SyncError) return { ok: false, code: error.code };
+    if (error instanceof TransportFault) {
+      return { ok: false, code: 'sync.transport_failed' };
+    }
+    throw error;
+  }
+}
+
 /**
  * §12 local authority behind the driver seam. One in-memory database outlives
  * `restart`, which reopens the authority the way a process restart does.
@@ -1277,38 +1317,18 @@ class TsLocalAuthorityInstance implements LocalAuthorityInstance {
     actorId: string,
     faults?: { readonly loseResponseOfCommit?: number },
   ): Promise<AttachResult> {
-    let commits = 0;
-    try {
-      await this.#open.attach(async (request) => {
-        const commit = decodeMessage(request).frames.some(
-          (frame) => frame.type === 'PUSH_COMMIT',
-        )
-          ? commits++
-          : -1;
-        const result = await target.handleSyncRequest(actorId, request);
-        if (!result.ok) {
-          throw new SyncError(result.error.code, result.error.message);
-        }
-        if (commit !== -1 && commit === faults?.loseResponseOfCommit) {
-          throw new TransportFault('injected: attach response lost');
-        }
-        return result.bytes;
-      });
-      return { ok: true };
-    } catch (error) {
-      if (error instanceof LocalAuthorityAttachError) {
-        return { ok: false, code: error.code, details: error.details };
-      }
-      if (error instanceof SyncError) return { ok: false, code: error.code };
-      if (error instanceof TransportFault) {
-        return { ok: false, code: 'sync.transport_failed' };
-      }
-      throw error;
-    }
+    return attachOutcome(() =>
+      this.#open.attach(remoteTransport(target, actorId, faults)),
+    );
   }
 
-  async abandonAttach(): Promise<void> {
-    this.#open.abandonAttach();
+  async abandonAttach(
+    target: ServerInstance,
+    actorId: string,
+  ): Promise<AttachResult> {
+    return attachOutcome(() =>
+      this.#open.abandonAttach(remoteTransport(target, actorId)),
+    );
   }
 
   async close(): Promise<void> {
