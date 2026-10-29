@@ -306,7 +306,14 @@ describe('error catalog (§10.2)', () => {
       recommendedAction: 'inspectServer',
       httpStatus: 500,
     });
-    expect(Object.keys(ERROR_CATALOG)).toHaveLength(41);
+    // §12.3: a local authority that is attaching or attached refuses rounds.
+    expect(ERROR_CATALOG['sync.authority_unavailable']).toEqual({
+      category: 'internal',
+      retryable: false,
+      recommendedAction: 'inspectServer',
+      httpStatus: 503,
+    });
+    expect(Object.keys(ERROR_CATALOG)).toHaveLength(42);
   });
 
   test('an ineligible primary-key type fails at compile (§2.4)', () => {

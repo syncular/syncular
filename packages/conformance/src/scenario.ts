@@ -29,11 +29,13 @@ import type {
   DriverRealtimePolicy,
   DriverSchema,
   DriverScopeMap,
+  LocalAuthorityInstance,
   Pairing,
   RealtimeSink,
   ServerCapability,
   ServerInstance,
   ServerLimitsOptions,
+  SyncEndpoint,
 } from './driver';
 import {
   seededRandom,
@@ -298,6 +300,12 @@ function drain(waiters: Waiter[], reached: number): void {
 export interface ClientHandle {
   readonly actorId: string;
   readonly clientId: string;
+  /**
+   * The server this client's sync, segment and realtime calls reach. Pointing
+   * it at another server is the app reopening its client against that server
+   * over the same local database (§12.4).
+   */
+  readonly route: { server: SyncEndpoint };
   /** The driver-facing client API. */
   readonly api: ClientInstance;
   /** Fault controller for this client's transport (the seam). */
@@ -325,6 +333,8 @@ export interface ClientHandle {
 }
 
 export interface NewClientOptions {
+  /** The server this client reaches; absent ⇒ the scenario's server. */
+  readonly server?: SyncEndpoint;
   readonly authorityReads?: ClientCreateOptions['authorityReads'];
   readonly securityPreflight?: boolean;
   readonly transportEnabled?: boolean;
@@ -372,6 +382,7 @@ export class ScenarioContext {
   readonly serverSchema: DriverSchema;
   readonly random: () => number;
   readonly #clients: ClientHandle[] = [];
+  readonly #authorities: LocalAuthorityInstance[] = [];
   readonly #rawLogEpochs = new Map<string, string>();
 
   constructor(
@@ -391,7 +402,10 @@ export class ScenarioContext {
   /** Create a client wired to the server through a faultable loopback. */
   async newClient(options: NewClientOptions): Promise<ClientHandle> {
     if (options.allowed !== undefined) {
-      await this.server.setAllowedScopes(options.actorId, options.allowed);
+      await (options.server ?? this.server).setAllowedScopes(
+        options.actorId,
+        options.allowed,
+      );
     }
     const faults = new TransportFaults(this.random);
     const sentRequests: Uint8Array[] = [];
@@ -402,7 +416,8 @@ export class ScenarioContext {
     const blobDownloads: string[] = [];
     const blobUrlFetches: string[] = [];
     const blobDirectPuts: string[] = [];
-    const server = this.server;
+    const route = { server: options.server ?? this.server };
+    const server = route.server;
     const actorId = options.actorId;
     const clientId = options.clientId;
     // §5.9: blob endpoints exist iff the server driver supports blobs. Their
@@ -516,7 +531,7 @@ export class ScenarioContext {
               faults.dropNextUrlFetches -= 1;
               throw new TransportFault('injected: url fetch lost');
             }
-            const serve = server.fetchSegmentUrl?.bind(server);
+            const serve = route.server.fetchSegmentUrl?.bind(route.server);
             if (serve === undefined) {
               throw new Error(
                 'newClient({ signedUrls: true }) needs a signed-urls server',
@@ -574,9 +589,9 @@ export class ScenarioContext {
           if (faults.duplicateNextRequest) {
             faults.duplicateNextRequest = false;
             // First delivery: processed by the server, response discarded.
-            await server.handleSyncRequest(actorId, request);
+            await route.server.handleSyncRequest(actorId, request);
           }
-          const result = await server.handleSyncRequest(actorId, request);
+          const result = await route.server.handleSyncRequest(actorId, request);
           if (!result.ok) throw new EndpointError(result.error);
           if (faults.dropNextResponses > 0) {
             faults.dropNextResponses -= 1;
@@ -610,7 +625,7 @@ export class ScenarioContext {
             faults.dropNextSegmentRequests -= 1;
             throw new TransportFault('injected: segment request lost');
           }
-          const result = await server.downloadSegment(
+          const result = await route.server.downloadSegment(
             actorId,
             request.segmentId,
             request.requestedScopesJson,
@@ -627,7 +642,7 @@ export class ScenarioContext {
             faults.refuseNextRealtimeConnect = false;
             throw new TransportFault('injected: realtime connect refused');
           }
-          const result = await server.connectRealtime(actorId, clientId, {
+          const result = await route.server.connectRealtime(actorId, clientId, {
             onText: (text) => {
               realtime.observeServerText(text);
               sink.onText(text);
@@ -658,6 +673,7 @@ export class ScenarioContext {
     const handle: ClientHandle = {
       actorId,
       clientId,
+      route,
       api,
       faults,
       sentRequests,
@@ -694,6 +710,22 @@ export class ScenarioContext {
     // The driver returns `this` with the core swapped; keep the same handle
     // object (mutably rebind `api`) so scenarios hold one reference.
     (handle as { api: ClientInstance }).api = next;
+  }
+
+  /** §12: a local authority from the pairing's server driver. */
+  async newLocalAuthority(
+    schema: DriverSchema = this.schema,
+  ): Promise<LocalAuthorityInstance> {
+    const driver = this.pairing.server;
+    if (driver.createLocalAuthority === undefined) {
+      throw new Error('this server driver has no local authority (§12)');
+    }
+    const authority = await driver.createLocalAuthority({
+      schema,
+      nowMs: await this.server.nowMs(),
+    });
+    this.#authorities.push(authority);
+    return authority;
   }
 
   /** Raw-bytes surface: hand-built reference-codec request → decoded
@@ -753,6 +785,9 @@ export class ScenarioContext {
   async close(): Promise<void> {
     for (const handle of this.#clients) {
       await handle.api.close();
+    }
+    for (const authority of this.#authorities) {
+      await authority.close();
     }
     await this.server.close();
   }

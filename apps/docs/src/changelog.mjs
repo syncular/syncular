@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-10-29',
+    title: 'A local authority lets a client start without a server',
+    body: "`openLocalAuthority({ database, schema })` from `@syncular/server` runs the reference server inside the app's process over its own SQLite file, on Bun and Node. Its `sync` and `downloadSegment` functions plug into `SyncClient` as `transport` and `segments`, so writes drain from the outbox, declared references cascade, and a schema upgrade rebuilds the replica from the authority. `authority.attach(transport)` later uploads every live row to a remote server as inserts, parents first with reference cycles kept in one commit, under stable commit IDs that make a crashed upload resumable. The client then reopens against the remote server over the same replica and rebinds through the log-epoch reset. A refused upload commit stops attach with `sync.attach_rejected`; a client that reaches an attaching or attached authority receives `sync.authority_unavailable`. The browser worker and the native cores have no local authority yet.",
+    links: [
+      {
+        href: '/guide-local-authority/',
+        label: 'Start without a server',
+      },
+    ],
+  },
+  {
+    date: '2026-10-29',
     title: 'A commit reader scans a declared relational index',
     body: "`CommitValidationReader.scanRowsByIndex({ table, index, values, afterRowId, limit })` and `RemoteCommandContext.scanRowsByIndex(...)` run an exact declared-index lookup on the push transaction, so a whole-commit validator reads only the rows its invariant needs instead of scanning a delivery scope and capping the page. The page is the commit's final candidate state: a staged sibling upsert is present and a staged delete is absent. `values` is the complete, order-sensitive index tuple, `afterRowId` is an exclusive keyset cursor, and `limit` defaults to 100 with the same 1 through 1,000 bound as `scanRows`. The readers apply no actor scope filter, exactly as `scanRows` and `queryAuthoritative`; a command's `authorize` callback gates the lookup. Unknown indexes, non-materialized tables, value-count mismatches, and invalid bounds fail with the storage's `sync.storage.*` codes.",
     links: [

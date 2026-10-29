@@ -354,6 +354,12 @@ export const nav: readonly NavGroup[] = [
         kind: 'how-to',
         advanced: true,
       },
+      {
+        slug: 'guide-local-authority',
+        title: 'Start without a server',
+        kind: 'how-to',
+        advanced: true,
+      },
     ],
   },
   {

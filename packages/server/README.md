@@ -322,6 +322,16 @@ and the ID check does not authenticate the client. Within one partition the ID
 contract is a correctness property: it stops a replayed ID from applying
 different operations.
 
+## Local authority
+
+`openLocalAuthority({ database, schema })` runs this server inside a client's
+process over its own SQLite database (SPEC §12). Its `sync` and
+`downloadSegment` functions are the client's `transport` and `segments`.
+`attach(transport)` uploads every live row to a remote server as inserts under
+stable commit IDs and then retires the authority (§12.3). The
+[local authority guide](https://syncular.dev/guide-local-authority/) covers the
+client setup and the attach sequence.
+
 ## Seed idempotency and safe revisioning
 
 `seedMutations` uses the real push path and a stable `clientId`/`commitId`.

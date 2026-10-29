@@ -24,6 +24,7 @@ export * from './events-ring';
 export * from './frame-bytes';
 export * from './handler';
 export * from './lease-store';
+export * from './local-authority';
 export * from './operations';
 export * from './operations-realtime';
 // The `PgExecutor` seam + Postgres storage/fanout are driver-agnostic (zero

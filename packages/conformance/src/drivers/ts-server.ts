@@ -6,6 +6,7 @@
  */
 import { buildSqliteImage } from '@syncular/server/sqlite';
 import {
+  decodeMessage,
   decodeRemoteOperationResponse,
   decodeRow,
   encodeRemoteOperationRequest,
@@ -32,6 +33,8 @@ import {
   handleSegmentDownload,
   handleSyncRequest,
   type LeaseConfig,
+  type LocalAuthority,
+  LocalAuthorityAttachError,
   MemoryBlobStore,
   MemoryLeaseStore,
   MemorySegmentStore,
@@ -43,8 +46,10 @@ import {
   RESOLVER_OUTAGE,
   type RealtimeHub,
   type SegmentUrlConfig,
+  openLocalAuthority,
   type ServerSchema,
   type ServerStorage,
+  type SqliteDatabase,
   SyncularAdmin,
   BunSqliteDatabase,
   SqliteServerStorage,
@@ -56,6 +61,7 @@ import {
   verifySegmentToken,
 } from '@syncular/server';
 import type {
+  AttachResult,
   BlobDownloadResult,
   BlobUploadGrantResult,
   BytesResult,
@@ -66,6 +72,7 @@ import type {
   DriverRowValue,
   DriverSchema,
   DriverScopeMap,
+  LocalAuthorityInstance,
   RealtimeConnectResult,
   RealtimeSink,
   RetentionOptions,
@@ -76,6 +83,7 @@ import type {
   ValidatorInstallSpec,
 } from '../driver';
 import { STORAGE_FAULT_SECRET } from '../driver';
+import { TransportFault } from '../faults';
 import { bytesToHex, hexToBytes } from '../raw';
 
 function toServerSchema(schema: DriverSchema): ServerSchema {
@@ -124,6 +132,47 @@ function toDriverError(error: SyncError): DriverError {
 function toDriverValue(value: RowValue): DriverRowValue {
   if (value instanceof Uint8Array) return { $bytes: bytesToHex(value) };
   return value;
+}
+
+/** Current rows of one table in a partition, decoded for assertions. */
+function readServerRows(
+  db: SqliteDatabase,
+  schema: DriverSchema,
+  partition: string,
+  table: string,
+): ServerRowState[] {
+  const schemaTable = schema.tables.find((t) => t.name === table);
+  if (schemaTable === undefined) throw new Error(`unknown table ${table}`);
+  const columns = schemaTable.columns as readonly RowColumn[];
+  const rows = db
+    .query<
+      {
+        row_id: string;
+        server_version: number;
+        scopes: string;
+        payload: Uint8Array;
+      },
+      [string]
+    >(
+      `SELECT _sync_row_id AS row_id, _sync_server_version AS server_version,
+              _sync_scopes AS scopes, _sync_payload AS payload
+       FROM "${table.replaceAll('"', '""')}"
+       WHERE _sync_partition=? ORDER BY _sync_row_id`,
+    )
+    .all(partition);
+  return rows.map((row) => {
+    const values = decodeRow(columns, new Uint8Array(row.payload));
+    const record: Record<string, DriverRowValue> = {};
+    columns.forEach((column, index) => {
+      record[column.name] = toDriverValue(values[index] ?? null);
+    });
+    return {
+      rowId: row.row_id,
+      version: row.server_version,
+      values: record as DriverRow,
+      scopes: JSON.parse(row.scopes) as Record<string, string>,
+    };
+  });
 }
 
 /**
@@ -1111,38 +1160,12 @@ class TsServerInstance implements ServerInstance {
   }
 
   async readRows(table: string): Promise<ServerRowState[]> {
-    const schemaTable = this.#schema.tables.find((t) => t.name === table);
-    if (schemaTable === undefined) throw new Error(`unknown table ${table}`);
-    const columns = schemaTable.columns as readonly RowColumn[];
-    const rows = this.#storage.db
-      .query<
-        {
-          row_id: string;
-          server_version: number;
-          scopes: string;
-          payload: Uint8Array;
-        },
-        [string]
-      >(
-        `SELECT _sync_row_id AS row_id, _sync_server_version AS server_version,
-                _sync_scopes AS scopes, _sync_payload AS payload
-         FROM "${table.replaceAll('"', '""')}"
-         WHERE _sync_partition=? ORDER BY _sync_row_id`,
-      )
-      .all(this.#partition);
-    return rows.map((row) => {
-      const values = decodeRow(columns, new Uint8Array(row.payload));
-      const record: Record<string, DriverRowValue> = {};
-      columns.forEach((column, index) => {
-        record[column.name] = toDriverValue(values[index] ?? null);
-      });
-      return {
-        rowId: row.row_id,
-        version: row.server_version,
-        values: record as DriverRow,
-        scopes: JSON.parse(row.scopes) as Record<string, string>,
-      };
-    });
+    return readServerRows(
+      this.#storage.db,
+      this.#schema,
+      this.#partition,
+      table,
+    );
   }
 
   async pruneDuringNextCommitRead(): Promise<void> {
@@ -1170,6 +1193,129 @@ class TsServerInstance implements ServerInstance {
   }
 }
 
+/**
+ * §12 local authority behind the driver seam. One in-memory database outlives
+ * `restart`, which reopens the authority the way a process restart does.
+ */
+class TsLocalAuthorityInstance implements LocalAuthorityInstance {
+  readonly #database: SqliteDatabase = new BunSqliteDatabase(':memory:');
+  readonly #nowMs: number;
+  #schema: DriverSchema;
+  #authority: LocalAuthority | undefined;
+
+  constructor(schema: DriverSchema, nowMs: number) {
+    this.#schema = schema;
+    this.#nowMs = nowMs;
+  }
+
+  get #open(): LocalAuthority {
+    if (this.#authority === undefined) throw new Error('authority not open');
+    return this.#authority;
+  }
+
+  async restart(schema: DriverSchema): Promise<void> {
+    this.#schema = schema;
+    this.#authority = await openLocalAuthority({
+      database: this.#database,
+      schema: toServerSchema(schema),
+      crdtMergers: yjsCrdtMergers,
+      sqliteImageBuilder: buildSqliteImage,
+      clock: () => this.#nowMs,
+    });
+  }
+
+  async state(): Promise<'local' | 'attaching' | 'attached'> {
+    return this.#open.state;
+  }
+
+  async handleSyncRequest(
+    _actorId: string,
+    request: Uint8Array,
+  ): Promise<BytesResult> {
+    try {
+      return { ok: true, bytes: await this.#open.sync(request) };
+    } catch (error) {
+      return {
+        ok: false,
+        error: toDriverError(adapterSyncError(error, undefined, 'sync')),
+      };
+    }
+  }
+
+  async downloadSegment(
+    _actorId: string,
+    segmentId: string,
+    scopesHeaderJson: string,
+  ): Promise<BytesResult> {
+    try {
+      const bytes = await this.#open.downloadSegment({
+        segmentId,
+        requestedScopesJson: scopesHeaderJson,
+      });
+      return { ok: true, bytes };
+    } catch (error) {
+      if (error instanceof SyncError) {
+        return { ok: false, error: toDriverError(error) };
+      }
+      throw error;
+    }
+  }
+
+  async connectRealtime(): Promise<RealtimeConnectResult> {
+    throw new Error('a local authority has no realtime channel (§12.2)');
+  }
+
+  /** §12.2: every scope value is granted to the one local actor. */
+  async setAllowedScopes(): Promise<void> {}
+
+  async readRows(table: string): Promise<ServerRowState[]> {
+    return readServerRows(this.#database, this.#schema, 'local', table);
+  }
+
+  async attach(
+    target: ServerInstance,
+    actorId: string,
+    faults?: { readonly loseResponseOfCommit?: number },
+  ): Promise<AttachResult> {
+    let commits = 0;
+    try {
+      await this.#open.attach(async (request) => {
+        const commit = decodeMessage(request).frames.some(
+          (frame) => frame.type === 'PUSH_COMMIT',
+        )
+          ? commits++
+          : -1;
+        const result = await target.handleSyncRequest(actorId, request);
+        if (!result.ok) {
+          throw new SyncError(result.error.code, result.error.message);
+        }
+        if (commit !== -1 && commit === faults?.loseResponseOfCommit) {
+          throw new TransportFault('injected: attach response lost');
+        }
+        return result.bytes;
+      });
+      return { ok: true };
+    } catch (error) {
+      if (error instanceof LocalAuthorityAttachError) {
+        return { ok: false, code: error.code, details: error.details };
+      }
+      if (error instanceof SyncError) return { ok: false, code: error.code };
+      if (error instanceof TransportFault) {
+        return { ok: false, code: 'sync.transport_failed' };
+      }
+      throw error;
+    }
+  }
+
+  async abandonAttach(): Promise<void> {
+    this.#open.abandonAttach();
+  }
+
+  async close(): Promise<void> {
+    this.#database.close();
+  }
+}
+
 export const tsServerDriver: ServerDriver = {
   name: 'ts-server',
   capabilities: [
@@ -1186,8 +1332,17 @@ export const tsServerDriver: ServerDriver = {
     'commit-validators',
     'backfill-checkpoints',
     'erasure',
+    'local-authority',
   ],
   async create(options: ServerCreateOptions): Promise<ServerInstance> {
     return new TsServerInstance(options);
+  },
+  async createLocalAuthority(options) {
+    const instance = new TsLocalAuthorityInstance(
+      options.schema,
+      options.nowMs,
+    );
+    await instance.restart(options.schema);
+    return instance;
   },
 };
