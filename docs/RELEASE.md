@@ -1,8 +1,24 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.46.2** (`v0.46.2`). All artifacts use Apache-2.0, except
+current release is **0.46.3** (`v0.46.3`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.46.3 release notes
+
+0.46.3 republishes 0.46.2. The packages, the crates, SSP2, the storage layout,
+the wire version, and the conformance catalog are unchanged.
+
+The 0.46.2 npm job passed the gate and published the crates, then the registry
+refused the first npm package: `@syncular/core` failed with
+`TLOG_CREATE_ENTRY_ERROR`, "(409) an equivalent entry already exists in the
+transparency log". The registry holds no 0.46.x version of that package, so the
+entry comes from an earlier attempt of the same tarball. A new version string
+gives every package a new tarball and a new transparency-log entry, and the
+publish step skips what is already on the registry.
+
+**Upgrade notes.** Nothing changes for a host. Upgrade all 12 npm packages and
+6 crates to 0.46.3 to stay in lockstep.
 
 ## 0.46.2 release notes
 
