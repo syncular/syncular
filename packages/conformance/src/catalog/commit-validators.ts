@@ -1,7 +1,7 @@
 /** Whole-commit host validation (SPEC.md §6.8). */
 import { check, checkEqual } from '../checks';
 import type { CommitValidatorInstallSpec } from '../driver';
-import { task } from '../fixture';
+import { item, project, REFERENCE_FIXTURE_SCHEMA, task } from '../fixture';
 import type { Scenario, ScenarioContext } from '../scenario';
 import { syncFails, syncIdle, syncOk } from './util';
 
@@ -224,6 +224,84 @@ export const commitValidatorScenarios: readonly Scenario[] = [
         await a.api.pendingCommitIds(),
         [],
         'cached rejection consumes the pending commit',
+      );
+    },
+  },
+  {
+    // §6.8 index-backed scan: a fight start reads its combatants through a
+    // declared relational index instead of scanning the campaign's delivery
+    // scope. The validator pages the index in two-row pages while a sibling
+    // upsert and a sibling delete are staged, then compares the page with the
+    // scope scan filtered to the same index value. A reader that misses the
+    // staged rows, or one that does not resume, rejects the commit.
+    name: 'commit-validators/index-scan-matches-scope-scan',
+    specRefs: ['§6.3', '§6.8'],
+    requires: ['commit-validators'],
+    server: { schema: REFERENCE_FIXTURE_SCHEMA },
+    async run(ctx) {
+      await install(ctx, {
+        kind: 'indexScanMatchesScopeScan',
+        table: 'items',
+        index: 'idx_items_restrict_parent_ref',
+        column: 'restrict_parent',
+        value: 'p1',
+        idColumn: 'id',
+        scopeVariable: 'project_id',
+        code: 'app.index_scan_mismatch',
+      });
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: { project_id: ['p1'] },
+        schema: REFERENCE_FIXTURE_SCHEMA,
+      });
+      await a.api.subscribe({
+        id: 'items',
+        table: 'items',
+        scopes: { project_id: ['p1'] },
+      });
+      await syncIdle(a);
+      await syncOk(a);
+      const seeded = await a.api.mutate([
+        { op: 'upsert', table: 'projects', values: project('p1') },
+        {
+          op: 'upsert',
+          table: 'items',
+          values: item('i1', 'p1', 'one', { restrict: 'p1' }),
+        },
+        {
+          op: 'upsert',
+          table: 'items',
+          values: item('i2', 'p1', 'two', { restrict: 'p1' }),
+        },
+        {
+          op: 'upsert',
+          table: 'items',
+          values: item('i3', 'p1', 'three'),
+        },
+      ]);
+      const seedReport = await syncOk(a);
+      check(
+        seedReport.applied.includes(seeded),
+        'the parent and its items apply before the measured commit',
+      );
+      const commit = await a.api.mutate([
+        { op: 'delete', table: 'items', rowId: 'i3' },
+        {
+          op: 'upsert',
+          table: 'items',
+          values: item('i4', 'p1', 'four', { restrict: 'p1' }),
+        },
+      ]);
+      const report = await syncOk(a);
+      check(
+        report.applied.includes(commit),
+        'an index scan that matches the scope scan applies the commit',
+      );
+      checkEqual(
+        (await ctx.server.readRows('items')).map((row) => row.rowId),
+        ['i1', 'i2', 'i4'],
+        'the staged sibling lands and the staged delete stays absent',
       );
     },
   },

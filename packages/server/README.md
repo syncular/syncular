@@ -256,7 +256,8 @@ const config: SyncServerConfig = {
 ```
 
 The callback also receives `read.getRow()` and its batch form
-`read.getRows(table, rowIds)`, bounded `read.scanRows()`, and
+`read.getRows(table, rowIds)`, bounded `read.scanRows()`,
+`read.scanRowsByIndex()` for an exact declared-index lookup, and
 `read.queryAuthoritative()` APIs. Those reads see the final candidate state, including staged sibling upserts and
 deletes. Syncular serializes the partition before any operation read so two
 aggregate validators cannot both accept mutually invalid candidates. It also
@@ -359,7 +360,9 @@ SQLite, PostgreSQL, and D1.
 
 An authoritative command that needs an exact alternate lookup can instead use
 the optional `storage.scanRowsByIndex(partition, query)` or transactional
-`tx.scanRowsByIndex(query)` capability. The query names one declared
+`tx.scanRowsByIndex(query)` capability, or `command.scanRowsByIndex()` on its
+push transaction. The whole-commit validator reaches the same transaction
+lookup as `read.scanRowsByIndex()`; both readers default `limit` to 100. The query names one declared
 `TableSchema.indexes` entry, supplies one exact value per index column, uses an
 exclusive `afterRowId`, and has a required limit from 1 through 1,000. All
 shipped adapters implement it; transaction reads see staged writes and deletes.

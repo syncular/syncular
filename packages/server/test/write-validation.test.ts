@@ -20,6 +20,7 @@ import {
   PostgresServerStorage,
   RESERVED_VALIDATION_CODE_PREFIXES,
   type ServerSchema,
+  StorageQueryError,
   SqliteServerStorage,
   type SyncularServerEvent,
   type SyncularServerEvents,
@@ -508,6 +509,20 @@ describe('write validation apply (§6.7)', () => {
   }
 });
 
+/** The commit-reader index fixture: one declared non-unique index. */
+const INDEXED_TASKS_SCHEMA: ServerSchema = {
+  version: 1,
+  tables: [
+    {
+      name: 'tasks',
+      columns: TASK_COLUMNS,
+      primaryKey: 'id',
+      scopes: ['project:{project_id}'],
+      indexes: [{ name: 'tasks_by_project', columns: ['project_id'] }],
+    },
+  ],
+};
+
 describe('whole-commit validation (§6.8)', () => {
   test('rejects a missing sibling operation and rolls every staged row back', async () => {
     const requireAudit: CommitValidator = ({ operations }) => {
@@ -655,6 +670,99 @@ describe('whole-commit validation (§6.8)', () => {
       mismatched: [],
       absentSingles: ['t-absent', 't-delete'],
     });
+  });
+
+  test('scanRowsByIndex pages the final candidate state through a declared index', async () => {
+    let seen: unknown;
+    const inspect: CommitValidator = async ({ read }) => {
+      const first = await read.scanRowsByIndex({
+        table: 'tasks',
+        index: 'tasks_by_project',
+        values: ['p1'],
+        limit: 2,
+      });
+      const after = first[first.length - 1]?.row.id;
+      const second = await read.scanRowsByIndex({
+        table: 'tasks',
+        index: 'tasks_by_project',
+        values: ['p1'],
+        afterRowId: typeof after === 'string' ? after : null,
+        limit: 2,
+      });
+      seen = {
+        first: first.map((row) => ({
+          id: row.row.id,
+          version: row.serverVersion,
+        })),
+        second: second.map((row) => row.row.id),
+      };
+    };
+    const t = makeContext({
+      schema: INDEXED_TASKS_SCHEMA,
+      commitValidator: inspect,
+      resolveScopes: () => ({ project_id: ['p1', 'p2'] }),
+    });
+    const seed = await sync(t, [
+      pushCommit('indexed-seed', [
+        upsert('tasks', 'a', taskRow('a', 'p1')),
+        upsert('tasks', 'b', taskRow('b', 'p1')),
+        upsert('tasks', 'c', taskRow('c', 'p1')),
+        upsert('tasks', 'd', taskRow('d', 'p2')),
+      ]),
+    ]);
+    const candidate = await sync(t, [
+      pushCommit('indexed-candidate', [
+        del('tasks', 'b', 1),
+        upsert('tasks', 'e', taskRow('e', 'p1')),
+        upsert('tasks', 'f', taskRow('f', 'p1')),
+      ]),
+    ]);
+    expect(pushResults(seed)[0]?.status).toBe('applied');
+    expect(pushResults(candidate)[0]?.status).toBe('applied');
+    // The staged delete is absent, the staged upserts are present, and the
+    // p2 row never matches the p1 index value.
+    expect(seen).toEqual({
+      first: [
+        { id: 'a', version: 1 },
+        { id: 'c', version: 1 },
+      ],
+      second: ['e', 'f'],
+    });
+  });
+
+  test('scanRowsByIndex fails loudly on an undeclared index or invalid bounds', async () => {
+    const errors: unknown[] = [];
+    const inspect: CommitValidator = async ({ read }) => {
+      for (const input of [
+        { table: 'tasks', index: 'missing_index', values: ['p1'], limit: 10 },
+        { table: 'tasks', index: 'tasks_by_project', values: ['p1'], limit: 0 },
+        { table: 'tasks', index: 'tasks_by_project', values: [], limit: 10 },
+      ] as const) {
+        try {
+          await read.scanRowsByIndex(input);
+          errors.push('no error');
+        } catch (error) {
+          if (!(error instanceof StorageQueryError)) {
+            errors.push('unexpected error');
+            continue;
+          }
+          errors.push(error.code);
+        }
+      }
+    };
+    const t = makeContext({
+      schema: INDEXED_TASKS_SCHEMA,
+      commitValidator: inspect,
+      resolveScopes: () => ({ project_id: ['p1'] }),
+    });
+    await sync(t, [
+      pushCommit('indexed-errors', [upsert('tasks', 'a', taskRow('a', 'p1'))]),
+    ]);
+    expect(errors).toEqual([
+      'sync.storage.index_not_found',
+      'sync.storage.invalid_limit',
+      'sync.storage.index_value_count_mismatch',
+    ]);
   });
 
   test('a Postgres getRows answers N ids in one statement', async () => {

@@ -24,6 +24,7 @@ import {
   type PgExecutor,
   type PgQueryable,
   PostgresServerStorage,
+  type ServerSchema,
   type SyncRequestContext,
 } from '@syncular/server';
 import { pgliteExecutor } from '@syncular/server/pglite';
@@ -410,6 +411,119 @@ describe('push reply row reads (SYNCULAR-PUSH-ROUNDTRIPS-002)', () => {
       expect(
         sql.filter((text) => text.includes('LEFT JOIN sync_changes ch')),
       ).toHaveLength(1);
+    } finally {
+      await db.close();
+    }
+  }, 60_000);
+});
+
+/**
+ * SYNCULAR-PUSH-ROUNDTRIPS-003: declared-reference enforcement reads the
+ * parents a commit names once per table, never once per reference. A fight
+ * start writes its chronicle row, the fight row, and three combatants; the
+ * chronicle and all three combatants point at the same fight, so the commit
+ * pays one candidate-state read for its single parent table instead of four.
+ */
+describe('push declared-reference reads (SYNCULAR-PUSH-ROUNDTRIPS-003)', () => {
+  const COMBAT_COLUMNS = [
+    { name: 'id', type: 'string' as const, nullable: false },
+    { name: 'project_id', type: 'string' as const, nullable: false },
+  ];
+  const CHILD_COLUMNS = [
+    ...COMBAT_COLUMNS,
+    { name: 'combat_id', type: 'string' as const, nullable: false },
+  ];
+  const REF_SCHEMA: ServerSchema = {
+    version: 1,
+    tables: [
+      {
+        name: 'combats',
+        columns: COMBAT_COLUMNS,
+        primaryKey: 'id',
+        scopes: ['project:{project_id}'],
+      },
+      ...['chronicle', 'combatants'].map((name) => ({
+        name,
+        columns: CHILD_COLUMNS,
+        primaryKey: 'id',
+        scopes: ['project:{project_id}'],
+        references: [
+          {
+            column: 'combat_id',
+            parentTable: 'combats',
+            onDelete: 'CASCADE' as const,
+          },
+        ],
+        indexes: [{ name: `${name}_by_combat`, columns: ['combat_id'] }],
+      })),
+    ],
+  };
+  const payload = (id: string, combatId: string): Uint8Array =>
+    encodeSparseRow(CHILD_COLUMNS, 0, [id, 'p1', combatId]);
+
+  test('a 5-row commit over 3 tables reads its parent table once', async () => {
+    const db = await PGlite.create();
+    const sql: string[] = [];
+    const inner = pgliteExecutor(db);
+    const wrap = (client: PgQueryable): PgQueryable => ({
+      query: (text, params) => {
+        sql.push(text);
+        return client.query(text, params);
+      },
+    });
+    const storage = new PostgresServerStorage({
+      query: wrap(inner).query,
+      transaction: (fn) => inner.transaction((client) => fn(wrap(client))),
+    });
+    const ctx: SyncRequestContext = {
+      partition: 'part-1',
+      actorId: 'actor-1',
+      schema: REF_SCHEMA,
+      storage,
+      segments: new MemorySegmentStore(),
+      resolveScopes: () => ({ project_id: ['p1'] }),
+      clock: () => 1_750_000_000_000,
+    };
+    await storage.ensureSchema(compileSchema(REF_SCHEMA));
+    await storage.touchPartition(
+      ctx.partition,
+      1_750_000_000_000,
+      TEST_LOG_EPOCH,
+    );
+    try {
+      sql.length = 0;
+      const message = decodeMessage(
+        await handleSyncRequest(
+          requestBytes([
+            pushCommit('fight-start', [
+              upsert(
+                'combats',
+                'f1',
+                encodeSparseRow(COMBAT_COLUMNS, 0, ['f1', 'p1']),
+                0,
+              ),
+              upsert('chronicle', 'ch1', payload('ch1', 'f1'), 0),
+              upsert('combatants', 'ca1', payload('ca1', 'f1'), 0),
+              upsert('combatants', 'ca2', payload('ca2', 'f1'), 0),
+              upsert('combatants', 'ca3', payload('ca3', 'f1'), 0),
+            ]),
+          ]),
+          ctx,
+        ),
+      );
+      if (message.msgKind !== 'response') throw new Error('expected response');
+      expect(pushResults(message)[0]?.status).toBe('applied');
+      const readBacks = sql.filter((text) =>
+        text.startsWith(
+          'SELECT "_sync_row_id" AS row_id, "_sync_server_version"',
+        ),
+      );
+      // One parent table (combats); before batching this was one statement
+      // per reference, four for this commit.
+      expect(readBacks).toHaveLength(1);
+      expect(readBacks[0]).toContain('=ANY(');
+      expect(await storage.getRow('part-1', 'combats', 'f1')).toBeDefined();
+      expect(await storage.getRow('part-1', 'combatants', 'ca3')).toBeDefined();
     } finally {
       await db.close();
     }

@@ -1104,17 +1104,26 @@ export function runStorageContract(
           code: 'sync.storage.invalid_limit',
         },
       ] as const;
+      // The same contract holds on a push transaction, where the commit
+      // readers call it.
+      const tx = await storage.begin(PARTITION);
       for (const { query, code } of cases) {
-        try {
-          await storage.scanRowsByIndex?.(PARTITION, query);
-          throw new Error('expected scanRowsByIndex to reject');
-        } catch (error) {
-          expect(error).toBeInstanceOf(StorageQueryError);
-          expect((error as StorageQueryError).code).toBe(code);
-          expect((error as Error).message).not.toContain('tasks');
-          expect((error as Error).message).not.toContain('p1');
+        for (const run of [
+          () => storage.scanRowsByIndex?.(PARTITION, query),
+          () => tx.scanRowsByIndex?.(query),
+        ]) {
+          try {
+            await run();
+            throw new Error('expected scanRowsByIndex to reject');
+          } catch (error) {
+            expect(error).toBeInstanceOf(StorageQueryError);
+            expect((error as StorageQueryError).code).toBe(code);
+            expect((error as Error).message).not.toContain('tasks');
+            expect((error as Error).message).not.toContain('p1');
+          }
         }
       }
+      await tx.rollback();
     });
 
     test('deleting a row removes it from the scope scan', async () => {

@@ -98,6 +98,22 @@ export interface CommitValidationScanInput {
 }
 
 /**
+ * One exact declared-index lookup a push-transaction reader runs (§6.8): the
+ * whole-commit reader and a registered command share this shape.
+ */
+export interface IndexScanInput {
+  readonly table: string;
+  /** `TableSchema.indexes[].name`; never exposed as a client subscription. */
+  readonly index: string;
+  /** Exact values in the index declaration's column order. */
+  readonly values: readonly RowValue[];
+  /** Resume after this rowId (exclusive); `null` = start of the match set. */
+  readonly afterRowId?: string | null;
+  /** Bounded per call by the server to 1..1,000; defaults to 100. */
+  readonly limit?: number;
+}
+
+/**
  * Candidate-state reads bound to the same storage transaction as the commit.
  * Reads observe every staged sibling operation and no uncommitted competing
  * transaction when the storage's commit-validation lock contract is honored.
@@ -120,6 +136,16 @@ export interface CommitValidationReader {
     rowIds: readonly string[],
   ): Promise<ReadonlyMap<string, CommitValidationRow>>;
   scanRows(input: CommitValidationScanInput): Promise<CommitValidationRow[]>;
+  /**
+   * Candidate-state exact lookup through one declared relational index, with
+   * the same read-your-own-writes guarantee as `scanRows`: staged sibling
+   * upserts are present and staged deletes are absent. The values form the
+   * complete, order-sensitive index tuple and `afterRowId` is an exclusive
+   * keyset cursor, so a caller pages without a scope declaration. There is no
+   * scope filter and no actor scope authorization: the caller already holds
+   * partition authority, exactly as with `scanRows`.
+   */
+  scanRowsByIndex(input: IndexScanInput): Promise<CommitValidationRow[]>;
   /**
    * Run a generated registered query on the commit transaction (§6.8). The
    * request has the shape `ServerStorage.queryAuthoritative` takes; the

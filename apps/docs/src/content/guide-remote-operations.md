@@ -477,7 +477,8 @@ staged writes, and it blocks once push transactions hold every connection.
 D1 buffers writes until commit. A D1 query over a table the commit has already
 written throws `StorageQueryError` with code
 `sync.storage.query_over_staged_writes`; read those rows with `read.getRow`,
-`read.getRows`, or `read.scanRows`, which overlay the buffered writes. A
+`read.getRows`, `read.scanRows`, or `read.scanRowsByIndex`, which overlay the
+buffered writes. A
 custom storage transaction without the capability throws
 `sync.storage.transaction_query_unsupported`. Inside a row validator either
 error rejects the commit with `sync.constraint_violation`; inside the
@@ -486,9 +487,9 @@ storage exception through `onError` ([Handling conflicts](/guide-concurrency-cor
 
 The query is bound to the partition and ignores the actor's scopes. A
 command's `getRow` returns `undefined` for a row outside the actor's scopes,
-and `command.getRows` omits such a row from its map; `queryAuthoritative`
-returns every matching row of the partition, so the hook decides what the
-actor may act on.
+and `command.getRows` omits such a row from its map. `queryAuthoritative` and
+`command.scanRowsByIndex` return every matching row of the partition, so the
+hook decides what the actor may act on.
 
 ### Do not hand-roll a command on `storage.begin()`
 

@@ -315,9 +315,30 @@ export interface CommitValidatorBatchReadSpec {
   readonly code: string;
 }
 
+/**
+ * The validator pages `read.scanRowsByIndex` over one declared index value,
+ * scans the same table's delivery scope through `read.scanRows`, and rejects
+ * with `code` when the two disagree. It proves the index read sees the final
+ * candidate state (staged sibling upserts present, staged deletes absent)
+ * and that a bounded page resumes through `afterRowId`.
+ */
+export interface CommitValidatorIndexScanSpec {
+  readonly kind: 'indexScanMatchesScopeScan';
+  readonly table: string;
+  readonly index: string;
+  /** The index column whose exact `value` the page filters on. */
+  readonly column: string;
+  readonly value: string;
+  /** The primary-key column the page keyset resumes on. */
+  readonly idColumn: string;
+  readonly scopeVariable: string;
+  readonly code: string;
+}
+
 export type CommitValidatorInstallSpec =
   | CommitValidatorSiblingSpec
   | CommitValidatorBatchReadSpec
+  | CommitValidatorIndexScanSpec
   | { readonly kind: 'throwUnexpected'; readonly message: string };
 
 export interface ServerInstance {

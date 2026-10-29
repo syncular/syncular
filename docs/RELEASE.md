@@ -1,8 +1,45 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.47.0** (`v0.47.0`). All artifacts use Apache-2.0, except
+current release is **0.48.0** (`v0.48.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.48.0 release notes
+
+0.48.0 adds an index-backed scan to both push-transaction readers and batches
+the parent reads of declared-reference enforcement. SSP2, the storage layout,
+and the wire version are unchanged; the TypeScript API is additive, and the
+conformance catalog gains one scenario.
+
+`CommitValidationReader.scanRowsByIndex({ table, index, values, afterRowId?,
+limit? })` and `RemoteCommandContext.scanRowsByIndex(...)` return the rows one
+declared `TableSchema.indexes` entry matches exactly, on the commit's own
+storage transaction. The page is the final candidate state: a staged sibling
+upsert is present and a staged delete is absent. `values` is the complete,
+order-sensitive index tuple, `afterRowId` is an exclusive keyset cursor, and
+`limit` defaults to 100 with the same 1 through 1,000 bound as `scanRows`.
+Neither reader applies an actor scope filter, exactly as `scanRows` and
+`queryAuthoritative` do not; a registered command's `authorize` callback gates
+the lookup. Unknown indexes, non-materialized tables, value-count mismatches,
+and invalid bounds fail with the storage's stable `sync.storage.*` codes.
+SQLite, Postgres, and D1 already implemented the transaction scan; this release
+exposes it where a host's invariants run.
+
+Push apply now reads the parent rows a commit's declared references name in
+one candidate-state statement per parent table instead of one per reference. A
+fight start that writes a chronicle row, the fight row, and three combatants
+against one fight spends one read-back for that table, where it spent four.
+SQLite and D1 answer the batch with one primary-key lookup per distinct parent.
+The rejection behavior, the codes, and the rollback contract are unchanged.
+
+The conformance catalog adds
+`commit-validators/index-scan-matches-scope-scan`: a validator pages a declared
+index in two-row pages while a sibling upsert is staged and compares the result
+with the same rows read through `scanRows`.
+
+**Upgrade notes.** No migration and no wire change. Upgrade all 12 npm
+packages and 6 crates together. Rust hosts are unaffected: the readers are
+server-side TypeScript APIs.
 
 ## 0.47.0 release notes
 

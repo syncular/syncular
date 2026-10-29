@@ -17,6 +17,28 @@
 export const changelog = [
   {
     date: '2026-10-29',
+    title: 'A commit reader scans a declared relational index',
+    body: "`CommitValidationReader.scanRowsByIndex({ table, index, values, afterRowId, limit })` and `RemoteCommandContext.scanRowsByIndex(...)` run an exact declared-index lookup on the push transaction, so a whole-commit validator reads only the rows its invariant needs instead of scanning a delivery scope and capping the page. The page is the commit's final candidate state: a staged sibling upsert is present and a staged delete is absent. `values` is the complete, order-sensitive index tuple, `afterRowId` is an exclusive keyset cursor, and `limit` defaults to 100 with the same 1 through 1,000 bound as `scanRows`. The readers apply no actor scope filter, exactly as `scanRows` and `queryAuthoritative`; a command's `authorize` callback gates the lookup. Unknown indexes, non-materialized tables, value-count mismatches, and invalid bounds fail with the storage's `sync.storage.*` codes.",
+    links: [
+      {
+        href: '/server-storage-reference/#trusted-alternate-lookup',
+        label: 'Trusted alternate lookup',
+      },
+    ],
+  },
+  {
+    date: '2026-10-29',
+    title: 'Declared-reference checks read each parent table once',
+    body: "Push apply reads the parent rows a commit's declared references name in one candidate-state statement per parent table, where it issued one statement per reference. A fight start that writes a chronicle row and three combatants against one fight pays one read-back for that table instead of four, and behind Hyperdrive each skipped statement is a saved round trip. Postgres binds the parent ids as one array; SQLite and D1 answer with one primary-key lookup per distinct parent. The wire, the storage layout, and the rejection behavior are unchanged.",
+    links: [
+      {
+        href: '/server-storage-reference/#push-path',
+        label: 'Push apply statement budget',
+      },
+    ],
+  },
+  {
+    date: '2026-10-29',
     title: 'A throwing commit validator reports a host fault',
     body: 'A `commitValidator` that throws an exception other than a deliberate rejection now rejects with `sync.validator_error` (category `internal`, not retryable, action `inspectServer`) and the static message `whole-commit validator failed`, where it used to answer `sync.constraint_violation`. The server hands the original exception, stack included, to `onError` with route `sync`. The rejection details carry `reason = validator_threw`, `references.validator = commit`, and the thrown message in `references.message`, with control characters replaced by spaces and truncated to 256 UTF-8 bytes, so a host fault is distinguishable from a rule refusal and leaves evidence. The details persist with the idempotency record and replay unchanged. Deliberate rejections and row validators are unchanged.',
     links: [

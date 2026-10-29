@@ -9,11 +9,13 @@ import {
   registerRemoteCommand,
   RemoteOperationRegistry,
   remoteCommand,
+  type ServerSchema,
 } from '@syncular/server';
 import {
   makeContext,
   pushCommit,
   sync,
+  TASK_COLUMNS,
   taskRow,
   type TestContext,
   upsert,
@@ -120,6 +122,79 @@ describe('explicit rescope (§2.2)', () => {
     expect(state.row?.serverVersion).toBe(2);
     expect(state.tombstone).toBeUndefined();
     expect(await t.storage.getMaxCommitSeq('part-1')).toBe(5);
+  });
+
+  test('a command index scan reads candidate state beyond the actor scopes', async () => {
+    const schema: ServerSchema = {
+      version: 1,
+      tables: [
+        {
+          name: 'tasks',
+          columns: TASK_COLUMNS,
+          primaryKey: 'id',
+          scopes: ['project:{project_id}'],
+          indexes: [{ name: 'tasks_by_project', columns: ['project_id'] }],
+        },
+      ],
+    };
+    const t = makeContext({ schema });
+    t.scopes.value = { project_id: ['p1', 'p2'] };
+    await sync(t, [
+      pushCommit('seed-index-read', [
+        upsert('tasks', 't1', taskRow('t1', 'p1', 'visible')),
+        upsert('tasks', 't2', taskRow('t2', 'p2', 'other')),
+      ]),
+    ]);
+    // The actor may write p1 only; the trusted index read is not filtered.
+    t.scopes.value = { project_id: ['p1'] };
+
+    let seen: string[] | undefined;
+    type EmptyInput = Readonly<Record<string, never>>;
+    const read = registerRemoteCommand<EmptyInput>(
+      remoteCommand<EmptyInput>('test-index-read'),
+      {
+        authorize: () => true,
+        run: async (context) => {
+          const rows = await context.scanRowsByIndex({
+            table: 'tasks',
+            index: 'tasks_by_project',
+            values: ['p2'],
+            limit: 10,
+          });
+          seen = rows.map((row) => String(row.id));
+          return [
+            {
+              table: 'tasks',
+              op: 'upsert',
+              values: {
+                id: 't3',
+                project_id: 'p1',
+                title: 'written',
+                done: false,
+                priority: null,
+                meta: null,
+              },
+            },
+          ];
+        },
+      },
+    );
+    const response = decodeRemoteOperationResponse(
+      await handleRemoteOperation(
+        encodeRemoteOperationRequest({
+          revision: 1,
+          kind: 'command',
+          clientId: 'index-read-test',
+          operationId: 'test-index-read',
+          requestId: 'index',
+          params: {},
+        }),
+        { ...t.ctx, actorId: 'actor-1' },
+        new RemoteOperationRegistry([read]),
+      ),
+    );
+    expect(response).toMatchObject({ kind: 'command', status: 'applied' });
+    expect(seen).toEqual(['t2']);
   });
 
   test('a command batch read applies getRow scope authorization', async () => {

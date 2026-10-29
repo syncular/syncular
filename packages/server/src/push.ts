@@ -1110,6 +1110,34 @@ function commitValidationReader(
         serverVersion: stored.serverVersion,
       }));
     },
+    scanRowsByIndex: async ({
+      table: tableName,
+      index,
+      values,
+      afterRowId = null,
+      limit = 100,
+    }) => {
+      const table = tableFor(tableName);
+      if (tx.scanRowsByIndex === undefined) {
+        throw new Error(
+          'storage transaction does not support commit-validator index scans',
+        );
+      }
+      const rows = await tx.scanRowsByIndex({
+        table: tableName,
+        index,
+        values,
+        afterRowId,
+        limit,
+      });
+      return rows.map((stored) => ({
+        row: toValidateRow(
+          table.columns,
+          decodeRow(table.columns, stored.payload),
+        ),
+        serverVersion: stored.serverVersion,
+      }));
+    },
     queryAuthoritative: (query) => transactionQuery(tx, query),
   };
 }
@@ -1268,6 +1296,11 @@ async function enforceReferences(
     });
   }
 
+  // One candidate-state read per parent table, not one per reference: a
+  // commit that points several rows at the same parent (a fight's
+  // combatants, its chronicle) reads that parent once. Postgres binds the
+  // ids as one array per table; SQLite and D1 answer with one lookup per id.
+  const parentIds = new Map<string, Set<string>>();
   for (const { last: write } of finalByRow.values()) {
     if (write.op !== 'upsert' || write.values === undefined) continue;
     for (const reference of write.table.references) {
@@ -1275,7 +1308,28 @@ async function enforceReferences(
       if (value === null || value === undefined) continue;
       const parentRowId = renderScopeValue(value);
       if (parentRowId === undefined) continue;
-      if ((await tx.getRow(reference.parentTable, parentRowId)) !== undefined) {
+      const ids = parentIds.get(reference.parentTable);
+      if (ids === undefined)
+        parentIds.set(reference.parentTable, new Set([parentRowId]));
+      else ids.add(parentRowId);
+    }
+  }
+  const parents = new Map<string, ReadonlyMap<string, StoredRow>>();
+  for (const [parentTable, ids] of parentIds) {
+    parents.set(
+      parentTable,
+      await readCandidateRows(tx, parentTable, [...ids]),
+    );
+  }
+
+  for (const { last: write } of finalByRow.values()) {
+    if (write.op !== 'upsert' || write.values === undefined) continue;
+    for (const reference of write.table.references) {
+      const value = write.values[reference.columnIndex];
+      if (value === null || value === undefined) continue;
+      const parentRowId = renderScopeValue(value);
+      if (parentRowId === undefined) continue;
+      if (parents.get(reference.parentTable)?.has(parentRowId) === true) {
         continue;
       }
       return {

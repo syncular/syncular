@@ -20,6 +20,7 @@ import {
   type BlobStore,
   type BlobUploadPresignConfig,
   CommitValidationRejection,
+  type CommitValidationRow,
   type CommitValidator,
   compileSchema,
   type CompiledSchema,
@@ -209,6 +210,42 @@ function compileCommitValidatorRule(
           0,
           spec.code,
           'batch read returned an unexpected row',
+        );
+      }
+    };
+  }
+  if (spec.kind === 'indexScanMatchesScopeScan') {
+    return async ({ read }) => {
+      const paged: CommitValidationRow[] = [];
+      let afterRowId: string | null = null;
+      for (;;) {
+        const page = await read.scanRowsByIndex({
+          table: spec.table,
+          index: spec.index,
+          values: [spec.value],
+          afterRowId,
+          limit: 2,
+        });
+        paged.push(...page);
+        if (page.length < 2) break;
+        const last = page[page.length - 1]?.row[spec.idColumn];
+        if (typeof last !== 'string') break;
+        afterRowId = last;
+      }
+      const scanned = await read.scanRows({
+        table: spec.table,
+        scopeFilter: { [spec.scopeVariable]: [spec.value] },
+        limit: 1_000,
+      });
+      const indexIds = paged.map((row) => row.row[spec.idColumn]);
+      const scanIds = scanned
+        .filter((row) => row.row[spec.column] === spec.value)
+        .map((row) => row.row[spec.idColumn]);
+      if (JSON.stringify(indexIds) !== JSON.stringify(scanIds)) {
+        throw new CommitValidationRejection(
+          0,
+          spec.code,
+          'index scan disagrees with the scope scan',
         );
       }
     };

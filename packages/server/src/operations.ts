@@ -37,6 +37,7 @@ import { transactionQuery } from './storage-query';
 import {
   toValidateRow,
   ValidationRejection,
+  type IndexScanInput,
   type ValidateRow,
 } from './validate';
 
@@ -138,6 +139,15 @@ export interface RemoteCommandContext {
     table: string,
     rowIds: readonly string[],
   ): Promise<ReadonlyMap<string, ValidateRow>>;
+  /**
+   * Exact lookup through one declared relational index on the command's push
+   * transaction. The values form the complete, order-sensitive index tuple
+   * and `afterRowId` is an exclusive keyset cursor. Unlike `getRow` and
+   * `getRows`, the rows are not filtered by the actor's scopes: `authorize`
+   * gates the command, and this is the same trusted server-host lookup
+   * `ServerStorage.scanRowsByIndex` performs.
+   */
+  scanRowsByIndex(input: IndexScanInput): Promise<ValidateRow[]>;
   /**
    * Run a generated registered query on the command's push transaction
    * (§6.7). The storage binds every relation to the partition; unlike
@@ -638,6 +648,36 @@ function commandContext(
         );
       }
       return rows;
+    },
+    scanRowsByIndex: async ({
+      table: tableName,
+      index,
+      values,
+      afterRowId = null,
+      limit = 100,
+    }) => {
+      const table = schema.tables.get(tableName);
+      if (table === undefined) {
+        throw syncError(
+          'operation.invalid_request',
+          'command read targets an unknown table',
+        );
+      }
+      if (tx.scanRowsByIndex === undefined) {
+        throw new Error(
+          'storage transaction does not support command index scans',
+        );
+      }
+      const rows = await tx.scanRowsByIndex({
+        table: tableName,
+        index,
+        values,
+        afterRowId,
+        limit,
+      });
+      return rows.map((stored) =>
+        toValidateRow(table.columns, decodeRow(table.columns, stored.payload)),
+      );
     },
     queryAuthoritative: (query) => transactionQuery(tx, query),
   };

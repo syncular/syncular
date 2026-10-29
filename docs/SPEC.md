@@ -3726,6 +3726,16 @@ reader:
   omitted scope map MUST fail with the privacy-safe host error
   `sync.storage.scan_requires_scope`; it MUST NOT return an
   indistinguishable empty result.
+- `scanRowsByIndex({ table, index, values, afterRowId?, limit? })` returns
+  the final candidate rows a declared relational index matches exactly, in
+  ascending `rowId` order. `values` is the complete, order-sensitive index
+  tuple; `afterRowId` is an exclusive keyset cursor; `limit` defaults to 100
+  and MUST be an integer from 1 through 1,000. It takes no scope filter and
+  no actor scope authorization: like `scanRows` it uses partition authority
+  the host already holds at the commit boundary. Unknown indexes,
+  non-materialized tables, value-count mismatches, and invalid bounds fail
+  with the stable privacy-safe `sync.storage.*` host errors §6.8 defines; a
+  storage transaction without the capability fails loudly before the read.
 - `queryAuthoritative(request)` runs a generated registered query on the
   commit transaction with the §6.7 transaction-bound semantics: every
   relation is bound to the commit's partition and the result reflects the
@@ -3791,7 +3801,10 @@ workflows, or replace commands whose server must choose or transform the
 write. Those remain explicit server-authoritative functions.
 
 Such a command MAY use the server storage's trusted relational-index lookup to
-find rows by an exact alternate key without declaring another client scope.
+find rows by an exact alternate key without declaring another client scope;
+`RemoteCommandContext.scanRowsByIndex` performs that lookup on the command's
+push transaction with the §6.8 candidate-state semantics and without an actor
+scope filter.
 `scanRowsByIndex` names one declared index, supplies exactly one value for each
 index column, uses exclusive `rowId` keyset pagination, and limits every page to
 an integer from 1 through 1,000. The table MUST be materialized. Transactional
