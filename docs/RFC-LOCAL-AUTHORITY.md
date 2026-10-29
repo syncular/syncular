@@ -423,6 +423,16 @@ lane keeps its current coverage.
    already holds the client core, the authority adds 134.6 KB minified and
    36.3 KB gzipped; only a worker entry that passes `openLocalAuthority`
    bundles it, so no separate package is needed.
+   The Rust authority, measured on an Apple M6 (12 cores, 16 GB, macOS
+   27.0.1) with Rust 1.99.1, a release build, and file-backed databases
+   (`bench/README.md`, `authority-bench`): `mutate` plus a sync until idle took
+   1.41 ms at p50 and 1.99 ms at p95 over 500 writes. After 100,500 rows in 700
+   commits the replica held 18.9 MB and the authority 38.9 MB, with all 700
+   commits retained. The 100,000 bulk rows took 8.4 s in 500-row commits, with
+   about 4.3 ms per commit in the authority's push handler. A fresh client
+   bootstrapped the 100,500 rows from inline rows segments in 340 ms, and
+   attach to a second authority took 1.03 s. Four runs ranged from 315 to
+   614 ms for bootstrap and from 0.97 to 1.79 s for attach.
 5. **Platform priority.** Hamukko's platform decides whether phase 2 is on
    its critical path.
 6. **Queued inserts across an appended column.** Found while writing

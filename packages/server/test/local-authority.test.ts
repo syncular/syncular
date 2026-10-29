@@ -271,9 +271,16 @@ describe('local authority (§12)', () => {
     const retired = await openLocalAuthority({ database, schema: NODE_SCHEMA });
     expect(retired.state).toBe('attached');
     expect(
-      database.query<{ n: number }, []>('SELECT count(*) AS n FROM nodes').get()
-        ?.n,
-    ).toBe(0);
+      database
+        .query<{ name: string }, []>(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+        )
+        .all(),
+    ).toEqual([{ name: 'sync_local_authority' }]);
+    await expect(retired.sync(request([pullHeader()]))).rejects.toMatchObject({
+      code: 'sync.authority_unavailable',
+      details: '{"state":"attached"}',
+    });
   });
 
   test('a rejected commit stops attach and abandonAttach serves the client again', async () => {

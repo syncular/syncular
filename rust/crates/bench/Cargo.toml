@@ -14,8 +14,14 @@ crate-type = ["rlib", "cdylib"]
 name = "syncular-bench"
 path = "src/main.rs"
 
+# §12 local authority costs: `cargo run --release -p syncular-bench --bin authority-bench`.
+[[bin]]
+name = "authority-bench"
+path = "src/authority_bench.rs"
+
 [dependencies]
-syncular-client = { path = "../client", features = ["bench-internals"] }
+syncular-authority = { path = "../authority" }
+syncular-client = { path = "../client", features = ["bench-internals", "local-authority"] }
 # `fallible_uint` for the same reason as the client crate.
 rusqlite = { version = "0.40", features = ["bundled", "trace", "hooks", "fallible_uint"] }
 syncular-command = { path = "../command" }

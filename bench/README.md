@@ -22,6 +22,24 @@ clock. It measures 30 single-task base/ACK/rebuild rounds at 0, 100,000 and
 FTS counts and the task's final server version are checked after every size.
 JSON output records median/min/max nanoseconds and zero unchanged deletes.
 
+## Local authority lane (Rust)
+
+`authority-bench` measures the Rust local authority (SPEC §12) on file-backed
+databases through the client's `LocalAuthorityTransport`, with a second
+authority as the remote server. Build in release mode:
+
+```sh
+cargo run --release --manifest-path rust/Cargo.toml -p syncular-bench --bin authority-bench -- --writes 500 --rows 100000 --commit-rows 500
+```
+
+The binary prints one JSON object: `mutate` + `sync_until_idle` latency (p50,
+p95) over `--writes` single-row commits, the time to write `--rows` further rows
+in `--commit-rows` commits, replica and authority file sizes after a WAL
+checkpoint, retained commits, a fresh client's bootstrap time, and the attach
+time. `--dir` keeps the databases; otherwise they are deleted. The lane has no
+timing assertions. The same measurements for the TypeScript authority are in
+[the local authority guide](../apps/docs/src/content/guide-local-authority.md).
+
 ## Server SQLite lanes
 
 Two standalone scripts measure `SqliteServerStorage` on `bun:sqlite`:

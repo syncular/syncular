@@ -6993,4 +6993,13 @@ Each is a driver-interface script, not a prose test.
     rebinds through the §2.1 reset and converges, including a write queued
     during attach. (d) A remote scope denial rejects the second upload
     commit after the first applied; resuming replays the rejection, abandon
-    deletes the applied rows, and a new attach recreates them and converges. Both pairings (TS×TS, Rust×TS).
+    deletes the applied rows, and a new attach recreates them and converges.
+    (e) A client holding a §5.11 key writes encrypted columns through the
+    authority and attaches; the remote stores the authority's ciphertext byte
+    for byte, the rebound client and a second client with the key read the
+    plaintext from the remote, and a client without the key fails its round
+    with `client.decrypt_failed` and applies no row. (f) Two local edits of a
+    `crdt` column merge in the authority; attach stores the merged state on
+    the remote unchanged (§5.10.2), and concurrent edits from the rebound
+    client and a second remote client merge into it without a conflict and
+    converge. Both pairings (TS×TS, Rust×TS).
