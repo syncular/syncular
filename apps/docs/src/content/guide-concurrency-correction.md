@@ -171,12 +171,17 @@ express.
 
 :::note{title="Validator messages"}
 An unexpected exception in a row validator, whole-commit validator, or CRDT
-merger produces a static public message. The original text never enters newly
-recorded push results or client outcomes. Capture errors inside the host
-callback when you need private diagnostics, and isolate diagnostic failures from
-the callback result. The messages of deliberate `ValidationRejection` and
-`CommitValidationRejection` are public content. Stored rejections keep their
-historical messages.
+merger produces a static public message. A row validator and a CRDT merger keep
+the original text off the wire. A whole-commit validator answers the distinct
+`sync.validator_error` code, hands the original exception, stack included, to
+`onError`, and carries the thrown message in the rejection's details: `reason`
+is `validator_threw`, `references.validator` is `commit`, and
+`references.message` is the exception text with control characters replaced by
+spaces and truncated to 256 UTF-8 bytes. Stacks and thrown values stay off the
+wire. Capture errors inside the host callback when you need more context, and
+isolate diagnostic failures from the callback result. The messages of
+deliberate `ValidationRejection` and `CommitValidationRejection` are public
+content. Stored rejections keep their historical messages.
 :::
 
 ::checkpoint[A push that carries the appointment without the reservation and audit rows returns `rejected` with `appointment.reschedule_aggregate_required`.]

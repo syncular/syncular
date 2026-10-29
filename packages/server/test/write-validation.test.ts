@@ -104,53 +104,145 @@ function capture(): Captured {
 }
 
 describe('write validation apply (§6.7)', () => {
-  for (const source of ['row', 'commit'] as const) {
-    test(`sanitizes unexpected ${source} exceptions before persistence and replay`, async () => {
-      const secret = 'synthetic-private-database-password';
-      let calls = 0;
-      const fail = () => {
-        calls += 1;
-        throw new Error(secret);
-      };
-      const cap = capture();
-      const t = makeContext({
-        ...(source === 'row'
-          ? { validators: { tasks: fail } }
-          : { commitValidator: fail }),
-        events: cap.sink,
-      });
-      const frames = [
-        pushCommit('private-failure', [
-          upsert('tasks', 't1', taskRow('t1', 'p1')),
-        ]),
-      ];
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        const result = await sync(t, frames);
-        expect(pushResults(result)[0]?.results[0]).toMatchObject({
-          status: 'error',
-          code: 'sync.constraint_violation',
-          message:
-            source === 'row'
-              ? 'write validator failed'
-              : 'whole-commit validator failed',
-        });
-        expect(JSON.stringify(result)).not.toContain(secret);
-      }
-      expect(calls).toBe(1);
-      expect(
-        JSON.stringify(
-          await t.storage.getPushResult(
-            'part-1',
-            'client-1',
-            'private-failure',
-          ),
-        ),
-      ).not.toContain(secret);
-      expect(JSON.stringify(cap.events)).not.toContain(secret);
-      expect(await t.storage.getRow('part-1', 'tasks', 't1')).toBeUndefined();
-      t.storage.db.close();
+  test('sanitizes unexpected row-validator exceptions before persistence and replay', async () => {
+    const secret = 'synthetic-private-database-password';
+    let calls = 0;
+    const fail = () => {
+      calls += 1;
+      throw new Error(secret);
+    };
+    const cap = capture();
+    const t = makeContext({
+      validators: { tasks: fail },
+      events: cap.sink,
     });
-  }
+    const frames = [
+      pushCommit('private-failure', [
+        upsert('tasks', 't1', taskRow('t1', 'p1')),
+      ]),
+    ];
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const result = await sync(t, frames);
+      expect(pushResults(result)[0]?.results[0]).toMatchObject({
+        status: 'error',
+        code: 'sync.constraint_violation',
+        message: 'write validator failed',
+      });
+      expect(JSON.stringify(result)).not.toContain(secret);
+    }
+    expect(calls).toBe(1);
+    expect(
+      JSON.stringify(
+        await t.storage.getPushResult('part-1', 'client-1', 'private-failure'),
+      ),
+    ).not.toContain(secret);
+    expect(JSON.stringify(cap.events)).not.toContain(secret);
+    expect(await t.storage.getRow('part-1', 'tasks', 't1')).toBeUndefined();
+    t.storage.db.close();
+  });
+
+  test('reports an unexpected whole-commit exception and answers sync.validator_error', async () => {
+    const failure = new Error('validator exploded: synthetic-token');
+    let calls = 0;
+    const reports: Array<{ error: unknown; route: string }> = [];
+    const t = makeContext({
+      commitValidator: () => {
+        calls += 1;
+        throw failure;
+      },
+      onError: (error, { route }) => void reports.push({ error, route }),
+    });
+    const frames = [
+      pushCommit('validator-threw', [
+        upsert('tasks', 't1', taskRow('t1', 'p1')),
+        upsert('tasks', 't2', taskRow('t2', 'p1')),
+      ]),
+    ];
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const message = await sync(t, frames);
+      expect(pushResults(message)[0]?.results[0]).toMatchObject({
+        opIndex: 0,
+        status: 'error',
+        code: 'sync.validator_error',
+        message: 'whole-commit validator failed',
+        retryable: false,
+      });
+      expect(
+        message.frames.find((frame) => frame.type === 'PUSH_RESULT_DETAILS'),
+      ).toEqual({
+        type: 'PUSH_RESULT_DETAILS',
+        clientCommitId: 'validator-threw',
+        entries: [
+          {
+            opIndex: 0,
+            details: {
+              reason: 'validator_threw',
+              references: {
+                validator: 'commit',
+                message: 'validator exploded: synthetic-token',
+              },
+            },
+          },
+        ],
+      });
+    }
+    // The hook sees the original exception (stack included) exactly once:
+    // the replayed rejection is served from the idempotency record.
+    expect(calls).toBe(1);
+    expect(reports).toHaveLength(1);
+    expect(reports[0]?.error).toBe(failure);
+    expect(reports[0]?.route).toBe('sync');
+    expect(await t.storage.getRow('part-1', 'tasks', 't1')).toBeUndefined();
+    expect(await t.storage.getRow('part-1', 'tasks', 't2')).toBeUndefined();
+    t.storage.db.close();
+  });
+
+  test('bounds and sanitizes the thrown message it reports', async () => {
+    const t = makeContext({
+      commitValidator: () => {
+        throw new Error(`  line one\nline two\u0007  ${'ü'.repeat(200)}  `);
+      },
+    });
+    const message = await sync(t, [
+      pushCommit('validator-bounds', [
+        upsert('tasks', 't1', taskRow('t1', 'p1')),
+      ]),
+    ]);
+    const details = message.frames.find(
+      (frame) => frame.type === 'PUSH_RESULT_DETAILS',
+    );
+    const text =
+      details?.type === 'PUSH_RESULT_DETAILS'
+        ? details.entries[0]?.details.references?.message
+        : undefined;
+    if (text === undefined) throw new Error('details message missing');
+    expect(text.startsWith('line one line two')).toBe(true);
+    expect(text).not.toContain('\n');
+    expect(text.length).toBeLessThan(256);
+    expect(new TextEncoder().encode(text).length).toBeLessThanOrEqual(256);
+    t.storage.db.close();
+  });
+
+  test('an empty thrown message keeps the reason without a reference', async () => {
+    const t = makeContext({
+      commitValidator: () => {
+        throw new Error('   \n  ');
+      },
+    });
+    const message = await sync(t, [
+      pushCommit('validator-empty', [
+        upsert('tasks', 't1', taskRow('t1', 'p1')),
+      ]),
+    ]);
+    expect(
+      message.frames.find((frame) => frame.type === 'PUSH_RESULT_DETAILS'),
+    ).toEqual({
+      type: 'PUSH_RESULT_DETAILS',
+      clientCommitId: 'validator-empty',
+      entries: [{ opIndex: 0, details: { reason: 'validator_threw' } }],
+    });
+    t.storage.db.close();
+  });
 
   test('emits and idempotently replays a privacy-safe details companion', async () => {
     const t = makeContext({
@@ -440,7 +532,11 @@ describe('whole-commit validation (§6.8)', () => {
         );
       }
     };
-    const t = makeContext({ commitValidator: requireAudit });
+    const reports: unknown[] = [];
+    const t = makeContext({
+      commitValidator: requireAudit,
+      onError: (error) => void reports.push(error),
+    });
     const rejected = await sync(t, [
       pushCommit('aggregate-rejected', [
         upsert('tasks', 't1', taskRow('t1', 'p1', 'done', true)),
@@ -479,6 +575,7 @@ describe('whole-commit validation (§6.8)', () => {
       ]),
     ]);
     expect(pushResults(accepted)[0]?.status).toBe('applied');
+    expect(reports).toHaveLength(0);
   });
 
   test('reads the final candidate state and operation version evidence', async () => {

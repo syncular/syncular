@@ -147,6 +147,15 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorCatalogEntry>> = {
     recommendedAction: 'fixRequest',
     httpStatus: 400,
   },
+  // §6.8: the whole-commit validator threw an exception that is not a
+  // deliberate rejection. A host fault; the thrown message rides the §6.3.1
+  // details and the original reaches the host's `onError`.
+  'sync.validator_error': {
+    category: 'internal',
+    retryable: false,
+    recommendedAction: 'inspectServer',
+    httpStatus: 500,
+  },
   'sync.missing_scopes': {
     category: 'internal',
     retryable: false,

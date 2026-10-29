@@ -479,8 +479,10 @@ written throws `StorageQueryError` with code
 `sync.storage.query_over_staged_writes`; read those rows with `read.getRow`,
 `read.getRows`, or `read.scanRows`, which overlay the buffered writes. A
 custom storage transaction without the capability throws
-`sync.storage.transaction_query_unsupported`. Inside a validator either error
-rejects the commit with `sync.constraint_violation`.
+`sync.storage.transaction_query_unsupported`. Inside a row validator either
+error rejects the commit with `sync.constraint_violation`; inside the
+whole-commit validator it rejects with `sync.validator_error` and reports the
+storage exception through `onError` ([Handling conflicts](/guide-concurrency-correction/#validate-the-complete-aggregate-on-the-server)).
 
 The query is bound to the partition and ignores the actor's scopes. A
 command's `getRow` returns `undefined` for a row outside the actor's scopes,

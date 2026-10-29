@@ -317,7 +317,8 @@ export interface CommitValidatorBatchReadSpec {
 
 export type CommitValidatorInstallSpec =
   | CommitValidatorSiblingSpec
-  | CommitValidatorBatchReadSpec;
+  | CommitValidatorBatchReadSpec
+  | { readonly kind: 'throwUnexpected'; readonly message: string };
 
 export interface ServerInstance {
   /**

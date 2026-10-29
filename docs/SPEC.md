@@ -3448,9 +3448,11 @@ contain at least one of them:
 not exceed 4,096 bytes. Unknown members, duplicates, empty members, malformed
 paths or tokens, and over-limit values are decode errors. The details frame
 MUST NOT carry diagnostic prose, stack traces, arbitrary host values, row
-contents, protected health information, or authorization data. A host opts
-every reference into replication and is responsible for classifying it as
-safe for the already-authorized client.
+contents, protected health information, or authorization data; the single
+exception is the bounded thrown message a §6.8 `sync.validator_error` carries
+in `references.message`, which names a server fault instead of host-approved
+recovery data. A host opts every reference into replication and is responsible
+for classifying it as safe for the already-authorized client.
 
 The server persists these details with the idempotency outcome, so a replayed
 rejection emits the identical companion. The client persists accepted details
@@ -3621,19 +3623,21 @@ collision. A host that throws a reserved-prefixed code is a **server
 bug**: the server rejects it loudly at the point the code is constructed,
 not silently at push time. A validator that throws something **other than
 a chosen host code** (an unexpected error, not a deliberate rejection)
-rejects the commit with `sync.constraint_violation` (§10.2) — the write
-did not happen, and the generic constraint code says so without leaking
-the thrown message as a machine code. Unexpected row-validator errors MUST
-use the static public message `write validator failed`; unexpected whole-commit
-validator errors MUST use `whole-commit validator failed`. Unexpected CRDT
-merger errors (§5.10.6) MUST use `CRDT merger failed` with
-`sync.crdt_merge_failed`. Original exception messages, stacks, and values MUST
+rejects the commit: the write did not happen. A §6.7 row validator answers
+`sync.constraint_violation` (§10.2) with the static public message
+`write validator failed`. A §6.8 whole-commit validator answers
+`sync.validator_error` with `whole-commit validator failed` and hands the
+original exception to the host's error hook (§6.8). An unexpected CRDT
+merger error (§5.10.6) MUST use `CRDT merger failed` with
+`sync.crdt_merge_failed`. Original exception stacks and thrown values MUST
 NOT enter wire results, persisted push results, client outcomes, or support
-diagnostics. Deliberate host rejection messages and validated details remain
-public host-authored content. Hosts may capture original exceptions inside
-their callback using a private diagnostic sink; diagnostic delivery MUST NOT
-change callback completion or retry semantics. This rule applies to newly
-recorded results; existing idempotency records retain their recorded messages.
+diagnostics; the one exception text a result may carry is the bounded
+message of a §6.8 `sync.validator_error` (§6.3.1). Deliberate host rejection
+messages and validated details remain public host-authored content. Hosts may
+capture original exceptions inside their callback using a private diagnostic
+sink; diagnostic delivery MUST NOT change callback completion or retry
+semantics. This rule applies to newly recorded results; existing idempotency
+records retain their recorded messages.
 
 **Events.** A validation rejection is an ordinary push rejection: it emits
 the existing `push.rejected` operational event (the §6.3 rejection seam)
@@ -3764,8 +3768,21 @@ aggregate failure to a chosen operation. `opIndex` MUST name an operation in
 the commit. The code namespace, bounded `RejectionDetails`, event behavior,
 privacy rules, client persistence, and atomic rollback are exactly §6.7 and
 §6.3.1. Throwing a plain `ValidationRejection` attributes the failure to the
-first operation. Any other throw becomes `sync.constraint_violation`; an
-invalid operation index is also a host bug reported with that generic code.
+first operation. An invalid operation index is a host bug answered with
+`sync.constraint_violation`.
+
+**Unexpected throws.** Any other throw is a host fault, not a rule refusal.
+The server rejects the commit with one `error` record at the first operation's
+`opIndex` carrying the protocol code `sync.validator_error` (§10.2) and the
+static public message `whole-commit validator failed`, and it hands the
+original exception, stack included, to the host's error hook (`onError`,
+`route = sync`) exactly once, even though the response is a rejection rather
+than `sync.internal_error`. The §6.3.1 details carry `reason =
+validator_threw` and `references = { validator: "commit", message: <text> }`,
+where `<text>` is the thrown exception's message (or the stringified thrown
+value), with control characters replaced by spaces, trimmed, and truncated to
+256 UTF-8 bytes; the reference is omitted when no text remains. The result and
+its details are persisted and replayed like any other rejection.
 
 **Server-authoritative commands remain distinct.** §6.8 validates a commit a
 client is already authorized to propose. It does not grant authority, connect
@@ -6213,6 +6230,7 @@ Recommended actions: `refreshAuth`, `checkPermissions`, `fixRequest`,
 | `sync.row_deleted` | not-found | no | fixRequest | An unversioned upsert targeting a row deleted inside the tombstone horizon (§6.2) — the delete wins; the client drops the operation on rebuild — *new in wire version 3*; a push operation-result `error` record only |
 | `sync.version_conflict` | conflict | no | resolveConflict | `baseVersion` mismatch (§6.2) — appears as a conflict result, not a request error |
 | `sync.constraint_violation` | invalid-request | no | fixRequest | Server-side data constraint (unique/FK/not-null) rejected the write; also a §6.7 write-validator that threw a non-host-code error (an unexpected throw, not a deliberate host rejection) |
+| `sync.validator_error` | internal | no | inspectServer | A §6.8 whole-commit validator threw an unexpected exception. A push operation-result `error` record with the static message `whole-commit validator failed`, `reason = validator_threw`, and the bounded thrown message in `references.message` (§6.3.1); the original exception reaches the host's `onError` |
 | `sync.reference_violation` | invalid-request | no | fixRequest | A declared reference (§6.11) failed: an absent parent, a `RESTRICT` delete with live children, or the cascade cap — *new in SSP2*; a push operation-result `error` record with `reason`/`references` in its §6.3.1 details |
 | `sync.missing_scopes` | internal | no | inspectServer | Handler emitted a change without stored scopes (§3.1) |
 | `sync.crdt_merge_failed` | internal | no | inspectServer | A `crdt` column (§2.4 tag 8) was pushed but no merger is registered for its `crdtType`, or the merger threw (§5.10.2) — *new in SSP2*; a push operation-result `error` record only |

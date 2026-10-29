@@ -1,8 +1,39 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.46.3** (`v0.46.3`). All artifacts use Apache-2.0, except
+current release is **0.47.0** (`v0.47.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.47.0 release notes
+
+0.47.0 gives a throwing whole-commit validator its own error identity. SSP2,
+the storage layout, and the wire version are unchanged; the TypeScript API is
+unchanged, and the conformance catalog gains one scenario.
+
+A `commitValidator` that throws anything other than `CommitValidationRejection`
+or `ValidationRejection` is a host fault. The commit still rolls back
+atomically, but the error record now carries `sync.validator_error` (category
+`internal`, not retryable, action `inspectServer`) with the static message
+`whole-commit validator failed` instead of `sync.constraint_violation`. The
+server hands the original exception, stack included, to `onError` with route
+`sync`, so a Worker host sees the throw in its error reporter.
+
+The §6.3.1 details carry `reason = validator_threw`,
+`references.validator = commit`, and the thrown message in
+`references.message`: control characters replaced by spaces, trimmed, and
+truncated to 256 UTF-8 bytes. The reference is omitted when the message is
+empty. The result and its details persist with the idempotency record and
+replay unchanged, and the validator does not run again.
+
+Row validators keep `sync.constraint_violation` and `write validator failed`.
+A row validator's or a CRDT merger's original exception still never reaches the
+wire, and no stack or thrown value does.
+
+**Upgrade notes.** A client that matched `sync.constraint_violation` for a
+whole-commit validator fault now receives `sync.validator_error`; deliberate
+rejections (`ValidationRejection`, `CommitValidationRejection`) are unchanged.
+No migration and no wire change. Upgrade all 12 npm packages and 6 crates
+together.
 
 ## 0.46.3 release notes
 

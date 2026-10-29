@@ -3,7 +3,7 @@ import { check, checkEqual } from '../checks';
 import type { CommitValidatorInstallSpec } from '../driver';
 import { task } from '../fixture';
 import type { Scenario, ScenarioContext } from '../scenario';
-import { syncIdle, syncOk } from './util';
+import { syncFails, syncIdle, syncOk } from './util';
 
 const P1 = { project_id: ['p1'] } as const;
 const AUDIT_CODE = 'app.completion_audit_required';
@@ -166,6 +166,64 @@ export const commitValidatorScenarios: readonly Scenario[] = [
         (await ctx.server.readRows('tasks')).map((row) => row.rowId),
         ['staged', 'stored-untouched'],
         'the staged upsert lands and the staged delete stays absent',
+      );
+    },
+  },
+  {
+    // An unexpected throw is a host fault, not a rule refusal: the client
+    // sees the distinct `sync.validator_error` code, and the bounded thrown
+    // message rides the §6.3.1 details on both cores. The cached rejection
+    // replays the identical answer without re-running the validator.
+    name: 'commit-validators/unexpected-throw-is-a-host-fault',
+    specRefs: ['§6.3', '§6.4', '§6.8', '§10.2'],
+    requires: ['commit-validators'],
+    async run(ctx) {
+      const thrown = 'synthetic-thrown-validator-token';
+      await install(ctx, { kind: 'throwUnexpected', message: thrown });
+      const a = await bootstrapped(ctx);
+      const commit = await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: task('t1', 'p1'),
+        },
+      ]);
+      a.faults.dropNextResponses = 1;
+      await syncFails(a, 'transport.lost', 'lost sanitized rejection');
+      checkEqual(
+        (await syncIdle(a)).rejected,
+        [commit],
+        'cached rejection drains the outbox',
+      );
+      const rejection = (await a.api.rejections())[0];
+      checkEqual(
+        rejection?.code,
+        'sync.validator_error',
+        'both clients surface the host-fault code',
+      );
+      checkEqual(rejection?.opIndex, 0, 'attributed to the first operation');
+      checkEqual(
+        rejection?.retryable,
+        false,
+        'the host fault is not retryable',
+      );
+      checkEqual(
+        rejection?.details,
+        {
+          reason: 'validator_threw',
+          references: { validator: 'commit', message: thrown },
+        },
+        'both clients preserve the bounded thrown message',
+      );
+      checkEqual(
+        await ctx.server.readRows('tasks'),
+        [],
+        'unexpected failure writes no rows',
+      );
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [],
+        'cached rejection consumes the pending commit',
       );
     },
   },

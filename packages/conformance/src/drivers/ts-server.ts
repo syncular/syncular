@@ -177,6 +177,11 @@ function compileValidatorRule(spec: ValidatorInstallSpec): Validator {
 function compileCommitValidatorRule(
   spec: CommitValidatorInstallSpec,
 ): CommitValidator {
+  if (spec.kind === 'throwUnexpected') {
+    return () => {
+      throw new Error(spec.message);
+    };
+  }
   if (spec.kind === 'rowsMatchSingles') {
     return async ({ operations, read }) => {
       const ids = [

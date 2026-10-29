@@ -299,7 +299,14 @@ describe('error catalog (§10.2)', () => {
       recommendedAction: 'inspectServer',
       httpStatus: 503,
     });
-    expect(Object.keys(ERROR_CATALOG)).toHaveLength(40);
+    // §6.8 unexpected whole-commit throws got their own host-fault code.
+    expect(ERROR_CATALOG['sync.validator_error']).toEqual({
+      category: 'internal',
+      retryable: false,
+      recommendedAction: 'inspectServer',
+      httpStatus: 500,
+    });
+    expect(Object.keys(ERROR_CATALOG)).toHaveLength(41);
   });
 
   test('an ineligible primary-key type fails at compile (§2.4)', () => {

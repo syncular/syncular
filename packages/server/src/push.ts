@@ -35,7 +35,7 @@ import type { BlobStore } from './blob-store';
 import type { SyncRequestContext } from './context';
 import { clockOf, limitsOf } from './context';
 import type { CrdtMergerRegistry } from './crdt-merger';
-import { SyncError } from './errors';
+import { reportError, SyncError, type SyncularErrorHandler } from './errors';
 import { emitEvent } from './events';
 import {
   prepareReactions,
@@ -1116,6 +1116,7 @@ function commitValidationReader(
 
 async function runCommitValidator(
   validator: CommitValidator | undefined,
+  onError: SyncularErrorHandler | undefined,
   tx: StorageTransaction,
   schema: CompiledSchema,
   clientId: string,
@@ -1160,10 +1161,34 @@ async function runCommitValidator(
         error.details,
       );
     }
+    // §6.8: a throw that is not a deliberate rejection is a host fault, not a
+    // rule refusal. The host's observation hook receives the original (its
+    // stack included); the client gets a distinct code and, in the §6.3.1
+    // details, the bounded thrown message. Stacks and thrown values stay off
+    // the wire.
+    reportError(error, onError, 'sync');
+    let text = '';
+    let bytes = 0;
+    const encoder = new TextEncoder();
+    const thrown = error instanceof Error ? error.message : String(error);
+    for (const char of thrown.replace(/\p{Cc}+/gu, ' ').trim()) {
+      const size = encoder.encode(char).length;
+      if (bytes + size > 256) break;
+      bytes += size;
+      text += char;
+    }
+    text = text.trimEnd();
     return errorRecord(
       operations[0]?.opIndex ?? 0,
-      'sync.constraint_violation',
+      'sync.validator_error',
       'whole-commit validator failed',
+      false,
+      {
+        reason: 'validator_threw',
+        ...(text === ''
+          ? {}
+          : { references: { validator: 'commit', message: text } }),
+      },
     );
   }
   return undefined;
@@ -1769,6 +1794,7 @@ export async function processPushOperationsWithTrace(
     if (terminated === undefined) {
       const commitReject = await runCommitValidator(
         commitValidator,
+        ctx.onError,
         tx,
         schema,
         clientId,

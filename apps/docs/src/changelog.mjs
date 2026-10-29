@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-10-29',
+    title: 'A throwing commit validator reports a host fault',
+    body: 'A `commitValidator` that throws an exception other than a deliberate rejection now rejects with `sync.validator_error` (category `internal`, not retryable, action `inspectServer`) and the static message `whole-commit validator failed`, where it used to answer `sync.constraint_violation`. The server hands the original exception, stack included, to `onError` with route `sync`. The rejection details carry `reason = validator_threw`, `references.validator = commit`, and the thrown message in `references.message`, with control characters replaced by spaces and truncated to 256 UTF-8 bytes, so a host fault is distinguishable from a rule refusal and leaves evidence. The details persist with the idempotency record and replay unchanged. Deliberate rejections and row validators are unchanged.',
+    links: [
+      {
+        href: '/guide-concurrency-correction/#validate-the-complete-aggregate-on-the-server',
+        label: 'Whole-commit validation',
+      },
+    ],
+  },
+  {
+    date: '2026-10-29',
     title: 'A commit read fetches many rows in one statement',
     body: '`CommitValidationReader.getRows(table, rowIds)` and `RemoteCommandContext.getRows(table, rowIds)` read N rows by primary key in one call. Postgres binds the ids as one `text[]` and issues one statement, so a host behind Hyperdrive no longer pays a round trip per row; SQLite and D1 issue one lookup per id. The batch read sees the final candidate state: a staged sibling upsert is present and a staged delete is absent. Absent ids are missing from the map, repeated ids read once, and the call takes no scope filter or page bound. The command reader applies the same actor-scope authorization as `getRow`.',
     links: [

@@ -37,6 +37,7 @@ Errors carry stable codes. When you arrive from a stack trace, start here:
 | `sync.invalid_client_id` | A client id was reused under a different actor | [below](#syncinvalid_client_id-after-an-account-switch) |
 | `sync.forbidden` | A write failed the scope check | [Scopes & authorization](/concepts-scopes/) |
 | `sync.crdt_merge_failed` | A `crdt` column has no registered merger, or the merger threw | [CRDT columns](/concepts-crdt/#register-the-merger-on-the-server) |
+| `sync.validator_error` | A whole-commit validator threw an unexpected exception; the original reaches `onError` | [Handling conflicts](/guide-concurrency-correction/#validate-the-complete-aggregate-on-the-server) |
 | `sync.storage.scan_requires_scope` | A row scan omitted its mandatory scope filter | [Storage reference](/server-storage-reference/#advanced-row-lookups-for-trusted-server-code) |
 | `sync.storage.stored_layout_mismatch` | Stored layouts disagree with the schema at the same version | [Storage reference](/server-storage-reference/#materialized-app-tables) |
 | `sync.storage.physical_layout_mismatch` | A synced table's columns or key differ from the storage layout | [Storage reference](/server-storage-reference/#materialized-app-tables) |
