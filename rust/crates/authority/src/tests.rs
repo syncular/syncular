@@ -2,6 +2,8 @@
 //! abandon against a second `LocalAuthority` serving as the remote server.
 
 use std::cell::Cell;
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::Arc;
 
 use serde_json::{json, Value};
 use ssp2::decode::WIRE_VERSION;
@@ -760,7 +762,10 @@ fn a_cursor_behind_the_horizon_resets() {
     let horizon = store::prune(
         &authority.conn,
         store::now_ms() + 31 * 24 * 60 * 60 * 1000,
-        1,
+        &Retention {
+            min_retained_commits: 1,
+            ..Retention::default()
+        },
     )
     .unwrap();
     assert_eq!(horizon, 3);
@@ -776,6 +781,141 @@ fn a_cursor_behind_the_horizon_resets() {
     assert_eq!(sub_end(&frames), (1, None));
     let frames = client.pull(&mut authority, vec![subscription("tasks", 3, None)], 0, 0);
     assert!(matches!(&frames[2], Frame::Commit { commit_seq: 4, .. }));
+}
+
+/// An authority whose clock the test moves.
+fn clocked() -> (LocalAuthority, Arc<AtomicI64>) {
+    let now = Arc::new(AtomicI64::new(1_000));
+    let clock = now.clone();
+    let authority = LocalAuthority::open_with_clock(
+        ":memory:",
+        &schema_json(1),
+        Box::new(move || clock.load(Ordering::SeqCst)),
+    )
+    .expect("open");
+    (authority, now)
+}
+
+/// The §4.5 record: cursor, retention timestamp, last round time, code, streak.
+fn client_record(
+    authority: &LocalAuthority,
+    client_id: &str,
+) -> Option<(i64, i64, i64, Option<String>, i64)> {
+    authority
+        .conn
+        .query_row(
+            "SELECT cursor, updated_at_ms, last_round_at_ms, last_error_code, consecutive_failures FROM sync_clients WHERE client_id=?1",
+            [client_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )
+        .optional()
+        .expect("read")
+}
+
+#[test]
+fn the_client_record_carries_the_last_round_outcome() {
+    let (mut authority, now) = clocked();
+    let s = authority.schema.clone();
+    let client = Session::new(&mut authority, "c1");
+    let report = |code: &str| Frame::RoundFailure {
+        code: code.to_owned(),
+    };
+    // A report on a schema-floor round has no record to land on.
+    let floor = encode_request(
+        "c1",
+        client.version + 1,
+        Some(client.epoch.clone()),
+        vec![report("sync.transport_failed"), empty_pull()],
+    );
+    authority.sync(&floor).expect("floor round");
+    assert_eq!(client_record(&authority, "c1"), None);
+
+    client.push(&mut authority, "c1", vec![task(&s, "t1", None, None)]);
+    client.pull(&mut authority, vec![subscription("tasks", -1, None)], 0, 0);
+    assert_eq!(
+        client_record(&authority, "c1"),
+        Some((1, 1_000, 1_000, None, 0))
+    );
+
+    // The report lands before the round, whose completion keeps it.
+    now.store(2_000, Ordering::SeqCst);
+    let mut frames = vec![report("sync.timeout"), empty_pull()];
+    frames.push(subscription("tasks", 1, None));
+    client.round(&mut authority, frames);
+    assert_eq!(
+        client_record(&authority, "c1"),
+        Some((1, 2_000, 2_000, Some("sync.timeout".to_owned()), 1))
+    );
+
+    // A refused round extends the streak and leaves the cursor and the
+    // retention timestamp alone.
+    now.store(3_000, Ordering::SeqCst);
+    let duplicate = encode_request(
+        "c1",
+        client.version,
+        Some(client.epoch.clone()),
+        vec![
+            empty_pull(),
+            subscription("tasks", 1, None),
+            subscription("tasks", 1, None),
+        ],
+    );
+    assert_eq!(
+        authority.sync(&duplicate).unwrap_err().code,
+        "sync.invalid_subscription"
+    );
+    assert_eq!(
+        client_record(&authority, "c1"),
+        Some((
+            1,
+            2_000,
+            3_000,
+            Some("sync.invalid_subscription".to_owned()),
+            2
+        ))
+    );
+    // A refused round never creates a record.
+    let stranger = encode_request("c2", client.version, Some(client.epoch.clone()), vec![]);
+    assert!(authority.sync(&stranger).is_err());
+    assert_eq!(client_record(&authority, "c2"), None);
+
+    // The next round without a report clears the outcome.
+    now.store(4_000, Ordering::SeqCst);
+    client.pull(&mut authority, vec![subscription("tasks", 1, None)], 0, 0);
+    assert_eq!(
+        client_record(&authority, "c1"),
+        Some((1, 4_000, 4_000, None, 0))
+    );
+}
+
+#[test]
+fn the_clock_stamps_commits_and_prune_takes_the_host_floors() {
+    let (mut authority, now) = clocked();
+    let s = authority.schema.clone();
+    let client = Session::new(&mut authority, "c1");
+    client.push(&mut authority, "a", vec![task(&s, "t1", None, None)]);
+    client.push(&mut authority, "b", vec![task(&s, "t2", None, None)]);
+    let stamps: Vec<i64> = authority
+        .conn
+        .prepare("SELECT created_at_ms FROM sync_commits ORDER BY commit_seq")
+        .and_then(|mut statement| statement.query_map([], |row| row.get(0))?.collect())
+        .expect("read");
+    assert_eq!(stamps, vec![1_000, 1_000]);
+
+    // The default floors keep the newest 1000 commits.
+    assert_eq!(authority.prune(&Retention::default()).unwrap(), 0);
+    now.store(2_000, Ordering::SeqCst);
+    let floors = |active_window_ms| Retention {
+        active_window_ms,
+        min_retained_commits: 0,
+        ..Retention::default()
+    };
+    // The client's cursor (-1, push-only rounds) holds the horizon while its
+    // record is inside the active window on the authority's clock...
+    assert_eq!(authority.prune(&floors(5_000)).unwrap(), 0);
+    // ...and stops holding it once the window no longer reaches it.
+    assert_eq!(authority.prune(&floors(500)).unwrap(), 2);
+    assert_eq!(store::log_state(&authority.conn).unwrap().horizon, 2);
 }
 
 #[test]

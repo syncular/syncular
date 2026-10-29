@@ -47,6 +47,7 @@ export const schemaBumpScenarios: readonly Scenario[] = [
   {
     name: 'schema-bump/queued-insert-survives-appended-column',
     specRefs: ['§7.1', '§7.4.4', '§6.2'],
+    requires: ['schema-window'],
     server: {
       schema: TASKS_WITH_NOTE,
       schemaWindow: [TASKS_WITH_NOTE, FIXTURE_SCHEMA],
@@ -543,6 +544,7 @@ export const schemaBumpScenarios: readonly Scenario[] = [
   {
     name: 'schema-window/previous-client-push-pull',
     specRefs: ['§9', '§7.4.2', '§6.7'],
+    requires: ['schema-window'],
     server: {
       schema: FIXTURE_SCHEMA_V2,
       schemaWindow: [FIXTURE_SCHEMA_V2, FIXTURE_SCHEMA],
@@ -946,6 +948,7 @@ export const schemaBumpScenarios: readonly Scenario[] = [
     // the single-shot whole-table completion the image lane guarantees.
     name: 'schema-bump/image-lane-rebootstrap',
     specRefs: ['§7.4.3', '§5.3', '§5.6'],
+    requires: ['sqlite-image'],
     server: { schema: FIXTURE_SCHEMA_V2 },
     async run(ctx) {
       await seedTasks(ctx, [

@@ -24,6 +24,7 @@ export const scopeScenarios: readonly Scenario[] = [
   {
     name: 'scopes/effective-is-requested-intersect-allowed',
     specRefs: ['§3.2'],
+    requires: ['scope-authorization'],
     async run(ctx) {
       const a = await ctx.newClient({
         actorId: 'actor-a',
@@ -55,6 +56,7 @@ export const scopeScenarios: readonly Scenario[] = [
   {
     name: 'scopes/paired-parent-scope-fences-child-wildcard',
     specRefs: ['§3.2', '§3.4'],
+    requires: ['scope-authorization'],
     async run(ctx) {
       const a = await ctx.newClient({
         actorId: 'actor-a',
@@ -108,6 +110,7 @@ export const scopeScenarios: readonly Scenario[] = [
   {
     name: 'scopes/revocation-purges-exactly-the-grant',
     specRefs: ['§3.3', '§3.4', 'B.4'],
+    requires: ['scope-authorization'],
     async run(ctx) {
       const a = await ctx.newClient({
         actorId: 'actor-a',
@@ -177,6 +180,7 @@ export const scopeScenarios: readonly Scenario[] = [
   {
     name: 'scopes/re-subscribe-rearms-a-revoked-subscription',
     specRefs: ['§3.3', '§4.1'],
+    requires: ['scope-authorization'],
     async run(ctx) {
       const a = await ctx.newClient({
         actorId: 'actor-a',
@@ -299,6 +303,7 @@ export const scopeScenarios: readonly Scenario[] = [
   {
     name: 'scopes/resolver-failure-fails-loud-and-closed',
     specRefs: ['§3.2', '§3.4'],
+    requires: ['scope-authorization'],
     async run(ctx) {
       const a = await ctx.newClient({
         actorId: 'actor-a',
@@ -357,6 +362,7 @@ export const scopeScenarios: readonly Scenario[] = [
   {
     name: 'scopes/write-outside-grant-denied-and-scope-columns-immutable',
     specRefs: ['§3.4'],
+    requires: ['scope-authorization'],
     async run(ctx) {
       const a = await ctx.newClient({
         actorId: 'actor-a',
@@ -445,6 +451,7 @@ export const scopeScenarios: readonly Scenario[] = [
   {
     name: 'scopes/segment-download-reauthorizes-every-time',
     specRefs: ['§5.5', '§3.5', '§5.1'],
+    requires: ['scope-authorization', 'segment-refs', 'server-limits'],
     server: { limits: { inlineSegmentMaxBytes: 0 } },
     async run(ctx) {
       await ctx.server.setAllowedScopes('dl-actor', { project_id: ['p1'] });

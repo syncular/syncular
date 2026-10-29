@@ -496,6 +496,7 @@ export const offlineScenarios: readonly Scenario[] = [
   {
     name: 'offline/transport-close-preserves-captured-reply-and-revocation',
     specRefs: ['§8.8', '§7.3.4'],
+    requires: ['realtime', 'scope-authorization'],
     async run(ctx) {
       for (const realtime of [false, true]) {
         for (const revoke of [false, true]) {

@@ -79,10 +79,23 @@ echo "== swift test =="
 # them). The loader also needs vendor/ for libsyncular at runtime.
 DEV="$(xcode-select -p 2>/dev/null || true)"
 TEST_FLAGS=()
+# Command-Line-Tools-only toolchains ship libTestingMacros.dylib under
+# usr/lib/swift/host/plugins/testing/, a directory the default `swiftbuild`
+# build engine (SwiftPM 6.2+) does not load as a macro plugin dir, so compiling
+# `@Test` fails with "plugin for module 'TestingMacros' not found". The legacy
+# `native` engine passes the plugin explicitly. Select it only when all three
+# hold: the active developer dir is the standalone CLT, that plugin exists
+# there, and `swift test` accepts --build-system with a `native` value. Xcode
+# toolchains and older SwiftPM (no flag) keep the default engine.
+if [ "${DEV}" = "/Library/Developer/CommandLineTools" ] \
+  && [ -f "${DEV}/usr/lib/swift/host/plugins/testing/libTestingMacros.dylib" ] \
+  && swift test --help 2>&1 | grep -qE '^ +native +- '; then
+  TEST_FLAGS+=(--build-system native)
+fi
 if [ -n "${DEV}" ] && [ -d "${DEV}/Library/Developer/Frameworks/Testing.framework" ]; then
   FWK="${DEV}/Library/Developer/Frameworks"
   INTEROP="${DEV}/Library/Developer/usr/lib"
-  TEST_FLAGS=(
+  TEST_FLAGS+=(
     -Xswiftc -F -Xswiftc "${FWK}"
     -Xlinker -F -Xlinker "${FWK}"
     -Xlinker -rpath -Xlinker "${FWK}"

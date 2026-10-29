@@ -16,6 +16,7 @@ import { check, checkEqual } from '../checks';
 import type { ClientInstance } from '../driver';
 import {
   FIXTURE_SCHEMA_V2,
+  FIXTURE_SCHEMA_V2_ADD_REQUIRED,
   FIXTURE_SCHEMA_V2_DROP_META,
   task,
 } from '../fixture';
@@ -327,6 +328,39 @@ export const previousVersionScenarios: readonly Scenario[] = [
             table: 'tasks',
             reason: 'unknown-column',
             column: 'meta',
+          },
+        ],
+        'the audit names the commit, table, reason and column only',
+      );
+    },
+  },
+
+  {
+    // §7.1/§7.4.6: an insert-intent commit presents every current column, so a
+    // non-nullable column the new schema adds leaves the pending insert
+    // unencodable. The audit names it `missing-required-column` with the column
+    // instead of calling the commit encodable.
+    name: 'previous-version/audit-names-missing-required-column',
+    specRefs: ['§7.4.6', '§7.1', '§7.4.4'],
+    server: { schema: FIXTURE_SCHEMA_V2_ADD_REQUIRED },
+    async run(ctx) {
+      const { handle: a, commitId } = await flooredClientWithOfflineRow(ctx, {
+        previousVersionContext: PREVIOUS_VERSION,
+      });
+      await ctx.recreateClient(a, FIXTURE_SCHEMA_V2_ADD_REQUIRED);
+
+      const audit = await a.api.previousVersionAudit?.();
+      check(audit !== undefined, 'the audit is recorded on the reset');
+      checkEqual(audit?.pending, 1, 'one pending commit was examined');
+      checkEqual(audit?.encodable, 0, 'the insert lacks the new column');
+      checkEqual(
+        audit?.incompatible,
+        [
+          {
+            commitId,
+            table: 'tasks',
+            reason: 'missing-required-column',
+            column: 'owner',
           },
         ],
         'the audit names the commit, table, reason and column only',

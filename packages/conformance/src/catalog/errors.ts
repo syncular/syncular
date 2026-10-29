@@ -204,6 +204,7 @@ export const errorScenarios: readonly Scenario[] = [
   {
     name: 'errors/request-level-catalog',
     specRefs: ['§1.7', '§4.2', '§10.1', '§10.2'],
+    requires: ['server-limits', 'multi-actor'],
     server: { limits: { maxOperationsPerRequest: 2 } },
     async run(ctx) {
       await ctx.server.setAllowedScopes('actor-1', P1);

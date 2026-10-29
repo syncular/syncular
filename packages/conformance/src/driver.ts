@@ -250,7 +250,22 @@ export type ServerCapability =
   | 'commit-validators'
   | 'backfill-checkpoints'
   | 'erasure'
-  | 'local-authority';
+  | 'local-authority'
+  // The server features a §12.2 local authority lacks:
+  /** §8 realtime socket: deltas, wake-ups, socket rounds, presence. */
+  | 'realtime'
+  /** §3.2 grants narrower than every value, revocation, resolver faults. */
+  | 'scope-authorization'
+  /** §1.5 clientIds bound to distinct authenticated actors. */
+  | 'multi-actor'
+  /** §5.4/§5.5 external segments (`SEGMENT_REF`, direct download). */
+  | 'segment-refs'
+  /** §5.3 SQLite image segments. */
+  | 'sqlite-image'
+  /** §9 serving more than one schema version at once. */
+  | 'schema-window'
+  /** Host-configured `ServerLimitsOptions`. */
+  | 'server-limits';
 
 /**
  * §6.7 declarative write-validation rule (JSON-able so it crosses the
@@ -936,7 +951,10 @@ export interface DriverPreviousVersionSnapshot {
 export interface DriverPreviousVersionAuditEntry {
   readonly commitId: string;
   readonly table: string;
-  readonly reason: 'unknown-table' | 'unknown-column';
+  readonly reason:
+    | 'unknown-table'
+    | 'unknown-column'
+    | 'missing-required-column';
   readonly column?: string;
 }
 

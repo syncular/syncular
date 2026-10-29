@@ -44,6 +44,7 @@ export const presenceScenarios: readonly Scenario[] = [
   {
     name: 'presence/lifecycle-join-update-leave-disconnect',
     specRefs: ['§8.6.1', '§8.6.2', '§8.6.4', 'B.16'],
+    requires: ['realtime'],
     async run(ctx) {
       await seedTasks(ctx, [task('t1', 'p1', 'seed')]);
       const a = await connectedOn(ctx, 'actor-a', 'client-a', P1);
@@ -117,6 +118,7 @@ export const presenceScenarios: readonly Scenario[] = [
   {
     name: 'presence/cross-scope-isolation-privacy-probe',
     specRefs: ['§8.6.3', 'B.16'],
+    requires: ['realtime'],
     async run(ctx) {
       const a = await connectedOn(ctx, 'actor-a', 'client-a', P1);
       const d = await connectedOn(ctx, 'actor-d', 'client-d', P2);
@@ -166,6 +168,7 @@ export const presenceScenarios: readonly Scenario[] = [
   {
     name: 'presence/feature-off-silence',
     specRefs: ['§8.1', '§8.6', 'B.16'],
+    requires: ['realtime'],
     async run(ctx) {
       await seedTasks(ctx, [task('t1', 'p1', 'seed')]);
       // A uses presence; B never touches it (the feature-off peer).
@@ -196,6 +199,7 @@ export const presenceScenarios: readonly Scenario[] = [
   {
     name: 'presence/survives-a-socket-sync-round',
     specRefs: ['§8.6.3', '§8.7', 'B.16'],
+    requires: ['realtime'],
     async run(ctx) {
       await seedTasks(ctx, [task('t1', 'p1', 'seed')]);
       const a = await connectedOn(ctx, 'actor-a', 'client-a', P1);

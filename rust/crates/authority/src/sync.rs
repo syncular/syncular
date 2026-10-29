@@ -263,6 +263,7 @@ fn response(wire_version: u16, frames: Vec<Frame>) -> Vec<u8> {
 pub(crate) fn handle(
     conn: &Connection,
     schema: &Schema,
+    now: i64,
     request: &[u8],
 ) -> Result<Vec<u8>, AuthorityError> {
     let message = decode_message(request).map_err(|e| {
@@ -272,6 +273,22 @@ pub(crate) fn handle(
             json!({ "detail": e.detail }),
         )
     })?;
+    let result = respond(conn, schema, now, &message);
+    if let (Err(error), MsgKind::Request, Some(Frame::ReqHeader { client_id, .. })) =
+        (&result, message.msg_kind, message.frames.first())
+    {
+        // §4.5: a failed outcome write never replaces the round's own outcome.
+        let _ = store::record_round_failure(conn, client_id, &error.code, now);
+    }
+    result
+}
+
+fn respond(
+    conn: &Connection,
+    schema: &Schema,
+    now: i64,
+    message: &Message,
+) -> Result<Vec<u8>, AuthorityError> {
     if message.msg_kind != MsgKind::Request {
         return Err(AuthorityError::new(
             "sync.invalid_request",
@@ -289,11 +306,13 @@ pub(crate) fn handle(
             "missing REQ_HEADER",
         ));
     };
+    let mut round_failure = None;
     let mut pushes = Vec::new();
     let mut pull = None;
     let mut subscriptions = Vec::new();
     for frame in &message.frames {
         match frame {
+            Frame::RoundFailure { code } => round_failure = Some(code),
             Frame::PushCommit {
                 client_commit_id,
                 operations,
@@ -336,14 +355,23 @@ pub(crate) fn handle(
         log_epoch: Some(log.log_epoch.clone()),
         reset_required: Some(epoch_reset),
     };
+    // §1.5/§4.5: the reported failure lands on the existing record before
+    // the round runs; a failed outcome write never replaces the round's own.
+    let report = || {
+        if let Some(code) = round_failure {
+            let _ = store::record_round_failure(conn, client_id, code, now);
+        }
+    };
     if *schema_version != schema.version {
         // §2.4: no degraded encoding; answer the schema floor (§1.6).
+        report();
         return Ok(response(
             message.wire_version,
             vec![header(Some(schema.version))],
         ));
     }
     if epoch_reset {
+        report();
         return Ok(response(message.wire_version, vec![header(None)]));
     }
     // §1.5: the server-command clientId namespace.
@@ -416,6 +444,7 @@ pub(crate) fn handle(
         });
     }
 
+    report();
     let mut frames = vec![header(None)];
     for (client_commit_id, operations) in pushes {
         frames.extend(process_commit(
@@ -424,6 +453,7 @@ pub(crate) fn handle(
             client_id,
             client_commit_id,
             operations,
+            now,
         )?);
     }
     let mut cursors = Vec::new();
@@ -453,6 +483,6 @@ pub(crate) fn handle(
         Some(cursor) => *cursor,
         None => store::client_cursor(conn, client_id)?.unwrap_or(-1),
     };
-    store::put_client(conn, client_id, cursor, store::now_ms())?;
+    store::put_client(conn, client_id, cursor, now, round_failure.is_some())?;
     Ok(response(message.wire_version, frames))
 }

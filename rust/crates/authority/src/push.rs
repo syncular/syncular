@@ -682,6 +682,7 @@ pub(crate) fn process_commit(
     client_id: &str,
     client_commit_id: &str,
     operations: &[Operation],
+    created_at_ms: i64,
 ) -> Result<Vec<Frame>, AuthorityError> {
     store::transaction(conn, || {
         if let Some(text) = store::push_result(conn, client_id, client_commit_id)? {
@@ -689,7 +690,6 @@ pub(crate) fn process_commit(
                 serde_json::from_str(&text).map_err(|_| store::corrupt("push result"))?;
             return Ok(stored.frames(client_commit_id, true));
         }
-        let created_at_ms = store::now_ms();
         conn.execute_batch("SAVEPOINT syncular_push_candidate")
             .db()?;
         let result = match apply_commit(conn, schema, operations) {

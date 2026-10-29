@@ -56,6 +56,7 @@ export const realtimeScenarios: readonly Scenario[] = [
   {
     name: 'realtime/delta-roundtrip-and-ack',
     specRefs: ['§8.1', '§8.2'],
+    requires: ['realtime'],
     async run(ctx) {
       const a = await connectedClient(ctx, 'actor-a', 'client-a');
       const b = await connectedClient(ctx, 'actor-b', 'client-b');
@@ -91,6 +92,7 @@ export const realtimeScenarios: readonly Scenario[] = [
   {
     name: 'realtime/scope-filtered-fanout',
     specRefs: ['§8.1', '§8.2'],
+    requires: ['realtime'],
     async run(ctx) {
       const b = await connectedClient(ctx, 'actor-b', 'client-b');
       await b.api.connectRealtime();
@@ -118,6 +120,7 @@ export const realtimeScenarios: readonly Scenario[] = [
   {
     name: 'realtime/behind-session-wakes-then-deltas-resume',
     specRefs: ['§8.1', '§8.2', '§8.3', '§8.4', 'B.7'],
+    requires: ['realtime'],
     async run(ctx) {
       const b = await connectedClient(ctx, 'actor-b', 'client-b');
 
@@ -165,6 +168,7 @@ export const realtimeScenarios: readonly Scenario[] = [
   {
     name: 'realtime/oversize-delta-degrades-to-wake',
     specRefs: ['§8.2', '§8.3'],
+    requires: ['realtime', 'server-limits'],
     server: { limits: { maxDeltaBytes: 1 } },
     async run(ctx) {
       const b = await connectedClient(ctx, 'actor-b', 'client-b');
@@ -238,6 +242,7 @@ export const realtimeScenarios: readonly Scenario[] = [
   {
     name: 'realtime/required-policy-refuses-after-socket-loss',
     specRefs: ['§8.8'],
+    requires: ['realtime'],
     async run(ctx) {
       const handle = await ctx.newClient({
         actorId: 'actor-loss',
@@ -313,6 +318,7 @@ export const realtimeScenarios: readonly Scenario[] = [
   {
     name: 'realtime/required-policy-exposes-a-refused-handshake',
     specRefs: ['§8.8'],
+    requires: ['realtime'],
     async run(ctx) {
       const handle = await ctx.newClient({
         actorId: 'actor-refused',
@@ -379,6 +385,7 @@ export const realtimeScenarios: readonly Scenario[] = [
   {
     name: 'realtime/required-policy-reconnect-restores-socket-rounds',
     specRefs: ['§8.4', '§8.8'],
+    requires: ['realtime'],
     async run(ctx) {
       const handle = await ctx.newClient({
         actorId: 'actor-reconnect',

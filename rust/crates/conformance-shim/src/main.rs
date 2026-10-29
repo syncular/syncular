@@ -34,9 +34,11 @@
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, StdinLock, Stdout, Write};
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::Arc;
 
 use serde_json::{json, Map, Value};
-use syncular_authority::{AuthorityError, AuthorityState, LocalAuthority};
+use syncular_authority::{AuthorityError, AuthorityState, LocalAuthority, Retention};
 use syncular_client::{
     BlobDownload, BlobUploadGrant, SegmentRequest, SyncClient, Transport, TransportError,
 };
@@ -390,6 +392,8 @@ fn main() {
     let mut io = HostIo::new();
     let mut client: Option<SyncClient> = None;
     let mut authority: Option<LocalAuthority> = None;
+    // The harness's virtual clock, which the authority reads (epoch ms).
+    let authority_now = Arc::new(AtomicI64::new(0));
     let mut effects = CreateEffects::default();
     let mut prepared_round: Option<syncular_client::PreparedSyncRound> = None;
     let progress_events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<
@@ -507,19 +511,61 @@ fn main() {
                         })
                     };
                     match (method.as_str(), authority.as_mut()) {
-                        ("localAuthorityOpen", None) => {
-                            match (params.get("path").and_then(Value::as_str), params.get("schema")) {
-                                (Some(path), Some(schema)) => LocalAuthority::open(path, schema)
-                                    .map(|opened| {
-                                        authority = Some(opened);
-                                        json!({})
-                                    })
-                                    .map_err(command_error),
-                                _ => Err(CommandError::new(
+                        ("localAuthorityOpen", None) => match (
+                            params.get("path").and_then(Value::as_str),
+                            params.get("schema"),
+                            params.get("nowMs").and_then(Value::as_i64),
+                        ) {
+                            (Some(path), Some(schema), Some(now_ms)) => {
+                                authority_now.store(now_ms, Ordering::SeqCst);
+                                let clock = authority_now.clone();
+                                LocalAuthority::open_with_clock(
+                                    path,
+                                    schema,
+                                    Box::new(move || clock.load(Ordering::SeqCst)),
+                                )
+                                .map(|opened| {
+                                    authority = Some(opened);
+                                    json!({})
+                                })
+                                .map_err(command_error)
+                            }
+                            _ => Err(CommandError::new(
+                                "harness.invalid_request",
+                                "path, schema and nowMs are required",
+                            )),
+                        },
+                        ("localAuthoritySetClock", Some(_)) => {
+                            match params.get("nowMs").and_then(Value::as_i64) {
+                                Some(now_ms) => {
+                                    authority_now.store(now_ms, Ordering::SeqCst);
+                                    Ok(json!({}))
+                                }
+                                None => Err(CommandError::new(
                                     "harness.invalid_request",
-                                    "path and schema are required",
+                                    "nowMs is required",
                                 )),
                             }
+                        }
+                        ("localAuthorityPrune", Some(instance)) => {
+                            let defaults = Retention::default();
+                            let floor = |key: &str, default: i64| {
+                                params.get(key).and_then(Value::as_i64).unwrap_or(default)
+                            };
+                            instance
+                                .prune(&Retention {
+                                    active_window_ms: floor(
+                                        "activeWindowMs",
+                                        defaults.active_window_ms,
+                                    ),
+                                    age_force_ms: floor("ageForceMs", defaults.age_force_ms),
+                                    min_retained_commits: floor(
+                                        "minRetainedCommits",
+                                        defaults.min_retained_commits,
+                                    ),
+                                })
+                                .map(|horizon| json!({ "horizonSeq": horizon }))
+                                .map_err(command_error)
                         }
                         ("localAuthorityState", Some(instance)) => Ok(json!(match instance.state() {
                             AuthorityState::Local => "local",

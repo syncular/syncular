@@ -21,6 +21,7 @@ export const lifecycleScenarios: readonly Scenario[] = [
   {
     name: 'security/authority-snapshot-preflight-base-intent-and-scope-loss',
     specRefs: ['§5.11', '§7.5'],
+    requires: ['scope-authorization'],
     async run(ctx) {
       const a = await ctx.newClient({
         actorId: 'authority',

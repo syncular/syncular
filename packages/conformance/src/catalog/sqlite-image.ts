@@ -44,6 +44,7 @@ export const sqliteImageScenarios: readonly Scenario[] = [
     // paging limits, and hands off to incremental pulls at the pin.
     name: 'sqlite-image/bootstrap-equivalence-single-shot',
     specRefs: ['§5.3', '§5.6', '§4.7', 'B.10'],
+    requires: ['sqlite-image'],
     async run(ctx) {
       await seedEligibleTable(ctx);
 
@@ -117,6 +118,7 @@ export const sqliteImageScenarios: readonly Scenario[] = [
     // the raw-bytes surface so any paired client implementation counts.
     name: 'sqlite-image/descriptor-format-reuse-and-gating',
     specRefs: ['§5.3', '§4.2', '§5.4', '§5.7', 'B.10'],
+    requires: ['sqlite-image'],
     async run(ctx) {
       await seedEligibleTable(ctx);
       await ctx.server.setAllowedScopes('raw-actor', P1);
@@ -241,6 +243,7 @@ export const sqliteImageScenarios: readonly Scenario[] = [
     // the re-pull converges.
     name: 'sqlite-image/integrity-failure-recovers',
     specRefs: ['§5.1', '§5.3', '§1.4', 'B.10'],
+    requires: ['sqlite-image'],
     async run(ctx) {
       await seedEligibleTable(ctx);
       const a = await ctx.newClient({

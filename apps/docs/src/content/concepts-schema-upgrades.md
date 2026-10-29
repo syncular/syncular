@@ -153,7 +153,7 @@ if (snapshot.available) {
 
 Two more surfaces:
 
-- `previousVersionAudit()` returns the pre-reset compatibility audit, written before the wipe. It classifies each pending outbox commit against the new schema and names the commits that cannot re-encode, with a typed reason (`unknown-table` or `unknown-column`) and the offending column. It carries no operations, row values, or commit envelope. It is advisory and drops nothing; the §7.4.4 send-time drop remains the only path that removes a commit.
+- `previousVersionAudit()` returns the pre-reset compatibility audit, written before the wipe. It classifies each pending outbox commit against the new schema and names the commits that cannot re-encode, with a typed reason and the offending column. The reasons are `unknown-table` (the new schema lacks the table), `unknown-column` (the commit writes a column the new schema lacks), and `missing-required-column` (an insert lacks a column the new schema declares non-nullable). It carries no operations, row values, or commit envelope. It is advisory and drops nothing; the §7.4.4 send-time drop remains the only path that removes a commit.
 - `statusSnapshot().previousVersionContext` returns `{ present, createdAtMs? }`, so an update or rollback path can require the discard below.
 
 ### When the cache is discarded

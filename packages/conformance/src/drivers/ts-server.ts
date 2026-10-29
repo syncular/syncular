@@ -1366,6 +1366,13 @@ export const tsServerDriver: ServerDriver = {
     'backfill-checkpoints',
     'erasure',
     'local-authority',
+    'realtime',
+    'scope-authorization',
+    'multi-actor',
+    'segment-refs',
+    'sqlite-image',
+    'schema-window',
+    'server-limits',
   ],
   async create(options: ServerCreateOptions): Promise<ServerInstance> {
     return new TsServerInstance(options);
