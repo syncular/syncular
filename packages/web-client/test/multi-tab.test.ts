@@ -11,6 +11,7 @@ import {
   ClientSyncError,
   type CrossTabChannel,
   createSyncClientHandle,
+  createTabCoordinator,
   FOLLOWER_TIMEOUT_CODE,
   isolatedReplicaNames,
   LEADER_HANDOVER_CODE,
@@ -23,6 +24,10 @@ import {
   SECURITY_PREFLIGHT_REQUIRED_CODE,
   type SyncClientHandle,
   type SyncClientHandleConfig,
+  type SyncWorkerEvent,
+  type TabCoordinator,
+  type TabCoordinatorConfig,
+  type TabLeaderContext,
   type WorkerInitConfig,
 } from '@syncular/client';
 import { hostBoolean } from '../../typegen/test/fixtures/basic/syncular.queries';
@@ -43,55 +48,55 @@ const noop = (): void => undefined;
 const ID = { protocol: MULTI_TAB_PROTOCOL_VERSION, schemaVersion: 1 } as const;
 
 /**
- * An in-process exclusive lock with real Web-Locks semantics: `tryAcquire`
- * returns undefined when held; `acquire` queues FIFO and resolves when the
- * current holder releases. This is the multi-tab seam the browser fills with
- * `navigator.locks`.
+ * In-process exclusive locks with real Web-Locks semantics, one per name:
+ * `tryAcquire` returns undefined when held; `acquire` queues FIFO and resolves
+ * when the current holder releases. This is the multi-tab seam the browser
+ * fills with `navigator.locks`.
  */
 function makeSharedLock(): LeaderLock {
-  let holder: symbol | undefined;
-  const waiters: Array<(lease: LeaderLease) => void> = [];
-  const grant = (): LeaderLease => {
-    const token = Symbol('lease');
-    holder = token;
+  const held = new Map<string, symbol>();
+  const waiters = new Map<string, Array<(lease: LeaderLease) => void>>();
+  const grant = (name: string): LeaderLease => {
+    const token = Symbol(name);
+    held.set(name, token);
     return {
       release: () => {
-        if (holder !== token) return;
-        holder = undefined;
-        const next = waiters.shift();
-        if (next !== undefined) next(grant());
+        if (held.get(name) !== token) return;
+        held.delete(name);
+        const next = waiters.get(name)?.shift();
+        if (next !== undefined) next(grant(name));
       },
     };
   };
   return {
-    acquire: () =>
+    acquire: (name) =>
       new Promise<LeaderLease>((resolve) => {
-        if (holder === undefined) resolve(grant());
-        else waiters.push(resolve);
+        if (!held.has(name)) resolve(grant(name));
+        else waiters.set(name, [...(waiters.get(name) ?? []), resolve]);
       }),
-    tryAcquire: () =>
-      Promise.resolve(holder === undefined ? grant() : undefined),
+    tryAcquire: (name) =>
+      Promise.resolve(held.has(name) ? undefined : grant(name)),
   };
 }
 
-class ChannelPartition {
-  readonly #channels = new Map<string, Set<CrossTabChannel>>();
+class ChannelPartition<E = SyncWorkerEvent> {
+  readonly #channels = new Map<string, Set<CrossTabChannel<E>>>();
   readonly sent: Array<{
     readonly name: string;
-    readonly message: MultiTabMessage;
+    readonly message: MultiTabMessage<E>;
   }> = [];
 
-  readonly factory = (name: string): CrossTabChannel => {
-    const listeners = new Set<(event: { data: MultiTabMessage }) => void>();
-    const channel: CrossTabChannel = {
+  readonly factory = (name: string): CrossTabChannel<E> => {
+    const listeners = new Set<(event: { data: MultiTabMessage<E> }) => void>();
+    const channel: CrossTabChannel<E> = {
       postMessage: (message) => {
         this.sent.push({ name, message });
         for (const peer of this.#channels.get(name) ?? []) {
           if (peer === channel) continue;
           queueMicrotask(() =>
             (
-              peer as CrossTabChannel & {
-                deliver?: (message: MultiTabMessage) => void;
+              peer as CrossTabChannel<E> & {
+                deliver?: (message: MultiTabMessage<E>) => void;
               }
             ).deliver?.(message),
           );
@@ -102,8 +107,8 @@ class ChannelPartition {
       close: () => this.#channels.get(name)?.delete(channel),
     };
     (
-      channel as CrossTabChannel & {
-        deliver: (message: MultiTabMessage) => void;
+      channel as CrossTabChannel<E> & {
+        deliver: (message: MultiTabMessage<E>) => void;
       }
     ).deliver = (message) => {
       for (const listener of listeners) listener({ data: message });
@@ -117,11 +122,11 @@ class ChannelPartition {
     return channel;
   };
 
-  deliver(name: string, message: MultiTabMessage): void {
+  deliver(name: string, message: MultiTabMessage<E>): void {
     for (const channel of this.#channels.get(name) ?? []) {
       (
-        channel as CrossTabChannel & {
-          deliver?: (message: MultiTabMessage) => void;
+        channel as CrossTabChannel<E> & {
+          deliver?: (message: MultiTabMessage<E>) => void;
         }
       ).deliver?.(message);
     }
@@ -707,7 +712,7 @@ test('a leader answering probes keeps its follower bound without running a timer
     clientId: 'lead',
     identity: ID,
     onNewerTab: noop,
-    invoke: (method) =>
+    invoke: (_tabId, method) =>
       method === 'slow' ? new Promise(noop) : Promise.resolve(`${method}-ok`),
   });
   expect(link.leadershipState).toEqual({
@@ -754,7 +759,7 @@ test('a call a live leader runs behind a long sync round waits past the follower
     clientId: 'lead',
     identity: ID,
     onNewerTab: noop,
-    invoke: (method) =>
+    invoke: (_tabId, method) =>
       method === 'setWindow'
         ? new Promise((resolve) => {
             finishRound = () => resolve('window-applied');
@@ -1336,7 +1341,11 @@ test('isolated replicas derive and open distinct ownership tuples', async () => 
     });
     open.push(handle);
   }
-  expect(new Set(acquired).size).toBe(2);
+  // Each tab also holds a tab lock named under its replica's lock.
+  const [alphaTab, alphaLead, betaTab, betaLead] = acquired;
+  expect([alphaLead, betaLead]).toEqual([alpha.lockName, beta.lockName]);
+  expect(alphaTab?.startsWith(`${alpha.lockName}:tab:`)).toBe(true);
+  expect(betaTab?.startsWith(`${beta.lockName}:tab:`)).toBe(true);
   expect(new Set(channels).size).toBe(2);
   const databases = initConfigs.map((config) => config.database);
   expect(databases).toEqual([
@@ -1508,5 +1517,208 @@ test('leader and follower preserve structured segment transport evidence', async
   } finally {
     follower.close();
     leader.close();
+  }
+});
+
+/** Settle queued channel deliveries and lock grants (all microtasks). */
+async function drain(): Promise<void> {
+  for (let i = 0; i < 100; i++) await Promise.resolve();
+}
+
+interface CoreLog {
+  readonly calls: Array<readonly [tabId: string, method: string]>;
+  readonly closedTabs: string[];
+  readonly contexts: Array<TabLeaderContext<string>>;
+  closes: number;
+}
+
+/**
+ * A group of coordinator tabs over one in-process lock and channel set. Each
+ * tab's core answers `<method>@<core tab>` and logs the calling tab.
+ */
+function coordinatorGroup(): {
+  readonly log: CoreLog;
+  open(
+    events: string[],
+    overrides?: Partial<TabCoordinatorConfig<string>>,
+  ): Promise<TabCoordinator>;
+  readonly tabs: TabCoordinator[];
+} {
+  const lock = makeSharedLock();
+  const channels = new ChannelPartition<string>();
+  const name = `tabs-${lockSeq++}`;
+  const log: CoreLog = { calls: [], closedTabs: [], contexts: [], closes: 0 };
+  const tabs: TabCoordinator[] = [];
+  return {
+    log,
+    tabs,
+    open: async (events, overrides) => {
+      const tab = await createTabCoordinator<string>({
+        name,
+        version: 1,
+        lock,
+        channelFactory: (channel) => channels.factory(channel),
+        lead: async (context) => {
+          log.contexts.push(context);
+          return {
+            clientId: `core-${context.tabId}`,
+            call: async (tabId, method) => {
+              log.calls.push([tabId, method]);
+              return `${method}@${context.tabId}`;
+            },
+            tabClosed: (tabId) => {
+              log.closedTabs.push(tabId);
+            },
+            close: async () => {
+              log.closes += 1;
+            },
+          };
+        },
+        onEvent: (event) => events.push(event),
+        ...overrides,
+      });
+      tabs.push(tab);
+      return tab;
+    },
+  };
+}
+
+test('a tab coordinator routes each call and event by tab', async () => {
+  const group = coordinatorGroup();
+  const aEvents: string[] = [];
+  const bEvents: string[] = [];
+  const cEvents: string[] = [];
+  const a = await group.open(aEvents);
+  const b = await group.open(bEvents);
+  // A third tab that only receives broadcasts.
+  await group.open(cEvents);
+  try {
+    expect(a.state).toEqual({ state: 'leader', clientId: `core-${a.tabId}` });
+    expect(b.state).toEqual({
+      state: 'follower',
+      leaderClientId: `core-${a.tabId}`,
+      epoch: 0,
+    });
+
+    expect(await a.call('open', [])).toBe(`open@${a.tabId}`);
+    expect(await b.call('open', [])).toBe(`open@${a.tabId}`);
+    expect(group.log.calls).toEqual([
+      [a.tabId, 'open'],
+      [b.tabId, 'open'],
+    ]);
+
+    const [context] = group.log.contexts;
+    context?.send(b.tabId, 'b-view');
+    context?.send(a.tabId, 'a-view');
+    context?.broadcast('signed-out');
+    await drain();
+    expect(aEvents).toEqual(['a-view', 'signed-out']);
+    expect(bEvents).toEqual(['b-view', 'signed-out']);
+    expect(cEvents).toEqual(['signed-out']);
+  } finally {
+    for (const tab of group.tabs) await tab.close();
+  }
+});
+
+test('a leader learns that a tab which called it closed', async () => {
+  const group = coordinatorGroup();
+  const a = await group.open([]);
+  const b = await group.open([]);
+  const c = await group.open([]);
+  try {
+    await b.call('open', []);
+    await b.call('navigate', []);
+    await b.close();
+    await c.close();
+    await drain();
+    // C never called the leader, so its core holds nothing for C.
+    expect(group.log.closedTabs).toEqual([b.tabId]);
+    expect(a.state.state).toBe('leader');
+  } finally {
+    for (const tab of group.tabs) await tab.close();
+  }
+});
+
+test('a closed leader hands its core to a follower on a higher epoch', async () => {
+  const group = coordinatorGroup();
+  const bStates: string[] = [];
+  const a = await group.open([]);
+  const b = await group.open([], {
+    onStateChange: (state) => bStates.push(state.state),
+  });
+  const cEvents: string[] = [];
+  const c = await group.open(cEvents);
+  try {
+    await c.call('open', []);
+    await a.close();
+    // The call made in the handover gap waits for the next leader.
+    const queued = c.call('navigate', []);
+    await drain();
+    expect(group.log.closes).toBe(1);
+    expect(b.state).toEqual({ state: 'leader', clientId: `core-${b.tabId}` });
+    expect(bStates).toContain('leader');
+    const promoted = group.log.contexts.at(-1);
+    expect(promoted?.tabId).toBe(b.tabId);
+    expect(promoted?.epoch).toBe(1);
+    expect(await queued).toBe(`navigate@${b.tabId}`);
+    expect(c.state).toEqual({
+      state: 'follower',
+      leaderClientId: `core-${b.tabId}`,
+      epoch: 1,
+    });
+    // The promoted core serves its own tab and watches the tabs that call it.
+    expect(await b.call('open', [])).toBe(`open@${b.tabId}`);
+    promoted?.send(c.tabId, 'c-view');
+    await drain();
+    expect(cEvents).toEqual(['c-view']);
+    await c.close();
+    await drain();
+    expect(group.log.closedTabs).toEqual([c.tabId]);
+  } finally {
+    for (const tab of group.tabs) await tab.close();
+  }
+});
+
+test('a leader of an older build stops its core for a newer tab', async () => {
+  const group = coordinatorGroup();
+  const older = await group.open([]);
+  const newer = await group.open([], { version: 2 });
+  try {
+    await drain();
+    expect(older.state).toEqual({
+      state: 'blocked',
+      reason: 'leader-incompatible',
+      code: LEADER_INCOMPATIBLE_CODE,
+      leader: 'newer',
+      retryable: true,
+    });
+    expect(group.log.closes).toBe(1);
+    expect(newer.state.state).toBe('leader');
+    await expectRejectsWithCode(
+      older.call('open', []),
+      LEADER_INCOMPATIBLE_CODE,
+    );
+    expect(await newer.call('open', [])).toBe(`open@${newer.tabId}`);
+  } finally {
+    for (const tab of group.tabs) await tab.close();
+  }
+});
+
+test('a tab coordinator that fails to start its core releases the lock', async () => {
+  const group = coordinatorGroup();
+  let attempts = 0;
+  const failing: Partial<TabCoordinatorConfig<string>> = {
+    lead: async () => {
+      attempts += 1;
+      throw new ClientSyncError('client.worker_failed', 'core start failed');
+    },
+  };
+  await expectRejectsWithCode(group.open([], failing), 'client.worker_failed');
+  const next = await group.open([]);
+  try {
+    expect(attempts).toBe(1);
+    expect(next.state.state).toBe('leader');
+  } finally {
+    for (const tab of group.tabs) await tab.close();
   }
 });

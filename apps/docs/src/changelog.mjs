@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-10-29',
+    title: 'Run your own core across browser tabs',
+    body: "`createTabCoordinator` from `@syncular/client` elects one leader tab per Web Lock name and runs a core you start yourself there, such as a Rust core compiled to WebAssembly in your own worker. Every other tab forwards its calls to that core and receives its events. Each call reaches the core with the calling tab's id, `send(tabId, event)` targets one tab and `broadcast(event)` reaches all of them, and a core that defines `tabClosed` learns when a tab that called it closes, through a lock every tab holds for its lifetime. When the leader tab closes, a follower promotes on a higher epoch and starts the core again; a tab of a newer `version` makes an older leader stop its core and hand over. `createSyncClientHandle` now runs on the coordinator. `MULTI_TAB_PROTOCOL_VERSION` is 2, so a tab of this release and a tab of an older release do not serve each other: the newer one takes over and the older one is `blocked` until it reloads.",
+    links: [
+      {
+        href: '/platform-web-specifics/#your-own-core-across-tabs',
+        label: 'Your own core across tabs',
+      },
+    ],
+  },
+  {
+    date: '2026-10-29',
     title: 'A queued insert survives a schema upgrade that appends a column',
     body: '`mutate` now marks an upsert of a row the replica does not show as an insert. After a schema bump that appends nullable columns, replay shows that row with the new columns NULL, and the push sends them as NULL, so the server inserts the row. Before, the insert re-encoded without the new columns, the overlay hid it, and the server refused it as a partial insert with `sync.row_missing`. A queued update still leaves appended columns out, so the server keeps their stored values. Commits recorded by an older client version carry no marker and keep the old behavior. Both cores.',
     links: [

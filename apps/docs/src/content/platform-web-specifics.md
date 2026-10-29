@@ -154,6 +154,63 @@ database name, database directory, lock name, and channel name from the replica
 id by appending `--replica-<id>`; the id contains only letters, digits, `.`,
 `_`, and `-`, or the call fails with `sync.invalid_request`.
 
+### Your own core across tabs
+
+`createTabCoordinator` from `@syncular/client` runs the same election,
+promotion, probes, and build check around a core you start yourself, such as a
+Rust core compiled to WebAssembly in your own worker. `createSyncClientHandle`
+is built on it.
+
+```ts
+import { createTabCoordinator } from '@syncular/client';
+
+const tabs = await createTabCoordinator<ViewEvent>({
+  name: 'app-core', // Web Lock name; the channel and tab locks derive from it
+  version: BUILD_NUMBER, // tabs of another build never serve each other
+  lead: async ({ tabId, epoch, broadcast, send }) => {
+    const core = await startCore(); // runs only while this tab holds the lock
+    return {
+      clientId: core.id,
+      call: (fromTab, method, args) => core.handle(fromTab, method, args),
+      tabClosed: (closedTab) => core.dropSession(closedTab),
+      close: () => core.stop(),
+    };
+  },
+  onEvent: (event) => render(event),
+  onStateChange: (state) => showLeadership(state),
+});
+await tabs.call('navigate', ['/campaigns']);
+```
+
+`lead` runs in the tab that wins the lock, and again in the follower that
+promotes after the leader tab closes. Each call reaches the core with the id of
+the tab that made it; the leader's own calls arrive under its own
+`tabs.tabId`. `send(tabId, event)` delivers to one tab and `broadcast(event)`
+to every tab, the leader included. When the core defines `tabClosed`, the
+coordinator waits on the tab lock that every tab holds until it closes, and
+reports each tab that called this leader once that lock is released.
+
+A promoted leader starts a fresh core, so it holds no per-tab state from the
+previous one. A follower sees `state.epoch` change on rebind and re-sends its
+own state, such as its current route. A call in flight when the leader closes
+rejects with `client.leader_handover`, and the follower cannot tell whether the
+old core applied it; give mutating calls an id the core deduplicates before
+retrying them. A call made while no leader is bound waits for the next leader
+for up to `callTimeoutMs` (default 10 s) and then rejects with
+`client.follower_timeout`.
+
+`version` orders builds. A leader that hears from a tab with a higher `version`
+closes its core and releases the lock; the newer tab promotes, and the older
+tab's state becomes `blocked` with reason `leader-incompatible` and
+`leader: 'newer'`, the signal to ask for a reload.
+
+The coordinator answers follower probes from the thread it runs on. Run it on
+the page's main thread and post to your worker from `lead`: a worker that
+blocks on synchronous requests cannot answer probes, and its followers would
+block after `callTimeoutMs`. Release `context.lease` yourself only when the
+core is already gone, such as a worker terminated on `pagehide`; otherwise the
+coordinator releases it after `close`.
+
 ## Support floor
 
 | Property | Behavior |

@@ -20,7 +20,8 @@
  *                                              — "I am the leader, this epoch";
  *                                                the answer to every hello
  *     res      {t,epoch,reqId,ok,value|error} — reply to one req
- *     event    {t,epoch,event}                — fan-out (invalidate/presence/…)
+ *     event    {t,epoch,event,to?}            — fan-out (invalidate/presence/…),
+ *                                                or one tab's event when `to` is set
  *
  * Epoch (leader generation token): a monotonic counter carried in a shared
  * BroadcastChannel and bumped by every promotion. Followers stamp requests
@@ -57,8 +58,18 @@
  * is exactly ONE presence peer collectively — `(actorId, leaderClientId)`.
  * A follower's `setPresence` forwards to the leader's single publisher; there
  * is no per-tab presence peer (documented in the web-client README).
+ *
+ * Tab lifetime: every tab of a {@link TabCoordinator} holds an exclusive Web
+ * Lock named for its tab id until it closes. A leader whose core keeps per-tab
+ * state waits on that lock for each tab that called it; the grant means the
+ * tab is gone.
  */
 import { ClientSyncError } from './errors';
+import {
+  type LeaderLease,
+  type LeaderLock,
+  webLocksLeaderLock,
+} from './leader-lock';
 import type { SyncWorkerEvent } from './worker-protocol';
 import { WORKER_FAILED_CODE } from './worker-protocol';
 
@@ -76,7 +87,7 @@ export const LEADER_HANDOVER_CODE = 'client.leader_handover';
  * with every change to a message shape or to a forwarded method's arguments
  * or result, so tabs of different builds never serve each other.
  */
-export const MULTI_TAB_PROTOCOL_VERSION = 1;
+export const MULTI_TAB_PROTOCOL_VERSION = 2;
 
 /** What a tab must share with its leader to be served by it. */
 export interface TabIdentity {
@@ -179,39 +190,43 @@ interface ResMessage {
   };
 }
 
-interface EventMessage {
+interface EventMessage<E> {
   readonly t: 'event';
   readonly epoch: number;
-  readonly event: SyncWorkerEvent;
+  readonly event: E;
+  /** The one tab this event is for; absent for a fan-out to every tab. */
+  readonly to?: string;
 }
 
-export type MultiTabMessage =
+export type MultiTabMessage<E = SyncWorkerEvent> =
   | HelloMessage
   | ReqMessage
   | AnnounceMessage
   | ResMessage
-  | EventMessage;
+  | EventMessage<E>;
 
 /**
  * The tiny cross-tab channel surface we depend on — the DOM `BroadcastChannel`
  * satisfies it. Injectable so bun tests can pair two instances by name.
  */
-export interface CrossTabChannel {
-  postMessage(message: MultiTabMessage): void;
+export interface CrossTabChannel<E = SyncWorkerEvent> {
+  postMessage(message: MultiTabMessage<E>): void;
   addEventListener(
     type: 'message',
-    listener: (event: { data: MultiTabMessage }) => void,
+    listener: (event: { data: MultiTabMessage<E> }) => void,
   ): void;
   removeEventListener(
     type: 'message',
-    listener: (event: { data: MultiTabMessage }) => void,
+    listener: (event: { data: MultiTabMessage<E> }) => void,
   ): void;
   close(): void;
 }
 
 /** Default channel factory: a real `BroadcastChannel` named per lock. */
-export function broadcastChannelFactory(): (name: string) => CrossTabChannel {
-  return (name) => new BroadcastChannel(name) as unknown as CrossTabChannel;
+export function broadcastChannelFactory<E = SyncWorkerEvent>(): (
+  name: string,
+) => CrossTabChannel<E> {
+  return (name) => new BroadcastChannel(name) as unknown as CrossTabChannel<E>;
 }
 
 /** The channel name a leader and its followers rendezvous on. */
@@ -235,31 +250,39 @@ export function newTabId(): string {
 
 /**
  * Runs on the leader tab. Announces leadership, answers follower `req`s by
- * invoking the (already-running) worker via `invoke`, and rebroadcasts every
- * worker event to followers. Owns nothing about the worker lifecycle — the
- * worker-host stays the single core owner; this is a relay. A hello from a
- * newer tab calls `onNewerTab`, whose owner closes the core and releases the
- * lock.
+ * invoking the (already-running) core via `invoke` with the calling tab's id,
+ * and relays core events to followers. Owns nothing about the core lifecycle;
+ * this is a relay. `onFirstCall` runs once per tab, at its first request. A
+ * hello from a newer tab calls `onNewerTab`, whose owner closes the core and
+ * releases the lock.
  */
-export class LeaderBridge {
-  readonly #channel: CrossTabChannel;
+export class LeaderBridge<E = SyncWorkerEvent> {
+  readonly #channel: CrossTabChannel<E>;
   readonly #epoch: number;
   readonly #clientId: string;
   readonly #identity: TabIdentity;
   readonly #invoke: (
+    tabId: string,
     method: string,
     args: readonly unknown[],
   ) => Promise<unknown>;
+  readonly #onFirstCall: ((tabId: string) => void) | undefined;
   readonly #onNewerTab: () => void;
-  readonly #onMessage: (event: { data: MultiTabMessage }) => void;
+  readonly #onMessage: (event: { data: MultiTabMessage<E> }) => void;
+  readonly #callers = new Set<string>();
   #closed = false;
 
   constructor(options: {
-    channel: CrossTabChannel;
+    channel: CrossTabChannel<E>;
     epoch: number;
     clientId: string;
     identity: TabIdentity;
-    invoke: (method: string, args: readonly unknown[]) => Promise<unknown>;
+    invoke: (
+      tabId: string,
+      method: string,
+      args: readonly unknown[],
+    ) => Promise<unknown>;
+    onFirstCall?: (tabId: string) => void;
     onNewerTab: () => void;
   }) {
     this.#channel = options.channel;
@@ -267,6 +290,7 @@ export class LeaderBridge {
     this.#clientId = options.clientId;
     this.#identity = options.identity;
     this.#invoke = options.invoke;
+    this.#onFirstCall = options.onFirstCall;
     this.#onNewerTab = options.onNewerTab;
     this.#onMessage = (event) => this.#handle(event.data);
     this.#channel.addEventListener('message', this.#onMessage);
@@ -284,13 +308,24 @@ export class LeaderBridge {
     });
   }
 
-  /** Fan a worker event out to all followers on the current epoch. */
-  broadcastEvent(event: SyncWorkerEvent): void {
+  /** Fan an event out to all followers on the current epoch. */
+  broadcastEvent(event: E): void {
     if (this.#closed) return;
     this.#channel.postMessage({ t: 'event', epoch: this.#epoch, event });
   }
 
-  #handle(message: MultiTabMessage): void {
+  /** Post an event that only the follower `tabId` delivers. */
+  sendEvent(tabId: string, event: E): void {
+    if (this.#closed) return;
+    this.#channel.postMessage({
+      t: 'event',
+      epoch: this.#epoch,
+      event,
+      to: tabId,
+    });
+  }
+
+  #handle(message: MultiTabMessage<E>): void {
     if (this.#closed) return;
     if (message.t === 'hello') {
       // A newer tab takes over; any other follower learns who leads.
@@ -306,7 +341,7 @@ export class LeaderBridge {
     // Ignore requests stamped for a different (dead/older) leader; that
     // follower will re-stamp once it sees our announce.
     if (message.epoch !== this.#epoch) return;
-    const { reqId, method, args } = message;
+    const { reqId, method, args, fromId } = message;
     if (compareTabIdentity(message, this.#identity) !== 0) {
       this.#channel.postMessage({
         t: 'res',
@@ -321,8 +356,12 @@ export class LeaderBridge {
       });
       return;
     }
+    if (!this.#callers.has(fromId)) {
+      this.#callers.add(fromId);
+      this.#onFirstCall?.(fromId);
+    }
     // A call can outlive close(); a closed BroadcastChannel throws on post.
-    this.#invoke(method, args).then(
+    this.#invoke(fromId, method, args).then(
       (value) => {
         if (this.#closed) return;
         this.#channel.postMessage({
@@ -403,11 +442,11 @@ interface InFlight {
  * when a probe goes unanswered, or when the leader's identity differs from
  * this tab's (see the module comment).
  */
-export class FollowerLink {
-  readonly #channel: CrossTabChannel;
+export class FollowerLink<E = SyncWorkerEvent> {
+  readonly #channel: CrossTabChannel<E>;
   readonly #fromId: string;
   readonly #identity: TabIdentity;
-  readonly #onEvent: (event: SyncWorkerEvent) => void;
+  readonly #onEvent: (event: E) => void;
   readonly #onLeaderChange: (clientId: string) => void;
   readonly #onStateChange: (state: LeadershipState) => void;
   readonly #callTimeoutMs: number;
@@ -415,7 +454,7 @@ export class FollowerLink {
   readonly #probeAfterMs: number;
   readonly #queueLimit: number;
   readonly #schedule: FollowerSchedule;
-  readonly #onMessage: (event: { data: MultiTabMessage }) => void;
+  readonly #onMessage: (event: { data: MultiTabMessage<E> }) => void;
 
   /** -1 until the first `announce` binds us to a leader. */
   #epoch = -1;
@@ -436,10 +475,10 @@ export class FollowerLink {
   #bindWaiters: Array<() => void> = [];
 
   constructor(options: {
-    channel: CrossTabChannel;
+    channel: CrossTabChannel<E>;
     fromId: string;
     identity: TabIdentity;
-    onEvent: (event: SyncWorkerEvent) => void;
+    onEvent: (event: E) => void;
     onLeaderChange: (clientId: string) => void;
     onStateChange?: (state: LeadershipState) => void;
     callTimeoutMs?: number;
@@ -635,7 +674,7 @@ export class FollowerLink {
     if (index >= 0) this.#queue.splice(index, 1);
   }
 
-  #handle(message: MultiTabMessage): void {
+  #handle(message: MultiTabMessage<E>): void {
     if (this.#closed) return;
     if (message.t === 'announce') {
       if (message.epoch > this.#maxEpochSeen) {
@@ -698,6 +737,7 @@ export class FollowerLink {
     }
     if (message.t === 'event') {
       if (message.epoch !== this.#epoch) return;
+      if (message.to !== undefined && message.to !== this.#fromId) return;
       this.#onEvent(message.event);
       return;
     }
@@ -892,4 +932,296 @@ export class FollowerLink {
     this.#cancelProbe = undefined;
     this.#cancelBlocked = undefined;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Tab coordinator: the whole leader/follower lifecycle around any core
+// ---------------------------------------------------------------------------
+
+/** What a leader's core receives when this tab wins or promotes. */
+export interface TabLeaderContext<E> {
+  /** This leadership's epoch; a promotion runs on a higher one. */
+  readonly epoch: number;
+  /** This tab's id. The leader's own calls arrive under it. */
+  readonly tabId: string;
+  /**
+   * The leader lock. The coordinator releases it after {@link TabLeader.close}
+   * resolves. Release it earlier only when the core is already gone, such as a
+   * worker terminated on `pagehide`.
+   */
+  readonly lease: LeaderLease;
+  /** Deliver an event to every tab, this one included. */
+  broadcast(event: E): void;
+  /** Deliver an event to the tab `tabId` only. */
+  send(tabId: string, event: E): void;
+}
+
+/** The core a leader tab runs for every tab of the coordinator. */
+export interface TabLeader {
+  /** Announced to followers as `LeadershipState.leaderClientId`. */
+  readonly clientId: string;
+  /** Serve one call from the tab `tabId`. */
+  call(
+    tabId: string,
+    method: string,
+    args: readonly unknown[],
+  ): Promise<unknown>;
+  /**
+   * The tab `tabId`, which called this leader, closed. Defined only by cores
+   * that keep per-tab state; the coordinator then waits on each caller's tab
+   * lock.
+   */
+  tabClosed?(tabId: string): void;
+  /** Stop the core. The coordinator releases the leader lock afterwards. */
+  close(): Promise<void>;
+}
+
+export interface TabCoordinatorConfig<E> {
+  /** Web Lock name of the leadership; the channel and tab locks derive from it. */
+  readonly name: string;
+  /**
+   * The application build. Tabs of different versions never serve each other:
+   * a leader steps down for a higher version, and a tab next to a leader of
+   * another version is `blocked` with reason `leader-incompatible`.
+   */
+  readonly version: number;
+  /** Start the core. Runs when this tab wins the lock, and on every promotion. */
+  lead(context: TabLeaderContext<E>): Promise<TabLeader>;
+  /** Events the leader broadcast, or sent to this tab. */
+  onEvent?(event: E): void;
+  onStateChange?(state: LeadershipState): void;
+  /** Defaults to Web Locks; tests inject a name-keyed exclusive lock. */
+  readonly lock?: LeaderLock;
+  readonly channelFactory?: (name: string) => CrossTabChannel<E>;
+  /** Liveness and handover-queue deadline; defaults to 10 s. */
+  readonly callTimeoutMs?: number;
+}
+
+/** One tab's end of the coordinator, the same in leader and follower tabs. */
+export interface TabCoordinator {
+  readonly tabId: string;
+  readonly state: LeadershipState;
+  /** Run a call on the leader's core, in this tab or over the channel. */
+  call(method: string, args: readonly unknown[]): Promise<unknown>;
+  /** Stop the core (leader) or the link (follower), and release this tab's locks. */
+  close(): Promise<void>;
+}
+
+function tabLockName(name: string, tabId: string): string {
+  return `${name}:tab:${tabId}`;
+}
+
+/**
+ * Elect one leader tab per `name` and run `lead` there; every other tab
+ * forwards its calls to that core and receives its events. When the leader
+ * tab closes, one follower promotes in place on a higher epoch and runs
+ * `lead` itself. Resolves once this tab leads or is bound to a leader.
+ */
+export async function createTabCoordinator<E>(
+  config: TabCoordinatorConfig<E>,
+): Promise<TabCoordinator> {
+  const lock = config.lock ?? webLocksLeaderLock();
+  const openChannel = config.channelFactory ?? broadcastChannelFactory<E>();
+  const channelName = multiTabChannelName(config.name);
+  const identity: TabIdentity = {
+    protocol: MULTI_TAB_PROTOCOL_VERSION,
+    schemaVersion: config.version,
+  };
+  const tabId = newTabId();
+  let state: LeadershipState = {
+    state: 'waiting',
+    reason: 'leader-announcement',
+  };
+  let leading:
+    | { leader: TabLeader; lease: LeaderLease; end(): void }
+    | undefined;
+  let follower: FollowerLink<E> | undefined;
+  let closed = false;
+
+  const setState = (next: LeadershipState): void => {
+    state = next;
+    try {
+      config.onStateChange?.(next);
+    } catch {
+      // A status listener must never break cross-tab coordination.
+    }
+  };
+
+  // Held until close: a leader waits on it to learn this tab is gone.
+  const tabLease = await lock.acquire(tabLockName(config.name, tabId));
+
+  const lead = async (lease: LeaderLease, epoch: number): Promise<void> => {
+    let bridge: LeaderBridge<E> | undefined;
+    let current = true;
+    const leader = await config.lead({
+      epoch,
+      tabId,
+      lease,
+      broadcast: (event) => {
+        if (!current) return;
+        bridge?.broadcastEvent(event);
+        config.onEvent?.(event);
+      },
+      send: (to, event) => {
+        if (!current) return;
+        if (to === tabId) config.onEvent?.(event);
+        else bridge?.sendEvent(to, event);
+      },
+    });
+    if (closed) {
+      // Closed while the core was starting: nobody holds this tab any more.
+      current = false;
+      await leader.close();
+      await lease.release();
+      return;
+    }
+    const ending = {
+      leader,
+      lease,
+      end: () => {
+        current = false;
+        bridge?.close();
+      },
+    };
+    leading = ending;
+    bridge = new LeaderBridge<E>({
+      channel: openChannel(channelName),
+      epoch,
+      clientId: leader.clientId,
+      identity,
+      invoke: (from, method, args) => leader.call(from, method, args),
+      ...(leader.tabClosed !== undefined
+        ? {
+            onFirstCall: (from: string) => {
+              void lock
+                .acquire(tabLockName(config.name, from))
+                .then(async (gone) => {
+                  await gone.release();
+                  if (current) leader.tabClosed?.(from);
+                });
+            },
+          }
+        : {}),
+      onNewerTab: () => {
+        // A newer build asked for the core: stop it and release the lock so
+        // that tab promotes. This tab stays blocked until it reloads.
+        if (leading !== ending) return;
+        leading = undefined;
+        ending.end();
+        setState({
+          state: 'blocked',
+          reason: 'leader-incompatible',
+          code: LEADER_INCOMPATIBLE_CODE,
+          leader: 'newer',
+          retryable: true,
+        });
+        void leader.close().finally(() => lease.release());
+      },
+    });
+    // Calls queued for the next leader run on this tab's own core.
+    follower?.handOver((method, args) => leader.call(tabId, method, args));
+    follower = undefined;
+    setState({ state: 'leader', clientId: leader.clientId });
+  };
+
+  const coordinator: TabCoordinator = {
+    tabId,
+    get state() {
+      return state;
+    },
+    call: (method, args) => {
+      if (closed) {
+        return Promise.reject(
+          new ClientSyncError(
+            WORKER_FAILED_CODE,
+            'the tab coordinator is closed',
+          ),
+        );
+      }
+      if (leading !== undefined)
+        return leading.leader.call(tabId, method, args);
+      if (state.state === 'blocked' && state.reason === 'leader-incompatible') {
+        return Promise.reject(
+          new ClientSyncError(
+            LEADER_INCOMPATIBLE_CODE,
+            'the tab that owns the database runs a different protocol or schema version',
+            true,
+          ),
+        );
+      }
+      if (follower !== undefined) return follower.call(method, args);
+      return Promise.reject(
+        new ClientSyncError(WORKER_FAILED_CODE, 'no core serves this tab'),
+      );
+    },
+    close: async () => {
+      if (closed) return;
+      closed = true;
+      follower?.close();
+      follower = undefined;
+      const ending = leading;
+      leading = undefined;
+      if (ending !== undefined) {
+        ending.end();
+        await ending.leader.close();
+        await ending.lease.release();
+      }
+      await tabLease.release();
+    },
+  };
+
+  // Leadership before any core exists: a losing tab never starts one.
+  const lease =
+    lock.tryAcquire !== undefined
+      ? await lock.tryAcquire(config.name)
+      : await lock.acquire(config.name);
+  if (lease !== undefined) {
+    try {
+      await lead(lease, 0);
+    } catch (error) {
+      await lease.release();
+      await tabLease.release();
+      throw error;
+    }
+    return coordinator;
+  }
+
+  const link = new FollowerLink<E>({
+    channel: openChannel(channelName),
+    fromId: tabId,
+    identity,
+    onEvent: (event) => config.onEvent?.(event),
+    onLeaderChange: () => {},
+    onStateChange: setState,
+    ...(config.callTimeoutMs !== undefined
+      ? { callTimeoutMs: config.callTimeoutMs }
+      : {}),
+  });
+  follower = link;
+  // Granted only when the leader releases the lock (its tab closed).
+  void lock.acquire(config.name).then(async (promoted) => {
+    if (closed) {
+      // Promoting a closed coordinator would hold the lock forever.
+      await promoted.release();
+      return;
+    }
+    // The new leader must exceed every epoch this tab saw, so stale replies
+    // and events are discarded everywhere.
+    const epoch = link.maxEpochSeen + 1;
+    link.unbind();
+    try {
+      await lead(promoted, epoch);
+    } catch {
+      // The core failed to start: release so the next tab tries.
+      await promoted.release();
+    }
+  });
+  // Return bound: an event the leader fans out before binding is dropped.
+  try {
+    await link.waitUntilBound();
+  } catch {
+    // Bind timed out: the link keeps probing, queued calls flush on the next
+    // announce, and the state says `blocked`.
+  }
+  return coordinator;
 }

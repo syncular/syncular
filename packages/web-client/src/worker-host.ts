@@ -81,16 +81,11 @@ import {
   type LocalDataRebootstrapResult,
 } from './local-rebootstrap';
 import {
-  broadcastChannelFactory,
   type CrossTabChannel,
-  FollowerLink,
-  LEADER_INCOMPATIBLE_CODE,
-  LeaderBridge,
+  createTabCoordinator,
   type LeadershipState,
-  MULTI_TAB_PROTOCOL_VERSION,
   multiTabChannelName,
-  newTabId,
-  type TabIdentity,
+  type TabCoordinator,
 } from './multi-tab';
 import type { OutboxCommit } from './outbox';
 import type {
@@ -272,9 +267,8 @@ function defaultLeaderLock(): LeaderLock {
 }
 
 /**
- * A running worker core owned by THIS tab (the leader). Wraps the worker,
- * the RPC pending map, and (in multi-tab mode) the `LeaderBridge` relaying
- * follower requests. Torn down on `close()` or on a graceful demotion.
+ * A running worker core owned by THIS tab (the leader). Wraps the worker and
+ * the RPC pending map. Torn down on `close()` or on a graceful demotion.
  */
 interface LeaderCore {
   readonly clientId: string;
@@ -282,9 +276,8 @@ interface LeaderCore {
     method: string,
     args: readonly unknown[],
   ) => Promise<unknown>;
-  readonly bridge: LeaderBridge | undefined;
-  readonly lease: LeaderLease;
-  close(terminate: boolean): Promise<void>;
+  /** Close the core, terminate the worker, and release the lease. */
+  close(): Promise<void>;
 }
 
 /**
@@ -319,8 +312,10 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
   #clientId: string;
   readonly #currentSchemaVersion: number;
   #leadership: LeadershipState;
+  /** The multi-tab route: this tab's core when it leads, the leader's otherwise. */
+  readonly #tabs: TabCoordinator | undefined;
+  /** The `multiTab: false` leader's own core. */
   #core: LeaderCore | undefined;
-  #follower: FollowerLink | undefined;
   readonly #invalidation: InvalidationEmitter;
   readonly #progress = new ProgressEmitter();
   readonly #changes: ChangeEmitter;
@@ -337,7 +332,7 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     clientId: string;
     currentSchemaVersion: number;
     core?: LeaderCore;
-    follower?: FollowerLink;
+    tabs?: TabCoordinator;
     invalidation: InvalidationEmitter;
     changes: ChangeEmitter;
     presence: Set<(scopeKey: string) => void>;
@@ -351,16 +346,17 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     this.#currentSchemaVersion = internals.currentSchemaVersion;
     this.#leadership =
       internals.leadership ??
+      internals.tabs?.state ??
       (internals.role === 'leader'
         ? { state: 'leader', clientId: internals.clientId }
-        : (internals.follower?.leadershipState ?? {
+        : {
             state: 'blocked',
             reason: 'leader-unreachable',
             code: 'client.follower_timeout',
             retryable: true,
-          }));
+          });
     this.#core = internals.core;
-    this.#follower = internals.follower;
+    this.#tabs = internals.tabs;
     this.#invalidation = internals.invalidation;
     this.#changes = internals.changes;
     this.#presence = internals.presence;
@@ -384,70 +380,28 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
   }
 
   /**
-   * @internal — whether `close()` has run.
-   *
-   * A follower keeps a blocking `acquire` outstanding for the whole time it is a
-   * follower, so its promotion can fire long after the application has discarded
-   * the handle. The promotion path consults this before opening anything.
+   * @internal — apply a leadership snapshot in place: a promotion flips the
+   * role to `'leader'`, stepping down for a newer tab flips it back.
    */
-  get __isClosed(): boolean {
-    return this.#closed;
-  }
-
-  /** @internal — swap this handle from follower to leader (promotion). */
-  __becomeLeader(core: LeaderCore): void {
-    // Calls queued for the next leader run on this tab's own core.
-    this.#follower?.handOver(core.invoke);
-    this.#follower = undefined;
-    this.#core = core;
-    this.#clientId = core.clientId;
-    this.#role = 'leader';
-    this.__setLeadership({ state: 'leader', clientId: core.clientId });
-    for (const listener of this.#roleListeners) {
-      try {
-        listener('leader');
-      } catch {
-        /* a UI listener must never break promotion */
-      }
-    }
-  }
-
-  /**
-   * @internal — a newer tab asked for the database: close the core and
-   * release the lock so that tab promotes. This tab stays blocked until it
-   * reloads with the newer build.
-   */
-  __yieldToNewerTab(): void {
-    const core = this.#core;
-    if (core === undefined) return;
-    this.#core = undefined;
-    this.#role = 'follower';
-    this.__setLeadership({
-      state: 'blocked',
-      reason: 'leader-incompatible',
-      code: LEADER_INCOMPATIBLE_CODE,
-      leader: 'newer',
-      retryable: true,
-    });
-    for (const listener of this.#roleListeners) {
-      try {
-        listener('follower');
-      } catch {
-        /* a UI listener must never break the handover */
-      }
-    }
-    void core.close(true);
-  }
-
-  /** @internal — apply a follower reachability snapshot in place. */
   __setLeadership(state: LeadershipState): void {
     this.#leadership = state;
+    if (state.state === 'leader') this.#clientId = state.clientId;
     if (state.state === 'follower') this.#clientId = state.leaderClientId;
     for (const listener of this.#leadershipListeners) {
       try {
         listener(state);
       } catch {
         /* a UI listener must never break leadership transitions */
+      }
+    }
+    const role = state.state === 'leader' ? 'leader' : 'follower';
+    if (role === this.#role) return;
+    this.#role = role;
+    for (const listener of this.#roleListeners) {
+      try {
+        listener(role);
+      } catch {
+        /* a UI listener must never break a promotion or a handover */
       }
     }
   }
@@ -539,36 +493,19 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
         new ClientSyncError(WORKER_FAILED_CODE, 'the handle is closed'),
       );
     }
-    if (
-      this.#leadership.state === 'blocked' &&
-      this.#leadership.reason === 'leader-incompatible'
-    ) {
-      return Promise.reject(
-        new ClientSyncError(
-          LEADER_INCOMPATIBLE_CODE,
-          'the tab that owns the database runs a different protocol or schema version',
-          true,
-        ),
-      );
-    }
-    if (this.#role === 'follower') {
-      if (this.#follower === undefined) {
-        return Promise.reject(
-          new ClientSyncError(
-            NOT_LEADER_CODE,
-            'this tab is not the leader — another tab owns the syncular ' +
-              'core for this origin (this handle opted out of follower ' +
-              'proxying with multiTab: false)',
-          ),
-        );
-      }
-      return this.#follower.call(method, args) as Promise<
+    if (this.#tabs !== undefined) {
+      return this.#tabs.call(method, args) as Promise<
         Awaited<ReturnType<WorkerApi[M]>>
       >;
     }
     if (this.#core === undefined) {
       return Promise.reject(
-        new ClientSyncError(WORKER_FAILED_CODE, 'the handle is closed'),
+        new ClientSyncError(
+          NOT_LEADER_CODE,
+          'this tab is not the leader — another tab owns the syncular ' +
+            'core for this origin (this handle opted out of follower ' +
+            'proxying with multiTab: false)',
+        ),
       );
     }
     return this.#core.invoke(method, args) as Promise<
@@ -826,38 +763,30 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     return this.#call('abandonLocalAuthorityAttach', []);
   }
 
-  /** Close the core (leader) or unbind the link (follower), release leadership. */
+  /** Close the core (leader) or the link (follower), release leadership. */
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
     this.#progress.clear();
     this.#devtoolsUnregister();
-    if (this.#follower !== undefined) {
-      this.#follower.close();
-      this.#follower = undefined;
-    }
+    await this.#tabs?.close();
     if (this.#core !== undefined) {
       const core = this.#core;
       this.#core = undefined;
-      await core.close(true);
+      await core.close();
     }
   }
 }
 
 /**
  * Spawn the worker, run the init handshake, and return a running leader core.
- * `dispatchEvent` receives every worker event; `bridge` (when supplied) is
- * the follower relay whose lifetime is tied to this core.
+ * `dispatchEvent` receives every worker event.
  */
 async function startWorkerCore(options: {
   config: SyncClientHandleConfig;
   initConfig: WorkerInitConfig;
   lease: LeaderLease;
   dispatchEvent: (event: SyncWorkerEvent) => void;
-  makeBridge?: (
-    clientId: string,
-    invoke: (method: string, args: readonly unknown[]) => Promise<unknown>,
-  ) => LeaderBridge;
 }): Promise<LeaderCore> {
   const { config, initConfig, lease } = options;
   const worker = config.worker();
@@ -873,7 +802,6 @@ async function startWorkerCore(options: {
     if (terminated) return;
     terminated = true;
     globalThis.removeEventListener?.('pagehide', terminate);
-    bridge?.close();
     worker.terminate();
     rejectReady?.(closedError);
     for (const entry of pending.values()) entry.reject(closedError);
@@ -901,8 +829,6 @@ async function startWorkerCore(options: {
       } as MainToWorkerMessage);
     });
   };
-
-  let bridge: LeaderBridge | undefined;
 
   const ready = new Promise<void>((resolve, reject) => {
     rejectReady = reject;
@@ -933,7 +859,6 @@ async function startWorkerCore(options: {
         }
         case 'event':
           options.dispatchEvent(message.event);
-          bridge?.broadcastEvent(message.event);
           break;
       }
     };
@@ -963,29 +888,17 @@ async function startWorkerCore(options: {
         } as MainToWorkerMessage);
       },
     );
-    if (options.makeBridge !== undefined) {
-      bridge = options.makeBridge(initResult.clientId, invoke);
-    }
     return {
       clientId: initResult.clientId,
       invoke,
-      bridge,
-      lease,
-      close: async (terminateWorker) => {
+      close: async () => {
         if (terminated) return;
-        bridge?.close();
         try {
           await invoke('close', []);
         } catch {
           // A terminated or failed worker has no further close RPC to service.
         }
-        if (terminateWorker) terminate();
-        else {
-          globalThis.removeEventListener?.('pagehide', terminate);
-          for (const entry of pending.values()) entry.reject(closedError);
-          pending.clear();
-          await lease.release();
-        }
+        terminate();
       },
     };
   } catch (error) {
@@ -1081,280 +994,104 @@ export async function createSyncClientHandle(
     leadershipListeners.add(resolvedConfig.onLeadershipChange);
   }
 
-  // Leadership BEFORE the worker exists: one core per origin, and a losing
-  // tab never boots a database it must not own.
-  const lease =
-    lock.tryAcquire !== undefined
-      ? await lock.tryAcquire(lockName)
-      : await lock.acquire(lockName);
-
-  // ---- Won the election: leader. ----
-  if (lease !== undefined) {
-    // Epoch derivation for a fresh boot: epoch 0. A promoter (below) reads
-    // the highest epoch it has seen and adds one, so leaders monotonically
-    // increase it across handovers.
-    return await bootLeader(resolvedConfig, lockName, lease, {
-      epoch: 0,
-      invalidation,
-      changes,
-      presence,
-      diagnostics,
-      roleListeners,
-      leadershipListeners,
-    });
-  }
-
-  // ---- Lost the election. ----
-  if (resolvedConfig.multiTab === false) {
-    // Opted-out single-tab contract: a dead not-leader handle.
-    return new SyncClientHandle({
-      role: 'follower',
-      clientId: '',
-      currentSchemaVersion: resolvedConfig.schema.version,
-      invalidation,
-      changes,
-      presence,
-      diagnostics,
-      roleListeners,
-      leadershipListeners,
-    });
-  }
-
-  // ---- Follower: proxy to the leader; contest + promote on its close. ----
-  return await bootFollower(resolvedConfig, lockName, lock, {
+  const handleRef: { handle: SyncClientHandle | undefined } = {
+    handle: undefined,
+  };
+  const parts = {
+    currentSchemaVersion: resolvedConfig.schema.version,
     invalidation,
     changes,
     presence,
     diagnostics,
     roleListeners,
     leadershipListeners,
-  });
-}
-
-interface HandleParts {
-  epoch?: number;
-  invalidation: InvalidationEmitter;
-  changes: ChangeEmitter;
-  presence: Set<(scopeKey: string) => void>;
-  diagnostics: ClientDiagnosticsEmitter;
-  roleListeners: Set<(role: HandleRole) => void>;
-  leadershipListeners: Set<(state: LeadershipState) => void>;
-}
-
-/** Boot (or promote to) a leader: spawn the worker, wire the bridge. */
-async function bootLeader(
-  config: SyncClientHandleConfig,
-  lockName: string,
-  lease: LeaderLease,
-  parts: HandleParts,
-): Promise<SyncClientHandle> {
-  const handleRef: { handle: SyncClientHandle | undefined } = {
-    handle: undefined,
-  };
-  const dispatchEvent = (event: SyncWorkerEvent): void => {
-    fireConfigCallbacks(config, event);
-    handleRef.handle?.__dispatchEvent(event);
-  };
-  // A newer tab may say hello before the handle exists; yield once it does.
-  let newerTab = false;
-  const makeBridge =
-    config.multiTab !== false
-      ? (
-          clientId: string,
-          invoke: (
-            method: string,
-            args: readonly unknown[],
-          ) => Promise<unknown>,
-        ): LeaderBridge => {
-          const factory = config.channelFactory ?? broadcastChannelFactory();
-          const channel = factory(multiTabChannelName(lockName));
-          return new LeaderBridge({
-            channel,
-            epoch: parts.epoch ?? 0,
-            clientId,
-            identity: tabIdentity(config),
-            invoke,
-            onNewerTab: () => {
-              newerTab = true;
-              handleRef.handle?.__yieldToNewerTab();
-            },
-          });
-        }
-      : undefined;
-
-  const core = await startWorkerCore({
-    config,
-    initConfig: buildInitConfig(config),
-    lease,
-    dispatchEvent,
-    ...(makeBridge !== undefined ? { makeBridge } : {}),
-  });
-
-  const handle = new SyncClientHandle({
-    role: 'leader',
-    clientId: core.clientId,
-    currentSchemaVersion: config.schema.version,
-    core,
-    invalidation: parts.invalidation,
-    changes: parts.changes,
-    presence: parts.presence,
-    diagnostics: parts.diagnostics,
-    roleListeners: parts.roleListeners,
-    leadershipListeners: parts.leadershipListeners,
-  });
-  handleRef.handle = handle;
-  if (newerTab) handle.__yieldToNewerTab();
-  return handle;
-}
-
-function tabIdentity(config: SyncClientHandleConfig): TabIdentity {
-  return {
-    protocol: MULTI_TAB_PROTOCOL_VERSION,
-    schemaVersion: config.schema.version,
-  };
-}
-
-/**
- * Boot a follower: open the channel, bind to the leader, and race the lock in
- * the background so this tab promotes itself the instant the leader closes.
- */
-async function bootFollower(
-  config: SyncClientHandleConfig,
-  lockName: string,
-  lock: LeaderLock,
-  parts: HandleParts,
-): Promise<SyncClientHandle> {
-  const factory = config.channelFactory ?? broadcastChannelFactory();
-  const channel = factory(multiTabChannelName(lockName));
-  const handleRef: { handle: SyncClientHandle | undefined } = {
-    handle: undefined,
   };
 
-  const follower = new FollowerLink({
-    channel,
-    fromId: newTabId(),
-    identity: tabIdentity(config),
-    onEvent: (event) => handleRef.handle?.__dispatchEvent(event),
-    onLeaderChange: (clientId) => {
-      // Learn the leader's shared client id (best-effort; the handle exposes
-      // it after binding). Nothing else to do — calls already flush.
-      void clientId;
-    },
-    onStateChange: (state) => handleRef.handle?.__setLeadership(state),
-    ...(config.followerCallTimeoutMs !== undefined
-      ? { callTimeoutMs: config.followerCallTimeoutMs }
-      : {}),
-  });
-
-  // A follower waits (blocking) on the exclusive lock: it resolves ONLY when
-  // the current leader releases it (tab close). Winning it triggers promotion.
-  // We do NOT hold this promise — it settles asynchronously.
-  void lock.acquire(lockName).then(async (lease) => {
-    const handle = handleRef.handle;
-    if (handle === undefined) {
-      // Handle was never assembled (shouldn't happen); drop the lease.
-      await lease.release();
-      return;
+  if (resolvedConfig.multiTab === false) {
+    // Single-tab contract: the leader runs its core with no channel; a losing
+    // tab is a dead not-leader handle that never boots a database.
+    const lease =
+      lock.tryAcquire !== undefined
+        ? await lock.tryAcquire(lockName)
+        : await lock.acquire(lockName);
+    if (lease === undefined) {
+      return new SyncClientHandle({ role: 'follower', clientId: '', ...parts });
     }
-    if (handle.__isClosed) {
-      // The application discarded this handle while it was queued for
-      // leadership. Promoting now would open a database nobody is holding and
-      // then keep the lock forever, so no other tab could ever take over.
-      // Release instead, and let the next waiter have it.
-      await lease.release();
-      return;
-    }
-    // The follower saw the departing leader's epoch; the new leader must
-    // strictly exceed it so stale replies/events are discarded everywhere.
-    const nextEpoch = follower.maxEpochSeen + 1;
-    // Unbind the link so any late leader traffic is ignored, then promote.
-    follower.unbind();
-    // A newer tab may say hello before this core is installed.
-    let newerTab = false;
-    try {
-      const core = await startWorkerCore({
-        config,
-        initConfig: buildInitConfig(config, handle.__headers ?? config.headers),
-        lease,
-        dispatchEvent: (event) => {
-          fireConfigCallbacks(config, event);
-          handle.__dispatchEvent(event);
-        },
-        ...(config.multiTab !== false
-          ? {
-              makeBridge: (
-                clientId: string,
-                invoke: (
-                  method: string,
-                  args: readonly unknown[],
-                ) => Promise<unknown>,
-              ): LeaderBridge => {
-                const promoteChannel = factory(multiTabChannelName(lockName));
-                return new LeaderBridge({
-                  channel: promoteChannel,
-                  epoch: nextEpoch,
-                  clientId,
-                  identity: tabIdentity(config),
-                  invoke,
-                  onNewerTab: () => {
-                    newerTab = true;
-                    handle.__yieldToNewerTab();
-                  },
-                });
-              },
-            }
-          : {}),
-      });
-      if (handle.__isClosed) {
-        // Closed while the worker was starting. `close()` already ran and found
-        // no core to shut down, so this one would leak: tear it down here rather
-        // than hand it to a discarded handle. `close(true)` releases the lease.
-        await core.close(true);
-        return;
-      }
-      handle.__becomeLeader(core);
-      if (newerTab) handle.__yieldToNewerTab();
-    } catch {
-      // Promotion failed to spawn a worker — release so the next tab tries.
-      await lease.release();
-    }
-  });
-
-  const handle = new SyncClientHandle({
-    role: 'follower',
-    // The follower learns the leader's shared client id once bound; expose it
-    // lazily via `clientId` is not possible on a getter over the link, so we
-    // leave '' until promotion (the shared id is the leader's — hooks that
-    // need it read it after a round). Followers rarely need clientId directly.
-    clientId: '',
-    currentSchemaVersion: config.schema.version,
-    follower,
-    invalidation: parts.invalidation,
-    changes: parts.changes,
-    presence: parts.presence,
-    diagnostics: parts.diagnostics,
-    roleListeners: parts.roleListeners,
-    leadershipListeners: parts.leadershipListeners,
-  });
-  handleRef.handle = handle;
-  // Do not hand back a follower until its link has bound to the leader (the
-  // hello→announce round trip completed). Before binding, epoch is -1 and any
-  // event the leader fans out is dropped, so a caller that subscribes and then
-  // relies on push invalidation would silently miss events emitted in the
-  // binding window — a real multi-tab race, not just a test flake. Binding is
-  // fast (the leader answers every hello with an announce); on the off chance
-  // it times out we still return the handle (queued calls flush and events
-  // resume on the next announce) rather than failing handle construction.
-  try {
-    await follower.waitUntilBound();
-  } catch {
-    /* bind timed out — return the (degraded but functional) handle anyway */
+    const core = await startWorkerCore({
+      config: resolvedConfig,
+      initConfig: buildInitConfig(resolvedConfig),
+      lease,
+      dispatchEvent: (event) => {
+        fireConfigCallbacks(resolvedConfig, event);
+        handleRef.handle?.__dispatchEvent(event);
+      },
+    });
+    const handle = new SyncClientHandle({
+      role: 'leader',
+      clientId: core.clientId,
+      core,
+      ...parts,
+    });
+    handleRef.handle = handle;
+    return handle;
   }
+
+  // One core per origin: the tab that wins the lock runs the worker, every
+  // other tab forwards to it and promotes when it closes.
+  const tabs = await createTabCoordinator<SyncWorkerEvent>({
+    name: lockName,
+    version: resolvedConfig.schema.version,
+    lock,
+    ...(resolvedConfig.channelFactory !== undefined
+      ? { channelFactory: resolvedConfig.channelFactory }
+      : {}),
+    ...(resolvedConfig.followerCallTimeoutMs !== undefined
+      ? { callTimeoutMs: resolvedConfig.followerCallTimeoutMs }
+      : {}),
+    lead: async (context) => {
+      const core = await startWorkerCore({
+        config: resolvedConfig,
+        // A promoted tab carries the latest `setHeaders` set.
+        initConfig: buildInitConfig(
+          resolvedConfig,
+          handleRef.handle?.__headers ?? resolvedConfig.headers,
+        ),
+        lease: context.lease,
+        dispatchEvent: (event) => {
+          fireConfigCallbacks(resolvedConfig, event);
+          context.broadcast(event);
+        },
+      });
+      return {
+        clientId: core.clientId,
+        call: (_tabId, method, args) => core.invoke(method, args),
+        close: () => core.close(),
+      };
+    },
+    onEvent: (event) => handleRef.handle?.__dispatchEvent(event),
+    onStateChange: (state) => handleRef.handle?.__setLeadership(state),
+  });
+  const leadership = tabs.state;
+  const handle = new SyncClientHandle({
+    role: leadership.state === 'leader' ? 'leader' : 'follower',
+    clientId:
+      leadership.state === 'leader'
+        ? leadership.clientId
+        : leadership.state === 'follower'
+          ? leadership.leaderClientId
+          : '',
+    tabs,
+    ...parts,
+  });
+  handleRef.handle = handle;
   // Init configuration belongs to the one leader worker. A newly opened
   // follower that explicitly requests security preflight must therefore put
   // the shared origin replica behind the same barrier before it is returned;
   // otherwise an already-running leader would silently ignore the request.
-  if (config.securityPreflight === true) {
+  if (
+    leadership.state !== 'leader' &&
+    resolvedConfig.securityPreflight === true
+  ) {
     try {
       await handle.beginSecurityPreflight();
     } catch (error) {

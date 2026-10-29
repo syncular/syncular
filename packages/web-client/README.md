@@ -295,6 +295,38 @@ does not solve a coordination-partition mismatch by itself: an independent
 instance must also use an isolated database and lock identity. Changing only
 the channel, lock, or database name is unsafe or ineffective.
 
+## Your own core across tabs
+
+`createTabCoordinator` is the election, promotion, probe, and build-check
+machinery under `createSyncClientHandle`, around a core you start yourself
+(for example a Rust core in your own worker):
+
+```ts
+const tabs = await createTabCoordinator<ViewEvent>({
+  name: 'app-core',
+  version: BUILD_NUMBER,
+  lead: async ({ broadcast, send }) => {
+    const core = await startCore();
+    return {
+      clientId: core.id,
+      call: (tabId, method, args) => core.handle(tabId, method, args),
+      tabClosed: (tabId) => core.dropSession(tabId),
+      close: () => core.stop(),
+    };
+  },
+  onEvent: render,
+});
+await tabs.call('navigate', ['/campaigns']);
+```
+
+Calls reach the core with the calling tab's id; `send(tabId, event)` targets
+one tab and `broadcast(event)` reaches all of them. Every tab holds a Web Lock
+named `<name>:tab:<tabId>` until it closes, and a core that defines
+`tabClosed` learns when a tab that called it is gone. A promoted leader runs
+`lead` again on a higher epoch, so followers re-send their per-tab state when
+`state.epoch` changes. See
+[platform specifics](https://syncular.dev/platform-web-specifics/#your-own-core-across-tabs).
+
 ## React availability guard
 
 The worker handle's schema and leadership snapshots feed the same public React
