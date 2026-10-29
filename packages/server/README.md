@@ -328,7 +328,9 @@ different operations.
 process over its own SQLite database (SPEC §12). Its `sync` and
 `downloadSegment` functions are the client's `transport` and `segments`.
 `attach(transport)` uploads every live row to a remote server as inserts under
-stable commit IDs and then retires the authority (§12.3). The
+stable commit IDs and then retires the authority (§12.3);
+`abandonAttach(transport)` deletes what a stopped attach uploaded. In a browser
+worker, `clientSqliteDatabase` adapts the worker's sibling database. The
 [local authority guide](https://syncular.dev/guide-local-authority/) covers the
 client setup and the attach sequence.
 

@@ -1,7 +1,7 @@
 # RFC: Local authority for serverless clients
 
-- Status: accepted 2026-10-29; phase 1 implemented for Bun and Node (SPEC
-  §12, Appendix B.24); browser worker and phase 2 open
+- Status: accepted 2026-10-29; phases 1 and 1b implemented for Bun, Node and
+  the browser worker (SPEC §12, Appendix B.24); phase 2 open
 - Date: 2026-10-29
 - Review baseline: `e4b4255b` (0.48.0)
 - Scope: SPEC §2.1, §6.10, §10, new §12, Appendix B; `@syncular/server`
@@ -192,9 +192,10 @@ overhead is unmeasured; phase 1 records it for a 100k-row fixture.
    `sync.attach_rejected` and details `{ reason: "commit_rejected",
    clientCommitId, code, opIndex }`. The cloud retains a rejected result
    under its idempotency key (§2.3), so resuming replays the rejection: a
-   rejected commit is terminal for its `attachId`. `abandonAttach()` returns
-   the authority to `local`; the host discards any commits the cloud applied
-   for that `attachId`, and the next `attach` uses a new `attachId`. A
+   rejected commit is terminal for its `attachId`. `abandonAttach(transport)`
+   deletes the rows of every commit the cloud applied, children first, and
+   returns the authority to `local`; the next `attach` uses a new `attachId`
+   and recreates the rows over their tombstones. A
    transport failure leaves the state `attaching`, and the next `attach`
    resumes with the applied commits returned as `cached`.
 5. When every commit is applied, the authority records `attached` and keeps
@@ -342,8 +343,7 @@ The harness gained `ServerDriver.createLocalAuthority`, the
 `local-authority` capability, `ScenarioContext.newLocalAuthority`, and a
 mutable `ClientHandle.route` that rebinds a client to another server. All
 four scenarios pass with the TypeScript client and with the Rust client
-against the TypeScript authority. Differences from the draft: scenario 2
-queues an update instead of an insert (§7 item 6), scenario 3 omits the
+against the TypeScript authority. Differences from the draft: scenario 3 omits the
 encrypted and `crdt` columns, and scenario 4 uses a scope denial and a new
 attach instead of a validator and a resume, because a rejection is terminal
 (§3.6 step 4). `packages/server/test/local-authority.test.ts` covers commit
@@ -400,10 +400,12 @@ server advertises all of them, so its lane keeps its current coverage.
 
 ## 7. Open questions
 
-1. **Abandoning a failed attach.** Resolved as proposed: `abandonAttach()`
-   returns the authority to local operation, and the host discards the
-   partial target partition before the next attach, which uses a new
-   `attachId`. Syncular ships no partition-discard tool yet.
+1. **Abandoning a failed attach.** Resolved without operator tooling: the
+   authority persists which upload commit it sent and which applied, and
+   `abandonAttach(transport)` deletes the applied rows through ordinary
+   delete commits (SPEC §12.3 step 6). A rollback delete can itself be
+   refused, for example by a `RESTRICT` reference from a row another client
+   added; abandon then stops and the attach stays in place.
 2. **Attaching into a non-empty partition**, including a second device's
    upload. Insert semantics turn every overlap into a conflict; merging two
    serverless histories is out of scope.
@@ -413,8 +415,10 @@ server advertises all of them, so its lane keeps its current coverage.
    and 2.97 ms at p95 over 500 writes. After 100,500 rows in 700 commits the
    replica held 11.1 MB and the authority 51.0 MB; the §4.6 floor of 1,000
    retained commits kept every change. A fresh client bootstrapped the
-   100,500 rows from the authority in 161 ms. The browser bundle size is
-   unmeasured until phase 1b.
+   100,500 rows from the authority in 161 ms. In a browser bundle that
+   already holds the client core, the authority adds 134.6 KB minified and
+   36.3 KB gzipped; only a worker entry that passes `openLocalAuthority`
+   bundles it, so no separate package is needed.
 5. **Platform priority.** Hamukko's platform decides whether phase 2 is on
    its critical path.
 6. **Queued inserts across an appended column.** Found while writing
@@ -423,8 +427,10 @@ server advertises all of them, so its lane keeps its current coverage.
    that column, and §6.2 refuses a partial payload for an absent row with
    `sync.row_missing`. §7.4.4 classifies only commits that cannot encode, so
    the insert reaches the server and is lost. Every remote server shows the
-   same behavior. A fix needs the outbox to record full-row intent and a
-   SPEC change in both cores.
+   same behavior. Fixed by SPEC §7.1 insert intent in both cores: `mutate`
+   marks an upsert of a row absent from the replica, and replay and encoding
+   fill the columns it lacks with NULL. Conformance scenario
+   `schema-bump/queued-insert-survives-appended-column` pins it.
 
 ## 8. Plan
 
@@ -432,5 +438,5 @@ server advertises all of them, so its lane keeps its current coverage.
 |---|---|---|
 | 0 | Maintainer review of this RFC | Accepted text moves into SPEC §12 |
 | 1 | Done: `openLocalAuthority` in `@syncular/server`, attach, `sync.authority_unavailable`, `sync.attach_rejected`; harness `createLocalAuthority` and `route`; scenarios 1 to 4 against both clients; measurements in §7 item 4; docs page `guide-local-authority` and changelog entry | `bun run check` |
-| 1b | Browser worker: sqlite-wasm `SqliteDatabase` adapter, worker configuration field, bundle-size measurement | `bun run check` |
+| 1b | Done: `clientSqliteDatabase` adapter, `startSyncWorker({ openLocalAuthority })`, `localAuthority` init flag, handle methods `localAuthorityState`, `attachLocalAuthority`, `abandonLocalAuthorityAttach`; the authority drops its rows once attached; bundle cost measured (134.6 KB minified, 36.3 KB gzipped) | `bun run check` |
 | 2 | `syncular-authority` crate; `rust-authority` server driver and capability tags; scenarios 1 to 4 with the Rust client; binding configuration for Tauri, Swift, Kotlin, Flutter and React Native | `bun run check`, `bun run rust test`, `bun run rust clippy --all-targets -- -D warnings`, binding `check.sh` gates |

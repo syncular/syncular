@@ -266,6 +266,14 @@ describe('local authority (§12)', () => {
     ]);
     expect(target.statuses).toEqual(['applied', 'applied', 'cached', 'cached']);
     expect(target.rows()).toHaveLength(600);
+
+    // The attached authority keeps only its state, across a reopen.
+    const retired = await openLocalAuthority({ database, schema: NODE_SCHEMA });
+    expect(retired.state).toBe('attached');
+    expect(
+      database.query<{ n: number }, []>('SELECT count(*) AS n FROM nodes').get()
+        ?.n,
+    ).toBe(0);
   });
 
   test('a rejected commit stops attach and abandonAttach serves the client again', async () => {
@@ -291,9 +299,67 @@ describe('local authority (§12)', () => {
     });
     expect(authority.state).toBe('attaching');
 
-    authority.abandonAttach();
+    // The request reached the remote server, so abandoning needs it.
+    await expect(authority.abandonAttach()).rejects.toMatchObject({
+      code: 'sync.invalid_request',
+    });
+    await authority.abandonAttach(target.transport);
     expect(authority.state).toBe('local');
+    // The remote replayed its stored rejection; nothing applied, nothing deleted.
+    expect(target.statuses).toEqual(['rejected', 'rejected']);
+    expect(target.rows()).toEqual([]);
     await writeNodes(authority, [[node('c', null)]]);
+  });
+
+  test('abandoning after an applied prefix deletes those rows children first', async () => {
+    const authority = await openLocalAuthority({
+      database: new BunSqliteDatabase(':memory:'),
+      schema: NODE_SCHEMA,
+    });
+    const chain = Array.from({ length: 500 }, (_, i) =>
+      node(
+        `a${String(i).padStart(3, '0')}`,
+        i === 0 ? null : `a${String(i - 1).padStart(3, '0')}`,
+      ),
+    );
+    await writeNodes(authority, [chain.slice(0, 250)]);
+    await writeNodes(authority, [chain.slice(250)]);
+    await writeNodes(authority, [[node('z', null, 'p2')]]);
+    const target = remote({ allowed: ['p1'] });
+
+    await expect(authority.attach(target.transport)).rejects.toMatchObject({
+      details: { reason: 'commit_rejected', code: 'sync.forbidden' },
+    });
+    expect(target.rows()).toHaveLength(500);
+
+    await authority.abandonAttach(target.transport);
+
+    expect(authority.state).toBe('local');
+    expect(target.rows()).toEqual([]);
+    const undo = target.commits.slice(3);
+    expect(undo.map((commit) => commit.operations.length)).toEqual([500]);
+    expect(
+      undo[0]!.operations.slice(0, 2).map((op) => [op.op, op.rowId]),
+    ).toEqual([
+      ['delete', 'a499'],
+      ['delete', 'a498'],
+    ]);
+  });
+
+  test('abandoning before any upload request needs no transport', async () => {
+    const authority = await openLocalAuthority({
+      database: new BunSqliteDatabase(':memory:'),
+      schema: NODE_SCHEMA,
+    });
+    await writeNodes(authority, [[node('a', null)]]);
+    await expect(
+      authority.attach(async () => {
+        throw new Error('injected: remote unreachable');
+      }),
+    ).rejects.toThrow('injected: remote unreachable');
+    expect(authority.state).toBe('attaching');
+    await authority.abandonAttach();
+    expect(authority.state).toBe('local');
   });
 
   test('a running upload refuses a second attach and abandonAttach', async () => {
@@ -315,7 +381,7 @@ describe('local authority (§12)', () => {
     await expect(authority.attach(target.transport)).rejects.toMatchObject({
       code: 'sync.invalid_request',
     });
-    expect(() => authority.abandonAttach()).toThrow(
+    await expect(authority.abandonAttach()).rejects.toThrow(
       'an attach upload is already running',
     );
     release();

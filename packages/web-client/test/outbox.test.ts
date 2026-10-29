@@ -261,6 +261,78 @@ describe('encode-at-send (§6.1)', () => {
   });
 });
 
+describe('insert intent (§7.1)', () => {
+  test('only a mutate of a row absent from the replica records insert intent', async () => {
+    const server = makeServer();
+    const a = await makeClient(server, { clientId: 'insert-intent' });
+    a.client.mutate([
+      { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1') },
+    ]);
+    a.client.mutate([
+      { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1', 'again') },
+    ]);
+    a.client.patch('tasks', 't1', { title: 'patched' });
+    expect(
+      a.client.pendingCommits().map((commit) => commit.operations[0]?.insert),
+    ).toEqual([true, undefined, undefined]);
+  });
+
+  test('an insert-intent operation encodes a missing nullable column as NULL', async () => {
+    const values = { id: 't1', project_id: 'p1', title: 'x', done: false };
+    const commit = (insert?: true) => ({
+      seq: 1,
+      clientCommitId: 'c1',
+      createdAtMs: 0,
+      operations: [
+        {
+          table: 'tasks',
+          rowId: 't1',
+          op: 'upsert' as const,
+          values,
+          ...(insert === undefined ? {} : { insert }),
+        },
+      ],
+    });
+    expect(
+      (await encodeOutboxCommit(compiled, commit(true))).operations[0]?.payload,
+    ).toEqual(
+      encodeSparseRow(TASK_COLUMNS, 0, ['t1', 'p1', 'x', false, null, null]),
+    );
+    // Without the marker the presence set is kept.
+    expect(
+      (await encodeOutboxCommit(compiled, commit())).operations[0]?.payload,
+    ).toEqual(
+      encodeSparseRow(TASK_COLUMNS, 0, [
+        't1',
+        'p1',
+        'x',
+        false,
+        undefined,
+        undefined,
+      ]),
+    );
+  });
+
+  test('an insert-intent operation missing a non-nullable column is unencodable', async () => {
+    await expect(
+      encodeOutboxCommit(compiled, {
+        seq: 1,
+        clientCommitId: 'c1',
+        createdAtMs: 0,
+        operations: [
+          {
+            table: 'tasks',
+            rowId: 't1',
+            op: 'upsert',
+            values: { id: 't1', project_id: 'p1' },
+            insert: true,
+          },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: 'sync.outbox_incompatible' });
+  });
+});
+
 describe('mutation validation', () => {
   test('unknown columns, missing non-nullables, and bad keys fail loud', async () => {
     const server = makeServer();

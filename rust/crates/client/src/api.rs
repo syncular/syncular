@@ -1069,6 +1069,9 @@ pub struct CommitOperation {
     pub base_version: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub values: Option<Map<String, Value>>,
+    /// §7.1 insert intent: serialized as `"insert": true`, absent otherwise.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub insert: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

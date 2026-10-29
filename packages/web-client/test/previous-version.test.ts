@@ -227,10 +227,11 @@ describe('RFC 0005 default off', () => {
       const inspect = rawDb(path);
       expect(metaValue(inspect, CONTEXT_KEY)).toBeUndefined();
       inspect.close();
-      // The §7.4.3 reset still ran: the table is empty at the new schema.
+      // The §7.4.3 reset still ran: only the queued insert replays (§7.1
+      // insert intent), visible until the §7.4.4 send-time drop.
       expect(
         bumped.client.query('SELECT COUNT(*) AS c FROM things')[0]?.c,
-      ).toBe(0);
+      ).toBe(1);
       const snap = bumped.client.previousVersionSnapshot({ table: 'things' });
       expect(snap.state).toBe('previousVersion');
       expect(snap.available).toBe(false);
@@ -514,6 +515,7 @@ describe('RFC 0005 compatibility audit', () => {
           table: 'things',
           rowId: 'r1',
           op: 'upsert',
+          insert: true,
           values: {
             id: 'r1',
             project_id: 'p1',
@@ -688,7 +690,7 @@ describe('RFC 0005 lifetime and discard', () => {
       });
       expect(
         unaware.client.query('SELECT COUNT(*) AS c FROM things')[0]?.c,
-      ).toBe(0);
+      ).toBe(1);
     } finally {
       await unaware.client.close();
       unaware.db.close();
@@ -858,7 +860,7 @@ describe('RFC 0005 stated limitations', () => {
     try {
       expect(
         unaware.client.query('SELECT COUNT(*) AS c FROM things')[0]?.c,
-      ).toBe(0);
+      ).toBe(1);
     } finally {
       await unaware.client.close();
       unaware.db.close();

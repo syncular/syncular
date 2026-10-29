@@ -17,8 +17,19 @@
 export const changelog = [
   {
     date: '2026-10-29',
+    title: 'A queued insert survives a schema upgrade that appends a column',
+    body: '`mutate` now marks an upsert of a row the replica does not show as an insert. After a schema bump that appends nullable columns, replay shows that row with the new columns NULL, and the push sends them as NULL, so the server inserts the row. Before, the insert re-encoded without the new columns, the overlay hid it, and the server refused it as a partial insert with `sync.row_missing`. A queued update still leaves appended columns out, so the server keeps their stored values. Commits recorded by an older client version carry no marker and keep the old behavior. Both cores.',
+    links: [
+      {
+        href: '/concepts-schema-upgrades/#appended-columns',
+        label: 'Appended columns',
+      },
+    ],
+  },
+  {
+    date: '2026-10-29',
     title: 'A local authority lets a client start without a server',
-    body: "`openLocalAuthority({ database, schema })` from `@syncular/server` runs the reference server inside the app's process over its own SQLite file, on Bun and Node. Its `sync` and `downloadSegment` functions plug into `SyncClient` as `transport` and `segments`, so writes drain from the outbox, declared references cascade, and a schema upgrade rebuilds the replica from the authority. `authority.attach(transport)` later uploads every live row to a remote server as inserts, parents first with reference cycles kept in one commit, under stable commit IDs that make a crashed upload resumable. The client then reopens against the remote server over the same replica and rebinds through the log-epoch reset. A refused upload commit stops attach with `sync.attach_rejected`; a client that reaches an attaching or attached authority receives `sync.authority_unavailable`. The browser worker and the native cores have no local authority yet.",
+    body: "`openLocalAuthority({ database, schema })` from `@syncular/server` runs the reference server inside the app's process over its own SQLite file, on Bun and Node, and in the browser worker through `startSyncWorker({ openLocalAuthority })` with `localAuthority: true` on the handle. Its `sync` and `downloadSegment` functions plug into `SyncClient` as `transport` and `segments`, so writes drain from the outbox, declared references cascade, and a schema upgrade rebuilds the replica from the authority. `authority.attach(transport)` later uploads every live row to a remote server as inserts, parents first with reference cycles kept in one commit, under stable commit IDs that make a crashed upload resumable. The client then reopens against the remote server over the same replica and rebinds through the log-epoch reset. A refused upload commit stops attach with `sync.attach_rejected`, and `abandonAttach(transport)` deletes the rows the remote server already applied before the authority serves the client again; a client that reaches an attaching or attached authority receives `sync.authority_unavailable`. The native cores have no local authority yet.",
     links: [
       {
         href: '/guide-local-authority/',

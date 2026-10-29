@@ -71,6 +71,10 @@ A compatible registration resets its cursor to `-1`, because the bump wipes the 
 
 The outbox replays on top of the fresh bootstrap. Entries are stored in schema-independent form and encoded at send time with the current codec (§0), so a commit written under version N pushes under N+1 by re-encoding. The server never accepts a retired encoding, and pending offline writes stay visible across the bump.
 
+### Appended columns
+
+A pending write that created a row encodes every column the new schema appended as NULL, so the server inserts it (§7.1 insert intent). A pending write to a row that already existed leaves the appended columns out, so the server keeps their stored values, including values a backfill wrote. `mutate` records the difference when it runs: a row absent from the replica at that moment is an insert. A commit recorded by a client version without this marker keeps its old presence set, and an insert among them is refused with `sync.row_missing`.
+
 ### Dropped columns and tables
 
 Re-encoding fails when a pending commit references a column or table the new schema no longer has, because the value or operation has nowhere to go. The commit gets a rejection with the client-local code `sync.outbox_incompatible` (§7.4.4). The commit leaves the outbox and its purely optimistic rows are undone, as for a server rejection. Later commits that do encode keep replaying, so the queue moves past the one incompatible commit.

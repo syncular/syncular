@@ -40,6 +40,11 @@ export interface OutboxOperation {
    * presence set — `mutate` marks every column, `patch` the supplied ones).
    */
   readonly values?: Readonly<Record<string, JsonRowValue>>;
+  /**
+   * §7.1 insert intent: a `mutate` of a row absent from the replica. Replay
+   * and encoding treat the operation as a full row; a missing column is NULL.
+   */
+  readonly insert?: true;
 }
 
 export interface OutboxCommit {
@@ -205,6 +210,7 @@ export class OutboxEncodeError extends ClientSyncError {
 function sparseValues(
   table: CompiledClientTable,
   values: Readonly<Record<string, JsonRowValue>>,
+  insert: boolean,
 ): SparseRowValue[] {
   // Any persisted key that is not a column of the CURRENT schema means the
   // bump removed (or renamed) it — the commit cannot be expressed now.
@@ -217,7 +223,15 @@ function sparseValues(
   }
   return table.columns.map((column) => {
     const value = values[column.name];
-    return value === undefined ? undefined : jsonToRowValue(value);
+    if (value !== undefined) return jsonToRowValue(value);
+    if (!insert) return undefined;
+    // §7.1: an insert-intent operation presents every current column.
+    if (!column.nullable) {
+      throw new OutboxEncodeError(
+        'an outbox insert lacks a non-nullable column (§7.4.4)',
+      );
+    }
+    return null;
   });
 }
 
@@ -264,7 +278,7 @@ export async function encodeOutboxCommit(
         `outbox upsert on ${op.table}/${op.rowId} has no values`,
       );
     }
-    let values = sparseValues(table, op.values);
+    let values = sparseValues(table, op.values, op.insert === true);
     if (encryption !== undefined && table.hasEncryptedColumns) {
       // Lazy: opt-in E2EE never enters an encryption-free app's bundle.
       const { encryptRowValues } = await import('./encryption');

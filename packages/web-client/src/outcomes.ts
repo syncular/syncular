@@ -186,8 +186,12 @@ export function isStoredOperation(value: unknown): value is OutboxOperation {
     typeof value.rowId === 'string' &&
     (value.baseVersion === undefined ||
       Number.isSafeInteger(value.baseVersion)) &&
-    ((value.op === 'upsert' && isStoredRow(value.values)) ||
-      (value.op === 'delete' && value.values === undefined))
+    ((value.op === 'upsert' &&
+      isStoredRow(value.values) &&
+      (value.insert === undefined || value.insert === true)) ||
+      (value.op === 'delete' &&
+        value.values === undefined &&
+        value.insert === undefined))
   );
 }
 

@@ -15,7 +15,7 @@
  */
 import type { defineAuthorityReads } from './authority';
 import { SyncClient } from './client';
-import type { ClientDatabase } from './database';
+import type { ClientDatabase, SiblingDatabase } from './database';
 import {
   type ClientDiagnosticsSnapshot,
   withClientDiagnosticsHost,
@@ -38,8 +38,11 @@ import type {
   SegmentDownloader,
   SyncTransport,
 } from './transport';
+import type { ClientSchema } from './schema';
 import { openPersistentWasmDatabase } from './wasm-database';
 import {
+  LOCAL_AUTHORITY_UNCONFIGURED_CODE,
+  type LocalAuthorityState,
   type MainToWorkerMessage,
   WORKER_FAILED_CODE,
   type WorkerApi,
@@ -73,7 +76,29 @@ export interface SyncWorkerOverrides {
     clientId: string,
     headers: () => Readonly<Record<string, string>>,
   ) => RealtimeConnector | undefined;
+  /**
+   * SPEC §12 local authority, required by init's `localAuthority: true`:
+   * `(database, schema) => openLocalAuthority({ database:
+   * clientSqliteDatabase(database), schema })` from `@syncular/server`. Only
+   * a worker entry that passes it bundles the server code.
+   */
+  readonly openLocalAuthority?: (
+    database: ClientDatabase,
+    schema: ClientSchema,
+  ) => Promise<WorkerLocalAuthority>;
 }
+
+/** The `LocalAuthority` surface of `@syncular/server` the worker drives (§12). */
+export interface WorkerLocalAuthority {
+  readonly state: LocalAuthorityState;
+  readonly sync: SyncTransport;
+  readonly downloadSegment: SegmentDownloader;
+  readonly attach: (transport: SyncTransport) => Promise<void>;
+  readonly abandonAttach: (transport?: SyncTransport) => Promise<void>;
+}
+
+/** §12: the worker's sibling file for the local authority. */
+const LOCAL_AUTHORITY_SIBLING = 'local-authority';
 
 /** Minimal structural view of the dedicated-worker global scope. */
 interface WorkerScope {
@@ -142,6 +167,9 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
 
   let client: SyncClient | undefined;
   let database: ClientDatabase | undefined;
+  let authority: WorkerLocalAuthority | undefined;
+  let authoritySibling: SiblingDatabase | undefined;
+  let remoteTransport: SyncTransport | undefined;
   let offline = false;
   let headers: Readonly<Record<string, string>> = {};
   let closed = false;
@@ -237,6 +265,51 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
     queueMicrotask(runAutoSync);
   }
 
+  /**
+   * §12.3: attach or abandon with the client's rounds held, so no round
+   * reaches the authority while it uploads or rolls back.
+   */
+  async function driveLocalAuthority(
+    run: (local: WorkerLocalAuthority, remote: SyncTransport) => Promise<void>,
+  ): Promise<void> {
+    const running = requireClient();
+    const local = authority;
+    const remote = remoteTransport;
+    if (local === undefined || remote === undefined) {
+      throw new ClientSyncError(
+        LOCAL_AUTHORITY_UNCONFIGURED_CODE,
+        'init did not enable the local authority',
+      );
+    }
+    running.setTransportEnabled(false);
+    try {
+      await serializedSync(() => run(local, remote));
+    } catch (error) {
+      // `sync.attach_rejected` keeps its code and details across the RPC.
+      if (
+        error instanceof Error &&
+        !(error instanceof ClientSyncError) &&
+        'code' in error &&
+        typeof error.code === 'string'
+      ) {
+        throw new ClientSyncError(
+          error.code,
+          error.message,
+          false,
+          'details' in error &&
+            typeof error.details === 'object' &&
+            error.details !== null
+            ? { ...error.details }
+            : undefined,
+        );
+      }
+      throw error;
+    } finally {
+      running.setTransportEnabled(!offline);
+    }
+    consumeSyncIntent({ kind: 'interactive' });
+  }
+
   function requireClient(): SyncClient {
     if (client === undefined) {
       throw new ClientSyncError(
@@ -290,16 +363,55 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
         }
       }
     }
-    const transport =
+    const remote =
       overrides.createTransport !== undefined
         ? overrides.createTransport(config)
         : httpSyncTransport(config.endpoints.syncUrl, http);
-    const segments =
+    remoteTransport = remote;
+    const remoteSegments =
       overrides.createSegments !== undefined
         ? overrides.createSegments(config)
         : config.endpoints.segmentsUrl !== undefined
           ? httpSegmentDownloader(config.endpoints.segmentsUrl, http)
           : undefined;
+    if (config.localAuthority === true) {
+      if (overrides.openLocalAuthority === undefined) {
+        throw new ClientSyncError(
+          LOCAL_AUTHORITY_UNCONFIGURED_CODE,
+          'localAuthority requires startSyncWorker({ openLocalAuthority })',
+        );
+      }
+      authoritySibling = database.openSibling?.(LOCAL_AUTHORITY_SIBLING);
+      if (authoritySibling === undefined) {
+        throw new ClientSyncError(
+          LOCAL_AUTHORITY_UNCONFIGURED_CODE,
+          'localAuthority requires a database with sibling files',
+        );
+      }
+      authority = await overrides.openLocalAuthority(
+        authoritySibling.database,
+        config.schema,
+      );
+    }
+    // §12.4: rounds reach the local authority until attach completes, then
+    // the remote server; the replica rebinds through the §2.1 epoch reset.
+    const localActive = () =>
+      authority !== undefined && authority.state !== 'attached';
+    const transport: SyncTransport = (request) =>
+      localActive() ? authority!.sync(request) : remote(request);
+    const segments: SegmentDownloader | undefined =
+      authority === undefined
+        ? remoteSegments
+        : (request) => {
+            if (localActive()) return authority!.downloadSegment(request);
+            if (remoteSegments === undefined) {
+              throw new ClientSyncError(
+                'sync.invalid_request',
+                'no segment endpoint configured',
+              );
+            }
+            return remoteSegments(request);
+          };
     // §5.9 blob transport: only when a blobs URL is configured.
     const blobs =
       config.endpoints.blobsUrl !== undefined
@@ -319,7 +431,8 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
       ...(segments !== undefined ? { segments } : {}),
       ...(blobs !== undefined ? { blobs } : {}),
       realtime: (handlers) => {
-        if (realtimeConnector === undefined) {
+        // §12.2: a local authority has no realtime channel.
+        if (realtimeConnector === undefined || localActive()) {
           throw new ClientSyncError(
             'sync.invalid_request',
             'no realtime connector configured',
@@ -529,10 +642,16 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
         });
       }
     },
+    localAuthorityState: () => authority?.state,
+    attachLocalAuthority: () =>
+      driveLocalAuthority((local, remote) => local.attach(remote)),
+    abandonLocalAuthorityAttach: () =>
+      driveLocalAuthority((local, remote) => local.abandonAttach(remote)),
     close: async () => {
       closed = true;
       if (backgroundTimer !== undefined) clearTimeout(backgroundTimer);
       await client?.close();
+      authoritySibling?.close();
       database?.close();
       client = undefined;
       database = undefined;

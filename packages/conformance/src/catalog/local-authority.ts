@@ -170,11 +170,11 @@ export const localAuthorityScenarios: readonly Scenario[] = [
         { op: 'upsert', table: 'nodes', values: node('n2', 'n1') },
       ]);
       await syncIdle(a);
-      // A queued update replays after the bump. (A queued insert re-encodes
-      // without the appended column and §6.2 refuses it as a partial insert;
-      // RFC-LOCAL-AUTHORITY §7 records that gap.)
+      // A queued update and a queued insert both replay after the bump; the
+      // insert carries §7.1 insert intent, so the appended column is NULL.
       const pending = await a.api.mutate([
         { op: 'upsert', table: 'nodes', values: node('n2', null) },
+        { op: 'upsert', table: 'nodes', values: node('n3', 'n2') },
       ]);
 
       await authority.restart(LOCAL_SCHEMA_V2);
@@ -185,13 +185,14 @@ export const localAuthorityScenarios: readonly Scenario[] = [
         'the pending commit survives the reset',
       );
       await syncIdle(a);
-      checkEqual(await a.api.rejections(), [], 'the queued update applies');
+      checkEqual(await a.api.rejections(), [], 'the queued writes apply');
 
       checkEqual(
         (await a.api.readRows('nodes')).map((row) => row.values),
         [
           { ...node('n1', null), note: null },
           { ...node('n2', null), note: null },
+          { ...node('n3', 'n2'), note: null },
         ],
         'every row survives the bump with the appended column NULL',
       );
@@ -290,7 +291,7 @@ export const localAuthorityScenarios: readonly Scenario[] = [
   },
 
   {
-    name: 'local-authority/rejected-attach-abandons-and-reattaches',
+    name: 'local-authority/rejected-attach-rolls-back-and-reattaches',
     specRefs: ['§12.3', '§2.3', 'B.24'],
     requires: ['local-authority'],
     server: { schema: LOCAL_SCHEMA },
@@ -299,9 +300,16 @@ export const localAuthorityScenarios: readonly Scenario[] = [
       const a = await localClient(ctx, authority, LOCAL_SCHEMA, {
         project_id: ['p1', 'p2'],
       });
+      // 500 rows fill the first upload commit; the p2 row lands in the second.
+      await a.api.mutate(
+        Array.from({ length: 500 }, (_, i) => ({
+          op: 'upsert' as const,
+          table: 'nodes',
+          values: node(`n${String(i).padStart(3, '0')}`, null),
+        })),
+      );
       await a.api.mutate([
-        { op: 'upsert', table: 'nodes', values: node('n1', null) },
-        { op: 'upsert', table: 'nodes', values: node('n2', null, null, 'p2') },
+        { op: 'upsert', table: 'nodes', values: node('z', null, null, 'p2') },
       ]);
       await syncIdle(a);
       await ctx.server.setAllowedScopes('owner', P1);
@@ -316,29 +324,48 @@ export const localAuthorityScenarios: readonly Scenario[] = [
             rejected.details?.opIndex,
             rejected.details?.code,
           ],
-          ['commit_rejected', 1, 'sync.forbidden'],
+          ['commit_rejected', 0, 'sync.forbidden'],
           'the details name the refused operation',
         );
       }
       checkEqual(
         (await ctx.server.readRows('nodes')).length,
-        0,
-        'the rejected commit applied nothing',
+        500,
+        'the first commit applied before the rejection',
+      );
+      checkEqual(
+        await authority.attach(ctx.server, 'owner'),
+        rejected,
+        'resuming replays the stored rejection (§2.3)',
       );
 
-      await authority.abandonAttach();
+      checkEqual(
+        await authority.abandonAttach(ctx.server, 'owner'),
+        { ok: true },
+        'abandon rolls back the applied commit',
+      );
       checkEqual(await authority.state(), 'local', 'abandon serves the client');
-      await a.api.mutate([{ op: 'delete', table: 'nodes', rowId: 'n2' }]);
+      checkEqual(
+        await ctx.server.readRows('nodes'),
+        [],
+        'the remote holds none of the abandoned rows',
+      );
+      await a.api.mutate([{ op: 'delete', table: 'nodes', rowId: 'z' }]);
       await syncIdle(a);
 
       checkEqual(
         await authority.attach(ctx.server, 'owner'),
         { ok: true },
-        'a new attach completes',
+        'a new attach recreates the rows over their tombstones',
       );
       a.route.server = ctx.server;
       await syncIdle(a);
       await expectConverged(ctx, 'nodes', [a]);
+      checkEqual(
+        (await ctx.server.readRows('nodes')).length,
+        500,
+        'the remote holds the 500 rows once',
+      );
     },
   },
 ];

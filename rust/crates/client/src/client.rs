@@ -9,6 +9,7 @@
 
 use crate::{ProgressObserver, ProgressPhase, ProgressState};
 use ssp2::encode_message;
+use std::borrow::Cow;
 #[cfg(test)]
 use std::cell::Cell;
 use std::cell::RefCell;
@@ -4281,6 +4282,7 @@ mod observation_tests {
                         client
                             .apply_outbox_ops(&[OutboxOp {
                                 upsert: false,
+                                insert: false,
                                 table: "tasks".into(),
                                 row_id: row_id.into(),
                                 base_version: None,
@@ -6105,6 +6107,7 @@ mod observation_tests {
             table: "tasks".into(),
             row_id: "absent".into(),
             upsert: true,
+            insert: false,
             base_version: Some(1),
             values: Some(Map::from_iter([
                 ("id".into(), json!("absent")),
@@ -6205,6 +6208,7 @@ mod observation_tests {
                     table: "tasks".into(),
                     row_id: "base".into(),
                     upsert: true,
+                    insert: false,
                     base_version: Some(1),
                     values: Some(Map::from_iter([
                         ("id".into(), json!("base")),
@@ -6848,6 +6852,7 @@ mod observation_tests {
                 table: "tasks".into(),
                 row_id: "t1".into(),
                 upsert: true,
+                insert: false,
                 base_version: Some(1),
                 values: Some(Map::from_iter([
                     ("id".into(), json!("t1")),
@@ -6977,11 +6982,13 @@ mod observation_tests {
                     ("id".into(), json!("t1")),
                     ("project_id".into(), json!("p1")),
                 ])),
+                insert: false,
             }),
         };
         let failed_operations = vec![
             OutboxOp {
                 upsert: true,
+                insert: false,
                 table: "tasks".to_owned(),
                 row_id: "t1".to_owned(),
                 base_version: Some(1),
@@ -6992,6 +6999,7 @@ mod observation_tests {
             },
             OutboxOp {
                 upsert: true,
+                insert: false,
                 table: "tasks".to_owned(),
                 row_id: "status-event-1".to_owned(),
                 base_version: Some(0),
@@ -7324,6 +7332,7 @@ mod observation_tests {
         client.begin_observation("test_delivery").expect("observe");
         let operations = [OutboxOp {
             upsert: true,
+            insert: false,
             table: "tasks".to_owned(),
             row_id: "t1".to_owned(),
             base_version: Some(1),
@@ -9148,17 +9157,19 @@ mod observation_tests {
                 vec![successor.clone()],
                 "{label}"
             );
-            // The successor survives and still encodes. A bump that adds a
-            // column leaves the older full-row upsert partial over the empty
-            // base, so its visible row appears when the server answers it
-            // (§7.1); the same-version recreation replays it locally.
+            // The successor survives and still encodes. It carries §7.1
+            // insert intent, so after a bump that appends a nullable column it
+            // replays as a full row with that column NULL.
             assert_eq!(reopened.pending_payloads().len(), 1, "{label}");
             if label == "version-bump reset" {
                 assert_eq!(
                     reopened
-                        .query("SELECT id FROM tasks ORDER BY id", &[])
+                        .query("SELECT id, later FROM tasks ORDER BY id", &[])
                         .unwrap(),
-                    Vec::<Map<String, Value>>::new(),
+                    vec![Map::from_iter([
+                        ("id".to_owned(), json!("t2")),
+                        ("later".to_owned(), Value::Null),
+                    ])],
                     "{label}"
                 );
                 // The guarded bump reset owns the publication, so its change
@@ -10708,6 +10719,24 @@ struct OutboxOp {
     /// the current codec at send time. A key's presence IS the §6.1 sparse
     /// presence set — both the overlay and the wire payload derive from it.
     values: Option<Map<String, Value>>,
+    /// §7.1 insert intent: `mutate` recorded this upsert while the row was
+    /// absent from the visible replica. Replay and send-time encoding present
+    /// every current-schema column; a column `values` lacks is NULL.
+    insert: bool,
+}
+
+impl OutboxOp {
+    /// The values this upsert presents under the current `table` (§7.1). An
+    /// insert-intent operation presents every column, a missing one as NULL;
+    /// `None` when a missing column is non-nullable, which leaves the commit
+    /// unencodable (§7.4.4), or when the operation carries no values.
+    fn presented_values(&self, table: &TableSchema) -> Option<Cow<'_, Map<String, Value>>> {
+        let values = self.values.as_ref()?;
+        if !self.insert || table.columns.iter().all(|c| values.contains_key(&c.name)) {
+            return Some(Cow::Borrowed(values));
+        }
+        full_row_values(table, values.clone()).ok().map(Cow::Owned)
+    }
 }
 
 impl From<&OutboxOp> for CommitOperation {
@@ -10718,6 +10747,7 @@ impl From<&OutboxOp> for CommitOperation {
             op: if operation.upsert { "upsert" } else { "delete" }.to_owned(),
             base_version: operation.base_version,
             values: operation.values.clone(),
+            insert: operation.insert,
         }
     }
 }
@@ -12538,6 +12568,7 @@ impl SyncClient {
                     // A legacy entry's `changedFields` key is ignored:
                     // the values map is the presence set (§6.1).
                     values: entry.get("values").and_then(Value::as_object).cloned(),
+                    insert: entry.get("insert") == Some(&Value::Bool(true)),
                 });
             }
             commits.push(OutboxCommit {
@@ -14103,8 +14134,9 @@ impl SyncClient {
     /// §7.4.4 send-time prepass: a persisted upsert whose values reference a
     /// column the current schema lacks (or a removed table) cannot be encoded
     /// (`commit_audit_operations` inspects upserts, so a value-free delete stays
-    /// encodable and is validated by the server). Drop the commit, undo its
-    /// optimistic projection, and raise a client-local
+    /// encodable and is validated by the server), nor can an insert-intent
+    /// upsert that lacks a non-nullable column (§7.1). Drop the commit, undo
+    /// its optimistic projection, and raise a client-local
     /// `sync.outbox_incompatible` rejection.
     fn drop_incompatible_outbox(&mut self) -> Result<bool, String> {
         let incompatible = self
@@ -14112,6 +14144,13 @@ impl SyncClient {
             .iter()
             .filter(|commit| {
                 first_incompatibility(&self.schema, &commit_audit_operations(commit)).is_some()
+                    || commit.ops.iter().any(|op| {
+                        op.insert
+                            && self
+                                .schema
+                                .table(&op.table)
+                                .is_some_and(|table| op.presented_values(table).is_none())
+                    })
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -14446,13 +14485,17 @@ impl SyncClient {
             .ops
             .iter()
             .map(|op| {
-                serde_json::json!({
+                let mut entry = serde_json::json!({
                     "op": if op.upsert { "upsert" } else { "delete" },
                     "table": op.table,
                     "rowId": op.row_id,
                     "baseVersion": op.base_version,
                     "values": op.values.clone().map(Value::Object),
-                })
+                });
+                if op.insert {
+                    entry["insert"] = Value::Bool(true);
+                }
+                entry
             })
             .collect();
         self.conn
@@ -14618,10 +14661,15 @@ impl SyncClient {
                     .is_some_and(|n| n.unsigned_abs() <= MAX_JS_SAFE_INTEGER)
             })
             && match value.get("op").and_then(Value::as_str) {
-                Some("upsert") => value
-                    .get("values")
-                    .is_some_and(Self::stored_row_is_representable),
-                Some("delete") => value.get("values").is_none(),
+                Some("upsert") => {
+                    value
+                        .get("values")
+                        .is_some_and(Self::stored_row_is_representable)
+                        && value
+                            .get("insert")
+                            .is_none_or(|insert| *insert == Value::Bool(true))
+                }
+                Some("delete") => value.get("values").is_none() && value.get("insert").is_none(),
                 _ => false,
             }
     }
@@ -15570,6 +15618,7 @@ impl SyncClient {
                             row_id: op.row_id,
                             base_version: op.base_version,
                             values: op.values,
+                            insert: op.insert,
                         })
                         .collect(),
                 },
@@ -15725,12 +15774,17 @@ impl SyncClient {
                         // author-time error. Full-row `mutate` presents every
                         // column, so no stored fallback is needed.
                         self.validate_author_encode(schema_table, &row_id, &values)?;
+                        // §7.1 insert intent: the row is absent from the
+                        // visible replica at call time, before this batch
+                        // applies anything.
+                        let insert = !self.visible_row_exists(schema_table, &row_id)?;
                         ops.push(OutboxOp {
                             upsert: true,
                             table,
                             row_id,
                             base_version,
                             values: Some(values),
+                            insert,
                         });
                     }
                     Mutation::Delete {
@@ -15747,6 +15801,7 @@ impl SyncClient {
                             row_id,
                             base_version,
                             values: None,
+                            insert: false,
                         });
                     }
                 }
@@ -15883,21 +15938,7 @@ impl SyncClient {
                 ));
             }
         }
-        // Existence reads only the key. Locked encrypted values stay opaque;
-        // decoding the complete row here would reject a valid plain patch.
-        let exists: bool = self
-            .conn
-            .query_row(
-                &format!(
-                    "SELECT EXISTS(SELECT 1 FROM {} WHERE {})",
-                    visible_table(table),
-                    row_id_predicate(schema_table)
-                ),
-                rusqlite::params![row_id],
-                |row| row.get(0),
-            )
-            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
-        if !exists {
+        if !self.visible_row_exists(schema_table, row_id)? {
             return Err("sync.row_missing: a sparse patch requires a local row".to_owned());
         }
         // §3.4 rule 5 / §6.2: scope columns are immutable on update. The
@@ -16000,6 +16041,7 @@ impl SyncClient {
             row_id: row_id.to_owned(),
             base_version,
             values: Some(values),
+            insert: false,
         })
     }
 
@@ -16071,13 +16113,15 @@ impl SyncClient {
                     .ops
                     .iter()
                     .find_map(|op| {
-                        let values = op.values.as_ref().filter(|_| op.upsert)?;
-                        let table = self.schema.table(&op.table)?;
+                        let table = self.schema.table(&op.table).filter(|_| op.upsert)?;
+                        // An insert lacking a non-nullable column is left to
+                        // `drop_incompatible_outbox` (§7.4.4).
+                        let values = op.presented_values(table)?;
                         let fallback = self.stored_key_fallback(table, &op.row_id);
                         match encode_sparse_row_json(
                             table,
                             &op.row_id,
-                            values,
+                            &values,
                             &self.encryption,
                             fallback.as_ref(),
                         ) {
@@ -16225,17 +16269,17 @@ impl SyncClient {
         let mut payloads = Vec::new();
         for commit in &self.outbox {
             for op in &commit.ops {
-                let Some(values) = op.values.as_ref().filter(|_| op.upsert) else {
+                let Some(table) = self.schema.table(&op.table).filter(|_| op.upsert) else {
                     continue;
                 };
-                let Some(table) = self.schema.table(&op.table) else {
+                let Some(values) = op.presented_values(table) else {
                     continue;
                 };
                 let fallback = self.stored_key_fallback(table, &op.row_id);
                 if let Ok(payload) = encode_sparse_row_json(
                     table,
                     &op.row_id,
-                    values,
+                    &values,
                     &self.encryption,
                     fallback.as_ref(),
                 ) {
@@ -17176,11 +17220,12 @@ impl SyncClient {
                 .ops
                 .iter()
                 .map(|op| {
-                    let payload = op.values.as_ref().and_then(|values| {
-                        let table = self.schema.table(&op.table)?;
+                    let payload = self.schema.table(&op.table).and_then(|table| {
+                        let values = op.presented_values(table)?;
                         // §0: outbox entries encode at send time with the
                         // current codec (validated at mutate()). §6.1: the
-                        // values map's keys are the sparse presence set.
+                        // values map's keys are the sparse presence set; an
+                        // insert-intent operation presents every column (§7.1).
                         // §5.11: encrypted columns are encrypted here, with
                         // an absent key-id selector read from the stored row.
                         // `sync_inner` runs `drop_unencodable_outbox` first,
@@ -17190,7 +17235,7 @@ impl SyncClient {
                         encode_sparse_row_json(
                             table,
                             &op.row_id,
-                            values,
+                            &values,
                             &self.encryption,
                             fallback.as_ref(),
                         )
@@ -20853,6 +20898,7 @@ impl SyncClient {
                 upsert: op.op == "upsert",
                 base_version: op.base_version,
                 values,
+                insert: op.insert,
             })
         })
         .collect()
@@ -20924,6 +20970,7 @@ impl SyncClient {
                     upsert: op.op == "upsert",
                     base_version: op.base_version,
                     values: op.values,
+                    insert: op.insert,
                 });
             }
             dropped.push(OutboxCommit {
@@ -20995,7 +21042,7 @@ impl SyncClient {
                     }
                     if let Some(table) = self.schema.table(&operation.table) {
                         if self.visible_row(table, &operation.row_id)?.is_none()
-                            && operation.values.as_ref().is_some_and(|values| {
+                            && operation.presented_values(table).is_some_and(|values| {
                                 table
                                     .columns
                                     .iter()
@@ -21068,12 +21115,12 @@ impl SyncClient {
                 phase.unit();
             }
             if op.upsert {
-                if let (Some(table), Some(values)) = (
-                    self.schema
-                        .table(&op.table)
-                        .filter(|table| table.indexes.iter().any(|index| index.unique)),
-                    op.values.as_ref(),
-                ) {
+                if let Some((table, values)) = self
+                    .schema
+                    .table(&op.table)
+                    .filter(|table| table.indexes.iter().any(|index| index.unique))
+                    .and_then(|table| Some((table, op.presented_values(table)?)))
+                {
                     let mut intended: Map<String, Value> = self
                         .visible_row(table, &op.row_id)?
                         .map(|(row, _)| {
@@ -21087,7 +21134,7 @@ impl SyncClient {
                                 .collect()
                         })
                         .unwrap_or_default();
-                    intended.extend(values.clone());
+                    intended.extend(values.into_owned());
                     if !self.unique_conflicts(table, &intended, false)?.is_empty() {
                         continue;
                     }
@@ -21111,13 +21158,17 @@ impl SyncClient {
                 .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
             return Ok(());
         }
-        let Some(values) = op.values.as_ref() else {
+        // §7.1: an insert-intent operation that lacks a non-nullable column
+        // cannot encode; it stays invisible until the send-time prepass drops
+        // it as sync.outbox_incompatible (§7.4.4).
+        let Some(values) = op.presented_values(table) else {
             return Ok(());
         };
         // §7.1: the overlay applies the operation's PRESENT columns
         // over the current local row. A partial operation over an
         // absent local row leaves it absent — the server answers it
-        // with sync.row_deleted or sync.row_missing (§6.2).
+        // with sync.row_deleted or sync.row_missing (§6.2). An
+        // insert-intent operation presents every column.
         let full = table
             .columns
             .iter()
@@ -21160,6 +21211,23 @@ impl SyncClient {
                     error
                 }
             })
+    }
+
+    /// Whether the row is present in the overlay. Existence reads only the
+    /// key: locked encrypted values stay opaque, and decoding the complete row
+    /// would reject a valid plain write.
+    fn visible_row_exists(&self, table: &TableSchema, row_id: &str) -> Result<bool, String> {
+        self.conn
+            .query_row(
+                &format!(
+                    "SELECT EXISTS(SELECT 1 FROM {} WHERE {})",
+                    visible_table(&table.name),
+                    row_id_predicate(table)
+                ),
+                rusqlite::params![row_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))
     }
 
     /// The visible (optimistic) row's values plus version, or `None` when the
@@ -23175,5 +23243,320 @@ mod scope_move_delivery_tests {
             message.frames.first(),
             Some(Frame::ReqHeader { client_id, .. }) if client_id == &next
         ));
+    }
+}
+
+#[cfg(test)]
+mod insert_intent_tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    /// Version 1 `tasks(id, title)`; later versions append `extra` columns.
+    fn tasks_schema(version: i32, extra: Value) -> Value {
+        let mut columns = vec![
+            json!({ "name": "id", "type": "string", "nullable": false }),
+            json!({ "name": "title", "type": "string", "nullable": true }),
+        ];
+        columns.extend(extra.as_array().cloned().unwrap_or_default());
+        json!({
+            "version": version,
+            "tables": [{ "name": "tasks", "primaryKey": "id", "columns": columns, "scopes": [] }]
+        })
+    }
+
+    fn with_note() -> Value {
+        tasks_schema(
+            2,
+            json!([{ "name": "note", "type": "string", "nullable": true }]),
+        )
+    }
+
+    fn upsert(id: &str, title: &str) -> Mutation {
+        Mutation::Upsert {
+            table: "tasks".into(),
+            values: Map::from_iter([("id".into(), json!(id)), ("title".into(), json!(title))]),
+            base_version: None,
+        }
+    }
+
+    fn persisted_markers(client: &SyncClient) -> Vec<Vec<Option<Value>>> {
+        let mut statement = client
+            .conn
+            .prepare("SELECT ops_json FROM _syncular_outbox ORDER BY seq")
+            .unwrap();
+        statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(|raw| {
+                serde_json::from_str::<Vec<Value>>(&raw.unwrap())
+                    .unwrap()
+                    .iter()
+                    .map(|entry| entry.get("insert").cloned())
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// One insert of `q` queued under version 1, then the bump to `next`.
+    /// `strip_marker` rewrites the persisted operation into the pre-marker
+    /// form an earlier release wrote.
+    fn queued_insert_after_bump(next: &Value, strip_marker: bool) -> SyncClient {
+        let mut client = SyncClient::new(
+            "insert-intent".into(),
+            &tasks_schema(1, json!([])),
+            ClientLimits::default(),
+        )
+        .unwrap();
+        client.mutate(vec![upsert("q", "new")]).unwrap();
+        if strip_marker {
+            client
+                .conn
+                .execute_batch(
+                    "UPDATE _syncular_outbox SET ops_json = json_remove(ops_json, '$[0].insert')",
+                )
+                .unwrap();
+            client.outbox[0].ops[0].insert = false;
+        }
+        client.recreate_with_schema(next).unwrap();
+        client
+    }
+
+    /// Write `q` into the base table under the current schema and replay the
+    /// outbox over it.
+    fn seed_base_row(client: &mut SyncClient, row: Row) {
+        client
+            .write_row(&base_table("tasks"), "tasks", &row, 1)
+            .unwrap();
+        client.overlay_dirty.set(true);
+        client.rebuild_overlay().unwrap();
+    }
+
+    fn sparse_payload(client: &SyncClient, values: Value) -> Vec<u8> {
+        let table = client.schema.table("tasks").unwrap();
+        encode_sparse_row_json(
+            table,
+            "q",
+            values.as_object().unwrap(),
+            &client.encryption,
+            None,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn mutate_records_insert_intent_only_for_rows_absent_at_call_time() {
+        let mut client = SyncClient::new(
+            "insert-intent".into(),
+            &tasks_schema(1, json!([])),
+            ClientLimits::default(),
+        )
+        .unwrap();
+        // Both upserts of one batch see the replica as it was at call time.
+        client
+            .mutate(vec![upsert("a", "first"), upsert("a", "second")])
+            .unwrap();
+        client.mutate(vec![upsert("a", "visible")]).unwrap();
+        client
+            .patch(
+                "tasks",
+                "a",
+                Map::from_iter([("title".into(), json!("patched"))]),
+                None,
+            )
+            .unwrap();
+        client
+            .mutate(vec![Mutation::Delete {
+                table: "tasks".into(),
+                row_id: "a".into(),
+                base_version: None,
+            }])
+            .unwrap();
+
+        let marker = Some(Value::Bool(true));
+        assert_eq!(
+            persisted_markers(&client),
+            vec![
+                vec![marker.clone(), marker],
+                vec![None],
+                vec![None],
+                vec![None]
+            ]
+        );
+        let flags = |commits: &[OutboxCommit]| {
+            commits
+                .iter()
+                .map(|commit| commit.ops.iter().map(|op| op.insert).collect::<Vec<_>>())
+                .collect::<Vec<_>>()
+        };
+        let expected = vec![vec![true, true], vec![false], vec![false], vec![false]];
+        assert_eq!(flags(&client.outbox), expected);
+        assert_eq!(
+            flags(&client.load_outbox().unwrap()),
+            expected,
+            "reload keeps it"
+        );
+
+        // The journal and failed-commit form carries the marker only when set.
+        let insert = serde_json::to_value(CommitOperation::from(&client.outbox[0].ops[0])).unwrap();
+        assert_eq!(insert["insert"], json!(true));
+        assert!(
+            serde_json::from_value::<CommitOperation>(insert)
+                .unwrap()
+                .insert
+        );
+        let update = serde_json::to_value(CommitOperation::from(&client.outbox[1].ops[0])).unwrap();
+        assert!(update.get("insert").is_none());
+    }
+
+    #[test]
+    fn insert_intent_replays_and_encodes_an_appended_nullable_column_as_null() {
+        let mut client = queued_insert_after_bump(&with_note(), false);
+        assert_eq!(
+            client
+                .query("SELECT id, title, note FROM tasks", &[])
+                .unwrap(),
+            vec![Map::from_iter([
+                ("id".into(), json!("q")),
+                ("title".into(), json!("new")),
+                ("note".into(), Value::Null),
+            ])],
+            "the replayed insert is visible with the appended column NULL"
+        );
+        assert_eq!(
+            client.pending_payloads(),
+            vec![sparse_payload(
+                &client,
+                json!({ "id": "q", "title": "new", "note": null })
+            )],
+            "the insert presents the appended column as NULL"
+        );
+
+        // Over an existing local row the NULL overwrites the local value.
+        seed_base_row(
+            &mut client,
+            vec![
+                Some(ColumnValue::String("q".into())),
+                Some(ColumnValue::String("base".into())),
+                Some(ColumnValue::String("server".into())),
+            ],
+        );
+        assert_eq!(
+            client.query("SELECT title, note FROM tasks", &[]).unwrap(),
+            vec![Map::from_iter([
+                ("title".into(), json!("new")),
+                ("note".into(), Value::Null),
+            ])]
+        );
+    }
+
+    #[test]
+    fn an_operation_without_the_marker_keeps_its_presence_set() {
+        let mut client = queued_insert_after_bump(&with_note(), true);
+        assert!(
+            client
+                .query("SELECT id FROM tasks", &[])
+                .unwrap()
+                .is_empty(),
+            "a partial operation over an absent row stays invisible"
+        );
+        assert_eq!(
+            client.pending_payloads(),
+            vec![sparse_payload(
+                &client,
+                json!({ "id": "q", "title": "new" })
+            )],
+            "the appended column stays absent"
+        );
+
+        seed_base_row(
+            &mut client,
+            vec![
+                Some(ColumnValue::String("q".into())),
+                Some(ColumnValue::String("base".into())),
+                Some(ColumnValue::String("server".into())),
+            ],
+        );
+        assert_eq!(
+            client.query("SELECT title, note FROM tasks", &[]).unwrap(),
+            vec![Map::from_iter([
+                ("title".into(), json!("new")),
+                ("note".into(), json!("server")),
+            ])],
+            "the stored appended value survives"
+        );
+    }
+
+    #[test]
+    fn insert_intent_missing_a_non_nullable_column_is_outbox_incompatible() {
+        let with_rank = tasks_schema(
+            2,
+            json!([{ "name": "rank", "type": "integer", "nullable": false }]),
+        );
+        let mut client = SyncClient::new(
+            "insert-intent".into(),
+            &tasks_schema(1, json!([])),
+            ClientLimits::default(),
+        )
+        .unwrap();
+        let insert = client.mutate(vec![upsert("q", "new")]).unwrap();
+        // An update of the now-visible row carries no insert intent and keeps
+        // its sparse presence set.
+        let update = client.mutate(vec![upsert("q", "edited")]).unwrap();
+        client.recreate_with_schema(&with_rank).unwrap();
+        assert_eq!(
+            client.pending_commit_ids(),
+            vec![insert.clone(), update.clone()],
+            "the reset classifies nothing"
+        );
+        assert!(client.rejections.is_empty());
+        assert!(
+            client
+                .query("SELECT id FROM tasks", &[])
+                .unwrap()
+                .is_empty(),
+            "the unencodable insert stays invisible"
+        );
+
+        assert!(client.drop_incompatible_outbox().unwrap());
+        assert_eq!(client.pending_commit_ids(), vec![update]);
+        assert_eq!(client.rejections.len(), 1);
+        let rejection = &client.rejections[0];
+        assert_eq!(rejection.client_commit_id, insert);
+        assert_eq!(rejection.code, OUTBOX_INCOMPATIBLE_CODE);
+        assert!(rejection.operation.as_ref().is_some_and(|op| op.insert));
+        assert!(
+            client.commit_outcome(&insert).unwrap().is_some(),
+            "the journal accepts the marked operation"
+        );
+    }
+
+    #[test]
+    fn the_stored_operation_validator_accepts_the_marker_only_on_upserts() {
+        let upsert =
+            json!({ "table": "tasks", "rowId": "q", "op": "upsert", "values": { "id": "q" } });
+        let delete = json!({ "table": "tasks", "rowId": "q", "op": "delete" });
+        let with = |base: &Value, insert: Value| {
+            let mut value = base.clone();
+            value["insert"] = insert;
+            value
+        };
+        assert!(SyncClient::stored_operation_is_representable(&upsert));
+        assert!(SyncClient::stored_operation_is_representable(&with(
+            &upsert,
+            json!(true)
+        )));
+        assert!(!SyncClient::stored_operation_is_representable(&with(
+            &upsert,
+            json!(false)
+        )));
+        assert!(!SyncClient::stored_operation_is_representable(&with(
+            &upsert,
+            json!("yes")
+        )));
+        assert!(SyncClient::stored_operation_is_representable(&delete));
+        assert!(!SyncClient::stored_operation_is_representable(&with(
+            &delete,
+            json!(true)
+        )));
     }
 }

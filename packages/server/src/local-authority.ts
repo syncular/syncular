@@ -12,6 +12,7 @@ import {
   PROTOCOL_WIRE_VERSION,
   type PushCommitFrame,
   type PushOperation,
+  type PushResultFrame,
   type RequestFrame,
   type ResponseFrame,
   type RowValue,
@@ -29,7 +30,11 @@ import {
 import { renderScopeValue } from './scopes';
 import { handleSegmentDownload } from './segment-download';
 import { MemorySegmentStore } from './segment-store';
-import type { SqliteDatabase } from './sqlite-driver';
+import type {
+  SqliteDatabase,
+  SqliteRunResult,
+  SqliteValue,
+} from './sqlite-driver';
 import type { SqliteImageBuilder } from './sqlite-image';
 import { SqliteServerStorage } from './sqlite-storage';
 
@@ -70,11 +75,13 @@ export interface LocalAuthority {
     transport: (request: Uint8Array) => Promise<Uint8Array>,
   ) => Promise<void>;
   /**
-   * §12.3: leave the attaching state and serve the client again. The remote
-   * server keeps the commits it already applied; the host discards that
-   * partition before the next attach.
+   * §12.3: delete the rows the remote server applied from this attach, then
+   * serve the client again. `transport` reaches the same remote server and is
+   * required once an upload request may have reached it.
    */
-  readonly abandonAttach: () => void;
+  readonly abandonAttach: (
+    transport?: (request: Uint8Array) => Promise<Uint8Array>,
+  ) => Promise<void>;
 }
 
 export type LocalAuthorityAttachDetails =
@@ -111,6 +118,50 @@ export class LocalAuthorityAttachError extends Error {
     super('the remote server did not accept the attach upload');
     this.details = details;
   }
+}
+
+/** The `ClientDatabase` surface of `@syncular/client`, as a browser worker opens it. */
+export interface LocalAuthorityClientDatabase {
+  exec(sql: string, params?: readonly SqliteValue[]): void;
+  query(
+    sql: string,
+    params?: readonly SqliteValue[],
+  ): Record<string, SqliteValue>[];
+  close(): void;
+}
+
+/**
+ * Serve a local authority from a client-side database, such as the sibling
+ * file a browser worker opens beside its replica. `exec` without parameters
+ * must run several statements, as the sqlite-wasm database does.
+ */
+export function clientSqliteDatabase(
+  database: LocalAuthorityClientDatabase,
+): SqliteDatabase {
+  const run = (
+    sql: string,
+    params: readonly SqliteValue[],
+  ): SqliteRunResult => {
+    database.exec(sql, params);
+    const result = database.query(
+      'SELECT changes() AS changes, last_insert_rowid() AS id',
+    )[0];
+    return {
+      changes: Number(result?.changes ?? 0),
+      lastInsertRowid: Number(result?.id ?? 0),
+    };
+  };
+  return {
+    exec: (sql) => database.exec(sql),
+    run: (sql, bindings = []) => run(sql, bindings),
+    query: <Row, Params extends readonly SqliteValue[]>(sql: string) => ({
+      run: (...params: Params) => run(sql, params),
+      get: (...params: Params) =>
+        (database.query(sql, params)[0] ?? null) as Row | null,
+      all: (...params: Params) => database.query(sql, params) as Row[],
+    }),
+    close: () => database.close(),
+  };
 }
 
 export async function openLocalAuthority(
@@ -188,27 +239,36 @@ export async function openLocalAuthority(
     promise.then(settle, settle);
     return promise;
   };
-  const writeState = (next: LocalAuthorityState, attachId?: string) => {
+  /** One transaction; a `null` value removes the key. */
+  const writeMeta = (entries: Readonly<Record<string, string | null>>) => {
     database.exec('BEGIN IMMEDIATE');
     try {
-      database.run(
-        'INSERT OR REPLACE INTO sync_local_authority(key,value) VALUES (?,?)',
-        ['state', next],
-      );
-      if (attachId === undefined) {
-        database.run("DELETE FROM sync_local_authority WHERE key='attach_id'");
-      } else {
-        database.run(
-          'INSERT OR REPLACE INTO sync_local_authority(key,value) VALUES (?,?)',
-          ['attach_id', attachId],
-        );
+      for (const [key, value] of Object.entries(entries)) {
+        if (value === null) {
+          database.run('DELETE FROM sync_local_authority WHERE key=?', [key]);
+        } else {
+          database.run(
+            'INSERT OR REPLACE INTO sync_local_authority(key,value) VALUES (?,?)',
+            [key, value],
+          );
+        }
       }
       database.exec('COMMIT');
     } catch (error) {
       database.exec('ROLLBACK');
       throw error;
     }
-    state = next;
+  };
+  const ordinal = (key: string): number => Number(readMeta(key) ?? -1);
+  const attachIdOf = (): string => {
+    const attachId = readMeta('attach_id');
+    if (attachId === undefined) {
+      throw new SyncError(
+        'sync.internal_error',
+        'the attaching local authority has no attach id',
+      );
+    }
+    return attachId;
   };
 
   const exchange = async (
@@ -252,6 +312,69 @@ export async function openLocalAuthority(
     return message.frames;
   };
 
+  /** Acquire the remote `logEpoch` (§2.1), then send one commit per request. */
+  const connect = async (
+    transport: (request: Uint8Array) => Promise<Uint8Array>,
+    clientId: string,
+  ): Promise<(commit: PushCommitFrame) => Promise<PushResultFrame>> => {
+    const acquired = (
+      await exchange(transport, [
+        { type: 'REQ_HEADER', clientId, schemaVersion: schema.version },
+        {
+          type: 'PULL_HEADER',
+          limitCommits: 0,
+          limitSnapshotRows: 0,
+          maxSnapshotPages: 0,
+          accept: 0b0011,
+        },
+      ])
+    )[0];
+    const logEpoch =
+      acquired?.type === 'RESP_HEADER' ? acquired.logEpoch : undefined;
+    if (logEpoch === undefined) {
+      throw new LocalAuthorityAttachError({
+        reason: 'request_failed',
+        code: 'sync.invalid_request',
+        retryable: false,
+      });
+    }
+    return async (commit) => {
+      const frames = await exchange(transport, [
+        {
+          type: 'REQ_HEADER',
+          clientId,
+          schemaVersion: schema.version,
+          logEpoch,
+        },
+        commit,
+      ]);
+      const header = frames[0];
+      if (header?.type === 'RESP_HEADER' && header.resetRequired === true) {
+        throw new LocalAuthorityAttachError({ reason: 'log_epoch_changed' });
+      }
+      const result = frames.find((frame) => frame.type === 'PUSH_RESULT');
+      if (result === undefined) {
+        throw new LocalAuthorityAttachError({
+          reason: 'request_failed',
+          code: 'sync.invalid_request',
+          retryable: false,
+        });
+      }
+      return result;
+    };
+  };
+  const applied = (result: PushResultFrame) =>
+    result.status === 'applied' || result.status === 'cached';
+  const rejected = (commit: PushCommitFrame, result: PushResultFrame) => {
+    const failed = result.results.find((r) => r.status !== 'applied');
+    return new LocalAuthorityAttachError({
+      reason: 'commit_rejected',
+      clientCommitId: commit.clientCommitId,
+      opIndex: failed?.opIndex ?? 0,
+      code: failed?.code ?? 'sync.invalid_request',
+    });
+  };
+
   const authority: LocalAuthority = {
     get state() {
       return state;
@@ -275,7 +398,7 @@ export async function openLocalAuthority(
         uploading = false;
       }
     },
-    abandonAttach() {
+    async abandonAttach(transport) {
       refuseDuringUpload();
       if (state === 'attached') {
         throw new SyncError(
@@ -284,7 +407,23 @@ export async function openLocalAuthority(
           JSON.stringify({ state }),
         );
       }
-      writeState('local');
+      if (state === 'local') return;
+      if (ordinal('sent') >= 0) {
+        if (transport === undefined) {
+          throw new SyncError(
+            'sync.invalid_request',
+            'abandoning an attach that reached the remote server needs its transport',
+          );
+        }
+        uploading = true;
+        try {
+          await rollback(transport);
+        } finally {
+          uploading = false;
+        }
+      }
+      writeMeta({ state: 'local', attach_id: null, sent: null, applied: null });
+      state = 'local';
     },
   };
   return authority;
@@ -298,69 +437,78 @@ export async function openLocalAuthority(
       state = 'attaching';
       try {
         await Promise.allSettled([...inflight]);
-        writeState('attaching', crypto.randomUUID());
+        writeMeta({ state: 'attaching', attach_id: crypto.randomUUID() });
       } catch (error) {
         state = 'local';
         throw error;
       }
     }
-    const attachId = readMeta('attach_id');
-    if (attachId === undefined) {
-      throw new SyncError(
-        'sync.internal_error',
-        'the attaching local authority has no attach id',
-      );
-    }
+    const attachId = attachIdOf();
     const commits = planAttach(database, compiled, attachId);
-    const clientId = `authority-${attachId}`;
-    const acquired = (
-      await exchange(transport, [
-        { type: 'REQ_HEADER', clientId, schemaVersion: schema.version },
-        {
-          type: 'PULL_HEADER',
-          limitCommits: 0,
-          limitSnapshotRows: 0,
-          maxSnapshotPages: 0,
-          accept: 0b0011,
-        },
-      ])
-    )[0];
-    const logEpoch =
-      acquired?.type === 'RESP_HEADER' ? acquired.logEpoch : undefined;
-    if (logEpoch === undefined) {
-      throw new LocalAuthorityAttachError({
-        reason: 'request_failed',
-        code: 'sync.invalid_request',
-        retryable: false,
-      });
+    const send = await connect(transport, `authority-${attachId}`);
+    for (const [index, commit] of commits.entries()) {
+      // §12.3: `sent` before the request, `applied` after its result, so an
+      // abandon knows which commits may have reached the remote server.
+      writeMeta({ sent: String(Math.max(index, ordinal('sent'))) });
+      const result = await send(commit);
+      if (!applied(result)) throw rejected(commit, result);
+      writeMeta({ applied: String(Math.max(index, ordinal('applied'))) });
     }
-    for (const commit of commits) {
-      const frames = await exchange(transport, [
-        {
-          type: 'REQ_HEADER',
-          clientId,
-          schemaVersion: schema.version,
-          logEpoch,
-        },
-        commit,
-      ]);
-      const header = frames[0];
-      if (header?.type === 'RESP_HEADER' && header.resetRequired === true) {
-        throw new LocalAuthorityAttachError({ reason: 'log_epoch_changed' });
-      }
-      const result = frames.find((frame) => frame.type === 'PUSH_RESULT');
-      if (result?.status === 'applied' || result?.status === 'cached') {
-        continue;
-      }
-      const failed = result?.results.find((r) => r.status !== 'applied');
-      throw new LocalAuthorityAttachError({
-        reason: 'commit_rejected',
-        clientCommitId: commit.clientCommitId,
-        opIndex: failed?.opIndex ?? 0,
-        code: failed?.code ?? 'sync.invalid_request',
-      });
+    writeMeta({ state: 'attached', sent: null, applied: null });
+    state = 'attached';
+    // §12.3: the retired authority keeps only its state.
+    const tables = database
+      .query<{ name: string }, []>(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name <> 'sync_local_authority'",
+      )
+      .all();
+    for (const { name } of tables) {
+      database.exec(`DROP TABLE IF EXISTS "${name.replaceAll('"', '""')}"`);
     }
-    writeState('attached');
+    database.exec('VACUUM');
+  }
+
+  /**
+   * §12.3 abandon: settle the one commit whose outcome may be unknown, then
+   * delete the rows of every applied commit, children before parents.
+   */
+  async function rollback(
+    transport: (request: Uint8Array) => Promise<Uint8Array>,
+  ): Promise<void> {
+    const attachId = attachIdOf();
+    const commits = planAttach(database, compiled, attachId);
+    const send = await connect(transport, `authority-${attachId}`);
+    let through = ordinal('applied');
+    const sent = ordinal('sent');
+    if (sent > through) {
+      const commit = commits[sent]!;
+      if (applied(await send(commit))) through = sent;
+      writeMeta({ applied: String(through) });
+    }
+    const deletes = commits
+      .slice(0, through + 1)
+      .flatMap((commit) => commit.operations)
+      .reverse()
+      .map(
+        (operation): PushOperation => ({
+          table: operation.table,
+          rowId: operation.rowId,
+          op: 'delete',
+        }),
+      );
+    for (
+      let start = 0;
+      start < deletes.length;
+      start += ATTACH_OPERATION_BUDGET
+    ) {
+      const commit: PushCommitFrame = {
+        type: 'PUSH_COMMIT',
+        clientCommitId: `${attachId}:undo:${start / ATTACH_OPERATION_BUDGET}`,
+        operations: deletes.slice(start, start + ATTACH_OPERATION_BUDGET),
+      };
+      const result = await send(commit);
+      if (!applied(result)) throw rejected(commit, result);
+    }
   }
 }
 

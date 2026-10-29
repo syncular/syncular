@@ -3333,12 +3333,21 @@ export class SyncClient {
             legacyCause: `sync.invalid_request: table ${table.name}: ${refusal}`,
           },
         );
+      // §7.1 insert intent: a full-row write of a row the replica does not
+      // show replays and encodes as a full row under every later schema.
+      const insert =
+        mutation.op !== 'patch' &&
+        this.#db.query(
+          `SELECT 1 FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)}=? LIMIT 1`,
+          [pkSqlValue(table, pkValue)],
+        ).length === 0;
       return definedObject({
         table: mutation.table,
         rowId: pkValue,
         op: 'upsert',
         baseVersion: mutation.baseVersion,
         values: json,
+        insert: insert ? true : undefined,
       });
     });
     this.#applyBatch((batch) => {
@@ -6207,9 +6216,23 @@ export class SyncClient {
       // §7.1 overlay: apply the operation's PRESENT columns over the current
       // local row. A partial operation over an absent local row leaves it
       // absent — the server answers it with sync.row_deleted or
-      // sync.row_missing, and the local mirror never invents a base.
+      // sync.row_missing, and the local mirror never invents a base. An
+      // insert-intent operation is a full row: a column it lacks is NULL.
       const opValues = op.values ?? {};
-      const full = table.columns.every((column) => column.name in opValues);
+      const full =
+        op.insert === true ||
+        table.columns.every((column) => column.name in opValues);
+      // An insert lacking a non-nullable column cannot encode (§7.4.4); it
+      // stays hidden until the send-time drop classifies it.
+      if (
+        op.insert === true &&
+        table.columns.some(
+          (column) => !column.nullable && opValues[column.name] === undefined,
+        )
+      ) {
+        if (batch !== undefined && !precise) batch.table(op.table);
+        continue;
+      }
       const local = this.#db.query(
         `SELECT * FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)}=?`,
         [pkSqlValue(table, op.rowId)],
@@ -6221,7 +6244,7 @@ export class SyncClient {
       const values = table.columns.map((column) => {
         const value = opValues[column.name];
         if (value !== undefined) return jsonToRowValue(value);
-        return local === undefined
+        return local === undefined || op.insert === true
           ? null
           : replay
             ? (coerceSqlRepresentation(

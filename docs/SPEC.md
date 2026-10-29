@@ -4055,6 +4055,20 @@ Every patch requires its base row in the local replica at call time. An absent
 base raises `sync.row_missing` before the batch changes local rows or appends
 an outbox commit. This includes a patch following an insert in the same batch.
 
+**Insert intent.** A `mutate` upsert of a row that is absent from the local
+replica's visible state at call time records insert intent: its
+schema-agnostic outbox operation carries `"insert": true`. Overlay replay and
+send-time encoding treat an insert-intent operation as a full row under the
+current schema: a column the operation does not carry is NULL and present. The
+operation therefore reaches the server as an insert with every column present
+(§6.2), including after a schema bump that appended nullable columns
+(§7.4.4). Over an existing local row, the NULL columns overwrite their local
+values exactly as the server applies them. A missing column the current
+schema declares non-nullable makes the commit unencodable
+(`sync.outbox_incompatible`), and overlay replay does not show that operation. A `patch` and a `mutate` of a visible row record
+no insert intent, and an operation persisted without the marker keeps its
+presence set.
+
 **Authoring value validation.** `mutate` and `patch` validate every supplied
 value against the column's declared type before the call records anything. A
 value the generated row codec cannot encode is refused with
@@ -4722,6 +4736,11 @@ off here: outbox commits are persisted in schema-agnostic local form and
 **encoded with the new generated codec at send time**, so a commit
 recorded under `vN` pushes under `vN+1` by re-encoding — the server
 never accepts a retired encoding.
+
+A pending insert-intent operation (§7.1) encodes the columns the bump
+appended as NULL, so the server inserts it. A pending operation without
+insert intent leaves the appended columns absent, so an update keeps their
+stored values.
 
 Re-encoding under the new schema can *fail* when a pending commit
 references a column the new schema no longer has (or newly requires and
@@ -6514,18 +6533,28 @@ is `local`, `attaching` or `attached`, persisted in the authority database.
 4. Commit `n` (0-based) carries `clientCommitId = attachId + ":" + n`. The
    frozen rows make the plan reproducible, so a restarted attach resends
    byte-equivalent commits and receives `cached` for every commit the remote
-   applied (§2.3).
+   applied (§2.3). Before it sends commit `n` the authority persists
+   `sent = n`, and after an `applied` or `cached` result it persists
+   `applied = n`.
 5. A transport failure stops attach with the transport's error; the state
    stays `attaching`, and the next attach resumes. A schema-floor response, an
    `ERROR` frame, a `resetRequired` response, or a commit result other than
    `applied` or `cached` stops attach with `sync.attach_rejected`. A rejected
    commit is terminal for its `attachId`: the remote retains the rejection
-   under the idempotency key (§2.3) and replays it on resume. The app then
-   abandons the attach, which returns the authority to `local`; the host
-   discards any commits the remote applied for that `attachId` before the
-   next attach, which uses a new `attachId`.
-6. When every commit is `applied` or `cached`, the authority persists
-   `attached` and serves no further request.
+   under the idempotency key (§2.3) and replays it on resume.
+6. Abandon returns an attaching authority to `local`. When `sent` is
+   persisted, abandon needs the remote transport and first rolls back: it
+   resends commit `sent` when `sent > applied` to learn that commit's
+   outcome, then deletes every row of commits `0` through `applied` in
+   reverse plan order, children before parents, in commits of at most 500
+   operations with `clientCommitId = attachId + ":undo:" + k`. A rollback
+   commit other than `applied` or `cached` stops abandon with
+   `sync.attach_rejected`, and the state stays `attaching`. The remote keeps a
+   tombstone per deleted row; the next attach uses a new `attachId`, and its
+   `baseVersion = 0` inserts recreate those rows (§6.2).
+7. When every commit is `applied` or `cached`, the authority persists
+   `attached`, drops every table except its state, and serves no further
+   request. Reopening an attached authority keeps that state.
 
 The remote's scope resolver MUST grant the attaching actor every scope value
 the rows carry; a denied row rejects its commit with `sync.forbidden`.
@@ -6945,12 +6974,13 @@ Each is a driver-interface script, not a prose test.
     the outbox drains, rows carry authority versions, and deleting a parent
     cascades and nullifies through declared references. (b) The authority and
     the client reopen at a version that appends a nullable column and a
-    table; every row survives with the column NULL and a queued update
-    replays. (c) An authority holding a reference chain and a two-row cycle
+    table; every row survives with the column NULL, a queued update
+    replays, and a queued insert replays with the column NULL (§7.1 insert
+    intent). (c) An authority holding a reference chain and a two-row cycle
     attaches to the reference server; a lost response stops attach, the
     client's round fails with `sync.authority_unavailable`, a restarted
     attach completes with the applied commit `cached`, and the client
     rebinds through the §2.1 reset and converges, including a write queued
-    during attach. (d) A remote scope denial stops attach with
-    `sync.attach_rejected`; abandoning serves the client again, and a new
-    attach completes. Both pairings (TS×TS, Rust×TS).
+    during attach. (d) A remote scope denial rejects the second upload
+    commit after the first applied; resuming replays the rejection, abandon
+    deletes the applied rows, and a new attach recreates them and converges. Both pairings (TS×TS, Rust×TS).

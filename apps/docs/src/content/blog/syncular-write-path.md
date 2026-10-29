@@ -321,7 +321,7 @@ it. Both cores implement the written
 consume the same generated schema contract, and run the same
 [conformance scenarios and golden byte vectors](/reference/#protocol--conformance).
 
-The catalog contains 255 scenarios covering convergence, offline replay, lost
+The catalog contains 256 scenarios covering convergence, offline replay, lost
 acknowledgements, conflicts, scopes, revocation, bootstrap interruption,
 blobs, encryption, CRDTs, schema upgrades, realtime, presence, windowing,
 validation, and pruning. The repository gate runs it against both cores
