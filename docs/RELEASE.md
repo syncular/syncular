@@ -1,8 +1,44 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.49.1** (`v0.49.1`). All artifacts use Apache-2.0, except
+current release is **0.49.2** (`v0.49.2`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.49.2 release notes
+
+0.49.2 lets a follower tab take over from a leader tab that stopped
+responding. SSP2, the storage layout, the wire version, and
+`MULTI_TAB_PROTOCOL_VERSION` are unchanged; the TypeScript API is additive.
+
+A follower that has been `blocked` with reason `leader-unreachable` for
+`takeOverAfterMs` (default twice `followerCallTimeoutMs`) may call
+`handle.takeOver()` or `TabCoordinator.takeOver()` from a user action. The
+call steals the leader's Web Lock and starts the core in this tab on a higher
+epoch; `lead` receives `context.takeover`. The handle's worker then steals the
+storage lock the old worker holds for its OPFS pool. OPFS sync access handles
+are exclusive, so the new worker opens the database only after the old worker
+closed it. The old worker's database refuses every statement with
+`client.storage_fenced` from the moment its storage lock is gone, closes its
+sibling files and its handles, and the new worker's open retries for about
+2.5 s before it rejects with `client.storage_busy`. The old tab's lease reports
+`lost`; when that tab runs again its state becomes `blocked` with reason
+`leadership-taken` (`client.leadership_taken`), the coordinator closes its
+core, and its calls reject. A leader that answers its probes, hidden or not,
+keeps its lock: `takeOver()` rejects with `client.takeover_refused` and
+`details.reason` `not-unreachable`, `too-early` (with `takeOverAt`),
+`in-progress`, or `unsupported`.
+
+`onLeaderUnreachable`, on the handle and the coordinator config, reports
+`{ phase: 'started', at, takeOverAt }` when a follower enters
+`leader-unreachable` and `{ phase: 'ended', at, durationMs, outcome }` when it
+leaves, with `outcome` `rebound`, `promoted`, `taken-over`, `incompatible`, or
+`closed`. `LeaderLock` gains an optional `steal`, `LeaderLease` an optional
+`lost`, and `SyncAvailability` the blocked reason `leadership-taken`.
+
+**Upgrade notes.** No migration and no wire change. A custom `leaderLock`
+without `steal` makes `takeOver()` reject with reason `unsupported`. Upgrade
+all 12 npm packages and 7 crates together; `syncular-authority` still awaits
+its first crates.io publish.
 
 ## 0.49.1 release notes
 
