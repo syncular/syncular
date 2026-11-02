@@ -738,5 +738,6 @@ async function defaultOpenDatabase(
     ...(config.database.directory !== undefined
       ? { directory: config.database.directory }
       : {}),
+    ...(config.takeOverStorage === true ? { takeOver: true } : {}),
   });
 }

@@ -118,6 +118,12 @@ export interface WorkerInitConfig {
   readonly headers?: Readonly<Record<string, string>>;
   /** Portable raw keyring installed inside the worker-owned client core. */
   readonly encryption?: EncryptionKeyringConfig;
+  /**
+   * This tab took the lock from an unreachable leader: take the storage lock
+   * from that leader's worker, which fences its database, and retry the open
+   * while its OPFS handles drain.
+   */
+  readonly takeOverStorage?: boolean;
   /** Open the worker-owned replica behind the fail-closed security gate. */
   readonly authorityReads?: readonly import('./authority').AuthorityReadDeclaration[];
   readonly securityPreflight?: boolean;

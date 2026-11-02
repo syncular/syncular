@@ -36,6 +36,7 @@ import {
   ClientSyncError,
   invalidRequest,
   STORAGE_BUSY_CODE,
+  STORAGE_FENCED_CODE,
   STORAGE_UNAVAILABLE_CODE,
 } from './errors';
 
@@ -121,6 +122,15 @@ function coerceParams(params: readonly SqlValue[]): unknown[] {
   });
 }
 
+/**
+ * Set when another worker took the pool's storage lock. Shared by a database
+ * and its siblings: every one of them refuses statements from then on.
+ */
+interface StorageFence {
+  fenced: boolean;
+  readonly siblings: Set<Oo1Database>;
+}
+
 class WasmClientDatabase implements ClientDatabase {
   readonly #db: Oo1Database;
   readonly #sqlite3: Sqlite3Static;
@@ -128,6 +138,7 @@ class WasmClientDatabase implements ClientDatabase {
   readonly #sah:
     | { readonly util: SahPoolUtil; readonly lease: LeaderLease }
     | undefined;
+  readonly #fence: StorageFence | undefined;
   #closed = false;
   #tx = { depth: 0 };
 
@@ -135,13 +146,35 @@ class WasmClientDatabase implements ClientDatabase {
     db: Oo1Database,
     sqlite3: Sqlite3Static,
     sah?: { readonly util: SahPoolUtil; readonly lease: LeaderLease },
+    fence?: StorageFence,
   ) {
     this.#db = db;
     this.#sqlite3 = sqlite3;
     this.#sah = sah;
+    this.#fence = fence;
+    // A takeover stole the storage lock. The new owner cannot open the pool
+    // while these SAHs are held, so close them before any further statement:
+    // the lost lease runs as its own task, never inside a transaction.
+    void sah?.lease.lost?.then(() => {
+      if (fence === undefined || this.#closed) return;
+      fence.fenced = true;
+      for (const sibling of fence.siblings) sibling.close();
+      fence.siblings.clear();
+      this.close();
+    });
+  }
+
+  #assertOwned(): void {
+    if (this.#fence?.fenced === true) {
+      throw new ClientSyncError(
+        STORAGE_FENCED_CODE,
+        'another tab took over this persistent database',
+      );
+    }
   }
 
   exec(sql: string, params: readonly SqlValue[] = []): void {
+    this.#assertOwned();
     this.#db.exec({
       sql,
       ...(params.length > 0 ? { bind: coerceParams(params) } : {}),
@@ -151,6 +184,7 @@ class WasmClientDatabase implements ClientDatabase {
   }
 
   query(sql: string, params: readonly SqlValue[] = []): SqlRow[] {
+    this.#assertOwned();
     const resultRows: unknown[] = [];
     this.#db.exec({
       sql,
@@ -162,6 +196,7 @@ class WasmClientDatabase implements ClientDatabase {
   }
 
   transaction<T>(fn: () => T): T {
+    this.#assertOwned();
     return runTransaction(this.#tx, (sql) => this.exec(sql), fn);
   }
 
@@ -183,9 +218,18 @@ class WasmClientDatabase implements ClientDatabase {
       db.close();
       throw error;
     }
+    this.#fence?.siblings.add(db);
     return {
-      database: new WasmClientDatabase(db, this.#sqlite3),
-      close: () => db.close(),
+      database: new WasmClientDatabase(
+        db,
+        this.#sqlite3,
+        undefined,
+        this.#fence,
+      ),
+      close: () => {
+        this.#fence?.siblings.delete(db);
+        db.close();
+      },
       removeFile: () => {
         sah.util.unlink(fileName);
       },
@@ -289,6 +333,12 @@ export interface PersistentWasmDatabaseOptions {
   readonly directory?: string;
   /** Initial SAH pool capacity (sqlite-wasm default: 6). */
   readonly initialCapacity?: number;
+  /**
+   * Take the storage lock from the worker that holds it, which fences that
+   * worker's database. Its SAHs stay held until it runs again, so the open
+   * fails with a retryable `client.storage_busy` until then.
+   */
+  readonly takeOver?: boolean;
 }
 
 function inWorkerContext(): boolean {
@@ -444,9 +494,12 @@ export async function openPersistentWasmDatabase(
   );
   // The document's leader lease can end before its worker's SAHs close. This
   // worker-owned lock has exactly the same lifetime as the physical pool.
-  const lease = await webLocksLeaderLock().acquire(
-    `syncular-opfs/${directory}`,
-  );
+  const storageLock = webLocksLeaderLock();
+  const lockName = `syncular-opfs/${directory}`;
+  const lease =
+    options?.takeOver === true
+      ? await storageLock.steal(lockName)
+      : await storageLock.acquire(lockName);
   let util: SahPoolUtil | undefined;
   let db: Oo1Database | undefined;
   try {
@@ -473,7 +526,12 @@ export async function openPersistentWasmDatabase(
     await util.unpauseVfs();
     db = new util.OpfsSAHPoolDb(`/${name}.db`);
     configureSahCrashRecovery(db, sqlite3);
-    return new WasmClientDatabase(db, sqlite3, { util, lease });
+    return new WasmClientDatabase(
+      db,
+      sqlite3,
+      { util, lease },
+      { fenced: false, siblings: new Set() },
+    );
   } catch (error) {
     db?.close();
     util?.pauseVfs();

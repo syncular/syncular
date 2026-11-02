@@ -7,13 +7,16 @@
  */
 import type { ClientDatabase, SiblingDatabase } from '../src/database';
 import { openPersistentWasmDatabase } from '../src/wasm-database';
+import { ClientSyncError } from '../src/errors';
 import {
+  FENCE_REPLICA,
   SIBLING_FLOOR,
   SIBLING_FLOOR_NAME,
   SIBLING_NAME,
   SIBLING_REPLICA,
   SIBLING_SECOND,
   siblingDirectory,
+  type FenceEvidence,
   type SahPoolProbeGlobal,
   type SiblingEvidence,
 } from './opfs-sibling-fixture';
@@ -211,6 +214,93 @@ async function runSiblingScenario(): Promise<SiblingEvidence> {
     floorFilesAtEnd,
   };
 }
+
+/** The fence scenario's state in this worker: one role per worker. */
+let fenced: { replica: ClientDatabase; sibling: SiblingDatabase } | undefined;
+
+const rowsOf = (database: ClientDatabase): string[] =>
+  database
+    .query('SELECT note FROM fenced ORDER BY id')
+    .map((row) => String((row as { note: unknown }).note));
+
+const codeOf = (write: () => void): string => {
+  try {
+    write();
+    return 'written';
+  } catch (error) {
+    return error instanceof ClientSyncError ? error.code : String(error);
+  }
+};
+
+/** Holder: open the replica and a sibling, write, and keep both open. */
+async function holdFenceReplica(): Promise<void> {
+  const replica = await openPersistentWasmDatabase(FENCE_REPLICA);
+  replica.exec('CREATE TABLE fenced (id INTEGER PRIMARY KEY, note TEXT)');
+  replica.exec("INSERT INTO fenced (note) VALUES ('before')");
+  const sibling = siblingCapability(replica).openSibling(SIBLING_NAME);
+  sibling.database.exec('CREATE TABLE IF NOT EXISTS side (note TEXT)');
+  fenced = { replica, sibling };
+}
+
+/** Taker: steal the storage lock and retry the open while the SAHs drain. */
+async function takeFenceReplica(): Promise<
+  Pick<FenceEvidence, 'rowsAtTakeover' | 'integrity'>
+> {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    try {
+      const replica = await openPersistentWasmDatabase(FENCE_REPLICA, {
+        takeOver: true,
+      });
+      const rowsAtTakeover = rowsOf(replica);
+      const integrity = String(
+        (replica.query('PRAGMA integrity_check')[0] as Record<string, unknown>)
+          .integrity_check,
+      );
+      replica.exec("INSERT INTO fenced (note) VALUES ('after')");
+      fenced = {
+        replica,
+        sibling: siblingCapability(replica).openSibling(SIBLING_NAME),
+      };
+      return { rowsAtTakeover, integrity };
+    } catch (error) {
+      if (
+        !(error instanceof ClientSyncError) ||
+        error.code !== 'client.storage_busy'
+      )
+        throw error;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+  throw new Error('the taker never opened the fenced replica');
+}
+
+scope.addEventListener('message', (event: MessageEvent) => {
+  const t = (event.data as { t?: string } | null)?.t;
+  const reply = (work: () => Promise<unknown>) =>
+    work().then(
+      (value) => scope.postMessage({ t: 'report', value }),
+      (error: unknown) =>
+        scope.postMessage({
+          t: 'error',
+          message: error instanceof Error ? error.message : String(error),
+        }),
+    );
+  if (t === 'fence-hold') void reply(holdFenceReplica);
+  if (t === 'fence-take') void reply(takeFenceReplica);
+  if (t === 'fence-write')
+    void reply(async () => ({
+      replica: codeOf(() =>
+        fenced?.replica.exec("INSERT INTO fenced (note) VALUES ('stale')"),
+      ),
+      sibling: codeOf(() =>
+        fenced?.sibling.database.exec("INSERT INTO side VALUES ('stale')"),
+      ),
+    }));
+  if (t === 'fence-rows')
+    void reply(async () =>
+      fenced === undefined ? [] : rowsOf(fenced.replica),
+    );
+});
 
 scope.addEventListener('message', (event: MessageEvent) => {
   if ((event.data as { t?: string } | null)?.t !== 'run') return;

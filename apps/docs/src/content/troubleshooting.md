@@ -20,6 +20,7 @@ Use this page when a Syncular client or server misbehaves during a first integra
 | Offline writes risk loss on a browser that has not granted persistence | [Pending outbox on best-effort browser storage](#pending-outbox-on-best-effort-browser-storage) |
 | `client.follower_timeout` in a follower tab | [`client.follower_timeout`](#clientfollower_timeout-in-a-follower-tab) |
 | `client.leader_incompatible` in a follower tab | [`client.leader_incompatible`](#clientleader_incompatible-in-a-follower-tab) |
+| `client.leadership_taken` in a tab that stopped responding | [`client.leadership_taken`](#clientleadership_taken-in-a-tab-that-stopped-responding) |
 | A Tauri view is slow, partial, or ignores another client | [Tauri troubleshooting](/platform-tauri-troubleshooting/#slow-partial-or-non-converging-views) |
 
 ## Error code index
@@ -45,6 +46,9 @@ Errors carry stable codes. When you arrive from a stack trace, start here:
 | `client.not_leader` | Another tab owns the origin leader lock | [below](#clientnot_leader-on-a-second-tab) |
 | `client.follower_timeout` | The leader tab answered no probe in time | [below](#clientfollower_timeout-in-a-follower-tab) |
 | `client.leader_incompatible` | The leader tab runs another protocol or schema version | [below](#clientleader_incompatible-in-a-follower-tab) |
+| `client.takeover_refused` | `takeOver()` ran while the leader answers, before `takeOverAfterMs`, or twice | [below](#clientfollower_timeout-in-a-follower-tab) |
+| `client.leadership_taken` | Another tab took this tab's leadership with `takeOver()` | [below](#clientleadership_taken-in-a-tab-that-stopped-responding) |
+| `client.storage_fenced` | A worker's database was taken over; the worker refuses every statement | [below](#clientleadership_taken-in-a-tab-that-stopped-responding) |
 | `client.storage_busy` | The OPFS pool is still held by another engine | [below](#clientstorage_busy-while-opening-the-app) |
 | `client.worker_restart_required` | A stale dev-server worker graph | [below](#clientworker_restart_required-after-a-package-upgrade) |
 | `client.decrypt_failed` | No key for an envelope's key id | [Encryption keys](/concepts-encryption/#encryption-keys) |
@@ -181,7 +185,13 @@ Do not mirror the outbox into IndexedDB for this condition. IndexedDB and OPFS s
 
 ## `client.follower_timeout` in a follower tab
 
-The follower's probe to the leader tab got no answer within `followerCallTimeoutMs` (default 10 s), so `handle.leadership` is `blocked` with reason `leader-unreachable` and calls reject immediately. A leader in a hidden or throttled tab still answers probes. This state means the leader tab's main thread processed no messages for the whole window, for example during a long synchronous task or while the browser froze the tab. The follower keeps probing and rebinds when the leader answers, and closing the leader tab promotes a follower. Render the blocked state. Raising `followerCallTimeoutMs` only delays detection of a hung leader. Details are on [Platform specifics](/platform-web-specifics/#multi-tab).
+The follower's probe to the leader tab got no answer within `followerCallTimeoutMs` (default 10 s), so `handle.leadership` is `blocked` with reason `leader-unreachable` and calls reject immediately. A leader in a hidden or throttled tab still answers probes. This state means the leader tab's main thread processed no messages for the whole window, for example during a long synchronous task or while the browser froze the tab. The follower keeps probing and rebinds when the leader answers, and closing the leader tab promotes a follower. Render the blocked state. Raising `followerCallTimeoutMs` only delays detection of a hung leader.
+
+When the user cannot find the leader tab, offer a button that calls `handle.takeOver()` once the `onLeaderUnreachable` `started` event's `takeOverAt` has passed (twice `followerCallTimeoutMs` by default). Earlier, while the leader answers again, or during another takeover, it rejects with `client.takeover_refused` and `details.reason` `too-early`, `not-unreachable`, or `in-progress`. It rejects with `client.storage_busy` when the old tab's worker is frozen with the database open; the button stays offered, and the takeover succeeds once that worker runs again or its tab closes. Details are on [Platform specifics](/platform-web-specifics/#take-over-from-an-unresponsive-leader).
+
+## `client.leadership_taken` in a tab that stopped responding
+
+Another tab called `takeOver()` while this tab's main thread processed no messages, so `handle.leadership` is `blocked` with reason `leadership-taken` and every call rejects with this code. The tab's worker refused every statement from the moment its storage lock was taken (`client.storage_fenced`) and closed the database. Reload the tab; it then binds to the tab that took over.
 
 ## `client.leader_incompatible` in a follower tab
 

@@ -3,6 +3,12 @@ import type { RealtimeState } from './diagnostics';
 /** A persistent local store is temporarily owned by another live engine. */
 export const STORAGE_BUSY_CODE = 'client.storage_busy';
 
+/**
+ * Another tab took this engine's persistent store with `takeOver()`; the
+ * engine closed the store and refuses every further statement.
+ */
+export const STORAGE_FENCED_CODE = 'client.storage_fenced';
+
 /** The browser cannot provide the persistent storage APIs Syncular requires. */
 export const STORAGE_UNAVAILABLE_CODE = 'client.storage_unavailable';
 

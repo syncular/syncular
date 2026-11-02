@@ -14,6 +14,7 @@ and tab failures to their entries there.
 | `client.not_leader` in a second tab | The handle was created with `multiTab: false` and another tab leads. | [Troubleshooting](/troubleshooting/#clientnot_leader-on-a-second-tab) |
 | `client.follower_timeout` | The leader tab answered no probe within `followerCallTimeoutMs`. | [Troubleshooting](/troubleshooting/#clientfollower_timeout-in-a-follower-tab) |
 | `client.leader_incompatible` | The leader runs another multi-tab protocol or schema version. | [Troubleshooting](/troubleshooting/#clientleader_incompatible-in-a-follower-tab) |
+| `client.leadership_taken` | Another tab took over while this one did not respond. | [Troubleshooting](/troubleshooting/#clientleadership_taken-in-a-tab-that-stopped-responding) |
 | `client.storage_busy` at startup | Another live engine still holds the OPFS pool. | [Troubleshooting](/troubleshooting/#clientstorage_busy-while-opening-the-app) |
 | Pending outbox on best-effort storage | The browser has not granted persistence. | [Troubleshooting](/troubleshooting/#pending-outbox-on-best-effort-browser-storage) |
 | `client.worker_restart_required` | A dev server worker graph refers to a retired chunk. | [Troubleshooting](/troubleshooting/#clientworker_restart_required-after-a-package-upgrade) |

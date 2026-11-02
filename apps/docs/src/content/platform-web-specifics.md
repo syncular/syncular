@@ -113,8 +113,10 @@ and the [eviction criteria](https://developer.mozilla.org/en-US/docs/Web/API/Sto
 When the leader closes, a follower promotes in place over the same OPFS
 database. The handle object survives, `role` flips to `'leader'`, and
 `onRoleChange` fires, so a React provider keeps a stable reference. A visible
-tab never takes leadership from a hidden leader: leadership moves only when the
-leader tab closes and its Web Lock passes to a follower.
+tab never takes leadership from a leader that answers its probes, hidden or
+not: leadership moves when the leader tab closes and its Web Lock passes to a
+follower, or when the user takes over from an
+[unresponsive leader](#take-over-from-an-unresponsive-leader).
 
 ### Leader probes
 
@@ -132,6 +134,43 @@ probing and rebinds when the leader answers. A forwarded call has no deadline of
 its own: the leader's core can run a follower's `setWindow` after a long
 bootstrap download, and the follower waits while the leader answers probes. The
 call rejects when the link blocks or another leader takes over.
+
+### Take over from an unresponsive leader
+
+A follower can take the database from a leader tab that stopped answering,
+such as a tab the browser froze in another window, on an explicit user action.
+`handle.takeOver()` is allowed once the follower has been `blocked` with reason
+`leader-unreachable` for `takeOverAfterMs`, which defaults to twice
+`followerCallTimeoutMs`. Before that, or against a leader that answers again,
+it rejects with `client.takeover_refused`; a hidden leader answers its probes,
+so it keeps its lock.
+
+```ts
+handle.onLeaderUnreachable((event) => {
+  if (event.phase === 'started') showTakeOverButtonAt(event.takeOverAt);
+  else report('leader-unreachable', event.durationMs, event.outcome);
+});
+await handle.takeOver(); // from the button's click handler
+```
+
+`takeOver()` takes the leader's Web Lock with `steal`, starts the worker in
+this tab on a higher epoch, and the new worker takes the storage lock the old
+worker holds for its OPFS pool. OPFS sync access handles are exclusive, so the
+new worker cannot open the database while the old worker holds them; it
+retries for about 2.5 s and then rejects with `client.storage_busy`. The old
+worker's database refuses every statement from the moment its storage lock is
+taken, with `client.storage_fenced`, and closes its handles, which lets the new
+worker open. A frozen worker does this when it next runs. When it stays frozen
+past the retries, `takeOver()` rejects with `client.storage_busy`, and calling
+it again succeeds once the old tab runs or closes.
+
+The old tab notices the loss when it next runs: its state becomes `blocked`
+with reason `leadership-taken` and code `client.leadership_taken`, it closes
+its core, and its calls reject. Reload it to rejoin as a follower.
+
+`onLeaderUnreachable` reports `started` with `at` and `takeOverAt`, and `ended`
+with `durationMs` and an `outcome`: `rebound` (the leader answered),
+`promoted` (its tab closed), `taken-over`, `incompatible`, or `closed`.
 
 ### Build compatibility
 
@@ -198,6 +237,13 @@ old core applied it; give mutating calls an id the core deduplicates before
 retrying them. A call made while no leader is bound waits for the next leader
 for up to `callTimeoutMs` (default 10 s) and then rejects with
 `client.follower_timeout`.
+
+`takeOver()` and `onLeaderUnreachable` work as on the handle
+([take over from an unresponsive leader](#take-over-from-an-unresponsive-leader)).
+`lead` then runs with `context.takeover` set: the old leader's worker can still
+hold the database files, so take over your own storage lock and retry opening
+until it releases them. The coordinator calls the old leader's `close()` when
+that tab runs again; its core must not write after that.
 
 `version` orders builds. A leader that hears from a tab with a higher `version`
 closes its core and releases the lock; the newer tab promotes, and the older

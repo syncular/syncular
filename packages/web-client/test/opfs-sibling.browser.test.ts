@@ -2,6 +2,7 @@ import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { dirname, join } from 'node:path';
 import { chromium } from 'playwright';
 import {
+  type FenceEvidence,
   SIBLING_FLOOR,
   SIBLING_NAME,
   SIBLING_REPLICA,
@@ -179,6 +180,30 @@ test('OPFS SAH pool drives the RFC 0005 sibling container', async () => {
     expect(evidence.floorCapacity).toBe(3);
     expect(evidence.floorRowCount).toBe(1);
     expect(evidence.floorFilesAtEnd).toEqual([`/${SIBLING_FLOOR}.db`]);
+  } finally {
+    await browser.close();
+  }
+}, 60000);
+
+test('a worker that takes the storage lock fences the worker that held it', async () => {
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    const errors: string[] = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    await page.goto(server.url.href);
+    const evidence: FenceEvidence = await page.evaluate(() =>
+      window.opfsSiblingTest.fence(),
+    );
+    expect(errors).toEqual([]);
+    // The taker opened the replica the holder wrote, intact.
+    expect(evidence.rowsAtTakeover).toEqual(['before']);
+    expect(evidence.integrity).toBe('ok');
+    // The holder kept running and refuses every statement on the replica and
+    // its sibling once its storage lock is gone.
+    expect(evidence.fencedReplicaWrite).toBe('client.storage_fenced');
+    expect(evidence.fencedSiblingWrite).toBe('client.storage_fenced');
+    expect(evidence.rowsAtEnd).toEqual(['before', 'after']);
   } finally {
     await browser.close();
   }

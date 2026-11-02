@@ -5,8 +5,9 @@ import { join, resolve } from 'node:path';
 
 // Bun 1.4.0, minified browser graphs with SQLite external. After the §12
 // local-authority seam and the queued-insert marker, the client measures
-// 163029 bytes and the worker 181505 bytes on Bun 1.4.0 (162385 and 181182 on
-// Bun 1.4.4). The ceilings round up from the maximum observed in source and
+// 163029 bytes on Bun 1.4.0 (162385 on Bun 1.4.4). The OPFS storage fence for
+// tab takeover grew the worker to 182197 bytes on Bun 1.4.0 (181874 on Bun
+// 1.4.4). The ceilings round up from the maximum observed in source and
 // materialized builds. Independently assert that ordinary imports
 // exclude authority modules.
 test('ordinary client, worker and native graphs exclude authority; only explicit opt-in retains it', async () => {
@@ -30,7 +31,7 @@ test('ordinary client, worker and native graphs exclude authority; only explicit
         'worker',
         `import { startSyncWorker } from '${root}/packages/web-client/src/worker-entry.ts'; startSyncWorker();`,
         false,
-        182000,
+        183000,
       ],
       [
         'authority-worker',

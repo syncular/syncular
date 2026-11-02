@@ -252,7 +252,24 @@ worker still holds the OPFS database and may be mid-commit, so a transfer
 needs a cooperative close-and-release handshake, and every focus change
 between tabs would restart the worker, reopen the database, and reconnect the
 realtime socket. A hidden leader answers its followers from its message
-handler, so leadership moves only when the leader tab closes.
+handler, so leadership moves only when the leader tab closes, or when the
+user takes over from an unresponsive one.
+
+**Taking over from an unresponsive leader.** A leader whose main thread runs
+no task (a frozen background tab, a hung window) blocks its followers with
+`leader-unreachable`. Once that has lasted `takeOverAfterMs` (default twice
+`followerCallTimeoutMs`), `handle.takeOver()`, called from a user action, steals
+the leader's Web Lock, starts the worker in this tab on a higher epoch, and
+steals the old worker's OPFS storage lock. OPFS sync access handles are
+exclusive, so the new worker opens the database only after the old one closed
+it. The old worker's database refuses every statement once its storage lock is
+gone (`client.storage_fenced`) and closes its handles, and the old tab becomes
+`blocked` with reason `leadership-taken` when it runs again. `takeOver()`
+rejects with `client.takeover_refused` (`details.reason`: `not-unreachable`,
+`too-early`, `in-progress`, `unsupported`) and with `client.storage_busy` while a
+frozen worker still holds the files. `onLeaderUnreachable` reports the start of
+each unreachable period with `takeOverAt`, and its end with `durationMs` and
+the outcome.
 
 **Presence semantics — one device, one peer.** All tabs share the leader's
 single connection, so a device is exactly ONE presence peer collectively:

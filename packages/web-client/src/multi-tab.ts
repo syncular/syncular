@@ -82,6 +82,12 @@ export const LEADER_INCOMPATIBLE_CODE = 'client.leader_incompatible';
 /** Client-local: the leader that received a call stopped leading before it answered. */
 export const LEADER_HANDOVER_CODE = 'client.leader_handover';
 
+/** Client-local: another tab took this tab's leadership with `takeOver()`. */
+export const LEADERSHIP_TAKEN_CODE = 'client.leadership_taken';
+
+/** Client-local: `takeOver()` was called while its conditions do not hold. */
+export const TAKEOVER_REFUSED_CODE = 'client.takeover_refused';
+
 /**
  * Version of the leader/follower wire and the forwarded handle API. Bump it
  * with every change to a message shape or to a forwarded method's arguments
@@ -140,6 +146,12 @@ export type LeadershipState =
       readonly code: typeof LEADER_INCOMPATIBLE_CODE;
       /** Whether the tab holding the database runs an older or a newer build. */
       readonly leader: 'older' | 'newer';
+      readonly retryable: true;
+    }
+  | {
+      readonly state: 'blocked';
+      readonly reason: 'leadership-taken';
+      readonly code: typeof LEADERSHIP_TAKEN_CODE;
       readonly retryable: true;
     };
 
@@ -945,6 +957,13 @@ export interface TabLeaderContext<E> {
   /** This tab's id. The leader's own calls arrive under it. */
   readonly tabId: string;
   /**
+   * True when this tab took the lock from an unreachable leader with
+   * `takeOver()`. That leader's worker can still hold the database files;
+   * the core must take over its storage lock and retry opening until the
+   * old worker releases them.
+   */
+  readonly takeover: boolean;
+  /**
    * The leader lock. The coordinator releases it after {@link TabLeader.close}
    * resolves. Release it earlier only when the core is already gone, such as a
    * worker terminated on `pagehide`.
@@ -972,8 +991,46 @@ export interface TabLeader {
    * lock.
    */
   tabClosed?(tabId: string): void;
-  /** Stop the core. The coordinator releases the leader lock afterwards. */
+  /**
+   * Stop the core. The coordinator releases the leader lock afterwards. It
+   * also runs when another tab took the lock: the core must not write again.
+   */
   close(): Promise<void>;
+}
+
+/**
+ * A follower's link to its leader went `leader-unreachable`, or left that
+ * state. Times are `clock.now()` milliseconds (wall-clock by default).
+ */
+export type LeaderUnreachableEvent =
+  | {
+      readonly phase: 'started';
+      readonly at: number;
+      /** The earliest time `takeOver()` is allowed. */
+      readonly takeOverAt: number;
+    }
+  | {
+      readonly phase: 'ended';
+      readonly at: number;
+      readonly durationMs: number;
+      /**
+       * `rebound`: the leader answered again. `promoted`: its lock passed to
+       * this tab. `taken-over`: this tab's `takeOver()` succeeded.
+       * `incompatible`: a leader of another build answered. `closed`: this
+       * tab closed first.
+       */
+      readonly outcome:
+        | 'rebound'
+        | 'promoted'
+        | 'taken-over'
+        | 'incompatible'
+        | 'closed';
+    };
+
+/** Time source and timer seam; tests inject a manual clock. */
+export interface TabClock {
+  now(): number;
+  schedule(callback: () => void, delayMs: number): () => void;
 }
 
 export interface TabCoordinatorConfig<E> {
@@ -990,11 +1047,19 @@ export interface TabCoordinatorConfig<E> {
   /** Events the leader broadcast, or sent to this tab. */
   onEvent?(event: E): void;
   onStateChange?(state: LeadershipState): void;
+  /** Start and end of every `leader-unreachable` period, for host telemetry. */
+  onLeaderUnreachable?(event: LeaderUnreachableEvent): void;
   /** Defaults to Web Locks; tests inject a name-keyed exclusive lock. */
   readonly lock?: LeaderLock;
   readonly channelFactory?: (name: string) => CrossTabChannel<E>;
   /** Liveness and handover-queue deadline; defaults to 10 s. */
   readonly callTimeoutMs?: number;
+  /**
+   * How long a follower must have been `leader-unreachable` before
+   * `takeOver()` is allowed; defaults to twice `callTimeoutMs`.
+   */
+  readonly takeOverAfterMs?: number;
+  readonly clock?: TabClock;
 }
 
 /** One tab's end of the coordinator, the same in leader and follower tabs. */
@@ -1003,12 +1068,33 @@ export interface TabCoordinator {
   readonly state: LeadershipState;
   /** Run a call on the leader's core, in this tab or over the channel. */
   call(method: string, args: readonly unknown[]): Promise<unknown>;
+  /**
+   * Take the lock from a leader that has been `leader-unreachable` for
+   * `takeOverAfterMs`, and start the core in this tab. The old leader reports
+   * `leadership-taken` and closes its core once it runs again. Rejects with
+   * `client.takeover_refused` (`details.reason`: `not-unreachable`,
+   * `too-early`, `in-progress` or `unsupported`) when the conditions do not
+   * hold, and with the core's start error when the core cannot start.
+   */
+  takeOver(): Promise<void>;
   /** Stop the core (leader) or the link (follower), and release this tab's locks. */
   close(): Promise<void>;
 }
 
 function tabLockName(name: string, tabId: string): string {
   return `${name}:tab:${tabId}`;
+}
+
+function takeOverRefused(
+  reason: 'not-unreachable' | 'too-early' | 'in-progress' | 'unsupported',
+  takeOverAt?: number,
+): ClientSyncError {
+  return new ClientSyncError(
+    TAKEOVER_REFUSED_CODE,
+    'takeOver() requires a leader that has been unreachable for takeOverAfterMs',
+    reason === 'too-early' || reason === 'in-progress',
+    { reason, ...(takeOverAt !== undefined ? { takeOverAt } : {}) },
+  );
 }
 
 /**
@@ -1021,6 +1107,16 @@ export async function createTabCoordinator<E>(
   config: TabCoordinatorConfig<E>,
 ): Promise<TabCoordinator> {
   const lock = config.lock ?? webLocksLeaderLock();
+  const clock: TabClock = config.clock ?? {
+    now: () => Date.now(),
+    schedule: (callback, delayMs) => {
+      const timer = setTimeout(callback, delayMs);
+      return () => clearTimeout(timer);
+    },
+  };
+  const callTimeoutMs =
+    config.callTimeoutMs ?? DEFAULT_FOLLOWER_CALL_TIMEOUT_MS;
+  const takeOverAfterMs = config.takeOverAfterMs ?? 2 * callTimeoutMs;
   const openChannel = config.channelFactory ?? broadcastChannelFactory<E>();
   const channelName = multiTabChannelName(config.name);
   const identity: TabIdentity = {
@@ -1037,9 +1133,43 @@ export async function createTabCoordinator<E>(
     | undefined;
   let follower: FollowerLink<E> | undefined;
   let closed = false;
+  let takingOver = false;
+  /** Start of the current `leader-unreachable` period. */
+  let unreachableSince: number | undefined;
 
+  const report = (event: LeaderUnreachableEvent): void => {
+    try {
+      config.onLeaderUnreachable?.(event);
+    } catch {
+      // A telemetry listener must never break cross-tab coordination.
+    }
+  };
+  const endUnreachable = (
+    outcome: Extract<LeaderUnreachableEvent, { phase: 'ended' }>['outcome'],
+  ): void => {
+    if (unreachableSince === undefined) return;
+    const at = clock.now();
+    report({ phase: 'ended', at, durationMs: at - unreachableSince, outcome });
+    unreachableSince = undefined;
+  };
   const setState = (next: LeadershipState): void => {
     state = next;
+    if (next.state === 'blocked' && next.reason === 'leader-unreachable') {
+      if (unreachableSince === undefined) {
+        unreachableSince = clock.now();
+        report({
+          phase: 'started',
+          at: unreachableSince,
+          takeOverAt: unreachableSince + takeOverAfterMs,
+        });
+      }
+    } else if (next.state === 'follower') {
+      endUnreachable('rebound');
+    } else if (next.state === 'leader') {
+      endUnreachable(takingOver ? 'taken-over' : 'promoted');
+    } else if (next.state === 'blocked') {
+      endUnreachable('incompatible');
+    }
     try {
       config.onStateChange?.(next);
     } catch {
@@ -1050,12 +1180,29 @@ export async function createTabCoordinator<E>(
   // Held until close: a leader waits on it to learn this tab is gone.
   const tabLease = await lock.acquire(tabLockName(config.name, tabId));
 
-  const lead = async (lease: LeaderLease, epoch: number): Promise<void> => {
+  const lead = async (
+    lease: LeaderLease,
+    epoch: number,
+    takeover: boolean,
+  ): Promise<void> => {
     let bridge: LeaderBridge<E> | undefined;
     let current = true;
+    let stepDown: ((next: LeadershipState) => void) | undefined;
+    let lostWhileStarting = false;
+    const taken: LeadershipState = {
+      state: 'blocked',
+      reason: 'leadership-taken',
+      code: LEADERSHIP_TAKEN_CODE,
+      retryable: true,
+    };
+    void lease.lost?.then(() => {
+      if (stepDown !== undefined) stepDown(taken);
+      else lostWhileStarting = true;
+    });
     const leader = await config.lead({
       epoch,
       tabId,
+      takeover,
       lease,
       broadcast: (event) => {
         if (!current) return;
@@ -1068,8 +1215,9 @@ export async function createTabCoordinator<E>(
         else bridge?.sendEvent(to, event);
       },
     });
-    if (closed) {
-      // Closed while the core was starting: nobody holds this tab any more.
+    if (closed || lostWhileStarting) {
+      // Closed while the core was starting, or another tab took the lock: a
+      // follower link, if any, binds to that tab's announcement.
       current = false;
       await leader.close();
       await lease.release();
@@ -1084,6 +1232,15 @@ export async function createTabCoordinator<E>(
       },
     };
     leading = ending;
+    stepDown = (next) => {
+      // Stop the core and release the lock; this tab stays blocked until it
+      // reloads.
+      if (leading !== ending) return;
+      leading = undefined;
+      ending.end();
+      setState(next);
+      void leader.close().finally(() => lease.release());
+    };
     bridge = new LeaderBridge<E>({
       channel: openChannel(channelName),
       epoch,
@@ -1102,21 +1259,15 @@ export async function createTabCoordinator<E>(
             },
           }
         : {}),
-      onNewerTab: () => {
-        // A newer build asked for the core: stop it and release the lock so
-        // that tab promotes. This tab stays blocked until it reloads.
-        if (leading !== ending) return;
-        leading = undefined;
-        ending.end();
-        setState({
+      // A newer build asked for the core.
+      onNewerTab: () =>
+        stepDown?.({
           state: 'blocked',
           reason: 'leader-incompatible',
           code: LEADER_INCOMPATIBLE_CODE,
           leader: 'newer',
           retryable: true,
-        });
-        void leader.close().finally(() => lease.release());
-      },
+        }),
     });
     // Calls queued for the next leader run on this tab's own core.
     follower?.handOver((method, args) => leader.call(tabId, method, args));
@@ -1140,6 +1291,16 @@ export async function createTabCoordinator<E>(
       }
       if (leading !== undefined)
         return leading.leader.call(tabId, method, args);
+      if (follower !== undefined) return follower.call(method, args);
+      if (state.state === 'blocked' && state.reason === 'leadership-taken') {
+        return Promise.reject(
+          new ClientSyncError(
+            LEADERSHIP_TAKEN_CODE,
+            'another tab took over the core this tab ran',
+            true,
+          ),
+        );
+      }
       if (state.state === 'blocked' && state.reason === 'leader-incompatible') {
         return Promise.reject(
           new ClientSyncError(
@@ -1149,14 +1310,62 @@ export async function createTabCoordinator<E>(
           ),
         );
       }
-      if (follower !== undefined) return follower.call(method, args);
       return Promise.reject(
         new ClientSyncError(WORKER_FAILED_CODE, 'no core serves this tab'),
       );
     },
+    takeOver: async () => {
+      if (closed) {
+        throw new ClientSyncError(
+          WORKER_FAILED_CODE,
+          'the tab coordinator is closed',
+        );
+      }
+      const link = follower;
+      if (
+        link === undefined ||
+        unreachableSince === undefined ||
+        state.state !== 'blocked' ||
+        state.reason !== 'leader-unreachable'
+      ) {
+        throw takeOverRefused('not-unreachable');
+      }
+      if (takingOver) throw takeOverRefused('in-progress');
+      const takeOverAt = unreachableSince + takeOverAfterMs;
+      if (clock.now() < takeOverAt)
+        throw takeOverRefused('too-early', takeOverAt);
+      if (lock.steal === undefined) throw takeOverRefused('unsupported');
+      takingOver = true;
+      try {
+        const lease = await lock.steal(config.name);
+        if (closed) {
+          await lease.release();
+          return;
+        }
+        try {
+          // Exceed every epoch this tab saw, so the old leader's late replies
+          // and events are discarded everywhere.
+          await lead(lease, link.maxEpochSeen + 1, true);
+        } catch (error) {
+          await lease.release();
+          throw error;
+        }
+        if (!closed && leading === undefined) {
+          // A third tab took the lock while this tab's core was starting.
+          throw new ClientSyncError(
+            LEADERSHIP_TAKEN_CODE,
+            'another tab took over the core this tab ran',
+            true,
+          );
+        }
+      } finally {
+        takingOver = false;
+      }
+    },
     close: async () => {
       if (closed) return;
       closed = true;
+      endUnreachable('closed');
       follower?.close();
       follower = undefined;
       const ending = leading;
@@ -1177,7 +1386,7 @@ export async function createTabCoordinator<E>(
       : await lock.acquire(config.name);
   if (lease !== undefined) {
     try {
-      await lead(lease, 0);
+      await lead(lease, 0, false);
     } catch (error) {
       await lease.release();
       await tabLease.release();
@@ -1193,15 +1402,16 @@ export async function createTabCoordinator<E>(
     onEvent: (event) => config.onEvent?.(event),
     onLeaderChange: () => {},
     onStateChange: setState,
-    ...(config.callTimeoutMs !== undefined
-      ? { callTimeoutMs: config.callTimeoutMs }
-      : {}),
+    callTimeoutMs,
+    schedule: clock.schedule,
   });
   follower = link;
-  // Granted only when the leader releases the lock (its tab closed).
+  // Granted only when the lock is released: the leader's tab closed, or this
+  // tab's own failed takeover let go of it.
   void lock.acquire(config.name).then(async (promoted) => {
-    if (closed) {
-      // Promoting a closed coordinator would hold the lock forever.
+    if (closed || follower !== link) {
+      // Closed, or this tab already leads through takeOver(): promoting would
+      // hold the lock forever.
       await promoted.release();
       return;
     }
@@ -1210,7 +1420,7 @@ export async function createTabCoordinator<E>(
     const epoch = link.maxEpochSeen + 1;
     link.unbind();
     try {
-      await lead(promoted, epoch);
+      await lead(promoted, epoch, false);
     } catch {
       // The core failed to start: release so the next tab tries.
       await promoted.release();

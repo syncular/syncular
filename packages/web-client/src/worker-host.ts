@@ -83,8 +83,11 @@ import {
 import {
   type CrossTabChannel,
   createTabCoordinator,
+  type LeaderUnreachableEvent,
   type LeadershipState,
   multiTabChannelName,
+  TAKEOVER_REFUSED_CODE,
+  type TabClock,
   type TabCoordinator,
 } from './multi-tab';
 import type { OutboxCommit } from './outbox';
@@ -235,6 +238,15 @@ export interface SyncClientHandleConfig {
    * `blocked` when the probe stays unanswered for the rest. Default 10 s.
    */
   readonly followerCallTimeoutMs?: number;
+  /**
+   * How long a follower must have been `leader-unreachable` before
+   * `takeOver()` is allowed. Default twice `followerCallTimeoutMs`.
+   */
+  readonly takeOverAfterMs?: number;
+  /** Start and end of every `leader-unreachable` period, for host telemetry. */
+  readonly onLeaderUnreachable?: (event: LeaderUnreachableEvent) => void;
+  /** Time source for the follower timers; injectable for tests. */
+  readonly tabClock?: TabClock;
   /** Fires when this handle's role changes (follower → leader on promotion). */
   readonly onRoleChange?: (role: HandleRole) => void;
   /** Fires when reachability or ownership changes without replacing the handle. */
@@ -323,6 +335,7 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
   readonly #diagnostics: ClientDiagnosticsEmitter;
   readonly #roleListeners: Set<(role: HandleRole) => void>;
   readonly #leadershipListeners: Set<(state: LeadershipState) => void>;
+  readonly #unreachableListeners: Set<(event: LeaderUnreachableEvent) => void>;
   readonly #devtoolsUnregister: () => void;
   #closed = false;
 
@@ -339,6 +352,7 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     diagnostics: ClientDiagnosticsEmitter;
     roleListeners?: Set<(role: HandleRole) => void>;
     leadershipListeners?: Set<(state: LeadershipState) => void>;
+    unreachableListeners?: Set<(event: LeaderUnreachableEvent) => void>;
     leadership?: LeadershipState;
   }) {
     this.#role = internals.role;
@@ -363,6 +377,7 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     this.#diagnostics = internals.diagnostics;
     this.#roleListeners = internals.roleListeners ?? new Set();
     this.#leadershipListeners = internals.leadershipListeners ?? new Set();
+    this.#unreachableListeners = internals.unreachableListeners ?? new Set();
     // Console introspection is a no-op outside a dev page.
     this.#devtoolsUnregister = registerDevtools({
       kind: 'handle',
@@ -482,6 +497,44 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     return () => {
       this.#leadershipListeners.delete(listener);
     };
+  }
+
+  /** Start and end of every `leader-unreachable` period, with its duration. */
+  onLeaderUnreachable(
+    listener: (event: LeaderUnreachableEvent) => void,
+  ): () => void {
+    this.#unreachableListeners.add(listener);
+    return () => {
+      this.#unreachableListeners.delete(listener);
+    };
+  }
+
+  /**
+   * Take the database from a leader tab that has been `leader-unreachable`
+   * for `takeOverAfterMs`, and run the worker in this tab. Call it from an
+   * explicit user action. The old leader's worker refuses every statement
+   * from then on (`client.storage_fenced`) and its tab reports
+   * `leadership-taken`. Rejects with `client.takeover_refused` when the
+   * conditions do not hold, and with `client.storage_busy` when the old
+   * worker still holds the database files.
+   */
+  takeOver(): Promise<void> {
+    if (this.#closed) {
+      return Promise.reject(
+        new ClientSyncError(WORKER_FAILED_CODE, 'the handle is closed'),
+      );
+    }
+    if (this.#tabs === undefined) {
+      return Promise.reject(
+        new ClientSyncError(
+          TAKEOVER_REFUSED_CODE,
+          'takeOver() requires a multi-tab handle',
+          false,
+          { reason: 'unsupported' },
+        ),
+      );
+    }
+    return this.#tabs.takeOver();
   }
 
   #call<M extends WorkerMethod>(
@@ -993,6 +1046,12 @@ export async function createSyncClientHandle(
   if (resolvedConfig.onLeadershipChange !== undefined) {
     leadershipListeners.add(resolvedConfig.onLeadershipChange);
   }
+  const unreachableListeners = new Set<
+    (event: LeaderUnreachableEvent) => void
+  >();
+  if (resolvedConfig.onLeaderUnreachable !== undefined) {
+    unreachableListeners.add(resolvedConfig.onLeaderUnreachable);
+  }
 
   const handleRef: { handle: SyncClientHandle | undefined } = {
     handle: undefined,
@@ -1005,6 +1064,7 @@ export async function createSyncClientHandle(
     diagnostics,
     roleListeners,
     leadershipListeners,
+    unreachableListeners,
   };
 
   if (resolvedConfig.multiTab === false) {
@@ -1048,14 +1108,32 @@ export async function createSyncClientHandle(
     ...(resolvedConfig.followerCallTimeoutMs !== undefined
       ? { callTimeoutMs: resolvedConfig.followerCallTimeoutMs }
       : {}),
+    ...(resolvedConfig.takeOverAfterMs !== undefined
+      ? { takeOverAfterMs: resolvedConfig.takeOverAfterMs }
+      : {}),
+    ...(resolvedConfig.tabClock !== undefined
+      ? { clock: resolvedConfig.tabClock }
+      : {}),
+    onLeaderUnreachable: (event) => {
+      for (const listener of unreachableListeners) {
+        try {
+          listener(event);
+        } catch {
+          /* a telemetry listener must never break cross-tab coordination */
+        }
+      }
+    },
     lead: async (context) => {
       const core = await startWorkerCore({
         config: resolvedConfig,
         // A promoted tab carries the latest `setHeaders` set.
-        initConfig: buildInitConfig(
-          resolvedConfig,
-          handleRef.handle?.__headers ?? resolvedConfig.headers,
-        ),
+        initConfig: {
+          ...buildInitConfig(
+            resolvedConfig,
+            handleRef.handle?.__headers ?? resolvedConfig.headers,
+          ),
+          ...(context.takeover ? { takeOverStorage: true } : {}),
+        },
         lease: context.lease,
         dispatchEvent: (event) => {
           fireConfigCallbacks(resolvedConfig, event);

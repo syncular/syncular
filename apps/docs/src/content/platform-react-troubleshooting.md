@@ -37,6 +37,7 @@ startup errors:
 | `incompatible-schema` | The status reports a schema floor that neither of the two cases above explains. Not retryable. |
 | `leader-unreachable` | In a follower tab, the leader tab answered no probe. See [Browser specifics](/platform-web-specifics/#leader-probes). |
 | `leader-incompatible` | The tab holding the database runs another build. See [Browser specifics](/platform-web-specifics/#build-compatibility). |
+| `leadership-taken` | Another tab took over this tab's leadership while it did not respond. Reload the tab. See [Browser specifics](/platform-web-specifics/#take-over-from-an-unresponsive-leader). |
 
 ## A query sits in error
 

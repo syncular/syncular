@@ -334,3 +334,84 @@ test('a follower tab reaches the leader authority, and a handover reopens it', a
     await browser.close();
   }
 }, 60000);
+
+test('a follower takes over from an unresponsive leader tab, which wakes up fenced', async () => {
+  const browser = await chromium.launch();
+  try {
+    const context = await browser.newContext();
+    const stuck = await context.newPage();
+    const taker = await context.newPage();
+    const errors: string[] = [];
+    for (const page of [stuck, taker])
+      page.on('pageerror', (error) => errors.push(error.message));
+    await stuck.goto(server.url.href);
+    expect(await open(stuck)).toBe('leader');
+    await write(stuck, 'p-stuck', ['stuck-1']);
+    await taker.goto(server.url.href);
+    expect(
+      await taker.evaluate(
+        (schema) => window.localAuthorityTest.open(schema, 300),
+        CLIENT_SCHEMA,
+      ),
+    ).toBe('follower');
+
+    // The leader's main thread stops running tasks (headless Chromium cannot
+    // freeze a visible page): it answers no probe, while its worker keeps the
+    // OPFS handles and keeps running.
+    const hung = stuck.evaluate(() => {
+      const end = Date.now() + 8000;
+      while (Date.now() < end) {
+        // A busy main thread, as in a hung tab.
+      }
+    });
+    await taker.waitForFunction(() => {
+      const started = window.localAuthorityTest.unreachable[0];
+      return started?.phase === 'started' && Date.now() >= started.takeOverAt;
+    });
+    await taker.evaluate(async () =>
+      (await window.localAuthorityTest.ready).takeOver(),
+    );
+    expect(
+      await taker.evaluate(
+        async () => (await window.localAuthorityTest.ready).role,
+      ),
+    ).toBe('leader');
+    const ended = await taker.evaluate(
+      () => window.localAuthorityTest.unreachable[1],
+    );
+    expect(ended).toMatchObject({ phase: 'ended', outcome: 'taken-over' });
+
+    // The new worker reopened the replica and the authority intact.
+    expect(await localTasks(taker)).toEqual(['stuck-1']);
+    await write(taker, 'p-stuck', ['taker-2']);
+    expect(await localTasks(taker)).toEqual(['stuck-1', 'taker-2']);
+
+    // The old leader wakes up without its lock: blocked, and every call fails.
+    await hung;
+    expect(
+      await stuck.evaluate(
+        async () => (await window.localAuthorityTest.ready).leadership,
+      ),
+    ).toEqual({
+      state: 'blocked',
+      reason: 'leadership-taken',
+      code: 'client.leadership_taken',
+      retryable: true,
+    });
+    expect(
+      await stuck.evaluate(async () => {
+        try {
+          await (await window.localAuthorityTest.ready).query('SELECT 1');
+          return 'answered';
+        } catch (error) {
+          return (error as { code?: string }).code;
+        }
+      }),
+    ).toBe('client.leadership_taken');
+    expect(await localTasks(taker)).toEqual(['stuck-1', 'taker-2']);
+    expect(errors).toEqual([]);
+    await close(taker);
+  } finally {
+    await browser.close();
+  }
+}, 60000);

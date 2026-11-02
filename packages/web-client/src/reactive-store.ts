@@ -377,7 +377,8 @@ function localReadsBlocked(availability: SyncAvailability): boolean {
   return (
     availability.state === 'blocked' &&
     (availability.reason === 'leader-unreachable' ||
-      availability.reason === 'leader-incompatible')
+      availability.reason === 'leader-incompatible' ||
+      availability.reason === 'leadership-taken')
   );
 }
 

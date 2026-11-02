@@ -11,7 +11,8 @@ export type SyncAvailability =
         | 'server-behind'
         | 'incompatible-schema'
         | 'leader-unreachable'
-        | 'leader-incompatible';
+        | 'leader-incompatible'
+        | 'leadership-taken';
       readonly currentSchemaVersion: number;
       /** `leader-incompatible`: whether the tab holding the database runs an
        * older or a newer build than this one. */
@@ -36,7 +37,7 @@ export function blockedLeadershipAvailability(
       }
     : {
         state: 'blocked',
-        reason: 'leader-unreachable',
+        reason: leadership.reason,
         currentSchemaVersion,
         retryable: true,
       };

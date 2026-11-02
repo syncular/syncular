@@ -16,8 +16,10 @@ import {
   isolatedReplicaNames,
   LEADER_HANDOVER_CODE,
   LEADER_INCOMPATIBLE_CODE,
+  LEADERSHIP_TAKEN_CODE,
   type LeaderLease,
   type LeaderLock,
+  type LeaderUnreachableEvent,
   MULTI_TAB_PROTOCOL_VERSION,
   type MultiTabMessage,
   NOT_LEADER_CODE,
@@ -25,6 +27,7 @@ import {
   type SyncClientHandle,
   type SyncClientHandleConfig,
   type SyncWorkerEvent,
+  TAKEOVER_REFUSED_CODE,
   type TabCoordinator,
   type TabCoordinatorConfig,
   type TabLeaderContext,
@@ -50,18 +53,29 @@ const ID = { protocol: MULTI_TAB_PROTOCOL_VERSION, schemaVersion: 1 } as const;
 /**
  * In-process exclusive locks with real Web-Locks semantics, one per name:
  * `tryAcquire` returns undefined when held; `acquire` queues FIFO and resolves
- * when the current holder releases. This is the multi-tab seam the browser
- * fills with `navigator.locks`.
+ * when the current holder releases; `steal` takes the lock at once and the
+ * holder's lease reports `lost`. This is the multi-tab seam the browser fills
+ * with `navigator.locks`. `holdLost` keeps `lost` from reaching a holder, the
+ * way a frozen tab runs no task until it resumes.
  */
-function makeSharedLock(): LeaderLock {
-  const held = new Map<string, symbol>();
+function makeSharedLock(): LeaderLock & {
+  holdLost(): void;
+  releaseLost(): void;
+} {
+  const held = new Map<string, { token: symbol; markLost(): void }>();
   const waiters = new Map<string, Array<(lease: LeaderLease) => void>>();
+  let heldLost: Array<() => void> | undefined;
   const grant = (name: string): LeaderLease => {
     const token = Symbol(name);
-    held.set(name, token);
+    let markLost = (): void => {};
+    const lost = new Promise<void>((resolve) => {
+      markLost = resolve;
+    });
+    held.set(name, { token, markLost });
     return {
+      lost,
       release: () => {
-        if (held.get(name) !== token) return;
+        if (held.get(name)?.token !== token) return;
         held.delete(name);
         const next = waiters.get(name)?.shift();
         if (next !== undefined) next(grant(name));
@@ -76,6 +90,22 @@ function makeSharedLock(): LeaderLock {
       }),
     tryAcquire: (name) =>
       Promise.resolve(held.has(name) ? undefined : grant(name)),
+    steal: (name) => {
+      const holder = held.get(name);
+      if (holder !== undefined) {
+        if (heldLost !== undefined) heldLost.push(holder.markLost);
+        else holder.markLost();
+      }
+      return Promise.resolve(grant(name));
+    },
+    holdLost: () => {
+      heldLost = [];
+    },
+    releaseLost: () => {
+      const pending = heldLost ?? [];
+      heldLost = undefined;
+      for (const markLost of pending) markLost();
+    },
   };
 }
 
@@ -86,21 +116,41 @@ class ChannelPartition<E = SyncWorkerEvent> {
     readonly message: MultiTabMessage<E>;
   }> = [];
 
+  /** Frozen channels and the sends and deliveries they hold until thawed. */
+  readonly #frozen = new Map<CrossTabChannel<E>, Array<() => void>>();
+
+  freeze(channel: CrossTabChannel<E>): void {
+    this.#frozen.set(channel, []);
+  }
+
+  thaw(channel: CrossTabChannel<E>): void {
+    const held = this.#frozen.get(channel) ?? [];
+    this.#frozen.delete(channel);
+    for (const run of held) run();
+  }
+
   readonly factory = (name: string): CrossTabChannel<E> => {
     const listeners = new Set<(event: { data: MultiTabMessage<E> }) => void>();
     const channel: CrossTabChannel<E> = {
       postMessage: (message) => {
-        this.sent.push({ name, message });
-        for (const peer of this.#channels.get(name) ?? []) {
-          if (peer === channel) continue;
-          queueMicrotask(() =>
-            (
-              peer as CrossTabChannel<E> & {
-                deliver?: (message: MultiTabMessage<E>) => void;
-              }
-            ).deliver?.(message),
-          );
-        }
+        const send = (): void => {
+          this.sent.push({ name, message });
+          for (const peer of this.#channels.get(name) ?? []) {
+            if (peer === channel) continue;
+            const deliver = (): void =>
+              (
+                peer as CrossTabChannel<E> & {
+                  deliver?: (message: MultiTabMessage<E>) => void;
+                }
+              ).deliver?.(message);
+            const held = this.#frozen.get(peer);
+            if (held !== undefined) held.push(deliver);
+            else queueMicrotask(deliver);
+          }
+        };
+        const held = this.#frozen.get(channel);
+        if (held !== undefined) held.push(send);
+        else send();
       },
       addEventListener: (_type, listener) => listeners.add(listener),
       removeEventListener: (_type, listener) => listeners.delete(listener),
@@ -206,12 +256,14 @@ async function expectRejectsWithCode(
  * which runs every due timer in deadline order.
  */
 function manualClock(): {
+  now: () => number;
   schedule: (callback: () => void, delayMs: number) => () => void;
   advance: (ms: number) => void;
 } {
   let now = 0;
   const timers = new Set<{ readonly at: number; readonly run: () => void }>();
   return {
+    now: () => now,
     schedule: (run, delayMs) => {
       const timer = { at: now + delayMs, run };
       timers.add(timer);
@@ -1543,21 +1595,41 @@ function coordinatorGroup(): {
     overrides?: Partial<TabCoordinatorConfig<string>>,
   ): Promise<TabCoordinator>;
   readonly tabs: TabCoordinator[];
+  readonly lock: ReturnType<typeof makeSharedLock>;
+  /** Freeze a tab: its channel messages and lost lease wait for `thaw`. */
+  freeze(tab: TabCoordinator): void;
+  thaw(tab: TabCoordinator): void;
 } {
   const lock = makeSharedLock();
   const channels = new ChannelPartition<string>();
   const name = `tabs-${lockSeq++}`;
   const log: CoreLog = { calls: [], closedTabs: [], contexts: [], closes: 0 };
   const tabs: TabCoordinator[] = [];
+  const opened = new Map<TabCoordinator, Array<CrossTabChannel<string>>>();
+  let opening: Array<CrossTabChannel<string>> = [];
   return {
     log,
     tabs,
+    lock,
+    freeze: (tab) => {
+      for (const channel of opened.get(tab) ?? []) channels.freeze(channel);
+      lock.holdLost();
+    },
+    thaw: (tab) => {
+      lock.releaseLost();
+      for (const channel of opened.get(tab) ?? []) channels.thaw(channel);
+    },
     open: async (events, overrides) => {
+      opening = [];
       const tab = await createTabCoordinator<string>({
         name,
         version: 1,
         lock,
-        channelFactory: (channel) => channels.factory(channel),
+        channelFactory: (channel) => {
+          const created = channels.factory(channel);
+          opening.push(created);
+          return created;
+        },
         lead: async (context) => {
           log.contexts.push(context);
           return {
@@ -1577,6 +1649,7 @@ function coordinatorGroup(): {
         onEvent: (event) => events.push(event),
         ...overrides,
       });
+      opened.set(tab, opening);
       tabs.push(tab);
       return tab;
     },
@@ -1721,4 +1794,207 @@ test('a tab coordinator that fails to start its core releases the lock', async (
   } finally {
     for (const tab of group.tabs) await tab.close();
   }
+});
+
+/**
+ * Advance a manual clock in steps of `stepMs`, settling channel deliveries
+ * after each step so a live leader answers every probe.
+ */
+async function advanceSettled(
+  clock: ReturnType<typeof manualClock>,
+  totalMs: number,
+  stepMs: number,
+): Promise<void> {
+  for (let elapsed = 0; elapsed < totalMs; elapsed += stepMs) {
+    clock.advance(stepMs);
+    await drain();
+  }
+}
+
+test('a follower takes over from a frozen leader, which wakes up fenced', async () => {
+  const group = coordinatorGroup();
+  const clock = manualClock();
+  const unreachable: LeaderUnreachableEvent[] = [];
+  const timing = { clock, callTimeoutMs: 300 };
+  const frozen = await group.open([], timing);
+  const taker = await group.open([], {
+    ...timing,
+    onLeaderUnreachable: (event) => unreachable.push(event),
+  });
+  try {
+    expect(await taker.call('open', [])).toBe(`open@${frozen.tabId}`);
+    group.freeze(frozen);
+
+    // The probe after 100 ms stays unanswered; the follower blocks at 300 ms.
+    await advanceSettled(clock, 300, 100);
+    expect(taker.state).toEqual({
+      state: 'blocked',
+      reason: 'leader-unreachable',
+      code: FOLLOWER_TIMEOUT_CODE,
+      retryable: true,
+    });
+    expect(unreachable).toEqual([
+      { phase: 'started', at: 300, takeOverAt: 900 },
+    ]);
+    try {
+      await taker.takeOver();
+      throw new Error('takeOver() succeeded before takeOverAfterMs');
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: TAKEOVER_REFUSED_CODE,
+        details: { reason: 'too-early', takeOverAt: 900 },
+      });
+    }
+
+    await advanceSettled(clock, 600, 100);
+    await taker.takeOver();
+    expect(taker.state).toEqual({
+      state: 'leader',
+      clientId: `core-${taker.tabId}`,
+    });
+    const started = group.log.contexts.at(-1);
+    expect(started).toMatchObject({
+      tabId: taker.tabId,
+      epoch: 1,
+      takeover: true,
+    });
+    expect(unreachable.at(-1)).toEqual({
+      phase: 'ended',
+      at: 900,
+      durationMs: 600,
+      outcome: 'taken-over',
+    });
+    expect(await taker.call('navigate', [])).toBe(`navigate@${taker.tabId}`);
+
+    // Frozen, the old leader has not run since: its core is still open.
+    expect(frozen.state.state).toBe('leader');
+    expect(group.log.closes).toBe(0);
+    const callsBeforeWake = group.log.calls.length;
+
+    group.thaw(frozen);
+    await drain();
+    expect(frozen.state).toEqual({
+      state: 'blocked',
+      reason: 'leadership-taken',
+      code: LEADERSHIP_TAKEN_CODE,
+      retryable: true,
+    });
+    expect(group.log.closes).toBe(1);
+    await expectRejectsWithCode(
+      frozen.call('write', []),
+      LEADERSHIP_TAKEN_CODE,
+    );
+    // The woken leader's core ran nothing, and the new leader still leads.
+    expect(group.log.calls.length).toBe(callsBeforeWake);
+    expect(taker.state.state).toBe('leader');
+    expect(await taker.call('write', [])).toBe(`write@${taker.tabId}`);
+  } finally {
+    for (const tab of group.tabs) await tab.close();
+  }
+});
+
+test('a responsive hidden leader keeps its lock against takeOver', async () => {
+  const group = coordinatorGroup();
+  const clock = manualClock();
+  const unreachable: LeaderUnreachableEvent[] = [];
+  const timing = { clock, callTimeoutMs: 300 };
+  const hidden = await group.open([], timing);
+  const follower = await group.open([], {
+    ...timing,
+    onLeaderUnreachable: (event) => unreachable.push(event),
+  });
+  try {
+    // Hidden tabs still dispatch channel messages, so every probe is answered.
+    await advanceSettled(clock, 3000, 100);
+    expect(follower.state.state).toBe('follower');
+    try {
+      await follower.takeOver();
+      throw new Error('takeOver() succeeded against a responsive leader');
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: TAKEOVER_REFUSED_CODE,
+        details: { reason: 'not-unreachable' },
+      });
+    }
+    expect(hidden.state.state).toBe('leader');
+    expect(group.log.contexts).toHaveLength(1);
+    expect(unreachable).toEqual([]);
+  } finally {
+    for (const tab of group.tabs) await tab.close();
+  }
+});
+
+test('an unreachable period ends when the leader answers again', async () => {
+  const group = coordinatorGroup();
+  const clock = manualClock();
+  const unreachable: LeaderUnreachableEvent[] = [];
+  const timing = { clock, callTimeoutMs: 300 };
+  const leader = await group.open([], timing);
+  const follower = await group.open([], {
+    ...timing,
+    onLeaderUnreachable: (event) => unreachable.push(event),
+  });
+  try {
+    group.freeze(leader);
+    await advanceSettled(clock, 500, 100);
+    expect(follower.state.state).toBe('blocked');
+    group.thaw(leader);
+    // The blocked follower re-probes every 100 ms; the thawed leader answers.
+    await advanceSettled(clock, 100, 100);
+    expect(follower.state.state).toBe('follower');
+    expect(unreachable).toEqual([
+      { phase: 'started', at: 300, takeOverAt: 900 },
+      { phase: 'ended', at: 600, durationMs: 300, outcome: 'rebound' },
+    ]);
+  } finally {
+    for (const tab of group.tabs) await tab.close();
+  }
+});
+
+test('takeOver() on a handle opens the worker with the storage takeover flag', async () => {
+  const lock = makeSharedLock();
+  const channels = new ChannelPartition();
+  const clock = manualClock();
+  const initConfigs: WorkerInitConfig[] = [];
+  const lockName = `takeover-${lockSeq++}`;
+  const make = (clientId: string) =>
+    createSyncClientHandle({
+      worker: () => fakeReadyWorker(clientId, initConfigs),
+      schema: CLIENT_SCHEMA,
+      database: { mode: 'persistent', name: 'takeover' },
+      endpoints: { syncUrl: http.syncUrl },
+      leaderLock: lock,
+      lockName,
+      channelFactory: (name) => {
+        const channel = channels.factory(name);
+        created.push(channel);
+        return channel;
+      },
+      followerCallTimeoutMs: 300,
+      tabClock: clock,
+    });
+  let created: CrossTabChannel[] = [];
+  const frozen = await make('frozen-leader');
+  open.push(frozen);
+  const frozenChannels = created;
+  created = [];
+  const taker = await make('taker');
+  open.push(taker);
+  for (const channel of frozenChannels) channels.freeze(channel);
+  lock.holdLost();
+  await advanceSettled(clock, 900, 100);
+  expect(taker.leadership).toMatchObject({ reason: 'leader-unreachable' });
+  await taker.takeOver();
+  expect(taker.role).toBe('leader');
+  expect(taker.clientId).toBe('taker');
+  expect(initConfigs.map((config) => config.takeOverStorage)).toEqual([
+    undefined,
+    true,
+  ]);
+  lock.releaseLost();
+  for (const channel of frozenChannels) channels.thaw(channel);
+  await drain();
+  expect(frozen.role).toBe('follower');
+  expect(frozen.leadership).toMatchObject({ reason: 'leadership-taken' });
+  await expectRejectsWithCode(frozen.query('SELECT 1'), LEADERSHIP_TAKEN_CODE);
 });

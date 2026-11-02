@@ -16,6 +16,17 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-11-02',
+    title: 'A follower tab takes over from an unresponsive leader',
+    body: "`handle.takeOver()` and `TabCoordinator.takeOver()` let a follower that has been `blocked` with reason `leader-unreachable` for `takeOverAfterMs` (default twice `followerCallTimeoutMs`) take the database from a leader tab that runs no task, such as a frozen tab in another window. Call it from a user action. It steals the leader's Web Lock, starts the core on a higher epoch, and steals the old worker's OPFS storage lock; that worker's database refuses every statement with `client.storage_fenced` and closes its handles, so the new worker opens the database only after the old one let go. The old tab becomes `blocked` with reason `leadership-taken` when it runs again. A leader that answers its probes, hidden or not, keeps its lock: `takeOver()` rejects with `client.takeover_refused`. `onLeaderUnreachable` reports when a follower enters `leader-unreachable` and when it leaves, with the duration and the outcome, for host telemetry.",
+    links: [
+      {
+        href: '/platform-web-specifics/#take-over-from-an-unresponsive-leader',
+        label: 'Take over from an unresponsive leader',
+      },
+    ],
+  },
+  {
     date: '2026-10-29',
     title: 'Run your own core across browser tabs',
     body: "`createTabCoordinator` from `@syncular/client` elects one leader tab per Web Lock name and runs a core you start yourself there, such as a Rust core compiled to WebAssembly in your own worker. Every other tab forwards its calls to that core and receives its events. Each call reaches the core with the calling tab's id, `send(tabId, event)` targets one tab and `broadcast(event)` reaches all of them, and a core that defines `tabClosed` learns when a tab that called it closes, through a lock every tab holds for its lifetime. When the leader tab closes, a follower promotes on a higher epoch and starts the core again; a tab of a newer `version` makes an older leader stop its core and hand over. `createSyncClientHandle` now runs on the coordinator. `MULTI_TAB_PROTOCOL_VERSION` is 2, so a tab of this release and a tab of an older release do not serve each other: the newer one takes over and the older one is `blocked` until it reloads.",

@@ -76,3 +76,18 @@ export interface SiblingEvidence {
   floorRowCount: number;
   floorFilesAtEnd: string[];
 }
+
+/** The database two workers contend for in the takeover fence scenario. */
+export const FENCE_REPLICA = 'opfs-fence-replica';
+
+/** What the takeover fence scenario observed, across both workers. */
+export interface FenceEvidence {
+  /** Rows the taker read right after opening, and SQLite's integrity check. */
+  rowsAtTakeover: string[];
+  integrity: string;
+  /** Error codes the fenced worker got for a replica and a sibling write. */
+  fencedReplicaWrite: string;
+  fencedSiblingWrite: string;
+  /** Rows after the taker wrote, read by the taker. */
+  rowsAtEnd: string[];
+}

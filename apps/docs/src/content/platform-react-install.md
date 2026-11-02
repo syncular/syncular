@@ -95,7 +95,8 @@ const todos = useQuery(listTodosQuery, { listId });
 renders every non-ready state. `state.state` is `starting`, `startup-error`
 (with `error` and `retryable`), `migrating`, or `blocked` (with a `reason`:
 `client-upgrade-required`, `server-behind`, `incompatible-schema`,
-`leader-unreachable`, or `leader-incompatible`). `actions.retry` is present when
+`leader-unreachable`, `leader-incompatible`, or `leadership-taken`).
+`actions.retry` is present when
 the client is a resource. [Troubleshooting](/platform-react-troubleshooting/)
 maps each state to its fix.
 

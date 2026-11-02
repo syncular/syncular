@@ -1,3 +1,4 @@
+import type { LeaderUnreachableEvent } from '../src/multi-tab';
 import type { ClientSchema } from '../src/schema';
 import {
   createSyncClientHandle,
@@ -14,7 +15,12 @@ declare global {
     localAuthorityTest: {
       ready: Promise<SyncClientHandle>;
       /** Open the persistent handle; resolves with its multi-tab role. */
-      open(schema: ClientSchema): Promise<HandleRole>;
+      open(
+        schema: ClientSchema,
+        followerCallTimeoutMs?: number,
+      ): Promise<HandleRole>;
+      /** Every `onLeaderUnreachable` event this tab's handle reported. */
+      unreachable: LeaderUnreachableEvent[];
       /** Ask this tab's worker (a leader's only) for its OPFS evidence. */
       probe(): Promise<LocalAuthorityProbe>;
     };
@@ -24,7 +30,8 @@ declare global {
 let worker: Worker | undefined;
 window.localAuthorityTest = {
   ready: new Promise(() => {}),
-  open: async (schema) => {
+  unreachable: [],
+  open: async (schema, followerCallTimeoutMs) => {
     window.localAuthorityTest.ready = createSyncClientHandle({
       worker: () => {
         worker = new Worker('/local-authority-browser-worker.js', {
@@ -40,6 +47,9 @@ window.localAuthorityTest = {
       },
       localAuthority: true,
       autoSync: false,
+      ...(followerCallTimeoutMs !== undefined ? { followerCallTimeoutMs } : {}),
+      onLeaderUnreachable: (event) =>
+        window.localAuthorityTest.unreachable.push(event),
     });
     return (await window.localAuthorityTest.ready).role;
   },
