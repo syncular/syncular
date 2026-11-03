@@ -18,6 +18,7 @@ import {
   compileSchema,
   type NewReaction,
   PARTITION_TOUCH_INTERVAL_MS,
+  prepareAuthorityTransaction,
   type ServerSchema,
   type ServerStorage,
   StorageQueryError,
@@ -158,6 +159,97 @@ export function runStorageContract(
     return storage;
   };
   describe(`ServerStorage contract (${name})`, () => {
+    test('prepares a non-push authority transaction without an idempotency read', async () => {
+      const storage = await make();
+      const tx = await storage.begin(PARTITION);
+      let readPushResult = false;
+      const guarded = new Proxy(tx, {
+        get(target, property) {
+          if (property === 'getPushResult') {
+            readPushResult = true;
+            throw new Error('unexpected push identity lookup');
+          }
+          const value = Reflect.get(target, property, target);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+      try {
+        if (name === 'd1/double') {
+          await expect(
+            prepareAuthorityTransaction(guarded, CONTRACT_SCHEMA.version),
+          ).rejects.toMatchObject({
+            code: 'sync.storage.partition_lock_unsupported',
+          });
+          return;
+        }
+        await prepareAuthorityTransaction(guarded, CONTRACT_SCHEMA.version);
+        await tx.upsertRow('tasks', taskRow('authority-row', 'p1'));
+        expect(await tx.getRow('tasks', 'authority-row')).toMatchObject({
+          rowId: 'authority-row',
+        });
+        await tx.commit();
+      } finally {
+        await tx.rollback();
+      }
+      expect(readPushResult).toBe(false);
+      expect(
+        await storage.getRow(PARTITION, 'tasks', 'authority-row'),
+      ).toBeDefined();
+    });
+
+    test('a missing partition-lock capability fails before a gate read', async () => {
+      const storage = await make();
+      const tx = await storage.begin(PARTITION);
+      try {
+        for (const missing of [undefined, null]) {
+          const unsupported = new Proxy(tx, {
+            get(target, property, receiver) {
+              if (property === 'lockPartition') return missing;
+              if (property === 'readServeGate')
+                throw new Error('unexpected gate read');
+              return Reflect.get(target, property, receiver);
+            },
+          });
+          await expect(
+            prepareAuthorityTransaction(unsupported, CONTRACT_SCHEMA.version),
+          ).rejects.toMatchObject({
+            code: 'sync.storage.partition_lock_unsupported',
+          });
+        }
+      } finally {
+        await tx.rollback();
+      }
+    });
+
+    test('invalid authority schema versions fail before invoking the lock capability', async () => {
+      const storage = await make();
+      const tx = await storage.begin(PARTITION);
+      const guarded = new Proxy(tx, {
+        get(target, property, receiver) {
+          if (property === 'lockPartition') throw new Error('unexpected lock');
+          return Reflect.get(target, property, receiver);
+        },
+      });
+      try {
+        for (const version of [
+          0,
+          -1,
+          1.5,
+          Number.NaN,
+          Number.POSITIVE_INFINITY,
+          0x80000000,
+        ]) {
+          await expect(
+            prepareAuthorityTransaction(guarded, version),
+          ).rejects.toMatchObject({
+            code: 'sync.invalid_request',
+          });
+        }
+      } finally {
+        await tx.rollback();
+      }
+    });
+
     test('appendCommit allocates a dense per-partition commitSeq', async () => {
       const storage = await make();
       const seqs: number[] = [];

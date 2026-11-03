@@ -16,6 +16,7 @@ import {
   type PgQueryable,
   PostgresServerStorage,
   processPushOperationsWithTrace,
+  prepareAuthorityTransaction,
   SqliteServerStorage,
   StorageQueryError,
   type ServerStorage,
@@ -152,6 +153,56 @@ for (const backend of ['sqlite', 'postgres/pglite', 'd1/double'] as const) {
       : backend === 'd1/double'
         ? 'd1'
         : 'sqlite';
+
+  if (key !== 'd1') {
+    test(`${backend} authority preparation refuses a newer stored schema`, async () => {
+      const { storage, close } = await harnessFn(key);
+      await storage.ensureSchema(SCHEMA_V2);
+      const tx = await storage.begin(PARTITION);
+      try {
+        await expect(
+          prepareAuthorityTransaction(tx, SCHEMA.version),
+        ).rejects.toMatchObject({ code: 'sync.schema_not_ready' });
+      } finally {
+        await tx.rollback();
+        await close();
+      }
+    });
+
+    test(`${backend} authority preparation enforces declared checkpoints`, async () => {
+      const { storage, close } = await harnessFn(key);
+      try {
+        await storage.declareCheckpoint(
+          PARTITION,
+          'tasks-projection',
+          SCHEMA.version,
+          NOW,
+        );
+        const denied = await storage.begin(PARTITION);
+        try {
+          await expect(
+            prepareAuthorityTransaction(denied, SCHEMA.version),
+          ).rejects.toMatchObject({ code: 'sync.schema_not_ready' });
+        } finally {
+          await denied.rollback();
+        }
+        const declared = await storage.begin(PARTITION);
+        try {
+          await prepareAuthorityTransaction(declared, SCHEMA.version, [
+            {
+              partition: PARTITION,
+              name: 'tasks-projection',
+              schemaVersion: SCHEMA.version,
+            },
+          ]);
+        } finally {
+          await declared.rollback();
+        }
+      } finally {
+        await close();
+      }
+    });
+  }
 
   test(`${backend} claimCheckpoint increments owner_epoch without a shared epoch`, async () => {
     const { storage, insert, close } = await harnessFn(key);
@@ -341,6 +392,28 @@ for (const backend of ['sqlite', 'postgres/pglite', 'd1/double'] as const) {
     }
   });
 }
+
+test('D1 authority preparation fails without an interactive transaction', async () => {
+  for (const pushApplySerialized of [false, true]) {
+    const storage = new D1ServerStorage(new D1DatabaseDouble(), {
+      pushApplySerialized,
+    });
+    while (!(await storage.migrateSchema(SCHEMA)).complete) {
+      // Finish the D1 migration before opening a transaction.
+    }
+    await storage.ensureSchema(SCHEMA);
+    const tx = await storage.begin(PARTITION);
+    try {
+      await expect(
+        prepareAuthorityTransaction(tx, SCHEMA.version),
+      ).rejects.toMatchObject({
+        code: 'sync.storage.partition_lock_unsupported',
+      });
+    } finally {
+      await tx.rollback();
+    }
+  }
+});
 
 test('D1 never declares a checkpoint and the no-barrier path is unchanged', async () => {
   const { storage, close } = await harnessFn('d1');

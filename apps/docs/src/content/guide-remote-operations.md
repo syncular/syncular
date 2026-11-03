@@ -491,18 +491,48 @@ and `command.getRows` omits such a row from its map. `queryAuthoritative` and
 `command.scanRowsByIndex` return every matching row of the partition, so the
 hook decides what the actor may act on.
 
-### Do not hand-roll a command on `storage.begin()`
+### Host-owned authority transactions
 
-`registerRemoteCommand` is the lock: it builds the command after
-`preparePushApply` takes the partition lock and reads the serve gate and the
-idempotency record, and its reads share the committed transaction. `storage.begin()` is the raw primitive and acquires no
-partition write lock. In-tree SQLite opens with `BEGIN IMMEDIATE`, so a
-hand-rolled command on SQLite is serialized against a concurrent push by
-accident; PostgreSQL's `BEGIN` takes no row lock, so the same command races the
-push there and a SQLite-only test conceals it. If a host must own the
-transaction, call `preparePushApply(clientId, clientCommitId, schemaVersion)`
-before its first authority, version, or replay read and keep it through the
-commit.
-Command callbacks should restrict side effects to planning database mutations.
-External calls belong after the commit in an idempotent worker or durable
+`registerRemoteCommand` takes the partition lock, checks the serve gate, and
+performs its idempotency read before it builds a command. A host that owns a
+transaction for an authorized read or a non-push command can take the same
+lock without a push identity. Call `prepareAuthorityTransaction` before any
+authority, version, or application-row read, and hold the transaction through
+the result or write:
+
+```ts
+import { prepareAuthorityTransaction } from '@syncular/server';
+
+async function readMembership(partition: string, actorId: string) {
+  const tx = await storage.begin(partition);
+  try {
+    await prepareAuthorityTransaction(tx, schema.version, checkpoints);
+    const result = await readAuthorizedMembership(tx, actorId);
+    await tx.commit();
+    return result;
+  } catch (error) {
+    await tx.rollback();
+    throw error;
+  }
+}
+```
+
+Run `storage.ensureSchema` for the configured schema and checkpoint
+declarations before opening the transaction. Pass the same declarations to
+the helper. A closed schema or checkpoint gate throws `sync.schema_not_ready`;
+roll back before handling the refusal. A storage without the lock capability
+throws `sync.storage.partition_lock_unsupported`. The bundled SQLite and
+PostgreSQL adapters implement the capability. D1 has no interactive
+transaction and refuses this helper even when its push coordinator is enabled.
+
+The helper does not authorize the actor. Check current authority on `tx` before
+returning data or staging writes. Route every authority mutation, including a
+revocation, through the same partition serialization boundary. A revocation
+can follow after the transaction finishes.
+
+The helper does not create a push identity or idempotency record. A host-owned
+command supplies its own replay protection and appends any sync changes in the
+same transaction. Custom storage adapters implement `lockPartition()` to hold
+the same serialization boundary as push apply through commit or rollback.
+Keep external calls after the commit in an idempotent worker or durable
 reaction.

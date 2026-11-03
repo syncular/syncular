@@ -255,8 +255,8 @@ not need a custom retention effect.
 - `useConflicts()` observes conflicts and rejections only when that domain
   changes.
 - `useCommitOutcomes()` observes the durable newest-first final-outcome journal
-  from exact `outcomesChanged` batches. Resolve entries through
-  `useSyncClient().resolveCommitOutcome(...)`.
+  from exact `outcomesChanged` batches. Resolve entries through the client
+  returned by `useSyncClient()`.
 - `usePresence(scopeKey)` observes ephemeral realtime peers.
 - `useSyncClient()` and `useReactiveStore()` expose the normalized low-level
   surfaces for integrations. When the concrete client was passed through
@@ -350,6 +350,11 @@ come from that snapshot. Direct `conflicts`, `rejections`, and
 `securityLifecycle` reads are now method calls. `normalizeClient` has been
 removed; custom adapters must implement the canonical snapshot methods.
 See the [client migration](https://syncular.dev/platform-web-reads-writes/#reading-local-state).
+
+Read the client with `useSyncClient()` at the top of a component, then call
+`client.proveCurrentBase(outcome)` from a recovery handler. Every client host
+exposes the same retained-base proof. Custom `SyncClientLike` implementations
+provide the method and its typed result.
 
 ## Live sync progress
 

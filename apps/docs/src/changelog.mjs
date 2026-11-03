@@ -17,6 +17,28 @@
 export const changelog = [
   {
     date: '2026-11-03',
+    title: 'Lock a host-owned authority transaction',
+    body: '`prepareAuthorityTransaction` takes the partition lock and checks the schema and checkpoint gate without a push identity. SQLite and PostgreSQL support the boundary; D1 and adapters without the lock capability refuse it.',
+    links: [
+      {
+        href: '/guide-remote-operations/#host-owned-authority-transactions',
+        label: 'Host-owned authority transactions',
+      },
+    ],
+  },
+  {
+    date: '2026-11-03',
+    title: 'Prove a retained base from React context',
+    body: '`useSyncClient()` exposes the typed `proveCurrentBase` method on direct, worker, Tauri, and React Native clients.',
+    links: [
+      {
+        href: '/platform-react-realtime/',
+        label: 'React realtime and lifecycle',
+      },
+    ],
+  },
+  {
+    date: '2026-11-03',
     title: 'Cover an independently scoped query',
     body: 'A multi-scope `sync query` can select a proven unit with `by` and omit independent scopes it does not bind. The generated window requests only the proven dimensions; additional bound dimensions remain an intersection.',
     links: [

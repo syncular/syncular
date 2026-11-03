@@ -375,6 +375,15 @@ explicit acknowledgement, and restart-safe recovery UI together.
 
 ## Trusted relational-index lookups for authoritative commands
 
+A host-owned non-push transaction can call
+`prepareAuthorityTransaction(tx, schema.version, checkpoints)` before its
+first authority or row read. The helper holds the partition serialization
+lock through commit or rollback and refuses a closed schema/checkpoint gate.
+It requires no client commit identity. SQLite and PostgreSQL implement the
+lock; D1 and custom adapters without `lockPartition()` fail with
+`sync.storage.partition_lock_unsupported`. See
+[host-owned authority transactions](https://syncular.dev/guide-remote-operations/#host-owned-authority-transactions).
+
 `scanRows` is a Syncular scope-index scan, never an unscoped administrative
 query. Passing an empty or omitted `scopeFilter` throws the exported
 `StorageQueryError` with `code: 'sync.storage.scan_requires_scope'` on

@@ -23,6 +23,7 @@ import {
   useRawSql,
   useRetainedWindow,
   useSyncStatus,
+  useSyncClient,
   useSyncProgress,
   useWindow,
 } from '../src/index';
@@ -65,6 +66,23 @@ function deferred<T>() {
 
 afterEach(() => {
   document.body.innerHTML = '';
+});
+
+test('useSyncClient exposes proof through the supplied client', async () => {
+  const client = new FakeClient();
+  const calls: unknown[] = [];
+  client.proveCurrentBase = (outcome, maxRounds) => {
+    calls.push({ outcome, maxRounds });
+    return { proven: false, reason: 'offline' };
+  };
+  const view = renderHook(() => useSyncClient(), { wrapper: wrapper(client) });
+  const outcome = { clientCommitId: 'commit-1', sequence: 2 };
+  expect(await view.result.current.proveCurrentBase(outcome, 3)).toEqual({
+    proven: false,
+    reason: 'offline',
+  });
+  expect(calls).toEqual([{ outcome, maxRounds: 3 }]);
+  view.unmount();
 });
 
 describe('useRawSql', () => {

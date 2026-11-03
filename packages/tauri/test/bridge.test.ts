@@ -1247,10 +1247,11 @@ describe('createTauriSyncClient', () => {
       sequence: 3,
       privateData: 'not sent',
     };
+    const like: SyncClientLike = client;
     await expect(
       client.proveCurrentBase(outcome, Number.NaN),
     ).rejects.toMatchObject({ code: 'sync.invalid_request' });
-    expect(await client.proveCurrentBase(outcome, 2)).toEqual({
+    expect(await like.proveCurrentBase(outcome, 2)).toEqual({
       proven: true,
       rows: [
         {

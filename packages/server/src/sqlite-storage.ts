@@ -315,6 +315,11 @@ class SqliteTransaction implements StorageTransaction {
     };
   }
 
+  async lockPartition(): Promise<void> {
+    this.#assertOpen();
+    // BEGIN IMMEDIATE in the constructor already owns SQLite's writer lock.
+  }
+
   async advanceCheckpoint(
     name: string,
     ownerEpoch: number,

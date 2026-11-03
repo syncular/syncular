@@ -16,6 +16,7 @@ import type {
   CommitOutcome,
   CommitOutcomeQuery,
   ConflictRecord,
+  CurrentBaseProof,
   InvalidationEvent,
   InvalidationListener,
   LeadershipState,
@@ -182,6 +183,13 @@ export class FakeClient implements SyncClientLike {
   }
 
   // -- SyncClientLike --------------------------------------------------------
+
+  proveCurrentBase(
+    _outcome: Pick<CommitOutcome, 'clientCommitId' | 'sequence'>,
+    _maxRounds?: number,
+  ): CurrentBaseProof {
+    return { proven: false, reason: 'outcome_unavailable' };
+  }
 
   beginSecurityPreflight(): void {
     this.#securityLifecycle = 'preflight';

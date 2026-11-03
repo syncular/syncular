@@ -1,8 +1,30 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.51.0** (`v0.51.0`). All artifacts use Apache-2.0, except
+current release is **0.52.0** (`v0.52.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.52.0 release notes
+
+0.52.0 adds a partition lock and schema gate for host-owned authority
+transactions and exposes retained-base proof through the React client type.
+SSP2, the storage layout, and the wire version are unchanged.
+
+`prepareAuthorityTransaction(tx, schemaVersion, checkpoints?)` takes the same
+partition lock as push apply, then checks the schema and checkpoint gate on
+that transaction. It requires no push identity or idempotency lookup. SQLite
+and PostgreSQL support the helper; D1 and custom adapters without the optional
+`lockPartition()` capability fail with `sync.storage.partition_lock_unsupported`.
+The caller commits or rolls back, including after a gate refusal.
+
+`useSyncClient()` now exposes `proveCurrentBase(outcome, maxRounds?)` with the
+same typed result as the direct, worker, Tauri, and React Native clients.
+
+**Upgrade notes.** Custom `SyncClientLike` implementations must provide
+`proveCurrentBase`; Syncular's client hosts already do. Custom server storage
+adapters implement the optional `lockPartition()` capability before calling
+`prepareAuthorityTransaction`. Upgrade all 12 npm packages and 7 crates
+together.
 
 ## 0.51.0 release notes
 

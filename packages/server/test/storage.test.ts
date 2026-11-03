@@ -9,11 +9,12 @@
 import { expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { PGlite } from '@electric-sql/pglite';
-import { encodeRow } from '@syncular/core';
+import { decodeRow, encodeRow } from '@syncular/core';
 import {
   compileSchema,
   SyncularAdmin,
   pruneCommitLog,
+  prepareAuthorityTransaction,
   type D1PreparedStatement,
   D1ServerStorage,
   PostgresServerStorage,
@@ -269,6 +270,155 @@ runStorageContract('d1/double', async () => {
   });
   await prepareD1(storage);
   return storage;
+});
+
+test('SQLite authority reads and commands serialize with revocation', async () => {
+  const storage = new SqliteServerStorage();
+  const columns = CONTRACT_SCHEMA.tables[0]!.columns;
+  const row = (id: string, state: number) => ({
+    rowId: id,
+    serverVersion: 1,
+    scopes: { project_id: 'p1' },
+    payload: encodeRow(columns, [id, 'p1', new Uint8Array([state])]),
+  });
+  await storage.ensureSchema(compileSchema(CONTRACT_SCHEMA));
+  const seed = await storage.begin('authority');
+  await prepareAuthorityTransaction(seed, CONTRACT_SCHEMA.version);
+  await seed.upsertRow('tasks', row('membership', 1));
+  await seed.commit();
+
+  const revoke = await storage.begin('authority');
+  let afterRevocation: Promise<number> | undefined;
+  try {
+    await revoke.preparePushApply(
+      'revoker',
+      'revoke-1',
+      CONTRACT_SCHEMA.version,
+    );
+    await revoke.upsertRow('tasks', row('membership', 0));
+    let readStarted = false;
+    afterRevocation = (async () => {
+      const reader = await storage.begin('authority');
+      try {
+        await prepareAuthorityTransaction(reader, CONTRACT_SCHEMA.version);
+        readStarted = true;
+        const stored = await reader.getRow('tasks', 'membership');
+        if (stored === undefined) throw new Error('missing membership');
+        const state = decodeRow(columns, stored.payload)[2];
+        if (!(state instanceof Uint8Array)) throw new Error('missing state');
+        if (state[0] === 1)
+          await reader.upsertRow('tasks', row('denied-command', 1));
+        await reader.commit();
+        return state[0]!;
+      } finally {
+        await reader.rollback();
+      }
+    })();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(readStarted).toBe(false);
+    await revoke.commit();
+    expect(await afterRevocation).toBe(0);
+    expect(
+      await storage.getRow('authority', 'tasks', 'denied-command'),
+    ).toBeUndefined();
+
+    const restore = await storage.begin('authority');
+    await prepareAuthorityTransaction(restore, CONTRACT_SCHEMA.version);
+    await restore.upsertRow('tasks', row('membership', 1));
+    await restore.commit();
+
+    const command = await storage.begin('authority');
+    let afterCommand: Promise<void> | undefined;
+    try {
+      await prepareAuthorityTransaction(command, CONTRACT_SCHEMA.version);
+      const before = await command.getRow('tasks', 'membership');
+      let revoked = false;
+      afterCommand = (async () => {
+        const writer = await storage.begin('authority');
+        try {
+          await writer.preparePushApply(
+            'revoker',
+            'revoke-2',
+            CONTRACT_SCHEMA.version,
+          );
+          await writer.upsertRow('tasks', row('membership', 0));
+          await writer.commit();
+          revoked = true;
+        } finally {
+          await writer.rollback();
+        }
+      })();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(revoked).toBe(false);
+      expect(await command.getRow('tasks', 'membership')).toEqual(before);
+      const event = row('authorized-command', 1);
+      await command.upsertRow('tasks', event);
+      await command.appendCommit({
+        clientId: 'domain-command',
+        clientCommitId: 'operation-1',
+        actorId: 'actor',
+        createdAtMs: 1,
+        changes: [
+          {
+            table: 'tasks',
+            rowId: event.rowId,
+            op: 'upsert',
+            rowVersion: 1,
+            scopes: event.scopes,
+            payload: event.payload,
+          },
+        ],
+      });
+      await command.commit();
+      await afterCommand;
+      expect(revoked).toBe(true);
+      expect(
+        await storage.getRow('authority', 'tasks', 'authorized-command'),
+      ).toBeDefined();
+    } finally {
+      await command.rollback();
+      await afterCommand?.catch(() => {});
+    }
+  } finally {
+    await revoke.rollback();
+    await afterRevocation?.catch(() => {});
+    storage.db.close();
+  }
+});
+
+test('SQLite authority preparation serializes with a schema migration', async () => {
+  const storage = new SqliteServerStorage();
+  await storage.ensureSchema(compileSchema(CONTRACT_SCHEMA));
+  const holder = await storage.begin('authority');
+  let migration: Promise<void> | undefined;
+  try {
+    await prepareAuthorityTransaction(holder, CONTRACT_SCHEMA.version);
+    let migrated = false;
+    migration = storage
+      .ensureSchema(compileSchema({ ...CONTRACT_SCHEMA, version: 2 }))
+      .then(() => {
+        migrated = true;
+      });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(migrated).toBe(false);
+    await holder.commit();
+    await migration;
+    const stale = await storage.begin('authority');
+    try {
+      await expect(
+        prepareAuthorityTransaction(stale, CONTRACT_SCHEMA.version),
+      ).rejects.toMatchObject({ code: 'sync.schema_not_ready' });
+    } finally {
+      await stale.rollback();
+    }
+  } finally {
+    await holder.rollback();
+    await migration?.catch(() => {});
+    storage.db.close();
+  }
 });
 
 const LEGACY_CLIENTS_DDL = `CREATE TABLE sync_clients(
@@ -560,6 +710,43 @@ test('Postgres partition locking initializes once and survives an initial rollba
       }
     }
     expect(await storage.getMaxCommitSeq('lock-partition')).toBe(2);
+  } finally {
+    await db.close();
+  }
+});
+
+test('Postgres authority preparation reads the gate after the lock without push idempotency', async () => {
+  const db = await PGlite.create();
+  const base = pgliteExecutor(db);
+  const statements: string[] = [];
+  const storage = new PostgresServerStorage({
+    query: (sql, params) => base.query(sql, params),
+    transaction: (fn) =>
+      base.transaction((client) =>
+        fn({
+          query: (sql, params) => {
+            statements.push(sql);
+            return client.query(sql, params);
+          },
+        }),
+      ),
+  });
+  try {
+    await storage.ensureSchema(compileSchema(CONTRACT_SCHEMA));
+    statements.length = 0;
+    const tx = await storage.begin('authority');
+    try {
+      await prepareAuthorityTransaction(tx, CONTRACT_SCHEMA.version);
+      const lock = statements.findIndex((sql) => sql.includes('FOR UPDATE'));
+      const gate = statements.findIndex((sql) =>
+        sql.includes('sync_schema_meta'),
+      );
+      expect(lock).toBeGreaterThanOrEqual(0);
+      expect(gate).toBeGreaterThan(lock);
+      expect(statements.join('\n')).not.toContain('sync_push_results');
+    } finally {
+      await tx.rollback();
+    }
   } finally {
     await db.close();
   }

@@ -631,6 +631,13 @@ export interface StorageTransaction {
     query: AuthoritativeQueryRequest,
   ): Promise<AuthoritativeQueryResult>;
   /**
+   * Acquire the push-serialization lock until commit or rollback. This
+   * capability does not evaluate the serve gate; host-owned authority paths
+   * use `prepareAuthorityTransaction` before reading or writing. Optional so
+   * existing custom storage implementations fail closed at that boundary.
+   */
+  lockPartition?(): Promise<void>;
+  /**
    * Serialize every push apply for this partition before any operation read,
    * validation, merge, or write, and read the admission token in the same
    * round trip: the RFC 0007 serve gate and the §2.3 idempotency record for
@@ -795,11 +802,11 @@ export interface ServerStorage {
    * against a concurrent push; PostgreSQL's `BEGIN` takes no row lock, so the
    * same command races a push on Postgres and a SQLite-only test conceals it.
    *
-   * A trusted command must therefore run through `registerRemoteCommand`,
-   * which builds after `preparePushApply` and shares the committed
-   * transaction, or call `preparePushApply` before its first authority,
-   * version, or replay read. SSP2 request handling does this for you; only
-   * host-authored commands choose.
+   * A trusted command may run through `registerRemoteCommand`, which builds
+   * after `preparePushApply` and shares the committed transaction. A
+   * host-owned non-push transaction calls `prepareAuthorityTransaction`
+   * before its first authority, version, or application-row read. SSP2
+   * request handling takes its own push boundary.
    */
   begin(partition: string): Promise<StorageTransaction>;
 

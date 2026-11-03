@@ -16,6 +16,7 @@ import {
   useMutation,
   useCommitOutcomes,
   useRawSql,
+  useSyncClient,
 } from '../src/index';
 import { FakeClient } from './fake-client';
 import { installHappyDom } from './setup';
@@ -47,6 +48,37 @@ afterEach(() => {
 });
 
 describe('client resources', () => {
+  test('a resource exposes the actor-bound current-base proof', async () => {
+    const client = new FakeClient();
+    client.proveCurrentBase = () => ({
+      proven: true,
+      rows: [
+        {
+          table: 'tasks',
+          rowId: 't1',
+          localRow: { id: 't1', title: 'mine' },
+          serverRow: { id: 't1', title: 'server' },
+          serverVersion: 2,
+        },
+      ],
+    });
+    const resource = createSyncClientResource(() => client);
+    const view = renderHook(() => useSyncClient(), {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <SyncProvider client={resource}>{children}</SyncProvider>
+      ),
+    });
+    await waitFor(() => expect(view.result.current).toBe(client));
+    const proof = await view.result.current.proveCurrentBase({
+      clientCommitId: 'commit-1',
+      sequence: 2,
+    });
+    expect(proof.proven).toBe(true);
+    if (proof.proven) expect(proof.rows[0]?.serverVersion).toBe(2);
+    view.unmount();
+    await resource.dispose();
+  });
+
   test('StrictMode initializes once and explicit disposal closes exactly once', async () => {
     const ready = deferred<FakeClient>();
     const client = new FakeClient();

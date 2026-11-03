@@ -5,6 +5,8 @@ import type {
   SyncProgressListener,
   ClientChangeListener,
   ClientDiagnosticsListener,
+  CommitOutcome,
+  CurrentBaseProof,
   InvalidationListener,
   LeadershipState,
   LocalDataPurgeInput,
@@ -57,6 +59,10 @@ export interface SyncClientLike extends ClientSnapshotReader {
     spec: QueryReadSpec,
   ): QuerySnapshot<Row> | Promise<QuerySnapshot<Row>>;
   pendingCommits: () => unknown[] | Promise<unknown[]>;
+  proveCurrentBase(
+    outcome: Pick<CommitOutcome, 'clientCommitId' | 'sequence'>,
+    maxRounds?: number,
+  ): CurrentBaseProof | Promise<CurrentBaseProof>;
   presence(
     scopeKey: string,
   ): readonly PresencePeer[] | Promise<readonly PresencePeer[]>;

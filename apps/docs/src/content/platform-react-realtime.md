@@ -87,8 +87,14 @@ const outcome = outcomes.find((item) => item.clientCommitId === lastCommitId);
 look up the same result after a restart. An absent terminal outcome means the
 commit has not reached a recorded final server result. For a rejection or
 conflict, inspect the outcome and apply the resolution actions in
-[Conflicts & optimistic writes](/concepts-conflicts/). Resolve an entry with
-`useSyncClient().resolveCommitOutcome(...)`.
+[Conflicts & optimistic writes](/concepts-conflicts/). Read the client with
+`useSyncClient()` at the top of the component and resolve an entry with
+`client.resolveCommitOutcome(...)`.
+
+Call `await client.proveCurrentBase(outcome)` from the recovery handler to
+prove every retained base through the actor-bound client. The result and
+failure reasons match the [outcome reference](/reference-outbox-outcomes/#refresh-a-retained-base-before-recovery).
+Custom `SyncClientLike` implementations supply this method as well.
 
 ::checkpoint[`outcome` is `undefined` while the commit is pending and holds the server result after a round accepts or rejects it.]
 ::::

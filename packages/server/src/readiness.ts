@@ -10,7 +10,13 @@ import type { SyncServerConfig } from './context';
 import { type SyncError, syncError } from './errors';
 import { type CompiledSchema, compileSchema } from './schema';
 import { schemaWindowOf } from './schema-window';
-import type { ServeGateRefusal } from './storage';
+import {
+  type CheckpointDeclaration,
+  type ServeGateRefusal,
+  type StorageTransaction,
+  serveGateRefusal,
+} from './storage';
+import { StorageQueryError } from './storage-errors';
 
 export const SYNC_SERVER_READINESS_ERROR_CODE =
   'sync.schema_not_ready' as const;
@@ -103,4 +109,30 @@ export function serveNotReadyError(refusal: ServeGateRefusal): SyncError {
             runningSchemaVersion: refusal.running,
           }),
   );
+}
+
+/**
+ * Lock and gate a host-owned non-push transaction (§6.8). The caller checks
+ * actor authority under the lock and commits or rolls back the transaction.
+ */
+export async function prepareAuthorityTransaction(
+  tx: StorageTransaction,
+  runningSchemaVersion: number,
+  checkpoints?: readonly CheckpointDeclaration[],
+): Promise<void> {
+  if (
+    !Number.isInteger(runningSchemaVersion) ||
+    runningSchemaVersion < 1 ||
+    runningSchemaVersion > 0x7fffffff
+  )
+    throw syncError(
+      'sync.invalid_request',
+      'schema version must be a positive 32-bit integer',
+    );
+  if (typeof tx.lockPartition !== 'function')
+    throw new StorageQueryError('sync.storage.partition_lock_unsupported');
+  await tx.lockPartition();
+  const gate = await tx.readServeGate(runningSchemaVersion);
+  const refusal = serveGateRefusal(gate, runningSchemaVersion, checkpoints);
+  if (refusal !== undefined) throw serveNotReadyError(refusal);
 }

@@ -1488,7 +1488,7 @@ class PostgresTransaction implements StorageTransaction {
     // commit has released the partition lock to observe it. Folding the lock
     // and the read into one statement would miss a duplicate that committed
     // while this transaction waited.
-    await lockPartitionOn(this.#client, this.#partition);
+    await this.lockPartition();
     const tables: CompiledTable[] = [];
     const specs: { tbl: string; ids: string[] }[] = [];
     for (const target of targets) {
@@ -1511,6 +1511,11 @@ class PostgresTransaction implements StorageTransaction {
     );
     this.#recordPrefetched(admission.prefetched);
     return { gate: admission.gate, persisted: admission.persisted };
+  }
+
+  async lockPartition(): Promise<void> {
+    this.#assertOpen();
+    await lockPartitionOn(this.#client, this.#partition);
   }
 
   async advanceCheckpoint(

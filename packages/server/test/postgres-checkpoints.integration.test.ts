@@ -10,11 +10,13 @@
  *     bun test packages/server/test/postgres-checkpoints.integration.test.ts
  */
 import { afterAll, describe, expect, test } from 'bun:test';
+import { decodeRow, encodeRow } from '@syncular/core';
 import {
   compileSchema,
   type PgExecutor,
   type PgQueryable,
   PostgresServerStorage,
+  prepareAuthorityTransaction,
   type ServerSchema,
 } from '@syncular/server';
 import { BunSQL, bunSqlExecutor, PG_URL, queryableOver } from './pg-real';
@@ -327,6 +329,95 @@ gate('RFC 0007 real-Postgres receipts (SYNCULAR_PG_URL)', () => {
     expect(seq).toBeGreaterThan(0);
   });
 
+  test('authority reads and commands serialize with concurrent revocation', async () => {
+    const { storage, partition, executor } = await fresh();
+    const columns = SCHEMA.tables[0]!.columns;
+    const row = (id: string, title: string) => ({
+      rowId: id,
+      serverVersion: 1,
+      scopes: { project_id: 'p1' },
+      payload: encodeRow(columns, [id, 'p1', title]),
+    });
+    const seed = await storage.begin(partition);
+    await prepareAuthorityTransaction(seed, SCHEMA.version);
+    await seed.upsertRow('tasks', row('membership', 'active'));
+    await seed.commit();
+
+    const revoke = await storage.begin(partition);
+    await revoke.preparePushApply('revoker', 'revoke-1', SCHEMA.version);
+    await revoke.upsertRow('tasks', row('membership', 'revoked'));
+    const pendingRead = (async () => {
+      const reader = await storage.begin(partition);
+      try {
+        await prepareAuthorityTransaction(reader, SCHEMA.version);
+        const stored = await reader.getRow('tasks', 'membership');
+        if (stored === undefined) throw new Error('missing membership');
+        const state = decodeRow(columns, stored.payload)[2];
+        if (state === 'active')
+          await reader.upsertRow('tasks', row('denied-command', 'written'));
+        await reader.commit();
+        return state;
+      } finally {
+        await reader.rollback();
+      }
+    })();
+    const readWaiters = await waitForLockWaiter(executor);
+    await revoke.commit();
+    expect(await pendingRead).toBe('revoked');
+    expect(readWaiters).toBeGreaterThan(0);
+    expect(
+      await storage.getRow(partition, 'tasks', 'denied-command'),
+    ).toBeUndefined();
+
+    const restore = await storage.begin(partition);
+    await prepareAuthorityTransaction(restore, SCHEMA.version);
+    await restore.upsertRow('tasks', row('membership', 'active'));
+    await restore.commit();
+
+    const command = await storage.begin(partition);
+    await prepareAuthorityTransaction(command, SCHEMA.version);
+    const before = await command.getRow('tasks', 'membership');
+    const pendingRevoke = (async () => {
+      const writer = await storage.begin(partition);
+      try {
+        await writer.preparePushApply('revoker', 'revoke-2', SCHEMA.version);
+        await writer.upsertRow('tasks', row('membership', 'revoked'));
+        await writer.commit();
+      } finally {
+        await writer.rollback();
+      }
+    })();
+    const writeWaiters = await waitForLockWaiter(executor);
+    const during = await command.getRow('tasks', 'membership');
+    const event = row('authorized-command', 'written');
+    await command.upsertRow('tasks', event);
+    await command.appendCommit({
+      clientId: 'domain-command',
+      clientCommitId: 'operation-1',
+      actorId: 'actor',
+      createdAtMs: 1,
+      changes: [
+        {
+          table: 'tasks',
+          rowId: event.rowId,
+          op: 'upsert',
+          rowVersion: 1,
+          scopes: event.scopes,
+          payload: event.payload,
+        },
+      ],
+    });
+    await command.commit();
+    await pendingRevoke;
+    expect(writeWaiters).toBeGreaterThan(0);
+    expect(during).toEqual(before);
+    expect(
+      await storage.getRow(partition, 'tasks', 'authorized-command'),
+    ).toBeDefined();
+    const latest = await storage.getRow(partition, 'tasks', 'membership');
+    expect(latest && decodeRow(columns, latest.payload)[2]).toBe('revoked');
+  });
+
   test('B1: the migration transaction blocks a raw old writer at its first statement', async () => {
     // Three real connections, ZERO advisory calls, genuine interleaving:
     //  - `sqlA` runs the schema-bump transaction, held open after its first
@@ -431,6 +522,14 @@ gate('RFC 0007 real-Postgres receipts (SYNCULAR_PG_URL)', () => {
       });
     })();
     await writerStarted.promise;
+    const authority = await bootstrap.begin(partition);
+    const authorityPreparation = prepareAuthorityTransaction(
+      authority,
+      SCHEMA.version,
+    ).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
 
     const relationWaiter = async (): Promise<number> =>
       Number(
@@ -467,6 +566,8 @@ gate('RFC 0007 real-Postgres receipts (SYNCULAR_PG_URL)', () => {
     } catch (error) {
       writerError = error;
     }
+    const authorityError = await authorityPreparation;
+    await authority.rollback();
 
     // The raw old writer was actually blocked on the migration's relation lock.
     expect(observedWaiting).toBeGreaterThan(0);
@@ -480,6 +581,7 @@ gate('RFC 0007 real-Postgres receipts (SYNCULAR_PG_URL)', () => {
     );
     expect(Number(fence.rows[0]?.required_writer_version)).toBe(2);
     expect(String(writerError)).toMatch(/writer_fence_rejected/);
+    expect(authorityError).toMatchObject({ code: 'sync.schema_not_ready' });
     const sourceRows = await observer.query<{ n: unknown }>(
       'SELECT count(*) AS n FROM tasks WHERE _sync_partition=$1',
       [partition],

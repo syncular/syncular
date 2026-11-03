@@ -3795,6 +3795,32 @@ callback may read arbitrary aggregate members, so Syncular cannot know a
 smaller safe lock set in advance. Applications SHOULD keep partitions bounded
 and callbacks/queries indexed and short.
 
+**Host-owned authority transactions.** A host that performs an authorized
+read or a non-push command on a storage transaction MAY call
+`prepareAuthorityTransaction(tx, schemaVersion, checkpoints)` before its first
+authority, application-row, or version read. The call takes the same partition
+serialization lock as a push, then evaluates the RFC 0007 serve gate on that
+transaction. It requires no client id, commit id, or idempotency lookup. A
+host MUST check the actor's authority under that lock; the preparation itself
+does not authorize the actor. Every authority mutation it depends on MUST use
+the same partition serialization boundary.
+An authorization decision describes the state held through that transaction;
+another writer may revoke authority after it finishes. A
+closed gate fails with `sync.schema_not_ready`; a storage without the lock
+capability fails with `sync.storage.partition_lock_unsupported`. The lock stays
+held until commit or rollback, including after a gate refusal. The caller MUST
+roll back a refused transaction and MUST hold the lock through every read and
+write whose authorization depends on it. The host remains responsible for the
+command's own idempotency, commit-log append, and external side effects.
+The schema version MUST be an integer from 1 through 2,147,483,647; an invalid
+value fails with `sync.invalid_request` before the helper calls the lock capability.
+
+SQLite holds its `BEGIN IMMEDIATE` lock; PostgreSQL takes the same partition
+row lock as push apply before reading the gate. D1 has no interactive
+transaction or pinned snapshot and MUST reject this preparation. Its push
+serialization assertion does not establish the separate schema and read
+boundary an authority transaction requires.
+
 **Rejection attribution.** Throw
 `CommitValidationRejection(opIndex, code, message?, details?)` to attribute the
 aggregate failure to a chosen operation. `opIndex` MUST name an operation in
