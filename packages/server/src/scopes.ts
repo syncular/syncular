@@ -77,9 +77,8 @@ export function storedScopesForRow(
 }
 
 /**
- * Write-path authorization (§3.4 steps 2–3): every declared variable's
- * stored value must be present and allowed (or the allowed list holds
- * `'*'`). All declared keys are required — there is no partial pass.
+ * Write-path authorization (§3.4 steps 2–3): all stored values must exist;
+ * the declared write variables must be allowed (or hold `'*'`).
  */
 export function authorizeWrite(
   table: CompiledTable,
@@ -90,7 +89,11 @@ export function authorizeWrite(
   for (const pattern of table.scopePatterns) {
     const value = rowScopes[pattern.variable];
     if (value === undefined || value.length === 0) return false;
-    const allowedValues = resolved.allowed[pattern.variable];
+  }
+  for (const variable of table.writeScopeVariables) {
+    const value = rowScopes[variable];
+    if (value === undefined) return false;
+    const allowedValues = resolved.allowed[variable];
     if (allowedValues === undefined) return false;
     if (!allowedValues.includes('*') && !allowedValues.includes(value)) {
       return false;

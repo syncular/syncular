@@ -131,7 +131,8 @@ the live row, so the row can move again. Only scope columns may differ from
 the stored row; the server authorizes both the old and the new values.
 
 An applied retry returns `cached` without running the callback again. A normal
-push rejection is stored and replays as `rejected`. A callback exception is a
+push rejection is stored and replays as `rejected`; conflict rows are
+reauthorized on replay (SPEC §2.3). A callback exception is a
 request failure and is not a stored command outcome. A `ValidationRejection` thrown by
 `authorize` or `run` fails the request with its host code and message
 (§7); like every callback exception it is not stored, so a retry runs the

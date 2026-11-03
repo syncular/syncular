@@ -124,6 +124,110 @@ function sevenOps(prefix: string, baseVersion?: number): PushOperation[] {
 }
 
 describe('push commit statement count (SYNCULAR-PUSH-ROUNDTRIPS-001)', () => {
+  test('Postgres persists conflict authorization and rechecks it after revocation', async () => {
+    const db = await PGlite.create();
+    const storage = new PostgresServerStorage(pgliteExecutor(db));
+    const original = await context(storage);
+    let allowed = { org_id: ['o1'], projectId: ['old'] };
+    const ctx: SyncRequestContext = {
+      ...original,
+      schema: {
+        ...TEST_SCHEMA,
+        tables: TEST_SCHEMA.tables.map((table) =>
+          table.name === 'docs'
+            ? { ...table, writeScopeVariables: ['org_id'] }
+            : table,
+        ),
+      },
+      resolveScopes: () => allowed,
+    };
+    try {
+      expect(
+        pushResults(
+          await sync(ctx, [
+            pushCommit('insert-alt', [
+              upsert('docs', 'd1', docRow('d1', 'o1', 'new')),
+            ]),
+          ]),
+        )[0]?.status,
+      ).toBe('applied');
+      const request = pushCommit('conflict-alt', [
+        upsert('docs', 'd1', docRow('d1', 'o1', 'new'), 0),
+      ]);
+      expect(
+        pushResults(await sync(ctx, [request]))[0]?.results[0]?.status,
+      ).toBe('conflict');
+      allowed = { org_id: ['o2'], projectId: ['old'] };
+      expect(
+        pushResults(await sync(ctx, [request]))[0]?.results[0],
+      ).toMatchObject({ status: 'error', code: 'sync.forbidden' });
+      allowed = { org_id: ['o1'], projectId: ['old'] };
+      expect(
+        pushResults(await sync(ctx, [request]))[0]?.results[0]?.status,
+      ).toBe('conflict');
+    } finally {
+      await db.close();
+    }
+  });
+  test('Postgres serializes competing inserts without exposing a foreign winner', async () => {
+    const db = await PGlite.create();
+    const storage = new PostgresServerStorage(pgliteExecutor(db));
+    const original = await context(storage);
+    const schema: ServerSchema = {
+      ...TEST_SCHEMA,
+      tables: TEST_SCHEMA.tables.map((table) =>
+        table.name === 'docs'
+          ? { ...table, writeScopeVariables: ['org_id'] }
+          : table,
+      ),
+    };
+    try {
+      const attempts = await Promise.all(
+        ['o1', 'o2'].map(async (org) => {
+          const ctx: SyncRequestContext = {
+            ...original,
+            actorId: org,
+            schema,
+            resolveScopes: () => ({ org_id: [org] }),
+          };
+          const response = decodeMessage(
+            await handleSyncRequest(
+              requestBytes(
+                [
+                  pushCommit(`race-${org}`, [
+                    upsert('docs', 'race', docRow('race', org, 'race', org), 0),
+                  ]),
+                ],
+                `client-${org}`,
+              ),
+              ctx,
+            ),
+          );
+          if (response.msgKind !== 'response')
+            throw new Error('expected a response');
+          return pushResults(response)[0];
+        }),
+      );
+      expect(
+        attempts.filter((result) => result?.status === 'applied'),
+      ).toHaveLength(1);
+      expect(
+        attempts.filter((result) => result?.results[0]?.status === 'error'),
+      ).toHaveLength(1);
+      expect(
+        attempts
+          .flatMap((result) => result?.results ?? [])
+          .find((record) => record.status === 'error'),
+      ).toMatchObject({ code: 'sync.forbidden' });
+      expect(
+        attempts
+          .flatMap((result) => result?.results ?? [])
+          .some((record) => record.status === 'conflict'),
+      ).toBe(false);
+    } finally {
+      await db.close();
+    }
+  });
   test('a 7-op commit applies in ≤8 statements, a refused one in ≤3', async () => {
     const db = await PGlite.create();
     const counting = countingExecutor(pgliteExecutor(db));

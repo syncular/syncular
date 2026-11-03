@@ -71,7 +71,7 @@ Each pushed commit carries a `clientCommitId`. The server keys its result on `(p
 <div class="node"><span class="t">4 · Client retries k1</span>Server returns the stored outcome<br><span class="chip">cached</span></div>
 </div>
 
-::caption[An originally rejected commit replays as the same rejection.]
+::caption[A rejected commit replays as the same rejection while its conflict row remains authorized.]
 :::
 
 Apply is exactly-once per client commit, and delivery of results is at-least-once. The client outbox can retry after any network failure, and [offline replay](/platform-web-realtime/#offline-replay) is safe.

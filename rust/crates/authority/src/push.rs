@@ -51,6 +51,16 @@ struct StoredResult {
     applied: bool,
     commit_seq: Option<i64>,
     results: Vec<StoredOp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    conflict_authorization: Option<ConflictAuthorization>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ConflictAuthorization {
+    table: String,
+    #[serde(default)]
+    schema_version: Option<i32>,
+    scopes: Scopes,
 }
 
 impl StoredResult {
@@ -578,6 +588,13 @@ fn enforce_references(
                 ));
             }
             for row in rows {
+                if !authorized(child, &row.scopes) {
+                    return Err(error(
+                        origin,
+                        "sync.forbidden",
+                        "cascade denied by scope authorization (§3.4)",
+                    ));
+                }
                 let key = (child.name.clone(), row.row_id.clone());
                 if incoming.on_delete == OnDelete::Cascade {
                     if !scheduled.insert(key.clone()) {
@@ -688,6 +705,34 @@ pub(crate) fn process_commit(
         if let Some(text) = store::push_result(conn, client_id, client_commit_id)? {
             let stored: StoredResult =
                 serde_json::from_str(&text).map_err(|_| store::corrupt("push result"))?;
+            if let Some(StoredOp::Conflict { op_index, .. }) = stored.results.first() {
+                let authorized_snapshot =
+                    stored
+                        .conflict_authorization
+                        .as_ref()
+                        .is_some_and(|snapshot| {
+                            snapshot.schema_version == Some(schema.version)
+                                && schema
+                                    .table(&snapshot.table)
+                                    .is_some_and(|table| authorized(table, &snapshot.scopes))
+                        });
+                if !authorized_snapshot {
+                    return Ok(StoredResult {
+                        applied: false,
+                        commit_seq: None,
+                        results: vec![StoredOp::Error {
+                            op_index: *op_index,
+                            code: "sync.forbidden".to_owned(),
+                            message: "conflict replay denied by scope authorization (§3.4)"
+                                .to_owned(),
+                            retryable: false,
+                            details: None,
+                        }],
+                        conflict_authorization: None,
+                    }
+                    .frames(client_commit_id, true));
+                }
+            }
             return Ok(stored.frames(client_commit_id, true));
         }
         conn.execute_batch("SAVEPOINT syncular_push_candidate")
@@ -708,9 +753,24 @@ pub(crate) fn process_commit(
                     results: (0..operations.len() as i32)
                         .map(|op_index| StoredOp::Applied { op_index })
                         .collect(),
+                    conflict_authorization: None,
                 }
             }
             Err(Fail::Terminate(record)) => {
+                let conflict_authorization = if let StoredOp::Conflict { op_index, .. } = &record {
+                    let operation = operations
+                        .get(*op_index as usize)
+                        .ok_or_else(|| store::corrupt("conflict operation"))?;
+                    let row = store::get_row(conn, &operation.table, &operation.row_id)?
+                        .ok_or_else(|| store::corrupt("conflict authorization row"))?;
+                    Some(ConflictAuthorization {
+                        table: operation.table.clone(),
+                        schema_version: Some(schema.version),
+                        scopes: row.scopes,
+                    })
+                } else {
+                    None
+                };
                 conn.execute_batch(
                     "ROLLBACK TO syncular_push_candidate; RELEASE syncular_push_candidate",
                 )
@@ -719,6 +779,7 @@ pub(crate) fn process_commit(
                     applied: false,
                     commit_seq: None,
                     results: vec![record],
+                    conflict_authorization,
                 }
             }
             Err(Fail::Storage(error)) => return Err(error),

@@ -664,6 +664,152 @@ if (!available) {
       }
     });
 
+    test('native offline insert uses a facility write scope after reopen', async () => {
+      const alternativeSchema = {
+        ...schema,
+        tables: schema.tables.map((table) => ({
+          ...table,
+          scopes: [...table.scopes, { pattern: 'row:{row_id}', column: 'id' }],
+          writeScopeVariables: ['list_id'],
+        })),
+      };
+      const source = makeServer(alternativeSchema);
+      source.allowed.seed = { list_id: ['one', 'two'] };
+      source.allowed.reader = { row_id: ['old'] };
+      let allowed = ['one'];
+      const server = Bun.serve({
+        hostname: '127.0.0.1',
+        port: 0,
+        async fetch(request) {
+          const pathname = new URL(request.url).pathname;
+          const context = {
+            ...source.ctxFor('native-host'),
+            resolveScopes: () => ({ list_id: allowed }),
+          };
+          if (pathname === '/sync')
+            return new Response(
+              (
+                await handleSyncRequest(
+                  new Uint8Array(await request.arrayBuffer()),
+                  context,
+                )
+              ).slice().buffer,
+            );
+          if (pathname.startsWith('/segments/'))
+            return new Response(
+              (
+                await handleSegmentDownload(context, {
+                  segmentId: decodeURIComponent(
+                    pathname.slice('/segments/'.length),
+                  ),
+                  scopesHeader:
+                    request.headers.get('X-Syncular-Scopes') ?? '{}',
+                })
+              ).bytes.slice().buffer,
+            );
+          return new Response('unknown route', { status: 404 });
+        },
+      });
+      const host = nativeTauri(`http://127.0.0.1:${server.port}`);
+      const seed = await makeClient(source, {
+        actorId: 'seed',
+        clientId: 'native-alt-seed',
+        schema: alternativeSchema,
+      });
+      const reader = await makeClient(source, {
+        actorId: 'reader',
+        clientId: 'native-alt-reader',
+        schema: alternativeSchema,
+      });
+      try {
+        seed.client.mutate([
+          {
+            table: 'todos',
+            op: 'upsert',
+            values: { id: 'old', list_id: 'one', title: 'old' },
+          },
+          {
+            table: 'todos',
+            op: 'upsert',
+            values: { id: 'other', list_id: 'one', title: 'other' },
+          },
+          {
+            table: 'todos',
+            op: 'upsert',
+            values: { id: 'foreign', list_id: 'two', title: 'private' },
+          },
+        ]);
+        await seed.client.syncUntilIdle();
+        reader.client.subscribe({
+          id: 'exact',
+          table: 'todos',
+          scopes: { row_id: ['old'] },
+        });
+        await reader.client.syncUntilIdle();
+        expect(reader.client.query('SELECT id FROM todos')).toEqual([
+          { id: 'old' },
+        ]);
+        let client = await createTauriSyncClient({
+          schema: alternativeSchema,
+          clientId: 'native-alt-host',
+          tauri: host.api,
+          retainFailedCommits: true,
+        });
+        await client.subscribe({
+          id: 'facility',
+          table: 'todos',
+          scopes: { list_id: ['one'] },
+        });
+        await client.syncUntilIdle();
+        await client.mutate([
+          {
+            table: 'todos',
+            op: 'upsert',
+            values: { id: 'offline', list_id: 'one', title: 'offline' },
+          },
+        ]);
+        await client.close();
+        client = await createTauriSyncClient({
+          schema: alternativeSchema,
+          clientId: 'native-alt-host',
+          tauri: host.api,
+          retainFailedCommits: true,
+        });
+        await client.syncUntilIdle();
+        expect(await client.query('SELECT id FROM todos ORDER BY id')).toEqual([
+          { id: 'offline' },
+          { id: 'old' },
+          { id: 'other' },
+        ]);
+        await reader.client.syncUntilIdle();
+        expect(reader.client.query('SELECT id FROM todos')).toEqual([
+          { id: 'old' },
+        ]);
+        allowed = [];
+        await client.mutate([
+          {
+            table: 'todos',
+            op: 'upsert',
+            values: { id: 'revoked', list_id: 'one', title: 'revoked' },
+          },
+        ]);
+        await client.syncUntilIdle();
+        expect(
+          await source.storage.getRow('part-1', 'todos', 'revoked'),
+        ).toBeUndefined();
+        expect(await client.query('SELECT id FROM todos')).toEqual([]);
+        await client.close();
+      } finally {
+        await seed.client.close();
+        seed.db.close();
+        await reader.client.close();
+        reader.db.close();
+        await host.close();
+        await server.stop(true);
+        source.storage.db.close();
+      }
+    }, 60000);
+
     test('real Tauri transport retains a distinct-ID UNIQUE insert across reopen and resolution', async () => {
       const uniqueSchema = {
         ...schema,

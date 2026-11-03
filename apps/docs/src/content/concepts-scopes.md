@@ -82,6 +82,27 @@ A client does not have to hold every row it may read. [Windowed sync](/concepts-
 
 A scope move is one commit with a delete under the old scopes and an upsert under the new ones. A registered command requests one with the `rescope` mutation, passing the complete row with its new scope values; the server keeps the row's `server_version` and writes no tombstone, so the row can move again. A reader that holds both scopes receives the pair in two subscription sections. Each client applies it as one change, so the row survives whichever section arrives first and the upsert's values win ([guide](/guide-remote-operations/#move-a-row-between-scopes)).
 
+### Independent read and write scopes
+
+By default, a write requires an allowed value for every scope variable declared by the table. A table with an independent exact-ID read scope can select the variables required for writes in the server schema:
+
+```ts
+const serverSchema = {
+  ...schema,
+  tables: schema.tables.map((table) =>
+    table.name === 'calendars'
+      ? { ...table, writeScopeVariables: ['facility_id'] }
+      : table,
+  ),
+};
+```
+
+Declare both the `facility_id` and `calendar_id` scope patterns in the manifest. Return the authorized facility IDs and exact calendar IDs from `resolveScopes`. A facility grant authorizes writes to rows in that facility, including offline inserts with new calendar IDs. An exact calendar grant authorizes a subscription to that calendar; it does not authorize writes under this policy. The server still extracts every declared scope value and prevents updates from changing scope columns.
+
+`writeScopeVariables` must contain one or more distinct scope variables declared by the table. Every listed variable must match. Omitting the property preserves the default intersection of all variables. Configure the policy on the server schema; generated client schemas and subscription requests do not need it. Review each table and grant before changing the policy. A registered command's row reads and blob downloads also use the table's write scope check; an exact-only reader needs an independently authorized route for blobs.
+
+The server reauthorizes a cached conflict row on every replay against the current write scopes. A replay after scope loss returns `sync.forbidden` without the row; the original conflict remains stored and can be returned if access is restored. A replay after a schema version change also returns `sync.forbidden`, because scope variables can change meaning across versions. Conflict results stored before this policy lack the authorization snapshot and return `sync.forbidden` on replay. Reference cascades check the scope of each affected child and reject the commit if the actor lacks access.
+
 ## Advanced: multiple variables and server lookups
 
 ### Variables are independent dimensions

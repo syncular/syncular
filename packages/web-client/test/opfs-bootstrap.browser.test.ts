@@ -13,6 +13,7 @@ import {
 import { makeClient, makeServer, PARTITION } from './helpers';
 import {
   OPFS_SCHEMA,
+  OPFS_ALTERNATIVE_SCOPE_SCHEMA,
   OPFS_SCOPE_SCHEMAS,
   type CrashPoint,
 } from './opfs-bootstrap-fixture';
@@ -23,6 +24,14 @@ source.allowed['actor-1'] = { project_id: ['p1'] };
 source.limits.inlineSegmentMaxBytes = 0;
 const scopeSource = makeServer(OPFS_SCOPE_SCHEMAS[2]!);
 scopeSource.allowed['actor-1'] = { calendar_theatre_id: ['p1'] };
+const alternativeSource = makeServer({
+  ...OPFS_ALTERNATIVE_SCOPE_SCHEMA,
+  tables: OPFS_ALTERNATIVE_SCOPE_SCHEMA.tables.map((table) => ({
+    ...table,
+    writeScopeVariables: ['project_id'],
+  })),
+});
+alternativeSource.allowed['actor-1'] = { project_id: ['p1'] };
 const expected = Array.from({ length: 4000 }, (_, i) => ({
   id: `code-${String(i).padStart(5, '0')}`,
   project_id: 'p1',
@@ -166,6 +175,25 @@ beforeAll(async () => {
         );
         return new Response(response.slice().buffer);
       }
+      if (pathname === '/sync-alternative') {
+        const response = await handleSyncRequest(
+          new Uint8Array(await request.arrayBuffer()),
+          alternativeSource.ctxFor('actor-1'),
+        );
+        return new Response(response.slice().buffer);
+      }
+      if (pathname.startsWith('/alternative-segments/')) {
+        const result = await handleSegmentDownload(
+          alternativeSource.ctxFor('actor-1'),
+          {
+            segmentId: decodeURIComponent(
+              pathname.slice('/alternative-segments/'.length),
+            ),
+            scopesHeader: request.headers.get('X-Syncular-Scopes') ?? '',
+          },
+        );
+        return new Response(result.bytes.slice().buffer);
+      }
       if (pathname.startsWith('/scope-segments/')) {
         const result = await handleSegmentDownload(
           {
@@ -237,6 +265,7 @@ afterAll(async () => {
   await server?.stop(true);
   source.storage.db.close();
   scopeSource.storage.db.close();
+  alternativeSource.storage.db.close();
 });
 
 for (const point of [
@@ -986,6 +1015,116 @@ test('OPFS retains a distinct-ID unique insert without displacing the server win
     await browser.close();
   }
 }, 30000);
+
+test('OPFS offline inserts use a facility write scope across restart and revocation', async () => {
+  alternativeSource.allowed.seed = { project_id: ['p1', 'p2'] };
+  alternativeSource.allowed.reader = { row_id: ['old'] };
+  const seed = await makeClient(alternativeSource, {
+    actorId: 'seed',
+    clientId: 'alternative-seed',
+    schema: OPFS_ALTERNATIVE_SCOPE_SCHEMA,
+  });
+  const reader = await makeClient(alternativeSource, {
+    actorId: 'reader',
+    clientId: 'alternative-reader',
+    schema: OPFS_ALTERNATIVE_SCOPE_SCHEMA,
+  });
+  const browser = await chromium.launch();
+  try {
+    await seed.client.mutate([
+      {
+        table: 'catalogue',
+        op: 'upsert',
+        values: { id: 'old', project_id: 'p1', title: 'old' },
+      },
+      {
+        table: 'catalogue',
+        op: 'upsert',
+        values: { id: 'other', project_id: 'p1', title: 'other' },
+      },
+      {
+        table: 'catalogue',
+        op: 'upsert',
+        values: { id: 'foreign', project_id: 'p2', title: 'private' },
+      },
+    ]);
+    await seed.client.syncUntilIdle();
+    reader.client.subscribe({
+      id: 'exact',
+      table: 'catalogue',
+      scopes: { row_id: ['old'] },
+    });
+    await reader.client.syncUntilIdle();
+    expect(reader.client.query('SELECT id FROM catalogue')).toEqual([
+      { id: 'old' },
+    ]);
+    const page = await browser.newPage();
+    await page.goto(server.url.href);
+    await page.evaluate(
+      (schema) => window.opfsTest.open(false, schema),
+      OPFS_ALTERNATIVE_SCOPE_SCHEMA,
+    );
+    await page.evaluate(async () => {
+      const client = await window.opfsTest.ready;
+      await client.subscribe({
+        id: 'facility',
+        table: 'catalogue',
+        scopes: { project_id: ['p1'] },
+      });
+      await client.syncUntilIdle();
+      await client.mutate([
+        {
+          table: 'catalogue',
+          op: 'upsert',
+          values: { id: 'offline', project_id: 'p1', title: 'offline' },
+        },
+      ]);
+    });
+    await page.reload({ waitUntil: 'load' });
+    await page.evaluate(
+      (schema) => window.opfsTest.open(false, schema),
+      OPFS_ALTERNATIVE_SCOPE_SCHEMA,
+    );
+    expect(
+      await page.evaluate(async () => {
+        const client = await window.opfsTest.ready;
+        await client.syncUntilIdle();
+        return client.query('SELECT id FROM catalogue ORDER BY id');
+      }),
+    ).toEqual([{ id: 'offline' }, { id: 'old' }, { id: 'other' }]);
+    await reader.client.syncUntilIdle();
+    expect(reader.client.query('SELECT id FROM catalogue')).toEqual([
+      { id: 'old' },
+    ]);
+    alternativeSource.allowed['actor-1'] = { project_id: [] };
+    await page.evaluate(async () => {
+      const client = await window.opfsTest.ready;
+      await client.mutate([
+        {
+          table: 'catalogue',
+          op: 'upsert',
+          values: { id: 'revoked', project_id: 'p1', title: 'revoked' },
+        },
+      ]);
+      await client.syncUntilIdle();
+    });
+    expect(
+      await alternativeSource.storage.getRow(PARTITION, 'catalogue', 'revoked'),
+    ).toBeUndefined();
+    expect(
+      await page.evaluate(async () =>
+        (await window.opfsTest.ready).query('SELECT id FROM catalogue'),
+      ),
+    ).toEqual([]);
+    await page.evaluate(async () => (await window.opfsTest.ready).close());
+  } finally {
+    await seed.client.close();
+    seed.db.close();
+    await reader.client.close();
+    reader.db.close();
+    await browser.close();
+  }
+}, 60000);
 
 test('OPFS 89→90 drops old scopes/windows and reloads after a compatible 91 bump', async () => {
   const browser = await chromium.launch();

@@ -1,8 +1,36 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.49.2** (`v0.49.2`). All artifacts use Apache-2.0, except
+current release is **0.50.0** (`v0.50.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.50.0 release notes
+
+0.50.0 adds a server table policy for independent read and write scopes.
+SSP2, the storage layout, and the wire version are unchanged.
+
+`writeScopeVariables` names a non-empty set of declared scope variables that
+must all match the actor's allowed scopes for a write. Omit it to require every
+declared variable. A facility grant can authorize a new offline row while an
+independent exact-ID pattern provides historical reads. The policy also governs
+registered-command row reads and blob downloads. Every scope value remains
+required on a stored row and scope columns remain immutable on client updates.
+
+The server records the scope values of conflict snapshots in the idempotency
+result and reauthorizes them on replay. A replay after scope loss returns
+`sync.forbidden` without the snapshot. If access returns at the same schema
+version, the original conflict replays unchanged. Replays after a schema version
+change and cached conflicts written before this release return `sync.forbidden`:
+the server cannot verify their snapshot scopes against the current schema.
+Reference cascades authorize each
+child before changing it; a denied child rolls back the parent commit.
+
+**Upgrade notes.** Configure `writeScopeVariables` on the server's schema
+when needed. Existing tables keep their previous write scope intersection.
+Audit registered-command reads, blob downloads, and reference cascades against
+the policy. Custom `ServerStorage` adapters must persist and restore the optional
+`conflictAuthorization` field of `StoredPushResult`. Upgrade all 12 npm packages
+and 7 crates together.
 
 ## 0.49.2 release notes
 

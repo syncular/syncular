@@ -866,8 +866,8 @@ order; the coalescing rule applies to a pair split across sections.
 
 The idempotency key for a push commit is the triple
 **(partition, `clientId`, `clientCommitId`)**. A server MUST persist the
-full commit result before acknowledging, and a replay of the same key
-MUST return the persisted result byte-equivalent: an
+full commit result before acknowledging. Subject to conflict-row
+reauthorization below, a replay of the same key returns that result: an
 originally-`applied` commit is returned with `status = cached`; an
 originally-`rejected` commit is returned with `status` still `rejected`
 (§6.3). `cached` means "this already applied — you may have missed the
@@ -878,10 +878,19 @@ The key binds the commit ID alone. Host authentication, request-envelope
 validation, and the §1.5 clientId-actor binding run before the idempotency
 lookup. `clientId` is a client-supplied namespace inside the authenticated
 partition, not proof of an authenticated device. When a retained result
-exists for the key, the server MUST return it byte-equivalent and skip
-`buildOperations`, the commit and write validators, and the apply
-transaction for that commit. Changed operations under a reused key are
-never built, validated, or applied. A client MUST NOT reuse a
+exists for the key, the server MUST skip `buildOperations`, the commit and
+write validators, and the apply transaction for that commit. Before returning
+a cached conflict row, the server MUST authorize the stored scope values of
+that conflict snapshot against the actor's current allowed scopes and the
+table's current write policy. The server persists the table, schema version,
+and snapshot scopes with the result, independently of the replay's operations.
+If this metadata is absent, the schema version changed, the table is absent,
+or authorization fails, it returns
+`sync.forbidden` for that operation without the row. Otherwise it returns
+the persisted result byte-equivalent. It does not replace the stored result,
+so a later authorized replay still returns the original conflict. Changed
+operations under a reused key are never built, validated, or applied. A client
+MUST NOT reuse a
 `clientCommitId` for changed intent, including after the persisted result
 has been pruned: the ID identifies one logical commit permanently, and a
 later edit is a later commit with a new ID.
@@ -1166,6 +1175,10 @@ lists on the wire (§0), and one fail-loud rule applies throughout:
   it would revoke under §3.2 rule 5; "global" tables are modeled with
   an explicit scope column shared by all rows, never by omitting
   patterns.
+- A server table MAY declare `writeScopeVariables`, a non-empty list of
+  distinct variables from its scope patterns. The server requires all of
+  those variables to authorize a write. If omitted, all declared variables
+  are required. This server-side policy does not change subscription scopes.
 - On every applied change the server extracts the declared columns from
   the row (upsert: the row after the write; delete: the row before
   removal) and stores them as **stored scopes**: a `map` of
@@ -1324,10 +1337,12 @@ On every push operation:
    table. A missing or empty scope column value ⇒ deny. A delete
    targeting an absent row has no authorization row: it is applied
    idempotently, emits no change, and performs no scope check (§6.2).
-3. For every declared variable: the row's value MUST be present in the
-   actor's allowed values for that variable, or the allowed values
-   contain `'*'`. **All declared keys are required** — there is no
-   partial pass.
+3. For every variable in the table's `writeScopeVariables`, or every
+   declared variable when that list is absent, the row's value MUST be
+   present in the actor's allowed values for that variable, or the allowed
+   values contain `'*'`. All variables in that list are required. The
+   server validates the list when it compiles the schema and rejects an
+   empty list, duplicates, or variables the table does not declare.
 4. Any denial, or a throwing `resolveScopes`, rejects the operation with
    `sync.forbidden` (non-retryable) and rolls back the commit (§6.4).
 5. **Scope columns are immutable on update.** A present scope column on
@@ -2563,8 +2578,8 @@ MUST verify the actor is authorized to see the blob, and authorization
 > index for (partition, blobId) is authorized for the actor** under the
 > write-path scope check (§3.4 steps 1–3): resolve the actor's allowed
 > scopes once (§3.2 step 3), and for each candidate referencing row, test
-> the row's stored scope values against the allowed values for every
-> declared scope variable of that row's table. The first row that passes
+> the row's stored scope values against the allowed values for the write
+> variables of that row's table. The first row that passes
 > authorizes the download; if none pass (or the index is empty, or
 > `resolveScopes` threw), the download is **HTTP 403 `blob.forbidden`**
 > (never 404 — leaking existence-vs-authorization is the same class of
@@ -3383,7 +3398,8 @@ Semantics:
 - **`cached`**: idempotent replay of an **applied** commit — the
   persisted original results are returned unchanged with
   `status = cached`. A replayed **rejected** commit returns its
-  persisted rejected result unchanged (`status` stays `rejected`, §2.3).
+  persisted rejected result (`status` stays `rejected`, §2.3), subject to
+  conflict-row reauthorization.
   If the server cannot read its own cached result it answers
   `sync.idempotency_cache_miss` (retryable) for that commit rather than
   re-applying. Encoding of that answer: a `PUSH_RESULT` with
@@ -4020,8 +4036,8 @@ place, so enforcement does not visit the references of that child.
 |---|---|
 | Staged upsert whose present, non-null reference column names an absent parent | reject `sync.reference_violation` with `reason = missing_parent`, `fieldPaths = [column]`, and `references = { parent: <parentTable>, row: <parentRowId> }` |
 | Staged delete of a parent with remaining children, `RESTRICT` | reject `sync.reference_violation` with `reason = restricted_delete` and `references = { child: <childTable> }` |
-| Staged delete of a parent, `CASCADE` | the server appends one `delete` operation per child to the same commit, recursively through further `CASCADE` references with a visited set |
-| Staged delete of a parent, `SET NULL` | the server appends one sparse upsert per child that presents only the reference column, set to `NULL` (§6.2: only that column's version moves) |
+| Staged delete of a parent, `CASCADE` | the server authorizes each child under §3.4 and appends one `delete` operation per child to the same commit, recursively through further `CASCADE` references with a visited set |
+| Staged delete of a parent, `SET NULL` | the server authorizes each child under §3.4 and appends one sparse upsert per child that presents only the reference column, set to `NULL` (§6.2: only that column's version moves) |
 | Appended operations exceed the cascade cap (reference default 1,000 per commit) | reject `sync.reference_violation` with `reason = cascade_limit` |
 
 Appended operations run the §6.7 row validators with `op` set to `delete` or

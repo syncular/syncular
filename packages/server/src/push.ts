@@ -1263,6 +1263,7 @@ function referenceRejection(
 async function enforceReferences(
   tx: StorageTransaction,
   schema: CompiledSchema,
+  resolved: ResolvedScopes,
   staged: readonly StagedWrite[],
   clientOpCount: number,
   cascadeLimit: number,
@@ -1432,6 +1433,13 @@ async function enforceReferences(
         );
       }
       for (const childRow of children) {
+        if (!authorizeWrite(child, childRow.scopes, resolved)) {
+          return errorRecord(
+            item.originOpIndex,
+            'sync.forbidden',
+            'cascade denied by scope authorization (§3.4)',
+          );
+        }
         if (reference.onDelete === 'CASCADE') {
           if (
             !schedule(
@@ -1772,6 +1780,36 @@ export async function processPushOperationsWithTrace(
       throw serveNotReadyError(refusal);
     }
     if (prepared.persisted !== undefined) {
+      const conflict = prepared.persisted.results.find(
+        (result) => result.status === 'conflict',
+      );
+      const authorization = prepared.persisted.conflictAuthorization;
+      const table = authorization && schema.tables.get(authorization.table);
+      if (
+        conflict !== undefined &&
+        (authorization === undefined ||
+          authorization.schemaVersion !== schema.version ||
+          table === undefined ||
+          !authorizeWrite(table, authorization.scopes, resolved))
+      ) {
+        await tx.rollback();
+        return processedPushCommit(
+          clientCommitId,
+          {
+            ...prepared.persisted,
+            results: [
+              {
+                opIndex: conflict.opIndex,
+                status: 'error',
+                code: 'sync.forbidden',
+                message: 'conflict replay denied by scope authorization (§3.4)',
+                retryable: false,
+              },
+            ],
+          },
+          true,
+        );
+      }
       await tx.rollback();
       return processedPushCommit(clientCommitId, prepared.persisted, true);
     }
@@ -1829,6 +1867,7 @@ export async function processPushOperationsWithTrace(
       const referencePass = await enforceReferences(
         tx,
         schema,
+        resolved,
         stagedWrites,
         operations.length,
         limitsOf(ctx).maxCascadeOperationsPerCommit,
@@ -1887,8 +1926,31 @@ export async function processPushOperationsWithTrace(
     if (terminated !== undefined) {
       // §6.3 rejected: only the terminating operation's record; §6.4:
       // every write of the commit rolls back.
+      const conflictOperation =
+        terminated.status === 'conflict'
+          ? operations[terminated.opIndex]
+          : undefined;
+      const conflictRow =
+        conflictOperation === undefined
+          ? undefined
+          : await tx.getRow(conflictOperation.table, conflictOperation.rowId);
+      if (
+        terminated.status === 'conflict' &&
+        (conflictOperation === undefined || conflictRow === undefined)
+      ) {
+        throw new Error('conflict snapshot has no authorization row');
+      }
       const stored = newStoredPushResult(createdAtMs, {
         status: 'rejected',
+        ...(conflictOperation !== undefined && conflictRow !== undefined
+          ? {
+              conflictAuthorization: {
+                table: conflictOperation.table,
+                schemaVersion: schema.version,
+                scopes: conflictRow.scopes,
+              },
+            }
+          : {}),
         results: [terminated],
       });
       // Discard candidates and persist the rejection while retaining the same

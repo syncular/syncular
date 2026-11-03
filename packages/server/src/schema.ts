@@ -75,6 +75,8 @@ export interface TableSchema {
   readonly primaryKey: string;
   /** Scope patterns (§3.1). Every synced table declares at least one. */
   readonly scopes: readonly ScopePatternSpec[];
+  /** Variables required together for writes; defaults to every scope variable. */
+  readonly writeScopeVariables?: readonly string[];
   /** User indexes (optional) — created on the server's relational tables. */
   readonly indexes?: readonly IndexSchema[];
   /** Server-only indexes (optional); names share the namespace of `indexes`. */
@@ -120,6 +122,7 @@ export interface CompiledTable {
   readonly columns: readonly RowColumn[];
   readonly primaryKeyIndex: number;
   readonly scopePatterns: readonly CompiledScopePattern[];
+  readonly writeScopeVariables: readonly string[];
   /** User indexes (validated: unique names, existing columns). */
   readonly indexes: readonly IndexSchema[];
   /** Server-only indexes (validated like `indexes`). */
@@ -318,6 +321,17 @@ export function compileSchema(schema: ServerSchema): CompiledSchema {
       variables.add(pattern.variable);
       declaredVariables.add(pattern.variable);
     }
+    const writeScopeVariables = table.writeScopeVariables ?? [...variables];
+    if (
+      !Array.isArray(writeScopeVariables) ||
+      writeScopeVariables.length === 0 ||
+      new Set(writeScopeVariables).size !== writeScopeVariables.length ||
+      writeScopeVariables.some((variable) => !variables.has(variable))
+    ) {
+      throw new Error(
+        `table ${table.name}: writeScopeVariables must contain distinct declared scope variables (§3.4)`,
+      );
+    }
     const blobRefColumnIndices: number[] = [];
     const crdtColumns: { index: number; crdtType: string }[] = [];
     const encryptedColumnIndices: number[] = [];
@@ -372,6 +386,7 @@ export function compileSchema(schema: ServerSchema): CompiledSchema {
       columns: table.columns,
       primaryKeyIndex,
       scopePatterns,
+      writeScopeVariables,
       indexes,
       serverIndexes,
       references,

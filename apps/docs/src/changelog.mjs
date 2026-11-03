@@ -16,6 +16,17 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-11-03',
+    title: 'Declare the scopes required for writes',
+    body: "A server table can set `writeScopeVariables` to the declared scope variables a write must match. A facility grant can authorize an offline insert while a separate exact-ID scope supports historical reads. Omitting the property retains the existing intersection of all scope variables. The server also reauthorizes cached conflict rows on replay and checks each child affected by a reference cascade against the actor's write scopes.",
+    links: [
+      {
+        href: '/concepts-scopes/#independent-read-and-write-scopes',
+        label: 'Independent read and write scopes',
+      },
+    ],
+  },
+  {
     date: '2026-11-02',
     title: 'A follower tab takes over from an unresponsive leader',
     body: "`handle.takeOver()` and `TabCoordinator.takeOver()` let a follower that has been `blocked` with reason `leader-unreachable` for `takeOverAfterMs` (default twice `followerCallTimeoutMs`) take the database from a leader tab that runs no task, such as a frozen tab in another window. Call it from a user action. It steals the leader's Web Lock, starts the core on a higher epoch, and steals the old worker's OPFS storage lock; that worker's database refuses every statement with `client.storage_fenced` and closes its handles, so the new worker opens the database only after the old one let go. The old tab becomes `blocked` with reason `leadership-taken` when it runs again. A leader that answers its probes, hidden or not, keeps its lock: `takeOver()` rejects with `client.takeover_refused`. `onLeaderUnreachable` reports when a follower enters `leader-unreachable` and when it leaves, with the duration and the outcome, for host telemetry.",

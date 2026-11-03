@@ -76,6 +76,7 @@ export interface DriverTable {
   readonly columns: readonly DriverColumn[];
   readonly primaryKey: string;
   readonly scopes: readonly DriverScopePattern[];
+  readonly writeScopeVariables?: readonly string[];
   readonly indexes?: readonly {
     readonly name: string;
     readonly columns: readonly string[];

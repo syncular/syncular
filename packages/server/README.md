@@ -291,8 +291,10 @@ explicit server-authoritative commands.
 The idempotency key for a push commit is the triple
 **(`partition`, `clientId`, `clientCommitId`)**. The server persists the full
 commit result in the same transaction as the writes, and a replay of the same
-key returns that result byte-equivalent: an applied commit replays as `cached`,
-a rejected commit replays as `rejected` (§2.3, §6.3).
+key returns that result: an applied commit replays as `cached`, and a rejected
+commit replays as `rejected` (§2.3, §6.3). The server reauthorizes a cached
+conflict snapshot against current write scopes before returning its row. A
+denied replay returns `sync.forbidden` and leaves the cached result intact.
 
 The key contains the commit ID and nothing about the operations. Host
 authentication, request-envelope validation, and the §1.5 clientId-actor
@@ -301,8 +303,8 @@ binding run before the lookup.
 not proof of an authenticated device. When a retained result exists for the
 key, the server skips `buildOperations`, the commit and write validators, and
 the apply transaction: a retry that reuses the key with different operations
-returns the persisted result, and those operations are never built, validated,
-or applied. `packages/server/test/push.test.ts` pins this.
+returns the persisted result subject to conflict reauthorization, and those
+operations are never built, validated, or applied. `packages/server/test/push.test.ts` pins this.
 
 A client MUST NOT reuse a `clientCommitId` for changed intent, including after
 the persisted result has been pruned. One ID identifies one logical commit

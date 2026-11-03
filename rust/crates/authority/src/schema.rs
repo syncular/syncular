@@ -26,6 +26,8 @@ struct TableIr {
     primary_key: String,
     scopes: Vec<ScopeIr>,
     #[serde(default)]
+    write_scope_variables: Option<Vec<String>>,
+    #[serde(default)]
     indexes: Vec<IndexIr>,
     #[serde(default)]
     references: Vec<ReferenceIr>,
@@ -293,6 +295,20 @@ pub(crate) fn parse_schema(json: &Value) -> Result<Schema, AuthorityError> {
                 pattern: pattern.clone(),
                 column,
             });
+        }
+        if let Some(variables) = &table.write_scope_variables {
+            let distinct: BTreeSet<_> = variables.iter().collect();
+            if variables.is_empty()
+                || distinct.len() != variables.len()
+                || variables
+                    .iter()
+                    .any(|variable| !scopes.iter().any(|scope| &scope.variable == variable))
+            {
+                return Err(invalid(format!(
+                    "table {:?}: writeScopeVariables must contain distinct declared scope variables (§3.4)",
+                    table.name
+                )));
+            }
         }
         let mut indexes: Vec<Index> = Vec::with_capacity(table.indexes.len());
         for index in &table.indexes {

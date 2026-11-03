@@ -81,13 +81,13 @@ Everything a subscription's effective scopes allow arrives in the device's SQLit
 
 See [Scopes & authorization](/concepts-scopes/).
 
-### Do expect a write to need every scope of its row
+### Do declare the scopes a write requires
 
-The server authorizes a write against the stored row and requires every declared scope variable to be in the actor's allowed values. There is no partial pass. A row that carries two scopes (a campaign and a user, for example) cannot be changed by an actor who holds only one of them, which includes a campaign owner editing another member's row.
+The server authorizes a write against the stored row and, by default, requires every declared scope variable to be in the actor's allowed values. A row that carries campaign and user scopes cannot be changed by a campaign owner who holds only the campaign scope. Set `writeScopeVariables` on the server table when the campaign grant is intended to authorize writes independently of the user read scope. Every variable in that list must match.
 
-Make such writes registered remote commands. A `RemoteOperationResolver` binds the registry, the commit actor, and extra scopes for one call. Available since 0.34.0.
+Use a registered remote command when the operation requires authorization beyond a fixed set of scope variables. A `RemoteOperationResolver` binds the registry, the commit actor, and extra scopes for one call. Available since 0.34.0.
 
-See [SPEC §3.4](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#34-write-path-authorization) and [Bind the registry per request](/guide-remote-operations/#bind-the-registry-per-request).
+See [Independent read and write scopes](/concepts-scopes/#independent-read-and-write-scopes) and [Bind the registry per request](/guide-remote-operations/#bind-the-registry-per-request).
 
 ### Don't let a plain write create the scope it needs
 

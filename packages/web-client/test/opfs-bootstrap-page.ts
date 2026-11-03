@@ -70,8 +70,8 @@ window.opfsTest = {
       autoSync,
       retainFailedCommits: true,
       endpoints: {
-        syncUrl: `${location.origin}/${schema.version >= 89 ? 'sync-scope' : location.search === '?signed' ? 'sync-signed' : 'sync'}`,
-        segmentsUrl: `${location.origin}/${schema.version >= 89 ? 'scope-segments' : 'segments'}`,
+        syncUrl: `${location.origin}/${schema.version >= 100 ? 'sync-alternative' : schema.version >= 89 ? 'sync-scope' : location.search === '?signed' ? 'sync-signed' : 'sync'}`,
+        segmentsUrl: `${location.origin}/${schema.version >= 100 ? 'alternative-segments' : schema.version >= 89 ? 'scope-segments' : 'segments'}`,
       },
     });
     (await window.opfsTest.ready).onProgress((progress) =>

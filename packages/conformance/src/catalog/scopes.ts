@@ -6,7 +6,7 @@
 import { canonicalScopeJson } from '@syncular/core';
 import { check, checkEqual } from '../checks';
 import { ScenarioSkip } from '../scenario';
-import type { DriverSchema } from '../driver';
+import type { DriverSchema, DriverTable } from '../driver';
 import { ALL_SCOPES, doc, FIXTURE_SCHEMA, task } from '../fixture';
 import {
   rawDelete,
@@ -20,7 +20,290 @@ import {
 import type { Scenario } from '../scenario';
 import { seedRows, seedTasks, syncIdle, syncOk } from './util';
 
+const ALTERNATIVE_WRITE_SCHEMA: DriverSchema = {
+  version: 1,
+  tables: [
+    FIXTURE_SCHEMA.tables[0]!,
+    ...['calendars', 'theatres'].map(
+      (name): DriverTable => ({
+        name,
+        columns: [
+          { name: 'id', type: 'string', nullable: false },
+          { name: 'org_id', type: 'string', nullable: false },
+          { name: 'project_id', type: 'string', nullable: false },
+          { name: 'body', type: 'string', nullable: false },
+        ],
+        primaryKey: 'id',
+        scopes: [
+          { pattern: 'org:{org_id}' },
+          { pattern: 'project:{projectId}', column: 'project_id' },
+        ],
+        writeScopeVariables: ['org_id'],
+      }),
+    ),
+  ],
+};
+
 export const scopeScenarios: readonly Scenario[] = [
+  {
+    name: 'scopes/independent-read-and-write-scopes',
+    specRefs: ['§3.2', '§3.3', '§3.4', '§6.2'],
+    requires: ['scope-authorization'],
+    server: { schema: ALTERNATIVE_WRITE_SCHEMA },
+    async run(ctx) {
+      await ctx.server.setAllowedScopes('alternative-seed', {
+        org_id: ['o1', 'o2'],
+      });
+      for (const table of ['calendars', 'theatres']) {
+        const seeded = await ctx.rawSync(
+          'alternative-seed',
+          [
+            rawPushCommit(
+              `seed-${table}`,
+              [
+                doc('old', 'o1', 'old', 'referenced'),
+                doc('other', 'o1', 'other', 'unreferenced'),
+                doc('foreign', 'o2', 'foreign', 'private'),
+              ].map((row) => rawUpsert(ctx.serverSchema, table, row)),
+            ),
+          ],
+          { clientId: 'alternative-seed' },
+        );
+        check(seeded.ok, 'seed request succeeds');
+        if (!seeded.ok) return;
+        checkEqual(
+          responsePushResults(seeded.message)[0]?.status,
+          'applied',
+          'facility grants seed both facilities',
+        );
+      }
+      const host = await ctx.newClient({
+        actorId: 'host',
+        clientId: 'host',
+        schema: ALTERNATIVE_WRITE_SCHEMA,
+        allowed: { org_id: ['o1'] },
+        retainFailedCommits: true,
+      });
+      const reader = await ctx.newClient({
+        actorId: 'reader',
+        clientId: 'reader',
+        schema: ALTERNATIVE_WRITE_SCHEMA,
+        allowed: { projectId: ['old'] },
+      });
+      const rival = await ctx.newClient({
+        actorId: 'rival',
+        clientId: 'rival',
+        schema: ALTERNATIVE_WRITE_SCHEMA,
+        allowed: { org_id: ['o1'] },
+        retainFailedCommits: true,
+      });
+      for (const table of ['calendars', 'theatres']) {
+        await host.api.subscribe({
+          id: table,
+          table,
+          scopes: { org_id: ['o1'] },
+        });
+        await reader.api.subscribe({
+          id: table,
+          table,
+          scopes: { projectId: ['old'] },
+        });
+        await rival.api.subscribe({
+          id: table,
+          table,
+          scopes: { org_id: ['o1'] },
+        });
+      }
+      await syncIdle(host);
+      await syncIdle(reader);
+      await syncIdle(rival);
+      for (const table of ['calendars', 'theatres']) {
+        checkEqual(
+          (await reader.api.readRows(table)).map((row) => row.rowId),
+          ['old'],
+          'exact reader sees one row',
+        );
+        checkEqual(
+          (await host.api.readRows(table)).map((row) => row.rowId),
+          ['old', 'other'],
+          'host sees only its facility',
+        );
+        await host.api.mutate([
+          { op: 'upsert', table, values: doc('new', 'o1', 'new', 'offline') },
+        ]);
+      }
+      await syncIdle(host);
+      await syncIdle(reader);
+      for (const table of ['calendars', 'theatres']) {
+        checkEqual(
+          (await reader.api.readRows(table)).map((row) => row.rowId),
+          ['old'],
+          'new rows stay outside exact read',
+        );
+        checkEqual(
+          (await host.api.readRows(table)).map((row) => row.rowId),
+          ['new', 'old', 'other'],
+          'offline insert reaches host',
+        );
+        const denied = await host.api.mutate([
+          {
+            op: 'upsert',
+            table,
+            values: doc('foreign', 'o1', 'foreign', 'attack'),
+          },
+        ]);
+        checkEqual(
+          (await syncOk(host)).rejected,
+          [denied],
+          'foreign insert race is denied',
+        );
+        checkEqual(
+          (await host.api.rejections()).find((r) => r.clientCommitId === denied)
+            ?.code,
+          'sync.forbidden',
+          'foreign row is not disclosed',
+        );
+        checkEqual(
+          (await host.api.commitOutcomes()).find(
+            (r) => r.clientCommitId === denied,
+          )?.status,
+          'rejected',
+          'failed intent is retained',
+        );
+        checkEqual(
+          (await host.api.readRows(table)).find(
+            (row) => row.rowId === 'foreign',
+          )?.values.body,
+          'attack',
+          'retained intent contains no foreign server row',
+        );
+        await host.api.resolveCommitOutcome(denied, 'resolved_keep_server');
+        const readerWrite = await reader.api.mutate([
+          {
+            op: 'upsert',
+            table,
+            values: doc('old', 'o1', 'old', 'reader edit'),
+          },
+        ]);
+        checkEqual(
+          (await syncOk(reader)).rejected,
+          [readerWrite],
+          'exact read grant does not authorize writes',
+        );
+        await host.api.mutate([
+          { op: 'upsert', table, values: doc('old', 'o1', 'old', 'host edit') },
+        ]);
+        await syncIdle(host);
+        checkEqual(
+          (await ctx.server.readRows(table)).find((row) => row.rowId === 'old')
+            ?.values.body,
+          'host edit',
+          'facility write updates an existing row',
+        );
+        await host.api.mutate([
+          {
+            op: 'upsert',
+            table,
+            values: doc('race', 'o1', 'race', 'winner'),
+            baseVersion: 0,
+          },
+        ]);
+        const losing = await rival.api.mutate([
+          {
+            op: 'upsert',
+            table,
+            values: doc('race', 'o1', 'race', 'loser'),
+            baseVersion: 0,
+          },
+        ]);
+        await syncIdle(host);
+        checkEqual(
+          (await syncOk(rival)).rejected,
+          [losing],
+          'concurrent insert returns a conflict',
+        );
+        checkEqual(
+          (await rival.api.conflicts()).find(
+            (conflict) => conflict.clientCommitId === losing,
+          )?.serverRow?.body,
+          'winner',
+          'authorized conflict carries the winner',
+        );
+      }
+      check(host.api.recreateWithSchema !== undefined, 'restart supported');
+      await ctx.recreateClient(host, ALTERNATIVE_WRITE_SCHEMA);
+      await syncIdle(host);
+      checkEqual(
+        (await host.api.readRows('calendars')).map((row) => row.rowId),
+        ['new', 'old', 'other', 'race'],
+        'restart preserves authorized data',
+      );
+      await ctx.server.setAllowedScopes('raw-host', { org_id: ['o1'] });
+      const conflict = rawPushCommit('cached-conflict', [
+        rawUpsert(
+          ctx.serverSchema,
+          'calendars',
+          doc('old', 'o1', 'old', 'mine'),
+          0,
+        ),
+      ]);
+      const first = await ctx.rawSync('raw-host', [conflict], {
+        clientId: 'raw-host',
+      });
+      check(first.ok, 'initial conflict request succeeds');
+      if (!first.ok) return;
+      checkEqual(
+        responsePushResults(first.message)[0]?.results[0]?.status,
+        'conflict',
+        'authorized conflict includes snapshot',
+      );
+      await ctx.server.setAllowedScopes('raw-host', { org_id: ['o2'] });
+      const replay = await ctx.rawSync('raw-host', [conflict], {
+        clientId: 'raw-host',
+      });
+      check(replay.ok, 'revoked conflict replay succeeds');
+      if (!replay.ok) return;
+      checkEqual(
+        responsePushResults(replay.message)[0]?.results[0]?.status,
+        'error',
+        'revoked replay contains no conflict row',
+      );
+      await ctx.server.setAllowedScopes('raw-host', { org_id: ['o1'] });
+      const restored = await ctx.rawSync('raw-host', [conflict], {
+        clientId: 'raw-host',
+      });
+      check(restored.ok, 'restored conflict replay succeeds');
+      if (!restored.ok) return;
+      checkEqual(
+        responsePushResults(restored.message)[0]?.results[0]?.status,
+        'conflict',
+        'restored grant returns the original conflict',
+      );
+      await ctx.server.setAllowedScopes('host', { org_id: [] });
+      const pending = await host.api.mutate([
+        {
+          op: 'upsert',
+          table: 'calendars',
+          values: doc('after-loss', 'o1', 'after-loss', 'offline'),
+        },
+      ]);
+      const revoked = await syncOk(host);
+      check(
+        revoked.revoked.includes('calendars'),
+        'facility subscription revoked',
+      );
+      check(
+        !(await ctx.server.readRows('calendars')).some(
+          (row) => row.rowId === 'after-loss',
+        ),
+        'revoked write did not reach the server',
+      );
+      check(
+        !(await host.api.pendingCommitIds()).includes(pending),
+        'revoked write leaves the outbox',
+      );
+    },
+  },
   {
     name: 'scopes/effective-is-requested-intersect-allowed',
     specRefs: ['§3.2'],

@@ -124,6 +124,9 @@ function toServerSchema(schema: DriverSchema): ServerSchema {
           ? { pattern: scope.pattern, column: scope.column }
           : scope.pattern,
       ),
+      ...(table.writeScopeVariables !== undefined
+        ? { writeScopeVariables: table.writeScopeVariables }
+        : {}),
       ...(table.references !== undefined
         ? { references: table.references }
         : {}),

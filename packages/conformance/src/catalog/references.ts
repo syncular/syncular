@@ -40,6 +40,69 @@ async function bootstrapped(
 
 export const referenceScenarios: readonly Scenario[] = [
   {
+    name: 'references/cascade-authorizes-each-child',
+    specRefs: ['§3.4', '§6.11'],
+    requires: ['scope-authorization'],
+    server: { schema: REFERENCE_FIXTURE_SCHEMA },
+    async run(ctx) {
+      const seed = await ctx.newClient({
+        actorId: 'seed',
+        clientId: 'seed',
+        allowed: { project_id: ['p1', 'p2'] },
+        schema: REFERENCE_FIXTURE_SCHEMA,
+      });
+      const owner = await ctx.newClient({
+        actorId: 'owner',
+        clientId: 'owner',
+        allowed: { project_id: ['p1'] },
+        schema: REFERENCE_FIXTURE_SCHEMA,
+      });
+      for (const action of ['cascade', 'nullify'] as const) {
+        await seed.api.mutate([
+          { op: 'upsert', table: 'projects', values: project(action) },
+          {
+            op: 'upsert',
+            table: 'items',
+            values: item(action, 'p2', 'private', { [action]: action }),
+          },
+        ]);
+        // The parent scope is its primary key; grant its value for the seed.
+        await ctx.server.setAllowedScopes('seed', {
+          project_id: ['p2', action],
+        });
+        await syncIdle(seed);
+        await ctx.server.setAllowedScopes('owner', { project_id: [action] });
+        const deletion = await owner.api.mutate([
+          { op: 'delete', table: 'projects', rowId: action },
+        ]);
+        checkEqual(
+          (await syncOk(owner)).rejected,
+          [deletion],
+          'cross-scope cascade is rejected',
+        );
+        checkEqual(
+          (await owner.api.rejections()).find(
+            (rejection) => rejection.clientCommitId === deletion,
+          )?.code,
+          'sync.forbidden',
+          'cascade denial is explicit',
+        );
+        check(
+          (await ctx.server.readRows('projects')).some(
+            (row) => row.rowId === action,
+          ),
+          'parent remains',
+        );
+        check(
+          (await ctx.server.readRows('items')).some(
+            (row) => row.rowId === action,
+          ),
+          'child remains',
+        );
+      }
+    },
+  },
+  {
     name: 'references/missing-parent-rejects',
     specRefs: ['§6.11', 'B.19'],
     server: { schema: REFERENCE_FIXTURE_SCHEMA },

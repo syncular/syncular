@@ -6,11 +6,13 @@ import { describe, expect, test } from 'bun:test';
 import { decodeRow } from '@syncular/core';
 import {
   CommitValidationRejection,
+  compileSchema,
   handleSyncRequest,
   ValidationRejection,
 } from '@syncular/server';
 import {
   del,
+  DOC_COLUMNS,
   expectSyncError,
   makeContext,
   overlapDuplicateDeliveries,
@@ -23,8 +25,91 @@ import {
   taskRow,
   upsert,
 } from './helpers';
+import { encodeSparseRow } from '@syncular/core';
 
 describe('push apply (§6.2)', () => {
+  test('an independent read scope does not block an explicitly scoped write', async () => {
+    const schema = {
+      version: 1,
+      tables: [
+        {
+          name: 'docs',
+          columns: DOC_COLUMNS,
+          primaryKey: 'id',
+          scopes: [
+            'org:{org_id}',
+            { pattern: 'project:{projectId}', column: 'project_id' },
+          ],
+          writeScopeVariables: ['org_id'],
+        },
+      ],
+    };
+    const t = makeContext({ schema });
+    t.scopes.value = { org_id: ['o1'], projectId: ['old'] };
+    const row = encodeSparseRow(DOC_COLUMNS, 0, ['d1', 'o1', 'new', 'offline']);
+    const message = await sync(t, [
+      pushCommit('new', [upsert('docs', 'd1', row, 0)]),
+    ]);
+    expect(pushResults(message)[0]?.status).toBe('applied');
+  });
+
+  test('a cached conflict does not disclose a row after its scope is revoked', async () => {
+    const t = makeContext();
+    await seedTask(t, 'seed', 't1', 'p1', 'private');
+    const request = pushCommit('conflict-before-revoke', [
+      upsert('tasks', 't1', taskRow('t1', 'p1', 'mine'), 0),
+    ]);
+    expect(pushResults(await sync(t, [request]))[0]?.results[0]?.status).toBe(
+      'conflict',
+    );
+    t.scopes.value = { project_id: ['p2'] };
+    expect(pushResults(await sync(t, [request]))[0]?.results[0]).toMatchObject({
+      status: 'error',
+      code: 'sync.forbidden',
+    });
+    t.scopes.value = { project_id: ['p1'] };
+    expect(pushResults(await sync(t, [request]))[0]?.results[0]?.status).toBe(
+      'conflict',
+    );
+    t.storage.db
+      .query(
+        "UPDATE sync_push_results SET result = json_set(result, '$.conflictAuthorization.schemaVersion', 0) WHERE client_commit_id = ?",
+      )
+      .run('conflict-before-revoke');
+    expect(pushResults(await sync(t, [request]))[0]?.results[0]).toMatchObject({
+      status: 'error',
+      code: 'sync.forbidden',
+    });
+    t.storage.db
+      .query(
+        "UPDATE sync_push_results SET result = json_remove(result, '$.conflictAuthorization') WHERE client_commit_id = ?",
+      )
+      .run('conflict-before-revoke');
+    expect(pushResults(await sync(t, [request]))[0]?.results[0]).toMatchObject({
+      status: 'error',
+      code: 'sync.forbidden',
+    });
+  });
+
+  test('write variables must be distinct, nonempty, declared variables', () => {
+    const table = {
+      name: 'docs',
+      columns: DOC_COLUMNS,
+      primaryKey: 'id',
+      scopes: [
+        'org:{org_id}',
+        { pattern: 'project:{projectId}', column: 'project_id' },
+      ],
+    };
+    for (const writeScopeVariables of [[], ['org_id', 'org_id'], ['missing']]) {
+      expect(() =>
+        compileSchema({
+          version: 1,
+          tables: [{ ...table, writeScopeVariables }],
+        }),
+      ).toThrow('writeScopeVariables');
+    }
+  });
   test('insert applies with server_version 1 and a commitSeq', async () => {
     const t = makeContext();
     const message = await sync(t, [

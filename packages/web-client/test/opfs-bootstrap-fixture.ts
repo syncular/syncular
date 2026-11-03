@@ -43,6 +43,15 @@ export const OPFS_SCOPE_SCHEMAS = [89, 90, 91].map((version) => ({
   })),
 }));
 
+export const OPFS_ALTERNATIVE_SCOPE_SCHEMA: ClientSchema = {
+  ...OPFS_SCHEMA,
+  version: 100,
+  tables: OPFS_SCHEMA.tables.map((table) => ({
+    ...table,
+    scopes: ['project:{project_id}', { pattern: 'row:{row_id}', column: 'id' }],
+  })),
+};
+
 export type CrashPoint =
   | 'download'
   | 'before-import'

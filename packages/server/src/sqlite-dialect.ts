@@ -247,6 +247,9 @@ export function serializePushResult(result: StoredPushResult): string {
     ...(result.cacheIdentity !== undefined
       ? { cacheIdentity: result.cacheIdentity }
       : {}),
+    ...(result.conflictAuthorization !== undefined
+      ? { conflictAuthorization: result.conflictAuthorization }
+      : {}),
     results: result.results.map((record) => {
       if (record.status === 'conflict') {
         return {
@@ -280,6 +283,7 @@ export function deserializePushResult(text: string): StoredPushResult {
     commitSeq?: number;
     recordedAtMs?: number;
     cacheIdentity?: string;
+    conflictAuthorization?: StoredPushResult['conflictAuthorization'];
     results: SerializedResult[];
   };
   const results: PushOperationResult[] = parsed.results.map((record) => {
@@ -314,6 +318,9 @@ export function deserializePushResult(text: string): StoredPushResult {
       : {}),
     ...(parsed.cacheIdentity !== undefined
       ? { cacheIdentity: parsed.cacheIdentity }
+      : {}),
+    ...(parsed.conflictAuthorization !== undefined
+      ? { conflictAuthorization: parsed.conflictAuthorization }
       : {}),
     results,
   };

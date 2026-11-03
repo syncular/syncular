@@ -323,6 +323,12 @@ export interface StoredPushResult {
   readonly recordedAtMs?: number;
   /** Privacy-safe identity used to distinguish this stored outcome from a race. */
   readonly cacheIdentity?: string;
+  /** The scope of a persisted conflict snapshot, for replay authorization. */
+  readonly conflictAuthorization?: {
+    readonly table: string;
+    readonly schemaVersion: number;
+    readonly scopes: Readonly<Record<string, string>>;
+  };
   readonly results: readonly PushOperationResult[];
 }
 

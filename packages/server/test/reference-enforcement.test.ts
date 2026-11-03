@@ -134,6 +134,29 @@ async function seed(
 }
 
 describe('declared references (§6.11)', () => {
+  test('a cascade cannot change a child in a scope the actor does not hold', async () => {
+    const t = referenceContext();
+    await seed(t, 'parent', 'projects', 'p1', projectRow('p1'));
+    const privileged = {
+      ...t.ctx,
+      resolveScopes: () => ({ project_id: ['p1', 'p2'] }),
+    };
+    const seeded = await sync({ ...t, ctx: privileged }, [
+      pushCommit('child', [
+        upsert('items', 'child', itemRow('child', 'p2', { cascade: 'p1' })),
+      ]),
+    ]);
+    expect(pushResults(seeded)[0]?.status).toBe('applied');
+    const result = await sync(t, [
+      pushCommit('delete', [del('projects', 'p1')]),
+    ]);
+    expect(pushResults(result)[0]?.results[0]).toMatchObject({
+      status: 'error',
+      code: 'sync.forbidden',
+    });
+    expect(await t.storage.getRow('part-1', 'projects', 'p1')).toBeDefined();
+    expect(await t.storage.getRow('part-1', 'items', 'child')).toBeDefined();
+  });
   test('an upsert naming an absent parent rejects with missing_parent details', async () => {
     const t = referenceContext();
     await seed(t, 'c1', 'projects', 'p1', projectRow('p1'));
