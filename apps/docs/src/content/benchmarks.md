@@ -180,7 +180,7 @@ client core. The harness builds each entry with the same command and
 A page that uses the worker setup loads 59.8 KiB of Syncular code gzipped plus
 the 461.3 KiB gzipped sqlite-wasm glue and binary (65.2 + 396.1 KiB). The
 anti-bloat gate (`ownJsRawCeilingBytes`) covers the main-thread entry's
-Syncular bytes only, with a 166 KiB raw ceiling and a 600 KiB total gzip
+Syncular bytes only, with a 175 KiB raw ceiling and a 600 KiB total gzip
 ceiling. The measurement is one unsplit `Bun.build({minify: true})` with
 `conditions: ['bun']`. It counts dynamically imported opt-in modules, so it
 overstates what a typical page loads.

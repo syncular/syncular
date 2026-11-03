@@ -104,11 +104,16 @@ const WORKLOAD = {
  * - `propagationP95CeilingMs` 20 ms: local in-process p95 is 0.8-1.2 ms. A
  *   ~20x allowance absorbs runner noise; breaching 20 ms in-process means
  *   a sleep/poll crept into the sync/realtime loop.
- * - `ownJsRawCeilingBytes` 166 KiB: the main-thread browser bundle
- *   (`bundle-entry.ts`) measures 159.5 KiB raw (163,348 bytes) with Bun
- *   1.4.0. The ceiling keeps ~4% headroom, rounded up to a whole KiB. The
- *   entrypoint and SQLite externalization are unchanged; the shipped gzip
- *   budget stays separate. The recommended page + worker setup is reported
+ * - `ownJsRawCeilingBytes` 175 KiB: the main-thread browser bundle
+ *   (`bundle-entry.ts`) measures 167.4 KiB raw (171,443 bytes) with Bun
+ *   1.4.4. The ceiling keeps ~4% headroom, rounded up to a whole KiB.
+ *   Previously 166 KiB over 159.5 KiB (163,348 bytes, Bun 1.4.0); CI
+ *   measured 164.8 KiB before 0df2374c and 167.6 KiB after it, which adds
+ *   `SyncClient.proveCurrentBase` (§7.2.1) and its subscription, transport
+ *   and security epochs. Folding its duplicated outcome-eligibility check
+ *   into one predicate recovered 199 bytes; closing the rest would mean
+ *   removing the proof. The entrypoint and SQLite externalization are
+ *   unchanged; the shipped gzip budget stays separate. The recommended page + worker setup is reported
  *   in RESULTS.md (195.6 KiB raw, 59.8 KiB gzip) and does not gate.
  * - `totalGzipCeilingBytes` 600 KiB: total shipped payload (own JS +
  *   sqlite-wasm glue + sqlite3.wasm) is 510.0 KiB gzip today. Also
@@ -120,7 +125,7 @@ const BUDGETS = {
   imageBootstrapRowsPerSecFloor: 600_000,
   imageToRowsRatioFloor: 5,
   propagationP95CeilingMs: 20,
-  ownJsRawCeilingBytes: 166 * 1024,
+  ownJsRawCeilingBytes: 175 * 1024,
   totalGzipCeilingBytes: 600 * 1024,
 } as const;
 

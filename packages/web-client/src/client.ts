@@ -2776,22 +2776,26 @@ export class SyncClient {
     )
       throw invalidRequest('maxRounds must be a positive integer');
     const { clientCommitId, sequence } = outcome;
+    const provable = (
+      candidate: CommitOutcome | undefined,
+    ): candidate is CommitOutcome & {
+      readonly retainedRows: readonly RetainedCommitRow[];
+    } =>
+      candidate !== undefined &&
+      candidate.sequence === sequence &&
+      candidate.resolution === 'active' &&
+      (candidate.status === 'conflict' || candidate.status === 'rejected') &&
+      candidate.operations !== undefined &&
+      candidate.retainedRows !== undefined &&
+      candidate.operations.length === candidate.retainedRows.length &&
+      candidate.retainedRows.length > 0;
     let initial: CommitOutcome | undefined;
     try {
       initial = readCommitOutcome(this.#db, clientCommitId);
     } catch {
       return { proven: false, reason: 'snapshot_failed' };
     }
-    if (
-      initial === undefined ||
-      initial.sequence !== sequence ||
-      initial.resolution !== 'active' ||
-      (initial.status !== 'conflict' && initial.status !== 'rejected') ||
-      initial.operations === undefined ||
-      initial.retainedRows === undefined ||
-      initial.operations.length !== initial.retainedRows.length ||
-      initial.retainedRows.length === 0
-    )
+    if (!provable(initial))
       return { proven: false, reason: 'outcome_unavailable' };
     if (!this.#transportEnabled) return { proven: false, reason: 'offline' };
     await this.#opChain;
@@ -2841,17 +2845,7 @@ export class SyncClient {
         });
         const delivery = snapshot.deliveries[0];
         const current = readCommitOutcome(this.#db, clientCommitId);
-        if (
-          delivery?.status !== 'known' ||
-          current === undefined ||
-          current.sequence !== sequence ||
-          current.resolution !== 'active' ||
-          (current.status !== 'conflict' && current.status !== 'rejected') ||
-          current.operations === undefined ||
-          current.retainedRows === undefined ||
-          current.operations.length !== current.retainedRows.length ||
-          current.retainedRows.length === 0
-        )
+        if (delivery?.status !== 'known' || !provable(current))
           return {
             proven: false,
             reason:
