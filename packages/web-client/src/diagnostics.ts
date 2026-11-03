@@ -23,6 +23,21 @@ export type ClientDiagnosticsHostRole =
   | 'follower'
   | 'unknown';
 export type ClientDiagnosticsConnectivity = 'online' | 'offline' | 'unknown';
+/** Bounded transport classification shared by progress and diagnostics (§1.8). */
+export type TransportCauseKind =
+  | 'network'
+  | 'connect'
+  | 'tls'
+  | 'io'
+  | 'request'
+  | 'protocol'
+  | 'timeout'
+  | 'round_deadline'
+  | 'aborted'
+  | 'body'
+  | 'status'
+  | 'redirect'
+  | 'unknown';
 /**
  * SPEC §8.8: how a client treats the realtime binding for sync rounds. The
  * default is `optional`.
@@ -115,6 +130,8 @@ export type DiagnosticLastRound =
       readonly durationMs: number;
       /** Stable code only; never arbitrary transport/server prose. */
       readonly errorCode: string;
+      readonly causeKind?: TransportCauseKind;
+      readonly httpStatus?: number;
     };
 
 export interface DiagnosticLastChange {

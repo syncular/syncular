@@ -1,4 +1,5 @@
 //! Ephemeral live sync work (SPEC §7.6), observable while the core is busy.
+use crate::api::TransportCauseKind;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, Weak};
@@ -23,6 +24,10 @@ pub struct SyncProgress {
     pub rows_total: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cause_kind: Option<TransportCauseKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
     /// Present on `failed` when the core scheduled a background retry.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_delay_ms: Option<u64>,
@@ -129,6 +134,8 @@ impl ProgressObserver {
             rows_processed: 0,
             rows_total: None,
             error_code: None,
+            cause_kind: None,
+            http_status: None,
             retry_delay_ms: None,
         });
     }

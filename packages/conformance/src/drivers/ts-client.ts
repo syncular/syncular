@@ -786,8 +786,12 @@ class TsClientInstance implements ClientInstance {
     const snapshot = this.#client.diagnosticsSnapshot();
     return {
       queryFailures: snapshot.queryFailures,
+      ...(snapshot.lastRound !== undefined
+        ? { lastRound: snapshot.lastRound }
+        : {}),
       host: {
         realtime: snapshot.host.realtime,
+        connectivity: snapshot.host.connectivity,
         ...(snapshot.host.realtimePolicy !== undefined
           ? { realtimePolicy: snapshot.host.realtimePolicy }
           : {}),

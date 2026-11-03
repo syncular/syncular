@@ -2298,6 +2298,7 @@ mod observation_tests {
     struct FailureScriptTransport {
         rounds: std::collections::VecDeque<Result<Vec<u8>, TransportError>>,
         requests: Vec<Message>,
+        segment_error: Option<TransportError>,
     }
 
     impl Transport for FailureScriptTransport {
@@ -2316,7 +2317,10 @@ mod observation_tests {
             _request: &SegmentRequest,
             _on_progress: &mut dyn FnMut(u64),
         ) -> Result<Vec<u8>, TransportError> {
-            Err(TransportError::new("transport.timeout", "segment stalled"))
+            Err(self
+                .segment_error
+                .clone()
+                .unwrap_or_else(|| TransportError::new("transport.timeout", "segment stalled")))
         }
 
         fn realtime_connect(&mut self) -> Result<(), TransportError> {
@@ -2365,6 +2369,113 @@ mod observation_tests {
         FailureScriptTransport {
             rounds: rounds.into_iter().collect(),
             requests: Vec::new(),
+            segment_error: None,
+        }
+    }
+
+    #[test]
+    fn transport_diagnostics_bound_evidence_and_clear_it_after_recovery() {
+        let secret = "https://user:password@example.invalid/private?token=secret";
+        for (code, details, expected_cause, expected_status, connectivity, retry) in [
+            (
+                "transport.failed",
+                json!({"causeKind":"connect", "secret":secret}),
+                Some(crate::TransportCauseKind::Connect),
+                None,
+                "offline",
+                None,
+            ),
+            (
+                "transport.failed",
+                json!({"causeKind":"status", "httpStatus":500, "secret":secret}),
+                Some(crate::TransportCauseKind::Status),
+                Some(500),
+                "online",
+                Some(250),
+            ),
+            (
+                "sync.auth_required",
+                json!({"causeKind":"status", "httpStatus":401, "secret":secret}),
+                Some(crate::TransportCauseKind::Status),
+                Some(401),
+                "online",
+                Some(250),
+            ),
+            (
+                "transport.timeout",
+                json!({"causeKind":"timeout", "secret":secret}),
+                Some(crate::TransportCauseKind::Timeout),
+                None,
+                "unknown",
+                Some(250),
+            ),
+            (
+                "transport.failed",
+                json!({"causeKind":"unknown", "secret":secret}),
+                Some(crate::TransportCauseKind::Unknown),
+                None,
+                "unknown",
+                Some(250),
+            ),
+            (
+                "transport.failed",
+                json!({"causeKind":secret, "httpStatus":500}),
+                None,
+                None,
+                "unknown",
+                Some(250),
+            ),
+            (
+                "transport.failed",
+                json!({"causeKind":"status", "httpStatus":500.5}),
+                Some(crate::TransportCauseKind::Status),
+                None,
+                "unknown",
+                Some(250),
+            ),
+            (
+                "transport.failed",
+                json!({"causeKind":"connect", "httpStatus":500}),
+                Some(crate::TransportCauseKind::Connect),
+                None,
+                "offline",
+                None,
+            ),
+        ] {
+            let mut client = client();
+            client.set_meta(LOG_EPOCH_KEY, "epoch-1");
+            let mut error = TransportError::new(code, secret);
+            error.details = Some(details);
+            let mut transport = failure_transport([Err(error), Ok(completed_response(vec![]))]);
+            assert!(matches!(
+                client.sync(&mut transport),
+                SyncOutcome::Failed { .. }
+            ));
+            let progress = client.progress().snapshot().unwrap();
+            assert_eq!(progress.cause_kind, expected_cause);
+            assert_eq!(progress.http_status, expected_status);
+            assert_eq!(progress.retry_delay_ms, retry);
+            let snapshot = client
+                .diagnostics_snapshot(&ClientDiagnosticsRequest::default())
+                .unwrap();
+            assert_eq!(snapshot.host.connectivity, connectivity);
+            let last_round = snapshot.last_round.as_ref().unwrap();
+            assert_eq!(last_round.cause_kind, expected_cause);
+            assert_eq!(last_round.http_status, expected_status);
+            assert!(!serde_json::to_string(&snapshot).unwrap().contains(secret));
+            assert!(!serde_json::to_string(&progress).unwrap().contains(secret));
+
+            assert!(matches!(client.sync(&mut transport), SyncOutcome::Ok(_)));
+            let progress = client.progress().snapshot().unwrap();
+            assert_eq!(progress.cause_kind, None);
+            assert_eq!(progress.http_status, None);
+            let snapshot = client
+                .diagnostics_snapshot(&ClientDiagnosticsRequest::default())
+                .unwrap();
+            assert_eq!(snapshot.host.connectivity, "online");
+            let last_round = snapshot.last_round.unwrap();
+            assert_eq!(last_round.cause_kind, None);
+            assert_eq!(last_round.http_status, None);
         }
     }
 
@@ -2500,11 +2611,34 @@ mod observation_tests {
             Ok(completed_response(Vec::new())),
             Ok(completed_response(Vec::new())),
         ]);
+        let mut segment_error = TransportError::new("transport.timeout", "private response body");
+        segment_error.details = Some(json!({
+            "causeKind": "status",
+            "httpStatus": 500,
+            "url": "https://example.invalid/private"
+        }));
+        transport.segment_error = Some(segment_error);
 
         assert!(matches!(
             client.sync(&mut transport),
             SyncOutcome::Failed { ref error_code, .. } if error_code == "transport.timeout"
         ));
+        let progress = client.progress().snapshot().unwrap();
+        assert_eq!(progress.cause_kind, Some(crate::TransportCauseKind::Status));
+        assert_eq!(progress.http_status, Some(500));
+        let diagnostics = client
+            .diagnostics_snapshot(&ClientDiagnosticsRequest::default())
+            .unwrap();
+        assert_eq!(diagnostics.host.connectivity, "online");
+        let round = diagnostics.last_round.as_ref().unwrap();
+        assert_eq!(round.cause_kind, Some(crate::TransportCauseKind::Status));
+        assert_eq!(round.http_status, Some(500));
+        assert!(!serde_json::to_string(&diagnostics)
+            .unwrap()
+            .contains("private"));
+        assert!(!serde_json::to_string(&progress)
+            .unwrap()
+            .contains("private"));
         assert!(
             matches!(
                 client.drain_sync_intents().as_slice(),
@@ -10833,6 +10967,7 @@ impl StoredCommitOutcomeRow {
 enum SectionError {
     FailClosed,
     Abort(String, String),
+    Transport(TransportError),
 }
 
 #[derive(Debug)]
@@ -13110,13 +13245,16 @@ impl SyncClient {
             Some(round) if round.status == "succeeded" => "online",
             Some(round)
                 if round.status == "failed"
-                    && round
-                        .error_code
-                        .as_deref()
-                        .is_some_and(Self::retryable_transport_code) =>
+                    && matches!(
+                        round.cause_kind,
+                        Some(
+                            crate::TransportCauseKind::Network | crate::TransportCauseKind::Connect
+                        )
+                    ) =>
             {
                 "offline"
             }
+            Some(round) if round.status == "failed" && round.http_status.is_some() => "online",
             _ => "unknown",
         };
         Ok(ClientDiagnosticsSnapshot {
@@ -13262,7 +13400,7 @@ impl SyncClient {
         if ssp2::model::valid_round_failure_code(&error.code) {
             self.round_failure = Some(error.code.clone());
         }
-        SectionError::Abort(error.code, error.message)
+        SectionError::Transport(error)
     }
 
     /// A failed round worth a background retry: a transport failure, or a
@@ -17651,6 +17789,45 @@ impl SyncClient {
                 *details = failure.details();
             }
         }
+        let details = match &outcome {
+            SyncOutcome::Failed { details, .. } => details.as_ref(),
+            _ => None,
+        };
+        let cause_kind = details
+            .and_then(|details| details.get("causeKind"))
+            .and_then(Value::as_str)
+            .and_then(|cause| match cause {
+                "network" => Some(crate::TransportCauseKind::Network),
+                "connect" => Some(crate::TransportCauseKind::Connect),
+                "tls" => Some(crate::TransportCauseKind::Tls),
+                "io" => Some(crate::TransportCauseKind::Io),
+                "request" => Some(crate::TransportCauseKind::Request),
+                "protocol" => Some(crate::TransportCauseKind::Protocol),
+                "timeout" => Some(crate::TransportCauseKind::Timeout),
+                "round_deadline" => Some(crate::TransportCauseKind::RoundDeadline),
+                "aborted" => Some(crate::TransportCauseKind::Aborted),
+                "body" => Some(crate::TransportCauseKind::Body),
+                "status" => Some(crate::TransportCauseKind::Status),
+                "redirect" => Some(crate::TransportCauseKind::Redirect),
+                "unknown" => Some(crate::TransportCauseKind::Unknown),
+                _ => None,
+            });
+        let http_status = if matches!(
+            cause_kind,
+            Some(
+                crate::TransportCauseKind::Status
+                    | crate::TransportCauseKind::Body
+                    | crate::TransportCauseKind::Redirect
+            )
+        ) {
+            details
+                .and_then(|details| details.get("httpStatus"))
+                .and_then(Value::as_f64)
+                .filter(|status| status.fract() == 0.0 && (100.0..=599.0).contains(status))
+                .map(|status| status as u16)
+        } else {
+            None
+        };
         let retry_delay_ms = self.round_retry_delay_ms;
         self.progress.update(|p| match &outcome {
             SyncOutcome::Ok(report) | SyncOutcome::BudgetExhausted(report)
@@ -17665,6 +17842,8 @@ impl SyncClient {
             SyncOutcome::Failed { error_code, .. } => {
                 p.state = ProgressState::Failed;
                 p.error_code = Some(Self::diagnostic_code(error_code));
+                p.cause_kind = cause_kind;
+                p.http_status = http_status;
                 p.retry_delay_ms = retry_delay_ms;
             }
             SyncOutcome::RealtimeUnavailable { .. } => {
@@ -17695,6 +17874,8 @@ impl SyncClient {
                     deferred_commits: report.deferred_commits,
                 }),
                 error_code: None,
+                cause_kind: None,
+                http_status: None,
             },
             SyncOutcome::Failed { error_code, .. } => DiagnosticLastRound {
                 status: "failed".to_owned(),
@@ -17703,6 +17884,8 @@ impl SyncClient {
                 duration_ms: completed_at_ms.saturating_sub(started_at_ms).max(0),
                 counters: None,
                 error_code: Some(Self::diagnostic_code(error_code)),
+                cause_kind,
+                http_status,
             },
             SyncOutcome::RealtimeUnavailable { .. } => DiagnosticLastRound {
                 status: "failed".to_owned(),
@@ -17711,6 +17894,8 @@ impl SyncClient {
                 duration_ms: completed_at_ms.saturating_sub(started_at_ms).max(0),
                 counters: None,
                 error_code: Some(REALTIME_UNAVAILABLE_CODE.to_owned()),
+                cause_kind: None,
+                http_status: None,
             },
         });
         outcome
@@ -18367,7 +18552,7 @@ impl SyncClient {
                     if sub_end.is_some() {
                         incomplete_subscriptions.remove(id.as_str());
                     }
-                    if let Err(SectionError::Abort(code, message)) = self.process_section(
+                    let section_failure = match self.process_section(
                         transport,
                         &id,
                         status,
@@ -18379,7 +18564,16 @@ impl SyncClient {
                         &mut report,
                         &coalesced_deletes,
                     ) {
-                        failure = Some((code, message, None, None));
+                        Err(SectionError::Abort(code, message)) => {
+                            Some((code, message, None, None))
+                        }
+                        Err(SectionError::Transport(error)) => {
+                            Some((error.code, error.message, None, error.details))
+                        }
+                        _ => None,
+                    };
+                    if section_failure.is_some() {
+                        failure = section_failure;
                         break;
                     }
                 }

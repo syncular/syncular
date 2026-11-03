@@ -56,6 +56,36 @@ Worker and follower RPC preserve the code and details. The native transport
 uses its own codes and `causeKind` values
 ([Rust troubleshooting](/platform-rust-troubleshooting/)).
 
+Failed `onProgress` events and `diagnosticsSnapshot().lastRound` carry the
+same bounded `causeKind` and an optional `httpStatus`. `onDiagnostics` pushes
+the last-round evidence to each worker leader and follower. Tauri and React
+Native forward the native core's evidence. A new progress attempt clears its
+failure fields, and a successful round replaces the failed `lastRound`.
+
+`host.connectivity` describes the latest endpoint observation. A `network` or
+`connect` failure reports `offline`; an HTTP response reports `online`, even
+when the response is an error. Other failed rounds report `unknown`. These
+values do not establish the device's network state or the server's health.
+The retry delay describes scheduling and does not identify a failure cause.
+
+For a custom TypeScript transport, declare a classification at the point where
+the transport knows it:
+
+```ts
+import { ClientSyncError } from '@syncular/client';
+
+throw new ClientSyncError('sync.transport_failed', 'sync request failed', true, {
+  causeKind: 'network',
+});
+```
+
+Use `network` when the transport observed a failed network request. A custom
+transport that knows an HTTP response can supply `causeKind: 'status'` and its
+numeric `httpStatus`. Use static, non-sensitive messages and details. The core
+maps an unclassified exception to `unknown` and drops its raw cause because the
+exception can contain request or response data. A `network` or `connect`
+classification leaves the next drive to the host's connectivity signal.
+
 A direct endpoint's JSON error keeps the server's code and retry policy, plus
 the HTTP status. A failed signed URL carries
 `sync.transport_failed` and invalidates the descriptor. The client aborts that

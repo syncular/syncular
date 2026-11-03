@@ -22,3 +22,10 @@ Match a symptom to its cause and fix.
 | `transport.failed` | The request failed without a usable response; `details.causeKind` holds `connect`, `tls`, `io`, `request`, `protocol`, `body`, `status` (with `httpStatus`), or `unknown` | Treat `connect`, `tls`, and `transport.timeout` as a missing connection; branch on the code and `causeKind`, never on the message |
 
 For protocol-level failures (`sync.*` codes, revoked subscriptions, conflicts) see [Troubleshooting](/troubleshooting/).
+
+Failed progress and `lastRound` diagnostics expose the transport's bounded
+`causeKind` and, for an HTTP response, `httpStatus`. Native bridges forward
+these fields with their progress and diagnostics events. A successful round
+replaces the failed evidence. `host.connectivity` reports the endpoint
+observation: an HTTP response reports `online` even when its status is an
+error. It does not establish the device's network state or server health.

@@ -69,11 +69,13 @@ export class EndpointError extends Error {
   override readonly name = 'EndpointError';
   readonly code: string;
   readonly retryable: boolean;
+  readonly details: unknown;
 
   constructor(error: DriverError) {
     super(error.message);
     this.code = error.code;
     this.retryable = error.retryable ?? false;
+    this.details = error.details;
   }
 }
 

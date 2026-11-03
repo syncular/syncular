@@ -2419,6 +2419,169 @@ mod tests {
 
     #[cfg(feature = "native-transport")]
     #[test]
+    fn owner_thread_publishes_refused_connection_evidence() {
+        use std::net::TcpListener;
+        use std::sync::{mpsc::channel, Arc, Mutex};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let events = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let emitted = Arc::clone(&events);
+        let (tx, rx) = channel::<Request>();
+        let owner_tx = tx.clone();
+        let owner = std::thread::spawn(move || {
+            run_owner_thread(
+                SyncularConfig {
+                    base_url: Some(format!("http://{address}")),
+                    auto_sync: false,
+                    ..Default::default()
+                },
+                owner_tx,
+                rx,
+                move |event| emitted.lock().unwrap().push(event.clone()),
+            )
+        });
+        let call = |command: Value| -> Value {
+            let (reply, result) = channel();
+            tx.send(Request::Command { command, reply }).unwrap();
+            result.recv().unwrap()
+        };
+        let created = call(json!({ "method": "create", "params": {
+            "clientId": "diagnostics-tauri-connect", "transportEnabled": true,
+            "schema": { "version": 1, "tables": [] }
+        } }));
+        assert!(created.get("error").is_none(), "{created}");
+        call(json!({ "method": "enableDiagnostics", "params": {} }));
+        let failed = call(json!({ "method": "sync", "params": {} }));
+        assert_eq!(failed["result"]["details"]["causeKind"], "connect");
+        let snapshot = call(json!({ "method": "diagnosticsSnapshot", "params": {} }));
+        assert_eq!(snapshot["result"]["lastRound"]["causeKind"], "connect");
+        assert_eq!(snapshot["result"]["host"]["connectivity"], "offline");
+        {
+            let events = events.lock().unwrap();
+            assert!(events
+                .iter()
+                .any(|event| event["type"] == "progress"
+                    && event["progress"]["causeKind"] == "connect"));
+            assert!(events.iter().any(|event| event["type"] == "diagnostics"
+                && event["snapshot"]["lastRound"]["causeKind"] == "connect"));
+        }
+        tx.send(Request::Shutdown).unwrap();
+        owner.join().unwrap();
+    }
+
+    #[cfg(feature = "native-transport")]
+    #[test]
+    fn owner_thread_publishes_transport_status_and_clears_it_on_recovery() {
+        use ssp2::model::{Frame, Message, MsgKind};
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::{mpsc::channel, Arc, Mutex};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            for round in 0..2 {
+                let (mut socket, _) = listener.accept().unwrap();
+                let mut header = Vec::new();
+                while !header.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    socket.read_exact(&mut byte).unwrap();
+                    header.push(byte[0]);
+                }
+                let header = String::from_utf8(header).unwrap();
+                let length: usize = header
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse().unwrap())
+                    })
+                    .unwrap();
+                let mut request = vec![0; length];
+                socket.read_exact(&mut request).unwrap();
+                if round == 0 {
+                    let body = b"private-response-secret";
+                    write!(socket, "HTTP/1.1 500 Internal Server Error\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+                    socket.write_all(body).unwrap();
+                } else {
+                    let response = ssp2::encode_message(&Message {
+                        wire_version: ssp2::decode::WIRE_VERSION,
+                        msg_kind: MsgKind::Response,
+                        frames: vec![Frame::RespHeader {
+                            required_schema_version: None,
+                            latest_schema_version: None,
+                            log_epoch: Some("epoch-1".into()),
+                            reset_required: Some(true),
+                        }],
+                    });
+                    write!(
+                        socket,
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        response.len()
+                    )
+                    .unwrap();
+                    socket.write_all(&response).unwrap();
+                }
+            }
+        });
+        let events = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let emitted = Arc::clone(&events);
+        let (tx, rx) = channel::<Request>();
+        let owner_tx = tx.clone();
+        let owner = std::thread::spawn(move || {
+            run_owner_thread(
+                SyncularConfig {
+                    base_url: Some(format!("http://{address}")),
+                    auto_sync: false,
+                    ..Default::default()
+                },
+                owner_tx,
+                rx,
+                move |event| emitted.lock().unwrap().push(event.clone()),
+            )
+        });
+        let call = |command: Value| -> Value {
+            let (reply, result) = channel();
+            tx.send(Request::Command { command, reply }).unwrap();
+            result.recv().unwrap()
+        };
+        let created = call(json!({ "method": "create", "params": {
+            "clientId": "diagnostics-tauri", "transportEnabled": true,
+            "schema": { "version": 1, "tables": [] }
+        } }));
+        assert!(created.get("error").is_none(), "{created}");
+        call(json!({ "method": "enableDiagnostics", "params": {} }));
+        let failed = call(json!({ "method": "sync", "params": {} }));
+        assert_eq!(failed["result"]["details"]["causeKind"], "status");
+        assert_eq!(failed["result"]["details"]["httpStatus"], 500);
+        let snapshot = call(json!({ "method": "diagnosticsSnapshot", "params": {} }));
+        assert_eq!(snapshot["result"]["lastRound"]["causeKind"], "status");
+        assert_eq!(snapshot["result"]["lastRound"]["httpStatus"], 500);
+        assert_eq!(snapshot["result"]["host"]["connectivity"], "online");
+        {
+            let events = events.lock().unwrap();
+            assert!(events.iter().any(|event| event["type"] == "progress"
+                && event["progress"]["causeKind"] == "status"
+                && event["progress"]["httpStatus"] == 500));
+            assert!(events.iter().any(|event| event["type"] == "diagnostics"
+                && event["snapshot"]["lastRound"]["httpStatus"] == 500));
+            assert!(!format!("{events:?}").contains("private-response-secret"));
+        }
+        let recovered = call(json!({ "method": "sync", "params": {} }));
+        assert_eq!(recovered["result"]["ok"], true);
+        let snapshot = call(json!({ "method": "diagnosticsSnapshot", "params": {} }));
+        assert_eq!(snapshot["result"]["lastRound"]["status"], "succeeded");
+        assert!(snapshot["result"]["lastRound"].get("causeKind").is_none());
+        assert!(snapshot["result"]["lastRound"].get("httpStatus").is_none());
+        tx.send(Request::Shutdown).unwrap();
+        owner.join().unwrap();
+        server.join().unwrap();
+    }
+
+    #[cfg(feature = "native-transport")]
+    #[test]
     fn owner_thread_sync_until_idle_reports_budget_exhaustion_with_the_report() {
         use ssp2::model::{Change, Frame, Message, MsgKind, Op, OpResult, PushStatus, SubStatus};
         use ssp2::segment::{encode_row, Column, ColumnType, ColumnValue};

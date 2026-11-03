@@ -72,6 +72,7 @@ import type {
   ServerRowState,
 } from '../driver';
 import { TransportFault } from '../faults';
+import { EndpointError } from '../scenario';
 import { bytesToHex, hexToBytes } from '../raw';
 import {
   readServerRows,
@@ -386,6 +387,9 @@ class ShimProcess {
         error: {
           code: errorCodeOf(error),
           message: error instanceof Error ? error.message : String(error),
+          ...(error instanceof EndpointError && error.details !== undefined
+            ? { details: error.details }
+            : {}),
         },
       });
     }
@@ -690,6 +694,12 @@ function progressValue(value: JsonValue): DriverSyncProgress {
       : {}),
     ...(typeof object.errorCode === 'string'
       ? { errorCode: object.errorCode }
+      : {}),
+    ...(typeof object.causeKind === 'string'
+      ? { causeKind: object.causeKind }
+      : {}),
+    ...(typeof object.httpStatus === 'number'
+      ? { httpStatus: object.httpStatus }
       : {}),
     ...(typeof object.retryDelayMs === 'number'
       ? { retryDelayMs: object.retryDelayMs }
@@ -1358,6 +1368,12 @@ class RustClientInstance implements ClientInstance {
     return (await this.#shim.call('diagnosticsSnapshot', {})) as unknown as {
       readonly queryFailures: readonly DriverQueryFailure[];
       readonly host: DriverRealtimeAvailability;
+      readonly lastRound?: {
+        readonly status: string;
+        readonly errorCode?: string;
+        readonly causeKind?: string;
+        readonly httpStatus?: number;
+      };
     };
   }
 

@@ -65,6 +65,130 @@ const FTS_SCHEMA = {
 
 export const observationScenarios: readonly Scenario[] = [
   {
+    name: 'observation/bounded-transport-failure-and-recovery',
+    specRefs: ['§1.8', '§7.6'],
+    async run(ctx) {
+      const handle = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'transport-diagnostics',
+        allowed: { project_id: ['p1'] },
+      });
+      await syncIdle(handle);
+      const diagnostics = handle.api.diagnosticsSnapshot?.bind(handle.api);
+      const progress = handle.api.progressSnapshot?.bind(handle.api);
+      check(
+        diagnostics !== undefined && progress !== undefined,
+        'diagnostics and progress are available',
+      );
+      if (diagnostics === undefined || progress === undefined) return;
+      const original = handle.route.server;
+      const secret = 'private-transport-value';
+      for (const fixture of [
+        {
+          details: { causeKind: 'network', secret },
+          cause: 'network',
+          status: undefined,
+          connectivity: 'offline',
+        },
+        {
+          details: { causeKind: 'status', httpStatus: 500, secret },
+          cause: 'status',
+          status: 500,
+          connectivity: 'online',
+        },
+        {
+          details: { causeKind: 'timeout', secret },
+          cause: 'timeout',
+          status: undefined,
+          connectivity: 'unknown',
+        },
+        {
+          details: { causeKind: secret, httpStatus: 500 },
+          cause: undefined,
+          status: undefined,
+          connectivity: 'unknown',
+        },
+      ]) {
+        handle.route.server = {
+          ...original,
+          handleSyncRequest: async (actor, request) => {
+            const result = await original.handleSyncRequest(actor, request);
+            if (!result.ok) return result;
+            const message = decodeMessage(result.bytes);
+            const header = message.frames[0];
+            if (
+              message.msgKind !== 'response' ||
+              header?.type !== 'RESP_HEADER'
+            )
+              throw new Error('expected response header');
+            return {
+              ok: true,
+              bytes: encodeMessage({
+                ...message,
+                frames: [
+                  header,
+                  {
+                    type: 'ERROR',
+                    code: 'sync.transport_failed',
+                    message: secret,
+                    category: 'internal',
+                    retryable: true,
+                    recommendedAction: 'retryLater',
+                    details: JSON.stringify(fixture.details),
+                  },
+                ],
+              }),
+            };
+          },
+        };
+        check(!(await handle.api.sync()).ok, 'injected round fails');
+        const current = await progress();
+        const snapshot = await diagnostics();
+        checkEqual(
+          current?.causeKind,
+          fixture.cause,
+          'progress carries only a bounded cause',
+        );
+        checkEqual(
+          current?.httpStatus,
+          fixture.status,
+          'progress carries only a bounded status',
+        );
+        checkEqual(
+          snapshot.lastRound?.causeKind,
+          fixture.cause,
+          'diagnostics carry the same cause',
+        );
+        checkEqual(
+          snapshot.lastRound?.httpStatus,
+          fixture.status,
+          'diagnostics carry the same status',
+        );
+        checkEqual(
+          snapshot.host.connectivity,
+          fixture.connectivity,
+          'connectivity follows endpoint evidence',
+        );
+        check(
+          !JSON.stringify({ current, snapshot }).includes(secret),
+          'snapshots omit private error data',
+        );
+        handle.route.server = original;
+        await syncOk(handle);
+        checkEqual(
+          (await progress())?.causeKind,
+          undefined,
+          'recovery clears progress cause',
+        );
+        checkEqual(
+          (await diagnostics()).lastRound?.causeKind,
+          undefined,
+          'recovery clears last-round cause',
+        );
+      }
+    },
+  },
+  {
     // SYQL §15: typegen reads `_syncular_source_id` through the mapping table
     // on the projection rowid. Both cores keep every projection row's mapping
     // id equal to its rowid and its source_id equal to its source id.

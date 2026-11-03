@@ -222,6 +222,77 @@ export const signedUrlScenarios: readonly Scenario[] = [
       }
       checkEqual(a.directDownloads, [], 'no fall-through on loss (§5.4)');
 
+      // A failed download retains bounded transport evidence on both cores.
+      const original = a.route.server;
+      const secret = 'private-segment-response';
+      let cause: 'status' | 'network' = 'status';
+      a.route.server = {
+        ...original,
+        handleSyncRequest: original.handleSyncRequest.bind(original),
+        fetchSegmentUrl: async () => ({
+          ok: false,
+          error: {
+            code: 'sync.transport_failed',
+            message: secret,
+            retryable: true,
+            details: { causeKind: cause, httpStatus: 500, secret },
+          },
+        }),
+      };
+      check(
+        !(await a.api.sync()).ok,
+        'a failed segment download fails the round',
+      );
+      const progress = await a.api.progressSnapshot?.();
+      const diagnostics = await a.api.diagnosticsSnapshot?.();
+      checkEqual(
+        progress?.causeKind,
+        'status',
+        'segment progress carries cause',
+      );
+      checkEqual(progress?.httpStatus, 500, 'segment progress carries status');
+      checkEqual(
+        diagnostics?.lastRound?.causeKind,
+        'status',
+        'last round carries cause',
+      );
+      checkEqual(
+        diagnostics?.lastRound?.httpStatus,
+        500,
+        'last round carries status',
+      );
+      checkEqual(
+        diagnostics?.host.connectivity,
+        'online',
+        'HTTP response establishes connectivity',
+      );
+      check(
+        !JSON.stringify({ progress, diagnostics }).includes(secret),
+        'segment snapshots omit private data',
+      );
+      check(a.api.drainSyncIntents !== undefined, 'sync intents are available');
+      if (a.api.drainSyncIntents === undefined)
+        throw new Error('missing sync intents');
+      await a.api.drainSyncIntents();
+      cause = 'network';
+      check(!(await a.api.sync()).ok, 'a network-lost segment fails the round');
+      checkEqual(
+        (await a.api.progressSnapshot?.())?.causeKind,
+        'network',
+        'lost segment carries cause',
+      );
+      checkEqual(
+        (await a.api.diagnosticsSnapshot?.())?.host.connectivity,
+        'offline',
+        'network loss reports offline',
+      );
+      checkEqual(
+        await a.api.drainSyncIntents(),
+        [],
+        'network loss follows the existing no-retry policy',
+      );
+      a.route.server = original;
+
       // Healed path: the re-pull converges through the URL host.
       await syncIdle(a);
       checkEqual(a.directDownloads, [], 'recovery is re-pull, not detour');

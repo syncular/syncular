@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-03',
+    title: 'Expose bounded transport evidence in round snapshots',
+    body: 'Failed progress and last-round diagnostics carry the transport cause and an optional HTTP status across worker leaders, followers, and native hosts. A successful round clears the failure evidence.',
+    links: [
+      {
+        href: '/platform-web-troubleshooting/#transport-failures',
+        label: 'Transport failures',
+      },
+    ],
+  },
+  {
+    date: '2026-11-03',
     title: 'Lock a host-owned authority transaction',
     body: '`prepareAuthorityTransaction` takes the partition lock and checks the schema and checkpoint gate without a push identity. SQLite and PostgreSQL support the boundary; D1 and adapters without the lock capability refuse it.',
     links: [

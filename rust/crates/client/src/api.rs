@@ -271,6 +271,25 @@ pub struct DiagnosticRoundCounters {
     pub deferred_commits: usize,
 }
 
+/// Bounded transport classification for progress and diagnostics (§1.8).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TransportCauseKind {
+    Network,
+    Connect,
+    Tls,
+    Io,
+    Request,
+    Protocol,
+    Timeout,
+    RoundDeadline,
+    Aborted,
+    Body,
+    Status,
+    Redirect,
+    Unknown,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct DiagnosticLastRound {
@@ -282,6 +301,10 @@ pub struct DiagnosticLastRound {
     pub counters: Option<DiagnosticRoundCounters>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cause_kind: Option<TransportCauseKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

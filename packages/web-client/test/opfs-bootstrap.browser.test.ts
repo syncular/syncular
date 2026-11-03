@@ -1423,6 +1423,94 @@ test('OPFS 89→90 drops old scopes/windows and reloads after a compatible 91 bu
   }
 }, 60000);
 
+test('OPFS leader and follower observe network and HTTP failure evidence and recovery', async () => {
+  const browser = await chromium.launch();
+  try {
+    for (const kind of ['network', 'status'] as const) {
+      const context = await browser.newContext();
+      try {
+        const owner = await context.newPage();
+        await owner.goto(server.url.href);
+        await owner.evaluate(() => window.opfsTest.open());
+        const follower = await context.newPage();
+        await follower.goto(server.url.href);
+        await follower.evaluate(() => window.opfsTest.open());
+        expect(
+          await owner.evaluate(async () => (await window.opfsTest.ready).role),
+        ).toBe('leader');
+        expect(
+          await follower.evaluate(
+            async () => (await window.opfsTest.ready).role,
+          ),
+        ).toBe('follower');
+        await context.route('**/sync', (route) =>
+          kind === 'network'
+            ? route.abort('failed')
+            : route.fulfill({ status: 500, body: 'private-response-secret' }),
+        );
+        await Promise.all([
+          owner.evaluate(() => window.opfsTest.watchRound('failed')),
+          follower.evaluate(() => window.opfsTest.watchRound('failed')),
+        ]);
+        const failed = await owner.evaluate(async () => {
+          try {
+            await (await window.opfsTest.ready).sync();
+            return false;
+          } catch {
+            return true;
+          }
+        });
+        expect(failed).toBe(true);
+        const evidence = await Promise.all([
+          owner.evaluate(() => window.opfsTest.evidence),
+          follower.evaluate(() => window.opfsTest.evidence),
+        ]);
+        for (const [progress, diagnostics] of evidence) {
+          expect(progress.causeKind).toBe(kind);
+          expect(progress.httpStatus).toBe(kind === 'status' ? 500 : undefined);
+          expect(diagnostics.lastRound?.status).toBe('failed');
+          if (diagnostics.lastRound?.status !== 'failed')
+            throw new Error('missing failed round');
+          expect(diagnostics.lastRound.causeKind).toBe(kind);
+          expect(diagnostics.lastRound.httpStatus).toBe(
+            kind === 'status' ? 500 : undefined,
+          );
+          expect(diagnostics.host.connectivity).toBe(
+            kind === 'network' ? 'offline' : 'online',
+          );
+        }
+        expect(JSON.stringify(evidence)).not.toContain(
+          'private-response-secret',
+        );
+        await context.unroute('**/sync');
+        await Promise.all([
+          owner.evaluate(() => window.opfsTest.watchRound('complete')),
+          follower.evaluate(() => window.opfsTest.watchRound('complete')),
+        ]);
+        await owner.evaluate(async () => (await window.opfsTest.ready).sync());
+        const recovered = await Promise.all([
+          owner.evaluate(() => window.opfsTest.evidence),
+          follower.evaluate(() => window.opfsTest.evidence),
+        ]);
+        for (const [progress, diagnostics] of recovered) {
+          expect(progress.causeKind).toBeUndefined();
+          expect(progress.httpStatus).toBeUndefined();
+          expect(diagnostics.lastRound?.status).toBe('succeeded');
+          expect(diagnostics.host.connectivity).toBe('online');
+        }
+        await follower.evaluate(async () =>
+          (await window.opfsTest.ready).close(),
+        );
+        await owner.evaluate(async () => (await window.opfsTest.ready).close());
+      } finally {
+        await context.close();
+      }
+    }
+  } finally {
+    await browser.close();
+  }
+}, 60000);
+
 test('OPFS live second tab follows the leader and promotes after reload', async () => {
   const browser = await chromium.launch();
   const context = await browser.newContext();

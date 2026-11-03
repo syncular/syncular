@@ -1,14 +1,166 @@
 import { describe, expect, test } from 'bun:test';
 import {
   type ClientSchema,
+  type ClientDiagnosticsSnapshot,
   ClientSyncError,
+  SyncClient,
+  type SyncProgress,
+  httpSyncTransport,
   MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
   MAX_DIAGNOSTIC_QUERY_FAILURES,
   SECURITY_PREFLIGHT_REQUIRED_CODE,
 } from '@syncular/client';
+import { BunClientDatabase } from '@syncular/client/bun';
+import { encodeMessage } from '@syncular/core';
 import { CLIENT_SCHEMA, makeClient, makeServer, taskValues } from './helpers';
 
 describe('privacy-safe client diagnostics', () => {
+  test('publishes bounded transport evidence and clears it on recovery', async () => {
+    const secret = 'https://user:password@example.invalid/private?token=secret';
+    const response = encodeMessage({
+      wireVersion: 3,
+      msgKind: 'response',
+      frames: [
+        { type: 'RESP_HEADER', logEpoch: 'epoch-1', resetRequired: true },
+      ],
+    });
+    for (const fixture of [
+      { kind: 'network', connectivity: 'offline', retry: undefined },
+      { kind: 'status', status: 500, connectivity: 'online', retry: 250 },
+      { kind: 'status', status: 401, connectivity: 'online', retry: undefined },
+      { kind: 'timeout', connectivity: 'unknown', retry: 250 },
+      { kind: 'unknown', connectivity: 'unknown', retry: 250 },
+    ] as const) {
+      const db = new BunClientDatabase();
+      let healthy = false;
+      const doFetch = Object.assign(
+        async () => {
+          if (healthy)
+            return new Response(response.slice().buffer as ArrayBuffer);
+          if (fixture.kind === 'network') throw new TypeError(secret);
+          if (fixture.kind === 'timeout')
+            throw new DOMException(secret, 'TimeoutError');
+          if (fixture.kind === 'unknown') throw new Error(secret);
+          return fixture.status === 401
+            ? Response.json(
+                {
+                  code: 'sync.auth_required',
+                  message: secret,
+                  details: { secret },
+                },
+                { status: 401 },
+              )
+            : new Response(secret, { status: fixture.status });
+        },
+        { preconnect: fetch.preconnect },
+      );
+      const client = new SyncClient({
+        schema: { version: 1, tables: [] },
+        database: db,
+        clientId: 'diagnostic-classification',
+        transport: httpSyncTransport('https://example.invalid/sync', {
+          fetch: doFetch,
+        }),
+      });
+      const progress: SyncProgress[] = [];
+      const diagnostics: ClientDiagnosticsSnapshot[] = [];
+      client.onProgress((value) => progress.push(value));
+      client.onDiagnostics((value) => diagnostics.push(value));
+      try {
+        await client.start();
+        const code =
+          'status' in fixture && fixture.status === 401
+            ? 'sync.auth_required'
+            : 'sync.transport_failed';
+        const expected = {
+          causeKind: fixture.kind,
+          ...('status' in fixture ? { httpStatus: fixture.status } : {}),
+        };
+        await expect(client.sync()).rejects.toMatchObject({
+          code,
+          details: expected,
+        });
+        expect(client.progressSnapshot()).toMatchObject({
+          state: 'failed',
+          errorCode: code,
+          ...expected,
+        });
+        expect(client.progressSnapshot()?.retryDelayMs).toBe(fixture.retry);
+        const snapshot = client.diagnosticsSnapshot();
+        expect(snapshot.host.connectivity).toBe(fixture.connectivity);
+        expect(snapshot.lastRound).toMatchObject({
+          status: 'failed',
+          errorCode: code,
+          ...expected,
+        });
+        expect(progress.at(-1)).toEqual(client.progressSnapshot());
+        expect(diagnostics.at(-1)?.lastRound).toEqual(snapshot.lastRound);
+        expect(JSON.stringify({ progress, diagnostics })).not.toContain(secret);
+
+        healthy = true;
+        await client.sync();
+        expect(client.progressSnapshot()).toMatchObject({ state: 'complete' });
+        expect(client.progressSnapshot()).not.toHaveProperty('causeKind');
+        expect(client.progressSnapshot()).not.toHaveProperty('httpStatus');
+        expect(client.diagnosticsSnapshot().host.connectivity).toBe('online');
+        expect(client.diagnosticsSnapshot().lastRound).toMatchObject({
+          status: 'succeeded',
+        });
+        expect(client.diagnosticsSnapshot().lastRound).not.toHaveProperty(
+          'causeKind',
+        );
+        expect(client.diagnosticsSnapshot().lastRound).not.toHaveProperty(
+          'httpStatus',
+        );
+      } finally {
+        await client.close();
+        db.close();
+      }
+    }
+  });
+
+  test('omits untrusted or malformed transport detail members', async () => {
+    const secret = 'private-transport-value';
+    for (const details of [
+      { causeKind: secret, httpStatus: 500, secret },
+      { causeKind: 'status', httpStatus: 600, secret },
+      { causeKind: 'status', httpStatus: 500.5, secret },
+      { causeKind: 'status', httpStatus: '500', secret },
+      { causeKind: 'network', httpStatus: 500, secret },
+    ]) {
+      const db = new BunClientDatabase();
+      const client = new SyncClient({
+        schema: { version: 1, tables: [] },
+        database: db,
+        clientId: 'diagnostic-bounds',
+        transport: async () => {
+          throw new ClientSyncError(
+            'sync.transport_failed',
+            secret,
+            true,
+            details,
+          );
+        },
+      });
+      try {
+        await client.start();
+        await expect(client.sync()).rejects.toBeInstanceOf(ClientSyncError);
+        const progress = client.progressSnapshot();
+        const snapshot = client.diagnosticsSnapshot();
+        expect(progress).not.toHaveProperty('httpStatus');
+        expect(snapshot.lastRound).not.toHaveProperty('httpStatus');
+        if (details.causeKind === secret) {
+          expect(progress).not.toHaveProperty('causeKind');
+          expect(snapshot.lastRound).not.toHaveProperty('causeKind');
+        }
+        expect(JSON.stringify({ progress, snapshot })).not.toContain(secret);
+      } finally {
+        await client.close();
+        db.close();
+      }
+    }
+  });
+
   test('distinguishes intent, bootstrap, zero-row completion, local work, and offline failure', async () => {
     const server = makeServer();
     const fixture = await makeClient(server, {
@@ -92,7 +244,7 @@ describe('privacy-safe client diagnostics', () => {
     fixture.faults.dropResponseOnce = true;
     await expect(fixture.client.sync()).rejects.toThrow();
     const offline = fixture.client.diagnosticsSnapshot();
-    expect(offline.host.connectivity).toBe('offline');
+    expect(offline.host.connectivity).toBe('unknown');
     expect(offline.lastRound).toMatchObject({
       status: 'failed',
       errorCode: 'sync.transport_failed',

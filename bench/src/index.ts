@@ -105,7 +105,7 @@ const WORKLOAD = {
  *   ~20x allowance absorbs runner noise; breaching 20 ms in-process means
  *   a sleep/poll crept into the sync/realtime loop.
  * - `ownJsRawCeilingBytes` 175 KiB: the main-thread browser bundle
- *   (`bundle-entry.ts`) measures 167.4 KiB raw (171,443 bytes) with Bun
+ *   (`bundle-entry.ts`) measures 168.0 KiB raw (171,982 bytes) with Bun
  *   1.4.4. The ceiling keeps ~4% headroom, rounded up to a whole KiB.
  *   Previously 166 KiB over 159.5 KiB (163,348 bytes, Bun 1.4.0); CI
  *   measured 164.8 KiB before 0df2374c and 167.6 KiB after it, which adds

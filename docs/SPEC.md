@@ -5407,9 +5407,9 @@ The snapshot is one bounded observation containing:
 - every registered subscription's application id, generated table, cursor,
   completeness, state (`bootstrapping`, `complete`, `reset`, `revoked`, or
   `failed`), and optional stable reason code;
-- the last sync round as bounded counters or a stable failure code, and the
-  last revisioned change as generated table/window names plus changed-domain
-  booleans;
+- the last sync round as bounded counters or a stable failure code with the
+  optional transport evidence below, and the last revisioned change as
+  generated table/window names plus changed-domain booleans;
 - aggregate SQLite/outbox/outcome/blob-cache byte estimates and storage state
   (`healthy`, `pressure`, or `unreadable`). Failure to open storage remains the
   stable startup error `client.storage_unavailable`; no snapshot can be read
@@ -5456,6 +5456,25 @@ requests a fresh snapshot with its intent list. Diagnostics remains a
 protected operation during security preflight because table/subscription
 evidence belongs to the quarantined replica.
 
+A failed round's `lastRound` and terminal progress MAY carry `causeKind`
+from §1.8 and `httpStatus`. The client copies `causeKind` only when the
+failure's structured details contain a member of the closed §1.8 vocabulary.
+It copies `httpStatus` only for `status`, `body`, or `redirect` and only when
+the value is an integer from 100 through 599. Other detail keys, invalid
+causes, raw exceptions, and response bodies do not enter either snapshot.
+The next attempt clears progress failure evidence; a successful round replaces
+the failed `lastRound`. These fields report the transport's classification,
+including a custom transport's declared classification; they do not prove
+device connectivity or server health.
+
+The core reports host connectivity as `offline` when the transport is disabled
+or the last failed round has cause `network` or `connect`. It reports `online`
+after a successful round or a failure with a valid HTTP status. It reports
+`unknown` for other failures and before the first round. `online` for an HTTP
+failure means an endpoint answered, not that the sync server is healthy.
+Hosts can replace connectivity with their own platform observation. A retry
+delay does not classify the failure.
+
 ---
 
 ### 7.6 Live sync progress
@@ -5490,6 +5509,8 @@ per-block transactions; SQLite images commit in chunks of at most 1,024 rows
 and reconciled the optimistic read model. It means the round completed, not that
 all subscriptions have finished bootstrap. `failed` carries a static `errorCode`
 and retains the last observed counters; processed rows may have rolled back.
+It also carries the bounded `causeKind` and `httpStatus` described above when
+the failed round provides them.
 When the failed round scheduled a background retry intent, `failed` also
 carries `retryDelayMs`, the intent's `delayMs`: 250 ms after the first
 consecutive retryable failure, doubling per further failure up to 30,000 ms,

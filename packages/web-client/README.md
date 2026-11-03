@@ -393,6 +393,11 @@ and generated table names, never scopes. It lets a support screen distinguish
 an absent registration from a legitimate zero-row completed bootstrap. The
 snapshot also distinguishes reset, revocation, failure, schema floor, lease
 stop, pending outbox, offline transport, and storage pressure/unreadability.
+Failed progress and `lastRound` diagnostics expose an optional bounded
+`causeKind` and HTTP status. Worker leaders and followers receive the same
+evidence. A new progress attempt clears its failure fields; a successful round
+replaces the failed last round. `host.connectivity` describes the latest
+endpoint observation and does not prove the device's network state.
 `queryFailures` retains at most 256 failed owned snapshot reads until each query
 reads successfully. An entry contains only its stable PHI-free owner id,
 generated table names, a stable code, an optional numeric SQLite result code,

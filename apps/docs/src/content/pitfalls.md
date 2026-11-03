@@ -15,6 +15,15 @@ The page grows from integrator feedback. Add an entry once the failure is unders
 
 ## Transport and rounds
 
+### Do classify failures at a custom transport boundary
+
+An arbitrary exception does not establish whether a network request or an
+HTTP response failed. The client reports it as `sync.transport_failed` with
+`causeKind: unknown` and excludes its raw cause. A custom transport that knows
+the failure throws a `ClientSyncError` with a static message and a bounded
+`causeKind`; an HTTP response can also carry its numeric `httpStatus`.
+See [Browser transport failures](/platform-web-troubleshooting/#transport-failures).
+
 ### Don't run a round on a blocking transport while the UI has events pending
 
 A transport that blocks its thread for the whole request freezes everything else on that thread. The Rust client's `Transport` is synchronous, and a host that answers it with a blocking request on the thread that also serves the UI handles no events while a round is on the wire. In one app (a Rust core in a browser worker), a reload with a fully populated replica showed its first screen after 0.97 to 1.69 s (4.2 s with `/sync` delayed by 3 s), against 0.2 s when no round was in the way. With a large replica and a slow link the wait grows to the length of a round.

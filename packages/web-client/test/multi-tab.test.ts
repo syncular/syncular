@@ -9,6 +9,7 @@
 import { afterEach, beforeAll, expect, test } from 'bun:test';
 import {
   ClientSyncError,
+  type ClientDiagnosticsSnapshot,
   type CrossTabChannel,
   createSyncClientHandle,
   createTabCoordinator,
@@ -26,6 +27,7 @@ import {
   SECURITY_PREFLIGHT_REQUIRED_CODE,
   type SyncClientHandle,
   type SyncClientHandleConfig,
+  type SyncProgress,
   type SyncWorkerEvent,
   TAKEOVER_REFUSED_CODE,
   type TabCoordinator,
@@ -378,6 +380,119 @@ function makeGroup(): Group {
   };
   return { lock, lockName, make };
 }
+
+test('worker leader and follower receive bounded failure evidence and recovery', async () => {
+  const workerUrl = new URL('./diagnostics-worker.ts', import.meta.url).href;
+  for (const fixture of [
+    {
+      mode: 'network',
+      cause: 'network',
+      status: undefined,
+      connectivity: 'offline',
+    },
+    {
+      mode: 'coded-network',
+      cause: 'network',
+      status: undefined,
+      connectivity: 'offline',
+    },
+    { mode: 'status', cause: 'status', status: 500, connectivity: 'online' },
+    { mode: 'auth', cause: 'status', status: 401, connectivity: 'online' },
+    {
+      mode: 'timeout',
+      cause: 'timeout',
+      status: undefined,
+      connectivity: 'unknown',
+    },
+    {
+      mode: 'unknown',
+      cause: 'unknown',
+      status: undefined,
+      connectivity: 'unknown',
+    },
+  ] as const) {
+    const group = makeGroup();
+    const options: Partial<SyncClientHandleConfig> = {
+      worker: () => new Worker(workerUrl),
+      database: { mode: 'custom', options: fixture.mode },
+      endpoints: { syncUrl: 'https://example.invalid/sync' },
+    };
+    const leader = await group.make({
+      ...options,
+      clientId: `diagnostics-${fixture.mode}`,
+    });
+    const follower = await group.make(options);
+    expect(leader.role).toBe('leader');
+    expect(follower.role).toBe('follower');
+    const progress = [
+      Promise.withResolvers<SyncProgress>(),
+      Promise.withResolvers<SyncProgress>(),
+    ];
+    const diagnostics = [
+      Promise.withResolvers<ClientDiagnosticsSnapshot>(),
+      Promise.withResolvers<ClientDiagnosticsSnapshot>(),
+    ];
+    const recovered = [
+      Promise.withResolvers<SyncProgress>(),
+      Promise.withResolvers<SyncProgress>(),
+    ];
+    for (const [index, handle] of [leader, follower].entries()) {
+      handle.onProgress((value) => {
+        if (value.state === 'failed') progress[index]!.resolve(value);
+        if (value.state === 'complete') recovered[index]!.resolve(value);
+      });
+      handle.onDiagnostics((value) => {
+        if (value.lastRound?.status === 'failed')
+          diagnostics[index]!.resolve(value);
+      });
+    }
+    try {
+      let error: unknown;
+      try {
+        await leader.sync();
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toBeInstanceOf(ClientSyncError);
+      const seenProgress = await Promise.all(
+        progress.map((item) => item.promise),
+      );
+      const seenDiagnostics = await Promise.all(
+        diagnostics.map((item) => item.promise),
+      );
+      for (const item of seenProgress) {
+        expect(item.causeKind).toBe(fixture.cause);
+        expect(item.httpStatus).toBe(fixture.status);
+      }
+      for (const item of seenDiagnostics) {
+        expect(item.host.connectivity).toBe(fixture.connectivity);
+        expect(item.lastRound?.status).toBe('failed');
+        if (item.lastRound?.status !== 'failed')
+          throw new Error('missing failed round');
+        expect(item.lastRound.causeKind).toBe(fixture.cause);
+        expect(item.lastRound.httpStatus).toBe(fixture.status);
+      }
+      expect(JSON.stringify({ seenProgress, seenDiagnostics })).not.toContain(
+        'secret',
+      );
+      await leader.sync();
+      for (const item of await Promise.all(
+        recovered.map((entry) => entry.promise),
+      )) {
+        expect(item.causeKind).toBeUndefined();
+        expect(item.httpStatus).toBeUndefined();
+      }
+      for (const handle of [leader, follower]) {
+        const snapshot = await handle.diagnosticsSnapshot();
+        expect(snapshot.lastRound?.status).toBe('succeeded');
+        expect(snapshot.host.connectivity).toBe('online');
+      }
+    } finally {
+      await follower.close();
+      await leader.close();
+    }
+  }
+});
 
 test('leader + follower: follower proxies the full API to the one core', async () => {
   const group = makeGroup();

@@ -387,6 +387,107 @@ fn diagnostics_preserve_capture_time_and_events_without_serializing_unchanged_ev
     }
 }
 
+#[cfg(feature = "native-transport")]
+#[test]
+fn ffi_progress_and_diagnostics_distinguish_connection_and_http_failure() {
+    use ssp2::model::{Frame, Message, MsgKind};
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    drop(listener);
+    let config = CString::new(json!({"baseUrl": format!("http://{address}")}).to_string()).unwrap();
+    let handle = syncular_client_new(config.as_ptr());
+    assert!(!handle.is_null());
+    let created = command(
+        handle,
+        "create",
+        json!({"clientId":"diagnostics-ffi", "schema":simple_schema()}),
+    );
+    assert!(created.get("error").is_none(), "{created}");
+    while poll_event(handle).is_some() {}
+    let refused = command(handle, "sync", json!({}));
+    assert_eq!(refused["result"]["details"]["causeKind"], "connect");
+    let mut events = Vec::new();
+    while let Some(event) = poll_event(handle) {
+        events.push(event);
+    }
+    assert!(events
+        .iter()
+        .any(|event| event["type"] == "progress" && event["progress"]["causeKind"] == "connect"));
+    assert!(events.iter().any(|event| event["type"] == "diagnostics"
+        && event["snapshot"]["lastRound"]["causeKind"] == "connect"
+        && event["snapshot"]["host"]["connectivity"] == "offline"));
+    let listener = TcpListener::bind(address).unwrap();
+    let server = std::thread::spawn(move || {
+        for round in 0..2 {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut header = Vec::new();
+            while !header.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                socket.read_exact(&mut byte).unwrap();
+                header.push(byte[0]);
+            }
+            let header = String::from_utf8(header).unwrap();
+            let length: usize = header
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse().unwrap())
+                })
+                .unwrap();
+            let mut request = vec![0; length];
+            socket.read_exact(&mut request).unwrap();
+            if round == 0 {
+                let body = b"private-response-secret";
+                write!(socket, "HTTP/1.1 500 Internal Server Error\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+                socket.write_all(body).unwrap();
+            } else {
+                let response = ssp2::encode_message(&Message {
+                    wire_version: ssp2::decode::WIRE_VERSION,
+                    msg_kind: MsgKind::Response,
+                    frames: vec![Frame::RespHeader {
+                        required_schema_version: None,
+                        latest_schema_version: None,
+                        log_epoch: Some("epoch-1".into()),
+                        reset_required: Some(true),
+                    }],
+                });
+                write!(
+                    socket,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    response.len()
+                )
+                .unwrap();
+                socket.write_all(&response).unwrap();
+            }
+        }
+    });
+    let failed = command(handle, "sync", json!({}));
+    assert_eq!(failed["result"]["details"]["causeKind"], "status");
+    assert_eq!(failed["result"]["details"]["httpStatus"], 500);
+    let mut events = Vec::new();
+    while let Some(event) = poll_event(handle) {
+        events.push(event);
+    }
+    assert!(events.iter().any(|event| event["type"] == "progress"
+        && event["progress"]["causeKind"] == "status"
+        && event["progress"]["httpStatus"] == 500));
+    assert!(events.iter().any(|event| event["type"] == "diagnostics"
+        && event["snapshot"]["lastRound"]["httpStatus"] == 500));
+    assert!(!format!("{events:?}").contains("private-response-secret"));
+    let recovered = command(handle, "sync", json!({}));
+    assert_eq!(recovered["result"]["ok"], true);
+    let snapshot = command(handle, "diagnosticsSnapshot", json!({}));
+    assert_eq!(snapshot["result"]["lastRound"]["status"], "succeeded");
+    assert!(snapshot["result"]["lastRound"].get("causeKind").is_none());
+    assert!(snapshot["result"]["lastRound"].get("httpStatus").is_none());
+    syncular_client_close(handle);
+    server.join().unwrap();
+}
+
 #[test]
 fn poll_event_nonblocking_returns_null_when_empty() {
     let config = CString::new("{}").unwrap();

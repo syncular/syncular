@@ -109,6 +109,7 @@ export interface DriverSchema {
 export interface DriverError {
   readonly code: string;
   readonly message: string;
+  readonly details?: unknown;
   readonly category?: string;
   readonly retryable?: boolean;
   readonly recommendedAction?: string;
@@ -747,6 +748,7 @@ export type DriverRealtimePolicy = 'required' | 'optional' | 'off';
 /** SPEC §8.8: the explicit realtime availability evidence. */
 export interface DriverRealtimeAvailability {
   readonly realtime: string;
+  readonly connectivity?: string;
   readonly realtimePolicy?: string;
   readonly realtimeReasonCode?: string;
   readonly realtimeRetryDelayMs?: number;
@@ -1104,6 +1106,8 @@ export interface DriverSyncProgress {
   readonly rowsProcessed: number;
   readonly rowsTotal?: number;
   readonly errorCode?: string;
+  readonly causeKind?: string;
+  readonly httpStatus?: number;
   readonly retryDelayMs?: number;
 }
 
@@ -1175,6 +1179,12 @@ export interface ClientInstance {
   diagnosticsSnapshot?(): Promise<{
     readonly queryFailures: readonly DriverQueryFailure[];
     readonly host: DriverRealtimeAvailability;
+    readonly lastRound?: {
+      readonly status: string;
+      readonly errorCode?: string;
+      readonly causeKind?: string;
+      readonly httpStatus?: number;
+    };
   }>;
   /**
    * §7.5: one atomic read over several read-only statements plus window

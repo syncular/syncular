@@ -1,4 +1,5 @@
 import type { ClientSchema } from '../src/schema';
+import type { ClientDiagnosticsSnapshot } from '../src/diagnostics';
 import { singleOwnerLock } from '../src/leader-lock';
 import type { SyncProgress } from '../src/progress';
 import {
@@ -17,6 +18,8 @@ declare global {
     opfsTest: {
       ready: Promise<SyncClientHandle>;
       progress: SyncProgress[];
+      evidence: Promise<[SyncProgress, ClientDiagnosticsSnapshot]>;
+      watchRound(state: 'failed' | 'complete'): Promise<void>;
       open(
         contend?: boolean,
         schema?: ClientSchema,
@@ -38,6 +41,31 @@ let announceStorageBusy: () => void;
 let announceCrash: (receipt: CrashReceipt) => void;
 window.opfsTest = {
   progress: [],
+  evidence: new Promise(() => {}),
+  watchRound: async (state) => {
+    const client = await window.opfsTest.ready;
+    const progress = new Promise<SyncProgress>((resolve) => {
+      let off = () => {};
+      off = client.onProgress((value) => {
+        if (value.state !== state) return;
+        off();
+        resolve(value);
+      });
+    });
+    const diagnostics = new Promise<ClientDiagnosticsSnapshot>((resolve) => {
+      let off = () => {};
+      off = client.onDiagnostics((value) => {
+        if (
+          value.lastRound?.status !==
+          (state === 'failed' ? 'failed' : 'succeeded')
+        )
+          return;
+        off();
+        resolve(value);
+      });
+    });
+    window.opfsTest.evidence = Promise.all([progress, diagnostics]);
+  },
   storageBusy: new Promise((resolve) => {
     announceStorageBusy = resolve;
   }),

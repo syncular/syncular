@@ -104,6 +104,7 @@ import {
   MAX_DIAGNOSTIC_QUERY_FAILURES,
   type RealtimePolicy,
   type RealtimeState,
+  type TransportCauseKind,
 } from './diagnostics';
 import type { EncryptionConfig } from './encryption';
 import {
@@ -2290,9 +2291,13 @@ export class SyncClient {
       : this.#lastRound?.status === 'succeeded'
         ? 'online'
         : this.#lastRound?.status === 'failed' &&
-            this.#transportFailureCode(this.#lastRound.errorCode)
+            (this.#lastRound.causeKind === 'network' ||
+              this.#lastRound.causeKind === 'connect')
           ? 'offline'
-          : 'unknown';
+          : this.#lastRound?.status === 'failed' &&
+              this.#lastRound.httpStatus !== undefined
+            ? 'online'
+            : 'unknown';
     const expectedOrder = new Map(
       expected.map((item, index) => [item.id, index] as const),
     );
@@ -4221,6 +4226,49 @@ export class SyncClient {
           const error = classifySqliteFailure(caught).error;
           const completedAtMs = this.#now();
           const code = (error as { code?: unknown }).code;
+          const details =
+            typeof error === 'object' && error !== null && 'details' in error
+              ? error.details
+              : undefined;
+          const rawCause =
+            typeof details === 'object' &&
+            details !== null &&
+            'causeKind' in details
+              ? details.causeKind
+              : undefined;
+          let causeKind: TransportCauseKind | undefined;
+          switch (rawCause) {
+            case 'network':
+            case 'connect':
+            case 'tls':
+            case 'io':
+            case 'request':
+            case 'protocol':
+            case 'timeout':
+            case 'round_deadline':
+            case 'aborted':
+            case 'body':
+            case 'status':
+            case 'redirect':
+            case 'unknown':
+              causeKind = rawCause;
+          }
+          const rawStatus =
+            typeof details === 'object' &&
+            details !== null &&
+            'httpStatus' in details
+              ? details.httpStatus
+              : undefined;
+          const httpStatus =
+            (causeKind === 'status' ||
+              causeKind === 'body' ||
+              causeKind === 'redirect') &&
+            typeof rawStatus === 'number' &&
+            Number.isInteger(rawStatus) &&
+            rawStatus >= 100 &&
+            rawStatus <= 599
+              ? rawStatus
+              : undefined;
           this.#progress.update(
             definedObject({
               state: 'failed',
@@ -4229,6 +4277,8 @@ export class SyncClient {
                   ? this.#diagnosticCode(code)
                   : 'client.unknown_failure',
               retryDelayMs: this.#roundRetryDelayMs,
+              causeKind,
+              httpStatus,
             }),
           );
           this.#lastRound = {
@@ -4240,6 +4290,8 @@ export class SyncClient {
               typeof code === 'string'
                 ? this.#diagnosticCode(code)
                 : 'client.unknown_failure',
+            ...(causeKind !== undefined ? { causeKind } : {}),
+            ...(httpStatus !== undefined ? { httpStatus } : {}),
           };
           this.#emitDiagnostics();
           throw error;
@@ -4267,16 +4319,6 @@ export class SyncClient {
       failed: summary.failed.length,
       deferredCommits: summary.deferredCommits ?? 0,
     };
-  }
-
-  #transportFailureCode(code: string): boolean {
-    return (
-      code === 'transport.failed' ||
-      code === 'transport.unavailable' ||
-      code === 'sync.transport_failed' ||
-      code === 'client.worker_failed' ||
-      code === 'client.worker_restart_required'
-    );
   }
 
   #diagnosticCode(code: string): string {

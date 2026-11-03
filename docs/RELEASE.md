@@ -1,8 +1,30 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.52.0** (`v0.52.0`). All artifacts use Apache-2.0, except
+current release is **0.53.0** (`v0.53.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.53.0 release notes
+
+0.53.0 carries bounded transport evidence on failed progress and last-round
+diagnostics. Browser worker leaders and followers, Tauri, and native hosts
+receive an optional `causeKind` and numeric `httpStatus`. The client excludes
+raw exception text, URLs, response bodies, and unrecognized detail values.
+A new attempt clears progress failure fields; a successful round replaces the
+failed last round. The transport's existing retry policy is unchanged.
+Rust segment downloads now retain their transport classification, so the
+existing no-retry policy for `network` and `connect` also applies there.
+
+Host connectivity now reports an HTTP response as `online`, a `network` or
+`connect` failure as `offline`, and other failed rounds as `unknown`. A
+response proves an endpoint answered; it does not prove server health or a
+device-wide network state.
+
+**Upgrade notes.** Rust code constructing `SyncProgress` or
+`DiagnosticLastRound` adds the optional `cause_kind` and `http_status` fields.
+TypeScript consumers can read the optional `causeKind` and `httpStatus` fields.
+Upgrade all 12 npm packages and 7 crates together. No wire or storage migration
+is required.
 
 ## 0.52.0 release notes
 

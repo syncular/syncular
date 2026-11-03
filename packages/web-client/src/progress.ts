@@ -1,3 +1,5 @@
+import type { TransportCauseKind } from './diagnostics';
+
 /** Ephemeral sync work, independent of committed change notifications (SPEC §7.6). */
 export interface SyncProgress {
   readonly attempt: number;
@@ -11,6 +13,8 @@ export interface SyncProgress {
   readonly rowsProcessed: number;
   readonly rowsTotal?: number;
   readonly errorCode?: string;
+  readonly causeKind?: TransportCauseKind;
+  readonly httpStatus?: number;
   /** Present on `failed` when the core scheduled a background retry. */
   readonly retryDelayMs?: number;
 }

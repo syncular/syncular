@@ -1413,6 +1413,78 @@ describe('createTauriSyncClient', () => {
     expect(seen).toEqual(['tauri']);
   });
 
+  test('progress and diagnostics carry native transport evidence through failure and recovery', async () => {
+    const { client, emit } = await build();
+    const progress: Array<{ causeKind?: string; httpStatus?: number }> = [];
+    const rounds: Array<
+      { status: string; causeKind?: string; httpStatus?: number } | undefined
+    > = [];
+    client.onProgress((value) => progress.push(value));
+    client.onDiagnostics((value) => rounds.push(value.lastRound));
+    for (const evidence of [
+      { causeKind: 'connect' },
+      { causeKind: 'status', httpStatus: 500 },
+      { causeKind: 'status', httpStatus: 401 },
+      { causeKind: 'timeout' },
+      { causeKind: 'unknown' },
+    ] as const) {
+      emit({
+        type: 'progress',
+        progress: {
+          attempt: 1,
+          state: 'failed',
+          phase: 'request',
+          bytesReceived: 0,
+          rowsProcessed: 0,
+          errorCode: 'transport.failed',
+          ...evidence,
+        },
+      });
+      emit({
+        type: 'diagnostics',
+        snapshot: {
+          ...DIAGNOSTICS,
+          lastRound: {
+            status: 'failed',
+            startedAtMs: 1,
+            completedAtMs: 2,
+            durationMs: 1,
+            errorCode: 'transport.failed',
+            ...evidence,
+          },
+        },
+      });
+      expect(progress.at(-1)).toMatchObject(evidence);
+      expect(rounds.at(-1)).toMatchObject(evidence);
+    }
+    emit({
+      type: 'progress',
+      progress: {
+        attempt: 2,
+        state: 'complete',
+        phase: 'request',
+        bytesReceived: 0,
+        rowsProcessed: 0,
+      },
+    });
+    emit({
+      type: 'diagnostics',
+      snapshot: {
+        ...DIAGNOSTICS,
+        lastRound: {
+          status: 'succeeded',
+          startedAtMs: 2,
+          completedAtMs: 3,
+          durationMs: 1,
+          counters: {},
+        },
+      },
+    });
+    expect(progress.at(-1)).not.toHaveProperty('causeKind');
+    expect(rounds.at(-1)).not.toHaveProperty('causeKind');
+    await client.close();
+  });
+
   test('the first diagnostics listener enables native pushes exactly once', async () => {
     const { client, calls } = await build();
     const offFirst = client.onDiagnostics(() => {});

@@ -194,7 +194,9 @@ impl HostIo {
                             .and_then(Value::as_str)
                             .unwrap_or("")
                             .to_owned();
-                        return Err(TransportError::new(code, message));
+                        let mut transport_error = TransportError::new(code, message);
+                        transport_error.details = error.get("details").cloned();
+                        return Err(transport_error);
                     }
                     return Ok(result.unwrap_or(Value::Null));
                 }
