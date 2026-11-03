@@ -5,7 +5,7 @@
   "description": "Minimal Tauri + React app wiring tauri-plugin-syncular + @syncular/tauri + @syncular/react",
   "scripts": {
     "build-frontend": "bun run build-frontend.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsrs --noEmit"
   },
   "dependencies": {
     "@syncular/client": "workspace:*",

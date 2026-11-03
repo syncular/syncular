@@ -428,7 +428,7 @@ The emitted `*.generated.ts` module:
 output only create churn.
 Freshness and migration-history integrity are enforced instead by `syncular
 generate --check`, which is byte-exact and refuses locked-history drift; the
-generated fixture is still typechecked by `tsc` and exercised by tests.
+generated fixture is still typechecked by `tsrs` and exercised by tests.
 
 ## 5. Native emitter contracts (Swift / Kotlin / Dart)
 

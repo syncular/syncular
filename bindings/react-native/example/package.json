@@ -8,7 +8,7 @@
     "ios": "react-native run-ios",
     "android": "react-native run-android",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsrs --noEmit"
   },
   "dependencies": {
     "@syncular/react": "workspace:*",
@@ -23,6 +23,6 @@
     "@testing-library/react": "^16.1.0",
     "@types/react": "^19.1.0",
     "react-test-renderer": "19.1.0",
-    "typescript": "^5.9.0"
+    "tsrs": "0.20.1-ts7.1.0-beta"
   }
 }

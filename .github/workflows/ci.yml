@@ -404,7 +404,7 @@ jobs:
   # its own isolated build (never joins the main gates). This job runs the CHEAP
   # lanes on Ubuntu: Kotlin/FFM (JDK 21 — compiles + runs the offline hermetic
   # gradle test against the real native core) and the RN JS bridge (bun test +
-  # tsc, an injected NativeModule double — no device). The Swift lane needs an
+  # tsrs, an injected NativeModule double — no device). The Swift lane needs an
   # expensive macOS runner and is a documented LOCAL gate (bindings/swift/check.sh),
   # so it is intentionally NOT run in CI — the tauri-job precedent's honest scoping.
   swift-kotlin-bindings:
@@ -497,7 +497,7 @@ jobs:
         run: ./ci-smoke.sh
 
       # React Native — bun test (bridge double + the example App rendered
-      # against a NativeModule double: hooks↔module integration) + tsc. No
+      # against a NativeModule double: hooks↔module integration) + tsrs. No
       # native toolchain; the device build is a documented follow-up.
       - name: React Native bindings gate
         if: steps.changed.outputs.run == 'true'

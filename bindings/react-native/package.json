@@ -17,7 +17,7 @@
   ],
   "scripts": {
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsrs --noEmit"
   },
   "peerDependencies": {
     "react": "*",

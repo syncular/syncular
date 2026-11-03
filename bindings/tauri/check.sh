@@ -31,7 +31,7 @@ echo "ok: example/src/frontend/syncular.generated.ts is fresh"
 echo "== frontend bundle (bun) =="
 ( cd example && bun run build-frontend )
 
-echo "== frontend typecheck (tsc) =="
+echo "== frontend typecheck (tsrs) =="
 ( cd example && bun run typecheck )
 
 echo "== cargo fmt --check =="

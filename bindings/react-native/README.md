@@ -190,7 +190,7 @@ state to that payload. The API remains protected during security preflight.
     `@syncular/react` hooks drive the native client end-to-end. `react-native`
     primitives are mocked to DOM tags by a bunfig preload (`test/setup-app.ts`) —
     the one thing bun can't resolve off-device.
-- **`tsc --noEmit`** — the TypeScript (bridge + spec **+ the example `App.tsx`**)
+- **`tsrs --noEmit`** — the TypeScript (bridge + spec **+ the example `App.tsx`**)
   compiles. An ambient `react-native` stub (`types/react-native.d.ts`) declares
   the spec's + example's RN surface so both typecheck standalone; a consuming
   app's real RN types shadow it.
@@ -227,7 +227,7 @@ honest scoping applies. To verify manually:
 ## CI
 
 The RN gate runs on the standard Ubuntu runner (bun bridge tests + the App
-integration render + tsc — **no native toolchain**), as part of the
+integration render + tsrs — **no native toolchain**), as part of the
 `swift-kotlin-bindings` job in `.github/workflows/ci.yml` (path-gated on
 `bindings/**`). This lane now also proves the example App's hooks↔module
 integration, not just the bridge.

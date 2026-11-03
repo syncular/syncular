@@ -45,11 +45,11 @@
     "bench:ci": "bun run rust:clean && bun run --cwd bench bench:ci",
     "load": "bun run --cwd load load",
     "load:smoke": "bun run --cwd load load:smoke",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsrs --noEmit",
     "lint": "oxlint && oxfmt --check",
     "lint:fix": "oxlint --fix && oxfmt",
     "knip": "knip",
-    "build:packages": "bun run clean:packages && for p in core crypto server server-hono server-workers crdt-yjs web-client react typegen tauri testing create-app; do echo \"building @ packages/$p\" && tsc -p packages/$p/tsconfig.build.json || exit 1; done && bun run fix:esm && bun run build:bins",
+    "build:packages": "bun run clean:packages && for p in core crypto server server-hono server-workers crdt-yjs web-client react typegen tauri testing create-app; do echo \"building @ packages/$p\" && tsrs -p packages/$p/tsconfig.build.json || exit 1; done && bun run fix:esm && bun run build:bins",
     "verify:runtimes": "bun run --cwd packages/web-client verify:node && bun run --cwd packages/server verify:node",
     "verify:packages": "bun scripts/verify-runtime-packages.ts",
     "build:sites": "bun run version:check && bun run --cwd apps/docs build",
@@ -66,6 +66,6 @@
     "oxfmt": "^0.60.0",
     "oxlint": "^1.78.0",
     "sharp": "^0.35.3",
-    "typescript": "^5.9.3"
+    "tsrs": "0.20.1-ts7.1.0-beta"
   }
 }

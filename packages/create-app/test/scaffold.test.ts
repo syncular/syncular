@@ -30,7 +30,7 @@ import { linkWorkspaceInto, workspaceRoot } from './link-workspace';
 import { WORKSPACE_PACKAGES } from '../src/constants';
 
 const CLI = join(import.meta.dir, '..', '..', 'typegen', 'src', 'cli.ts');
-const TSC = join(workspaceRoot(), 'node_modules', '.bin', 'tsc');
+const TSRS = join(workspaceRoot(), 'node_modules', '.bin', 'tsrs');
 const RUN_INSTALL = process.env.SYNCULAR_TEMPLATE_INSTALL === '1';
 
 const tempDirs: string[] = [];
@@ -188,12 +188,12 @@ for (const template of TEMPLATES) {
       scaffoldApp({ template, targetDir: target, local: true });
       linkWorkspaceInto(target);
 
-      // tsc follows the workspace symlinks and would also type-check the
+      // tsrs follows the workspace symlinks and would also type-check the
       // dependency SOURCES (workspace links are `.ts`, not shipped `.d.ts`) —
       // that internal type noise is the packages' own concern (gated by the
       // workspace `bun run typecheck`), not the template's. Assert only that
       // the template's OWN files raise no diagnostics.
-      const typecheck = run(['bun', TSC, '--noEmit'], target);
+      const typecheck = run(['bun', TSRS, '--noEmit'], target);
       const templateErrors = (typecheck.stdout + typecheck.stderr)
         .split('\n')
         .filter((line) => /error TS/.test(line))

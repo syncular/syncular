@@ -75,7 +75,7 @@ all of it.
 ```sh
 cd bindings/tauri
 bun --cwd example run build-frontend   # bundle → example/dist (tauri needs it at compile time)
-bun --cwd example run typecheck        # tsc --noEmit over the frontend
+bun --cwd example run typecheck        # tsrs --noEmit over the frontend
 cargo build -p syncular-tauri-example  # the wiring compiles
 ```
 

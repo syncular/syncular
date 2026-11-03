@@ -31,9 +31,9 @@ echo "ok: example/src/syncular.generated.ts is fresh"
 echo "== bun test (JS bridge double + App integration render) =="
 bun test
 
-echo "== tsc --noEmit (module + spec + example App compile) =="
-bunx tsc --noEmit
+echo "== tsrs --noEmit (module + spec + example App compile) =="
+bunx tsrs --noEmit
 
-echo "OK: react-native bindings gate is green (bridge + App integration + tsc)"
+echo "OK: react-native bindings gate is green (bridge + App integration + tsrs)"
 echo "    note: iOS/Android native shims + the device build verify at a"
 echo "    consuming app's build — see README.md + example/README.md."

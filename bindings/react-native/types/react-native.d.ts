@@ -1,7 +1,7 @@
 /**
  * A MINIMAL ambient stub for `react-native` — just enough surface for this
  * module AND the example (`example/src/App.tsx`) to typecheck standalone
- * (`tsc --noEmit`) without installing the full React Native package (heavy, and
+ * (`tsrs --noEmit`) without installing the full React Native package (heavy, and
  * unnecessary for the JS-bridge + hooks-integration verification bar). In a
  * consuming RN app the real `react-native` types are present and this stub is
  * shadowed (the app's node_modules resolution wins).

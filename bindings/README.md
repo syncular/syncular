@@ -12,7 +12,7 @@ webkit tree, Swift, the JVM, RN codegen) out of the core's fast, hermetic gate.
 | [`swift`](swift) | `SyncularClient` SwiftPM package | the C-ABI FFI (dylib / xcframework) | `swift test` (offline hermetic) |
 | [`kotlin`](kotlin) | `SyncularClient` Kotlin/JVM library | the C-ABI FFI via **FFM** (JDK 21+) | `gradle test` (offline hermetic) |
 | [`flutter`](flutter) | `SyncularClient` Dart package + Flutter todo example | the C-ABI FFI via `dart:ffi` | `dart analyze` + `dart test` (offline hermetic) |
-| [`react-native`](react-native) | `@syncular/react-native` module | the C-ABI FFI via a TurboModule | `bun test` (bridge double) + `tsc` |
+| [`react-native`](react-native) | `@syncular/react-native` module | the C-ABI FFI via a TurboModule | `bun test` (bridge double) + `tsrs` |
 
 The Swift/Kotlin/Flutter/RN wrappers all speak the **one JSON command surface** the
 `syncular-command` crate defines (`{method, params}` in, `{result|error}` out,

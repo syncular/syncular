@@ -81,7 +81,7 @@ No Xcode/Android toolchains on the dev machine can't build the app — but the
 **JS graph is fully verified**, and the hooks↔module integration is proven
 headless:
 
-- **`tsc --noEmit`** (via the module's `check.sh`, which includes
+- **`tsrs --noEmit`** (via the module's `check.sh`, which includes
   `example/src/**`): `App.tsx` + the schema typecheck against the real
   `@syncular/react` hooks and the `SyncClientLike` surface — a drift breaks
   it. `react-native`'s primitives resolve through the module's ambient stub
@@ -101,7 +101,7 @@ documented one-time overlay above.
 
 ## CI
 
-The RN gate (bun bridge tests + the App integration test + `tsc`) runs on the
+The RN gate (bun bridge tests + the App integration test + `tsrs`) runs on the
 standard Ubuntu runner — no native toolchain — in `.github/workflows/ci.yml`. A
 full **device-build lane** (Android `assembleDebug` with cargo-ndk cross-builds
 of the cdylib) is the heaviest of all binding lanes; it is a documented
