@@ -1,7 +1,7 @@
 import type { ClientDatabase } from '../src/database';
 import { httpSegmentDownloader } from '../src/http';
 import { openPersistentWasmDatabase } from '../src/wasm-database';
-import { startSyncWorker } from '../src/worker-entry';
+import { startSyncWorker } from '../src/worker-remote';
 import type {
   CrashPoint,
   CrashReceipt,

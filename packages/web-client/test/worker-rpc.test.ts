@@ -12,6 +12,7 @@ import {
   ClientSyncError,
   createSyncClientHandle,
   INVALID_HOST_RESPONSE_CODE,
+  LOCAL_AUTHORITY_UNCONFIGURED_CODE,
   type LeaderLease,
   type LeaderLock,
   NOT_LEADER_CODE,
@@ -20,6 +21,7 @@ import {
   type SyncClientHandle,
   type SyncClientHandleConfig,
   WORKER_FAILED_CODE,
+  WORKER_METHOD_UNAVAILABLE_CODE,
   WORKER_RESTART_REQUIRED_CODE,
   type WorkerErrorShape,
   workerStartupError,
@@ -1258,6 +1260,46 @@ test('worker atomic sparse conflict keeps its local aggregate and explicit resol
   ]);
   await a.close();
   await b.close();
+});
+
+test('remote worker refuses local authority before opening storage and omits its methods', async () => {
+  const worker = new Worker(WORKER_URL);
+  const opens: unknown[] = [];
+  worker.addEventListener('message', (event) => {
+    if (event.data.t === 'storage-open') opens.push(event.data);
+  });
+  await expectRejectsWithCode(
+    createSyncClientHandle({
+      worker: () => worker,
+      schema: CLIENT_SCHEMA,
+      database: { mode: 'custom' },
+      endpoints: { syncUrl: http.syncUrl },
+      localAuthority: true,
+      autoSync: false,
+      multiTab: false,
+    }),
+    LOCAL_AUTHORITY_UNCONFIGURED_CODE,
+  );
+  expect(opens).toEqual([]);
+
+  const { handle } = await makeHandle({
+    clientId: 'remote-without-authority',
+    autoSync: false,
+    multiTab: false,
+  });
+  await expectRejectsWithCode(
+    handle.localAuthorityState(),
+    WORKER_METHOD_UNAVAILABLE_CODE,
+  );
+  await expectRejectsWithCode(
+    handle.attachLocalAuthority(),
+    WORKER_METHOD_UNAVAILABLE_CODE,
+  );
+  await expectRejectsWithCode(
+    handle.abandonLocalAuthorityAttach(),
+    WORKER_METHOD_UNAVAILABLE_CODE,
+  );
+  await handle.close();
 });
 
 test('ordinary worker rejects authority declarations before opening storage', async () => {

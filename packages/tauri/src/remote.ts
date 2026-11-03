@@ -1,0 +1,1462 @@
+import {
+  ProgressEmitter,
+  type SyncProgress,
+  type SyncProgressListener,
+} from '@syncular/client';
+import type { ClientSnapshotMethods, PromiseMethods } from '@syncular/client';
+/**
+ * @syncular/tauri — the JS bridge to the native syncular instance running
+ * inside the Tauri process (see `tauri-plugin-syncular`).
+ *
+ * The Tauri host runs a REAL Rust syncular client (file DB + native HTTP+WS
+ * transport). This module is a thin webview-side proxy that implements the SAME
+ * `SyncClientLike` interface the React package normalizes — so the hooks
+ * (`useRawSql`, `useMutation`, `usePresence`, …) work UNCHANGED against a
+ * Tauri app. It is the fourth host of one interface, after the direct
+ * `SyncClient`, the worker-leader `SyncClientHandle`, and the multi-tab
+ * follower.
+ *
+ * Every method forwards to the plugin's `syncular_command` command (the whole
+ * command surface in one JSON envelope — `{method, params}`), mirroring the FFI
+ * and the conformance shim. `query` uses the dedicated `syncular_query` fast
+ * path; atomic reactive reads use `syncular_query_snapshot`, backed by an
+ * independent read-only SQLite connection so network sync cannot stall local
+ * UI reads. Client-observable
+ * events (`change` / `presence`) arrive on
+ * the `syncular://event` Tauri event and fan out to the registered listeners.
+ *
+ * Bytes cross the command JSON as the established `{$bytes: hex}` envelope, the
+ * same convention the Rust command router and the driver protocol use.
+ *
+ * `@tauri-apps/api` is a required peer dependency: the bridge takes
+ * `invoke`/`listen` either from its ESM entry points, from the ambient
+ * `window.__TAURI__`, or via injected doubles (tests).
+ */
+
+import type {
+  AuthorityReadPolicy,
+  ClientChangeBatch,
+  ClientChangeListener,
+  ClientDiagnosticsListener,
+  ClientDiagnosticsRequest,
+  ClientDiagnosticsSnapshot,
+  CommitOutcome,
+  CommitOutcomeQuery,
+  CurrentBaseProof,
+  ConflictRecord,
+  EncryptionKeyringConfig,
+  InvalidationEvent,
+  InvalidationListener,
+  LocalDataPurgeInput,
+  LocalDataPurgeResult,
+  LocalDataRebootstrapInput,
+  LocalDataRebootstrapResult,
+  MutationInput,
+  PresencePeer,
+  PreviousVersionAudit,
+  PreviousVersionReadSpec,
+  PreviousVersionSnapshot,
+  QueryReadSpec,
+  QuerySnapshot,
+  RejectionRecord,
+  ResolveCommitOutcomeInput,
+  RetainedCommitRow,
+  SecurityLifecycle,
+  SnapshotRead,
+  SnapshotReadRequest,
+  SqlRow,
+  SqlValue,
+  SyncClientConfig,
+  SyncStatusSnapshot,
+  WindowBase,
+  WindowState,
+} from '@syncular/client';
+// -- Types the bridge speaks (structurally the web-client's) -----------------
+// Most imports stay type-only; the stable preflight error code is shared at
+// runtime so every host surfaces byte-identical policy evidence.
+import {
+  decodeLocalDataRebootstrapResult,
+  decodePreviousVersionAuditResult,
+  decodePreviousVersionDiscardResult,
+  decodePreviousVersionSnapshot,
+  SECURITY_PREFLIGHT_REQUIRED_CODE,
+  withClientDiagnosticsHost,
+} from '@syncular/client';
+
+/** A driver-protocol reply: `{result}` on success or `{error}` on failure. */
+interface CommandReply {
+  readonly result?: unknown;
+  readonly error?: {
+    readonly code: string;
+    readonly message: string;
+    readonly details?: Readonly<Record<string, unknown>> | null;
+    readonly retryable?: boolean;
+  };
+}
+
+/** One event pushed on `syncular://event` (the derived client-observable set). */
+interface SyncularEvent {
+  readonly type: string;
+  readonly [key: string]: unknown;
+}
+
+/** §7.5: one read-only statement in an atomic sidecar snapshot read. */
+export type { SnapshotStatement } from '@syncular/client';
+
+/** §7.5: the catch-up state of one subscription from the sidecar. */
+export type { SubscriptionCatchup } from '@syncular/client';
+
+/** §7.5: delivery status for one client commit id. */
+export type { CommitDelivery } from '@syncular/client';
+
+/** §7.5: one atomic sidecar snapshot read result with decoded rows. */
+export type SnapshotReadResult = SnapshotRead;
+
+/** The two Tauri primitives the bridge needs — injectable for tests. */
+export interface TauriApi {
+  invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
+  listen<T>(
+    event: string,
+    handler: (event: { payload: T }) => void,
+  ): Promise<() => void>;
+}
+
+/** The plugin's Tauri event name — mirror of `tauri-plugin-syncular`. */
+export const SYNCULAR_EVENT = 'syncular://event';
+
+const PLUGIN = 'plugin:syncular|';
+
+/** SPEC §12 local authority lifecycle state. */
+export type LocalAuthorityState = 'local' | 'attaching' | 'attached';
+
+/** Config for {@link createTauriSyncClient}. */
+export interface TauriSyncClientConfig {
+  /** The generated schema JSON (the app passes `schema` from typegen). */
+  readonly schema: unknown;
+  /**
+   * Client id for this device/actor. If omitted, the native client generates
+   * one and persists it in the database. Supplying a different id when opening
+   * an existing database fails with `client.identity_mismatch`.
+   */
+  readonly clientId?: string;
+  /**
+   * Name of the native database to open, for example one replica per
+   * signed-in actor. The plugin opens `<database_dir>/<database>.db` from its
+   * `SyncularConfig`; a name is 1 to 128 ASCII letters, digits, `-`, `_` or
+   * `.` and starts with a letter or digit. Absent ⇒ the plugin's `db_path`.
+   */
+  readonly database?: string;
+  /** §4.2 client limits, forwarded to the native `create`. */
+  readonly limits?: Record<string, unknown>;
+  /**
+   * SPEC §8.8 realtime policy, forwarded to the native `create`. Absent ⇒
+   * `optional`. `required` refuses a sync round while the socket is not
+   * connected instead of falling back to HTTP.
+   */
+  readonly realtimePolicy?: SyncClientConfig['realtimePolicy'];
+  readonly retainFailedCommits?: boolean;
+  /**
+   * Portable E2EE keys and declarative per-row key-id columns. Raw keys are
+   * encoded into the native command envelope and never sent to the server.
+   */
+  readonly encryption?: EncryptionKeyringConfig;
+  /** Fixed plain authority reads permitted before security activation. */
+  readonly authorityReads?: AuthorityReadPolicy;
+  /** Open the native replica behind the fail-closed security gate. */
+  readonly securityPreflight?: boolean;
+  /** Open local storage with network transport closed until explicitly resumed. */
+  readonly transportEnabled?: boolean;
+  /**
+   * RFC 0005 previous-version context, forwarded to the native `create`. The
+   * Rust create handler must read this key to enable capture; while it does
+   * not, the native core treats the feature as off (default-off).
+   */
+  readonly previousVersionContext?: SyncClientConfig['previousVersionContext'];
+  /**
+   * The Tauri primitives. Omit in a real Tauri webview to auto-resolve from
+   * `@tauri-apps/api` (peer dep) or the ambient `window.__TAURI__`; inject in
+   * tests. Resolution is async, so construction is a factory (below).
+   */
+  readonly tauri?: TauriApi;
+}
+
+/** The bytes envelope both sides share. */
+export type BytesEnvelope = { readonly $bytes: string };
+type BigIntEnvelope = { readonly $bigint: string };
+
+function isBytesEnvelope(value: unknown): value is BytesEnvelope {
+  if (typeof value !== 'object' || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return (
+    Object.keys(record).length === 1 &&
+    typeof record.$bytes === 'string' &&
+    /^(?:[0-9a-fA-F]{2})*$/.test(record.$bytes)
+  );
+}
+
+/**
+ * §7.1: a host reply that carries an envelope-shaped object with a malformed
+ * body is refused, never padded into different bytes. Objects without a
+ * `$bytes` key keep the defensive JSON text round-trip below.
+ */
+function assertBytesEnvelope(value: unknown): void {
+  if (typeof value !== 'object' || value === null || !('$bytes' in value))
+    return;
+  if (!isBytesEnvelope(value))
+    throw new TauriSyncError(
+      'sync.invalid_request',
+      'a $bytes envelope requires exactly one $bytes key holding an even-length hexadecimal string',
+    );
+}
+
+function isBigIntEnvelope(value: unknown): value is BigIntEnvelope {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { $bigint?: unknown }).$bigint === 'string'
+  );
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  let out = '';
+  for (const b of bytes) {
+    out += b.toString(16).padStart(2, '0');
+  }
+  return out;
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  if (!/^(?:[0-9a-fA-F]{2})*$/.test(hex))
+    throw new TauriSyncError(
+      'sync.invalid_request',
+      'a $bytes envelope requires an even-length hexadecimal string',
+    );
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) {
+    out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return out;
+}
+
+/** Encode an SQL param for the command JSON (bytes → `{$bytes: hex}`). */
+function encodeParam(value: SqlValue): unknown {
+  if (value instanceof Uint8Array) return { $bytes: bytesToHex(value) };
+  if (typeof value === 'bigint') return { $bigint: value.toString() };
+  return value;
+}
+
+function encodeJsonValue(value: unknown): unknown {
+  if (value instanceof Uint8Array) return { $bytes: bytesToHex(value) };
+  if (typeof value === 'bigint') return { $bigint: value.toString() };
+  if (Array.isArray(value)) return value.map(encodeJsonValue);
+  if (value !== null && typeof value === 'object') {
+    const encoded: Record<string, unknown> = {};
+    for (const [key, member] of Object.entries(value)) {
+      encoded[key] = encodeJsonValue(member);
+    }
+    return encoded;
+  }
+  return value;
+}
+
+function encodeEncryption(config: EncryptionKeyringConfig): unknown {
+  return {
+    keys: Object.fromEntries(
+      Object.entries(config.keys).map(([keyId, key]) => [
+        keyId,
+        { $bytes: bytesToHex(key) },
+      ]),
+    ),
+    ...(config.keyIdColumns !== undefined
+      ? { keyIdColumns: config.keyIdColumns }
+      : {}),
+  };
+}
+
+/** Decode one query-result cell back to an `SqlValue` (`{$bytes}` → bytes). */
+function decodeCell(value: unknown): SqlValue {
+  assertBytesEnvelope(value);
+  if (isBytesEnvelope(value)) return hexToBytes(value.$bytes);
+  if (isBigIntEnvelope(value)) return BigInt(value.$bigint);
+  if (
+    value === null ||
+    typeof value === 'string' ||
+    typeof value === 'number' ||
+    typeof value === 'boolean'
+  ) {
+    return value;
+  }
+  // Objects/arrays that are not the bytes envelope round-trip as their JSON
+  // string (SQLite json columns arrive as text already; this is defensive).
+  return JSON.stringify(value);
+}
+
+/** A decoded outcome row cell. Structurally the shared `RowValue` (bytes are
+ * `Uint8Array`); native outcome rows emit plain JSON numbers, never `$bigint`. */
+type OutcomeRowValue = ConflictRecord['serverRow'][string];
+
+/** Decode one native outcome row image. Only the `{$bytes}` envelope is
+ * honored; operation `values` stay `JsonRowValue` and are not passed here. */
+function decodeOutcomeRow(
+  row: Readonly<Record<string, unknown>>,
+): Record<string, OutcomeRowValue> {
+  const out: Record<string, OutcomeRowValue> = {};
+  for (const [key, value] of Object.entries(row)) {
+    // Reserved `_sync_*` columns stay engine-internal, matching `decodeRow`.
+    if (key.startsWith('_sync_')) continue;
+    assertBytesEnvelope(value);
+    if (
+      value === null ||
+      typeof value === 'string' ||
+      typeof value === 'number' ||
+      typeof value === 'boolean'
+    ) {
+      out[key] = value;
+    } else if (isBytesEnvelope(value)) {
+      out[key] = hexToBytes(value.$bytes);
+    } else {
+      out[key] = JSON.stringify(value);
+    }
+  }
+  return out;
+}
+
+function decodeRetainedRows(
+  rows: readonly RetainedCommitRow[],
+): RetainedCommitRow[] {
+  return rows.map((row) => ({
+    ...row,
+    localRow: row.localRow === null ? null : decodeOutcomeRow(row.localRow),
+    serverRow: row.serverRow === null ? null : decodeOutcomeRow(row.serverRow),
+    ...(row.uniqueConflicts !== undefined
+      ? {
+          uniqueConflicts: row.uniqueConflicts.map((conflict) => ({
+            ...conflict,
+            serverRow: decodeOutcomeRow(conflict.serverRow),
+          })),
+        }
+      : {}),
+  }));
+}
+
+/** Decode the row images a native `CommitOutcome` carries: conflict server
+ * rows and retained-row images. */
+function decodeCommitOutcome(outcome: CommitOutcome): CommitOutcome {
+  return {
+    ...outcome,
+    results: outcome.results.map((result) =>
+      result.status === 'conflict'
+        ? {
+            ...result,
+            conflict: {
+              ...result.conflict,
+              serverRow: decodeOutcomeRow(result.conflict.serverRow),
+            },
+          }
+        : result,
+    ),
+    ...(outcome.retainedRows !== undefined
+      ? {
+          retainedRows: decodeRetainedRows(outcome.retainedRows),
+        }
+      : {}),
+  };
+}
+
+/** @internal Shared native row codec. */
+export function decodeRow(row: Record<string, unknown>): SqlRow {
+  const out: SqlRow = {};
+  for (const [key, value] of Object.entries(row)) {
+    // Reserved `_sync_*` columns stay engine-internal (parity with the
+    // web client's `query()`), so a `SELECT *` row round-trips straight
+    // into `mutate()` values. Alias (`_sync_version AS v`) to read one.
+    if (key.startsWith('_sync_')) continue;
+    out[key] = decodeCell(value);
+  }
+  return out;
+}
+
+/**
+ * Decode the JSON cell envelopes in an RFC 0005 snapshot reply's rows before
+ * the strict bridge decoder sees them; a malformed reply is passed through
+ * untouched so `decodePreviousVersionSnapshot` rejects it.
+ */
+function decodeSnapshotRows(value: unknown): unknown {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return value;
+  }
+  const source = value as Record<string, unknown>;
+  if (!Array.isArray(source.rows)) return value;
+  return {
+    ...source,
+    rows: source.rows.map((row) =>
+      row !== null && typeof row === 'object' && !Array.isArray(row)
+        ? decodeRow(row as Record<string, unknown>)
+        : row,
+    ),
+  };
+}
+
+/** Resolve the Tauri primitives from the ambient environment when not injected. */
+async function resolveTauri(injected: TauriApi | undefined): Promise<TauriApi> {
+  if (injected !== undefined) return injected;
+  // Prefer the ambient global (present when `withGlobalTauri` is enabled).
+  const ambient = (
+    globalThis as {
+      __TAURI__?: {
+        core?: { invoke?: TauriApi['invoke'] };
+        event?: { listen?: TauriApi['listen'] };
+      };
+    }
+  ).__TAURI__;
+  if (ambient?.core?.invoke && ambient.event?.listen) {
+    return {
+      invoke: ambient.core.invoke.bind(ambient.core),
+      listen: ambient.event.listen.bind(ambient.event),
+    };
+  }
+  // Fall back to the ESM package (the common path). These must remain literal,
+  // bundler-visible specifiers: hiding a bare package import behind
+  // `@vite-ignore` makes WebKit resolve it as a URL at runtime instead of
+  // letting Vite/Bun include the Tauri API in the webview bundle.
+  const [core, event] = await Promise.all([
+    import('@tauri-apps/api/core'),
+    import('@tauri-apps/api/event'),
+  ]);
+  return { invoke: core.invoke, listen: event.listen };
+}
+
+/**
+ * The webview-side proxy implementing `SyncClientLike` over the plugin. Every
+ * snapshot method returns a promise from an IPC round trip. React hooks accept
+ * the canonical snapshot interface directly.
+ */
+export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
+  readonly #tauri: TauriApi;
+  readonly #invalidationListeners = new Set<InvalidationListener>();
+  readonly #changeListeners = new Set<ClientChangeListener>();
+  readonly #progress = new ProgressEmitter();
+  readonly #diagnosticsListeners = new Set<ClientDiagnosticsListener>();
+  readonly #presenceListeners = new Set<(scopeKey: string) => void>();
+  #unlisten: (() => void) | undefined;
+  #closed = false;
+  #securityLifecycle: SecurityLifecycle;
+  #preflightBarrier: Promise<void> | undefined;
+  #diagnosticsEnabled = false;
+
+  /** @internal — use {@link createTauriSyncClient}. */
+  constructor(
+    tauri: TauriApi,
+    unlisten: () => void,
+    securityLifecycle: SecurityLifecycle = 'active',
+  ) {
+    this.#tauri = tauri;
+    this.#unlisten = unlisten;
+    this.#securityLifecycle = securityLifecycle;
+  }
+
+  /** Dispatch a `syncular_command` and unwrap `{result}` / throw on `{error}`. */
+  async #command(
+    method: string,
+    params: Record<string, unknown>,
+  ): Promise<unknown> {
+    this.#requireOpen();
+    if (
+      this.#securityLifecycle === 'preflight' &&
+      ![
+        'authoritySnapshot',
+        'securityLifecycle',
+        'beginSecurityPreflight',
+        'activateSecurity',
+        'setTransportEnabled',
+        'purgeLocalData',
+        'previousVersionDiscard',
+        'localRevision',
+        'statusSnapshot',
+        'shutdown',
+      ].includes(method) &&
+      !this.allowPreflightCommand(method)
+    ) {
+      this.#throwSecurityPreflight();
+    }
+    const reply = await this.#tauri.invoke<CommandReply>(
+      `${PLUGIN}syncular_command`,
+      { command: { method, params } },
+    );
+    if (reply.error !== undefined) {
+      throw new TauriSyncError(
+        reply.error.code,
+        reply.error.message,
+        reply.error.details ?? undefined,
+        reply.error.retryable ?? false,
+      );
+    }
+    return reply.result;
+  }
+
+  #throwSecurityPreflight(): never {
+    throw new TauriSyncError(
+      SECURITY_PREFLIGHT_REQUIRED_CODE,
+      'the local replica is in security preflight; complete quarantine checks and call activateSecurity before accessing protected data',
+    );
+  }
+
+  #requireOpen(): void {
+    if (this.#closed) {
+      throw new TauriSyncError(
+        'client.closed',
+        'the Tauri sync client is closed',
+      );
+    }
+  }
+
+  /** @internal Shared command gate for explicit bridge extensions. */
+  protected command(
+    method: string,
+    params: Record<string, unknown>,
+  ): Promise<unknown> {
+    return this.#command(method, params);
+  }
+
+  /** @internal Additional preflight operations supplied by bridge extensions. */
+  protected allowPreflightCommand(_method: string): boolean {
+    return false;
+  }
+
+  /** @internal Recheck local close after an extension's asynchronous reply. */
+  protected requireOpen(): void {
+    this.#requireOpen();
+  }
+
+  #requireActive(): void {
+    this.#requireOpen();
+    if (this.#securityLifecycle === 'preflight') this.#throwSecurityPreflight();
+  }
+
+  /** @internal — fan an incoming plugin event out to the local listeners. */
+  __dispatchEvent(event: SyncularEvent): void {
+    switch (event.type) {
+      case 'progress': {
+        this.#progress.emit(event.progress as SyncProgress);
+        break;
+      }
+      case 'change': {
+        const batch = decodeChangeBatch(event.batch);
+        if (batch === undefined) break;
+        for (const listener of this.#changeListeners) {
+          try {
+            listener(batch);
+          } catch {
+            /* a UI listener must never break event dispatch */
+          }
+        }
+        const payload = invalidationFromChange(batch);
+        if (payload === undefined) break;
+        for (const listener of this.#invalidationListeners) {
+          try {
+            listener(payload);
+          } catch {
+            /* a UI listener must never break event dispatch */
+          }
+        }
+        break;
+      }
+      case 'presence': {
+        const scopeKey =
+          typeof event.scopeKey === 'string' ? event.scopeKey : '';
+        for (const listener of this.#presenceListeners) {
+          try {
+            listener(scopeKey);
+          } catch {
+            /* never break dispatch */
+          }
+        }
+        break;
+      }
+      case 'diagnostics': {
+        const snapshot = decodeDiagnosticsSnapshot(event.snapshot, 'tauri');
+        if (snapshot === undefined) break;
+        for (const listener of this.#diagnosticsListeners) {
+          try {
+            listener(snapshot);
+          } catch {
+            /* a diagnostics observer must never break event dispatch */
+          }
+        }
+        break;
+      }
+      default:
+        // Unknown extension events are deliberately ignored. All durable
+        // observable state arrives in the revisioned `change` batch.
+        break;
+    }
+  }
+
+  // -- SyncClientLike --------------------------------------------------------
+
+  async securityLifecycle(): Promise<SecurityLifecycle> {
+    this.#requireOpen();
+    return Promise.resolve(this.#securityLifecycle);
+  }
+
+  beginSecurityPreflight(): Promise<void> {
+    if (this.#closed) {
+      return Promise.reject(
+        new TauriSyncError('client.closed', 'the Tauri sync client is closed'),
+      );
+    }
+    if (this.#preflightBarrier !== undefined) return this.#preflightBarrier;
+    // Flip synchronously so a same-webview query cannot race the IPC barrier.
+    this.#securityLifecycle = 'preflight';
+    const barrier = this.#command('beginSecurityPreflight', {}).then(() => {});
+    this.#preflightBarrier = barrier;
+    void barrier.then(
+      () => {
+        if (this.#preflightBarrier === barrier)
+          this.#preflightBarrier = undefined;
+      },
+      () => {
+        if (this.#preflightBarrier === barrier)
+          this.#preflightBarrier = undefined;
+      },
+    );
+    return barrier;
+  }
+
+  /**
+   * Complete the security preflight. `headers` optionally carries a fresh
+   * FULL transport header set that the native host applies atomically with
+   * the activation, before the startup sync it enqueues — so a preflight
+   * that outlives the boot token starts its first round with valid
+   * credentials (the direct `setHeaders` path stays refused while gated).
+   */
+  async activateSecurity(
+    options: {
+      readonly encryption?: EncryptionKeyringConfig;
+      readonly headers?: Readonly<Record<string, string>>;
+    } = {},
+  ): Promise<void> {
+    this.#requireOpen();
+    if (this.#securityLifecycle === 'active') {
+      throw new TauriSyncError(
+        'sync.invalid_request',
+        'activateSecurity requires the client to be in security preflight',
+      );
+    }
+    await this.#preflightBarrier;
+    await this.#command('activateSecurity', {
+      ...(options.encryption !== undefined
+        ? { encryption: encodeEncryption(options.encryption) }
+        : {}),
+      ...(options.headers !== undefined ? { headers: options.headers } : {}),
+    });
+    this.#securityLifecycle = 'active';
+  }
+
+  onInvalidate(listener: InvalidationListener): () => void {
+    this.#requireOpen();
+    this.#invalidationListeners.add(listener);
+    return () => this.#invalidationListeners.delete(listener);
+  }
+
+  onProgress(listener: SyncProgressListener): () => void {
+    this.#requireOpen();
+    return this.#progress.on(listener);
+  }
+  progressSnapshot(): SyncProgress | undefined {
+    this.#requireOpen();
+    return this.#progress.snapshot();
+  }
+
+  onChange(listener: ClientChangeListener): () => void {
+    this.#requireOpen();
+    this.#changeListeners.add(listener);
+    return () => this.#changeListeners.delete(listener);
+  }
+
+  onDiagnostics(listener: ClientDiagnosticsListener): () => void {
+    this.#requireOpen();
+    this.#diagnosticsListeners.add(listener);
+    this.#enableDiagnosticsPush();
+    return () => this.#diagnosticsListeners.delete(listener);
+  }
+
+  /**
+   * Host-local push registration: the native core emits pushed diagnostics
+   * snapshots only once a consumer is known (a `diagnosticsSnapshot` pull, or
+   * this explicit `enableDiagnostics` signal). Fired once, on the first
+   * registered listener, fire-and-forget. The invoke deliberately bypasses
+   * the bridge's preflight gate — the command is a pure observability
+   * registration handled before dispatch, and the native side stays silent
+   * until activation anyway. Errors are tolerated: an older native core
+   * rejects the unknown command, and the mount-time snapshot pull path keeps
+   * `useDiagnostics` working there.
+   */
+  #enableDiagnosticsPush(): void {
+    if (this.#diagnosticsEnabled || this.#closed) return;
+    this.#diagnosticsEnabled = true;
+    void this.#tauri
+      .invoke<CommandReply>(`${PLUGIN}syncular_command`, {
+        command: { method: 'enableDiagnostics', params: {} },
+      })
+      .catch(() => {
+        /* fire-and-forget; an error reply is equally ignored above */
+      });
+  }
+
+  onPresence(listener: (scopeKey: string) => void): () => void {
+    this.#requireOpen();
+    this.#presenceListeners.add(listener);
+    return () => this.#presenceListeners.delete(listener);
+  }
+
+  async query(sql: string, params?: readonly SqlValue[]): Promise<SqlRow[]> {
+    this.#requireActive();
+    const reply = await this.#tauri.invoke<CommandReply>(
+      `${PLUGIN}syncular_query`,
+      { sql, params: (params ?? []).map(encodeParam) },
+    );
+    if (reply.error !== undefined) {
+      throw new TauriSyncError(
+        reply.error.code,
+        reply.error.message,
+        reply.error.details ?? undefined,
+        reply.error.retryable ?? false,
+      );
+    }
+    const rows = (reply.result as { rows?: unknown[] }).rows ?? [];
+    return rows.map((r) => decodeRow(r as Record<string, unknown>));
+  }
+
+  async querySnapshot<Row = SqlRow>(
+    spec: QueryReadSpec,
+  ): Promise<QuerySnapshot<Row>> {
+    this.#requireActive();
+    const reply = await this.#tauri.invoke<CommandReply>(
+      `${PLUGIN}syncular_query_snapshot`,
+      {
+        sql: spec.sql,
+        params: (spec.params ?? []).map(encodeParam),
+        coverage: spec.coverage ?? [],
+        ...(spec.owner !== undefined ? { owner: spec.owner } : {}),
+      },
+    );
+    if (reply.error !== undefined) {
+      throw new TauriSyncError(
+        reply.error.code,
+        reply.error.message,
+        reply.error.details ?? undefined,
+        reply.error.retryable ?? false,
+      );
+    }
+    const result = reply.result as {
+      revision: string;
+      rows: Record<string, unknown>[];
+      coverage: QuerySnapshot['coverage'];
+    };
+    return {
+      revision: BigInt(result.revision),
+      rows: result.rows.map(decodeRow) as unknown as readonly Row[],
+      coverage: result.coverage,
+    };
+  }
+
+  async localRevision(): Promise<bigint> {
+    const result = (await this.#command('localRevision', {})) as {
+      revision: string;
+    };
+    return BigInt(result.revision);
+  }
+
+  /**
+   * §7.5: one atomic read over the file-backed sidecar. Every statement and
+   * every catch-up/delivery read shares one revision (a `bigint`, matching
+   * `querySnapshot`) and one read transaction; every query row is decoded.
+   */
+  async snapshotRead(request: SnapshotReadRequest): Promise<SnapshotRead> {
+    this.#requireActive();
+    const reply = await this.#tauri.invoke<CommandReply>(
+      `${PLUGIN}syncular_snapshot_read`,
+      {
+        statements: request.statements.map((statement) => ({
+          sql: statement.sql,
+          params: (statement.params ?? []).map(encodeParam),
+        })),
+        coverage: request.coverage ?? [],
+        subscriptions: request.subscriptions ?? [],
+        commitIds: request.commitIds ?? [],
+        ...(request.owner !== undefined ? { owner: request.owner } : {}),
+      },
+    );
+    if (reply.error !== undefined) {
+      throw new TauriSyncError(
+        reply.error.code,
+        reply.error.message,
+        reply.error.details ?? undefined,
+        reply.error.retryable ?? false,
+      );
+    }
+    const result = reply.result as {
+      revision: string;
+      queries: readonly (readonly Record<string, unknown>[])[];
+      coverage: SnapshotRead['coverage'];
+      subscriptions: SnapshotRead['subscriptions'];
+      deliveries: SnapshotRead['deliveries'];
+    };
+    return {
+      revision: BigInt(result.revision),
+      queries: result.queries.map((rows) => rows.map(decodeRow)),
+      coverage: result.coverage,
+      subscriptions: result.subscriptions,
+      deliveries: result.deliveries.map((delivery) =>
+        delivery.status === 'known'
+          ? { ...delivery, outcome: decodeCommitOutcome(delivery.outcome) }
+          : delivery,
+      ),
+    };
+  }
+
+  async statusSnapshot(): Promise<SyncStatusSnapshot> {
+    return (await this.#command('statusSnapshot', {})) as SyncStatusSnapshot;
+  }
+
+  async diagnosticsSnapshot(
+    request: ClientDiagnosticsRequest = {},
+  ): Promise<ClientDiagnosticsSnapshot> {
+    const snapshot = (await this.#command('diagnosticsSnapshot', {
+      expectedSubscriptions: request.expectedSubscriptions ?? [],
+    })) as ClientDiagnosticsSnapshot;
+    return withClientDiagnosticsHost(snapshot, {
+      ...snapshot.host,
+      kind: 'tauri',
+      role: 'single',
+    });
+  }
+
+  async mutate(mutations: readonly MutationInput[]): Promise<string> {
+    const result = (await this.#command('mutate', {
+      mutations: mutations.map(encodeMutation),
+    })) as { clientCommitId: string };
+    return result.clientCommitId;
+  }
+
+  async patch(
+    table: string,
+    rowId: string,
+    partial: Readonly<Record<string, unknown>>,
+    options?: { readonly baseVersion?: number },
+  ): Promise<string> {
+    const result = (await this.#command('patch', {
+      table,
+      rowId,
+      partial: encodeJsonValue(partial),
+      ...(options?.baseVersion !== undefined
+        ? { baseVersion: options.baseVersion }
+        : {}),
+    })) as { clientCommitId: string };
+    return result.clientCommitId;
+  }
+
+  async purgeLocalData(
+    input: LocalDataPurgeInput,
+  ): Promise<LocalDataPurgeResult> {
+    return (await this.#command('purgeLocalData', {
+      input,
+    })) as LocalDataPurgeResult;
+  }
+
+  async rebootstrapLocalData(
+    input: LocalDataRebootstrapInput,
+  ): Promise<LocalDataRebootstrapResult> {
+    return decodeLocalDataRebootstrapResult(
+      await this.#command('rebootstrapLocalData', { input }),
+    );
+  }
+
+  async previousVersionSnapshot(
+    spec: PreviousVersionReadSpec,
+  ): Promise<PreviousVersionSnapshot> {
+    return decodePreviousVersionSnapshot(
+      decodeSnapshotRows(
+        await this.#command('previousVersionSnapshot', { spec }),
+      ),
+    );
+  }
+
+  async previousVersionAudit(): Promise<PreviousVersionAudit | undefined> {
+    return decodePreviousVersionAuditResult(
+      await this.#command('previousVersionAudit', {}),
+    );
+  }
+
+  async previousVersionDiscard(): Promise<{
+    present: boolean;
+    discarded: boolean;
+  }> {
+    return decodePreviousVersionDiscardResult(
+      await this.#command('previousVersionDiscard', {}),
+    );
+  }
+
+  /** Suspend new network work while retaining local access and queued commits. */
+  async setTransportEnabled(enabled: boolean): Promise<void> {
+    await this.#command('setTransportEnabled', { enabled });
+  }
+
+  /** Browser offline-control parity; local reads and commits remain available. */
+  async setOffline(offline: boolean): Promise<void> {
+    await this.setTransportEnabled(!offline);
+  }
+
+  /**
+   * Replace the native transport's request headers at runtime — the auth
+   * rotation path. Pass the FULL header set (it replaces,
+   * it does not merge). HTTP requests use the new set from the next call;
+   * the realtime socket applies it on its next (re)connect.
+   */
+  async setHeaders(headers: Readonly<Record<string, string>>): Promise<void> {
+    this.#requireActive();
+    const reply = await this.#tauri.invoke<CommandReply>(
+      `${PLUGIN}syncular_set_headers`,
+      { headers },
+    );
+    if (reply.error !== undefined) {
+      throw new TauriSyncError(
+        reply.error.code,
+        reply.error.message,
+        reply.error.details ?? undefined,
+        reply.error.retryable ?? false,
+      );
+    }
+  }
+
+  // -- Native CRDT (SPEC.md §5.10.5; needs the plugin `crdt-yjs` feature) ------
+
+  /** Materialize a `crdt` column's collaborative text — decoded from the
+   * stored (server-merged) Yjs bytes. `name` selects the shared text
+   * (default `"text"`). An absent row / NULL column is the empty document. */
+  async crdtText(
+    table: string,
+    rowId: string,
+    column: string,
+    name = 'text',
+  ): Promise<string> {
+    const result = (await this.#command('crdtText', {
+      table,
+      rowId,
+      column,
+      name,
+    })) as { text: string };
+    return result.text;
+  }
+
+  /** Insert `value` at UTF-16 offset `index` in a `crdt` column's text and
+   * push the resulting Yjs update (baseVersion-less). Returns the commit id. */
+  async crdtInsertText(
+    table: string,
+    rowId: string,
+    column: string,
+    index: number,
+    value: string,
+    name = 'text',
+  ): Promise<string> {
+    const result = (await this.#command('crdtInsertText', {
+      table,
+      rowId,
+      column,
+      name,
+      index,
+      value,
+    })) as { clientCommitId: string };
+    return result.clientCommitId;
+  }
+
+  /** Delete `len` UTF-16 code units at `index` in a `crdt` column's text. */
+  async crdtDeleteText(
+    table: string,
+    rowId: string,
+    column: string,
+    index: number,
+    len: number,
+    name = 'text',
+  ): Promise<string> {
+    const result = (await this.#command('crdtDeleteText', {
+      table,
+      rowId,
+      column,
+      name,
+      index,
+      len,
+    })) as { clientCommitId: string };
+    return result.clientCommitId;
+  }
+
+  /** Escape hatch: apply an arbitrary Yjs update onto a `crdt` column. */
+  async crdtApplyUpdate(
+    table: string,
+    rowId: string,
+    column: string,
+    update: Uint8Array,
+  ): Promise<string> {
+    const result = (await this.#command('crdtApplyUpdate', {
+      table,
+      rowId,
+      column,
+      update: { $bytes: bytesToHex(update) },
+    })) as { clientCommitId: string };
+    return result.clientCommitId;
+  }
+
+  /**
+   * Stage a blob for attachment (§5.9.7) and return the canonical `BlobRef`
+   * string to store in a `blob_ref` column. The native core owns the upload
+   * queue; write the referencing row after this resolves (§5.9.3).
+   */
+  async uploadBlob(
+    bytes: Uint8Array,
+    options?: { readonly mediaType?: string; readonly name?: string },
+  ): Promise<string> {
+    const result = (await this.#command('uploadBlob', {
+      bytes: { $bytes: bytesToHex(bytes) },
+      ...(options?.mediaType !== undefined
+        ? { mediaType: options.mediaType }
+        : {}),
+      ...(options?.name !== undefined ? { name: options.name } : {}),
+    })) as { ref: string };
+    return result.ref;
+  }
+
+  /**
+   * Resolve blob bytes for a `blob_ref` column value or a bare `blobId`
+   * (§5.9.7): the native core serves a local cache hit and otherwise
+   * downloads and verifies the content address.
+   */
+  async fetchBlob(ref: string): Promise<{
+    readonly blobId: string;
+    readonly byteLength: number;
+    readonly bytes: Uint8Array;
+    readonly mediaType?: string;
+  }> {
+    const result = (await this.#command('fetchBlob', { blob: ref })) as {
+      blob: {
+        blobId: string;
+        byteLength: number;
+        bytes: unknown;
+        mediaType?: string;
+      };
+    };
+    const bytes = result.blob.bytes;
+    if (!isBytesEnvelope(bytes))
+      throw new TauriSyncError(
+        'sync.invalid_request',
+        'fetchBlob reply carried no $bytes envelope',
+      );
+    return {
+      blobId: result.blob.blobId,
+      byteLength: result.blob.byteLength,
+      bytes: hexToBytes(bytes.$bytes),
+      ...(result.blob.mediaType !== undefined
+        ? { mediaType: result.blob.mediaType }
+        : {}),
+    };
+  }
+
+  async subscribe(input: {
+    readonly id: string;
+    readonly table: string;
+    readonly scopes?: Record<string, readonly string[]>;
+    readonly params?: string;
+  }): Promise<void> {
+    await this.#command('subscribe', {
+      id: input.id,
+      table: input.table,
+      scopes: input.scopes ?? {},
+      ...(input.params !== undefined ? { params: input.params } : {}),
+    });
+  }
+
+  /** Register several subscriptions in one local transaction. */
+  async subscribeMany(
+    inputs: readonly {
+      readonly id: string;
+      readonly table: string;
+      readonly scopes?: Record<string, readonly string[]>;
+      readonly params?: string;
+    }[],
+  ): Promise<void> {
+    await this.#command('subscribeMany', {
+      subscriptions: inputs.map((input) => ({
+        id: input.id,
+        table: input.table,
+        scopes: input.scopes ?? {},
+        ...(input.params !== undefined ? { params: input.params } : {}),
+      })),
+    });
+  }
+
+  async unsubscribe(id: string): Promise<void> {
+    await this.#command('unsubscribe', { id });
+  }
+
+  async setWindow(base: WindowBase, units: readonly string[]): Promise<void> {
+    await this.#command('setWindow', {
+      base: base as unknown as Record<string, unknown>,
+      units: units as string[],
+    });
+  }
+
+  async windowState(base: WindowBase): Promise<WindowState> {
+    const result = (await this.#command('windowState', {
+      base: base as unknown as Record<string, unknown>,
+    })) as { units: string[]; pending: string[] };
+    return { units: result.units, pending: result.pending };
+  }
+
+  async sync(): Promise<unknown> {
+    return this.#command('sync', {});
+  }
+
+  /**
+   * Rotate the client id (§1.5) after a `sync.invalid_client_id` refusal
+   * (`recommendedAction: resetClientId`). The next round carries the new id;
+   * the replica and outbox stay in place.
+   */
+  async resetClientId(): Promise<string> {
+    const result = (await this.#command('resetClientId', {})) as {
+      clientId: string;
+    };
+    return result.clientId;
+  }
+
+  async syncUntilIdle(maxRounds?: number): Promise<unknown> {
+    return this.#command('syncUntilIdle', {
+      ...(maxRounds !== undefined ? { maxRounds } : {}),
+    });
+  }
+
+  async proveCurrentBase(
+    outcome: Pick<CommitOutcome, 'clientCommitId' | 'sequence'>,
+    maxRounds?: number,
+  ): Promise<CurrentBaseProof> {
+    if (
+      maxRounds !== undefined &&
+      (!Number.isInteger(maxRounds) || maxRounds < 1 || maxRounds > 0xffffffff)
+    )
+      throw new TauriSyncError(
+        'sync.invalid_request',
+        'maxRounds must be a positive integer',
+      );
+    const proof = (await this.#command('proveCurrentBase', {
+      outcome: {
+        clientCommitId: outcome.clientCommitId,
+        sequence: outcome.sequence,
+      },
+      ...(maxRounds !== undefined ? { maxRounds } : {}),
+    })) as CurrentBaseProof;
+    return proof.proven
+      ? { proven: true, rows: decodeRetainedRows(proof.rows) }
+      : proof;
+  }
+
+  async conflicts(): Promise<readonly ConflictRecord[]> {
+    const result = (await this.#command('conflicts', {})) as {
+      conflicts: ConflictRecord[];
+    };
+    return result.conflicts;
+  }
+
+  async rejections(): Promise<readonly RejectionRecord[]> {
+    const result = (await this.#command('rejections', {})) as {
+      rejections: RejectionRecord[];
+    };
+    return result.rejections;
+  }
+
+  async commitOutcome(
+    clientCommitId: string,
+  ): Promise<CommitOutcome | undefined> {
+    const result = (await this.#command('commitOutcome', {
+      clientCommitId,
+    })) as { outcome?: CommitOutcome };
+    return result.outcome === undefined
+      ? undefined
+      : decodeCommitOutcome(result.outcome);
+  }
+
+  async commitOutcomes(
+    query: CommitOutcomeQuery = {},
+  ): Promise<readonly CommitOutcome[]> {
+    const result = (await this.#command('commitOutcomes', { query })) as {
+      outcomes: CommitOutcome[];
+    };
+    return result.outcomes.map(decodeCommitOutcome);
+  }
+
+  async resolveCommitOutcome(
+    input: ResolveCommitOutcomeInput,
+  ): Promise<CommitOutcome> {
+    const result = (await this.#command('resolveCommitOutcome', {
+      input,
+    })) as { outcome: CommitOutcome };
+    return decodeCommitOutcome(result.outcome);
+  }
+
+  async pendingCommits(): Promise<unknown[]> {
+    const result = (await this.#command('pendingCommitIds', {})) as {
+      ids: string[];
+    };
+    return result.ids;
+  }
+
+  async presence(scopeKey: string): Promise<readonly PresencePeer[]> {
+    const result = (await this.#command('presence', { scopeKey })) as {
+      peers: PresencePeer[];
+    };
+    return result.peers;
+  }
+
+  async setPresence(
+    scopeKey: string,
+    doc: Record<string, unknown> | null,
+  ): Promise<void> {
+    await this.#command('setPresence', { scopeKey, doc });
+  }
+
+  async connectRealtime(): Promise<void> {
+    await this.#command('connectRealtime', {});
+  }
+
+  async disconnectRealtime(): Promise<void> {
+    await this.#command('disconnectRealtime', {});
+  }
+
+  /** Shut down the native core, release its keyring, then detach listeners. */
+  async close(): Promise<void> {
+    if (this.#closed) return;
+    const shutdown = this.#command('shutdown', {});
+    this.#closed = true;
+    try {
+      await shutdown;
+    } finally {
+      this.#unlisten?.();
+      this.#unlisten = undefined;
+      this.#invalidationListeners.clear();
+      this.#progress.clear();
+      this.#changeListeners.clear();
+      this.#diagnosticsListeners.clear();
+      this.#presenceListeners.clear();
+    }
+  }
+}
+
+function decodeDiagnosticsSnapshot(
+  value: unknown,
+  kind: 'tauri',
+): ClientDiagnosticsSnapshot | undefined {
+  if (value === null || typeof value !== 'object') return undefined;
+  const snapshot = value as ClientDiagnosticsSnapshot;
+  if (snapshot.version !== 1 || snapshot.host === undefined) return undefined;
+  return withClientDiagnosticsHost(snapshot, {
+    ...snapshot.host,
+    kind,
+    role: 'single',
+  });
+}
+
+/** The error a `{error}` reply surfaces (mirrors the web-client `ClientSyncError`). */
+export class TauriSyncError extends Error {
+  readonly code: string;
+  readonly details: Readonly<Record<string, unknown>> | undefined;
+  readonly retryable: boolean;
+  constructor(
+    code: string,
+    message: string,
+    details?: Readonly<Record<string, unknown>>,
+    retryable = false,
+  ) {
+    super(message);
+    this.name = 'TauriSyncError';
+    this.code = code;
+    this.details = details;
+    this.retryable = retryable;
+  }
+}
+
+function toStringSet(value: unknown): ReadonlySet<string> {
+  if (Array.isArray(value)) {
+    return new Set(value.filter((v): v is string => typeof v === 'string'));
+  }
+  return new Set<string>();
+}
+
+function decodeChangeBatch(value: unknown): ClientChangeBatch | undefined {
+  if (value === null || typeof value !== 'object') return undefined;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.revision !== 'string') return undefined;
+  const tables = Array.isArray(raw.tables)
+    ? raw.tables.flatMap((entry) => {
+        if (entry === null || typeof entry !== 'object') return [];
+        const item = entry as Record<string, unknown>;
+        if (typeof item.table !== 'string') return [];
+        return [
+          {
+            table: item.table,
+            ...(Array.isArray(item.scopeKeys)
+              ? { scopeKeys: toStringSet(item.scopeKeys) }
+              : {}),
+          },
+        ];
+      })
+    : [];
+  const windows = Array.isArray(raw.windows)
+    ? raw.windows.flatMap((entry) => {
+        if (entry === null || typeof entry !== 'object') return [];
+        const item = entry as Record<string, unknown>;
+        if (
+          typeof item.baseKey !== 'string' ||
+          typeof item.table !== 'string'
+        ) {
+          return [];
+        }
+        return [
+          {
+            baseKey: item.baseKey,
+            table: item.table,
+            units: toStringSet(item.units),
+          },
+        ];
+      })
+    : [];
+  return {
+    revision: BigInt(raw.revision),
+    tables,
+    windows,
+    ...(raw.status !== undefined
+      ? { status: raw.status as SyncStatusSnapshot }
+      : {}),
+    conflictsChanged: raw.conflictsChanged === true,
+    rejectionsChanged: raw.rejectionsChanged === true,
+    outcomesChanged: raw.outcomesChanged === true,
+  };
+}
+
+function invalidationFromChange(
+  batch: ClientChangeBatch,
+): InvalidationEvent | undefined {
+  if (batch.tables.length === 0 && batch.windows.length === 0) return undefined;
+  const tables = new Set<string>();
+  const scopeKeys = new Set<string>();
+  for (const table of batch.tables) {
+    tables.add(table.table);
+    for (const key of table.scopeKeys ?? []) scopeKeys.add(key);
+  }
+  for (const window of batch.windows) tables.add(window.table);
+  return { tables, scopeKeys };
+}
+
+/** Encode one mutation for the command JSON (bytes inside `values` handled by
+ * the native side; the driver form is already JSON-able). */
+function encodeMutation(mutation: MutationInput): unknown {
+  if (mutation.op === 'delete') return mutation;
+  const values: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(mutation.values)) {
+    values[key] = encodeJsonValue(value);
+  }
+  return { ...mutation, values };
+}
+
+/**
+ * Construct the bridge and issue the native `create` (opening/attaching the
+ * file DB on the Rust side per the plugin config). Returns a ready
+ * `TauriSyncClient` that satisfies `SyncClientLike` — pass it straight to the
+ * React `<SyncProvider client={…}>`.
+ */
+export function createTauriSyncClient(
+  config: TauriSyncClientConfig,
+): Promise<TauriSyncClient>;
+/** @internal Explicit bridge extension used by the authority entry. */
+export function createTauriSyncClient<Client extends TauriSyncClient>(
+  config: TauriSyncClientConfig,
+  createClient: (
+    ...args: ConstructorParameters<typeof TauriSyncClient>
+  ) => Client,
+): Promise<Client>;
+export async function createTauriSyncClient(
+  config: TauriSyncClientConfig,
+  createClient = (...args: ConstructorParameters<typeof TauriSyncClient>) =>
+    new TauriSyncClient(...args),
+): Promise<TauriSyncClient> {
+  const tauri = await resolveTauri(config.tauri);
+
+  // Wire the event stream BEFORE create, so no early change batch is missed.
+  const clientRef: { client: TauriSyncClient | undefined } = {
+    client: undefined,
+  };
+  const unlisten = await tauri.listen<SyncularEvent>(
+    SYNCULAR_EVENT,
+    (event) => {
+      clientRef.client?.__dispatchEvent(event.payload);
+    },
+  );
+
+  if (config.securityPreflight === true && config.encryption !== undefined) {
+    unlisten();
+    throw new TauriSyncError(
+      'sync.invalid_request',
+      'securityPreflight and encryption are mutually exclusive; install keys with activateSecurity after preflight',
+    );
+  }
+
+  const client = createClient(
+    tauri,
+    unlisten,
+    config.securityPreflight === true ? 'preflight' : 'active',
+  );
+  clientRef.client = client;
+
+  // The native side owns every path (plugin config); the JS side names a
+  // database and supplies the schema, clientId, and limits.
+  const reply = await tauri.invoke<CommandReply>(`${PLUGIN}syncular_command`, {
+    command: {
+      method: 'create',
+      params: {
+        ...(config.clientId !== undefined ? { clientId: config.clientId } : {}),
+        ...(config.database !== undefined ? { database: config.database } : {}),
+        schema: config.schema,
+        ...(config.limits !== undefined ? { limits: config.limits } : {}),
+        ...(config.retainFailedCommits !== undefined
+          ? { retainFailedCommits: config.retainFailedCommits }
+          : {}),
+        ...(config.realtimePolicy !== undefined
+          ? { realtimePolicy: config.realtimePolicy }
+          : {}),
+        ...(config.encryption !== undefined
+          ? { encryption: encodeEncryption(config.encryption) }
+          : {}),
+        ...(config.transportEnabled !== undefined
+          ? { transportEnabled: config.transportEnabled }
+          : {}),
+        ...(config.authorityReads !== undefined
+          ? { authorityReads: config.authorityReads.declarations }
+          : {}),
+        ...(config.securityPreflight !== undefined
+          ? { securityPreflight: config.securityPreflight }
+          : {}),
+        ...(config.previousVersionContext !== undefined
+          ? { previousVersionContext: config.previousVersionContext }
+          : {}),
+      },
+    },
+  });
+  if (reply.error !== undefined) {
+    unlisten();
+    throw new TauriSyncError(
+      reply.error.code,
+      reply.error.message,
+      reply.error.details ?? undefined,
+      reply.error.retryable ?? false,
+    );
+  }
+
+  return client;
+}

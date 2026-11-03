@@ -48,6 +48,15 @@ import { startSyncWorker } from '@syncular/client/worker';
 startSyncWorker();
 ```
 
+Use `@syncular/client/worker/remote` for a worker that only connects to a
+remote authority. It omits the local-authority lifecycle from the worker
+bundle while preserving the normal client and multi-tab APIs. It refuses an
+initialization with `localAuthority: true` before opening storage using
+`client.local_authority_unconfigured`. The shared handle still declares its
+local-authority methods; those calls fail with
+`client.worker_method_unavailable` on a remote-only worker. Use
+`@syncular/client/worker` to run a local authority.
+
 ```ts
 // main thread
 import { createSyncClientHandle } from '@syncular/client';
@@ -741,6 +750,7 @@ they own their buffer.
 |---|---|
 | `.` | protocol core, transports, handle + RPC protocol (browser-safe, no SQLite) |
 | `./worker` | `startSyncWorker` — worker-side bootstrap (pulls sqlite-wasm) |
+| `./worker/remote` | remote-only worker bootstrap without the local-authority lifecycle |
 | `./wasm` | sqlite-wasm bindings: `openPersistentWasmDatabase`, `openWasmDatabase` |
 | `./sqlite` | Runtime-selected SQLite: `openSqliteDatabase` on Node or Bun |
 | `./bun` | Explicit `bun:sqlite` binding: `openBunDatabase` |

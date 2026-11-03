@@ -41,6 +41,14 @@
         "types": "./dist/authority.d.ts",
         "default": "./dist/authority.js"
       }
+    },
+    "./remote": {
+      "bun": "./src/remote.ts",
+      "browser": "./dist/remote.js",
+      "import": {
+        "types": "./dist/remote.d.ts",
+        "default": "./dist/remote.js"
+      }
     }
   },
   "files": [

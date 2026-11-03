@@ -20,6 +20,12 @@ import { schema } from './syncular.generated';
 export const client = await createTauriSyncClient({ schema });
 ```
 
+Use `@syncular/tauri/remote` for a client that only connects to a remote
+authority, and leave the native plugin's `local_authority_path` unset. This
+entry omits the JavaScript local-authority lifecycle methods while retaining
+the other client APIs. It does not change the code compiled into the native
+plugin. The default `@syncular/tauri` entry retains those lifecycle methods.
+
 Register the native plugin as described in the
 [Tauri guide](https://syncular.dev/platform-tauri/). React apps can separately
 install `@syncular/react` for hooks over the same client.

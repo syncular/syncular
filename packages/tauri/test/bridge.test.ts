@@ -16,6 +16,7 @@ import {
 import { type SyncClientLike } from '@syncular/react';
 import { hostBoolean } from '../../typegen/test/fixtures/basic/syncular.queries';
 import { createTauriSyncClient, type TauriApi } from '../src/index';
+import { createTauriSyncClient as createRemoteTauriSyncClient } from '../src/remote';
 
 /** A recording invoke/listen double. Commands answer from a scripted table. */
 function makeTauri(
@@ -1765,5 +1766,51 @@ test('progress arrives as an event and listener removal does not issue a command
   emit({ type: 'progress', progress: { ...progress, rowsProcessed: 2048 } });
   expect(received).toEqual([1024]);
   expect(calls.length).toBe(before);
+  await client.close();
+});
+
+test('remote Tauri bridge omits local authority while retaining proof and diagnostics', async () => {
+  const { tauri, emit } = makeTauri((cmd, args) => {
+    const method = (args.command as { method?: string } | undefined)?.method;
+    if (method === 'proveCurrentBase')
+      return OK({ proven: false, reason: 'offline' });
+    return defaultResponder(cmd, args);
+  });
+  const client = await createRemoteTauriSyncClient({
+    schema: { version: 1, tables: [] },
+    tauri,
+  });
+  const like: SyncClientLike = client;
+  expect('localAuthorityState' in client).toBe(false);
+  expect('attachLocalAuthority' in client).toBe(false);
+  expect('abandonLocalAuthorityAttach' in client).toBe(false);
+  expect(
+    await like.proveCurrentBase({ clientCommitId: 'c1', sequence: 3 }),
+  ).toEqual({
+    proven: false,
+    reason: 'offline',
+  });
+  const diagnostics: string[] = [];
+  client.onDiagnostics((snapshot) => diagnostics.push(snapshot.host.kind));
+  emit({ type: 'diagnostics', snapshot: DIAGNOSTICS });
+  expect(diagnostics).toEqual(['tauri']);
+  await client.close();
+});
+
+test('authority-enabled Tauri bridge still exposes its state during preflight', async () => {
+  const { tauri } = makeTauri((cmd, args) => {
+    const method = (args.command as { method?: string } | undefined)?.method;
+    if (method === 'localAuthorityState') return OK({ state: 'local' });
+    return defaultResponder(cmd, args);
+  });
+  const client = await createTauriSyncClient({
+    schema: { version: 1, tables: [] },
+    securityPreflight: true,
+    tauri,
+  });
+  expect(await client.localAuthorityState()).toBe('local');
+  await expect(client.query('SELECT 1')).rejects.toMatchObject({
+    code: SECURITY_PREFLIGHT_REQUIRED_CODE,
+  });
   await client.close();
 });

@@ -17,6 +17,21 @@
 export const changelog = [
   {
     date: '2026-11-03',
+    title: 'Choose remote-only worker and Tauri entries',
+    body: 'Remote-only worker and Tauri imports omit the JavaScript local-authority lifecycle while preserving replica, recovery, and diagnostics behavior. The existing entries retain local-authority support.',
+    links: [
+      {
+        href: '/platform-web-install/#add-the-worker-entry',
+        label: 'Browser worker entry',
+      },
+      {
+        href: '/platform-tauri-install/#create-the-client-and-sync',
+        label: 'Tauri client',
+      },
+    ],
+  },
+  {
+    date: '2026-11-03',
     title: 'Gate the development console registry',
     body: 'Client reference registration requires an explicit registrar and a development environment signal. Production builds can omit the registry.',
     links: [

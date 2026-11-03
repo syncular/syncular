@@ -51,6 +51,16 @@ import { startSyncWorker } from '@syncular/client/worker';
 startSyncWorker();
 ```
 
+For a worker that only connects to a remote authority, import
+`startSyncWorker` from `@syncular/client/worker/remote`. This entry excludes the
+optional local-authority lifecycle from the worker bundle. It retains the same
+subscription, retained-outcome, proof, diagnostics, and multi-tab behavior.
+An initialization that requests `localAuthority: true` fails before opening
+storage with `client.local_authority_unconfigured`. The shared handle still
+declares the local-authority methods; calling one against a remote-only worker
+fails with `client.worker_method_unavailable`. Use `@syncular/client/worker`
+when the worker must run a local authority.
+
 ::checkpoint[The file exists and imports without errors.]
 ::::
 

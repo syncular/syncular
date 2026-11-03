@@ -19,7 +19,7 @@ describe('@syncular/tauri package contract', () => {
 
   test('keeps the default imports visible to browser bundlers', () => {
     const source = readFileSync(
-      join(import.meta.dir, '..', 'src', 'index.ts'),
+      join(import.meta.dir, '..', 'src', 'remote.ts'),
       'utf8',
     );
 

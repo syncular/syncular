@@ -7,7 +7,7 @@
 import { BunClientDatabase } from '../src/bun-database';
 import { ClientSyncError, STORAGE_BUSY_CODE } from '../src/errors';
 import { defineAuthorityReads } from '../src/authority';
-import { startSyncWorker } from '../src/worker-entry';
+import { startSyncWorker } from '../src/worker-remote';
 
 let opens = 0;
 startSyncWorker({

@@ -6626,6 +6626,13 @@ separate from the client replica: it holds server tables named like the
 replica's synced tables, and the §7.4.3 reset drops every replica table
 outside `_syncular_*`.
 
+A JavaScript host MAY select a remote-only worker or native bridge that omits
+local-authority commands. The remote-only worker MUST refuse an initialization
+request for local authority before opening storage and MUST reject an absent
+worker method with `client.worker_method_unavailable`. The authority-enabled
+entries retain the §12 lifecycle and existing command behavior. Both profiles
+use the same replica, authorization, observation, and transport contracts.
+
 ### 12.2 Profile
 
 A local authority follows every server rule of §2.1 to §2.3, §4.1 to §4.7,

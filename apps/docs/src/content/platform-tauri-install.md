@@ -134,6 +134,14 @@ await client.syncUntilIdle();
 console.log(await client.query('SELECT id, title FROM todos ORDER BY id'));
 ```
 
+For a native client that only connects to a remote authority, import
+`createTauriSyncClient` from `@syncular/tauri/remote` and leave the native
+plugin's `local_authority_path` unset. The remote bridge omits the JavaScript
+local-authority lifecycle methods while retaining reads, mutations, retained
+outcomes, proof, and diagnostics. This entry does not change the code compiled
+into the native plugin. The default `@syncular/tauri` entry retains the
+local-authority lifecycle methods.
+
 The JS side supplies the schema and optional `limits`; the native side owns the
 database path. On first open the core generates a cryptographically random
 client id and stores it in that database; later opens restore it. An explicit

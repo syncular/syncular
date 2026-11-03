@@ -66,6 +66,9 @@ export const NOT_LEADER_CODE = 'client.not_leader';
 export const WORKER_FAILED_CODE = 'client.worker_failed';
 /** A page/worker bundle identity changed and a full host reload is required. */
 export const WORKER_RESTART_REQUIRED_CODE = 'client.worker_restart_required';
+/** The selected worker entry does not provide the requested method. */
+export const WORKER_METHOD_UNAVAILABLE_CODE =
+  'client.worker_method_unavailable';
 /** SPEC §12: local-authority use without `startSyncWorker({ openLocalAuthority })`. */
 export const LOCAL_AUTHORITY_UNCONFIGURED_CODE =
   'client.local_authority_unconfigured';

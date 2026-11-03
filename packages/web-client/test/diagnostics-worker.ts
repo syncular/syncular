@@ -2,7 +2,7 @@ import { encodeMessage } from '@syncular/core';
 import { BunClientDatabase } from '../src/bun-database';
 import { ClientSyncError } from '../src/errors';
 import { httpSyncTransport } from '../src/http';
-import { startSyncWorker } from '../src/worker-entry';
+import { startSyncWorker } from '../src/worker-remote';
 
 startSyncWorker({
   openDatabase: () => new BunClientDatabase(),

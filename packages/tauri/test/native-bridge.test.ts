@@ -17,7 +17,7 @@ import {
   handleSegmentDownload,
   ValidationRejection,
 } from '@syncular/server';
-import { createTauriSyncClient, type TauriApi } from '../src/index';
+import { createTauriSyncClient, type TauriApi } from '../src/remote';
 import { createTauriAuthoritySyncClient } from '../src/authority';
 
 const ROOT = join(import.meta.dir, '..', '..', '..');

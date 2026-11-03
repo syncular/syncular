@@ -1,8 +1,23 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.53.1** (`v0.53.1`). All artifacts use Apache-2.0, except
+current release is **0.54.0** (`v0.54.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.54.0 release notes
+
+0.54.0 adds `@syncular/client/worker/remote` and `@syncular/tauri/remote`
+entries for hosts that use a remote authority. The worker entry excludes the
+local-authority lifecycle and refuses `localAuthority: true` before opening
+storage. Its shared handle returns `client.worker_method_unavailable` for a
+local-authority call. The Tauri entry omits those methods from the JavaScript
+bridge. Both retain the existing replica, coverage, recovery, diagnostics, and
+transport behavior. The original entries retain local-authority support.
+
+**Upgrade notes.** Upgrade all 12 npm packages and 7 crates together. Select
+the remote-only imports when the application has no local authority; leave the
+native plugin's `local_authority_path` unset. No wire or storage migration is
+required.
 
 ## 0.53.1 release notes
 

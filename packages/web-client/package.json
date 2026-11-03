@@ -74,6 +74,14 @@
         "default": "./dist/worker-entry.js"
       }
     },
+    "./worker/remote": {
+      "bun": "./src/worker-remote.ts",
+      "browser": "./dist/worker-remote.js",
+      "import": {
+        "types": "./dist/worker-remote.d.ts",
+        "default": "./dist/worker-remote.js"
+      }
+    },
     "./authority": {
       "bun": "./src/authority.ts",
       "browser": "./dist/authority.js",
@@ -100,9 +108,9 @@
     "@syncular/core": "workspace:*"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.4",
     "@syncular/server": "workspace:*",
     "playwright": "1.63.0",
-    "@electric-sql/pglite": "^0.5.4",
     "vite": "8.3.4"
   }
 }

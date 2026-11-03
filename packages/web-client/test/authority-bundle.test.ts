@@ -2,6 +2,7 @@ import { expect, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { build as viteBuild } from 'vite';
 
 // Bun 1.4.0, minified browser graphs with SQLite external. After the §12
 // local-authority seam and retained-base proof, the client measures 165940
@@ -32,6 +33,12 @@ test('ordinary client, worker and native graphs exclude authority; only explicit
         186000,
       ],
       [
+        'remote-worker',
+        `import { startSyncWorker } from '${root}/packages/web-client/src/worker-remote.ts'; startSyncWorker();`,
+        false,
+        186000,
+      ],
+      [
         'authority-worker',
         `import { startSyncWorker } from '${root}/packages/web-client/src/worker-entry.ts'; import { defineAuthorityReads } from '${root}/packages/web-client/src/authority.ts'; startSyncWorker({ createAuthorityReads: defineAuthorityReads });`,
         true,
@@ -40,6 +47,12 @@ test('ordinary client, worker and native graphs exclude authority; only explicit
       [
         'tauri',
         `export { createTauriSyncClient } from '${root}/packages/tauri/src/index.ts';`,
+        false,
+        Infinity,
+      ],
+      [
+        'remote-tauri',
+        `export { createTauriSyncClient } from '${root}/packages/tauri/src/remote.ts';`,
         false,
         Infinity,
       ],
@@ -100,6 +113,16 @@ test('ordinary client, worker and native graphs exclude authority; only explicit
         expect(authorityModules.length > 0).toBe(optIn);
       }
       const code = new TextDecoder().decode(bytes);
+      for (const method of [
+        'localAuthorityState',
+        'attachLocalAuthority',
+        'abandonLocalAuthorityAttach',
+      ]) {
+        if (lane === 'remote-worker' || lane === 'remote-tauri')
+          expect(code).not.toContain(method);
+        if (lane === 'worker' || lane === 'tauri')
+          expect(code).toContain(method);
+      }
       expect(code.includes('authority persisted evidence is invalid')).toBe(
         lane === 'authority-worker',
       );
@@ -109,6 +132,76 @@ test('ordinary client, worker and native graphs exclude authority; only explicit
         );
     }
   } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('Vite production excludes optional local authority from remote entries', async () => {
+  const root = resolve(import.meta.dir, '../../..');
+  const directory = mkdtempSync(join(root, '.bundle-test-'));
+  const previousNodeEnv = process.env.NODE_ENV;
+  try {
+    process.env.NODE_ENV = 'production';
+    for (const [lane, source, includesAuthority] of [
+      [
+        'worker',
+        `import { startSyncWorker } from '${root}/packages/web-client/src/worker-entry.ts'; startSyncWorker();`,
+        true,
+      ],
+      [
+        'remote-worker',
+        `import { startSyncWorker } from '${root}/packages/web-client/src/worker-remote.ts'; startSyncWorker();`,
+        false,
+      ],
+      [
+        'tauri',
+        `import { createTauriSyncClient } from '${root}/packages/tauri/src/index.ts'; globalThis.bundleProbe = createTauriSyncClient;`,
+        true,
+      ],
+      [
+        'remote-tauri',
+        `import { createTauriSyncClient } from '${root}/packages/tauri/src/remote.ts'; globalThis.bundleProbe = createTauriSyncClient;`,
+        false,
+      ],
+    ] as const) {
+      const entry = join(directory, `${lane}.ts`);
+      writeFileSync(entry, source);
+      const result = await viteBuild({
+        configFile: false,
+        mode: 'production',
+        logLevel: 'silent',
+        resolve: { conditions: ['bun'] },
+        build: {
+          write: false,
+          minify: true,
+          rollupOptions: {
+            input: entry,
+            external: [
+              '@sqlite.org/sqlite-wasm',
+              '@tauri-apps/api/core',
+              '@tauri-apps/api/event',
+            ],
+          },
+        },
+      });
+      if (Array.isArray(result) || !('output' in result))
+        throw new Error('expected one production Vite output');
+      const code = result.output
+        .filter((output) => output.type === 'chunk')
+        .map((output) => output.code)
+        .join('\n');
+      for (const method of [
+        'localAuthorityState',
+        'attachLocalAuthority',
+        'abandonLocalAuthorityAttach',
+      ]) {
+        expect(code.includes(method)).toBe(includesAuthority);
+      }
+      expect(code).not.toContain('__SYNCULAR__');
+    }
+  } finally {
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
     rmSync(directory, { recursive: true, force: true });
   }
 });
