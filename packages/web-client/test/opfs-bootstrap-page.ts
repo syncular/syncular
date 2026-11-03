@@ -81,7 +81,7 @@ window.opfsTest = {
     window.opfsTest.ready = createSyncClientHandle({
       worker: () => {
         worker = new Worker(
-          `/opfs-bootstrap-worker.js${location.search === '?responsive' ? '?responsive' : ''}`,
+          `${location.pathname === '/production/' ? '/production' : ''}/opfs-bootstrap-worker.js${location.search === '?responsive' ? '?responsive' : ''}`,
           { type: 'module' },
         );
         worker.addEventListener('message', (event) => {

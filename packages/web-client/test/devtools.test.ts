@@ -6,6 +6,7 @@
  * for THIS client rather than global absence.
  */
 import { afterEach, expect, test } from 'bun:test';
+import { registerDevtools } from '../src/devtools';
 import { makeClient, makeServer, taskValues } from './helpers';
 
 type Entry = {
@@ -34,15 +35,21 @@ test('gated off without a window: starting a client registers nothing', async ()
   delete g.window;
   const before = registry()?.clients.length ?? 0;
   const server = makeServer();
-  const a = await makeClient(server, { clientId: 'no-window' });
+  const a = await makeClient(server, {
+    clientId: 'no-window',
+    devtools: registerDevtools,
+  });
   expect(registry()?.clients.length ?? 0).toBe(before);
   await a.client.close();
 });
 
-test('registers on a dev page, snapshots state, unregisters on close', async () => {
+test('registers on an opted-in dev page, snapshots state, unregisters on close', async () => {
   g.window ??= g; // a dev "page" (NODE_ENV under bun test is not production)
   const server = makeServer();
-  const a = await makeClient(server, { clientId: 'dev-client' });
+  const a = await makeClient(server, {
+    clientId: 'dev-client',
+    devtools: registerDevtools,
+  });
   expect(entryFor('dev-client')).toBeDefined();
 
   a.client.subscribe({
@@ -64,4 +71,12 @@ test('registers on a dev page, snapshots state, unregisters on close', async () 
 
   await a.client.close();
   expect(entryFor('dev-client')).toBeUndefined();
+});
+
+test('a client without a registrar never exposes itself on a dev page', async () => {
+  g.window ??= g;
+  const server = makeServer();
+  const a = await makeClient(server, { clientId: 'no-devtools-opt-in' });
+  expect(entryFor('no-devtools-opt-in')).toBeUndefined();
+  await a.client.close();
 });

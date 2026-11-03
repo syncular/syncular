@@ -194,6 +194,43 @@ async function build() {
 }
 
 describe('createTauriSyncClient', () => {
+  test('a webview client exposes no development registry', async () => {
+    const host = globalThis as Record<string, unknown>;
+    const previousWindow = host.window;
+    const previousRegistry = host.__SYNCULAR__;
+    host.window = host;
+    delete host.__SYNCULAR__;
+    try {
+      const { client, calls } = await build();
+      expect(await client.query('SELECT id, title FROM tasks')).toEqual([
+        {
+          id: 't1',
+          title: 'hello',
+          blob: new Uint8Array([222, 173, 190, 239]),
+        },
+      ]);
+      await client.subscribe({
+        id: 'tauri-scope',
+        table: 'tasks',
+        scopes: { project_id: ['p1'] },
+      });
+      expect(
+        calls.some(
+          (call) =>
+            (call.args.command as { method?: string } | undefined)?.method ===
+            'subscribe',
+        ),
+      ).toBe(true);
+      expect(host.__SYNCULAR__).toBeUndefined();
+      await client.close();
+    } finally {
+      if (previousWindow === undefined) delete host.window;
+      else host.window = previousWindow;
+      if (previousRegistry === undefined) delete host.__SYNCULAR__;
+      else host.__SYNCULAR__ = previousRegistry;
+    }
+  });
+
   test('forwards retained failure policy and mixed sparse aggregate unchanged', async () => {
     const { tauri, calls } = makeTauri(defaultResponder);
     const client = await createTauriSyncClient({

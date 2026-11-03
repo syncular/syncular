@@ -317,6 +317,7 @@ export interface TestClient {
 
 export interface MakeClientOptions {
   readonly clientId: string;
+  readonly devtools?: SyncClientConfig['devtools'];
   /** Re-openable local SQLite path; defaults to an isolated in-memory DB. */
   readonly databasePath?: string;
   /** Optional instrumented backend for database-boundary regression tests. */
@@ -359,6 +360,7 @@ export async function makeClient(
     database: db,
     schema: options.schema ?? CLIENT_SCHEMA,
     clientId: options.clientId,
+    ...(options.devtools !== undefined ? { devtools: options.devtools } : {}),
     now: () => server.now.ms,
     ...(options.realtimePolicy !== undefined
       ? { realtimePolicy: options.realtimePolicy }

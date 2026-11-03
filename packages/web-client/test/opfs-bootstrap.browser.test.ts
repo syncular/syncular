@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { chromium } from 'playwright';
+import { build as viteBuild } from 'vite';
 import { decodeMessage, encodeMessage } from '@syncular/core';
 import {
   handleSegmentDownload,
@@ -19,6 +20,7 @@ import {
   type CrashPoint,
 } from './opfs-bootstrap-fixture';
 import type {} from './opfs-bootstrap-page';
+import type {} from './devtools-explicit-page';
 
 const source = makeServer(OPFS_SCHEMA);
 source.allowed['actor-1'] = { project_id: ['p1'] };
@@ -104,6 +106,133 @@ beforeAll(async () => {
       ),
     ),
   );
+  const previousNodeEnv = process.env.NODE_ENV;
+  let productionBuild: Awaited<ReturnType<typeof viteBuild>>;
+  let explicitBuild: Awaited<ReturnType<typeof viteBuild>>;
+  let developmentBuild: Awaited<ReturnType<typeof viteBuild>>;
+  try {
+    process.env.NODE_ENV = 'production';
+    productionBuild = await viteBuild({
+      configFile: false,
+      mode: 'production',
+      logLevel: 'silent',
+      resolve: { conditions: ['bun'] },
+      build: {
+        write: false,
+        minify: true,
+        rollupOptions: {
+          input: {
+            'opfs-bootstrap-page': join(
+              import.meta.dir,
+              'opfs-bootstrap-page.ts',
+            ),
+            'opfs-bootstrap-worker': join(
+              import.meta.dir,
+              'opfs-bootstrap-worker.ts',
+            ),
+          },
+          external: ['@sqlite.org/sqlite-wasm'],
+          output: {
+            entryFileNames: '[name].js',
+            chunkFileNames: 'chunks/[name]-[hash].js',
+          },
+        },
+      },
+    });
+    explicitBuild = await viteBuild({
+      configFile: false,
+      mode: 'production',
+      logLevel: 'silent',
+      resolve: { conditions: ['bun'] },
+      build: {
+        write: false,
+        minify: true,
+        rollupOptions: {
+          input: {
+            'devtools-explicit-page': join(
+              import.meta.dir,
+              'devtools-explicit-page.ts',
+            ),
+          },
+          external: ['@sqlite.org/sqlite-wasm'],
+          output: {
+            entryFileNames: '[name].js',
+            chunkFileNames: 'chunks/[name]-[hash].js',
+          },
+        },
+      },
+    });
+    process.env.NODE_ENV = 'development';
+    developmentBuild = await viteBuild({
+      configFile: false,
+      mode: 'development',
+      logLevel: 'silent',
+      resolve: { conditions: ['bun'] },
+      build: {
+        write: false,
+        minify: true,
+        rollupOptions: {
+          input: {
+            'devtools-explicit-page': join(
+              import.meta.dir,
+              'devtools-explicit-page.ts',
+            ),
+          },
+          external: ['@sqlite.org/sqlite-wasm'],
+          output: {
+            entryFileNames: '[name].js',
+            chunkFileNames: 'chunks/[name]-[hash].js',
+          },
+        },
+      },
+    });
+  } finally {
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
+  }
+  if (Array.isArray(productionBuild) || !('output' in productionBuild))
+    throw new Error('expected one production Vite output');
+  const productionAssets = new Map<string, string>();
+  for (const output of productionBuild.output) {
+    if (output.type !== 'chunk') continue;
+    expect(output.code).not.toContain('__SYNCULAR__');
+    productionAssets.set(
+      `/production/${output.fileName}`,
+      output.code.replaceAll(
+        /(["'])@sqlite\.org\/sqlite-wasm\1/g,
+        '"/vendor/index.mjs"',
+      ),
+    );
+  }
+  if (Array.isArray(explicitBuild) || !('output' in explicitBuild))
+    throw new Error('expected one explicit development-registry output');
+  const explicitAssets = new Map<string, string>();
+  let explicitRegistryIncluded = false;
+  for (const output of explicitBuild.output) {
+    if (output.type !== 'chunk') continue;
+    explicitRegistryIncluded ||= output.code.includes('__SYNCULAR__');
+    explicitAssets.set(
+      `/production-explicit/${output.fileName}`,
+      output.code.replaceAll(
+        /(["'])@sqlite\.org\/sqlite-wasm\1/g,
+        '"/vendor/index.mjs"',
+      ),
+    );
+  }
+  expect(explicitRegistryIncluded).toBe(true);
+  if (Array.isArray(developmentBuild) || !('output' in developmentBuild))
+    throw new Error('expected one development Vite output');
+  const developmentAssets = new Map<string, string>();
+  for (const output of developmentBuild.output) {
+    if (output.type !== 'chunk') continue;
+    developmentAssets.set(
+      `/development/${output.fileName}`,
+      output.code.replaceAll(
+        /(["'])@sqlite\.org\/sqlite-wasm\1/g,
+        '"/vendor/index.mjs"',
+      ),
+    );
+  }
   const vendor = dirname(
     Bun.resolveSync('@sqlite.org/sqlite-wasm', import.meta.dir),
   );
@@ -118,6 +247,36 @@ beforeAll(async () => {
           '<!doctype html><script type="module" src="/opfs-bootstrap-page.js"></script>',
           { headers: { ...headers, 'Content-Type': 'text/html' } },
         );
+      if (pathname === '/production/')
+        return new Response(
+          '<!doctype html><script type="module" src="/production/opfs-bootstrap-page.js"></script>',
+          { headers: { ...headers, 'Content-Type': 'text/html' } },
+        );
+      if (pathname === '/production-explicit/')
+        return new Response(
+          '<!doctype html><script type="module" src="/production-explicit/devtools-explicit-page.js"></script>',
+          { headers: { ...headers, 'Content-Type': 'text/html' } },
+        );
+      if (pathname === '/development/')
+        return new Response(
+          '<!doctype html><script type="module" src="/development/devtools-explicit-page.js"></script>',
+          { headers: { ...headers, 'Content-Type': 'text/html' } },
+        );
+      const developmentAsset = developmentAssets.get(pathname);
+      if (developmentAsset)
+        return new Response(developmentAsset, {
+          headers: { ...headers, 'Content-Type': 'text/javascript' },
+        });
+      const explicitAsset = explicitAssets.get(pathname);
+      if (explicitAsset)
+        return new Response(explicitAsset, {
+          headers: { ...headers, 'Content-Type': 'text/javascript' },
+        });
+      const productionAsset = productionAssets.get(pathname);
+      if (productionAsset)
+        return new Response(productionAsset, {
+          headers: { ...headers, 'Content-Type': 'text/javascript' },
+        });
       const asset = assets.get(pathname);
       if (asset)
         return new Response(asset, {
@@ -1418,6 +1577,98 @@ test('OPFS 89→90 drops old scopes/windows and reloads after a compatible 91 bu
     });
     expect(errors).toEqual([]);
     await page.evaluate(async () => (await window.opfsTest.ready).close());
+  } finally {
+    await browser.close();
+  }
+}, 60000);
+
+test('development Vite direct client registers only until close', async () => {
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    await page.goto(new URL('/development/', server.url).href);
+    const observed = await page.evaluate(() => window.directRegistryProbe());
+    expect(observed.registryPresent).toBe(true);
+    expect(observed.entriesAfterClose).toBe(0);
+    expect(observed.rows).toEqual([{ id: 'local-direct', title: 'private' }]);
+  } finally {
+    await browser.close();
+  }
+}, 60000);
+
+test('production Vite direct client refuses an explicitly configured development registry', async () => {
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    await page.goto(new URL('/production-explicit/', server.url).href);
+    const observed = await page.evaluate(() => window.directRegistryProbe());
+    expect(observed.registryPresent).toBe(false);
+    expect(observed.entriesAfterClose).toBeNull();
+    expect(observed.rows).toEqual([{ id: 'local-direct', title: 'private' }]);
+    expect(observed.scopes).toContainEqual(
+      expect.objectContaining({
+        id: 'direct-scope',
+        scopes: { project_id: ['p1'] },
+      }),
+    );
+  } finally {
+    await browser.close();
+  }
+}, 60000);
+
+test('production Vite leader and follower expose no development registry', async () => {
+  const browser = await chromium.launch();
+  const context = await browser.newContext();
+  try {
+    const owner = await context.newPage();
+    await owner.goto(new URL('/production/', server.url).href);
+    await owner.evaluate(() => window.opfsTest.open());
+    await owner.evaluate(async () => {
+      const client = await window.opfsTest.ready;
+      await client.subscribe({
+        id: 'production-scope',
+        table: 'catalogue',
+        scopes: { project_id: ['p1'] },
+      });
+      await client.syncUntilIdle();
+    });
+    const follower = await context.newPage();
+    await follower.goto(new URL('/production/', server.url).href);
+    await follower.evaluate(() => window.opfsTest.open());
+    for (const [page, role] of [
+      [owner, 'leader'],
+      [follower, 'follower'],
+    ] as const) {
+      const observed = await page.evaluate(async () => {
+        const client = await window.opfsTest.ready;
+        return {
+          role: client.role,
+          processPresent: 'process' in globalThis,
+          registryPresent: '__SYNCULAR__' in globalThis,
+          rows: await client.query(
+            "SELECT id FROM catalogue WHERE id >= 'code-03997' ORDER BY id LIMIT 3",
+          ),
+          subscriptions: await client.subscriptions(),
+        };
+      });
+      expect(observed.role).toBe(role);
+      expect(observed.processPresent).toBe(false);
+      expect(observed.registryPresent).toBe(false);
+      expect(observed.rows).toEqual([
+        { id: 'code-03997' },
+        { id: 'code-03998' },
+        { id: 'code-03999' },
+      ]);
+      expect(observed.subscriptions).toContainEqual(
+        expect.objectContaining({
+          id: 'production-scope',
+          scopes: { project_id: ['p1'] },
+          effectiveScopes: { project_id: ['p1'] },
+        }),
+      );
+    }
+    await follower.evaluate(async () => (await window.opfsTest.ready).close());
+    await owner.evaluate(async () => (await window.opfsTest.ready).close());
   } finally {
     await browser.close();
   }

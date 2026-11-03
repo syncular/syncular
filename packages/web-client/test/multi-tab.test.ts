@@ -24,6 +24,7 @@ import {
   MULTI_TAB_PROTOCOL_VERSION,
   type MultiTabMessage,
   NOT_LEADER_CODE,
+  registerDevtools,
   SECURITY_PREFLIGHT_REQUIRED_CODE,
   type SyncClientHandle,
   type SyncClientHandleConfig,
@@ -380,6 +381,39 @@ function makeGroup(): Group {
   };
   return { lock, lockName, make };
 }
+
+test('development registry is opt-in per handle and unregisters on close', async () => {
+  const host = globalThis as Record<string, unknown>;
+  const registry = () =>
+    host.__SYNCULAR__ as { clients: Array<{ ref: unknown }> } | undefined;
+  const previousWindow = host.window;
+  const previousRegistry = host.__SYNCULAR__;
+  host.window = host;
+  delete host.__SYNCULAR__;
+  try {
+    const group = makeGroup();
+    const leader = await group.make({
+      clientId: 'devtools-leader',
+      devtools: registerDevtools,
+    });
+    const follower = await group.make({ devtools: registerDevtools });
+    expect(leader.role).toBe('leader');
+    expect(follower.role).toBe('follower');
+    expect(registry()?.clients.map((entry) => entry.ref)).toEqual([
+      leader,
+      follower,
+    ]);
+    await follower.close();
+    expect(registry()?.clients.map((entry) => entry.ref)).toEqual([leader]);
+    await leader.close();
+    expect(registry()?.clients).toEqual([]);
+  } finally {
+    if (previousWindow === undefined) delete host.window;
+    else host.window = previousWindow;
+    if (previousRegistry === undefined) delete host.__SYNCULAR__;
+    else host.__SYNCULAR__ = previousRegistry;
+  }
+});
 
 test('worker leader and follower receive bounded failure evidence and recovery', async () => {
   const workerUrl = new URL('./diagnostics-worker.ts', import.meta.url).href;

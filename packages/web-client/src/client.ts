@@ -86,7 +86,7 @@ import {
   serializeBlobRef,
 } from './blob';
 import type { ClientDatabase, SqlRow, SqlValue } from './database';
-import { registerDevtools } from './devtools';
+import type { DevtoolsRegistrar } from './devtools';
 import {
   CLIENT_DIAGNOSTICS_VERSION,
   ClientDiagnosticsEmitter,
@@ -417,6 +417,8 @@ export interface SyncClientLimits {
 }
 
 export interface SyncClientConfig {
+  /** Explicit development console registry; absent means no registration. */
+  readonly devtools?: DevtoolsRegistrar;
   readonly transportEnabled?: boolean;
   /** Keep rejected/conflicting local intent visible until explicit resolution. */
   readonly retainFailedCommits?: boolean;
@@ -1252,7 +1254,7 @@ export class SyncClient {
       this.#emitSyncIntent({ kind: 'interactive' });
     }
     // Console introspection is a no-op outside a dev page.
-    this.#devtoolsUnregister = registerDevtools({
+    this.#devtoolsUnregister = this.#config.devtools?.({
       kind: 'client',
       ref: this,
       clientId: () => this.#clientId,

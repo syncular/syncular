@@ -1,6 +1,6 @@
 /**
- * The client-side introspection registry: every live
- * `SyncClient` / `SyncClientHandle` on a page registers itself on
+ * The optional client-side introspection registry: a configured
+ * `SyncClient` / `SyncClientHandle` on a development page registers itself on
  * `globalThis.__SYNCULAR__`, so a first integration debugs from the console
  * instead of hand-exposing the client:
  *
@@ -11,11 +11,9 @@
  *                                     // last invalidation
  *     __SYNCULAR__.clients[0].ref     // the client itself — full API
  *
- * Gated to development: the registry installs only where a `window` exists
- * (worker cores register through their page-side handle) and NODE_ENV is
- * anything except `'production'` (bundlers statically replace it, so
- * production builds skip installation; environments without `process` are
- * treated as dev). Cost when gated off: one function call per client.
+ * The host explicitly supplies `registerDevtools` in its client config. The
+ * registry also requires a development or test environment signal and a
+ * `window`. A browser without a development signal leaves it disabled.
  */
 import type { InvalidationEvent, InvalidationListener } from './invalidation';
 
@@ -36,6 +34,11 @@ export interface DevtoolsRegistration {
   readonly onInvalidate: (listener: InvalidationListener) => () => void;
 }
 
+/** Explicit development registry supplied to a client or worker handle. */
+export type DevtoolsRegistrar = (
+  registration: DevtoolsRegistration,
+) => () => void;
+
 /** One live entry on the registry (a registration plus tracked state). */
 export interface DevtoolsEntry extends DevtoolsRegistration {
   /** The most recent invalidation event, timestamped (epoch ms). */
@@ -55,12 +58,20 @@ const KEY = '__SYNCULAR__';
 
 /** The page global to install on, or undefined when gated off. */
 function registryHost(): Record<string, unknown> | undefined {
-  const g = globalThis as Record<string, unknown> & {
-    window?: unknown;
-    process?: { env?: { NODE_ENV?: string } };
-  };
+  const g = globalThis as Record<string, unknown> & { window?: unknown };
   if (g.window === undefined) return undefined;
-  if (g.process?.env?.NODE_ENV === 'production') return undefined;
+  if (typeof process !== 'undefined' && process.env.NODE_ENV === 'production')
+    return undefined;
+  if (
+    !(
+      (typeof import.meta.env !== 'undefined' &&
+        (import.meta.env.DEV as boolean | string | undefined) === true) ||
+      (typeof process !== 'undefined' &&
+        (process.env.NODE_ENV === 'development' ||
+          process.env.NODE_ENV === 'test'))
+    )
+  )
+    return undefined;
   return g;
 }
 

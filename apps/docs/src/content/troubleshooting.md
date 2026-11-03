@@ -199,7 +199,21 @@ The tab that holds the database runs another `MULTI_TAB_PROTOCOL_VERSION` or sch
 
 ## Debugging from the console
 
-Every live client and handle on a dev page registers itself on `window.__SYNCULAR__`. Your bundler turns the registry off when it sets `NODE_ENV=production`.
+Configure `devtools: registerDevtools` on a client or worker handle to register
+it on `window.__SYNCULAR__`. The registry also requires a development or test
+environment signal. Vite development mode and `NODE_ENV=development` provide
+that signal. A browser without a development signal leaves it disabled.
+
+For a Vite app, include the registrar only in the development build:
+
+```ts
+import { registerDevtools, SyncClient } from '@syncular/client';
+
+const client = new SyncClient({
+  ...config,
+  ...(import.meta.env.DEV ? { devtools: registerDevtools } : {}),
+});
+```
 
 ```js title="browser console"
 await __SYNCULAR__.snapshot();

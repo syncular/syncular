@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-03',
+    title: 'Gate the development console registry',
+    body: 'Client reference registration requires an explicit registrar and a development environment signal. Production builds can omit the registry.',
+    links: [
+      {
+        href: '/troubleshooting/#debugging-from-the-console',
+        label: 'Debugging from the console',
+      },
+    ],
+  },
+  {
+    date: '2026-11-03',
     title: 'Expose bounded transport evidence in round snapshots',
     body: 'Failed progress and last-round diagnostics carry the transport cause and an optional HTTP status across worker leaders, followers, and native hosts. A successful round clears the failure evidence.',
     links: [

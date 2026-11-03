@@ -5392,6 +5392,13 @@ change signal. React integrations SHOULD expose the same evidence through a
 hook. A host wrapper changes only topology facts (`kind`, `role`, connectivity,
 realtime); the underlying evidence remains equivalent.
 
+The optional development registry exposes live client references to scripts on
+the page. A host MUST explicitly configure the registry and supply a
+development environment signal. The absence of a Node `process` global does
+not establish development mode.
+Production bundles MUST NOT install the registry. Omitting the registry does
+not disable the bounded diagnostics contract in this section.
+
 The snapshot is one bounded observation containing:
 
 - capture time; host kind/role/connectivity/realtime; security lifecycle.

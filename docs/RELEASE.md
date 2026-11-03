@@ -1,8 +1,20 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.53.0** (`v0.53.0`). All artifacts use Apache-2.0, except
+current release is **0.53.1** (`v0.53.1`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.53.1 release notes
+
+0.53.1 prevents the development console registry from exposing client handles
+in production browser and webview builds. The registry requires an explicit
+`devtools: registerDevtools` configuration and a development or test signal.
+A missing Node `process` global no longer enables it. Bounded client
+diagnostics remain available in every build.
+
+**Upgrade notes.** Upgrade all 12 npm packages and 7 crates together. Hosts
+that use the console registry must configure it and provide a development signal.
+No wire or storage migration is required.
 
 ## 0.53.0 release notes
 

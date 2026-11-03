@@ -49,7 +49,7 @@ import type {
   WindowState,
 } from './client';
 import type { SqlRow, SqlValue } from './database';
-import { registerDevtools } from './devtools';
+import type { DevtoolsRegistrar } from './devtools';
 import {
   ClientDiagnosticsEmitter,
   type ClientDiagnosticsListener,
@@ -178,6 +178,8 @@ export function isolatedReplicaNames(options: {
 }
 
 export interface SyncClientHandleConfig {
+  /** Explicit development console registry for this page's handle. */
+  readonly devtools?: DevtoolsRegistrar;
   /**
    * Spawns the worker running `startSyncWorker()` (a factory so bundlers
    * see `new Worker(new URL(...))` at the call site, and so no worker is
@@ -337,7 +339,7 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
   readonly #roleListeners: Set<(role: HandleRole) => void>;
   readonly #leadershipListeners: Set<(state: LeadershipState) => void>;
   readonly #unreachableListeners: Set<(event: LeaderUnreachableEvent) => void>;
-  readonly #devtoolsUnregister: () => void;
+  readonly #devtoolsUnregister: (() => void) | undefined;
   #closed = false;
 
   /** @internal — use {@link createSyncClientHandle}. */
@@ -355,6 +357,7 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     leadershipListeners?: Set<(state: LeadershipState) => void>;
     unreachableListeners?: Set<(event: LeaderUnreachableEvent) => void>;
     leadership?: LeadershipState;
+    devtools?: DevtoolsRegistrar;
   }) {
     this.#role = internals.role;
     this.#clientId = internals.clientId;
@@ -380,7 +383,7 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     this.#leadershipListeners = internals.leadershipListeners ?? new Set();
     this.#unreachableListeners = internals.unreachableListeners ?? new Set();
     // Console introspection is a no-op outside a dev page.
-    this.#devtoolsUnregister = registerDevtools({
+    this.#devtoolsUnregister = internals.devtools?.({
       kind: 'handle',
       ref: this,
       clientId: () => this.#clientId,
@@ -832,7 +835,7 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     if (this.#closed) return;
     this.#closed = true;
     this.#progress.clear();
-    this.#devtoolsUnregister();
+    this.#devtoolsUnregister?.();
     await this.#tabs?.close();
     if (this.#core !== undefined) {
       const core = this.#core;
@@ -1076,6 +1079,9 @@ export async function createSyncClientHandle(
     roleListeners,
     leadershipListeners,
     unreachableListeners,
+    ...(resolvedConfig.devtools !== undefined
+      ? { devtools: resolvedConfig.devtools }
+      : {}),
   };
 
   if (resolvedConfig.multiTab === false) {
