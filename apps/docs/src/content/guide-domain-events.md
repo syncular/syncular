@@ -188,6 +188,13 @@ export const requireAppointmentEvents: CommitValidator = ({ operations }) => {
 Pass it as `SyncServerConfig.commitValidator`. The callback observes the final
 candidate state inside the open commit transaction.
 
+To deny an operation for lack of host authority, throw
+`CommitAuthorizationRejection(opIndex, message)` from the whole-commit
+validator. The server rolls back the commit and reports `sync.forbidden` for
+that operation. For an absent-row delete, use the static message
+`delete denied by scope authorization (§3.4)` to match a stored-row scope
+denial. Keep row data and identifiers out of the message.
+
 ::checkpoint[A push that moves `starts_at_ms` without the reservation and event rows is rejected with `app.incomplete_appointment_reschedule`.]
 ::::
 

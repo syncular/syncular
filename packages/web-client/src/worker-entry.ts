@@ -605,6 +605,10 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
       const running = requireClient();
       return serializedSync(() => running.syncUntilIdle(options));
     },
+    proveCurrentBase: (outcome, options) => {
+      const running = requireClient();
+      return serializedSync(() => running.proveCurrentBase(outcome, options));
+    },
     resetClientId: () => requireClient().resetClientId(),
     localRevision: () => requireClient().localRevision,
     diagnosticsSnapshot: (request) => {

@@ -343,9 +343,9 @@ A failed multi-operation outcome retains its complete ordered local envelope in
 domain-specific correction flow, because the stored operations may no longer
 express safe intent.
 
-The functions below handle all three choices for the reschedule aggregate. The
-replacement uses the conflict's `serverVersion`, or the freshly generated query
-version after a domain rejection. It never reuses the stale original base.
+The functions below handle all three choices for the reschedule aggregate. A
+replacement first proves the bases of every retained row after the rejection.
+It uses those versions for the replacement.
 
 ```ts
 import type {
@@ -393,16 +393,20 @@ export async function replaceReschedule(
     | { kind: 'keep-local' }
     | { kind: 'merge'; clinicianId: string; startsAtMs: number },
 ) {
+  const proof = await client.proveCurrentBase(outcome);
+  if (!proof.proven) return { kind: 'unproven' as const, reason: proof.reason };
   const appointment = requiredUpsert(outcome, 'appointments');
   const reservation = requiredUpsert(outcome, 'room_reservations');
-  const conflict = outcome.results.find(
-    (result) => result.status === 'conflict',
+  const appointmentBase = proof.rows.find(
+    (row) => row.table === 'appointments' && row.rowId === appointment.rowId,
   );
-  const newBase =
-    conflict?.status === 'conflict'
-      ? conflict.conflict.serverVersion
-      : current.serverVersion;
-  if (newBase < 1) throw new Error('correction requires a confirmed base');
+  const reservationBase = proof.rows.find(
+    (row) => row.table === 'room_reservations' && row.rowId === reservation.rowId,
+  );
+  const newBase = appointmentBase?.serverVersion;
+  if (newBase == null || newBase < 1 || reservationBase === undefined) {
+    throw new Error('correction requires the retained aggregate bases');
+  }
 
   const desiredAppointment = {
     ...appointment.values,
@@ -425,7 +429,7 @@ export async function replaceReschedule(
       table: 'room_reservations',
       op: 'upsert',
       values: reservation.values,
-      baseVersion: 0,
+      baseVersion: reservationBase.serverVersion ?? 0,
     },
     {
       table: 'appointment_events',
@@ -450,7 +454,10 @@ export async function replaceReschedule(
     replacementClientCommitId,
   });
   await client.syncUntilIdle();
-  return await client.commitOutcome(replacementClientCommitId);
+  return {
+    kind: 'submitted' as const,
+    outcome: await client.commitOutcome(replacementClientCommitId),
+  };
 }
 ```
 

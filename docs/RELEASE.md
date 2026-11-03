@@ -1,29 +1,40 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.50.1** (`v0.50.1`). All artifacts use Apache-2.0, except
+current release is **0.51.0** (`v0.51.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
 
-## 0.50.1 release notes
+## 0.51.0 release notes
 
-0.50.1 keeps an incomplete pull from being reported as idle. SSP2, the
+0.51.0 adds partial-scope query coverage, a retained-base proof, and a whole-commit authority refusal. SSP2, the
 storage layout, and the wire version are unchanged.
+
+A multi-scope SYQL `sync query` can select a bound unit using `by` without
+binding every independent table scope. Typegen emits the proven scopes only;
+additional bound scope dimensions remain an intersection. The server authorizes
+the requested values. Scoped remote query registration still requires every
+declared table scope.
 
 When a response omits a completed section for a subscription in the request,
 both client cores keep sync needed and an idle drive retries the pull. A
-validator rejection is delivered before its response's pull sections. Its
-retained `serverRow` is the latest delivered base and may predate the
-rejection. To prepare a reviewed replacement, wait for any active drive, run a
-new `syncUntilIdle()` drive, require success without budget exhaustion or a
-schema floor, and verify an active complete subscription covers the row.
-Read the outcome again after the drive. A failure, missing coverage, or
-revocation is not evidence of a current base. Concurrent writes can still
-arrive after the pull; submit the replacement with the domain's version check.
+validator rejection is delivered before its response's pull sections. Call
+`proveCurrentBase(outcome)` before building a reviewed replacement. The call
+drives a fresh pull, checks complete authorized coverage, and returns every
+retained row together or a typed failure with no rows. A concurrent write can
+arrive after proof; use domain version checks on the replacement.
 
-**Upgrade notes.** Existing apps can keep the same API. Recovery UI that uses
-retained bases must wait for a successful covering catch-up or query the
-authorized current row directly. Upgrade all 12 npm packages and 7 crates
-together.
+A whole-commit validator can throw `CommitAuthorizationRejection(opIndex,
+message)` to return `sync.forbidden` while rolling back the commit. Use the
+existing static delete-denial message when an absent target must be
+indistinguishable from a foreign target.
+
+**Upgrade notes.** Regenerate queries that should claim a partial-scope window.
+Replace app-local freshness orchestration with the proof
+call and handle every failure reason. Replace the equivalent server patch with
+the exported `CommitAuthorizationRejection`. Upgrade all 12 npm packages and
+7 crates together. The Bun 1.4.0 minified browser client and worker graphs
+measure 165,940 and 185,177 bytes; their ceilings rise to 167,000 and 186,000
+bytes.
 
 ## 0.50.0 release notes
 

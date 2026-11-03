@@ -18,6 +18,49 @@ const IR: IrDocument = {
   schemaVersions: [{ version: 1, migrations: ['0001'] }],
   tables: [
     {
+      name: 'calendars',
+      primaryKey: 'id',
+      columns: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'facility', type: 'string', nullable: false },
+      ],
+      scopes: [
+        {
+          pattern: 'calendar:{calendar_id}',
+          variable: 'calendar_id',
+          column: 'id',
+        },
+        {
+          pattern: 'facility:{facility_id}',
+          variable: 'facility_id',
+          column: 'facility',
+        },
+      ],
+      references: [],
+      indexes: [],
+      ftsIndexes: [],
+      extensions: {},
+    },
+    {
+      name: 'theatres',
+      primaryKey: 'id',
+      columns: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'facility_id', type: 'string', nullable: false },
+      ],
+      scopes: [
+        {
+          pattern: 'theatre:{theatre_id}',
+          variable: 'theatre_id',
+          column: 'id',
+        },
+      ],
+      references: [],
+      indexes: [],
+      ftsIndexes: [],
+      extensions: {},
+    },
+    {
       name: 'todos',
       primaryKey: 'id',
       columns: [
@@ -283,17 +326,54 @@ describe('SYQL schema/SQL validation', () => {
     ]);
   });
 
+  test('matches complete scope column names in reactive dependencies', () => {
+    for (const predicate of [
+      'facility_id = :facilityId',
+      ':facilityId = facility_id',
+      't.facility_id = :facilityId',
+      ':facilityId = t.facility_id',
+      'facility_id in (:facilityId)',
+      't.facility_id in (:facilityId)',
+    ]) {
+      const query = validate(`query q(facilityId) {
+        select t.id from theatres t where ${predicate};
+      }`).queries[0];
+      expect(query?.reactive.dependencies).toEqual([
+        { table: 'theatres', scopes: [] },
+      ]);
+      expect(query?.reactive.coverage).toEqual([]);
+    }
+
+    for (const predicate of ['id = :id', ':id = t.id', 't.id in (:id)']) {
+      const query = validate(`query q(id) {
+        select t.id from theatres t where ${predicate};
+      }`).queries[0];
+      expect(query?.reactive.dependencies).toEqual([
+        {
+          table: 'theatres',
+          scopes: [
+            {
+              table: 'theatres',
+              variable: 'theatre_id',
+              pattern: 'theatre:{theatre_id}',
+              params: ['id'],
+            },
+          ],
+        },
+      ]);
+    }
+
+    const joined = validate(`query q(facilityId) {
+      select t.id from theatres t join todos d on d.id = t.facility_id
+      where t.facility_id = :facilityId;
+    }`).queries[0];
+    expect(joined?.reactive.dependencies).toEqual([
+      { table: 'theatres', scopes: [] },
+      { table: 'todos', scopes: [] },
+    ]);
+  });
+
   test('rejects sync queries whose coverage cannot be proven', () => {
-    const incomplete = frontendError(() =>
-      validate(`sync query q(threadId) by messages.thread_id {
-
-          select id from messages
-          where messages.thread_id = :threadId
-        ;
-      }`),
-    );
-    expect(incomplete.code).toBe('SYQL6005_INVALID_SYNC_QUERY');
-
     const nonScope = frontendError(() =>
       validate(`sync query q(id) {
          select id from todos where todos.id = :id ;
@@ -319,6 +399,78 @@ describe('SYQL schema/SQL validation', () => {
       }`),
     );
     expect(nullableScope.code).toBe('SYQL6005_INVALID_SYNC_QUERY');
+  });
+
+  test('an explicit unit covers only the proven independent scopes', () => {
+    const facility = validate(`sync query q(facilityId) by c.facility {
+      select c.id from calendars c where c.facility = :facilityId;
+    }`).queries[0];
+    expect(facility?.reactive.coverage).toEqual([
+      {
+        table: 'calendars',
+        variable: 'facility_id',
+        units: ['facilityId'],
+        fixedScopes: [],
+      },
+    ]);
+    expect(facility?.reactive.dependencies).toEqual([
+      {
+        table: 'calendars',
+        scopes: [
+          {
+            table: 'calendars',
+            variable: 'facility_id',
+            pattern: 'facility:{facility_id}',
+            params: ['facilityId'],
+          },
+        ],
+      },
+    ]);
+    const intersection =
+      validate(`sync query q(facilityId, calendarId) by c.facility {
+      select c.id from calendars c where c.facility = :facilityId and c.id = :calendarId;
+    }`).queries[0];
+    expect(intersection?.reactive.coverage).toEqual([
+      {
+        table: 'calendars',
+        variable: 'facility_id',
+        units: ['facilityId'],
+        fixedScopes: [{ variable: 'calendar_id', params: ['calendarId'] }],
+      },
+    ]);
+    const exact = validate(`sync query q(calendarId) by c.id {
+      select c.id from calendars c where c.id = :calendarId;
+    }`).queries[0];
+    expect(exact?.reactive.coverage).toEqual([
+      {
+        table: 'calendars',
+        variable: 'calendar_id',
+        units: ['calendarId'],
+        fixedScopes: [],
+      },
+    ]);
+    const joined = validate(`sync query q(facilityId) by c.facility {
+      select c.id, d.id as peer_id from calendars c
+      join calendars d on d.facility = c.facility
+      where c.facility = :facilityId;
+    }`).queries[0];
+    expect(joined?.reactive.coverage).toEqual([
+      {
+        table: 'calendars',
+        variable: 'facility_id',
+        units: ['facilityId'],
+        fixedScopes: [],
+      },
+    ]);
+    for (const source of [
+      `sync query q(facilityId) { select c.id from calendars c where c.facility = :facilityId; }`,
+      `sync query q(facilityId) by c.id { select c.id from calendars c where c.facility = :facilityId; }`,
+      `sync query q(facilityId, a, b) by c.facility { select c.id from calendars c where c.facility = :facilityId and c.id in (:a, :b); }`,
+      `sync query q(facilityId) by c.facility { select c.id, d.id as peer_id from calendars c join calendars d on d.id = c.id where c.facility = :facilityId; }`,
+    ])
+      expect(frontendError(() => validate(source)).code).toBe(
+        'SYQL6005_INVALID_SYNC_QUERY',
+      );
   });
 
   test('proves aggregate coverage for every joined scoped table', () => {

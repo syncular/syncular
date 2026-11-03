@@ -21,6 +21,7 @@ import {
 import {
   booleanResults,
   booleanResultsMapRow,
+  facilityDocsQuery,
   joinedSyncCoverageQuery,
   outerJoinValues,
   QueryResultDecodeError,
@@ -44,6 +45,20 @@ function outputFor(basename: string): string {
 }
 
 describe('named-query emitter goldens', () => {
+  test('an independent scope emits a facility-only window and dependency', () => {
+    expect(facilityDocsQuery.coverage({ orgId: 'host' })).toEqual([
+      {
+        base: { table: 'docs', variable: 'org_id' },
+        units: ['host'],
+      },
+    ]);
+    expect(facilityDocsQuery.dependencies({ orgId: 'host' })).toEqual([
+      {
+        table: 'docs',
+        scopeKeys: ['org:host'],
+      },
+    ]);
+  });
   for (const [lang, basename] of Object.entries(QUERY_FILES)) {
     describe(lang, () => {
       test('snapshot matches byte-exactly', () => {

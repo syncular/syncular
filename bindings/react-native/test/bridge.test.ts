@@ -675,6 +675,59 @@ describe('createNativeSyncClient', () => {
     await client.close();
   });
 
+  test('base proof sends only outcome identity and decodes native rows', async () => {
+    const { nativeModule, eventEmitter, calls } = makeNative(
+      (method, params) => {
+        if (method === 'proveCurrentBase')
+          return OK({
+            proven: true,
+            rows: [
+              {
+                table: 'todo',
+                rowId: 't1',
+                localRow: null,
+                serverRow: { blob: { $bytes: '0102' } },
+                serverVersion: 2,
+              },
+            ],
+          });
+        return defaultResponder(method, params);
+      },
+    );
+    const client = await createNativeSyncClient({
+      schema: {},
+      nativeModule,
+      eventEmitter,
+    });
+    const outcome = {
+      clientCommitId: 'c1',
+      sequence: 3,
+      privateData: 'not sent',
+    };
+    await expect(
+      client.proveCurrentBase(outcome, Number.NaN),
+    ).rejects.toMatchObject({ code: 'sync.invalid_request' });
+    expect(await client.proveCurrentBase(outcome, 2)).toEqual({
+      proven: true,
+      rows: [
+        {
+          table: 'todo',
+          rowId: 't1',
+          localRow: null,
+          serverRow: { blob: new Uint8Array([1, 2]) },
+          serverVersion: 2,
+        },
+      ],
+    });
+    expect(
+      calls.filter((call) => call.fn === 'command').map((call) => call.arg),
+    ).toContainEqual({
+      method: 'proveCurrentBase',
+      params: { outcome: { clientCommitId: 'c1', sequence: 3 }, maxRounds: 2 },
+    });
+    await client.close();
+  });
+
   test('mutate returns the clientCommitId', async () => {
     const { client } = await build();
     const id = await client.mutate([

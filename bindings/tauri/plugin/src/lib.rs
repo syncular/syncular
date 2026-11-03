@@ -503,6 +503,7 @@ struct RoundRun {
     max_rounds: Option<u32>,
     spent: u32,
     aggregate: syncular_client::SyncReport,
+    proof: Option<syncular_client::CurrentBasePreparation>,
 }
 
 fn run_owner_thread<F>(config: SyncularConfig, tx: Sender<Request>, rx: Receiver<Request>, emit: F)
@@ -578,6 +579,7 @@ where
                             max_rounds: None,
                             spent: 0,
                             aggregate: Default::default(),
+                            proof: None,
                         });
                     }
                     syncular_client::SyncIntent::Background { delay_ms } => {
@@ -603,8 +605,14 @@ where
                         }
                     }
                     Err(outcome) => {
-                        if let Some(reply) = active.take().and_then(|run| run.reply) {
-                            let _ = reply.send(json!({ "result": outcome.to_json() }));
+                        if let Some(mut run) = active.take() {
+                            let result = match run.proof.take() {
+                                Some(proof) => json!(core.finish_current_base(proof, *outcome)),
+                                None => outcome.to_json(),
+                            };
+                            if let Some(reply) = run.reply {
+                                let _ = reply.send(json!({ "result": result }));
+                            }
                         }
                     }
                 }
@@ -626,6 +634,7 @@ where
                             max_rounds: None,
                             spent: 0,
                             aggregate: Default::default(),
+                            proof: None,
                         });
                         continue;
                     }
@@ -689,14 +698,42 @@ where
                 if keep_running {
                     queued.push_front(run);
                 } else if let Some(reply) = run.reply {
-                    let _ = reply.send(json!({ "result": outcome.to_json() }));
+                    let result = match run.proof.take() {
+                        Some(proof) => json!(core.finish_current_base(proof, outcome)),
+                        None => outcome.to_json(),
+                    };
+                    let _ = reply.send(json!({ "result": result }));
                 }
                 pump_events(&mut core, &*emit);
             }
             Request::Command { command, reply } => {
                 let method = command.get("method").and_then(Value::as_str);
-                if matches!(method, Some("sync" | "syncUntilIdle")) && core.transport_enabled() {
-                    let until_idle = method == Some("syncUntilIdle");
+                if matches!(method, Some("sync" | "syncUntilIdle" | "proveCurrentBase"))
+                    && core.transport_enabled()
+                {
+                    let until_idle = method != Some("sync");
+                    let proof = if method == Some("proveCurrentBase") {
+                        let outcome = command.pointer("/params/outcome");
+                        let id = outcome
+                            .and_then(|v| v.get("clientCommitId"))
+                            .and_then(Value::as_str);
+                        let sequence = outcome
+                            .and_then(|v| v.get("sequence"))
+                            .and_then(Value::as_i64);
+                        let (Some(id), Some(sequence)) = (id, sequence) else {
+                            let _ = reply.send(json!({ "error": { "code": "sync.invalid_request", "message": "proveCurrentBase requires an outcome identity", "retryable": false } }));
+                            continue;
+                        };
+                        match core.prepare_current_base(id, sequence) {
+                            Ok(proof) => Some(proof),
+                            Err(proof) => {
+                                let _ = reply.send(json!({ "result": proof }));
+                                continue;
+                            }
+                        }
+                    } else {
+                        None
+                    };
                     // The shared router ignores `maxRounds` for `sync`; only
                     // `syncUntilIdle` carries a round budget.
                     let max_rounds = if until_idle {
@@ -729,6 +766,7 @@ where
                         max_rounds,
                         spent: 0,
                         aggregate: Default::default(),
+                        proof,
                     });
                     continue;
                 }
@@ -2382,7 +2420,7 @@ mod tests {
     #[cfg(feature = "native-transport")]
     #[test]
     fn owner_thread_sync_until_idle_reports_budget_exhaustion_with_the_report() {
-        use ssp2::model::{Change, Frame, Message, MsgKind, Op, SubStatus};
+        use ssp2::model::{Change, Frame, Message, MsgKind, Op, OpResult, PushStatus, SubStatus};
         use ssp2::segment::{encode_row, Column, ColumnType, ColumnValue};
         use std::io::{ErrorKind, Read, Write};
         use std::net::TcpListener;
@@ -2445,6 +2483,26 @@ mod tests {
                     log_epoch: Some("epoch".into()),
                     reset_required: Some(reset),
                 }];
+                if !reset {
+                    for frame in &request.frames {
+                        if let Frame::PushCommit {
+                            client_commit_id, ..
+                        } = frame
+                        {
+                            frames.push(Frame::PushResult {
+                                client_commit_id: client_commit_id.clone(),
+                                status: PushStatus::Rejected,
+                                commit_seq: None,
+                                results: vec![OpResult::Error {
+                                    op_index: 0,
+                                    code: "app.rejected".into(),
+                                    message: "rejected".into(),
+                                    retryable: false,
+                                }],
+                            });
+                        }
+                    }
+                }
                 if !reset
                     && request
                         .frames
@@ -2522,7 +2580,7 @@ mod tests {
         };
 
         let created = call(json!({ "method": "create", "params": {
-            "clientId": "budget-tauri", "transportEnabled": true, "schema": { "version": 1, "tables": [{
+            "clientId": "budget-tauri", "transportEnabled": true, "retainFailedCommits": true, "schema": { "version": 1, "tables": [{
                 "name": "todo", "primaryKey": "id",
                 "columns": [
                     { "name": "id", "type": "string", "nullable": false },
@@ -2578,6 +2636,24 @@ mod tests {
             json!(2),
             "the aggregate retains every round's work: {exhausted}"
         );
+
+        let mutated = call(json!({ "method": "mutate", "params": { "mutations": [{
+            "op": "upsert", "table": "todo", "values": { "id": "one", "title": "mine" }
+        }] } }));
+        let id = mutated["result"]["clientCommitId"].as_str().unwrap();
+        call(json!({ "method": "sync", "params": {} }));
+        let outcome =
+            call(json!({ "method": "commitOutcome", "params": { "clientCommitId": id } }));
+        let before_proof = requests.load(Ordering::SeqCst);
+        let proof = call(
+            json!({ "method": "proveCurrentBase", "params": { "outcome": outcome["result"]["outcome"], "maxRounds": 1 } }),
+        );
+        assert_eq!(
+            proof["result"],
+            json!({ "proven": false, "reason": "budget_exhausted" }),
+            "{proof}"
+        );
+        assert_eq!(requests.load(Ordering::SeqCst) - before_proof, 1);
 
         tx.send(Request::Shutdown).unwrap();
         owner.join().unwrap();

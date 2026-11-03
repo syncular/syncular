@@ -17,6 +17,36 @@
 export const changelog = [
   {
     date: '2026-11-03',
+    title: 'Cover an independently scoped query',
+    body: 'A multi-scope `sync query` can select a proven unit with `by` and omit independent scopes it does not bind. The generated window requests only the proven dimensions; additional bound dimensions remain an intersection.',
+    links: [
+      { href: '/syql/#query-and-sync-query', label: 'Query and sync query' },
+    ],
+  },
+  {
+    date: '2026-11-03',
+    title: 'Prove retained bases before recovery',
+    body: '`proveCurrentBase(outcome)` runs a post-rejection catch-up and checks covering subscriptions before returning the authorized bases for every retained row. Offline transport, a failed or exhausted drive, a schema floor, missing coverage, revocation, and an unavailable outcome return typed reasons without partial rows.',
+    links: [
+      {
+        href: '/reference-outbox-outcomes/#refresh-a-retained-base-before-recovery',
+        label: 'Refresh a retained base before recovery',
+      },
+    ],
+  },
+  {
+    date: '2026-11-03',
+    title: 'Refuse a whole commit for lack of authority',
+    body: 'A whole-commit validator can throw `CommitAuthorizationRejection` for an operation. The server rolls back the commit and reports `sync.forbidden` with a static host message. A host can match the stored-row scope denial when it refuses an absent-row delete.',
+    links: [
+      {
+        href: '/guide-domain-events/#require-the-event-with-a-commit-validator',
+        label: 'Require the event with a commit validator',
+      },
+    ],
+  },
+  {
+    date: '2026-11-03',
     title: 'Catch up before reviewing a retained base',
     body: 'Both client cores keep sync needed when a pull response omits a requested subscription section, so an idle drive retries it. A rejection can arrive before its winning row; recovery UI can run a fresh successful `syncUntilIdle()` drive, verify active complete coverage, and then read the retained outcome again before constructing a version-checked replacement.',
     links: [

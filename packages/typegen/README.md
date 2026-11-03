@@ -717,15 +717,18 @@ sync query compareLists(left, right) {
 }
 ```
 
-Coverage must resolve every read schema table and bind every declared scope on
-every table instance. A required scope bind can propagate across a qualified
+Coverage must resolve every read schema table and bind at least one declared
+scope on every table instance. Select the unit with `by` for a multi-scope
+table. The descriptor includes all proven dimensions; unbound dimensions are
+omitted. A required scope bind can propagate across a qualified
 scope-column equality in an unconditional outer `WHERE` clause or a simple
 mandatory `ON` clause. The generated descriptor contains aggregate coverage for
 every table, and readiness requires all of it. A self-join claims coverage when
 every instance of the table carries the same proof (the same scopes, operators,
 and parameters); the descriptor then holds one coverage entry and one
 dependency for that table. An unproven instance or differing proofs fail with
-`SYQL6005_INVALID_SYNC_QUERY`. `ON` clauses containing `OR`, `NOT`, or nested
+`SYQL6005_INVALID_SYNC_QUERY`. Bound fixed dimensions retain intersection
+semantics. Scoped remote operations still require every declared scope. `ON` clauses containing `OR`, `NOT`, or nested
 SQL cannot claim coverage. Only
 required, non-null, exactly typed binds are allowed. Result identity is inferred
 from schema keys and the projection; a self-join has no inferred identity. Without constructive proof an ordinary

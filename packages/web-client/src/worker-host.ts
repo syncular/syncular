@@ -31,6 +31,7 @@ import type { WakeReason } from '@syncular/core';
 import type { BlobRef, CachedBlob } from './blob';
 import type {
   ConflictRecord,
+  CurrentBaseProof,
   MutationInput,
   PresencePeer,
   QueryReadSpec,
@@ -653,6 +654,16 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
 
   syncUntilIdle(options?: number | SyncIdleOptions): Promise<SyncIdleResult> {
     return this.#call('syncUntilIdle', [options]);
+  }
+
+  proveCurrentBase(
+    outcome: Pick<CommitOutcome, 'clientCommitId' | 'sequence'>,
+    maxRounds?: number,
+  ): Promise<CurrentBaseProof> {
+    return this.#call('proveCurrentBase', [
+      { clientCommitId: outcome.clientCommitId, sequence: outcome.sequence },
+      maxRounds,
+    ]);
   }
 
   /**

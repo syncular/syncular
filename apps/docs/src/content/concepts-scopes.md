@@ -99,7 +99,14 @@ const serverSchema = {
 
 Declare both the `facility_id` and `calendar_id` scope patterns in the manifest. Return the authorized facility IDs and exact calendar IDs from `resolveScopes`. A facility grant authorizes writes to rows in that facility, including offline inserts with new calendar IDs. An exact calendar grant authorizes a subscription to that calendar; it does not authorize writes under this policy. The server still extracts every declared scope value and prevents updates from changing scope columns.
 
-`writeScopeVariables` must contain one or more distinct scope variables declared by the table. Every listed variable must match. Omitting the property preserves the default intersection of all variables. Configure the policy on the server schema; generated client schemas and subscription requests do not need it. Review each table and grant before changing the policy. A registered command's row reads and blob downloads also use the table's write scope check; an exact-only reader needs an independently authorized route for blobs.
+`writeScopeVariables` must contain one or more distinct scope variables declared by the table. Every listed variable must match. Omitting the property preserves the default intersection of all variables. The typegen manifest does not accept `writeScopeVariables`; decorate the generated server schema as shown. Generated client schemas and subscription requests do not need the policy. Review each table and grant before changing it. A registered command's row reads and blob downloads also use the table's write scope check; an exact-only reader needs an independently authorized route for blobs.
+
+A [SYNC query](/syql/#query-and-sync-query) can select the facility as its
+window unit with `by calendars.facility_id` and bind only the facility
+predicate. Typegen emits a facility-only subscription. A query that also binds
+the calendar ID requests both dimensions and keeps their intersection. The
+server authorizes each requested scope value independently of the write
+policy.
 
 The server reauthorizes a cached conflict row on every replay against the current write scopes. A replay after scope loss returns `sync.forbidden` without the row; the original conflict remains stored and can be returned if access is restored. A replay after a schema version change also returns `sync.forbidden`, because scope variables can change meaning across versions. Conflict results stored before this policy lack the authorization snapshot and return `sync.forbidden` on replay. Reference cascades check the scope of each affected child and reject the commit if the actor lacks access.
 

@@ -1756,6 +1756,13 @@ never a mutation of an existing subscription:
 - **Replace** `{A,B}→{B,C}` = shrink `A` + widen `C`; `B` is neither
 re-bootstrapped nor evicted.
 
+A window base contains its selected variable and any fixed scope variables
+requested by the query. It need not contain every variable declared by the
+table. The server authorizes all requested variables, and a request naming
+several variables retains their intersection semantics (§3.2). SYQL requires
+an explicit unit selection for a multi-scope table and emits only scope
+dimensions proven by the query ([SYQL.md §13.2](./SYQL.md#132-sync-query)).
+
 **Creation-time bucket sugar (W2).** A table MAY store an immutable UTC month
 bucket derived from the row's creation timestamp as a scope value. Client
 cores expose `creationTimeBucket(createdAtMs, 'month')`, which returns
@@ -3797,6 +3804,15 @@ privacy rules, client persistence, and atomic rollback are exactly §6.7 and
 first operation. An invalid operation index is a host bug answered with
 `sync.constraint_violation`.
 
+A whole-commit validator may deny a proposed operation with
+`CommitAuthorizationRejection(opIndex, message)`. The server rolls back the
+commit and returns a non-retryable `sync.forbidden` result for that operation.
+The message MUST be static and MUST contain no row, identifier, or authority
+evidence. A host that conceals whether a delete target exists MUST use the
+same message as the stored-row scope denial. An invalid operation index is a
+host bug answered with `sync.constraint_violation`. This refusal grants no
+authority and does not change the default idempotent absent-row delete.
+
 **Unexpected throws.** Any other throw is a host fault, not a rule refusal.
 The server rejects the commit with one `error` record at the first operation's
 `opIndex` carrying the protocol code `sync.validator_error` (§10.2) and the
@@ -4400,6 +4416,31 @@ row under its effective scopes. It reads the active outcome again after the
 drive; failure, offline transport, missing coverage, or revocation cannot prove
 the base. The server can accept another write after the pull, so a replacement
 still uses the domain's normal version check.
+
+`proveCurrentBase(outcome)` owns this recovery sequence. It accepts the
+client commit id and journal sequence of an active conflict or rejection,
+waits for an earlier drive, and completes a new bounded idle drive. It reads
+subscription catch-up and outcome delivery from one §7.5 snapshot, then
+re-reads the retained outcome for the same journal entry. A covering
+subscription must have been registered before the drive, have the same
+intent after it, be active and bootstrap-complete, and cover the row under its
+effective scopes. The client checks every retained row and every returned
+unique-conflict row. A deletion with neither a local nor a server row has no
+scope evidence and cannot be proven. An absent authorized base is not proof
+that a row with the same primary key does not exist outside the actor's scopes.
+The client refuses the proof if subscription registrations change during the
+drive, including removal and recreation with the same id and intent.
+It also refuses a proof if the transport gate or security preflight changes
+during the drive.
+
+On success the result contains every retained row from that outcome. On any
+failure the result contains no row data and a reason: `offline`, `sync_failed`,
+`schema_floor`, `budget_exhausted`, `snapshot_failed`, `missing_coverage`, `revoked`, or
+`outcome_unavailable`. The client refuses an incomplete retained envelope or a
+changed, resolved, or pruned outcome. The proof describes the authorized local
+base after the completed drive; it does not reserve the row against later
+writes. Native and TypeScript clients and their worker and bridge surfaces
+expose the same contract.
 
 The client exposes `commitOutcome(clientCommitId)` and
 `commitOutcomes({ limit?, activeOnly? })`. Active conflict/rejection entries

@@ -67,6 +67,7 @@ import type {
   ValidatorRegistry,
 } from './validate';
 import {
+  CommitAuthorizationRejection,
   CommitValidationRejection,
   toValidateRow,
   ValidationRejection,
@@ -1164,6 +1165,16 @@ async function runCommitValidator(
       read: commitValidationReader(tx, schema),
     });
   } catch (error) {
+    if (error instanceof CommitAuthorizationRejection) {
+      if (error.opIndex >= operations.length) {
+        return errorRecord(
+          0,
+          'sync.constraint_violation',
+          'commit authorization rejection names an unavailable operation',
+        );
+      }
+      return errorRecord(error.opIndex, error.code, error.message, false);
+    }
     if (error instanceof CommitValidationRejection) {
       if (error.opIndex >= operations.length) {
         return errorRecord(

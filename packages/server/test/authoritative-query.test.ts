@@ -34,10 +34,12 @@ import { pgliteExecutor } from '@syncular/server/pglite';
 import { BunSqliteDatabase } from '@syncular/server/sqlite';
 import {
   docsInProjectQuery,
+  facilityDocsQuery,
   projectDocCountQuery,
   searchTasksQuery,
   taskTitlesQuery,
 } from '../../typegen/test/fixtures/basic/syncular.queries';
+import { schema as generatedSchema } from '../../typegen/test/fixtures/basic/syncular.generated';
 import { D1DatabaseDouble } from './d1-double';
 
 const COLUMNS: readonly RowColumn[] = [
@@ -92,6 +94,42 @@ async function seed(storage: ServerStorage, partition: string, title: string) {
 }
 
 describe('authoritative query partition rewriting', () => {
+  test('scoped remote operations still require every table scope', async () => {
+    const storage = new SqliteServerStorage();
+    let calls = 0;
+    storage.queryAuthoritative = async () => {
+      calls += 1;
+      return { rows: [], maxCommitSeq: 0 };
+    };
+    const context = {
+      schema: generatedSchema,
+      storage,
+      segments: new MemorySegmentStore(),
+      partition: 'part-1',
+      actorId: 'reader',
+      resolveScopes: () => ({ org_id: ['o1'], projectId: ['old'] }),
+    };
+    const options = { maxRows: 10, auth: { access: 'scoped' } } as const;
+    try {
+      const partial = registerRemoteQuery(facilityDocsQuery, options);
+      await expect(
+        partial.run(context, 'reader-client', { orgId: 'o1' }),
+      ).rejects.toMatchObject({ code: 'operation.invalid_request' });
+      expect(calls).toBe(0);
+
+      const intersection = registerRemoteQuery(docsInProjectQuery, options);
+      await expect(
+        intersection.run(context, 'reader-client', {
+          orgId: 'o1',
+          projectId: 'old',
+        }),
+      ).resolves.toMatchObject({ kind: 'query', rows: [] });
+      expect(calls).toBe(1);
+    } finally {
+      storage.db.close();
+    }
+  });
+
   test('rejects stale and inconsistent metadata during registration', () => {
     const options = {
       maxRows: 10,

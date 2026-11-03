@@ -1220,6 +1220,61 @@ describe('createTauriSyncClient', () => {
     expect((await client.statusSnapshot()).schemaFloor).toBeUndefined();
   });
 
+  test('base proof sends only outcome identity and decodes native rows', async () => {
+    const { tauri, calls } = makeTauri((cmd, args) => {
+      const method = (args.command as { method?: string } | undefined)?.method;
+      if (method === 'proveCurrentBase')
+        return OK({
+          proven: true,
+          rows: [
+            {
+              table: 'todo',
+              rowId: 't1',
+              localRow: null,
+              serverRow: { blob: { $bytes: '0102' } },
+              serverVersion: 2,
+            },
+          ],
+        });
+      return defaultResponder(cmd, args);
+    });
+    const client = await createTauriSyncClient({
+      schema: { version: 1, tables: [] },
+      tauri,
+    });
+    const outcome = {
+      clientCommitId: 'c1',
+      sequence: 3,
+      privateData: 'not sent',
+    };
+    await expect(
+      client.proveCurrentBase(outcome, Number.NaN),
+    ).rejects.toMatchObject({ code: 'sync.invalid_request' });
+    expect(await client.proveCurrentBase(outcome, 2)).toEqual({
+      proven: true,
+      rows: [
+        {
+          table: 'todo',
+          rowId: 't1',
+          localRow: null,
+          serverRow: { blob: new Uint8Array([1, 2]) },
+          serverVersion: 2,
+        },
+      ],
+    });
+    expect(
+      calls.find(
+        (call) =>
+          (call.args.command as { method?: string } | undefined)?.method ===
+          'proveCurrentBase',
+      )?.args.command,
+    ).toEqual({
+      method: 'proveCurrentBase',
+      params: { outcome: { clientCommitId: 'c1', sequence: 3 }, maxRounds: 2 },
+    });
+    await client.close();
+  });
+
   test('local authority calls map to commands and keep error code and details', async () => {
     let state: string | null = 'local';
     const { tauri, calls } = makeTauri((_cmd, args) => {

@@ -177,6 +177,7 @@ import {
   persistedCommitOutcome,
   pruneCommitOutcomes,
   type RejectionRecord,
+  type RetainedCommitRow,
   type ResolveCommitOutcomeInput,
   commitOutcome as readCommitOutcome,
   recordCommitOutcome,
@@ -364,6 +365,21 @@ export interface SyncIdleOptions {
    */
   readonly timeoutMs?: number;
 }
+
+export type CurrentBaseProof =
+  | { readonly proven: true; readonly rows: readonly RetainedCommitRow[] }
+  | {
+      readonly proven: false;
+      readonly reason:
+        | 'offline'
+        | 'sync_failed'
+        | 'schema_floor'
+        | 'budget_exhausted'
+        | 'snapshot_failed'
+        | 'missing_coverage'
+        | 'revoked'
+        | 'outcome_unavailable';
+    };
 
 export interface SyncClientLimits {
   readonly limitCommits?: number;
@@ -874,7 +890,10 @@ export class SyncClient {
   /** RFC 0005 resolved capture budgets; undefined ⇒ feature off. */
   readonly #previousVersion: PreviousVersionCaptureConfig | undefined;
   #securityLifecycle: SecurityLifecycle;
+  #securityEpoch = 0;
   #transportEnabled: boolean;
+  #transportEpoch = 0;
+  #subscriptionEpoch = 0;
   readonly #now: () => number;
   readonly #outcomeRetentionMaxEntries: number;
   readonly #retainFailedCommits: boolean;
@@ -1543,6 +1562,7 @@ export class SyncClient {
       throw invalidRequest('transportEnabled must be a boolean');
     if (this.#transportEnabled === enabled) return;
     this.#transportEnabled = enabled;
+    this.#transportEpoch += 1;
     if (!enabled && !this.#syncOutstanding) this.disconnectRealtime();
     this.#emitSyncIntent(
       enabled && this.#securityLifecycle === 'active'
@@ -1571,6 +1591,7 @@ export class SyncClient {
     this.#requireStarted();
     if (this.#preflightBarrier !== undefined) return this.#preflightBarrier;
     this.#securityLifecycle = 'preflight';
+    this.#securityEpoch += 1;
     this.disconnectRealtime();
     const barrier = (async () => {
       await Promise.allSettled([this.#opChain, ...this.#protectedAsync]);
@@ -2743,6 +2764,168 @@ export class SyncClient {
     return readCommitOutcome(this.#db, clientCommitId);
   }
 
+  /** Prove all retained bases against a completed post-rejection pull (§7.2.1). */
+  async proveCurrentBase(
+    outcome: Pick<CommitOutcome, 'clientCommitId' | 'sequence'>,
+    maxRounds?: number,
+  ): Promise<CurrentBaseProof> {
+    this.#requireActive();
+    if (
+      maxRounds !== undefined &&
+      (!Number.isInteger(maxRounds) || maxRounds < 1 || maxRounds > 0xffffffff)
+    )
+      throw invalidRequest('maxRounds must be a positive integer');
+    const { clientCommitId, sequence } = outcome;
+    let initial: CommitOutcome | undefined;
+    try {
+      initial = readCommitOutcome(this.#db, clientCommitId);
+    } catch {
+      return { proven: false, reason: 'snapshot_failed' };
+    }
+    if (
+      initial === undefined ||
+      initial.sequence !== sequence ||
+      initial.resolution !== 'active' ||
+      (initial.status !== 'conflict' && initial.status !== 'rejected') ||
+      initial.operations === undefined ||
+      initial.retainedRows === undefined ||
+      initial.operations.length !== initial.retainedRows.length ||
+      initial.retainedRows.length === 0
+    )
+      return { proven: false, reason: 'outcome_unavailable' };
+    if (!this.#transportEnabled) return { proven: false, reason: 'offline' };
+    await this.#opChain;
+    if (!this.#transportEnabled) return { proven: false, reason: 'offline' };
+    const epoch = this.#transportEpoch;
+    const subscriptionEpoch = this.#subscriptionEpoch;
+    const securityEpoch = this.#securityEpoch;
+    let before: SubscriptionRecord[];
+    try {
+      before = loadSubscriptions(this.#db);
+    } catch {
+      return { proven: false, reason: 'snapshot_failed' };
+    }
+    let report: SyncIdleResult;
+    try {
+      report = await this.syncUntilIdle(maxRounds);
+    } catch {
+      return {
+        proven: false,
+        reason:
+          !this.#transportEnabled || epoch !== this.#transportEpoch
+            ? 'offline'
+            : subscriptionEpoch !== this.#subscriptionEpoch
+              ? 'missing_coverage'
+              : 'sync_failed',
+      };
+    }
+    if (!this.#transportEnabled || epoch !== this.#transportEpoch)
+      return { proven: false, reason: 'offline' };
+    if (subscriptionEpoch !== this.#subscriptionEpoch)
+      return { proven: false, reason: 'missing_coverage' };
+    if (
+      this.#securityLifecycle !== 'active' ||
+      securityEpoch !== this.#securityEpoch
+    )
+      return { proven: false, reason: 'sync_failed' };
+    if (report.schemaFloor !== undefined)
+      return { proven: false, reason: 'schema_floor' };
+    if (report.budgetExhausted)
+      return { proven: false, reason: 'budget_exhausted' };
+    try {
+      return this.#db.transaction(() => {
+        const snapshot = this.#readSnapshot({
+          statements: [],
+          subscriptions: before.map((sub) => sub.id),
+          commitIds: [clientCommitId],
+        });
+        const delivery = snapshot.deliveries[0];
+        const current = readCommitOutcome(this.#db, clientCommitId);
+        if (
+          delivery?.status !== 'known' ||
+          current === undefined ||
+          current.sequence !== sequence ||
+          current.resolution !== 'active' ||
+          (current.status !== 'conflict' && current.status !== 'rejected') ||
+          current.operations === undefined ||
+          current.retainedRows === undefined ||
+          current.operations.length !== current.retainedRows.length ||
+          current.retainedRows.length === 0
+        )
+          return {
+            proven: false,
+            reason:
+              report.revoked.length > 0 ? 'revoked' : 'outcome_unavailable',
+          };
+        const after = new Map(
+          loadSubscriptions(this.#db).map((sub) => [sub.id, sub]),
+        );
+        const states = new Map(
+          snapshot.subscriptions.map((sub) => [sub.id, sub]),
+        );
+        const candidates = before.flatMap((previous) => {
+          const sub = after.get(previous.id);
+          const state = states.get(previous.id);
+          return sub !== undefined &&
+            sub.table === previous.table &&
+            sub.params === previous.params &&
+            canonicalScopeJson(sub.scopes) ===
+              canonicalScopeJson(previous.scopes) &&
+            sub.effectiveScopes !== undefined &&
+            state?.state === 'known' &&
+            state.bootstrapComplete
+            ? [{ table: sub.table, scopes: sub.effectiveScopes }]
+            : [];
+        });
+        const covered = (
+          tableName: string,
+          row: Readonly<Record<string, RowValue>> | null,
+        ): boolean => {
+          const table = this.#schema.tables.get(tableName);
+          if (table === undefined || row === null) return false;
+          const values = Object.fromEntries(
+            Object.entries(row).map(([key, value]) => [
+              key,
+              rowValueToJson(value),
+            ]),
+          );
+          return candidates.some((candidate) => {
+            return (
+              candidate.table === tableName &&
+              Object.keys(candidate.scopes).every((variable) => {
+                const column = table.scopeColumnByVariable.get(variable);
+                const value = column === undefined ? undefined : row[column];
+                return (
+                  (typeof value === 'string' && value.length > 0) ||
+                  typeof value === 'number' ||
+                  typeof value === 'boolean'
+                );
+              }) &&
+              matchesLocalScopes(table, candidate.scopes, values)
+            );
+          });
+        };
+        for (const row of current.retainedRows) {
+          if (
+            !covered(row.table, row.serverRow ?? row.localRow) ||
+            row.uniqueConflicts?.some(
+              (conflict) => !covered(row.table, conflict.serverRow),
+            )
+          ) {
+            return {
+              proven: false,
+              reason:
+                report.revoked.length > 0 ? 'revoked' : 'missing_coverage',
+            };
+          }
+        }
+        return { proven: true, rows: current.retainedRows };
+      });
+    } catch {
+      return { proven: false, reason: 'snapshot_failed' };
+    }
+  }
+
   /** Newest-first durable outcome journal. */
   commitOutcomes(query: CommitOutcomeQuery = {}): readonly CommitOutcome[] {
     this.#requireActive();
@@ -2985,6 +3168,7 @@ export class SyncClient {
       }
     });
     if (!registered) return;
+    this.#subscriptionEpoch += 1;
     this.#setSyncNeeded(true);
     this.#emitSyncIntent({ kind: 'interactive' });
     this.#emitDiagnostics();
@@ -2994,6 +3178,7 @@ export class SyncClient {
     this.#requireActive();
     if (getSubscription(this.#db, id) === undefined) return;
     deleteSubscription(this.#db, id);
+    this.#subscriptionEpoch += 1;
     this.#setSyncNeeded(true);
     this.#emitSyncIntent({ kind: 'interactive' });
     this.#emitDiagnostics();
@@ -3068,6 +3253,7 @@ export class SyncClient {
         });
         changed = true;
         widened = true;
+        this.#subscriptionEpoch += 1;
       }
 
       // Shrink: units live but not wanted → unsubscribe fused with eviction.
@@ -3075,6 +3261,7 @@ export class SyncClient {
         if (wanted.has(unit)) continue;
         await this.#evictUnit(baseKey, base, unit, subId);
         changed = true;
+        this.#subscriptionEpoch += 1;
       }
     });
     const effects: CommandEffects = {

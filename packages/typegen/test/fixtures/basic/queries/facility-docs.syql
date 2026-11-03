@@ -1,0 +1,6 @@
+sync query facilityDocs(orgId) by docs.org_id {
+  select docs.id, docs.org_id, docs.project_id, docs.body
+  from docs
+  where docs.org_id = :orgId
+  order by docs.id;
+}

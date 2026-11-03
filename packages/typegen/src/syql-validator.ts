@@ -1739,7 +1739,7 @@ class Validator {
       return (
         table !== undefined &&
         table.scopes.length > 0 &&
-        candidate.scopes.length === table.scopes.length
+        candidate.scopes.length > 0
       );
     });
     const syncBy = logical.declaration.syncBy;
@@ -1747,7 +1747,7 @@ class Validator {
       this.#fail(
         'SYQL6005_INVALID_SYNC_QUERY',
         logical.declaration.syncBy?.span ?? logical.declaration.nameSpan,
-        'sync query coverage cannot be proven for every read table instance from required equality/IN predicates over every declared scope; split the query or add an exact compatible scope proof',
+        'sync query coverage cannot be proven for every read table instance from required equality/IN predicates on declared scopes; split the query or add an exact compatible scope proof',
       );
     }
     const divergent = eligible.find((candidate) =>
@@ -1852,7 +1852,11 @@ class Validator {
           );
         }
         const fixedScopes = table.scopes
-          .filter((scope) => scope.variable !== unit.binding.variable)
+          .filter(
+            (scope) =>
+              scope.variable !== unit.binding.variable &&
+              byVariable.has(scope.variable),
+          )
           .map((scope) => {
             const fixed = byVariable.get(scope.variable) as
               | InferredScope

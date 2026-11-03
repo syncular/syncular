@@ -356,6 +356,7 @@ export type CommitValidatorInstallSpec =
   | CommitValidatorSiblingSpec
   | CommitValidatorBatchReadSpec
   | CommitValidatorIndexScanSpec
+  | { readonly kind: 'denyAbsentDeletes' }
   | { readonly kind: 'throwUnexpected'; readonly message: string };
 
 export interface ServerInstance {
@@ -1216,6 +1217,21 @@ export interface ClientInstance {
   sync(): Promise<ClientSyncResult>;
   /** Pull until quiescent (bootstrap pages, resets, delivered commits). */
   syncUntilIdle(maxRounds?: number): Promise<ClientSyncResult>;
+  proveCurrentBase(
+    clientCommitId: string,
+    maxRounds?: number,
+  ): Promise<
+    | { readonly proven: false; readonly reason: string }
+    | {
+        readonly proven: true;
+        readonly rows: readonly {
+          readonly table: string;
+          readonly rowId: string;
+          readonly serverRow: DriverRow | null;
+          readonly serverVersion: number | null;
+        }[];
+      }
+  >;
 
   /** All local rows of a table, ordered by rowId. */
   readRows(table: string): Promise<ClientRowState[]>;

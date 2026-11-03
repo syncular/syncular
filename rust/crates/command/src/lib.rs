@@ -1060,6 +1060,38 @@ pub fn dispatch<T: Transport>(
             };
             Ok(outcome.to_json())
         }
+        "proveCurrentBase" => {
+            let outcome = params
+                .get("outcome")
+                .and_then(Value::as_object)
+                .ok_or_else(|| client_err("proveCurrentBase missing outcome".to_owned()))?;
+            let id = outcome
+                .get("clientCommitId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| client_err("proveCurrentBase missing clientCommitId".to_owned()))?;
+            let sequence = outcome
+                .get("sequence")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| client_err("proveCurrentBase missing sequence".to_owned()))?;
+            let max_rounds = match params.get("maxRounds") {
+                None | Some(Value::Null) => None,
+                Some(value) => Some(
+                    value
+                        .as_u64()
+                        .and_then(|n| u32::try_from(n).ok())
+                        .filter(|n| *n >= 1)
+                        .ok_or_else(|| {
+                            client_err(
+                                "sync.invalid_request: maxRounds must be a positive integer"
+                                    .to_owned(),
+                            )
+                        })?,
+                ),
+            };
+            Ok(json!(
+                need_client(client)?.prove_current_base(transport, id, sequence, max_rounds)
+            ))
+        }
         "readRows" => {
             let table = params
                 .get("table")

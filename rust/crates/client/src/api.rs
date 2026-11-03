@@ -1134,6 +1134,40 @@ pub struct RetainedCommitRow {
     pub server_version: Option<i64>,
 }
 
+/// Result of proving every retained base after a completed pull (§7.2.1).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CurrentBaseProof {
+    pub proven: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rows: Option<Vec<RetainedCommitRow>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<CurrentBaseProofReason>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CurrentBaseProofReason {
+    Offline,
+    SyncFailed,
+    SchemaFloor,
+    BudgetExhausted,
+    SnapshotFailed,
+    MissingCoverage,
+    Revoked,
+    OutcomeUnavailable,
+}
+
+impl CurrentBaseProof {
+    pub fn failure(reason: CurrentBaseProofReason) -> Self {
+        Self {
+            proven: false,
+            rows: None,
+            reason: Some(reason),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CommitOutcome {

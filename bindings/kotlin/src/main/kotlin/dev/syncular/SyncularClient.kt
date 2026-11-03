@@ -330,6 +330,14 @@ class SyncularClient private constructor(
         return command("syncUntilIdle", JsonValue.Obj(p))
     }
 
+    /** Prove every retained base after a completed post-rejection pull. */
+    @JvmOverloads
+    fun proveCurrentBase(outcome: JsonValue, maxRounds: Int? = null): JsonValue {
+        val p = linkedMapOf("outcome" to outcome)
+        maxRounds?.let { p["maxRounds"] = JsonValue.of(it) }
+        return command("proveCurrentBase", JsonValue.Obj(p))
+    }
+
     /** Read all locally-visible rows of a table as RowState objects
      *  (`{rowId, version, values}`; version -1 = optimistic/offline). */
     fun readRows(table: String): List<JsonValue> {

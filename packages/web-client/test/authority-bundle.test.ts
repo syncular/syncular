@@ -4,12 +4,10 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 // Bun 1.4.0, minified browser graphs with SQLite external. After the §12
-// local-authority seam and the queued-insert marker, the client measures
-// 163029 bytes on Bun 1.4.0 (162385 on Bun 1.4.4). The OPFS storage fence for
-// tab takeover grew the worker to 182197 bytes on Bun 1.4.0 (181874 on Bun
-// 1.4.4). The ceilings round up from the maximum observed in source and
-// materialized builds. Independently assert that ordinary imports
-// exclude authority modules.
+// local-authority seam and retained-base proof, the client measures 165940
+// bytes and the worker 185177 bytes on Bun 1.4.0. The ceilings round up from
+// the maximum observed in source and materialized builds. Independently assert
+// that ordinary imports exclude authority modules.
 test('ordinary client, worker and native graphs exclude authority; only explicit opt-in retains it', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'syncular-authority-bundle-'));
   const root = resolve(import.meta.dir, '../../..');
@@ -19,19 +17,19 @@ test('ordinary client, worker and native graphs exclude authority; only explicit
         'client',
         `export { SyncClient } from '${root}/packages/web-client/src/client.ts';`,
         false,
-        164000,
+        167000,
       ],
       [
         'client-root',
         `export { SyncClient } from '${root}/packages/web-client/src/index.ts';`,
         false,
-        164000,
+        167000,
       ],
       [
         'worker',
         `import { startSyncWorker } from '${root}/packages/web-client/src/worker-entry.ts'; startSyncWorker();`,
         false,
-        183000,
+        186000,
       ],
       [
         'authority-worker',

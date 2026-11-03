@@ -32,6 +32,29 @@ async function bootstrapped(ctx: ScenarioContext) {
 
 export const commitValidatorScenarios: readonly Scenario[] = [
   {
+    name: 'commit-validators/deny-absent-delete-without-disclosure',
+    specRefs: ['§3.4', '§6.4', '§6.8'],
+    requires: ['commit-validators'],
+    async run(ctx) {
+      await install(ctx, { kind: 'denyAbsentDeletes' });
+      const client = await bootstrapped(ctx);
+      const id = await client.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('sibling', 'p1') },
+        { op: 'delete', table: 'tasks', rowId: 'missing' },
+      ]);
+      const report = await syncIdle(client);
+      checkEqual(report.rejected, [id], 'the whole commit is rejected');
+      const rejection = (await client.api.rejections())[0];
+      checkEqual(rejection?.code, 'sync.forbidden', 'the refusal stays opaque');
+      checkEqual(rejection?.opIndex, 1, 'the delete is identified');
+      checkEqual(
+        (await ctx.server.readRows('tasks')).length,
+        0,
+        'the sibling rolls back',
+      );
+    },
+  },
+  {
     name: 'commit-validators/requires-sibling-and-rolls-back-candidate',
     specRefs: ['§6.3', '§6.4', '§6.8'],
     requires: ['commit-validators'],

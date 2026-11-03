@@ -427,6 +427,13 @@ public final class SyncularClient {
         return try command(method: "syncUntilIdle", params: .object(p))
     }
 
+    /// Prove every retained base after a completed post-rejection pull.
+    public func proveCurrentBase(outcome: JSONValue, maxRounds: Int? = nil) throws -> JSONValue {
+        var p: [String: JSONValue] = ["outcome": outcome]
+        if let maxRounds { p["maxRounds"] = .number(Double(maxRounds)) }
+        return try command(method: "proveCurrentBase", params: .object(p))
+    }
+
     /// Read all locally-visible rows of a table as `RowState` objects
     /// (`{rowId, version, values}`; `version == -1` = optimistic, offline). See
     /// `query` for a flat column-shaped read.

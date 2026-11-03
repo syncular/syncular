@@ -193,8 +193,8 @@ sync query listTodos(listId) {
 }
 ```
 
-Coverage is accepted only when every declared schema scope of every table
-instance is proven from required, non-null equality/`IN` predicates. A
+Coverage is accepted when each table instance has a declared scope proven
+from required, non-null equality/`IN` predicates. A
 required scope bind may propagate through a qualified, mandatory scope-column
 equality in `WHERE` or a simple `JOIN ... ON` clause. The body of a top-level
 CTE is a scope of its own: its `WHERE` proves the instances it reads, and the
@@ -235,6 +235,23 @@ sync query messages(roomId, left, right) by messages.thread_id {
     and messages.thread_id in (:left, :right);
 }
 ```
+
+The compiler includes every proven scope in the window. An unbound independent
+scope is omitted. For example, a calendar table with facility and exact-ID
+scopes can synchronize a facility without requesting wildcard calendar IDs:
+
+```syql
+sync query facilityCalendars(facilityId) by calendars.facility_id {
+  select id, facility_id, title from calendars
+  where calendars.facility_id = :facilityId;
+}
+```
+
+The server must grant that facility scope. Adding a required exact-ID
+predicate includes it as a fixed scope, so the resulting window requires both
+values. An exact-ID historical reader can select the ID scope as its own unit.
+Scoped remote queries still require every declared table scope; see
+[Remote operations](/guide-remote-operations/).
 
 There are no `@scope` or `@cover` directives.
 

@@ -32,11 +32,12 @@ use crate::api::{
     ClientDiagnosticsStorage, ClientError, ClientLimits, CommandEffects, CommitDelivery,
     CommitOperation, CommitOperationOutcome, CommitOutcome, CommitOutcomeQuery,
     CommitOutcomeResolution, CommitOutcomeStatus, ConflictRecord, CoverageSnapshot,
-    DiagnosticLastChange, DiagnosticLastRound, DiagnosticQueryFailure, DiagnosticRoundCounters,
-    DiagnosticSubscription, FetchedBlob, LeaseState, LocalDataPurgeInput, LocalDataPurgeResult,
-    LocalDataPurgeTarget, LocalDataRebootstrapInput, LocalDataRebootstrapResult, Mutation,
-    PresencePeer, PreviousVersionStatus, QueryOwner, QueryReadFailure, QueryRow, QuerySnapshot,
-    QueryValue, RejectionDetails, RejectionRecord, ResolveCommitOutcomeInput, RetainedCommitRow,
+    CurrentBaseProof, CurrentBaseProofReason, DiagnosticLastChange, DiagnosticLastRound,
+    DiagnosticQueryFailure, DiagnosticRoundCounters, DiagnosticSubscription, FetchedBlob,
+    LeaseState, LocalDataPurgeInput, LocalDataPurgeResult, LocalDataPurgeTarget,
+    LocalDataRebootstrapInput, LocalDataRebootstrapResult, Mutation, PresencePeer,
+    PreviousVersionStatus, QueryOwner, QueryReadFailure, QueryRow, QuerySnapshot, QueryValue,
+    RejectionDetails, RejectionRecord, ResolveCommitOutcomeInput, RetainedCommitRow,
     RetainedUniqueConflict, RowState, SchemaFloor, SnapshotRead, SubscriptionCatchup,
     SubscriptionRequest, SubscriptionStateView, SyncIntent, SyncOutcome, SyncReport,
     SyncStatusSnapshot, TableChange, WindowBase, WindowChange, WindowCoverage, WindowState,
@@ -10616,6 +10617,17 @@ struct Subscription {
     synced_once: bool,
 }
 
+/// Internal state for hosts that perform network I/O outside the client owner.
+#[doc(hidden)]
+pub struct CurrentBasePreparation {
+    client_commit_id: String,
+    sequence: i64,
+    subscriptions: Vec<Subscription>,
+    transport_epoch: u64,
+    subscription_epoch: u64,
+    security_epoch: u64,
+}
+
 #[cfg(test)]
 mod subscription_rearm_tests {
     use super::*;
@@ -10963,7 +10975,10 @@ pub struct SyncClient {
     /// Fail-closed host bootstrap gate. While set, command hosts permit only
     /// status/lifecycle inspection and an exact authorized local purge.
     security_preflight: bool,
+    security_epoch: u64,
     transport_enabled: bool,
+    transport_epoch: u64,
+    subscription_epoch: u64,
     /// RFC 0005 D2/D8: the previous-version capture config. `None` (default)
     /// means the feature is off; the descriptor write and the container orphan
     /// sweep still happen.
@@ -12138,7 +12153,10 @@ impl SyncClient {
             now_ms: None,
             encryption: crate::values::EncryptionConfig::default(),
             security_preflight: false,
+            security_epoch: 0,
             transport_enabled: true,
+            transport_epoch: 0,
+            subscription_epoch: 0,
             previous_version,
             insert_sql: RefCell::new(HashMap::new()),
             overlay_dirty: OverlayDirty::clean(),
@@ -12304,6 +12322,7 @@ impl SyncClient {
     pub fn set_transport_enabled(&mut self, transport: &mut dyn Transport, enabled: bool) {
         if self.transport_enabled != enabled {
             self.transport_enabled = enabled;
+            self.transport_epoch = self.transport_epoch.wrapping_add(1);
             self.sync_intent_queue.clear();
             self.sync_intent_queue
                 .push_back(if enabled && !self.security_preflight {
@@ -12347,6 +12366,7 @@ impl SyncClient {
     pub fn seal_security_on_teardown(&mut self) {
         self.cancel_sync_round();
         self.security_preflight = true;
+        self.security_epoch = self.security_epoch.wrapping_add(1);
         self.encryption = crate::values::EncryptionConfig::default();
         self.sync_intent_queue.clear();
     }
@@ -14938,6 +14958,235 @@ impl SyncClient {
             .transpose()
     }
 
+    /// Internal host step. The host must run its idle drive before finishing.
+    #[doc(hidden)]
+    pub fn prepare_current_base(
+        &self,
+        client_commit_id: &str,
+        sequence: i64,
+    ) -> Result<CurrentBasePreparation, CurrentBaseProof> {
+        let outcome = self
+            .commit_outcome(client_commit_id)
+            .map_err(|_| CurrentBaseProof::failure(CurrentBaseProofReason::SnapshotFailed))?;
+        let valid = outcome.as_ref().is_some_and(|outcome| {
+            outcome.sequence == sequence
+                && outcome.resolution == CommitOutcomeResolution::Active
+                && matches!(
+                    outcome.status,
+                    CommitOutcomeStatus::Conflict | CommitOutcomeStatus::Rejected
+                )
+                && outcome
+                    .operations
+                    .as_ref()
+                    .zip(outcome.retained_rows.as_ref())
+                    .is_some_and(|(operations, rows)| {
+                        !rows.is_empty() && operations.len() == rows.len()
+                    })
+        });
+        if !valid {
+            return Err(CurrentBaseProof::failure(
+                CurrentBaseProofReason::OutcomeUnavailable,
+            ));
+        }
+        if !self.transport_enabled {
+            return Err(CurrentBaseProof::failure(CurrentBaseProofReason::Offline));
+        }
+        Ok(CurrentBasePreparation {
+            client_commit_id: client_commit_id.to_owned(),
+            sequence,
+            subscriptions: self.subs.clone(),
+            transport_epoch: self.transport_epoch,
+            subscription_epoch: self.subscription_epoch,
+            security_epoch: self.security_epoch,
+        })
+    }
+
+    /// Internal host step after the completed post-rejection idle drive.
+    #[doc(hidden)]
+    pub fn finish_current_base(
+        &mut self,
+        prepared: CurrentBasePreparation,
+        drive: SyncOutcome,
+    ) -> CurrentBaseProof {
+        if !self.transport_enabled || self.transport_epoch != prepared.transport_epoch {
+            return CurrentBaseProof::failure(CurrentBaseProofReason::Offline);
+        }
+        if self.subscription_epoch != prepared.subscription_epoch {
+            return CurrentBaseProof::failure(CurrentBaseProofReason::MissingCoverage);
+        }
+        if self.security_preflight || self.security_epoch != prepared.security_epoch {
+            return CurrentBaseProof::failure(CurrentBaseProofReason::SyncFailed);
+        }
+        let report = match drive {
+            SyncOutcome::Ok(report) => report,
+            SyncOutcome::BudgetExhausted(_) => {
+                return CurrentBaseProof::failure(CurrentBaseProofReason::BudgetExhausted)
+            }
+            _ => return CurrentBaseProof::failure(CurrentBaseProofReason::SyncFailed),
+        };
+        if report.schema_floor.is_some() {
+            return CurrentBaseProof::failure(CurrentBaseProofReason::SchemaFloor);
+        }
+        if self
+            .conn
+            .execute_batch("SAVEPOINT syncular_base_proof")
+            .is_err()
+        {
+            return CurrentBaseProof::failure(CurrentBaseProofReason::SnapshotFailed);
+        }
+        let proof = (|| {
+            let snapshot = snapshot_read_connection(
+                &self.conn,
+                &SnapshotReadRequest {
+                    subscriptions: prepared
+                        .subscriptions
+                        .iter()
+                        .map(|sub| sub.id.clone())
+                        .collect(),
+                    commit_ids: vec![prepared.client_commit_id.clone()],
+                    ..Default::default()
+                },
+            )
+            .map_err(|_| CurrentBaseProofReason::SnapshotFailed)?;
+            let current = self
+                .commit_outcome(&prepared.client_commit_id)
+                .map_err(|_| CurrentBaseProofReason::SnapshotFailed)?;
+            let unavailable = if report.revoked.is_empty() {
+                CurrentBaseProofReason::OutcomeUnavailable
+            } else {
+                CurrentBaseProofReason::Revoked
+            };
+            let Some(outcome) = current else {
+                return Err(unavailable);
+            };
+            if !matches!(
+                snapshot.deliveries.first(),
+                Some(CommitDelivery::Known { .. })
+            ) || outcome.sequence != prepared.sequence
+                || outcome.resolution != CommitOutcomeResolution::Active
+                || !matches!(
+                    outcome.status,
+                    CommitOutcomeStatus::Conflict | CommitOutcomeStatus::Rejected
+                )
+            {
+                return Err(unavailable);
+            }
+            let (Some(operations), Some(rows)) = (outcome.operations, outcome.retained_rows) else {
+                return Err(unavailable);
+            };
+            if rows.is_empty() || operations.len() != rows.len() {
+                return Err(unavailable);
+            }
+            let after: HashMap<&str, &Subscription> =
+                self.subs.iter().map(|sub| (sub.id.as_str(), sub)).collect();
+            let complete: HashSet<&str> = snapshot
+                .subscriptions
+                .iter()
+                .filter_map(|sub| match sub {
+                    SubscriptionCatchup::Known {
+                        id,
+                        bootstrap_complete: true,
+                        ..
+                    } => Some(id.as_str()),
+                    _ => None,
+                })
+                .collect();
+            let candidates: Vec<_> = prepared
+                .subscriptions
+                .iter()
+                .filter_map(|before| {
+                    let after = after.get(before.id.as_str())?;
+                    if before.table != after.table
+                        || before.params != after.params
+                        || canonical_scope_json(&before.requested)
+                            != canonical_scope_json(&after.requested)
+                        || !complete.contains(before.id.as_str())
+                    {
+                        return None;
+                    }
+                    after
+                        .effective
+                        .as_ref()
+                        .map(|scopes| (after.table.as_str(), scopes))
+                })
+                .collect();
+            let covered = |table_name: &str, row: &Map<String, Value>| {
+                let Some(table) = self.schema.table(table_name) else {
+                    return false;
+                };
+                candidates.iter().any(|(candidate_table, scopes)| {
+                    *candidate_table == table_name
+                        && !scopes.is_empty()
+                        && scopes.iter().all(|(variable, allowed)| {
+                            table
+                                .scope_column(variable)
+                                .and_then(|column| match row.get(column) {
+                                    Some(Value::String(value)) => Some(value.clone()),
+                                    Some(Value::Bool(value)) => Some(value.to_string()),
+                                    Some(Value::Number(value)) => value.as_f64().map(|number| {
+                                        ryu_js::Buffer::new().format_finite(number).to_owned()
+                                    }),
+                                    _ => None,
+                                })
+                                .is_some_and(|value| !value.is_empty() && allowed.contains(&value))
+                        })
+                })
+            };
+            for row in &rows {
+                let Some(base) = row.server_row.as_ref().or(row.local_row.as_ref()) else {
+                    return Err(if report.revoked.is_empty() {
+                        CurrentBaseProofReason::MissingCoverage
+                    } else {
+                        CurrentBaseProofReason::Revoked
+                    });
+                };
+                if !covered(&row.table, base)
+                    || row
+                        .unique_conflicts
+                        .iter()
+                        .any(|conflict| !covered(&row.table, &conflict.server_row))
+                {
+                    return Err(if report.revoked.is_empty() {
+                        CurrentBaseProofReason::MissingCoverage
+                    } else {
+                        CurrentBaseProofReason::Revoked
+                    });
+                }
+            }
+            Ok(rows)
+        })();
+        if self
+            .conn
+            .execute_batch("RELEASE syncular_base_proof")
+            .is_err()
+        {
+            return CurrentBaseProof::failure(CurrentBaseProofReason::SnapshotFailed);
+        }
+        match proof {
+            Ok(rows) => CurrentBaseProof {
+                proven: true,
+                rows: Some(rows),
+                reason: None,
+            },
+            Err(reason) => CurrentBaseProof::failure(reason),
+        }
+    }
+
+    pub fn prove_current_base(
+        &mut self,
+        transport: &mut dyn Transport,
+        client_commit_id: &str,
+        sequence: i64,
+        max_rounds: Option<u32>,
+    ) -> CurrentBaseProof {
+        let prepared = match self.prepare_current_base(client_commit_id, sequence) {
+            Ok(prepared) => prepared,
+            Err(proof) => return proof,
+        };
+        let drive = self.sync_until_idle(transport, max_rounds);
+        self.finish_current_base(prepared, drive)
+    }
+
     pub fn commit_outcomes(&self, query: CommitOutcomeQuery) -> Result<Vec<CommitOutcome>, String> {
         if query.limit == Some(0) {
             return Err("sync.invalid_request: commit outcome limit must be positive".to_owned());
@@ -15078,6 +15327,7 @@ impl SyncClient {
             Some(index) => self.subs[index] = sub,
             None => self.subs.push(sub),
         }
+        self.subscription_epoch = self.subscription_epoch.wrapping_add(1);
         // Only a re-arm asks for a sync here: a fresh registration reaches the
         // next round through the host's schedule, and `set_window` (§4.8)
         // batches its own intent for the units it registers.
@@ -15114,6 +15364,7 @@ impl SyncClient {
     pub fn unsubscribe(&mut self, id: &str) {
         if self.subs.iter().any(|s| s.id == id) {
             self.cancel_sync_round();
+            self.subscription_epoch = self.subscription_epoch.wrapping_add(1);
         }
         self.subs.retain(|s| s.id != id);
         let _ = self.conn.execute(
@@ -15342,6 +15593,7 @@ impl SyncClient {
             )
             .map_err(|error| Self::sqlite_failure(&self.storage_failure, error))?;
         self.subs.retain(|sub| sub.id != sub_id);
+        self.subscription_epoch = self.subscription_epoch.wrapping_add(1);
         if deferred {
             self.save_pending_evict(sub_id, &base.table, &effective)?;
         } else {

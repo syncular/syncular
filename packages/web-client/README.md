@@ -79,6 +79,11 @@ SPEC §8.4); the supported page-level realtime supervisor owns reconnect and
 resume policy. The main thread gets `onSyncNeeded` / `onConflict` / `onSynced`
 events for rendering.
 
+For a reviewed recovery from a retained conflict or rejection, call
+`await client.proveCurrentBase(outcome)`. The result contains bases for every
+retained row only after a completed covering pull, or a typed failure reason
+without row data. Use the returned versions in the replacement commit.
+
 A direct `SyncClient` used by a long-running service exposes
 `onSyncNeeded()` and `onSyncIntent()`. Install the shared single-flight loop
 instead of maintaining host timers:

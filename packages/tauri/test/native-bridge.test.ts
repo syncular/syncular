@@ -130,9 +130,14 @@ function nativeTauri(baseUrl?: string): {
                 params: actual.params,
                 coverage: actual.coverage,
               }
-            : cmd.endsWith('syncular_query')
-              ? { kind: 'query', sql: actual.sql, params: actual.params }
-              : { kind: 'command', command: actual.command },
+            : cmd.endsWith('syncular_snapshot_read')
+              ? {
+                  kind: 'command',
+                  command: { method: 'snapshotRead', params: actual },
+                }
+              : cmd.endsWith('syncular_query')
+                ? { kind: 'query', sql: actual.sql, params: actual.params }
+                : { kind: 'command', command: actual.command },
       );
       for (const payload of response.events) {
         for (const listener of listeners) listener({ payload });
@@ -768,6 +773,12 @@ if (!available) {
           (await client.commitOutcome(id))?.retainedRows?.[0]?.serverRow?.title,
         ).toBe('old');
         expect((await client.statusSnapshot()).syncNeeded).toBe(true);
+        const stale = await client.commitOutcome(id);
+        if (stale === undefined) throw new Error('missing outcome');
+        expect(await client.proveCurrentBase(stale, 1)).toEqual({
+          proven: false,
+          reason: 'budget_exhausted',
+        });
         await client.close();
         client = await createTauriSyncClient({
           schema,
@@ -775,12 +786,17 @@ if (!available) {
           tauri: host.api,
           retainFailedCommits: true,
         });
-        await client.syncUntilIdle();
-        expect(
-          (await client.commitOutcome(id))?.retainedRows?.[0]?.serverRow?.title,
-        ).toBe('winner');
+        const reopened = await client.commitOutcome(id);
+        if (reopened === undefined) throw new Error('missing outcome');
+        const proof = await client.proveCurrentBase(reopened);
+        expect(proof.proven).toBe(true);
+        if (proof.proven)
+          expect(proof.rows[0]?.serverRow?.title).toBe('winner');
         source.allowed['native-fresh'] = { list_id: [] };
-        await client.syncUntilIdle();
+        expect(await client.proveCurrentBase(reopened)).toEqual({
+          proven: false,
+          reason: 'revoked',
+        });
         expect((await client.commitOutcome(id))?.retainedRows).toBeUndefined();
         await client.close();
       } finally {
@@ -883,12 +899,25 @@ if (!available) {
           tauri: host.api,
           retainFailedCommits: true,
         });
-        await client.subscribe({
-          id: 'facility',
-          table: 'todos',
-          scopes: { list_id: ['one'] },
-        });
+        const base = { table: 'todos', variable: 'list_id' };
+        await client.setWindow(base, ['one']);
+        expect(
+          (
+            await client.snapshotRead({
+              statements: [],
+              coverage: [{ base, units: ['one'] }],
+            })
+          ).coverage.complete,
+        ).toBe(false);
         await client.syncUntilIdle();
+        expect(
+          (
+            await client.snapshotRead({
+              statements: [],
+              coverage: [{ base, units: ['one'] }],
+            })
+          ).coverage.complete,
+        ).toBe(true);
         await client.mutate([
           {
             table: 'todos',
@@ -926,6 +955,14 @@ if (!available) {
           await source.storage.getRow('part-1', 'todos', 'revoked'),
         ).toBeUndefined();
         expect(await client.query('SELECT id FROM todos')).toEqual([]);
+        expect(
+          (
+            await client.snapshotRead({
+              statements: [],
+              coverage: [{ base, units: ['one'] }],
+            })
+          ).coverage.complete,
+        ).toBe(false);
         await client.close();
       } finally {
         await seed.client.close();

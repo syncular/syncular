@@ -47,8 +47,16 @@ for (const backend of ['sqlite', 'pglite'] as const) {
       ? new PostgresServerStorage(pgliteExecutor(pg))
       : new SqliteServerStorage();
     const segments = new MemorySegmentStore();
-    const databases = [new BunClientDatabase(), new BunClientDatabase()];
+    const databases = [
+      new BunClientDatabase(),
+      new BunClientDatabase(),
+      new BunClientDatabase(),
+    ];
     let defer = 0;
+    let fail = false;
+    let floor = false;
+    let hold: Promise<void> | undefined;
+    let entered: (() => void) | undefined;
     let readerAllowed = ['one'];
     const clients = databases.map((database, index) => {
       const context = {
@@ -75,7 +83,25 @@ for (const backend of ['sqlite', 'pglite'] as const) {
         clientId: `fresh-${index}`,
         retainFailedCommits: true,
         transport: async (bytes) => {
+          if (index === 1 && fail) throw new Error('offline');
+          if (index === 1 && hold !== undefined) {
+            entered?.();
+            await hold;
+          }
           const response = await handleSyncRequest(bytes, context);
+          if (index === 2 && floor) {
+            const message = decodeMessage(response);
+            if (message.msgKind !== 'response')
+              throw new Error('expected response');
+            return encodeMessage({
+              ...message,
+              frames: message.frames.map((frame) =>
+                frame.type === 'RESP_HEADER'
+                  ? { ...frame, requiredSchemaVersion: 2 }
+                  : frame,
+              ),
+            });
+          }
           if (index === 0 || defer === 0) return response;
           defer -= 1;
           const message = decodeMessage(response);
@@ -95,7 +121,7 @@ for (const backend of ['sqlite', 'pglite'] as const) {
         },
       });
     });
-    const [winner, reader] = clients;
+    const [winner, reader, floorReader] = clients;
     try {
       for (const client of clients) {
         await client.start();
@@ -116,24 +142,122 @@ for (const backend of ['sqlite', 'pglite'] as const) {
             body: 'old',
           },
         },
+        {
+          table: 'versions',
+          op: 'upsert',
+          values: {
+            id: 't2',
+            theatre_id: 'one',
+            publication_number: 2,
+            body: 'old two',
+          },
+        },
       ]);
       await winner!.syncUntilIdle();
       await reader!.syncUntilIdle();
+      await floorReader!.syncUntilIdle();
       winner!.patch('versions', 't1', { body: 'winner' });
+      winner!.patch('versions', 't2', { body: 'winner two' });
       await winner!.syncUntilIdle();
-      const id = reader!.patch('versions', 't1', { body: 'reject' });
+      const id = reader!.mutate([
+        {
+          table: 'versions',
+          op: 'upsert',
+          values: {
+            id: 't1',
+            theatre_id: 'one',
+            publication_number: 1,
+            body: 'reject',
+          },
+        },
+        {
+          table: 'versions',
+          op: 'upsert',
+          values: {
+            id: 't2',
+            theatre_id: 'one',
+            publication_number: 2,
+            body: 'mine two',
+          },
+        },
+      ]);
       defer = 2;
       await reader!.sync();
       expect(
         reader!.commitOutcome(id)?.retainedRows?.[0]?.serverRow?.body,
       ).toBe('old');
       expect(reader!.statusSnapshot().syncNeeded).toBe(true);
-      expect((await reader!.syncUntilIdle()).budgetExhausted).toBe(false);
-      expect(
-        reader!.commitOutcome(id)?.retainedRows?.[0]?.serverRow?.body,
-      ).toBe('winner');
-      readerAllowed = [];
+      const outcome = reader!.commitOutcome(id)!;
+      expect(await reader!.proveCurrentBase(outcome, 1)).toEqual({
+        proven: false,
+        reason: 'budget_exhausted',
+      });
+      reader!.setTransportEnabled(false);
+      expect(await reader!.proveCurrentBase(outcome)).toEqual({
+        proven: false,
+        reason: 'offline',
+      });
+      reader!.setTransportEnabled(true);
+      fail = true;
+      expect(await reader!.proveCurrentBase(outcome)).toEqual({
+        proven: false,
+        reason: 'sync_failed',
+      });
+      fail = false;
+      const proof = await reader!.proveCurrentBase(outcome);
+      expect(proof.proven).toBe(true);
+      if (proof.proven) {
+        expect(proof.rows.map((row) => row.serverRow?.body)).toEqual([
+          'winner',
+          'winner two',
+        ]);
+        expect(proof.rows.map((row) => row.serverVersion)).toEqual([2, 2]);
+      }
+      let release!: () => void;
+      const requestEntered = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      hold = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const racingProof = reader!.proveCurrentBase(outcome);
+      await requestEntered;
+      reader!.unsubscribe('one');
+      reader!.subscribe({
+        id: 'one',
+        table: 'versions',
+        scopes: { theatre_id: ['one'] },
+      });
+      release();
+      hold = undefined;
+      expect(await racingProof).toEqual({
+        proven: false,
+        reason: 'missing_coverage',
+      });
+      reader!.unsubscribe('one');
+      expect(await reader!.proveCurrentBase(outcome)).toEqual({
+        proven: false,
+        reason: 'missing_coverage',
+      });
+      reader!.subscribe({
+        id: 'one',
+        table: 'versions',
+        scopes: { theatre_id: ['one'] },
+      });
       await reader!.syncUntilIdle();
+      const floorId = floorReader!.patch('versions', 't1', { body: 'reject' });
+      await floorReader!.syncUntilIdle();
+      const floorOutcome = floorReader!.commitOutcome(floorId)!;
+      floor = true;
+      expect(await floorReader!.proveCurrentBase(floorOutcome)).toEqual({
+        proven: false,
+        reason: 'schema_floor',
+      });
+      readerAllowed = [];
+      expect(await reader!.proveCurrentBase(outcome)).toEqual({
+        proven: false,
+        reason: 'revoked',
+      });
       expect(reader!.commitOutcome(id)?.retainedRows).toBeUndefined();
     } finally {
       for (const client of clients) await client.close();

@@ -1115,22 +1115,36 @@ test('OPFS refreshes a rejected base after withheld pulls and restart', async ()
       };
     }, id);
     expect(prior).toEqual({ base: 'old', needed: true });
+    expect(
+      await page.evaluate(async (commitId) => {
+        const client = await window.opfsTest.ready;
+        const outcome = await client.commitOutcome(commitId);
+        if (outcome === undefined) throw new Error('missing outcome');
+        return client.proveCurrentBase(outcome, 1);
+      }, id),
+    ).toEqual({ proven: false, reason: 'budget_exhausted' });
     await page.reload({ waitUntil: 'load' });
     await page.evaluate(() => window.opfsTest.open());
     const after = await page.evaluate(async (commitId) => {
       const client = await window.opfsTest.ready;
-      const report = await client.syncUntilIdle();
+      const outcome = await client.commitOutcome(commitId);
+      if (outcome === undefined) throw new Error('missing outcome');
+      const proof = await client.proveCurrentBase(outcome);
       return {
-        base: (await client.commitOutcome(commitId))?.retainedRows?.[0]
-          ?.serverRow?.title,
-        exhausted: report.budgetExhausted,
+        base: proof.proven ? proof.rows[0]?.serverRow?.title : undefined,
+        proven: proof.proven,
       };
     }, id);
-    expect(after).toEqual({ base: 'winner', exhausted: false });
+    expect(after).toEqual({ base: 'winner', proven: true });
     freshSource.allowed['actor-1'] = { project_id: [] };
-    await page.evaluate(async () =>
-      (await window.opfsTest.ready).syncUntilIdle(),
-    );
+    expect(
+      await page.evaluate(async (commitId) => {
+        const client = await window.opfsTest.ready;
+        const outcome = await client.commitOutcome(commitId);
+        if (outcome === undefined) throw new Error('missing outcome');
+        return client.proveCurrentBase(outcome);
+      }, id),
+    ).toEqual({ proven: false, reason: 'revoked' });
     expect(
       await page.evaluate(
         async (commitId) =>
@@ -1195,14 +1209,31 @@ test('OPFS offline inserts use a facility write scope across restart and revocat
       (schema) => window.opfsTest.open(false, schema),
       OPFS_ALTERNATIVE_SCOPE_SCHEMA,
     );
+    const coverageBefore = await page.evaluate(async () => {
+      const client = await window.opfsTest.ready;
+      const base = { table: 'catalogue', variable: 'project_id' };
+      await client.setWindow(base, ['p1']);
+      return (
+        await client.snapshotRead({
+          statements: [],
+          coverage: [{ base, units: ['p1'] }],
+        })
+      ).coverage.complete;
+    });
+    expect(coverageBefore).toBe(false);
     await page.evaluate(async () => {
       const client = await window.opfsTest.ready;
-      await client.subscribe({
-        id: 'facility',
-        table: 'catalogue',
-        scopes: { project_id: ['p1'] },
-      });
       await client.syncUntilIdle();
+      const base = { table: 'catalogue', variable: 'project_id' };
+      if (
+        !(
+          await client.snapshotRead({
+            statements: [],
+            coverage: [{ base, units: ['p1'] }],
+          })
+        ).coverage.complete
+      )
+        throw new Error('facility coverage did not complete');
       await client.mutate([
         {
           table: 'catalogue',
@@ -1247,6 +1278,18 @@ test('OPFS offline inserts use a facility write scope across restart and revocat
         (await window.opfsTest.ready).query('SELECT id FROM catalogue'),
       ),
     ).toEqual([]);
+    expect(
+      await page.evaluate(async () => {
+        const client = await window.opfsTest.ready;
+        const base = { table: 'catalogue', variable: 'project_id' };
+        return (
+          await client.snapshotRead({
+            statements: [],
+            coverage: [{ base, units: ['p1'] }],
+          })
+        ).coverage.complete;
+      }),
+    ).toBe(false);
     await page.evaluate(async () => (await window.opfsTest.ready).close());
   } finally {
     await seed.client.close();

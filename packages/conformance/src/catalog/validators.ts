@@ -14,7 +14,7 @@
  * scenarios assert.
  */
 import { check, checkEqual } from '../checks';
-import type { ValidatorInstallSpec } from '../driver';
+import type { DriverSchema, ValidatorInstallSpec } from '../driver';
 import { task } from '../fixture';
 import type { Scenario, ScenarioContext } from '../scenario';
 import { expectConverged, syncFails, syncIdle, syncOk } from './util';
@@ -26,6 +26,21 @@ const P1 = { project_id: ['p1'] } as const;
 const TITLE_CODE = 'app.title_too_long';
 /** The host code the immutable-transition rule rejects with. */
 const IMMUTABLE_CODE = 'app.done_task_frozen';
+const NUMERIC_SCOPE_SCHEMA: DriverSchema = {
+  version: 1,
+  tables: [
+    {
+      name: 'measurements',
+      primaryKey: 'id',
+      columns: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'scope_num', type: 'float', nullable: false },
+        { name: 'title', type: 'string', nullable: false },
+      ],
+      scopes: [{ pattern: 'measurement:{scope_num}' }],
+    },
+  ],
+};
 
 async function install(
   ctx: ScenarioContext,
@@ -108,6 +123,23 @@ export const validatorScenarios: readonly Scenario[] = [
         limited.budgetExhausted === true,
         'a withheld pull cannot report idle',
       );
+      checkEqual(
+        await reader.api.proveCurrentBase(rejected, 1),
+        {
+          proven: false,
+          reason: 'budget_exhausted',
+        },
+        'proof fails atomically while the pull is withheld',
+      );
+      reader.faults.dropNextRequests = 1;
+      checkEqual(
+        await reader.api.proveCurrentBase(rejected),
+        {
+          proven: false,
+          reason: 'sync_failed',
+        },
+        'proof reports a failed drive without row data',
+      );
       reader.faults.dropNextRequests = 1;
       await syncFails(reader, 'transport.lost', 'offline refresh');
       checkEqual(
@@ -118,7 +150,14 @@ export const validatorScenarios: readonly Scenario[] = [
         'failed refresh keeps the prior base and intent',
       );
       await ctx.recreateClient(reader, ctx.schema);
-      await syncIdle(reader);
+      const proof = await reader.api.proveCurrentBase(rejected);
+      check(proof.proven, 'a complete drive proves the base after restart');
+      if (!proof.proven) return;
+      checkEqual(
+        proof.rows[0]?.serverRow?.title,
+        'winner',
+        'proof reads the winning row',
+      );
       checkEqual(
         (await reader.api.commitOutcomes()).find(
           (outcome) => outcome.clientCommitId === rejected,
@@ -163,7 +202,14 @@ export const validatorScenarios: readonly Scenario[] = [
         'the second catch-up delivers its winning base',
       );
       await ctx.server.setAllowedScopes('fresh-reader', { project_id: [] });
-      await syncIdle(reader);
+      checkEqual(
+        await reader.api.proveCurrentBase(second),
+        {
+          proven: false,
+          reason: 'revoked',
+        },
+        'revocation returns no row evidence',
+      );
       checkEqual(
         (await reader.api.commitOutcomes()).find(
           (outcome) => outcome.clientCommitId === second,
@@ -171,6 +217,229 @@ export const validatorScenarios: readonly Scenario[] = [
         undefined,
         'revocation removes retained row evidence',
       );
+    },
+  },
+  {
+    name: 'validators/prove-all-aggregate-bases',
+    specRefs: ['§7.2.1', '§7.5', '§7.7'],
+    requires: ['validators', 'scope-authorization'],
+    async run(ctx) {
+      await install(ctx, [
+        {
+          table: 'tasks',
+          rule: {
+            kind: 'maxLength',
+            column: 'title',
+            max: 10,
+            code: TITLE_CODE,
+          },
+        },
+      ]);
+      const writer = await bootstrapped(
+        ctx,
+        'aggregate-writer',
+        'aggregate-writer',
+      );
+      const reader = await ctx.newClient({
+        actorId: 'aggregate-reader',
+        clientId: 'aggregate-reader',
+        allowed: P1,
+        retainFailedCommits: true,
+      });
+      await reader.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await writer.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('a', 'p1', 'old') },
+        { op: 'upsert', table: 'tasks', values: task('b', 'p1', 'old') },
+      ]);
+      await syncIdle(writer);
+      await syncIdle(reader);
+      await writer.api.patch('tasks', 'a', { title: 'new-a' });
+      await writer.api.patch('tasks', 'b', { title: 'new-b' });
+      await syncIdle(writer);
+      const rejected = await reader.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: task('a', 'p1', 'too-long-to-accept'),
+        },
+        { op: 'upsert', table: 'tasks', values: task('b', 'p1', 'mine') },
+      ]);
+      reader.faults.deferNextPulls = 2;
+      await syncOk(reader);
+      checkEqual(
+        await reader.api.proveCurrentBase(rejected, 1),
+        { proven: false, reason: 'budget_exhausted' },
+        'no partial aggregate proof',
+      );
+      const proof = await reader.api.proveCurrentBase(rejected);
+      check(proof.proven, 'both aggregate bases are proven');
+      if (!proof.proven) return;
+      checkEqual(
+        proof.rows.map((row) => row.serverRow?.title),
+        ['new-a', 'new-b'],
+        'both current bases come from the same proof',
+      );
+      checkEqual(
+        proof.rows.map((row) => row.serverVersion),
+        [2, 2],
+        'both server versions are returned',
+      );
+    },
+  },
+  {
+    name: 'validators/prove-aggregate-requires-every-scope',
+    specRefs: ['§3.3', '§7.2.1', '§7.5'],
+    requires: ['validators', 'scope-authorization'],
+    async run(ctx) {
+      await install(ctx, [
+        {
+          table: 'tasks',
+          rule: {
+            kind: 'maxLength',
+            column: 'title',
+            max: 10,
+            code: TITLE_CODE,
+          },
+        },
+      ]);
+      const grants = { project_id: ['p1', 'p2'] };
+      const writer = await ctx.newClient({
+        actorId: 'coverage-writer',
+        clientId: 'coverage-writer',
+        allowed: grants,
+      });
+      const reader = await ctx.newClient({
+        actorId: 'coverage-reader',
+        clientId: 'coverage-reader',
+        allowed: grants,
+        retainFailedCommits: true,
+      });
+      await writer.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('a', 'p1', 'server-a') },
+        { op: 'upsert', table: 'tasks', values: task('b', 'p2', 'server-b') },
+      ]);
+      await syncIdle(writer);
+      await reader.api.subscribe({
+        id: 'p1',
+        table: 'tasks',
+        scopes: { project_id: ['p1'] },
+      });
+      await syncIdle(reader);
+      const rejected = await reader.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: task('a', 'p1', 'too-long-to-accept'),
+        },
+        { op: 'upsert', table: 'tasks', values: task('b', 'p2', 'mine') },
+      ]);
+      await syncIdle(reader);
+      checkEqual(
+        await reader.api.proveCurrentBase(rejected),
+        { proven: false, reason: 'missing_coverage' },
+        'one uncovered row prevents any aggregate result',
+      );
+      await reader.api.subscribe({
+        id: 'p2',
+        table: 'tasks',
+        scopes: { project_id: ['p2'] },
+      });
+      const proof = await reader.api.proveCurrentBase(rejected);
+      check(proof.proven, 'separate subscriptions cover both retained rows');
+      if (!proof.proven) return;
+      checkEqual(
+        proof.rows.map((row) => row.serverRow?.title),
+        ['server-a', 'server-b'],
+        'each authorized base is returned',
+      );
+      await ctx.server.setAllowedScopes('coverage-reader', P1);
+      checkEqual(
+        await reader.api.proveCurrentBase(rejected),
+        { proven: false, reason: 'revoked' },
+        'loss of one aggregate scope returns no rows',
+      );
+    },
+  },
+  {
+    name: 'validators/prove-numeric-scope-values',
+    specRefs: ['§3.1', '§7.2.1'],
+    requires: ['validators', 'scope-authorization'],
+    server: { schema: NUMERIC_SCOPE_SCHEMA },
+    async run(ctx) {
+      await install(ctx, [
+        {
+          table: 'measurements',
+          rule: {
+            kind: 'maxLength',
+            column: 'title',
+            max: 10,
+            code: TITLE_CODE,
+          },
+        },
+      ]);
+      const scopes = { scope_num: ['1', '1e+21', '1e-7'] };
+      const writer = await ctx.newClient({
+        actorId: 'numeric-writer',
+        clientId: 'numeric-writer',
+        schema: NUMERIC_SCOPE_SCHEMA,
+        allowed: scopes,
+      });
+      await writer.api.mutate([
+        {
+          op: 'upsert',
+          table: 'measurements',
+          values: { id: 'a', scope_num: 1, title: 'server' },
+        },
+        {
+          op: 'upsert',
+          table: 'measurements',
+          values: { id: 'b', scope_num: 1e21, title: 'server' },
+        },
+        {
+          op: 'upsert',
+          table: 'measurements',
+          values: { id: 'c', scope_num: 1e-7, title: 'server' },
+        },
+      ]);
+      await syncIdle(writer);
+      const client = await ctx.newClient({
+        actorId: 'numeric-reader',
+        clientId: 'numeric-reader',
+        schema: NUMERIC_SCOPE_SCHEMA,
+        allowed: scopes,
+        retainFailedCommits: true,
+      });
+      await client.api.subscribe({
+        id: 'numbers',
+        table: 'measurements',
+        scopes,
+      });
+      await syncIdle(client);
+      const id = await client.api.mutate([
+        {
+          op: 'upsert',
+          table: 'measurements',
+          values: { id: 'a', scope_num: 1, title: 'too-long-to-accept' },
+        },
+        {
+          op: 'upsert',
+          table: 'measurements',
+          values: { id: 'b', scope_num: 1e21, title: 'mine' },
+        },
+        {
+          op: 'upsert',
+          table: 'measurements',
+          values: { id: 'c', scope_num: 1e-7, title: 'mine' },
+        },
+      ]);
+      await syncIdle(client);
+      const proof = await client.api.proveCurrentBase(id);
+      check(
+        proof.proven,
+        'the complete numeric scope covers every retained row',
+      );
+      if (proof.proven)
+        checkEqual(proof.rows.length, 3, 'all three rows are returned');
     },
   },
   {

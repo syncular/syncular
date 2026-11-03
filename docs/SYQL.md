@@ -408,10 +408,13 @@ sync query listTodos(listId) {
 }
 ```
 
-Coverage MUST resolve every read schema table and MUST bind every scope
-declared by every table instance through required, non-null equality or `IN`
-predicates. The result descriptor contains one coverage entry per read table; a
-client may report the query complete only when all entries are complete.
+Coverage MUST resolve every read schema table and bind at least one declared
+scope of every table instance through required, non-null equality or `IN`
+predicates. A multi-scope query MUST explicitly select its unit dimension with
+`by`. The descriptor includes the selected scope and every other proven scope;
+an unbound scope is omitted from the subscription request. The result
+descriptor contains one coverage entry per read table; a client may report the
+query complete only when all entries are complete.
 
 A scope proof may propagate between qualified scope columns joined by a
 required outer `WHERE` equality or by a simple mandatory `ON` equality. For
@@ -474,12 +477,17 @@ sync query threadMessages(roomId, left, right) by messages.thread_id {
 }
 ```
 
-The selected dimension may use equality or `IN`. Every other scope is fixed by
-exactly one required equality bind. `by` names the SQL table name or alias used
+The selected dimension may use equality or `IN`. Every other proven scope is
+fixed by exactly one required equality bind. `by` names the SQL table name or alias used
 by the selected anchor instance and one of its declared scope columns. A joined
 single-scope table uses its sole dimension. A joined multi-scope table must have
-exactly one dimension with the anchor's unit parameters and exact fixed-scope
-proofs for the remainder; otherwise the query must be split.
+exactly one proven dimension with the anchor's unit parameters and exact
+fixed-scope proofs for its other proven dimensions; otherwise the query must be
+split. A predicate binding two scope dimensions therefore produces their
+intersection, while a query that binds only one requests that scope alone.
+The server authorizes the requested scope values; declaring a scope on a table
+does not grant it. Scoped remote query registration retains its stricter
+requirement to cover every declared variable ([REMOTE.md §2.1](./REMOTE.md)).
 
 ## 14. Result types and identity
 

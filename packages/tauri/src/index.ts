@@ -42,6 +42,7 @@ import type {
   ClientDiagnosticsSnapshot,
   CommitOutcome,
   CommitOutcomeQuery,
+  CurrentBaseProof,
   ConflictRecord,
   EncryptionKeyringConfig,
   InvalidationEvent,
@@ -59,6 +60,7 @@ import type {
   QuerySnapshot,
   RejectionRecord,
   ResolveCommitOutcomeInput,
+  RetainedCommitRow,
   SecurityLifecycle,
   SnapshotRead,
   SnapshotReadRequest,
@@ -319,6 +321,24 @@ function decodeOutcomeRow(
   return out;
 }
 
+function decodeRetainedRows(
+  rows: readonly RetainedCommitRow[],
+): RetainedCommitRow[] {
+  return rows.map((row) => ({
+    ...row,
+    localRow: row.localRow === null ? null : decodeOutcomeRow(row.localRow),
+    serverRow: row.serverRow === null ? null : decodeOutcomeRow(row.serverRow),
+    ...(row.uniqueConflicts !== undefined
+      ? {
+          uniqueConflicts: row.uniqueConflicts.map((conflict) => ({
+            ...conflict,
+            serverRow: decodeOutcomeRow(conflict.serverRow),
+          })),
+        }
+      : {}),
+  }));
+}
+
 /** Decode the row images a native `CommitOutcome` carries: conflict server
  * rows and retained-row images. */
 function decodeCommitOutcome(outcome: CommitOutcome): CommitOutcome {
@@ -337,21 +357,7 @@ function decodeCommitOutcome(outcome: CommitOutcome): CommitOutcome {
     ),
     ...(outcome.retainedRows !== undefined
       ? {
-          retainedRows: outcome.retainedRows.map((row) => ({
-            ...row,
-            localRow:
-              row.localRow === null ? null : decodeOutcomeRow(row.localRow),
-            serverRow:
-              row.serverRow === null ? null : decodeOutcomeRow(row.serverRow),
-            ...(row.uniqueConflicts !== undefined
-              ? {
-                  uniqueConflicts: row.uniqueConflicts.map((conflict) => ({
-                    ...conflict,
-                    serverRow: decodeOutcomeRow(conflict.serverRow),
-                  })),
-                }
-              : {}),
-          })),
+          retainedRows: decodeRetainedRows(outcome.retainedRows),
         }
       : {}),
   };
@@ -1148,6 +1154,30 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
     return this.#command('syncUntilIdle', {
       ...(maxRounds !== undefined ? { maxRounds } : {}),
     });
+  }
+
+  async proveCurrentBase(
+    outcome: Pick<CommitOutcome, 'clientCommitId' | 'sequence'>,
+    maxRounds?: number,
+  ): Promise<CurrentBaseProof> {
+    if (
+      maxRounds !== undefined &&
+      (!Number.isInteger(maxRounds) || maxRounds < 1 || maxRounds > 0xffffffff)
+    )
+      throw new TauriSyncError(
+        'sync.invalid_request',
+        'maxRounds must be a positive integer',
+      );
+    const proof = (await this.#command('proveCurrentBase', {
+      outcome: {
+        clientCommitId: outcome.clientCommitId,
+        sequence: outcome.sequence,
+      },
+      ...(maxRounds !== undefined ? { maxRounds } : {}),
+    })) as CurrentBaseProof;
+    return proof.proven
+      ? { proven: true, rows: decodeRetainedRows(proof.rows) }
+      : proof;
   }
 
   async conflicts(): Promise<readonly ConflictRecord[]> {

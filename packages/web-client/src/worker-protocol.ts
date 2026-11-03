@@ -21,6 +21,7 @@ import type { WakeReason } from '@syncular/core';
 import type { BlobRef, CachedBlob } from './blob';
 import type {
   ConflictRecord,
+  CurrentBaseProof,
   ClientSnapshotMethods,
   MutationInput,
   PresencePeer,
@@ -45,6 +46,7 @@ import type {
   LocalDataRebootstrapResult,
 } from './local-rebootstrap';
 import type { OutboxCommit } from './outbox';
+import type { CommitOutcome } from './outcomes';
 import type {
   PreviousVersionAudit,
   PreviousVersionReadSpec,
@@ -207,6 +209,10 @@ export interface WorkerApi extends Omit<
   previousVersionDiscard(): { present: boolean; discarded: boolean };
   sync(): Promise<SyncSummary>;
   syncUntilIdle(options?: number | SyncIdleOptions): Promise<SyncIdleResult>;
+  proveCurrentBase(
+    outcome: Pick<CommitOutcome, 'clientCommitId' | 'sequence'>,
+    maxRounds?: number,
+  ): Promise<CurrentBaseProof>;
   resetClientId(): string;
   query(sql: string, params?: readonly SqlValue[]): SqlRow[];
   authoritySnapshot(): import('./authority').AuthoritySnapshot;

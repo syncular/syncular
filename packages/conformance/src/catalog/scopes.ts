@@ -46,6 +46,159 @@ const ALTERNATIVE_WRITE_SCHEMA: DriverSchema = {
 
 export const scopeScenarios: readonly Scenario[] = [
   {
+    name: 'scopes/partial-window-coverage-and-intersection',
+    specRefs: ['§3.2', '§3.3', '§4.8', '§7.5'],
+    requires: ['scope-authorization'],
+    server: { schema: ALTERNATIVE_WRITE_SCHEMA },
+    async run(ctx) {
+      await ctx.server.setAllowedScopes('window-seed', {
+        org_id: ['o1', 'o2'],
+      });
+      for (const table of ['calendars', 'theatres']) {
+        const response = await ctx.rawSync(
+          'window-seed',
+          [
+            rawPushCommit(
+              `seed-${table}`,
+              [
+                doc('old', 'o1', 'old', 'referenced'),
+                doc('other', 'o1', 'other', 'unreferenced'),
+                doc('foreign', 'o2', 'foreign', 'private'),
+              ].map((row) => rawUpsert(ctx.serverSchema, table, row)),
+            ),
+          ],
+          { clientId: 'window-seed' },
+        );
+        check(response.ok, 'the rows are seeded');
+      }
+      const host = await ctx.newClient({
+        actorId: 'window-host',
+        clientId: 'window-host',
+        schema: ALTERNATIVE_WRITE_SCHEMA,
+        allowed: { org_id: ['o1'] },
+      });
+      const reader = await ctx.newClient({
+        actorId: 'window-reader',
+        clientId: 'window-reader',
+        schema: ALTERNATIVE_WRITE_SCHEMA,
+        allowed: { projectId: ['old'] },
+      });
+      const intersection = await ctx.newClient({
+        actorId: 'window-intersection',
+        clientId: 'window-intersection',
+        schema: ALTERNATIVE_WRITE_SCHEMA,
+        allowed: { org_id: ['o1'], projectId: ['old'] },
+      });
+      check(
+        host.api.setWindow !== undefined && host.api.snapshotRead !== undefined,
+        'window and snapshot APIs are available',
+      );
+      check(
+        reader.api.setWindow !== undefined &&
+          intersection.api.setWindow !== undefined,
+        'reader windows are available',
+      );
+      if (
+        !host.api.setWindow ||
+        !host.api.snapshotRead ||
+        !reader.api.setWindow ||
+        !intersection.api.setWindow
+      )
+        return;
+      for (const table of ['calendars', 'theatres']) {
+        const facility = { table, variable: 'org_id' };
+        const exact = { table, variable: 'projectId' };
+        const both = {
+          table,
+          variable: 'org_id',
+          fixedScopes: { projectId: ['old'] },
+        };
+        await host.api.setWindow(facility, ['o1']);
+        await reader.api.setWindow(exact, ['old']);
+        await intersection.api.setWindow(both, ['o1']);
+        const before = await host.api.snapshotRead({
+          statements: [],
+          coverage: [{ base: facility, units: ['o1'] }],
+        });
+        check(
+          !before.coverage.complete,
+          'an unbootstrapped facility window is incomplete',
+        );
+      }
+      await syncIdle(host);
+      await syncIdle(reader);
+      await syncIdle(intersection);
+      for (const table of ['calendars', 'theatres']) {
+        const facility = { table, variable: 'org_id' };
+        const ready = await host.api.snapshotRead({
+          statements: [],
+          coverage: [{ base: facility, units: ['o1'] }],
+        });
+        check(ready.coverage.complete, 'the facility window becomes complete');
+        checkEqual(
+          (await host.api.readRows(table)).map((row) => row.rowId),
+          ['old', 'other'],
+          'facility coverage excludes foreign rows',
+        );
+        checkEqual(
+          (await reader.api.readRows(table)).map((row) => row.rowId),
+          ['old'],
+          'exact historical coverage stays narrow',
+        );
+        checkEqual(
+          (await intersection.api.readRows(table)).map((row) => row.rowId),
+          ['old'],
+          'bound dimensions retain intersection semantics',
+        );
+        await host.api.mutate([
+          { op: 'upsert', table, values: doc('new', 'o1', 'new', 'offline') },
+        ]);
+      }
+      await syncIdle(host);
+      await syncIdle(reader);
+      await syncIdle(intersection);
+      checkEqual(
+        (await reader.api.readRows('calendars')).map((row) => row.rowId),
+        ['old'],
+        'new facility rows do not reach exact readers',
+      );
+      checkEqual(
+        (await intersection.api.readRows('calendars')).map((row) => row.rowId),
+        ['old'],
+        'new facility rows do not widen an intersection',
+      );
+      await ctx.recreateClient(host, ALTERNATIVE_WRITE_SCHEMA);
+      await syncIdle(host);
+      checkEqual(
+        (await host.api.readRows('calendars')).map((row) => row.rowId),
+        ['new', 'old', 'other'],
+        'restart keeps the facility window',
+      );
+      await ctx.server.setAllowedScopes('window-host', { org_id: [] });
+      await syncOk(host);
+      check(host.api.snapshotRead !== undefined, 'snapshot survives restart');
+      if (!host.api.snapshotRead) return;
+      const revoked = await host.api.snapshotRead({
+        statements: [],
+        coverage: [
+          { base: { table: 'calendars', variable: 'org_id' }, units: ['o1'] },
+        ],
+      });
+      check(!revoked.coverage.complete, 'revoked coverage is incomplete');
+      checkEqual(
+        await host.api.readRows('calendars'),
+        [],
+        'revocation removes facility rows',
+      );
+      await syncIdle(reader);
+      checkEqual(
+        (await reader.api.readRows('calendars')).map((row) => row.rowId),
+        ['old'],
+        'facility revocation leaves the exact reader intact',
+      );
+    },
+  },
+  {
     name: 'scopes/independent-read-and-write-scopes',
     specRefs: ['§3.2', '§3.3', '§3.4', '§6.2'],
     requires: ['scope-authorization'],

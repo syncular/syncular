@@ -898,6 +898,34 @@ class TsClientInstance implements ClientInstance {
     }
   }
 
+  async proveCurrentBase(
+    clientCommitId: string,
+    maxRounds?: number,
+  ): ReturnType<ClientInstance['proveCurrentBase']> {
+    const outcome = this.#client.commitOutcome(clientCommitId);
+    if (outcome === undefined)
+      return { proven: false, reason: 'outcome_unavailable' };
+    const proof = await this.#client.proveCurrentBase(outcome, maxRounds);
+    if (!proof.proven) return proof;
+    return {
+      proven: true,
+      rows: proof.rows.map((row) => ({
+        table: row.table,
+        rowId: row.rowId,
+        serverVersion: row.serverVersion,
+        serverRow:
+          row.serverRow === null
+            ? null
+            : Object.fromEntries(
+                Object.entries(row.serverRow).map(([key, value]) => [
+                  key,
+                  toDriverValue(value),
+                ]),
+              ),
+      })),
+    };
+  }
+
   async authoritySnapshot(): Promise<
     import('../driver').DriverAuthoritySnapshot
   > {

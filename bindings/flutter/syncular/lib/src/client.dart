@@ -376,6 +376,14 @@ class SyncularClient {
     return command('syncUntilIdle', p);
   }
 
+  /// Prove every retained base after a completed post-rejection pull.
+  Map<String, Object?> proveCurrentBase(Map<String, Object?> outcome,
+      {int? maxRounds}) {
+    final p = <String, Object?>{'outcome': outcome};
+    if (maxRounds != null) p['maxRounds'] = maxRounds;
+    return command('proveCurrentBase', p);
+  }
+
   /// Read all locally-visible rows of a table as RowState maps
   /// (`{rowId, version, values}`; `version == -1` = optimistic/offline).
   List<Map<String, Object?>> readRows(String table) {

@@ -24,6 +24,7 @@ import type {
   AuthoritativeQueryRequest,
   AuthoritativeQueryResult,
 } from './storage';
+import { SyncError } from './errors';
 
 /**
  * §6.7 reserved code prefixes. A host validator code MUST NOT start with
@@ -279,6 +280,21 @@ export class CommitValidationRejection extends ValidationRejection {
     if (!Number.isSafeInteger(opIndex) || opIndex < 0) {
       throw new Error(
         'CommitValidationRejection opIndex must be a non-negative safe integer',
+      );
+    }
+  }
+}
+
+/** A whole-commit authority refusal attributed to one operation (§6.8). */
+export class CommitAuthorizationRejection extends SyncError {
+  constructor(
+    readonly opIndex: number,
+    message: string,
+  ) {
+    super('sync.forbidden', message);
+    if (!Number.isSafeInteger(opIndex) || opIndex < 0) {
+      throw new Error(
+        'CommitAuthorizationRejection opIndex must be a non-negative safe integer',
       );
     }
   }

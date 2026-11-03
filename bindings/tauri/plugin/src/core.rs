@@ -235,6 +235,32 @@ impl SyncularCore {
             .is_some_and(SyncClient::transport_enabled)
     }
 
+    pub fn prepare_current_base(
+        &self,
+        id: &str,
+        sequence: i64,
+    ) -> Result<syncular_client::CurrentBasePreparation, syncular_client::CurrentBaseProof> {
+        match self.client.as_ref() {
+            Some(client) => client.prepare_current_base(id, sequence),
+            None => Err(syncular_client::CurrentBaseProof::failure(
+                syncular_client::CurrentBaseProofReason::OutcomeUnavailable,
+            )),
+        }
+    }
+
+    pub fn finish_current_base(
+        &mut self,
+        prepared: syncular_client::CurrentBasePreparation,
+        drive: syncular_client::SyncOutcome,
+    ) -> syncular_client::CurrentBaseProof {
+        match self.client.as_mut() {
+            Some(client) => client.finish_current_base(prepared, drive),
+            None => syncular_client::CurrentBaseProof::failure(
+                syncular_client::CurrentBaseProofReason::OutcomeUnavailable,
+            ),
+        }
+    }
+
     /// Run one `syncUntilIdle` round for the background host loop, deriving
     /// events afterwards. A no-op (empty reply) before `create`.
     pub fn sync_until_idle(&mut self) -> Value {

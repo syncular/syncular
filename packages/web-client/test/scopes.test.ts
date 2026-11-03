@@ -5,7 +5,22 @@
  * missing local scope-column mapping fails closed.
  */
 import { describe, expect, test } from 'bun:test';
-import type { ClientSchema } from '@syncular/client';
+import { PGlite } from '@electric-sql/pglite';
+import { SyncClient, type ClientSchema } from '@syncular/client';
+import { BunClientDatabase } from '@syncular/client/bun';
+import {
+  handleSyncRequest,
+  MemorySegmentStore,
+  PostgresServerStorage,
+  SqliteServerStorage,
+  ValidationRejection,
+} from '@syncular/server';
+import { pgliteExecutor } from '@syncular/server/pglite';
+import { schema as generatedSchema } from '../../typegen/test/fixtures/basic/syncular.generated';
+import {
+  docsInProjectQuery,
+  facilityDocsQuery,
+} from '../../typegen/test/fixtures/basic/syncular.queries';
 import {
   DOC_COLUMNS,
   makeClient,
@@ -280,3 +295,144 @@ describe('revocation purge (§3.3)', () => {
     expect(a.client.subscription('s1')?.status).toBe('failed');
   });
 });
+
+for (const backend of ['sqlite', 'pglite'] as const) {
+  test(`${backend}: generated partial coverage synchronizes only authorized facility rows`, async () => {
+    const pg = backend === 'pglite' ? await PGlite.create() : undefined;
+    const storage = pg
+      ? new PostgresServerStorage(pgliteExecutor(pg))
+      : new SqliteServerStorage();
+    const segments = new MemorySegmentStore();
+    const serverSchema = {
+      ...generatedSchema,
+      tables: generatedSchema.tables.map((table) =>
+        table.name === 'docs'
+          ? { ...table, writeScopeVariables: ['org_id'] }
+          : table,
+      ),
+    };
+    const grants: Record<string, Record<string, string[]>> = {
+      seed: { org_id: ['o1', 'o2'] },
+      host: { org_id: ['o1'] },
+      historical: { projectId: ['old'] },
+      intersection: { org_id: ['o1'], projectId: ['old'] },
+    };
+    const databases = Array.from({ length: 4 }, () => new BunClientDatabase());
+    const clients = ['seed', 'host', 'historical', 'intersection'].map(
+      (actorId, index) =>
+        new SyncClient({
+          schema: generatedSchema,
+          database: databases[index]!,
+          clientId: `generated-${actorId}`,
+          retainFailedCommits: true,
+          transport: (bytes) =>
+            handleSyncRequest(bytes, {
+              partition: 'part-1',
+              actorId,
+              schema: serverSchema,
+              storage,
+              segments,
+              resolveScopes: () => grants[actorId]!,
+              validators: {
+                docs: (operation) => {
+                  if (operation.row?.body === 'reject') {
+                    throw new ValidationRejection('app.rejected', 'rejected');
+                  }
+                },
+              },
+            }),
+        }),
+    );
+    const [seed, host, historical, intersection] = clients;
+    const row = (id: string, org_id: string, project_id: string) => ({
+      id,
+      org_id,
+      project_id,
+      body: id,
+      score: null,
+      attachment: null,
+      body_doc: null,
+      remote_blob: null,
+    });
+    try {
+      for (const client of clients) await client.start();
+      seed!.mutate([
+        { op: 'upsert', table: 'docs', values: row('old', 'o1', 'old') },
+        { op: 'upsert', table: 'docs', values: row('other', 'o1', 'other') },
+        {
+          op: 'upsert',
+          table: 'docs',
+          values: row('foreign', 'o2', 'foreign'),
+        },
+      ]);
+      expect((await seed!.syncUntilIdle()).rejected).toEqual([]);
+      const params = { orgId: 'o1' };
+      const coverage = facilityDocsQuery.coverage(params);
+      const facility = coverage[0]!;
+      await host!.setWindow(facility.base, facility.units);
+      const read = () =>
+        host!.querySnapshot({
+          sql: facilityDocsQuery.sqlFor?.(params) ?? facilityDocsQuery.sql,
+          params: facilityDocsQuery.bind(params),
+          coverage,
+        });
+      expect(read().coverage.complete).toBe(false);
+      await host!.syncUntilIdle();
+      expect(read().coverage.complete).toBe(true);
+      expect(read().rows.map((item) => item.id)).toEqual(['old', 'other']);
+      historical!.subscribe({
+        id: 'exact',
+        table: 'docs',
+        scopes: { projectId: ['old'] },
+      });
+      await historical!.syncUntilIdle();
+      const intersectionCoverage = docsInProjectQuery.coverage({
+        orgId: 'o1',
+        projectId: 'old',
+      });
+      await intersection!.setWindow(
+        intersectionCoverage[0]!.base,
+        intersectionCoverage[0]!.units,
+      );
+      await intersection!.syncUntilIdle();
+      expect(intersection!.query('SELECT id FROM docs ORDER BY id')).toEqual([
+        { id: 'old' },
+      ]);
+      host!.setTransportEnabled(false);
+      host!.mutate([
+        { op: 'upsert', table: 'docs', values: row('new', 'o1', 'new') },
+      ]);
+      expect(read().rows.map((item) => item.id)).toEqual([
+        'new',
+        'old',
+        'other',
+      ]);
+      host!.setTransportEnabled(true);
+      await host!.syncUntilIdle();
+      await historical!.syncUntilIdle();
+      await intersection!.syncUntilIdle();
+      expect(historical!.query('SELECT id FROM docs ORDER BY id')).toEqual([
+        { id: 'old' },
+      ]);
+      expect(intersection!.query('SELECT id FROM docs ORDER BY id')).toEqual([
+        { id: 'old' },
+      ]);
+      const rejected = host!.patch('docs', 'old', { body: 'reject' });
+      await host!.syncUntilIdle();
+      const outcome = host!.commitOutcome(rejected)!;
+      expect(await host!.proveCurrentBase(outcome)).toMatchObject({
+        proven: true,
+        rows: [{ rowId: 'old', serverRow: { body: 'old' }, serverVersion: 1 }],
+      });
+      grants.host = { org_id: [] };
+      await host!.syncUntilIdle();
+      expect(read().coverage.complete).toBe(false);
+      expect(host!.query('SELECT id FROM docs')).toEqual([]);
+    } finally {
+      for (const client of clients) await client.close();
+      for (const database of databases) database.close();
+      if (pg) await pg.close();
+      else if (storage instanceof SqliteServerStorage) storage.db.close();
+    }
+  });
+}

@@ -1488,6 +1488,42 @@ class RustClientInstance implements ClientInstance {
     });
   }
 
+  async proveCurrentBase(
+    clientCommitId: string,
+    maxRounds?: number,
+  ): ReturnType<ClientInstance['proveCurrentBase']> {
+    const result = asObject(
+      await this.#shim.call('commitOutcome', { clientCommitId }),
+      'commitOutcome',
+    );
+    if (result.outcome === undefined || result.outcome === null)
+      return { proven: false, reason: 'outcome_unavailable' };
+    const outcome = asObject(result.outcome, 'commit outcome');
+    const proof = asObject(
+      await this.#shim.call('proveCurrentBase', {
+        outcome: { clientCommitId, sequence: outcome.sequence ?? null },
+        ...(maxRounds === undefined ? {} : { maxRounds }),
+      }),
+      'proveCurrentBase',
+    );
+    if (proof.proven !== true)
+      return { proven: false, reason: String(proof.reason) };
+    if (!Array.isArray(proof.rows)) throw new Error('sync.invalid_response');
+    return {
+      proven: true,
+      rows: proof.rows.map((raw) => {
+        const row = asObject(raw, 'retained row');
+        return {
+          table: String(row.table),
+          rowId: String(row.rowId),
+          serverRow: row.serverRow === null ? null : driverRowOf(row.serverRow),
+          serverVersion:
+            row.serverVersion === null ? null : Number(row.serverVersion),
+        };
+      }),
+    };
+  }
+
   async resolveCommitOutcome(
     clientCommitId: string,
     resolution: 'resolved_keep_server' | 'superseded',

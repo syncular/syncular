@@ -286,6 +286,14 @@ Whole-commit validation checks a client-proposed commit; it does not grant
 authority. Privileged operations such as connecting facilities still belong in
 explicit server-authoritative commands.
 
+For a whole-commit authority refusal, throw `CommitAuthorizationRejection`
+with the operation index and a static message. The server returns
+`sync.forbidden` and rolls back the commit. An absent-row delete is normally an
+idempotent no-op; a validator that denies it can use the message
+`delete denied by scope authorization (§3.4)` to match the refusal for a
+stored row outside the actor's scopes. Do not put row data or identifiers in
+the message.
+
 ## Push idempotency and retry contract
 
 The idempotency key for a push commit is the triple

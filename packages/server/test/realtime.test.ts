@@ -12,6 +12,8 @@ import {
   type SubStartFrame,
 } from '@syncular/core';
 import {
+  CommitAuthorizationRejection,
+  type CommitValidator,
   createRealtimeHub,
   type RealtimeHub,
   SqliteServerStorage,
@@ -19,9 +21,11 @@ import {
   SyncError,
 } from '@syncular/server';
 import {
+  del,
   makeContext,
   pullHeader,
   pushCommit,
+  pushResults,
   requestBytes,
   subFrame,
   sync,
@@ -994,6 +998,88 @@ describe('presence (§8.6)', () => {
     );
     expect(lastPresence(a.wire)?.error).toBe('presence.too_large');
     expect(presenceEvents(b.wire)).toHaveLength(0); // never fanned out
+  });
+});
+
+describe('whole-commit authority refusal over a socket', () => {
+  test('absent and foreign deletes receive the same whole-commit authority refusal', async () => {
+    const commitValidator: CommitValidator = ({ operations }) => {
+      const absent = operations.find(
+        (operation) =>
+          operation.op === 'delete' && operation.stored === undefined,
+      );
+      if (absent !== undefined)
+        throw new CommitAuthorizationRejection(
+          absent.opIndex,
+          'delete denied by scope authorization (§3.4)',
+        );
+    };
+    const t = makeContext({ commitValidator });
+    t.scopes.value = { project_id: ['p2'] };
+    await sync(t, [
+      pushCommit('seed-foreign', [
+        upsert('tasks', 'foreign', taskRow('foreign', 'p2')),
+      ]),
+    ]);
+    t.scopes.value = { project_id: ['p1'] };
+    const hub = createRealtimeHub({
+      schema: t.ctx.schema,
+      storage: t.ctx.storage,
+      segments: t.segments,
+      resolveScopes: t.ctx.resolveScopes,
+      commitValidator,
+    });
+    const wire = makeWire();
+    const session = await hub.connect({
+      partition: 'part-1',
+      actorId: 'actor-1',
+      clientId: 'socket-client',
+      send: wire.send,
+    });
+    const send = async (id: string, rowId: string) => {
+      wire.binaries.length = 0;
+      const request = requestBytes(
+        [
+          pushCommit(id, [
+            upsert('tasks', 'sibling', taskRow('sibling', 'p1')),
+            del('tasks', rowId),
+          ]),
+          pullHeader(),
+        ],
+        'socket-client',
+      );
+      const tagged = new Uint8Array(request.length + 1);
+      tagged[0] = REALTIME_TAG_ROUND;
+      tagged.set(request, 1);
+      await session.handleBinary(tagged);
+      const chunks = wire.binaries.map((chunk) => chunk.subarray(1));
+      const bytes = new Uint8Array(
+        chunks.reduce((size, chunk) => size + chunk.length, 0),
+      );
+      let offset = 0;
+      for (const chunk of chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.length;
+      }
+      const response = decodeMessage(bytes);
+      if (response.msgKind !== 'response') throw new Error('expected response');
+      return pushResults(response)[0]?.results[0];
+    };
+    const foreign = await send('foreign-delete', 'foreign');
+    const absent = await send('absent-delete', 'missing');
+    expect(absent).toEqual(foreign);
+    expect(absent).toMatchObject({
+      opIndex: 1,
+      code: 'sync.forbidden',
+      message: 'delete denied by scope authorization (§3.4)',
+      retryable: false,
+    });
+    expect(
+      await t.storage.getRow('part-1', 'tasks', 'sibling'),
+    ).toBeUndefined();
+    expect(await t.storage.getRow('part-1', 'tasks', 'foreign')).toBeDefined();
+    session.close();
+    t.storage.db.close();
   });
 });
 

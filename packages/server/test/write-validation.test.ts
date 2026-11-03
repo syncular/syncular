@@ -13,6 +13,7 @@ import {
   type RowColumn,
 } from '@syncular/core';
 import {
+  CommitAuthorizationRejection,
   CommitValidationRejection,
   type CommitValidator,
   compileSchema,
@@ -524,6 +525,91 @@ const INDEXED_TASKS_SCHEMA: ServerSchema = {
 };
 
 describe('whole-commit validation (§6.8)', () => {
+  for (const backend of ['sqlite', 'pglite'] as const) {
+    test(`${backend}: an authority refusal conceals absent deletes and rolls back sibling writes`, async () => {
+      let calls = 0;
+      const pg = backend === 'pglite' ? await PGlite.create() : undefined;
+      const storage =
+        pg === undefined
+          ? undefined
+          : new PostgresServerStorage(pgliteExecutor(pg));
+      if (storage !== undefined)
+        await storage.ensureSchema(compileSchema(TEST_SCHEMA));
+      const t = makeContext({
+        ...(storage === undefined ? {} : { storage }),
+        commitValidator: ({ operations }) => {
+          calls += 1;
+          const absent = operations.find(
+            (operation) =>
+              operation.op === 'delete' && operation.stored === undefined,
+          );
+          if (absent !== undefined) {
+            throw new CommitAuthorizationRejection(
+              absent.opIndex,
+              'delete denied by scope authorization (§3.4)',
+            );
+          }
+        },
+      });
+      t.scopes.value = { project_id: ['p2'] };
+      await sync(t, [
+        pushCommit('seed-foreign', [
+          upsert('tasks', 'foreign', taskRow('foreign', 'p2')),
+        ]),
+      ]);
+      t.scopes.value = { project_id: ['p1'] };
+      const operation = (rowId: string) => [
+        upsert('tasks', 'sibling', taskRow('sibling', 'p1')),
+        del('tasks', rowId),
+      ];
+      const foreign = pushResults(
+        await sync(t, [pushCommit('foreign-delete', operation('foreign'))]),
+      )[0]?.results[0];
+      const missing = pushCommit('missing-delete', operation('missing'));
+      const first = pushResults(await sync(t, [missing]))[0]?.results[0];
+      const callsAfterFirst = calls;
+      const replay = pushResults(await sync(t, [missing]))[0]?.results[0];
+      expect(first).toEqual(foreign);
+      expect(replay).toEqual(first);
+      expect(first).toMatchObject({
+        opIndex: 1,
+        status: 'error',
+        code: 'sync.forbidden',
+        message: 'delete denied by scope authorization (§3.4)',
+        retryable: false,
+      });
+      expect(calls).toBe(callsAfterFirst);
+      expect(
+        await t.ctx.storage.getRow('part-1', 'tasks', 'sibling'),
+      ).toBeUndefined();
+      expect(
+        await t.ctx.storage.getRow('part-1', 'tasks', 'foreign'),
+      ).toBeDefined();
+      t.storage.db.close();
+      if (pg !== undefined) await pg.close();
+    });
+  }
+
+  test('rejects invalid authority refusal indexes as host errors', async () => {
+    expect(() => new CommitAuthorizationRejection(-1, 'denied')).toThrow();
+    expect(() => new CommitAuthorizationRejection(0.5, 'denied')).toThrow();
+    const t = makeContext({
+      commitValidator: () => {
+        throw new CommitAuthorizationRejection(1, 'denied');
+      },
+    });
+    const result = await sync(t, [
+      pushCommit('invalid-index', [upsert('tasks', 't1', taskRow('t1', 'p1'))]),
+    ]);
+    expect(pushResults(result)[0]?.results[0]).toMatchObject({
+      opIndex: 0,
+      code: 'sync.constraint_violation',
+      message: 'commit authorization rejection names an unavailable operation',
+    });
+    expect(await t.storage.getRow('part-1', 'tasks', 't1')).toBeUndefined();
+    t.storage.db.close();
+  });
+
   test('rejects a missing sibling operation and rolls every staged row back', async () => {
     const requireAudit: CommitValidator = ({ operations }) => {
       const completed = operations.find(

@@ -20,6 +20,7 @@ import {
   type BlobPresignConfig,
   type BlobStore,
   type BlobUploadPresignConfig,
+  CommitAuthorizationRejection,
   CommitValidationRejection,
   type CommitValidationRow,
   type CommitValidator,
@@ -243,6 +244,20 @@ function compileValidatorRule(spec: ValidatorInstallSpec): Validator {
 function compileCommitValidatorRule(
   spec: CommitValidatorInstallSpec,
 ): CommitValidator {
+  if (spec.kind === 'denyAbsentDeletes') {
+    return ({ operations }) => {
+      const absent = operations.find(
+        (operation) =>
+          operation.op === 'delete' && operation.stored === undefined,
+      );
+      if (absent !== undefined) {
+        throw new CommitAuthorizationRejection(
+          absent.opIndex,
+          'delete denied by scope authorization (§3.4)',
+        );
+      }
+    };
+  }
   if (spec.kind === 'throwUnexpected') {
     return () => {
       throw new Error(spec.message);

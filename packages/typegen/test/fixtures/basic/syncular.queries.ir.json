@@ -1245,6 +1245,148 @@
       }
     },
     {
+      "name": "facilityDocs",
+      "file": "facility-docs.syql",
+      "sourceSql": "select docs.id, docs.org_id AS \"orgId\", docs.project_id AS \"projectId\", docs.body from docs\n  where docs.org_id = :orgId\n  order by docs.id",
+      "sql": "select docs.id, docs.org_id AS \"orgId\", docs.project_id AS \"projectId\", docs.body from docs\n  where docs.org_id = :orgId\n  order by docs.id",
+      "positionalSql": "select docs.id, docs.org_id AS \"orgId\", docs.project_id AS \"projectId\", docs.body from docs where docs.org_id = ? order by docs.id",
+      "relations": [
+        {
+          "table": "docs",
+          "start": 87,
+          "end": 91
+        }
+      ],
+      "params": [
+        {
+          "name": "orgId",
+          "langName": "orgId",
+          "type": "string"
+        }
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "langName": "id",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "docs",
+            "column": "id"
+          }
+        },
+        {
+          "name": "org_id",
+          "langName": "orgId",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "docs",
+            "column": "org_id"
+          }
+        },
+        {
+          "name": "project_id",
+          "langName": "projectId",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "docs",
+            "column": "project_id"
+          }
+        },
+        {
+          "name": "body",
+          "langName": "body",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "docs",
+            "column": "body"
+          }
+        }
+      ],
+      "tables": [
+        "docs"
+      ],
+      "reactive": {
+        "dependencies": [
+          {
+            "table": "docs",
+            "scopes": [
+              {
+                "variable": "org_id",
+                "pattern": "org:{org_id}",
+                "params": [
+                  "orgId"
+                ]
+              }
+            ]
+          }
+        ],
+        "coverage": [
+          {
+            "table": "docs",
+            "variable": "org_id",
+            "units": [
+              "orgId"
+            ],
+            "fixedScopes": []
+          }
+        ],
+        "rowKey": [
+          "id"
+        ]
+      },
+      "syql": {
+        "revision": 1,
+        "inputs": [
+          {
+            "kind": "value",
+            "name": "orgId",
+            "langName": "orgId",
+            "type": "string",
+            "nullable": false,
+            "required": true
+          }
+        ],
+        "plan": {
+          "backend": "variants",
+          "activationControls": [],
+          "conditions": [],
+          "statements": [
+            {
+              "activationMask": 0,
+              "sql": "select docs.id, docs.org_id AS \"orgId\", docs.project_id AS \"projectId\", docs.body from docs\n  where docs.org_id = :orgId\n  order by docs.id",
+              "positionalSql": "select docs.id, docs.org_id AS \"orgId\", docs.project_id AS \"projectId\", docs.body from docs where docs.org_id = ? order by docs.id",
+              "relations": [
+                {
+                  "table": "docs",
+                  "start": 87,
+                  "end": 91
+                }
+              ],
+              "binds": [
+                {
+                  "kind": "value",
+                  "name": "orgId",
+                  "type": "string",
+                  "input": "orgId"
+                }
+              ]
+            }
+          ]
+        },
+        "identity": [
+          "id"
+        ]
+      }
+    },
+    {
       "name": "joinedSyncCoverage",
       "file": "joined-sync-coverage.syql",
       "sourceSql": "select t.id AS \"taskId\", d.id AS \"docId\", d.body from tasks as t\n  join docs as d on d.project_id = t.project_id\n  where t.project_id = :projectId\n    and d.org_id = :orgId\n  order by t.id, d.id",

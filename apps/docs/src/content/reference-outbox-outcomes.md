@@ -66,9 +66,18 @@ A failed commit leaves the outbox and is never retried implicitly. Incoming serv
 
 A rejection reaches the client before the pull section of the same sync round. The retained `serverRow` can therefore still contain the before-image when the rejection first appears. An empty outbox, an online connection, and a non-null `serverRow` do not establish freshness.
 
-For a reviewed replacement, wait for any active sync drive to finish, then run a new `syncUntilIdle()` drive. Require a successful, non-exhausted result without a schema floor. Use `snapshotRead({ statements: [], subscriptions: [id] })` to confirm that an active, complete subscription's effective scopes cover the row, then read `commitOutcome(id)` again. Use a separate subscription for each exact scope value when access to one value can be revoked independently. The base has then incorporated the server state available after the rejection. Another write can still arrive afterward, so submit the replacement with the domain's version check and retain any new rejection.
+Call `await client.proveCurrentBase(outcome)` when the user requests a reviewed replacement. The call waits for an earlier drive, completes a new idle drive, checks subscription coverage in a snapshot, and rereads the retained outcome. On success, `rows` contains the authorized bases and versions for every retained row in the aggregate. The call returns no rows when any row lacks proof. It also checks the coverage of returned `uniqueConflicts` rows.
 
-An incomplete pull keeps sync needed and the idle drive retries it. If the drive fails or exhausts its budget, transport is offline, coverage is missing, or the subscription is revoked, keep the recovery action unavailable and retain the reason. An actor-authorized registered remote query can instead read the current row directly from the server; it also requires a successful online request.
+```ts
+const proof = await client.proveCurrentBase(outcome);
+if (!proof.proven) {
+  showRecoveryUnavailable(proof.reason);
+  return;
+}
+// Construct the replacement from proof.rows and the saved operation intent.
+```
+
+The failure reason is `offline`, `sync_failed`, `schema_floor`, `budget_exhausted`, `snapshot_failed`, `missing_coverage`, `revoked`, or `outcome_unavailable`. Keep the failed outcome and show a message for the reason. Pass a positive round limit as the second argument to bound the drive. Use a separate subscription for each exact scope value when access to one value can be revoked independently. A null `serverRow` means the covering subscription holds no authorized base; it does not establish that the primary key is absent outside the actor's scopes. Another writer can change a row after proof, so submit the replacement with the domain's version check and retain any new rejection.
 
 | Resolution | Call |
 |---|---|
