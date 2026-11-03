@@ -61,7 +61,9 @@ parallel path without current evidence and a specification change.
 - **Leave others' work alone.** Never run destructive git commands
   (`revert`, `reset --hard`, forced checkouts) over changes you did not make.
 - **No unrequested publishing.** Deploy, release, and publish scripts run only
-  on explicit instruction, like pushes.
+  on explicit instruction, like pushes. A consumer-feedback handoff that
+  follows the `syncular-feedback` skill carries that instruction for the
+  fixes it accepts.
 
 ## Prose rules for docs
 
