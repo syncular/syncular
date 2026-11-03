@@ -51,6 +51,129 @@ async function bootstrapped(
 
 export const validatorScenarios: readonly Scenario[] = [
   {
+    name: 'validators/rejected-base-waits-for-a-complete-pull',
+    specRefs: ['§7.2', '§7.2.1', '§7.7'],
+    requires: ['validators', 'scope-authorization'],
+    async run(ctx) {
+      await install(ctx, [
+        {
+          table: 'tasks',
+          rule: {
+            kind: 'maxLength',
+            column: 'title',
+            max: 10,
+            code: TITLE_CODE,
+          },
+        },
+      ]);
+      const winner = await bootstrapped(ctx, 'fresh-winner', 'fresh-winner');
+      const reader = await ctx.newClient({
+        actorId: 'fresh-reader',
+        clientId: 'fresh-reader',
+        allowed: P1,
+        retainFailedCommits: true,
+      });
+      await reader.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await winner.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('t1', 'p1', 'old') },
+      ]);
+      await syncIdle(winner);
+      await syncIdle(reader);
+      await winner.api.patch('tasks', 't1', { title: 'winner' });
+      await syncIdle(winner);
+      const rejected = await reader.api.patch('tasks', 't1', {
+        title: 'invalid-too-long',
+      });
+      reader.faults.deferNextPulls = 3;
+      checkEqual(
+        (await syncOk(reader)).rejected,
+        [rejected],
+        'the validator rejection is retained',
+      );
+      checkEqual(
+        (await reader.api.commitOutcomes()).find(
+          (outcome) => outcome.clientCommitId === rejected,
+        )?.retainedRows?.[0]?.serverRow?.title,
+        'old',
+        'the before-image is visible while the pull is withheld',
+      );
+      check(
+        await reader.api.syncNeeded(),
+        'the omitted subscription requests a new pull',
+      );
+      const limited = await reader.api.syncUntilIdle(1);
+      check(limited.ok, 'the bounded refresh completes its round');
+      if (!limited.ok) return;
+      check(
+        limited.budgetExhausted === true,
+        'a withheld pull cannot report idle',
+      );
+      reader.faults.dropNextRequests = 1;
+      await syncFails(reader, 'transport.lost', 'offline refresh');
+      checkEqual(
+        (await reader.api.commitOutcomes()).find(
+          (outcome) => outcome.clientCommitId === rejected,
+        )?.retainedRows?.[0]?.serverRow?.title,
+        'old',
+        'failed refresh keeps the prior base and intent',
+      );
+      await ctx.recreateClient(reader, ctx.schema);
+      await syncIdle(reader);
+      checkEqual(
+        (await reader.api.commitOutcomes()).find(
+          (outcome) => outcome.clientCommitId === rejected,
+        )?.retainedRows?.[0]?.serverRow?.title,
+        'winner',
+        'a fresh idle drive delivers the winning base after restart',
+      );
+      const replacement = await reader.api.patch('tasks', 't1', {
+        title: 'mine',
+      });
+      await reader.api.resolveCommitOutcome(
+        rejected,
+        'superseded',
+        replacement,
+      );
+      await syncIdle(reader);
+      await syncIdle(winner);
+      await winner.api.patch('tasks', 't1', { title: 'winner2' });
+      await syncIdle(winner);
+      const second = await reader.api.patch('tasks', 't1', {
+        title: 'invalid-again',
+      });
+      reader.faults.deferNextPulls = 1;
+      checkEqual(
+        (await syncOk(reader)).rejected,
+        [second],
+        'a second distinct-actor conflict is retained',
+      );
+      checkEqual(
+        (await reader.api.commitOutcomes()).find(
+          (outcome) => outcome.clientCommitId === second,
+        )?.retainedRows?.[0]?.serverRow?.title,
+        'mine',
+        'the second rejection initially holds the prior delivered base',
+      );
+      await syncIdle(reader);
+      checkEqual(
+        (await reader.api.commitOutcomes()).find(
+          (outcome) => outcome.clientCommitId === second,
+        )?.retainedRows?.[0]?.serverRow?.title,
+        'winner2',
+        'the second catch-up delivers its winning base',
+      );
+      await ctx.server.setAllowedScopes('fresh-reader', { project_id: [] });
+      await syncIdle(reader);
+      checkEqual(
+        (await reader.api.commitOutcomes()).find(
+          (outcome) => outcome.clientCommitId === second,
+        )?.retainedRows,
+        undefined,
+        'revocation removes retained row evidence',
+      );
+    },
+  },
+  {
     name: 'validators/unexpected-error-retries-as-static-rejection',
     specRefs: ['§6.3', '§6.7', '§2.3'],
     requires: ['validators'],

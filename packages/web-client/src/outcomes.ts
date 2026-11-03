@@ -95,7 +95,7 @@ export interface RetainedCommitRow {
   readonly rowId: string;
   /** Complete intended row, or null for a local deletion. */
   readonly localRow: Readonly<Record<string, RowValue>> | null;
-  /** Latest authorized server base, or null for an absent server row. */
+  /** Latest delivered authorized base; a new rejection can precede its pull. */
   readonly serverRow: Readonly<Record<string, RowValue>> | null;
   readonly serverVersion: number | null;
 }

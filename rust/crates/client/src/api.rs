@@ -1129,6 +1129,7 @@ pub struct RetainedCommitRow {
     pub table: String,
     pub row_id: String,
     pub local_row: Option<Map<String, Value>>,
+    /// The latest delivered authorized base; rejection can precede the pull.
     pub server_row: Option<Map<String, Value>>,
     pub server_version: Option<i64>,
 }

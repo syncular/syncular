@@ -14,6 +14,7 @@ import {
   ValidationRejection,
 } from '@syncular/server';
 import { pgliteExecutor } from '@syncular/server/pglite';
+import { decodeMessage, encodeMessage } from '@syncular/core';
 
 const schema: ClientSchema = {
   version: 1,
@@ -38,6 +39,110 @@ const schema: ClientSchema = {
     },
   ],
 };
+
+for (const backend of ['sqlite', 'pglite'] as const) {
+  test(`${backend}: a rejected base waits for withheld pulls`, async () => {
+    const pg = backend === 'pglite' ? await PGlite.create() : undefined;
+    const storage = pg
+      ? new PostgresServerStorage(pgliteExecutor(pg))
+      : new SqliteServerStorage();
+    const segments = new MemorySegmentStore();
+    const databases = [new BunClientDatabase(), new BunClientDatabase()];
+    let defer = 0;
+    let readerAllowed = ['one'];
+    const clients = databases.map((database, index) => {
+      const context = {
+        partition: 'fresh',
+        actorId: `actor-${index}`,
+        schema,
+        storage,
+        segments,
+        resolveScopes: () => ({
+          theatre_id: index === 0 ? ['one'] : readerAllowed,
+        }),
+        validators: {
+          versions: (operation: {
+            row: Readonly<Record<string, unknown>> | undefined;
+          }) => {
+            if (operation.row?.body === 'reject')
+              throw new ValidationRejection('app.rejected', 'rejected');
+          },
+        },
+      };
+      return new SyncClient({
+        database,
+        schema,
+        clientId: `fresh-${index}`,
+        retainFailedCommits: true,
+        transport: async (bytes) => {
+          const response = await handleSyncRequest(bytes, context);
+          if (index === 0 || defer === 0) return response;
+          defer -= 1;
+          const message = decodeMessage(response);
+          if (message.msgKind !== 'response')
+            throw new Error('expected response');
+          return encodeMessage({
+            ...message,
+            frames: message.frames.filter((frame) =>
+              [
+                'RESP_HEADER',
+                'LEASE',
+                'PUSH_RESULT',
+                'PUSH_RESULT_DETAILS',
+              ].includes(frame.type),
+            ),
+          });
+        },
+      });
+    });
+    const [winner, reader] = clients;
+    try {
+      for (const client of clients) {
+        await client.start();
+        client.subscribe({
+          id: 'one',
+          table: 'versions',
+          scopes: { theatre_id: ['one'] },
+        });
+      }
+      winner!.mutate([
+        {
+          table: 'versions',
+          op: 'upsert',
+          values: {
+            id: 't1',
+            theatre_id: 'one',
+            publication_number: 1,
+            body: 'old',
+          },
+        },
+      ]);
+      await winner!.syncUntilIdle();
+      await reader!.syncUntilIdle();
+      winner!.patch('versions', 't1', { body: 'winner' });
+      await winner!.syncUntilIdle();
+      const id = reader!.patch('versions', 't1', { body: 'reject' });
+      defer = 2;
+      await reader!.sync();
+      expect(
+        reader!.commitOutcome(id)?.retainedRows?.[0]?.serverRow?.body,
+      ).toBe('old');
+      expect(reader!.statusSnapshot().syncNeeded).toBe(true);
+      expect((await reader!.syncUntilIdle()).budgetExhausted).toBe(false);
+      expect(
+        reader!.commitOutcome(id)?.retainedRows?.[0]?.serverRow?.body,
+      ).toBe('winner');
+      readerAllowed = [];
+      await reader!.syncUntilIdle();
+      expect(reader!.commitOutcome(id)?.retainedRows).toBeUndefined();
+    } finally {
+      for (const client of clients) await client.close();
+      for (const database of databases) database.close();
+      if (pg) await pg.close();
+      else if (storage instanceof SqliteServerStorage) storage.db.close();
+    }
+  });
+}
 
 for (const backend of ['sqlite', 'pglite'] as const) {
   for (const resolution of [

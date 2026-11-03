@@ -1,8 +1,29 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.50.0** (`v0.50.0`). All artifacts use Apache-2.0, except
+current release is **0.50.1** (`v0.50.1`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.50.1 release notes
+
+0.50.1 keeps an incomplete pull from being reported as idle. SSP2, the
+storage layout, and the wire version are unchanged.
+
+When a response omits a completed section for a subscription in the request,
+both client cores keep sync needed and an idle drive retries the pull. A
+validator rejection is delivered before its response's pull sections. Its
+retained `serverRow` is the latest delivered base and may predate the
+rejection. To prepare a reviewed replacement, wait for any active drive, run a
+new `syncUntilIdle()` drive, require success without budget exhaustion or a
+schema floor, and verify an active complete subscription covers the row.
+Read the outcome again after the drive. A failure, missing coverage, or
+revocation is not evidence of a current base. Concurrent writes can still
+arrive after the pull; submit the replacement with the domain's version check.
+
+**Upgrade notes.** Existing apps can keep the same API. Recovery UI that uses
+retained bases must wait for a successful covering catch-up or query the
+authorized current row directly. Upgrade all 12 npm packages and 7 crates
+together.
 
 ## 0.50.0 release notes
 

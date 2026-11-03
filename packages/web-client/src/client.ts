@@ -5008,6 +5008,9 @@ export class SyncClient {
     let section: OpenSection | undefined;
     let errorFrame: ClientSyncError | undefined;
     let deltaCursor = -1;
+    const incompleteSubscriptions = new Set(
+      mode === 'pull' ? subsById.keys() : [],
+    );
 
     // §5.4/§5.5: issue every segment download of this response before the
     // apply loop reaches the first one, so a paged bootstrap overlaps its page
@@ -5353,6 +5356,13 @@ export class SyncClient {
           }
           case 'SUB_END': {
             if (
+              section?.sub !== undefined &&
+              !section.skip &&
+              this.#localResetEpoch === resetEpoch
+            ) {
+              incompleteSubscriptions.delete(section.sub.id);
+            }
+            if (
               section !== undefined &&
               !section.skip &&
               section.sub !== undefined &&
@@ -5414,6 +5424,11 @@ export class SyncClient {
     }
 
     if (errorFrame !== undefined) throw errorFrame;
+
+    if (incompleteSubscriptions.size > 0) {
+      this.#setSyncNeeded(true);
+      this.#emitSyncIntent({ kind: 'interactive' });
+    }
 
     if (mode === 'delta') {
       if (deltaCursor >= 0) this.#sendAck(deltaCursor);

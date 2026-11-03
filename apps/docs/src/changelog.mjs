@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-03',
+    title: 'Catch up before reviewing a retained base',
+    body: 'Both client cores keep sync needed when a pull response omits a requested subscription section, so an idle drive retries it. A rejection can arrive before its winning row; recovery UI can run a fresh successful `syncUntilIdle()` drive, verify active complete coverage, and then read the retained outcome again before constructing a version-checked replacement.',
+    links: [
+      {
+        href: '/reference-outbox-outcomes/#refresh-a-retained-base-before-recovery',
+        label: 'Refresh a retained base before recovery',
+      },
+    ],
+  },
+  {
+    date: '2026-11-03',
     title: 'Declare the scopes required for writes',
     body: "A server table can set `writeScopeVariables` to the declared scope variables a write must match. A facility grant can authorize an offline insert while a separate exact-ID scope supports historical reads. Omitting the property retains the existing intersection of all scope variables. The server also reauthorizes cached conflict rows on replay and checks each child affected by a reference cascade against the actor's write scopes.",
     links: [

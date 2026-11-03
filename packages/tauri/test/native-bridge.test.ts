@@ -12,7 +12,11 @@ import {
 } from '@syncular/client';
 import { makeClient, makeServer } from '../../web-client/test/helpers';
 import { decodeMessage, encodeMessage } from '../../core/src/index';
-import { handleSyncRequest, handleSegmentDownload } from '@syncular/server';
+import {
+  handleSyncRequest,
+  handleSegmentDownload,
+  ValidationRejection,
+} from '@syncular/server';
 import { createTauriSyncClient, type TauriApi } from '../src/index';
 import { createTauriAuthoritySyncClient } from '../src/authority';
 
@@ -663,6 +667,130 @@ if (!available) {
         await host.close();
       }
     });
+
+    test('native refreshes a rejected base after withheld pulls and reopen', async () => {
+      const source = makeServer(schema, {
+        validators: {
+          todos: (operation) => {
+            if (operation.row?.title === 'reject') {
+              throw new ValidationRejection('app.rejected', 'rejected');
+            }
+          },
+        },
+      });
+      source.allowed.seed = { list_id: ['one'] };
+      source.allowed['native-fresh'] = { list_id: ['one'] };
+      let deferPulls = 0;
+      const server = Bun.serve({
+        hostname: '127.0.0.1',
+        port: 0,
+        async fetch(request) {
+          const pathname = new URL(request.url).pathname;
+          const context = source.ctxFor('native-fresh');
+          if (pathname === '/sync') {
+            const bytes = await handleSyncRequest(
+              new Uint8Array(await request.arrayBuffer()),
+              context,
+            );
+            if (deferPulls === 0) return new Response(bytes.slice().buffer);
+            deferPulls -= 1;
+            const message = decodeMessage(bytes);
+            if (message.msgKind !== 'response')
+              throw new Error('expected response');
+            return new Response(
+              encodeMessage({
+                ...message,
+                frames: message.frames.filter((frame) =>
+                  [
+                    'RESP_HEADER',
+                    'LEASE',
+                    'PUSH_RESULT',
+                    'PUSH_RESULT_DETAILS',
+                  ].includes(frame.type),
+                ),
+              }).slice().buffer,
+            );
+          }
+          if (pathname.startsWith('/segments/'))
+            return new Response(
+              (
+                await handleSegmentDownload(context, {
+                  segmentId: decodeURIComponent(
+                    pathname.slice('/segments/'.length),
+                  ),
+                  scopesHeader:
+                    request.headers.get('X-Syncular-Scopes') ?? '{}',
+                })
+              ).bytes.slice().buffer,
+            );
+          return new Response('unknown route', { status: 404 });
+        },
+      });
+      const host = nativeTauri(`http://127.0.0.1:${server.port}`);
+      const seed = await makeClient(source, {
+        actorId: 'seed',
+        clientId: 'native-fresh-seed',
+        schema,
+      });
+      try {
+        seed.client.mutate([
+          {
+            table: 'todos',
+            op: 'upsert',
+            values: { id: 'row', list_id: 'one', title: 'old' },
+          },
+        ]);
+        await seed.client.syncUntilIdle();
+        let client = await createTauriSyncClient({
+          schema,
+          clientId: 'native-fresh',
+          tauri: host.api,
+          retainFailedCommits: true,
+        });
+        await client.subscribe({
+          id: 'single',
+          table: 'todos',
+          scopes: { list_id: ['one'] },
+        });
+        await client.syncUntilIdle();
+        seed.client.patch('todos', 'row', { title: 'winner' });
+        await seed.client.syncUntilIdle();
+        const id = await client.mutate([
+          {
+            table: 'todos',
+            op: 'patch',
+            values: { id: 'row', title: 'reject' },
+          },
+        ]);
+        deferPulls = 2;
+        await client.sync();
+        expect(
+          (await client.commitOutcome(id))?.retainedRows?.[0]?.serverRow?.title,
+        ).toBe('old');
+        expect((await client.statusSnapshot()).syncNeeded).toBe(true);
+        await client.close();
+        client = await createTauriSyncClient({
+          schema,
+          clientId: 'native-fresh',
+          tauri: host.api,
+          retainFailedCommits: true,
+        });
+        await client.syncUntilIdle();
+        expect(
+          (await client.commitOutcome(id))?.retainedRows?.[0]?.serverRow?.title,
+        ).toBe('winner');
+        source.allowed['native-fresh'] = { list_id: [] };
+        await client.syncUntilIdle();
+        expect((await client.commitOutcome(id))?.retainedRows).toBeUndefined();
+        await client.close();
+      } finally {
+        await seed.client.close();
+        seed.db.close();
+        await host.close();
+        await server.stop(true);
+        source.storage.db.close();
+      }
+    }, 60000);
 
     test('native offline insert uses a facility write scope after reopen', async () => {
       const alternativeSchema = {

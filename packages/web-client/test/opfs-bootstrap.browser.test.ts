@@ -9,6 +9,7 @@ import {
   compileSchema,
   handleSyncRequest,
   verifySegmentToken,
+  ValidationRejection,
 } from '@syncular/server';
 import { makeClient, makeServer, PARTITION } from './helpers';
 import {
@@ -23,6 +24,18 @@ const source = makeServer(OPFS_SCHEMA);
 source.allowed['actor-1'] = { project_id: ['p1'] };
 source.limits.inlineSegmentMaxBytes = 0;
 const scopeSource = makeServer(OPFS_SCOPE_SCHEMAS[2]!);
+const freshSource = makeServer(OPFS_SCHEMA, {
+  validators: {
+    catalogue: (operation) => {
+      if (operation.row?.title === 'reject') {
+        throw new ValidationRejection('app.rejected', 'rejected');
+      }
+    },
+  },
+});
+freshSource.allowed['actor-1'] = { project_id: ['p1'] };
+freshSource.allowed.seed = { project_id: ['p1'] };
+let deferFreshPulls = 0;
 scopeSource.allowed['actor-1'] = { calendar_theatre_id: ['p1'] };
 const alternativeSource = makeServer({
   ...OPFS_ALTERNATIVE_SCOPE_SCHEMA,
@@ -175,6 +188,41 @@ beforeAll(async () => {
         );
         return new Response(response.slice().buffer);
       }
+      if (pathname === '/sync-fresh') {
+        const response = await handleSyncRequest(
+          new Uint8Array(await request.arrayBuffer()),
+          freshSource.ctxFor('actor-1'),
+        );
+        if (deferFreshPulls === 0) return new Response(response.slice().buffer);
+        deferFreshPulls -= 1;
+        const message = decodeMessage(response);
+        if (message.msgKind !== 'response')
+          throw new Error('expected response');
+        const filtered = encodeMessage({
+          ...message,
+          frames: message.frames.filter((frame) =>
+            [
+              'RESP_HEADER',
+              'LEASE',
+              'PUSH_RESULT',
+              'PUSH_RESULT_DETAILS',
+            ].includes(frame.type),
+          ),
+        });
+        return new Response(filtered.slice().buffer);
+      }
+      if (pathname.startsWith('/fresh-segments/')) {
+        const result = await handleSegmentDownload(
+          freshSource.ctxFor('actor-1'),
+          {
+            segmentId: decodeURIComponent(
+              pathname.slice('/fresh-segments/'.length),
+            ),
+            scopesHeader: request.headers.get('X-Syncular-Scopes') ?? '',
+          },
+        );
+        return new Response(result.bytes.slice().buffer);
+      }
       if (pathname === '/sync-alternative') {
         const response = await handleSyncRequest(
           new Uint8Array(await request.arrayBuffer()),
@@ -265,6 +313,7 @@ afterAll(async () => {
   await server?.stop(true);
   source.storage.db.close();
   scopeSource.storage.db.close();
+  freshSource.storage.db.close();
   alternativeSource.storage.db.close();
 });
 
@@ -1015,6 +1064,88 @@ test('OPFS retains a distinct-ID unique insert without displacing the server win
     await browser.close();
   }
 }, 30000);
+
+test('OPFS refreshes a rejected base after withheld pulls and restart', async () => {
+  const seed = await makeClient(freshSource, {
+    actorId: 'seed',
+    clientId: 'fresh-seed',
+    schema: OPFS_SCHEMA,
+  });
+  const browser = await chromium.launch();
+  try {
+    seed.client.mutate([
+      {
+        table: 'catalogue',
+        op: 'upsert',
+        values: { id: 'row', project_id: 'p1', title: 'old' },
+      },
+    ]);
+    await seed.client.syncUntilIdle();
+    const page = await browser.newPage();
+    await page.goto(`${server.url.href}?fresh`);
+    await page.evaluate(() => window.opfsTest.open());
+    await page.evaluate(async () => {
+      const client = await window.opfsTest.ready;
+      await client.subscribe({
+        id: 'single',
+        table: 'catalogue',
+        scopes: { project_id: ['p1'] },
+      });
+      await client.syncUntilIdle();
+    });
+    seed.client.patch('catalogue', 'row', { title: 'winner' });
+    await seed.client.syncUntilIdle();
+    const id = await page.evaluate(async () =>
+      (await window.opfsTest.ready).mutate([
+        {
+          table: 'catalogue',
+          op: 'patch',
+          values: { id: 'row', title: 'reject' },
+        },
+      ]),
+    );
+    deferFreshPulls = 2;
+    const prior = await page.evaluate(async (commitId) => {
+      const client = await window.opfsTest.ready;
+      await client.sync();
+      return {
+        base: (await client.commitOutcome(commitId))?.retainedRows?.[0]
+          ?.serverRow?.title,
+        needed: (await client.statusSnapshot()).syncNeeded,
+      };
+    }, id);
+    expect(prior).toEqual({ base: 'old', needed: true });
+    await page.reload({ waitUntil: 'load' });
+    await page.evaluate(() => window.opfsTest.open());
+    const after = await page.evaluate(async (commitId) => {
+      const client = await window.opfsTest.ready;
+      const report = await client.syncUntilIdle();
+      return {
+        base: (await client.commitOutcome(commitId))?.retainedRows?.[0]
+          ?.serverRow?.title,
+        exhausted: report.budgetExhausted,
+      };
+    }, id);
+    expect(after).toEqual({ base: 'winner', exhausted: false });
+    freshSource.allowed['actor-1'] = { project_id: [] };
+    await page.evaluate(async () =>
+      (await window.opfsTest.ready).syncUntilIdle(),
+    );
+    expect(
+      await page.evaluate(
+        async (commitId) =>
+          (await (await window.opfsTest.ready).commitOutcome(commitId))
+            ?.retainedRows,
+        id,
+      ),
+    ).toBeUndefined();
+    await page.evaluate(async () => (await window.opfsTest.ready).close());
+  } finally {
+    await seed.client.close();
+    seed.db.close();
+    await browser.close();
+  }
+}, 60000);
 
 test('OPFS offline inserts use a facility write scope across restart and revocation', async () => {
   alternativeSource.allowed.seed = { project_id: ['p1', 'p2'] };

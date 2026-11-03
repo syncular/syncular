@@ -4238,6 +4238,12 @@ including an epoch handshake with no subscriptions. A persisted outbox can
 therefore drain after startup without requiring a subscription to trigger a
 second request.
 
+A pull response that omits a completed section for any subscription sent in
+that request leaves sync-needed raised. An idle drive MUST retry that pull;
+it cannot report idle while a sent subscription's section is missing. A
+revoked or failed subscription is reported as such and is not evidence of an
+authorized current base.
+
 ### 7.2 Replay and idempotent retry
 
 A client configured with `retainFailedCommits: true` keeps failed local rows
@@ -4383,6 +4389,17 @@ With retained intent enabled, outcomes also expose protected `retainedRows`:
 complete intended `localRow`, latest authorized `serverRow` and `serverVersion`
 per affected row (null for deletion or an absent server base). Changes to those
 server bases publish `outcomesChanged` with the row transaction.
+
+The retained server base is the latest delivered base. A rejection notification
+can precede the pull section of the same round, so the base is not evidence of
+the row current at rejection. To obtain a base at least as recent as a
+rejection, an application waits for the active sync drive to finish, then runs
+a new `syncUntilIdle` drive. It requires a non-exhausted successful drive with
+no schema floor and verifies that a complete active subscription covers the
+row under its effective scopes. It reads the active outcome again after the
+drive; failure, offline transport, missing coverage, or revocation cannot prove
+the base. The server can accept another write after the pull, so a replacement
+still uses the domain's normal version check.
 
 The client exposes `commitOutcome(clientCommitId)` and
 `commitOutcomes({ limit?, activeOnly? })`. Active conflict/rejection entries

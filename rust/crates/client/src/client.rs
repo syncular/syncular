@@ -17908,6 +17908,8 @@ impl SyncClient {
             .iter()
             .map(String::as_str)
             .collect::<HashSet<_>>();
+        let mut incomplete_subscriptions: HashSet<&str> =
+            meta.fresh.iter().map(|(id, _)| id.as_str()).collect();
         let mut last_final_push_result_id: Option<String> = None;
         for frame in &response.frames {
             match frame {
@@ -18110,6 +18112,9 @@ impl SyncClient {
                             other => body.push(other),
                         }
                     }
+                    if sub_end.is_some() {
+                        incomplete_subscriptions.remove(id.as_str());
+                    }
                     if let Err(SectionError::Abort(code, message)) = self.process_section(
                         transport,
                         &id,
@@ -18196,6 +18201,9 @@ impl SyncClient {
                 message,
                 recommended_action,
             };
+        }
+        if !incomplete_subscriptions.is_empty() {
+            self.set_sync_needed(true, true);
         }
         self.ack_after_pull(transport);
         // §7.4.5: the reset is over once the first post-reset pull round
