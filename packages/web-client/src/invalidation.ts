@@ -49,6 +49,13 @@ export interface ClientChangeBatch {
   readonly conflictsChanged: boolean;
   readonly rejectionsChanged: boolean;
   readonly outcomesChanged: boolean;
+  /** Server COMMIT frames applied by this transaction, when present. */
+  readonly appliedCommits?: readonly {
+    readonly subscriptionId: string;
+    readonly table: string;
+    readonly commitSeq: number;
+    readonly source: 'delta' | 'pull';
+  }[];
 }
 
 export type ClientChangeListener = (batch: ClientChangeBatch) => void;
@@ -93,6 +100,15 @@ export class ChangeAccumulator {
   #conflicts = false;
   #rejections = false;
   #outcomes = false;
+  readonly #appliedCommits: NonNullable<
+    ClientChangeBatch['appliedCommits']
+  >[number][] = [];
+
+  appliedCommit(
+    entry: NonNullable<ClientChangeBatch['appliedCommits']>[number],
+  ): void {
+    this.#appliedCommits.push(entry);
+  }
 
   /** Mark a whole table dirty, discarding any weaker scope-only facts. */
   table(name: string): void {
@@ -214,6 +230,9 @@ export class ChangeAccumulator {
       conflictsChanged: this.#conflicts,
       rejectionsChanged: this.#rejections,
       outcomesChanged: this.#outcomes,
+      ...(this.#appliedCommits.length > 0
+        ? { appliedCommits: this.#appliedCommits }
+        : {}),
     };
   }
 }

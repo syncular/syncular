@@ -98,6 +98,10 @@ try {
 
 When a commit lands that a connected client cares about, the server pushes it as a delta: an ordinary sync response over the socket. The client applies it and acknowledges.
 
+During a socket round the server queues matching deltas until the response ends and registrations refresh. The queue shares the `maxDeltaBytes` byte limit. A full queue, a notification gap, or a changed registration discards the queued deltas and sends a `catchup-required` wake. The client applies a delta received while the round is applying after that round finishes.
+
+Change batches for applied `COMMIT` frames carry `appliedCommits` entries with `subscriptionId`, `table`, `commitSeq`, and `source` (`delta` or `pull`). Snapshot imports, cursor advances, and wake-ups do not create these entries. An entry confirms a local transaction committed; a later frame can still fail the round. Inspect progress or the round result for the round outcome. Subscription IDs can contain application data, so apply your logging policy to them.
+
 The protocol has one delta kind and one wake-up kind. The wake-up tells the client to run a pull soon and carries no data. It has three reason codes: `catchup-required`, `delta-too-large`, and `reset-required` ([SPEC §8.2 and §8.3](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#8-realtime)). Realtime propagation latency is on [Benchmarks](/benchmarks/).
 
 ## The host supervisor

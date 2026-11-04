@@ -922,13 +922,10 @@ export class SyncClient {
   #needsPull = false;
   readonly #progress = new ProgressEmitter();
   #progressAttempt = 0;
-  #syncing = false;
   /**
    * True from the synchronous entry of `sync()` until its serialized round
    * settles — the "one loop owns the database" guard that rejects a
-   * concurrent `sync()` before the op chain would queue it. Distinct from
-   * `#syncing`, which is true only while `#runSync`'s body actually runs
-   * (the fast-bail the delta path reads).
+   * concurrent `sync()` before the op chain would queue it.
    */
   #syncOutstanding = false;
   /**
@@ -4347,10 +4344,7 @@ export class SyncClient {
         schemaFloor: this.#schemaFloor,
       };
     }
-    this.#syncing = true;
-    // Cleared before the round, not after: a wake-up (or a delta dropped
-    // because this pull is mid-flight) that lands during the round must
-    // survive it — the reference server keeps no replay buffer (§8.2).
+    // A wake-up that lands during the round must survive it (§8.4).
     this.#setSyncNeeded(false);
     try {
       await this.#drainPendingEvictions();
@@ -4554,8 +4548,6 @@ export class SyncClient {
         this.#emitSyncIntent(intent);
       }
       throw error;
-    } finally {
-      this.#syncing = false;
     }
   }
 
@@ -5096,19 +5088,26 @@ export class SyncClient {
 
   async #handleRealtimeBinary(bytes: Uint8Array): Promise<void> {
     if (!this.#transportEnabled) return;
-    if (this.#syncing) {
-      // Fast path: a pull is mid-flight; let it win and recover the gap
-      // itself — re-pulling is idempotent, interleaved application is not
-      // worth it. (An optimization; the op chain below is the correctness
-      // mechanism — it also excludes a delta from racing a `setWindow` or a
-      // sync round that started between this check and the apply.)
-      this.#setSyncNeeded(true);
-      return;
-    }
+    const resetEpoch = this.#localResetEpoch;
+    const securityEpoch = this.#securityEpoch;
+    const transportEpoch = this.#transportEpoch;
     // Serialize the apply on the operation chain: a delta must never
     // interleave its transactions or share the `#batch` accumulator with a
     // pull round or a `setWindow` at an await point (§8.2).
     await this.#serialize(async () => {
+      if (
+        !this.#started ||
+        !this.#transportEnabled ||
+        this.#securityLifecycle !== 'active' ||
+        securityEpoch !== this.#securityEpoch ||
+        transportEpoch !== this.#transportEpoch
+      )
+        return;
+      if (resetEpoch !== this.#localResetEpoch) {
+        this.#setSyncNeeded(true);
+        this.#emitSyncNeeded('catchup-required');
+        return;
+      }
       try {
         const message = decodeMessage(bytes);
         if (message.msgKind !== 'response') return;
@@ -5445,7 +5444,11 @@ export class SyncClient {
             break;
           }
           case 'COMMIT':
-            if (section !== undefined && !section.skip) {
+            if (
+              section !== undefined &&
+              !section.skip &&
+              section.sub !== undefined
+            ) {
               const changes = frame.changes.filter((change) => {
                 if (change.op !== 'delete') return true;
                 const table = frame.tables[change.tableIndex];
@@ -5457,7 +5460,12 @@ export class SyncClient {
                 );
               });
               if (changes.length > 0) {
-                await this.#applyCommit({ ...frame, changes }, summary);
+                await this.#applyCommit(
+                  { ...frame, changes },
+                  summary,
+                  section.sub.id,
+                  mode,
+                );
               }
             }
             break;
@@ -5875,6 +5883,8 @@ export class SyncClient {
   async #applyCommit(
     frame: CommitFrame,
     summary: MutableSummary,
+    subscriptionId: string,
+    source: 'delta' | 'pull',
   ): Promise<void> {
     await applyCommitFrame(
       this.#db,
@@ -5886,6 +5896,17 @@ export class SyncClient {
           this.#recordCommitChanges(batch, frame);
           const result = fn();
           this.#replayOutbox(result, false);
+          for (const table of new Set(
+            frame.changes.map((change) => frame.tables[change.tableIndex]),
+          )) {
+            if (table !== undefined)
+              batch.appliedCommit({
+                subscriptionId,
+                table,
+                commitSeq: frame.commitSeq,
+                source,
+              });
+          }
           return result;
         }),
     );

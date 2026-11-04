@@ -957,7 +957,7 @@ class TsServerInstance implements ServerInstance {
         clientId,
         send: (data) => {
           if (typeof data === 'string') sink.onText(data);
-          else sink.onBinary(data);
+          else return sink.onBinary(data);
         },
         closeSocket: () => sink.onClose?.(),
       });

@@ -444,6 +444,22 @@ pub struct ClientDiagnosticsLease {
 /// JSON bindings carry the u64 revision as a decimal string (§7.5).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AppliedServerCommit {
+    pub subscription_id: String,
+    pub table: String,
+    pub commit_seq: i64,
+    pub source: AppliedServerCommitSource,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AppliedServerCommitSource {
+    Delta,
+    Pull,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ClientChangeBatch {
     pub revision: String,
     pub tables: Vec<TableChange>,
@@ -453,6 +469,8 @@ pub struct ClientChangeBatch {
     pub conflicts_changed: bool,
     pub rejections_changed: bool,
     pub outcomes_changed: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub applied_commits: Vec<AppliedServerCommit>,
 }
 
 #[derive(Debug, Clone, Serialize)]

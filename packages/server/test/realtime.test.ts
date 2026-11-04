@@ -148,6 +148,106 @@ describe('delta delivery (§8.2)', () => {
     return { wire, session };
   }
 
+  test('round-time deltas follow END, remain ordered, and trigger a wake on overflow or registration changes', async () => {
+    for (const mode of ['normal', 'overflow', 'revoked', 'added'] as const) {
+      const t = makeContext();
+      if (mode === 'added') t.scopes.value = { project_id: ['p1', 'p2'] };
+      const hub = makeHub(t, 1024);
+      await sync(t, [
+        pullHeader(),
+        subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
+      ]);
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const sent: (string | Uint8Array)[] = [];
+      let held = false;
+      const session = await hub.connect({
+        partition: 'part-1',
+        actorId: 'actor-1',
+        clientId: 'client-1',
+        send(data) {
+          sent.push(data);
+          if (
+            typeof data !== 'string' &&
+            data[0] === REALTIME_TAG_ROUND &&
+            !held
+          ) {
+            held = true;
+            entered.resolve();
+            return release.promise;
+          }
+        },
+      });
+      const request = requestBytes(
+        [
+          pullHeader(),
+          subFrame('s1', 'tasks', { project_id: ['p1'] }, 0),
+          ...(mode === 'added'
+            ? [subFrame('s2', 'tasks', { project_id: ['p2'] }, -1)]
+            : []),
+        ],
+        'client-1',
+      );
+      const tagged = new Uint8Array(request.length + 1);
+      tagged[0] = REALTIME_TAG_ROUND;
+      tagged.set(request, 1);
+      const round = session.handleBinary(tagged);
+      await entered.promise;
+      for (let i = 0; i < (mode === 'overflow' ? 20 : 2); i += 1) {
+        await sync(
+          t,
+          [
+            pushCommit(`c${i}`, [
+              upsert(
+                'tasks',
+                `t${i}`,
+                taskRow(`t${i}`, mode === 'added' ? 'p2' : 'p1'),
+              ),
+            ]),
+          ],
+          { clientId: 'writer' },
+        );
+      }
+      expect(
+        sent.filter((data) => typeof data !== 'string' && data[0] === 0),
+      ).toHaveLength(0);
+      if (mode === 'revoked') {
+        t.scopes.value = { project_id: [] };
+        await hub.refreshScopes('part-1', 'actor-1');
+      }
+      release.resolve();
+      await round;
+      const deltas = sent.filter(
+        (data): data is Uint8Array => typeof data !== 'string' && data[0] === 0,
+      );
+      const wakes = sent
+        .filter((data): data is string => typeof data === 'string')
+        .map(parseRealtimeServerEvent)
+        .filter((event) => event.known && event.event.event === 'sync');
+      if (mode === 'normal') {
+        expect(wakes).toHaveLength(0);
+        expect(
+          deltas.map((data) => {
+            const frame = decodeMessage(data.subarray(1)).frames.find(
+              (entry) => entry.type === 'COMMIT',
+            );
+            return frame?.type === 'COMMIT' ? frame.commitSeq : undefined;
+          }),
+        ).toEqual([1, 2]);
+        const lastRound = sent.findLastIndex(
+          (data) => typeof data !== 'string' && data[0] === REALTIME_TAG_ROUND,
+        );
+        expect(
+          sent.findIndex((data) => typeof data !== 'string' && data[0] === 0),
+        ).toBeGreaterThan(lastRound);
+      } else {
+        expect(deltas).toHaveLength(0);
+        expect(wakes.length).toBeGreaterThan(0);
+      }
+      session.close();
+    }
+  });
+
   test('a matching commit is pushed as a complete SSP2 response', async () => {
     const t = makeContext();
     const hub = makeHub(t);

@@ -1327,10 +1327,36 @@ function decodeChangeBatch(value: unknown): ClientChangeBatch | undefined {
         ];
       })
     : [];
+  const appliedCommits: NonNullable<
+    ClientChangeBatch['appliedCommits']
+  >[number][] = [];
+  if (raw.appliedCommits !== undefined) {
+    if (!Array.isArray(raw.appliedCommits)) return undefined;
+    for (const entry of raw.appliedCommits) {
+      if (entry === null || typeof entry !== 'object') return undefined;
+      const item = entry as Record<string, unknown>;
+      if (
+        typeof item.subscriptionId !== 'string' ||
+        typeof item.table !== 'string' ||
+        typeof item.commitSeq !== 'number' ||
+        !Number.isSafeInteger(item.commitSeq) ||
+        item.commitSeq < 1 ||
+        (item.source !== 'delta' && item.source !== 'pull')
+      )
+        return undefined;
+      appliedCommits.push({
+        subscriptionId: item.subscriptionId,
+        table: item.table,
+        commitSeq: item.commitSeq,
+        source: item.source,
+      });
+    }
+  }
   return {
     revision: BigInt(raw.revision),
     tables,
     windows,
+    ...(raw.appliedCommits !== undefined ? { appliedCommits } : {}),
     ...(raw.status !== undefined
       ? { status: raw.status as SyncStatusSnapshot }
       : {}),

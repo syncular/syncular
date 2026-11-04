@@ -1,8 +1,29 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.54.0** (`v0.54.0`). All artifacts use Apache-2.0, except
+current release is **0.55.0** (`v0.55.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.55.0 release notes
+
+0.55.0 adds bounded native WebSocket receipt observation and identifies
+applied server commits in client change batches. The receipt channel reports
+message timestamps, byte counts, and kinds, including socket round chunks,
+and counts records lost to a full or closed channel. WebSocket fragmentation
+is reassembled before observation. Applied commit entries name the
+subscription, table, sequence, and delta or pull source. A later round failure
+can follow a successfully committed entry; round progress reports the failure.
+
+The server queues matching deltas produced during a socket round and sends
+them after the response and registration refresh. A full queue, notification
+gap, or changed registration discards the queue and requests a catch-up pull.
+The browser client queues a delta until an in-progress round finishes applying.
+SSP2 and the storage layout are unchanged.
+
+**Upgrade notes.** Upgrade all 12 npm packages and 7 crates together, including
+the server for deferred delta delivery. Rust code constructing
+`ClientChangeBatch` adds the `applied_commits` field. Hosts that install the
+receipt observer must drain its bounded channel and check the dropped count.
 
 ## 0.54.0 release notes
 

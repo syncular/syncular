@@ -110,6 +110,7 @@ interface Registration {
   readonly codec: CompiledTable;
   readonly id: string;
   readonly table: string;
+  readonly schemaVersion: number;
   readonly effective: ScopeMap;
 }
 
@@ -261,6 +262,13 @@ export class RealtimeSession {
    * never clobbers a follow-up round's in-flight marker. */
   #requestScanner: MessageStreamScanner | undefined;
   #activeRound: symbol | undefined;
+  /** Deltas wait for every round response and registration refresh to finish. */
+  #roundsRefreshing = 0;
+  #deferredDeltas: { bytes: Uint8Array; commitSeq: number; changes: number }[] =
+    [];
+  #deferredBytes = 0;
+  #deferredRegistrations: string | undefined;
+  #closed = false;
   /** §8.6.4 rate cap: per-scope-key last-fanout time + a pending latest
    * document coalesced while over the cap. */
   #presenceRate = new Map<
@@ -505,6 +513,10 @@ export class RealtimeSession {
 
   /** §8.6.1: on disconnect, leave every key this session was present on. */
   dropAllPresence(): void {
+    this.#closed = true;
+    this.#deferredDeltas = [];
+    this.#deferredBytes = 0;
+    this.#deferredRegistrations = undefined;
     for (const key of this.#hub.presence.keysOf(this.partition, this)) {
       this.#leavePresence(key);
     }
@@ -564,6 +576,7 @@ export class RealtimeSession {
     }
     const token = Symbol('round');
     this.#activeRound = token;
+    this.#roundsRefreshing += 1;
     return this.#runRound(done.message.slice(), token);
   }
 
@@ -668,6 +681,32 @@ export class RealtimeSession {
       // §8.7 registration at round end: reload the persisted list — it
       // only advances on success, so failed rounds change nothing.
       await this.refreshRegistrations(false);
+      this.#roundsRefreshing -= 1;
+      if (
+        !this.#closed &&
+        this.#roundsRefreshing === 0 &&
+        this.#deferredRegistrations !== undefined
+      ) {
+        const registrations = JSON.stringify([
+          this.wireVersion,
+          this.registrations.map(({ id, table, schemaVersion, effective }) => [
+            id,
+            table,
+            schemaVersion,
+            effective,
+          ]),
+        ]);
+        if (registrations !== this.#deferredRegistrations) {
+          this.sendWake('catchup-required');
+        } else {
+          const deltas = this.#deferredDeltas;
+          this.#deferredDeltas = [];
+          this.#deferredBytes = 0;
+          this.#deferredRegistrations = undefined;
+          for (const delta of deltas)
+            this.#sendDelta(delta.bytes, delta.commitSeq, delta.changes);
+        }
+      }
     }
   }
 
@@ -711,7 +750,11 @@ export class RealtimeSession {
         this.clientId,
       );
     } catch {
-      if (!failClosed) return;
+      if (!failClosed) {
+        if (this.#deferredRegistrations !== undefined)
+          this.sendWake('catchup-required');
+        return;
+      }
       // Fail closed (host refresh): drop every grant on the connection.
       registrations = [];
     }
@@ -779,6 +822,9 @@ export class RealtimeSession {
   }
 
   sendWake(reason: WakeReason): void {
+    this.#deferredDeltas = [];
+    this.#deferredBytes = 0;
+    this.#deferredRegistrations = undefined;
     this.wakePending = true;
     this.#wakeRequiredThroughSeq = Math.max(
       this.#wakeRequiredThroughSeq,
@@ -848,14 +894,26 @@ export class RealtimeSession {
       this.sendWake('catchup-required');
       return;
     }
-    if (sections.length === 0) return;
-    if (this.#activeRound !== undefined) {
-      // §8.7 interleaving: no 0x00 messages while a response stream is
-      // in flight — the §8.2 suppression path takes over (the client's
-      // post-round ack lifts it when the round covered this commit).
-      this.sendWake('catchup-required');
-      return;
+    if (this.#roundsRefreshing > 0 && !this.wakePending) {
+      const registrations = JSON.stringify([
+        this.wireVersion,
+        this.registrations.map(({ id, table, schemaVersion, effective }) => [
+          id,
+          table,
+          schemaVersion,
+          effective,
+        ]),
+      ]);
+      if (
+        this.#deferredRegistrations !== undefined &&
+        this.#deferredRegistrations !== registrations
+      ) {
+        this.sendWake('catchup-required');
+        return;
+      }
+      this.#deferredRegistrations = registrations;
     }
+    if (sections.length === 0) return;
     if (this.wakePending) {
       // §8.2: deltas must be cursor-contiguous; while the client is behind
       // we send (coalescible) wake-ups instead of a delta past its cursor.
@@ -902,8 +960,26 @@ export class RealtimeSession {
     const tagged = new Uint8Array(bytes.length + 1);
     tagged[0] = REALTIME_TAG_DELTA;
     tagged.set(bytes, 1);
+    const changeCount = sections.reduce((n, s) => n + s.changes.length, 0);
+    if (this.#roundsRefreshing > 0) {
+      if (this.#deferredBytes + tagged.length > this.#maxDeltaBytes) {
+        this.sendWake('catchup-required');
+        return;
+      }
+      this.#deferredDeltas.push({
+        bytes: tagged,
+        commitSeq: commit.commitSeq,
+        changes: changeCount,
+      });
+      this.#deferredBytes += tagged.length;
+      return;
+    }
+    this.#sendDelta(tagged, commit.commitSeq, changeCount);
+  }
+
+  #sendDelta(tagged: Uint8Array, commitSeq: number, changes: number): void {
     this.#sendSafe(tagged);
-    this.cursor = Math.max(this.cursor, commit.commitSeq);
+    this.cursor = Math.max(this.cursor, commitSeq);
     const events = this.#events;
     if (events !== undefined) {
       emitEvent(events, {
@@ -913,9 +989,9 @@ export class RealtimeSession {
         actorId: this.actorId,
         clientId: this.clientId,
         sessionId: this.sessionId,
-        commitSeq: commit.commitSeq,
-        bytes: bytes.length,
-        changes: sections.reduce((n, s) => n + s.changes.length, 0),
+        commitSeq,
+        bytes: tagged.length - 1,
+        changes,
       });
     }
   }
@@ -1089,6 +1165,8 @@ export class RealtimeHub {
         id: subscription.id,
         codec: table,
         table: subscription.table,
+        schemaVersion:
+          subscription.schemaVersion ?? this.#config.schema.version,
         effective: outcome.effective,
       });
     }

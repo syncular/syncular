@@ -20,8 +20,9 @@
 //! polling. The socket implementation is deliberately singular: fairness and
 //! wire fixes therefore reach FFI, Tauri, and future Rust hosts together.
 
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::{Duration, SystemTime};
 
 use crate::{
     BlobDownload, BlobUploadGrant, SegmentFetch, SegmentRequest, Transport, TransportError,
@@ -158,12 +159,34 @@ pub enum Inbound {
     Disconnected(TransportError),
 }
 
+/// Metadata for one received WebSocket message. The byte count includes the
+/// Syncular channel tag for binary messages, but excludes WebSocket headers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RealtimeReceipt {
+    pub received_at: SystemTime,
+    pub bytes: usize,
+    pub kind: RealtimeReceiptKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RealtimeReceiptKind {
+    Text,
+    Delta,
+    Round,
+    OtherBinary,
+    Ping,
+    Pong,
+    Close,
+}
+
 /// The shared inbound buffer the WS reader thread fills and the command path
 /// drains. The optional callback carries no data; it only wakes an owning
 /// mailbox so the host can drain the buffer promptly.
 pub struct InboundBuffer {
     frames: Mutex<Vec<Inbound>>,
     notify: Option<Arc<dyn Fn() + Send + Sync>>,
+    receipts: Mutex<Option<mpsc::SyncSender<RealtimeReceipt>>>,
+    dropped_receipts: AtomicU64,
 }
 
 impl Default for InboundBuffer {
@@ -171,6 +194,8 @@ impl Default for InboundBuffer {
         Self {
             frames: Mutex::new(Vec::new()),
             notify: None,
+            receipts: Mutex::new(None),
+            dropped_receipts: AtomicU64::new(0),
         }
     }
 }
@@ -180,6 +205,8 @@ impl InboundBuffer {
         Self {
             frames: Mutex::new(Vec::new()),
             notify: Some(notify),
+            receipts: Mutex::new(None),
+            dropped_receipts: AtomicU64::new(0),
         }
     }
 
@@ -191,6 +218,20 @@ impl InboundBuffer {
     }
     fn take(&self) -> Vec<Inbound> {
         std::mem::take(&mut *self.frames.lock().expect("inbound lock"))
+    }
+
+    #[cfg(feature = "native-transport")]
+    fn observe(&self, kind: RealtimeReceiptKind, bytes: usize) {
+        if let Some(sender) = self.receipts.lock().expect("receipt lock").as_ref() {
+            let receipt = RealtimeReceipt {
+                received_at: SystemTime::now(),
+                bytes,
+                kind,
+            };
+            if sender.try_send(receipt).is_err() {
+                self.dropped_receipts.fetch_add(1, Ordering::Relaxed);
+            }
+        }
     }
 }
 
@@ -354,6 +395,41 @@ impl HostTransport {
             #[cfg(feature = "local-authority")]
             HostTransport::Local(t) => t.remote.take_inbound(),
         }
+    }
+
+    /// Observe received WebSocket messages without blocking the socket reader.
+    /// Supply a bounded `sync_channel` and drain it on a separate thread. The
+    /// observer is shared by round forks and survives reconnects. Replacing it
+    /// resets the dropped-receipt count.
+    pub fn set_realtime_receipt_observer(
+        &mut self,
+        sender: Option<mpsc::SyncSender<RealtimeReceipt>>,
+    ) {
+        let inbound = match self {
+            HostTransport::Null { inbound, .. } => inbound,
+            #[cfg(feature = "native-transport")]
+            HostTransport::Native(t) => &t.inbound,
+            #[cfg(feature = "local-authority")]
+            HostTransport::Local(t) => {
+                t.remote.set_realtime_receipt_observer(sender);
+                return;
+            }
+        };
+        let mut current = inbound.receipts.lock().expect("receipt lock");
+        *current = sender;
+        inbound.dropped_receipts.store(0, Ordering::Relaxed);
+    }
+
+    /// Return and clear the number of receipts lost to a full or closed channel.
+    pub fn take_dropped_realtime_receipts(&mut self) -> u64 {
+        let inbound = match self {
+            HostTransport::Null { inbound, .. } => inbound,
+            #[cfg(feature = "native-transport")]
+            HostTransport::Native(t) => &t.inbound,
+            #[cfg(feature = "local-authority")]
+            HostTransport::Local(t) => return t.remote.take_dropped_realtime_receipts(),
+        };
+        inbound.dropped_receipts.swap(0, Ordering::Relaxed)
     }
 
     /// Release the socket/reader thread and close the local authority.
@@ -965,7 +1041,7 @@ mod native {
     };
     use ureq::Timeout as UreqTimeout;
 
-    use super::{HostTransportPolicy, Inbound, InboundBuffer, RedirectPolicy};
+    use super::{HostTransportPolicy, Inbound, InboundBuffer, RealtimeReceiptKind, RedirectPolicy};
     use crate::{
         BlobDownload, BlobUploadGrant, RealtimeRound, RoundInbound, SegmentFetch, SegmentRequest,
         Transport, TransportError,
@@ -2552,7 +2628,29 @@ mod native {
                     // Bound receive work so a continuously readable peer cannot starve sends.
                     let mut drained = false;
                     for _ in 0..64 {
-                        match ws.read() {
+                        let received = ws.read();
+                        if let Ok(message) = &received {
+                            let kind = match message {
+                                Message::Text(_) => Some(RealtimeReceiptKind::Text),
+                                Message::Binary(bytes) => Some(match bytes.first() {
+                                    Some(&crate::REALTIME_TAG_DELTA) => RealtimeReceiptKind::Delta,
+                                    Some(&crate::REALTIME_TAG_ROUND) => RealtimeReceiptKind::Round,
+                                    _ => RealtimeReceiptKind::OtherBinary,
+                                }),
+                                Message::Ping(_) => Some(RealtimeReceiptKind::Ping),
+                                Message::Pong(_) => Some(RealtimeReceiptKind::Pong),
+                                Message::Close(_) => Some(RealtimeReceiptKind::Close),
+                                Message::Frame(_) => None,
+                            };
+                            if let Some(kind) = kind {
+                                let bytes = match message {
+                                    Message::Close(Some(close)) => 2 + close.reason.len(),
+                                    _ => message.len(),
+                                };
+                                inbound.observe(kind, bytes);
+                            }
+                        }
+                        match received {
                             Ok(Message::Text(text)) => {
                                 inbound.push(Inbound::Text(text.to_string()))
                             }
@@ -3139,6 +3237,148 @@ mod native {
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
+
+    #[test]
+    fn receipt_observer_covers_round_chunks_wakes_reconnect_and_overflow() {
+        use ssp2::model::{Frame, Message, MsgKind};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let response = ssp2::encode_message(&Message {
+            wire_version: ssp2::decode::WIRE_VERSION,
+            msg_kind: MsgKind::Response,
+            frames: vec![Frame::RespHeader {
+                required_schema_version: None,
+                latest_schema_version: None,
+                log_epoch: Some("epoch".into()),
+                reset_required: Some(false),
+            }],
+        });
+        let server_response = response.clone();
+        let server = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (socket, _) = listener.accept().unwrap();
+                let mut socket = tungstenite::accept(socket).unwrap();
+                assert!(matches!(
+                    socket.read().unwrap(),
+                    tungstenite::Message::Binary(_)
+                ));
+                socket
+                    .send(tungstenite::Message::Binary(
+                        vec![crate::REALTIME_TAG_DELTA, 7].into(),
+                    ))
+                    .unwrap();
+                socket
+                    .send(tungstenite::Message::Text("wake".into()))
+                    .unwrap();
+                let split = server_response.len() / 2;
+                for part in [&server_response[..split], &server_response[split..]] {
+                    let mut chunk = vec![crate::REALTIME_TAG_ROUND];
+                    chunk.extend_from_slice(part);
+                    socket
+                        .send(tungstenite::Message::Binary(chunk.into()))
+                        .unwrap();
+                }
+                assert!(matches!(
+                    socket.read().unwrap(),
+                    tungstenite::Message::Close(_)
+                ));
+            }
+        });
+        let mut transport =
+            HostTransport::from_config(&serde_json::json!({"baseUrl": base})).unwrap();
+        let (sender, receiver) = mpsc::sync_channel(4);
+        let (small_sender, small_receiver) = mpsc::sync_channel(1);
+        transport.set_realtime_receipt_observer(Some(sender));
+        for round in 0..2 {
+            transport.realtime_connect().unwrap();
+            let before = SystemTime::now();
+            assert_eq!(transport.realtime_sync(b"request").unwrap(), response);
+            let after = SystemTime::now();
+            if round == 0 {
+                let receipts = [
+                    receiver.recv().unwrap(),
+                    receiver.recv().unwrap(),
+                    receiver.recv().unwrap(),
+                    receiver.recv().unwrap(),
+                ];
+                assert_eq!(
+                    receipts.map(|r| r.kind),
+                    [
+                        RealtimeReceiptKind::Delta,
+                        RealtimeReceiptKind::Text,
+                        RealtimeReceiptKind::Round,
+                        RealtimeReceiptKind::Round
+                    ]
+                );
+                assert_eq!(
+                    receipts.map(|r| r.bytes),
+                    [
+                        2,
+                        4,
+                        1 + response.len() / 2,
+                        1 + response.len() - response.len() / 2
+                    ]
+                );
+                assert!(receipts
+                    .iter()
+                    .all(|r| r.received_at >= before && r.received_at <= after));
+                assert!(
+                    matches!(&transport.take_inbound()[..], [Inbound::Binary(bytes), Inbound::Text(text)] if bytes == &[7] && text == "wake")
+                );
+                assert_eq!(transport.take_dropped_realtime_receipts(), 0);
+                // A capacity-one channel proves loss is visible without blocking
+                // the reader or its round waiter.
+                transport.set_realtime_receipt_observer(Some(small_sender.clone()));
+            } else {
+                assert_eq!(
+                    small_receiver.recv().unwrap().kind,
+                    RealtimeReceiptKind::Delta
+                );
+                assert_eq!(transport.take_dropped_realtime_receipts(), 3);
+                assert_eq!(transport.take_dropped_realtime_receipts(), 0);
+            }
+            transport.shutdown();
+        }
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn receipt_observer_reports_chunks_of_a_failed_round() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (socket, _) = listener.accept().unwrap();
+            let mut socket = tungstenite::accept(socket).unwrap();
+            assert!(matches!(
+                socket.read().unwrap(),
+                tungstenite::Message::Binary(_)
+            ));
+            socket
+                .send(tungstenite::Message::Binary(
+                    vec![crate::REALTIME_TAG_ROUND, b'S'].into(),
+                ))
+                .unwrap();
+            socket
+                .close(Some(tungstenite::protocol::CloseFrame {
+                    code: tungstenite::protocol::frame::coding::CloseCode::Normal,
+                    reason: "bye".into(),
+                }))
+                .unwrap();
+        });
+        let mut transport =
+            HostTransport::from_config(&serde_json::json!({"baseUrl": base})).unwrap();
+        let (sender, receiver) = mpsc::sync_channel(2);
+        transport.set_realtime_receipt_observer(Some(sender));
+        transport.realtime_connect().unwrap();
+        assert!(transport.realtime_sync(b"request").is_err());
+        assert_eq!(receiver.recv().unwrap().kind, RealtimeReceiptKind::Round);
+        let close = receiver.recv().unwrap();
+        assert_eq!(close.kind, RealtimeReceiptKind::Close);
+        assert_eq!(close.bytes, 5);
+        assert_eq!(transport.take_dropped_realtime_receipts(), 0);
+        transport.shutdown();
+        server.join().unwrap();
+    }
 
     #[test]
     fn detached_round_uses_the_owned_socket_and_shutdown_releases_it() {

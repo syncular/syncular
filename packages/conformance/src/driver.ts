@@ -220,7 +220,7 @@ export interface DriverAdminClient {
  * `0x01` = sync-round byte-stream chunk. */
 export interface RealtimeSink {
   onText(text: string): void;
-  onBinary(bytes: Uint8Array): void;
+  onBinary(bytes: Uint8Array): void | Promise<void>;
   /** Server-initiated close (§8.7 protocol violations). */
   onClose?(): void;
 }
@@ -1077,6 +1077,12 @@ export interface DriverChangeBatch {
   readonly conflictsChanged: boolean;
   readonly rejectionsChanged: boolean;
   readonly outcomesChanged: boolean;
+  readonly appliedCommits?: readonly {
+    readonly subscriptionId: string;
+    readonly table: string;
+    readonly commitSeq: number;
+    readonly source: 'delta' | 'pull';
+  }[];
 }
 
 export type DriverSyncIntent =

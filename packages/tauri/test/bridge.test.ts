@@ -1396,7 +1396,9 @@ describe('createTauriSyncClient', () => {
     const { client, emit } = await build();
     const revisions: bigint[] = [];
     const seen: Array<{ tables: string[]; scopeKeys: string[] }> = [];
+    const applied: unknown[] = [];
     client.onChange((batch) => revisions.push(batch.revision));
+    client.onChange((batch) => applied.push(batch.appliedCommits));
     client.onInvalidate((event) => {
       seen.push({
         tables: [...event.tables],
@@ -1411,9 +1413,27 @@ describe('createTauriSyncClient', () => {
         windows: [],
         conflictsChanged: false,
         rejectionsChanged: false,
+        appliedCommits: [
+          {
+            subscriptionId: 'one',
+            table: 'todo',
+            commitSeq: 17,
+            source: 'delta',
+          },
+        ],
       },
     });
     expect(revisions).toEqual([9n]);
+    expect(applied).toEqual([
+      [
+        {
+          subscriptionId: 'one',
+          table: 'todo',
+          commitSeq: 17,
+          source: 'delta',
+        },
+      ],
+    ]);
     expect(seen).toHaveLength(1);
     expect(seen[0]?.tables).toEqual(['todo']);
     expect(seen[0]?.scopeKeys).toEqual(['project:1']);

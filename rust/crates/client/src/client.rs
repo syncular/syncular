@@ -27,17 +27,17 @@ use ssp2::segment::{decode_rows_segment, Column, ColumnType, ColumnValue, Row, R
 use ssp2::{decode_message, encode_presence_publish, parse_control, ControlMessage, PresenceKind};
 
 use crate::api::{
-    ClientChangeBatch, ClientDiagnosticsHost, ClientDiagnosticsLease, ClientDiagnosticsReplica,
-    ClientDiagnosticsRequest, ClientDiagnosticsSchema, ClientDiagnosticsSnapshot,
-    ClientDiagnosticsStorage, ClientError, ClientLimits, CommandEffects, CommitDelivery,
-    CommitOperation, CommitOperationOutcome, CommitOutcome, CommitOutcomeQuery,
-    CommitOutcomeResolution, CommitOutcomeStatus, ConflictRecord, CoverageSnapshot,
-    CurrentBaseProof, CurrentBaseProofReason, DiagnosticLastChange, DiagnosticLastRound,
-    DiagnosticQueryFailure, DiagnosticRoundCounters, DiagnosticSubscription, FetchedBlob,
-    LeaseState, LocalDataPurgeInput, LocalDataPurgeResult, LocalDataPurgeTarget,
-    LocalDataRebootstrapInput, LocalDataRebootstrapResult, Mutation, PresencePeer,
-    PreviousVersionStatus, QueryOwner, QueryReadFailure, QueryRow, QuerySnapshot, QueryValue,
-    RejectionDetails, RejectionRecord, ResolveCommitOutcomeInput, RetainedCommitRow,
+    AppliedServerCommit, AppliedServerCommitSource, ClientChangeBatch, ClientDiagnosticsHost,
+    ClientDiagnosticsLease, ClientDiagnosticsReplica, ClientDiagnosticsRequest,
+    ClientDiagnosticsSchema, ClientDiagnosticsSnapshot, ClientDiagnosticsStorage, ClientError,
+    ClientLimits, CommandEffects, CommitDelivery, CommitOperation, CommitOperationOutcome,
+    CommitOutcome, CommitOutcomeQuery, CommitOutcomeResolution, CommitOutcomeStatus,
+    ConflictRecord, CoverageSnapshot, CurrentBaseProof, CurrentBaseProofReason,
+    DiagnosticLastChange, DiagnosticLastRound, DiagnosticQueryFailure, DiagnosticRoundCounters,
+    DiagnosticSubscription, FetchedBlob, LeaseState, LocalDataPurgeInput, LocalDataPurgeResult,
+    LocalDataPurgeTarget, LocalDataRebootstrapInput, LocalDataRebootstrapResult, Mutation,
+    PresencePeer, PreviousVersionStatus, QueryOwner, QueryReadFailure, QueryRow, QuerySnapshot,
+    QueryValue, RejectionDetails, RejectionRecord, ResolveCommitOutcomeInput, RetainedCommitRow,
     RetainedUniqueConflict, RowState, SchemaFloor, SnapshotRead, SubscriptionCatchup,
     SubscriptionRequest, SubscriptionStateView, SyncIntent, SyncOutcome, SyncReport,
     SyncStatusSnapshot, TableChange, WindowBase, WindowChange, WindowCoverage, WindowState,
@@ -13656,6 +13656,7 @@ impl SyncClient {
             conflicts_changed: batch.conflicts,
             rejections_changed: batch.rejections,
             outcomes_changed: batch.outcomes,
+            applied_commits: Vec::new(),
         };
         self.conn
             .execute_batch(&format!("RELEASE {name}"))
@@ -19384,6 +19385,8 @@ impl SyncClient {
                             changes,
                             commit_seq,
                             coalesced_deletes,
+                            sub_index,
+                            AppliedServerCommitSource::Pull,
                         )
                         .map_err(|(c, m)| SectionError::Abort(c, m))?
                     {
@@ -19565,6 +19568,8 @@ impl SyncClient {
         changes: Vec<ssp2::model::Change>,
         commit_seq: i64,
         coalesced_deletes: &HashSet<(i64, String, String)>,
+        sub_index: usize,
+        source: AppliedServerCommitSource,
     ) -> Result<bool, (String, String)> {
         let changes: Vec<ssp2::model::Change> = changes
             .into_iter()
@@ -19581,7 +19586,30 @@ impl SyncClient {
         if changes.is_empty() {
             return Ok(false);
         }
+        let affected_tables = changes
+            .iter()
+            .filter_map(|change| tables.get(change.table_index as usize))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let previous_batches = self.change_queue.len();
         self.apply_commit_frame(tables, &changes, Some(commit_seq))?;
+        if self.change_queue.len() > previous_batches {
+            let subscription_id = self.subs[sub_index].id.clone();
+            if let Some(batch) = self.change_queue.back_mut() {
+                batch
+                    .applied_commits
+                    .extend(
+                        affected_tables
+                            .into_iter()
+                            .map(|table| AppliedServerCommit {
+                                subscription_id: subscription_id.clone(),
+                                table,
+                                commit_seq,
+                                source,
+                            }),
+                    );
+            }
+        }
         Ok(true)
     }
 
@@ -22063,6 +22091,8 @@ impl SyncClient {
                                 changes,
                                 commit_seq,
                                 &coalesced_deletes,
+                                sub_index,
+                                AppliedServerCommitSource::Delta,
                             )
                             .is_err()
                         {

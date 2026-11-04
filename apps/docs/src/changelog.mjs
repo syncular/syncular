@@ -16,6 +16,21 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-11-04',
+    title: 'Observe realtime receipt and applied commits',
+    body: 'Native hosts can observe bounded socket message receipts, and change batches identify applied server commits. The server queues round-time deltas until the response ends, avoiding an extra catch-up pull when the queue and registrations remain valid.',
+    links: [
+      {
+        href: '/platform-rust-specifics/#realtime-receipt-observation',
+        label: 'Realtime receipt observation',
+      },
+      {
+        href: '/concepts-realtime/#deltas-and-wake-ups',
+        label: 'Deltas and wake-ups',
+      },
+    ],
+  },
+  {
     date: '2026-11-03',
     title: 'Choose remote-only worker and Tauri entries',
     body: 'Remote-only worker and Tauri imports omit the JavaScript local-authority lifecycle while preserving replica, recovery, and diagnostics behavior. The existing entries retain local-authority support.',

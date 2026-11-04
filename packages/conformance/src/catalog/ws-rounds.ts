@@ -177,7 +177,7 @@ export const wsRoundScenarios: readonly Scenario[] = [
   },
 
   {
-    name: 'ws-round/commit-during-round-wakes-then-deltas-resume',
+    name: 'ws-round/commit-during-round-delivers-after-response',
     specRefs: ['§8.2', '§8.7', 'B.11'],
     requires: ['realtime'],
     async run(ctx) {
@@ -190,45 +190,101 @@ export const wsRoundScenarios: readonly Scenario[] = [
       await b.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
       await syncIdle(b); // registers this connection (§8.7)
 
-      // b's own push fans out to its own session MID-ROUND: §8.7 forbids
-      // a 0x00 message inside the response stream, so the session takes
-      // the §8.2 suppression path — a text wake-up, free to interleave.
+      // b's own push fans out while its response is in flight. The server
+      // sends the queued delta after the response and registration refresh.
       await b.api.mutate([
         { op: 'upsert', table: 'tasks', values: task('t1', 'p1', 'own') },
       ]);
       await syncIdle(b);
-      checkEqual(
-        b.realtime.deltasDelivered,
-        0,
-        'no standalone delta during the round (§8.7 interleaving)',
-      );
+      await b.realtime.waitForDeltas(1);
       checkEqual(
         b.realtime.deltaInterleavedDuringRound,
         false,
         'nothing interleaved the response stream',
       );
-      check(
-        b.realtime.wakeReasons.includes('catchup-required'),
-        'the mid-round commit degraded to a coalescible wake-up (§8.2)',
+      checkEqual(
+        b.realtime.wakeReasons,
+        [],
+        'the queued delta needs no catch-up wake',
       );
 
-      // The round's own pull half covered the commit, so the post-round
-      // ack (§8.2 ack point) lifts suppression — deltas resume.
+      // The pull can already cover the queued delta; a later delta still applies.
       const ownSeq = await ctx.server.getMaxCommitSeq();
       await b.realtime.waitForAck(ownSeq);
       await seedTasks(ctx, [task('t2', 'p1', 'resumed')]);
       const resumedSeq = await ctx.server.getMaxCommitSeq();
-      await b.realtime.waitForDeltas(1);
+      await b.realtime.waitForDeltas(2);
       await b.realtime.waitForAck(resumedSeq);
       checkEqual(
         (await b.api.readRows('tasks')).map((row) => row.rowId),
         ['t1', 't2'],
-        'suppressed window plus resumed deltas converged',
+        'queued and later deltas converged',
       );
       await expectConverged(ctx, 'tasks', [b], {
         variable: 'project_id',
         values: ['p1'],
       });
+    },
+  },
+  {
+    name: 'ws-round/commit-after-pull-snapshot-applies-without-catchup',
+    specRefs: ['§8.2', '§8.7'],
+    requires: ['realtime'],
+    async run(ctx) {
+      const b = await ctx.newClient({
+        actorId: 'reader',
+        clientId: 'reader',
+        allowed: P1,
+      });
+      await b.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await syncIdle(b);
+      const original = ctx.server.connectRealtime.bind(ctx.server);
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      let armed = false;
+      ctx.server.connectRealtime = (actorId, clientId, sink) =>
+        original(actorId, clientId, {
+          ...sink,
+          onBinary(bytes) {
+            const delivered = sink.onBinary(bytes);
+            if (armed && bytes[0] === REALTIME_TAG_ROUND) {
+              armed = false;
+              entered.resolve();
+              return release.promise;
+            }
+            return delivered;
+          },
+        });
+      try {
+        await b.api.connectRealtime();
+        armed = true;
+        const round = b.api.sync();
+        await entered.promise;
+        await seedTasks(ctx, [task('after-snapshot', 'p1', 'queued')]);
+        const sequence = await ctx.server.getMaxCommitSeq();
+        release.resolve();
+        check((await round).ok, 'the original round succeeds');
+        await b.realtime.waitForDeltas(1);
+        await b.realtime.waitForAck(sequence);
+        checkEqual(
+          (await b.api.readRows('tasks')).map((row) => row.rowId),
+          ['after-snapshot'],
+          'the queued delta applied',
+        );
+        checkEqual(
+          b.realtime.wakeReasons,
+          [],
+          'no follow-up pull was requested',
+        );
+        checkEqual(
+          b.realtime.deltaInterleavedDuringRound,
+          false,
+          'the delta followed END',
+        );
+      } finally {
+        release.resolve();
+        ctx.server.connectRealtime = original;
+      }
     },
   },
 ];

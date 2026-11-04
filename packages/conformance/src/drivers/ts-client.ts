@@ -840,6 +840,9 @@ class TsClientInstance implements ClientInstance {
       conflictsChanged: batch.conflictsChanged,
       rejectionsChanged: batch.rejectionsChanged,
       outcomesChanged: batch.outcomesChanged,
+      ...(batch.appliedCommits !== undefined
+        ? { appliedCommits: batch.appliedCommits }
+        : {}),
     }));
   }
 

@@ -65,6 +65,61 @@ const FTS_SCHEMA = {
 
 export const observationScenarios: readonly Scenario[] = [
   {
+    name: 'observation/applied-commits-distinguish-subscriptions-and-snapshots',
+    specRefs: ['§1.4', '§7.5'],
+    async run(ctx) {
+      await seedTasks(ctx, [task('initial', 'p1', 'snapshot')]);
+      const handle = await ctx.newClient({
+        actorId: 'reader',
+        clientId: 'reader',
+        allowed: { project_id: ['p1', 'p2'] },
+      });
+      await handle.api.subscribe({
+        id: 'one',
+        table: 'tasks',
+        scopes: { project_id: ['p1'] },
+      });
+      await handle.api.subscribe({
+        id: 'two',
+        table: 'tasks',
+        scopes: { project_id: ['p2'] },
+      });
+      const observation = requireObservation(handle.api);
+      await observation.drainChangeBatches();
+      await syncIdle(handle);
+      check(
+        (await observation.drainChangeBatches()).every(
+          (batch) => batch.appliedCommits === undefined,
+        ),
+        'snapshot coverage is not an applied COMMIT frame',
+      );
+      await seedTasks(ctx, [task('first', 'p1', 'one')]);
+      await seedTasks(ctx, [task('second', 'p2', 'two')]);
+      await syncOk(handle);
+      const commits = (await observation.drainChangeBatches()).flatMap(
+        (batch) => batch.appliedCommits ?? [],
+      );
+      checkEqual(
+        commits.sort((a, b) => a.commitSeq - b.commitSeq),
+        [
+          {
+            subscriptionId: 'one',
+            table: 'tasks',
+            commitSeq: 2,
+            source: 'pull',
+          },
+          {
+            subscriptionId: 'two',
+            table: 'tasks',
+            commitSeq: 3,
+            source: 'pull',
+          },
+        ],
+        'the pull identifies each subscription and server commit',
+      );
+    },
+  },
+  {
     name: 'observation/bounded-transport-failure-and-recovery',
     specRefs: ['§1.8', '§7.6'],
     async run(ctx) {
@@ -494,6 +549,18 @@ export const observationScenarios: readonly Scenario[] = [
           'each realtime COMMIT publishes its own revision',
         );
         checkEqual(
+          batches.map((batch) => batch.appliedCommits),
+          [1, 2].map((commitSeq) => [
+            {
+              subscriptionId: 'tasks',
+              table: 'tasks',
+              commitSeq,
+              source: 'delta',
+            },
+          ]),
+          'each transaction identifies its applied server commit',
+        );
+        checkEqual(
           (
             BigInt(batches[1]?.revision ?? '0') -
             BigInt(batches[0]?.revision ?? '0')
@@ -587,6 +654,18 @@ export const observationScenarios: readonly Scenario[] = [
         batches.length,
         1,
         'only the first frame publishes a revision',
+      );
+      checkEqual(
+        batches[0]?.appliedCommits,
+        [
+          {
+            subscriptionId: 'tasks',
+            table: 'tasks',
+            commitSeq: 1,
+            source: 'pull',
+          },
+        ],
+        'a failed round reports the durable prefix and excludes the failed frame',
       );
       const prefix = await observation.querySnapshot(
         'SELECT id, title FROM tasks ORDER BY id',

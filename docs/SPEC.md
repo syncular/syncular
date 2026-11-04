@@ -5348,6 +5348,16 @@ one batch carrying its revision and the domains changed by that transaction:
 - `outcomesChanged` identifies durable journal insertion, resolution, or
   retention changes.
 
+When a transaction applies a `COMMIT` frame, its change batch also carries
+`appliedCommits`: entries containing the subscription id, affected table,
+`commitSeq`, and source (`delta` or `pull`). An entry identifies a committed
+local transaction, not completion of the enclosing response. A later frame can
+fail the round while earlier transactions remain committed (§1.4). A rolled
+back transaction publishes no entry. Snapshot segments, cursor advances,
+wake-ups, push results, and local writes do not manufacture commit entries.
+Hosts forward these entries with the batch and use round progress separately
+to identify response failure. The entries carry no row values or credentials.
+
 An empty scope-key set never means global. Scope-changing row updates record
 the union of the row's before and after scope keys; deletes record before keys
 and inserts record after keys. Bulk formats without row scope facts remain
@@ -6134,14 +6144,15 @@ reference design (one loop, §8.4).
 
 **Interleaving.** While a response stream is in flight, the server
 MUST NOT send `0x00` (delta) messages on that connection. A commit
-matching the connection's registrations during that window follows the
-§8.2 suppression path: the session answers with coalescible
-`catchup-required` wake-ups (text — free to interleave) until an ack
-covers the highest `commitSeq` the connection has observed. The
-client's post-round ack (§8.2 ack point — it applies to socket rounds
-exactly as to HTTP pulls) lifts the suppression when the round's pull
-half already covered the commit; otherwise the wake-up's next round
-does. Deltas resume with zero new machinery.
+matching the connection's registrations during that window is queued as a
+bounded delta and sent after the response's `END` and registration refresh.
+Queued deltas retain notification order. If the queue exceeds its byte bound,
+notifications are non-contiguous, or the registration changes before delivery,
+the server discards the queue and sends a `catchup-required` wake-up (§8.2).
+It MUST NOT send queued data authorized by an earlier registration after a
+registration change. A response can already cover a queued delta; duplicate
+sections are idempotent (§8.2). A client queues a delta received while its
+round is applying and applies it after the round completes.
 
 **Backpressure.** Per-connection server send buffering MUST be
 bounded: when the socket cannot drain (implementation signal, e.g.
@@ -6879,8 +6890,8 @@ Each is a driver-interface script, not a prose test.
     structurally dead). (c) One round in flight: round bytes arriving
     while a response stream is in flight are not processed and drop
     the connection. (d) Interleaving: a commit landing during an
-    in-flight round produces a text wake-up, never a mid-stream `0x00`
-    message; deltas resume after the post-round ack (§8.2/§8.7).
+    in-flight round produces a delta after the response and registration
+    refresh, never a mid-stream `0x00` message (§8.2/§8.7).
 
 12. **Signed-URL delivery.** (a) Issue→fetch→verify: a bit-3 client
     bootstraps through descriptor-carried URLs (native HMAC scheme) —

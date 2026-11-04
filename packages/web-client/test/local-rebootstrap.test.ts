@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { MessageStreamScanner } from '@syncular/core';
 import {
   ClientSyncError,
   createSyncClientHandle,
@@ -15,6 +16,7 @@ import {
 import {
   makeClient,
   makeServer,
+  PARTITION,
   responseGate,
   tableRows,
   taskValues,
@@ -287,6 +289,81 @@ describe('application-authorized local projection rebootstrap', () => {
     ).toBeGreaterThanOrEqual(0);
     expect(local.client.statusSnapshot().upgrading).toBe(false);
     await local.client.close();
+    local.db.close();
+  });
+
+  test('a delta queued before a rebootstrap cannot restore the old projection', async () => {
+    const server = makeServer();
+    const entered = Promise.withResolvers<void>();
+    const deltaReceived = Promise.withResolvers<void>();
+    const scanner = new MessageStreamScanner();
+    const chunks: Uint8Array[] = [];
+    let hold = false;
+    let deliver: ((bytes: Uint8Array) => void) | undefined;
+    const local = await makeClient(server, {
+      clientId: 'queued-reset',
+      realtime: async (handlers) => {
+        deliver = handlers.onBinary;
+        const session = await server.hub.connect({
+          partition: PARTITION,
+          actorId: 'actor-1',
+          clientId: 'queued-reset',
+          send(data) {
+            if (typeof data === 'string') handlers.onText(data);
+            else if (hold && data[0] === 1) {
+              chunks.push(data);
+              if (scanner.push(data.subarray(1)) !== undefined)
+                entered.resolve();
+            } else {
+              if (data[0] === 0) deltaReceived.resolve();
+              handlers.onBinary(data);
+            }
+          },
+        });
+        return {
+          send: (text) => session.handleMessage(text),
+          sendBytes: (bytes) => session.handleBinary(bytes),
+          close: () => session.close(),
+        };
+      },
+    });
+    local.client.subscribe({
+      id: 'tasks',
+      table: 'tasks',
+      scopes: { project_id: ['p1'] },
+    });
+    await local.client.syncUntilIdle();
+    await local.client.connectRealtime();
+    hold = true;
+    const round = local.client.sync();
+    await entered.promise;
+    const writer = await makeClient(server, {
+      clientId: 'queued-reset-writer',
+    });
+    writer.client.mutate([
+      { op: 'upsert', table: 'tasks', values: taskValues('remote', 'p1') },
+    ]);
+    await writer.client.syncUntilIdle();
+    await deltaReceived.promise;
+    local.client.rebootstrapLocalData({ rebootstrapId: 'queued-reset-1' });
+    const dropped = Promise.withResolvers<void>();
+    const off = local.client.onSyncNeeded((reason) => {
+      if (reason === 'catchup-required') dropped.resolve();
+    });
+    hold = false;
+    for (const chunk of chunks) deliver?.(chunk);
+    await round;
+    await dropped.promise;
+    off();
+    expect(tableRows(local.db, 'tasks')).toEqual([]);
+    expect(local.client.subscription('tasks')?.cursor).toBe(-1);
+    await local.client.syncUntilIdle();
+    expect(tableRows(local.db, 'tasks').map((row) => row.id)).toEqual([
+      'remote',
+    ]);
+    await writer.client.close();
+    await local.client.close();
+    writer.db.close();
     local.db.close();
   });
 

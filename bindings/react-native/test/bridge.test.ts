@@ -1121,7 +1121,9 @@ describe('createNativeSyncClient', () => {
     const { client, emit } = await build();
     const changes: bigint[] = [];
     const seen: Array<{ tables: string[]; scopeKeys: string[] }> = [];
+    const applied: unknown[] = [];
     client.onChange((batch) => changes.push(batch.revision));
+    client.onChange((batch) => applied.push(batch.appliedCommits));
     client.onInvalidate((event) => {
       seen.push({ tables: [...event.tables], scopeKeys: [...event.scopeKeys] });
     });
@@ -1133,9 +1135,27 @@ describe('createNativeSyncClient', () => {
         windows: [],
         conflictsChanged: false,
         rejectionsChanged: false,
+        appliedCommits: [
+          {
+            subscriptionId: 'one',
+            table: 'todo',
+            commitSeq: 17,
+            source: 'delta',
+          },
+        ],
       },
     });
     expect(changes).toEqual([8n]);
+    expect(applied).toEqual([
+      [
+        {
+          subscriptionId: 'one',
+          table: 'todo',
+          commitSeq: 17,
+          source: 'delta',
+        },
+      ],
+    ]);
     expect(seen).toHaveLength(1);
     expect(seen[0]?.tables).toEqual(['todo']);
     expect(seen[0]?.scopeKeys).toEqual(['project:1']);
