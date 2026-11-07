@@ -118,6 +118,12 @@ not: leadership moves when the leader tab closes and its Web Lock passes to a
 follower, or when the user takes over from an
 [unresponsive leader](#take-over-from-an-unresponsive-leader).
 
+A follower call that the departing leader has not answered rejects with
+`client.leader_handover` (retryable): the follower cannot tell whether the old
+core applied it. `connectRealtime()` and `disconnectRealtime()` are the
+exception. The next leader starts a fresh core, so the follower runs them again
+there, and they settle with that core's result.
+
 ### Leader probes
 
 A follower that has heard nothing from the leader for a third of
@@ -234,7 +240,9 @@ previous one. A follower sees `state.epoch` change on rebind and re-sends its
 own state, such as its current route. A call in flight when the leader closes
 rejects with `client.leader_handover`, and the follower cannot tell whether the
 old core applied it; give mutating calls an id the core deduplicates before
-retrying them. A call made while no leader is bound waits for the next leader
+retrying them. List methods whose result does not depend on the old core in
+`replayOnHandover`: an in-flight call to one of them runs again on the next
+leader instead of rejecting. A call made while no leader is bound waits for the next leader
 for up to `callTimeoutMs` (default 10 s) and then rejects with
 `client.follower_timeout`.
 

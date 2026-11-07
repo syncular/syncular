@@ -439,11 +439,6 @@ interface QueuedCall {
   cancelTimer: (() => void) | undefined;
 }
 
-interface InFlight {
-  readonly resolve: (value: unknown) => void;
-  readonly reject: (error: unknown) => void;
-}
-
 /**
  * Runs on a follower tab. Sends `req`s to the leader and settles them on the
  * matching `res`; queues calls (bounded, timed) while no leader is bound (the
@@ -474,7 +469,8 @@ export class FollowerLink<E = SyncWorkerEvent> {
   #maxEpochSeen = -1;
   #leaderClientId = '';
   #nextReqId = 1;
-  readonly #inFlight = new Map<number, InFlight>();
+  readonly #inFlight = new Map<number, QueuedCall>();
+  readonly #replayOnHandover: ReadonlySet<string>;
   #queue: QueuedCall[] = [];
   #closed = false;
   #state: LeadershipState = {
@@ -496,6 +492,7 @@ export class FollowerLink<E = SyncWorkerEvent> {
     callTimeoutMs?: number;
     queueLimit?: number;
     schedule?: FollowerSchedule;
+    replayOnHandover?: readonly string[];
   }) {
     this.#channel = options.channel;
     this.#fromId = options.fromId;
@@ -507,6 +504,7 @@ export class FollowerLink<E = SyncWorkerEvent> {
       options.callTimeoutMs ?? DEFAULT_FOLLOWER_CALL_TIMEOUT_MS;
     this.#probeAfterMs = Math.max(1, Math.floor(this.#callTimeoutMs / 3));
     this.#queueLimit = options.queueLimit ?? DEFAULT_FOLLOWER_QUEUE_LIMIT;
+    this.#replayOnHandover = new Set(options.replayOnHandover);
     this.#schedule =
       options.schedule ??
       ((callback, delayMs) => {
@@ -643,10 +641,7 @@ export class FollowerLink<E = SyncWorkerEvent> {
     const reqId = this.#nextReqId++;
     // No deadline: a live leader may queue the call behind a long sync round.
     // The liveness probe, a leader change, or close settles it otherwise.
-    this.#inFlight.set(reqId, {
-      resolve: queued.resolve,
-      reject: queued.reject,
-    });
+    this.#inFlight.set(reqId, queued);
     this.#channel.postMessage({
       t: 'req',
       epoch: this.#epoch,
@@ -681,6 +676,22 @@ export class FollowerLink<E = SyncWorkerEvent> {
     for (const inflight of pending) inflight.reject(error);
   }
 
+  /**
+   * The leader changed before it answered. Calls to `replayOnHandover`
+   * methods return for replay on the next leader. Every other call rejects
+   * with `error`: the follower cannot tell whether the old core applied it.
+   */
+  #handOverInFlight(error: ClientSyncError): QueuedCall[] {
+    const pending = [...this.#inFlight.values()];
+    this.#inFlight.clear();
+    const replay: QueuedCall[] = [];
+    for (const inflight of pending) {
+      if (this.#replayOnHandover.has(inflight.method)) replay.push(inflight);
+      else inflight.reject(error);
+    }
+    return replay;
+  }
+
   #dropQueued(queued: QueuedCall): void {
     const index = this.#queue.indexOf(queued);
     if (index >= 0) this.#queue.splice(index, 1);
@@ -703,15 +714,16 @@ export class FollowerLink<E = SyncWorkerEvent> {
         message.epoch !== this.#epoch ||
         message.clientId !== this.#leaderClientId;
       // Calls sent to the previous leader get no answer from this one.
-      if (changed && this.#epoch >= 0) {
-        this.#rejectInFlight(
-          new ClientSyncError(
-            LEADER_HANDOVER_CODE,
-            'the leader changed before it answered the call',
-            true,
-          ),
-        );
-      }
+      const replay =
+        changed && this.#epoch >= 0
+          ? this.#handOverInFlight(
+              new ClientSyncError(
+                LEADER_HANDOVER_CODE,
+                'the leader changed before it answered the call',
+                true,
+              ),
+            )
+          : [];
       this.#epoch = message.epoch;
       this.#leaderClientId = message.clientId;
       if (changed) this.#onLeaderChange(message.clientId);
@@ -723,6 +735,9 @@ export class FollowerLink<E = SyncWorkerEvent> {
       this.#armLivenessProbe();
       this.#resolveBindWaiters();
       this.#flushQueue();
+      for (const call of replay) {
+        this.call(call.method, call.args).then(call.resolve, call.reject);
+      }
       return;
     }
     if (message.t === 'res') {
@@ -769,12 +784,13 @@ export class FollowerLink<E = SyncWorkerEvent> {
   /**
    * The leader we were bound to went away (its lock released). Un-bind so new
    * calls queue again; re-request an announce so the next leader finds us.
-   * Calls in flight to the departed leader reject; the winner's announce
-   * flushes the queued ones.
+   * Calls in flight to the departed leader reject, except `replayOnHandover`
+   * methods, which queue again; the winner's announce flushes the queued
+   * ones.
    */
   unbind(): void {
     if (this.#closed) return;
-    this.#rejectInFlight(
+    const replay = this.#handOverInFlight(
       new ClientSyncError(
         LEADER_HANDOVER_CODE,
         'the leader released the database before it answered the call',
@@ -785,6 +801,9 @@ export class FollowerLink<E = SyncWorkerEvent> {
     this.#leaderClientId = '';
     this.#setState({ state: 'waiting', reason: 'handover' });
     this.#armUnboundDeadline();
+    for (const call of replay) {
+      this.call(call.method, call.args).then(call.resolve, call.reject);
+    }
     this.#probe();
   }
 
@@ -1054,6 +1073,13 @@ export interface TabCoordinatorConfig<E> {
   readonly channelFactory?: (name: string) => CrossTabChannel<E>;
   /** Liveness and handover-queue deadline; defaults to 10 s. */
   readonly callTimeoutMs?: number;
+  /**
+   * Methods whose follower call, in flight when the leader changes, runs again
+   * on the next leader instead of rejecting with `client.leader_handover`.
+   * List only methods whose result does not depend on whether the departed
+   * core ran them.
+   */
+  readonly replayOnHandover?: readonly string[];
   /**
    * How long a follower must have been `leader-unreachable` before
    * `takeOver()` is allowed; defaults to twice `callTimeoutMs`.
@@ -1407,6 +1433,9 @@ export async function createTabCoordinator<E>(
     onStateChange: setState,
     callTimeoutMs,
     schedule: clock.schedule,
+    ...(config.replayOnHandover !== undefined
+      ? { replayOnHandover: config.replayOnHandover }
+      : {}),
   });
   follower = link;
   // Granted only when the lock is released: the leader's tab closed, or this

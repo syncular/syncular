@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-07',
+    title: 'Replay follower realtime calls across leader handover',
+    body: "A follower tab's in-flight `connectRealtime()` or `disconnectRealtime()` runs again on the next leader instead of rejecting with `client.leader_handover`. `createTabCoordinator` exposes the replay list as `replayOnHandover`.",
+    links: [
+      {
+        href: '/platform-web-specifics/#multi-tab',
+        label: 'Leader and followers',
+      },
+    ],
+  },
+  {
+    date: '2026-11-07',
     title: 'Join concurrent client close and dispose',
     body: 'Tauri, React Native, and browser worker `close()` and React resource `dispose()` return one shared promise. A concurrent or repeated call settles with the first shutdown and observes its failure.',
     links: [

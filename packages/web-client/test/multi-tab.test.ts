@@ -186,9 +186,11 @@ class ChannelPartition<E = SyncWorkerEvent> {
   }
 }
 
+/** A worker that answers every call at once, except `held`, which it never answers. */
 function fakeReadyWorker(
   clientId: string,
   initConfigs: WorkerInitConfig[],
+  held?: string,
 ): Worker {
   const messageListeners = new Set<(event: MessageEvent) => void>();
   let readyScheduled = false;
@@ -212,8 +214,10 @@ function fakeReadyWorker(
     postMessage: (message: {
       t: string;
       id?: number;
+      method?: string;
       config?: WorkerInitConfig;
     }) => {
+      if (message.t === 'call' && message.method === held) return;
       if (message.t === 'init' && message.config !== undefined) {
         initConfigs.push(message.config);
         queueMicrotask(() =>
@@ -1095,6 +1099,94 @@ test('calls in flight to a previous leader reject when another leader announces'
     epoch: 2,
   });
   link.close();
+});
+
+test('realtime calls in flight to a previous leader settle on the next leader', async () => {
+  const { FollowerLink } = await import('../src/multi-tab');
+  const clock = manualClock();
+  const posted: MultiTabMessage[] = [];
+  let deliver: ((event: { data: MultiTabMessage }) => void) | undefined;
+  const link = new FollowerLink({
+    channel: {
+      postMessage: (message) => posted.push(message),
+      addEventListener: (_type, listener) => {
+        deliver = listener;
+      },
+      removeEventListener: noop,
+      close: noop,
+    },
+    fromId: 'f',
+    identity: ID,
+    onEvent: noop,
+    onLeaderChange: noop,
+    callTimeoutMs: 300,
+    schedule: clock.schedule,
+    replayOnHandover: ['connectRealtime', 'disconnectRealtime'],
+  });
+  deliver?.({ data: { t: 'announce', epoch: 1, clientId: 'first', ...ID } });
+  const disconnect = link.call('disconnectRealtime', []);
+  const connect = link.call('connectRealtime', []);
+  const query = link.call('query', []);
+  deliver?.({ data: { t: 'announce', epoch: 2, clientId: 'second', ...ID } });
+  await expectRejectsWithCode(query, LEADER_HANDOVER_CODE);
+  const replayed = posted.filter(
+    (message): message is Extract<MultiTabMessage, { t: 'req' }> =>
+      message.t === 'req' && message.epoch === 2,
+  );
+  expect(replayed.map((message) => message.method)).toEqual([
+    'disconnectRealtime',
+    'connectRealtime',
+  ]);
+  for (const message of replayed) {
+    deliver?.({
+      data: {
+        t: 'res',
+        epoch: 2,
+        reqId: message.reqId,
+        ok: true,
+        value: message.method,
+      },
+    });
+  }
+  expect(await disconnect).toBe('disconnectRealtime');
+  expect(await connect).toBe('connectRealtime');
+  link.close();
+});
+
+test('a realtime call in flight when the leader releases the lock runs on the promoted core', async () => {
+  const { FollowerLink } = await import('../src/multi-tab');
+  const clock = manualClock();
+  let deliver: ((event: { data: MultiTabMessage }) => void) | undefined;
+  const link = new FollowerLink({
+    channel: {
+      postMessage: noop,
+      addEventListener: (_type, listener) => {
+        deliver = listener;
+      },
+      removeEventListener: noop,
+      close: noop,
+    },
+    fromId: 'f',
+    identity: ID,
+    onEvent: noop,
+    onLeaderChange: noop,
+    callTimeoutMs: 300,
+    schedule: clock.schedule,
+    replayOnHandover: ['connectRealtime', 'disconnectRealtime'],
+  });
+  deliver?.({ data: { t: 'announce', epoch: 1, clientId: 'lead', ...ID } });
+  const disconnect = link.call('disconnectRealtime', []);
+  const query = link.call('query', []);
+  // The leader tab signs out and closes; this tab wins the lock.
+  link.unbind();
+  await expectRejectsWithCode(query, LEADER_HANDOVER_CODE);
+  const invoked: string[] = [];
+  link.handOver((method) => {
+    invoked.push(method);
+    return Promise.resolve('own-core');
+  });
+  expect(await disconnect).toBe('own-core');
+  expect(invoked).toEqual(['disconnectRealtime']);
 });
 
 test('a tab that wins the lock runs the calls queued for the next leader on its own core', async () => {
@@ -2185,4 +2277,45 @@ test('concurrent and repeated multi-tab leader close join one held lease release
   expect(settled).toEqual(['first', 'second']);
   await leader.close();
   expect(settled).toEqual(['first', 'second']);
+});
+
+test('a follower disconnectRealtime in flight when the leader tab closes settles on the promoted core', async () => {
+  const lock = makeSharedLock();
+  const lockName = `mt-replay-${lockSeq++}`;
+  const workerMethods: string[] = [];
+  const leader = await createSyncClientHandle({
+    worker: () => fakeReadyWorker('replay-leader', [], 'disconnectRealtime'),
+    schema: CLIENT_SCHEMA,
+    database: { mode: 'custom' },
+    endpoints: { syncUrl: http.syncUrl },
+    autoSync: false,
+    leaderLock: lock,
+    lockName,
+    clientId: 'replay-leader',
+  });
+  const follower = await createSyncClientHandle({
+    worker: () => {
+      const worker = fakeReadyWorker('replay-follower', []);
+      const post = worker.postMessage.bind(worker);
+      worker.postMessage = (message: { t: string; method?: string }) => {
+        if (message.t === 'call' && message.method !== undefined)
+          workerMethods.push(message.method);
+        post(message);
+      };
+      return worker;
+    },
+    schema: CLIENT_SCHEMA,
+    database: { mode: 'custom' },
+    endpoints: { syncUrl: http.syncUrl },
+    autoSync: false,
+    leaderLock: lock,
+    lockName,
+  });
+  expect(follower.role).toBe('follower');
+  const disconnect = follower.disconnectRealtime();
+  await leader.close();
+  await disconnect;
+  expect(follower.role).toBe('leader');
+  expect(workerMethods).toContain('disconnectRealtime');
+  await follower.close();
 });

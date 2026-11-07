@@ -1,8 +1,25 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.55.1** (`v0.55.1`). All artifacts use Apache-2.0, except
+current release is **0.56.0** (`v0.56.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.56.0 release notes
+
+0.56.0 replays a follower tab's realtime calls across a leader handover. A
+`connectRealtime()` or `disconnectRealtime()` call that the departing leader
+had not answered runs again on the next leader, the promoted follower
+included, and settles with that core's result. Before, it rejected with
+`client.leader_handover`, so a follower that stopped realtime while the
+leader tab signed out had to reissue the call. Other follower calls in flight
+still reject with `client.leader_handover`. `createTabCoordinator` takes a new
+`replayOnHandover` option that lists the methods to replay; the worker handle
+sets it to the two realtime methods. SSP2, the storage layout, the wire
+version, and `MULTI_TAB_PROTOCOL_VERSION` are unchanged.
+
+**Upgrade notes.** Upgrade all 12 npm packages and 7 crates together. Code
+that retries `connectRealtime()` or `disconnectRealtime()` after
+`client.leader_handover` can drop the retry.
 
 ## 0.55.1 release notes
 

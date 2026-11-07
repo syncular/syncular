@@ -1125,6 +1125,9 @@ export async function createSyncClientHandle(
     name: lockName,
     version: resolvedConfig.schema.version,
     lock,
+    // A promoted leader starts a fresh core, so the realtime state a follower
+    // set on the departed core is gone either way.
+    replayOnHandover: ['connectRealtime', 'disconnectRealtime'],
     ...(resolvedConfig.channelFactory !== undefined
       ? { channelFactory: resolvedConfig.channelFactory }
       : {}),
