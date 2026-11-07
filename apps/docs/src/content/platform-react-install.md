@@ -69,7 +69,9 @@ const clientResource = createSyncClientResource(() => createClient());
 ```
 
 The application's lifecycle owner calls `clientResource.dispose()` when it no
-longer needs the engine. A resource survives React remounts and does not survive
+longer needs the engine. `dispose()` waits for initialization, then closes the
+client. Every call returns the same promise, so a second owner, such as a Vite
+HMR handoff, observes the same close and the same failure. A resource survives React remounts and does not survive
 automatic module replacement: keep it in your bundler's HMR data, or dispose the
 previous resource before you construct another persistent worker. The Vite
 recipe is in [Browser: realtime & lifecycle](/platform-web-realtime/#keep-one-owner-during-hmr).

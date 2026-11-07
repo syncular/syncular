@@ -1369,6 +1369,45 @@ describe('createNativeSyncClient', () => {
     await client.close();
     expect(pump.closed).toBe(1);
   });
+
+  for (const outcome of ['success', 'failure'] as const) {
+    test(`concurrent and repeated close join one held native close (${outcome})`, async () => {
+      const { nativeModule, eventEmitter, pump } = makeNative(defaultResponder);
+      let finishClose: (() => void) | undefined;
+      nativeModule.close = () => {
+        pump.closed += 1;
+        return new Promise<void>((resolve, reject) => {
+          finishClose = () =>
+            outcome === 'success'
+              ? resolve()
+              : reject(new Error('native close failed'));
+        });
+      };
+      const client = await createNativeSyncClient({
+        clientId: 'c1',
+        schema: { version: 1, tables: [] },
+        nativeModule,
+        eventEmitter,
+      });
+      const settled: string[] = [];
+      const track = (label: string, promise: Promise<void>) =>
+        promise.then(
+          () => settled.push(`${label}:ok`),
+          (error: Error) => settled.push(`${label}:${error.message}`),
+        );
+      const first = track('first', client.close());
+      const second = track('second', client.close());
+      await settle();
+      expect(settled).toEqual([]);
+      finishClose?.();
+      await Promise.all([first, second]);
+      const result = outcome === 'success' ? 'ok' : 'native close failed';
+      expect(settled).toEqual([`first:${result}`, `second:${result}`]);
+      await track('repeat', client.close());
+      expect(settled[2]).toBe(`repeat:${result}`);
+      expect(pump.closed).toBe(1);
+    });
+  }
 });
 
 describe('SyncClientLike parity', () => {

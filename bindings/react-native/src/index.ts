@@ -432,6 +432,7 @@ export class NativeSyncClient implements PromiseMethods<ClientSnapshotMethods> {
   readonly #presenceListeners = new Set<(scopeKey: string) => void>();
   #subscription: { remove(): void } | undefined;
   #closed = false;
+  #closing: Promise<void> | undefined;
   #paused = false;
   #syncScheduled = false;
   #syncRunning = false;
@@ -1249,21 +1250,26 @@ export class NativeSyncClient implements PromiseMethods<ClientSnapshotMethods> {
     if (this.#autoSync) this.#requestAutoSync();
   }
 
-  /** Detach the event listener and close the native core. Idempotent. */
-  async close(): Promise<void> {
-    if (this.#closed) return;
-    this.#closed = true;
-    if (this.#retryTimer !== undefined) clearTimeout(this.#retryTimer);
-    this.#retryTimer = undefined;
-    this.#native.stopEvents();
-    this.#subscription?.remove();
-    this.#subscription = undefined;
-    this.#invalidationListeners.clear();
-    this.#progress.clear();
-    this.#changeListeners.clear();
-    this.#diagnosticsListeners.clear();
-    this.#presenceListeners.clear();
-    await this.#native.close();
+  /**
+   * Detach the event listener and close the native core. Every call returns
+   * the same promise, which settles with the one native close.
+   */
+  close(): Promise<void> {
+    this.#closing ??= (async () => {
+      this.#closed = true;
+      if (this.#retryTimer !== undefined) clearTimeout(this.#retryTimer);
+      this.#retryTimer = undefined;
+      this.#native.stopEvents();
+      this.#subscription?.remove();
+      this.#subscription = undefined;
+      this.#invalidationListeners.clear();
+      this.#progress.clear();
+      this.#changeListeners.clear();
+      this.#diagnosticsListeners.clear();
+      this.#presenceListeners.clear();
+      await this.#native.close();
+    })();
+    return this.#closing;
   }
 }
 

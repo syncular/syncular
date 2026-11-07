@@ -61,6 +61,50 @@ describe('Vite schema-aware HMR fixture', () => {
     await replacement.resource.dispose();
   });
 
+  test('an explicit dispose during the owner handoff joins the handoff close', async () => {
+    const hotData: Record<string, unknown> = {};
+    let rejectClose: ((error: Error) => void) | undefined;
+    let closeCalls = 0;
+    const current = createViteSyncClientResource(hotData, 1, () => {
+      const client = new FakeClient();
+      (client as FakeClient & { close: () => Promise<void> }).close = () => {
+        closeCalls += 1;
+        return new Promise<void>((_resolve, reject) => {
+          rejectClose = reject;
+        });
+      };
+      return client;
+    });
+    expect((await settled(current.resource)).phase).toBe('ready');
+
+    const replacement = createViteSyncClientResource(hotData, 2, () => {
+      return new FakeClient();
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(closeCalls).toBe(1);
+    const explicit = current.resource.dispose();
+    const outcomes: string[] = [];
+    const tracked = Promise.all([
+      explicit.catch((error: Error) =>
+        outcomes.push(`explicit:${error.message}`),
+      ),
+      replacement.handoff.catch((error: Error) =>
+        outcomes.push(`handoff:${error.message}`),
+      ),
+    ]);
+    await Promise.resolve();
+    expect(outcomes).toEqual([]);
+    rejectClose?.(new Error('worker close failed'));
+    await tracked;
+    expect(outcomes.sort()).toEqual([
+      'explicit:worker close failed',
+      'handoff:worker close failed',
+    ]);
+    expect(closeCalls).toBe(1);
+    expect((await settled(replacement.resource)).phase).toBe('error');
+  });
+
   test('surfaces synchronous-bootstrap disposal failure without opening a replacement', async () => {
     const hotData: Record<string, unknown> = {};
     let replacementCalls = 0;

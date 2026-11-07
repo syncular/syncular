@@ -131,6 +131,64 @@ describe('client resources', () => {
     expect(closeCalls).toBe(1);
   });
 
+  for (const held of ['initialization', 'close'] as const) {
+    for (const outcome of ['success', 'failure'] as const) {
+      test(`concurrent and repeated dispose join one held ${held} (${outcome})`, async () => {
+        const ready = deferred<FakeClient>();
+        const closing = deferred<void>();
+        const client = new FakeClient();
+        let closeCalls = 0;
+        (client as FakeClient & { close: () => Promise<void> }).close = () => {
+          closeCalls += 1;
+          return closing.promise;
+        };
+        const resource = createSyncClientResource(() => ready.promise);
+        if (held === 'close') {
+          ready.resolve(client);
+          await waitFor(() =>
+            expect(resource.getSnapshot().phase).toBe('ready'),
+          );
+        }
+        const settled: string[] = [];
+        const track = (label: string, promise: Promise<void>) =>
+          promise.then(
+            () => settled.push(`${label}:ok`),
+            (error: Error) => settled.push(`${label}:${error.message}`),
+          );
+        const first = track('first', resource.dispose());
+        const second = track('second', resource.dispose());
+        if (held === 'initialization') {
+          for (let turn = 0; turn < 8; turn += 1) await Promise.resolve();
+          expect(closeCalls).toBe(0);
+          expect(settled).toEqual([]);
+          ready.resolve(client);
+        }
+        for (let turn = 0; turn < 8; turn += 1) await Promise.resolve();
+        expect(closeCalls).toBe(1);
+        expect(settled).toEqual([]);
+        if (outcome === 'success') closing.resolve();
+        else closing.reject(new Error('close failed'));
+        await Promise.all([first, second]);
+        const result = outcome === 'success' ? 'ok' : 'close failed';
+        expect(settled).toEqual([`first:${result}`, `second:${result}`]);
+        await track('repeat', resource.dispose());
+        expect(settled[2]).toBe(`repeat:${result}`);
+        expect(closeCalls).toBe(1);
+      });
+    }
+  }
+
+  test('disposal joins a failed initialization without closing', async () => {
+    const ready = deferred<FakeClient>();
+    const resource = createSyncClientResource(() => ready.promise);
+    const first = resource.dispose();
+    const second = resource.dispose();
+    expect(second).toBe(first);
+    ready.reject(new Error('opening failed'));
+    await first;
+    expect(resource.getSnapshot()).toEqual({ phase: 'pending' });
+  });
+
   test('a failed resource can retry without being replaced', async () => {
     const client = new FakeClient();
     const snapshots: string[] = [];

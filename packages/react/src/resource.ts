@@ -11,6 +11,10 @@ export interface SyncClientResource {
   getSnapshot(): SyncClientResourceSnapshot;
   /** Re-run a failed initialization attempt. Pending/ready calls are no-ops. */
   retry(): Promise<void>;
+  /**
+   * Wait for initialization, then close the client. Every call returns the
+   * same promise, so concurrent and repeated calls observe one outcome.
+   */
   dispose(): Promise<void>;
 }
 
@@ -19,8 +23,7 @@ export function createSyncClientResource(
 ): SyncClientResource {
   const listeners = new Set<() => void>();
   let snapshot: SyncClientResourceSnapshot = { phase: 'pending' };
-  let disposed = false;
-  let closed = false;
+  let disposing: Promise<void> | undefined;
   let initialized: Promise<void>;
 
   const notify = (): void => {
@@ -29,10 +32,7 @@ export function createSyncClientResource(
 
   const closeClient = async (client: SyncClientLike): Promise<void> => {
     const close = (client as { close?: () => void | Promise<void> }).close;
-    if (close !== undefined && !closed) {
-      closed = true;
-      await close.call(client);
-    }
+    if (close !== undefined) await close.call(client);
   };
 
   const initialize = (publishPending: boolean): Promise<void> => {
@@ -44,7 +44,7 @@ export function createSyncClientResource(
       .then(factory)
       .then(
         async (client) => {
-          if (disposed) {
+          if (disposing !== undefined) {
             await closeClient(client);
             return;
           }
@@ -52,7 +52,7 @@ export function createSyncClientResource(
           notify();
         },
         (error: unknown) => {
-          if (disposed) return;
+          if (disposing !== undefined) return;
           snapshot = {
             phase: 'error',
             error: error instanceof Error ? error : new Error(String(error)),
@@ -72,18 +72,19 @@ export function createSyncClientResource(
     },
     getSnapshot: () => snapshot,
     retry() {
-      if (disposed || snapshot.phase !== 'error') return initialized;
+      if (disposing !== undefined || snapshot.phase !== 'error') {
+        return initialized;
+      }
       initialized = initialize(true);
       return initialized;
     },
-    async dispose() {
-      if (disposed) return;
-      disposed = true;
-      await initialized;
-      if (snapshot.phase === 'ready' && !closed) {
-        await closeClient(snapshot.client);
-      }
-      listeners.clear();
+    dispose() {
+      disposing ??= (async () => {
+        await initialized;
+        if (snapshot.phase === 'ready') await closeClient(snapshot.client);
+        listeners.clear();
+      })();
+      return disposing;
     },
   };
 }

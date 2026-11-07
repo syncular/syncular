@@ -1,8 +1,23 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.55.0** (`v0.55.0`). All artifacts use Apache-2.0, except
+current release is **0.55.1** (`v0.55.1`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.55.1 release notes
+
+0.55.1 makes client teardown join one outcome. `close()` on the Tauri,
+React Native, and browser worker clients returns the same promise to every
+caller: a concurrent or repeated call settles when the first shutdown settles
+and rejects with its error. Before, a second call resolved at once, while the
+native shutdown was still running. `createSyncClientResource().dispose()` and
+the testkit's `dispose()` follow the same rule, including a dispose that waits
+on initialization. SSP2, the storage layout, and the wire version are
+unchanged.
+
+**Upgrade notes.** Upgrade all 12 npm packages and 7 crates together. No API
+change. Code that keeps its own close promise to join concurrent closes can
+call `close()` or `dispose()` directly.
 
 ## 0.55.0 release notes
 

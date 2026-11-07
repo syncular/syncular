@@ -1133,6 +1133,7 @@ export async function createTabCoordinator<E>(
     | undefined;
   let follower: FollowerLink<E> | undefined;
   let closed = false;
+  let closing: Promise<void> | undefined;
   let takingOver = false;
   /** Start of the current `leader-unreachable` period. */
   let unreachableSince: number | undefined;
@@ -1362,20 +1363,22 @@ export async function createTabCoordinator<E>(
         takingOver = false;
       }
     },
-    close: async () => {
-      if (closed) return;
-      closed = true;
-      endUnreachable('closed');
-      follower?.close();
-      follower = undefined;
-      const ending = leading;
-      leading = undefined;
-      if (ending !== undefined) {
-        ending.end();
-        await ending.leader.close();
-        await ending.lease.release();
-      }
-      await tabLease.release();
+    close: () => {
+      closing ??= (async () => {
+        closed = true;
+        endUnreachable('closed');
+        follower?.close();
+        follower = undefined;
+        const ending = leading;
+        leading = undefined;
+        if (ending !== undefined) {
+          ending.end();
+          await ending.leader.close();
+          await ending.lease.release();
+        }
+        await tabLease.release();
+      })();
+      return closing;
     },
   };
 

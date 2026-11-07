@@ -47,7 +47,9 @@ subscription.remove();
 await client.close();
 ```
 
-`close()` detaches listeners and releases the native core, and is idempotent.
+`close()` detaches listeners and releases the native core. Every call returns
+the same promise, which settles with the one native close and rejects with its
+error.
 `resume()` is one-shot: it reconnects realtime once and restarts the pump.
 
 ::checkpoint[Backgrounding the app stops events; returning to the foreground restores them and a new round runs.]

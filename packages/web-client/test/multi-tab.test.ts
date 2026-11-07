@@ -2147,3 +2147,42 @@ test('takeOver() on a handle opens the worker with the storage takeover flag', a
   expect(frozen.leadership).toMatchObject({ reason: 'leadership-taken' });
   await expectRejectsWithCode(frozen.query('SELECT 1'), LEADERSHIP_TAKEN_CODE);
 });
+
+test('concurrent and repeated multi-tab leader close join one held lease release', async () => {
+  const releases: Array<() => void> = [];
+  const lease = (): LeaderLease => ({
+    release: () =>
+      new Promise<void>((resolve) => {
+        releases.push(resolve);
+      }),
+  });
+  const leader = await createSyncClientHandle({
+    worker: () => fakeReadyWorker('held-release-leader', []),
+    schema: CLIENT_SCHEMA,
+    database: { mode: 'custom' },
+    endpoints: { syncUrl: http.syncUrl },
+    autoSync: false,
+    leaderLock: {
+      acquire: () => Promise.resolve(lease()),
+      tryAcquire: () => Promise.resolve(lease()),
+    },
+    lockName: `mt-held-release-${lockSeq++}`,
+    clientId: 'held-release-leader',
+  });
+  expect(leader.isLeader).toBe(true);
+  const settled: string[] = [];
+  const first = leader.close().then(() => settled.push('first'));
+  const second = leader.close().then(() => settled.push('second'));
+  for (let turn = 0; turn < 24; turn += 1) await Promise.resolve();
+  expect(settled).toEqual([]);
+  while (settled.length < 2) {
+    const release = releases.shift();
+    expect(release).toBeDefined();
+    release?.();
+    for (let turn = 0; turn < 24; turn += 1) await Promise.resolve();
+  }
+  await Promise.all([first, second]);
+  expect(settled).toEqual(['first', 'second']);
+  await leader.close();
+  expect(settled).toEqual(['first', 'second']);
+});

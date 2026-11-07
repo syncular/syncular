@@ -71,6 +71,14 @@ describe('createTestSync — convergence', () => {
       await sync.dispose();
     }
   });
+  test('concurrent and repeated dispose share one teardown', async () => {
+    const sync = await createTestSync({ schema: SCHEMA });
+    await sync.client('a');
+    const first = sync.dispose();
+    expect(sync.dispose()).toBe(first);
+    await first;
+    expect(sync.dispose()).toBe(first);
+  });
 });
 
 describe('createTestSync — offline queue / drain', () => {

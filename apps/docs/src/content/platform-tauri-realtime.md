@@ -103,8 +103,9 @@ reader follows the database the last successful `create` opened.
 
 ## Closing the client
 
-`close()` shuts down the native client and is idempotent. After
-`await client.close()`, data and control methods reject with `client.closed`
+`close()` shuts down the native client. Every call returns the same promise:
+a concurrent or repeated `close()` settles when the one native shutdown settles
+and rejects with its error. After `await client.close()`, data and control methods reject with `client.closed`
 before they check security preflight; local listener registration and progress
 reads throw the same code. Dispose host session listeners together with their
 client so a later sign-in cannot rotate a closed replica's headers.

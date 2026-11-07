@@ -440,6 +440,7 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
   readonly #presenceListeners = new Set<(scopeKey: string) => void>();
   #unlisten: (() => void) | undefined;
   #closed = false;
+  #closing: Promise<void> | undefined;
   #securityLifecycle: SecurityLifecycle;
   #preflightBarrier: Promise<void> | undefined;
   #diagnosticsEnabled = false;
@@ -1230,22 +1231,28 @@ export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
     await this.#command('disconnectRealtime', {});
   }
 
-  /** Shut down the native core, release its keyring, then detach listeners. */
-  async close(): Promise<void> {
-    if (this.#closed) return;
-    const shutdown = this.#command('shutdown', {});
-    this.#closed = true;
-    try {
-      await shutdown;
-    } finally {
-      this.#unlisten?.();
-      this.#unlisten = undefined;
-      this.#invalidationListeners.clear();
-      this.#progress.clear();
-      this.#changeListeners.clear();
-      this.#diagnosticsListeners.clear();
-      this.#presenceListeners.clear();
+  /**
+   * Shut down the native core, release its keyring, then detach listeners.
+   * Every call returns the same promise, so a concurrent or repeated close
+   * settles only when the one native shutdown settles, with its outcome.
+   */
+  close(): Promise<void> {
+    if (this.#closing === undefined) {
+      const shutdown = this.#command('shutdown', {});
+      this.#closed = true;
+      this.#closing = shutdown
+        .then(() => {})
+        .finally(() => {
+          this.#unlisten?.();
+          this.#unlisten = undefined;
+          this.#invalidationListeners.clear();
+          this.#progress.clear();
+          this.#changeListeners.clear();
+          this.#diagnosticsListeners.clear();
+          this.#presenceListeners.clear();
+        });
     }
+    return this.#closing;
   }
 }
 

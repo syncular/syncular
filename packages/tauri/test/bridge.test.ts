@@ -1694,6 +1694,58 @@ describe('createTauriSyncClient', () => {
     });
     expect(count).toBe(0);
   });
+
+  for (const outcome of ['success', 'failure'] as const) {
+    test(`concurrent and repeated close join one held shutdown (${outcome})`, async () => {
+      let releaseShutdown: (() => void) | undefined;
+      const { tauri, calls } = makeTauri((cmd, args) => {
+        const method = (args.command as { method?: string } | undefined)
+          ?.method;
+        if (method !== 'shutdown') return defaultResponder(cmd, args);
+        return new Promise((resolve) => {
+          releaseShutdown = () =>
+            resolve(
+              outcome === 'success'
+                ? OK({})
+                : {
+                    error: {
+                      code: 'client.shutdown_failed',
+                      message: 'native shutdown failed',
+                    },
+                  },
+            );
+        });
+      });
+      const client = await createTauriSyncClient({
+        clientId: 'c1',
+        schema: { version: 1, tables: [] },
+        tauri,
+      });
+      const settled: string[] = [];
+      const track = (label: string, promise: Promise<void>) =>
+        promise.then(
+          () => settled.push(`${label}:ok`),
+          (error: { code?: string }) => settled.push(`${label}:${error.code}`),
+        );
+      const first = track('first', client.close());
+      const second = track('second', client.close());
+      await settle();
+      expect(settled).toEqual([]);
+      releaseShutdown?.();
+      await Promise.all([first, second]);
+      const result = outcome === 'success' ? 'ok' : 'client.shutdown_failed';
+      expect(settled).toEqual([`first:${result}`, `second:${result}`]);
+      await track('repeat', client.close());
+      expect(settled[2]).toBe(`repeat:${result}`);
+      expect(
+        calls.filter(
+          (call) =>
+            (call.args.command as { method?: string } | undefined)?.method ===
+            'shutdown',
+        ),
+      ).toHaveLength(1);
+    });
+  }
 });
 
 describe('SyncClientLike parity', () => {

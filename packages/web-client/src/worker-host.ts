@@ -341,6 +341,7 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
   readonly #unreachableListeners: Set<(event: LeaderUnreachableEvent) => void>;
   readonly #devtoolsUnregister: (() => void) | undefined;
   #closed = false;
+  #closing: Promise<void> | undefined;
 
   /** @internal — use {@link createSyncClientHandle}. */
   constructor(internals: {
@@ -830,18 +831,23 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     return this.#call('abandonLocalAuthorityAttach', []);
   }
 
-  /** Close the core (leader) or the link (follower), release leadership. */
-  async close(): Promise<void> {
-    if (this.#closed) return;
-    this.#closed = true;
-    this.#progress.clear();
-    this.#devtoolsUnregister?.();
-    await this.#tabs?.close();
-    if (this.#core !== undefined) {
-      const core = this.#core;
-      this.#core = undefined;
-      await core.close();
-    }
+  /**
+   * Close the core (leader) or the link (follower), release leadership. Every
+   * call returns the same promise, which settles with the one close.
+   */
+  close(): Promise<void> {
+    this.#closing ??= (async () => {
+      this.#closed = true;
+      this.#progress.clear();
+      this.#devtoolsUnregister?.();
+      await this.#tabs?.close();
+      if (this.#core !== undefined) {
+        const core = this.#core;
+        this.#core = undefined;
+        await core.close();
+      }
+    })();
+    return this.#closing;
   }
 }
 

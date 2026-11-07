@@ -116,7 +116,7 @@ export async function createTestSync(
 
   const clients: TestClient[] = [];
   let autoId = 0;
-  let disposed = false;
+  let disposing: Promise<void> | undefined;
 
   const sync: TestSync = {
     clock,
@@ -154,17 +154,18 @@ export async function createTestSync(
         if (!progressed) return;
       }
     },
-    dispose: async () => {
-      if (disposed) return;
-      disposed = true;
-      for (const client of clients) {
-        try {
-          await client.close();
-        } catch {
-          // best-effort teardown; keep closing the rest
+    dispose: () => {
+      disposing ??= (async () => {
+        for (const client of clients) {
+          try {
+            await client.close();
+          } catch {
+            // best-effort teardown; keep closing the rest
+          }
         }
-      }
-      server.close();
+        server.close();
+      })();
+      return disposing;
     },
   };
 

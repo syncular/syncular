@@ -16,6 +16,21 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-11-07',
+    title: 'Join concurrent client close and dispose',
+    body: 'Tauri, React Native, and browser worker `close()` and React resource `dispose()` return one shared promise. A concurrent or repeated call settles with the first shutdown and observes its failure.',
+    links: [
+      {
+        href: '/platform-tauri-realtime/#closing-the-client',
+        label: 'Closing the Tauri client',
+      },
+      {
+        href: '/platform-react-install/',
+        label: 'React client resource',
+      },
+    ],
+  },
+  {
     date: '2026-11-04',
     title: 'Observe realtime receipt and applied commits',
     body: 'Native hosts can observe bounded socket message receipts, and change batches identify applied server commits. The server queues round-time deltas until the response ends, avoiding an extra catch-up pull when the queue and registrations remain valid.',

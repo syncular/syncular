@@ -59,13 +59,18 @@ async function expectRejectsWithCode(
   throw new Error(`expected a rejection with code ${code}`);
 }
 
-/** A protocol-correct Worker whose call replies come from a scripted table. */
+interface ScriptedReply {
+  readonly replied: boolean;
+  readonly value?: unknown;
+  readonly error?: WorkerErrorShape;
+}
+
+/**
+ * A protocol-correct Worker whose call replies come from a scripted table.
+ * A promised reply holds the call until it settles.
+ */
 function scriptedWorker(
-  answer: (method: string) => {
-    readonly replied: boolean;
-    readonly value?: unknown;
-    readonly error?: WorkerErrorShape;
-  },
+  answer: (method: string) => ScriptedReply | Promise<ScriptedReply>,
 ): Worker {
   const listeners = new Set<(event: MessageEvent) => void>();
   const emit = (data: unknown): void => {
@@ -93,8 +98,7 @@ function scriptedWorker(
         return;
       }
       if (message.t !== 'call') return;
-      const reply = answer(message.method ?? '');
-      queueMicrotask(() =>
+      void Promise.resolve(answer(message.method ?? '')).then((reply) =>
         emit(
           reply.error !== undefined
             ? { t: 'error', id: message.id, error: reply.error }
@@ -1502,4 +1506,35 @@ test('wake-ups during a queued round share one follow-up drive', async () => {
   } finally {
     await handle.close();
   }
+});
+
+test('concurrent and repeated handle close join one held worker close', async () => {
+  let releaseClose: (() => void) | undefined;
+  let closeCalls = 0;
+  const handle = await createSyncClientHandle({
+    worker: () =>
+      scriptedWorker((method) => {
+        if (method !== 'close') return { replied: false };
+        closeCalls += 1;
+        return new Promise<ScriptedReply>((resolve) => {
+          releaseClose = () => resolve({ replied: false });
+        });
+      }),
+    schema: { version: 1, tables: [] },
+    database: { mode: 'custom' },
+    endpoints: { syncUrl: 'https://invalid.test/sync' },
+    autoSync: false,
+    multiTab: false,
+  });
+  const settled: string[] = [];
+  const first = handle.close().then(() => settled.push('first'));
+  const second = handle.close().then(() => settled.push('second'));
+  for (let turn = 0; turn < 12; turn += 1) await Promise.resolve();
+  expect(closeCalls).toBe(1);
+  expect(settled).toEqual([]);
+  releaseClose?.();
+  await Promise.all([first, second]);
+  expect(settled).toEqual(['first', 'second']);
+  await handle.close();
+  expect(closeCalls).toBe(1);
 });
