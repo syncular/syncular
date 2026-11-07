@@ -54,7 +54,7 @@ jobs:
         with:
           # Keep releases deterministic and avoid setup-bun's extra GitHub API
           # lookup for the moving `latest` tag during registry outages.
-          bun-version: 1.4.0
+          bun-version: 1.4.4
       # npm CLI >= 11.5 performs OIDC trusted publishing natively. The exact
       # version is pinned so the privileged publish path stays deterministic.
       - uses: actions/setup-node@v6
@@ -128,7 +128,7 @@ jobs:
           ref: ${{ env.RELEASE_TAG }}
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.4.0
+          bun-version: 1.4.4
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable branch
       - name: validate and materialize release metadata
         run: |
@@ -212,7 +212,7 @@ jobs:
           ref: ${{ env.RELEASE_TAG }}
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.4.0
+          bun-version: 1.4.4
       - name: publish the GitHub release from docs/RELEASE.md
         env:
           GH_TOKEN: ${{ github.token }}
@@ -239,7 +239,7 @@ jobs:
           ref: ${{ env.RELEASE_TAG }}
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.4.0
+          bun-version: 1.4.4
       - run: bun install --frozen-lockfile
       - name: validate tag and build versioned docs
         run: |

@@ -19,6 +19,12 @@ unchanged.
 change. Code that keeps its own close promise to join concurrent closes can
 call `close()` or `dispose()` directly.
 
+The first `v0.55.1` workflow run published the crates and stopped in the npm
+job: under Bun 1.4.0, the materialized checkout failed to resolve
+`@syncular/client` from the Tauri tests once they ran after the bundle tests.
+The CI check lane passed the same order under Bun 1.4.4. The release workflow
+now pins Bun 1.4.4 for the resumed run.
+
 ## 0.55.0 release notes
 
 0.55.0 adds bounded native WebSocket receipt observation and identifies
@@ -3684,7 +3690,7 @@ Existing generated query inputs remain valid.
 
 ## Release gates
 
-Use Bun 1.4.0, matching the release workflow. The benchmark resource contract
+Use Bun 1.4.4, matching the release workflow. The benchmark resource contract
 expects its subprocess memory-counter units.
 
 From the repository root:
