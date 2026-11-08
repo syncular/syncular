@@ -288,3 +288,82 @@ describe('explicit rescope (§2.2)', () => {
     expect(state.tombstone).toBeUndefined();
   });
 });
+
+describe('command upsert insert (§6.2)', () => {
+  type WriteInput = {
+    readonly op: 'delete' | 'upsert' | 'insert';
+    readonly title: string;
+  };
+  const write = registerRemoteCommand<WriteInput>(
+    remoteCommand<WriteInput>('test-write'),
+    {
+      authorize: () => true,
+      run: (_context, input) => [
+        input.op === 'delete'
+          ? { table: 'tasks', op: 'delete', rowId: 't1' }
+          : input.op === 'insert'
+            ? {
+                table: 'tasks',
+                op: 'upsert',
+                insert: true,
+                values: taskValues('p1', input.title),
+              }
+            : {
+                table: 'tasks',
+                op: 'upsert',
+                values: taskValues('p1', input.title),
+              },
+      ],
+    },
+  );
+
+  async function run(t: TestContext, requestId: string, input: WriteInput) {
+    const response = decodeRemoteOperationResponse(
+      await handleRemoteOperation(
+        encodeRemoteOperationRequest({
+          revision: 1,
+          kind: 'command',
+          clientId: 'write-test',
+          operationId: 'test-write',
+          requestId,
+          params: input,
+        }),
+        { ...t.ctx, actorId: 'actor-1' },
+        new RemoteOperationRegistry([write]),
+      ),
+    );
+    if (response.kind !== 'command')
+      throw new Error('expected a command result');
+    return response;
+  }
+
+  test('recreates a row the command deleted; an unversioned upsert stays refused', async () => {
+    const t = makeContext();
+    t.scopes.value = { project_id: ['p1'] };
+    expect((await run(t, 'w1', { op: 'upsert', title: 'a' })).status).toBe(
+      'applied',
+    );
+    expect((await run(t, 'w2', { op: 'delete', title: '' })).status).toBe(
+      'applied',
+    );
+    expect((await rowState(t)).tombstone).toBeDefined();
+
+    const refused = await run(t, 'w3', { op: 'upsert', title: 'b' });
+    expect(refused.status).toBe('rejected');
+    expect(refused.results[0]).toMatchObject({ code: 'sync.row_deleted' });
+
+    expect((await run(t, 'w4', { op: 'insert', title: 'c' })).status).toBe(
+      'applied',
+    );
+    const state = await rowState(t);
+    expect(state.row?.serverVersion).toBe(1);
+    expect(state.tombstone).toBeUndefined();
+
+    const existing = await run(t, 'w5', { op: 'insert', title: 'd' });
+    expect(existing.status).toBe('rejected');
+    expect(existing.results[0]).toMatchObject({
+      status: 'conflict',
+      code: 'sync.version_conflict',
+    });
+  });
+});

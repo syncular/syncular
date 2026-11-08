@@ -218,6 +218,31 @@ const operations = new RemoteOperationRegistry([
 ]);
 ```
 
+### Recreate a deleted row
+
+A command `upsert` is unversioned. Within the tombstone horizon the server
+refuses an unversioned upsert of a deleted row with `sync.row_deleted`, so a
+command that deleted a row with a stable, derived id cannot write it back the
+same way. Set `insert: true` to send an explicit insert (`baseVersion = 0`):
+the server recreates the row at `server_version = 1` and clears its tombstone.
+An explicit insert of an existing row is refused with `sync.version_conflict`,
+so read the row first and set the flag only when it is absent.
+
+```ts
+run: async (command, input) => {
+  const id = `${input.mapId}:${input.cx}:${input.cy}`;
+  const existing = await command.getRow('map_chunks', id);
+  return [
+    {
+      table: 'map_chunks',
+      op: 'upsert',
+      ...(existing === undefined ? { insert: true as const } : {}),
+      values: { id, map_id: input.mapId, known: input.known },
+    },
+  ];
+};
+```
+
 ### Move a row between scopes
 
 A `rescope` mutation changes a row's scope values without recreating it. Pass

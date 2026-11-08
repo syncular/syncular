@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-11-08',
+    title: 'Recreate a deleted row from a command',
+    body: 'A command `upsert` mutation takes `insert: true` to send an explicit insert (`baseVersion = 0`), which recreates a row deleted inside the tombstone horizon instead of failing with `sync.row_deleted`.',
+    links: [
+      {
+        href: '/guide-remote-operations/#recreate-a-deleted-row',
+        label: 'Recreate a deleted row',
+      },
+    ],
+  },
+  {
+    date: '2026-11-08',
     title: 'Reset a cleanly closed Rust replica',
     body: '`SyncClient::reset_replica` treats a missing sidecar as deleted, so a WAL replica closed cleanly resets. The native transport builds against ureq 3.5.',
     links: [

@@ -1,8 +1,25 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.56.1** (`v0.56.1`). All artifacts use Apache-2.0, except
+current release is **0.57.0** (`v0.57.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.57.0 release notes
+
+0.57.0 lets a server-authoritative command recreate a row it deleted. A
+command `upsert` mutation was always unversioned, so within the tombstone
+horizon the server refused it with `sync.row_deleted` (SPEC.md §6.2), and a
+command that deleted a row with a stable, derived id could not write it back.
+The upsert mutation takes a new `insert: true` flag that sends it as an
+explicit insert (`baseVersion = 0`): the server recreates the row at
+`server_version = 1` and clears the tombstone. An explicit insert of an
+existing row answers `sync.version_conflict`. SSP2, the storage layout, and
+the wire version are unchanged.
+
+**Upgrade notes.** Upgrade all 12 npm packages and 7 crates together. Command
+upserts without the flag behave as before. A command that kept a placeholder
+row to avoid `sync.row_deleted` can delete the row and recreate it with
+`insert: true` when `getRow` returns `undefined`.
 
 ## 0.56.1 release notes
 

@@ -130,6 +130,13 @@ new ones, keeps the row's `server_version`, and leaves no tombstone behind
 the live row, so the row can move again. Only scope columns may differ from
 the stored row; the server authorizes both the old and the new values.
 
+An `upsert` mutation is unversioned by default, so SPEC.md §6.2 refuses it
+with `sync.row_deleted` when the row was deleted inside the tombstone horizon.
+`insert: true` makes it an explicit insert (`baseVersion = 0`): it recreates
+the deleted row at `server_version = 1` and clears the tombstone, and an
+existing row answers `sync.version_conflict`. A command that reads the row
+first with `getRow` sets `insert: true` when the row is absent.
+
 An applied retry returns `cached` without running the callback again. A normal
 push rejection is stored and replays as `rejected`; conflict rows are
 reauthorized on replay (SPEC §2.3). A callback exception is a

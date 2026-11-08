@@ -3357,6 +3357,9 @@ update, and there is nothing to update. A recreated row clears its
 tombstone. Beyond the pruning horizon the tombstone is gone and the
 insert rule applies (§4.6).
 
+A registered command's `upsert` mutation is unversioned unless it sets
+`insert`, which sends `baseVersion = 0` ([REMOTE.md](./REMOTE.md) §3).
+
 `sync.row_deleted`: category `not-found`, not retryable, action
 `fixRequest`. The client drops the operation on rebuild and journals it
 (§7.2).

@@ -108,6 +108,12 @@ export type CommandMutation =
       readonly table: string;
       readonly op: 'upsert';
       readonly values: Readonly<Record<string, RowValue>>;
+      /**
+       * Explicit insert (§6.2 `baseVersion = 0`): recreates a row deleted
+       * inside the tombstone horizon; an existing row answers
+       * `sync.version_conflict`. Absent: an unversioned upsert.
+       */
+      readonly insert?: true;
     }
   | {
       readonly table: string;
@@ -581,6 +587,9 @@ function commandOperations(
       table: table.name,
       rowId,
       op: mutation.op,
+      ...(mutation.op === 'upsert' && mutation.insert === true
+        ? { baseVersion: 0 }
+        : {}),
       payload: encodeSparseRow(table.columns, table.primaryKeyIndex, values),
     };
   });
