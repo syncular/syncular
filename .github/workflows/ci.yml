@@ -279,6 +279,15 @@ jobs:
       - name: Conformance (Rust client x TS server)
         run: SYNCULAR_RUST_CONFORMANCE=1 bun test packages/conformance/test/conformance-rust.test.ts
 
+      # Consumers resolve the published manifests afresh, so a semver-compatible
+      # dependency release can break their build while the committed lockfile
+      # still pins an older one. Last step: it rewrites this checkout's lockfile.
+      - name: Newest compatible dependencies
+        working-directory: rust
+        run: |
+          cargo update
+          cargo check --workspace --all-targets --all-features
+
   # The Tauri bindings live in their OWN cargo workspace (bindings/tauri) so
   # Tauri's heavy crate tree never bloats the main rust workspace's gate. This
   # job runs only when that tree changes. Building the `tauri` crate on Linux

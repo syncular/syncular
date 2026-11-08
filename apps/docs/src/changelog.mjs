@@ -16,6 +16,17 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-11-08',
+    title: 'Reset a cleanly closed Rust replica',
+    body: '`SyncClient::reset_replica` treats a missing sidecar as deleted, so a WAL replica closed cleanly resets. The native transport builds against ureq 3.5.',
+    links: [
+      {
+        href: '/platform-rust-install/',
+        label: 'Rust client',
+      },
+    ],
+  },
+  {
     date: '2026-11-07',
     title: 'Replay follower realtime calls across leader handover',
     body: "A follower tab's in-flight `connectRealtime()` or `disconnectRealtime()` runs again on the next leader instead of rejecting with `client.leader_handover`. `createTabCoordinator` exposes the replay list as `replayOnHandover`.",

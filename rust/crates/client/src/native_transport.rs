@@ -1730,17 +1730,16 @@ mod native {
     }
 
     /// Cap a wait at `idle`: a wait with no deadline or a longer one becomes
-    /// `idle`; a shorter ceiling (the round deadline) stays.
-    fn idle_bound(timeout: NextTimeout, idle: Duration) -> NextTimeout {
+    /// `idle`; a shorter ceiling (the round deadline) stays. The bound edits
+    /// the wait in place, so ureq's other limits (per-read and per-write
+    /// caps) pass through unchanged.
+    fn idle_bound(mut timeout: NextTimeout, idle: Duration) -> NextTimeout {
         let idle = UreqDuration::Exact(idle);
         if timeout.after.is_not_happening() || timeout.after.as_nanos() > idle.as_nanos() {
-            NextTimeout {
-                after: idle,
-                reason: UreqTimeout::RecvBody,
-            }
-        } else {
-            timeout
+            timeout.after = idle;
+            timeout.reason = UreqTimeout::RecvBody;
         }
+        timeout
     }
 
     impl UreqTransport for IdleTransport {
@@ -3096,19 +3095,23 @@ mod native {
         #[test]
         fn the_idle_bound_replaces_an_unbounded_or_longer_wait_and_keeps_a_shorter_one() {
             let idle = Duration::from_secs(30);
-            let unbounded = NextTimeout {
-                after: UreqDuration::NotHappening,
-                reason: UreqTimeout::Global,
-            };
+            let unbounded = NextTimeout::default();
             assert_eq!(idle_bound(unbounded, idle).after, UreqDuration::Exact(idle));
             let longer = NextTimeout {
                 after: UreqDuration::from_secs(90),
-                reason: UreqTimeout::Global,
+                per_read: Some(UreqDuration::from_secs(7)),
+                ..NextTimeout::default()
             };
-            assert_eq!(idle_bound(longer, idle).after, UreqDuration::Exact(idle));
+            let bounded = idle_bound(longer, idle);
+            assert_eq!(bounded.after, UreqDuration::Exact(idle));
+            assert_eq!(bounded.reason, UreqTimeout::RecvBody);
+            assert_eq!(
+                bounded.per_read, longer.per_read,
+                "per-read cap passes through"
+            );
             let shorter = NextTimeout {
                 after: UreqDuration::from_secs(5),
-                reason: UreqTimeout::Global,
+                ..NextTimeout::default()
             };
             assert_eq!(idle_bound(shorter, idle), shorter);
         }

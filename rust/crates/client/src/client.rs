@@ -12171,7 +12171,9 @@ impl SyncClient {
     /// pool's slot accounting.
     ///
     /// Close the client and every [`FileQuerySnapshotReader`] on `path` first;
-    /// a VFS cannot delete a file another handle still owns. The next open
+    /// a VFS cannot delete a file another handle still owns. A file that does
+    /// not exist counts as deleted, so a cleanly closed replica without
+    /// sidecars resets. The next open
     /// creates a fresh replica (new client id) and re-bootstraps from the
     /// server. A memory replica has nothing to delete and fails with
     /// `sync.invalid_request`.
@@ -12196,7 +12198,10 @@ impl SyncClient {
             // SAFETY: `vfs` and its `xDelete` pointer come from the live
             // SQLite library; `c_name` is a valid NUL-terminated path.
             let code = unsafe { delete(vfs, c_name.as_ptr(), 1) };
-            if code != rusqlite::ffi::SQLITE_OK {
+            // A cleanly closed WAL replica has no sidecars; a missing file is
+            // already deleted.
+            if code != rusqlite::ffi::SQLITE_OK && code != rusqlite::ffi::SQLITE_IOERR_DELETE_NOENT
+            {
                 return Err(format!(
                     "client.storage_io: deleting replica file {file_name:?} failed with SQLite code {code}"
                 ));
@@ -22590,6 +22595,61 @@ mod previous_version_wiring_tests {
             SyncClient::reset_replica(":memory:").expect_err("memory has nothing to reset"),
             "sync.invalid_request: a memory replica has nothing to reset"
         );
+    }
+
+    #[test]
+    fn reset_replica_after_a_clean_close_without_sidecars_opens_an_empty_replica() {
+        let path = temp_replica("reset-clean");
+        let path_str = path.to_str().expect("path");
+        let mut client = SyncClient::open_path(
+            "reset-clean".into(),
+            &previous_version_schema(1),
+            ClientLimits::default(),
+            path_str,
+        )
+        .expect("replica");
+        client
+            .mutate(vec![Mutation::Upsert {
+                table: "tasks".into(),
+                values: Map::from_iter([
+                    ("id".into(), Value::from("t1")),
+                    ("note".into(), Value::from("stale")),
+                ]),
+                base_version: None,
+            }])
+            .expect("stale row");
+        assert_eq!(
+            client
+                .query("SELECT id FROM tasks", &[])
+                .expect("row")
+                .len(),
+            1
+        );
+        drop(client);
+        for suffix in ["-journal", "-wal", "-shm"] {
+            assert!(
+                !std::path::Path::new(&format!("{path_str}{suffix}")).exists(),
+                "a clean close leaves no {suffix:?} sidecar"
+            );
+        }
+
+        SyncClient::reset_replica(path_str).expect("missing sidecars count as deleted");
+
+        assert!(!path.exists(), "reset removes the replica file");
+        let reopened = SyncClient::open_path_with_identity(
+            None,
+            &previous_version_schema(1),
+            ClientLimits::default(),
+            path_str,
+        )
+        .expect("fresh replica");
+        assert_ne!(reopened.client_id(), "reset-clean");
+        assert!(reopened
+            .query("SELECT id FROM tasks", &[])
+            .expect("empty")
+            .is_empty());
+        drop(reopened);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

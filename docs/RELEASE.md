@@ -1,8 +1,25 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.56.0** (`v0.56.0`). All artifacts use Apache-2.0, except
+current release is **0.56.1** (`v0.56.1`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.56.1 release notes
+
+0.56.1 fixes two Rust client defects. `syncular-client` with
+`native-transport` failed to compile against ureq 3.5, which added fields to
+`NextTimeout`; the native transport now edits ureq's timeout in place, keeps
+its per-read and per-write caps, and requires ureq 3.5. A CI step checks the
+Rust workspace against the newest semver-compatible dependencies.
+`SyncClient::reset_replica` failed with `client.storage_io` when a sidecar did
+not exist, which is the state after a clean close of a WAL replica, and left
+the main file in place. A missing file now counts as deleted. SSP2, the
+storage layout, and the wire version are unchanged.
+
+**Upgrade notes.** Upgrade all 12 npm packages and 7 crates together. Cargo
+moves ureq to 3.5 or later on upgrade; remove any `ureq = "=3.4.x"` pin added
+to work around the build failure. Code that deletes replica files itself after
+a failed `reset_replica` can call `reset_replica` alone.
 
 ## 0.56.0 release notes
 
