@@ -36,13 +36,13 @@ let rows = client.read_rows("todos")?;   // version -1 = optimistic
 let hits = client.query("SELECT id, title FROM todos ORDER BY id", &[])?;
 ```
 
-`Mutation` has three arms: `Upsert { table, values, base_version }`, `Patch { table, values, base_version }`, and `Delete { table, row_id, base_version }`. `base_version` drives [conflict detection](/concepts-conflicts/). `query` accepts one read-only statement over the local tables and refuses SQL that writes.
+`Mutation` has three arms: `Upsert { table, values, base_version }`, `Patch { table, values, base_version }`, and `Delete { table, row_id, base_version }`. `base_version` drives [conflict detection](/concepts-conflicts/). `None` writes last-write-wins, but an unversioned upsert of a row deleted inside the tombstone horizon rejects with `sync.row_deleted`, even when this client deleted it; recreate such a row with `Some(0)` ([Delete precedence](/concepts-conflicts/#delete-precedence)). `query` accepts one read-only statement over the local tables and refuses SQL that writes.
 
 `mutate` returns a `ClientError` on failure: a stable `code`, a static `message`, optional `details`, and `retryable`. [Platform specifics](/platform-rust-specifics/#structured-authoring-failures) lists the validation rules.
 
 ## Outcomes and conflicts
 
-`conflicts()`, `rejections()`, and `pending_commit_ids()` report divergence. Final results are also journaled durably: `commit_outcome(id)`, `commit_outcomes(query)`, and `resolve_commit_outcome(input)` restore correction UI after a restart and keep active conflicts and rejections until the application resolves them. An outcome's status is `applied`, `cached`, `conflict`, or `rejected`. See [Handling conflicts](/guide-concurrency-correction/).
+A rejected commit rolls back whole: the round that receives the rejection removes every optimistic row of that commit, and `sync()` and `sync_until_idle()` still return `SyncOutcome::Ok` with the commit id in `report.rejected`. `conflicts()`, `rejections()`, and `pending_commit_ids()` report divergence. Final results are also journaled durably: `commit_outcome(id)`, `commit_outcomes(query)`, and `resolve_commit_outcome(input)` restore correction UI after a restart and keep active conflicts and rejections until the application resolves them. An outcome's status is `applied`, `cached`, `conflict`, or `rejected`. See [Handling conflicts](/guide-concurrency-correction/).
 
 ## Purge
 

@@ -132,6 +132,22 @@ One app re-set a status on every start. The row got a new `updated_at` each time
 
 See [SPEC §6.2](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#62-conflict-detection) and [Commits, cursors, idempotency](/concepts-commits/).
 
+### Do recreate a deleted row with `baseVersion = 0`
+
+The server keeps a tombstone for every applied delete until the pruning horizon passes it, and an upsert without a `baseVersion` that meets the tombstone rejects with `sync.row_deleted` (SPEC §6.2). The rule also applies when the writing client issued the delete itself and its replica no longer holds the row. A server retains at least the newest 1,000 commits (SPEC §4.6), so on a quiet partition the tombstone can outlive the app's interest in it by months.
+
+The rejection rolls back the whole commit: the round removes every optimistic row of that commit from the replica, and the server stores none of them. One app deleted a settings row by mistake and wrote it again in the same commit as imported records. Each attempt rejected, the imported records went with it, and the user found the setting reset after the next launch.
+
+Write a row that the replica does not hold with `baseVersion: 0` (Rust: `base_version: Some(0)`); the explicit insert clears the tombstone. If another client created the row in the meantime, the insert returns `sync.version_conflict` and conflicts the whole commit, so put such inserts in a commit of their own when the other rows must not wait on that conflict.
+
+See [Delete precedence](/concepts-conflicts/#delete-precedence).
+
+### Do read `rejected` in every sync report
+
+A rejected commit is an outcome of a successful round. `sync()` and `syncUntilIdle()` (Rust: `sync_until_idle`) resolve with a report, and `report.rejected` lists the client commit ids the server refused. The round has already rolled the commit back. A host that reads only the outcome kind keeps showing the rows from memory until a restart reads the replica. Look up each id with `commitOutcome(id)` (Rust: `commit_outcome(&id)`) for the code and the operations, and surface it.
+
+See [Outbox & commit outcomes](/reference-outbox-outcomes/).
+
 ### Don't push a value you do not want stored
 
 A validator accepts or rejects a push. It cannot transform or redact a value, so the stored row is the pushed row and the commit log keeps it. "Check an invite secret on push and never store it" has no direct form. Push a derived proof (a hash over a tag, the scope id, and the secret), store a hash of the proof on the server row, and blank the field on the client after use. The proof still sits in the log. **Open:** an ephemeral column does not exist.

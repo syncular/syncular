@@ -28,14 +28,20 @@ The core has no timers, threads, or callbacks. The host decides when a round run
 use syncular_client::SyncOutcome;
 
 match client.sync_until_idle(&mut transport, None) {
-    SyncOutcome::Ok(report) => { /* report.pushed, report.commits_applied, report.conflicts */ }
+    SyncOutcome::Ok(report) => {
+        for id in &report.rejected {
+            // Refused and rolled back: outcome.results carry the codes,
+            // outcome.operations the refused rows.
+            let outcome = client.commit_outcome(id)?;
+        }
+    }
     SyncOutcome::Failed { error_code, message, .. } => eprintln!("{error_code}: {message}"),
     SyncOutcome::RealtimeUnavailable { state, retry_delay_ms, .. } => { /* required policy */ }
     SyncOutcome::BudgetExhausted(report) => { /* not idle yet; run again */ }
 }
 ```
 
-Transport and protocol failures come back as `SyncOutcome::Failed`; `sync()` does not panic or error out of band. `BudgetExhausted` is a partial success that retains the aggregate report of every round that ran; read it as not idle. After a round, `sync_needed()` reports whether another round is already warranted.
+A commit the server refused is part of a successful round: `report.rejected` lists its id, and the round has already removed its rows from the replica. Transport and protocol failures come back as `SyncOutcome::Failed`; `sync()` does not panic or error out of band. `BudgetExhausted` is a partial success that retains the aggregate report of every round that ran; read it as not idle. After a round, `sync_needed()` reports whether another round is already warranted.
 
 A failed outcome from an HTTP refusal carries the server error body's `error_code`, `message`, `details`, and `recommended_action`. For `sync.invalid_client_id` the action is `resetClientId`; call `client.reset_client_id(&mut transport)` to rotate the id before the next round. The call closes a live socket and persists the new id in the replica.
 

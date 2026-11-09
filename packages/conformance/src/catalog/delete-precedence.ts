@@ -107,6 +107,63 @@ export const deletePrecedenceScenarios: readonly Scenario[] = [
   },
 
   {
+    name: 'delete-precedence/own-delete-rejects-the-whole-recreating-commit',
+    specRefs: ['§5.2', '§7.2', 'B.20'],
+    async run(ctx) {
+      const a = await bootstrapped(ctx, 'actor-a', 'client-a');
+      await a.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('t1', 'p1', 'seed') },
+      ]);
+      await syncIdle(a);
+      await a.api.mutate([{ op: 'delete', table: 'tasks', rowId: 't1' }]);
+      await syncIdle(a);
+
+      // The writer saw its own delete, yet an unversioned upsert still meets
+      // the tombstone. The rejection takes the unrelated t2 down with it.
+      const rejected = await a.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('t1', 'p1', 'again') },
+        { op: 'upsert', table: 'tasks', values: task('t2', 'p1', 'other') },
+      ]);
+      const report = await syncIdle(a);
+      checkEqual(report.rejected, [rejected], 'the idle report lists it');
+      checkEqual(
+        (await a.api.rejections())[0]?.code,
+        'sync.row_deleted',
+        'the journal carries the code',
+      );
+      checkEqual(
+        await a.api.readRows('tasks'),
+        [],
+        'the round removes every optimistic row of the commit (§7.2)',
+      );
+      checkEqual(
+        (await ctx.server.readRows('tasks')).length,
+        0,
+        'the server applied nothing of the commit',
+      );
+
+      const applied = await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: task('t1', 'p1', 'again'),
+          baseVersion: 0,
+        },
+        { op: 'upsert', table: 'tasks', values: task('t2', 'p1', 'other') },
+      ]);
+      check(
+        (await syncIdle(a)).applied.includes(applied),
+        'an explicit insert recreates the row in the same commit',
+      );
+      checkEqual(
+        (await ctx.server.readRows('tasks')).length,
+        2,
+        'both rows exist on the server',
+      );
+    },
+  },
+
+  {
     name: 'delete-precedence/pruned-tombstone-restores-the-insert-rule',
     specRefs: ['§4.6', '§5.2', 'B.20'],
     async run(ctx) {

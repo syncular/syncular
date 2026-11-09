@@ -3353,7 +3353,10 @@ For an upsert against an **absent** row, the tombstone table decides
 | absent | no | insert when every column is present; otherwise `sync.row_missing` (§6.1 intent) |
 
 An insert requires every column present: a partial payload names an
-update, and there is nothing to update. A recreated row clears its
+update, and there is nothing to update. The server cannot tell a stale
+upsert from a deliberate recreate, so the `sync.row_deleted` row applies to
+every unversioned upsert, including one from the client that issued the
+delete; recreating takes `baseVersion = 0`. A recreated row clears its
 tombstone. Beyond the pruning horizon the tombstone is gone and the
 insert rule applies (§4.6).
 
@@ -7094,7 +7097,11 @@ Each is a driver-interface script, not a prose test.
     unversioned patch rejects `sync.row_deleted`, and the row stays absent
     on the server and on both clients. (b) An explicit insert
     (`baseVersion = 0`) over a fresh tombstone recreates the row at
-    `server_version = 1`. (c) After pruning advances the horizon past the
+    `server_version = 1`. (b2) A client's own delete followed by one commit
+    that upserts the row unversioned and an unrelated row rejects the whole
+    commit: the report lists it as `rejected`, the round removes both rows
+    locally, and the server stores neither; the same commit with
+    `baseVersion = 0` applies. (c) After pruning advances the horizon past the
     delete (§4.6), an unversioned full-row upsert inserts again — the
     ordinary insert rule is restored. Both pairings (TS×TS, Rust×TS).
 
