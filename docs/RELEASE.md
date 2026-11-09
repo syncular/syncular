@@ -1,8 +1,26 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.57.0** (`v0.57.0`). All artifacts use Apache-2.0, except
+current release is **0.58.0** (`v0.58.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.58.0 release notes
+
+0.58.0 moves the Rust crates to rusqlite 0.41.1 and libsqlite3-sys 0.39.1,
+which bundle SQLite 3.54.1. The SQLite 3.53.2 bundled through rusqlite 0.40
+is affected by CVE-2026-119375 (RUSTSEC-2026-0459): SQLite before 3.54.0 can
+return uninitialized page-cache memory when it opens a database together with
+a `-wal` file whose page size differs from the database's. Exposure needs a
+crafted database and `-wal` pair on the device. The scheduled `cargo deny`
+audit reported it on 9 November 2026 for both cargo workspaces. SSP2, the
+storage layout, the wire version, and the npm packages are unchanged.
+
+**Upgrade notes.** Upgrade all 12 npm packages and 7 crates together. A Rust
+app that passes its own `rusqlite::Connection` to `SyncClient::with_connection`
+moves to rusqlite 0.41, which needs Rust 1.89. rusqlite 0.41 takes `&mut self`
+for `trace_v2`, `commit_hook`, `rollback_hook`, and `busy_handler`, and
+`trace_v2` returns a `Result`. The Tauri, Swift, Kotlin, Flutter, and React
+Native bindings pick up SQLite 3.54.1 when they rebuild their native library.
 
 ## 0.57.0 release notes
 

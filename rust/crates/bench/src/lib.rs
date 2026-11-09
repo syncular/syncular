@@ -670,43 +670,45 @@ struct SqlCounts {
 fn set_sql_counts(connection: &mut rusqlite::Connection, enabled: bool) {
     SQL_COUNTS.with(|counts| *counts.borrow_mut() = enabled.then(SqlCounts::default));
     if enabled {
-        connection.trace_v2(
-            TraceEventCodes::SQLITE_TRACE_STMT,
-            Some(|event| {
-                let TraceEvent::Stmt(stmt, sql) = event else {
-                    return;
-                };
-                // `sqlite3_trace` reported the statement with its bound values
-                // substituted; SQLITE_TRACE_STMT hands over the prepared text.
-                // The counters keep counting the expanded form.
-                let sql = stmt.expanded_sql().unwrap_or_else(|| sql.to_owned());
-                let verb = sql
-                    .trim_start()
-                    .split(|character: char| !character.is_ascii_alphabetic())
-                    .next()
-                    .unwrap_or("");
-                let label = [
-                    "SELECT",
-                    "INSERT",
-                    "UPDATE",
-                    "DELETE",
-                    "SAVEPOINT",
-                    "RELEASE",
-                    "BEGIN",
-                    "COMMIT",
-                    "ROLLBACK",
-                    "PRAGMA",
-                ]
-                .into_iter()
-                .find(|candidate| verb.eq_ignore_ascii_case(candidate))
-                .unwrap_or("OTHER");
-                SQL_COUNTS.with(|counts| {
-                    if let Some(counts) = counts.borrow_mut().as_mut() {
-                        *counts.statements.entry(label).or_default() += 1;
-                    }
-                });
-            }),
-        );
+        connection
+            .trace_v2(
+                TraceEventCodes::SQLITE_TRACE_STMT,
+                Some(|event: TraceEvent<'_>| {
+                    let TraceEvent::Stmt(stmt, sql) = event else {
+                        return;
+                    };
+                    // `sqlite3_trace` reported the statement with its bound values
+                    // substituted; SQLITE_TRACE_STMT hands over the prepared text.
+                    // The counters keep counting the expanded form.
+                    let sql = stmt.expanded_sql().unwrap_or_else(|| sql.to_owned());
+                    let verb = sql
+                        .trim_start()
+                        .split(|character: char| !character.is_ascii_alphabetic())
+                        .next()
+                        .unwrap_or("");
+                    let label = [
+                        "SELECT",
+                        "INSERT",
+                        "UPDATE",
+                        "DELETE",
+                        "SAVEPOINT",
+                        "RELEASE",
+                        "BEGIN",
+                        "COMMIT",
+                        "ROLLBACK",
+                        "PRAGMA",
+                    ]
+                    .into_iter()
+                    .find(|candidate| verb.eq_ignore_ascii_case(candidate))
+                    .unwrap_or("OTHER");
+                    SQL_COUNTS.with(|counts| {
+                        if let Some(counts) = counts.borrow_mut().as_mut() {
+                            *counts.statements.entry(label).or_default() += 1;
+                        }
+                    });
+                }),
+            )
+            .expect("statement tracing needs a connection that owns its handle");
         connection
             .commit_hook(Some(|| {
                 SQL_COUNTS.with(|counts| {
@@ -727,7 +729,12 @@ fn set_sql_counts(connection: &mut rusqlite::Connection, enabled: bool) {
             }))
             .expect("SQL count hooks need a connection that owns its handle");
     } else {
-        connection.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, None);
+        connection
+            .trace_v2(
+                TraceEventCodes::SQLITE_TRACE_STMT,
+                None::<fn(TraceEvent<'_>)>,
+            )
+            .expect("statement tracing needs a connection that owns its handle");
         connection
             .commit_hook(None::<fn() -> bool>)
             .expect("SQL count hooks need a connection that owns its handle");
@@ -756,7 +763,7 @@ fn read_database(
     if !stmt.readonly() {
         return Err(client_err("Read fixture requires read-only SQL".to_owned()));
     }
-    let names: Vec<String> = stmt.column_names().into_iter().map(str::to_owned).collect();
+    let names: Vec<String> = stmt.column_names().map(str::to_owned).collect();
     let mut rows = stmt
         .query(rusqlite::params_from_iter(bind))
         .map_err(|e| client_err(e.to_string()))?;
@@ -897,18 +904,23 @@ fn bench_read(mut client: ReadClient<'_>, params: &Value) -> Result<Value, Comma
                 let command_params = json!({"sql": sql, "params": bind});
                 if counter_pass {
                     READ_STATEMENTS.with(|statements| statements.borrow_mut().clear());
-                    client.instance()?.benchmark_connection().trace_v2(
-                        TraceEventCodes::SQLITE_TRACE_STMT,
-                        Some(|event| {
-                            let TraceEvent::Stmt(stmt, sql) = event else {
-                                return;
-                            };
-                            // Recorded statements keep the expanded text, so a
-                            // reader sees the bound values the round sent.
-                            let sql = stmt.expanded_sql().unwrap_or_else(|| sql.to_owned());
-                            READ_STATEMENTS.with(|statements| statements.borrow_mut().push(sql));
-                        }),
-                    );
+                    client
+                        .instance()?
+                        .benchmark_connection()
+                        .trace_v2(
+                            TraceEventCodes::SQLITE_TRACE_STMT,
+                            Some(|event: TraceEvent<'_>| {
+                                let TraceEvent::Stmt(stmt, sql) = event else {
+                                    return;
+                                };
+                                // Recorded statements keep the expanded text, so a
+                                // reader sees the bound values the round sent.
+                                let sql = stmt.expanded_sql().unwrap_or_else(|| sql.to_owned());
+                                READ_STATEMENTS
+                                    .with(|statements| statements.borrow_mut().push(sql));
+                            }),
+                        )
+                        .expect("statement tracing needs a connection that owns its handle");
                 }
                 let started = Instant::now();
                 let measured = if surface == "database" || (mode == "direct" && surface == "query")
@@ -961,7 +973,11 @@ fn bench_read(mut client: ReadClient<'_>, params: &Value) -> Result<Value, Comma
                     client
                         .instance()?
                         .benchmark_connection()
-                        .trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, None);
+                        .trace_v2(
+                            TraceEventCodes::SQLITE_TRACE_STMT,
+                            None::<fn(TraceEvent<'_>)>,
+                        )
+                        .expect("statement tracing needs a connection that owns its handle");
                     let statements = READ_STATEMENTS
                         .with(|statements| std::mem::take(&mut *statements.borrow_mut()));
                     if statements.is_empty()

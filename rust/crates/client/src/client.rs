@@ -1112,7 +1112,7 @@ mod observation_tests {
         (client, response)
     }
 
-    fn count_commits(client: &SyncClient) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+    fn count_commits(client: &mut SyncClient) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
         let commits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counter = commits.clone();
         client
@@ -1133,7 +1133,7 @@ mod observation_tests {
             client.realtime_reason_code = None;
             let mut transport = CountingRealtimeTransport::default();
             let (_, meta) = client.build_request(false).unwrap();
-            let commits = count_commits(&client);
+            let commits = count_commits(&mut client);
             if realtime {
                 client.on_realtime_binary(&mut transport, &encode_message(&response));
             } else {
@@ -1180,7 +1180,7 @@ mod observation_tests {
         let (mut client, response) = coalesced_fixture(1, 3, 600);
         let mut transport = HostTransport::new_from_config(&json!({})).unwrap();
         let (_, meta) = client.build_request(false).unwrap();
-        let commits = count_commits(&client);
+        let commits = count_commits(&mut client);
         assert!(matches!(
             client.process_response(&mut transport, response, &meta),
             SyncOutcome::Ok(_)
@@ -11502,7 +11502,7 @@ fn query_connection(
         .map(json_param_to_sql)
         .collect::<Result<_, _>>()?;
     let mut stmt = conn.prepare(&lowered_sql)?;
-    let column_names: Vec<String> = stmt.column_names().into_iter().map(str::to_owned).collect();
+    let column_names: Vec<String> = stmt.column_names().map(str::to_owned).collect();
     let bound_refs: Vec<&dyn rusqlite::ToSql> =
         bound.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
     let mut sql_rows = stmt.query(bound_refs.as_slice())?;
@@ -22828,7 +22828,7 @@ mod previous_version_wiring_tests {
             )
             .expect("pending upgrade");
         CONCURRENT_UPGRADE.with(|slot| *slot.borrow_mut() = Some(banner));
-        let conn = Connection::open(path_str).expect("stale connection");
+        let mut conn = Connection::open(path_str).expect("stale connection");
         conn.busy_handler(Some(commit_concurrent_upgrade))
             .expect("busy handler");
         let error = SyncClient::with_connection(

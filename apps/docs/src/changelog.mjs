@@ -16,6 +16,17 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-11-09',
+    title: 'Rust crates bundle SQLite 3.54.1',
+    body: 'The Rust crates and native bindings move to rusqlite 0.41, which bundles SQLite 3.54.1 and closes CVE-2026-119375 (RUSTSEC-2026-0459). An app that passes its own `rusqlite::Connection` to `SyncClient::with_connection` upgrades to rusqlite 0.41 and Rust 1.89.',
+    links: [
+      {
+        href: '/platform-rust-install/',
+        label: 'Rust client',
+      },
+    ],
+  },
+  {
     date: '2026-11-08',
     title: 'Recreate a deleted row from a command',
     body: 'A command `upsert` mutation takes `insert: true` to send an explicit insert (`baseVersion = 0`), which recreates a row deleted inside the tombstone horizon instead of failing with `sync.row_deleted`.',
