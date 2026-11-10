@@ -77,6 +77,15 @@ else
   exit 0
 fi
 
+# -- typegen goldens compile against the binding ------------------------------
+if command -v kotlinc >/dev/null 2>&1; then
+  echo "== kotlinc compiles the typegen goldens with the binding =="
+  ( cd "${V2_DIR}" && SYNCULAR_NATIVE_GOLDENS=kotlin bun test --timeout 300000 \
+      packages/typegen/test/golden-queries.test.ts -t 'native toolchains' )
+else
+  echo "SKIP: no kotlinc; the typegen Kotlin goldens are not compiled."
+fi
+
 # -- build + vendor the native core ------------------------------------------
 echo "== build libsyncular (lean, this machine) =="
 ( cd "${RUST_DIR}" && cargo build -p syncular-ffi )

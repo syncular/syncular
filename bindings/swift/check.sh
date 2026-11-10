@@ -49,6 +49,10 @@ if ! diff -q "${RUST_DIR}/ffi.h" "${SWIFT_DIR}/Sources/CSyncularFFI/include/sync
 fi
 echo "ok: header matches rust/ffi.h"
 
+echo "== swiftc parses the typegen goldens =="
+( cd "${V2_DIR}" && SYNCULAR_NATIVE_GOLDENS=swift bun test --timeout 120000 \
+    packages/typegen/test/golden-queries.test.ts -t 'native toolchains' )
+
 echo "== build libsyncular (lean, this mac) =="
 ( cd "${RUST_DIR}" && cargo build -p syncular-ffi )
 

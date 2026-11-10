@@ -340,9 +340,12 @@ describe('named-query analysis fidelity', () => {
   });
 });
 
-// Each native golden must be accepted by its own toolchain. A gate whose
-// toolchain is not on PATH reports a skipped test.
+// Each native golden must be accepted by its own toolchain. The binding gates
+// (`bindings/{swift,kotlin,flutter}/check.sh`) pin those toolchains and name
+// theirs in SYNCULAR_NATIVE_GOLDENS; whatever happens to be on PATH elsewhere
+// is not the toolchain the bindings support.
 describe('native toolchains accept the committed goldens', () => {
+  const toolchains = (process.env.SYNCULAR_NATIVE_GOLDENS ?? '').split(',');
   const goldens = (extension: string) =>
     readdirSync(FIXTURE)
       .filter((name) => name.endsWith(extension))
@@ -352,14 +355,14 @@ describe('native toolchains accept the committed goldens', () => {
     expect(result.exitCode === 0 ? '' : result.stderr.toString()).toBe('');
   };
 
-  test.skipIf(Bun.which('swiftc') === null)(
+  test.skipIf(!toolchains.includes('swift'))(
     'swiftc parses every Swift golden',
     () => {
       for (const file of goldens('.swift')) accepts(['swiftc', '-parse', file]);
     },
   );
 
-  test.skipIf(Bun.which('kotlinc') === null)(
+  test.skipIf(!toolchains.includes('kotlin'))(
     'kotlinc compiles the Kotlin goldens with the binding',
     () => {
       const binding = join(
@@ -370,6 +373,8 @@ describe('native toolchains accept the committed goldens', () => {
       try {
         accepts([
           'kotlinc',
+          // The binding uses the JDK 21 preview FFM API, as its Gradle build does.
+          '-Xjvm-enable-preview',
           ...goldens('.kt'),
           ...readdirSync(binding).map((name) => join(binding, name)),
           '-d',
@@ -381,7 +386,7 @@ describe('native toolchains accept the committed goldens', () => {
     },
   );
 
-  test.skipIf(Bun.which('dart') === null)(
+  test.skipIf(!toolchains.includes('dart'))(
     'dart parses every Dart golden',
     () => {
       for (const file of goldens('.dart'))
