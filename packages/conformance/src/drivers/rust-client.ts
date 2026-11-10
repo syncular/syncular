@@ -2163,10 +2163,11 @@ class RustLocalAuthorityInstance
   async abandonAttach(
     target: ServerInstance,
     actorId: string,
+    faults?: { readonly loseResponseOfCommit?: number },
   ): Promise<AttachResult> {
     return this.#attachCall(
       'localAuthorityAbandonAttach',
-      remoteTransport(target, actorId),
+      remoteTransport(target, actorId, faults),
     );
   }
 

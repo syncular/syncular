@@ -208,6 +208,11 @@ impl LocalAuthority {
                 ])?;
                 self.state = AuthorityState::Attaching;
             }
+            // §12.3: resuming after a started rollback would count `cached`
+            // uploads whose rows the rollback deleted.
+            AuthorityState::Attaching if self.read_meta("undo")?.is_some() => {
+                return Err(attach::rejected(json!({ "reason": "undo_pending" })));
+            }
             AuthorityState::Attaching => {}
         }
         let attach_id = self.attach_id()?;
@@ -272,13 +277,15 @@ impl LocalAuthority {
             ("attach_id", None),
             ("sent", None),
             ("applied", None),
+            ("undo", None),
         ])?;
         self.state = AuthorityState::Local;
         Ok(())
     }
 
     /// Settle the one commit whose outcome may be unknown, then delete the
-    /// rows of every applied commit in reverse plan order, children first.
+    /// rows of every applied commit in reverse plan order, children first,
+    /// under commit ids fresh to this attempt (the persisted `undo` marker).
     fn rollback(&mut self, remote: &mut RemoteTransport<'_>) -> Result<(), AuthorityError> {
         let attach_id = self.attach_id()?;
         let commits = attach::plan(&self.conn, &self.schema, &attach_id)?;
@@ -307,8 +314,10 @@ impl LocalAuthority {
                 payload: None,
             })
             .collect();
+        let attempt = self.ordinal("undo")? + 1;
+        self.write_meta(&[("undo", Some(attempt.to_string()))])?;
         for (k, chunk) in deletes.chunks(attach::OPERATION_BUDGET).enumerate() {
-            let commit = (format!("{attach_id}:undo:{k}"), chunk.to_vec());
+            let commit = (format!("{attach_id}:undo:{attempt}:{k}"), chunk.to_vec());
             if let Some(rejection) = remote.send(&commit)? {
                 return Err(rejection);
             }

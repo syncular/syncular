@@ -576,16 +576,23 @@ export interface LocalAuthorityInstance extends SyncEndpoint {
   readRows(table: string): Promise<ServerRowState[]>;
   /**
    * §12.3: upload every live row to `target` on behalf of `actorId`.
-   * `loseResponseOfCommit` drops the response of that upload commit (0-based)
-   * after `target` processed it.
+   * `loseResponseOfCommit` drops the response of this call's push request
+   * with that 0-based index after `target` processed it.
    */
   attach(
     target: ServerInstance,
     actorId: string,
     faults?: { readonly loseResponseOfCommit?: number },
   ): Promise<AttachResult>;
-  /** §12.3: delete the rows `target` applied from this attach, then serve again. */
-  abandonAttach(target: ServerInstance, actorId: string): Promise<AttachResult>;
+  /**
+   * §12.3: delete the rows `target` applied from this attach, then serve
+   * again. `faults` as for `attach`; the settling resend counts as a push.
+   */
+  abandonAttach(
+    target: ServerInstance,
+    actorId: string,
+    faults?: { readonly loseResponseOfCommit?: number },
+  ): Promise<AttachResult>;
   /** A process restart: reopen over the same database at `schema`. */
   restart(schema: DriverSchema): Promise<void>;
   close(): Promise<void>;

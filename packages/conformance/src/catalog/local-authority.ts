@@ -81,6 +81,27 @@ const LOCAL_SCHEMA_V2: DriverSchema = {
   ],
 };
 
+/** `pins` holds a RESTRICT child of `nodes` (§6.11). */
+const PIN_SCHEMA: DriverSchema = {
+  version: 1,
+  tables: [
+    ...LOCAL_SCHEMA.tables,
+    {
+      name: 'pins',
+      columns: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'project_id', type: 'string', nullable: false },
+        { name: 'node_id', type: 'string', nullable: false },
+      ],
+      primaryKey: 'id',
+      scopes: [{ pattern: 'project:{project_id}' }],
+      references: [
+        { column: 'node_id', parentTable: 'nodes', onDelete: 'RESTRICT' },
+      ],
+    },
+  ],
+};
+
 function node(
   id: string,
   parentId: string | null,
@@ -376,6 +397,183 @@ export const localAuthorityScenarios: readonly Scenario[] = [
         (await ctx.server.readRows('nodes')).length,
         500,
         'the remote holds the 500 rows once',
+      );
+    },
+  },
+
+  {
+    // §12.3: a resumed upload after an applied undo would receive `cached`
+    // for deleted rows and retire the authority with the rows lost on both
+    // sides; the undo marker refuses it until a retried abandon completes.
+    name: 'local-authority/lost-undo-response-blocks-attach',
+    specRefs: ['§12.3', '§2.3', 'B.24'],
+    requires: ['local-authority'],
+    server: { schema: LOCAL_SCHEMA },
+    async run(ctx) {
+      const authority = await ctx.newLocalAuthority(LOCAL_SCHEMA);
+      const a = await localClient(ctx, authority);
+      await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'projects',
+          values: { project_id: 'p1', title: 'P1' },
+        },
+        { op: 'upsert', table: 'nodes', values: node('n1', null, 'p1') },
+        { op: 'upsert', table: 'nodes', values: node('n2', 'n1') },
+      ]);
+      await syncIdle(a);
+      await ctx.server.setAllowedScopes('owner', P1);
+
+      checkEqual(
+        await authority.attach(ctx.server, 'owner', {
+          loseResponseOfCommit: 0,
+        }),
+        { ok: false, code: 'sync.transport_failed' },
+        'a lost response stops attach',
+      );
+      // Push 0 settles upload commit 0; push 1 is the undo commit.
+      checkEqual(
+        await authority.abandonAttach(ctx.server, 'owner', {
+          loseResponseOfCommit: 1,
+        }),
+        { ok: false, code: 'sync.transport_failed' },
+        'a lost undo response stops abandon',
+      );
+      checkEqual(await authority.state(), 'attaching', 'abandon stays open');
+      checkEqual(
+        await ctx.server.readRows('nodes'),
+        [],
+        'the remote applied the undo',
+      );
+      checkEqual(
+        await authority.attach(ctx.server, 'owner'),
+        {
+          ok: false,
+          code: 'sync.attach_rejected',
+          details: { reason: 'undo_pending' },
+        },
+        'attach refuses while the undo marker is set',
+      );
+      checkEqual(
+        await authority.state(),
+        'attaching',
+        'the refusal retires nothing',
+      );
+
+      checkEqual(
+        await authority.abandonAttach(ctx.server, 'owner'),
+        { ok: true },
+        'the retried abandon completes',
+      );
+      checkEqual(await authority.state(), 'local', 'abandon serves the client');
+      await syncIdle(a);
+      await expectLocalConverged(authority, a, 'nodes');
+
+      checkEqual(
+        await authority.attach(ctx.server, 'owner'),
+        { ok: true },
+        'a fresh attach recreates the rows over their tombstones',
+      );
+      a.route.server = ctx.server;
+      await syncIdle(a);
+      await expectConverged(ctx, 'projects', [a]);
+      await expectConverged(ctx, 'nodes', [a]);
+      checkEqual(
+        (await ctx.server.readRows('nodes')).map((row) => row.values),
+        [node('n1', null, 'p1'), node('n2', 'n1')],
+        'no row is lost on either side',
+      );
+    },
+  },
+
+  {
+    // §12.3: every abandon attempt sends fresh undo commit ids, so a
+    // rejection stored for one attempt never replays on the next.
+    name: 'local-authority/rejected-undo-retries-with-fresh-ids',
+    specRefs: ['§12.3', '§2.3', '§6.11', 'B.24'],
+    requires: ['local-authority'],
+    server: { schema: PIN_SCHEMA },
+    async run(ctx) {
+      const authority = await ctx.newLocalAuthority(PIN_SCHEMA);
+      const a = await localClient(ctx, authority, PIN_SCHEMA);
+      await a.api.mutate([
+        { op: 'upsert', table: 'nodes', values: node('n1', null) },
+      ]);
+      await syncIdle(a);
+      await ctx.server.setAllowedScopes('owner', P1);
+      checkEqual(
+        await authority.attach(ctx.server, 'owner', {
+          loseResponseOfCommit: 0,
+        }),
+        { ok: false, code: 'sync.transport_failed' },
+        'a lost response stops attach',
+      );
+
+      // Another client pins the uploaded row with a RESTRICT child.
+      const b = await ctx.newClient({
+        actorId: 'b',
+        clientId: 'client-b',
+        schema: PIN_SCHEMA,
+        allowed: P1,
+      });
+      await b.api.mutate([
+        {
+          op: 'upsert',
+          table: 'pins',
+          values: { id: 'x1', project_id: 'p1', node_id: 'n1' },
+        },
+      ]);
+      await syncIdle(b);
+      checkEqual(
+        (await ctx.server.readRows('pins')).length,
+        1,
+        'the pin applies',
+      );
+
+      const rejected = await authority.abandonAttach(ctx.server, 'owner');
+      checkEqual(
+        rejected.ok
+          ? undefined
+          : [rejected.code, rejected.details?.reason, rejected.details?.code],
+        ['sync.attach_rejected', 'commit_rejected', 'sync.reference_violation'],
+        'the remote refuses the undo delete',
+      );
+      checkEqual(
+        await authority.attach(ctx.server, 'owner'),
+        {
+          ok: false,
+          code: 'sync.attach_rejected',
+          details: { reason: 'undo_pending' },
+        },
+        'attach refuses while the undo marker is set',
+      );
+
+      await b.api.mutate([{ op: 'delete', table: 'pins', rowId: 'x1' }]);
+      await syncIdle(b);
+      checkEqual(
+        await authority.abandonAttach(ctx.server, 'owner'),
+        { ok: true },
+        'the retried abandon applies instead of replaying the rejection',
+      );
+      checkEqual(await authority.state(), 'local', 'abandon serves the client');
+      checkEqual(
+        await ctx.server.readRows('nodes'),
+        [],
+        'the remote holds none of the abandoned rows',
+      );
+
+      checkEqual(
+        await authority.attach(ctx.server, 'owner'),
+        { ok: true },
+        'a fresh attach succeeds',
+      );
+      a.route.server = ctx.server;
+      await syncIdle(a);
+      await expectConverged(ctx, 'nodes', [a]);
+      checkEqual(
+        (await ctx.server.readRows('nodes')).map((row) => row.values),
+        [node('n1', null)],
+        'no row is lost on either side',
       );
     },
   },

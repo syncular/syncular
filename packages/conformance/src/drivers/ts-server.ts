@@ -1356,9 +1356,10 @@ class TsLocalAuthorityInstance implements LocalAuthorityInstance {
   async abandonAttach(
     target: ServerInstance,
     actorId: string,
+    faults?: { readonly loseResponseOfCommit?: number },
   ): Promise<AttachResult> {
     return attachOutcome(() =>
-      this.#open.abandonAttach(remoteTransport(target, actorId)),
+      this.#open.abandonAttach(remoteTransport(target, actorId, faults)),
     );
   }
 

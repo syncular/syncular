@@ -1,7 +1,7 @@
 //! Crate tests: the §12.2 profile through `sync` bytes, and §12.3 attach and
 //! abandon against a second `LocalAuthority` serving as the remote server.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
@@ -566,6 +566,91 @@ fn a_tombstone_beats_an_unversioned_upsert_and_an_insert_recreates() {
             .0,
         PushStatus::Applied
     );
+}
+
+#[test]
+fn an_unreadable_idempotency_record_answers_a_retryable_cache_miss_for_its_commit_only() {
+    let mut authority = memory();
+    let s = authority.schema.clone();
+    let client = Session::new(&mut authority, "c1");
+    client.push(&mut authority, "a", vec![task(&s, "t1", None, None)]);
+    authority
+        .conn
+        .execute(
+            "UPDATE sync_push_results SET result='{' WHERE client_commit_id='a'",
+            [],
+        )
+        .unwrap();
+    let frames = client.round(
+        &mut authority,
+        vec![
+            Frame::PushCommit {
+                client_commit_id: "a".to_owned(),
+                operations: vec![task(&s, "t1", None, None)],
+            },
+            Frame::PushCommit {
+                client_commit_id: "b".to_owned(),
+                operations: vec![task(&s, "t2", None, None)],
+            },
+            Frame::PullHeader {
+                limit_commits: 0,
+                limit_snapshot_rows: 0,
+                max_snapshot_pages: 0,
+                accept: 0b0011,
+            },
+            subscription("tasks", -1, None),
+        ],
+    );
+    let results: Vec<_> = frames
+        .iter()
+        .filter_map(|frame| match frame {
+            Frame::PushResult {
+                client_commit_id,
+                status,
+                commit_seq,
+                results,
+            } => Some((
+                client_commit_id.as_str(),
+                *status,
+                commit_seq.is_some(),
+                results.clone(),
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        results,
+        vec![
+            (
+                "a",
+                PushStatus::Rejected,
+                false,
+                vec![OpResult::Error {
+                    op_index: 0,
+                    code: "sync.idempotency_cache_miss".to_owned(),
+                    message: "persisted push result unreadable (§6.3)".to_owned(),
+                    retryable: true,
+                }]
+            ),
+            (
+                "b",
+                PushStatus::Applied,
+                true,
+                vec![OpResult::Applied { op_index: 0 }]
+            ),
+        ]
+    );
+    assert_eq!(
+        segment_rows(&frames),
+        vec![("t1".to_owned(), 1), ("t2".to_owned(), 1)],
+        "the pull proceeds"
+    );
+    assert_eq!(
+        store::push_result(&authority.conn, "c1", "a").unwrap(),
+        Some("{".to_owned()),
+        "the cache miss is not persisted"
+    );
+    assert_eq!(store::log_state(&authority.conn).unwrap().max_seq, 2);
 }
 
 #[test]
@@ -1500,7 +1585,7 @@ fn abandon_deletes_the_applied_prefix_in_reverse_plan_order() {
     }
     let undo = undo.into_inner();
     assert_eq!(undo.len(), 1);
-    assert!(undo[0].0.ends_with(":undo:0"));
+    assert!(undo[0].0.ends_with(":undo:0:0"));
     assert_eq!(undo[0].1.len(), 500);
     assert_eq!(
         (undo[0].1[0].row_id.as_str(), undo[0].1[499].row_id.as_str()),
@@ -1515,6 +1600,166 @@ fn abandon_deletes_the_applied_prefix_in_reverse_plan_order() {
     assert!(store::has_tombstone(&remote.conn, "tasks", "t0000").unwrap());
     assert_eq!(local.state(), AuthorityState::Local);
     assert_eq!(count(&local, "tasks"), 501);
+}
+
+/// A transport to `remote` that records every pushed `clientCommitId` and
+/// drops the response of push request `lose` (0-based) after the remote
+/// processed it.
+fn remote_transport<'a>(
+    remote: &'a mut LocalAuthority,
+    pushed: &'a RefCell<Vec<String>>,
+    lose: Option<usize>,
+) -> impl FnMut(&[u8]) -> Result<Vec<u8>, AuthorityError> + 'a {
+    let mut pushes = 0;
+    move |bytes: &[u8]| {
+        let commit =
+            decode_message(bytes)
+                .unwrap()
+                .frames
+                .into_iter()
+                .find_map(|frame| match frame {
+                    Frame::PushCommit {
+                        client_commit_id, ..
+                    } => Some(client_commit_id),
+                    _ => None,
+                });
+        let response = remote.sync(bytes)?;
+        if let Some(id) = commit {
+            pushed.borrow_mut().push(id);
+            pushes += 1;
+            if Some(pushes - 1) == lose {
+                return Err(AuthorityError::new(
+                    "sync.transport_failed",
+                    "the response was lost",
+                ));
+            }
+        }
+        Ok(response)
+    }
+}
+
+#[test]
+fn a_lost_undo_response_blocks_attach_until_a_retried_abandon_completes() {
+    let mut local = memory();
+    let s = local.schema.clone();
+    let client = Session::new(&mut local, "c1");
+    client.push(&mut local, "a", vec![task(&s, "t1", None, None)]);
+    let mut remote = memory();
+    let pushed = RefCell::new(Vec::new());
+    let lost = local
+        .attach(&mut remote_transport(&mut remote, &pushed, Some(0)))
+        .unwrap_err();
+    assert_eq!(lost.code, "sync.transport_failed");
+    let first = local.attach_id().unwrap();
+    // Push 0 settles upload commit 0 (`cached`); push 1 is the undo commit
+    // whose response is lost after the remote applied it.
+    let lost = local
+        .abandon_attach(Some(&mut remote_transport(&mut remote, &pushed, Some(1))))
+        .unwrap_err();
+    assert_eq!(lost.code, "sync.transport_failed");
+    assert_eq!(local.state(), AuthorityState::Attaching);
+    assert_eq!(count(&remote, "tasks"), 0, "the undo applied remotely");
+
+    let refused = local
+        .attach(&mut remote_transport(&mut remote, &pushed, None))
+        .unwrap_err();
+    assert_eq!(
+        (refused.code.as_str(), refused.details),
+        (
+            "sync.attach_rejected",
+            Some(json!({ "reason": "undo_pending" }))
+        ),
+        "a resumed upload would replay `cached` for deleted rows"
+    );
+    assert_eq!(pushed.borrow().len(), 3, "the refusal sends nothing");
+
+    local
+        .abandon_attach(Some(&mut remote_transport(&mut remote, &pushed, None)))
+        .unwrap();
+    assert_eq!(local.state(), AuthorityState::Local);
+    assert!(local.read_meta("undo").unwrap().is_none());
+    local
+        .attach(&mut remote_transport(&mut remote, &pushed, None))
+        .unwrap();
+    let second = local.attach_id().unwrap();
+    assert_ne!(first, second, "a completed abandon retires the attach id");
+    assert_eq!(
+        pushed.into_inner(),
+        vec![
+            format!("{first}:0"),
+            format!("{first}:0"),
+            format!("{first}:undo:0:0"),
+            format!("{first}:undo:1:0"),
+            format!("{second}:0"),
+        ]
+    );
+    assert_eq!(local.state(), AuthorityState::Attached);
+    assert_eq!(
+        stored(&remote, "tasks", "t1").map(|(version, _)| version),
+        Some(1),
+        "the remote holds the row once the fresh attach completes"
+    );
+}
+
+#[test]
+fn a_rejected_undo_applies_on_a_retried_abandon_once_the_blocker_is_gone() {
+    let mut local = memory();
+    let s = local.schema.clone();
+    let client = Session::new(&mut local, "c1");
+    client.push(&mut local, "a", vec![task(&s, "t1", None, None)]);
+    let mut remote = memory();
+    let other = Session::new(&mut remote, "other");
+    let pushed = RefCell::new(Vec::new());
+    local
+        .attach(&mut remote_transport(&mut remote, &pushed, Some(0)))
+        .unwrap_err();
+    let attach_id = local.attach_id().unwrap();
+    let pin = upsert(&s, "pins", &[Some("x1"), Some("o1"), Some("t1")], None);
+    assert_eq!(
+        other.push(&mut remote, "pin", vec![pin]).0,
+        PushStatus::Applied
+    );
+
+    let rejected = local
+        .abandon_attach(Some(&mut remote_transport(&mut remote, &pushed, None)))
+        .unwrap_err();
+    assert_eq!(
+        (rejected.code.as_str(), rejected.details),
+        (
+            "sync.attach_rejected",
+            Some(json!({
+                "reason": "commit_rejected",
+                "clientCommitId": format!("{attach_id}:undo:0:0"),
+                "opIndex": 0,
+                "code": "sync.reference_violation",
+            }))
+        )
+    );
+    assert_eq!(
+        local
+            .attach(&mut remote_transport(&mut remote, &pushed, None))
+            .unwrap_err()
+            .details,
+        Some(json!({ "reason": "undo_pending" }))
+    );
+
+    assert_eq!(
+        other
+            .push(&mut remote, "unpin", vec![delete("pins", "x1")])
+            .0,
+        PushStatus::Applied
+    );
+    local
+        .abandon_attach(Some(&mut remote_transport(&mut remote, &pushed, None)))
+        .unwrap();
+    assert_eq!(
+        pushed.borrow().last(),
+        Some(&format!("{attach_id}:undo:1:0")),
+        "the retry never replays the stored rejection"
+    );
+    assert_eq!(local.state(), AuthorityState::Local);
+    assert_eq!(count(&remote, "tasks"), 0);
+    assert_eq!(count(&local, "tasks"), 1);
 }
 
 #[test]

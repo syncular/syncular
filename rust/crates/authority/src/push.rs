@@ -767,8 +767,23 @@ pub(crate) fn process_commit(
 ) -> Result<Vec<Frame>, AuthorityError> {
     store::transaction(conn, || {
         if let Some(text) = store::push_result(conn, client_id, client_commit_id)? {
-            let stored: StoredResult =
-                serde_json::from_str(&text).map_err(|_| store::corrupt("push result"))?;
+            // §6.3: an unreadable record answers this commit with the
+            // retryable cache miss, never persisted, and never re-applies it.
+            let Ok(stored) = serde_json::from_str::<StoredResult>(&text) else {
+                return Ok(StoredResult {
+                    applied: false,
+                    commit_seq: None,
+                    results: vec![StoredOp::Error {
+                        op_index: 0,
+                        code: "sync.idempotency_cache_miss".to_owned(),
+                        message: "persisted push result unreadable (§6.3)".to_owned(),
+                        retryable: true,
+                        details: None,
+                    }],
+                    conflict_authorization: None,
+                }
+                .frames(client_commit_id, true));
+            };
             if let Some(StoredOp::Conflict { op_index, .. }) = stored.results.first() {
                 let authorized_snapshot =
                     stored

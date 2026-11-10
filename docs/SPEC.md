@@ -6702,7 +6702,8 @@ Outside the wire catalog: all client-local codes
 [§7.4.4 — a pending commit cannot re-encode under the new schema after a
 bump], `sync.attach_rejected` [§12.3 — the remote server did not apply an
 attach commit, answered with a schema floor, an `ERROR` frame or a log reset,
-or a reference cycle exceeds one commit; non-retryable, with the structured
+or a reference cycle exceeds one commit, or attach found an unfinished
+abandon rollback (`reason = undo_pending`); non-retryable, with the structured
 `reason` in details], `client.encrypt_failed` [§5.11 — an encrypted column failed to
 encode at the push seam: the key id resolved to no usable value or the
 selected key is unknown; category `crypto`, non-retryable, raised at the
@@ -6922,7 +6923,8 @@ is `local`, `attaching` or `attached`, persisted in the authority database.
    `sent = n`, and after an `applied` or `cached` result it persists
    `applied = n`.
 5. A transport failure stops attach with the transport's error; the state
-   stays `attaching`, and the next attach resumes. A schema-floor response, an
+   stays `attaching`, and the next attach resumes unless the undo marker of
+   step 6 is set. A schema-floor response, an
    `ERROR` frame, a `resetRequired` response, or a commit result other than
    `applied` or `cached` stops attach with `sync.attach_rejected`. A rejected
    commit is terminal for its `attachId`: the remote retains the rejection
@@ -6930,12 +6932,26 @@ is `local`, `attaching` or `attached`, persisted in the authority database.
 6. Abandon returns an attaching authority to `local`. When `sent` is
    persisted, abandon needs the remote transport and first rolls back: it
    resends commit `sent` when `sent > applied` to learn that commit's
-   outcome, then deletes every row of commits `0` through `applied` in
-   reverse plan order, children before parents, in commits of at most 500
-   operations with `clientCommitId = attachId + ":undo:" + k`. A rollback
-   commit other than `applied` or `cached` stops abandon with
-   `sync.attach_rejected`, and the state stays `attaching`. The remote keeps a
-   tombstone per deleted row; the next attach uses a new `attachId`, and its
+   outcome. Before the first rollback commit it persists the undo marker
+   `undo = u`, where `u` is 0 on the first rollback attempt of the `attachId`
+   and the stored value plus one on every later attempt. The rollback deletes
+   every row of commits `0` through `applied` in reverse plan order, children
+   before parents, in commits of at most 500 operations with
+   `clientCommitId = attachId + ":undo:" + u + ":" + k`. A retried abandon
+   therefore never receives a result the remote stored for an earlier
+   attempt (§2.3), and deleting a row an earlier attempt already deleted is
+   `applied` (§6.2). A transport failure stops abandon with the transport's
+   error, and a rollback commit other than `applied` or `cached` stops it
+   with `sync.attach_rejected`, `reason = commit_rejected`; the state stays
+   `attaching`, and a persisted marker stays set. While the marker is set, attach
+   refuses before any request with `sync.attach_rejected`,
+   `reason = undo_pending`: a resumed upload would receive `cached` for
+   commits whose rows the rollback deleted, and retiring on those results
+   loses the rows on both sides. When every rollback commit of one attempt is
+   `applied` or `cached`, the authority persists `local` and removes
+   `attachId`, `sent`, `applied` and the marker in one transaction. The
+   remote keeps a tombstone per deleted row; the next attach uses a new
+   `attachId`, so no result stored under the abandoned one replays, and its
    `baseVersion = 0` inserts recreate those rows (§6.2).
 7. When every commit is `applied` or `cached`, the authority persists
    `attached`, drops every table except its state, and serves no further
