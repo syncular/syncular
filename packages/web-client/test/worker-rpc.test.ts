@@ -1036,6 +1036,32 @@ test('worker realtime connect is single-owner across repeated RPC calls', async 
   await handle.disconnectRealtime();
 });
 
+test('a refused presence publish crosses the worker to both presence surfaces (§8.6.2)', async () => {
+  const configured: Array<[string, string | undefined]> = [];
+  const { handle } = await makeHandle({
+    clientId: 'rpc-presence-refused',
+    autoSync: false,
+    onPresence: (scopeKey, error) => configured.push([scopeKey, error]),
+  });
+  const subscribed: Array<[string, string | undefined]> = [];
+  const off = handle.onPresence((scopeKey, error) =>
+    subscribed.push([scopeKey, error]),
+  );
+  await handle.connectRealtime();
+  // The connection holds no scope key, so the hub refuses the publish.
+  await handle.setPresence('project:unheld', { who: 'me' });
+  await waitFor(
+    () => subscribed.length === 1 && configured.length === 1,
+    (notify) => handle.onPresence(notify),
+    'presence rejection over the worker RPC',
+  );
+  expect(subscribed).toEqual([['project:unheld', 'presence.forbidden']]);
+  expect(configured).toEqual(subscribed);
+  expect(await handle.presence('project:unheld')).toEqual([]);
+  off();
+  await handle.disconnectRealtime();
+});
+
 test('host auth headers reach /sync and rotate through setHeaders', async () => {
   const { handle } = await makeHandle({
     clientId: 'rpc-auth',

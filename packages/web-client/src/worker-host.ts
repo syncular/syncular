@@ -27,7 +27,11 @@ import type { PromiseMethods } from './client';
  * With `multiTab: false`, the loser is an `isLeader === false` handle whose
  * calls reject with `client.not_leader` (the single-tab contract).
  */
-import { serializeBlobRef, type WakeReason } from '@syncular/core';
+import {
+  type PresenceErrorCode,
+  serializeBlobRef,
+  type WakeReason,
+} from '@syncular/core';
 import type { BlobRef, CachedBlob } from './blob';
 import type {
   ConflictRecord,
@@ -264,8 +268,9 @@ export interface SyncClientHandleConfig {
   }) => void;
   /** §7.4.5: schema-bump `upgrading` state changed (reset began/completed). */
   readonly onUpgrading?: (upgrading: boolean) => void;
-  /** §8.6: presence on a scope key changed. */
-  readonly onPresence?: (scopeKey: string) => void;
+  /** §8.6: presence on a scope key changed, or the server refused this
+   * client's publish on it (`error`, §8.6.2). */
+  readonly onPresence?: (scopeKey: string, error?: PresenceErrorCode) => void;
   /** Atomic privacy-safe diagnostics changed. */
   readonly onDiagnostics?: (snapshot: ClientDiagnosticsSnapshot) => void;
 }
@@ -335,7 +340,9 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
   readonly #invalidation: InvalidationEmitter;
   readonly #progress = new ProgressEmitter();
   readonly #changes: ChangeEmitter;
-  readonly #presence: Set<(scopeKey: string) => void>;
+  readonly #presence: Set<
+    (scopeKey: string, error?: PresenceErrorCode) => void
+  >;
   readonly #diagnostics: ClientDiagnosticsEmitter;
   readonly #roleListeners: Set<(role: HandleRole) => void>;
   readonly #leadershipListeners: Set<(state: LeadershipState) => void>;
@@ -353,7 +360,7 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     tabs?: TabCoordinator;
     invalidation: InvalidationEmitter;
     changes: ChangeEmitter;
-    presence: Set<(scopeKey: string) => void>;
+    presence: Set<(scopeKey: string, error?: PresenceErrorCode) => void>;
     diagnostics: ClientDiagnosticsEmitter;
     roleListeners?: Set<(role: HandleRole) => void>;
     leadershipListeners?: Set<(state: LeadershipState) => void>;
@@ -441,7 +448,7 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     } else if (event.kind === 'presence') {
       for (const listener of this.#presence) {
         try {
-          listener(event.scopeKey);
+          listener(event.scopeKey, event.error);
         } catch {
           /* a UI listener must never break event dispatch */
         }
@@ -501,7 +508,9 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
    * §8.6: subscribe to presence changes — the identical surface as
    * `SyncClient.onPresence`. Returns an unsubscribe function.
    */
-  onPresence(listener: (scopeKey: string) => void): () => void {
+  onPresence(
+    listener: (scopeKey: string, error?: PresenceErrorCode) => void,
+  ): () => void {
     this.#presence.add(listener);
     return () => {
       this.#presence.delete(listener);
@@ -1068,7 +1077,7 @@ function fireConfigCallbacks(
   } else if (event.kind === 'upgrading') {
     config.onUpgrading?.(event.upgrading);
   } else if (event.kind === 'presence') {
-    config.onPresence?.(event.scopeKey);
+    config.onPresence?.(event.scopeKey, event.error);
   } else if (event.kind === 'synced') {
     config.onSynced?.({
       ...(event.summary !== undefined ? { summary: event.summary } : {}),
@@ -1094,7 +1103,9 @@ export async function createSyncClientHandle(
   const lockName = resolvedConfig.lockName ?? 'syncular-leader';
   const invalidation = new InvalidationEmitter();
   const changes = new ChangeEmitter();
-  const presence = new Set<(scopeKey: string) => void>();
+  const presence = new Set<
+    (scopeKey: string, error?: PresenceErrorCode) => void
+  >();
   const diagnostics = new ClientDiagnosticsEmitter();
   const roleListeners = new Set<(role: HandleRole) => void>();
   if (resolvedConfig.onRoleChange !== undefined)

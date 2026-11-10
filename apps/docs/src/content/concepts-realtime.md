@@ -126,6 +126,16 @@ Authorization uses the same registration as sync. A connection publishes to and 
 
 The server caps the presence one connection holds. Each held scope key's UTF-8 bytes plus its serialized document's UTF-8 bytes, summed over the connection's keys, stay at or under `maxPresenceBytes`, a `RealtimeHubConfig` field with a default of 8,192. The server answers a publish over the cap with `presence.too_large` to the publisher and changes nothing. A republish on a key replaces that key's bytes, and a leave frees them.
 
+`setPresence` returns once the client sends the publish, so a refusal arrives later on the socket. The client passes it to every presence listener as a second argument, and the local peer list stays unchanged:
+
+```ts title="src/presence.ts"
+client.onPresence((scopeKey, error) => {
+  if (error !== undefined) console.warn('presence refused', scopeKey, error); // 'presence.too_large' | 'presence.forbidden'
+});
+```
+
+The listener fires without `error` for peer joins, updates and leaves. The `onPresence` config option has the same signature. On the native core, the `presence` event carries the code in its `error` field, and the Swift, Kotlin and Flutter bindings pass it through in the event payload.
+
 In React, `usePresence(scopeKey)` keeps the peer list live. It clears the previous peers when the client or scope changes. Overlapping reads publish the newest requested snapshot, and an older response cannot replace it, including after the newer read fails. Cleanup invalidates pending reads.
 
 ## Advanced: server host boundaries

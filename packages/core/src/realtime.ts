@@ -56,6 +56,9 @@ export type PresenceKind = 'join' | 'update' | 'leave';
 
 const PRESENCE_KINDS: readonly PresenceKind[] = ['join', 'update', 'leave'];
 
+/** §8.6.2 publisher-directed presence rejection code — a closed set of two. */
+export type PresenceErrorCode = 'presence.too_large' | 'presence.forbidden';
+
 /**
  * Server → client presence fanout (§8.6.2): a scope-mate's presence for a
  * key the receiver holds changed. `doc` is the peer's document for
@@ -71,7 +74,7 @@ export interface RealtimePresenceEvent {
     actorId?: string;
     clientId?: string;
     doc?: Record<string, unknown> | null;
-    error?: string;
+    error?: PresenceErrorCode;
     timestamp?: number;
   };
 }

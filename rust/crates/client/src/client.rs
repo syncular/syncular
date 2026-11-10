@@ -11594,8 +11594,8 @@ impl SyncClient {
         doc: Option<Value>,
         error: Option<String>,
     ) {
-        // The publisher-directed error variant is out-of-band; nothing to
-        // record in the peer map.
+        // A refused publish (§8.6.2) changes no peer; the native host surfaces
+        // it as a `presence` event carrying the server's `error` code.
         if error.is_some() {
             return;
         }

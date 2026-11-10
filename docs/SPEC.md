@@ -6291,6 +6291,9 @@ carried in the `error` field of a server→client `presence` event, a known
 shape a feature-off peer still ignores by event name. The closed set is
 two: `presence.too_large` (over the size cap) and `presence.forbidden`
 (publish/subscribe to a key the connection does not hold — §8.6.3).
+A client MUST hand the rejection to the application on the same channel
+that reports presence changes, carrying the server's code and the
+`scopeKey`, and MUST leave its peer map unchanged.
 
 #### 8.6.3 Authorization and identity
 

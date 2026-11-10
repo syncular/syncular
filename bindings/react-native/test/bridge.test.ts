@@ -1188,12 +1188,20 @@ describe('createNativeSyncClient', () => {
     expect(seen[0]?.scopeKeys).toEqual(['project:1']);
   });
 
-  test('presence events fan out to onPresence listeners', async () => {
+  test('presence events fan out to onPresence listeners with the publish rejection code', async () => {
     const { client, emit } = await build();
-    const scopeKeys: string[] = [];
-    client.onPresence((key) => scopeKeys.push(key));
+    const heard: Array<[string, string | undefined]> = [];
+    client.onPresence((key, error) => heard.push([key, error]));
     emit({ type: 'presence', scopeKey: 'room:42' });
-    expect(scopeKeys).toEqual(['room:42']);
+    emit({
+      type: 'presence',
+      scopeKey: 'room:42',
+      error: 'presence.too_large',
+    });
+    expect(heard).toEqual([
+      ['room:42', undefined],
+      ['room:42', 'presence.too_large'],
+    ]);
   });
 
   test('native modules deliver events as JSON strings', async () => {

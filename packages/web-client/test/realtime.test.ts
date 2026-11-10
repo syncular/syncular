@@ -905,3 +905,66 @@ describe('heartbeat watchdog (§8.5)', () => {
     }
   });
 });
+
+describe('presence (§8.6.2)', () => {
+  test('a refused publish reaches presence listeners with the server code and leaves the peer map unchanged', async () => {
+    const callbacks: RealtimeHandlers[] = [];
+    const server = makeServer();
+    const local = await makeClient(server, {
+      clientId: 'presence-rejection',
+      realtime: async (handlers) => {
+        callbacks.push(handlers);
+        return {
+          send: () => undefined,
+          sendBytes: () => undefined,
+          close: () => undefined,
+        };
+      },
+    });
+    await local.client.connectRealtime();
+    const heard: Array<[string, string | undefined]> = [];
+    local.client.onPresence((scopeKey, error) => {
+      heard.push([scopeKey, error]);
+    });
+    const handlers = callbacks[0];
+    handlers?.onText(
+      JSON.stringify({
+        event: 'presence',
+        data: {
+          scopeKey: 'project:p1',
+          kind: 'join',
+          actorId: 'peer',
+          clientId: 'peer-client',
+          doc: { who: 'peer' },
+          timestamp: 1,
+        },
+      }),
+    );
+    for (const error of ['presence.too_large', 'presence.forbidden']) {
+      handlers?.onText(
+        JSON.stringify({
+          event: 'presence',
+          data: { scopeKey: 'project:p1', error, timestamp: 2 },
+        }),
+      );
+    }
+    // An unknown code is malformed (§8.1) and reaches nobody.
+    handlers?.onText(
+      JSON.stringify({
+        event: 'presence',
+        data: { scopeKey: 'project:p1', error: 'presence.other' },
+      }),
+    );
+    expect(heard).toEqual([
+      ['project:p1', undefined],
+      ['project:p1', 'presence.too_large'],
+      ['project:p1', 'presence.forbidden'],
+    ]);
+    expect(local.client.presence('project:p1')).toEqual([
+      { actorId: 'peer', clientId: 'peer-client', doc: { who: 'peer' } },
+    ]);
+    await local.client.close();
+    local.db.close();
+    server.storage.db.close();
+  });
+});

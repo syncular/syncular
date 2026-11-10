@@ -316,13 +316,11 @@ impl Core {
         for frame in self.transport.take_inbound() {
             match frame {
                 transport::Inbound::Text(text) => {
-                    // A presence fanout is the client-observable event a native
+                    // A presence frame is the client-observable event a native
                     // host wants pushed; detect it on the wire (the core has no
                     // presence callback) before handing the control frame off.
-                    if let Some(scope_key) = presence_scope_key(&text) {
-                        self.queue.push(Event {
-                            json: json!({ "type": "presence", "scopeKey": scope_key }),
-                        });
+                    if let Some(json) = presence_event(&text) {
+                        self.queue.push(Event { json });
                     }
                     client.on_realtime_text(&text);
                 }
@@ -381,18 +379,21 @@ impl Core {
     }
 }
 
-/// A presence fanout control frame (§8.6.2) — `{"event":"presence",...}`, the
-/// one inbound realtime event a native host surfaces as an event.
-fn presence_scope_key(text: &str) -> Option<String> {
-    serde_json::from_str::<Value>(text).ok().and_then(|v| {
-        if v.get("event").and_then(Value::as_str) != Some("presence") {
-            return None;
-        }
-        v.get("data")?
-            .get("scopeKey")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-    })
+/// A well-formed presence control frame (§8.6.2), the one inbound realtime
+/// event a native host surfaces as an event: a fanout, or the server's refusal
+/// of this client's own publish, which carries the server's `error` code.
+fn presence_event(text: &str) -> Option<Value> {
+    let Ok(ssp2::ControlMessage::Presence {
+        scope_key, error, ..
+    }) = ssp2::parse_control(text)
+    else {
+        return None;
+    };
+    let mut event = json!({ "type": "presence", "scopeKey": scope_key });
+    if let Some(error) = error {
+        event["error"] = Value::from(error);
+    }
+    Some(event)
 }
 
 // -- C-ABI surface (the 5 functions kept exactly in sync with rust/ffi.h) ----

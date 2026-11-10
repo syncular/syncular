@@ -495,9 +495,9 @@ export function startSyncWorkerCore(
         // §7.4.5: surface the schema-bump reset + completion to the UI thread.
         post({ t: 'event', event: { kind: 'upgrading', upgrading } });
       },
-      onPresence: (scopeKey) => {
-        // §8.6: surface a presence change to the UI thread.
-        post({ t: 'event', event: { kind: 'presence', scopeKey } });
+      onPresence: (scopeKey, error) => {
+        // §8.6: surface a presence change or rejection to the UI thread.
+        post({ t: 'event', event: { kind: 'presence', scopeKey, error } });
       },
     });
     started.onProgress((progress) => {

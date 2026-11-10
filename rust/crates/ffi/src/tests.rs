@@ -864,22 +864,29 @@ fn baseurl_without_native_feature_is_rejected() {
 }
 
 #[test]
-fn presence_scope_key_reads_the_fanout_data() {
+fn presence_event_carries_the_fanout_key_and_the_publish_rejection() {
     assert_eq!(
-        crate::presence_scope_key(
+        crate::presence_event(
             r#"{"event":"presence","data":{"scopeKey":"room:42","kind":"join","actorId":"a","clientId":"c","doc":{},"timestamp":1}}"#
-        )
-        .as_deref(),
-        Some("room:42")
+        ),
+        Some(json!({ "type": "presence", "scopeKey": "room:42" }))
     );
-    assert_eq!(
-        crate::presence_scope_key(r#"{"event":"presence","data":{}}"#),
-        None
-    );
-    assert_eq!(
-        crate::presence_scope_key(r#"{"event":"sync","data":{}}"#),
-        None
-    );
+    for code in ["presence.too_large", "presence.forbidden"] {
+        assert_eq!(
+            crate::presence_event(&format!(
+                r#"{{"event":"presence","data":{{"scopeKey":"room:42","error":"{code}","timestamp":1}}}}"#
+            )),
+            Some(json!({ "type": "presence", "scopeKey": "room:42", "error": code }))
+        );
+    }
+    // The core rejects a malformed frame, so the host hears nothing of it.
+    for text in [
+        r#"{"event":"presence","data":{"scopeKey":"room:42","error":"presence.other"}}"#,
+        r#"{"event":"presence","data":{}}"#,
+        r#"{"event":"sync","data":{}}"#,
+    ] {
+        assert_eq!(crate::presence_event(text), None, "{text}");
+    }
 }
 
 #[test]

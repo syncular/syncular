@@ -37,7 +37,10 @@ void   syncular_free_string(char* ptr);
   zero custom serialization.
 - **`poll_event`** drains exact revisioned `change` batches, explicit
   `sync-intent` effects, and ephemeral `presence` events with a timeout (`<0`
-  blocks, `0` non-blocking, `>0` waits N ms). The client core has no callbacks;
+  blocks, `0` non-blocking, `>0` waits N ms). A `presence` event carries the
+  server's `error` code (`presence.too_large`, `presence.forbidden`) when the
+  server refused this client's own publish on `scopeKey` (SPEC §8.6.2). The
+  client core has no callbacks;
   the FFI forwards committed core output after each command and after draining
   inbound realtime traffic. It never reconstructs changes from counters.
 

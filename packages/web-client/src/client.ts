@@ -40,10 +40,11 @@ import {
   isRoundFailureCode,
   MessageStreamScanner,
   PROTOCOL_WIRE_VERSION,
-  type PresenceKind,
+  type PresenceErrorCode,
   type PushResultFrame,
   parseJsonDocument,
   parseRealtimeServerEvent,
+  type RealtimePresenceEvent,
   REALTIME_TAG_DELTA,
   REALTIME_TAG_ROUND,
   type RejectionDetails,
@@ -477,9 +478,11 @@ export interface SyncClientConfig {
   /**
    * §8.6 presence: a scope-mate's presence on a key this client holds
    * changed (join/update/leave). Fired after the local presence map is
-   * updated — the app's cue to re-render who's-online.
+   * updated — the app's cue to re-render who's-online. `error` is set when
+   * the server refused this client's own publish on `scopeKey` (§8.6.2);
+   * the map is unchanged then.
    */
-  readonly onPresence?: (scopeKey: string) => void;
+  readonly onPresence?: (scopeKey: string, error?: PresenceErrorCode) => void;
   /**
    * §5.11 client-side encryption. Supplies the key material (`keyProvider`)
    * and key selection (`keyIdFor`) for columns the generated schema marks
@@ -987,7 +990,9 @@ export class SyncClient {
   /** Compatibility projection from exact batches; never bridge-inferred. */
   readonly #invalidation = new InvalidationEmitter();
   /** §8.6: subscribable presence-change listeners (twin of onPresence). */
-  readonly #presenceListeners = new Set<(scopeKey: string) => void>();
+  readonly #presenceListeners = new Set<
+    (scopeKey: string, error?: PresenceErrorCode) => void
+  >();
   readonly #syncNeededListeners = new Set<
     (reason: 'startup' | 'hello' | WakeReason) => void
   >();
@@ -3124,12 +3129,16 @@ export class SyncClient {
   }
 
   /**
-   * §8.6: subscribe to presence changes (join/update/leave on any held key).
-   * The subscribable twin of the `onPresence` config callback — React's
-   * `usePresence` targets this so many components can watch one client.
+   * §8.6: subscribe to presence changes (join/update/leave on any held key)
+   * and to the server's refusal of this client's own publish (`error`,
+   * §8.6.2). The subscribable twin of the `onPresence` config callback —
+   * React's `usePresence` targets this so many components can watch one
+   * client.
    * Returns an unsubscribe function.
    */
-  onPresence(listener: (scopeKey: string) => void): () => void {
+  onPresence(
+    listener: (scopeKey: string, error?: PresenceErrorCode) => void,
+  ): () => void {
     this.#presenceListeners.add(listener);
     return () => {
       this.#presenceListeners.delete(listener);
@@ -5193,42 +5202,34 @@ export class SyncClient {
     return event.event === 'heartbeat';
   }
 
-  /** §8.6 apply an inbound presence fanout to the local map. */
-  #applyPresence(data: {
-    scopeKey: string;
-    kind?: PresenceKind;
-    actorId?: string;
-    clientId?: string;
-    doc?: Record<string, unknown> | null;
-    error?: string;
-  }): void {
-    // The publisher-directed error variant (§8.6.2) surfaces via the
-    // sync-needed reason channel is inappropriate; it is an out-of-band
-    // presence rejection — record nothing to the peer map, just ignore
-    // here (setPresence callers observe it through the callback if wired).
-    if (data.error !== undefined || data.kind === undefined) return;
-    const { scopeKey, kind, actorId, clientId } = data;
-    if (actorId === undefined || clientId === undefined) return;
-    const peerKey = `${actorId} ${clientId}`;
-    let peers = this.#presence.get(scopeKey);
-    if (kind === 'leave') {
-      peers?.delete(peerKey);
-      if (peers !== undefined && peers.size === 0) {
-        this.#presence.delete(scopeKey);
+  /**
+   * §8.6 apply an inbound presence fanout to the local map, or hand a
+   * publisher-directed rejection (§8.6.2) to the listeners unchanged.
+   */
+  #applyPresence(data: RealtimePresenceEvent['data']): void {
+    const { scopeKey, kind, actorId, clientId, doc, error } = data;
+    if (error === undefined) {
+      // No `kind` is the client→server shape. The parser pins both ids and a
+      // join/update doc on a fanout (§8.6.2); these checks narrow types.
+      if (kind === undefined || actorId === undefined || clientId === undefined)
+        return;
+      const peerKey = `${actorId} ${clientId}`;
+      let peers = this.#presence.get(scopeKey);
+      if (kind === 'leave') {
+        peers?.delete(peerKey);
+        if (peers?.size === 0) this.#presence.delete(scopeKey);
+      } else if (doc) {
+        if (peers === undefined) {
+          peers = new Map();
+          this.#presence.set(scopeKey, peers);
+        }
+        peers.set(peerKey, { actorId, clientId, doc });
       }
-    } else {
-      const doc = data.doc;
-      if (doc === null || doc === undefined) return;
-      if (peers === undefined) {
-        peers = new Map();
-        this.#presence.set(scopeKey, peers);
-      }
-      peers.set(peerKey, { actorId, clientId, doc });
     }
-    this.#config.onPresence?.(scopeKey);
+    this.#config.onPresence?.(scopeKey, error);
     for (const listener of this.#presenceListeners) {
       try {
-        listener(scopeKey);
+        listener(scopeKey, error);
       } catch {
         // A UI listener must never break presence application.
       }

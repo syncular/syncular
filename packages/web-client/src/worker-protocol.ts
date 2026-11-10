@@ -17,7 +17,7 @@ import type { SyncProgress } from './progress';
  * so the UI thread never has to react to keep data flowing. Events are
  * still forwarded to the handle for visibility.
  */
-import type { WakeReason } from '@syncular/core';
+import type { PresenceErrorCode, WakeReason } from '@syncular/core';
 import type { BlobRef, CachedBlob } from './blob';
 import type {
   ConflictRecord,
@@ -301,9 +301,11 @@ export type SyncWorkerEvent =
       readonly upgrading: boolean;
     }
   | {
-      /** §8.6: presence on a scope key changed inside the worker. */
+      /** §8.6: presence on a scope key changed, or the server refused this
+       * client's publish on it (`error`, §8.6.2). */
       readonly kind: 'presence';
       readonly scopeKey: string;
+      readonly error?: PresenceErrorCode | undefined;
     }
   | {
       /** Exact revisioned core transaction; Sets and bigint clone directly. */

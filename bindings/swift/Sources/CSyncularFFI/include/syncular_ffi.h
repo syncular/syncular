@@ -61,7 +61,8 @@ char *syncular_client_command(void *handle, const char *command_json);
  * Poll the next client-observable event, a JSON object with a "type":
  *   change          an exact revisioned observer batch
  *   sync-intent     a sync round the host should schedule
- *   presence        a presence fanout for one scope key
+ *   presence        a presence fanout for one scope key; "error" carries
+ *                   the server's code when it refused this client's publish
  *   progress        the latest sync progress (only the newest is queued)
  *   diagnostics     a changed diagnostics snapshot
  *   realtime-wake   {"type":"realtime-wake"}: the socket reader buffered a

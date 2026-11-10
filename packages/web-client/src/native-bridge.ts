@@ -27,6 +27,7 @@ import {
   type WindowState,
 } from './client';
 import type { SqlRow, SqlValue } from './database';
+import type { PresenceErrorCode } from '@syncular/core';
 import {
   type ClientDiagnosticsListener,
   type ClientDiagnosticsRequest,
@@ -309,7 +310,9 @@ export abstract class NativeBridgeClient implements PromiseMethods<ClientSnapsho
   readonly #changeListeners = new Set<ClientChangeListener>();
   readonly #progress = new ProgressEmitter();
   readonly #diagnosticsListeners = new Set<ClientDiagnosticsListener>();
-  readonly #presenceListeners = new Set<(scopeKey: string) => void>();
+  readonly #presenceListeners = new Set<
+    (scopeKey: string, error?: PresenceErrorCode) => void
+  >();
   #closed = false;
   #closing: Promise<void> | undefined;
   #securityLifecycle: SecurityLifecycle;
@@ -537,13 +540,13 @@ export abstract class NativeBridgeClient implements PromiseMethods<ClientSnapsho
   /** @internal Fan an incoming native event out to the local listeners. */
   __dispatchEvent(event: SyncularEvent): void {
     // A UI listener that throws must never break event dispatch.
-    const fanOut = <Value>(
-      listeners: ReadonlySet<(value: Value) => void>,
-      value: Value,
+    const fanOut = <Args extends unknown[]>(
+      listeners: ReadonlySet<(...args: Args) => void>,
+      ...args: Args
     ) => {
       for (const listener of listeners) {
         try {
-          listener(value);
+          listener(...args);
         } catch {}
       }
     };
@@ -570,6 +573,7 @@ export abstract class NativeBridgeClient implements PromiseMethods<ClientSnapsho
         fanOut(
           this.#presenceListeners,
           typeof event.scopeKey === 'string' ? event.scopeKey : '',
+          event.error as PresenceErrorCode | undefined,
         );
         break;
       case 'diagnostics': {
@@ -682,7 +686,9 @@ export abstract class NativeBridgeClient implements PromiseMethods<ClientSnapsho
     return () => this.#diagnosticsListeners.delete(listener);
   }
 
-  onPresence(listener: (scopeKey: string) => void): () => void {
+  onPresence(
+    listener: (scopeKey: string, error?: PresenceErrorCode) => void,
+  ): () => void {
     this.requireOpen();
     this.#presenceListeners.add(listener);
     return () => this.#presenceListeners.delete(listener);
