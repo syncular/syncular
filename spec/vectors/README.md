@@ -56,7 +56,7 @@ spec/vectors/
 
 ## Coverage
 
-The authoritative vector list (34 valid cases + 57 invalid cases) is
+The authoritative vector list (34 valid cases + 62 invalid cases) is
 SPEC.md Appendix A. Summary of what it covers:
 
 - requests: minimal pull, bootstrap pull (accept bits, resume token),
@@ -97,7 +97,7 @@ SPEC.md Appendix A. Summary of what it covers:
   column, null bit for a non-nullable column, absent primary key),
   push admission values (U+0000 in a string; json nested 65 deep, `1e999`,
   `1.7976931348623159e308`, unpaired surrogate value and key, U+0000
-  value and key; NaN, `Infinity` and `-Infinity` floats; `blob_ref` with
+  value and key, and `1e999`, an unpaired surrogate, a `\u0000` escape, depth 65 or depth 128 under a shadowed duplicate key; NaN, `Infinity` and `-Infinity` floats; `blob_ref` with
   reordered keys, `byteLength` written `1e2`, `3.0` or `-0`, whitespace,
   a duplicate key, an unpaired surrogate or U+0000 in `name`),
   wake with `requiresPull` not the literal `true`, fractional realtime

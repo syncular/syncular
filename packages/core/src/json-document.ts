@@ -9,10 +9,14 @@ import { DecodeError } from './errors';
 const MAX_DEPTH = 64;
 
 /**
- * Parse `raw` as a JSON document under the validity rule: RFC 8259, at most
- * 64 nested containers, finite numbers only, no U+0000 and no unpaired
- * surrogate in any string or key. A violation throws `DecodeError`
- * (`sync.invalid_request`); `what` names the field in the message.
+ * Parse `raw` as a JSON document under the validity rule, which is defined on
+ * the raw text: RFC 8259, at most 64 nested containers anywhere in the text,
+ * every number token a finite binary64, no U+0000 and no unpaired surrogate in
+ * any string token (key or value), written literally or as a `\u` escape.
+ * `JSON.parse` drops values shadowed by a duplicate key, so one lexical pass
+ * over the text checks what the parser cannot see. A violation throws
+ * `DecodeError` (`sync.invalid_request`); `what` names the field in the
+ * message.
  */
 export function parseJsonDocument(raw: string, what: string): unknown {
   let value: unknown;
@@ -24,42 +28,35 @@ export function parseJsonDocument(raw: string, what: string): unknown {
       `${what} does not parse as a JSON document`,
     );
   }
-  const visit = (node: unknown, depth: number): void => {
-    if (typeof node === 'number') {
-      if (!Number.isFinite(node)) {
+  let depth = 0;
+  for (const [token] of raw.matchAll(
+    /"(?:[^"\\]|\\.)*"|[[{\]}]|-?\d[\d.eE+-]*/g,
+  )) {
+    const head = token[0];
+    if (head === '[' || head === '{') {
+      if (++depth > MAX_DEPTH) {
         throw new DecodeError(
           'sync.invalid_request',
-          `${what} holds a number outside finite binary64`,
+          `${what} nests deeper than ${MAX_DEPTH} containers`,
         );
       }
-      return;
-    }
-    if (typeof node === 'string') {
+    } else if (head === ']' || head === '}') {
+      depth--;
+    } else if (head === '"') {
       // In `u` mode `\p{Cs}` matches only a surrogate outside a pair.
-      if (node.includes('\u0000') || /\p{Cs}/u.test(node)) {
+      const text: string = token.includes('\\') ? JSON.parse(token) : token;
+      if (text.includes('\u0000') || /\p{Cs}/u.test(text)) {
         throw new DecodeError(
           'sync.invalid_request',
           `${what} holds a string with U+0000 or an unpaired surrogate`,
         );
       }
-      return;
-    }
-    if (typeof node !== 'object' || node === null) return;
-    if (depth === MAX_DEPTH) {
+    } else if (!Number.isFinite(Number(token))) {
       throw new DecodeError(
         'sync.invalid_request',
-        `${what} nests deeper than ${MAX_DEPTH} containers`,
+        `${what} holds a number outside finite binary64`,
       );
     }
-    if (Array.isArray(node)) {
-      for (const item of node) visit(item, depth + 1);
-      return;
-    }
-    for (const [key, item] of Object.entries(node)) {
-      visit(key, depth);
-      visit(item, depth + 1);
-    }
-  };
-  visit(value, 0);
+  }
   return value;
 }

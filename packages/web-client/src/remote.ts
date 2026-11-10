@@ -306,8 +306,7 @@ export class SyncRemoteClient {
       const acquisitionHeader = acquisition.frames[0];
       if (
         acquisition.msgKind !== 'response' ||
-        acquisitionHeader?.type !== 'RESP_HEADER' ||
-        acquisitionHeader.logEpoch === undefined
+        acquisitionHeader?.type !== 'RESP_HEADER'
       ) {
         throw new ClientSyncError(
           'client.invalid_host_response',

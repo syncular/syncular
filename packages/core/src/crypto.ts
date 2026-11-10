@@ -13,6 +13,7 @@
  * is the symmetric core and the envelope both sides agree on byte-for-byte.
  */
 import { ByteReader, ByteWriter } from './bytes';
+import { parseJsonDocument } from './json-document';
 
 /** The pre-flip application type of an encrypted column (SPEC.md §5.11). */
 export type DeclaredType =
@@ -150,7 +151,7 @@ export function deserializePlain(
       }
       if (declaredType === 'json' || declaredType === 'blob_ref') {
         try {
-          JSON.parse(text);
+          parseJsonDocument(text, `decrypted ${declaredType} value`);
         } catch {
           throw new DecryptError(
             `decrypted ${declaredType} value does not parse`,

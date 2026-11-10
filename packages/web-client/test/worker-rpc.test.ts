@@ -389,6 +389,45 @@ test('boot → subscribe → mutate → sync → query, all over the RPC', async
   expect(diagnosticEvents.length).toBeGreaterThan(0);
 });
 
+test('the worker builds no diagnostics push until a consumer pulls', async () => {
+  const messages: Array<{ t?: string; event?: { kind?: string } }> = [];
+  const { handle } = await makeHandle({
+    clientId: 'rpc-lazy-diagnostics',
+    autoSync: false,
+    worker: () => {
+      const worker = new Worker(WORKER_URL);
+      worker.addEventListener('message', (event) => messages.push(event.data));
+      return worker;
+    },
+  });
+  const pushes = () =>
+    messages.filter(
+      (message) =>
+        message.t === 'event' && message.event?.kind === 'diagnostics',
+    ).length;
+  await handle.subscribe({
+    id: 'tasks',
+    table: 'tasks',
+    scopes: { project_id: ['p1'] },
+  });
+  await handle.mutate([
+    { table: 'tasks', op: 'upsert', values: taskValues('lazy1', 'p1', 'a') },
+  ]);
+  await handle.statusSnapshot();
+  expect(pushes()).toBe(0);
+
+  const seen: string[] = [];
+  handle.onDiagnostics((snapshot) => seen.push(snapshot.replica.localRevision));
+  // A call after the subscription is a FIFO barrier for the worker's pull.
+  await handle.statusSnapshot();
+  await handle.mutate([
+    { table: 'tasks', op: 'upsert', values: taskValues('lazy2', 'p1', 'b') },
+  ]);
+  await handle.statusSnapshot();
+  expect(pushes()).toBeGreaterThan(0);
+  expect(seen.length).toBe(pushes());
+});
+
 test('worker subscriptions reject an identity rebind without losing completeness', async () => {
   const { handle } = await makeHandle({
     clientId: 'rpc-subscription-identity',

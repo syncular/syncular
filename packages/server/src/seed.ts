@@ -218,8 +218,7 @@ export async function seedMutations(
   const acquisitionHeader = acquisition.frames[0];
   if (
     acquisition.msgKind !== 'response' ||
-    acquisitionHeader?.type !== 'RESP_HEADER' ||
-    acquisitionHeader.logEpoch === undefined
+    acquisitionHeader?.type !== 'RESP_HEADER'
   ) {
     throw new SyncError(
       'sync.invalid_request',

@@ -207,6 +207,7 @@ export function startSyncWorkerCore(
   let offline = false;
   let headers: Readonly<Record<string, string>> = {};
   let closed = false;
+  let pushingDiagnostics = false;
 
   // -- one sync loop: RPC-driven and auto-driven rounds serialize ----------
   let syncChain: Promise<unknown> = Promise.resolve();
@@ -498,7 +499,6 @@ export function startSyncWorkerCore(
     started.onChange((batch) => {
       if (!closed) post({ t: 'event', event: { kind: 'change', batch } });
     });
-    started.onDiagnostics(postDiagnostics);
     await started.start();
     realtimeConnector =
       overrides.createRealtime !== undefined
@@ -605,8 +605,16 @@ export function startSyncWorkerCore(
     },
     resetClientId: () => requireClient().resetClientId(),
     localRevision: () => requireClient().localRevision,
-    diagnosticsSnapshot: (request) =>
-      workerDiagnostics(requireClient().diagnosticsSnapshot(request)),
+    diagnosticsSnapshot: (request) => {
+      const running = requireClient();
+      // The first pull makes the worker a push source: no tab has asked for
+      // diagnostics before it, so no snapshot is built per revision until then.
+      if (!pushingDiagnostics) {
+        pushingDiagnostics = true;
+        running.onDiagnostics(postDiagnostics);
+      }
+      return workerDiagnostics(running.diagnosticsSnapshot(request));
+    },
     setHeaders: (next) => {
       headers = next;
     },
@@ -615,7 +623,7 @@ export function startSyncWorkerCore(
       requireClient().setTransportEnabled(!value);
       if (offline) {
         stopBackground();
-      } else if (client !== undefined) {
+      } else if (client !== undefined && pushingDiagnostics) {
         postDiagnostics(client.diagnosticsSnapshot());
       }
     },

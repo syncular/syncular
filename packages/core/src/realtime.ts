@@ -9,6 +9,7 @@
  * `known: false` for unrecognized event names instead of failing.
  */
 import { DecodeError } from './errors';
+import { parseJsonDocument } from './json-document';
 
 /** §8.7 channel tag: a standalone SSP2 response message — a delta. */
 export const REALTIME_TAG_DELTA = 0x00;
@@ -167,13 +168,10 @@ const WAKE_REASONS: readonly WakeReason[] = [
 ];
 
 export function parseRealtimeServerEvent(text: string): ParsedRealtimeEvent {
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    malformed('not valid JSON');
-  }
-  const root = requireObject(value, 'control message');
+  const root = requireObject(
+    parseJsonDocument(text, 'control message'),
+    'control message',
+  );
   const event = requireString(root.event, 'event');
   if (event === 'hello') {
     const data = requireObject(root.data, 'hello.data');

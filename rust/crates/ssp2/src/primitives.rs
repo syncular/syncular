@@ -10,50 +10,55 @@ pub const I64_SAFE_MAX: i64 = 9_007_199_254_740_991;
 
 const JSON_MAX_DEPTH: usize = 64;
 
-/// Parse `raw` under the JSON validity rule (SPEC.md Conventions): RFC 8259,
-/// at most 64 nested containers, finite numbers only, no U+0000 and no
-/// unpaired surrogate in any string or key. The one definition for envelope
-/// `json` fields, push-payload `json` columns and `blob_ref` values; the TS
-/// core's `parseJsonDocument` accepts exactly the same documents.
+/// Parse `raw` under the JSON validity rule (SPEC.md Conventions), which is
+/// defined on the raw text: RFC 8259, at most 64 nested containers anywhere in
+/// the text, every number token a finite binary64, no U+0000 and no unpaired
+/// surrogate in any string token (key or value). The one definition for
+/// envelope `json` fields, push-payload `json` columns and `blob_ref` values;
+/// the TS core's `parseJsonDocument` accepts exactly the same documents.
 ///
-/// `serde_json` itself rejects numbers that overflow binary64 (correctly
-/// rounded through the `float_roundtrip` feature, so `f64::MAX` written in
-/// full parses) and unpaired surrogate escapes; the walk adds depth and
-/// U+0000.
+/// `serde_json` parses every value, shadowed ones included, and rejects
+/// numbers that overflow binary64 (correctly rounded through the
+/// `float_roundtrip` feature, so `f64::MAX` written in full parses) and
+/// unpaired surrogate escapes. One lexical pass adds depth and the `\u0000`
+/// escape; a literal U+0000 is a control character that RFC 8259 rejects.
 pub fn parse_json_document(raw: &str, what: &str) -> Result<serde_json::Value> {
-    use serde_json::Value;
-    fn visit(node: &Value, depth: usize, what: &str) -> Result<()> {
-        let check_str = |s: &str| {
-            if s.contains('\0') {
-                return Err(DecodeError::invalid(format!(
-                    "{what} holds a string with U+0000"
-                )));
-            }
-            Ok(())
-        };
-        match node {
-            Value::Array(_) | Value::Object(_) if depth == JSON_MAX_DEPTH => {
-                Err(DecodeError::invalid(format!(
-                    "{what} nests deeper than {JSON_MAX_DEPTH} containers"
-                )))
-            }
-            Value::Array(items) => items
-                .iter()
-                .try_for_each(|item| visit(item, depth + 1, what)),
-            Value::Object(map) => map.iter().try_for_each(|(key, item)| {
-                check_str(key)?;
-                visit(item, depth + 1, what)
-            }),
-            Value::String(s) => check_str(s),
-            Value::Null | Value::Bool(_) | Value::Number(_) => Ok(()),
-        }
-    }
-    let value: Value = serde_json::from_str(raw).map_err(|_| {
+    let value = serde_json::from_str(raw).map_err(|_| {
         DecodeError::invalid(format!(
             "{what} is not a JSON document under the validity rule"
         ))
     })?;
-    visit(&value, 0, what)?;
+    let text = raw.as_bytes();
+    let (mut depth, mut at) = (0usize, 0usize);
+    while at < text.len() {
+        match text[at] {
+            b'[' | b'{' => {
+                depth += 1;
+                if depth > JSON_MAX_DEPTH {
+                    return Err(DecodeError::invalid(format!(
+                        "{what} nests deeper than {JSON_MAX_DEPTH} containers"
+                    )));
+                }
+            }
+            b']' | b'}' => depth -= 1,
+            b'"' => {
+                at += 1;
+                while text[at] != b'"' {
+                    if text[at] == b'\\' {
+                        if text[at + 1..].starts_with(b"u0000") {
+                            return Err(DecodeError::invalid(format!(
+                                "{what} holds a string with U+0000"
+                            )));
+                        }
+                        at += 1;
+                    }
+                    at += 1;
+                }
+            }
+            _ => {}
+        }
+        at += 1;
+    }
     Ok(value)
 }
 
@@ -375,6 +380,42 @@ mod tests {
             ("U+0001 escape", r#""\u0001""#.into(), true),
             ("raw U+0000 in a string", "\"a\0b\"".into(), false),
             ("duplicate keys", r#"{"a":1,"a":2}"#.into(), true),
+            ("shadowed 1e999", r#"{"a":1e999,"a":1}"#.into(), false),
+            (
+                "shadowed unpaired surrogate",
+                r#"{"a":"\ud800","a":1}"#.into(),
+                false,
+            ),
+            (
+                "shadowed U+0000 escape",
+                r#"{"a":"\u0000","a":1}"#.into(),
+                false,
+            ),
+            (
+                "shadowed depth 64",
+                format!("{{\"a\":{},\"a\":1}}", nested("[", "]", 63)),
+                true,
+            ),
+            (
+                "shadowed depth 65",
+                format!("{{\"a\":{},\"a\":1}}", nested("[", "]", 64)),
+                false,
+            ),
+            (
+                "shadowed depth 128",
+                format!("{{\"a\":{},\"a\":1}}", nested("[", "]", 127)),
+                false,
+            ),
+            (
+                "escaped backslash before u0000",
+                r#""\\u0000""#.into(),
+                true,
+            ),
+            (
+                "brackets inside strings",
+                r#"["[[[[", "}}}}"]"#.into(),
+                true,
+            ),
             (
                 "insignificant whitespace",
                 r#" { "a" : [ 1 , 2 ] } "#.into(),

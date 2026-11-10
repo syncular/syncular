@@ -382,6 +382,25 @@ describe('RFC 0005 opt-in capture', () => {
     }
   });
 
+  test('capture includes rows with a negative rowid', async () => {
+    const server = v2Server();
+    const path = tempPath('negative-rowid');
+    await seedV1(server, path);
+    const raw = rawDb(path);
+    raw.exec(
+      "INSERT INTO things(rowid,id,project_id,_sync_version) VALUES(-5,'neg','p1',1)",
+    );
+    raw.close();
+    const bumped = await openAt(server, path, V2_SCHEMA, enabled());
+    try {
+      const snap = bumped.client.previousVersionSnapshot({ table: 'things' });
+      expect(snap.rows.map((row) => row.id).sort()).toEqual(['neg', 'r1']);
+    } finally {
+      await bumped.client.close();
+      bumped.db.close();
+    }
+  });
+
   test('a 0.22.0 database straight-bumps to no-previous-descriptor; one aware boot backfills', async () => {
     const server = v2Server();
     const straight = tempPath('straight');

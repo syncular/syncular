@@ -2018,6 +2018,36 @@ total += emitKind(
         covers: 'json object key holding U+0000',
       },
       {
+        name: 'json-shadowed-number-overflow',
+        bytes: admissionPayload('meta', '{"a":1e999,"a":1}'),
+        covers:
+          'json number 1e999 under a key that a later duplicate key shadows',
+      },
+      {
+        name: 'json-shadowed-lone-surrogate',
+        bytes: admissionPayload('meta', '{"a":"\\ud800","a":1}'),
+        covers:
+          'json unpaired high-surrogate escape under a key that a later duplicate key shadows',
+      },
+      {
+        name: 'json-shadowed-nul-escape',
+        bytes: admissionPayload('meta', '{"a":"\\u0000","a":1}'),
+        covers:
+          'json U+0000 escape under a key that a later duplicate key shadows',
+      },
+      {
+        name: 'json-shadowed-depth-65',
+        bytes: admissionPayload('meta', `{"a":${jsonDepth(64)},"a":1}`),
+        covers:
+          'json nested 65 containers deep inside a value that a later duplicate key shadows',
+      },
+      {
+        name: 'json-shadowed-depth-128',
+        bytes: admissionPayload('meta', `{"a":${jsonDepth(127)},"a":1}`),
+        covers:
+          'json nested 128 containers deep inside a value that a later duplicate key shadows',
+      },
+      {
         name: 'float-nan',
         bytes: admissionPayload('score', Number.NaN),
         covers: 'float value NaN',

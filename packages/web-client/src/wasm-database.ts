@@ -51,14 +51,23 @@ interface Oo1Database {
     rowMode: 'object';
     resultRows: unknown[];
   }): unknown;
-  prepare(sql: string): {
-    readonly pointer?: number;
-    readonly columnCount: number;
-    isReadOnly(): boolean;
-    finalize(): unknown;
-  };
+  prepare(sql: string): Oo1Statement;
   close(): void;
 }
+
+interface Oo1Statement {
+  readonly pointer?: number;
+  readonly columnCount: number;
+  isReadOnly(): boolean;
+  finalize(): unknown;
+  bind(values: readonly unknown[]): unknown;
+  step(): boolean;
+  get(target: Record<string, unknown>): Record<string, unknown>;
+  reset(clearBindings: boolean): unknown;
+}
+
+/** Compiled statements one database keeps; a full cache is finalized and cleared. */
+const STATEMENT_CACHE_LIMIT = 128;
 
 interface SahPoolUtil {
   OpfsSAHPoolDb: new (filename: string) => Oo1Database;
@@ -147,6 +156,7 @@ class WasmClientDatabase implements ClientDatabase {
     | { readonly util: SahPoolUtil; readonly lease: LeaderLease }
     | undefined;
   readonly #fence: StorageFence | undefined;
+  readonly #statements = new Map<string, Oo1Statement>();
   #closed = false;
   #tx = { depth: 0 };
 
@@ -182,25 +192,38 @@ class WasmClientDatabase implements ClientDatabase {
   }
 
   exec(sql: string, params: readonly SqlValue[] = []): void {
-    this.#assertOwned();
-    this.#db.exec({
-      sql,
-      ...(params.length > 0 ? { bind: coerceParams(params) } : {}),
-      rowMode: 'object',
-      resultRows: [],
-    });
+    this.query(sql, params);
   }
 
+  /**
+   * Parameterized SQL (one statement per call, the `ClientDatabase` contract)
+   * runs through a compiled statement cached by its SQL text. SQL without
+   * parameters may hold several statements and compiles through `exec`.
+   */
   query(sql: string, params: readonly SqlValue[] = []): SqlRow[] {
     this.#assertOwned();
-    const resultRows: unknown[] = [];
-    this.#db.exec({
-      sql,
-      ...(params.length > 0 ? { bind: coerceParams(params) } : {}),
-      rowMode: 'object',
-      resultRows,
-    });
-    return resultRows as SqlRow[];
+    if (params.length === 0) {
+      const resultRows: unknown[] = [];
+      this.#db.exec({ sql, rowMode: 'object', resultRows });
+      return resultRows as SqlRow[];
+    }
+    let statement = this.#statements.get(sql);
+    if (statement === undefined) {
+      statement = this.#db.prepare(sql);
+      if (this.#statements.size === STATEMENT_CACHE_LIMIT) {
+        for (const evicted of this.#statements.values()) evicted.finalize();
+        this.#statements.clear();
+      }
+      this.#statements.set(sql, statement);
+    }
+    const rows: SqlRow[] = [];
+    try {
+      statement.bind(coerceParams(params));
+      while (statement.step()) rows.push(statement.get({}) as SqlRow);
+    } finally {
+      statement.reset(true);
+    }
+    return rows;
   }
 
   queryReadOnly(sql: string, params: readonly SqlValue[] = []): SqlRow[] {
@@ -312,6 +335,7 @@ class WasmClientDatabase implements ClientDatabase {
 
   close(): void {
     if (this.#closed) return;
+    this.#statements.clear();
     this.#db.close();
     // DB.close() leaves the SAH pool live. Close siblings first, then pause the
     // VFS without deleting files, before releasing this worker's physical lock.

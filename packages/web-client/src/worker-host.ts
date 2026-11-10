@@ -406,6 +406,13 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
     this.#leadership = state;
     if (state.state === 'leader') this.#clientId = state.clientId;
     if (state.state === 'follower') this.#clientId = state.leaderClientId;
+    // A new leader starts a fresh core that no tab has pulled from yet.
+    if (
+      this.#diagnostics.observed &&
+      (state.state === 'leader' || state.state === 'follower')
+    ) {
+      this.#pullDiagnostics();
+    }
     for (const listener of this.#leadershipListeners) {
       try {
         listener(state);
@@ -474,7 +481,18 @@ export class SyncClientHandle implements PromiseMethods<WorkerApi> {
   }
 
   onDiagnostics(listener: ClientDiagnosticsListener): () => void {
-    return this.#diagnostics.on(listener);
+    const off = this.#diagnostics.on(listener);
+    this.#pullDiagnostics();
+    return off;
+  }
+
+  /**
+   * The worker pushes diagnostics only after a consumer pulled once. A handle
+   * that cannot reach a core has nothing to observe, so a failed pull is
+   * dropped.
+   */
+  #pullDiagnostics(): void {
+    void this.diagnosticsSnapshot().catch(() => undefined);
   }
 
   /**
@@ -967,6 +985,9 @@ async function startWorkerCore(options: {
         } as MainToWorkerMessage);
       },
     );
+    // A config callback is a consumer from the first round.
+    if (config.onDiagnostics !== undefined)
+      await invoke('diagnosticsSnapshot', []);
     return {
       clientId: initResult.clientId,
       invoke,
