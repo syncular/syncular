@@ -106,7 +106,7 @@ A declared `REFERENCES` column rejects a commit with `sync.reference_violation`.
 
 | `reason` | Meaning | Details |
 |---|---|---|
-| `missing_parent` | A present, non-null reference column names an absent parent. | `fieldPaths` names the column; `references` carries the parent table and row. |
+| `missing_parent` | A present, non-null reference column names an absent parent, or a parent in a scope the actor cannot write; both answer identically. | `fieldPaths` names the column; `references` carries the parent table and row. |
 | `restricted_delete` | A delete is blocked by a live child under `RESTRICT`. | `references.child` names the child table. |
 | `cascade_limit` | A cascade passed the per-commit operation cap. | |
 

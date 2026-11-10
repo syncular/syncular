@@ -310,8 +310,15 @@ state the commit produces (SPEC §6.11):
 - Each row counts by its final write in the commit. A row inserted and
   deleted in one commit is never checked, and a parent deleted and
   re-inserted in one commit keeps its children.
+- A reference column is checked only when an upsert of the row in the commit
+  writes it. A patch that leaves the column out is never checked against the
+  parent.
+- A parent in a scope the writing actor cannot write counts as absent. The
+  rejection is identical to the one for a parent that does not exist.
 
-A violation rejects the commit with `sync.reference_violation`.
+A violation rejects the commit with `sync.reference_violation`. The server
+refuses at startup a reference whose child table sets `materialize: false`,
+because it reaches children through the materialized columns.
 
 ### Constraints and where they are enforced
 

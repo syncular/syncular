@@ -17,6 +17,90 @@
 export const changelog = [
   {
     date: '2026-11-10',
+    title: 'C ABI: realtime traffic wakes an idle host',
+    body: 'When the socket reader buffers a delta, a presence fanout, or a socket loss, `syncular_client_poll_event` now returns one `{"type": "realtime-wake"}` event; answer it with the new `drainRealtime` command. Before, an idle host applied deltas and noticed a dropped socket only on its next command. The reader holds at most 16 MiB of undrained traffic, then closes the socket with `transport.failed` and `causeKind` `inbound_overflow`, and the drain reconnects and pulls. The event queue no longer shares the client\'s mutable state, so a pump thread may block in `poll_event` while another thread issues commands. In the Rust core, native CRDT text offsets count UTF-16 code units as Yjs does (an insert at 2 after `éa` appends), and the `crdt-yjs` feature also gives a local authority its merger. A `SELECT *` from `query` no longer returns the physical `_syncular_version` column; alias `_sync_version` to read the version. Commands refuse a present field of the wrong type, such as `baseVersion: "7"` or a non-string window unit, with `sync.invalid_request` instead of ignoring it. A round deadline that expires during a socket send fails with `transport.timeout` (`causeKind` `round_deadline`), and remote operations take `retryable` from the server\'s error.',
+    links: [
+      {
+        href: '/platform-ffi/#events',
+        label: 'Embedding via C FFI: events',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title:
+      'Web client: sync resumes after an outage, a silent fetch, or a refused blob',
+    body: "The realtime supervisor no longer treats a failed round as offline evidence; only its `connectivity` signal suspends it, and each `online` report runs `syncUntilIdle()`, also when realtime is unsupported or disabled. Before, a round that failed while the server was unreachable held the supervisor `offline` after the network returned, and a pending edit waited for the next local write. Such a round now leaves `syncNeeded` raised. The `syncUntilIdle` deadline aborts the round in flight through an `AbortSignal` that the `http*` transports pass to `fetch`; custom transports receive it as the second argument of `SyncTransport`, `signal` on a segment request, and the last argument of the `BlobTransport` upload calls. The direct-client scheduler and the worker auto-sync loop retry a drive that rejected with `sync.idle_timeout`, with the 250 ms to 30 s backoff, and a subscription that still holds a bootstrap resume token keeps `syncNeeded` raised. A blob upload the server refuses with a non-retryable code such as `blob.too_large` now rejects the commits that reference that blob with the server's code and lets the round push everything else; before, it failed every round.",
+    links: [
+      {
+        href: '/platform-web-realtime/#offline-replay',
+        label: 'Offline replay',
+      },
+      {
+        href: '/concepts-bootstrap/#running-rounds-until-idle',
+        label: 'Running rounds until idle',
+      },
+      {
+        href: '/concepts-blobs/#the-local-blob-cache',
+        label: 'The local blob cache',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title: 'Rust client: storage failures surface as errors',
+    body: "In the Rust client, `subscribe`, `subscribeMany` and `unsubscribe` now raise `syncNeeded` and queue an interactive sync intent as the web client does; `unsubscribe` returns a `Result`. A failed write of the security-preflight marker now fails `beginSecurityPreflight`, and a failed read of the log epoch fails the round; before, the first was ignored and the second adopted the server's epoch without a wipe. `beginSecurityPreflight`, `resetClientId`, `previousVersionAudit`, `previousVersionDiscard`, `pendingPayloads` and `local_revision` now return storage errors instead of an empty answer, and a corrupt page no longer aborts the host from `finish_sync_round`. A failed read of the key-id selector fails the round; only an absent stored key yields `client.encrypt_failed`. A `COMMIT` frame whose envelope cannot be decrypted reports `client.decrypt_failed`. With `retainFailedCommits`, an operation on a table the current schema removed no longer makes the outcome unreadable. A sqlite image is staged in a file created with owner-only permissions beside the replica database (the system temp directory for an in-memory replica), removed on every exit, and rejected with `sync.invalid_request` when the rows it yields differ from the declared count.",
+    links: [
+      {
+        href: '/concepts-subscriptions/',
+        label: 'Subscriptions',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title:
+      'Storage correctness: Postgres write counts, erasure of conflict results',
+    body: "`PgQueryable.query` now returns `{ rows }`; remove `rowCount` from your adapter. Postgres storage counts `RETURNING` rows for every write whose outcome matters. Before, a Bun.sql adapter reported 0 for a bare `UPDATE`, so reaction completion, lease extension, failure and retry never took effect, and `eraseScopeValue` reported `done` after one history step. `eraseScopeValue` now also removes `serverRow` from stored conflict results whose conflicting row carried the erased binding; idempotency results still survive pruning. On SQLite, a request no longer reads rows of another request's open push transaction, and its writes no longer join that transaction. `PostgresServerStorage.begin()` rejects when the executor cannot open a transaction, where the push hung. A client at cursor -1 no longer holds the pruning horizon. A SQLite lease whose id is in the revocation table reads as revoked.",
+    links: [
+      {
+        href: '/server-storage-reference/#driver-wiring',
+        label: 'Postgres driver wiring',
+      },
+      {
+        href: '/server-operations/#erasing-a-scope-value',
+        label: 'Erasing a scope value',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title: 'Overlapping subscriptions keep their shared rows',
+    body: 'A window shrink, a revocation purge and the first-page clear of a fresh bootstrap now keep every row that another active subscription on the same table still covers; before, they deleted it and the surviving subscription kept claiming those rows were complete. A realtime delta no longer applies to a subscription at cursor -1 after a reset or a local rebootstrap; the client skips the section and asks for a pull, where before the delta marked the subscription bootstrapped with only its own rows. `unsubscribe()` during a sync round now holds; the round no longer re-creates the subscription. A scoped delete whose scope map leaves one of the table’s scope variables unnamed now invalidates the whole table, so a live query keyed by that variable re-runs. In the Rust client, a revocation purge, an eviction and the first-page clear now match `integer` scope columns, where they deleted nothing, an eviction keeps outbox-pinned rows with integer primary keys, and a window shrink cancels a prepared round as `unsubscribe` does.',
+    links: [
+      {
+        href: '/concepts-windowing/#eviction-is-a-local-storage-decision',
+        label: 'Eviction rules',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
+    title: 'Push answers stay inside the writer’s scopes',
+    body: 'A child insert that names a parent in a scope the writer cannot write now rejects with `missing_parent`, the same answer as for an absent parent; before, the writer could attach a child to that parent and block its deletion. An unversioned upsert whose payload carries every scope column is authorized before the tombstone read, so `sync.row_deleted` no longer tells an unauthorized actor that a row was deleted. A conflict record carries the row as stored before the commit; before, it could carry values an earlier operation of the same rejected commit wrote. A conflict with a row only that commit inserted answers `sync.row_missing`. A patch that leaves a reference column out is no longer checked against the parent. An operation whose `rowId` holds U+0000 rejects with `sync.invalid_request`; on PostgreSQL it failed with a retryable `sync.internal_error`. Reference enforcement reads one child for `RESTRICT` and at most the remaining cascade cap plus one for `CASCADE` and `SET NULL`, a commit checks each distinct blob once and concurrently, and `compileSchema` refuses a reference whose child table sets `materialize: false`. The Rust local authority applies the same `rowId`, tombstone, conflict and reference rules.',
+    links: [
+      {
+        href: '/guide-schema/#declared-references',
+        label: 'Declared references',
+      },
+      {
+        href: '/reference-outbox-outcomes/#reference-violations',
+        label: 'Reference violations',
+      },
+    ],
+  },
+  {
+    date: '2026-11-10',
     title: 'Wildcard grants keep the other scope fences; request limits',
     body: "When a requested scope variable passes through an allowed `'*'`, the server now adds the actor's lists for the table's other declared variables to the effective scopes. Before, an actor allowed `clinic_id: ['clinic-a']` and `appointment_id: ['*']` who subscribed by `appointment_id` alone received other clinics' rows. `SUB_START` echoes the widened scopes. The sync config gains `maxRequestBytes` (16 MiB, counted after gzip decoding), `maxSubscriptionsPerRequest` (500), `maxScopeValuesPerSubscription` (1,000) and `maxWatchesPerSession` (100), each answered with `sync.limit_exceeded`; an invalid limit throws at startup. `decodeRequestBody` takes the byte cap as a second argument.",
     links: [

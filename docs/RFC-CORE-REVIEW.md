@@ -137,7 +137,7 @@ Columns: id, severity, evidence, where, defect, fix, status. Status values:
 | --- | --- | --- | --- | --- | --- | --- |
 | C1 | high | R | `core/src/row-codec.ts:150-164`, `core/src/message.ts:289-296`, `ssp2/src/primitives.rs:131-139` | TS `JSON.parse` accepts 128+ nested containers, `1e999` and `"\ud800"`; `serde_json` rejects all three. A value the TS server accepts fails to decode on a Rust client. | D2. One documented validity rule, enforced in both cores at authoring and push admission; golden vectors at each boundary. | partial 466a9813: values shadowed by a duplicate key still differ, see §7 |
 | C2 | high | R | `core/src/blob-ref.ts:44-110`, `ssp2/src/blob_ref.rs:26-85` | Rust iterates a sorted map, so its key-order check never fires and reordered keys pass; TS rejects them. TS accepts `byteLength` as `1e2`, `3.0`, `-0`; Rust rejects them. Both accept duplicate keys and whitespace. | D2. Validate by comparing the raw text with the canonical serialization in both cores; delete the per-field order logic. | fixed 466a9813 |
-| C3 | high | R | `server/src/storage-errors.ts:142-145`, `server/src/relational-rows.ts:526-534` | A pushed string with U+0000, or `json` with `\u0000` or a lone surrogate escape, applies on SQLite and throws SQLSTATE 22021/22P05/22P02 on Postgres. The round answers retryable `sync.internal_error`, so the outbox retries forever. | D2. Reject at admission. | fixed 466a9813 for values; rowId and scope values open |
+| C3 | high | R | `server/src/storage-errors.ts:142-145`, `server/src/relational-rows.ts:526-534` | A pushed string with U+0000, or `json` with `\u0000` or a lone surrogate escape, applies on SQLite and throws SQLSTATE 22021/22P05/22P02 on Postgres. The round answers retryable `sync.internal_error`, so the outbox retries forever. | D2. Reject at admission. | fixed 466a9813, a04b2623 |
 | C4 | medium | R | `server/src/push.ts` (no finite check), `core/src/row-codec.ts:115-122` | `NaN` in a non-nullable `float` applies on Postgres and is rejected with `sync.constraint_violation` on SQLite. Client SQLite stores `NaN` as NULL. | D2. | fixed 466a9813 |
 | C5 | low | C | 17 sites: `core/src/message.ts`, `server/src/handler.ts`, `server/src/realtime.ts`, `ssp2/src/decode.rs`, `ssp2/src/encode.rs` | Branches on `wireVersion >= 2` are dead: the minimum is 3. | Delete; `logEpoch` and `resetRequired` become required fields. | fixed 466a9813, 156e1356 |
 
@@ -155,14 +155,14 @@ a ciphertext across rows that share a key.
 | S3 | high | R | `pull.ts:91-116`, `pull.ts:554-604`, `pull.ts:720-724` | A client resume token's `asOfCommitSeq` has no upper bound or integer check and becomes the sqlite-image reuse key and `nextCursor`. A reader stores a stale image under a future sequence; later clients skip commits. | Require a safe integer `<= maxSeq`; never take the image reuse key from a token. | fixed 156e1356 |
 | S4 | high | R | `pull.ts:581-613` | The `lane` promise has no handler when `firstPage` rejects. One failed storage read raises an unhandled rejection, which terminates Node by default. | Derive the lane inside the per-plan async mapper. | fixed 156e1356 |
 | S5 | medium | R | `pull.ts:532-548`, `pull.ts:714-715` | An unparseable `bootstrapState` with an in-range cursor is served as an incremental pull; the client is marked synced with partial rows. §4.7 requires a restart. | Decide `bootstrapping` on `sub.bootstrapState !== undefined`. | fixed 156e1356 |
-| S6 | medium | U | `push.ts:1337-1360`, `push.ts:1446-1453` | A child insert is authorized on the child's scopes only; the parent check is existence anywhere in the partition. An actor inserts a child under another scope's parent and blocks its deletion; `missing_parent` is an existence oracle. | Treat a parent the actor cannot authorize as `missing_parent`. §6.11 first; authority parity. | open |
-| S7 | medium | U | `push.ts:1412-1426` | Reference enforcement loads every child with payloads before applying `RESTRICT` or the cascade cap, inside the partition lock. | `RESTRICT` reads one row; cascades stop at the cap plus one. | open |
+| S6 | medium | U | `push.ts:1337-1360`, `push.ts:1446-1453` | A child insert is authorized on the child's scopes only; the parent check is existence anywhere in the partition. An actor inserts a child under another scope's parent and blocks its deletion; `missing_parent` is an existence oracle. | Treat a parent the actor cannot authorize as `missing_parent`. §6.11 first; authority parity. | fixed a04b2623 |
+| S7 | medium | U | `push.ts:1412-1426` | Reference enforcement loads every child with payloads before applying `RESTRICT` or the cascade cap, inside the partition lock. | `RESTRICT` reads one row; cascades stop at the cap plus one. | fixed a04b2623 |
 | S8 | medium | U | `operations-realtime.ts:86-142` | A watch session accepts unlimited watches; each commit reruns all of them concurrently. | D3 cap, answered with `watch_error`; serialize a session's refreshes. | fixed 156e1356 |
-| S9 | medium | U | `push.ts:1012-1020` | Blob existence checks run one store round trip per reference, sequentially, inside the locked transaction. | One deduplicated, concurrent existence set per commit. | open |
-| S10 | medium | U | `push.ts:342`, `push.ts:718-745`, `push.ts:1944-1947` | A conflict record's `serverVersion` and `serverRow` are read from candidate state that includes the same commit's earlier, rolled-back operations. | Re-read the row after the savepoint rollback. | open |
-| S11 | low | U | `schema.ts:404-456` | `compileSchema` accepts a reference whose child table has `materialize: false`; every parent delete then fails with a non-catalog error. | One more throw in the reference loop. | open |
-| S12 | low | U | `push.ts:1316-1346` | `missing_parent` is judged on the merged row; §6.11 limits it to a present, non-null reference column. | Carry presence in the staged write and skip absent columns. | open |
-| S13 | low | U | `push.ts:864-875` | The tombstone probe runs before payload authorization, so `sync.row_deleted` versus `sync.forbidden` discloses deletion. | Move the probe below `authorizeWrite`. | open |
+| S9 | medium | U | `push.ts:1012-1020` | Blob existence checks run one store round trip per reference, sequentially, inside the locked transaction. | One deduplicated, concurrent existence set per commit. | fixed a04b2623 |
+| S10 | medium | U | `push.ts:342`, `push.ts:718-745`, `push.ts:1944-1947` | A conflict record's `serverVersion` and `serverRow` are read from candidate state that includes the same commit's earlier, rolled-back operations. | Re-read the row after the savepoint rollback. | fixed a04b2623 |
+| S11 | low | U | `schema.ts:404-456` | `compileSchema` accepts a reference whose child table has `materialize: false`; every parent delete then fails with a non-catalog error. | One more throw in the reference loop. | fixed a04b2623 |
+| S12 | low | U | `push.ts:1316-1346` | `missing_parent` is judged on the merged row; §6.11 limits it to a present, non-null reference column. | Carry presence in the staged write and skip absent columns. | fixed a04b2623 |
+| S13 | low | U | `push.ts:864-875` | The tombstone probe runs before payload authorization, so `sync.row_deleted` versus `sync.forbidden` discloses deletion. | Move the probe below `authorizeWrite`. | partial a04b2623: a patch without its scope columns still learns of the tombstone |
 | S14 | low | U | `push.ts:946-951`, `push.ts:691-697` | A recreated row restarts at version 1, so a `baseVersion` from the previous incarnation is accepted. | Q3. | open |
 | S15 | low | U | `handler.ts:705-734`, `handler.ts:968-985` | The client record is written before the serve-gate verification that can still refuse the round. §4.5 forbids a failed round changing the cursor. | Move `putClientRecord` and `notifySubscriptions` after the gate. | fixed 156e1356 |
 
@@ -218,17 +218,17 @@ upload, admin guard on every route, admin page escaping.
 
 | Id | Sev | Ev | Where | Defect | Fix | Status |
 | --- | --- | --- | --- | --- | --- | --- |
-| D1 | high | R | `sqlite-storage.ts:225`, reads at `:1068`, `:1502`, `:1767`, `:1814`, writes at `:866`, `:1927`, `:1961`, `:1978`, `:1995` | Non-transaction reads and five writes use the connection of an open push transaction without the write queue. A bootstrap reads rows that are then rolled back; `putClientRecord` is undone by another request's rollback. Needs an I/O await inside the transaction. | Route the five writes through `#serializeWrite`; queue reads behind the transaction tail. | open |
-| D2 | high | C | `postgres-storage.ts:2854-2916`, `:3387-3411`, `:2598`; adapter at `server-storage-reference.md:122-124`, `server/README.md:1237` | Five statements read `rowCount` from a bare `UPDATE`/`DELETE`. The documented Bun.sql adapter returns `rows.length`, which is 0. Reactions never run; `eraseScopeValueHistory` reports done after one step. pglite hides it. | Add `RETURNING` and count rows; delete `rowCount` from `PgQueryable`. | open |
-| D3 | medium | C | `sync_push_results` DDL in three backends, `postgres-storage.ts:685-694`, `push.ts:1954-1974` | No code deletes idempotency results, and stored conflicts keep `serverRow` after a scope erase. SPEC lines 1607 and 1654 contradict each other. | D4. | open |
+| D1 | high | R | `sqlite-storage.ts:225`, reads at `:1068`, `:1502`, `:1767`, `:1814`, writes at `:866`, `:1927`, `:1961`, `:1978`, `:1995` | Non-transaction reads and five writes use the connection of an open push transaction without the write queue. A bootstrap reads rows that are then rolled back; `putClientRecord` is undone by another request's rollback. Needs an I/O await inside the transaction. | Route the five writes through `#serializeWrite`; queue reads behind the transaction tail. | fixed c5f8a838 |
+| D2 | high | C | `postgres-storage.ts:2854-2916`, `:3387-3411`, `:2598`; adapter at `server-storage-reference.md:122-124`, `server/README.md:1237` | Five statements read `rowCount` from a bare `UPDATE`/`DELETE`. The documented Bun.sql adapter returns `rows.length`, which is 0. Reactions never run; `eraseScopeValueHistory` reports done after one step. pglite hides it. | Add `RETURNING` and count rows; delete `rowCount` from `PgQueryable`. | fixed c5f8a838 |
+| D3 | medium | C | `sync_push_results` DDL in three backends, `postgres-storage.ts:685-694`, `push.ts:1954-1974` | No code deletes idempotency results, and stored conflicts keep `serverRow` after a scope erase. SPEC lines 1607 and 1654 contradict each other. | D4. | fixed c5f8a838 |
 | D4 | medium | U | `d1-storage.ts:2322-2381`, `:441-460`, `relational-rows.ts:697`, `:748` | One bind per scope value; D1 caps a statement at 100. A subscription with 92 values fails every pull of the request. | Bind values as one JSON array (`json_each`). | open |
-| D5 | medium | R | `postgres-storage.ts:2446-2479` | `begin()` awaits a promise only the transaction callback resolves. If the executor cannot open a transaction, every push hangs and the error is an unhandled rejection. | Reject `ready` from the same `.catch`. | open |
+| D5 | medium | R | `postgres-storage.ts:2446-2479` | `begin()` awaits a promise only the transaction callback resolves. If the executor cannot open a transaction, every push hangs and the error is an unhandled rejection. | Reject `ready` from the same `.catch`. | fixed c5f8a838 |
 | D6 | medium | R | `relational-rows.ts:696-699`, `sqlite-dialect.ts:64-65` | With two or more scope values the SQLite planner walks `sync_row_scopes_by_row`: 0.07 ms for one value, 19 ms for two, on 300k rows. | Drop that index from `SQLITE_DDL`; verify the plans with `EXPLAIN` in a test. | open |
 | D7 | medium | U | `d1-storage.ts:350-396`, `:640-716` | A D1 push issues two to three sequential round trips per operation. | `prefetchRows` on `D1Transaction` as one `db.batch`. | open |
 | D9 | low | U | `postgres-storage.ts:2586-2589`, `sqlite-storage.ts:1207-1211`, `d1-storage.ts:1886-1897` | Pruning deletes scope entries by a predicate that scans the partition's whole scope index under the write lock. | Delete by key derived from the `sync_changes` rows being pruned. | open |
-| D10 | low | U | `postgres-storage.ts:3285-3289`, `sqlite-storage.ts:2014-2019`, `d1-storage.ts:2552-2558` | A client record at cursor -1 holds the pruning floor at -1. | `AND cursor >= 0` in the floor query. | open |
+| D10 | low | U | `postgres-storage.ts:3285-3289`, `sqlite-storage.ts:2014-2019`, `d1-storage.ts:2552-2558` | A client record at cursor -1 holds the pruning floor at -1. | `AND cursor >= 0` in the floor query. | fixed c5f8a838 |
 | D11 | low | U | `postgres-storage.ts:3520-3525`, `:3669-3683`, `:3332-3338` and SQLite/D1 twins | `listCommitMetadata`, `scopeActivity` and `listRowsReferencingBlob` issue one statement per row. | One grouped statement per page. | open |
-| D12 | low | U | `sqlite-lease-store.ts:132-144`, `:44-74` | `revoke` is two autocommit statements and `get()` ignores the revocation table. | Derive `revoked` from the revocations table. | open |
+| D12 | low | U | `sqlite-lease-store.ts:132-144`, `:44-74` | `revoke` is two autocommit statements and `get()` ignores the revocation table. | Derive `revoked` from the revocations table. | fixed c5f8a838 |
 
 Unconfirmed leads: the Postgres plan for multi-value scans; D1 batch size for
 a 500-operation commit; cross-request coupling in batched reads; `NOTIFY`
@@ -244,15 +244,15 @@ staged-write ordering and parameter chunking, pruning atomicity.
 | Id | Sev | Ev | Where | Defect | Fix | Status |
 | --- | --- | --- | --- | --- | --- | --- |
 | T1 | critical | C | `multi-tab.ts:191-203`, `:471`, `:641`, `:743-763` | `res` carries no recipient and `reqId` counts from 1 per follower. One follower's reply settles another's call with the same id. | `to` on `res`, dropped when it does not match; bump the multi-tab protocol version. | fixed 6831597b |
-| T2 | high | R | `client.ts:5439-5442`, `:5256-5261`, `:5306-5311`, `:6128-6145` | A realtime delta applies to a subscription at cursor -1 and its `SUB_END` marks it bootstrapped with a fraction of its rows. | Add `sub.cursor < 0` to one shared skip predicate; treat the skip as a drop. Rust parity; conformance scenario. | open |
+| T2 | high | R | `client.ts:5439-5442`, `:5256-5261`, `:5306-5311`, `:6128-6145` | A realtime delta applies to a subscription at cursor -1 and its `SUB_END` marks it bootstrapped with a fraction of its rows. | Add `sub.cursor < 0` to one shared skip predicate; treat the skip as a drop. Rust parity; conformance scenario. | fixed 24ed7c61 |
 | T3 | high | R | `client.ts:6400-6449`, `:6357-6379`, `apply.ts:157-160` | Rollback of a rejected commit restores the before-image captured at `mutate` time, though a server write to that row landed since. §7.2 requires the last server-delivered base. | Re-capture pending images for affected rows inside `#replayOutbox`. | fixed 03702c25 |
-| T4 | high | R | `apply.ts:278-290`, `:302-343`, `client.ts:3331`, `:6233` | Eviction and revocation purge delete rows another live subscription still covers; the survivor keeps claiming completeness. | Exclude rows matched by any other active subscription's effective scopes on that table. Both cores; conformance scenario. | open |
-| T5 | high | R | `client.ts:4529-4530`, `:2288-2299`, `realtime-supervisor.ts:328-347` | A round failing with `network`/`connect` schedules nothing and latches the supervisor offline. The pending edit is not pushed until the next local write. | The supervisor uses the host connectivity signal only; resume calls `syncUntilIdle`. | open |
-| T6 | high | R | `client.ts:4380-4388`, `:2685-2710` | One staged blob the server refuses fails every round before push and pull; no API removes it. | A non-retryable refusal is that blob's outcome: clear the upload, reject its commits through the existing drop path. §5.9.7; Rust parity. | open |
+| T4 | high | R | `apply.ts:278-290`, `:302-343`, `client.ts:3331`, `:6233` | Eviction and revocation purge delete rows another live subscription still covers; the survivor keeps claiming completeness. | Exclude rows matched by any other active subscription's effective scopes on that table. Both cores; conformance scenario. | fixed 24ed7c61 |
+| T5 | high | R | `client.ts:4529-4530`, `:2288-2299`, `realtime-supervisor.ts:328-347` | A round failing with `network`/`connect` schedules nothing and latches the supervisor offline. The pending edit is not pushed until the next local write. | The supervisor uses the host connectivity signal only; resume calls `syncUntilIdle`. | fixed 6cbc6721 |
+| T6 | high | R | `client.ts:4380-4388`, `:2685-2710` | One staged blob the server refuses fails every round before push and pull; no API removes it. | A non-retryable refusal is that blob's outcome: clear the upload, reject its commits through the existing drop path. §5.9.7; Rust parity. | partial 6cbc6721: TS only; the Rust client still fails the round |
 | T7 | high | R | `outbox.ts:282`, `apply.ts:135`, `apply.ts:583`, `remote.ts:366` | A schema with encrypted columns and no `encryption` config skips the crypto seam: plaintext is pushed, ciphertext is stored as the value. | Delete the `encryption !== undefined &&` conjunct at the four sites. | open |
-| T8 | medium | R | `http.ts:120-139`, `client.ts:4660-4679`, `sync-scheduler.ts:88-114`, `worker-core.ts:233-251` | No fetch carries an abort signal; the idle deadline aborts only a socket round; both host loops treat retryable `sync.idle_timeout` as terminal. | One `AbortSignal` from the drive deadline into transport calls; host loops queue a background intent on a retryable rejection. | open |
-| T9 | medium | U | `invalidation.ts:162-168`, `client.ts:6233-6234` | A bulk scoped delete records only the scope keys of the subscription's own variables; a live query keyed by another variable keeps publishing the deleted row. | Fall back to table-level invalidation when the map does not name every variable. Rust parity. | open |
-| T10 | medium | R | `client.ts:3175-3183`, `:5155-5157`, `:6132-6145`, `state.ts:84-85` | `unsubscribe()` during a round is undone by that round's `SUB_END` (`INSERT OR REPLACE`). | `UPDATE ... WHERE id=?`; skip the section when the row is gone. | open |
+| T8 | medium | R | `http.ts:120-139`, `client.ts:4660-4679`, `sync-scheduler.ts:88-114`, `worker-core.ts:233-251` | No fetch carries an abort signal; the idle deadline aborts only a socket round; both host loops treat retryable `sync.idle_timeout` as terminal. | One `AbortSignal` from the drive deadline into transport calls; host loops queue a background intent on a retryable rejection. | fixed 6cbc6721 |
+| T9 | medium | U | `invalidation.ts:162-168`, `client.ts:6233-6234` | A bulk scoped delete records only the scope keys of the subscription's own variables; a live query keyed by another variable keeps publishing the deleted row. | Fall back to table-level invalidation when the map does not name every variable. Rust parity. | fixed 24ed7c61 |
+| T10 | medium | R | `client.ts:3175-3183`, `:5155-5157`, `:6132-6145`, `state.ts:84-85` | `unsubscribe()` during a round is undone by that round's `SUB_END` (`INSERT OR REPLACE`). | `UPDATE ... WHERE id=?`; skip the section when the row is gone. | fixed 24ed7c61 |
 | T11 | medium | U | `reactive-store.ts:610-632`, `:545-550`, `:1224-1235` | Recovery re-reads only `blocked` entries; a read rejected by a leader handover is already `error` and stays there. | Request a read for every active entry on each transition to `leader` or `follower`. | fixed 6831597b |
 | T12 | medium | U | `multi-tab.ts:1443-1460` | A promoted follower whose core fails to start swallows the error and never contests the lock again. | Publish the error through `onStateChange`; re-issue `lock.acquire`, bounded. | fixed 6831597b |
 | T13 | medium | U | `multi-tab.ts:340-351`, `:708-712`, `:890-910` | A newer tab sends one `hello`, deposing one older leader; a second older tab promotes and never hears it. | One `hello` per newly seen older leader. | fixed 6831597b |
@@ -281,17 +281,17 @@ address verified before apply, lock-before-core on every multi-tab path.
 
 | Id | Sev | Ev | Where | Defect | Fix | Status |
 | --- | --- | --- | --- | --- | --- | --- |
-| R1 | high | C | `:15717-15747`, `:18033`, `:19299-19356` | `evict_unit` does not cancel the prepared round. A unit evicted and re-added mid-round is marked complete without its earlier rows. | Call `cancel_sync_round()` as `unsubscribe` does. | open |
-| R2 | high | C | `:14418-14425`, `:20791-20814`, `:15764-15792`, `:13817-13841` | Synced columns have no declared type and scope values bind as TEXT, so an INTEGER scope column never matches. Revocation purge, eviction and the first-page clear delete nothing; pinned-id exclusion fails on integer keys. | Bind scope values and pinned ids by the column's declared type, as `row_id_predicate` does. | open |
-| R3 | medium | U | `:16025-16028`, `:18938-18940`, `:15026-15029` | With `retainFailedCommits`, an operation on a table the schema removed fails every round and makes its outcome unlistable. | Skip removed-table operations in `retain_failed_commit` and `attach_retained_rows`. | open |
+| R1 | high | C | `:15717-15747`, `:18033`, `:19299-19356` | `evict_unit` does not cancel the prepared round. A unit evicted and re-added mid-round is marked complete without its earlier rows. | Call `cancel_sync_round()` as `unsubscribe` does. | fixed 24ed7c61 |
+| R2 | high | C | `:14418-14425`, `:20791-20814`, `:15764-15792`, `:13817-13841` | Synced columns have no declared type and scope values bind as TEXT, so an INTEGER scope column never matches. Revocation purge, eviction and the first-page clear delete nothing; pinned-id exclusion fails on integer keys. | Bind scope values and pinned ids by the column's declared type, as `row_id_predicate` does. | fixed 24ed7c61 |
+| R3 | medium | U | `:16025-16028`, `:18938-18940`, `:15026-15029` | With `retainFailedCommits`, an operation on a table the schema removed fails every round and makes its outcome unlistable. | Skip removed-table operations in `retain_failed_commit` and `attach_retained_rows`. | fixed 5c14eb5d |
 | R4 | medium | U | `:18805-18807`, `:21502-21567`, `:19835-19836`, `:19894-19906` | Each acknowledged push rebuilds whole visible tables plus FTS; one acked row or retained conflict anywhere disables incremental import, so a bootstrap rebuilds per 1,024-row block. | Make both gates per table; reuse the keyed restore for the ack path. | open |
-| R5 | medium | C | `:21321-21329`, `:17783-17785` | `has_acknowledged_rows` and `finish_sync_round` call `.expect()` on storage reads; a corrupt page aborts the host. | Return `Result` through `sqlite_failure`. | open |
-| R6 | medium | C | `:11196-11217`, `:12490-12495`, `:14055` | `meta_set`/`meta_delete` discard errors and `meta_get` maps them to `None`. A failed security-preflight marker write goes unreported; a failed epoch read adopts the new epoch without a wipe. | The three helpers return `Result`. | open |
-| R7 | medium | U | `:19958-19981`, `:20121-20253` | The sqlite image is written to the shared temp dir with default permissions and never swept; the chunk loop never ends when the scan count differs from `count(*)`. | End on a short chunk and compare counts; create the file 0600 beside the replica. | open |
-| R8 | low | U | `:15475-15480`, `:15508-15518` | `subscribe`/`unsubscribe` do not raise sync-needed as TS does (`client.ts:3168-3183`). | Raise it unconditionally; pin the rule in SPEC. | open |
-| R9 | low | U | `:16455-16458`, `:16511-16521` | A failed key-selector read is treated as "no stored key" and the commit is dropped as `client.encrypt_failed`. | Return `Result<Option<Row>>`; fail the round. | open |
-| R10 | low | U | `:19714-19715` | A `COMMIT` decrypt failure reports `sync.invalid_request`; §5.11 names `client.decrypt_failed`. | Keep the identity. | open |
-| R11 | low | U | `:19638-19656`, `:18726`, `:13510-13539` | Per-change `execute` re-prepares, `_syncular_acked_rows` has no `(tbl, id)` index, and `begin_coalesced_apply` deep-clones the outbox per 1,024 rows. | `prepare_cached`; one pinned-row set per frame. | open |
+| R5 | medium | C | `:21321-21329`, `:17783-17785` | `has_acknowledged_rows` and `finish_sync_round` call `.expect()` on storage reads; a corrupt page aborts the host. | Return `Result` through `sqlite_failure`. | fixed 5c14eb5d |
+| R6 | medium | C | `:11196-11217`, `:12490-12495`, `:14055` | `meta_set`/`meta_delete` discard errors and `meta_get` maps them to `None`. A failed security-preflight marker write goes unreported; a failed epoch read adopts the new epoch without a wipe. | The three helpers return `Result`. | fixed 5c14eb5d |
+| R7 | medium | U | `:19958-19981`, `:20121-20253` | The sqlite image is written to the shared temp dir with default permissions and never swept; the chunk loop never ends when the scan count differs from `count(*)`. | End on a short chunk and compare counts; create the file 0600 beside the replica. | fixed 5c14eb5d |
+| R8 | low | U | `:15475-15480`, `:15508-15518` | `subscribe`/`unsubscribe` do not raise sync-needed as TS does (`client.ts:3168-3183`). | Raise it unconditionally; pin the rule in SPEC. | fixed 5c14eb5d |
+| R9 | low | U | `:16455-16458`, `:16511-16521` | A failed key-selector read is treated as "no stored key" and the commit is dropped as `client.encrypt_failed`. | Return `Result<Option<Row>>`; fail the round. | fixed 5c14eb5d |
+| R10 | low | U | `:19714-19715` | A `COMMIT` decrypt failure reports `sync.invalid_request`; §5.11 names `client.decrypt_failed`. | Keep the identity. | fixed 5c14eb5d |
+| R11 | low | U | `:19638-19656`, `:18726`, `:13510-13539` | Per-change `execute` re-prepares, `_syncular_acked_rows` has no `(tbl, id)` index, and `begin_coalesced_apply` deep-clones the outbox per 1,024 rows. | `prepare_cached`; one pinned-row set per frame. | partial 5c14eb5d: the outbox clone per coalesced re-begin remains |
 
 Unconfirmed leads: `temp_dir()` on wasm and Android for image import; a delta
 applied over an earlier failed delta; a payload-less upsert after an
@@ -306,20 +306,20 @@ addresses verified before use, no reachable panic from server frames.
 
 | Id | Sev | Ev | Where | Defect | Fix | Status |
 | --- | --- | --- | --- | --- | --- | --- |
-| F1 | high | C | `ffi/src/lib.rs:133-135`, `:399-412`, `client/src/native_transport.rs:263-265` | The C ABI builds its transport without a wake callback; `poll_event` only pops the queue. Deltas and disconnects are processed only on the next host command. | Pass a notify that pushes one wake event; bindings answer it with a command. | open |
+| F1 | high | C | `ffi/src/lib.rs:133-135`, `:399-412`, `client/src/native_transport.rs:263-265` | The C ABI builds its transport without a wake callback; `poll_event` only pops the queue. Deltas and disconnects are processed only on the next host command. | Pass a notify that pushes one wake event; bindings answer it with a command. | fixed c4e48fe3 |
 | F2 | high | C | `authority/src/lib.rs:201-247`, `:282-316`, `authority/src/attach.rs:298-300` | A lost undo response followed by a retried `attach` counts `cached` uploads as done, drops the local tables, and the server already deleted the rows. TS `local-authority.ts:440-521` shares the logic. | D6. Both cores; conformance scenario. | open |
 | F3 | medium | R | `client/src/query_guard.rs:13`, `:189-203` | `WITH x$select AS (SELECT 1) DELETE FROM tasks` passes the guard and runs; `PRAGMA query_only = ON` passes. | D5. | open |
 | F4 | medium | C | `client/src/native_transport.rs:2698`, `:1370-1375` | An established socket has no silence detection. | Give the poller wait a timeout from transport config; treat silence as loss. Depends on N15b. | open |
-| F5 | medium | C | `client/Cargo.toml:87`, `authority/Cargo.toml:23-25` | The client's `crdt-yjs` feature does not forward to the authority; every CRDT commit under local authority is rejected. | `crdt-yjs = ["dep:yrs", "syncular-authority?/crdt-yjs"]`. | open |
-| F6 | medium | C | `client/src/crdt.rs:26`, `:59-91` | `Doc::new()` uses byte offsets; the contract is UTF-16 code units. "éa" plus insert at 2 gives "éax" in TS and "éxa" in Rust. | `OffsetKind::Utf16`; non-ASCII conformance case; `u32::try_from` for the index. | open |
-| F7 | medium | U | `client/src/client.rs:11511-11515` | `SELECT *` returns the physical `_syncular_version` column; §2.4 says it never enters star projections. | Strip it in `query_connection`. | open |
+| F5 | medium | C | `client/Cargo.toml:87`, `authority/Cargo.toml:23-25` | The client's `crdt-yjs` feature does not forward to the authority; every CRDT commit under local authority is rejected. | `crdt-yjs = ["dep:yrs", "syncular-authority?/crdt-yjs"]`. | fixed c4e48fe3 |
+| F6 | medium | C | `client/src/crdt.rs:26`, `:59-91` | `Doc::new()` uses byte offsets; the contract is UTF-16 code units. "éa" plus insert at 2 gives "éax" in TS and "éxa" in Rust. | `OffsetKind::Utf16`; non-ASCII conformance case; `u32::try_from` for the index. | fixed c4e48fe3 |
+| F7 | medium | U | `client/src/client.rs:11511-11515` | `SELECT *` returns the physical `_syncular_version` column; §2.4 says it never enters star projections. | Strip it in `query_connection`. | fixed c4e48fe3 |
 | F8 | medium | U | `client/src/native_transport.rs:2126-2173`, `client/src/round.rs:373-424` | A segment or blob body has no size bound unless the host sets `maxResponseBytes`. | Enforce the descriptor's `byteLength` as the cap for segment and blob bodies; §5.4 wording. TS parity check. | open |
-| F9 | medium | U | `client/src/remote.rs:291`, `:381`, `:438` | `SyncRemoteClient` marks every transport failure retryable. | Take `retryable` from the error details when present. | open |
-| F10 | low | U | `command/src/lib.rs:902-910`, `:405`, `:262-282` | Parsers coerce malformed fields to absent: `setWindow` with wrong-typed units evicts every unit; `baseVersion: "7"` drops the conflict check. | Reject wrong-typed values with `sync.invalid_request`. | open |
+| F9 | medium | U | `client/src/remote.rs:291`, `:381`, `:438` | `SyncRemoteClient` marks every transport failure retryable. | Take `retryable` from the error details when present. | fixed c4e48fe3 |
+| F10 | low | U | `command/src/lib.rs:902-910`, `:405`, `:262-282` | Parsers coerce malformed fields to absent: `setWindow` with wrong-typed units evicts every unit; `baseVersion: "7"` drops the conflict check. | Reject wrong-typed values with `sync.invalid_request`. | fixed c4e48fe3 |
 | F11 | low | U | `authority/src/lib.rs:310-315` | Undo commit ids are deterministic, so a rejected undo replays its rejection forever. | D6. | open |
-| F12 | low | U | `ffi/src/lib.rs:378`, `:407`, `rust/ffi.h:39`, `:54-55` | `command` forms `&mut Handle` while `poll_event` forms `&Handle` from the same pointer; the header states a different threading contract and a stale event list. | Keep the queue outside the mutable part; correct `ffi.h` and the comments. | open |
-| F13 | low | U | `client/src/native_transport.rs:2015-2022`, `:2079-2084` | A deadline expiring during a socket send surfaces `sync.transport_failed`, not the typed timeout. | Record the round failure before `shutdown()`. | open |
-| F14 | low | U | `command/src/lib.rs:137-150` | `client_err` splits on `:`; a colon-less identity becomes `client.failed`. | Route through `ClientError::from(String)`. | open |
+| F12 | low | U | `ffi/src/lib.rs:378`, `:407`, `rust/ffi.h:39`, `:54-55` | `command` forms `&mut Handle` while `poll_event` forms `&Handle` from the same pointer; the header states a different threading contract and a stale event list. | Keep the queue outside the mutable part; correct `ffi.h` and the comments. | fixed c4e48fe3 |
+| F13 | low | U | `client/src/native_transport.rs:2015-2022`, `:2079-2084` | A deadline expiring during a socket send surfaces `sync.transport_failed`, not the typed timeout. | Record the round failure before `shutdown()`. | fixed c4e48fe3 |
+| F14 | low | U | `command/src/lib.rs:137-150` | `client_err` splits on `:`; a colon-less identity becomes `client.failed`. | Route through `ClientError::from(String)`. | fixed c4e48fe3: code kept, message unchanged |
 | F15 | low | U | `authority/src/push.rs:705-707` | An unreadable idempotency record fails the whole round; §6.3 requires a per-commit `sync.idempotency_cache_miss`. | Map to the §6.3 rejected frame. | open |
 
 Unconfirmed leads: no `catch_unwind` at the C ABI; a partial request left on
@@ -337,7 +337,7 @@ deadline, FFI string ownership, `ffi.h` signatures.
 | X1 | Delete the dead wire-version branches (C5). | 17 branches, two optional fields | fixed 466a9813, 156e1356 |
 | X2 | One SQL module for the SQLite and D1 backends behind a `run(sql, params)` seam; one shared admin read surface for all three. | Most of `d1-storage.ts` (2,964 lines) or `sqlite-storage.ts` (2,418 lines); the class of one-backend-only fixes | open |
 | X3 | One bootstrap decision in `pull.ts` (`prepareSections` and `preparedSection` decide separately today). | The seam behind S3, S4, S5 | fixed 156e1356 |
-| X4 | One row-ownership predicate for eviction, purge, first-page clear and invalidation, in both cores. | The seam behind T4, T9, R2 | open |
+| X4 | One row-ownership predicate for eviction, purge, first-page clear and invalidation, in both cores. | The seam behind T4, T9, R2 | fixed 24ed7c61 |
 | X5 | One optimistic base store in the TS client, updated by every server write. | Three stores with different rules; the outbox scans of T14 | declined: touches retained rows, authority and unique-conflict evidence for a 40-line fix |
 | X6 | Ask SQLite whether a statement is read-only (D5). | Two lexical scanners | open |
 | X7 | A typed error enum at the Rust storage and codec boundary. | `starts_with` branching; R9, R10, F14 as a class | open |
@@ -413,6 +413,10 @@ beside each fix; docs and changelog with user-visible changes; no push.
   `verify:runtimes`, Rust workspace tests and clippy. Wave 2 started: push
   path and authority parity, client round fencing and row ownership, storage
   correctness.
+- 2026-11-10: waves 2 and 3 landed in part: row ownership and round fencing
+  (`24ed7c61`), Rust client robustness (`5c14eb5d`), client liveness
+  (`6cbc6721`), storage correctness, push path and authority parity, FFI wake
+  and command parsing. The catalog holds 284 scenarios.
 
 Follow-ups found while fixing:
 
@@ -443,3 +447,24 @@ Follow-ups found while fixing:
   mention the watch cap or serialized refreshes.
 - **Worker bundle ceiling.** `authority-bundle.test.ts` caps the worker at
   186,000 bytes and the margin is a few dozen bytes.
+- **T6 in Rust.** `prepare_sync_round` builds the request before the uploads,
+  so a refused blob still fails the round. Matching TS means dropping commits
+  from a prepared round.
+- **Sync-needed parity.** Two rules are TS-only: raised after an unreachable
+  round, and while a subscription holds a resume token.
+- **Explicit offline.** A client taken offline with
+  `setTransportEnabled(false)` shows phase `retrying` and re-attempts the
+  realtime connect locally; the supervisor needs the gate as evidence.
+- **Outbox drop on revocation.** `dropOutboxCommitsInScope` (TS) and
+  `drop_doomed_outbox` (Rust) drop pending commits on a revoked scope even
+  when another active subscription still covers the row.
+- **S13 remainder.** Closing it needs scopes on the tombstone or clients
+  that always send scope columns in a patch.
+- **Bindings.** Kotlin, Swift, Flutter and React Native poll loops must
+  answer the `realtime-wake` event with `drainRealtime`.
+- **Image temp file.** A crash between staging and removal leaves a
+  `.syncular-image-*.tmp`; nothing sweeps it at startup.
+- **Code size.** Through wave 3 the fixes added about 1,100 production lines
+  net and 1 to 2.5 KB to the web bundles. The remaining program carries a
+  size rule: a task that grows a bundle or a package's production line count
+  names the removal that offsets it, and bundle ceilings are not raised.
