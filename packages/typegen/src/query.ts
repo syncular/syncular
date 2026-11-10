@@ -121,7 +121,7 @@ export interface QueryColumn {
   readonly type: IrColumnType;
   readonly nullable: boolean;
   /** `exact` = resolved to an IR column (plain ref); `fallback` = a computed
-   * expression typed by the documented honest fallback. */
+   * expression typed by its `CAST` or `count()` (SYQL §14.1). */
   readonly fidelity: 'exact' | 'fallback';
   /** Proven physical origin for reactive row identity and diagnostics. */
   readonly origin?: { readonly table: string; readonly column: string };
@@ -1489,15 +1489,6 @@ function callsAggregate(expr: string): boolean {
   });
 }
 
-const AGG_RE = /\b(count|sum|total|avg|min|max)\s*\(/i;
-
-/** decltype-null column: the documented honest fallback. Aggregates and
- * arithmetic → nullable number; everything else → nullable string. */
-function fallbackColumnType(expr: string): IrColumnType {
-  if (AGG_RE.test(expr) || /[+\-*/]/.test(expr)) return 'float';
-  return 'string';
-}
-
 function inferReactiveMetadata(
   sql: string,
   relations: SqlRelations,
@@ -2089,13 +2080,46 @@ export function analyzeStatement(
         origin: { table: source.table, column: source.column.name },
       };
     }
-    // Fallback: decltype affinity if present, else the expr-shape fallback.
-    const mapped =
-      decl !== null && decl !== undefined
-        ? DECLTYPE_MAP[decl.toUpperCase()]
+    // Computed column (SYQL §14.1): the type is the decltype SQLite reports,
+    // else the target of a whole-expression CAST, else integer for a
+    // whole-expression count(); anything else is refused.
+    const { tokens, depths, closes } = sqlStructure(item?.expr ?? '');
+    const whole =
+      tokens[1]?.text === '(' && closes.get(1) === tokens.length - 1
+        ? lowerWord(tokens[0])
         : undefined;
+    const asAt = tokens.findLastIndex(
+      (token, at) => depths[at] === 1 && lowerWord(token) === 'as',
+    );
+    const castType = tokens
+      .flatMap((token, at) =>
+        at > asAt && depths[at] === 1 && token.kind === 'identifier'
+          ? [token.text.toUpperCase()]
+          : [],
+      )
+      .join(' ');
     const type =
-      mapped ?? (item !== undefined ? fallbackColumnType(item.expr) : 'string');
+      (decl !== null && decl !== undefined
+        ? DECLTYPE_MAP[decl.toUpperCase()]
+        : undefined) ??
+      // SQLite gives the other mapped names NUMERIC or BLOB affinity, which
+      // can change the value's storage class.
+      (whole === 'cast' &&
+      asAt > 0 &&
+      /^(INTEGER|INT|BIGINT|SMALLINT|TEXT|REAL|FLOAT|DOUBLE|BLOB|BOOLEAN|BOOL)$/.test(
+        castType,
+      )
+        ? DECLTYPE_MAP[castType]
+        : undefined) ??
+      (whole === 'count' ? 'integer' : undefined);
+    if (type === undefined) {
+      throw new TypegenError(
+        file,
+        'computed result column has no declared type; wrap the expression in CAST(... AS <type>)',
+        'typegen.computed_column_type',
+        { query: name, column: sqlName },
+      );
+    }
     return {
       name: sqlName,
       langName,

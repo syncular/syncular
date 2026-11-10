@@ -648,7 +648,7 @@ boundary):
 | Result column | Type source | Nullability | Fidelity |
 |---|---|---|---|
 | **plain column ref** (`title`, `t.title`, `title AS x`) | resolved to the IR column (decltype confirms) — exact IR type, incl. `json`/`blob_ref`/`crdt` | the IR column's nullability, lifted to nullable whenever `LEFT`, `RIGHT`, or `FULL OUTER JOIN` can null-extend its table alias | **exact** |
-| **computed expression** (`count(*)`, `done + 1`, `:p AS l`) | decltype is null → documented fallback: aggregate/arithmetic → number, else string | always nullable (an expression's nullability is not knowable from decltype) | **fallback** |
+| **computed expression** (`count(*)`, `CAST(done + 1 AS INTEGER)`) | decltype is null → the target type of a whole-expression `CAST`, or `integer` for a whole-expression `count(...)`; any other expression fails with `typegen.computed_column_type` | always nullable (an expression's nullability is not knowable from decltype) | **fallback** |
 
 Every local synced table also has the protocol-owned `_sync_version` column.
 Named queries may project it with an explicit public alias when an application
@@ -685,9 +685,10 @@ new right relation unit, `RIGHT` lifts every prior relation in that chain, and
 join while its nested join order remains intact. `INNER`, `CROSS`, and ordinary
 `JOIN` do not remove nullability already introduced earlier in the chain.
 Unqualified coalesced `USING`/`NATURAL` columns are not assigned a guessed
-physical origin and stay on the honest nullable fallback path. Want an exact
-type for a computed column? Alias it to a plain ref, or accept the honest
-fallback.
+physical origin and stay nullable. A computed column takes its type from the
+query text ([SYQL §14.4](../../docs/SYQL.md)): wrap the expression in
+`CAST(... AS <type>)`. A cast that is an operand, as in `CAST(a AS INTEGER) + 1`,
+does not type the column.
 
 **Parameters** use the `:name` convention. A param's type is **inferred** where
 it compares against a plain column ref — `WHERE list_id = :listId` (equality,

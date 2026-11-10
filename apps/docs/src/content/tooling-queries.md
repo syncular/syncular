@@ -105,6 +105,21 @@ as nullable: SQLite returns one row with `NULL` in that column when no row
 matches. A column of a compound `SELECT` (`UNION`, `INTERSECT`, `EXCEPT`) is
 nullable when any branch can yield `NULL` there.
 
+SQLite reports no type for a computed column, so typegen takes the type from
+the query text. Wrap the expression in `CAST(... AS <type>)`; the column
+takes the mapped type of the target and is nullable. A whole-expression
+`count(...)` is `integer` without a cast. Any other computed column fails with
+`typegen.computed_column_type`, naming the query and the column. A cast that is
+an operand, such as `CAST(a AS INTEGER) + 1`, does not type the column
+([SYQL §14.4](/syql/)).
+
+```sql title="queries/todo-stats.sql"
+select id,
+       cast(done = 1 as integer) as is_done,
+       cast(length(title) as integer) as title_length
+from todos
+```
+
 ::checkpoint[`syncular fmt --check` passes for `.syql` files.]
 ::::
 

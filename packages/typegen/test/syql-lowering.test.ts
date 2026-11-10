@@ -373,7 +373,7 @@ describe('select aliases in dynamic sort profiles', () => {
     const root = resolve('/virtual/syql-lowering-alias');
     const file = resolve(root, 'aliased.syql');
     const source = `query aliased(listId) {
-  select id, created_at + 1 as next_at from todos
+  select id, cast(created_at + 1 as integer) as next_at from todos
   where todos.list_id = :listId
   order by sortBy default soon {
     soon: next_at asc, id asc;

@@ -215,7 +215,7 @@ describe('reactive table discovery', () => {
   test('accepts non-relation commas in projections and functions', () => {
     const query = analyze(
       'q.sql',
-      `SELECT id, title, coalesce(note, title) AS display_title
+      `SELECT id, title, CAST(coalesce(note, title) AS TEXT) AS display_title
        FROM todos`,
     );
     expect(query.tables).toEqual(['todos']);
@@ -260,14 +260,14 @@ describe('parameter typing', () => {
     ]);
   });
   test('an un-inferable param demands a comment (loud, names the fix)', () => {
-    expect(() => analyze('q.sql', 'SELECT id, :label AS l FROM todos')).toThrow(
-      /cannot infer a type for param :label/,
-    );
+    expect(() =>
+      analyze('q.sql', 'SELECT id, CAST(:label AS TEXT) AS l FROM todos'),
+    ).toThrow(/cannot infer a type for param :label/);
   });
   test('a comment resolves an un-inferable param', () => {
     const q = analyze(
       'q.sql',
-      '-- param :label string\nSELECT id, :label AS l FROM todos',
+      '-- param :label string\nSELECT id, CAST(:label AS TEXT) AS l FROM todos',
     );
     expect(q.params).toEqual([
       { name: 'label', langName: 'label', type: 'string', source: 'comment' },
@@ -556,7 +556,10 @@ describe('multi-statement files', () => {
   });
 
   test('a `;` inside a string literal does NOT split statements', () => {
-    const qs = analyzeFile('greet.sql', "SELECT id, 'a;b' AS sep FROM todos");
+    const qs = analyzeFile(
+      'greet.sql',
+      "SELECT id, CAST('a;b' AS TEXT) AS sep FROM todos",
+    );
     expect(qs).toHaveLength(1);
   });
 });
@@ -617,7 +620,7 @@ describe('select aliases in ORDER BY (.sql queries)', () => {
   test('a snake_case alias is renamed in ORDER BY with the projection', () => {
     const [query] = analyzeFile(
       'by-length.sql',
-      'SELECT id, length(title) AS title_len FROM todos ORDER BY title_len DESC, id',
+      'SELECT id, CAST(length(title) AS INTEGER) AS title_len FROM todos ORDER BY title_len DESC, id',
     );
     expect(query?.sql).toContain('ORDER BY "titleLen" DESC, id');
   });
@@ -626,7 +629,7 @@ describe('select aliases in ORDER BY (.sql queries)', () => {
     expect(() =>
       analyzeFile(
         'by-missing.sql',
-        'SELECT id, length(title) AS title_len FROM todos ORDER BY missing_len',
+        'SELECT id, CAST(length(title) AS INTEGER) AS title_len FROM todos ORDER BY missing_len',
       ),
     ).toThrow('no such column: missing_len');
   });
@@ -636,10 +639,10 @@ describe('emitted SQL is the SQL SQLite checked', () => {
   test('whitespace inside a string literal survives emission', () => {
     const query = analyze(
       'q.sql',
-      "SELECT id, replace(title, '  ', ' ') AS spaced FROM todos",
+      "SELECT id, CAST(replace(title, '  ', ' ') AS TEXT) AS spaced FROM todos",
     );
     expect(query.positionalSql).toBe(
-      "SELECT id, replace(title, '  ', ' ') AS spaced FROM todos",
+      "SELECT id, CAST(replace(title, '  ', ' ') AS TEXT) AS spaced FROM todos",
     );
   });
 
@@ -747,6 +750,89 @@ describe('scope proofs are whole WHERE conjuncts', () => {
   });
 });
 
+describe('computed column types (SYQL §14.1)', () => {
+  const types = (select: string) =>
+    analyze('q.sql', `SELECT ${select} FROM todos`).columns.map(
+      (column) => column.type,
+    );
+  const refused = (select: string) => {
+    try {
+      analyze('computed-types.sql', `SELECT ${select} FROM todos`);
+    } catch (error) {
+      if (error instanceof TypegenError) return error;
+      throw error;
+    }
+    throw new Error('expected the computed column to be refused');
+  };
+
+  test('a whole-expression CAST takes the mapped type of its target', () => {
+    expect(
+      types(
+        `CAST(done AS INTEGER) AS a, cast(title AS text) AS b,
+         CAST(length(title) AS REAL) AS c, CAST(done AS BOOLEAN) AS d`,
+      ),
+    ).toEqual(['integer', 'string', 'float', 'boolean']);
+  });
+
+  test('a whole-expression count() is an integer, DISTINCT included', () => {
+    expect(
+      types('count(*) AS a, count(DISTINCT title) AS b, count(note) AS c'),
+    ).toEqual(['integer', 'integer', 'integer']);
+  });
+
+  test('a column SQLite reports a decltype for keeps its declared type', () => {
+    expect(types('done AS a, (SELECT title FROM todos LIMIT 1) AS b')).toEqual([
+      'boolean',
+      'string',
+    ]);
+  });
+
+  test('anything else is refused with a static code and structured details', () => {
+    for (const select of [
+      'done = 1 AS x',
+      'length(title) AS x',
+      "date('2024-01-01', '-1 day') AS x",
+      'sum(length(title)) AS x',
+      '1 + 1 AS x',
+    ]) {
+      const error = refused(select);
+      expect(error.code).toBe('typegen.computed_column_type');
+      expect(error.message).toContain('wrap the expression in CAST(');
+      expect(error.details).toEqual({ query: 'computedTypes', column: 'x' });
+    }
+  });
+
+  test('CAST that is not the whole expression is refused', () => {
+    for (const select of [
+      'CAST(length(title) AS INTEGER) + 1 AS x',
+      'abs(CAST(length(title) AS INTEGER)) AS x',
+      'coalesce(CAST(done AS INTEGER), 0) AS x',
+      'count(*) + 1 AS x',
+      'count(*) OVER () AS x',
+      "CAST(title AS TEXT) || ')' AS x",
+    ]) {
+      expect(refused(select).code).toBe('typegen.computed_column_type');
+    }
+  });
+
+  test('a CAST target whose affinity can change the value is refused', () => {
+    // DATETIME is no column type; JSON, BYTEA, BLOB_REF and CRDT are, but
+    // SQLite casts them with NUMERIC or BLOB affinity.
+    for (const target of [
+      'DATETIME',
+      'JSON',
+      'JSONB',
+      'BYTEA',
+      'BLOB_REF',
+      'CRDT',
+    ]) {
+      expect(refused(`CAST(title AS ${target}) AS x`).code).toBe(
+        'typegen.computed_column_type',
+      );
+    }
+  });
+});
+
 describe('result nullability', () => {
   test('a bare column beside an aggregate without GROUP BY is nullable', () => {
     const query = analyze('q.sql', 'SELECT count(*) AS n, title FROM todos');
@@ -761,7 +847,7 @@ describe('result nullability', () => {
     expect(grouped.columns[1]?.nullable).toBe(false);
     const windowed = analyze(
       'q.sql',
-      'SELECT count(*) OVER () AS n, title FROM todos',
+      'SELECT CAST(count(*) OVER () AS INTEGER) AS n, title FROM todos',
     );
     expect(windowed.columns[1]?.nullable).toBe(false);
   });

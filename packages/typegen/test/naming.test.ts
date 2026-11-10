@@ -322,8 +322,12 @@ describe('projection lowering (§5 AS-aliasing)', () => {
   });
 
   test('an author-written alias is the SQL-truth name and convention-maps', () => {
-    const q = camel('SELECT max(created_at) AS last_seen FROM todos');
-    expect(q.sql).toBe('SELECT max(created_at) AS "lastSeen" FROM todos');
+    const q = camel(
+      'SELECT CAST(max(created_at) AS INTEGER) AS last_seen FROM todos',
+    );
+    expect(q.sql).toBe(
+      'SELECT CAST(max(created_at) AS INTEGER) AS "lastSeen" FROM todos',
+    );
     expect(q.columns[0]).toMatchObject({
       name: 'last_seen',
       langName: 'lastSeen',
@@ -398,8 +402,10 @@ describe('projection lowering (§5 AS-aliasing)', () => {
   });
 
   test('string literals in the projection survive verbatim', () => {
-    const q = camel("SELECT 'a, b' AS tag_text, id FROM todos");
-    expect(q.sql).toBe('SELECT \'a, b\' AS "tagText", id FROM todos');
+    const q = camel("SELECT CAST('a, b' AS TEXT) AS tag_text, id FROM todos");
+    expect(q.sql).toBe(
+      'SELECT CAST(\'a, b\' AS TEXT) AS "tagText", id FROM todos',
+    );
   });
 });
 
